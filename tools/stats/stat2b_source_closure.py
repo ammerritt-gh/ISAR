@@ -57,7 +57,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument("--manifest", default=DEFAULT_ACTIVE_PATH)
     provenance = verify.add_mutually_exclusive_group()
-    provenance.add_argument("--git-provenance", action="store_true")
+    provenance.add_argument(
+        "--git-provenance",
+        action="store_true",
+        help="force Git-backed provenance even for an unapproved candidate",
+    )
+    provenance.add_argument(
+        "--no-git-provenance",
+        action="store_true",
+        help="skip Git-backed provenance (candidate/in-flight manifests only)",
+    )
     provenance.add_argument("--release-anchor")
     return parser
 
@@ -133,7 +142,16 @@ def main(argv: list[str] | None = None) -> int:
         _print_result(result)
         if not result.ok:
             return 1
-        if args.command == "verify" and (args.git_provenance or args.release_anchor):
+        # An owner-approved manifest asserts three Git-backed bindings (preceding candidate
+        # commit, candidate bytes, immutable review bytes); verifying it without provenance
+        # proves none of them, so provenance is the default there.
+        run_provenance = (
+            args.command == "verify"
+            and not args.no_git_provenance
+            and (args.git_provenance
+                 or bool(args.release_anchor)
+                 or bool(result.manifest and result.manifest.get("owner_approved"))))
+        if run_provenance:
             provenance = git_provenance(
                 REPO_ROOT,
                 result.manifest,

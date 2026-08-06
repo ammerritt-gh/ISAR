@@ -32,6 +32,12 @@ tools\stats\stat2b1-production-source-closure.candidate.json` returned `candidat
 candidate evidence commit. Git-backed provenance becomes checkable only after that commit and does
 not constitute owner approval.
 
+`verify` now runs Git-backed provenance by default whenever the manifest it authenticates is
+owner-approved, so verifying the active closure proves the preceding-candidate-commit, candidate-byte
+and review-byte bindings rather than only the source hashes. An unapproved candidate such as the one
+above still skips provenance by default; `--git-provenance` forces it once the candidate evidence is
+committed, and `--no-git-provenance` suppresses it.
+
 ## Verification evidence
 
 The retained [verification record](2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE/verification.json) records:

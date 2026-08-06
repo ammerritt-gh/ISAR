@@ -454,7 +454,12 @@ def _evaluate_gate(
 
 def replay_heldout_aggregate(repo_root: Path, gate: Mapping[str, Any]) -> dict[str, Any]:
     evaluator = _repo_path(repo_root, HISTORICAL_EVALUATOR_PATH)
-    if sha256_file(evaluator) != HISTORICAL_EVALUATOR_SHA256:
+    # Same required content, hashed the way this module hashes every other module: the
+    # evaluator carries no ``-text`` attribute, so a CRLF checkout changes its raw bytes
+    # without changing a byte of source.  HISTORICAL_EVALUATOR_SHA256 is unchanged and still
+    # the value frozen in the immutable held-out gate and aggregate, which record it over
+    # canonical LF content.
+    if source_content_sha256(evaluator) != HISTORICAL_EVALUATOR_SHA256:
         raise ClosureError("historical evaluator source is unavailable at its frozen identity")
     summary_path = _repo_path(repo_root, HELDOUT_SUMMARY_PATH)
     if sha256_file(summary_path) != HELDOUT_SUMMARY_SHA256:

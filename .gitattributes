@@ -7,3 +7,9 @@ tools/stats/stat2b1-production-source-closure.json -text
 docs/campaigns/2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP/** -text
 docs/campaigns/2026-07-31_STAT2B1_HELDOUT/** -text
 docs/campaigns/2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR/** -text
+docs/campaigns/2026-08-05_O44_ZONE_CENTRE_SOURCE_CLOSURE/** -text
+# NOTE: docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE*/** deliberately has NO `-text` row yet.
+# Nine of its retained files are stored LF but were hashed into run-manifest.json as CRLF, so the
+# bundle reproduces only on a Windows checkout. Adding `-text` alone does not fix that — it inverts
+# it, making those nine wrong on *every* platform. The attribute and the manifest re-freeze have to
+# land in the same change; the re-freeze is an owner decision (PR #9 review, R9).

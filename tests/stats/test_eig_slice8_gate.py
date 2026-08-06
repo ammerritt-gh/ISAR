@@ -425,6 +425,105 @@ def test_repaired_slice8_bundle_is_self_contained_and_reproduces_exact_bytes(tmp
     assert reproduced["overall_disposition"] == "passed"
 
 
+def _resign_replacement_bundle(bundle: Path) -> None:
+    """Re-sign every internal fingerprint of a mutated o36.8.2 bundle.
+
+    This is what an adversary with write access to the retained bytes can do; nothing here
+    forges an identity the gate does not derive from the bundle itself.
+    """
+    def load(name):
+        return json.loads((bundle / name).read_text(encoding="utf-8"))
+
+    def dump(name, value):
+        (bundle / name).write_bytes(gate.canonical_json(value).encode("utf-8"))
+
+    manifest = load("case-manifest.json")
+    manifest["case_manifest_fingerprint"] = gate._fingerprint(
+        "isar.eig4_slice8_case_manifest_fingerprint/o36.8.2", manifest,
+        "case_manifest_fingerprint")
+    dump("case-manifest.json", manifest)
+    fixtures = {item["case_id"]: item["fixture_definition"]
+                for item in manifest["cases"]}
+
+    results = load("case-results.json")
+    for case in results["cases"]:
+        case["fixture_definition_fingerprint"] = gate.fixture_definition_fingerprint(
+            fixtures[case["case_id"]])
+        case["case_evidence_fingerprint"] = gate._fingerprint(
+            "isar.eig4_slice8_case_evidence_fingerprint/o36.8.1", case,
+            "case_evidence_fingerprint")
+    dump("case-results.json", results)
+
+    run = load("run-manifest.json")
+    for row in run["retained_files"]:
+        row["sha256"] = hashlib.sha256(
+            (bundle / row["path"]).read_bytes()).hexdigest()
+    run["case_manifest_fingerprint"] = manifest["case_manifest_fingerprint"]
+    run["run_manifest_fingerprint"] = gate._fingerprint(
+        "isar.eig4_slice8_run_manifest_fingerprint/o36.8.1", run,
+        "run_manifest_fingerprint")
+    dump("run-manifest.json", run)
+
+    results = load("case-results.json")
+    results["case_manifest_fingerprint"] = manifest["case_manifest_fingerprint"]
+    results["run_manifest_fingerprint"] = run["run_manifest_fingerprint"]
+    results["case_results_fingerprint"] = gate._fingerprint(
+        "isar.eig4_slice8_case_results_fingerprint/o36.8.1", results,
+        "case_results_fingerprint")
+    dump("case-results.json", results)
+
+
+def _forge_case2_amplitude(bundle: Path) -> None:
+    path = bundle / "case-manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    case = next(item for item in manifest["cases"]
+                if item["case_id"] == "s8-c02-weak-unresolved-confirmed")
+    case["fixture_definition"]["physical_parameters"]["amplitude"] = 0.9999
+    path.write_bytes(gate.canonical_json(manifest).encode("utf-8"))
+
+
+def _forge_case3_fixture(bundle: Path) -> None:
+    path = bundle / "case-manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    case = next(item for item in manifest["cases"]
+                if item["case_id"] == "s8-c03-near-elastic-selection-time")
+    case["fixture_definition"]["physical_parameters"]["ncount"] = 999999
+    path.write_bytes(gate.canonical_json(manifest).encode("utf-8"))
+
+
+def _forge_calibration_table(bundle: Path) -> None:
+    path = bundle / "case2-amplitude-calibration-table.json"
+    table = json.loads(path.read_text(encoding="utf-8"))
+    table["selected_amplitude"] = 0.4
+    table["selected_ladder_index"] = 3
+    table["calibration_table_fingerprint"] = gate._fingerprint(
+        "isar.eig4_slice8_case2_amplitude_calibration_table_fingerprint/o36.8.2",
+        table, "calibration_table_fingerprint")
+    path.write_text(
+        json.dumps(table, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("forge,stage", [
+    (_forge_case2_amplitude, "case_manifest"),
+    (_forge_case3_fixture, "case_manifest"),
+    (_forge_calibration_table, "case2_calibration"),
+])
+def test_replacement_bundle_with_forged_fixture_or_calibration_is_refused(
+        tmp_path, forge, stage):
+    source = Path("docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3")
+    bundle = tmp_path / "forged-bundle"
+    shutil.copytree(source, bundle)
+    forge(bundle)
+    _resign_replacement_bundle(bundle)
+
+    result = gate.evaluate_bundle(bundle)
+
+    assert result["overall_disposition"] == "invalid"
+    assert result["invalid_stage"] == stage
+    assert gate.main(["evaluate", "--bundle", str(bundle),
+                      "--output", str(tmp_path / "out.json")]) == 1
+
+
 def test_repaired_case1_classifies_the_exact_production_comparison():
     bundle = Path(
         "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3")

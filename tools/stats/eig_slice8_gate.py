@@ -637,6 +637,111 @@ def validate_replacement_fixture_definitions(
     return value
 
 
+_REGIME_CASE_IDS = {
+    "s8-c01-strong-confirmed", "s8-c02-weak-unresolved-confirmed",
+    "s8-c03-near-elastic-selection-time",
+}
+
+
+def _regime_physical_parameters(cases: Sequence[Any]) -> dict[str, Any]:
+    return {item["case_id"]: item["physical_parameters"] for item in cases
+            if isinstance(item, Mapping) and item.get("case_id") in _REGIME_CASE_IDS}
+
+
+def repair_fixture_definitions_from_cases(
+        cases: Sequence[Any]) -> Mapping[str, Any]:
+    """Rebuild the o36.8.1 fixture-definitions artifact from embedded fixture bytes.
+
+    Every field of the artifact other than the fixture cases themselves is either a frozen
+    constant or derived from those cases, so a case manifest that embeds the fixtures fully
+    determines both fingerprints it claims.  Rebuilding and validating here is what makes the
+    claimed ``fixture_definitions_fingerprint`` / ``regime_assessment_fingerprint`` an
+    authentication of the fixture bytes rather than a self-referential restatement.
+    """
+    assessment: dict[str, Any] = {
+        "contract": "isar.eig4_slice8_fixture_regime_assessment/o36.8.1",
+        "parameter_set_fingerprint": semantics_fingerprint(
+            "isar.eig4_slice8_fixture_parameter_set/o36.8.1",
+            _regime_physical_parameters(cases)),
+        "scoring_config_fingerprint": (
+            ScanWindowShadowScoringConfig().scoring_config_fingerprint),
+        "case_1": {"delta_positive": True, "lower_margin_positive": True},
+        "case_2": {"delta_positive": True, "lower_margin_positive": False},
+        "no_retuning_claim": "assessment cannot rescue a contrary frozen repaired result",
+        "regime_assessment_fingerprint": "",
+    }
+    assessment["regime_assessment_fingerprint"] = _fingerprint(
+        "isar.eig4_slice8_fixture_regime_assessment_fingerprint/o36.8.1",
+        assessment, "regime_assessment_fingerprint")
+    value: dict[str, Any] = {
+        "contract": REPAIR_FIXTURE_DEFINITIONS_CONTRACT,
+        "cases": list(cases),
+        "regime_assessment": assessment,
+        "fixture_definitions_fingerprint": "",
+    }
+    value["fixture_definitions_fingerprint"] = _fingerprint(
+        "isar.eig4_slice8_fixture_definitions_fingerprint/o36.8.1", value,
+        "fixture_definitions_fingerprint")
+    return validate_repair_fixture_definitions(value)
+
+
+def replacement_fixture_definitions_from_cases(
+        cases: Sequence[Any]) -> Mapping[str, Any]:
+    """Rebuild the o36.8.2 fixture-definitions artifact from embedded fixture bytes.
+
+    See :func:`repair_fixture_definitions_from_cases`; in addition, validation here re-applies
+    the authorized Case 2 amplitude and calibration-binding checks at evaluate time, not only
+    at freeze time.
+    """
+    assessment: dict[str, Any] = {
+        "contract": "isar.eig4_slice8_fixture_regime_assessment/o36.8.2",
+        "parameter_set_fingerprint": semantics_fingerprint(
+            "isar.eig4_slice8_fixture_parameter_set/o36.8.2",
+            _regime_physical_parameters(cases)),
+        "scoring_config_fingerprint": (
+            ScanWindowShadowScoringConfig().scoring_config_fingerprint),
+        "case_1": {"delta_positive": True, "lower_margin_positive": True},
+        "case_2": {"delta_positive": True, "lower_margin_positive": False},
+        "calibration_table_fingerprint": CASE2_CALIBRATION_TABLE_FINGERPRINT,
+        "no_post_selection_retuning_claim": (
+            "first qualifying predeclared amplitude selected; no later row can replace it"),
+        "regime_assessment_fingerprint": "",
+    }
+    assessment["regime_assessment_fingerprint"] = _fingerprint(
+        "isar.eig4_slice8_fixture_regime_assessment_fingerprint/o36.8.2",
+        assessment, "regime_assessment_fingerprint")
+    value: dict[str, Any] = {
+        "contract": REPLACEMENT_FIXTURE_DEFINITIONS_CONTRACT,
+        "cases": list(cases),
+        "regime_assessment": assessment,
+        "calibration_binding": {
+            "protocol_fingerprint": CASE2_CALIBRATION_PROTOCOL_FINGERPRINT,
+            "calibration_table_fingerprint": CASE2_CALIBRATION_TABLE_FINGERPRINT,
+            "reproducibility_fingerprint": (
+                CASE2_CALIBRATION_REPRODUCIBILITY_FINGERPRINT),
+            "selected_ladder_index": 1,
+            "selected_amplitude": 0.275,
+        },
+        "fixture_definitions_fingerprint": "",
+    }
+    value["fixture_definitions_fingerprint"] = _fingerprint(
+        "isar.eig4_slice8_fixture_definitions_fingerprint/o36.8.2", value,
+        "fixture_definitions_fingerprint")
+    return validate_replacement_fixture_definitions(value)
+
+
+def _embedded_fixture_cases(value: Mapping[str, Any], label: str) -> list[Any]:
+    cases = value.get("cases")
+    if not isinstance(cases, list):
+        raise GateEvidenceError(f"{label} cases must be a list")
+    fixtures = []
+    for item in cases:
+        if not isinstance(item, Mapping) or "fixture_definition" not in item:
+            raise GateEvidenceError(f"{label} case omits its embedded fixture definition")
+        fixtures.append(item["fixture_definition"])
+    return fixtures
+
+
 def build_repair_case_manifest(gate_manifest: Mapping[str, Any],
                                fixture_definitions: Mapping[str, Any]) -> dict[str, Any]:
     validate_repair_gate_manifest(gate_manifest)
@@ -673,22 +778,14 @@ def validate_repair_case_manifest(value: Mapping[str, Any],
         "contract", "gate_manifest_fingerprint", "fixture_definitions_fingerprint",
         "regime_assessment_fingerprint", "cases", "faults", "case_manifest_fingerprint",
     }, "repair case manifest")
-    if (value["contract"] != REPAIR_CASE_MANIFEST_CONTRACT
-            or value["gate_manifest_fingerprint"]
-            != gate_manifest["gate_manifest_fingerprint"]
-            or value["cases"] != [{
-                **item,
-                "fixture_definition": next(
-                    row["fixture_definition"] for row in value["cases"]
-                    if row.get("case_id") == item["case_id"]),
-                "fixture_freeze_rule": (
-                    "unchanged Slice 8 physical parameters and seeds; a contrary result fails without retuning"),
-                "truth_authority": "post_run_evaluation_only",
-            } for item in CASE_DEFINITIONS]
-            or value["faults"] != [dict(item) for item in FAULT_DEFINITIONS]
-            or value["case_manifest_fingerprint"] != _fingerprint(
-                "isar.eig4_slice8_case_manifest_fingerprint/o36.8.1", value,
-                "case_manifest_fingerprint")):
+    if value["contract"] != REPAIR_CASE_MANIFEST_CONTRACT:
+        raise GateEvidenceError("repair case manifest contract is unsupported")
+    # Rebuild the fixture-definitions artifact from the embedded fixture bytes so the claimed
+    # fixture and regime fingerprints authenticate those bytes instead of restating themselves.
+    fixtures = repair_fixture_definitions_from_cases(
+        _embedded_fixture_cases(value, "repair case manifest"))
+    expected = build_repair_case_manifest(gate_manifest, fixtures)
+    if canonical_json(value) != canonical_json(expected):
         raise GateEvidenceError("repair case manifest is invalid")
     return value
 
@@ -733,32 +830,21 @@ def validate_replacement_case_manifest(
         "regime_assessment_fingerprint", "calibration_table_fingerprint",
         "cases", "faults", "case_manifest_fingerprint",
     }, "replacement case manifest")
-    if (value.get("contract") != REPLACEMENT_CASE_MANIFEST_CONTRACT
-            or value.get("gate_manifest_fingerprint")
-            != gate_manifest["gate_manifest_fingerprint"]
-            or value.get("calibration_table_fingerprint")
-            != CASE2_CALIBRATION_TABLE_FINGERPRINT
-            or value.get("faults") != [dict(item) for item in FAULT_DEFINITIONS]
-            or value.get("case_manifest_fingerprint") != _fingerprint(
-                "isar.eig4_slice8_case_manifest_fingerprint/o36.8.2", value,
-                "case_manifest_fingerprint")):
+    if value.get("contract") != REPLACEMENT_CASE_MANIFEST_CONTRACT:
+        raise GateEvidenceError("replacement case manifest contract is unsupported")
+    if value.get("calibration_table_fingerprint") != CASE2_CALIBRATION_TABLE_FINGERPRINT:
+        raise GateEvidenceError("replacement case manifest does not bind the frozen "
+                                "Case 2 calibration table")
+    # There is no separately retained fixture-definitions artifact in the bundle, so the
+    # embedded fixture bytes are the only copy.  Rebuild the artifact they fully determine and
+    # revalidate it here: that re-applies the authorized Case 2 amplitude and calibration
+    # binding at evaluate time and makes the claimed fixture and regime fingerprints an
+    # authentication of the fixture bytes instead of a self-referential restatement.
+    fixtures = replacement_fixture_definitions_from_cases(
+        _embedded_fixture_cases(value, "replacement case manifest"))
+    expected = build_replacement_case_manifest(gate_manifest, fixtures)
+    if canonical_json(value) != canonical_json(expected):
         raise GateEvidenceError("replacement case manifest is invalid")
-    # Fixture and assessment bytes are already authenticated by their fingerprints in the
-    # separately retained fixture-definitions artifact; the manifest must still cover each case.
-    if [item.get("case_id") for item in value["cases"]] != [
-            item["case_id"] for item in CASE_DEFINITIONS]:
-        raise GateEvidenceError("replacement case manifest does not cover all six cases")
-    freeze_rule = (
-        "o36.8.2 changes only Case 2 amplitude to the first qualifying value in the "
-        "predeclared ladder; all other physical parameters, seeds and expectations remain")
-    for definition, retained in zip(CASE_DEFINITIONS, value["cases"]):
-        fixture = retained.get("fixture_definition")
-        if retained != {
-                **definition,
-                "fixture_definition": fixture,
-                "fixture_freeze_rule": freeze_rule,
-                "truth_authority": "post_run_evaluation_only"}:
-            raise GateEvidenceError("replacement case manifest changed a frozen case definition")
     return value
 
 
@@ -1303,6 +1389,55 @@ def _validate_repair_run_manifest(value: Mapping[str, Any], gate: Mapping[str, A
     return retained
 
 
+def _validate_replacement_calibration(bundle: Path, retained: Mapping[str, str],
+                                      validated: list[str]) -> None:
+    """Authenticate the retained Case 2 amplitude-calibration artifacts at evaluate time.
+
+    The o36.8.2 gate manifest and case manifest only *claim* these fingerprints; without
+    opening the retained files the claim is self-referential.
+    """
+    stage = "case2_calibration"
+    artifacts = (
+        ("case2-amplitude-calibration-protocol.json", "protocol_fingerprint",
+         "isar.eig4_slice8_case2_amplitude_calibration_protocol/o36.8.2",
+         "isar.eig4_slice8_case2_amplitude_calibration_protocol_fingerprint/o36.8.2",
+         CASE2_CALIBRATION_PROTOCOL_FINGERPRINT),
+        ("case2-amplitude-calibration-table.json", "calibration_table_fingerprint",
+         "isar.eig4_slice8_case2_amplitude_calibration_table/o36.8.2",
+         "isar.eig4_slice8_case2_amplitude_calibration_table_fingerprint/o36.8.2",
+         CASE2_CALIBRATION_TABLE_FINGERPRINT),
+        ("case2-amplitude-reproducibility.json", "reproducibility_fingerprint",
+         "isar.eig4_slice8_case2_amplitude_reproducibility/o36.8.2",
+         "isar.eig4_slice8_case2_amplitude_reproducibility_fingerprint/o36.8.2",
+         CASE2_CALIBRATION_REPRODUCIBILITY_FINGERPRINT),
+    )
+    documents: dict[str, Mapping[str, Any]] = {}
+    for relative, field, contract, domain, expected in artifacts:
+        value = _repair_read_json(
+            bundle, relative, retained, stage=stage, validated=validated)
+        if value.get("contract") != contract:
+            raise _repair_invalid(
+                stage, "calibration_contract_unsupported", relative, validated)
+        if _fingerprint(domain, value, field) != expected or value.get(field) != expected:
+            raise _repair_invalid(
+                stage, "calibration_fingerprint_mismatch", relative, validated)
+        documents[relative] = value
+        validated.append(expected)
+    table = documents["case2-amplitude-calibration-table.json"]
+    reproducibility = documents["case2-amplitude-reproducibility.json"]
+    if (table.get("protocol_fingerprint") != CASE2_CALIBRATION_PROTOCOL_FINGERPRINT
+            or table.get("selected_ladder_index") != 1
+            or table.get("selected_amplitude") != 0.275
+            or reproducibility.get("calibration_table_fingerprint")
+            != CASE2_CALIBRATION_TABLE_FINGERPRINT
+            or reproducibility.get("selected_ladder_index") != 1
+            or reproducibility.get("selected_amplitude") != 0.275):
+        raise _repair_invalid(
+            stage, "calibration_binding_broken",
+            "retained calibration artifacts do not select the authorized Case 2 amplitude",
+            validated)
+
+
 def _repair_case_fingerprint(case: Mapping[str, Any]) -> str:
     return _fingerprint(
         "isar.eig4_slice8_case_evidence_fingerprint/o36.8.1", case,
@@ -1656,6 +1791,8 @@ def _evaluate_repair_bundle(bundle: Path, validated: list[str], *,
     run = _read_json(bundle / "run-manifest.json")
     retained = _validate_repair_run_manifest(
         run, gate_value, case_manifest, verification, bundle, validated)
+    if replacement:
+        _validate_replacement_calibration(bundle, retained, validated)
     try:
         raw = _read_json(bundle / "case-results.json")
         _exact(raw, {
@@ -1913,11 +2050,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = evaluate_bundle(args.bundle)
         if args.command == "evaluate":
             _write_json(args.output, result)
-            return 0
-        retained = (args.bundle / "gate-result.json").read_bytes()
-        reproduced = _canonical_bytes(result)
-        if retained != reproduced:
-            raise GateEvidenceError("retained gate-result bytes do not reproduce")
+        else:
+            retained = (args.bundle / "gate-result.json").read_bytes()
+            reproduced = _canonical_bytes(result)
+            if retained != reproduced:
+                raise GateEvidenceError("retained gate-result bytes do not reproduce")
+        # A reproduced or written result is not a passing one: `evaluate_repair_bundle`
+        # returns an "invalid" disposition rather than raising, and a re-signed bundle can
+        # reproduce a "failed" disposition byte for byte.  Neither may exit 0.
+        disposition = result.get("overall_disposition")
+        if disposition != "passed":
+            log.error("Slice 8 gate %s disposition is %s", args.command, disposition)
+            return 1
         return 0
     except (GateEvidenceError, OSError, subprocess.CalledProcessError, ValueError) as error:
         log.error("Slice 8 gate %s failed: %s", args.command, error)
