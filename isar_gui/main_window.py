@@ -12,8 +12,10 @@ The Docks-menu two-way sync (checkable action <-> dock ``visibilityChanged``) fo
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from weakref import WeakSet
@@ -822,19 +824,33 @@ class MainWindow(QMainWindow):
                 self, "Example already exists",
                 f"Choose another parent folder or rename this existing folder:\n{destination}")
             return
+        # Staged in a sibling temp folder and renamed into place, so a failure part-way through
+        # (missing resource in a non-editable install, permission or AV lock) leaves NO partial
+        # workspace behind — a partial one would trip the exists() guard above on the next attempt
+        # and send the operator hunting for a name clash that is not the real problem.
+        staging = Path(tempfile.mkdtemp(dir=parent, prefix=".isar-example-"))
+        staged = staging / destination.name
         try:
-            shutil.copytree(source, destination)
-            shutil.copy2(resources / "card.policy.toml", destination / "card.policy.toml")
-            shutil.copy2(resources / "compact-goal.json", destination / "compact-goal.json")
-            shutil.copy2(resources / "example-manifest.json",
-                         destination / "example-manifest.json")
+            shutil.copytree(source, staged)
+            shutil.copy2(resources / "card.policy.toml", staged / "card.policy.toml")
+            shutil.copy2(resources / "compact-goal.json", staged / "compact-goal.json")
+            shutil.copy2(resources / "example-manifest.json", staged / "example-manifest.json")
             # Historical gate events are evidence for the seed, not the new operator campaign's
             # spend ledger. The copied prior/model artifacts remain; the campaign log starts clean.
-            (destination / "report" / "session_log.jsonl").write_text("", encoding="utf-8")
+            (staged / "report" / "session_log.jsonl").write_text("", encoding="utf-8")
+            os.replace(staged, destination)
         except OSError as exc:
             log.exception("failed to create the O41 example workspace")
-            self.statusBar().showMessage(f"Could not create O41 example — {exc}")
+            message = f"Could not create O41 example — {exc}"
+            self.statusBar().showMessage(message)
+            self.log(message)
             return
+        finally:
+            try:
+                shutil.rmtree(staging)
+            except OSError:
+                log.warning("could not remove the O41 example staging folder %s",
+                            staging, exc_info=True)
         self.load_workspace(str(destination))
         if self.campaign_dock is not None:
             self.campaign_dock.apply_form({

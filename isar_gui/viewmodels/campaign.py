@@ -276,6 +276,20 @@ def analysis_readout(state: CampaignState) -> tuple[int, str]:
                                   f"{limit / 60.0:.1f} min")
 
 
+def authority_iter_text(authority: dict | None) -> str:
+    """`" [iter 4]"` for an authority decision, or `""` when the payload carried no iteration.
+
+    The reducer keeps the LAST authority decision seen since ``campaign_start`` and never ages it
+    out, so a decision from an early iteration keeps rendering while the campaign moves on. The
+    stamp is what lets an operator tell a live grant from a stale one; it is read straight off the
+    payload (1-based, like every other iteration the docks print) and never re-derived.
+    """
+    it = (authority or {}).get("iter", (authority or {}).get("iteration"))
+    if not isinstance(it, (int, float)) or isinstance(it, bool):
+        return ""
+    return f" [iter {int(it) + 1}]"
+
+
 def terminal_status_text(state: CampaignState) -> str:
     """Stable operator-facing terminal outcome, separate from low-level reason detail."""
     reasons = "; ".join(state.stop_reasons)

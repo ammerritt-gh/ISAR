@@ -51,8 +51,8 @@ from PySide6.QtWidgets import (
 
 from isar_gui.commands import DriveOptions, source_fingerprint
 from isar_gui.log_render import BUDGET_KIND, BudgetAnnouncer, RenderedEvent, format_payload
-from isar_gui.viewmodels.campaign import (analysis_readout, budget_readout, current_activity_text,
-                                          terminal_status_text)
+from isar_gui.viewmodels.campaign import (analysis_readout, authority_iter_text, budget_readout,
+                                          current_activity_text, terminal_status_text)
 
 log = logging.getLogger(__name__)
 
@@ -672,7 +672,8 @@ class CampaignDock(QDockWidget):
                 f"{name}×{count}" for name, count in sorted(
                     state.authority_predicate_failure_counts.items())) or "none"
             self._authority_label.setText(
-                f"scan-window authority: {authority.get('selected_role', '—')} — "
+                f"scan-window authority{authority_iter_text(authority)}: "
+                f"{authority.get('selected_role', '—')} — "
                 f"{authority.get('decision_outcome', '—')}; reasons {reasons}; "
                 f"campaign predicate failures {failures}")
         else:

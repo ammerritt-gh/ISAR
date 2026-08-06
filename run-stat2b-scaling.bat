@@ -20,12 +20,19 @@ if not exist "%ISAR_MAMBA%" (
     exit /b 1
 )
 
+rem Durable console log, like run-stat2b-campaign.bat: a failure must survive the console buffer.
+if not exist "out\stat2b-scaling" mkdir "out\stat2b-scaling"
+set "STAT2B_LOG=out\stat2b-scaling\stat2b-scaling-console.log"
+echo Running STAT-2b scaling preflight...
+echo Durable console log: %STAT2B_LOG%
+> "%STAT2B_LOG%" echo [%DATE% %TIME%] Starting STAT-2b scaling preflight.
 "%ISAR_MAMBA%" run -n isar python -m isar.synth.stat2b.scaling ^
     --spec tools\stats\stat2b-development.toml ^
-    --output-root out\stat2b-scaling
+    --output-root out\stat2b-scaling >> "%STAT2B_LOG%" 2>&1
 if errorlevel 1 (
     echo.
-    echo STAT-2b scaling preflight failed.
+    echo STAT-2b scaling preflight failed. Check:
+    echo   %STAT2B_LOG%
     echo Existing scaling output is never resumed; remove it explicitly or use
     echo --recreate from a command prompt when a fully fresh rerun is intended.
     pause
