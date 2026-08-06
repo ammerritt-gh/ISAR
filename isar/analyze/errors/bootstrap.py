@@ -18,7 +18,7 @@ import logging
 import numpy as np
 
 from isar.analyze import loop
-from isar.synth import backends, estimators
+from isar.analyze import backends, estimators
 
 # Only spin up a process pool for the M-replicate loop when there is enough work to amortize the
 # (Windows-spawn) worker startup. Below this, the serial path is faster.

@@ -9,7 +9,7 @@ from isar.analyze.context import ScanContext
 from isar.analyze.errors import bootstrap as B
 from isar.analyze.ic import greedy_multimode_ic
 from isar.analyze.structures import enumerate_multimode, enumerate_structures
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _spectrum_ctx(seed=0, omega0=5.0, n=81):

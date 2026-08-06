@@ -36,6 +36,12 @@ HISTORICAL_GATE_FINGERPRINT = (
     "ceaecf278329297729ae77d29eccfd940a5eaeefde703b86815225be5fc2a645"
 )
 HISTORICAL_EVALUATOR_PATH = "isar/synth/stat2b/campaign.py"
+# The path above is the frozen *key* recorded inside the gate and aggregate source-hash
+# mappings and never changes. The live module at that path evolves under ordinary
+# development (S10), so the evaluator's frozen source is preserved as evidence at the
+# snapshot path below (extracted verbatim at `b9ae490`, the last commit carrying the
+# frozen identity) and authenticated there against HISTORICAL_EVALUATOR_SHA256.
+HISTORICAL_EVALUATOR_SNAPSHOT_PATH = "tools/stats/stat2b1-heldout-evaluator.frozen"
 HISTORICAL_EVALUATOR_SHA256 = (
     "6800a240ed4b42280d762f4d260e9a6630c4bf8caf3a31483e6d59ef28b65a64"
 )
@@ -243,12 +249,11 @@ def _evaluate_gate(
 
 
 def replay_heldout_aggregate(repo_root: Path, gate: Mapping[str, Any]) -> dict[str, Any]:
-    evaluator = _repo_path(repo_root, HISTORICAL_EVALUATOR_PATH)
-    # Same required content, hashed the way this module hashes every other module: the
-    # evaluator carries no ``-text`` attribute, so a CRLF checkout changes its raw bytes
-    # without changing a byte of source.  HISTORICAL_EVALUATOR_SHA256 is unchanged and still
-    # the value frozen in the immutable held-out gate and aggregate, which record it over
-    # canonical LF content.
+    evaluator = _repo_path(repo_root, HISTORICAL_EVALUATOR_SNAPSHOT_PATH)
+    # The frozen evaluator source is read from its evidence snapshot, not from the live
+    # module (which evolves under S10). Hashed over canonical LF content, so a CRLF
+    # checkout cannot change its identity. HISTORICAL_EVALUATOR_SHA256 is unchanged and
+    # still the value frozen in the immutable held-out gate and aggregate.
     if source_content_sha256(evaluator) != HISTORICAL_EVALUATOR_SHA256:
         raise ClosureError("historical evaluator source is unavailable at its frozen identity")
     summary_path = _repo_path(repo_root, HELDOUT_SUMMARY_PATH)

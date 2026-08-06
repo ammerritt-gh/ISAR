@@ -22,9 +22,9 @@ from isar.analyze.ic import EPS_OMEGA_D, greedy_multimode_ic, structure_ic
 from isar.analyze.structures import (
     Hypothesis, elastic_admissible, enumerate_multimode, enumerate_structures,
 )
-from isar.synth import backends, estimators
-from isar.synth.backends import BackendResult
-from isar.synth.fit import assess_success, omega0_value_error
+from isar.analyze import backends, estimators
+from isar.analyze.backends import BackendResult
+from isar.analyze.phonon import assess_success, omega0_value_error
 
 GAMMA_FLOOR = 1e-3
 GAMMA_MAX = 5.0

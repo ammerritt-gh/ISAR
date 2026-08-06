@@ -10,7 +10,8 @@ from isar.analyze.components import (CompositeModel, ConstantBackground, Elastic
                                      PhononDHO)
 from isar.analyze.context import ScanContext
 from isar.synth import fit
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze import phonon
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _spectrum_ctx():
@@ -68,8 +69,8 @@ def test_greedy_multimode_ic_recovers_two_seeds_on_double_peak():
     one = loop.fit_hypothesis({h.label: h for h in enumerate_structures(ctx)}["stokes+bg"], ctx)
     comp = {h.label: h for h in enumerate_multimode(ctx)}["stokes2+bg"].build()
     seed = ic.greedy_multimode_ic(comp, ctx, one)
-    o1 = fit.omega0_from(seed["phonon.Omega_d"], seed["phonon.Gamma"])
-    o2 = fit.omega0_from(seed["phonon2.Omega_d"], seed["phonon2.Gamma"])
+    o1 = phonon.omega0_from(seed["phonon.Omega_d"], seed["phonon.Gamma"])
+    o2 = phonon.omega0_from(seed["phonon2.Omega_d"], seed["phonon2.Gamma"])
     seeds = sorted([o1, o2])
     assert abs(seeds[0] - 4.0) < 1.5
     assert abs(seeds[1] - 10.0) < 1.5
@@ -85,6 +86,6 @@ def test_greedy_multimode_ic_seeds_mode1_when_one_mode_result_is_none():
     comp = {h.label: h for h in enumerate_multimode(ctx)}["stokes2+bg"].build()
     seed = ic.greedy_multimode_ic(comp, ctx, None)
     assert set(seed) == set(comp.param_names())
-    seeds = sorted([fit.omega0_from(seed["phonon.Omega_d"], seed["phonon.Gamma"]),
-                    fit.omega0_from(seed["phonon2.Omega_d"], seed["phonon2.Gamma"])])
+    seeds = sorted([phonon.omega0_from(seed["phonon.Omega_d"], seed["phonon.Gamma"]),
+                    phonon.omega0_from(seed["phonon2.Omega_d"], seed["phonon2.Gamma"])])
     assert abs(seeds[0] - 4.0) < 1.6 and abs(seeds[1] - 10.0) < 1.6

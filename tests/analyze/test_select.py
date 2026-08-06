@@ -10,7 +10,7 @@ import numpy as np
 
 from isar.analyze import loop, select
 from isar.analyze.context import ScanContext
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _result(label, k, ndof, cost, *, params=None, within_model=None, converged=True):

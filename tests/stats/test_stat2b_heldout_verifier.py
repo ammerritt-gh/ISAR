@@ -29,7 +29,7 @@ def _heldout_repo(tmp_path: Path) -> Path:
     for relative in (
         ENGINE.HISTORICAL_GATE_PATH,
         ENGINE.HELDOUT_SUMMARY_PATH,
-        ENGINE.HISTORICAL_EVALUATOR_PATH,
+        ENGINE.HISTORICAL_EVALUATOR_SNAPSHOT_PATH,
     ):
         destination = tmp_path / relative
         destination.parent.mkdir(parents=True, exist_ok=True)

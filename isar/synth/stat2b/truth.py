@@ -18,7 +18,7 @@ from isar.analyze.context import ScanContext
 from isar.schema.statistics import semantics_fingerprint
 from isar.schema.steering import ParamConstraints
 from isar.session.branch_model import BranchPrediction
-from isar.synth._ff import Voigt
+from isar.analyze.lineshapes import Voigt
 
 from .spec import CampaignSpec, ScenarioSpec
 

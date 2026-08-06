@@ -7,7 +7,8 @@ import sys
 import numpy as np
 import pytest
 
-from isar.synth import config, demo, estimators
+from isar.analyze import estimators
+from isar.synth import config, demo
 
 
 # ----------------------------------------------------------------- Layer 1: algebra

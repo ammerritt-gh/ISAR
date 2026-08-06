@@ -1,0 +1,165 @@
+"""
+Fitting_Functions.py  —  Shared IXS lineshape library for FeSeS analysis
+=========================================================================
+Canonical version used by both FeSeS_1 and FeSeS_2 analysis pipelines.
+
+Provides:
+  - Gaussian, Lorentzian, Voigt profiles (FWHM-parameterised, integrate to Area)
+  - Pseudo-Voigt (for elastic-line / K=0 energy-zero calibration)
+  - DHO (Damped Harmonic Oscillator) Stokes / anti-Stokes lineshapes
+  - Voigt ⊗ DHO convolution model with elastic Voigt peak + flat background
+  - Helper: voigt_area_for_height
+
+Constants
+---------
+  KB  : Boltzmann constant in meV/K
+"""
+
+import numpy as np
+from scipy.special import wofz
+from scipy.signal import fftconvolve
+from scipy.interpolate import interp1d
+
+# ============================================================
+# Constants
+# ============================================================
+KB = 0.086173324   # Boltzmann constant (meV / K)
+kB = KB            # alias
+
+
+# ============================================================
+# Basic lineshapes
+# ============================================================
+
+def Gaussian(x, Area, Width, Center):
+    """Gaussian lineshape (FWHM-parameterised, integrates to Area)."""
+    return (Area * np.sqrt(4 * np.log(2) / np.pi) / Width
+            * np.exp(-4 * np.log(2) * (np.asarray(x) - Center) ** 2 / Width ** 2))
+
+
+def Lorentzian(x, Area, Width, Center):
+    """Lorentzian lineshape (FWHM-parameterised, integrates to Area)."""
+    return 2 * Area / np.pi * Width / (4 * (np.asarray(x) - Center) ** 2 + Width ** 2)
+
+
+def Voigt(x, Area, gauss_fwhm, lorentz_fwhm, center):
+    """Voigt profile via Faddeeva function (integrates to Area)."""
+    sigma = gauss_fwhm / (2 * np.sqrt(2 * np.log(2)))
+    gamma = lorentz_fwhm / 2
+    z = ((np.asarray(x) - center) + 1j * gamma) / (sigma * np.sqrt(2))
+    profile = np.real(wofz(z)) / (sigma * np.sqrt(2 * np.pi))
+    return Area * profile
+
+
+def Voigt_wBG(x, center, gauss_fwhm, lorentz_fwhm, elastic_amplitude, BG):
+    """Voigt profile + flat background (for Bragg / elastic-line fitting)."""
+    return Voigt(x, elastic_amplitude, gauss_fwhm, lorentz_fwhm, center) + BG
+
+
+def pseudo_voigt(x, I, W, x0, eta):
+    """Pseudo-Voigt: eta * Lorentzian + (1-eta) * Gaussian (for K=0 calibration)."""
+    return eta * Lorentzian(x, I, W, x0) + (1 - eta) * Gaussian(x, I, W, x0)
+
+
+# ============================================================
+# Area / height conversion utilities
+# ============================================================
+
+def voigt_area_for_height(height, gauss_fwhm, lorentz_fwhm):
+    """Return the Area that gives a Voigt peak of a given height at its centre."""
+    sigma = gauss_fwhm / (2 * np.sqrt(2 * np.log(2)))
+    gamma = lorentz_fwhm / 2
+    z = (1j * gamma) / (sigma * np.sqrt(2))
+    voigt_peak = np.real(wofz(z)) / (sigma * np.sqrt(2 * np.pi))
+    return height / voigt_peak if voigt_peak > 0 else 0.0
+
+
+# ============================================================
+# DHO (Damped Harmonic Oscillator)
+# ============================================================
+
+def Stokes_DHO(x, amplitude, damping, center):
+    """Stokes (phonon creation) DHO lineshape.
+    Returns large penalty if overdamped (centre² ≤ damping²).
+    """
+    x = np.asarray(x, dtype=float)
+    damping_sq = center ** 2 - damping ** 2
+    if damping_sq <= 0:
+        return np.full_like(x, 1e6 * (1 + abs(damping_sq)))
+    return amplitude / ((x - np.sqrt(damping_sq)) ** 2 + damping ** 2)
+
+
+def antiStokes_DHO(x, amplitude, damping, center):
+    """Anti-Stokes (phonon annihilation) DHO lineshape."""
+    x = np.asarray(x, dtype=float)
+    damping_sq = center ** 2 - damping ** 2
+    if damping_sq <= 0:
+        return np.full_like(x, 1e6 * (1 + abs(damping_sq)))
+    return amplitude / ((x + np.sqrt(damping_sq)) ** 2 + damping ** 2)
+
+
+# ============================================================
+# Voigt ⊗ DHO convolution model
+# ============================================================
+
+def convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, lorentz_fwhm,
+                        damping, phonon_amplitude, elastic_amplitude, BG, T,
+                        peak='all'):
+    """
+    Voigt-convolved DHO model + elastic Voigt peak + flat background.
+
+    Parameters
+    ----------
+    x_target        : array-like — energy grid (meV)
+    phonon_energy   : float      — undamped phonon frequency ω₀ (meV)
+    center          : float      — energy-zero offset (meV)
+    gauss_fwhm      : float      — Gaussian FWHM of Voigt resolution (meV)
+    lorentz_fwhm    : float      — Lorentzian FWHM of Voigt resolution (meV)
+    damping         : float      — DHO damping Γ (meV)
+    phonon_amplitude: float      — Stokes DHO amplitude
+    elastic_amplitude: float     — elastic Voigt area
+    BG              : float      — flat background
+    T               : float      — temperature (K)
+    peak            : str        — 'all', 'stokes', 'astokes', 'elastic',
+                                   or '+'-separated combination
+
+    Returns
+    -------
+    y : ndarray — model intensity at x_target
+    """
+    x_target = np.asarray(x_target, dtype=float)
+    dx = 0.05
+    pad_range = 20
+
+    x_span = max(abs(x_target.min()), abs(x_target.max())) + pad_range
+    x_uniform = np.arange(-x_span, x_span, dx)
+
+    peak_lower = peak.lower()
+    if peak_lower == 'all':
+        peak_parts = ['stokes', 'astokes', 'elastic']
+    else:
+        peak_parts = peak_lower.split('+')
+
+    signal = np.zeros_like(x_uniform)
+    if 'stokes' in peak_parts:
+        signal += Stokes_DHO(x_uniform, amplitude=phonon_amplitude,
+                             damping=damping, center=phonon_energy)
+    if 'astokes' in peak_parts:
+        astokes_amp = phonon_amplitude / np.exp(phonon_energy / (KB * T))
+        signal += antiStokes_DHO(x_uniform, amplitude=astokes_amp,
+                                 damping=damping, center=phonon_energy)
+
+    voigt_kernel = Voigt(x_uniform, Area=1.0,
+                         gauss_fwhm=gauss_fwhm, lorentz_fwhm=lorentz_fwhm, center=0)
+    convolved = fftconvolve(signal, voigt_kernel, mode='same') * dx
+
+    interp_fn = interp1d(x_uniform, convolved, kind='linear',
+                         bounds_error=False, fill_value=0.0)
+    y = interp_fn(x_target - center)
+
+    if 'elastic' in peak_parts:
+        y += Voigt(x_target, Area=elastic_amplitude,
+                   gauss_fwhm=gauss_fwhm, lorentz_fwhm=lorentz_fwhm, center=center)
+
+    y += BG
+    return y

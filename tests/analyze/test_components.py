@@ -10,8 +10,8 @@ import numpy as np
 
 from isar.analyze import components as C
 from isar.analyze.context import ScanContext
-from isar.synth._ff import Voigt, convolute_voigt_dho
-from isar.synth.fit import omega0_from, omega0_value_error
+from isar.analyze.lineshapes import Voigt, convolute_voigt_dho
+from isar.analyze.phonon import omega0_from, omega0_value_error
 
 
 def _ctx(gauss_fwhm=1.2, lorentz_fwhm=0.3, center=-0.5, T=200.0, x=None, counts=None,

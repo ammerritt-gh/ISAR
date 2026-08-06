@@ -20,7 +20,7 @@ from isar.session import driver
 from isar.session import guidelines as G
 from isar.session.state import ScanEntry, SessionState, canonical_hash
 from isar.session.workspace import Workspace
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 from isar.drive.isar_io import readers
 
 

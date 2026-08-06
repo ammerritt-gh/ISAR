@@ -2,7 +2,7 @@
 import numpy as np
 from scipy.optimize import minimize_scalar
 
-from isar.synth import estimators
+from isar.analyze import estimators
 
 
 def test_registry_has_three():

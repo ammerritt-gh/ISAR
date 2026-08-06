@@ -52,7 +52,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from isar.report import captions          # noqa: E402
-from isar.synth import estimators as _est  # noqa: E402
+from isar.analyze import estimators as _est  # noqa: E402
 
 # --------------------------------------------------------------------------- constants
 SEED = 20260710

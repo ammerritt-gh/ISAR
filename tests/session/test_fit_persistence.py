@@ -33,7 +33,7 @@ from isar.analyze.shadow_selection import unavailable_shadow_selection
 from isar.session import driver
 from isar.session.state import ScanEntry, SessionState
 from isar.session.workspace import Workspace
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _card():

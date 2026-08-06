@@ -24,7 +24,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.optimize import minimize_scalar
 
-from . import config, estimators, generate, score
+from . import config, generate, score
+from isar.analyze import estimators
 
 # ---------------------------------------------------------------------------
 # Module-level constants

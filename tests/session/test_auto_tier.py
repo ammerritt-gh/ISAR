@@ -9,7 +9,7 @@ from isar.schema import card as card_mod
 from isar.session import driver
 from isar.session.promotions import PromotionKey, PromotionStore
 from isar.session.state import ScanEntry, SessionState
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _result(**overrides):

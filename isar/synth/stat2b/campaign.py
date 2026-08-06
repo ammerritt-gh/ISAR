@@ -111,9 +111,6 @@ CAMPAIGN_SOURCE_PATHS = (
     "isar/session/driver.py",
     "isar/session/branch_model.py",
     "isar/session/session_prior.py",
-    "isar/synth/_ff.py",
-    "isar/synth/backends.py",
-    "isar/synth/estimators.py",
     "isar/synth/fit.py",
 )
 CAMPAIGN_SOURCE_ROOTS = (

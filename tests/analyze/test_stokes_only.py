@@ -12,7 +12,7 @@ from isar.analyze import loop
 from isar.analyze import structures as S
 from isar.analyze.components import CompositeModel, ConstantBackground, PhononDHO
 from isar.analyze.context import ScanContext
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _ctx(prior_omega=None, T=100.0, bg=10.0, stokes_amp=30.0):

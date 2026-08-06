@@ -12,7 +12,7 @@ from isar.analyze.context import ScanContext
 from isar.analyze.errors import bootstrap as B
 from isar.analyze.errors import profile as P
 from isar.analyze.structures import enumerate_structures
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _fitted(seed=0):

@@ -4,7 +4,7 @@
 > **Provenance:** hand-written
 > **Verified against production anchor:** `b9ae4907a9aa3dc0afc356bc6235b957dc2d9d03` (2026-08-06)
 > **Owner:** @ammerritt-gh
-> **Status:** P2.0 (this baseline) landed; P2.1–P2.8 not started.
+> **Status:** P2.0 and P2.1 landed; P2.2–P2.8 not started.
 > **Exit criteria:** the Pass-2 exit criteria at the end of this document are met and verified;
 > accepted ownership boundaries are folded into `DESIGN.md` and `AGENTS.md`; this execution plan
 > is then deleted and tombstoned in `docs/DOC_INVENTORY.md`.
@@ -158,11 +158,27 @@ gate, never renewed.
 
 | Slice | Commit | Notes |
 |---|---|---|
-| P2.0 | (this commit) | Baseline, ownership map, active plan |
+| P2.0 | `c6d1625` | Baseline, ownership map, active plan |
+| P2.1 | (this commit) | Lineshapes/backends/estimators under `analyze`; `phonon.py` seeded; `_ff.py` shim deleted; `lmfit` → `[test]` extra. Included repair: the held-out verifier hashed the *live* `stat2b/campaign.py` as the historical evaluator (a selection-critical live file, contra S10); its frozen source is now preserved as evidence at `tools/stats/stat2b1-heldout-evaluator.frozen` (extracted at `b9ae490`, same frozen SHA256) and authenticated there |
 
 Deferred findings (things noticed but out of scope for the slice that noticed them):
 
-- *(none yet)*
+- `isar/calibrate/tas.py` imports `isar.synth.resolution` (Cooper–Nathans resolution) — production
+  calibration genuinely depends on synth machinery that P2.1 did not move; candidate for a later
+  ownership decision. Until then the acceptance criterion "no production import of `isar.synth`"
+  carries this one named exception.
+- `isar/synth/stat2b/campaign.py` `CAMPAIGN_SOURCE_PATHS` rows for the three moved files were
+  deleted (the `isar/analyze` glob already covers their new homes); ordinary development under
+  S10, no re-freeze.
+- Pre-existing (moved verbatim in P2.1, flagged by review, not fixed in a move slice):
+  `isar/analyze/phonon.py` `omega0_value_error` divides by zero when `omega_d = gamma = 0` with
+  a covariance supplied; `isar/analyze/backends.py` `lmfit_minimize` accepts finite-but-non-PSD
+  covariance where the scipy path requires positive eigenvalues. Candidates for P2.7 when the
+  phonon module is worked anyway.
+- `isar/synth_format/run_builder.py` imports `isar.synth.{config,generate,noise}` and is
+  reachable from `isar/reduce/adjudicate_eyeball.py` — correct ownership (synth_format emits
+  synthetic data), but the "no production import of `isar.synth`" criterion holds only with
+  `synth_format` counted as synthetic tooling.
 
 ## Pass-2 exit criteria
 

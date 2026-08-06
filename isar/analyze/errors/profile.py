@@ -14,7 +14,7 @@ from scipy.optimize import brentq
 from scipy.optimize import minimize as _scipy_minimize
 
 from isar.analyze import loop
-from isar.synth import backends, estimators
+from isar.analyze import backends, estimators
 
 _OD_FLOOR = 1e-6  # keep Ω_d = √(ω₀²−Γ²) strictly real/positive in the constrained profile
 log = logging.getLogger(__name__)

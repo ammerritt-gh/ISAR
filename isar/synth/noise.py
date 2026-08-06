@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 
 from . import config
-from ._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def energy_grid(x_min: float, x_max: float, x_step: float) -> np.ndarray:

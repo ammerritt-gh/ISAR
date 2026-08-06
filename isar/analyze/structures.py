@@ -15,7 +15,7 @@ import numpy as np
 from isar.analyze.components import (
     Component, ConstantBackground, Elastic, PhononDHO, QuasiElastic,
 )
-from isar.synth._ff import KB
+from isar.analyze.lineshapes import KB
 
 # Anti-Stokes is dropped only when its *predicted counts* — Stokes excursion × the
 # detailed-balance weight exp(−ħω/kT) — cannot be told from the background Poisson noise.

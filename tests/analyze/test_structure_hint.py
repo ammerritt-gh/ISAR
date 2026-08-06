@@ -11,7 +11,7 @@ import numpy as np
 from isar.analyze import loop
 from isar.analyze.context import ScanContext
 from isar.analyze.structures import enumerate_structures
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _one_peak_ctx(o1=5.0, a1=500.0, g=0.4, bg=8.0, n=81, seed=3):

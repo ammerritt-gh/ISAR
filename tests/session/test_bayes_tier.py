@@ -12,7 +12,7 @@ from isar.analyze.context import ScanContext
 from isar.analyze.errors.bayes import BayesResult
 from isar.schema import card as card_mod
 from isar.session import driver
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 # --------------------------------------------------------------------------- fixtures

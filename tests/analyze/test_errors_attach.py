@@ -7,7 +7,7 @@ from isar.analyze.context import ScanContext
 from isar.analyze.errors import attach, attach_batch
 from isar.analyze.errors.bayes import BayesResult
 from isar.analyze.structures import enumerate_structures
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _ctx(seed=0):

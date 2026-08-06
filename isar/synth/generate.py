@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from . import config, dispersion, noise
-from ._ff import convolute_voigt_dho, voigt_area_for_height
+from isar.analyze.lineshapes import convolute_voigt_dho, voigt_area_for_height
 
 
 def energy_grid(cfg: config.RunConfig) -> np.ndarray:

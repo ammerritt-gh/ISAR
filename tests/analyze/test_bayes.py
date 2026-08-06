@@ -17,7 +17,7 @@ from isar.analyze.errors import bayes as BZ
 from isar.analyze.errors import bootstrap as B
 from isar.analyze.prior import PhononPrior
 from isar.analyze.structures import enumerate_structures
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 # The tiny-nlive unif runs emit a benign ellipsoid-efficiency note; production nlive does not.
 pytestmark = pytest.mark.filterwarnings("ignore:The enlargement factor")

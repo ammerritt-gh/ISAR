@@ -13,7 +13,7 @@ from isar.analyze.components import ConstantBackground, PhononDHO
 from isar.analyze.context import ScanContext
 from isar.analyze.structures import Hypothesis
 from isar.schema.steering import ParamConstraints
-from isar.synth import estimators
+from isar.analyze import estimators
 
 _HYP = Hypothesis("stokes+bg", (PhononDHO, ConstantBackground))
 

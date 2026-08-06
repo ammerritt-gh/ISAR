@@ -276,7 +276,7 @@ def test_winning_curve_preserves_exact_selected_structure(label, modes, amplitud
 # --------------------------------------------------------------------------- the real fit core
 @pytest.mark.slow
 def test_fit_core_fits_a_single_peak():
-    from isar.synth._ff import convolute_voigt_dho
+    from isar.analyze.lineshapes import convolute_voigt_dho
     x = np.linspace(-6.0, 24.0, 121)
     peak = convolute_voigt_dho(x, 6.0, 0.0, 1.0, 0.0, 0.4, 600.0, 0.0, 0.0, 50.0,
                                peak="stokes+astokes")

@@ -14,7 +14,7 @@ from isar.analyze import verdict as V
 from isar.analyze.context import ScanContext
 from isar.analyze.structures import enumerate_structures
 from isar.schema.steering import DescriptorPeak, ScanDescriptor
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _ctx(counts, center=0.0):

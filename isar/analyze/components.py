@@ -6,7 +6,7 @@ ordered list of components summed together, with a flat prefixed parameter names
 (``phonon.Omega_d``, ``elastic.E``, ``bg.BG`` …).
 
 The components wrap the *frozen, validated* lineshape library
-(``Fitting_Functions.convolute_voigt_dho`` via :mod:`isar.synth._ff`) — the physics is
+(``Fitting_Functions.convolute_voigt_dho`` via :mod:`isar.analyze.lineshapes`) — the physics is
 not reimplemented here. The phonon component carries its own Bose-tied anti-Stokes
 (``peak="stokes+astokes"``), so anti-Stokes is never a free parameter (a *functional*
 tie, unlike PUFFIN's equality-only link groups).
@@ -21,8 +21,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from isar.synth._ff import Voigt, convolute_voigt_dho
-from isar.synth.fit import omega0_from, omega0_value_error
+from isar.analyze.lineshapes import Voigt, convolute_voigt_dho
+from isar.analyze.phonon import omega0_from, omega0_value_error
 
 
 @dataclass(frozen=True)

@@ -6,7 +6,7 @@ mechanics — minimize, covariance, MINOS — are tested independently of the DH
 import numpy as np
 import pytest
 
-from isar.synth import backends, estimators
+from isar.analyze import backends, estimators
 
 SIGMA = 1.0
 X = np.linspace(-10.0, 10.0, 81)

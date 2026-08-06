@@ -10,6 +10,7 @@ covariance is `2·H⁻¹` and matches `curve_fit(absolute_sigma=True)`.
 - scipy (fallback): L-BFGS-B + a carefully scaled finite-difference Hessian with a
   positive-definite guard; no MINOS.
 - lmfit (comparison): scalar minimizer on the same cost; covariance where available.
+  Optional — imported lazily, ships in the ``[test]`` extra.
 """
 from __future__ import annotations
 
@@ -176,7 +177,13 @@ def scipy_minimize(costv, x0, bounds, names, *, minos=False) -> BackendResult:
 # lmfit (comparison)
 # ----------------------------------------------------------------------------
 def lmfit_minimize(costv, x0, bounds, names, *, minos=False) -> BackendResult:
-    import lmfit
+    try:
+        import lmfit
+    except ImportError as exc:  # pragma: no cover - depends on install extras
+        raise ImportError(
+            "the 'lmfit' backend requires the optional lmfit package; "
+            "install it with the [test] extra (pip install -e \".[test]\")"
+        ) from exc
 
     names = list(names)
     params = lmfit.Parameters()

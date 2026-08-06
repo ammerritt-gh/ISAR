@@ -12,8 +12,8 @@ from isar.analyze.components import CompositeModel, ConstantBackground, PhononDH
 from isar.analyze.context import ScanContext
 from isar.analyze.structures import enumerate_structures
 from isar.synth import fit
-from isar.synth._ff import convolute_voigt_dho
-from isar.synth.backends import BackendResult
+from isar.analyze.lineshapes import convolute_voigt_dho
+from isar.analyze.backends import BackendResult
 
 
 def _spectrum_ctx(n=61, status="needs_zero", center=-0.4):
@@ -242,7 +242,7 @@ def test_migrad_budget_exceeds_iminuit_default():
     """The raised budget is strictly greater than iminuit's own default (200+100·npar+5·npar²)
     for every parameter count, so a fit that already converges inside the default is untouched
     while the k≥7 fits get the head-room they were being starved of."""
-    from isar.synth import backends
+    from isar.analyze import backends
     for npar in (4, 5, 7, 8, 10):
         default = 200 + 100 * npar + 5 * npar * npar
         assert backends._migrad_ncall(npar) > default
@@ -256,7 +256,7 @@ def test_call_budget_starvation_drops_two_mode_that_raised_budget_certifies(monk
     being cut short, not the seed."""
     from isar.analyze import ic, select
     from isar.analyze.structures import enumerate_multimode
-    from isar.synth import backends
+    from isar.analyze import backends
 
     ctx = _sparse_two_peak_ctx()
     hyp2 = {h.label: h for h in enumerate_multimode(ctx)}["stokes2+bg"]

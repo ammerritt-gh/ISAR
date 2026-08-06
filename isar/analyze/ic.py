@@ -12,8 +12,8 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import nnls
 
-from isar.synth import estimators
-from isar.synth.fit import omega0_from
+from isar.analyze import estimators
+from isar.analyze.phonon import omega0_from
 
 EPS_OMEGA_D = 1e-3
 GAMMA0 = 0.3

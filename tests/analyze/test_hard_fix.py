@@ -14,7 +14,7 @@ from isar.analyze.context import ScanContext
 from isar.analyze.structures import enumerate_structures
 from isar.schema.steering import ParamConstraints
 from isar.session import driver
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _ctx(constraints=None, center=-0.4, n=81):
@@ -149,7 +149,7 @@ def test_minimize_fixed_empty_delegates_unchanged():
     ctx = _ctx()
     prob = loop.build_problem(_hyp(ctx), ctx)
     be = [loop._sanitize(n) for n in prob.free_names]
-    from isar.synth import backends
+    from isar.analyze import backends
     ref = backends.minimize("iminuit", prob.objective, prob.x0, prob.bounds, be, minos=False)
     got = loop._minimize_fixed("iminuit", prob.objective, prob.x0, prob.bounds, be, [], [],
                                minos=False)
