@@ -207,19 +207,40 @@ def _parse_budget(text: str) -> dict:
     """Parse a ``--budget`` override: ``'8h'`` → counting_seconds, ``'1e10n'`` → neutrons.
 
     A bare number is treated as counting-seconds. Accepts hours, minutes, seconds, and neutrons.
+
+    The unit is matched as a whole word, never as a suffix: suffix matching across overlapping
+    vocabularies resolved ``10min`` as "…n for neutrons" and crashed on ``float('10mi')``.
     """
+    import math
+    import re
+
     s = str(text).strip().lower()
-    units = (
-        (("neutrons", "neutron", "n"), "neutrons", 1.0),
-        (("hours", "hour", "hrs", "hr", "h"), "counting_seconds", 3600.0),
-        (("minutes", "minute", "mins", "min", "m"), "counting_seconds", 60.0),
-        (("seconds", "second", "secs", "sec", "s"), "counting_seconds", 1.0),
-    )
-    for suffixes, kind, multiplier in units:
-        suffix = next((item for item in suffixes if s.endswith(item)), None)
-        if suffix is not None:
-            return {"kind": kind, "amount": float(s[:-len(suffix)].strip()) * multiplier}
-    return {"kind": "counting_seconds", "amount": float(s)}
+    match = re.fullmatch(r"([0-9.eE+-]+)\s*([a-z]*)", s)
+    if match is None:
+        raise ValueError(f"could not parse a budget from {text!r}")
+    amount = float(match.group(1))
+    if not math.isfinite(amount):
+        # A non-finite budget serializes as bare ``Infinity``/``NaN``, which is not JSON and which
+        # a strict reader of the campaign objective rejects.
+        raise ValueError(f"budget amount must be finite, not {match.group(1)!r}")
+    units = {
+        "": ("counting_seconds", 1.0),
+        "n": ("neutrons", 1.0), "neutron": ("neutrons", 1.0), "neutrons": ("neutrons", 1.0),
+        "h": ("counting_seconds", 3600.0), "hr": ("counting_seconds", 3600.0),
+        "hrs": ("counting_seconds", 3600.0), "hour": ("counting_seconds", 3600.0),
+        "hours": ("counting_seconds", 3600.0),
+        "m": ("counting_seconds", 60.0), "min": ("counting_seconds", 60.0),
+        "mins": ("counting_seconds", 60.0), "minute": ("counting_seconds", 60.0),
+        "minutes": ("counting_seconds", 60.0),
+        "s": ("counting_seconds", 1.0), "sec": ("counting_seconds", 1.0),
+        "secs": ("counting_seconds", 1.0), "second": ("counting_seconds", 1.0),
+        "seconds": ("counting_seconds", 1.0),
+    }
+    unit = match.group(2)
+    if unit not in units:
+        raise ValueError(f"unknown budget unit {unit!r} in {text!r}")
+    kind, multiplier = units[unit]
+    return {"kind": kind, "amount": amount * multiplier}
 
 
 def _parse_analysis_limit(text: str) -> float | None:

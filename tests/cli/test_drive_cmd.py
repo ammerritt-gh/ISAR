@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from isar.cli.main import build_parser, main
+from isar.cli.main import _parse_analysis_limit, _parse_budget, build_parser, main
 import isar.drive.loop as loop_mod
 import isar.drive.supervisor.goal_to_spec as g2s
 from isar.drive.objective import ObjectiveSpec
@@ -62,6 +62,35 @@ def test_analysis_limit_accepts_gui_minute_duration(tmp_path, monkeypatch):
         "--workspace", str(tmp_path / "ws"), "--analysis-limit", "10m",
     ]) == 0
     assert captured[0][0].analysis_limit_seconds == 600.0
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("10m", 600.0), ("10min", 600.0), ("10mins", 600.0), ("10minute", 600.0),
+    ("10minutes", 600.0), ("10 min", 600.0), ("10s", 10.0), ("10sec", 10.0),
+    ("2h", 7200.0), ("2hrs", 7200.0), ("2hours", 7200.0), ("90", 90.0),
+])
+def test_analysis_limit_parses_every_duration_abbreviation(text, expected):
+    """``10min`` used to crash: the unit table matched ``n`` for neutrons before ``min``."""
+    assert _parse_analysis_limit(text) == expected
+
+
+def test_analysis_limit_accepts_none_and_rejects_neutrons():
+    assert _parse_analysis_limit("none") is None
+    with pytest.raises(ValueError):
+        _parse_analysis_limit("1e10n")
+
+
+@pytest.mark.parametrize("text", ["1e10n", "1e10neutron", "1e10neutrons"])
+def test_budget_parses_neutrons_in_every_spelling(text):
+    assert _parse_budget(text) == {"kind": "neutrons", "amount": 1e10}
+
+
+@pytest.mark.parametrize("text", ["inf", "-inf", "1e999", "nan", "10mi", "10xyz", ""])
+def test_budget_rejects_non_finite_and_unparseable_amounts(text):
+    # A non-finite amount serializes as bare ``Infinity``, which is not JSON, and is the input that
+    # made the GUI's budget line raise OverflowError mid-campaign.
+    with pytest.raises(ValueError):
+        _parse_budget(text)
 
 
 def test_control_token_lands_in_config(tmp_path, monkeypatch):

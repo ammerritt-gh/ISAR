@@ -91,7 +91,9 @@ def test_diagnose_eig_tabulates_the_decision_and_counts_its_reason_codes(tmp_pat
     target = decision.target_core_validation["executed_point_count"]
     assert f"{legacy} / {target}" in row
     assert decision.reason_codes[0] in row
-    assert "Primary reason code across all 1 record(s):" in out
+    assert "Primary reason code across all 1 authority decision(s):" in out
+    # The table is one row per Q, not one row per record; the heading has to say so.
+    assert "Latest authority decision per Q (1 of 1 record(s) shown):" in out
     # Fingerprints belong in the artifacts, not in a table meant to be read at a beamline.
     assert decision.authority_decision_fingerprint not in out
 
@@ -121,6 +123,30 @@ def test_diagnose_eig_reports_an_artifact_that_does_not_authenticate(tmp_path, c
     out = capsys.readouterr().out
     assert "1 artifact(s) did not authenticate:" in out
     assert "aaaaaaaaaaaa… authority decision:" in out
+
+
+def test_total_evidence_corruption_does_not_read_as_scan_window_eig_being_off(tmp_path, capsys):
+    """A workspace whose every artifact fails authentication is not a workspace that ran EIG off.
+
+    The authentication warnings go to stderr, so a redirected ``isar diagnose --eig > report.txt``
+    used to be byte-identical in the two cases, and both exited 0.
+    """
+    _campaign(tmp_path)
+    for folder in ("scan-design-authority", "scan-design-realizations"):
+        for path in (tmp_path / "report" / folder).glob("*.json"):
+            path.rename(path.with_name("a" * 64 + ".json"))   # parked at a wrong content address
+
+    assert diagnose_cmd.run(_args(tmp_path)) == 1
+    out = capsys.readouterr().out
+    assert "2 artifact(s) did not authenticate:" in out
+    assert "no authenticated EIG artifacts remain" in out
+    assert "scan-window EIG off" not in out
+
+    off = tmp_path / "off"
+    (off / "report").mkdir(parents=True)
+    (off / "card.policy.toml").write_text("# test workspace\n", encoding="utf-8")
+    assert diagnose_cmd.run(_args(off)) == 0
+    assert "scan-window EIG off" in capsys.readouterr().out
 
 
 def test_diagnose_without_the_flag_still_renders_the_campaign_diagnostic(tmp_path, capsys):

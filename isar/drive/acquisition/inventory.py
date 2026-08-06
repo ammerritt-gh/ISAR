@@ -165,7 +165,10 @@ def canonical_hkl(hkl) -> tuple[float, float, float]:
     values = tuple(float(value) for value in hkl)
     if not all(math.isfinite(value) for value in values):
         raise ValueError("HKL values must be finite")
-    return tuple(round(value, 9) for value in values)
+    # ``+ 0.0`` collapses ``-0.0`` onto ``0.0``: reduced-zone arithmetic yields negative zero for a
+    # zone-centre component, and ``json.dumps`` writes it as ``-0.0``, which would mint a second
+    # fingerprint for the same scientific Q and escape dedup.
+    return tuple(round(value, 9) + 0.0 for value in values)
 
 
 def scientific_fingerprint(intent: "MeasurementIntent") -> str:
@@ -178,8 +181,9 @@ def scientific_fingerprint(intent: "MeasurementIntent") -> str:
     payload = canonical_json([
         intent.action_class,
         list(canonical_hkl(intent.hkl)),
-        None if intent.energy_lo is None else round(float(intent.energy_lo), 6),
-        None if intent.energy_hi is None else round(float(intent.energy_hi), 6),
+        # ``+ 0.0``: see :func:`canonical_hkl` — a negative-zero bound must not fork identity.
+        None if intent.energy_lo is None else round(float(intent.energy_lo), 6) + 0.0,
+        None if intent.energy_hi is None else round(float(intent.energy_hi), 6) + 0.0,
         intent.window_family,
         intent.target_branch_role,
         intent.rival_branch_role,

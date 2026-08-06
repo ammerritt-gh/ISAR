@@ -24,7 +24,10 @@ def canonical_hkl(hkl: Any) -> tuple[float, float, float]:
     values = tuple(float(value) for value in hkl)
     if not all(math.isfinite(value) for value in values):
         raise ValueError("HKL values must be finite")
-    return tuple(round(value, 9) for value in values)
+    # ``+ 0.0`` collapses ``-0.0`` onto ``0.0``: reduced-zone arithmetic yields negative zero for a
+    # zone-centre component, and ``json.dumps`` writes it as ``-0.0``, which would mint a second
+    # fingerprint for the same scientific Q and escape dedup.
+    return tuple(round(value, 9) + 0.0 for value in values)
 
 
 def scientific_fingerprint_from_mapping(payload: Mapping[str, object]) -> str:
@@ -84,8 +87,8 @@ def scientific_fingerprint_from_mapping(payload: Mapping[str, object]) -> str:
     encoded = canonical_json([
         action_class,
         list(hkl),
-        None if energy_lo is None else round(energy_lo, 6),
-        None if energy_hi is None else round(energy_hi, 6),
+        None if energy_lo is None else round(energy_lo, 6) + 0.0,   # ``+ 0.0``: see canonical_hkl
+        None if energy_hi is None else round(energy_hi, 6) + 0.0,
         window_family,
         target_branch_role,
         rival_branch_role,

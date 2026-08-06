@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -40,6 +41,8 @@ from isar.schema.eig_authority import (
 from isar.schema.eig_realized import RealizedScanRequest, ScanDesignRealizedComparison
 from isar.schema.eig_shadow import thaw
 
+
+log = logging.getLogger(__name__)
 
 AUTHORITY_DECISION_REF_KIND = "scan_design_authority_decision"
 
@@ -151,7 +154,11 @@ def _partition_offset_evidence(
                 target_core_information_nats=target_value)
             for offset, legacy_value, target_value
             in zip(offsets, legacy_information, target_information))
-    except ValueError:
+    except (TypeError, ValueError, KeyError) as error:
+        # Fails closed to the pooled margin, which is safe but indistinguishable in the durable
+        # record from "no offsets published" unless the join failure is written down.
+        log.warning("O41 partition offset evidence did not join (%s: %s) — "
+                    "the selector falls back to legacy", type(error).__name__, error)
         return None
 
 
@@ -182,7 +189,11 @@ def _primary_score_evidence(inventory: Any, comparison: ScanDesignRealizedCompar
         return O41ScoreEvidence("unavailable", "target_core_minus_legacy", ())
     try:
         score_set = _score_set_from_mapping(score_payload)
-    except (TypeError, ValueError, KeyError):
+    except (TypeError, ValueError, KeyError) as error:
+        # Same fail-closed contract as ``_partition_offset_evidence``: legacy is retained, but the
+        # record must distinguish a malformed score set from a campaign that published no scores.
+        log.warning("O41 primary score set could not be read (%s: %s) — score evidence "
+                    "recorded as unavailable/mismatch", type(error).__name__, error)
         return O41ScoreEvidence(
             "unavailable", "target_core_minus_legacy", (), evidence_join_status="mismatch")
     legacy_ids = {legacy.realized_request_fingerprint, legacy.source_candidate_id}

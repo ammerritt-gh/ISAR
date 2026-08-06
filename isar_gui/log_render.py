@@ -110,17 +110,20 @@ def count_text(value) -> str:
 
 def duration_text(seconds) -> str:
     """A duration an operator can act on: ``45 s``, ``12 min``, ``3 h 05 m``."""
+    # ``OverflowError`` is caught alongside the conversion errors because ``int(inf)`` raises it,
+    # and this runs inside an unguarded Qt slot: an infinite budget must degrade to a printed
+    # "inf", never stop the campaign feed.
     try:
         total = max(float(seconds), 0.0)
-    except (TypeError, ValueError):
+        if total < 1.0:
+            return "<1 s"                 # never round a real wait down to a bare "0 s"
+        if total < 90.0:
+            return f"{total:.0f} s"
+        if total < 3600.0:
+            return f"{total / 60.0:.0f} min"
+        hours, rest = divmod(int(total), 3600)
+    except (TypeError, ValueError, OverflowError):
         return str(seconds)
-    if total < 1.0:
-        return "<1 s"                     # never round a real wait down to a bare "0 s"
-    if total < 90.0:
-        return f"{total:.0f} s"
-    if total < 3600.0:
-        return f"{total / 60.0:.0f} min"
-    hours, rest = divmod(int(total), 3600)
     return f"{hours} h {rest // 60:02d} m"
 
 
@@ -160,8 +163,8 @@ def scan_text(kind: str, payload: dict) -> str | None:
         if payload.get("ncount") is not None:
             bits.append(f"{count_text(payload['ncount'])} neutrons")
         detail = " — " + ", ".join(bits) if bits else ""
-        return (f"Planning a {_phrase(payload.get('kind'), 'scan')} scan at "
-                f"{q_text(payload.get('hkl'))}{detail}{tail}")
+        at = f" at {q_text(payload['hkl'])}" if payload.get("hkl") is not None else ""
+        return f"Planning a {_phrase(payload.get('kind'), 'scan')} scan{at}{detail}{tail}"
     if kind == "run":
         bits = []
         if payload.get("submitted_ncount") is not None or payload.get("ncount") is not None:
@@ -222,9 +225,9 @@ def _render_decide(payload: dict, tail: str) -> tuple[str, str]:
     if action == "operator_stop":
         return f"Stop requested — finishing the current scan first{tail}", "notice"
     if action == "model_update":
-        return (f"Dispersion model updated — {payload.get('converged')} of "
-                f"{payload.get('n_grid')} points certified, "
-                f"{payload.get('n_observations')} observation(s){tail}"), "info"
+        return (f"Dispersion model updated — {_phrase(payload.get('converged'), '—')} of "
+                f"{_phrase(payload.get('n_grid'), '—')} points certified, "
+                f"{_phrase(payload.get('n_observations'), '—')} observation(s){tail}"), "info"
     return f"Decision: {_phrase(action)}{tail}", "info"
 
 
@@ -245,7 +248,9 @@ def _render_escalate_fit(payload: dict, tail: str) -> tuple[str, str]:
 
 def _render_exception(payload: dict, tail: str) -> tuple[str, str]:
     action = _phrase(payload.get("action"), "exception")
-    reason = payload.get("reason")
+    # Most emitters write ``error``, a minority ``reason``; without both the operator sees the
+    # action slug and nothing about what actually failed.
+    reason = payload.get("reason") or payload.get("error")
     because = f" — {_clip(reason)}" if reason else ""
     return f"Problem: {action}{because}{tail}", "warn"
 
@@ -275,8 +280,8 @@ def _render_inventory(payload: dict, tail: str) -> tuple[str, str]:
     chosen = _phrase(payload.get("selected_action_class"), "an action")
     by = (f" via {_phrase(payload.get('selected_generator'))}"
           if payload.get("selected_generator") else "")
-    return (f"Weighed {evaluated} candidate action(s), {eligible} usable — chose "
-            f"{chosen}{at}{by}{tail}"), "info"
+    return (f"Weighed {_phrase(evaluated, '—')} candidate action(s), {_phrase(eligible, '—')} "
+            f"usable — chose {chosen}{at}{by}{tail}"), "info"
 
 
 def _render_eig_decision(payload: dict, tail: str) -> tuple[str, str]:
@@ -304,6 +309,9 @@ def _render_eig_decision(payload: dict, tail: str) -> tuple[str, str]:
     role = payload.get("selected_role")
     chose = f" — {role} selected" if role else ""
     severity = "notice" if role == "target_core" else "info"
+    if not bits and not role:
+        # A bare "EIG" tells the operator nothing; say that the record carried no margin.
+        return f"EIG{at} — ready, no margin or role recorded{tail}", "info"
     return f"EIG{at}{detail}{chose}{tail}", severity
 
 
@@ -424,7 +432,9 @@ def budget_status_line(state) -> str | None:
             spent = float(getattr(state, "analysis_spent_seconds", 0.0) or 0.0)
             parts.append(f"{duration_text(max(limit - spent, 0.0))} of {duration_text(limit)} "
                          "analysis time left")
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
+        # ``OverflowError``: a non-finite budget reaches ``int()`` inside ``duration_text``. This is
+        # called from an unguarded Qt slot, so an escape here freezes the campaign feed mid-run.
         log.debug("budget status could not be formed from the campaign state: %s", exc)
         return None
     if not parts:

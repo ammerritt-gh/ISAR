@@ -290,53 +290,82 @@ def _rate_lines(events: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def render(workspace: str | Path) -> list[str]:
-    """The complete report as printable lines. Reads the workspace; never writes to it."""
+def render_with_status(workspace: str | Path) -> tuple[list[str], int]:
+    """The report as printable lines, plus the process exit status it implies.
+
+    Status is ``1`` only when artifacts were discovered and *none* of them authenticated: that
+    workspace's evidence is unreadable, which is a different fact from EIG having been off, and
+    stdout must say so rather than leaving it to a stderr warning.
+    """
     root = Path(workspace)
     iterations = _iterations_by_fingerprint(root)
     decisions, decision_problems = _decision_rows(root, iterations)
     realizations, realization_problems = _realization_rows(root, iterations)
     rows = decisions or realizations
+    problems = decision_problems + realization_problems
     lines = [f"EIG scan-window decisions — {root}",
              f"  {len(decisions)} authority decision(s), "
              f"{len(realizations)} realized comparison(s)", ""]
+    if problems:
+        lines.append(f"  {len(problems)} artifact(s) did not authenticate:")
+        lines.extend(f"    {problem}" for problem in problems)
+        lines.append("")
     if not rows:
+        if problems:
+            lines.append("  no authenticated EIG artifacts remain — every artifact discovered in "
+                         "this workspace failed authentication (this is NOT 'EIG was off')")
+            return lines, 1
         lines.append("  no scan-window EIG artifacts in this workspace "
                      "(the campaign ran with scan-window EIG off)")
-        return lines
+        return lines, 0
+    counted = "authority decision" if decisions else "realized comparison"
     if not decisions:
         lines.append("  no authority decisions — showing the shadow realized comparisons")
-    lines.extend(_table(_latest_per_q(rows)))
+    shown = _latest_per_q(rows)
+    # ``_latest_per_q`` keeps one row per Q, so the table is a collapse of ``rows`` and must say so
+    # — otherwise the row count read off the table silently disagrees with every count below it.
+    lines.append(f"  Latest {counted} per Q ({len(shown)} of {len(rows)} record(s) shown):")
+    lines.extend(_table(shown))
     blockers = Counter(row["reasons"][0] for row in rows if row["reasons"])
     lines.append("")
     if blockers:
-        lines.append(f"  Primary reason code across all {len(rows)} record(s):")
+        lines.append(f"  Primary reason code across all {len(rows)} {counted}(s):")
         width = max(len(code) for code in blockers)
         lines.extend(f"    {code.ljust(width)}  {count}"
                      for code, count in sorted(blockers.items(),
                                                key=lambda item: (-item[1], item[0])))
     else:
         lines.append("  no reason codes recorded")
+    if decisions and realizations:
+        lines.append(f"  ({len(realizations)} realized comparison(s) are not counted above; "
+                     "authority decisions supersede them)")
     lines.extend(_rate_lines(_decision_events(root)))
-    problems = decision_problems + realization_problems
-    if problems:
-        lines.append("")
-        lines.append(f"  {len(problems)} artifact(s) did not authenticate:")
-        lines.extend(f"    {problem}" for problem in problems)
-    return lines
+    return lines, 0
+
+
+def render(workspace: str | Path) -> list[str]:
+    """The complete report as printable lines. Reads the workspace; never writes to it."""
+    return render_with_status(workspace)[0]
 
 
 def run(args) -> int:
+    """Print the EIG audit trail; non-zero on any failure, as a command should.
+
+    Note the exit status is deliberately coarser than :func:`render_with_status`'s: a missing
+    workspace, an unreadable one, and evidence that failed to authenticate are all ``1``.  They are
+    told apart by what is printed, not by the status, so a script that needs the distinction must
+    read the output rather than branch on the code.
+    """
     ws = Workspace.open(args.workspace)
     if not ws.exists():
         print(f"error: no workspace at {ws.root} (run `isar init` first)", file=sys.stderr)
         return 1
     try:
-        lines = render(ws.root)
+        lines, status = render_with_status(ws.root)
     except Exception as exc:  # noqa: BLE001 — a diagnostic reports its failure, not a stack trace
         log.exception("isar diagnose --eig failed")
         print(f"isar diagnose --eig: failed: {exc}", file=sys.stderr)
         return 1
     for line in lines:
         print(line)
-    return 0
+    return status

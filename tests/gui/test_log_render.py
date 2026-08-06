@@ -183,8 +183,12 @@ def test_eig_decision_retains_legacy_without_pretending_to_a_score():
         "point_count_basis": "planned_inventory", "legacy_points": 52, "target_points": None,
         "delta_nats_per_point": None, "standard_error_nats": None, "lower_margin_nats": None,
         "selected_role": None, "decision_outcome": None, "decision_ref": None})
-    assert retained.text == "EIG H=2.75  [iter 8]"
+    # Still no invented score — but a bare "EIG H=2.75" told the operator nothing at all, so the
+    # line now says which fields the record was missing.
+    assert retained.text == "EIG H=2.75 — ready, no margin or role recorded  [iter 8]"
     assert retained.severity == "info"
+    for forbidden in ("ΔI", "selected", "None"):
+        assert forbidden not in retained.text
 
 
 def test_eig_decision_reaches_the_dock():
@@ -286,3 +290,44 @@ def test_budget_announcer_paces_itself_and_suppresses_repeats():
 
 def test_budget_kind_is_a_distinct_synthetic_kind():
     assert BUDGET_KIND not in HIDDEN_KINDS and BUDGET_KIND not in LOUD_KINDS
+
+
+# ---- degraded payloads: what the operator sees when a field is absent ---------
+def test_the_exception_line_carries_the_error_text_whichever_key_holds_it():
+    """32 of 38 emitters write ``error``; only a handful write ``reason``.
+
+    The authoritative-selection failure (``isar/drive/loop.py``) is one of the 32, so the operator
+    used to see the action slug and nothing at all about what went wrong.
+    """
+    event = _rendered("exception", {"action": "authoritative_selection",
+                                    "error": "ValueError: no scored grid join", "iter": 12})
+    assert event.text == ("Problem: authoritative selection — ValueError: no scored grid join"
+                          "  [iter 12]")
+    legacy = _rendered("exception", {"action": "analyze", "reason": "fit did not converge"})
+    assert legacy.text == "Problem: analyze — fit did not converge"
+
+
+def test_missing_counts_read_as_a_dash_not_as_the_word_none():
+    update = _rendered("decide", {"action": "model_update"})
+    assert "None" not in update.text
+    assert update.text == "Dispersion model updated — — of — points certified, — observation(s)"
+
+    weighed = _rendered("inventory", {"selected_action_class": "quicklook"})
+    assert "None" not in weighed.text
+    assert weighed.text.startswith("Weighed — candidate action(s), — usable")
+
+    planning = _rendered("propose", {"kind": "quicklook", "n_points": 8})
+    assert "None" not in planning.text
+    assert planning.text == "Planning a quicklook scan — 8 points"
+
+    bare = _rendered("eig_decision", {"ready": True})
+    assert bare.text == "EIG — ready, no margin or role recorded"
+
+
+def test_a_non_finite_budget_degrades_instead_of_killing_the_feed():
+    """``duration_text`` reaches ``int(inf)`` → ``OverflowError``, inside an unguarded Qt slot."""
+    state = _State()
+    state.budget_kind, state.budget_amount = "counting_seconds", float("inf")
+    assert budget_status_line(state) is not None          # no exception escapes
+    state.analysis_limit_seconds = float("inf")
+    assert budget_status_line(state) is not None
