@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from isar.drive import loop
+from isar.drive.acquisition import eig_runtime
 from isar.drive.acquisition.acquire import ScanProposal, ShadowScoringSource
 from isar.drive.acquisition.eig_shadow import (
     _AUTHORITY_BASIS_FIELDS,
@@ -78,8 +79,8 @@ def test_shadow_adapter_runs_inside_charged_operation_without_changing_request(
             ScanDesignShadowScoring.unavailable_internal("qoi_policy_missing"))
         return value
 
-    monkeypatch.setattr(loop, "score_proposal_shadow_inventory", score)
-    loop._score_shadow_proposal(
+    monkeypatch.setattr(eig_runtime, "score_proposal_shadow_inventory", score)
+    eig_runtime._score_shadow_proposal(
         proposal, SimpleNamespace(analysis_limit_seconds=100.0), _cfg(tmp_path), it=3)
 
     assert proposal.scan_design_inventory.selected_candidate_id == selected
@@ -104,8 +105,8 @@ def test_shadow_deadline_and_crash_fail_open_on_the_same_legacy_candidate(
     def fail(*_args, **_kwargs):
         raise raised
 
-    monkeypatch.setattr(loop, "score_proposal_shadow_inventory", fail)
-    loop._score_shadow_proposal(
+    monkeypatch.setattr(eig_runtime, "score_proposal_shadow_inventory", fail)
+    eig_runtime._score_shadow_proposal(
         proposal, SimpleNamespace(analysis_limit_seconds=100.0), _cfg(tmp_path), it=4)
 
     shadow = proposal.scan_design_inventory.shadow_scoring
@@ -124,9 +125,9 @@ def test_shadow_boundary_never_catches_process_interrupts(monkeypatch, tmp_path)
     def interrupt(*_args, **_kwargs):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(loop, "score_proposal_shadow_inventory", interrupt)
+    monkeypatch.setattr(eig_runtime, "score_proposal_shadow_inventory", interrupt)
     with pytest.raises(KeyboardInterrupt):
-        loop._score_shadow_proposal(
+        eig_runtime._score_shadow_proposal(
             proposal, SimpleNamespace(analysis_limit_seconds=100.0), _cfg(tmp_path), it=5)
 
 

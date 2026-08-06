@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from isar.drive import loop
+from isar.drive.acquisition import eig_runtime
 from isar.drive.instrument import request_realization as wire
 from isar.drive.acquisition.acquire import ScanProposal
 from isar.drive.acquisition.authority import (
@@ -222,7 +223,7 @@ def test_bounded_authority_refresh_restores_the_initial_authenticated_legacy_wit
             scan_window_eig_mode="authoritative"))
     proposal.meta["scan_design_inventory_ref"] = _inventory_reference(
         tmp_path, proposal.scan_design_inventory)
-    initial = loop._clone_proposal(proposal)
+    initial = eig_runtime._clone_proposal(proposal)
     calls = []
 
     class RefusingClient:
@@ -232,14 +233,14 @@ def test_bounded_authority_refresh_restores_the_initial_authenticated_legacy_wit
                     "requested_points": body.get("n_points", 0), "feasible_points": 0}
 
     monkeypatch.setattr(
-        loop, "load_scan_design_realized_comparison", lambda *_args: comparison)
+        eig_runtime, "load_scan_design_realized_comparison", lambda *_args: comparison)
     refreshes = []
     monkeypatch.setattr(
-        loop, "_refresh_realized_comparison",
+        eig_runtime, "_refresh_realized_comparison",
         lambda *_args, **kwargs: refreshes.append(kwargs.get("force")))
     decisions = []
     monkeypatch.setattr(
-        loop, "build_authority_decision",
+        eig_runtime, "build_authority_decision",
         lambda *_args, **_kwargs: decisions.append(True))
     exact_config = runpy.run_path(str(
         Path(__file__).parents[1] / "eig" / "test_o41_authority.py"))["_config"]()
@@ -429,16 +430,16 @@ def test_a_partially_infeasible_target_core_is_refused_and_legacy_is_submitted(
             return payload
 
     monkeypatch.setattr(
-        loop, "load_scan_design_realized_comparison", lambda *_args: comparison)
+        eig_runtime, "load_scan_design_realized_comparison", lambda *_args: comparison)
     monkeypatch.setattr(
-        loop, "_refresh_realized_comparison", lambda *_args, **_kwargs: None)
+        eig_runtime, "_refresh_realized_comparison", lambda *_args, **_kwargs: None)
     captured = []
 
     def capture(**kwargs):
         captured.append(kwargs)
         raise RuntimeError("selector not exercised by this test")
 
-    monkeypatch.setattr(loop, "build_authority_decision", capture)
+    monkeypatch.setattr(eig_runtime, "build_authority_decision", capture)
     exact_config = runpy.run_path(str(
         Path(__file__).parents[1] / "eig" / "test_o41_authority.py"))["_config"]()
     log_path = tmp_path / "report" / "session_log.jsonl"
@@ -522,7 +523,7 @@ def test_pre_submit_authentication_is_exact_and_strips_corrupt_claims_once(
     sidecar.write_bytes(sidecar.read_bytes() + b" ")
     refreshes = []
     monkeypatch.setattr(
-        loop, "_refresh_realized_comparison",
+        eig_runtime, "_refresh_realized_comparison",
         lambda *_args, **_kwargs: refreshes.append(True))
     cfg = SimpleNamespace(
         workspace=tmp_path, log_path=tmp_path / "report" / "session.jsonl")
@@ -556,7 +557,7 @@ def test_refresh_persistence_failure_and_process_interrupt_have_distinct_boundar
         steering={"max_scan_points": 100, "production_batch_ncount": 10_000,
                   "max_ncount_per_scan": 1_000_000})
     monkeypatch.setattr(
-        loop, "persist_realized_comparison",
+        eig_runtime, "persist_realized_comparison",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")))
 
     assert loop._refresh_realized_comparison(
@@ -571,7 +572,7 @@ def test_refresh_persistence_failure_and_process_interrupt_have_distinct_boundar
                for event in read_log(cfg.log_path))
 
     monkeypatch.setattr(
-        loop, "persist_realized_comparison",
+        eig_runtime, "persist_realized_comparison",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()))
     with pytest.raises(KeyboardInterrupt):
         loop._refresh_realized_comparison(
@@ -612,7 +613,7 @@ def test_allowance_exhaustion_replaces_stale_claims_and_historical_v2_never_resc
     historical_proposal.meta["scan_design_inventory_ref"] = _inventory_reference(
         tmp_path, historical)
     monkeypatch.setattr(
-        loop, "score_proposal_realized_pair",
+        eig_runtime, "score_proposal_realized_pair",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not rescore /2")))
     assert loop._refresh_realized_comparison(
         cfg, objective, historical_proposal,
@@ -821,7 +822,7 @@ def test_runtime_scoring_failure_persists_unavailable_exact_request_and_keeps_le
     def fail(*_args, **_kwargs):
         raise RuntimeError("Monte Carlo backend failed")
 
-    monkeypatch.setattr(loop, "score_proposal_realized_pair", fail)
+    monkeypatch.setattr(eig_runtime, "score_proposal_realized_pair", fail)
 
     reference = loop._refresh_realized_comparison(
         cfg, objective, proposal,
@@ -930,7 +931,7 @@ def test_a_refused_rescore_persists_and_reports_its_own_reason_code(monkeypatch,
     def refuse(*_args, **_kwargs):
         raise RealizedScoringUnavailable("qoi_policy_missing")
 
-    monkeypatch.setattr(loop, "score_proposal_realized_pair", refuse)
+    monkeypatch.setattr(eig_runtime, "score_proposal_realized_pair", refuse)
     reference = loop._refresh_realized_comparison(
         cfg, objective, proposal,
         {"kind": "neutrons", "amount": 10**12, "spent": 0.0}, it=4)
@@ -972,8 +973,8 @@ def test_the_shared_authority_refresh_records_the_failure_that_caused_it(monkeyp
             return {"would_queue": False, "blockers": ["test_refusal"],
                     "requested_points": body.get("n_points", 0), "feasible_points": 0}
 
-    monkeypatch.setattr(loop, "load_scan_design_realized_comparison", load)
-    monkeypatch.setattr(loop, "_refresh_realized_comparison", lambda *_a, **_k: None)
+    monkeypatch.setattr(eig_runtime, "load_scan_design_realized_comparison", load)
+    monkeypatch.setattr(eig_runtime, "_refresh_realized_comparison", lambda *_a, **_k: None)
     exact_config = runpy.run_path(str(
         Path(__file__).parents[1] / "eig" / "test_o41_authority.py"))["_config"]()
     cfg = SimpleNamespace(
@@ -1008,8 +1009,8 @@ def test_a_repaired_pre_submit_authentication_still_records_the_drift(monkeypatc
             raise ValueError("submission identity is inconsistent")
         return comparison
 
-    monkeypatch.setattr(loop, "authenticate_realized_submission", authenticate)
-    monkeypatch.setattr(loop, "_refresh_realized_comparison", lambda *_a, **_k: None)
+    monkeypatch.setattr(eig_runtime, "authenticate_realized_submission", authenticate)
+    monkeypatch.setattr(eig_runtime, "_refresh_realized_comparison", lambda *_a, **_k: None)
     cfg = SimpleNamespace(workspace=tmp_path, log_path=tmp_path / "report" / "session_log.jsonl")
 
     loop._authenticate_realized_before_submission(
