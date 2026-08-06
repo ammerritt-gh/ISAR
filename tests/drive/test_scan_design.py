@@ -849,3 +849,39 @@ def test_a_declared_target_band_still_wins_over_the_fallback():
                   if r.candidate_family == FAMILY_TARGET_CORE).to_dict()["detail"]
     assert detail["support_band_source"] == "declared"
     assert detail["support_band_sigma"] == pytest.approx(0.05)
+
+
+def test_a_pre_canonical_encoding_still_loads_at_its_semantic_address(tmp_path, caplog):
+    """A ``main``-era artifact authenticates semantically but not byte-for-byte.
+
+    The writer changed from ``json.dump(..., indent=2)`` to canonical bytes; the content address is
+    the semantics, so every artifact the previous release wrote still authenticates. Rejecting them
+    turned an intact historical acquisition into a silent ``scan_design_provenance_invalid`` for
+    every shadow replay of a resumed workspace.
+    """
+    import logging
+
+    from isar.drive.acquisition.inventory import canonical_json
+    from isar.drive.acquisition.scan_design import load_scan_design_inventory
+
+    inventory = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    digest = inventory.content_hash()
+    path = tmp_path / "report" / "scan-design" / f"{digest}.json"
+    path.parent.mkdir(parents=True)
+    payload = json.loads(canonical_json(inventory.to_full_dict()))
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")   # the main-era encoding
+    assert hashlib.sha256(path.read_bytes()).hexdigest() != digest
+    reference = {"kind": "scan_design_inventory", "sha256": digest,
+                 "path": f"report/scan-design/{digest}.json"}
+
+    with caplog.at_level(logging.WARNING):
+        loaded = load_scan_design_inventory(reference, tmp_path)
+
+    assert loaded.content_hash() == digest
+    assert "legacy_artifact_encoding" in caplog.text
+
+    # Tampered semantics are still refused — the fallback is on encoding, not on content.
+    path.write_text(json.dumps({**payload, "selected_candidate_id": "tampered"}, indent=2),
+                    encoding="utf-8")
+    with pytest.raises(ValueError, match="content address is invalid"):
+        load_scan_design_inventory(reference, tmp_path)

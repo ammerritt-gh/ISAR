@@ -3615,7 +3615,7 @@ def test_validation_refusals_use_distinct_logical_acquisitions(tmp_path):
                 for p in proposals]
     assert len(set(requests)) == len(requests), "an identical refused request is never re-emitted"
     assert len(proposals) < 20, "the iteration limit is no longer the guardrail"
-    assert summary["stop"]["terminal_cause"] == TERMINAL_CONTROLLER_FAULT
+    assert summary["stop"]["terminal_cause"] == loop_mod.TERMINAL_CONTROLLER_FAULT
     assert "no unsuppressed realization" in summary["stop"]["reasons"][0]
 
 
@@ -4444,3 +4444,102 @@ def test_scan_and_validate_bodies_omit_background_when_none():
     body = loop_mod._scan_body(proposal, "deterministic", 3, sample="Al_phonon_DFT",
                                background=frozen)
     assert body["background"] == frozen and body["engine"] == "deterministic"
+
+
+class _AlwaysFailingTavi(MockTavi):
+    """Every submitted job comes back ``failed`` — the instrument never produces data."""
+
+    def wait_scan(self, job_id, timeout=0.0, **kw):
+        return {"job_id": job_id, "state": "failed", "error": "detector offline"}
+
+
+def test_a_persistently_failing_instrument_terminates_instead_of_spinning(tmp_path, monkeypatch):
+    """An unlimited budget plus a rejection class that suppresses nothing had NO termination bound.
+
+    ``scan_not_done:*`` is not in the rejection rules, so it classes transient with scope "none" and
+    suppresses nothing; the identical action is re-selected and re-submitted every iteration. Nothing
+    is ever charged either — with ``budget=None`` the deterministic tier keeps "unlimited", so
+    ``spent`` stays 0.0 and the budget exception can never fire. The absolute iteration ceiling is the
+    only thing that ends this, and it must end it with a named reason.
+    """
+    _no_subprocess(monkeypatch)
+    monkeypatch.setattr(loop_mod, "_ABSOLUTE_ITERATION_CEILING", 3)
+    omega = lambda h: (h - 2.0) * 2.0
+    objective = ObjectiveSpec.along_h(
+        h_start=2.1, h_end=2.4, step=0.1, tolerance_meV=0.5, budget=None, name="unbounded")
+
+    summary, _ws = _run(tmp_path, objective, _AlwaysFailingTavi(omega), make_mock_runner(omega))
+
+    assert summary["stop"]["state"] == "incomplete"
+    reason = summary["stop"]["reasons"][0]
+    assert "absolute iteration ceiling" in reason and "3" in reason
+    assert summary["stop"]["terminal_cause"] == loop_mod.TERMINAL_CONTROLLER_FAULT
+
+    events = read_log(summary["session_log"])
+    ceilings = [event["payload"] for event in events
+                if event["kind"] == "exception"
+                and event["payload"].get("action") == "iteration_ceiling_reached"]
+    assert len(ceilings) == 1 and ceilings[0]["ceiling"] == 3
+    stops = [event for event in events if event["kind"] == "stop"]
+    assert len(stops) == 1 and stops[0]["payload"]["resume_supported"] is True
+    # Certification must not run on a controller fault.
+    assert not any((event.get("payload") or {}).get("event") == "certify_start"
+                   for event in events if event["kind"] == "decide")
+
+
+def test_acquisition_provenance_names_the_authority_decision_and_executed_identity(tmp_path):
+    """In authoritative mode the record must say which of two selections it means.
+
+    ``ScanDesignRealizedComparison.selected_request_fingerprint`` always returns the LEGACY request,
+    while ``apply_selected_request`` overwrites ``scan_design_realized_selected_request_fingerprint``
+    with the request the authority decision actually granted (the target core). The persisted record
+    previously carried the overwritten value with nothing naming the decision that caused it, so an
+    auditor loading the comparison beside the record and applying its own accessor got a different
+    answer with no way to tell which was right.
+    """
+    from isar.drive.loop import _persist_acquisition_provenance
+    from isar.schema.card import Card
+
+    shutil.copy(Path(loop_mod.__file__).resolve().parents[1] / "parsers" / "cards"
+                / "tavi.policy.toml", tmp_path / "card.policy.toml")
+    decision_ref = {"kind": "scan_design_authority_decision", "sha256": "a" * 64,
+                    "path": f"report/scan-design/{'a' * 64}.json"}
+    _persist_acquisition_provenance(tmp_path, {
+        "job_id": "j1", "acquisition_id": "acq-1", "acquisition_target_energy": 5.0,
+        "submitted_ncount": 10_000, "kind": "production",
+        # What the loop executed, after apply_selected_request moved it to the target core.
+        "scan_design_realized_selected_request_fingerprint": "t" * 64,
+        "scan_design_realized_selected_grid_fingerprint": "g" * 64,
+        "scan_design_authority_decision_ref": decision_ref,
+        "scan_design_authority_decision_fingerprint": "a" * 64,
+        "scan_design_authority_selected_request_fingerprint": "t" * 64,
+        "scan_design_authority_selected_grid_fingerprint": "g" * 64,
+    })
+
+    entry = Card.load(tmp_path / "card.policy.toml",
+                      tmp_path / "card.state.json").state.acquisition_provenance[-1]
+    assert entry["scan_design_authority_decision_ref"] == decision_ref
+    assert entry["scan_design_authority_decision_fingerprint"] == "a" * 64
+    assert entry["scan_design_authority_selected_request_fingerprint"] == "t" * 64
+    assert entry["scan_design_authority_selected_grid_fingerprint"] == "g" * 64
+    # Additive: the pre-existing key keeps its meaning and value.
+    assert entry["scan_design_realized_selected_request_fingerprint"] == "t" * 64
+
+
+def test_a_shadow_only_acquisition_record_carries_no_authority_keys(tmp_path):
+    """Shadow/off mode records the authority keys as ``None`` — presence is what marks a decision."""
+    from isar.drive.loop import _persist_acquisition_provenance
+    from isar.schema.card import Card
+
+    shutil.copy(Path(loop_mod.__file__).resolve().parents[1] / "parsers" / "cards"
+                / "tavi.policy.toml", tmp_path / "card.policy.toml")
+    _persist_acquisition_provenance(tmp_path, {
+        "job_id": "j1", "acquisition_id": "acq-1", "acquisition_target_energy": 5.0,
+        "submitted_ncount": 10_000, "kind": "production",
+        "scan_design_realized_selected_request_fingerprint": "l" * 64,
+    })
+
+    entry = Card.load(tmp_path / "card.policy.toml",
+                      tmp_path / "card.state.json").state.acquisition_provenance[-1]
+    assert entry["scan_design_authority_decision_ref"] is None
+    assert entry["scan_design_authority_selected_request_fingerprint"] is None

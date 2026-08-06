@@ -456,3 +456,32 @@ def test_publisher_mirrored_fallbacks_cannot_hide_a_refit_master(monkeypatch):
         predictive, projection,
         expected_authority=_expected_authority(entry, refit, source))
     assert "projection_stale" in evidence.scientific_codes
+
+
+def test_a_main_era_artifact_replays_and_an_unreadable_one_is_logged(tmp_path, caplog):
+    """The shadow replay reads ``physical_submission`` events that survive resumes.
+
+    A ``main``-era inventory (written with ``indent=2``) authenticates semantically, so the replay
+    must still resolve it — silently downgrading every past acquisition to
+    ``scan_design_provenance_invalid`` is what the raw-byte-only check did. A genuinely unreadable
+    artifact still refuses, but never without a log entry.
+    """
+    import logging
+
+    inventory = _inventory()
+    reference = _write_source_events(tmp_path, inventory)
+    design_path = tmp_path / "report" / "scan-design" / f"{reference['sha256']}.json"
+    payload = json.loads(design_path.read_text(encoding="utf-8"))
+    design_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        source, events = _scan_design_source(tmp_path, "physical-a", "request-a")
+    assert source["inventory_fingerprint"] == inventory.content_hash()
+    assert events == ()
+
+    design_path.write_text("{not json", encoding="utf-8")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        source, reasons = _scan_design_source(tmp_path, "physical-a", "request-a")
+    assert source is None and reasons == ("scan_design_provenance_invalid",)
+    assert "scan_design_provenance_invalid" in caplog.text

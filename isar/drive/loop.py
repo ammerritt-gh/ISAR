@@ -125,6 +125,15 @@ from isar.schema.steering import (ANALYSIS_UNUSABLE, AUXILIARY_TRACK_NODE, CANDI
                                   CANONICAL_MASTER, realized_outcome_for)
 
 DEFAULT_WAIT_TIMEOUT = 600.0
+# A runaway backstop, NOT a scientific limit. Campaign length is bounded by the declared budget, and
+# an operator-chosen iteration cap silently truncated campaigns that were still making progress
+# (DECISIONS: the --max-iters removal). But a budget of ``None`` is "unlimited", and an instrument
+# whose every job comes back failed produces a rejection class that suppresses nothing, so the
+# identical action is re-selected and re-submitted forever with nothing spent. This ceiling is set far
+# above any real campaign (a real one converges in tens of iterations) so it can only ever be reached
+# by a controller that is not making progress; hitting it is classified as a controller fault, which
+# is unattended-safe — checkpoints are retained and the campaign resumes after repair.
+_ABSOLUTE_ITERATION_CEILING = 10_000
 # The instrument point-count ceiling (TAVI enforces max_points=200 on a scan command). An over-limit
 # scan latches TAVI's validator state and blocks all later API calls until restart (see
 # docs/campaigns/2026-07_MVP_ZONE_RETEST.md), so ISAR must never submit/validate one. Used only as the
@@ -172,6 +181,10 @@ _AUTHORITY_SUBMISSION_FIELDS = (
     "scan_design_selected_role",
     "scan_design_selected_candidate_family",
     "scan_design_selected_candidate_id",
+    # The executed request identity the authority decision selected, kept distinct from the
+    # ``scan_design_realized_selected_*`` keys the realized comparison's own accessor defines.
+    "scan_design_authority_selected_request_fingerprint",
+    "scan_design_authority_selected_grid_fingerprint",
 )
 
 
@@ -3169,6 +3182,20 @@ def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
             "scan_design_realized_selected_request_fingerprint"),
         "scan_design_realized_selected_grid_fingerprint": payload.get(
             "scan_design_realized_selected_grid_fingerprint"),
+        # Authoritative mode only (``None`` in shadow/off mode). The realized_selected_* keys above
+        # carry whichever request was actually executed, which on an authority grant is the
+        # target_core request rather than the legacy one
+        # ``ScanDesignRealizedComparison.selected_request_fingerprint`` returns. Recording the
+        # deciding artifact and the executed identity under their own keys is what tells an auditor
+        # which of the two answers this record means, instead of leaving the record and the
+        # comparison beside it silently disagreeing.
+        "scan_design_authority_decision_ref": payload.get("scan_design_authority_decision_ref"),
+        "scan_design_authority_decision_fingerprint": payload.get(
+            "scan_design_authority_decision_fingerprint"),
+        "scan_design_authority_selected_request_fingerprint": payload.get(
+            "scan_design_authority_selected_request_fingerprint"),
+        "scan_design_authority_selected_grid_fingerprint": payload.get(
+            "scan_design_authority_selected_grid_fingerprint"),
         "scan_design_eig_applicability": payload.get("scan_design_eig_applicability"),
         "scan_design_eig_invalidation_reason": payload.get(
             "scan_design_eig_invalidation_reason"),
@@ -4046,6 +4073,23 @@ def _prepare_authoritative_submission(
             apply_selected_request(proposal, decision)
             if decision.physical_role != "none":
                 authenticate_authority_submission(proposal, cfg.workspace)
+            # The executed identity under its OWN key. ``apply_selected_request`` overwrites the
+            # ``scan_design_realized_selected_*`` keys with the request the authority decision
+            # selected, which on a grant is the target_core request — NOT what
+            # ``ScanDesignRealizedComparison.selected_request_fingerprint`` returns (always the
+            # legacy request). An auditor reading the persisted record beside the comparison
+            # artifact would otherwise see two different answers to "which request was selected"
+            # with nothing naming the decision that chose between them. Additive: the realized keys
+            # keep their current value (the submission-identity authentication above is defined
+            # against them), and the decision ref plus these keys make the record unambiguous.
+            selected = decision.selected_request
+            if selected is not None:
+                meta = proposal.meta if isinstance(proposal.meta, dict) else {}
+                proposal.meta = meta
+                meta["scan_design_authority_selected_request_fingerprint"] = selected[
+                    "request_fingerprint"]
+                meta["scan_design_authority_selected_grid_fingerprint"] = selected[
+                    "grid_fingerprint"]
             log_event(cfg.log_path, "scan_design_authority_decision", {
                 "iter": it,
                 "mode": "authoritative",
@@ -4924,6 +4968,10 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                 "scan_design_selected_candidate_family"),
             "scan_design_selected_candidate_id": (proposal.meta or {}).get(
                 "scan_design_selected_candidate_id"),
+            "scan_design_authority_selected_request_fingerprint": (proposal.meta or {}).get(
+                "scan_design_authority_selected_request_fingerprint"),
+            "scan_design_authority_selected_grid_fingerprint": (proposal.meta or {}).get(
+                "scan_design_authority_selected_grid_fingerprint"),
             # The other two lifecycle identities, so a submitted scan joins back to the scientific
             # question it answers and the geometry its request was accepted under.
             "scientific_action_fingerprint": (proposal.meta or {}).get(
@@ -5590,7 +5638,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
         # or its declared budget (counting time, or neutrons when that is the declared kind) trips.
         # An iteration ceiling is not a scientific limit — it silently truncated campaigns that were
         # still making progress and still had beam time — so ``it`` is a counter for the log and the
-        # records only. A budget of ``None`` is unlimited by operator choice, and the loop honours it.
+        # records only. A budget of ``None`` is unlimited by operator choice, and the loop honours it —
+        # bounded only by :data:`_ABSOLUTE_ITERATION_CEILING`, the non-scientific runaway backstop.
         for it in itertools.count():
             if pending_recovery_reason is not None:
                 break
@@ -5611,6 +5660,22 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         master_rows, grid = _grid_state(
                             objective, observations, cfg.workspace, cfg.calibration)
                     decision = evaluate_stop(objective, grid, budget_state, calibration=cfg.calibration, floor=cfg.floor)
+                if it >= _ABSOLUTE_ITERATION_CEILING:
+                    # Runaway backstop (see _ABSOLUTE_ITERATION_CEILING): the campaign is neither
+                    # completing nor spending, so no budget can ever trip. Terminate with a named
+                    # reason rather than spin.
+                    reason = (
+                        "controller_fault: the campaign reached the absolute iteration ceiling "
+                        f"({_ABSOLUTE_ITERATION_CEILING}) without completing or exhausting its "
+                        "budget — the loop is not making progress. Checkpoints retained and resume "
+                        "is supported after repair.")
+                    log_event(cfg.log_path, "exception", {
+                        "event": "iteration_ceiling_reached",
+                        "action": "iteration_ceiling_reached",
+                        "ceiling": _ABSOLUTE_ITERATION_CEILING, "iter": it})
+                    decision = StopDecision("incomplete", [reason], decision.per_q,
+                                            terminal_cause=TERMINAL_CONTROLLER_FAULT)
+                    break
                 if decision.state == "met":
                     unresolved_promotions = _unresolved_current_promotions(cfg.workspace)
                     if unresolved_promotions:

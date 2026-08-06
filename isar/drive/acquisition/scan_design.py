@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -80,6 +81,8 @@ from isar.schema.eig_shadow import (
     validate_scan_design_shadow_scoring,
 )
 
+
+_LOG = logging.getLogger(__name__)
 
 AUXILIARY_DETECTION_KINDS = frozenset({"identity_rival_probe"})
 
@@ -774,13 +777,18 @@ def load_scan_design_inventory(reference: Mapping[str, Any], workspace: str | Pa
         payload = json.loads(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError("scan-design inventory artifact is unreadable") from error
-    if hashlib.sha256(raw).hexdigest() != digest:
-        raise ValueError("scan-design inventory artifact raw-byte address is invalid")
     if not isinstance(payload, Mapping):
         raise ValueError("scan-design inventory artifact must contain an object")
     semantic_digest = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
     if semantic_digest != digest:
         raise ValueError("scan-design inventory artifact content address is invalid")
+    if hashlib.sha256(raw).hexdigest() != digest:
+        # A pre-canonical-encoding artifact: the previous release wrote ``json.dump(..., indent=2)``,
+        # so the semantics authenticate but the raw bytes do not. The content address is the
+        # semantics, and rejecting these would silently invalidate every historical acquisition a
+        # resume or shadow replay reads. Accept, note the encoding, keep writing canonical bytes.
+        _LOG.warning("legacy_artifact_encoding: scan-design inventory %s authenticates "
+                     "semantically but was written with a pre-canonical encoding", path)
     inventory = validate_scan_design_inventory(ScanDesignInventory.from_dict(payload))
     if inventory.content_hash() != digest:
         raise ValueError("scan-design inventory reconstructed content address is invalid")

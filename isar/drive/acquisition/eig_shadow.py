@@ -7,6 +7,7 @@ and detector frozen on the proposal; it never searches by Q and never substitute
 from __future__ import annotations
 
 import dataclasses
+import logging
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -21,6 +22,8 @@ from isar.eig.realized_score import score_realized_pair
 from isar.eig.shadow_inventory import ScanDesignShadowScoring, score_shadow_inventory
 from isar.schema.eig_realized import RealizedCandidatePair
 
+
+_LOG = logging.getLogger(__name__)
 
 SHADOW_SCORING_ALLOWANCE_SECONDS = 5.0
 
@@ -160,7 +163,9 @@ def _scan_design_source(workspace: Path, acquisition_id: str | None,
             return None, ("scan_design_provenance_invalid",)
         try:
             inventory = load_scan_design_inventory(reference, workspace)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as error:
+            _LOG.warning("scan_design_provenance_invalid: acquisition %s inventory %s could not be "
+                         "authenticated: %s", acquisition_id, reference.get("sha256"), error)
             return None, ("scan_design_provenance_invalid",)
         if (inventory.selected_candidate_id != str(candidate_id)
                 or inventory.context.fingerprint != str(context_fingerprint)):
