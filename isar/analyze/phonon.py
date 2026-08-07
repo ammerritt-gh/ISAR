@@ -96,7 +96,7 @@ AS_MIN_COUNTS = 2.0      # …and this absolute floor (a fraction of a count is 
 # A phonon Γ this close to the floor is a resolution-limited δ-spike, not a fitted intrinsic
 # width: ω₀ = √(Ω_d²+Γ²) ≈ Ω_d with Γ unmovable, so the parametric bootstrap collapses to a
 # degenerate ω₀ interval (halfwidth ~1e-3 meV) that is spuriously tight, not trustworthy. Fits
-# with any Γ within this tolerance of GAMMA_FLOOR (or at GAMMA_MAX, a runaway-broad DHO) get
+# with any Γ at or below this tolerance (or at GAMMA_MAX, a runaway-broad DHO) get
 # their ω₀ interval flagged unreliable so the σ-calibration / downstream can filter them out
 # (an honestly-flagged interval beats a silently repaired one — ISAR philosophy). 5×floor
 # separates resolution-limited spikes (≤0.005 meV) from genuinely-fit widths (≳0.05 meV) with
@@ -117,7 +117,7 @@ def _gamma_at_bound(gammas) -> bool:
     or GAMMA_MAX (runaway-broad) — so its derived ω₀ interval is not trustworthy."""
     for g in gammas:
         g = float(g)
-        if g <= GAMMA_FLOOR + GAMMA_BOUND_TOL or g >= GAMMA_MAX * (1.0 - 1e-3):
+        if g <= GAMMA_BOUND_TOL or g >= GAMMA_MAX * (1.0 - 1e-3):
             return True
     return False
 
