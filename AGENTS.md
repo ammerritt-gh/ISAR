@@ -112,10 +112,10 @@ area.
 | Card / schema across facilities | `docs/SCHEMA_LANDSCAPE.md` |
 | Flag adjudication (opt-in LLM) | `docs/ADJUDICATION.md` |
 | The autonomous driver (`isar drive`) | `docs/MEASUREMENT_STEERING.md` |
-| Same-action scan-window EIG (candidate generation and exact realized scoring Partial; authoritative selection Partial — symmetric per-neutron comparison, O43; opt-in, pending O42 release review) | `docs/EIG_STEERING_DESIGN.md`, then `docs/MEASUREMENT_STEERING.md` |
+| Same-action scan-window EIG (candidate generation and exact realized scoring Partial; authoritative selection Partial — symmetric per-neutron comparison, O43; O42 release review retired by H1, default-on once the SCENE world suite exercises it) | `docs/EIG_STEERING_DESIGN.md`, then `docs/MEASUREMENT_STEERING.md` |
 | Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
 | Campaign diagnostic report | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |
-| Why a decision was made | `docs/DECISIONS.md` (IDs P*/D*/V/R/S/O/T/W are stable, safe to cite) |
+| Why a decision was made | `docs/DECISIONS.md` (IDs P*/D*/V/R/S/O/T/W/H are stable, safe to cite) |
 | What happened in a run (historical, never load-bearing) | `docs/campaigns/` |
 
 ## Module map (ownership boundaries that matter)
@@ -142,8 +142,12 @@ facade) ·
 `isar_gui` (reads science through `workspace_api`; controls campaigns by subprocess + control
 files). The Stage II ↔ III boundary is a **frozen file contract**
 (`report/results.csv`, `<workspace>/report/report.json`, `card.state.json`) — the driver never imports fit internals.
-The one pre-release v1→v2 clean break was authorized on 2026-07-17 (DECISIONS O12); from v2 onward,
-contract changes are additive only (DESIGN §4).
+The one pre-release v1→v2 clean break was authorized on 2026-07-17 (DECISIONS O12). During the
+SCENE transition, H1 supersedes the additive-only rule for contracts SCENE rebuilds:
+`isar.campaign-program/1` replaces the objective envelope outright with no compatibility reader,
+and contract changes are judged against the SCENE world suite, not serialization compatibility
+(DESIGN §4, DECISIONS H1). Do not build compatibility shims or dual-path readers for retired
+formats — H1 classifies them as defects.
 
 ## Verification (cheapest first)
 
@@ -186,6 +190,8 @@ contract changes are additive only (DESIGN §4).
    real-instrument deployment, publication-grade claim): designed before the run, executed once,
    kept at their commit. Everything else is ordinary development — normal review plus behavior
    tests; no drift closure, no promotion commits, and no permanently "selection-critical" files.
+   Internal acquisition authority granted during the SCENE program is "everything else": it is
+   validated by the ordinary deterministic world-suite lanes, never by a new freeze (H1).
 
 ## Documentation policy (what a document is allowed to be)
 

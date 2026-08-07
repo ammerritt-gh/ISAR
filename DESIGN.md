@@ -145,9 +145,11 @@ occurrence. *(Implemented; see `docs/WORKSPACE_AND_CLI.md` for the full treatmen
 **The Stage II ↔ Stage III boundary is a frozen file contract.** The driver consumes analysis
 only via the `isar run` subprocess and its products — `report/results.csv`, `<workspace>/report/report.json`,
 `card.state.json` — and never imports fit internals. The pre-release v1→v2 objective/campaign reset
-was authorized on 2026-07-17 (O12); additive-only evolution resumes from v2. This boundary
-is what lets the stages be independently useful and independently testable, and it is what makes
-the asynchronous loop (§8) possible.
+was authorized on 2026-07-17 (O12); additive-only evolution resumed from v2, and is superseded for
+contracts the SCENE program rebuilds (DECISIONS H1): `isar.campaign-program/1` replaces the
+objective envelope outright, with compatibility judged against the SCENE world suite until the
+program closes. This boundary is what lets the stages be independently useful and independently
+testable, and it is what makes the asynchronous loop (§8) possible.
 
 ## 5. Data model
 
