@@ -13,7 +13,7 @@ from isar.analyze import loop
 from isar.analyze.context import ScanContext
 from isar.analyze.structures import enumerate_structures
 from isar.schema.steering import ParamConstraints
-from isar.session import driver
+from isar.session import driver, scan_delivery
 from isar.analyze.lineshapes import convolute_voigt_dho
 
 
@@ -94,7 +94,7 @@ def _escalation_env(monkeypatch):
         calls.append((a, k))
         return {"omega0": 5.0, "gamma_at_bound": False}
 
-    monkeypatch.setattr(driver, "fit_one", _spy)
+    monkeypatch.setattr(scan_delivery, "fit_one", _spy)
     return calls
 
 
@@ -107,7 +107,7 @@ def test_escalation_skipped_when_gamma_already_hard_fixed(monkeypatch):
     fit = {"gamma_at_bound": True, "omega0": 5.0}
     prior = types.SimpleNamespace(omega0=5.0)
     region_reasons = []
-    out = driver._hard_fix_escalation(
+    out = scan_delivery._hard_fix_escalation(
         fit, ctx, prior, card=None, sample="s", T=150.0, labels=None, peaks=None,
         descriptor=None, region_reasons=region_reasons, M=10, seed=0, errors_tier="fast",
         boot_workers=1, boot_executor=None, boot_adaptive=False)
@@ -130,7 +130,7 @@ def test_escalation_fires_when_gamma_only_soft(monkeypatch):
     prior = types.SimpleNamespace(omega0=5.0)
     card = types.SimpleNamespace(state=None)               # branch_for is monkeypatched; state unused
     region_reasons = []
-    out = driver._hard_fix_escalation(
+    out = scan_delivery._hard_fix_escalation(
         fit, ctx, prior, card=card, sample="s", T=150.0, labels=None, peaks=None,
         descriptor=None, region_reasons=region_reasons, M=10, seed=0, errors_tier="fast",
         boot_workers=1, boot_executor=None, boot_adaptive=False)

@@ -49,7 +49,7 @@ def _authenticated_projection(monkeypatch, *, explicit_weights: bool = False):
         semantics_fingerprint,
         validate_for_write,
     )
-    from isar.session import driver
+    from isar.session import driver, scan_delivery
     from isar.session import predictive_artifact
 
     manifest = {
@@ -95,7 +95,7 @@ def _authenticated_projection(monkeypatch, *, explicit_weights: bool = False):
                              within_model={"omega0_samples": [3.0, 3.1]})
     score = SimpleNamespace(label="one", cost=10.0, k=2, aic=14.0, weight=1.0,
                             survives=True, fit_semantics=fit_semantics)
-    selection = driver._build_selection_semantics(
+    selection = scan_delivery._build_selection_semantics(
         [result], SimpleNamespace(scores=[score], pooled=object()),
         {"route": "full_two_stage", "labels_before_guideline": ["one"],
          "guideline_structure_filter": [], "guideline_changed_model_set": False,

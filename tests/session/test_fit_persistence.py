@@ -30,7 +30,7 @@ from isar.schema.statistics import (
     semantics_fingerprint,
 )
 from isar.analyze.shadow_selection import unavailable_shadow_selection
-from isar.session import driver
+from isar.session import driver, scan_delivery
 from isar.session.state import ScanEntry, SessionState
 from isar.session.workspace import Workspace
 from isar.analyze.lineshapes import convolute_voigt_dho
@@ -60,7 +60,7 @@ def _single_peak_ctx():
 @pytest.mark.slow
 def test_fit_one_populates_amplitudes_and_candidates():
     ctx = _single_peak_ctx()
-    fit = driver.fit_one(ctx, _card(), prior=None, M=20, seed=1)
+    fit = scan_delivery.fit_one(ctx, _card(), prior=None, M=20, seed=1)
 
     # amplitudes: non-empty dict of the winning composite's linear param names, plain floats.
     amps = fit["amplitudes"]
@@ -128,7 +128,7 @@ def test_stored_amplitudes_reproduce_reconstruct_curve():
     linear part plus any component the winner dropped (its stored amplitude is absent → treated 0,
     while NNLS may assign it a small non-zero value)."""
     ctx = _single_peak_ctx()
-    fit = driver.fit_one(ctx, _card(), prior=None, M=20, seed=1)
+    fit = scan_delivery.fit_one(ctx, _card(), prior=None, M=20, seed=1)
     amps = fit["amplitudes"]
     omega0, gamma = fit["omega0"], fit["gamma"]
     assert omega0 is not None

@@ -4,7 +4,7 @@
 > **Provenance:** hand-written
 > **Verified against production anchor:** `b9ae4907a9aa3dc0afc356bc6235b957dc2d9d03` (2026-08-06)
 > **Owner:** @ammerritt-gh
-> **Status:** P2.0–P2.6a landed; P2.6b–P2.8 not started.
+> **Status:** P2.0–P2.6b landed; P2.6c–P2.8 not started.
 > **Exit criteria:** the Pass-2 exit criteria at the end of this document are met and verified;
 > accepted ownership boundaries are folded into `DESIGN.md` and `AGENTS.md`; this execution plan
 > is then deleted and tombstoned in `docs/DOC_INVENTORY.md`.
@@ -164,7 +164,8 @@ gate, never renewed.
 | P2.3 | `8fc8057` | TAVI wire knowledge (validate/scan bodies, limit discovery, feasibility interpretation, run selection) out of `drive/loop.py` into `drive/instrument/request_realization.py`; `FeasibilityDecision` seam replaces the inlined trim branching; loop keeps EIG refresh, budget, session-log side effects |
 | P2.4 | `704ddb0` | EIG runtime adaptation (shadow scoring, realized comparison, authority preparation, pre-submit authentication, submission-metadata assembly) out of `loop.py` into `drive/acquisition/eig_runtime.py`; loop passes `finalizer=_finalize_proposal` explicitly (no cycle). Scope notes: no frozen input record (existing signatures suffice); exact-source session-log joins (`_exact_pooled_master_sources`/`_read_master_rows`) stay in loop pending the P2.5 `isar_io` seam — partial delivery of the ownership-map row |
 | P2.5 | `8a1e4ea` | `refresh_analysis(...)` on `isar_io/runner.py` owns runner-signature inspection, kwarg assembly, and the completion decision; the three `runner.run` sites become explicit seam calls; P2.4-deferred readers land in `readers.py` (`read_run_timings`, `exact_pooled_master_sources`, `read_master_rows` with injected row-interpretation functions). Documented exception: one `runner_accepts` survives at the predictive-promotion degrade site (loop.py:1147) — it changes pre-run logging/targeting, not kwargs; replacing it with a declared `supports_targeted_masters` runner attribute is deferred |
-| P2.6a | (this commit) | `FitOutcome` + `to_dict` + tolerant reader (`_coerce_fit_outcome`) + `_CSV_COLUMNS` + `_write_results_csv` and projection helpers moved to `session/outcome.py` (stdlib+schema imports only, purity-probed); driver imports the DTO; ledger-drift warning logger renamed to `isar.session.outcome` |
+| P2.6a | `6114cc7` | `FitOutcome` + `to_dict` + tolerant reader (`_coerce_fit_outcome`) + `_CSV_COLUMNS` + `_write_results_csv` and projection helpers moved to `session/outcome.py` (stdlib+schema imports only, purity-probed); driver imports the DTO; ledger-drift warning logger renamed to `isar.session.outcome` |
+| P2.6b | (this commit) | Scan delivery (context, candidates, selection/interval semantics, shadow block, `fit_one`, the scan task pool, triage/rescue/escalation) → `session/scan_delivery.py`; pooled-master fitting, promotion bookkeeping and the certification primitives → `session/master_delivery.py`; driver (4,594 → ~1,740 lines) keeps `run_batch`, `_apply_and_finish`, `_run_master_certification` and the evidence/tracking block. Verbatim moves: the only body edits are the cross-module call rewrites to module-attribute form (`scan_delivery._run_tasks`, `master_delivery._fit_masters`, `master_delivery._fit_master_group_task`, and master→scan calls), so each seam keeps exactly one patch point. Import direction `driver → master_delivery → scan_delivery`; no re-exports of moved callables (tests repoint), `FitOutcome`/`PREDICTIVE_CONTRACT` stay importable from the driver. Differential: IN8 two-scan run byte-identical `results.csv`, `session.json` differing only in wall-clock timings and file mtimes |
 
 Deferred findings (things noticed but out of scope for the slice that noticed them):
 
@@ -190,6 +191,19 @@ Deferred findings (things noticed but out of scope for the slice that noticed th
   Current tests patch the correct side; future test authors must patch the namespace whose
   caller they exercise. Collapses naturally if later slices remove loop's remaining direct
   calls (`loop.py:3160,3174,3445`).
+- P2.6b left `_run_master_certification` in the driver: it calls the P2.6c evidence material
+  (`_store_branch_beliefs`, `_update_hypothesis_mismatch`, `_resolve_target_projections`), so
+  moving it now would need an import cycle or parameter-threading. Its certification *primitives*
+  already live in `master_delivery.py`; the orchestrator's evidence tail moves with P2.6c. Its
+  `ProcessPoolExecutor` / `as_completed` patch points therefore stay driver-targeted while
+  `_fit_masters`' equivalents live in `master_delivery` (test_master_fit.py:151/172/187 vs
+  :602/:604).
+- P2.6b placed `_PRIOR_NARROW_SIGMA` in `scan_delivery.py`, not `master_delivery.py` as the slice
+  plan said: the constant gates both `_fit_master_group` and `_resolve_prior_and_context`, so the
+  D1 rule (shared helpers move down) applies; `master_delivery` from-imports it.
+- After P2.6b the driver imports `FitOutcome` and `PREDICTIVE_CONTRACT` without using them — they
+  are deliberate re-exports for consumers that still reach for `driver.<name>`, and are the only
+  two pyflakes "imported but unused" reports on the three session delivery files.
 - `isar/synth_format/run_builder.py` imports `isar.synth.{config,generate,noise}` and is
   reachable from `isar/reduce/adjudicate_eyeball.py` — correct ownership (synth_format emits
   synthetic data), but the "no production import of `isar.synth`" criterion holds only with

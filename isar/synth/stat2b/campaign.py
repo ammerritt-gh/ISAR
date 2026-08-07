@@ -33,7 +33,7 @@ from isar.drive.supervisor.stopping import evaluate_stop, summarize_grid
 from isar.schema import card as card_mod
 from isar.schema.statistics import semantics_fingerprint
 from isar.schema.steering import ParamConstraints
-from isar.session import driver
+from isar.session import scan_delivery
 from isar.session import session_prior
 from isar.synth.stat2b.criteria import (
     NULL_LABELS,
@@ -109,6 +109,8 @@ CAMPAIGN_SOURCE_PATHS = (
     "isar/schema/statistics.py",
     "isar/schema/steering.py",
     "isar/session/driver.py",
+    "isar/session/scan_delivery.py",
+    "isar/session/master_delivery.py",
     "isar/session/branch_model.py",
     "isar/session/session_prior.py",
     "isar/synth/fit.py",
@@ -656,9 +658,9 @@ def _full_delivery(
     seed = int(delivery_inputs["delivery_seed"])
     ctx = replace(dataset.fit_context, acoustic_omega=target_hint)
     prior, card = _delivery_prior_and_card(dataset, scenario)
-    descriptor = driver._build_descriptor(ctx)
+    descriptor = scan_delivery._build_descriptor(ctx)
     region_reasons: list[str] = []
-    fit = driver.fit_one(
+    fit = scan_delivery.fit_one(
         ctx,
         card,
         prior=prior,
@@ -671,7 +673,7 @@ def _full_delivery(
         descriptor=descriptor,
         shadow_enabled=False,
     )
-    fit = driver._hard_fix_escalation(
+    fit = scan_delivery._hard_fix_escalation(
         fit,
         ctx,
         prior,

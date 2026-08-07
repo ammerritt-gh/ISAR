@@ -11,7 +11,7 @@ from isar.analyze.shadow_selection import unavailable_shadow_selection
 from isar.eig import EligibilityInput, QoIProjectionEvidence, evaluate_eig_eligibility
 from isar.eig.qoi import OMEGA0_ADAPTER_REVISION, QOI_EVIDENCE_CONTRACT
 from isar.schema.statistics import FIT_SELECTION_SCHEMA, authority_scopes, semantics_fingerprint, validate_for_write
-from isar.session import driver
+from isar.session import driver, scan_delivery
 
 
 def _evidence(**overrides):
@@ -137,7 +137,7 @@ def _clean_selection(**route_updates) -> dict:
              "labels_before_guideline": list(labels), "multimode_route": "not_offered",
              "offered_labels": list(labels), "scored_labels": list(labels)}
     route.update(route_updates)
-    return driver._build_selection_semantics(
+    return scan_delivery._build_selection_semantics(
         results, SimpleNamespace(scores=scores, pooled=object()), route,
         error_attachment_labels=list(labels))
 

@@ -6,7 +6,7 @@ import pytest
 
 from isar.analyze.context import ScanContext
 from isar.schema import card as card_mod
-from isar.session import driver
+from isar.session import driver, master_delivery, scan_delivery
 from isar.session.promotions import PromotionKey, PromotionStore
 from isar.session.state import ScanEntry, SessionState
 from isar.analyze.lineshapes import convolute_voigt_dho
@@ -50,11 +50,11 @@ def _card():
 
 
 def test_auto_escalation_reasons_are_stable_and_ordered(monkeypatch):
-    monkeypatch.setattr(driver, "_hesse_interval_and_trust", lambda best, ctx: (None, False))
+    monkeypatch.setattr(scan_delivery, "_hesse_interval_and_trust", lambda best, ctx: (None, False))
     fit = _result(
         params={"phonon.Omega_d": 0.01, "phonon.Gamma": 0.002},
         param_errors={"phonon.Omega_d": 0.1, "phonon.Gamma": 0.1})
-    assert driver._auto_escalation_reasons(
+    assert scan_delivery._auto_escalation_reasons(
         _prelim(runner_weight=0.10), {"best": fit}, _ctx()) == [
             "untrusted_hesse",
             "omega_d_within_2sigma_of_bound",
@@ -64,9 +64,9 @@ def test_auto_escalation_reasons_are_stable_and_ordered(monkeypatch):
 
 
 def test_auto_escalates_missing_best_and_covariance(monkeypatch):
-    monkeypatch.setattr(driver, "_hesse_interval_and_trust", lambda best, ctx: (None, False))
-    assert driver._auto_escalation_reasons(_prelim(best=None), {}, _ctx()) == ["no_usable_best"]
-    reasons = driver._auto_escalation_reasons(
+    monkeypatch.setattr(scan_delivery, "_hesse_interval_and_trust", lambda best, ctx: (None, False))
+    assert scan_delivery._auto_escalation_reasons(_prelim(best=None), {}, _ctx()) == ["no_usable_best"]
+    reasons = scan_delivery._auto_escalation_reasons(
         _prelim(runner_weight=0.0),
         {"best": _result(covariance_ok=False, parameter_covariance=None)}, _ctx())
     assert reasons[:2] == ["no_usable_covariance", "untrusted_hesse"]
@@ -75,7 +75,7 @@ def test_auto_escalates_missing_best_and_covariance(monkeypatch):
 def test_auto_attaches_to_same_point_estimates_without_reenumeration(monkeypatch):
     enumeration_calls = []
     attach_calls = []
-    original = driver.loop.fit_structures_two_stage_hinted
+    original = scan_delivery.loop.fit_structures_two_stage_hinted
 
     def enumerate_once(*args, **kwargs):
         enumeration_calls.append(1)
@@ -84,10 +84,10 @@ def test_auto_attaches_to_same_point_estimates_without_reenumeration(monkeypatch
     def attach(items, **kwargs):
         attach_calls.append([id(item[0]) for item in items])
 
-    monkeypatch.setattr(driver.loop, "fit_structures_two_stage_hinted", enumerate_once)
-    monkeypatch.setattr(driver, "_auto_escalation_reasons", lambda *args: ["untrusted_hesse"])
-    monkeypatch.setattr(driver.errors, "attach_batch", attach)
-    fit = driver.fit_one(_ctx(), _card(), prior=None, M=20, seed=1, errors_tier="auto",
+    monkeypatch.setattr(scan_delivery.loop, "fit_structures_two_stage_hinted", enumerate_once)
+    monkeypatch.setattr(scan_delivery, "_auto_escalation_reasons", lambda *args: ["untrusted_hesse"])
+    monkeypatch.setattr(scan_delivery.errors, "attach_batch", attach)
+    fit = scan_delivery.fit_one(_ctx(), _card(), prior=None, M=20, seed=1, errors_tier="auto",
                          fit_role="master")
 
     assert len(enumeration_calls) == 1
@@ -135,7 +135,7 @@ def test_reconcile_keeps_current_pending_and_supersedes_stale(tmp_path):
     session = SessionState(scans={
         "master:q": ScanEntry("master:q", 1, "measurement", "fitted",
                               content_hash="rev-b")})
-    unresolved = driver.unresolved_current_promotions(tmp_path, session)
+    unresolved = master_delivery.unresolved_current_promotions(tmp_path, session)
     assert [record["promotion_id"] for record in unresolved] == [current.digest]
     assert store.load(stale)["status"] == "superseded"
     assert store.load(current)["status"] == "pending"

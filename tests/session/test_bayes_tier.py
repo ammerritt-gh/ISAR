@@ -11,7 +11,7 @@ import pytest
 from isar.analyze.context import ScanContext
 from isar.analyze.errors.bayes import BayesResult
 from isar.schema import card as card_mod
-from isar.session import driver
+from isar.session import driver, scan_delivery
 from isar.analyze.lineshapes import convolute_voigt_dho
 
 
@@ -58,7 +58,7 @@ def test_bayes_tier_populates_posterior_and_keeps_bootstrap(monkeypatch):
     _patch_bayes(monkeypatch)
     # bayes_opts is what run_batch resolves (defaults) and threads through to fit_one; the driver
     # never calls fit_one without it, so pass it here to exercise the provenance (bayes_n_live) path.
-    fit = driver.fit_one(_single_peak_ctx(), _card(), prior=None, M=20, seed=1,
+    fit = scan_delivery.fit_one(_single_peak_ctx(), _card(), prior=None, M=20, seed=1,
                          errors_tier="bayes",
                          bayes_opts={"n_live": 250, "dlogz": 0.5, "max_iter": 30_000})
 
@@ -85,7 +85,7 @@ def test_bayes_tier_populates_posterior_and_keeps_bootstrap(monkeypatch):
 
 @pytest.mark.slow
 def test_full_tier_leaves_all_bayes_fields_default():
-    fit = driver.fit_one(_single_peak_ctx(), _card(), prior=None, M=20, seed=1, errors_tier="full")
+    fit = scan_delivery.fit_one(_single_peak_ctx(), _card(), prior=None, M=20, seed=1, errors_tier="full")
     for key in ("bayes_interval", "bayes_ok", "bayes_ess", "bayes_fail_reason",
                 "log_evidence", "log_evidence_err", "bayes_freq_ratio", "hesse_freq_ratio"):
         assert fit[key] is None, key
@@ -107,7 +107,7 @@ def test_posterior_sampled_once_on_prelim_best_only(monkeypatch):
         return _canned_bayes()
 
     monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", _capture)
-    fit = driver.fit_one(_single_peak_ctx(), _card(), prior=None, M=20, seed=1, errors_tier="bayes")
+    fit = scan_delivery.fit_one(_single_peak_ctx(), _card(), prior=None, M=20, seed=1, errors_tier="bayes")
 
     assert len(calls) == 1                     # bounded cost: posterior on one label only
     assert calls[0] == fit["best_label"]       # and that label is the (prelim==final) best
@@ -117,7 +117,7 @@ def test_posterior_sampled_once_on_prelim_best_only(monkeypatch):
 def test_failed_posterior_falls_back_to_frequentist(monkeypatch):
     _patch_bayes(monkeypatch, _canned_bayes(converged=False, omega0_interval=(float("nan"),) * 3,
                                             fail_reason="ess=12 below 100"))
-    fit = driver.fit_one(_single_peak_ctx(), _card(), prior=None, M=20, seed=1, errors_tier="bayes")
+    fit = scan_delivery.fit_one(_single_peak_ctx(), _card(), prior=None, M=20, seed=1, errors_tier="bayes")
 
     assert fit["bayes_ok"] is False
     assert fit["bayes_fail_reason"] == "ess=12 below 100"

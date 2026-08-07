@@ -8,7 +8,7 @@ changes — the guard the whole feature rides on.
 """
 from types import SimpleNamespace
 
-from isar.session import driver
+from isar.session import driver, master_delivery, scan_delivery
 from isar.session.state import ScanEntry, SessionState
 
 
@@ -51,7 +51,7 @@ def _capturing_stub(monkeypatch, *, best_label=None):
                                                "omega0": 0.95, "best_label": best_label}
         return e
 
-    monkeypatch.setattr(driver, "_fit_master_group", fake)
+    monkeypatch.setattr(master_delivery, "_fit_master_group", fake)
     return seen
 
 
@@ -66,10 +66,10 @@ def test_flag_off_threads_no_hint(monkeypatch):
     s = SessionState()
     ms = _MS([("tavi", 1, "det")])
     col = _Col("merge", [_Grp(("tavi", "42", 200.0), ms)])
-    assert driver._fit_masters(col, [], _card(False), None, None, s, M=10, seed_base=6000) == 1
+    assert master_delivery._fit_masters(col, [], _card(False), None, None, s, M=10, seed_base=6000) == 1
     ms.members.append(("tavi", 2, "det")); ms.n_members = 2      # invalidate → refit
     seen.clear()
-    assert driver._fit_masters(col, [], _card(False), None, None, s, M=10, seed_base=6000) == 1
+    assert master_delivery._fit_masters(col, [], _card(False), None, None, s, M=10, seed_base=6000) == 1
     assert seen == [("master:tavi_42_200.0", None)]             # no hint threaded
 
 
@@ -78,10 +78,10 @@ def test_flag_on_threads_previous_best_label(monkeypatch):
     s = SessionState()
     ms = _MS([("tavi", 1, "det")])
     col = _Col("merge", [_Grp(("tavi", "42", 200.0), ms)])
-    assert driver._fit_masters(col, [], _card(True), None, None, s, M=10, seed_base=6000) == 1
+    assert master_delivery._fit_masters(col, [], _card(True), None, None, s, M=10, seed_base=6000) == 1
     ms.members.append(("tavi", 2, "det")); ms.n_members = 2
     seen.clear()
-    assert driver._fit_masters(col, [], _card(True), None, None, s, M=10, seed_base=6000) == 1
+    assert master_delivery._fit_masters(col, [], _card(True), None, None, s, M=10, seed_base=6000) == 1
     assert seen == [("master:tavi_42_200.0", "elastic+stokes+bg")]   # previous winner threaded
 
 
@@ -89,7 +89,7 @@ def test_flag_on_no_previous_entry_threads_no_hint(monkeypatch):
     # Cold group (no prior ledger entry) with the flag on → nothing to reuse → hint None.
     seen = _capturing_stub(monkeypatch, best_label="stokes+bg")
     s = SessionState()
-    assert driver._fit_masters(_grp1([("tavi", 1, "det")]), [], _card(True), None, None, s,
+    assert master_delivery._fit_masters(_grp1([("tavi", 1, "det")]), [], _card(True), None, None, s,
                                M=10, seed_base=6000) == 1
     assert seen == [("master:tavi_42_200.0", None)]
 
@@ -98,9 +98,9 @@ def test_flag_on_previous_not_fitted_threads_no_hint(monkeypatch):
     # A previous entry that was NOT fitted (held/non_result) is not a usable hint source.
     seen = _capturing_stub(monkeypatch, best_label="stokes+bg")
     s = SessionState()
-    s.put(ScanEntry(scan_id="master:tavi_42_200.0", scan_number=driver._MASTER_SCAN_BASE,
+    s.put(ScanEntry(scan_id="master:tavi_42_200.0", scan_number=master_delivery._MASTER_SCAN_BASE,
                     scan_type="measurement", content_hash="stale", status="non_result"))
-    assert driver._fit_masters(_grp1([("tavi", 1, "det")]), [], _card(True), None, None, s,
+    assert master_delivery._fit_masters(_grp1([("tavi", 1, "det")]), [], _card(True), None, None, s,
                                M=10, seed_base=6000) == 1
     assert seen == [("master:tavi_42_200.0", None)]
 
@@ -124,7 +124,7 @@ def test_provenance_stamped_when_fit_reports_skip(monkeypatch):
 
     import numpy as np
     monkeypatch.setattr(driver.calibrations, "resolve", fake_resolve)
-    monkeypatch.setattr(driver, "_assign_and_triage", lambda *a, **k: None)
+    monkeypatch.setattr(scan_delivery, "_assign_and_triage", lambda *a, **k: None)
     card = SimpleNamespace(policy=SimpleNamespace(
         instrument="S30", energy_status="needs_zero", quasielastic_fwhm=None, dispersion={},
         collation={}))
@@ -139,14 +139,14 @@ def test_provenance_stamped_when_fit_reports_skip(monkeypatch):
     grp = _Grp(("tavi", "42", 200.0), ms)
     g = SimpleNamespace(min_fit_points=6, monitor_frac=0.5)
 
-    monkeypatch.setattr(driver, "fit_one", make_fit(True))
-    e = driver._fit_master_group(ms, grp, object(), "det", card, None, g, "master:x", 9_000_000,
+    monkeypatch.setattr(scan_delivery, "fit_one", make_fit(True))
+    e = master_delivery._fit_master_group(ms, grp, object(), "det", card, None, g, "master:x", 9_000_000,
                                  "ch", M=10, seed=1, structure_hint="stokes+bg")
     assert e.status == "fitted"
     assert e.provenance.get("structure_skipped") is True
 
     # And NOT stamped when the fit fell through to the full enumeration.
-    monkeypatch.setattr(driver, "fit_one", make_fit(False))
-    e2 = driver._fit_master_group(ms, grp, object(), "det", card, None, g, "master:x", 9_000_000,
+    monkeypatch.setattr(scan_delivery, "fit_one", make_fit(False))
+    e2 = master_delivery._fit_master_group(ms, grp, object(), "det", card, None, g, "master:x", 9_000_000,
                                   "ch", M=10, seed=1, structure_hint="stokes+bg")
     assert "structure_skipped" not in e2.provenance

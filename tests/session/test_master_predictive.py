@@ -22,7 +22,7 @@ from isar.parsers import ill_in8
 from isar.predictive import (evaluate_master_predictive, predictive_basis_fingerprint,
                              predictive_score as _predictive_score)
 from isar.session import driver, predictive_artifact
-from isar.session.driver import _persist_master_predictive
+from isar.session.master_delivery import _persist_master_predictive
 from isar.session.predictive_artifact import (bounded_parameter_draws as _bounded_parameter_draws,
                                               build_master_predictive as _predictive_ensemble)
 

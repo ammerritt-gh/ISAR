@@ -32,7 +32,7 @@ from isar.schema.statistics import (
     semantics_fingerprint,
     validate_for_write,
 )
-from isar.session import driver
+from isar.session import driver, scan_delivery
 from isar.session.predictive_artifact import build_target_projection
 
 
@@ -171,7 +171,7 @@ def _bundle(monkeypatch, specs=None):
         weight=item["weight"], survives=True, fit_semantics=semantics[item["label"]])
         for index, item in enumerate(specs)]
     labels = [item["label"] for item in specs]
-    selection = driver._build_selection_semantics(
+    selection = scan_delivery._build_selection_semantics(
         list(results.values()), SimpleNamespace(scores=scores, pooled=object()),
         {"route": "full_two_stage", "labels_before_guideline": labels,
          "guideline_structure_filter": [], "guideline_changed_model_set": False,

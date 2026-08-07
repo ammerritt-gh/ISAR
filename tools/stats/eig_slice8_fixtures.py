@@ -75,7 +75,7 @@ from isar.schema.statistics import (
     semantics_fingerprint,
     validate_for_write,
 )
-from isar.session import driver, predictive_artifact
+from isar.session import driver, predictive_artifact, scan_delivery
 from isar.session.state import ScanEntry, SessionState
 from isar.session.predictive_artifact import build_target_projection
 from isar.drive import loop as drive_loop
@@ -157,7 +157,7 @@ def _selection(label: str, *, constrained: bool = False) -> dict[str, Any]:
         "guideline_structure_filter": [label], "offered_labels": [label],
         "scored_labels": [label],
     }
-    return driver._build_selection_semantics(
+    return scan_delivery._build_selection_semantics(
         [result], SimpleNamespace(scores=[score], pooled=object()), route,
         error_attachment_labels=[label])
 

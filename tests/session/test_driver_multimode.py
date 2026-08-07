@@ -16,7 +16,7 @@ from isar.report import run_report
 from isar.schema import card as card_mod
 from isar.schema.statistics import validate_shadow_model_selection
 from isar.schema.steering import ParamConstraints
-from isar.session import driver
+from isar.session import driver, scan_delivery
 from isar.session import guidelines as G
 from isar.session.state import ScanEntry, SessionState, canonical_hash
 from isar.session.workspace import Workspace
@@ -64,7 +64,7 @@ def test_build_context_applies_fit_range_and_excludes_masks_only():
                           "exclude_regions": [[9.0, 11.0]]}]})
     g = G.resolve(card)
 
-    ctx, n_used, reasons = driver.build_context(
+    ctx, n_used, reasons = scan_delivery.build_context(
         rec, "ana7", card, _CALRES, None, g, scan_number=7, q=[3.0, 0.2, 0.0], T=100.0)
 
     assert ctx is not None
@@ -87,7 +87,7 @@ def test_build_context_min_fit_points_reguard_trips_when_overmasked():
     # A fit_range keeping < min_fit_points (default 6): [9.8, 10.2] -> only x=10.0.
     card = _card_with_fitting({"expectations": [{"scans": [7], "fit_range": [9.8, 10.2]}]})
     g = G.resolve(card)
-    ctx, n_used, reasons = driver.build_context(
+    ctx, n_used, reasons = scan_delivery.build_context(
         rec, "ana7", card, _CALRES, None, g, scan_number=7, q=None, T=None)
     assert ctx is None                                    # undersampled after masking
     assert n_used < g.min_fit_points
@@ -98,7 +98,7 @@ def test_build_context_no_guideline_is_noop_mask():
     x = np.linspace(0.0, 20.0, 41)
     rec = _fake_record(x, np.full_like(x, 100.0))
     g = G.resolve(_card_with_fitting({}))
-    ctx, n_used, reasons = driver.build_context(
+    ctx, n_used, reasons = scan_delivery.build_context(
         rec, "ana7", card=_card_with_fitting({}), calres=_CALRES, prior=None, g=g,
         scan_number=7, q=None, T=None)
     assert n_used == x.size and reasons == []
@@ -117,7 +117,7 @@ def test_exclude_regions_toml_roundtrips_to_build_context():
     g = G.resolve(card)
     x = np.linspace(0.0, 20.0, 41)
     rec = _fake_record(x, np.full_like(x, 100.0))
-    ctx, n_used, reasons = driver.build_context(
+    ctx, n_used, reasons = scan_delivery.build_context(
         rec, "ana7", card, _CALRES, None, g, scan_number=7, q=None, T=None)
     assert n_used == int((~((x >= 9.0) & (x <= 11.0))).sum())
     assert any("exclude_region" in r for r in reasons)
@@ -155,7 +155,7 @@ def test_fit_one_two_peak_returns_two_modes_and_secondary_csv(tmp_path):
     ctx = _two_peak_ctx()
     card = _card_with_fitting({})
     peaks = ({"omega0": 4.0, "sigma": 0.5}, {"omega0": 10.0, "sigma": 0.5})
-    fit = driver.fit_one(ctx, card, prior=None, M=20, seed=1, peaks=peaks)
+    fit = scan_delivery.fit_one(ctx, card, prior=None, M=20, seed=1, peaks=peaks)
 
     assert fit["n_modes"] == 2
     assert fit["modes"] is not None and len(fit["modes"]) == 2
@@ -195,7 +195,7 @@ def test_fit_one_single_peak_leaves_secondary_blank(tmp_path):
     ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
                       energy_status="needs_zero")
-    fit = driver.fit_one(ctx, _card_with_fitting({}), prior=None, M=20, seed=1)
+    fit = scan_delivery.fit_one(ctx, _card_with_fitting({}), prior=None, M=20, seed=1)
     assert fit["n_modes"] == 1
     outcome = driver.FitOutcome(
         detector_id="ana7", verdict=fit["verdict"], disposition="resolved",
@@ -222,20 +222,20 @@ def test_hesse_trust_gate_unit():
     ctx_hi = types.SimpleNamespace(counts=np.full(50, 100.0), mask=np.ones(50, dtype=bool))  # 5000
     good = types.SimpleNamespace(omega0=5.0, omega0_err_hesse=0.02, covariance_ok=True,
                                  gamma_at_bound=False)
-    iv, trusted = driver._hesse_interval_and_trust(good, ctx_hi)
+    iv, trusted = scan_delivery._hesse_interval_and_trust(good, ctx_hi)
     assert iv == (pytest.approx(4.98), pytest.approx(5.02)) and trusted is True
 
     gb = types.SimpleNamespace(omega0=5.0, omega0_err_hesse=0.02, covariance_ok=True,
                                gamma_at_bound=True)                       # Γ at bound → untrusted
-    iv2, t2 = driver._hesse_interval_and_trust(gb, ctx_hi)
+    iv2, t2 = scan_delivery._hesse_interval_and_trust(gb, ctx_hi)
     assert iv2 is not None and t2 is False
 
     ctx_lo = types.SimpleNamespace(counts=np.full(50, 1.0), mask=np.ones(50, dtype=bool))     # 50
-    assert driver._hesse_interval_and_trust(good, ctx_lo)[1] is False      # low counts → untrusted
+    assert scan_delivery._hesse_interval_and_trust(good, ctx_lo)[1] is False      # low counts → untrusted
 
     bad = types.SimpleNamespace(omega0=5.0, omega0_err_hesse=float("nan"), covariance_ok=False,
                                 gamma_at_bound=False)
-    assert driver._hesse_interval_and_trust(bad, ctx_hi) == (None, False)  # non-PD → no interval
+    assert scan_delivery._hesse_interval_and_trust(bad, ctx_hi) == (None, False)  # non-PD → no interval
 
 
 def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
@@ -247,7 +247,7 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
     ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
                       energy_status="needs_zero")
-    fit = driver.fit_one(ctx, _card_with_fitting({}), prior=None, M=20, seed=1, errors_tier="fast")
+    fit = scan_delivery.fit_one(ctx, _card_with_fitting({}), prior=None, M=20, seed=1, errors_tier="fast")
 
     assert fit["hesse_interval"] is not None
     lo, hi = fit["hesse_interval"]
@@ -304,10 +304,10 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
 def test_shadow_selection_is_invariant_to_delivery_constraints(constraints):
     ctx = _single_peak_ctx_for_csv()
     card = _card_with_fitting({})
-    baseline = driver.fit_one(
+    baseline = scan_delivery.fit_one(
         ctx, card, prior=None, M=20, seed=1, errors_tier="fast"
     )
-    constrained = driver.fit_one(
+    constrained = scan_delivery.fit_one(
         replace(ctx, constraints=constraints),
         card,
         prior=None,
@@ -352,7 +352,7 @@ def test_accepted_delivery_hint_records_partial_shadow_execution():
         ).astype(float),
     )
     card = _card_with_fitting({})
-    hinted = driver.fit_one(
+    hinted = scan_delivery.fit_one(
         ctx,
         card,
         prior=None,
@@ -389,8 +389,8 @@ def test_soft_deadline_shadow_policy_skips_extra_candidate_fits(monkeypatch):
     def forbidden(*_args, **_kwargs):
         raise AssertionError("deadline-bounded work launched shadow optimizers")
 
-    monkeypatch.setattr(driver.loop, "fit_shadow_candidates", forbidden)
-    fit = driver.fit_one(
+    monkeypatch.setattr(scan_delivery.loop, "fit_shadow_candidates", forbidden)
+    fit = scan_delivery.fit_one(
         ctx,
         _card_with_fitting({}),
         prior=None,
@@ -410,7 +410,7 @@ def test_soft_deadline_shadow_policy_skips_extra_candidate_fits(monkeypatch):
 def test_shadow_comparator_failure_cannot_change_delivery(monkeypatch):
     ctx = _single_peak_ctx_for_csv()
     card = _card_with_fitting({})
-    baseline = driver.fit_one(
+    baseline = scan_delivery.fit_one(
         ctx,
         card,
         prior=None,
@@ -424,9 +424,9 @@ def test_shadow_comparator_failure_cannot_change_delivery(monkeypatch):
         raise RuntimeError("injected shadow-only failure")
 
     monkeypatch.setattr(
-        driver.shadow_selection, "compare_shadow_selection", injected_failure
+        scan_delivery.shadow_selection, "compare_shadow_selection", injected_failure
     )
-    observed = driver.fit_one(
+    observed = scan_delivery.fit_one(
         ctx, card, prior=None, M=20, seed=1, errors_tier="fast"
     )
 
@@ -451,9 +451,9 @@ def test_shadow_unavailable_projection_has_a_nonraising_minimal_fallback(monkeyp
         raise RuntimeError("injected unavailable-record validator failure")
 
     monkeypatch.setattr(
-        driver.shadow_selection, "unavailable_shadow_selection", injected_failure
+        scan_delivery.shadow_selection, "unavailable_shadow_selection", injected_failure
     )
-    record = driver._safe_shadow_unavailable(
+    record = scan_delivery._safe_shadow_unavailable(
         "shadow_context_construction_failed",
         "context_construction",
         point={"runtime_increment_seconds": 0.01},
@@ -513,7 +513,7 @@ def _outcome_from_fit(fit, scan_number, det="ana7"):
 def test_bayes_tier_populates_csv_bayes_columns(tmp_path, monkeypatch):
     monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior",
                         lambda *a, **k: _canned_bayes_for_csv())
-    fit = driver.fit_one(_single_peak_ctx_for_csv(), _card_with_fitting({}), prior=None, M=20,
+    fit = scan_delivery.fit_one(_single_peak_ctx_for_csv(), _card_with_fitting({}), prior=None, M=20,
                          seed=1, errors_tier="bayes",
                          bayes_opts={"n_live": 250, "dlogz": 0.5, "max_iter": 30_000})
     outcome = _outcome_from_fit(fit, 10)
@@ -535,7 +535,7 @@ def test_bayes_tier_populates_csv_bayes_columns(tmp_path, monkeypatch):
 
 @pytest.mark.slow
 def test_full_tier_leaves_csv_bayes_columns_empty(tmp_path):
-    fit = driver.fit_one(_single_peak_ctx_for_csv(), _card_with_fitting({}), prior=None, M=20,
+    fit = scan_delivery.fit_one(_single_peak_ctx_for_csv(), _card_with_fitting({}), prior=None, M=20,
                          seed=1, errors_tier="full")
     outcome = _outcome_from_fit(fit, 11)
     st = SessionState()
