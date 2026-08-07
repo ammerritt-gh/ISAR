@@ -119,6 +119,8 @@ def test_at_limit_flag_detects_pinned_param():
     assert "BG" in r.at_limit and "A" in r.at_limit
     assert r.at_limit["BG"] is True
     assert r.at_limit["A"] is False
+
+
 def test_psd_covariance_rejects_finite_but_indefinite():
     """A reported covariance that is finite but not positive-definite carries negative
     variances along some direction — the lmfit path used to accept it while the scipy path

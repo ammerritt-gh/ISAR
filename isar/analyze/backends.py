@@ -151,7 +151,9 @@ def _fd_hessian(costv, x, rel=1e-3):
 def _psd_covariance(c):
     """A reported covariance is usable only if it is finite AND positive-definite. Returns
     ``(cov, True)`` or ``(None, False)`` — the same acceptance test :func:`_fd_covariance`
-    applies, so every backend rejects a non-PSD covariance identically."""
+    applies, so the scipy and lmfit paths reject a non-PSD covariance identically.
+    (``iminuit_minimize`` still accepts on finiteness alone; tightening it would move
+    production numbers and needs its own review.)"""
     cov = np.asarray(c, dtype=float)
     if not np.all(np.isfinite(cov)):
         return None, False
