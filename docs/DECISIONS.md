@@ -1325,6 +1325,20 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   before the final run, executed once, and preserved at their commit. Demotion of the closure tests
   and tooling is executed by the next governance slice under this ruling.
 
+- **S11.** (2026-08-07, In force; verification rule under S10; no production behavior change)
+  **Evidence identity is content-aware going forward and EOL-tolerant looking back.**
+  Documentation evidence promoted from now on records content-aware identity
+  (`docs/assets/MANIFEST.json` `schema_version` 3): JSON and TOML are hashed in canonical parsed
+  form, CSV/MD/TXT as LF-normalized text, everything else as raw bytes, so a checkout's line-ending
+  policy cannot invalidate an artifact whose content is unchanged. Frozen historical evidence
+  manifests keep the raw-byte hashes they recorded — including the Slice-8 shadow-gate bundles,
+  whose run manifests mix CRLF- and LF-hashed rows and therefore reproduce on no uniform checkout.
+  Those are verified by matching any EOL variant of the retained bytes (raw, LF-normalized,
+  CRLF-forced) against the recorded digest; content changes still fail. Verification moves, the
+  frozen record does not: this retires the pending "add the `-text` attribute and re-freeze the
+  manifests" operation of the PR #9 review (R9), which S10 would otherwise have required an
+  owner-named milestone to perform.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:

@@ -1248,6 +1248,21 @@ def validate_case_results(value: Mapping[str, Any], gate: Mapping[str, Any],
     return value
 
 
+def _eol_variant_hashes(data: bytes) -> set[str]:
+    """Digests of the raw, LF-normalized and CRLF-forced forms of ``data``.
+
+    Frozen historical run manifests recorded whichever line ending the file happened to
+    carry on the machine that froze it, so retained-file identity is checked EOL-tolerantly
+    (S11); the manifests themselves are never re-frozen.
+    """
+    import hashlib
+    lf = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return {
+        hashlib.sha256(variant).hexdigest()
+        for variant in (data, lf, lf.replace(b"\n", b"\r\n"))
+    }
+
+
 def _repair_invalid(stage: str, reason_code: str, message: str,
                     validated: Sequence[str]) -> BundleInvalid:
     log.error("Slice 8 repair bundle invalid at %s (%s): %s", stage, reason_code, message)
@@ -1280,8 +1295,7 @@ def _repair_read_json(bundle: Path, relative: str, retained: Mapping[str, str], 
     except OSError as error:
         raise _repair_invalid(
             stage, "retained_file_missing", relative, validated) from error
-    import hashlib
-    if hashlib.sha256(payload).hexdigest() != expected:
+    if expected not in _eol_variant_hashes(payload):
         raise _repair_invalid(
             stage, "retained_file_tampered", relative, validated)
     try:
@@ -1364,11 +1378,10 @@ def _validate_repair_run_manifest(value: Mapping[str, Any], gate: Mapping[str, A
             path = _repair_safe_path(
                 bundle, relative, stage="run_manifest", validated=validated)
             try:
-                import hashlib
-                actual = hashlib.sha256(path.read_bytes()).hexdigest()
+                variants = _eol_variant_hashes(path.read_bytes())
             except OSError as error:
                 raise GateEvidenceError(f"retained file {relative} is missing") from error
-            if actual != row["sha256"]:
+            if row["sha256"] not in variants:
                 raise GateEvidenceError(f"retained file {relative} is tampered")
             retained[relative] = row["sha256"]
         for required in ("gate-manifest.json", "case-manifest.json",
