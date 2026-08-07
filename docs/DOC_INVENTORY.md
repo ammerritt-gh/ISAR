@@ -109,7 +109,7 @@ and verified by `git grep` at deletion time rather than by bookkeeping.
 
 ## `docs/` — active plans
 
-All six are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
+All five are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
 status block — `tests/docs/` fails the build if either is missing. Their shared statistical
 motivation and current sequence are recorded in the 2026-07-19 statistics-contract audit; its
 accepted findings were promoted once into `STATS_PRIMER.md` §7, so the plans do not carry drifting
@@ -123,7 +123,6 @@ copies.
 | `docs/EIG_STEERING_DESIGN.md` | Active plan | predictive `/2`, arbitrary-grid evaluation, candidate generation, executed-grid identity, target projection, Slice 2 `o36.2.1` eligibility/QoI adaptation, Slice 3 `o36.3` homogeneous predictive-scenario design measure, Slice 4 `o36.4` pure full-vector Poisson scoring, Slice 5.1 `o36.5.1` controlled offline `off`→`shadow` comparison, and Slice 6 `o36.6` scored shadow inventories implemented; exact realized-request rescoring, authoritative selection, and EIG-4 SVP execution Planned | Documents same-action scan-window EIG, authenticated QoI evidence, bounded hand-authored distinction-policy provenance, objective `/2` omission compatibility, diagnostic-only score sets, exact-source live shadow integration, and the invariant that Slice 6 always executes legacy |
 | `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md` | Active plan | STAT-0/1/1.5 and STAT-2a/2b.1 complete; S8 recorded; STAT-2c through STAT-6 remain active, with the restricted O36 EIG-4 sequencing exception | Temporary producer/consumer audit; findings remain authoritative for the broader statistics program and STAT-6 closeout |
 | `docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md` | Active plan | STAT-2a and STAT-2b.1 complete; S8 retains AIC; STAT-2c and STAT-2d pending | Temporary execution plan; STAT-2d folds accepted behavior into canonical statistics documents, then deletes and tombstones it |
-| `docs/plans/POST_EIG4_ARCHITECTURE_CLEANUP.md` | Active plan | P2.0–P2.6a landed; P2.6b–P2.8 not started | Temporary execution plan; P2.8 folds accepted boundaries into `DESIGN.md`/`AGENTS.md`, then deletes and tombstones it |
 
 ## `docs/` — historical evidence
 
@@ -213,6 +212,7 @@ file cannot be named inside that same commit, so the last-containing commit is t
 | `docs/DATA_SCHEME_RESEARCH.md` | `bba902c` | Superseded by `SCHEMA_LANDSCAPE.md`; `AGENTS.md` routing narrowed |
 | `docs/WISHLIST.md` | `9a16a75` | Content merged into `TODO.md` before deletion |
 | `docs/campaigns/PHASE_5_NOTES.md` | `24e1ab5` | "Forward notes only. Not designed." Described nothing that exists |
+| `docs/plans/POST_EIG4_ARCHITECTURE_CLEANUP.md` | `ec885f2` | Post-EIG-4 architectural cleanup (Pass 2), finished 2026-08-07. P2.0–P2.8 landed and every Pass-2 exit criterion holds; the accepted ownership boundaries are folded into `AGENTS.md`'s module map. The deferred-findings ledger — including the items still open (iminuit PSD acceptance, `canonical_hkl` coercion, `calibrate/tas` ownership, the dual-namespace patch seams) — is in the plan's final revision at that commit |
 | `docs/EIG4_COMPLETION_PLAN.md` | `cda26b1` | EIG-4 completion plan, finished 2026-08-05. Rules 6–8 restored, the five STAT-2b mismatches closed through the candidate/active cycle, and the tuning slice landed as O43; the durable outcome and its two named limitations are in `EIG_STEERING_DESIGN.md` |
 
 **Two references are deliberately left dangling.** `DECISIONS.md` mentions two deleted handoffs by

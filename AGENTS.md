@@ -120,13 +120,25 @@ area.
 
 ## Module map (ownership boundaries that matter)
 
-`schema` (ScanRecord + card) · `parsers` (plugin registry: S30 SPEC, IN8 numor, TAVI, BL43LXU; card
+`schema` (ScanRecord + card; `schema/action_identity.py` is the one implementation of scientific
+action identity — `drive/acquisition/inventory.py` re-exports those names for its callers and
+`tests/schema/test_action_identity.py` pins them as re-exports so no second implementation appears)
+· `parsers` (plugin registry: S30 SPEC, IN8 numor, TAVI, BL43LXU; card
 templates in `parsers/cards/*.toml` — in8, s30, s30_raw, tavi) · `reduce` (QC mask-not-delete,
-combine-before-divide, collate) · `calibrate` (elastic fits, versioned energy-zero series) · `analyze`
-(structure enumeration, fitting, errors, model selection, verdict, confidence) · `session` (workspace/
-prior/branch-model assembly) · `cli` · `drive` (autonomous loop, action/Q EIG, unscored scan design,
-TAVI I/O) ·
-`report` · `synth` (Phase-1 synthetic core) · `workspace_api` / `geometry` / `plotspec` (Qt-free) ·
+combine-before-divide, collate) · `calibrate` (elastic fits, versioned energy-zero series;
+`calibrate/tas.py` importing `isar.synth.resolution` is the one sanctioned production→synth
+dependency) · `analyze` (fitting, errors, model selection, verdict, confidence; the DHO physics —
+IC grids, admissibility gates, structure enumeration, Γ bounds — is owned by `analyze/phonon.py`,
+and `analyze/structures.py` holds only the generic `Hypothesis` recipe) · `session` (`driver.py`
+orders the stages; `outcome.py` owns the FitOutcome persistence DTO and `results.csv`,
+`scan_delivery.py` the per-scan fits, `master_delivery.py` the pooled masters and certification,
+`evidence_update.py` the cross-q evidence and branch identity) · `cli` · `drive` (`loop.py`
+orchestrates the campaign; TAVI wire details live in `drive/instrument/request_realization.py` and
+EIG runtime adaptation in `drive/acquisition/eig_runtime.py`; `loop.<CONST>` re-imports are
+deliberate, production reads them) ·
+`report` · `synth` (Phase-1 synthetic core) / `synth_format` (synthetic-run tooling) ·
+`workspace_api` / `geometry` / `plotspec` (Qt-free; `workspace_api/config_gates.py` is the G16
+facade) ·
 `isar_gui` (reads science through `workspace_api`; controls campaigns by subprocess + control
 files). The Stage II ↔ III boundary is a **frozen file contract**
 (`report/results.csv`, `<workspace>/report/report.json`, `card.state.json`) — the driver never imports fit internals.
