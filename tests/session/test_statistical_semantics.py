@@ -29,7 +29,7 @@ from isar.schema.statistics import (
     validate_for_write,
 )
 from isar.schema.steering import ParamConstraints
-from isar.session import branch_tracking, certification, driver, master_delivery, predictive_artifact, scan_delivery
+from isar.session import branch_tracking, certification, driver, evidence_update, master_delivery, predictive_artifact, scan_delivery
 from isar.session.state import canonical_hash, content_hash
 from isar.workspace_api.views import FitView
 
@@ -578,7 +578,7 @@ def test_interval_authority_is_revoked_when_tracking_withholds_delivery():
             interval_reliable=True,
         ),
     }
-    driver._clear_tracked_selection(outcome, {}, 2)
+    evidence_update._clear_tracked_selection(outcome, {}, 2)
     assert outcome["interval"] is None
     assert outcome["interval_semantics"]["selected_interval_quantity"] is None
     assert outcome["interval_semantics"]["quantities"]["interval"][
@@ -860,8 +860,8 @@ def test_metadata_is_excluded_from_scientific_selection_and_identity_firewalls()
         "entropy_stop": 0.2,
         "maximum_bridge_steps": 1,
     }
-    sig_before = driver._tracked_authority_signature([observation], **signature_args)
-    sig_after = driver._tracked_authority_signature(
+    sig_before = evidence_update._tracked_authority_signature([observation], **signature_args)
+    sig_after = evidence_update._tracked_authority_signature(
         [{**observation, "probability_semantics": {"schema": "ignored"},
           "shadow_model_selection": {"selection_status": "complete"}}],
         **signature_args,

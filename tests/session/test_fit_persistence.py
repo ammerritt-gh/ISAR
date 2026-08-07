@@ -30,7 +30,7 @@ from isar.schema.statistics import (
     semantics_fingerprint,
 )
 from isar.analyze.shadow_selection import unavailable_shadow_selection
-from isar.session import driver, scan_delivery
+from isar.session import driver, evidence_update, scan_delivery
 from isar.session.state import ScanEntry, SessionState
 from isar.session.workspace import Workspace
 from isar.analyze.lineshapes import convolute_voigt_dho
@@ -190,7 +190,7 @@ def test_to_dict_is_json_clean_for_new_fields():
     assert restored["candidates"] == _cands()
 
 
-@pytest.mark.parametrize("writer", [driver._select_mode, driver._clear_tracked_selection])
+@pytest.mark.parametrize("writer", [evidence_update._select_mode, evidence_update._clear_tracked_selection])
 def test_local_identity_survives_the_writer_to_results_csv_path(tmp_path, writer):
     """Declaring a column is not populating it: the OP10 repair's second bug class.
 
@@ -205,7 +205,7 @@ def test_local_identity_survives_the_writer_to_results_csv_path(tmp_path, writer
     assignment.update(target_probability=0.7373147601858216,
                       identity_entropy=0.5614679859005164,
                       local_identity_clear=False)
-    if writer is driver._select_mode:
+    if writer is evidence_update._select_mode:
         writer(written, {"candidate_ref": "acoustic:0", "energy_meV": 1.35,
                          "probabilities": {"acoustic": 0.9}}, 0, assignment, 1, "acoustic")
     else:
@@ -350,9 +350,9 @@ def _written_outcome_dict(writer):
     outcome = _outcome_with(None, None).to_dict()
     candidate = {"candidate_ref": "acoustic:0", "energy_meV": 1.35,
                  "probabilities": {"acoustic": 0.9}}
-    if writer is driver._select_mode:
+    if writer is evidence_update._select_mode:
         writer(outcome, candidate, 0, _tracked_assignment(), 1, "acoustic")
-    elif writer is driver._withhold_tracked_delivery:
+    elif writer is evidence_update._withhold_tracked_delivery:
         writer(outcome, {**candidate, "evidence_source": "auxiliary_probe"},
                _tracked_assignment(), 1, "acoustic")
     else:
@@ -360,7 +360,7 @@ def _written_outcome_dict(writer):
     return outcome
 
 
-@pytest.mark.parametrize("writer", [driver._select_mode, driver._clear_tracked_selection])
+@pytest.mark.parametrize("writer", [evidence_update._select_mode, evidence_update._clear_tracked_selection])
 def test_carry_path_rehydrates_tracked_selection_outcome(writer):
     """The exact production sequence: writer → ledger → carry-branch rehydration."""
     entry = ScanEntry(scan_id="E:7:ana7", scan_number=7, scan_type="measurement",
@@ -370,8 +370,8 @@ def test_carry_path_rehydrates_tracked_selection_outcome(writer):
     assert oc.is_reduced_q_origin is True
 
 
-@pytest.mark.parametrize("writer", [driver._select_mode, driver._clear_tracked_selection,
-                                   driver._withhold_tracked_delivery])
+@pytest.mark.parametrize("writer", [evidence_update._select_mode, evidence_update._clear_tracked_selection,
+                                   evidence_update._withhold_tracked_delivery])
 def test_every_tracked_selection_key_is_a_declared_field(writer):
     """Writer/schema invariant: persisting a key the dataclass cannot accept is the bug class."""
     declared = {f.name for f in dataclasses.fields(driver.FitOutcome)}
@@ -379,13 +379,13 @@ def test_every_tracked_selection_key_is_a_declared_field(writer):
     assert not undeclared, f"{writer.__name__} persists undeclared field(s): {sorted(undeclared)}"
 
 
-@pytest.mark.parametrize("writer", [driver._select_mode, driver._clear_tracked_selection])
+@pytest.mark.parametrize("writer", [evidence_update._select_mode, evidence_update._clear_tracked_selection])
 def test_is_reduced_q_origin_normalizes_to_false_when_absent(writer):
     """Dataclasses do not enforce annotations, so an absent key must not persist None under a
     bool-typed field — that would put a lie in both the ledger and results.csv."""
     outcome = _outcome_with(None, None).to_dict()
     assignment = {"track_state": "ambiguous", "assignment_entropy": 0.4}  # no AP3 endpoint keys
-    if writer is driver._select_mode:
+    if writer is evidence_update._select_mode:
         writer(outcome, {"candidate_ref": "acoustic:0", "energy_meV": 1.35,
                          "probabilities": {}}, 0, assignment, 1, "acoustic")
     else:

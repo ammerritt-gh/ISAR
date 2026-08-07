@@ -4,7 +4,7 @@
 > **Provenance:** hand-written
 > **Verified against production anchor:** `b9ae4907a9aa3dc0afc356bc6235b957dc2d9d03` (2026-08-06)
 > **Owner:** @ammerritt-gh
-> **Status:** P2.0–P2.6b landed; P2.6c–P2.8 not started.
+> **Status:** P2.0–P2.6c landed; P2.7–P2.8 not started.
 > **Exit criteria:** the Pass-2 exit criteria at the end of this document are met and verified;
 > accepted ownership boundaries are folded into `DESIGN.md` and `AGENTS.md`; this execution plan
 > is then deleted and tombstoned in `docs/DOC_INVENTORY.md`.
@@ -87,7 +87,7 @@ against the production anchor above.
 | Analysis refresh mechanics (subprocess/worker invocation, forced masters, certification manifests, results.csv / card.state.json / timing reads, completion decision) | `isar/drive/loop.py` over `isar/drive/isar_io/{runner,readers}.py` | one high-level `refresh_analysis(...)` operation on the existing `isar_io` seam (P2.5) |
 | `FitOutcome` persistence DTO | `isar/session/driver.py:84` | `isar/session/outcome.py` with to/from-dict and CSV projection helpers (P2.6a) |
 | Scan delivery / master delivery | `isar/session/driver.py` (`run_batch` :2045) | `isar/session/scan_delivery.py`, `isar/session/master_delivery.py`; driver keeps stage ordering and deadlines (P2.6b) |
-| Evidence updates / persistence (prior admission, branch beliefs, connected tracker, target projection, predictive references; ledger, results.csv, atomic state, report inputs) | `isar/session/driver.py` | `isar/session/evidence_update.py`, `isar/session/persistence.py` (P2.6c) |
+| Evidence updates / persistence (prior admission, branch beliefs, connected tracker, target projection, predictive references; ledger, results.csv, atomic state, report inputs) | `isar/session/driver.py` | `isar/session/evidence_update.py` (P2.6c); `persistence.py` deliberately not created — see the P2.6c deviation note |
 | DHO/phonon assumptions (parameter bounds, Ω_d IC grid, ω₀/Γ conversion and propagation, mode extraction and ordering, primary selection, Γ-bound diagnostics, admissibility helpers) | spread through `isar/analyze/{ic,structures,loop,select}.py` | `isar/analyze/phonon.py`; generic component/manifest/backend machinery stays generic (P2.7) |
 
 ## Slices
@@ -121,9 +121,10 @@ against the production anchor above.
 - **P2.6b — Scan/master delivery.** Extract `scan_delivery.py` (context, candidates, selection,
   intervals, verdict, scan outcome) and `master_delivery.py` (pool, master fit, consistency,
   target delivery, certification payload, predictive inputs, master outcome).
-- **P2.6c — Evidence/persistence.** Extract `evidence_update.py` and `persistence.py`;
-  `run_batch()` becomes orchestration. The pre-merge-repaired admission predicate remains the
-  one source for independent fit evidence.
+- **P2.6c — Evidence/persistence.** Extract `evidence_update.py`; `run_batch()` becomes
+  orchestration. The pre-merge-repaired admission predicate (`_master_prior_admissible`) remains
+  the one source for independent fit evidence. `persistence.py` was not created — the
+  persistence inventory had already been consumed by earlier slices (see the deviation note).
 - **P2.7 — Phonon quarantine.** `analyze/phonon.py` owns the DHO-specific machinery; cheap
   renames (`structure_ic` → `phonon_structure_ic`, `enumerate_structures` →
   `enumerate_phonon_structures`) with temporary aliases. A spectral-model registry is built only
@@ -165,7 +166,8 @@ gate, never renewed.
 | P2.4 | `704ddb0` | EIG runtime adaptation (shadow scoring, realized comparison, authority preparation, pre-submit authentication, submission-metadata assembly) out of `loop.py` into `drive/acquisition/eig_runtime.py`; loop passes `finalizer=_finalize_proposal` explicitly (no cycle). Scope notes: no frozen input record (existing signatures suffice); exact-source session-log joins (`_exact_pooled_master_sources`/`_read_master_rows`) stay in loop pending the P2.5 `isar_io` seam — partial delivery of the ownership-map row |
 | P2.5 | `8a1e4ea` | `refresh_analysis(...)` on `isar_io/runner.py` owns runner-signature inspection, kwarg assembly, and the completion decision; the three `runner.run` sites become explicit seam calls; P2.4-deferred readers land in `readers.py` (`read_run_timings`, `exact_pooled_master_sources`, `read_master_rows` with injected row-interpretation functions). Documented exception: one `runner_accepts` survives at the predictive-promotion degrade site (loop.py:1147) — it changes pre-run logging/targeting, not kwargs; replacing it with a declared `supports_targeted_masters` runner attribute is deferred |
 | P2.6a | `6114cc7` | `FitOutcome` + `to_dict` + tolerant reader (`_coerce_fit_outcome`) + `_CSV_COLUMNS` + `_write_results_csv` and projection helpers moved to `session/outcome.py` (stdlib+schema imports only, purity-probed); driver imports the DTO; ledger-drift warning logger renamed to `isar.session.outcome` |
-| P2.6b | (this commit) | Scan delivery (context, candidates, selection/interval semantics, shadow block, `fit_one`, the scan task pool, triage/rescue/escalation) → `session/scan_delivery.py`; pooled-master fitting, promotion bookkeeping and the certification primitives → `session/master_delivery.py`; driver (4,594 → ~1,740 lines) keeps `run_batch`, `_apply_and_finish`, `_run_master_certification` and the evidence/tracking block. Verbatim moves: the only body edits are the cross-module call rewrites to module-attribute form (`scan_delivery._run_tasks`, `master_delivery._fit_masters`, `master_delivery._fit_master_group_task`, and master→scan calls), so each seam keeps exactly one patch point. Import direction `driver → master_delivery → scan_delivery`; no re-exports of moved callables (tests repoint), `FitOutcome`/`PREDICTIVE_CONTRACT` stay importable from the driver. Differential: IN8 two-scan run byte-identical `results.csv`, `session.json` differing only in wall-clock timings and file mtimes |
+| P2.6b | `b0b3996` | Scan delivery (context, candidates, selection/interval semantics, shadow block, `fit_one`, the scan task pool, triage/rescue/escalation) → `session/scan_delivery.py`; pooled-master fitting, promotion bookkeeping and the certification primitives → `session/master_delivery.py`; driver (4,594 → ~1,740 lines) keeps `run_batch`, `_apply_and_finish`, `_run_master_certification` and the evidence/tracking block. Verbatim moves: the only body edits are the cross-module call rewrites to module-attribute form (`scan_delivery._run_tasks`, `master_delivery._fit_masters`, `master_delivery._fit_master_group_task`, and master→scan calls), so each seam keeps exactly one patch point. Import direction `driver → master_delivery → scan_delivery`; no re-exports of moved callables (tests repoint), `FitOutcome`/`PREDICTIVE_CONTRACT` stay importable from the driver. Differential: IN8 two-scan run byte-identical `results.csv`, `session.json` differing only in wall-clock timings and file mtimes |
+| P2.6c | (this commit) | Evidence-update cluster (cross-q persistence `_store_branch_models`/`_store_branch_beliefs`/`_update_hypothesis_mismatch`; branch identity — candidate materialisation, mode selection/withholding, the connected tracker and both prior rebuilds incl. `_master_prior_admissible`; `_resolve_target_projections`) → `session/evidence_update.py` (24 top-level objects incl. the module logger, source-identical to `b0b3996`). Driver 1,712 → 898 lines: `_apply_and_finish` and `_run_master_certification` keep their explicit evidence tails and call in qualified (`evidence_update._name`, 14 sites); dropped imports `json`, `math`, `schema.steering`, `BA`, `branch_model`, `branch_tracking`, `predictive_artifact`, `_persist_content_addressed` and four now-unused `scan_delivery` re-exports. Import direction `driver → evidence_update → {branch_assignment, branch_model, branch_tracking, session_prior, predictive_artifact, master_delivery, scan_delivery, state, schema.steering}` (acyclic). No re-exports of moved callables — 11 test/tool files repoint; `FitOutcome`/`PREDICTIVE_CONTRACT` and `unresolved_current_promotions` stay importable from the driver |
 
 Deferred findings (things noticed but out of scope for the slice that noticed them):
 
@@ -208,6 +210,36 @@ Deferred findings (things noticed but out of scope for the slice that noticed th
   reachable from `isar/reduce/adjudicate_eyeball.py` — correct ownership (synth_format emits
   synthetic data), but the "no production import of `isar.synth`" criterion holds only with
   `synth_format` counted as synthetic tooling.
+
+- **P2.6c did not create `persistence.py` (scope reduction).** The plan row's persistence
+  inventory had already been consumed: the `results.csv` writer moved to `session/outcome.py` in
+  P2.6a, `workspace.save` was already a seam, and the ledger `session.put` loops plus the
+  `session.last_run` dicts are the orchestration the driver is supposed to keep. The only
+  remaining candidate was the certification staged atomic-publish block (15 lines, one caller,
+  coupled to the `checkpoint_store` publication lifecycle); a module holding one 15-line function
+  is a shell, contra reduce-don't-append, so it stays inline in `_run_master_certification`.
+- P2.6c closes the P2.6b deferred finding on `_run_master_certification`: its evidence tail now
+  calls `evidence_update.*` and the import cycle that blocked the move is gone. The orchestrator
+  itself deliberately stays in the driver, and its evidence tail is NOT unified with
+  `_apply_and_finish`'s — the two 8-step sequences differ materially (certification restores the
+  physical ledger rows mid-sequence, orders `summary.context_lines` differently, writes a
+  different `last_run`, and publishes through a staged workspace plus three `os.replace` calls
+  rather than a timer-staged save). A shared `update_evidence(...)` would need hook machinery and
+  would put the byte-identity contract at risk for no reduction in real logic. Its
+  `ProcessPoolExecutor` / `as_completed` patch points therefore remain driver-targeted.
+- `tools/stats/stat2b1-heldout-evaluator.frozen` is a frozen S10 evidence snapshot and was not
+  touched. It has referred to pre-P2.6b names since that slice and now also predates the
+  evidence_update split; it is not collected by `CAMPAIGN_SOURCE_PATHS` and must never be
+  refreshed to match current source (S10: evidence is frozen once, never renewed).
+- P2.6c added `isar/session/evidence_update.py` to `CAMPAIGN_SOURCE_PATHS` (fit-relevant code
+  moved there). The entry is belt-and-braces: `CAMPAIGN_SOURCE_ROOTS` already rglobs
+  `isar/session`, and the neighbouring delivery-module rows are redundant for the same reason.
+- Pre-existing (moved verbatim in P2.6c, confirmed by review panel, not fixed in a move slice):
+  `evidence_update.py` `_rebuild_tracked_prior`'s final metadata pass stamps `track_revision`
+  onto *every* surviving `#tracked:` dispersion-prior point, including points whose base scan_id
+  is not among the current authorities — a tracked point from a different source would be
+  relabeled with the current revision without being rebuilt. Latent (single-campaign priors
+  never hit it). Candidate fix: restrict the stamp to points added in the current call.
 
 ## Pass-2 exit criteria
 

@@ -13,7 +13,7 @@ from isar.analyze import loop
 from isar.analyze.context import ScanContext
 from isar.analyze.structures import enumerate_structures
 from isar.schema.steering import ParamConstraints
-from isar.session import driver, scan_delivery
+from isar.session import branch_model, driver, scan_delivery
 from isar.analyze.lineshapes import convolute_voigt_dho
 
 
@@ -86,7 +86,7 @@ def test_hard_fixed_fit_matches_unconstrained_when_value_is_truth():
 def _escalation_env(monkeypatch):
     """A branch that would be a valid hard-fix target (in-range, Γ>0) and a fit_one spy — so any
     escalation attempt is observable as a fit_one call."""
-    monkeypatch.setattr(driver.branch_model, "branch_for",
+    monkeypatch.setattr(branch_model, "branch_for",
                         lambda *a, **k: types.SimpleNamespace(in_anchor_range=True, gamma=0.6))
     calls = []
 

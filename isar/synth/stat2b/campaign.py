@@ -109,6 +109,7 @@ CAMPAIGN_SOURCE_PATHS = (
     "isar/schema/statistics.py",
     "isar/schema/steering.py",
     "isar/session/driver.py",
+    "isar/session/evidence_update.py",
     "isar/session/scan_delivery.py",
     "isar/session/master_delivery.py",
     "isar/session/branch_model.py",

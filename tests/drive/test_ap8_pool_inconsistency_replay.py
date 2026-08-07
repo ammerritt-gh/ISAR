@@ -35,13 +35,13 @@ pytestmark = pytest.mark.skipif(
 
 def _replay_track():
     from isar.schema.card import Card
-    from isar.session import driver
+    from isar.session import evidence_update
     from isar.session.state import SessionState
 
     session = SessionState.load(str(_WORKSPACE / "session.json"))
     card = Card.load(str(_WORKSPACE / "card.policy.toml"), str(_WORKSPACE / "card.state.json"))
     t_round = (getattr(card.policy, "collation", None) or {}).get("t_round") or 5.0
-    track = driver._apply_tracked_branch(session, card, t_round=float(t_round))
+    track = evidence_update._apply_tracked_branch(session, card, t_round=float(t_round))
     return track, card
 
 

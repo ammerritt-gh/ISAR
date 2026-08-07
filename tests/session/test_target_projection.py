@@ -17,7 +17,7 @@ import pytest
 from isar.analyze.context import ScanContext
 from isar.predictive import target_projection_set_fingerprint
 from isar.schema.statistics import semantics_fingerprint
-from isar.session import driver, master_delivery, predictive_artifact
+from isar.session import driver, evidence_update, master_delivery, predictive_artifact
 from isar.session.predictive_artifact import build_master_predictive, build_target_projection
 
 _TWO_MODE_MANIFEST = {
@@ -526,7 +526,7 @@ def test_the_driver_records_an_attribute_error_instead_of_aborting_the_run(tmp_p
     monkeypatch.setattr(predictive_artifact, "build_target_projection",
                         _raiser(AttributeError("'ValueError' object has no attribute 'reason_code'")))
 
-    assert driver._resolve_target_projections(session, tmp_path / "data") == 0
+    assert evidence_update._resolve_target_projections(session, tmp_path / "data") == 0
     unavailable = entry.provenance["target_projection_unavailable"]
     assert unavailable["error_type"] == "AttributeError"
     assert unavailable["reason_code"] == predictive_artifact.PROJECTION_UNAVAILABLE_CONSTRUCTION_FAILED

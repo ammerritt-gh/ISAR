@@ -6,7 +6,7 @@ import pytest
 
 from isar.analyze.context import ScanContext
 from isar.schema import card as card_mod
-from isar.session import driver, master_delivery, scan_delivery
+from isar.session import driver, evidence_update, master_delivery, scan_delivery
 from isar.session.promotions import PromotionKey, PromotionStore
 from isar.session.state import ScanEntry, SessionState
 from isar.analyze.lineshapes import convolute_voigt_dho
@@ -170,10 +170,10 @@ def test_prior_admission_requires_full_or_trusted_hesse():
         return ScanEntry("master:q", 1, "measurement", "fitted",
                          provenance={"errors_tier_effective": tier})
 
-    assert driver._master_prior_admissible(entry("full"), {"hesse_trusted": False})
-    assert driver._master_prior_admissible(entry("bayes"), {"hesse_trusted": False})
-    assert driver._master_prior_admissible(entry("fast"), {"hesse_trusted": True})
-    assert not driver._master_prior_admissible(entry("fast"), {"hesse_trusted": False})
-    assert not driver._master_prior_admissible(entry("cheap"), {"hesse_trusted": True})
-    assert driver._master_prior_admissible(
+    assert evidence_update._master_prior_admissible(entry("full"), {"hesse_trusted": False})
+    assert evidence_update._master_prior_admissible(entry("bayes"), {"hesse_trusted": False})
+    assert evidence_update._master_prior_admissible(entry("fast"), {"hesse_trusted": True})
+    assert not evidence_update._master_prior_admissible(entry("fast"), {"hesse_trusted": False})
+    assert not evidence_update._master_prior_admissible(entry("cheap"), {"hesse_trusted": True})
+    assert evidence_update._master_prior_admissible(
         ScanEntry("legacy", 1, "measurement", "fitted"), {"hesse_trusted": False})

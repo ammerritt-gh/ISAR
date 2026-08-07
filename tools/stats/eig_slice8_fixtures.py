@@ -75,7 +75,7 @@ from isar.schema.statistics import (
     semantics_fingerprint,
     validate_for_write,
 )
-from isar.session import driver, predictive_artifact, scan_delivery
+from isar.session import driver, evidence_update, predictive_artifact, scan_delivery
 from isar.session.state import ScanEntry, SessionState
 from isar.session.predictive_artifact import build_target_projection
 from isar.drive import loop as drive_loop
@@ -1397,7 +1397,7 @@ def _init_tavi_workspace(root: Path) -> Path:
             },
         })
     state = CardState(dispersion_prior=prior)
-    driver._store_branch_beliefs(state, t_round=5.0, period=2.0)
+    evidence_update._store_branch_beliefs(state, t_round=5.0, period=2.0)
     _write_json(root / "card.state.json", state.to_dict())
     SessionState().save(root / "session.json")
     return root

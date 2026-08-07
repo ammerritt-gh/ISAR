@@ -3,8 +3,8 @@ read the prediction durably from card.state.json (crash-safe, no session-only ob
 from isar.schema.card import CardState
 from isar.schema.hypotheses import resolve_hypothesis
 from isar.session import branch_model
-from isar.session.driver import (_store_branch_beliefs, _store_branch_models,
-                                 _update_hypothesis_mismatch)
+from isar.session.evidence_update import (_store_branch_beliefs, _store_branch_models,
+                                          _update_hypothesis_mismatch)
 
 
 def _pt(sample, T, w, g, a, *, fwhm=0.5, fit_kind="unconstrained"):

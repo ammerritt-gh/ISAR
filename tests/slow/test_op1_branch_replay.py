@@ -7,7 +7,7 @@ import pytest
 
 from isar.schema.card import Card
 from isar.session.branch_tracking import track_path
-from isar.session.driver import _apply_tracked_branch
+from isar.session.evidence_update import _apply_tracked_branch
 from isar.session.state import SessionState
 
 

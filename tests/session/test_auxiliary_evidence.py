@@ -20,7 +20,7 @@ non-certification-eligible fit the *sole* identity evidence at that point — ex
 """
 from __future__ import annotations
 
-from isar.session.driver import _tracked_authorities, _tracked_authority_signature
+from isar.session.evidence_update import _tracked_authorities, _tracked_authority_signature
 from isar.session.state import ScanEntry, SessionState
 
 PATH = [[2.8, 0.0, 0.0], [2.9, 0.0, 0.0], [3.0, 0.0, 0.0]]
@@ -195,7 +195,7 @@ def _auxiliary_probe_outcome(q, energy):
 def _tracked_session_with_probe():
     """The reviewer's reproduction: the auxiliary 7 meV candidate wins the target selection at the
     middle q, where the canonical master only ever saw 4 meV."""
-    from isar.session.driver import _apply_tracked_branch
+    from isar.session.evidence_update import _apply_tracked_branch
 
     session = SessionState()
     for index, q in enumerate(PATH):
@@ -272,7 +272,7 @@ def test_a_withheld_delivery_is_not_certifiable_and_seeds_no_prior():
 def test_a_later_canonical_selection_clears_withholding_and_reuses_model_delivery():
     from isar.drive.acquisition.calibration import Calibration
     from isar.drive.loop import _master_obs_from_row
-    from isar.session.driver import _select_mode
+    from isar.session.evidence_update import _select_mode
 
     session, _card, track = _tracked_session_with_probe()
     master = session.scans["master:q1"].detectors["det"]
@@ -302,7 +302,7 @@ def test_a_later_canonical_selection_clears_withholding_and_reuses_model_deliver
 
 
 def test_new_ambiguity_withdraws_the_old_auxiliary_identity_but_keeps_delivery_gated():
-    from isar.session.driver import _clear_tracked_selection
+    from isar.session.evidence_update import _clear_tracked_selection
 
     session, _card, track = _tracked_session_with_probe()
     master = session.scans["master:q1"].detectors["det"]
