@@ -30,7 +30,7 @@ from isar.schema.statistics import (
     semantics_fingerprint,
 )
 from isar.analyze.shadow_selection import unavailable_shadow_selection
-from isar.session import driver, evidence_update, scan_delivery
+from isar.session import driver, evidence_update, outcome as outcome_mod, scan_delivery
 from isar.session.state import ScanEntry, SessionState
 from isar.session.workspace import Workspace
 from isar.analyze.lineshapes import convolute_voigt_dho
@@ -153,7 +153,7 @@ def test_stored_amplitudes_reproduce_reconstruct_curve():
 
 # --------------------------------------------------------------------------- csv + ledger round-trips
 def _outcome_with(amplitudes, candidates):
-    return driver.FitOutcome(
+    return outcome_mod.FitOutcome(
         detector_id="ana7", verdict="resolved", disposition="resolved", confidence=0.9,
         omega0=5.0, omega0_err=0.05, interval=(4.9, 5.0, 5.1), modality="fold", gamma=0.4,
         gamma_provisional=False, best_label="stokes+bg", cost_per_dof=1.1,
@@ -374,7 +374,7 @@ def test_carry_path_rehydrates_tracked_selection_outcome(writer):
                                    evidence_update._withhold_tracked_delivery])
 def test_every_tracked_selection_key_is_a_declared_field(writer):
     """Writer/schema invariant: persisting a key the dataclass cannot accept is the bug class."""
-    declared = {f.name for f in dataclasses.fields(driver.FitOutcome)}
+    declared = {f.name for f in dataclasses.fields(outcome_mod.FitOutcome)}
     undeclared = set(_written_outcome_dict(writer)) - declared
     assert not undeclared, f"{writer.__name__} persists undeclared field(s): {sorted(undeclared)}"
 
@@ -428,5 +428,5 @@ def test_session_json_roundtrips_new_fields(tmp_path):
     assert det["amplitudes"] == amps
     assert det["candidates"] == _cands()
     # A reconstructed FitOutcome carries them as first-class fields.
-    oc = driver.FitOutcome(**det)
+    oc = outcome_mod.FitOutcome(**det)
     assert oc.amplitudes == amps and oc.candidates == _cands()

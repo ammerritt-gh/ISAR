@@ -24,14 +24,11 @@ import numpy as np
 
 from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
-from isar.predictive import PREDICTIVE_CONTRACT
 from isar.predictive import json_fingerprint as _json_fingerprint
 from isar.schema.card import Card
 from isar.session import calibrations, guidelines as guide_mod, ingest, router, session_prior
-# ``FitOutcome`` and ``PREDICTIVE_CONTRACT`` are re-exported unused: the driver stays the public
-# name consumers reach for even though P2.6a/P2.6b moved their producers out.
 from isar.session.outcome import (
-    FitOutcome, _coerce_fit_outcome, _outcome_from_entry, _write_results_csv,
+    _coerce_fit_outcome, _outcome_from_entry, _write_results_csv,
 )
 from isar.session import unit_data
 from isar.session.state import ScanEntry, SessionState, canonical_hash, content_hash

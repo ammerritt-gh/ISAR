@@ -11,7 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from isar.session import certification, driver, master_delivery, scan_delivery
+from isar.predictive import PREDICTIVE_CONTRACT
+from isar.session import (certification, driver, master_delivery,
+                          outcome as outcome_mod, scan_delivery)
 from isar.session.state import ScanEntry, SessionState
 from isar.session.workspace import Workspace
 from isar.synth_format import run_builder
@@ -50,7 +52,7 @@ def _stub(monkeypatch):
                               "members": master_delivery._member_labels(ms.members)}
         # Stamped by _stamp_master_analysis on every real path; the carry gate requires it, so a
         # predictive-contract bump regenerates the artifact instead of carrying a stale one.
-        e.provenance = {"predictive_contract": driver.PREDICTIVE_CONTRACT}
+        e.provenance = {"predictive_contract": PREDICTIVE_CONTRACT}
         return e
 
     monkeypatch.setattr(master_delivery, "_fit_master_group", fake)
@@ -644,7 +646,7 @@ def test_carry_backfills_members_without_refit(monkeypatch):
     # Simulate an old ledger: strip members from the detector dict + a provenance lacking it.
     del s.scans[mid].detectors["det"]["members"]
     s.scans[mid].provenance = {"pooled": True, "n_members": 3,
-                               "predictive_contract": driver.PREDICTIVE_CONTRACT}
+                               "predictive_contract": PREDICTIVE_CONTRACT}
 
     # Same member set → carry path; the stub is not called again but members are restored.
     assert master_delivery._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000) == 0
@@ -657,7 +659,7 @@ def test_carry_backfills_members_without_refit(monkeypatch):
 
 
 def _master_entry(members, n_members=None):
-    oc = driver.FitOutcome(
+    oc = outcome_mod.FitOutcome(
         detector_id="merged", verdict="clear_phonon", disposition="resolved", confidence=0.9,
         omega0=0.95, omega0_err=0.02, interval=(0.9, 1.0), modality="single", gamma=0.3,
         gamma_provisional=False, best_label="elastic+stokes+bg", cost_per_dof=1.0,
@@ -671,7 +673,7 @@ def _master_entry(members, n_members=None):
 
 
 def _unpooled_entry():
-    oc = driver.FitOutcome(
+    oc = outcome_mod.FitOutcome(
         detector_id="det", verdict="clear_phonon", disposition="resolved", confidence=0.8,
         omega0=1.2, omega0_err=0.03, interval=(1.1, 1.3), modality="single", gamma=0.2,
         gamma_provisional=False, best_label="elastic+stokes+bg", cost_per_dof=1.1,

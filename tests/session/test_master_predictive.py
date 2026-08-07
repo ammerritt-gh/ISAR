@@ -204,8 +204,7 @@ def test_the_predictive_contract_has_exactly_one_definition():
     from isar.predictive import PREDICTIVE_ARTIFACT_SCHEMA
     from isar.session import certification
 
-    assert driver.PREDICTIVE_CONTRACT is certification.PREDICTIVE_CONTRACT
-    assert driver.PREDICTIVE_CONTRACT is predictive.PREDICTIVE_CONTRACT
+    assert certification.PREDICTIVE_CONTRACT is predictive.PREDICTIVE_CONTRACT
     assert PREDICTIVE_ARTIFACT_SCHEMA == "isar.master_predictive/2"
     # The SCHEMA LABEL and the CONTRACT REVISION are different things: the payload shape changed
     # under an unchanged /2 label (ADR-019), and only the revision may drive the cache bump.

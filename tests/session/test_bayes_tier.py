@@ -11,7 +11,7 @@ import pytest
 from isar.analyze.context import ScanContext
 from isar.analyze.errors.bayes import BayesResult
 from isar.schema import card as card_mod
-from isar.session import driver, scan_delivery
+from isar.session import driver, outcome as outcome_mod, scan_delivery
 from isar.analyze.lineshapes import convolute_voigt_dho
 
 
@@ -137,12 +137,12 @@ def test_fitoutcome_back_compat_and_to_dict_roundtrip():
         "modality": "fold", "gamma": 0.4, "gamma_provisional": False, "best_label": "stokes+bg",
         "cost_per_dof": 1.1, "q": [3.0, 0.2, 0.0], "T": 50.0, "sample": "S", "prior_used": None,
         "calib": {}, "reasons": [], "n_modes": 1}
-    oc = driver.FitOutcome(**old)
+    oc = outcome_mod.FitOutcome(**old)
     assert oc.bayes_interval is None and oc.bayes_ok is None
     assert oc.bayes_prior_driven is False and oc.bayes_fork_suspected is False
 
     # A new outcome list-ifies bayes_interval in to_dict and round-trips through FitOutcome(**d).
-    oc2 = driver.FitOutcome(
+    oc2 = outcome_mod.FitOutcome(
         detector_id="ana7", verdict="resolved", disposition="resolved", confidence=0.8,
         omega0=5.0, omega0_err=0.05, interval=(4.9, 5.0, 5.1), modality="fold", gamma=0.4,
         gamma_provisional=False, best_label="stokes+bg", cost_per_dof=1.1, q=[3.0, 0.2, 0.0],
@@ -150,7 +150,7 @@ def test_fitoutcome_back_compat_and_to_dict_roundtrip():
         bayes_ok=True, bayes_ess=500.0)
     d = oc2.to_dict()
     assert d["bayes_interval"] == [4.9, 5.0, 5.1]      # list-ified like `interval`
-    oc3 = driver.FitOutcome(**d)
+    oc3 = outcome_mod.FitOutcome(**d)
     assert oc3.bayes_interval == [4.9, 5.0, 5.1] and oc3.bayes_ok is True
 
 

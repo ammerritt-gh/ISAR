@@ -16,7 +16,7 @@ from isar.report import run_report
 from isar.schema import card as card_mod
 from isar.schema.statistics import validate_shadow_model_selection
 from isar.schema.steering import ParamConstraints
-from isar.session import driver, scan_delivery
+from isar.session import driver, outcome as outcome_mod, scan_delivery
 from isar.session import guidelines as G
 from isar.session.state import ScanEntry, SessionState, canonical_hash
 from isar.session.workspace import Workspace
@@ -163,7 +163,7 @@ def test_fit_one_two_peak_returns_two_modes_and_secondary_csv(tmp_path):
     assert abs(oms[0] - 4.0) < 1.0 and abs(oms[1] - 10.0) < 1.0
 
     # Build an outcome + ledger and write results.csv: secondary columns populate.
-    outcome = driver.FitOutcome(
+    outcome = outcome_mod.FitOutcome(
         detector_id="ana7", verdict=fit["verdict"], disposition="resolved",
         confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
         interval=fit["interval"], modality=fit["modality"], gamma=fit["gamma"],
@@ -197,7 +197,7 @@ def test_fit_one_single_peak_leaves_secondary_blank(tmp_path):
                       energy_status="needs_zero")
     fit = scan_delivery.fit_one(ctx, _card_with_fitting({}), prior=None, M=20, seed=1)
     assert fit["n_modes"] == 1
-    outcome = driver.FitOutcome(
+    outcome = outcome_mod.FitOutcome(
         detector_id="ana7", verdict=fit["verdict"], disposition="resolved",
         confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
         interval=fit["interval"], modality=fit["modality"], gamma=fit["gamma"],
@@ -267,7 +267,7 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
         item["label"]: item["weight"] for item in shadow["legacy_model_weights"]
     })
 
-    outcome = driver.FitOutcome(
+    outcome = outcome_mod.FitOutcome(
         detector_id="ana7", verdict=fit["verdict"], disposition="resolved",
         confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
         interval=fit["interval"], modality=fit["modality"], gamma=fit["gamma"],
@@ -492,7 +492,7 @@ def _single_peak_ctx_for_csv():
 
 
 def _outcome_from_fit(fit, scan_number, det="ana7"):
-    return driver.FitOutcome(
+    return outcome_mod.FitOutcome(
         detector_id=det, verdict=fit["verdict"], disposition="resolved",
         confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
         interval=fit["interval"], modality=fit["modality"], gamma=fit["gamma"],
