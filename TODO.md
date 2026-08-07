@@ -18,7 +18,7 @@ ISAR = analysis authority). Forward workstreams live in their own plans:
 [SPEEDUP](docs/SPEEDUP_DESIGN.md), [STEERING](docs/STEERING_DESIGN.md),
 [BACKGROUND](docs/BACKGROUND_DESIGN.md), [EIG](docs/EIG_STEERING_DESIGN.md).
 
-Last updated: 2026-08-02.
+Last updated: 2026-08-07.
 
 ---
 
@@ -42,6 +42,23 @@ Things that are wrong now, as opposed to things not yet built.
       question, not a prior question.
       **Acceptance:** a test with a deliberately wrong prior, plus a data-driven cross-check
       before the anti-Stokes side is dropped.
+
+- [ ] **DEFECT-6 — Convolution-grid centring bias in `convolute_voigt_dho` (fix deferred).**
+      The internal `arange(-span, span, dx)` grid contains exact 0 only when the span is a dx
+      multiple, so `fftconvolve(mode='same')` carries a sub-dx (≤ dx/2 = 0.025 meV), fit-window-
+      dependent centring offset on every convolved model, biasing fitted ω₀ by up to ~0.03 meV.
+      The symmetric odd-grid fix was implemented during the PR #10 review response and reverted:
+      the corrected (honestly flat) landscape makes degenerate k≥7 candidates fail MIGRAD often
+      enough that shadow selection reports `unavailable` — which `isar/eig/eligibility.py` treats
+      as a science blocker — and it invalidates the pending Slice-8 replacement candidate and the
+      predictive/golden fixtures. Requires its own slice: fit robustness for degenerate candidates
+      (or a shadow-availability contract that tolerates a non-converged superfluous candidate),
+      fixture/golden regeneration, and owner-sequenced Slice-8 candidate renewal around O42.
+      `tests/analyze/test_lineshapes.py` pins the defect as a strict xfail that flips to XPASS
+      when the grid is fixed.
+      **Acceptance:** the xfail in `tests/analyze/test_lineshapes.py` passes un-marked, with no
+      shadow-availability regression on the SHADOWREG synthetic probe and renewed Slice-8
+      candidate evidence.
 
 - [ ] **DEFECT-5 — `branch_continuation` mislabeling loses the recenter/widen retry.**
       Fit-derived features get `float("inf")` significance in `features_from`, so a garbage fit on

@@ -1,6 +1,6 @@
 """
-Fitting_Functions.py  —  Shared IXS lineshape library for FeSeS analysis
-=========================================================================
+lineshapes.py  —  Shared IXS lineshape library for FeSeS analysis
+==================================================================
 Canonical version used by both FeSeS_1 and FeSeS_2 analysis pipelines.
 
 Provides:
@@ -132,6 +132,14 @@ def convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, lorentz_fwh
     pad_range = 20
 
     x_span = max(abs(x_target.min()), abs(x_target.max())) + pad_range
+    # KNOWN DEFECT, deliberately retained (PR #10 review, deferred): this grid contains exact 0
+    # only when x_span is a dx multiple, so fftconvolve(mode='same') carries a sub-dx (<= dx/2),
+    # window-dependent centring offset. The symmetric odd-grid fix (arange(-n, n+1)*dx) is correct
+    # but removes the accidental tie-breaking this offset provides to degenerate multi-mode
+    # candidates: with it, k>=7 shadow candidates fail MIGRAD often enough that shadow selection
+    # reports `unavailable` (an EIG-eligibility blocker), and the frozen Slice-8 replacement
+    # candidate no longer reproduces. Fixing it needs its own owner-sequenced slice (fit-robustness
+    # + candidate renewal). tests/analyze/test_lineshapes.py pins the defect as strict xfails.
     x_uniform = np.arange(-x_span, x_span, dx)
 
     peak_lower = peak.lower()
@@ -144,7 +152,9 @@ def convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, lorentz_fwh
     if 'stokes' in peak_parts:
         signal += Stokes_DHO(x_uniform, amplitude=phonon_amplitude,
                              damping=damping, center=phonon_energy)
-    if 'astokes' in peak_parts:
+    if 'astokes' in peak_parts and T > 0:
+        # Detailed balance is only defined for T > 0: at T = 0 the anti-Stokes side is exactly
+        # empty (no phonons to annihilate), and a negative T would invert the Bose weight.
         astokes_amp = phonon_amplitude / np.exp(phonon_energy / (KB * T))
         signal += antiStokes_DHO(x_uniform, amplitude=astokes_amp,
                                  damping=damping, center=phonon_energy)
