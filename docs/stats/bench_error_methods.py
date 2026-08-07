@@ -102,7 +102,7 @@ def _refit_best(ctx):
     Mirrors make_figures.py's `_refit_bootstrap` selection but stops at the fit — the timed error
     methods each consume this (fit_result, hypothesis) pair. Returns (None, None) if nothing
     converged."""
-    from isar.analyze.structures import enumerate_structures
+    from isar.analyze.phonon import enumerate_phonon_structures as enumerate_structures
     from isar.analyze import loop
     hyps = enumerate_structures(ctx)
     pairs = [(loop.fit_hypothesis(h, ctx), h) for h in hyps]

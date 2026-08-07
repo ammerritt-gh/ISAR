@@ -98,7 +98,6 @@ CAMPAIGN_SOURCE_PATHS = (
     "isar/analyze/errors/bayes.py",
     "isar/analyze/errors/bootstrap.py",
     "isar/analyze/errors/profile.py",
-    "isar/analyze/ic.py",
     "isar/analyze/loop.py",
     "isar/analyze/model_manifest.py",
     "isar/analyze/phonon.py",

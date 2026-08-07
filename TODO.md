@@ -35,7 +35,7 @@ Things that are wrong now, as opposed to things not yet built.
       peak-significance floor gates the rescue or the risk is explicitly accepted in writing.
 
 - [ ] **DEFECT-3 — `stokes_only` gate is prior-only.**
-      `structures.antistokes_mode()` decides to drop the anti-Stokes side purely from
+      `phonon.antistokes_mode()` decides to drop the anti-Stokes side purely from
       `ctx.prior_omega` (populated only when branch σ ≤ 0.6 meV, so a *confidently wrong*
       posterior triggers it). No data-driven cross-check once dropped, and no test with a wrong
       prior. Interacts with Hard Rule 2 — anti-Stokes admissibility is a detailed-balance

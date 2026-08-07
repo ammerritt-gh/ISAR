@@ -45,7 +45,7 @@ if str(REPO) not in sys.path:
 from isar.analyze import errors, loop, select, verdict      # noqa: E402
 from isar.analyze.context import ScanContext               # noqa: E402
 from isar.analyze.prior import PhononPrior                 # noqa: E402
-from isar.analyze.structures import enumerate_structures   # noqa: E402
+from isar.analyze.phonon import enumerate_phonon_structures as enumerate_structures   # noqa: E402
 from isar.calibrate import elastic, energy_zero            # noqa: E402
 from isar.parsers import spec_s30                          # noqa: E402
 from isar.report import captions, findings                 # noqa: E402

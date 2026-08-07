@@ -29,23 +29,3 @@ class Hypothesis:
         pre-built instances (components are stateless) are reused as-is."""
         from isar.analyze.components import CompositeModel
         return CompositeModel([c() if isinstance(c, type) else c for c in self.components])
-
-
-# Temporary P2.7 aliases — removed in P2.8. Lazy (module ``__getattr__``) rather than an
-# eager bottom import because :mod:`isar.analyze.phonon` imports this module: an eager
-# import would deadlock the graph when phonon is imported first.
-_P27_ALIASES = {
-    "elastic_admissible": "elastic_admissible",
-    "quasielastic_admissible": "quasielastic_admissible",
-    "antistokes_mode": "antistokes_mode",
-    "enumerate_structures": "enumerate_phonon_structures",
-    "enumerate_multimode": "enumerate_phonon_multimode",
-}
-
-
-def __getattr__(name: str):
-    target = _P27_ALIASES.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from isar.analyze import phonon
-    return getattr(phonon, target)

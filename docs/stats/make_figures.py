@@ -345,7 +345,7 @@ def _synth_record(level, i, M, gamma_true, seed, boot_seed) -> dict:
     ``gamma_true=None`` uses the config default (0.5); the skewed cell passes a small Γ."""
     from isar.synth import config as cfg_mod, generate as gen
     from isar.analyze.context import ScanContext
-    from isar.analyze.structures import enumerate_structures
+    from isar.analyze.phonon import enumerate_phonon_structures as enumerate_structures
     from isar.analyze import loop
     from isar.analyze.errors import bootstrap as bs, profile as prof
     cfg = cfg_mod.default_run_config()
@@ -850,7 +850,7 @@ def _workspace_ctx(ws: Path, card, scan_number: int, row: dict):
 
 def _refit_bootstrap(ctx, *, M=200, seed=SEED):
     """Unconstrained standalone re-fit → best converged structure → bootstrap ω₀ samples."""
-    from isar.analyze.structures import enumerate_structures
+    from isar.analyze.phonon import enumerate_phonon_structures as enumerate_structures
     from isar.analyze import loop, errors
     hyps = enumerate_structures(ctx)
     pairs = [(loop.fit_hypothesis(h, ctx), h) for h in hyps]
@@ -973,8 +973,8 @@ def figure_akaike(ws: Path) -> Path:
     pairs = loop._enumerate_and_fit(ctx, peaks=[(0.0,), (0.0,)])
     by_label = {r.label: (r, h) for r, h in pairs}
     if "stokes2+bg" not in by_label:            # gate/IC fallback: fit the 2-mode set explicitly
-        from isar.analyze.structures import enumerate_multimode
-        from isar.analyze.ic import greedy_multimode_ic
+        from isar.analyze.phonon import enumerate_phonon_multimode as enumerate_multimode
+        from isar.analyze.phonon import greedy_multimode_ic
         best_one = loop._best_converged([r for r, _ in pairs])
         for h in enumerate_multimode(ctx):
             x0 = greedy_multimode_ic(h.build(), ctx, best_one, peaks=[(0.0,), (0.0,)])

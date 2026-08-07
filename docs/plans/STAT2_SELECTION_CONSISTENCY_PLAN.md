@@ -115,8 +115,8 @@ STAT-2a leaves every one of those authority edges on the legacy result.
 
 The complete shadow route must record, rather than erase, all four current set transitions:
 
-- Physical admissibility: `enumerate_structures()` and `enumerate_multimode()` in
-  `isar/analyze/structures.py` gate elastic, quasielastic, anti-Stokes, Stokes-only, and
+- Physical admissibility: `enumerate_phonon_structures()` and `enumerate_phonon_multimode()` in
+  `isar/analyze/phonon.py` gate elastic, quasielastic, anti-Stokes, Stokes-only, and
   multi-mode hypotheses from the scientific context.
 - Residual/expected-mode escalation: `loop._offer_multimode()` and the `peaks` guideline decide
   whether two-mode hypotheses are offered. The shadow trigger is evaluated from the complete
