@@ -148,6 +148,22 @@ def _fd_hessian(costv, x, rel=1e-3):
     return 0.5 * (H + H.T)
 
 
+def _psd_covariance(c):
+    """A reported covariance is usable only if it is finite AND positive-definite. Returns
+    ``(cov, True)`` or ``(None, False)`` — the same acceptance test :func:`_fd_covariance`
+    applies, so every backend rejects a non-PSD covariance identically."""
+    cov = np.asarray(c, dtype=float)
+    if not np.all(np.isfinite(cov)):
+        return None, False
+    try:
+        w = np.linalg.eigvalsh(cov)
+    except np.linalg.LinAlgError:
+        return None, False
+    if not np.all(np.isfinite(w)) or np.any(w <= 0):
+        return None, False
+    return cov, True
+
+
 def _fd_covariance(costv, x):
     H = _fd_hessian(costv, x)
     try:
@@ -202,8 +218,7 @@ def lmfit_minimize(costv, x0, bounds, names, *, minos=False) -> BackendResult:
     cov_ok = False
     covar = getattr(res, "covar", None)
     if covar is not None:
-        cov = np.asarray(covar, dtype=float)
-        cov_ok = bool(np.all(np.isfinite(cov)))
+        cov, cov_ok = _psd_covariance(covar)
     # conf_interval needs a residual/χ²-like objective; not valid for a scalar −2lnL → skip.
     return BackendResult(x, bool(res.success), str(getattr(res, "message", "")),
                          int(res.nfev), cov, cov_ok, _at_limit_map(x, bounds, names), None)

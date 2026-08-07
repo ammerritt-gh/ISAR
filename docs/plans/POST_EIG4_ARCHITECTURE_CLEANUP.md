@@ -179,11 +179,13 @@ Deferred findings (things noticed but out of scope for the slice that noticed th
 - `isar/synth/stat2b/campaign.py` `CAMPAIGN_SOURCE_PATHS` rows for the three moved files were
   deleted (the `isar/analyze` glob already covers their new homes); ordinary development under
   S10, no re-freeze.
-- Pre-existing (moved verbatim in P2.1, flagged by review, not fixed in a move slice):
-  `isar/analyze/phonon.py` `omega0_value_error` divides by zero when `omega_d = gamma = 0` with
-  a covariance supplied; `isar/analyze/backends.py` `lmfit_minimize` accepts finite-but-non-PSD
-  covariance where the scipy path requires positive eigenvalues. Candidates for P2.7 when the
-  phonon module is worked anyway.
+- **Resolved in P2.7** (both P2.1-deferred, one commit each, after the move commits so the
+  move stays behaviour-preserving): `omega0_value_error` returned a ZeroDivisionError instead of
+  a value when `omega_d = gamma = 0` with a covariance supplied — it now returns a NaN error,
+  the existing contract for an unpropagatable covariance; `backends.lmfit_minimize` accepted a
+  finite-but-non-PSD covariance where the scipy path requires positive eigenvalues — both paths
+  now share `_psd_covariance` and reject identically with `cov=None, cov_ok=False`. Degenerate
+  inputs only; the IN8 reference run is unmoved (iminuit is the production backend).
 - Pre-existing, carried through P2.2 unchanged: `canonical_hkl` / the energy fields coerce
   numeric strings via bare `float()`, so `["2","0","0"]` and `"1.25"` are accepted at the
   persisted-artifact trust boundary. Tightening would move digests — only ever do it behind a
@@ -241,6 +243,16 @@ Deferred findings (things noticed but out of scope for the slice that noticed th
   is not among the current authorities — a tracked point from a different source would be
   relabeled with the current revision without being rebuilt. Latent (single-campaign priors
   never hit it). Candidate fix: restrict the stamp to points added in the current call.
+- P2.7 left seven non-normative scripts on the compatibility aliases, deliberately:
+  `docs/phase3_step1_check.py`, `docs/phase3_gold_check.py`, `docs/phase3_gold_in8_check.py`,
+  `docs/stats/make_figures.py` (three sites) and `docs/stats/bench_error_methods.py` still import
+  `enumerate_structures` / `enumerate_multimode` / `greedy_multimode_ic` from
+  `isar.analyze.{structures,ic}`. They are the P2.8 work list: deleting `ic.py` and the
+  `structures.__getattr__` aliases requires repointing them first.
+  `tools/stats/stat2b1-heldout-evaluator.frozen` is NOT one of them — the held-out verifier hashes
+  its bytes and never executes it (S10 frozen evidence).
+- P2.7 added `isar/analyze/phonon.py` to `CAMPAIGN_SOURCE_PATHS` (fit-relevant code moved there),
+  and left the `isar/analyze/{ic,structures}.py` rows in place while those files still exist.
 
 ## Pass-2 exit criteria
 
