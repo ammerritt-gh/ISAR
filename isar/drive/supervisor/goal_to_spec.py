@@ -337,8 +337,9 @@ def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec"
 
     Accepts either the goal schema (``{"path": {"h_start", …}, "step_h", "tolerance_meV", …}``) or a
     full ``ObjectiveSpec.to_dict()`` (``path`` is a list of triples). This is the shared dict path that
-    both :func:`spec_from_json` (file → dict) and the ``isar drive --resume-latest`` path (frozen
-    campaign_start objective → dict) route through, so a resume never re-compiles a goal via the LLM.
+    both a targeted step of :func:`program_from_json` (file → dict) and the ``isar drive
+    --resume-latest`` path (frozen campaign_start objective → dict) route through, so a resume never
+    re-compiles a goal via the LLM.
 
     ``where`` is a short label (a file path, or ``"resume"``) used in error messages only.
     """
