@@ -101,11 +101,11 @@ class CampaignDock(QDockWidget):
 
         # ---- Setup -----------------------------------------------------------
         self._src_goal = QRadioButton("Goal", body)
-        self._src_spec = QRadioButton("Spec file", body)
+        self._src_program = QRadioButton("Program file", body)
         self._src_goal.setChecked(True)
         src_row = QHBoxLayout()
         src_row.addWidget(self._src_goal)
-        src_row.addWidget(self._src_spec)
+        src_row.addWidget(self._src_program)
         src_row.addStretch(1)
         outer.addLayout(src_row)
 
@@ -114,14 +114,14 @@ class CampaignDock(QDockWidget):
         self._goal.setFixedHeight(58)
         outer.addWidget(self._goal)
 
-        spec_row = QHBoxLayout()
-        self._spec_path = QLineEdit(body)
-        self._spec_path.setPlaceholderText("objective spec .json")
-        self._spec_browse = QPushButton("Browse…", body)
-        self._spec_browse.clicked.connect(self._browse_spec)
-        spec_row.addWidget(self._spec_path, 1)
-        spec_row.addWidget(self._spec_browse)
-        outer.addLayout(spec_row)
+        program_row = QHBoxLayout()
+        self._program_path = QLineEdit(body)
+        self._program_path.setPlaceholderText("campaign program .json")
+        self._program_browse = QPushButton("Browse…", body)
+        self._program_browse.clicked.connect(self._browse_program)
+        program_row.addWidget(self._program_path, 1)
+        program_row.addWidget(self._program_browse)
+        outer.addLayout(program_row)
 
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
@@ -274,7 +274,7 @@ class CampaignDock(QDockWidget):
             operations.drive_compiled.connect(self._on_objective_compiled)
             operations.drive_compile_failed.connect(self._on_objective_compile_failed)
         self._goal.textChanged.connect(self._on_form_edited)
-        self._spec_path.textChanged.connect(self._on_form_edited)
+        self._program_path.textChanged.connect(self._on_form_edited)
         self._budget.textChanged.connect(self._on_form_edited)
         self._analysis_limit.textChanged.connect(self._on_form_edited)
         self._src_goal.toggled.connect(self._on_form_edited)
@@ -308,10 +308,10 @@ class CampaignDock(QDockWidget):
             self._loading_form = False
 
     def _apply_form(self, form: dict) -> None:
-        self._src_spec.setChecked(form.get("source") == "spec")
-        self._src_goal.setChecked(form.get("source") != "spec")
+        self._src_program.setChecked(form.get("source") == "program")
+        self._src_goal.setChecked(form.get("source") != "program")
         self._goal.setPlainText(str(form.get("goal", "")))
-        self._spec_path.setText(str(form.get("spec_path", "")))
+        self._program_path.setText(str(form.get("program_path", "")))
         tier = str(form.get("tier", "deterministic"))
         if self._tier.findText(tier) >= 0:
             self._tier.setCurrentText(tier)
@@ -329,9 +329,9 @@ class CampaignDock(QDockWidget):
         """The current form as the plain dict the GuiStore persists — the window uses this to
         carry the operator's typed setup across a workspace rebind (virtual-campaign start)."""
         return {
-            "source": "spec" if self._src_spec.isChecked() else "goal",
+            "source": "program" if self._src_program.isChecked() else "goal",
             "goal": self._goal.toPlainText(),
-            "spec_path": self._spec_path.text(),
+            "program_path": self._program_path.text(),
             "tier": self._tier.currentText(),
             "scan_window_eig_mode": self._eig_mode.currentData(),
             "budget": self._budget.text(),
@@ -359,22 +359,22 @@ class CampaignDock(QDockWidget):
         self._save_timer.start()
         self._sync_status()
 
-    def _browse_spec(self) -> None:
-        path, _f = QFileDialog.getOpenFileName(self, "Objective spec", "", "JSON (*.json)")
+    def _browse_program(self) -> None:
+        path, _f = QFileDialog.getOpenFileName(self, "Campaign program", "", "JSON (*.json)")
         if path:
-            self._spec_path.setText(path)
-            self._src_spec.setChecked(True)
+            self._program_path.setText(path)
+            self._src_program.setChecked(True)
 
     # ---- Start / Resume decision (AD-10) --------------------------------------
     def _form_fingerprint(self) -> str | None:
         try:
-            if self._src_spec.isChecked():
-                p = self._spec_path.text().strip()
-                return source_fingerprint(spec_path=p) if p else None
+            if self._src_program.isChecked():
+                p = self._program_path.text().strip()
+                return source_fingerprint(program_path=p) if p else None
             text = self._goal.toPlainText().strip()
             return source_fingerprint(goal=text) if text else None
         except (OSError, ValueError):
-            return None   # unreadable spec file etc. — treated as "no fingerprint yet"
+            return None   # unreadable program file etc. — treated as "no fingerprint yet"
 
     def _resume_decision(self) -> tuple[str, bool]:
         """(button label, resume_latest?) from the fingerprint comparison."""
@@ -411,8 +411,8 @@ class CampaignDock(QDockWidget):
         if resume:
             self._launch_resume()
             return
-        if self._src_spec.isChecked():
-            opts = DriveOptions(spec_path=self._spec_path.text().strip(),
+        if self._src_program.isChecked():
+            opts = DriveOptions(program_path=self._program_path.text().strip(),
                                 tier=self._tier.currentText(), budget=budget,
                                 analysis_limit=analysis_limit, seed=self._seed.value(),
                                 scan_window_eig_mode=str(self._eig_mode.currentData()))
@@ -430,18 +430,18 @@ class CampaignDock(QDockWidget):
         self._status_line.setText("compiling objective for confirmation…")
         self._sync_status()
 
-    def _on_objective_compiled(self, envelope: dict, path: str) -> None:
+    def _on_objective_compiled(self, program: dict, path: str) -> None:
         # A workspace rebind replaces this dock with deleteLater(); a compile signal already queued
         # for the retired receiver can arrive before Qt finishes disconnecting it. Never let that
         # stale Python wrapper open a second modal or launch a duplicate campaign.
         if not shiboken6.isValid(self):
             return
-        if not self._confirm_objective(envelope):
+        if not self._confirm_objective(program):
             self._status_line.setText("campaign start cancelled — no measurements submitted")
             return
         # Branch, tier, energy window, tolerance, and budget are exactly what the operator just
         # confirmed. Only invocation controls that are outside the objective remain mutable here.
-        opts = DriveOptions(envelope_path=path, seed=self._seed.value())
+        opts = DriveOptions(compiled_program_path=path, seed=self._seed.value())
         if self._workspace_state() == "none":
             self.virtual_start_requested.emit(opts, dict(self._llm_env()))
             return
@@ -473,9 +473,10 @@ class CampaignDock(QDockWidget):
             except (RuntimeError, TypeError) as exc:
                 log.debug("campaign dock signal already disconnected during dispose: %s", exc)
 
-    def _confirm_objective(self, envelope: dict) -> bool:
+    def _confirm_objective(self, program: dict) -> bool:
         """Copyable, modal measurement preview. Tests must stub this method."""
-        objective = envelope.get("objective") or {}
+        steps = program.get("steps") or [{}]
+        objective = steps[0].get("payload") or {}
         path = objective.get("path") or []
         budget = objective.get("budget") or {}
         lines = [
@@ -488,8 +489,8 @@ class CampaignDock(QDockWidget):
             f"Analysis limit: {objective.get('analysis_limit_seconds')} seconds",
             f"Scan-window EIG: {(objective.get('steering') or {}).get('scan_window_eig_mode', 'off')}",
             "",
-            "Frozen envelope:",
-            json.dumps(envelope, indent=2),
+            "Frozen campaign program:",
+            json.dumps(program, indent=2),
         ]
         dialog = QDialog(self)
         dialog.setWindowTitle("Confirm campaign objective")
@@ -593,7 +594,7 @@ class CampaignDock(QDockWidget):
         elif self._tavi_status != "ok":
             self._start_btn.setToolTip("TAVI backend is not reachable — launch it first")
         elif self._form_fingerprint() is None:
-            self._start_btn.setToolTip("Enter a goal or pick a spec file")
+            self._start_btn.setToolTip("Enter a goal or pick a program file")
         else:
             self._start_btn.setToolTip("")
 
@@ -603,7 +604,7 @@ class CampaignDock(QDockWidget):
         self._resume_btn.setVisible(state.has_campaign and label != "Resume")
         self._resume_btn.setEnabled((not busy) and self._tavi_status == "ok")
         self._resume_btn.setToolTip(
-            "Continues the frozen objective from the campaign log (no LLM). Goal/spec and tier "
+            "Continues the frozen objective from the campaign log (no LLM). Goal/program and tier "
             "are ignored; budget and seed still apply to this run."
             + ("" if self._tavi_status == "ok" else "\nTAVI backend is not reachable — launch it first."))
 

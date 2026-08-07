@@ -237,11 +237,11 @@ def test_build_drive_command_goal_only_defaults_are_minimal():
                    "--workspace", r"D:\ws\exp1"]
 
 
-def test_build_drive_command_spec_with_budget_seed_token():
-    opts = DriveOptions(spec_path=r"D:\obj\spec.json", budget="8h", seed=7,
+def test_build_drive_command_program_with_budget_seed_token():
+    opts = DriveOptions(program_path=r"D:\obj\program.json", budget="8h", seed=7,
                         control_token="abc123")
     cmd = commands.build_drive_command("py", "ws", opts)
-    assert cmd[:6] == ["py", "-m", "isar", "drive", "--spec", r"D:\obj\spec.json"]
+    assert cmd[:6] == ["py", "-m", "isar", "drive", "--program", r"D:\obj\program.json"]
     assert cmd[cmd.index("--workspace") + 1] == "ws"
     assert cmd[cmd.index("--budget") + 1] == "8h"
     assert cmd[cmd.index("--seed") + 1] == "7"
@@ -255,10 +255,13 @@ def test_build_drive_command_resume_latest():
     assert cmd == ["py", "-m", "isar", "drive", "--resume-latest", "--workspace", "ws"]
 
 
-def test_build_drive_command_frozen_envelope():
+def test_build_drive_command_compiled_program_freezes_tier():
+    # A compiled program the operator already confirmed carries its own tier; the GUI must not
+    # re-assert one on the command line and silently disagree with what was confirmed.
     cmd = commands.build_drive_command(
-        "py", "ws", DriveOptions(envelope_path="objective.json", tier="mcstas", budget="8h"))
-    assert cmd == ["py", "-m", "isar", "drive", "--envelope", "objective.json",
+        "py", "ws", DriveOptions(compiled_program_path="program.json", tier="mcstas",
+                                 budget="8h"))
+    assert cmd == ["py", "-m", "isar", "drive", "--program", "program.json",
                    "--workspace", "ws", "--budget", "8h"]
 
 
@@ -325,7 +328,8 @@ def test_build_drive_command_requires_exactly_one_source():
     with pytest.raises(ValueError):
         commands.build_drive_command("py", "ws", DriveOptions(goal="g", resume_latest=True))
     with pytest.raises(ValueError):
-        commands.build_drive_command("py", "ws", DriveOptions(goal="g", spec_path="s.json"))
+        commands.build_drive_command("py", "ws", DriveOptions(goal="g",
+                                                             program_path="p.json"))
 
 
 # ---- source fingerprint (must match the CLI's campaign_start sha256) ---------
@@ -336,14 +340,14 @@ def test_source_fingerprint_goal_text_vector():
     assert commands.source_fingerprint(goal=goal) == expected
 
 
-def test_source_fingerprint_spec_bytes_vector_non_ascii(tmp_path):
-    """A spec's fingerprint is over its raw BYTES, not decoded text — non-ASCII proves it."""
+def test_source_fingerprint_program_bytes_vector_non_ascii(tmp_path):
+    """A program's fingerprint is over its raw BYTES, not decoded text — non-ASCII proves it."""
     import hashlib
-    spec = tmp_path / "spec.json"
+    program = tmp_path / "program.json"
     raw = '{"goal": "phonon α→β at 2Å⁻¹"}'.encode("utf-8")
-    spec.write_bytes(raw)
+    program.write_bytes(raw)
     expected = hashlib.sha256(raw).hexdigest()
-    assert commands.source_fingerprint(spec_path=str(spec)) == expected
+    assert commands.source_fingerprint(program_path=str(program)) == expected
 
 
 def test_source_fingerprint_requires_exactly_one_arg():
@@ -351,4 +355,4 @@ def test_source_fingerprint_requires_exactly_one_arg():
     with pytest.raises(ValueError):
         commands.source_fingerprint()
     with pytest.raises(ValueError):
-        commands.source_fingerprint(goal="g", spec_path="s.json")
+        commands.source_fingerprint(goal="g", program_path="p.json")

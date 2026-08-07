@@ -1,0 +1,40 @@
+{
+  "schema": "isar.campaign-program/1",
+  "source_text": "Scan the region from (2,0,0) to (3,0,0) up to 10meV, map out all the phenomena of interest.",
+  "steps": [
+    {
+      "id": "discover-1",
+      "kind": "discover_and_map",
+      "payload": {
+        "schema": "isar.campaign-step.discover_and_map/1",
+        "region": {
+          "kind": "path",
+          "q_start": [
+            2.0,
+            0.0,
+            0.0
+          ],
+          "q_end": [
+            3.0,
+            0.0,
+            0.0
+          ],
+          "maximum_initial_spacing_rlu": 0.1
+        },
+        "energy": {
+          "intrinsic_omega_domain_meV": [
+            0.0,
+            10.0
+          ]
+        },
+        "catalogue_profile": "isar.catalogue.inelastic-default/1",
+        "deliverables": [
+          {
+            "kind": "phenomenon_map"
+          }
+        ],
+        "include_unknown": true
+      }
+    }
+  ]
+}

@@ -23,18 +23,20 @@ def test_o41_seed_opens_and_compiles_through_the_normal_workspace_path(tmp_path)
     workspace = tmp_path / "isar-eig4-o41-authoritative"
     shutil.copytree(seed, workspace)
     shutil.copy2(resources / "card.policy.toml", workspace / "card.policy.toml")
-    shutil.copy2(resources / "compact-goal.json", workspace / "compact-goal.json")
+    shutil.copy2(resources / "campaign-program.json", workspace / "campaign-program.json")
     (workspace / "report" / "session_log.jsonl").write_text("", encoding="utf-8")
     assert list(Workspace.open(workspace).session_events()) == []
 
-    envelope_path = tmp_path / "objective-envelope.json"
+    program_path = tmp_path / "campaign-program.json"
     assert main([
-        "drive", "--spec", str(workspace / "compact-goal.json"),
+        "drive", "--program", str(workspace / "campaign-program.json"),
         "--workspace", str(workspace), "--scan-window-eig-mode", "authoritative",
         "--analysis-limit", "10m",
-        "--compile-only", str(envelope_path),
+        "--compile-only", str(program_path),
     ]) == 0
-    objective = json.loads(envelope_path.read_text(encoding="utf-8"))["objective"]
+    compiled = json.loads(program_path.read_text(encoding="utf-8"))
+    assert compiled["schema"] == "isar.campaign-program/1"
+    objective = compiled["steps"][0]["payload"]
     assert objective["path"] == [
         [round(2.0 + index * 0.05, 10), 0.0, 0.0] for index in range(21)]
     assert objective["analysis_limit_seconds"] == 600.0
@@ -67,8 +69,8 @@ def test_file_action_creates_and_prefills_the_normal_campaign_workspace(
     assert (destination / "report" / "session_log.jsonl").read_text(
         encoding="utf-8") == ""
     assert window.campaign_dock._eig_mode.currentData() == "authoritative"
-    assert window.campaign_dock._spec_path.text() == str(
-        destination / "compact-goal.json")
+    assert window.campaign_dock._program_path.text() == str(
+        destination / "campaign-program.json")
     # Budget and analysis limit are left blank so the canonical tier defaults
     # (unlimited neutrons, 1 h deterministic wall clock) govern the example.
     assert window.campaign_dock._analysis_limit.text() == ""
