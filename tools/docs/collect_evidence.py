@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -26,7 +27,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from datetime import date
+from datetime import date, datetime, time
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -143,6 +144,36 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _reject_json_constant(token: str) -> None:
+    raise ValueError(f"non-finite JSON constant {token!r} is not valid evidence content")
+
+
+def _canonical_structured_value(value):
+    """Recursively map a parsed JSON/TOML value onto JSON-serializable canonical form.
+
+    TOML temporal types get tagged isoformat dicts (deterministic, EOL-independent identity);
+    non-finite numbers and any other non-JSON type are collection failures, never TypeErrors.
+    """
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise EvidenceError("structured evidence contains a non-finite number")
+        return value
+    # datetime before date: datetime subclasses date.
+    if isinstance(value, datetime):
+        return {"$datetime": value.isoformat()}
+    if isinstance(value, date):
+        return {"$date": value.isoformat()}
+    if isinstance(value, time):
+        return {"$time": value.isoformat()}
+    if isinstance(value, dict):
+        return {str(key): _canonical_structured_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_canonical_structured_value(item) for item in value]
+    raise EvidenceError(f"unsupported structured evidence value: {type(value).__name__}")
+
+
 def content_sha256(path: Path) -> str:
     """Hash evidence by content: structured files canonically, text with normalized newlines.
 
@@ -153,10 +184,16 @@ def content_sha256(path: Path) -> str:
     if suffix in {".json", ".toml"}:
         try:
             text = path.read_text(encoding="utf-8")
-            parsed = json.loads(text) if suffix == ".json" else tomllib.loads(text)
-        except (OSError, UnicodeError, ValueError) as exc:
+            if suffix == ".json":
+                parsed = json.loads(text, parse_constant=_reject_json_constant)
+            else:
+                parsed = tomllib.loads(text)
+            canonical = json.dumps(_canonical_structured_value(parsed), sort_keys=True,
+                                   separators=(",", ":"), allow_nan=False)
+        except EvidenceError as exc:
+            raise EvidenceError(f"invalid {suffix} evidence {path}: {exc}") from exc
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
             raise EvidenceError(f"unparsable {suffix} evidence {path}: {exc}") from exc
-        canonical = json.dumps(parsed, sort_keys=True, separators=(",", ":"))
     elif suffix in {".csv", ".md", ".txt"}:
         try:
             canonical = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")

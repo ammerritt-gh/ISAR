@@ -562,6 +562,42 @@ def test_content_sha256_ignores_line_endings_but_not_content(collector, tmp_path
         collector.content_sha256(tmp_path / "bad.json")
 
 
+def test_content_sha256_canonicalizes_toml_temporal_values(collector, tmp_path: Path):
+    """tomllib yields datetime/date/time objects; pre-repair those escaped json.dumps as a raw
+    TypeError. They must canonicalize deterministically, stay EOL-independent, and stay
+    content-sensitive."""
+    def digest(payload: bytes) -> str:
+        path = tmp_path / "temporal.toml"
+        path.write_bytes(payload)
+        return collector.content_sha256(path)
+
+    lf = b"day = 2026-07-30\nstamp = 2026-07-30T12:34:56\nclock = 12:34:56\n"
+    crlf = lf.replace(b"\n", b"\r\n")
+    changed = lf.replace(b"T12:34:56", b"T12:34:57")
+    assert digest(lf) == digest(crlf)
+    assert digest(lf) != digest(changed)
+
+
+@pytest.mark.parametrize("name, payload", [
+    ("nan.json", b'{"a": NaN}'),
+    ("inf.json", b'{"a": Infinity}'),
+    ("nan.toml", b"a = nan\n"),
+    ("inf.toml", b"a = -inf\n"),
+])
+def test_content_sha256_rejects_nonfinite_numbers(collector, tmp_path: Path, name, payload):
+    # Canonical structured identity must not admit content the rest of ISAR treats as invalid
+    # fingerprint input — and the failure is a clean EvidenceError, never a traceback.
+    path = tmp_path / name
+    path.write_bytes(payload)
+    with pytest.raises(collector.EvidenceError):
+        collector.content_sha256(path)
+
+
+def test_canonical_structured_value_never_leaks_typeerror(collector):
+    with pytest.raises(collector.EvidenceError, match="unsupported"):
+        collector._canonical_structured_value({"key": object()})
+
+
 def test_check_retains_changed_missing_and_extra_diagnostics(
     collector, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
