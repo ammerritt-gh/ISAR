@@ -233,6 +233,11 @@ def test_callable_runner_never_gets_no_render(monkeypatch):
 # ``runner.run`` at each of the loop's three call sites are exactly the pre-seam ones.
 
 
+# Distinguishes "keyword never passed" from an explicit None/False: refresh_analysis's contract is
+# to OMIT unsupported/inapplicable keywords, and a None default cannot prove omission.
+_OMITTED = object()
+
+
 class _Recorder:
     """Full-protocol runner double that records the kwargs it was called with."""
 
@@ -243,11 +248,12 @@ class _Recorder:
     def run(self, workspace, data_paths, *, force=False, errors_tier="full", render=True,
             timeout=None, scan_errors_tier=None, master_errors_tier=None, force_masters=None,
             certification_manifest=None, certification_request=None,
-            analysis_allowance_seconds=None, finish_initial_wave=False):
+            analysis_allowance_seconds=_OMITTED, finish_initial_wave=_OMITTED):
         self.calls.append({
             "workspace": workspace, "data_paths": list(data_paths), "force": force,
             "errors_tier": errors_tier, "render": render, "scan_errors_tier": scan_errors_tier,
             "master_errors_tier": master_errors_tier, "force_masters": force_masters,
+            "certification_manifest": certification_manifest,
             "certification_request": certification_request,
             "analysis_allowance_seconds": analysis_allowance_seconds,
             "finish_initial_wave": finish_initial_wave})
@@ -310,8 +316,8 @@ def test_refresh_analysis_forwards_the_allowance_pair_only_when_the_campaign_has
     wide = _Recorder()
     refresh_analysis(wide, "ws", ["d"], errors_tier="full",
                      analysis_allowance_seconds=None, finish_initial_wave=None)
-    assert wide.calls[0]["analysis_allowance_seconds"] is None
-    assert wide.calls[0]["finish_initial_wave"] is False   # the runner's own default, not ours
+    assert wide.calls[0]["analysis_allowance_seconds"] is _OMITTED   # never passed, not passed-None
+    assert wide.calls[0]["finish_initial_wave"] is _OMITTED
 
     refresh_analysis(wide, "ws", ["d"], errors_tier="full",
                      analysis_allowance_seconds=12.5, finish_initial_wave=True)
@@ -349,7 +355,8 @@ def test_refresh_analysis_reproduces_each_loop_call_site_kwargs():
     assert promotion.calls == [{
         "workspace": ws, "data_paths": [data], "force": False, "errors_tier": "full",
         "render": False, "scan_errors_tier": "fast", "master_errors_tier": "full",
-        "force_masters": ["master-1"], "certification_request": None,
+        "force_masters": ["master-1"], "certification_manifest": None,
+        "certification_request": None,
         "analysis_allowance_seconds": 30.0, "finish_initial_wave": False}]
 
     # 2. Submission finalization: the initial wave must finish; no force, no targeted masters.
@@ -360,7 +367,7 @@ def test_refresh_analysis_reproduces_each_loop_call_site_kwargs():
     assert finalize.calls == [{
         "workspace": ws, "data_paths": [data], "force": False, "errors_tier": "fast",
         "render": False, "scan_errors_tier": "cheap", "master_errors_tier": "fast",
-        "force_masters": None, "certification_request": None,
+        "force_masters": None, "certification_manifest": None, "certification_request": None,
         "analysis_allowance_seconds": 30.0, "finish_initial_wave": True}]
 
     # 3. Certification: master-only pass — no role tiers, no force, a session-owned request file.
@@ -371,5 +378,6 @@ def test_refresh_analysis_reproduces_each_loop_call_site_kwargs():
     assert certify.calls == [{
         "workspace": ws, "data_paths": [data], "force": False, "errors_tier": "full",
         "render": False, "scan_errors_tier": None, "master_errors_tier": None,
-        "force_masters": None, "certification_request": "req.json",
+        "force_masters": None, "certification_manifest": None,
+        "certification_request": "req.json",
         "analysis_allowance_seconds": 30.0, "finish_initial_wave": False}]

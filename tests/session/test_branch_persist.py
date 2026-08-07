@@ -130,5 +130,7 @@ def test_rebuild_tracked_prior_leaves_foreign_tracked_points_at_their_own_revisi
 
     by_id = {p["scan_id"]: p for p in card.state.dispersion_prior}
     assert by_id["s100#tracked:optic"]["track_revision"] == 7
-    assert foreign["track_revision"] == 1
+    # Assert through the REBUILT state, not the caller-held dict: this both proves the foreign
+    # point survived the rebuild and stays honest if the rebuild ever copies instead of filtering.
+    assert by_id["foreign_scan#tracked:optic"]["track_revision"] == 1
 
