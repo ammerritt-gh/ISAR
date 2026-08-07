@@ -304,7 +304,7 @@ three tiers of "measurement" that differ only in cost and realism — this is bo
 ladder and, later, an in-loop multi-fidelity strategy.
 
 **Tier 1 — Analytic (cheap, effectively free).** The forward model itself: a DHO lineshape convolved with
-an analytic resolution, evaluated in closed form (`Fitting_Functions.convolute_voigt_dho`), optionally
+an analytic resolution, evaluated in closed form (`isar.analyze.lineshapes.convolute_voigt_dho`), optionally
 with analytic Poisson noise. A "measurement" is a draw from the model; evaluations are unlimited and
 instant.
 - *Role:* algorithm development, unit tests, and — crucially — **EIG-estimator ground truth**. Because

@@ -109,7 +109,7 @@ and verified by `git grep` at deletion time rather than by bookkeeping.
 
 ## `docs/` — active plans
 
-All five are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
+All six are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
 status block — `tests/docs/` fails the build if either is missing. Their shared statistical
 motivation and current sequence are recorded in the 2026-07-19 statistics-contract audit; its
 accepted findings were promoted once into `STATS_PRIMER.md` §7, so the plans do not carry drifting
