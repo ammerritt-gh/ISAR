@@ -66,7 +66,7 @@ Load-bearing rules, each naming the failure it prevents:
 
 | Slice | Goal | Status |
 |---|---|---|
-| SCENE-0 | Constitution (H1) + synthetic world-suite foundation (11 worlds, ensemble runner, world manifests) | In progress |
+| SCENE-0 | Constitution (H1) + synthetic world-suite foundation (12 worlds, ensemble runner, world manifests) | In progress |
 | SCENE-1 | Catalogue, identity-conditional Laplace evidence, global grammar (bg-only + elastic+bg first-class, `elastic_only` verdict), observation footprints, interpretation artifacts — three sequential PRs | Planned |
 | SCENE-2 | `isar.campaign-program/1` sole contract; old envelope unreadable by design | In progress |
 | SCENE-3 | Scene layer core: clusters, structural factors, revisioned scene store, workspace_api read surface; tracker contracts ported as specifications | Planned |

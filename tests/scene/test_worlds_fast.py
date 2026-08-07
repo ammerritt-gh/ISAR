@@ -62,6 +62,27 @@ def test_truth_manifest_rejects_a_foreign_schema():
         config.WorldTruth.from_dict(payload)
 
 
+def test_from_dict_rejects_an_unexpected_key_at_every_level():
+    # A dropped/extra key must fail loudly, not vanish silently on round-trip.
+    _cfg, truth, _data = _build("canonical")
+    payload = truth.to_dict()
+
+    world_payload = dict(payload)
+    world_payload["bogus"] = 1
+    with pytest.raises(ValueError, match="bogus"):
+        config.WorldTruth.from_dict(world_payload)
+
+    config_payload = dict(payload)
+    config_payload["config"] = dict(payload["config"], bogus=1)
+    with pytest.raises(ValueError, match="bogus"):
+        config.WorldTruth.from_dict(config_payload)
+
+    component_payload = dict(payload)
+    component_payload["components"] = [dict(payload["components"][0], bogus=1)]
+    with pytest.raises(ValueError, match="bogus"):
+        config.WorldTruth.from_dict(component_payload)
+
+
 @pytest.mark.parametrize("name", sorted(worlds.WORLDS))
 def test_same_seed_replays_identically(name):
     _cfg, truth, first = _build(name)
@@ -138,11 +159,22 @@ def test_crossing_world_branches_actually_cross():
 
 
 def test_endpoint_under_bragg_buries_several_low_q_nodes():
-    _cfg, truth, _data = _build("endpoint_under_bragg")
+    _cfg, truth, data = _build("endpoint_under_bragg")
     acoustic = next(c for c in truth.components if c.identity == "acoustic")
+    bragg = next(c for c in truth.components if c.identity == "bragg")
     resolution = truth.config.gauss_fwhm       # ~1 meV: unresolvable from the elastic line
-    buried = [h for h in (2.05, 2.10, 2.15) if acoustic.branch.omega0(h) < resolution]
-    assert len(buried) >= 3
+
+    nodes = (2.05, 2.10, 2.15)
+    mirrors = (2.95, 2.90, 2.85)
+    for h in nodes + mirrors:
+        # The branch is genuinely present but unresolvable from the resolution width...
+        assert acoustic.branch.omega0(h) < resolution
+        # ...and the elastic line is genuinely there too: not a deleted/zeroed component.
+        elastic_peak = generate.component_lambda(truth, bragg, h, data.x).max()
+        acoustic_peak = generate.component_lambda(truth, acoustic, h, data.x).max()
+        assert acoustic_peak > 0
+        assert elastic_peak >= 0.25 * acoustic_peak
+
     # The mode is truly there at those H — the manifest says so even where the data cannot.
     assert acoustic.branch.omega0(2.5) > resolution
 
@@ -247,3 +279,18 @@ def test_an_elastic_only_request_of_an_inelastic_component_is_empty():
     x = generate.world_energy_grid(truth.config)
     horn = next(c for c in truth.components if c.kind == "unknown")
     assert np.all(generate.component_lambda(truth, horn, 2.5, x, peak="elastic") == 0.0)
+
+
+def test_component_lambda_rejects_a_mistyped_peak_token_for_every_kind():
+    # A silent partial model (dropping the mistyped token to zero) is worse than a crash:
+    # component_lambda must name the bad token instead of quietly returning zeros.
+    _cfg, truth, _d = _build("canonical")
+    x = generate.world_energy_grid(truth.config)
+    bragg = next(c for c in truth.components if c.kind == "elastic")
+    dho = next(c for c in truth.components if c.kind == "dho")
+    _cfg2, mm, _d2 = _build("mismatch")
+    horn = next(c for c in mm.components if c.kind == "unknown")
+
+    for comp, comp_truth in ((bragg, truth), (dho, truth), (horn, mm)):
+        with pytest.raises(ValueError, match="stokse"):
+            generate.component_lambda(comp_truth, comp, 2.5, x, peak="stokse")

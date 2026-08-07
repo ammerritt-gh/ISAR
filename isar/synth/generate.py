@@ -308,6 +308,14 @@ def component_lambda(truth: config.WorldTruth, comp: config.ComponentTruth,
     """
     cfg = truth.config
     x = np.asarray(x, dtype=float)
+    if peak is not None and peak.lower() != "all":
+        tokens = peak.lower().split("+")
+        bad = [t for t in tokens if t not in ("stokes", "astokes", "elastic")]
+        if bad:
+            raise ValueError(
+                f"component_lambda: unrecognized peak token(s) {bad!r} in peak={peak!r}; "
+                "expected 'all' or a '+'-separated combination of 'stokes'/'astokes'/'elastic'"
+            )
     env = q_envelope(comp, float(H))
     if env < _ENVELOPE_FLOOR:
         return np.zeros_like(x)

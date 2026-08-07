@@ -11,6 +11,17 @@ from pathlib import Path
 
 from . import dispersion
 
+
+def _reject_unknown_keys(d: dict, allowed: set[str], cls_name: str) -> None:
+    """Raise if ``d`` carries a key ``from_dict`` on ``cls_name`` does not know about.
+
+    A silently-dropped extra key means a manifest round-trip can lose data without
+    telling anyone; from_dict must fail loudly instead.
+    """
+    unexpected = set(d) - allowed
+    if unexpected:
+        raise ValueError(f"{cls_name}.from_dict: unexpected key(s) {sorted(unexpected)!r}")
+
 # ----------------------------------------------------------------------------
 # Parameter ordering (fixes the optimizer vector layout)
 # ----------------------------------------------------------------------------
@@ -113,6 +124,9 @@ class WorldConfig:
 
     @classmethod
     def from_dict(cls, d: dict) -> "WorldConfig":
+        _reject_unknown_keys(d, {"name", "seed", "H_start", "H_stop", "H_step",
+                                  "x_min", "x_max", "x_step", "gauss_fwhm", "lorentz_fwhm"},
+                             "WorldConfig")
         return cls(name=str(d["name"]), seed=int(d["seed"]),
                    **{k: float(d[k]) for k in
                       ("H_start", "H_stop", "H_step", "x_min", "x_max", "x_step",
@@ -160,6 +174,9 @@ class ComponentTruth:
 
     @classmethod
     def from_dict(cls, d: dict) -> "ComponentTruth":
+        _reject_unknown_keys(d, {"kind", "identity", "peak_counts", "branch", "gamma",
+                                  "q_centers", "q_fwhm", "width", "asymmetry"},
+                             "ComponentTruth")
         branch = d.get("branch")
         return cls(
             kind=str(d["kind"]), identity=str(d["identity"]),
@@ -203,6 +220,8 @@ class WorldTruth:
 
     @classmethod
     def from_dict(cls, d: dict) -> "WorldTruth":
+        _reject_unknown_keys(d, {"schema", "config", "T", "background_counts",
+                                  "components", "description"}, "WorldTruth")
         schema = str(d.get("schema", SCENE_TRUTH_SCHEMA))
         if schema != SCENE_TRUTH_SCHEMA:
             raise ValueError(f"unsupported world-truth schema {schema!r}")

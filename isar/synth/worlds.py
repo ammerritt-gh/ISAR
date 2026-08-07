@@ -39,15 +39,21 @@ GAMMA = 0.5
 ZONE_CENTRES = (2.0, 3.0)
 BRAGG_FWHM = 0.08
 
+# Wider elastic H-envelope for `endpoint_under_bragg` only: at fwhm=0.08 the elastic
+# component is only >=25% of the acoustic peak at H=2.05, not 2.10/2.15 (5.3 / 0.02 counts
+# vs the 100-count acoustic mode). 0.20 keeps all three low-q nodes (H=2.05/2.10/2.15,
+# offsets 0.05/0.10/0.15 from the zone centre) at or above that 25% floor.
+ENDPOINT_BRAGG_FWHM = 0.20
+
 ACOUSTIC = BranchSpec("acoustic", 0.0, 6.0)
 OPTIC = BranchSpec("optic", 7.0, 9.0)
 GAPPED = BranchSpec("gapped", 3.0, 6.0)
 
 
-def _bragg(peak_counts: float = ELASTIC_PEAK) -> config.ComponentTruth:
+def _bragg(peak_counts: float = ELASTIC_PEAK, q_fwhm: float = BRAGG_FWHM) -> config.ComponentTruth:
     return config.ComponentTruth(
         kind="elastic", identity="bragg", peak_counts=peak_counts,
-        q_centers=ZONE_CENTRES, q_fwhm=BRAGG_FWHM,
+        q_centers=ZONE_CENTRES, q_fwhm=q_fwhm,
     )
 
 
@@ -119,7 +125,8 @@ def endpoint_under_bragg(seed: int = 1006):
     return _world(
         "endpoint_under_bragg", seed,
         "shallow acoustic branch degenerate with the elastic line over several low-q nodes",
-        [_bragg(), _mode(shallow, "acoustic", gamma=0.25), _mode(OPTIC, "optic")],
+        [_bragg(q_fwhm=ENDPOINT_BRAGG_FWHM), _mode(shallow, "acoustic", gamma=0.25),
+         _mode(OPTIC, "optic")],
     )
 
 
