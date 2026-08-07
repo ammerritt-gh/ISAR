@@ -18,65 +18,27 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-from isar.analyze.ic import EPS_OMEGA_D, greedy_multimode_ic, structure_ic
-from isar.analyze.structures import (
-    Hypothesis, elastic_admissible, enumerate_multimode, enumerate_structures,
-)
 from isar.analyze import backends, estimators
 from isar.analyze.backends import BackendResult
-from isar.analyze.phonon import assess_success, omega0_value_error
-
-GAMMA_FLOOR = 1e-3
-GAMMA_MAX = 5.0
+from isar.analyze.phonon import (
+    EPS_OMEGA_D, GATE_COST, _bound, _gamma_at_bound, assess_success, elastic_admissible,
+    enumerate_phonon_multimode, enumerate_phonon_structures, greedy_multimode_ic,
+    omega0_value_error, phonon_structure_ic,
+)
+# Re-imported for their module attributes, not for use here: scan_delivery.py and the
+# analyze tests read ``loop.GAMMA_FLOOR`` / ``loop.GAMMA_MAX``.
+from isar.analyze.phonon import GAMMA_FLOOR, GAMMA_MAX  # noqa: F401
+from isar.analyze.structures import Hypothesis
 
 # STAT-1.5 metadata revisions.  These are descriptive fingerprints only: changing either label
 # changes semantic comparability identity, never a fit/cache/scientific identity.
 DATA_LIKELIHOOD_REVISION = "isar.baker_cousins_data_likelihood/1"
 MODEL_PARAMETERIZATION_REVISION = "isar.fit_model_parameterization/1"
 
-# A phonon Γ this close to the floor is a resolution-limited δ-spike, not a fitted intrinsic
-# width: ω₀ = √(Ω_d²+Γ²) ≈ Ω_d with Γ unmovable, so the parametric bootstrap collapses to a
-# degenerate ω₀ interval (halfwidth ~1e-3 meV) that is spuriously tight, not trustworthy. Fits
-# with any Γ within this tolerance of GAMMA_FLOOR (or at GAMMA_MAX, a runaway-broad DHO) get
-# their ω₀ interval flagged unreliable so the σ-calibration / downstream can filter them out
-# (an honestly-flagged interval beats a silently repaired one — ISAR philosophy). 5×floor
-# separates resolution-limited spikes (≤0.005 meV) from genuinely-fit widths (≳0.05 meV) with
-# wide margin, and is a flag, never a value edit.
-GAMMA_BOUND_TOL = 5.0 * GAMMA_FLOOR
-
-
-def _gamma_at_bound(gammas) -> bool:
-    """True if any phonon Γ has railed out — pinned near GAMMA_FLOOR (resolution-limited spike)
-    or GAMMA_MAX (runaway-broad) — so its derived ω₀ interval is not trustworthy."""
-    for g in gammas:
-        g = float(g)
-        if g <= GAMMA_FLOOR + GAMMA_BOUND_TOL or g >= GAMMA_MAX * (1.0 - 1e-3):
-            return True
-    return False
-
-# cost/dof of the best converged 1-mode fit above which the two-stage loop offers the 2-mode
-# hypothesis set. A documented default (Baker–Cousins -2lnL/dof; a good fit sits near 1),
-# deliberately loose — the runs-test structured-residual clause catches the wide-window trap
-# where cost/dof looks acceptable — and NOT tuned to any single toy spectrum.
-GATE_COST = 2.0
-
 
 def _sanitize(name: str) -> str:
     """Backend parameter names must be plain identifiers (iminuit); drop the dotted prefix."""
     return name.replace(".", "_")
-
-
-def _bound(name: str, x_max: float, cmax: float) -> tuple[float, float]:
-    """Per-parameter bounds, mirroring ``synth.fit._build_problem`` exactly."""
-    if name.endswith(".Omega_d"):
-        return (EPS_OMEGA_D, x_max)
-    if name.endswith(".Gamma"):
-        return (GAMMA_FLOOR, GAMMA_MAX)
-    if name.endswith(".A") or name.endswith(".E"):
-        return (0.0, 1e4 * cmax)
-    if name.endswith(".BG"):
-        return (0.0, 5.0 * cmax + 10.0)
-    return (-np.inf, np.inf)
 
 
 @dataclass
@@ -501,8 +463,8 @@ def build_problem(hyp, ctx, *, x0=None) -> Problem:
     """Assemble the per-hypothesis :class:`Problem` (composite, IC, bounds, cost).
 
     ``x0`` overrides the default grid+NNLS initial condition: pass a dict keyed by
-    ``composite.param_names()`` (e.g. from :func:`~isar.analyze.ic.greedy_multimode_ic`) or a
-    ready array. Defaults to :func:`~isar.analyze.ic.structure_ic` (unchanged 1-mode path)."""
+    ``composite.param_names()`` (e.g. from :func:`~isar.analyze.phonon.greedy_multimode_ic`) or a
+    ready array. Defaults to :func:`~isar.analyze.phonon.phonon_structure_ic` (unchanged 1-mode path)."""
     composite = hyp.build()
     x = ctx.x_used
     counts = ctx.counts_used
@@ -511,7 +473,7 @@ def build_problem(hyp, ctx, *, x0=None) -> Problem:
 
     names = composite.param_names()
     if x0 is None:
-        x0 = structure_ic(composite, ctx)
+        x0 = phonon_structure_ic(composite, ctx)
     elif isinstance(x0, dict):
         x0 = np.array([x0[n] for n in names], dtype=float)
     else:
@@ -825,7 +787,7 @@ def fit_shadow_candidates(ctx, *, reusable_results=(), backend="iminuit", minos=
     reusable_by_label = {
         str(result.label): result for result in reusable_results
     }
-    one_hypotheses = list(enumerate_structures(ctx))
+    one_hypotheses = list(enumerate_phonon_structures(ctx))
     one_results, reused_one = _fit_shadow_stage(
         one_hypotheses,
         ctx,
@@ -845,7 +807,7 @@ def fit_shadow_candidates(ctx, *, reusable_results=(), backend="iminuit", minos=
         best_one = _best_converged(one_results)
         n_used = int(ctx.x_used.size)
         multi_hypotheses = [
-            hypothesis for hypothesis in enumerate_multimode(ctx)
+            hypothesis for hypothesis in enumerate_phonon_multimode(ctx)
             if n_used - hypothesis.k > 0
         ]
 
@@ -902,7 +864,7 @@ def fit_admissible_structures(ctx, *, backend="iminuit", minos=False, errors=Fal
 
     With ``errors=True`` the frequentist error layer (bootstrap, §5.2) is attached to each
     converged result's ``within_model``. Off by default so step 1's fast path is unchanged."""
-    hyps = enumerate_structures(ctx)
+    hyps = enumerate_phonon_structures(ctx)
     tasks = [(h, ctx, backend, minos, None) for h in hyps]
     results = _fit_hypothesis_batch(tasks, executor, phase="admissible-candidate")
     if errors:
@@ -943,7 +905,7 @@ def _enumerate_and_fit(ctx, *, backend="iminuit", minos=False, peaks=None, execu
     gate fires or ``peaks`` declares ≥2 peaks. Returns ``[(result, hypothesis), ...]`` (both stages
     unioned). Split out of :func:`fit_structures_two_stage` so the structure-hint shortcut
     (:func:`fit_structures_two_stage_hinted`) can fall back to it verbatim."""
-    one_hyps = enumerate_structures(ctx)
+    one_hyps = enumerate_phonon_structures(ctx)
     one_tasks = [(h, ctx, backend, minos, None) for h in one_hyps]
     one_results = _fit_hypothesis_batch(one_tasks, executor, phase="one-mode candidate")
     pairs = list(zip(one_results, one_hyps))
@@ -954,7 +916,7 @@ def _enumerate_and_fit(ctx, *, backend="iminuit", minos=False, peaks=None, execu
         n_used = int(ctx.x_used.size)
         multi_hyps = []
         multi_tasks = []
-        for h in enumerate_multimode(ctx):
+        for h in enumerate_phonon_multimode(ctx):
             if n_used - h.k <= 0:                     # ndof guard: no positive dof
                 continue
             x0 = greedy_multimode_ic(h.build(), ctx, best_one, peaks=peaks)
@@ -970,8 +932,8 @@ def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors
                              M=200, seed=12345, peaks=None, executor=None) -> list[StructureFitResult]:
     """Two-stage, data-gated structure enumeration (§ multiplicity). Fit the 1-mode set; if the
     gate (:func:`_offer_multimode`) fires OR ``peaks`` declares ≥2 expected peaks, also fit the
-    2-mode set (:func:`~isar.analyze.structures.enumerate_multimode`) seeded by
-    :func:`~isar.analyze.ic.greedy_multimode_ic`, and return the UNION for a single
+    2-mode set (:func:`~isar.analyze.phonon.enumerate_phonon_multimode`) seeded by
+    :func:`~isar.analyze.phonon.greedy_multimode_ic`, and return the UNION for a single
     :func:`~isar.analyze.select.select_models` pass — AIC/BIC then decide whether the second
     mode earns its parameters. 2-mode hypotheses with no positive dof (``n_used − k ≤ 0``) are
     skipped. ``peaks`` is threaded through untouched (the driver supplies it later); this
@@ -1022,8 +984,8 @@ def _try_structure_hint(ctx, structure_hint, *, backend="iminuit", minos=False):
     a structured residual) fires, i.e. one structure is not enough; or the no-phonon null is
     AIC-preferred, i.e. the phonon does not earn its parameters here. On any of these the full
     enumeration must run — the hint is a computational shortcut, never a correctness override."""
-    by_label = {h.label: h for h in enumerate_structures(ctx)}
-    by_label.update({h.label: h for h in enumerate_multimode(ctx)})
+    by_label = {h.label: h for h in enumerate_phonon_structures(ctx)}
+    by_label.update({h.label: h for h in enumerate_phonon_multimode(ctx)})
     hyp = by_label.get(structure_hint)
     if hyp is None:
         return None                                    # label no longer in the hypothesis set

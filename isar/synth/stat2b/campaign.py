@@ -25,9 +25,12 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 
 from isar.analyze import loop
-from isar.analyze.ic import greedy_multimode_ic
+from isar.analyze.phonon import (
+    enumerate_phonon_multimode,
+    enumerate_phonon_structures,
+    greedy_multimode_ic,
+)
 from isar.analyze.prior import PhononPrior
-from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.supervisor.stopping import evaluate_stop, summarize_grid
 from isar.schema import card as card_mod
@@ -98,6 +101,7 @@ CAMPAIGN_SOURCE_PATHS = (
     "isar/analyze/ic.py",
     "isar/analyze/loop.py",
     "isar/analyze/model_manifest.py",
+    "isar/analyze/phonon.py",
     "isar/analyze/prior.py",
     "isar/analyze/select.py",
     "isar/analyze/shadow_selection.py",
@@ -432,7 +436,7 @@ def _delivery_prior_and_card(
 
 
 def _all_production_hypotheses(ctx) -> list:
-    return list(enumerate_structures(ctx)) + list(enumerate_multimode(ctx))
+    return list(enumerate_phonon_structures(ctx)) + list(enumerate_phonon_multimode(ctx))
 
 
 def _standard_evidence(

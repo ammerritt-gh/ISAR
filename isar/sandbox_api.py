@@ -187,10 +187,10 @@ def _winning_curve(fit, ctx, x_eval):
     from types import SimpleNamespace
 
     from isar.analyze.components import PhononDHO
-    from isar.analyze.structures import enumerate_multimode, enumerate_structures
+    from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 
-    by_label = {h.label: h for h in enumerate_structures(ctx)}
-    by_label.update({h.label: h for h in enumerate_multimode(ctx)})
+    by_label = {h.label: h for h in enumerate_phonon_structures(ctx)}
+    by_label.update({h.label: h for h in enumerate_phonon_multimode(ctx)})
     label = fit.get("best_label")
     hyp = by_label.get(label)
     if hyp is None:

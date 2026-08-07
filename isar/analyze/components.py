@@ -12,7 +12,7 @@ not reimplemented here. The phonon component carries its own Bose-tied anti-Stok
 tie, unlike PUFFIN's equality-only link groups).
 
 Parameter ``kind`` (``"linear"`` vs ``"nonlinear"``) is what the grid+NNLS IC
-(:mod:`isar.analyze.ic`) needs: linear amplitudes are solved by non-negative least
+(:mod:`isar.analyze.phonon`) needs: linear amplitudes are solved by non-negative least
 squares at fixed nonlinear values; nonlinear values (Ω_d, Γ) are grid-scanned / optimized.
 """
 from __future__ import annotations

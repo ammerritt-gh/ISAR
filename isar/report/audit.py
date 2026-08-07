@@ -4,7 +4,7 @@ The audit figure overlays the human expert's (provisional) fit on the data, next
 expert's by-hand fit gives us its ω₀, Γ, energy zero and resolution but not the raw lineshape, so we
 rebuild the curve here: fix those nonlinear values and solve only the linear amplitudes by NNLS — the
 same component model (`isar.analyze.components`) and the same amplitude solve ISAR's IC uses
-(`isar.analyze.ic`). This is presentation only; it changes no fitting logic.
+(`isar.analyze.phonon`). This is presentation only; it changes no fitting logic.
 """
 from __future__ import annotations
 

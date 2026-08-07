@@ -19,7 +19,7 @@ from isar.analyze import errors, loop, select, shadow_selection, verdict
 from isar.analyze import gold as gold_mod
 from isar.analyze.context import ScanContext, effective_exposure, select_exposure
 from isar.analyze.descriptor import describe_spectrum
-from isar.analyze.structures import enumerate_multimode, enumerate_structures
+from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 from isar.schema.card import Card
 from isar.schema.hypotheses import preset as hypothesis_preset
 from isar.schema.statistics import (
@@ -988,9 +988,9 @@ def _shadow_can_alias_delivery(results, *, structure_skipped: bool) -> bool:
 
 
 def _shadow_model_identities(results, selection_ctx) -> list[dict]:
-    hypotheses = {hypothesis.label: hypothesis for hypothesis in enumerate_structures(selection_ctx)}
+    hypotheses = {hypothesis.label: hypothesis for hypothesis in enumerate_phonon_structures(selection_ctx)}
     hypotheses.update(
-        {hypothesis.label: hypothesis for hypothesis in enumerate_multimode(selection_ctx)}
+        {hypothesis.label: hypothesis for hypothesis in enumerate_phonon_multimode(selection_ctx)}
     )
     identities = []
     for result in results:
@@ -1344,8 +1344,8 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     all_results = results
     labels_before_guideline = [str(r.label) for r in results]
     # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
-    by_hyp = {h.label: h for h in enumerate_structures(ctx)}
-    by_hyp.update({h.label: h for h in enumerate_multimode(ctx)})
+    by_hyp = {h.label: h for h in enumerate_phonon_structures(ctx)}
+    by_hyp.update({h.label: h for h in enumerate_phonon_multimode(ctx)})
 
     warn = None
     guideline_changed_set = False

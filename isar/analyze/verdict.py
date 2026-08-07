@@ -80,9 +80,9 @@ def _fitted_model(label, params, ctx):
     (`stokes2+bg`) must reconstruct here, else a GoF-bad two-branch fit is silently mis-routed to
     `junk` (and the descriptor falsification is disabled for it). ``None`` if the label is not
     enumerable here or its params do not pack."""
-    from isar.analyze.structures import enumerate_multimode, enumerate_structures
+    from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 
-    hyp = {h.label: h for h in (*enumerate_structures(ctx), *enumerate_multimode(ctx))}.get(label)
+    hyp = {h.label: h for h in (*enumerate_phonon_structures(ctx), *enumerate_phonon_multimode(ctx))}.get(label)
     if hyp is None:
         return None
     comp = hyp.build()

@@ -17,12 +17,12 @@ import numpy as np
 from isar.analyze import loop
 from isar.analyze.components import ConstantBackground, Elastic, QuasiElastic
 from isar.analyze.loop import _minimize_fixed, _sanitize, build_problem
-from isar.analyze.structures import (
-    Hypothesis,
+from isar.analyze.phonon import (
     elastic_admissible,
-    enumerate_multimode,
+    enumerate_phonon_multimode,
     quasielastic_admissible,
 )
+from isar.analyze.structures import Hypothesis
 
 
 CRITERIA = ("aic", "aicc", "bic")
@@ -313,7 +313,7 @@ def fit_null_candidates(ctx, *, backend: str = "iminuit") -> list[CandidateEvide
 def oracle_hypotheses(ctx) -> list[Hypothesis]:
     """Complete two-mode production family; caller supplies the one-mode family."""
 
-    return list(enumerate_multimode(ctx))
+    return list(enumerate_phonon_multimode(ctx))
 
 
 def candidate_identity(candidate: CandidateEvidence) -> str:
