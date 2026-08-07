@@ -368,6 +368,10 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "spectrum_ref": oc.get("spectrum_ref"),
                 "predictive_ref": oc.get("predictive_ref"),
                 "target_projection_ref": oc.get("target_projection_ref"),
+                # Absent/unrecognised means canonical_master (see FitOutcome.evidence_sink), so
+                # historical CSVs stay readable — but a written row must carry the recorded sink,
+                # or auxiliary-probe rows read as canonical evidence.
+                "evidence_sink": oc.get("evidence_sink", CANONICAL_MASTER),
                 "master_revision": oc.get("master_revision"),
                 "model_interval_lo": (miv[0] if miv else None),
                 "model_interval_med": (miv[1] if miv and len(miv) > 2 else None),

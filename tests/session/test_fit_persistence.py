@@ -181,6 +181,17 @@ def _write_read(tmp_path, outcome, scan_number=7):
     return readers.read_results_csv(ws.root)[0]
 
 
+def test_evidence_sink_survives_to_results_csv(tmp_path):
+    """PR #10 review: the column was declared (PR2.6) but never populated by the row builder, so
+    auxiliary-probe rows were indistinguishable from canonical evidence in the CSV projection."""
+    ordinary = _outcome_with(None, None)
+    assert _write_read(tmp_path / "a", ordinary)["evidence_sink"] == "canonical_master"
+
+    probe = _outcome_with(None, None)
+    probe.evidence_sink = "auxiliary_track_node"
+    assert _write_read(tmp_path / "b", probe)["evidence_sink"] == "auxiliary_track_node"
+
+
 def test_to_dict_is_json_clean_for_new_fields():
     amps = {"phonon.A": 501.2, "bg.BG": 8.0}
     d = _outcome_with(amps, _cands()).to_dict()
