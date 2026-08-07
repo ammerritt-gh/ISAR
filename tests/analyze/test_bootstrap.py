@@ -7,8 +7,9 @@ import pytest
 from isar.analyze import loop
 from isar.analyze.context import ScanContext
 from isar.analyze.errors import bootstrap as B
-from isar.analyze.ic import greedy_multimode_ic
-from isar.analyze.structures import enumerate_multimode, enumerate_structures
+from isar.analyze.phonon import (
+    enumerate_phonon_multimode, enumerate_phonon_structures, greedy_multimode_ic,
+)
 from isar.analyze.lineshapes import convolute_voigt_dho
 
 
@@ -22,7 +23,7 @@ def _spectrum_ctx(seed=0, omega0=5.0, n=81):
 
 
 def _fitted(ctx):
-    hyp = {h.label: h for h in enumerate_structures(ctx)}["elastic+stokes+bg"]
+    hyp = {h.label: h for h in enumerate_phonon_structures(ctx)}["elastic+stokes+bg"]
     return hyp, loop.fit_hypothesis(hyp, ctx, minos=False)
 
 
@@ -169,8 +170,8 @@ def test_bootstrap_canonicalizes_two_close_modes_no_label_switch():
     the primary's rank, so the PRIMARY interval stays tight around its truth and does NOT
     inflate to span both peaks (the label-switching failure mode)."""
     ctx = _two_peak_ctx()
-    one = loop.fit_hypothesis({h.label: h for h in enumerate_structures(ctx)}["stokes+bg"], ctx)
-    hyp = {h.label: h for h in enumerate_multimode(ctx)}["stokes2+bg"]
+    one = loop.fit_hypothesis({h.label: h for h in enumerate_phonon_structures(ctx)}["stokes+bg"], ctx)
+    hyp = {h.label: h for h in enumerate_phonon_multimode(ctx)}["stokes2+bg"]
     x0 = greedy_multimode_ic(hyp.build(), ctx, one)
     fit = loop.fit_hypothesis(hyp, ctx, x0=x0)
     assert fit.n_modes == 2

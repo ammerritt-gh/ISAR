@@ -10,7 +10,7 @@ import pytest
 from isar.analyze import loop
 from isar.analyze.context import ScanContext
 from isar.analyze.errors import bootstrap as B
-from isar.analyze.structures import enumerate_structures
+from isar.analyze.phonon import enumerate_phonon_structures
 from isar.synth import config, generate, noise
 
 
@@ -31,7 +31,7 @@ def test_bootstrap_omega0_coverage_on_synthetic_truth():
     for i in range(R):
         gt = generate.make_ground_truth(cfg, H, target, seed=1000 + i)
         ctx = context_from_ground_truth(gt, noise.draw_counts(gt))
-        hyp = {h.label: h for h in enumerate_structures(ctx)}["elastic+stokes+bg"]
+        hyp = {h.label: h for h in enumerate_phonon_structures(ctx)}["elastic+stokes+bg"]
         fit = loop.fit_hypothesis(hyp, ctx, minos=False)
         if not fit.optimizer_converged:
             continue

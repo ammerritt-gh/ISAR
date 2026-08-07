@@ -11,7 +11,7 @@ import numpy as np
 
 from isar.analyze import loop
 from isar.analyze.context import ScanContext
-from isar.analyze.structures import enumerate_structures
+from isar.analyze.phonon import enumerate_phonon_structures
 from isar.schema.steering import ParamConstraints
 from isar.session import branch_model, driver, scan_delivery
 from isar.analyze.lineshapes import convolute_voigt_dho
@@ -27,7 +27,7 @@ def _ctx(constraints=None, center=-0.4, n=81):
 
 
 def _hyp(ctx, label="elastic+stokes+bg"):
-    return {h.label: h for h in enumerate_structures(ctx)}[label]
+    return {h.label: h for h in enumerate_phonon_structures(ctx)}[label]
 
 
 # --------------------------------------------------------------------------- build_problem

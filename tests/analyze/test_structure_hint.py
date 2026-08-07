@@ -10,7 +10,7 @@ import numpy as np
 
 from isar.analyze import loop
 from isar.analyze.context import ScanContext
-from isar.analyze.structures import enumerate_structures
+from isar.analyze.phonon import enumerate_phonon_structures
 from isar.analyze.lineshapes import convolute_voigt_dho
 
 
@@ -96,14 +96,14 @@ def test_label_mismatch_falls_through_to_full():
     results, skipped = loop.fit_structures_two_stage_hinted(
         ctx, minos=False, structure_hint="stokes+qe+bg")       # not admissible (no QE width)
     assert skipped is False
-    assert {r.label for r in results} == {h.label for h in enumerate_structures(ctx)}
+    assert {r.label for r in results} == {h.label for h in enumerate_phonon_structures(ctx)}
 
 
 def test_null_preferred_falls_through_to_full():
     # Flat, signal-free data: the phonon buys no explanatory power over the no-phonon null, so the
     # null is AIC-preferred and the shortcut is refused (the "master no longer has a phonon" guard).
     ctx = _flat_ctx()
-    r = loop.fit_hypothesis({h.label: h for h in enumerate_structures(ctx)}["stokes+bg"], ctx)
+    r = loop.fit_hypothesis({h.label: h for h in enumerate_phonon_structures(ctx)}["stokes+bg"], ctx)
     assert not loop._offer_multimode([r], ctx)                 # GoF gate itself would PASS on flat data
     _results, skipped = loop.fit_structures_two_stage_hinted(
         ctx, minos=False, structure_hint="stokes+bg")
@@ -131,7 +131,7 @@ def test_accepted_hint_is_reused_but_cannot_suppress_shadow_alternatives():
     bundle = loop.fit_shadow_candidates(ctx, reusable_results=hinted)
 
     assert set(bundle.offered_labels) == {
-        hypothesis.label for hypothesis in enumerate_structures(ctx)
+        hypothesis.label for hypothesis in enumerate_phonon_structures(ctx)
     }
     assert "stokes+bg" in bundle.reused_labels
     assert set(bundle.freshly_fitted_labels) == (

@@ -16,7 +16,7 @@ from isar.analyze.errors import agree as A
 from isar.analyze.errors import bayes as BZ
 from isar.analyze.errors import bootstrap as B
 from isar.analyze.prior import PhononPrior
-from isar.analyze.structures import enumerate_structures
+from isar.analyze.phonon import enumerate_phonon_structures
 from isar.analyze.lineshapes import convolute_voigt_dho
 
 # The tiny-nlive unif runs emit a benign ellipsoid-efficiency note; production nlive does not.
@@ -46,7 +46,7 @@ def _sparse_ctx(seed=21, omega0=5.0, n=81):
 
 
 def _fitted(ctx):
-    hyp = {h.label: h for h in enumerate_structures(ctx)}["elastic+stokes+bg"]
+    hyp = {h.label: h for h in enumerate_phonon_structures(ctx)}["elastic+stokes+bg"]
     return hyp, loop.fit_hypothesis(hyp, ctx, minos=False)
 
 

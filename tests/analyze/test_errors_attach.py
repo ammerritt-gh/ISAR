@@ -6,7 +6,7 @@ from isar.analyze import loop
 from isar.analyze.context import ScanContext
 from isar.analyze.errors import attach, attach_batch
 from isar.analyze.errors.bayes import BayesResult
-from isar.analyze.structures import enumerate_structures
+from isar.analyze.phonon import enumerate_phonon_structures
 from isar.analyze.lineshapes import convolute_voigt_dho
 
 
@@ -20,7 +20,7 @@ def _ctx(seed=0):
 
 
 def _fitted(ctx):
-    hyp = {h.label: h for h in enumerate_structures(ctx)}["elastic+stokes+bg"]
+    hyp = {h.label: h for h in enumerate_phonon_structures(ctx)}["elastic+stokes+bg"]
     return hyp, loop.fit_hypothesis(hyp, ctx, minos=False)
 
 

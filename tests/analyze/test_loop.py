@@ -10,7 +10,7 @@ import numpy as np
 from isar.analyze import loop
 from isar.analyze.components import CompositeModel, ConstantBackground, PhononDHO
 from isar.analyze.context import ScanContext
-from isar.analyze.structures import enumerate_structures
+from isar.analyze.phonon import enumerate_phonon_structures
 from isar.synth import fit
 from isar.analyze.lineshapes import convolute_voigt_dho
 from isar.analyze.backends import BackendResult
@@ -26,7 +26,7 @@ def _spectrum_ctx(n=61, status="needs_zero", center=-0.4):
 
 
 def _by_label(ctx):
-    return {h.label: h for h in enumerate_structures(ctx)}
+    return {h.label: h for h in enumerate_phonon_structures(ctx)}
 
 
 def test_build_problem_per_hypothesis_k_and_ndof():
@@ -254,14 +254,14 @@ def test_call_budget_starvation_drops_two_mode_that_raised_budget_certifies(monk
     the raised budget lets the identical fit converge to the identical minimum and recover the
     hard (weaker) secondary peak. The greedy seed is fine either way — the failure was the fit
     being cut short, not the seed."""
-    from isar.analyze import ic, select
-    from isar.analyze.structures import enumerate_multimode
+    from isar.analyze import phonon, select
+    from isar.analyze.phonon import enumerate_phonon_multimode
     from isar.analyze import backends
 
     ctx = _sparse_two_peak_ctx()
-    hyp2 = {h.label: h for h in enumerate_multimode(ctx)}["stokes2+bg"]
+    hyp2 = {h.label: h for h in enumerate_phonon_multimode(ctx)}["stokes2+bg"]
     one = loop.fit_hypothesis(_by_label(ctx)["stokes+bg"], ctx)
-    x0 = ic.greedy_multimode_ic(hyp2.build(), ctx, one)
+    x0 = phonon.greedy_multimode_ic(hyp2.build(), ctx, one)
 
     # starved budget → the fit hits the call limit and is NOT certified as converged.
     monkeypatch.setattr(backends, "_migrad_ncall", lambda npar: 40)

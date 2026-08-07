@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from isar.analyze.context import ScanContext
-from isar.analyze.structures import enumerate_structures
+from isar.analyze.phonon import enumerate_phonon_structures
 from isar.schema.steering import ParamConstraints
 from isar.session import branch_model
 from isar.synth.stat2b import campaign
@@ -640,7 +640,7 @@ def test_frozen_gate_applies_each_margin_to_each_critical_stratum():
 
 def _candidate(ctx, label="stokes+bg", cost=1.0, modes=None):
     modes = list(modes or [{"omega0": 4.0}])
-    hypothesis = enumerate_structures(ctx)[0]
+    hypothesis = enumerate_phonon_structures(ctx)[0]
     result = SimpleNamespace(
         label=label,
         k=4,
@@ -990,7 +990,7 @@ def test_rescue_cell_builds_a_real_in_range_production_branch():
 
 def test_campaign_only_candidates_never_enter_production_enumeration():
     dataset = generate_dataset(_spec(), "weak", 0)
-    labels = {hypothesis.label for hypothesis in enumerate_structures(dataset.fit_context)}
+    labels = {hypothesis.label for hypothesis in enumerate_phonon_structures(dataset.fit_context)}
     assert labels.isdisjoint(NULL_LABELS)
     assert labels == {
         "stokes+bg",

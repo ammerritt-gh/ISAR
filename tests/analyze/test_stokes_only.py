@@ -9,7 +9,7 @@ detectability test — temperature × amplitude × background — not temperatur
 import numpy as np
 
 from isar.analyze import loop
-from isar.analyze import structures as S
+from isar.analyze import phonon as S
 from isar.analyze.components import CompositeModel, ConstantBackground, PhononDHO
 from isar.analyze.context import ScanContext
 from isar.analyze.lineshapes import convolute_voigt_dho
@@ -81,19 +81,19 @@ def test_high_background_buries_an_otherwise_alive_antistokes():
 
 # --------------------------------------------------------------------------- enumeration wiring
 def test_enumeration_emits_stokes_only_when_buried():
-    hyps = S.enumerate_structures(_ctx(prior_omega=30.0, T=100.0))
+    hyps = S.enumerate_phonon_structures(_ctx(prior_omega=30.0, T=100.0))
     assert hyps and all(h.build().is_stokes_only() for h in hyps)
     # param set unchanged — Stokes-only is a lineshape choice, not fewer params
     assert hyps[0].build().param_names() == ["phonon.Omega_d", "phonon.Gamma", "phonon.A", "bg.BG"]
 
 
 def test_enumeration_stays_tied_when_resolvable():
-    hyps = S.enumerate_structures(_ctx(prior_omega=5.0, T=100.0))
+    hyps = S.enumerate_phonon_structures(_ctx(prior_omega=5.0, T=100.0))
     assert hyps and not any(h.build().is_stokes_only() for h in hyps)
 
 
 def test_multimode_honors_stokes_only():
-    hyps = S.enumerate_multimode(_ctx(prior_omega=30.0, T=100.0))
+    hyps = S.enumerate_phonon_multimode(_ctx(prior_omega=30.0, T=100.0))
     assert hyps and all(h.build().is_stokes_only() for h in hyps)
     assert "phonon.Omega_d" in hyps[0].build().param_names()  # mode-1 nesting preserved
 
@@ -119,7 +119,7 @@ def test_fit_kind_tagged_stokes_only_and_recovers_omega0():
                       center=0.0, gauss_fwhm=1.1, lorentz_fwhm=0.0, instrument="S30",
                       energy_status="needs_zero", prior_omega=25.0)
     assert S.antistokes_mode(ctx) == "stokes_only"          # exp(-25/(KB·70)) ≈ 0.016 → buried
-    hyp = {h.label: h for h in S.enumerate_structures(ctx)}["stokes+bg"]
+    hyp = {h.label: h for h in S.enumerate_phonon_structures(ctx)}["stokes+bg"]
     res = loop.fit_hypothesis(hyp, ctx, minos=False)
     assert res.fit_kind == "stokes_only"
     assert res.optimizer_converged and abs(res.omega0 - 25.0) < 0.5

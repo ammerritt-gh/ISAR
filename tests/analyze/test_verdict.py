@@ -8,7 +8,7 @@ import numpy as np
 from isar.analyze import loop, select, verdict
 from isar.analyze.context import ScanContext
 from isar.analyze.prior import PhononPrior
-from isar.analyze.structures import enumerate_structures
+from isar.analyze.phonon import enumerate_phonon_structures
 
 
 def _ctx(counts, *, energy_status="needs_zero", prior_omega=None, x=None):
@@ -110,7 +110,7 @@ def test_sparse_and_wide_is_unconstrained():
 def test_junk_vs_model_incomplete_split():
     x = np.linspace(-10.0, 10.0, 81)
     base = _ctx(np.zeros_like(x), x=x)
-    comp = {h.label: h for h in enumerate_structures(base)}["stokes+bg"].build()
+    comp = {h.label: h for h in enumerate_phonon_structures(base)}["stokes+bg"].build()
     theta = np.array([_SB["phonon.Omega_d"], _SB["phonon.Gamma"], _SB["phonon.A"], _SB["bg.BG"]])
     model = comp.evaluate(x, theta, base)
     rng = np.random.default_rng(0)
