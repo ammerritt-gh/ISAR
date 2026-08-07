@@ -595,6 +595,7 @@ def _rebuild_tracked_prior(card, session: SessionState, track: dict, observation
     card.state.dispersion_prior = [point for point in (card.state.dispersion_prior or [])
                                    if str(point.get("scan_id", "")).split("#", 1)[0] not in source_ids]
     revision = int(track.get("revision", 0))
+    added = set()
     for assignment, observation in zip(track.get("assignments") or [], observations):
         if assignment.get("track_state") != "confirmed" or not observation.get("authority"):
             continue
@@ -617,9 +618,11 @@ def _rebuild_tracked_prior(card, session: SessionState, track: dict, observation
             probability = float((candidate.get("probabilities") or {}).get(branch, 0.0))
             if probability < branch_tracking.CONFIRMED_PROBABILITY:
                 continue
+            scan_id = f"{candidate['source_scan_id']}#tracked:{branch}"
+            added.add(scan_id)
             session_prior.add_point(
                 card.state,
-                scan_id=f"{candidate['source_scan_id']}#tracked:{branch}",
+                scan_id=scan_id,
                 sample=outcome.get("sample"), T=outcome.get("T"), q=outcome.get("q"),
                 omega0=candidate.get("energy_meV"), modality="fold", verdict="resolved",
                 gamma=candidate.get("gamma"), gamma_err=candidate.get("gamma_err"),
@@ -628,8 +631,11 @@ def _rebuild_tracked_prior(card, session: SessionState, track: dict, observation
                 branch_posterior=candidate.get("probabilities"),
                 assignment_entropy=assignment.get("assignment_entropy"), t_round=t_round,
                 require_fold=True)
+    # Only the points this call rebuilt carry the current revision. A tracked point from another
+    # campaign survives the source-id filter untouched, and stamping it here would advertise it as
+    # evidence of this revision.
     for point in card.state.dispersion_prior:
-        if "#tracked:" in str(point.get("scan_id", "")):
+        if point.get("scan_id") in added:
             point["track_revision"] = revision
 
 
