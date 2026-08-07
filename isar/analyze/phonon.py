@@ -42,6 +42,10 @@ def omega0_value_error(omega_d: float, gamma: float, cov) -> tuple[float, float]
     omega0 = omega0_from(omega_d, gamma)
     if cov is None:
         return omega0, float("nan")
+    if omega0 == 0.0:
+        # Ω_d = Γ = 0: both derivatives are ∂ω₀/∂· = 0/0, so the covariance cannot be
+        # propagated at all. Same contract as a missing covariance — an unusable error.
+        return omega0, float("nan")
     var_od, var_g, cov_og = cov[0, 0], cov[1, 1], cov[0, 1]
     d_od, d_g = omega_d / omega0, gamma / omega0
     var = d_od**2 * var_od + d_g**2 * var_g + 2.0 * d_od * d_g * cov_og

@@ -59,6 +59,13 @@ def test_omega0_error_none_covariance():
     assert np.isfinite(omega0) and np.isnan(err)
 
 
+def test_omega0_error_zero_omega0_with_covariance():
+    """Ω_d = Γ = 0 makes ω₀ = 0, so the derivatives are undefined: report an unusable
+    (NaN) error rather than raising ZeroDivisionError on plain floats."""
+    omega0, err = phonon.omega0_value_error(0.0, 0.0, np.eye(2))
+    assert omega0 == 0.0 and np.isnan(err)
+
+
 # ---------------------------------------------------------------- success logic
 def test_assess_success_normal():
     x = np.array([5.0, 0.5, 100.0, 300.0, 5.0])
