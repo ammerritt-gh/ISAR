@@ -421,8 +421,11 @@ def test_retained_file_identity_is_eol_tolerant_but_content_sensitive():
     recorded = hashlib.sha256(crlf).hexdigest()
 
     for payload in (lf, crlf, cr):
-        assert recorded in gate._eol_variant_hashes(payload)
-    assert recorded not in gate._eol_variant_hashes(b"alpha\r\ngamma\r\n")
+        assert recorded in gate._eol_variant_hashes(payload, text=True)
+    assert recorded not in gate._eol_variant_hashes(b"alpha\r\ngamma\r\n", text=True)
+    # Binary identity stays raw-byte: no EOL variant is tolerated for non-text content.
+    assert gate._eol_variant_hashes(crlf, text=False) == {recorded}
+    assert recorded not in gate._eol_variant_hashes(lf, text=False)
 
 
 def test_repaired_slice8_bundle_is_self_contained_and_reproduces_exact_bytes(tmp_path):
