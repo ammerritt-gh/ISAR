@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the append-only ruling ledger; IDs are stable citation anchors (D2, D4)
 > **Provenance:** hand-written
-> **Verified against code revision:** `9d77631` (2026-08-04)
+> **Verified against code revision:** `24ff041` (2026-08-06)
 
 Append-only ledger of design rulings. IDs are stable citation anchors (D2). Started at the
 2026-07-09 design review; each ruling is final unless explicitly reopened; "future" means
@@ -1309,6 +1309,35 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
 
   Consequence for the stop contract: an acoustic campaign's "N measurable grid q converged" now
   excludes the origin, so N is one lower than the path length. That is the honest count.
+
+- **S10.** (2026-08-06, In force; governance rule superseding the S9 candidate/active closure
+  cycle; no production behavior change) **Continuous production source closure is retired;
+  evidence freezes are reserved for owner-named milestones.**
+  S10 supersedes the candidate/active source-closure cycle of S9: protected-semantic and
+  protected-adjacent drift reconciliation, candidate closure generation, owner review artifacts,
+  separate promotion commits, and closure-before-merge are no longer required, and the closure
+  tooling retains no merge or production authority (it may remain temporarily as an optional
+  diagnostic). S9's first half remains in force: completed STAT-2b.1 execution evidence stays
+  immutable and authenticated at its frozen identities. S10 does not amend S8 — production model
+  selection remains AIC. New formal gates are created only when the owner names a milestone
+  (production selection-criterion change, new acquisition authority, first acceptance of a major
+  steering capability, real-instrument deployment, or a publication-grade claim); they are designed
+  before the final run, executed once, and preserved at their commit. Demotion of the closure tests
+  and tooling is executed by the next governance slice under this ruling.
+
+- **S11.** (2026-08-07, In force; verification rule under S10; no production behavior change)
+  **Evidence identity is content-aware going forward and EOL-tolerant looking back.**
+  Documentation evidence promoted from now on records content-aware identity
+  (`docs/assets/MANIFEST.json` `schema_version` 3): JSON and TOML are hashed in canonical parsed
+  form, CSV/MD/TXT as LF-normalized text, everything else as raw bytes, so a checkout's line-ending
+  policy cannot invalidate an artifact whose content is unchanged. Frozen historical evidence
+  manifests keep the raw-byte hashes they recorded — including the Slice-8 shadow-gate bundles,
+  whose run manifests mix CRLF- and LF-hashed rows and therefore reproduce on no uniform checkout.
+  Those are verified by matching any EOL variant of the retained bytes (raw, LF-normalized,
+  CRLF-forced) against the recorded digest; content changes still fail. Verification moves, the
+  frozen record does not: this retires the pending "add the `-text` attribute and re-freeze the
+  manifests" operation of the PR #9 review (R9), which S10 would otherwise have required an
+  owner-named milestone to perform.
 
 ## Session status update
 

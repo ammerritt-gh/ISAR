@@ -212,6 +212,7 @@ file cannot be named inside that same commit, so the last-containing commit is t
 | `docs/DATA_SCHEME_RESEARCH.md` | `bba902c` | Superseded by `SCHEMA_LANDSCAPE.md`; `AGENTS.md` routing narrowed |
 | `docs/WISHLIST.md` | `9a16a75` | Content merged into `TODO.md` before deletion |
 | `docs/campaigns/PHASE_5_NOTES.md` | `24e1ab5` | "Forward notes only. Not designed." Described nothing that exists |
+| `docs/plans/POST_EIG4_ARCHITECTURE_CLEANUP.md` | `ec885f2` | Post-EIG-4 architectural cleanup (Pass 2), finished 2026-08-07. P2.0–P2.8 landed and every Pass-2 exit criterion holds; the accepted ownership boundaries are folded into `AGENTS.md`'s module map. The deferred-findings ledger — including the items still open (iminuit PSD acceptance, `canonical_hkl` coercion, `calibrate/tas` ownership, the dual-namespace patch seams) — is in the plan's final revision at that commit |
 | `docs/EIG4_COMPLETION_PLAN.md` | `cda26b1` | EIG-4 completion plan, finished 2026-08-05. Rules 6–8 restored, the five STAT-2b mismatches closed through the candidate/active cycle, and the tuning slice landed as O43; the durable outcome and its two named limitations are in `EIG_STEERING_DESIGN.md` |
 
 **Two references are deliberately left dangling.** `DECISIONS.md` mentions two deleted handoffs by

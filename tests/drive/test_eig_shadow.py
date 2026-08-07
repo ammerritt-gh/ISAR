@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from isar.drive import loop
+from isar.drive.acquisition import eig_runtime
 from isar.drive.acquisition.acquire import ScanProposal, ShadowScoringSource
 from isar.drive.acquisition.eig_shadow import (
     _AUTHORITY_BASIS_FIELDS,
@@ -20,6 +21,7 @@ from isar.drive.acquisition.eig_shadow import (
 from isar.eig.qoi import adapt_omega0_target_projection
 from isar.drive.acquisition.inventory import MeasurementIntent, canonical_json
 from isar.drive.acquisition.scan_design import ScanDesignContext, design_scan_windows
+from isar.drive.isar_io.readers import exact_pooled_master_sources
 from isar.drive.session_log import AnalysisLimitExceeded, read_log
 from isar.eig.shadow_inventory import ScanDesignShadowScoring
 from isar.schema.eig_policy import ScanWindowShadowScoringConfig
@@ -78,8 +80,8 @@ def test_shadow_adapter_runs_inside_charged_operation_without_changing_request(
             ScanDesignShadowScoring.unavailable_internal("qoi_policy_missing"))
         return value
 
-    monkeypatch.setattr(loop, "score_proposal_shadow_inventory", score)
-    loop._score_shadow_proposal(
+    monkeypatch.setattr(eig_runtime, "score_proposal_shadow_inventory", score)
+    eig_runtime._score_shadow_proposal(
         proposal, SimpleNamespace(analysis_limit_seconds=100.0), _cfg(tmp_path), it=3)
 
     assert proposal.scan_design_inventory.selected_candidate_id == selected
@@ -104,8 +106,8 @@ def test_shadow_deadline_and_crash_fail_open_on_the_same_legacy_candidate(
     def fail(*_args, **_kwargs):
         raise raised
 
-    monkeypatch.setattr(loop, "score_proposal_shadow_inventory", fail)
-    loop._score_shadow_proposal(
+    monkeypatch.setattr(eig_runtime, "score_proposal_shadow_inventory", fail)
+    eig_runtime._score_shadow_proposal(
         proposal, SimpleNamespace(analysis_limit_seconds=100.0), _cfg(tmp_path), it=4)
 
     shadow = proposal.scan_design_inventory.shadow_scoring
@@ -124,9 +126,9 @@ def test_shadow_boundary_never_catches_process_interrupts(monkeypatch, tmp_path)
     def interrupt(*_args, **_kwargs):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(loop, "score_proposal_shadow_inventory", interrupt)
+    monkeypatch.setattr(eig_runtime, "score_proposal_shadow_inventory", interrupt)
     with pytest.raises(KeyboardInterrupt):
-        loop._score_shadow_proposal(
+        eig_runtime._score_shadow_proposal(
             proposal, SimpleNamespace(analysis_limit_seconds=100.0), _cfg(tmp_path), it=5)
 
 
@@ -222,7 +224,7 @@ def test_pooled_master_source_join_uses_exact_revision_and_request(tmp_path):
     inventory = _inventory()
     _write_source_events(tmp_path, inventory)
 
-    sources = loop._exact_pooled_master_sources(tmp_path)
+    sources = exact_pooled_master_sources(tmp_path)
 
     assert sources[("master", "det", "revision-1")] == {
         "source_acquisition_id": "physical-a",
@@ -239,7 +241,7 @@ def test_ambiguous_pooled_source_join_refuses_instead_of_substituting(tmp_path):
     inventory = _inventory()
     _write_source_events(tmp_path, inventory, ambiguous=True)
 
-    assert ("master", "det", "revision-1") not in loop._exact_pooled_master_sources(tmp_path)
+    assert ("master", "det", "revision-1") not in exact_pooled_master_sources(tmp_path)
 
 
 def test_exact_pooled_source_runs_producer_grounded_numeric_path(monkeypatch, tmp_path):

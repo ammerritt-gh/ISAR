@@ -119,7 +119,7 @@ def fit_context(record, detector_id, card, calres, guidelines, *, unit_key, scan
     ``center/gauss_fwhm/lorentz_fwhm``). A held calibration returns a ``held`` result that still
     carries the RAW spectrum + a guessed zero, so the dock can offer manual E₀ placement (never a
     fabricated curve). Everything is displayed in the RAW frame; ``center`` marks the energy zero."""
-    from isar.session import driver
+    from isar.session import scan_delivery
 
     try:
         temperature_ok = np.isfinite(float(T))
@@ -138,15 +138,15 @@ def fit_context(record, detector_id, card, calres, guidelines, *, unit_key, scan
     x, counts, yerr, mask = _raw_arrays(record, detector_id)
     center = float(calres.center)
 
-    ctx, n_used, _reasons = driver.build_context(
+    ctx, n_used, _reasons = scan_delivery.build_context(
         record, detector_id, card, calres, prior, guidelines, scan_number=scan_number, q=q, T=T)
     if ctx is None:
         return _held_data(unit_key, f"too few points to fit ({n_used} kept)", record, detector_id,
                           center=center)
 
     try:
-        fit = driver.fit_one(ctx, card, prior=prior, M=m, seed=seed,
-                             structure_labels=labels, peaks=peaks, errors_tier="fast")
+        fit = scan_delivery.fit_one(ctx, card, prior=prior, M=m, seed=seed,
+                                    structure_labels=labels, peaks=peaks, errors_tier="fast")
     except Exception as exc:  # noqa: BLE001 — a preview fit failing is a shown state, not a crash
         log.warning("sandbox fit_one failed for %s: %s", unit_key, exc)
         return _error(unit_key, f"fit error: {type(exc).__name__}: {exc}")
@@ -187,10 +187,10 @@ def _winning_curve(fit, ctx, x_eval):
     from types import SimpleNamespace
 
     from isar.analyze.components import PhononDHO
-    from isar.analyze.structures import enumerate_multimode, enumerate_structures
+    from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 
-    by_label = {h.label: h for h in enumerate_structures(ctx)}
-    by_label.update({h.label: h for h in enumerate_multimode(ctx)})
+    by_label = {h.label: h for h in enumerate_phonon_structures(ctx)}
+    by_label.update({h.label: h for h in enumerate_phonon_multimode(ctx)})
     label = fit.get("best_label")
     hyp = by_label.get(label)
     if hyp is None:

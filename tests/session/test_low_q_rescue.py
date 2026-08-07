@@ -56,7 +56,7 @@ def test_low_q_branch_constraint_pins_gamma_and_tags():
 
 def test_driver_trigger_threshold_is_low_q_only():
     """The driver applies the branch only when the predicted ω₀ is within LOW_Q_FWHM_FACTOR·FWHM."""
-    from isar.session import driver
+    from isar.session import driver, scan_delivery
     fwhm = 1.5
-    assert 1.3 < driver.LOW_Q_FWHM_FACTOR * fwhm        # low-q → would trigger
-    assert not (5.0 < driver.LOW_Q_FWHM_FACTOR * fwhm)  # mid-q → left unconstrained
+    assert 1.3 < scan_delivery.LOW_Q_FWHM_FACTOR * fwhm        # low-q → would trigger
+    assert not (5.0 < scan_delivery.LOW_Q_FWHM_FACTOR * fwhm)  # mid-q → left unconstrained

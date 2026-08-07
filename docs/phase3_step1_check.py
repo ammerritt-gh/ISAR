@@ -45,12 +45,12 @@ if str(REPO) not in sys.path:
 from isar.analyze import errors, loop, select, verdict      # noqa: E402
 from isar.analyze.context import ScanContext               # noqa: E402
 from isar.analyze.prior import PhononPrior                 # noqa: E402
-from isar.analyze.structures import enumerate_structures   # noqa: E402
+from isar.analyze.phonon import enumerate_phonon_structures as enumerate_structures   # noqa: E402
 from isar.calibrate import elastic, energy_zero            # noqa: E402
 from isar.parsers import spec_s30                          # noqa: E402
 from isar.report import captions, findings                 # noqa: E402
 from isar.schema import axes                               # noqa: E402
-from isar.synth._ff import convolute_voigt_dho             # noqa: E402
+from isar.analyze.lineshapes import convolute_voigt_dho             # noqa: E402
 
 # --------------------------------------------------------------------------- config
 S30_FILE = REPO / "test_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"

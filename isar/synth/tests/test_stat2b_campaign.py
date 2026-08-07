@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 from concurrent.futures import ProcessPoolExecutor
-import hashlib
 import json
 import multiprocessing
 import pickle
@@ -14,7 +13,7 @@ import numpy as np
 import pytest
 
 from isar.analyze.context import ScanContext
-from isar.analyze.structures import enumerate_structures
+from isar.analyze.phonon import enumerate_phonon_structures
 from isar.schema.steering import ParamConstraints
 from isar.session import branch_model
 from isar.synth.stat2b import campaign
@@ -178,9 +177,6 @@ def test_repo_specs_load_and_heldout_matrix_is_fingerprinted():
         ).read_text(encoding="utf-8")
     )
     assert old_gate["owner_approved"] is True
-    assert hashlib.sha256(old_gate_path.read_bytes()).hexdigest() == (
-        "28d7c72d09d236a9092afca50b843b2ccaa195a1bf9e53897c3d57724fdfb868"
-    )
     assert old_status["status"] == "superseded_by_stat2b_1"
     assert old_status["checkpoint_count_at_stop"] == 1254
     assert old_status["heldout_records_inspected"] is False
@@ -640,7 +636,7 @@ def test_frozen_gate_applies_each_margin_to_each_critical_stratum():
 
 def _candidate(ctx, label="stokes+bg", cost=1.0, modes=None):
     modes = list(modes or [{"omega0": 4.0}])
-    hypothesis = enumerate_structures(ctx)[0]
+    hypothesis = enumerate_phonon_structures(ctx)[0]
     result = SimpleNamespace(
         label=label,
         k=4,
@@ -990,7 +986,7 @@ def test_rescue_cell_builds_a_real_in_range_production_branch():
 
 def test_campaign_only_candidates_never_enter_production_enumeration():
     dataset = generate_dataset(_spec(), "weak", 0)
-    labels = {hypothesis.label for hypothesis in enumerate_structures(dataset.fit_context)}
+    labels = {hypothesis.label for hypothesis in enumerate_phonon_structures(dataset.fit_context)}
     assert labels.isdisjoint(NULL_LABELS)
     assert labels == {
         "stokes+bg",

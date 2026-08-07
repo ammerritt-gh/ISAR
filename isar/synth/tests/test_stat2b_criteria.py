@@ -7,7 +7,7 @@ import pytest
 
 from isar.analyze import loop
 from isar.analyze.context import ScanContext
-from isar.analyze.structures import enumerate_structures
+from isar.analyze.phonon import enumerate_phonon_structures
 from isar.synth.stat2b.criteria import (
     CandidateEvidence,
     criterion_values,
@@ -121,7 +121,7 @@ def test_null_family_obeys_production_gates_and_fits():
 
 def test_standard_evidence_refuses_missing_fit_selection_semantics():
     ctx = _context()
-    hypothesis = enumerate_structures(ctx)[0]
+    hypothesis = enumerate_phonon_structures(ctx)[0]
     result = loop.fit_hypothesis(hypothesis, ctx)
     result.fit_semantics = None
     evidence = evidence_from_results(

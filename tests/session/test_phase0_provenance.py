@@ -37,13 +37,13 @@ def test_intensity_measure_dict_roundtrip():
 
 # --------------------------------------------------------------------------- driver helper
 def test_intensity_measure_from_fit_normalizes_by_exposure():
-    from isar.session import driver
+    from isar.session import driver, scan_delivery
     rec = types.SimpleNamespace(normalization=types.SimpleNamespace(
         counting_mode="monitor", monitor=np.array([1e6, 1e6, 2e6, 1e6]), time=None))
     ctx = types.SimpleNamespace(mask=np.array([True, True, False, True]),
                                 gauss_fwhm=1.5, lorentz_fwhm=0.0, instrument="S30")
     fit = {"omega0": 5.0, "modes": [{"omega0": 5.0, "amplitude": 42.0}]}
-    im = driver._intensity_measure(rec, ctx, fit)
+    im = scan_delivery._intensity_measure(rec, ctx, fit)
     # exposure = median monitor over KEPT points [1e6, 1e6, 1e6] = 1e6
     assert im["exposure"] == pytest.approx(1e6)
     assert im["value"] == pytest.approx(42.0 / 1e6)
@@ -52,17 +52,17 @@ def test_intensity_measure_from_fit_normalizes_by_exposure():
 
 
 def test_intensity_measure_none_when_no_amplitude_or_exposure():
-    from isar.session import driver
+    from isar.session import driver, scan_delivery
     ctx = types.SimpleNamespace(mask=np.array([True]), gauss_fwhm=1.5, lorentz_fwhm=0.0,
                                 instrument="S30")
     rec = types.SimpleNamespace(normalization=types.SimpleNamespace(
         counting_mode="monitor", monitor=np.array([1e6]), time=None))
-    assert driver._intensity_measure(rec, ctx, {"omega0": None, "modes": None}) is None
+    assert scan_delivery._intensity_measure(rec, ctx, {"omega0": None, "modes": None}) is None
     # no usable exposure → None
     rec0 = types.SimpleNamespace(normalization=types.SimpleNamespace(
         counting_mode="monitor", monitor=np.array([0.0]), time=None))
     fit = {"omega0": 5.0, "modes": [{"omega0": 5.0, "amplitude": 42.0}]}
-    assert driver._intensity_measure(rec0, ctx, fit) is None
+    assert scan_delivery._intensity_measure(rec0, ctx, fit) is None
 
 
 # --------------------------------------------------------------------------- add_point provenance

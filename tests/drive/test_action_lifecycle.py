@@ -22,6 +22,7 @@ from isar.drive import loop as loop_mod
 from isar.drive.acquisition import acquire as acq
 from isar.drive.acquisition import model as acq_model
 from isar.drive.acquisition.inventory import FinalizedProposal, ValidatedAttempt
+from isar.drive.instrument import request_realization as wire
 from isar.drive.objective import ObjectiveSpec
 
 
@@ -53,7 +54,7 @@ def _finalized(tmp_path, proposal, objective, *, it=0):
         objective, {"workspace": tmp_path, "client": object(),
                     "run_isar": lambda *a, **k: None, "worker": False})
     loop_mod._finalize_proposal(proposal, objective, cfg, {}, it=it)
-    return loop_mod.finalized_proposal(proposal)
+    return wire.finalized_proposal(proposal)
 
 
 def test_finalization_produces_a_request_matching_the_emitted_scan(tmp_path):
@@ -110,7 +111,7 @@ def test_the_validated_attempt_fingerprints_the_geometry_it_was_judged_under(tmp
     proposal, _inv = acq.propose_action(obj, model, [], {"fwhm_dE": 0.8}, {})
     finalized = _finalized(tmp_path, proposal, obj)
 
-    attempt = loop_mod.validated_attempt(finalized, _validation(), status="would_queue")
+    attempt = wire.validated_attempt(finalized, _validation(), status="would_queue")
     assert isinstance(attempt, ValidatedAttempt)
     assert attempt.proposal is finalized
     assert attempt.feasible_points == 3 and attempt.status == "would_queue"
@@ -125,8 +126,8 @@ def test_a_different_feasibility_manifest_is_a_different_attempt(tmp_path):
     proposal, _inv = acq.propose_action(obj, model, [], {"fwhm_dE": 0.8}, {})
     finalized = _finalized(tmp_path, proposal, obj)
 
-    reachable = loop_mod.validated_attempt(finalized, _validation(), status="would_queue")
-    blocked = loop_mod.validated_attempt(
+    reachable = wire.validated_attempt(finalized, _validation(), status="would_queue")
+    blocked = wire.validated_attempt(
         finalized, _validation((True, False, False), would_queue=False, blockers=["a2_limit"]),
         status="validation_rejected")
 
@@ -141,8 +142,8 @@ def test_the_manifest_fingerprint_is_stable_for_an_identical_verdict(tmp_path):
     obj, model = _obj(), acq_model.fit([])
     proposal, _inv = acq.propose_action(obj, model, [], {"fwhm_dE": 0.8}, {})
     finalized = _finalized(tmp_path, proposal, obj)
-    first = loop_mod.validated_attempt(finalized, _validation(), status="would_queue")
-    second = loop_mod.validated_attempt(finalized, _validation(), status="would_queue")
+    first = wire.validated_attempt(finalized, _validation(), status="would_queue")
+    second = wire.validated_attempt(finalized, _validation(), status="would_queue")
     assert first.feasibility_manifest_fingerprint == second.feasibility_manifest_fingerprint
 
 
@@ -151,7 +152,7 @@ def test_the_manifest_hash_treats_positional_masks_as_positional():
     would make two geometries collide, letting a suppression formed under one apply to the other —
     a false match, which is the dangerous direction. Blockers are an unordered reason set, so those
     do normalize."""
-    manifest = loop_mod._feasibility_manifest_fingerprint
+    manifest = wire._feasibility_manifest_fingerprint
     assert manifest(_validation((True, False, True))) != manifest(_validation((True, True, False)))
     assert manifest(_validation(blockers=["a2_limit", "s2_limit"])) == \
         manifest(_validation(blockers=["s2_limit", "a2_limit"]))
@@ -161,4 +162,4 @@ def test_the_manifest_hash_refuses_an_unserializable_verdict():
     """Same discipline as the inventory artifacts (PR1.7e): a value that is not JSON must fail rather
     than be stringified into a stable-looking address that means nothing."""
     with pytest.raises(TypeError):
-        loop_mod._feasibility_manifest_fingerprint({"would_queue": True, "infeasible": {object()}})
+        wire._feasibility_manifest_fingerprint({"would_queue": True, "infeasible": {object()}})

@@ -1,16 +1,16 @@
 """Structure-aware initial conditions: grid+NNLS generalized to a CompositeModel.
 
-The load-bearing test is that, for the full elastic+stokes+bg composite, structure_ic
+The load-bearing test is that, for the full elastic+stokes+bg composite, phonon_structure_ic
 reproduces the frozen `fit.initial_guess` exactly — proving the generalization is faithful.
 """
 import numpy as np
 
-from isar.analyze import ic
+from isar.analyze import phonon
 from isar.analyze.components import (CompositeModel, ConstantBackground, Elastic,
                                      PhononDHO)
 from isar.analyze.context import ScanContext
 from isar.synth import fit
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _spectrum_ctx():
@@ -25,7 +25,7 @@ def _spectrum_ctx():
 def test_structure_ic_matches_initial_guess_for_full_model():
     ctx = _spectrum_ctx()
     comp = CompositeModel([PhononDHO(), Elastic(), ConstantBackground()])
-    got = ic.structure_ic(comp, ctx)
+    got = phonon.phonon_structure_ic(comp, ctx)
     expected = fit.initial_guess(ctx.x, ctx.counts, ctx.gauss_fwhm, ctx.lorentz_fwhm,
                                  ctx.T, center=ctx.center, x_max=float(np.max(ctx.x)))
     assert np.allclose(got, expected)
@@ -34,7 +34,7 @@ def test_structure_ic_matches_initial_guess_for_full_model():
 def test_structure_ic_stokes_only_has_no_elastic_param():
     ctx = _spectrum_ctx()
     comp = CompositeModel([PhononDHO(), ConstantBackground()])
-    got = ic.structure_ic(comp, ctx)
+    got = phonon.phonon_structure_ic(comp, ctx)
     assert got.shape == (4,)              # Omega_d, Gamma, A, BG — no elastic
     od, gamma, A, BG = got
     assert 0.0 < od <= float(np.max(ctx.x))
@@ -43,9 +43,9 @@ def test_structure_ic_stokes_only_has_no_elastic_param():
 
 def test_omega_d_grid_full_vs_prior_narrowed():
     x = np.linspace(-10.0, 10.0, 41)
-    full = ic.omega_d_grid(x, 10.0)
+    full = phonon.omega_d_grid(x, 10.0)
     assert full.min() < 1.0 and full.max() > 8.0
-    narrowed = ic.omega_d_grid(x, 10.0, prior_omega=5.0)
+    narrowed = phonon.omega_d_grid(x, 10.0, prior_omega=5.0)
     assert narrowed.min() >= 3.4 and narrowed.max() <= 6.6
 
 
@@ -63,13 +63,13 @@ def test_greedy_multimode_ic_recovers_two_seeds_on_double_peak():
     """On a synthetic two-peak spectrum, freezing mode-1 at the 1-mode fit and grid-scanning
     mode-2 places the two seeds near the two true peaks (ω₀ ≈ 4 and 10 meV)."""
     from isar.analyze import loop
-    from isar.analyze.structures import enumerate_multimode, enumerate_structures
+    from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
     ctx = _two_peak_ctx()
-    one = loop.fit_hypothesis({h.label: h for h in enumerate_structures(ctx)}["stokes+bg"], ctx)
-    comp = {h.label: h for h in enumerate_multimode(ctx)}["stokes2+bg"].build()
-    seed = ic.greedy_multimode_ic(comp, ctx, one)
-    o1 = fit.omega0_from(seed["phonon.Omega_d"], seed["phonon.Gamma"])
-    o2 = fit.omega0_from(seed["phonon2.Omega_d"], seed["phonon2.Gamma"])
+    one = loop.fit_hypothesis({h.label: h for h in enumerate_phonon_structures(ctx)}["stokes+bg"], ctx)
+    comp = {h.label: h for h in enumerate_phonon_multimode(ctx)}["stokes2+bg"].build()
+    seed = phonon.greedy_multimode_ic(comp, ctx, one)
+    o1 = phonon.omega0_from(seed["phonon.Omega_d"], seed["phonon.Gamma"])
+    o2 = phonon.omega0_from(seed["phonon2.Omega_d"], seed["phonon2.Gamma"])
     seeds = sorted([o1, o2])
     assert abs(seeds[0] - 4.0) < 1.5
     assert abs(seeds[1] - 10.0) < 1.5
@@ -78,13 +78,13 @@ def test_greedy_multimode_ic_recovers_two_seeds_on_double_peak():
 
 
 def test_greedy_multimode_ic_seeds_mode1_when_one_mode_result_is_none():
-    """With no 1-mode result supplied, mode-1 is seeded internally (structure_ic) and mode-2
+    """With no 1-mode result supplied, mode-1 is seeded internally (phonon_structure_ic) and mode-2
     still lands on the second peak — the seed is a full dict over all params."""
     ctx = _two_peak_ctx()
-    from isar.analyze.structures import enumerate_multimode
-    comp = {h.label: h for h in enumerate_multimode(ctx)}["stokes2+bg"].build()
-    seed = ic.greedy_multimode_ic(comp, ctx, None)
+    from isar.analyze.phonon import enumerate_phonon_multimode
+    comp = {h.label: h for h in enumerate_phonon_multimode(ctx)}["stokes2+bg"].build()
+    seed = phonon.greedy_multimode_ic(comp, ctx, None)
     assert set(seed) == set(comp.param_names())
-    seeds = sorted([fit.omega0_from(seed["phonon.Omega_d"], seed["phonon.Gamma"]),
-                    fit.omega0_from(seed["phonon2.Omega_d"], seed["phonon2.Gamma"])])
+    seeds = sorted([phonon.omega0_from(seed["phonon.Omega_d"], seed["phonon.Gamma"]),
+                    phonon.omega0_from(seed["phonon2.Omega_d"], seed["phonon2.Gamma"])])
     assert abs(seeds[0] - 4.0) < 1.6 and abs(seeds[1] - 10.0) < 1.6

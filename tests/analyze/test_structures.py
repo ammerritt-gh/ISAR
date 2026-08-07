@@ -5,7 +5,7 @@ off-window-elastic degeneracy fix, and anti-Stokes is handled by the tie inside 
 """
 import numpy as np
 
-from isar.analyze import structures as S
+from isar.analyze import phonon as S
 from isar.analyze.context import ScanContext
 
 
@@ -28,7 +28,7 @@ def _tas_offwindow_ctx(quasielastic_fwhm=None):
 
 
 def test_in_window_ixs_emits_both_hypotheses():
-    hyps = S.enumerate_structures(_ixs_ctx())
+    hyps = S.enumerate_phonon_structures(_ixs_ctx())
     by_label = {h.label: h for h in hyps}
     assert set(by_label) == {"stokes+bg", "elastic+stokes+bg"}
     assert by_label["stokes+bg"].k == 4
@@ -36,19 +36,19 @@ def test_in_window_ixs_emits_both_hypotheses():
 
 
 def test_off_window_elastic_excluded():
-    hyps = S.enumerate_structures(_tas_offwindow_ctx())
+    hyps = S.enumerate_phonon_structures(_tas_offwindow_ctx())
     assert [h.label for h in hyps] == ["stokes+bg"]
 
 
 def test_needs_conversion_refuses_elastic():
-    hyps = S.enumerate_structures(_ixs_ctx(status="needs_conversion_and_zero"))
+    hyps = S.enumerate_phonon_structures(_ixs_ctx(status="needs_conversion_and_zero"))
     assert [h.label for h in hyps] == ["stokes+bg"]
 
 
 def test_tas_quasielastic_admitted_when_card_enables_it():
     """IN8 (off-window elastic) + a card-declared QE width: the broad quasi-elastic
     hypothesis is added even though the sharp elastic is excluded (§8)."""
-    hyps = S.enumerate_structures(_tas_offwindow_ctx(quasielastic_fwhm=1.5))
+    hyps = S.enumerate_phonon_structures(_tas_offwindow_ctx(quasielastic_fwhm=1.5))
     assert [h.label for h in hyps] == ["stokes+bg", "stokes+qe+bg"]
     qe = {h.label: h for h in hyps}["stokes+qe+bg"]
     assert qe.k == 5  # phonon (Omega_d, Gamma, A) + qe.QE + bg.BG
@@ -59,14 +59,14 @@ def test_tas_quasielastic_admitted_when_card_enables_it():
 def test_quasielastic_not_admitted_when_card_silent():
     """A TAS scan whose card does not declare a QE width stays single-structure — the
     quasi-elastic is opt-in per card, never enumerated by default."""
-    hyps = S.enumerate_structures(_tas_offwindow_ctx())
+    hyps = S.enumerate_phonon_structures(_tas_offwindow_ctx())
     assert [h.label for h in hyps] == ["stokes+bg"]
 
 
 def test_in_window_elastic_and_quasielastic_emit_four_hypotheses():
     """When both gates fire (in-window elastic AND a declared QE width), the elastic-only,
     QE-only, and elastic+QE structures are all admissible; model selection decides."""
-    hyps = S.enumerate_structures(_ixs_ctx(quasielastic_fwhm=1.5))
+    hyps = S.enumerate_phonon_structures(_ixs_ctx(quasielastic_fwhm=1.5))
     assert [h.label for h in hyps] == [
         "stokes+bg", "elastic+stokes+bg", "stokes+qe+bg", "elastic+stokes+qe+bg"]
     full = {h.label: h for h in hyps}["elastic+stokes+qe+bg"].build()
@@ -81,7 +81,7 @@ def test_antistokes_gate_is_tied_at_step1():
 def test_enumerate_multimode_two_phonon_build_and_k():
     """The 2-mode escalation set: mode 1 keeps the ``phonon`` prefix (so the 1-mode hypothesis
     is strictly nested), mode 2 is ``phonon2``; k counts both phonons + bg."""
-    hyps = S.enumerate_multimode(_ixs_ctx())
+    hyps = S.enumerate_phonon_multimode(_ixs_ctx())
     by_label = {h.label: h for h in hyps}
     assert set(by_label) == {"stokes2+bg", "elastic+stokes2+bg"}
     two = by_label["stokes2+bg"].build()
@@ -90,30 +90,30 @@ def test_enumerate_multimode_two_phonon_build_and_k():
     assert by_label["stokes2+bg"].k == 7
     assert by_label["elastic+stokes2+bg"].k == 8
     # 1-mode params are a strict subset of the 2-mode params (nesting the LRT keys on)
-    one = {h.label: h for h in S.enumerate_structures(_ixs_ctx())}
+    one = {h.label: h for h in S.enumerate_phonon_structures(_ixs_ctx())}
     assert set(one["stokes+bg"].build().param_names()) < set(two.param_names())
 
 
 def test_enumerate_multimode_honors_elastic_and_qe_gates():
     # off-window elastic, no QE → only stokes2+bg
-    assert [h.label for h in S.enumerate_multimode(_tas_offwindow_ctx())] == ["stokes2+bg"]
+    assert [h.label for h in S.enumerate_phonon_multimode(_tas_offwindow_ctx())] == ["stokes2+bg"]
     # off-window elastic + QE declared → stokes2+bg + stokes2+qe+bg
-    assert [h.label for h in S.enumerate_multimode(_tas_offwindow_ctx(quasielastic_fwhm=1.5))] == \
+    assert [h.label for h in S.enumerate_phonon_multimode(_tas_offwindow_ctx(quasielastic_fwhm=1.5))] == \
         ["stokes2+bg", "stokes2+qe+bg"]
     # in-window elastic + QE declared → all four
-    assert [h.label for h in S.enumerate_multimode(_ixs_ctx(quasielastic_fwhm=1.5))] == \
+    assert [h.label for h in S.enumerate_phonon_multimode(_ixs_ctx(quasielastic_fwhm=1.5))] == \
         ["stokes2+bg", "elastic+stokes2+bg", "stokes2+qe+bg", "elastic+stokes2+qe+bg"]
 
 
 def test_enumerate_multimode_capped_at_two():
-    assert S.enumerate_multimode(_ixs_ctx(), n_max=1) == []
+    assert S.enumerate_phonon_multimode(_ixs_ctx(), n_max=1) == []
     # n_max > 2 is treated as 2 this round (still a two-phonon set)
-    assert [h.label for h in S.enumerate_multimode(_ixs_ctx(), n_max=3)] == \
+    assert [h.label for h in S.enumerate_phonon_multimode(_ixs_ctx(), n_max=3)] == \
         ["stokes2+bg", "elastic+stokes2+bg"]
 
 
 def test_hypothesis_build_param_order():
-    by_label = {h.label: h for h in S.enumerate_structures(_ixs_ctx())}
+    by_label = {h.label: h for h in S.enumerate_phonon_structures(_ixs_ctx())}
     full = by_label["elastic+stokes+bg"].build()
     assert full.param_names() == ["phonon.Omega_d", "phonon.Gamma", "phonon.A",
                                   "elastic.E", "bg.BG"]

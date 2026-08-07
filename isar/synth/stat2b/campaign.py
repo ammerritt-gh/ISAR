@@ -25,15 +25,18 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 
 from isar.analyze import loop
-from isar.analyze.ic import greedy_multimode_ic
+from isar.analyze.phonon import (
+    enumerate_phonon_multimode,
+    enumerate_phonon_structures,
+    greedy_multimode_ic,
+)
 from isar.analyze.prior import PhononPrior
-from isar.analyze.structures import enumerate_multimode, enumerate_structures
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.supervisor.stopping import evaluate_stop, summarize_grid
 from isar.schema import card as card_mod
 from isar.schema.statistics import semantics_fingerprint
 from isar.schema.steering import ParamConstraints
-from isar.session import driver
+from isar.session import scan_delivery
 from isar.session import session_prior
 from isar.synth.stat2b.criteria import (
     NULL_LABELS,
@@ -95,9 +98,9 @@ CAMPAIGN_SOURCE_PATHS = (
     "isar/analyze/errors/bayes.py",
     "isar/analyze/errors/bootstrap.py",
     "isar/analyze/errors/profile.py",
-    "isar/analyze/ic.py",
     "isar/analyze/loop.py",
     "isar/analyze/model_manifest.py",
+    "isar/analyze/phonon.py",
     "isar/analyze/prior.py",
     "isar/analyze/select.py",
     "isar/analyze/shadow_selection.py",
@@ -109,11 +112,11 @@ CAMPAIGN_SOURCE_PATHS = (
     "isar/schema/statistics.py",
     "isar/schema/steering.py",
     "isar/session/driver.py",
+    "isar/session/evidence_update.py",
+    "isar/session/scan_delivery.py",
+    "isar/session/master_delivery.py",
     "isar/session/branch_model.py",
     "isar/session/session_prior.py",
-    "isar/synth/_ff.py",
-    "isar/synth/backends.py",
-    "isar/synth/estimators.py",
     "isar/synth/fit.py",
 )
 CAMPAIGN_SOURCE_ROOTS = (
@@ -432,7 +435,7 @@ def _delivery_prior_and_card(
 
 
 def _all_production_hypotheses(ctx) -> list:
-    return list(enumerate_structures(ctx)) + list(enumerate_multimode(ctx))
+    return list(enumerate_phonon_structures(ctx)) + list(enumerate_phonon_multimode(ctx))
 
 
 def _standard_evidence(
@@ -659,9 +662,9 @@ def _full_delivery(
     seed = int(delivery_inputs["delivery_seed"])
     ctx = replace(dataset.fit_context, acoustic_omega=target_hint)
     prior, card = _delivery_prior_and_card(dataset, scenario)
-    descriptor = driver._build_descriptor(ctx)
+    descriptor = scan_delivery._build_descriptor(ctx)
     region_reasons: list[str] = []
-    fit = driver.fit_one(
+    fit = scan_delivery.fit_one(
         ctx,
         card,
         prior=prior,
@@ -674,7 +677,7 @@ def _full_delivery(
         descriptor=descriptor,
         shadow_enabled=False,
     )
-    fit = driver._hard_fix_escalation(
+    fit = scan_delivery._hard_fix_escalation(
         fit,
         ctx,
         prior,

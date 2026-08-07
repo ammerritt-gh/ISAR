@@ -77,7 +77,7 @@ NEGATIVE_PREDICTION_EPS = 1e-9
 #: zero-exposure case (threshold and value both zero) falling out correctly.
 NEGATIVE_PREDICTION_EPS_RULE = "exposure_scaled"
 
-#: The registered PhononDHO peak vocabulary. ``Fitting_Functions.convolute_voigt_dho`` lowercases
+#: The registered PhononDHO peak vocabulary. ``isar.analyze.lineshapes.convolute_voigt_dho`` lowercases
 #: ``peak`` and either takes the literal ``all`` or splits it on ``+`` into these parts; an
 #: unrecognised part is silently dropped there, producing a plausible but wrong lineshape.
 PHONON_PEAK_PARTS = ("stokes", "astokes", "elastic")

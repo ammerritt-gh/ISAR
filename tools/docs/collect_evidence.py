@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -25,7 +26,8 @@ import string
 import subprocess
 import sys
 import tempfile
-from datetime import date
+import tomllib
+from datetime import date, datetime, time
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -35,7 +37,11 @@ ASSETS = REPO / "docs" / "assets"
 MANIFEST = ASSETS / "MANIFEST.json"
 TEST_DATA = REPO / "test_data"
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+# Schema 2 hashed every artifact as raw bytes, which made text evidence depend on the checkout's
+# line endings. Schema 3 hashes structured and text evidence by content instead. The v2 branches
+# below exist only for the committed bundle and die at the next real promotion.
+LEGACY_RAW_BYTE_SCHEMA = 2
 REPARSE_POINT = 0x400
 WINDOWS_RESERVED = {
     "CON", "PRN", "AUX", "NUL",
@@ -136,6 +142,66 @@ def sha256_of(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _reject_json_constant(token: str) -> None:
+    raise ValueError(f"non-finite JSON constant {token!r} is not valid evidence content")
+
+
+def _canonical_structured_value(value):
+    """Recursively map a parsed JSON/TOML value onto JSON-serializable canonical form.
+
+    TOML temporal types get tagged isoformat dicts (deterministic, EOL-independent identity);
+    non-finite numbers and any other non-JSON type are collection failures, never TypeErrors.
+    """
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise EvidenceError("structured evidence contains a non-finite number")
+        return value
+    # datetime before date: datetime subclasses date.
+    if isinstance(value, datetime):
+        return {"$datetime": value.isoformat()}
+    if isinstance(value, date):
+        return {"$date": value.isoformat()}
+    if isinstance(value, time):
+        return {"$time": value.isoformat()}
+    if isinstance(value, dict):
+        return {str(key): _canonical_structured_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_canonical_structured_value(item) for item in value]
+    raise EvidenceError(f"unsupported structured evidence value: {type(value).__name__}")
+
+
+def content_sha256(path: Path) -> str:
+    """Hash evidence by content: structured files canonically, text with normalized newlines.
+
+    Anything else (figures, archives) falls back to the raw bytes. Evidence must parse — a
+    ``.json``/``.toml`` artifact that does not is a collection failure, not a raw-byte fallback.
+    """
+    suffix = path.suffix.lower()
+    if suffix in {".json", ".toml"}:
+        try:
+            text = path.read_text(encoding="utf-8")
+            if suffix == ".json":
+                parsed = json.loads(text, parse_constant=_reject_json_constant)
+            else:
+                parsed = tomllib.loads(text)
+            canonical = json.dumps(_canonical_structured_value(parsed), sort_keys=True,
+                                   separators=(",", ":"), allow_nan=False)
+        except EvidenceError as exc:
+            raise EvidenceError(f"invalid {suffix} evidence {path}: {exc}") from exc
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+            raise EvidenceError(f"unparsable {suffix} evidence {path}: {exc}") from exc
+    elif suffix in {".csv", ".md", ".txt"}:
+        try:
+            canonical = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        except (OSError, UnicodeError) as exc:
+            raise EvidenceError(f"cannot read UTF-8 evidence {path}: {exc}") from exc
+    else:
+        return sha256_of(path)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _git_output(args: list[str]) -> bytes:
@@ -456,7 +522,7 @@ def _stage(
             manifest_group["files"].append({
                 "path": f"{group['name']}/{rel}",
                 "bytes": destination.stat().st_size,
-                "sha256": sha256_of(destination),
+                "sha256": content_sha256(destination),
             })
     (stage / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest
@@ -604,10 +670,10 @@ def _semantic_manifest(manifest: object, groups: list[dict[str, Any]]) -> tuple[
     listed: set[str] = set()
     if not isinstance(manifest, dict):
         return ["manifest root is not an object"], listed
-    if manifest.get("schema_version") != SCHEMA_VERSION:
+    if manifest.get("schema_version") not in (LEGACY_RAW_BYTE_SCHEMA, SCHEMA_VERSION):
         problems.append(
             f"unsupported schema_version: {manifest.get('schema_version')!r} "
-            f"(expected {SCHEMA_VERSION})"
+            f"(expected {LEGACY_RAW_BYTE_SCHEMA} or {SCHEMA_VERSION})"
         )
     collected = manifest.get("collected")
     try:
@@ -737,6 +803,7 @@ def check() -> int:
         return 1
     disk_files, disk_problems = _disk_files_and_problems()
     problems.extend(disk_problems)
+    legacy = manifest.get("schema_version") == LEGACY_RAW_BYTE_SCHEMA
     if isinstance(manifest, dict) and isinstance(manifest.get("groups"), list):
         for group in manifest["groups"]:
             if not isinstance(group, dict) or not isinstance(group.get("files"), list):
@@ -753,10 +820,22 @@ def check() -> int:
                     if message not in problems:
                         problems.append(str(exc))
                     continue
-                if isinstance(record.get("bytes"), int) and path.stat().st_size != record["bytes"]:
+                # ``bytes`` is a raw-byte property, so it is only a reliable check under the
+                # legacy raw-byte schema; under v3 the content hash is authoritative.
+                if (
+                    legacy
+                    and isinstance(record.get("bytes"), int)
+                    and path.stat().st_size != record["bytes"]
+                ):
                     problems.append(f"changed size since collection: {rel}")
-                if isinstance(record.get("sha256"), str) and sha256_of(path) != record["sha256"]:
-                    problems.append(f"changed since collection: {rel}")
+                if isinstance(record.get("sha256"), str):
+                    try:
+                        digest = sha256_of(path) if legacy else content_sha256(path)
+                    except EvidenceError as exc:
+                        problems.append(str(exc))
+                        continue
+                    if digest != record["sha256"]:
+                        problems.append(f"changed since collection: {rel}")
     for extra in sorted(disk_files - listed):
         problems.append(f"present but unlisted: {extra}")
     for problem in problems:

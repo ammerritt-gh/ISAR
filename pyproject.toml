@@ -12,12 +12,11 @@ dependencies = [
     "scipy>=1.11",
     "matplotlib>=3.8",
     "iminuit>=2.25",
-    "lmfit>=1.2",
     "dynesty>=3,<4",  # rwalk draws are seeded-deterministic per major version only; validated on 3.0.0
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=7.4", "pytest-xdist>=3.5"]
+test = ["pytest>=7.4", "pytest-xdist>=3.5", "lmfit>=1.2"]  # lmfit: comparison backend only
 test-gui = ["pytest-qt"]
 gui = ["PySide6", "pyqtgraph>=0.13,<0.15", "watchdog"]
 
@@ -25,8 +24,6 @@ gui = ["PySide6", "pyqtgraph>=0.13,<0.15", "watchdog"]
 isar = "isar.cli.main:main"
 
 [tool.setuptools]
-# Fitting_Functions.py is a top-level module at the repo root, imported unchanged.
-py-modules = ["Fitting_Functions"]
 packages = ["isar", "isar.synth", "isar.synth.stat2b", "isar.schema", "isar.parsers", "isar.synth_format", "isar.reduce", "isar.report", "isar.analyze", "isar.analyze.errors", "isar.calibrate", "isar.session", "isar.cli", "isar.drive", "isar.drive.supervisor", "isar.drive.acquisition", "isar.drive.instrument", "isar.drive.isar_io", "isar.geometry", "isar.workspace_api", "isar.plotspec", "isar.plotspec.backends", "isar.eig", "isar_gui", "isar_gui.viewmodels", "isar_gui.views"]
 
 [tool.setuptools.package-data]

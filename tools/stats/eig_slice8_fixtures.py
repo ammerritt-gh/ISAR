@@ -75,10 +75,11 @@ from isar.schema.statistics import (
     semantics_fingerprint,
     validate_for_write,
 )
-from isar.session import driver, predictive_artifact
+from isar.session import driver, evidence_update, predictive_artifact, scan_delivery
 from isar.session.state import ScanEntry, SessionState
 from isar.session.predictive_artifact import build_target_projection
 from isar.drive import loop as drive_loop
+from isar.drive.acquisition import eig_runtime
 from tools.stats import eig_slice8_gate as gate
 
 
@@ -156,7 +157,7 @@ def _selection(label: str, *, constrained: bool = False) -> dict[str, Any]:
         "guideline_structure_filter": [label], "offered_labels": [label],
         "scored_labels": [label],
     }
-    return driver._build_selection_semantics(
+    return scan_delivery._build_selection_semantics(
         [result], SimpleNamespace(scores=[score], pooled=object()), route,
         error_attachment_labels=[label])
 
@@ -999,15 +1000,15 @@ def _run_controller_completion(raw: Mapping[str, Any], workspace: Path,
     })
     budget = {"kind": "neutrons", "amount": 1.0e12,
               "neutrons": 0.0, "seconds": 0.0, "spent": 0.0}
-    drive_loop._score_shadow_proposal(proposal, objective, cfg, it=0)
+    eig_runtime._score_shadow_proposal(proposal, objective, cfg, it=0)
     scoring = proposal.scan_design_inventory.shadow_scoring
     if scoring is None or scoring.status != "complete":
         raise gate.GateEvidenceError("production controller did not complete shadow scoring")
     drive_loop._finalize_proposal(proposal, objective, cfg, budget, it=0)
     drive_loop._persist_scan_design_inventory(cfg, proposal, it=0)
-    drive_loop._refresh_realized_comparison(
+    eig_runtime._refresh_realized_comparison(
         cfg, objective, proposal, budget, it=0,
-        legacy_adjustments=("repair_pre_submit",))
+        legacy_adjustments=("repair_pre_submit",), finalizer=drive_loop._finalize_proposal)
     proposal.acquisition_id = "s8-c01-current-candidate"
     observations: list[dict[str, Any]] = []
     drive_loop._execute_proposal(
@@ -1396,7 +1397,7 @@ def _init_tavi_workspace(root: Path) -> Path:
             },
         })
     state = CardState(dispersion_prior=prior)
-    driver._store_branch_beliefs(state, t_round=5.0, period=2.0)
+    evidence_update._store_branch_beliefs(state, t_round=5.0, period=2.0)
     _write_json(root / "card.state.json", state.to_dict())
     SessionState().save(root / "session.json")
     return root

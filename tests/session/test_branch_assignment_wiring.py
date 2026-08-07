@@ -7,7 +7,7 @@ import pytest
 from isar.schema.card import CardState
 from isar.session import branch_model as BM
 from isar.session import session_prior as SP
-from isar.session import driver
+from isar.session import driver, scan_delivery
 
 
 def _add(state, scan_id, q, omega0, *, branch_id, weight=1.0, sample="S", T=200.0):
@@ -60,18 +60,18 @@ def test_acquisition_provenance_resolves_driven_and_standalone_scans():
     card = SimpleNamespace(state=state)
     assert CardState.from_dict(state.to_dict()).acquisition_provenance == state.acquisition_provenance
     driven = SimpleNamespace(raw_header={"tavi": {"job_id": "j-0042"}})
-    acquisition_id, provenance = driver._acquisition_provenance_for(driven, card, "S:42")
+    acquisition_id, provenance = scan_delivery._acquisition_provenance_for(driven, card, "S:42")
     assert acquisition_id == "logical:7"
     assert provenance["acquisition_target_energy"] == pytest.approx(6.25)
     standalone = SimpleNamespace(raw_header={})
-    assert driver._acquisition_provenance_for(standalone, card, "S:9") == ("scan:S:9", None)
+    assert scan_delivery._acquisition_provenance_for(standalone, card, "S:9") == ("scan:S:9", None)
 
 
 def test_effective_exposure_uses_preserved_selected_center_after_triage_withholds_fit():
     ctx = SimpleNamespace(
         x=[0.0, 1.0, 2.0, 3.0], mask=[True] * 4, gauss_fwhm=0.1,
         lorentz_fwhm=0.0, acoustic_omega=None, prior_omega=None, window=(0.0, 3.0))
-    info = driver._effective_exposure_for(
+    info = scan_delivery._effective_exposure_for(
         None, ctx, {"omega0": None}, absolute_exposure=[10.0, 20.0, 80.0, 160.0],
         target_center=2.0)
     assert info["center"] == pytest.approx(2.0)
@@ -100,17 +100,17 @@ def test_optic_cold_start_keeps_lowest_candidate_provisional_with_bayesian_evide
         {"omega0": 1.2, "omega0_err": 0.1, "gamma": 0.2, "amplitude": 900.0},
         {"omega0": 6.0, "omega0_err": 0.1, "gamma": 0.3, "amplitude": 300.0},
     ]
-    optic = driver._assign_and_triage(
+    optic = scan_delivery._assign_and_triage(
         {"omega0": 6.0, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
         q=[2.1, 0.0, 0.0], t_round=5.0, near_gamma=False)
-    acoustic = driver._assign_and_triage(
+    acoustic = scan_delivery._assign_and_triage(
         {"omega0": 1.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
         q=[2.1, 0.0, 0.0], t_round=5.0, near_gamma=False)
     assert optic["deliver"] is False and acoustic["deliver"] is False
     assert acoustic["branch_id"] == "acoustic"
     assert acoustic["candidate_state"] == "provisional"
     assert acoustic["posterior"]["acoustic"] > acoustic["posterior"].get("optic", 0.0)
-    neighbor = driver._assign_and_triage(
+    neighbor = scan_delivery._assign_and_triage(
         {"omega0": 1.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
         q=[2.2, 0.0, 0.0], t_round=5.0, near_gamma=False)
     assert neighbor["candidate_id"] == acoustic["candidate_id"]
@@ -126,7 +126,7 @@ def test_optic_cold_start_nearest_energy_can_deliver_supported_mode():
         {"omega0": 1.2, "omega0_err": 0.1, "gamma": 0.2, "amplitude": 900.0},
         {"omega0": 6.0, "omega0_err": 0.1, "gamma": 0.3, "amplitude": 300.0},
     ]
-    result = driver._assign_and_triage(
+    result = scan_delivery._assign_and_triage(
         {"omega0": 6.0, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
         q=[2.0, 0.0, 0.0], t_round=5.0, near_gamma=False)
     assert result["deliver"] is True and result["branch_id"] == "optic"
@@ -148,10 +148,10 @@ def test_explicit_highest_selector_keeps_unsupported_upper_mode_provisional():
         {"omega0": 7.4, "omega0_err": 0.1, "gamma": 0.3, "amplitude": 300.0},
     ]
 
-    optic = driver._assign_and_triage(
+    optic = scan_delivery._assign_and_triage(
         {"omega0": 7.4, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
         q=[2.0, 0.5, 0.0], t_round=5.0, near_gamma=False)
-    acoustic = driver._assign_and_triage(
+    acoustic = scan_delivery._assign_and_triage(
         {"omega0": 4.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
         q=[2.0, 0.5, 0.0], t_round=5.0, near_gamma=False)
 
@@ -181,7 +181,7 @@ def test_established_optic_uses_fitted_modes_before_descriptor_rivals():
         SimpleNamespace(energy=8.0, width=0.2, integrated_intensity=100.0, significance=20.0),
     ])
 
-    optic = driver._assign_and_triage(
+    optic = scan_delivery._assign_and_triage(
         {"omega0": 7.4, "modes": modes}, descriptor, ctx, card=card, sample="S", T=200.0,
         q=[2.0, 0.5, 0.0], t_round=5.0, near_gamma=False)
 

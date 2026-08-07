@@ -5,7 +5,7 @@ import json
 import pytest
 
 from isar.drive.isar_io import readers
-from isar.session.driver import _CSV_COLUMNS  # the authoritative results.csv header (test-side import ok)
+from isar.session.outcome import _CSV_COLUMNS  # the authoritative results.csv header (test-side import ok)
 
 
 def _write_results(workspace, rows):

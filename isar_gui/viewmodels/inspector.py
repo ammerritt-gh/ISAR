@@ -5,7 +5,7 @@ assembles everything the inspector widget draws — the data+fit overlay spec, t
 interval-ladder rows (labeled by tier, one certifying), the AIC candidate rows, and the
 verdict/provenance dicts. ALL derivation lives here; the widget only renders these outputs.
 
-Interval-ladder derivation follows ``FitOutcome`` (isar/session/driver.py) exactly:
+Interval-ladder derivation follows ``FitOutcome`` (isar/session/outcome.py) exactly:
 
 * bootstrap ``interval`` is authoritative and certifies **when** ``interval_reliable`` and present;
 * else the profile-likelihood ``omega0_profile`` certifies when present;

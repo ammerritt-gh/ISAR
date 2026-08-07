@@ -1,24 +1,39 @@
-"""Qt- and drive-free scientific action identity helpers.
+"""Qt- and drive-free scientific action identity — the one implementation of the fingerprint.
 
-The acquisition inventory remains the owner of the live ``MeasurementIntent`` value type.  Pure
-evidence modules consume persisted mappings, however, and must not import the acquisition package
-merely to authenticate the same frozen payload.
+The schema owns the ``MeasurementIntent`` value type and the hash derived from it. Both the live
+acquisition path and the pure evidence modules that only ever see persisted mappings resolve to this
+module, so there is no second hand-maintained copy of the rule that can drift: a divergence would
+fork candidate identity, dedupe the same scientific question against itself in one module and not
+the other, and orphan every retained inventory artifact keyed by the old digest.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import math
+from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .steering import EVIDENCE_SINKS
+from .steering import CANONICAL_MASTER, EVIDENCE_SINKS
 
 
 def canonical_json(value: Any) -> str:
+    """Deterministic JSON for content addressing — strict on purpose.
+
+    ``allow_nan=False`` because NaN/Infinity are not JSON and would make the artifact unreadable by a
+    conforming parser, and no ``default=`` coercion so an unserializable value raises instead of
+    silently becoming a ``str`` whose text (and therefore the content address) is not stable.
+    """
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def canonical_hkl(hkl: Any) -> tuple[float, float, float]:
+    """Canonical scientific Q identity shared by action and EIG policy.
+
+    Fingerprints have always used nine decimal places.  Giving that rule one
+    named implementation prevents a nearby-but-not-identical tolerance from
+    becoming a second scientific identity rule in a later consumer.
+    """
     if not isinstance(hkl, (list, tuple)) or len(hkl) != 3:
         raise ValueError("HKL must contain exactly three values")
     values = tuple(float(value) for value in hkl)
@@ -30,8 +45,76 @@ def canonical_hkl(hkl: Any) -> tuple[float, float, float]:
     return tuple(round(value, 9) + 0.0 for value in values)
 
 
+def scientific_fingerprint(intent: "MeasurementIntent") -> str:
+    """Stable hash of the *scientific question* an intent resolves — its dedup / anti-repeat id.
+
+    Deliberately excludes anything about the exact emitted request (window step, ncount, feasibility):
+    two intents that ask the same scientific question with different executable realizations share one
+    fingerprint and must not both occupy the inventory.
+    """
+    payload = canonical_json([
+        intent.action_class,
+        list(canonical_hkl(intent.hkl)),
+        # ``+ 0.0``: see :func:`canonical_hkl` — a negative-zero bound must not fork identity.
+        None if intent.energy_lo is None else round(float(intent.energy_lo), 6) + 0.0,
+        None if intent.energy_hi is None else round(float(intent.energy_hi), 6) + 0.0,
+        intent.window_family,
+        intent.target_branch_role,
+        intent.rival_branch_role,
+        intent.evidence_basis_fingerprint,
+        intent.hypotheses_fingerprint,
+        intent.campaign_slice_fingerprint,
+        intent.evidence_sink,
+    ])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class MeasurementIntent:
+    """The scientific question an action resolves, independent of any exact emitted request."""
+
+    action_class: str
+    hkl: tuple[float, float, float]
+    energy_lo: float | None
+    energy_hi: float | None
+    window_family: str
+    target_branch_role: str | None = None
+    rival_branch_role: str | None = None
+    evidence_basis_fingerprint: str | None = None
+    hypotheses_fingerprint: str | None = None
+    campaign_slice_fingerprint: str | None = None
+    # Where this action's evidence may go (isar.schema.steering.EVIDENCE_SINKS). Part of the scientific
+    # identity, not a delivery detail: the same window at the same q routed to a different sink is
+    # answered against different evidence and updates a different posterior, so the two are genuinely
+    # different actions and must not dedupe onto one another.
+    evidence_sink: str = CANONICAL_MASTER
+    # The energy this action is *about*, when that is not the midpoint of its window. A rival probe's
+    # bounds are clamped into the identity domain, so a domain that clips one side moves the midpoint
+    # off the predicted rival; realization must resolve the instrument resolution and persist the
+    # acquisition target at the prediction, not at the midpoint of what survived the clamp.
+    #
+    # Deliberately EXCLUDED from ``scientific_fingerprint``: ``energy_lo``/``energy_hi`` already carry
+    # the scientific window, and folding the centre in would re-mint every fingerprint ever computed,
+    # invalidating the frozen replay artifacts for no gain in what the identity distinguishes.
+    window_center_meV: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.evidence_sink not in EVIDENCE_SINKS:
+            raise ValueError(f"unknown evidence_sink {self.evidence_sink!r}; "
+                             f"expected one of {EVIDENCE_SINKS}")
+
+    @property
+    def scientific_action_fingerprint(self) -> str:
+        return scientific_fingerprint(self)
+
+
 def scientific_fingerprint_from_mapping(payload: Mapping[str, object]) -> str:
-    """Authenticate the unchanged scientific subset of a persisted measurement intent."""
+    """Reconstruct and authenticate a persisted :class:`MeasurementIntent`.
+
+    Inventory consumers must never hash a convenient subset of an intent map.
+    Rebuilding the value type keeps the persisted action identity subject to the
+    same Q, finite-number, and evidence-sink rules as a live proposal.
+    """
     if not isinstance(payload, Mapping):
         raise ValueError("measurement intent must be a mapping")
 
@@ -62,42 +145,33 @@ def scientific_fingerprint_from_mapping(payload: Mapping[str, object]) -> str:
         try:
             number = float(value)
         except (TypeError, ValueError) as error:
-            raise ValueError(
-                f"measurement intent {name!r} must be a finite number or null") from error
+            raise ValueError(f"measurement intent {name!r} must be a finite number or null") from error
         if not math.isfinite(number):
             raise ValueError(f"measurement intent {name!r} must be a finite number or null")
         return number
 
-    action_class = required_text("action_class")
-    hkl = canonical_hkl(payload.get("hkl"))
-    energy_lo = optional_number("energy_lo")
-    energy_hi = optional_number("energy_hi")
-    window_family = required_text("window_family")
-    target_branch_role = optional_text("target_branch_role")
-    rival_branch_role = optional_text("rival_branch_role")
-    evidence_basis_fingerprint = optional_text("evidence_basis_fingerprint")
-    hypotheses_fingerprint = optional_text("hypotheses_fingerprint")
-    campaign_slice_fingerprint = optional_text("campaign_slice_fingerprint")
-    evidence_sink = required_text("evidence_sink")
-    if evidence_sink not in EVIDENCE_SINKS:
-        raise ValueError(
-            f"unknown evidence_sink {evidence_sink!r}; expected one of {EVIDENCE_SINKS}")
-    if "window_center_meV" in payload:
-        optional_number("window_center_meV")  # validated but deliberately excluded from identity
-    encoded = canonical_json([
-        action_class,
-        list(hkl),
-        None if energy_lo is None else round(energy_lo, 6) + 0.0,   # ``+ 0.0``: see canonical_hkl
-        None if energy_hi is None else round(energy_hi, 6) + 0.0,
-        window_family,
-        target_branch_role,
-        rival_branch_role,
-        evidence_basis_fingerprint,
-        hypotheses_fingerprint,
-        campaign_slice_fingerprint,
-        evidence_sink,
-    ])
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    intent = MeasurementIntent(
+        action_class=required_text("action_class"),
+        hkl=canonical_hkl(payload.get("hkl")),
+        energy_lo=optional_number("energy_lo"),
+        energy_hi=optional_number("energy_hi"),
+        window_family=required_text("window_family"),
+        target_branch_role=optional_text("target_branch_role"),
+        rival_branch_role=optional_text("rival_branch_role"),
+        evidence_basis_fingerprint=optional_text("evidence_basis_fingerprint"),
+        hypotheses_fingerprint=optional_text("hypotheses_fingerprint"),
+        campaign_slice_fingerprint=optional_text("campaign_slice_fingerprint"),
+        evidence_sink=required_text("evidence_sink"),
+        window_center_meV=(optional_number("window_center_meV")
+                           if "window_center_meV" in payload else None),
+    )
+    return scientific_fingerprint(intent)
 
 
-__all__ = ["canonical_hkl", "canonical_json", "scientific_fingerprint_from_mapping"]
+__all__ = [
+    "MeasurementIntent",
+    "canonical_hkl",
+    "canonical_json",
+    "scientific_fingerprint",
+    "scientific_fingerprint_from_mapping",
+]

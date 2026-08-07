@@ -18,7 +18,7 @@ from isar.drive.acquisition.eig import (
     voi_saturated,
     voi_saturated_from_sigmas,
 )
-from isar.synth.fit import omega0_value_error
+from isar.analyze.phonon import omega0_value_error
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.supervisor.stopping import GridQ, evaluate_stop, summarize_grid
 
@@ -163,7 +163,7 @@ def test_proposal_carries_json_safe_score():
 
 def test_sigma_omega0_matches_delta_method_on_diagonal():
     # With a diagonal (no nuisance coupling) Fisher matrix, the Schur+delta σ(ω₀) equals the analytic
-    # covariance propagation the fit uses (isar.synth.fit.omega0_value_error).
+    # covariance propagation the fit uses (isar.analyze.phonon.omega0_value_error).
     theta = (3.0, 0.3, 100.0, 0.0, 1.0)
     info = np.diag([50.0, 200.0, 1.0, 1.0, 1.0])
     got = sigma_omega0(theta, info)

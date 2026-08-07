@@ -29,7 +29,7 @@ from isar.schema.statistics import (
     validate_for_write,
 )
 from isar.schema.steering import ParamConstraints
-from isar.session import branch_tracking, certification, driver, predictive_artifact
+from isar.session import branch_tracking, certification, driver, evidence_update, master_delivery, predictive_artifact, scan_delivery
 from isar.session.state import canonical_hash, content_hash
 from isar.workspace_api.views import FitView
 
@@ -204,7 +204,7 @@ def test_selection_publishes_each_distinct_model_set_transition():
         ),
     ]
     selection = SimpleNamespace(scores=scores, pooled=object())
-    record = driver._build_selection_semantics(
+    record = scan_delivery._build_selection_semantics(
         results,
         selection,
         {
@@ -225,7 +225,7 @@ def test_selection_publishes_each_distinct_model_set_transition():
     assert all(record[name] for name in names)
     assert record["legacy_pool_set_fingerprint"] == semantics_fingerprint(
         "isar.legacy_pool_set/1",
-        [driver._model_set_record(results[0].label, results[0].fit_semantics)],
+        [scan_delivery._model_set_record(results[0].label, results[0].fit_semantics)],
     )
     assert record["selection_eligibility"] == "eligible"
     assert record["selection_ineligibility_reasons"] == []
@@ -334,13 +334,13 @@ def test_selection_fingerprints_are_order_invariant_and_route_sensitive():
         "offered_labels": ["one", "two"],
         "scored_labels": ["one", "two"],
     }
-    baseline = driver._build_selection_semantics(
+    baseline = scan_delivery._build_selection_semantics(
         results,
         SimpleNamespace(scores=scores, pooled=object()),
         route,
         error_attachment_labels=["one", "two"],
     )
-    permuted = driver._build_selection_semantics(
+    permuted = scan_delivery._build_selection_semantics(
         list(reversed(results)),
         SimpleNamespace(scores=list(reversed(scores)), pooled=object()),
         {
@@ -360,7 +360,7 @@ def test_selection_fingerprints_are_order_invariant_and_route_sensitive():
     ):
         assert permuted[name] == baseline[name]
 
-    changed_route = driver._build_selection_semantics(
+    changed_route = scan_delivery._build_selection_semantics(
         results,
         SimpleNamespace(scores=scores, pooled=object()),
         {**route, "multimode_route": "guideline_forced"},
@@ -371,7 +371,7 @@ def test_selection_fingerprints_are_order_invariant_and_route_sensitive():
     ]
     changed_denominator_scores = [copy.copy(scores[0])]
     changed_denominator_scores[0].weight = 1.0
-    changed_denominator = driver._build_selection_semantics(
+    changed_denominator = scan_delivery._build_selection_semantics(
         results,
         SimpleNamespace(scores=changed_denominator_scores, pooled=object()),
         route,
@@ -417,7 +417,7 @@ def test_selection_aggregate_preserves_strongest_reason_and_incomparability():
         {"label": "one", "fit_semantics": eligible},
         {"label": "two", "fit_semantics": data_dependent},
     ]
-    aggregate, reasons = driver._aggregate_selection_eligibility(candidates)
+    aggregate, reasons = scan_delivery._aggregate_selection_eligibility(candidates)
     assert aggregate == "ineligible_incomparable_context"
     assert {item["reason_code"] for item in reasons} == {
         "candidate_data_likelihood_contexts_differ",
@@ -437,7 +437,7 @@ def test_interval_metadata_failure_does_not_remove_interval(caplog):
 def test_pooled_interval_references_exact_selection_and_fit_conditioning():
     fit_semantics = _fit_semantics()
     selection_semantics = _selection_semantics()
-    record = driver._outcome_interval_semantics(
+    record = scan_delivery._outcome_interval_semantics(
         best=SimpleNamespace(fit_semantics=fit_semantics, within_model={}),
         selection=SimpleNamespace(
             pooled=object(), fit_selection_semantics=selection_semantics
@@ -520,7 +520,7 @@ def test_interval_authority_matches_realized_delivery(
         SimpleNamespace(label="one", fit_semantics=fit_semantics),
         produced,
     )
-    record = driver._outcome_interval_semantics(
+    record = scan_delivery._outcome_interval_semantics(
         best=SimpleNamespace(
             fit_semantics=fit_semantics,
             within_model={"interval_semantics": producer_semantics},
@@ -564,7 +564,7 @@ def test_interval_authority_is_revoked_when_tracking_withholds_delivery():
         "bayes_interval": None,
         "hesse_trusted": False,
         "interval_reliable": True,
-        "interval_semantics": driver._outcome_interval_semantics(
+        "interval_semantics": scan_delivery._outcome_interval_semantics(
             best=SimpleNamespace(
                 fit_semantics=fit_semantics,
                 within_model={"interval_semantics": producer},
@@ -578,7 +578,7 @@ def test_interval_authority_is_revoked_when_tracking_withholds_delivery():
             interval_reliable=True,
         ),
     }
-    driver._clear_tracked_selection(outcome, {}, 2)
+    evidence_update._clear_tracked_selection(outcome, {}, 2)
     assert outcome["interval"] is None
     assert outcome["interval_semantics"]["selected_interval_quantity"] is None
     assert outcome["interval_semantics"]["quantities"]["interval"][
@@ -760,7 +760,7 @@ def test_probability_like_fields_have_distinct_declared_measures():
         "model_entropy": 0.3,
         "probability_semantics": None,
     }
-    record = driver._refresh_probability_semantics(
+    record = scan_delivery._refresh_probability_semantics(
         outcome,
         predictive_payload={"predictive_retained_set_fingerprint": retained},
     )
@@ -808,8 +808,8 @@ def test_metadata_is_excluded_from_scientific_selection_and_identity_firewalls()
         "akaike_weight": 1.0,
         "usable": True,
     }
-    assert driver._promotion_candidate_identity([promotion_candidate]) == (
-        driver._promotion_candidate_identity(
+    assert master_delivery._promotion_candidate_identity([promotion_candidate]) == (
+        master_delivery._promotion_candidate_identity(
             [
                 {
                     **promotion_candidate,
@@ -860,8 +860,8 @@ def test_metadata_is_excluded_from_scientific_selection_and_identity_firewalls()
         "entropy_stop": 0.2,
         "maximum_bridge_steps": 1,
     }
-    sig_before = driver._tracked_authority_signature([observation], **signature_args)
-    sig_after = driver._tracked_authority_signature(
+    sig_before = evidence_update._tracked_authority_signature([observation], **signature_args)
+    sig_after = evidence_update._tracked_authority_signature(
         [{**observation, "probability_semantics": {"schema": "ignored"},
           "shadow_model_selection": {"selection_status": "complete"}}],
         **signature_args,
@@ -1039,7 +1039,7 @@ def test_a_nan_interval_is_never_selected_for_delivery():
     # hand the stopping rule a nan half-width that no tolerance can ever satisfy.
     fit_semantics = _fit_semantics()
     produced = {"freq_interval": _NAN3, "profile_interval": (0.9, 1.3)}
-    record = driver._outcome_interval_semantics(
+    record = scan_delivery._outcome_interval_semantics(
         best=SimpleNamespace(fit_semantics=fit_semantics,
                              within_model={"interval_semantics": _producer(produced)}),
         selection=SimpleNamespace(pooled=None, fit_selection_semantics=None),
@@ -1057,7 +1057,7 @@ def test_a_nan_interval_is_never_selected_for_delivery():
 
 def test_every_interval_nan_leaves_nothing_selected():
     fit_semantics = _fit_semantics()
-    record = driver._outcome_interval_semantics(
+    record = scan_delivery._outcome_interval_semantics(
         best=SimpleNamespace(fit_semantics=fit_semantics,
                              within_model={"interval_semantics": _producer(
                                  {"freq_interval": _NAN3, "profile_interval": _NAN3[:2]})}),

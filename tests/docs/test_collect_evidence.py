@@ -97,7 +97,7 @@ def _collect_ok(collector, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     return calls
 
 
-def test_collect_generates_in_declared_order_clears_stale_and_writes_schema_v2(
+def test_collect_generates_in_declared_order_clears_stale_and_writes_schema_v3(
     collector, monkeypatch: pytest.MonkeyPatch
 ):
     stale = collector.OUT / "source_a"
@@ -112,7 +112,7 @@ def test_collect_generates_in_declared_order_clears_stale_and_writes_schema_v2(
     ]
     assert not (collector.OUT / "source_a" / "stale.txt").exists()
     manifest = json.loads(collector.MANIFEST.read_text(encoding="utf-8"))
-    assert manifest["schema_version"] == 2
+    assert manifest["schema_version"] == 3
     assert manifest["code_revision"] == "a" * 40
     assert manifest["code_dirty"] is False
     assert manifest["code_diff_sha256"] is None
@@ -526,6 +526,76 @@ def test_check_rejects_semantic_manifest_drift(
     mutation(manifest)
     collector.MANIFEST.write_text(json.dumps(manifest), encoding="utf-8")
     assert collector.check() == 1
+
+
+def test_check_still_accepts_the_legacy_raw_byte_schema(
+    collector, monkeypatch: pytest.MonkeyPatch
+):
+    _collect_ok(collector, monkeypatch)
+    manifest = json.loads(collector.MANIFEST.read_text(encoding="utf-8"))
+    manifest["schema_version"] = 2
+    for group in manifest["groups"]:
+        for record in group["files"]:
+            record["sha256"] = collector.sha256_of(collector.ASSETS / record["path"])
+    collector.MANIFEST.write_text(json.dumps(manifest), encoding="utf-8")
+    assert collector.check() == 0
+
+
+def test_content_sha256_ignores_line_endings_but_not_content(collector, tmp_path: Path):
+    def digest(name: str, payload: bytes) -> str:
+        path = tmp_path / name
+        path.write_bytes(payload)
+        return collector.content_sha256(path)
+
+    for name, lf, crlf, changed in [
+        ("j.json", b'{"a": 1,\n "b": 2}', b'{"a": 1,\r\n "b": 2}', b'{"a": 1, "b": 3}'),
+        ("t.toml", b"a = 1\nb = 2\n", b"a = 1\r\nb = 2\r\n", b"a = 1\nb = 3\n"),
+        ("t.txt", b"one\ntwo\n", b"one\r\ntwo\r\n", b"one\nthree\n"),
+    ]:
+        assert digest(name, lf) == digest(name, crlf)
+        assert digest(name, lf) != digest(name, changed)
+
+    assert digest("f.png", b"\x89PNG\x00\x01") != digest("f.png", b"\x89PNG\x00\x02")
+
+    (tmp_path / "bad.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(collector.EvidenceError, match="unparsable"):
+        collector.content_sha256(tmp_path / "bad.json")
+
+
+def test_content_sha256_canonicalizes_toml_temporal_values(collector, tmp_path: Path):
+    """tomllib yields datetime/date/time objects; pre-repair those escaped json.dumps as a raw
+    TypeError. They must canonicalize deterministically, stay EOL-independent, and stay
+    content-sensitive."""
+    def digest(payload: bytes) -> str:
+        path = tmp_path / "temporal.toml"
+        path.write_bytes(payload)
+        return collector.content_sha256(path)
+
+    lf = b"day = 2026-07-30\nstamp = 2026-07-30T12:34:56\nclock = 12:34:56\n"
+    crlf = lf.replace(b"\n", b"\r\n")
+    changed = lf.replace(b"T12:34:56", b"T12:34:57")
+    assert digest(lf) == digest(crlf)
+    assert digest(lf) != digest(changed)
+
+
+@pytest.mark.parametrize("name, payload", [
+    ("nan.json", b'{"a": NaN}'),
+    ("inf.json", b'{"a": Infinity}'),
+    ("nan.toml", b"a = nan\n"),
+    ("inf.toml", b"a = -inf\n"),
+])
+def test_content_sha256_rejects_nonfinite_numbers(collector, tmp_path: Path, name, payload):
+    # Canonical structured identity must not admit content the rest of ISAR treats as invalid
+    # fingerprint input — and the failure is a clean EvidenceError, never a traceback.
+    path = tmp_path / name
+    path.write_bytes(payload)
+    with pytest.raises(collector.EvidenceError):
+        collector.content_sha256(path)
+
+
+def test_canonical_structured_value_never_leaks_typeerror(collector):
+    with pytest.raises(collector.EvidenceError, match="unsupported"):
+        collector._canonical_structured_value({"key": object()})
 
 
 def test_check_retains_changed_missing_and_extra_diagnostics(

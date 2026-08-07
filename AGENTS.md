@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for contributor rules and area routing
 > **Provenance:** hand-written
-> **Verified against code revision:** `9914eb7` (2026-07-26)
+> **Verified against code revision:** `24ff041` (2026-08-06)
 
 Automated **triage** pipeline for inelastic scattering (IXS + triple-axis): during a beamtime it
 parses incoming scans, QCs and calibrates them, fits DHO ⊗ resolution models with physics-gated
@@ -120,13 +120,25 @@ area.
 
 ## Module map (ownership boundaries that matter)
 
-`schema` (ScanRecord + card) · `parsers` (plugin registry: S30 SPEC, IN8 numor, TAVI, BL43LXU; card
+`schema` (ScanRecord + card; `schema/action_identity.py` is the one implementation of scientific
+action identity — `drive/acquisition/inventory.py` re-exports those names for its callers and
+`tests/schema/test_action_identity.py` pins them as re-exports so no second implementation appears)
+· `parsers` (plugin registry: S30 SPEC, IN8 numor, TAVI, BL43LXU; card
 templates in `parsers/cards/*.toml` — in8, s30, s30_raw, tavi) · `reduce` (QC mask-not-delete,
-combine-before-divide, collate) · `calibrate` (elastic fits, versioned energy-zero series) · `analyze`
-(structure enumeration, fitting, errors, model selection, verdict, confidence) · `session` (workspace/
-prior/branch-model assembly) · `cli` · `drive` (autonomous loop, action/Q EIG, unscored scan design,
-TAVI I/O) ·
-`report` · `synth` (Phase-1 synthetic core) · `workspace_api` / `geometry` / `plotspec` (Qt-free) ·
+combine-before-divide, collate) · `calibrate` (elastic fits, versioned energy-zero series;
+`calibrate/tas.py` importing `isar.synth.resolution` is the one sanctioned production→synth
+dependency) · `analyze` (fitting, errors, model selection, verdict, confidence; the DHO physics —
+IC grids, admissibility gates, structure enumeration, Γ bounds — is owned by `analyze/phonon.py`,
+and `analyze/structures.py` holds only the generic `Hypothesis` recipe) · `session` (`driver.py`
+orders the stages; `outcome.py` owns the FitOutcome persistence DTO and `results.csv`,
+`scan_delivery.py` the per-scan fits, `master_delivery.py` the pooled masters and certification,
+`evidence_update.py` the cross-q evidence and branch identity) · `cli` · `drive` (`loop.py`
+orchestrates the campaign; TAVI wire details live in `drive/instrument/request_realization.py` and
+EIG runtime adaptation in `drive/acquisition/eig_runtime.py`; `loop.<CONST>` re-imports are
+deliberate, production reads them) ·
+`report` · `synth` (Phase-1 synthetic core) / `synth_format` (synthetic-run tooling) ·
+`workspace_api` / `geometry` / `plotspec` (Qt-free; `workspace_api/config_gates.py` is the G16
+facade) ·
 `isar_gui` (reads science through `workspace_api`; controls campaigns by subprocess + control
 files). The Stage II ↔ III boundary is a **frozen file contract**
 (`report/results.csv`, `<workspace>/report/report.json`, `card.state.json`) — the driver never imports fit internals.
@@ -167,23 +179,13 @@ contract changes are additive only (DESIGN §4).
      "rerun the world."
 4. **Status discipline:** DESIGN §15 marks every capability Implemented / Partial / Planned. Do not
    describe Planned work in the implemented voice, and match that table when you change status.
-5. **STAT-2b history is immutable:** never refresh the completed held-out gate or aggregate to match
-   current production. Authenticate the aggregate's raw bytes and reproduce its complete semantic
-   fingerprint; maintain current production closure in the separate candidate/active cycle governed
-   by S9. Bootstrap uses history only when no active closure exists; renewal authenticates and keeps
-   the active file in force while writing a candidate against its source and graph identities.
-6. **Close protected drift before merge:** a protected-semantic mismatch requires selection or
-   evidence-contract review with proportionate proof; protected-adjacent drift requires bounded
-   source review and focused parity. A branch may be temporarily red while the boundary is updated,
-   but the mismatch must be closed before its statistical slice or containing PR merges.
-7. **No automatic source-closure approval:** passing tests and verification establish eligibility
-   for review, never owner approval. Promotion requires an explicit owner decision and a separate
-   minimal commit that changes no protected production source. The active manifest must bind the
-   exact preceding candidate commit, candidate bytes, and immutable review bytes; Git-backed
-   verification proves all three.
-8. **The whole driver is selection-critical:** protect all of `isar/session/driver.py`. Even a
-   harmless change needs source review and focused parity until authority-seam extraction lands as a
-   separately reviewed refactor.
+5. **Evidence is frozen once, at milestones, and never renewed (S10).** A completed formal gate
+   (the STAT-2b.1 held-out campaign) is authenticated at its frozen commit, inputs, and
+   interpretation — never refreshed to match current source. New formal freezes happen only when
+   the owner names a milestone (selection-criterion change, new acquisition authority,
+   real-instrument deployment, publication-grade claim): designed before the run, executed once,
+   kept at their commit. Everything else is ordinary development — normal review plus behavior
+   tests; no drift closure, no promotion commits, and no permanently "selection-critical" files.
 
 ## Documentation policy (what a document is allowed to be)
 
@@ -244,4 +246,4 @@ review item.
 
 ---
 
-*Last updated: 2026-07-26. Canonical file is `AGENTS.md`; `CLAUDE.md` is the `@AGENTS.md` stub.*
+*Last updated: 2026-08-06. Canonical file is `AGENTS.md`; `CLAUDE.md` is the `@AGENTS.md` stub.*

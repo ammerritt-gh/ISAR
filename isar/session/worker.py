@@ -55,7 +55,7 @@ def _run_job(workspace_path, req) -> tuple[dict, dict]:
 
     Returns ``(summary_dict, timings_dict)``. ``run_timings.json`` is written to the workspace report
     dir BEFORE the caller replies — same contract as :func:`isar.cli.run_cmd.run`, so the loop's
-    ``_read_run_timings`` off-disk read keeps working unchanged."""
+    ``read_run_timings`` off-disk read keeps working unchanged."""
     from isar.session import driver
     from isar.session.timing import StageTimer
     from isar.session.workspace import Workspace

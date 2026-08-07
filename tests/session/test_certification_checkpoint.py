@@ -8,7 +8,7 @@ import pytest
 
 from isar.session.certification import (CheckpointStore, create_analysis_manifest,
                                         master_fit_fingerprint, tier_satisfies)
-from isar.session import driver
+from isar.session import driver, master_delivery, scan_delivery
 from isar.session.state import ScanEntry
 
 
@@ -143,15 +143,15 @@ def test_soft_deadline_finishes_active_wave_then_stops_dispatch(monkeypatch):
         shadow_policies.append(kwargs["shadow_enabled"])
         return object()
 
-    monkeypatch.setattr(driver, "_process_one", fake_process)
+    monkeypatch.setattr(scan_delivery, "_process_one", fake_process)
     tasks = [
         (None, "det", [2.0, 0, 0], 300.0, "sample", f"scan:{index}",
          f"content:{index}", "guide", 6000 + index)
         for index in range(2)
     ]
     gate = driver._AnalysisDeadline(time.monotonic() - 1.0, force_initial_wave=True)
-    with pytest.raises(driver.AnalysisWorkIncomplete, match="1/2 scan fit units"):
-        driver._run_tasks(
+    with pytest.raises(scan_delivery.AnalysisWorkIncomplete, match="1/2 scan fit units"):
+        scan_delivery._run_tasks(
             tasks, object(), object(), object(), set(), M=10, errors_tier="full",
             boot_workers=1, use_pool=False, scan_workers=1,
             on_complete=completed.append, deadline_gate=gate)
@@ -166,8 +166,8 @@ def test_master_task_threads_deadline_shadow_policy(monkeypatch):
         captured.update(kwargs)
         return object()
 
-    monkeypatch.setattr(driver, "_fit_master_group", fake_master_group)
-    driver._fit_master_group_task((
+    monkeypatch.setattr(master_delivery, "_fit_master_group", fake_master_group)
+    master_delivery._fit_master_group_task((
         None, None, None, "det", None, None, None, "master:q", 9000001, "hash",
         20, 1, "full", False, None, None, "certification", False,
     ))
@@ -331,9 +331,9 @@ def test_worklist_index_gate_accepts_an_excluded_zone_origin():
     which raised on every zone-origin acoustic campaign and hard-failed final certification."""
     worklist = [{"canonical_index": i} for i in range(1, 21)]
     excluded = [{"canonical_index": 0}]
-    driver._assert_canonical_indices_cover_path(worklist, excluded)  # no raise
+    master_delivery._assert_canonical_indices_cover_path(worklist, excluded)  # no raise
     # Dense worklist with no exclusions still fine.
-    driver._assert_canonical_indices_cover_path(
+    master_delivery._assert_canonical_indices_cover_path(
         [{"canonical_index": 0}, {"canonical_index": 1}], [])
 
 
@@ -343,8 +343,8 @@ def test_worklist_index_gate_still_rejects_gaps_and_duplicates():
     still a hard error."""
     with pytest.raises(ValueError, match="contiguous, unique"):
         # combined {0, 2} leaves index 1 unaccounted for — a silently dropped point.
-        driver._assert_canonical_indices_cover_path(
+        master_delivery._assert_canonical_indices_cover_path(
             [{"canonical_index": 2}], [{"canonical_index": 0}])
     with pytest.raises(ValueError, match="contiguous, unique"):
-        driver._assert_canonical_indices_cover_path(
+        master_delivery._assert_canonical_indices_cover_path(
             [{"canonical_index": 1}, {"canonical_index": 1}], [{"canonical_index": 0}])

@@ -12,7 +12,7 @@ from isar.session.branch_tracking import (
     anchor_index,
     track_path,
 )
-from isar.session.driver import (
+from isar.session.evidence_update import (
     _apply_tracked_branch,
     _clear_tracked_selection,
     _materialize_branch_candidates,
@@ -558,7 +558,7 @@ def test_tracker_authority_prefers_the_consistent_master_when_both_exist_at_a_q(
     """The rank tie-break: keeping inconsistent masters as identity evidence must never let one
     OUTRANK a consistent master at the same q. A consistent master wins the authority even when the
     inconsistent one has more members — inconsistency is the leading (worst) rank key."""
-    from isar.session.driver import _tracked_authorities
+    from isar.session.evidence_update import _tracked_authorities
 
     path = [[2.2, 0.0, 0.0]]
     session = SessionState()
@@ -574,7 +574,7 @@ def test_tracker_authority_prefers_the_consistent_master_when_both_exist_at_a_q(
 
 
 def test_tracking_domain_is_authorized_union_not_observed_candidate_extent():
-    from isar.session.driver import _authorized_tracking_domain
+    from isar.session.evidence_update import _authorized_tracking_domain
 
     target = {"energy_search_meV": [-2.0, 7.0], "identity_search_meV": [-1.0, 7.05]}
     observations = [{
@@ -594,7 +594,7 @@ def test_tracking_domain_is_authorized_union_not_observed_candidate_extent():
 def test_malformed_explicit_target_domain_fails_closed():
     import pytest
 
-    from isar.session.driver import _authorized_tracking_domain
+    from isar.session.evidence_update import _authorized_tracking_domain
 
     with pytest.raises(ValueError, match="malformed persisted energy_search_meV"):
         _authorized_tracking_domain(
@@ -604,7 +604,7 @@ def test_malformed_explicit_target_domain_fails_closed():
 
 
 def test_tracking_signature_includes_domain_and_scorer_revision():
-    from isar.session.driver import _tracked_authority_signature
+    from isar.session.evidence_update import _tracked_authority_signature
 
     kwargs = dict(observations=[{"candidates": []}], target_branch="acoustic", period=2.0,
                   hypotheses=HYPOTHESES, entropy_stop=1.0, maximum_bridge_steps=1)
@@ -624,7 +624,7 @@ def test_clean_null_auxiliary_probe_becomes_a_tracker_null_window_and_shifts_the
     surface as a ``null_windows`` entry on that path point's observation carrying the searched window,
     and (ii) change the identity-basis authority signature -- so the tracker consumes the null and, the
     basis having changed, the identical probe is not re-offered under an unchanged basis."""
-    from isar.session.driver import _tracked_authorities, _tracked_authority_signature
+    from isar.session.evidence_update import _tracked_authorities, _tracked_authority_signature
 
     path = [[2.9, 0.0, 0.0]]
     session = SessionState()

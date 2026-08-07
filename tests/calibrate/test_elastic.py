@@ -4,7 +4,7 @@ is no significant elastic, so a flat spectrum cannot yield a bogus zero."""
 import numpy as np
 
 from isar.calibrate import elastic
-from isar.synth._ff import Voigt
+from isar.analyze.lineshapes import Voigt
 
 
 def test_fit_elastic_recovers_synthetic_center_and_width():

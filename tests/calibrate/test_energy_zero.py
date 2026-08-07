@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from isar.calibrate import energy_zero as ez
-from isar.synth._ff import Voigt
+from isar.analyze.lineshapes import Voigt
 
 
 def _elastic(x, center):

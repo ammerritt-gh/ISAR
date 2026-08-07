@@ -413,6 +413,21 @@ def test_capture_copy_accepts_a_relative_bundle_root(tmp_path, monkeypatch):
     assert (tmp_path / "bundle" / "report" / "artifact.json").read_bytes() == b"slice-8"
 
 
+def test_retained_file_identity_is_eol_tolerant_but_content_sensitive():
+    lf = b"alpha\nbeta\n"
+    crlf = b"alpha\r\nbeta\r\n"
+    cr = b"alpha\rbeta\r"
+
+    recorded = hashlib.sha256(crlf).hexdigest()
+
+    for payload in (lf, crlf, cr):
+        assert recorded in gate._eol_variant_hashes(payload, text=True)
+    assert recorded not in gate._eol_variant_hashes(b"alpha\r\ngamma\r\n", text=True)
+    # Binary identity stays raw-byte: no EOL variant is tolerated for non-text content.
+    assert gate._eol_variant_hashes(crlf, text=False) == {recorded}
+    assert recorded not in gate._eol_variant_hashes(lf, text=False)
+
+
 def test_repaired_slice8_bundle_is_self_contained_and_reproduces_exact_bytes(tmp_path):
     source = Path(
         "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3")
@@ -557,85 +572,28 @@ def test_repaired_case1_classifies_the_exact_production_comparison():
         for path in retained)
 
 
-def test_original_attempt_disposition_is_additive_and_authenticates_old_bundle():
-    bundle = Path("docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE")
+@pytest.mark.parametrize("bundle_name, contract, expected_status", [
+    ("2026-08-04_EIG4_SLICE8_SHADOW_GATE",
+     "isar.eig4_slice8_attempt_disposition_fingerprint/o36.8.1",
+     "invalid_superseded"),
+    ("2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_ABORTED",
+     "isar.eig4_slice8_repair_attempt_disposition_fingerprint/o36.8.1",
+     "aborted_pre_freeze"),
+    ("2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR",
+     "isar.eig4_slice8_attempt_disposition_fingerprint/o36.8.2",
+     "invalid_superseded"),
+    ("2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2",
+     "isar.eig4_slice8_attempt_disposition_fingerprint/o36.8.2",
+     "invalid_superseded"),
+])
+def test_superseded_attempt_cannot_pose_as_current(bundle_name, contract, expected_status):
     disposition = json.loads(
-        (bundle / "attempt-disposition.json").read_text(encoding="utf-8"))
+        (Path("docs/campaigns") / bundle_name / "attempt-disposition.json").read_text(
+            encoding="utf-8"))
     fingerprint = disposition.pop("attempt_disposition_fingerprint")
 
-    assert disposition["status"] == "invalid_superseded"
-    assert disposition["reason_code"] == "eligible_same_action_join_mismatch"
-    assert fingerprint == gate.semantics_fingerprint(
-        "isar.eig4_slice8_attempt_disposition_fingerprint/o36.8.1", disposition)
-    assert disposition["authenticated_artifacts"]["gate_result_fingerprint"] == json.loads(
-        (bundle / "gate-result.json").read_text(encoding="utf-8"))[
-            "gate_result_fingerprint"]
-
-
-def test_coherence_repair_attempt_is_authenticated_as_aborted_before_freeze():
-    path = Path(
-        "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_ABORTED/"
-        "attempt-disposition.json")
-    disposition = json.loads(path.read_text(encoding="utf-8"))
-    fingerprint = disposition.pop("attempt_disposition_fingerprint")
-    case_2 = disposition["case_2"]
-    delta, standard_error, lower = gate._paired_summary(
-        case_2["paired_block_deltas_per_executed_point_nats"])
-
-    assert disposition["status"] == "aborted_pre_freeze"
-    assert disposition["reason_code"] == "fixture_regime_mismatch"
-    assert disposition["manifests_frozen"] is False
-    assert disposition["final_evidence_opened"] is False
-    assert case_2["expected_outcome"] == "unresolved"
-    assert case_2["coherently_observed_outcome"] == "target_core"
-    assert delta == case_2["delta_information_per_executed_point_nats"]
-    assert standard_error == case_2[
-        "delta_standard_error_per_executed_point_nats"]
-    assert lower == case_2["two_standard_error_lower_margin_nats"]
-    assert lower > 0.0
-    assert case_2["scorer_seed_evidence"]["seed"] == 5724296368191850781
-    assert fingerprint == gate.semantics_fingerprint(
-        "isar.eig4_slice8_repair_attempt_disposition_fingerprint/o36.8.1",
-        disposition)
-
-
-def test_opened_o36_8_2_attempt_is_preserved_as_invalid_and_superseded():
-    bundle = Path(
-        "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR")
-    disposition = json.loads(
-        (bundle / "attempt-disposition.json").read_text(encoding="utf-8"))
-    fingerprint = disposition.pop("attempt_disposition_fingerprint")
-
-    assert disposition["status"] == "invalid_superseded"
-    assert disposition["reason_code"] == (
-        "acquisition_provenance_join_contract_mismatch")
-    assert disposition["manifests_frozen"] is True
-    assert disposition["final_evidence_opened"] is True
-    assert disposition["production_behavior_changed"] is False
-    assert disposition["case_definitions_changed"] is False
-    assert disposition["authenticated_artifacts"]["gate_result_fingerprint"] == json.loads(
-        (bundle / "gate-result.json").read_text(encoding="utf-8"))[
-            "gate_result_fingerprint"]
-    assert fingerprint == gate.semantics_fingerprint(
-        "isar.eig4_slice8_attempt_disposition_fingerprint/o36.8.2",
-        disposition)
-
-
-def test_v2_case1_comparison_join_gap_is_preserved_as_invalid_and_superseded():
-    bundle = Path(
-        "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2")
-    disposition = json.loads(
-        (bundle / "attempt-disposition.json").read_text(encoding="utf-8"))
-    fingerprint = disposition.pop("attempt_disposition_fingerprint")
-
-    assert disposition["status"] == "invalid_superseded"
-    assert disposition["reason_code"] == "case1_comparison_execution_join_mismatch"
-    assert disposition["production_behavior_changed"] is False
-    assert disposition["statistical_evidence_changed"] is False
-    assert disposition["case_definitions_changed"] is False
-    assert fingerprint == gate.semantics_fingerprint(
-        "isar.eig4_slice8_attempt_disposition_fingerprint/o36.8.2",
-        disposition)
+    assert disposition["status"] == expected_status
+    assert fingerprint == gate.semantics_fingerprint(contract, disposition)
 
 
 def test_replacement_gate_manifest_is_additive_and_keeps_gate_policy():

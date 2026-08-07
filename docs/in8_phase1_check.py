@@ -10,7 +10,7 @@ in-window elastic line -- so its Gamma is meaningful and the contrast is the pro
 
 Reuses the production parsers (`isar.parsers.ill_in8`, `isar.parsers.spec_s30`), the fitter
 (`isar.synth.fit`), the collation merge (`isar.reduce.collate`), and the lineshape library
-(`isar.synth._ff`). No library code is modified. Run from the repo root:
+(`isar.analyze.lineshapes`). No library code is modified. Run from the repo root:
 
     python docs/in8_phase1_check.py
 
@@ -39,7 +39,7 @@ from isar.reduce import collate                       # noqa: E402
 from isar.report import captions, findings            # noqa: E402
 from isar.schema import axes                          # noqa: E402
 from isar.synth import fit                            # noqa: E402
-from isar.synth._ff import Voigt, convolute_voigt_dho  # noqa: E402
+from isar.analyze.lineshapes import Voigt, convolute_voigt_dho  # noqa: E402
 
 # --------------------------------------------------------------------------- config
 IN8_DIR = REPO / "test_data" / "ILL IN8"

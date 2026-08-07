@@ -1,10 +1,12 @@
 """Phase 5b-live Part A — the session persists the cross-q branch into card.state so the drive can
 read the prediction durably from card.state.json (crash-safe, no session-only object)."""
+from types import SimpleNamespace
+
 from isar.schema.card import CardState
 from isar.schema.hypotheses import resolve_hypothesis
 from isar.session import branch_model
-from isar.session.driver import (_store_branch_beliefs, _store_branch_models,
-                                 _update_hypothesis_mismatch)
+from isar.session.evidence_update import (_rebuild_tracked_prior, _store_branch_beliefs,
+                                          _store_branch_models, _update_hypothesis_mismatch)
 
 
 def _pt(sample, T, w, g, a, *, fwhm=0.5, fit_kind="unconstrained"):
@@ -104,3 +106,31 @@ def test_branch_belief_preserves_complete_posterior_and_legacy_fallback():
     assert exact["assignment_entropy"] != 123.0  # derived from the normalized complete vector
     old = by_scan[legacy["scan_id"]]
     assert old["label_probabilities"] == {"optic": 0.75, "new": 0.25}
+
+
+def test_rebuild_tracked_prior_leaves_foreign_tracked_points_at_their_own_revision():
+    # A tracked point sourced outside this campaign survives the source-id filter by design. It was
+    # not rebuilt in this call, so relabelling it with the current revision would advertise evidence
+    # freshness that never happened — the stamp belongs only to the points just added. The confirmed
+    # assignment below exercises the add path, so this test also fails if the stamp loop is deleted.
+    foreign = {"scan_id": "foreign_scan#tracked:optic", "track_revision": 1,
+               "sample": "x", "T": 300.0, "q": [0.5, 0.0, 0.0], "omega0": 4.0,
+               "modality": "fold", "verdict": "resolved"}
+    card = SimpleNamespace(state=CardState(dispersion_prior=[foreign]))
+    outcome = {"pooled": True, "modality": "fold", "verdict": "resolved",
+               "sample": "x", "T": 300.0, "q": [0.25, 0.0, 0.0], "fit_kind": "dho"}
+    refs = {"master:s100:D": (SimpleNamespace(provenance={}), "D", outcome)}
+    track = {"revision": 7, "assignments": [{
+        "track_state": "confirmed", "optic_candidate_index": 0, "assignment_entropy": 0.1,
+        "candidates": [{"source_scan_id": "s100", "energy_meV": 4.2, "gamma": 0.3,
+                        "probabilities": {"optic": 1.0}}]}]}
+
+    _rebuild_tracked_prior(card, None, track,
+                           [{"authority": "master:s100:D"}], refs, t_round=0.0)
+
+    by_id = {p["scan_id"]: p for p in card.state.dispersion_prior}
+    assert by_id["s100#tracked:optic"]["track_revision"] == 7
+    # Assert through the REBUILT state, not the caller-held dict: this both proves the foreign
+    # point survived the rebuild and stays honest if the rebuild ever copies instead of filtering.
+    assert by_id["foreign_scan#tracked:optic"]["track_revision"] == 1
+

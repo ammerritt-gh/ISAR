@@ -227,13 +227,13 @@ def test_held_result_carries_raw_data_for_manual_placement():
 
 def test_fit_no_result_preserves_calibrated_marker_without_manual_zero_prompt(
         qtbot, monkeypatch):
-    from isar.session import driver
+    from isar.session import driver, scan_delivery
     from isar_gui.viewmodels.sandbox import SandboxViewModel
     from isar_gui.views.sandbox_pane import SandboxPane
 
     ctx = types.SimpleNamespace()
-    monkeypatch.setattr(driver, "build_context", lambda *args, **kwargs: (ctx, 3, []))
-    monkeypatch.setattr(driver, "fit_one", lambda *args, **kwargs: {
+    monkeypatch.setattr(scan_delivery, "build_context", lambda *args, **kwargs: (ctx, 3, []))
+    monkeypatch.setattr(scan_delivery, "fit_one", lambda *args, **kwargs: {
         "omega0": None, "gamma": None})
     result = sandbox.fit_context(
         _record([0, 1, 2], [1, 2, 1]), "ana7", _card(), _calres(center=0.35),
@@ -276,7 +276,7 @@ def test_winning_curve_preserves_exact_selected_structure(label, modes, amplitud
 # --------------------------------------------------------------------------- the real fit core
 @pytest.mark.slow
 def test_fit_core_fits_a_single_peak():
-    from isar.synth._ff import convolute_voigt_dho
+    from isar.analyze.lineshapes import convolute_voigt_dho
     x = np.linspace(-6.0, 24.0, 121)
     peak = convolute_voigt_dho(x, 6.0, 0.0, 1.0, 0.0, 0.4, 600.0, 0.0, 0.0, 50.0,
                                peak="stokes+astokes")

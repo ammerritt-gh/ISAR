@@ -17,13 +17,12 @@ from isar.drive.acquisition.calibration import Calibration
 import types
 
 import isar.drive.loop as loop_mod
-from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_point_count,
+from isar.drive.loop import (_campaign_config,
                              _campaign_summary,
                              _terminalize_certification_regression,
                              _declined_observation,
-                             _executed_point_count, _feasible_point_count,
                              _errors_arg_for, _errors_tier_for, _errors_tiers_for,
-                             _extract_max_points, _full_tier,
+                             _full_tier,
                              _finalize_proposal, _guard_point_count,
                              _make_classification_providers, _record_eligible_crossings,
                              resolve_campaign_slice,
@@ -31,11 +30,18 @@ from isar.drive.loop import (DEFAULT_MAX_POINTS, _campaign_config, _emitted_poin
                              _auxiliary_clean_null,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
                              _pooled_target_delivered,
-                             _preflight_instrument_limits, _preflight_max_points,
                              _proposal_from_submission, _selected_action_record,
                              _reconcile_budget_points, _resume_state,
-                             _run_nonce, _target_supporting_feasible_points, _validate_body,
+                             _run_nonce,
                              run_campaign)
+from isar.drive.instrument import request_realization as wire
+from isar.drive.instrument.request_realization import (DEFAULT_MAX_POINTS, _emitted_point_count,
+                                                       _executed_point_count,
+                                                       _extract_max_points, _feasible_point_count,
+                                                       _preflight_instrument_limits,
+                                                       _preflight_max_points,
+                                                       _target_supporting_feasible_points,
+                                                       _validate_body)
 from isar.drive.acquisition.acquire import ScanProposal, points_in_window
 from isar.drive.acquisition.grid_adapters import TAVI_GRID_ADAPTER
 from isar.drive.acquisition.eig import counts_eig
@@ -2299,47 +2305,47 @@ def test_suppression_rebuild_recovers_superseded_request_fingerprints(tmp_path):
 
 
 def test_feasibility_shaped_refusal_recognises_geometry_and_nothing_else():
-    assert loop_mod._is_feasibility_shaped_refusal({"blockers": ["a2_out_of_range"]})
-    assert loop_mod._is_feasibility_shaped_refusal(
+    assert wire._is_feasibility_shaped_refusal({"blockers": ["a2_out_of_range"]})
+    assert wire._is_feasibility_shaped_refusal(
         {"blockers": ["physical_infeasible", "scattering triangle does not close"]})
-    assert not loop_mod._is_feasibility_shaped_refusal(
+    assert not wire._is_feasibility_shaped_refusal(
         {"blockers": ["limit_exceeded: queue neutron budget exceeded"]})
     # Mixed verdicts fail closed: one non-geometry blocker is enough to leave the window alone.
-    assert not loop_mod._is_feasibility_shaped_refusal(
+    assert not wire._is_feasibility_shaped_refusal(
         {"blockers": ["a2_out_of_range", "queue_full"]})
-    assert not loop_mod._is_feasibility_shaped_refusal({"blockers": []})
+    assert not wire._is_feasibility_shaped_refusal({"blockers": []})
 
 
 def test_select_feasible_run_prefers_the_target_and_refuses_a_blind_window():
     energies = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
     manifest = {"planned_feasible_mask": [True, False, True, True, True, True]}
     # A one-point island containing the target beats a four-point run that does not.
-    assert loop_mod._select_feasible_run(
+    assert wire._select_feasible_run(
         manifest, energies, target_energy=0.0, acceptance=(-0.5, 0.5)) == ((0, 0),
                                                                           "contains_target")
     # No target declared → longest run, unchanged behaviour for survey/legacy proposals.
-    assert loop_mod._select_feasible_run(
+    assert wire._select_feasible_run(
         manifest, energies, target_energy=None, acceptance=None) == ((2, 5), "longest")
     # Target in the infeasible gap and the longest run does not reach it → refuse.
-    assert loop_mod._select_feasible_run(
+    assert wire._select_feasible_run(
         manifest, energies, target_energy=1.0, acceptance=(0.9, 1.1)) == (None, "target_excluded")
     # Same target, but the acceptance interval reaches the feasible run → longest run is enough.
-    assert loop_mod._select_feasible_run(
+    assert wire._select_feasible_run(
         manifest, energies, target_energy=1.0, acceptance=(0.5, 2.5)) == ((2, 5), "longest")
 
 
 def test_largest_feasible_run_refuses_a_manifest_that_does_not_match_the_request():
     """A mask of the wrong length describes a different grid; trimming against it would move the
     window to the wrong energies, so it must read as 'no localization'."""
-    assert loop_mod._largest_feasible_run({"planned_feasible_mask": [True] * 4}, 5) is None
-    assert loop_mod._largest_feasible_run(
+    assert wire._largest_feasible_run({"planned_feasible_mask": [True] * 4}, 5) is None
+    assert wire._largest_feasible_run(
         {"feasible_segments": [{"start_index": 1, "end_index": 9}]}, 5) is None
-    assert loop_mod._largest_feasible_run({"planned_feasible_mask": [False] * 5}, 5) is None
-    assert loop_mod._largest_feasible_run({}, 5) is None
+    assert wire._largest_feasible_run({"planned_feasible_mask": [False] * 5}, 5) is None
+    assert wire._largest_feasible_run({}, 5) is None
     # Longest run wins, and the segment form agrees with the mask form.
-    assert loop_mod._largest_feasible_run(
+    assert wire._largest_feasible_run(
         {"planned_feasible_mask": [True, False, True, True, True]}, 5) == (2, 4)
-    assert loop_mod._largest_feasible_run(
+    assert wire._largest_feasible_run(
         {"feasible_segments": [{"start_index": 2, "end_index": 4}]}, 5) == (2, 4)
 
 
@@ -4438,10 +4444,10 @@ def test_the_frozen_background_shares_nothing_with_the_spec(tmp_path):
 def test_scan_and_validate_bodies_omit_background_when_none():
     proposal = _scan_proposal(0.0, 1.0, 0.1)
     assert "background" not in _validate_body(proposal, sample="Al_phonon_DFT")
-    assert "background" not in loop_mod._scan_body(proposal, "deterministic", 3,
+    assert "background" not in wire._scan_body(proposal, "deterministic", 3,
                                                    sample="Al_phonon_DFT")
     frozen = _normalized_bg(enabled=False)
-    body = loop_mod._scan_body(proposal, "deterministic", 3, sample="Al_phonon_DFT",
+    body = wire._scan_body(proposal, "deterministic", 3, sample="Al_phonon_DFT",
                                background=frozen)
     assert body["background"] == frozen and body["engine"] == "deterministic"
 

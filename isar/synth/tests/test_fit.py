@@ -3,7 +3,8 @@ import numpy as np
 import pytest
 
 from isar.synth import config, dispersion, fit, generate, noise
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze import phonon
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 CFG = config.default_run_config()
 
@@ -15,9 +16,9 @@ def _gt(H=2.5, target=2000.0, seed=0, **over):
 # ---------------------------------------------------------------- reparam / guard
 def test_reparam_round_trip():
     omega0, gamma = 6.0, 0.5
-    omega_d = fit.omega_d_from(omega0, gamma)
+    omega_d = phonon.omega_d_from(omega0, gamma)
     assert np.isclose(omega_d, np.sqrt(36 - 0.25))
-    assert np.isclose(fit.omega0_from(omega_d, gamma), omega0)
+    assert np.isclose(phonon.omega0_from(omega_d, gamma), omega0)
 
 
 def test_guard_never_fires_in_model():
@@ -28,7 +29,7 @@ def test_guard_never_fires_in_model():
         omega0 = dispersion.omega0_of_H(H)
         if omega0 < CFG.eps_omega_d:
             continue
-        omega_d = fit.omega_d_from(omega0, CFG.gamma)
+        omega_d = phonon.omega_d_from(omega0, CFG.gamma)
         y = model(np.array([max(omega_d, CFG.eps_omega_d), CFG.gamma, 100.0, 300.0, 5.0]))
         assert np.all(np.isfinite(y))
         assert y.max() < 1e5  # the 1e6 guard would dwarf this
@@ -45,7 +46,7 @@ def test_direct_overdamped_call_does_fire_guard():
 def test_omega0_error_includes_cross_term():
     omega_d, gamma = 5.0, 0.5
     cov = np.array([[0.04, 0.01], [0.01, 0.02]])  # var_od, cov, var_g
-    omega0, err = fit.omega0_value_error(omega_d, gamma, cov)
+    omega0, err = phonon.omega0_value_error(omega_d, gamma, cov)
     o = np.sqrt(omega_d**2 + gamma**2)
     d_od, d_g = omega_d / o, gamma / o
     expected = np.sqrt(d_od**2 * 0.04 + d_g**2 * 0.02 + 2 * d_od * d_g * 0.01)
@@ -54,8 +55,15 @@ def test_omega0_error_includes_cross_term():
 
 
 def test_omega0_error_none_covariance():
-    omega0, err = fit.omega0_value_error(5.0, 0.5, None)
+    omega0, err = phonon.omega0_value_error(5.0, 0.5, None)
     assert np.isfinite(omega0) and np.isnan(err)
+
+
+def test_omega0_error_zero_omega0_with_covariance():
+    """Ω_d = Γ = 0 makes ω₀ = 0, so the derivatives are undefined: report an unusable
+    (NaN) error rather than raising ZeroDivisionError on plain floats."""
+    omega0, err = phonon.omega0_value_error(0.0, 0.0, np.eye(2))
+    assert omega0 == 0.0 and np.isnan(err)
 
 
 # ---------------------------------------------------------------- success logic
@@ -63,33 +71,33 @@ def test_assess_success_normal():
     x = np.array([5.0, 0.5, 100.0, 300.0, 5.0])
     errs = np.array([0.05, 0.05, 5.0, 10.0, 1.0])
     at_limit = {"omega_d": False, "gamma": False}
-    assert fit.assess_success(x, errs, at_limit, True, True, CFG.eps_omega_d)
+    assert phonon.assess_success(x, errs, at_limit, True, True, CFG.eps_omega_d)
 
 
 def test_assess_success_omega_d_pinned_at_eps_fails():
     x = np.array([CFG.eps_omega_d, 0.5, 100.0, 300.0, 5.0])
     errs = np.array([0.05, 0.05, 5.0, 10.0, 1.0])
     at_limit = {"omega_d": True, "gamma": False}
-    assert not fit.assess_success(x, errs, at_limit, True, True, CFG.eps_omega_d)
+    assert not phonon.assess_success(x, errs, at_limit, True, True, CFG.eps_omega_d)
 
 
 def test_assess_success_error_swamps_omega_d_fails():
     x = np.array([0.4, 0.5, 100.0, 300.0, 5.0])
     errs = np.array([0.9, 0.05, 5.0, 10.0, 1.0])  # σ_Ωd > Ω_d
-    assert not fit.assess_success(x, errs, {"omega_d": False}, True, True, CFG.eps_omega_d)
+    assert not phonon.assess_success(x, errs, {"omega_d": False}, True, True, CFG.eps_omega_d)
 
 
 def test_assess_success_requires_covariance_and_finite_errors():
     x = np.array([5.0, 0.5, 100.0, 300.0, 5.0])
-    assert not fit.assess_success(x, None, {}, True, False, CFG.eps_omega_d)
+    assert not phonon.assess_success(x, None, {}, True, False, CFG.eps_omega_d)
     errs = np.array([0.05, np.nan, 5.0, 10.0, 1.0])
-    assert not fit.assess_success(x, errs, {}, True, True, CFG.eps_omega_d)
+    assert not phonon.assess_success(x, errs, {}, True, True, CFG.eps_omega_d)
 
 
 def test_assess_success_gamma_at_floor_is_still_success():
     x = np.array([5.0, CFG.gamma_floor, 100.0, 300.0, 5.0])
     errs = np.array([0.05, 0.05, 5.0, 10.0, 1.0])
-    assert fit.assess_success(x, errs, {"omega_d": False, "gamma": True}, True, True, CFG.eps_omega_d)
+    assert phonon.assess_success(x, errs, {"omega_d": False, "gamma": True}, True, True, CFG.eps_omega_d)
 
 
 # ---------------------------------------------------------------- recovery
@@ -118,7 +126,7 @@ def test_grid_ic_finds_basin_at_low_counts():
     x, counts, _ = generate.generate_scan(gt)
     x0 = fit.initial_guess(x, counts, gt.gauss_fwhm, gt.lorentz_fwhm, gt.T,
                            center=0.0, eps_omega_d=gt.x_step, x_max=gt.x_max, mode="grid")
-    omega_d_true = fit.omega_d_from(gt.omega0, gt.gamma)
+    omega_d_true = phonon.omega_d_from(gt.omega0, gt.gamma)
     assert abs(x0[0] - omega_d_true) < 1.5  # grid IC lands in the Ω_d basin
 
 

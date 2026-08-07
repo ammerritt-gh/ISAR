@@ -51,7 +51,7 @@ import matplotlib.pyplot as plt                            # noqa: E402
 from isar.analyze import errors, gold, loop, select, verdict   # noqa: E402
 from isar.analyze.context import ScanContext               # noqa: E402
 from isar.analyze.prior import PhononPrior                 # noqa: E402
-from isar.analyze.structures import enumerate_structures   # noqa: E402
+from isar.analyze.phonon import enumerate_phonon_structures as enumerate_structures   # noqa: E402
 from isar.calibrate import bragg, elastic                  # noqa: E402
 from isar.calibrate.energy_zero import build_energy_calibration   # noqa: E402
 from isar.parsers import spec_s30                          # noqa: E402

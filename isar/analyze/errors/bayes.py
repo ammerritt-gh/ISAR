@@ -32,7 +32,7 @@ from dynesty.utils import resample_equal
 from isar.analyze import loop
 from isar.analyze.errors.bootstrap import _percentile_interval, is_bimodal
 from isar.schema.statistics import SemanticsConstructionError, semantics_fingerprint
-from isar.synth import estimators
+from isar.analyze import estimators
 
 # Production defaults + diagnostic thresholds (D10-adjacent empirical pins, like loop.GAMMA_FLOOR).
 DEFAULT_NLIVE = 400

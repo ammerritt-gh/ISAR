@@ -551,7 +551,7 @@ def _produced_predictive_artifact(monkeypatch, weights: dict[str, float], bases:
 def test_current_omega0_adapter_accepts_the_real_authenticated_producer_contract(tmp_path: Path):
     from isar.eig import adapt_omega0_target_projection
     from isar.parsers import ill_in8
-    from isar.session import driver
+    from isar.session import driver, scan_delivery
     from isar.session.predictive_artifact import build_target_projection
     from isar.session.workspace import Workspace
     from isar.synth_format import run_builder
@@ -888,7 +888,7 @@ def _producer_fit_semantics(*, label: str, constraints: list[dict], reasons: lis
 
 
 def test_selection_diagnostics_use_producer_candidate_fit_semantics_with_multiplicity(tmp_path: Path):
-    from isar.session import driver
+    from isar.session import driver, scan_delivery
 
     constraints = [
         {"parameter": "phonon.Gamma", "constraint_kind": "soft", "mean": 0.3, "sigma": 0.1,
@@ -920,7 +920,7 @@ def test_selection_diagnostics_use_producer_candidate_fit_semantics_with_multipl
         "offered_labels": ["one", "two"],
         "scored_labels": ["one", "two"],
     }
-    record = driver._build_selection_semantics(
+    record = scan_delivery._build_selection_semantics(
         results, SimpleNamespace(scores=scores, pooled=object()), route,
         error_attachment_labels=["one", "two"])
     assert record is not None

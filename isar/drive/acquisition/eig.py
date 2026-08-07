@@ -128,7 +128,7 @@ def sigma_omega0(theta, info) -> float:
 
     Marginalizes (A, E, BG) by the Schur complement onto the (Ω_d, Γ) block (the honest cost of not
     knowing the nuisances), then projects with the exact Jacobian ``g = (Ω_d/ω₀, Γ/ω₀)`` (the same
-    weights as :func:`isar.synth.fit.omega0_value_error`). Returns ``+inf`` — never a falsely-small
+    weights as :func:`isar.analyze.phonon.omega0_value_error`). Returns ``+inf`` — never a falsely-small
     value — when ω₀ is unidentifiable: a bare Moore-Penrose inverse would zero the null directions and
     report a tight σ, so instead the ω₀-direction precision ``gᵀ I_marg g`` is rank-checked and any
     singular/non-finite/non-positive variance maps to ∞.

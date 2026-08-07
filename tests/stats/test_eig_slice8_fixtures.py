@@ -14,10 +14,10 @@ PARAMETERS = Path("tools/stats/eig_slice8_fixture_parameters.json")
 CASE2_PROTOCOL = Path(
     "tools/stats/eig_slice8_case2_amplitude_protocol_o36_8_2.json")
 CASE2_TABLE = Path(
-    "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR/"
+    "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3/"
     "case2-amplitude-calibration-table.json")
 CASE2_REPRODUCIBILITY = Path(
-    "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR/"
+    "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3/"
     "case2-amplitude-reproducibility.json")
 REPLACEMENT_PARAMETERS = Path(
     "tools/stats/eig_slice8_fixture_parameters_o36_8_2.json")

@@ -11,8 +11,8 @@ from isar.analyze import loop
 from isar.analyze.context import ScanContext
 from isar.analyze.errors import bootstrap as B
 from isar.analyze.errors import profile as P
-from isar.analyze.structures import enumerate_structures
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.phonon import enumerate_phonon_structures
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _fitted(seed=0):
@@ -22,7 +22,7 @@ def _fitted(seed=0):
     ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
                       energy_status="needs_zero")
-    hyp = {h.label: h for h in enumerate_structures(ctx)}["elastic+stokes+bg"]
+    hyp = {h.label: h for h in enumerate_phonon_structures(ctx)}["elastic+stokes+bg"]
     return hyp, ctx, loop.fit_hypothesis(hyp, ctx, minos=False)
 
 

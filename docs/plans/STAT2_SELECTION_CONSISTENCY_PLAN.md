@@ -115,8 +115,8 @@ STAT-2a leaves every one of those authority edges on the legacy result.
 
 The complete shadow route must record, rather than erase, all four current set transitions:
 
-- Physical admissibility: `enumerate_structures()` and `enumerate_multimode()` in
-  `isar/analyze/structures.py` gate elastic, quasielastic, anti-Stokes, Stokes-only, and
+- Physical admissibility: `enumerate_phonon_structures()` and `enumerate_phonon_multimode()` in
+  `isar/analyze/phonon.py` gate elastic, quasielastic, anti-Stokes, Stokes-only, and
   multi-mode hypotheses from the scientific context.
 - Residual/expected-mode escalation: `loop._offer_multimode()` and the `peaks` guideline decide
   whether two-mode hypotheses are offered. The shadow trigger is evaluated from the complete
@@ -660,24 +660,16 @@ S8 accepts the completed evidence, retains production AIC, and authorizes no AIC
 not authorize STAT-2c or another production-selection authority change; STAT-2c requires a separate
 owner decision.
 
-STAT-2b.1 source-closure upkeep is governed separately by S9. The historical gate and completed
-aggregate are immutable execution evidence, not refreshable production manifests. Current
-production closure is maintained in a candidate/active manifest cycle rooted at production anchor
-`ce490fec5badbc76e8799b7fb3f84ef5c201b855`. A protected-semantic mismatch requires selection or
-evidence-contract review with proportionate proof; a protected-adjacent mismatch requires bounded
-source review and focused parity; a newly reached dependency remains unclassified until reviewed.
-A branch may be temporarily red while its boundary is being updated, but the mismatch must be
-closed before the statistical slice or containing PR merges. Passing checks never constitute owner
-approval. The dated upkeep evidence is
-[`../campaigns/2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md`](../campaigns/2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md).
-
-The cycle has two modes. Bootstrap uses the frozen historical source map only when no active
-closure exists. Renewal authenticates and preserves the active closure, compares source and graph
-drift against it, and writes a candidate beside it using an explicit proposed production anchor
-and new review path. Every protected non-exempt module is AST-traversed. The complete held-out
-summary fingerprint is recomputed from its contents and its raw bytes are pinned. Git-backed active
-verification proves the preceding candidate and review bytes at the declared candidate artifact
-commit; owner/date/anchor/commit formats are validated portably first.
+The historical gate and completed aggregate are immutable execution evidence, not refreshable
+production manifests. The continuous source-closure upkeep cycle that S9 required (candidate/active
+manifests, protected-drift reconciliation, owner promotion commits, closure-before-merge) was
+retired by S10; ordinary source changes need normal review plus behavior tests only. What remains
+is the held-out trust boundary: `tools/stats/stat2b_heldout_verifier.py` authenticates the frozen
+gate and aggregate at their frozen identities and replays the preserved decision
+(`tests/stats/test_stat2b_heldout_verifier.py`). The closure manifests under `tools/stats/` and
+the dated upkeep evidence
+([`../campaigns/2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md`](../campaigns/2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md))
+remain as historical records of the retired cycle.
 
 Compare:
 

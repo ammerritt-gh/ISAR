@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from isar.synth._ff import Voigt
+from isar.analyze.lineshapes import Voigt
 
 
 def fit_elastic(x, counts, *, k: float = 5.0):

@@ -12,9 +12,9 @@ import numpy as np
 from isar.analyze import gold, loop, select
 from isar.analyze import verdict as V
 from isar.analyze.context import ScanContext
-from isar.analyze.structures import enumerate_structures
+from isar.analyze.phonon import enumerate_phonon_structures
 from isar.schema.steering import DescriptorPeak, ScanDescriptor
-from isar.synth._ff import convolute_voigt_dho
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _ctx(counts, center=0.0):
@@ -29,7 +29,7 @@ def _clean_counts():
 
 
 def _fit(ctx, label="elastic+stokes+bg"):
-    hyp = {h.label: h for h in enumerate_structures(ctx)}[label]
+    hyp = {h.label: h for h in enumerate_phonon_structures(ctx)}[label]
     res = loop.fit_hypothesis(hyp, ctx, minos=False)
     return res, select.select_models([res])
 

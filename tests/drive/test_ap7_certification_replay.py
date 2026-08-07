@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from isar.session.driver import _assert_canonical_indices_cover_path
+from isar.session.master_delivery import _assert_canonical_indices_cover_path
 
 _FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "ap7_certification_worklist.json"
 _MANIFEST_PATH = (Path(__file__).resolve().parents[2] / "test_workspaces" / "AP7_Failed" / "report"

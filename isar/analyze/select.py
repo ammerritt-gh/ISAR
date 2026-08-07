@@ -4,7 +4,7 @@ one honest answer.
 Selection is by information criterion, **never raw chi^2** (D2): raw chi^2 always prefers the
 model with more peaks and so fits noise as a phantom phonon — the named ``fit_phonons``
 anti-pattern (§0.2). The structure loop's ``cost`` is the Baker-Cousins -2lnL
-(``isar.synth.estimators.baker_cousins_cost``), so the implemented formulas are:
+(``isar.analyze.estimators.baker_cousins_cost``), so the implemented formulas are:
 
     AIC  = cost + 2k
     AICc = AIC + 2k(k+1)/(n-k-1)         (small-n correction; n/k ~ 5-9 on these scans)
