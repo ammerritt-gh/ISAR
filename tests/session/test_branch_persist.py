@@ -111,15 +111,24 @@ def test_branch_belief_preserves_complete_posterior_and_legacy_fallback():
 def test_rebuild_tracked_prior_leaves_foreign_tracked_points_at_their_own_revision():
     # A tracked point sourced outside this campaign survives the source-id filter by design. It was
     # not rebuilt in this call, so relabelling it with the current revision would advertise evidence
-    # freshness that never happened — the stamp belongs only to the points just added.
+    # freshness that never happened — the stamp belongs only to the points just added. The confirmed
+    # assignment below exercises the add path, so this test also fails if the stamp loop is deleted.
     foreign = {"scan_id": "foreign_scan#tracked:optic", "track_revision": 1,
                "sample": "x", "T": 300.0, "q": [0.5, 0.0, 0.0], "omega0": 4.0,
                "modality": "fold", "verdict": "resolved"}
     card = SimpleNamespace(state=CardState(dispersion_prior=[foreign]))
-    track = {"revision": 7, "assignments": []}
+    outcome = {"pooled": True, "modality": "fold", "verdict": "resolved",
+               "sample": "x", "T": 300.0, "q": [0.25, 0.0, 0.0], "fit_kind": "dho"}
+    refs = {"master:s100:D": (SimpleNamespace(provenance={}), "D", outcome)}
+    track = {"revision": 7, "assignments": [{
+        "track_state": "confirmed", "optic_candidate_index": 0, "assignment_entropy": 0.1,
+        "candidates": [{"source_scan_id": "s100", "energy_meV": 4.2, "gamma": 0.3,
+                        "probabilities": {"optic": 1.0}}]}]}
 
-    _rebuild_tracked_prior(card, None, track, [], {}, t_round=0.0)
+    _rebuild_tracked_prior(card, None, track,
+                           [{"authority": "master:s100:D"}], refs, t_round=0.0)
 
-    assert card.state.dispersion_prior == [foreign]
+    by_id = {p["scan_id"]: p for p in card.state.dispersion_prior}
+    assert by_id["s100#tracked:optic"]["track_revision"] == 7
     assert foreign["track_revision"] == 1
 
