@@ -433,31 +433,11 @@ def enumerate_phonon_multimode(ctx, n_max: int = 2) -> list[Hypothesis]:
     mode 2 gets the ``phonon2`` namespace. Capped at N=2 this round (``n_max`` is accepted for
     the later N=3 extension; values >2 are treated as 2).
 
-    Still hand-enumerated: multiplicity (a second instance of the *same* phenomenon in its own
-    parameter namespace) is not a catalogue concept yet, so routing it through the catalogue would
-    not be a strict-equivalence change. It migrates with the evidence work in SCENE-1 PR-b."""
-    # local import: components imports this module, so the classes cannot come in at
-    # module level (components.py -> phonon.py cycle).
-    from isar.analyze.components import ConstantBackground, Elastic, QuasiElastic
+    Catalogue-driven since SCENE-1 PR-b (multiplicity is the catalogue's concept: a second
+    instance of the same phenomenon in the ``phonon2`` namespace); output pinned bit-identical
+    to the legacy hand enumeration by ``tests/analyze/test_catalogue.py``."""
+    # local import: catalogue imports components, which imports this module, so it cannot come
+    # in at module level (components.py -> phonon.py cycle).
+    from isar.analyze.catalogue import enumerate_multimode_structures
 
-    if n_max < 2:
-        return []
-    elastic = elastic_admissible(ctx)
-    qe = quasielastic_admissible(ctx)
-
-    def twophonon():
-        # mode 1 (default "phonon" prefix), mode 2 ("phonon2"). Both honour the Bose-dead
-        # Stokes-only choice so a two-mode high-q fit stays one-sided as well.
-        return (_phonon_for(ctx), _phonon_for(ctx, prefix="phonon2"))
-
-    hyps = [Hypothesis("stokes2+bg", (*twophonon(), ConstantBackground))]
-    if elastic:
-        hyps.append(Hypothesis("elastic+stokes2+bg",
-                               (*twophonon(), Elastic, ConstantBackground)))
-    if qe:
-        hyps.append(Hypothesis("stokes2+qe+bg",
-                               (*twophonon(), QuasiElastic, ConstantBackground)))
-    if elastic and qe:
-        hyps.append(Hypothesis("elastic+stokes2+qe+bg",
-                               (*twophonon(), Elastic, QuasiElastic, ConstantBackground)))
-    return hyps
+    return enumerate_multimode_structures(ctx, n_max)
