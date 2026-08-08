@@ -51,6 +51,11 @@ EVIDENCE_REVISION = "isar.laplace_evidence/1"
 # of sampled. Reaching the 0.01 survivor floor needs the ceiling within ~ln(N/0.01) ≈ 7 nats
 # of the leader; 100 leaves ~93 nats of slack for optimizer slop before pruning could matter.
 PRUNE_MARGIN = 100.0
+# Scoped escalation budget (owner ruling 2026-08-08): post-pruning deferred escalations sample
+# at n_live=128 — their job is separating Occam gaps of 10–40 nats, where the larger logzerr
+# (~0.6 vs ~0.3 nats) is decision-irrelevant. D4's n_live=400 stays for the bayes-tier error
+# diagnostics (errors --errors bayes) and for direct structure_evidence calls.
+ESCALATION_N_LIVE = 128
 
 _LN_2PI = math.log(2.0 * math.pi)
 log = logging.getLogger(__name__)
@@ -264,6 +269,7 @@ def candidate_set_evidence(candidates, ctx, **kwargs) -> EvidenceSet:
     # ponytail: escalations run serially; parallelize the surviving dynesty runs through the
     # session process pool (fit_one's boot_executor, task tuples like _fit_hypothesis_task)
     # when per-scan latency matters — owner-flagged follow-up 2026-08-08.
+    kwargs.setdefault("n_live", ESCALATION_N_LIVE)
     es = EvidenceSet(arena_fingerprint=loop.data_likelihood_fingerprint(ctx))
     deferred = []
     for hyp, fit, bundle in candidates:

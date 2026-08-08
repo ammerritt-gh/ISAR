@@ -323,6 +323,46 @@ def test_all_railed_set_escalates_highest_ceiling_first(clean, monkeypatch):
     assert es.by_label()["weak"].evidence_method == "dominated"
 
 
+def test_candidate_set_escalations_use_the_scoped_n_live_cut(clean, monkeypatch):
+    """Owner ruling 2026-08-08: post-pruning escalations sample at ESCALATION_N_LIVE=128;
+    the direct-call default and the bayes diagnostics tier (D4) stay at 400. An explicit
+    caller n_live wins over the cut (setdefault, not override)."""
+    import inspect
+
+    ctx, hyp, fit = clean
+    bundle = _bundle(hyp, ctx)
+    original = E.structure_evidence
+    seen = []
+
+    def _stub(h, c, f, b, *, escalation="run", **k):
+        if escalation == "defer":
+            return E.EvidenceRecord(
+                label=f.label, log_evidence=float("nan"), log_evidence_err=None,
+                evidence_method="deferred_escalation", k_free=f.k,
+                arena_fingerprint=loop.data_likelihood_fingerprint(c), prior_spec=(),
+                validity={"log_evidence_upper_bound": -0.5 * f.cost})
+        seen.append(k.get("n_live"))
+        return E.EvidenceRecord(
+            label=f.label, log_evidence=-0.5 * f.cost - 10.0, log_evidence_err=0.3,
+            evidence_method="dynesty", k_free=f.k,
+            arena_fingerprint=loop.data_likelihood_fingerprint(c), prior_spec=(),
+            validity={"dynesty": {"converged": True, "n_live": k.get("n_live")}})
+
+    monkeypatch.setattr(E, "structure_evidence", _stub)
+    es = E.candidate_set_evidence([(hyp, fit, bundle)], ctx)
+    assert seen == [E.ESCALATION_N_LIVE] and E.ESCALATION_N_LIVE == 128
+    # the record carries the cut honestly (rides validity into the /2 semantics record)
+    assert es.by_label()[fit.label].validity["dynesty"]["n_live"] == 128
+
+    seen.clear()
+    E.candidate_set_evidence([(hyp, fit, bundle)], ctx, n_live=80)
+    assert seen == [80]                                   # explicit caller n_live wins
+
+    # the two-lane split: direct calls and the bayes diagnostics tier keep D4's 400
+    assert inspect.signature(original).parameters["n_live"].default == 400
+    assert BZ.DEFAULT_NLIVE == 400
+
+
 # ------------------------------------------------------------------ generalized bayes lane
 def test_prior_bundle_ppf_drives_the_sampler(clean):
     """The bundle enters via the prior transform: a near-delta prior on Ω_d pins the sampled
