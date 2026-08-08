@@ -24,9 +24,12 @@ area.
   report score profile drive view diagnose`.
 - **GUI:** `run-isar-gui.bat` → `micromamba run -n isar python -m isar_gui`; falls back to env
   `tavi-dev` when `isar` isn't built yet.
-- **Tests:** markers `slow`, `live`; `testpaths` = `isar/synth/tests`, `tests` (`pyproject.toml`).
-  `live` needs a running TAVI at `127.0.0.1:8642`. `tests/real_data/` needs the gitignored local
-  `test_data/`. `isar/synth/tests/` = Phase-1 synthetic core; `tests/` = Phase 2+. Parallel runs
+- **Tests:** markers `slow`, `live`, `golden`; `testpaths` = `isar/synth/tests`, `tests`
+  (`pyproject.toml`). `live` needs a running TAVI at `127.0.0.1:8642`. `tests/real_data/` needs
+  the gitignored local `test_data/`. `golden` (S12) = **sealed held-out real-data gates**: the
+  repo carries only the generic runner; every expectation lives in gitignored
+  `test_data/golden/<scenario>/scenario.json`, which is **never read, run, or consulted during
+  development** — the gate runs only when the owner names it (`ISAR_GOLDEN=1`). `isar/synth/tests/` = Phase-1 synthetic core; `tests/` = Phase 2+. Parallel runs
   need `pytest-xdist>=3.5` (in the `[test]` extra).
 - **Running the suite — three commands, pick by intent:**
   1. *Targeted / debugging (serial):* `python -m pytest <path>::<test> -s`. Keep debugging serial —

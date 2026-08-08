@@ -1339,6 +1339,23 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   manifests" operation of the PR #9 review (R9), which S10 would otherwise have required an
   owner-named milestone to perform.
 
+- **S12.** (2026-08-08, In force; validation governance under S10/H1; no production behavior
+  change) **Real-data golden gates are sealed held-out instruments: run only when the owner
+  names it, never consulted during development.** A golden gate is a frozen real-scan scenario
+  whose candidate specifications, seeds, declared priors, and expected claims live entirely in
+  the gitignored local `test_data/golden/<scenario>/scenario.json`; the repository carries only
+  the generic runner (`tests/real_data/test_golden_scenarios.py`, marker `golden`, enabled by
+  `ISAR_GOLDEN=1`). The failure this prevents is Goodhart drift: a benchmark whose expected
+  answers are visible in the tree quietly becomes a tuning target, and a system fitted to its
+  own exam proves nothing to a skeptical colleague. Expectations pin qualitative contracts and
+  toleranced quantities (winner identity, evidence orderings, mode positions), not exact
+  floats, so legitimate machinery evolution does not spuriously fail the gate; a genuine
+  divergence is adjudicated by the owner at the gate run, and per S10 the frozen scenario is
+  never refreshed to match current source without an owner-named re-freeze. First instance:
+  the H204 IN8 scan (T=1.5 K, B=−3.5 T; frozen 2026-08-08 at `26e4b75`), whose exam record —
+  including the blind/assisted evidence contrast that motivates the seal — is retained in the
+  bundle's `provenance/` directory.
+
 ## SCENE hypothesis layer (H-series)
 
 - **H1.** (2026-08-08, In force; opening ruling of the SCENE program — target-free

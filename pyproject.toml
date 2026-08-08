@@ -40,4 +40,5 @@ testpaths = ["isar/synth/tests", "tests"]
 markers = [
     "slow: marks tests that run many fits (deselect with '-m \"not slow\"')",
     "live: marks tests that require a running TAVI at 127.0.0.1:8642 (set ISAR_LIVE_TAVI to enable)",
+    "golden: sealed held-out real-data gates (S12) — run only when the owner names it (set ISAR_GOLDEN=1; needs local test_data/golden/)",
 ]
