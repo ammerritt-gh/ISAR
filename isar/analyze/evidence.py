@@ -148,12 +148,16 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     property, and raises. ``max_iter`` budgets the dynesty escalation (rung 3); a budget or
     sampler failure yields ``log_evidence=NaN`` with the reason recorded, never an exception.
 
-    ``escalation="defer"`` stops at the Gaussian rungs: a candidate that would escalate
-    returns a ``"deferred_escalation"`` marker carrying its rigorous evidence ceiling
+    ``escalation="defer"`` stops at the Gaussian rungs: an UNPENALISED candidate that would
+    escalate returns a ``"deferred_escalation"`` marker carrying its rigorous evidence ceiling
     (``log_evidence_upper_bound`` = −cost/2, from Z = ∫L·p ≤ L(θ̂) for a proper prior)
     instead of paying for dynesty — :func:`candidate_set_evidence` uses this to prune
     candidates whose ceiling cannot reach the survivor floor (dominance pruning, owner
-    ruling 2026-08-08)."""
+    ruling 2026-08-08). A penalised (soft-prior) fit ignores the deferral and samples: θ̂ is its
+    MAP, so −cost/2 is not a valid ceiling for it.
+
+    A dynesty run that fails its own convergence gate yields ``log_evidence=NaN`` with
+    ``evidence_method="invalid"``; the untrusted value and the reason stay in ``validity``."""
     arena = loop.data_likelihood_fingerprint(ctx)
     names = list(fit_result.params)
     free_names = [p.name for p in bundle.params]
@@ -193,7 +197,13 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
 
     def _escalate(reason: str) -> EvidenceRecord:
         validity["escalation"] = reason
-        if escalation == "defer":
+        # The ceiling below is only a ceiling for an UNPENALISED fit. Z = ∫L·p ≤ L(θ̂) needs L(θ̂)
+        # to be the maximum of the data likelihood; for a soft-constrained fit θ̂ is the MAP, so
+        # cost(θ̂) ≥ cost(θ̂_MLE) and −cost/2 UNDERstates the bound. Pruning on an understated
+        # ceiling can drop a candidate whose true lnZ sits above it, so a penalised fit is never
+        # deferred — it pays for the sampler. Pruning was always an optimisation, never a
+        # shortcut around one.
+        if escalation == "defer" and fit_result.prior_penalty is None:
             validity["log_evidence_upper_bound"] = -0.5 * float(fit_result.cost)
             return _record(float("nan"), None, "deferred_escalation")
         return _dynesty_evidence(hyp, ctx, fit_result, bundle, _record, validity,
@@ -255,7 +265,8 @@ def candidate_set_evidence(candidates, ctx, **kwargs) -> EvidenceSet:
     ``candidates`` is ``[(hyp, fit_result, bundle), ...]`` (converged fits only — the caller
     owns that filter). Strategy (owner ruling 2026-08-08): the Gaussian rungs run for every
     candidate first; escalations are then processed in descending order of their evidence
-    ceiling ``lnZ ≤ −cost(θ̂)/2`` (exact for proper priors: Z = ∫L·p ≤ L(θ̂)·∫p = L(θ̂)).
+    ceiling ``lnZ ≤ −cost(θ̂)/2`` (exact for proper priors on an unpenalised fit, where θ̂ is the
+    data MLE: Z = ∫L·p ≤ L(θ̂)·∫p = L(θ̂); a penalised fit is excluded from pruning entirely).
     A candidate whose ceiling sits more than ``PRUNE_MARGIN`` nats below the current leader
     is recorded ``"dominated"`` — its true posterior is bounded above by e^−PRUNE_MARGIN of
     the leader's, orders of magnitude under the survivor floor, so skipping the sampler
@@ -325,5 +336,15 @@ def _dynesty_evidence(hyp, ctx, fit_result, bundle, _record, validity, *,
                            "fail_reason": bz.fail_reason, "ess": float(bz.ess),
                            "n_live": int(n_live)}
     if not np.isfinite(bz.log_evidence):
+        return _record(float("nan"), None, "invalid")
+    if not bz.converged:
+        # A sampler that failed its own §5.4 gate returns a number, not evidence. The gates that
+        # fail here (max_iter, ess < ESS_MIN, logzerr > LOGZERR_MAX, a railed Omega_d, a degenerate
+        # interval) all leave logz finite, so finiteness alone cannot separate them — and logzerr
+        # is allowed up to 5 nats, noise on the 10-40 nat Occam gaps selection turns on. Refusing
+        # here rather than at each reader keeps one trust standard: this is the same condition
+        # ``candidate_set_evidence._trusted`` already requires before a record may lead pruning.
+        # The value survives in validity for diagnosis; it just may not steer.
+        validity["dynesty"]["log_evidence_untrusted"] = float(bz.log_evidence)
         return _record(float("nan"), None, "invalid")
     return _record(float(bz.log_evidence), float(bz.log_evidence_err), "dynesty")

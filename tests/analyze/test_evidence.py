@@ -272,6 +272,48 @@ def test_dominated_candidate_never_pays_for_dynesty(clean, monkeypatch):
     assert recs["elastic+stokes+bg"].evidence_method == "laplace"
 
 
+def test_failed_sampler_gate_yields_no_usable_evidence(clean, monkeypatch):
+    """A dynesty run that fails its own §5.4 gate returns a finite logz — and must NOT be
+    usable evidence. Finiteness cannot separate the failures (max_iter, low ESS, logzerr blow-up,
+    a railed Omega_d all leave logz finite), so the gate is convergence, not finiteness.
+    Otherwise a sampler the module already distrusts for pruning decides the production
+    posterior, since select_models admits every finite lnZ."""
+    ctx, hyp, fit = clean
+    failed = types.SimpleNamespace(converged=False, fail_reason="ess=12 below 100",
+                                   ess=12.0, log_evidence=-123.5, log_evidence_err=7.0)
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior",
+                        lambda *a, **k: failed)
+    rec = E.structure_evidence(hyp, ctx, replace(fit, at_limit=None), _bundle(hyp, ctx), **FAST)
+
+    assert rec.evidence_method == "invalid"
+    assert math.isnan(rec.log_evidence)
+    # The number is kept for diagnosis, with the sampler's own reason — refused, not discarded.
+    assert rec.validity["dynesty"]["converged"] is False
+    assert rec.validity["dynesty"]["fail_reason"] == "ess=12 below 100"
+    assert rec.validity["dynesty"]["log_evidence_untrusted"] == -123.5
+
+
+def test_penalised_fit_is_never_dominance_pruned(monkeypatch):
+    """−cost/2 is a ceiling only when θ̂ is the data MLE. For a soft-constrained fit θ̂ is the
+    MAP, so the bound UNDERstates lnZ and pruning on it could drop a competitive candidate
+    unsampled. A penalised fit must therefore ignore the deferral and sample."""
+    constraints = ParamConstraints(soft={"phonon.Gamma": (0.5, 0.2)},
+                                   origins={"phonon.Gamma": "transport_test"})
+    ctx = _spectrum_ctx(constraints=constraints)
+    hyp, fit = _fitted(ctx)
+    assert fit.prior_penalty is not None                  # the precondition the guard reads
+    sampled = types.SimpleNamespace(converged=True, fail_reason=None, ess=500.0,
+                                    log_evidence=-42.0, log_evidence_err=0.3)
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior",
+                        lambda *a, **k: sampled)
+
+    rec = E.structure_evidence(hyp, ctx, replace(fit, at_limit=None), _bundle(hyp, ctx),
+                               escalation="defer", **FAST)
+
+    assert rec.evidence_method == "dynesty"               # sampled despite escalation="defer"
+    assert "log_evidence_upper_bound" not in rec.validity
+
+
 def test_genuine_contest_still_pays_for_dynesty():
     """On a blank (bg-only) scan a railed phonon candidate fits AS WELL as the winner —
     its ceiling is near the leader, so pruning must NOT fire and dynesty must run: the
