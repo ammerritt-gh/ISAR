@@ -246,13 +246,17 @@ def evidence_from_results(
 
 
 def null_hypotheses(ctx) -> list[Hypothesis]:
-    """Campaign-only null family under the production elastic/QE gates."""
+    """Campaign-only null family under the production elastic/QE gates.
 
-    hypotheses = [Hypothesis("bg", (ConstantBackground,))]
+    Only the nulls production does NOT already enumerate: ``bg`` and ``elastic+bg`` became
+    first-class production candidates at SCENE-1 PR-a (the ``elastic_only`` / ``no_signal``
+    winners), so fitting them here again would double-count them in every family that unions
+    campaign nulls with the production evidence. ``NULL_LABELS`` still names the full
+    phonon-less family — it is the "a null was selected" predicate, whoever enumerated it."""
+
+    hypotheses = []
     elastic = elastic_admissible(ctx)
     qe = quasielastic_admissible(ctx)
-    if elastic:
-        hypotheses.append(Hypothesis("elastic+bg", (Elastic, ConstantBackground)))
     if qe:
         hypotheses.append(Hypothesis("qe+bg", (QuasiElastic, ConstantBackground)))
     if elastic and qe:

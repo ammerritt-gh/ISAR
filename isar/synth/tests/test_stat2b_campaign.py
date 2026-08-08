@@ -17,7 +17,7 @@ from isar.analyze.phonon import enumerate_phonon_structures
 from isar.schema.steering import ParamConstraints
 from isar.session import branch_model
 from isar.synth.stat2b import campaign
-from isar.synth.stat2b.criteria import CandidateEvidence, NULL_LABELS
+from isar.synth.stat2b.criteria import CandidateEvidence, NULL_LABELS, null_hypotheses
 from isar.synth.stat2b.spec import (
     CAMPAIGN_SCHEMA,
     CRITICAL_STRATA,
@@ -987,12 +987,18 @@ def test_rescue_cell_builds_a_real_in_range_production_branch():
 def test_campaign_only_candidates_never_enter_production_enumeration():
     dataset = generate_dataset(_spec(), "weak", 0)
     labels = {hypothesis.label for hypothesis in enumerate_phonon_structures(dataset.fit_context)}
-    assert labels.isdisjoint(NULL_LABELS)
+    # bg / elastic+bg were promoted into production at SCENE-1 PR-a (the elastic_only /
+    # no_signal winners); only the QE-bearing nulls remain campaign-only.
+    assert labels & set(NULL_LABELS) == {"bg", "elastic+bg"}
+    assert {hyp.label for hyp in null_hypotheses(dataset.fit_context)} == {
+        "qe+bg", "elastic+qe+bg"}
     assert labels == {
         "stokes+bg",
         "elastic+stokes+bg",
         "stokes+qe+bg",
         "elastic+stokes+qe+bg",
+        "elastic+bg",
+        "bg",
     }
 
 
