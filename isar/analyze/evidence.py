@@ -261,6 +261,9 @@ def candidate_set_evidence(candidates, ctx, **kwargs) -> EvidenceSet:
     the constrained optimum the optimizer reported. The leader only advances on evidence
     worth trusting (Laplace lanes, or dynesty with its §5.4 gate passed), so a blown-up
     sampler cannot over-prune the rest of the set."""
+    # ponytail: escalations run serially; parallelize the surviving dynesty runs through the
+    # session process pool (fit_one's boot_executor, task tuples like _fit_hypothesis_task)
+    # when per-scan latency matters — owner-flagged follow-up 2026-08-08.
     es = EvidenceSet(arena_fingerprint=loop.data_likelihood_fingerprint(ctx))
     deferred = []
     for hyp, fit, bundle in candidates:
