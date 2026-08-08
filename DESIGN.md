@@ -282,7 +282,8 @@ Given an objective and a budget, the driver runs propose → validate → run �
 a loop against a backend (§9), consuming analysis only through the file contract (§4).
 
 **Objective (v1): per-point tolerance** — each grid q to a calibrated 68% halfwidth ≤ tol,
-parsed from a natural-language goal into a formal spec (`goal_to_spec`). The model-level
+compiled from a natural-language goal into a frozen `isar.campaign-program/1` whose one `targeted`
+step carries that objective as its payload (`goal_to_program`). The model-level
 objective (ARIANE-style: maximize improvement of the dispersion model, interpolation allowed) is
 a named future tier. *(Per-point Implemented; model-level Planned.)*
 

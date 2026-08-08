@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the operator workflow
 > **Provenance:** hand-written
-> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Verified against code revision:** `d483af1` (2026-08-08)
 
 How to run ISAR on your own data: set up an experiment once, then re-run one command as scans land.
 Written for a scientist at (or preparing for) a beamtime. For what ISAR *is* and why to trust it,
@@ -127,10 +127,12 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   natural-language goal it proposes scans, drives a virtual instrument (TAVI), fits each scan with
   the same `isar run` pipeline, and decides where to remeasure and when to stop — writing an
   audited `report/session_log.jsonl` and `report/campaign_summary.json`. Needs LLMM (goal-parsing)
-  and a running TAVI instrument. Use `--spec spec.json` for an LLM-free run. **Currently drives the
+  and a running TAVI instrument. Use `--program program.json` for an LLM-free run — an
+  `isar.campaign-program/1` file, which `--goal … --compile-only program.json` writes for you without
+  contacting TAVI. **Currently drives the
   TAVI simulator only** (development tier), not a live beamline. See
   [campaigns/2026-06_MVP_FIRST_RUN.md](campaigns/2026-06_MVP_FIRST_RUN.md).
-  The **budget is the only stop condition** — there is no iteration cap. A goal or spec compiled by
+  The **budget is the only stop condition** — there is no iteration cap. A goal or program compiled by
   `isar drive` that declares no budget gets the canonical default for its tier: **1 hour** of counting time on the
   `deterministic` tier, **8 hours** on `mcstas` (`isar.drive.objective.DEFAULT_BUDGET_HOURS_BY_TIER`,
   overridable with `--budget 8h` / `--budget 1e10n`). No neutron budget is set by default, so a
@@ -177,9 +179,9 @@ gitignored `test_data/` and `examples/` conventions. CI copies the seed, opens i
 `Workspace.open`, and compiles the objective through the same CLI path used by the GUI. The retained
 seed is under 500 KB; schema drift therefore fails fast instead of quietly rotting the demo.
 
-For CLI authoring, add `--scan-window-eig-mode authoritative` to a new goal or compact-spec drive.
-Full specs, frozen envelopes, and resumes retain their recorded mode: a conflicting override is
-rejected. Historical pre-Slice-9 campaigns whose default/off mode agrees resume with their original
+For CLI authoring, add `--scan-window-eig-mode authoritative` to a new goal or compact-payload drive.
+Frozen step payloads and resumes retain their recorded mode: a conflicting override is
+rejected. Campaigns whose default/off mode agrees resume with their original
 identity unchanged.
 
 ## Telling ISAR what you know — the `[fitting]` guidelines

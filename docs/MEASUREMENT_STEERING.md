@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the steering research foundation and the current controller contract
 > **Provenance:** hand-written
-> **Verified against code revision:** `9d77631` (2026-08-04)
+> **Verified against code revision:** `d483af1` (2026-08-08)
 
 > **Status: design locked; the core is built.** The model-free descriptor (L0), branch model +
 > normalized branch-assignment scoring, soft/hard Γ constraints, Stokes-only rescue, under-model
@@ -163,9 +163,9 @@ The proposal-wide `authoritative_evidence_revision` remains transition-first and
 the evidence transition used by proposal/request identity. Shadow scoring has a narrower exact-source
 join: its in-memory action provenance names the selected completed master's `master_revision` (or
 null), independently of the proposal-wide revision. This preserves off/shadow request parity while
-refusing same-Q or later-master substitution. Historical `isar.objective/2` records that omit the
-additive `scan_window_eig` block load as no-policy/default-scoring objectives; readers never consult
-the current card to supplement such a full spec, envelope, or resume record.
+refusing same-Q or later-master substitution. A targeted step payload that omits the `scan_window_eig`
+block loads as a no-policy/default-scoring objective; readers never consult the current card to
+supplement such a frozen payload, program, or resume record.
 Alongside the interval/no-progress brakes there is an identity-space one, `identity_saturated`, for
 the case those cannot speak to — an identity-ambiguous q never matches the target branch, so it never
 accumulates the pooled-master updates `interval_floored` reads. It requires both the target
@@ -711,7 +711,8 @@ The loop gained a small, additive operator-control contract (GUI_DESIGN.md G19 h
   iteration boundary, i.e. at the top of each iteration. Present → one
   acknowledgement `decide` event (`action="operator_stop"`), the in-flight iteration having
   already completed (wait → persist → analyze), then a clean exit with the first-class terminal
-  state **`operator_stopped`** (CLI exit **4**; met 0 / incomplete 3 / infeasible 6 / error 2):
+  state **`operator_stopped`** (CLI exit **4**; met 0 / incomplete 3 / pending_recovery 5 /
+  infeasible 6 / parse-or-config error 2 / valid-but-not-executable-by-this-build 7):
   certification is skipped, the final grid is still evaluated honestly and recorded as
   `stop["grid_state"]`, exactly one terminal `stop` event stays last in the log, and the control
   file is retained (nothing is ever deleted; other tokens' files are inert). No token → no
@@ -723,13 +724,14 @@ The loop gained a small, additive operator-control contract (GUI_DESIGN.md G19 h
   when that is the declared kind) is exhausted. A budget of `None` is unlimited by operator choice.
   `run_campaign` restarts iteration numbering at zero each invocation, but spend does not reset —
   the ledger is whole-log.
-- **LLM-free resume.** `--resume-latest` (mutually exclusive with `--goal`/`--spec`) rebuilds
+- **LLM-free resume.** `--resume-latest` (mutually exclusive with `--goal`/`--program`) rebuilds
   the objective from the last `campaign_start` event's frozen `objective` dict — a goal is never
   re-compiled through the LLM on resume. `--budget` may still override explicitly; **`--tier` is
   frozen with the objective** (an explicit different `--tier` gets a stderr note and is ignored).
-- **Start fingerprints.** `campaign_start` payloads carry `source: {kind: goal|spec|resume,
-  sha256}` (goal text / spec file bytes / inherited), so a consumer can tell "same objective
-  resumed" from "new objective over the same workspace spend ledger".
+- **Start fingerprints.** `campaign_start` payloads carry `source: {kind: goal|program|resume,
+  sha256}` (goal text / program file bytes / inherited), so a consumer can tell "same objective
+  resumed" from "new objective over the same workspace spend ledger". A `program` source also
+  records `program_schema` and the `program_step_id` the campaign is executing.
 
 A hard kill remains possible (the GUI escalation path tree-kills the process group) and safe by
 the crash-resume contract, at the documented cost: a scan whose `run` event was logged before
@@ -743,11 +745,28 @@ expansion uses `ceil(distance / step_rlu)` and includes both endpoints. The lega
 retains its round-based grid exactly, including its non-commensurate-span behavior. Natural-language
 degenerate segments are rejected; explicit and resumed one-point objectives remain valid.
 
-`isar drive --compile-only <envelope.json>` freezes the objective, original goal, and source
-fingerprint without contacting TAVI. The GUI presents that envelope in a copyable confirmation dialog
-(path, point count, target branch, energy range, tolerance, and budget), then executes the same envelope;
-confirmed fields cannot be overridden on that handoff. Resume continues to read the frozen
-`campaign_start.objective` and never recompiles through the LLM.
+`isar drive --goal "…" --compile-only <program.json>` freezes the campaign program — the objective as
+a `targeted` step payload, the original goal, and the source fingerprint — without contacting TAVI,
+and exits 0. That file is what `isar drive --program <program.json>` then executes. The GUI presents
+the compiled program in a copyable confirmation dialog (path, point count, target branch, energy
+range, tolerance, and budget), then executes the same program; confirmed fields cannot be overridden
+on that handoff. Resume continues to read the frozen `campaign_start.objective` and never recompiles
+through the LLM.
+
+The campaign contract is `isar.campaign-program/1` (`isar/schema/campaign_program.py`). A program
+declares an ordered list of steps; each carries its own step schema, `isar.campaign-step.targeted/1`
+for the per-point-tolerance objective above and `isar.campaign-step.discover_and_map/1` for
+target-free discovery. This build parses, validates and freezes both kinds, but **executes only a
+single `targeted` step**: a discovery step, or a program with more than one step, is a well-formed
+program this build declines to run and exits **7** — deliberately distinct from the malformed-input
+exit **2**, so an operator script can tell "not built yet" from "written wrong". Sequencing and
+discovery execution land in SCENE-4. The same refusal applies before `--compile-only` writes its
+output, so compiling a discovery program currently exits 7 rather than freezing it.
+
+The retired `isar.objective/1`, `isar.objective/2`, `isar.objective-envelope/1`, and
+`isar.objective-envelope/2` documents are refused with an error naming their replacement. There is no
+compatibility reader and none will be written: under DECISIONS H1 a shim for a retired pre-release
+contract is a defect, not a courtesy (H2).
 
 The objective carries additive `target_branch`, `target_label`, and `energy_search_meV` fields. Older
 objectives default to acoustic and `[-2, 7]` meV. An optic objective defaults to `[-2, 12]` meV; that
