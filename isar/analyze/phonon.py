@@ -371,23 +371,17 @@ def enumerate_phonon_structures(ctx) -> list[Hypothesis]:
     quasi-elastic width (§8 TAS), and ``elastic+stokes+qe+bg`` when both gates fire. The
     quasi-elastic is opt-in per card, not enumerated by default; model selection (§4)
     decides whether it earns its parameter. Second-phonon / sloped-BG remain later-step.
-    """
-    # local import: components imports this module, so the classes cannot come in at
-    # module level (components.py -> phonon.py cycle).
-    from isar.analyze.components import ConstantBackground, Elastic, QuasiElastic
 
-    elastic = elastic_admissible(ctx)
-    qe = quasielastic_admissible(ctx)
-    pho = _phonon_for(ctx)                          # class (tied) or Stokes-only instance (Bose-dead)
-    hyps = [Hypothesis("stokes+bg", (pho, ConstantBackground))]
-    if elastic:
-        hyps.append(Hypothesis("elastic+stokes+bg", (pho, Elastic, ConstantBackground)))
-    if qe:
-        hyps.append(Hypothesis("stokes+qe+bg", (pho, QuasiElastic, ConstantBackground)))
-    if elastic and qe:
-        hyps.append(Hypothesis("elastic+stokes+qe+bg",
-                               (pho, Elastic, QuasiElastic, ConstantBackground)))
-    return hyps
+    The structure set is now assembled from the phenomenon catalogue
+    (:mod:`isar.analyze.catalogue`, SCENE-1); the gates and the phonon recipe below still live
+    here. Output is unchanged — labels, order and components are pinned by
+    ``tests/analyze/test_catalogue.py``.
+    """
+    # local import: catalogue imports components, which imports this module, so it cannot come
+    # in at module level (components.py -> phonon.py cycle).
+    from isar.analyze.catalogue import enumerate_structures
+
+    return enumerate_structures(ctx)
 
 
 def _phonon_for(ctx, prefix: str | None = None):
@@ -413,7 +407,11 @@ def enumerate_phonon_multimode(ctx, n_max: int = 2) -> list[Hypothesis]:
     with a second phonon. Mode 1 keeps the default ``phonon`` prefix so each 1-mode hypothesis
     is *strictly nested* in its 2-mode counterpart (the LRT/AIC comparison in §4 is then exact);
     mode 2 gets the ``phonon2`` namespace. Capped at N=2 this round (``n_max`` is accepted for
-    the later N=3 extension; values >2 are treated as 2)."""
+    the later N=3 extension; values >2 are treated as 2).
+
+    Still hand-enumerated: multiplicity (a second instance of the *same* phenomenon in its own
+    parameter namespace) is not a catalogue concept yet, so routing it through the catalogue would
+    not be a strict-equivalence change. It migrates with the evidence work in SCENE-1 PR-b."""
     # local import: components imports this module, so the classes cannot come in at
     # module level (components.py -> phonon.py cycle).
     from isar.analyze.components import ConstantBackground, Elastic, QuasiElastic
