@@ -12,11 +12,12 @@ the catalogue holds *references* to them. It is also lattice-blind: the ``elasti
 generic incoherent/coherent elastic scattering, not a Bragg model — Bragg is scene-level knowledge
 (DECISIONS decision 20), and an elastic-only outcome is a scan-local claim, never region exclusion.
 
-**Status in this commit.** Only ``local_models`` and their gates drive anything: they reproduce the
-legacy :func:`isar.analyze.phonon.enumerate_phonon_structures` output exactly (pinned by
-``tests/analyze/test_catalogue.py``). ``parameter_priors``, ``transport``, ``constrained_variants``
-and ``delivery_profile`` are **dormant declarations** — nothing reads them yet; they are consumed
-when Laplace evidence lands (SCENE-1 PR-b).
+**Status.** Only ``local_models`` and their gates drive anything: the enumeration is the legacy
+:func:`isar.analyze.phonon.enumerate_phonon_structures` list (pinned by
+``tests/analyze/test_catalogue.py``) extended by the phonon-less nulls ``elastic+bg`` and ``bg``
+(SCENE-1 PR-a — what the ``elastic_only`` / ``no_signal`` verdicts select on). ``parameter_priors``,
+``transport``, ``constrained_variants`` and ``delivery_profile`` are **dormant declarations** —
+nothing reads them yet; they are consumed when Laplace evidence lands (SCENE-1 PR-b).
 
 Import direction: :mod:`isar.analyze.components` imports :mod:`isar.analyze.phonon` at module
 level, so ``phonon`` never imports this module at module level — the delegation there is a
@@ -219,7 +220,10 @@ def enumerate_structures(ctx, profile: str = DEFAULT_PROFILE) -> list[Hypothesis
     """The admissible structure hypotheses for a scan context, driven by the catalogue.
 
     Always the single-phonon ``stokes+bg``; plus the sharp elastic when its gate fires, plus the
-    broad quasi-elastic when the card declares its width, plus both when both fire. Whether an
+    broad quasi-elastic when the card declares its width, plus both when both fire. The
+    phonon-less nulls close the list: ``elastic+bg`` (elastic gate) and ``bg`` (always) are
+    first-class candidates, so selection can honestly prefer "nothing inelastic here" — the
+    winner the ``elastic_only`` / ``no_signal`` verdicts read (SCENE-1 PR-a). Whether an
     enumerated component earns its parameter is model selection's decision (§4), not the
     catalogue's.
     """
@@ -239,4 +243,7 @@ def enumerate_structures(ctx, profile: str = DEFAULT_PROFILE) -> list[Hypothesis
     if elastic and qe:
         hyps.append(Hypothesis("elastic+stokes+qe+bg",
                                (pho, sharp.recipe, broad.recipe, bg)))
+    if elastic:
+        hyps.append(Hypothesis("elastic+bg", (sharp.recipe, bg)))
+    hyps.append(Hypothesis("bg", (bg,)))
     return hyps

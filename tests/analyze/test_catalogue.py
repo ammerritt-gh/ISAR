@@ -1,11 +1,12 @@
-"""The phenomenon catalogue (SCENE-1) and the equivalence of its enumeration with the legacy
-hand-written one.
+"""The phenomenon catalogue (SCENE-1) and its enumeration pin.
 
-:func:`isar.analyze.phonon.enumerate_phonon_structures` is now catalogue-backed. Its output is
-pinned here — labels, order, and per-component identity — for every reachable gate combination
-(elastic × quasi-elastic × anti-Stokes mode). The expected lists below were snapshotted from the
-legacy implementation before it was deleted; ``docs/assets/`` is hash-pinned against figures built
-from this enumeration, so a drift here is a real regression, not a test to update.
+:func:`isar.analyze.phonon.enumerate_phonon_structures` is catalogue-backed. Its output is pinned
+here — labels, order, and per-component identity — for every reachable gate combination
+(elastic × quasi-elastic × anti-Stokes mode). The phonon-bearing prefix was snapshotted from the
+legacy implementation before it was deleted and must never drift; the phonon-less nulls
+(``elastic+bg``, ``bg``) were appended deliberately at SCENE-1 PR-a (the ``elastic_only`` /
+``no_signal`` selection candidates) and are pinned from that point on. A drift here is a real
+regression, not a test to update.
 """
 import numpy as np
 import pytest
@@ -69,6 +70,10 @@ def _expected(elastic: bool, qe: bool, stokes_only: bool) -> list[tuple]:
         out.append(("stokes+qe+bg", (pho, _QE, _BG)))
     if elastic and qe:
         out.append(("elastic+stokes+qe+bg", (pho, _ELASTIC, _QE, _BG)))
+    # Phonon-less nulls close the list (SCENE-1 PR-a).
+    if elastic:
+        out.append(("elastic+bg", (_ELASTIC, _BG)))
+    out.append(("bg", (_BG,)))
     return out
 
 

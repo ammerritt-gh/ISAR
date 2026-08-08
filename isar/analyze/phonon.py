@@ -163,6 +163,15 @@ def phonon_structure_ic(composite, ctx, *, gamma0=GAMMA0, estimator="baker_cousi
     est = estimators.get_estimator(estimator)
     linear_set = set(composite.linear_names())
 
+    if not composite.nonlinear_names():
+        # Phonon-less composite (elastic+bg / bg): every param is linear, so one NNLS solve IS
+        # the IC — no Ω_d to grid-scan, and the grid (empty on a Stokes-free window) is
+        # irrelevant to this structure.
+        phi, lin_names = composite.nnls_basis(x, {}, ctx)
+        coef, _ = nnls(phi, counts)
+        lin = dict(zip(lin_names, coef))
+        return np.array([max(float(lin[n]), 0.0) for n in composite.param_names()], dtype=float)
+
     best_cost, best = np.inf, None
     for od in omega_d_grid(x, x_max, ctx.prior_omega, eps=EPS_OMEGA_D):
         nl = {name: (od if name.endswith(".Omega_d") else gamma0)

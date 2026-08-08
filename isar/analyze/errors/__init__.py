@@ -204,6 +204,11 @@ def attach(result, hyp, ctx, *, M=200, seed=12345, backend="iminuit",
     of each sub-method that actually ran."""
     if not result.optimizer_converged:
         return result
+    if int(getattr(result, "n_modes", 1) or 0) == 0:
+        # Phonon-less structure (elastic+bg / bg, SCENE-1 PR-a): there is no ω₀ to bootstrap or
+        # profile — the within-model error layer is about the phonon energy. Leaving
+        # ``within_model`` unset keeps the null out of the across-model pool by construction.
+        return result
     t0 = time.perf_counter()
     boot = parametric_bootstrap(hyp, ctx, result, M=M, seed=seed, backend=backend,
                                 workers=boot_workers, executor=boot_executor,
@@ -291,7 +296,8 @@ def attach_batch(items, *, M=200, seed=12345, backend="iminuit", with_profile=Fa
     enough to pickle cheaply. Bootstraps then retain exclusive use of the shared pool, one survivor
     at a time. Mutations happen only in this parent process.
     """
-    active = [(result, hyp, ctx) for result, hyp, ctx in items if result.optimizer_converged]
+    active = [(result, hyp, ctx) for result, hyp, ctx in items
+              if result.optimizer_converged and int(getattr(result, "n_modes", 1) or 0) > 0]
     profile_values = {}
     profile_batch_seconds = 0.0
     profile_ran_parallel = False

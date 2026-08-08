@@ -32,7 +32,9 @@ import numpy as np
 _RESOLVED = ("resolved",)
 _FLAGGED = ("model_incomplete",)
 _REJECT = ("junk", "unconstrained")
-_ABSTAIN = ("held_for_calibration", "underpowered", "no_signal")
+# `elastic_only` (SCENE-1 PR-a): a positive scan-local claim, but not an omega0 delivery — on the
+# gold/truth scoring axis it abstains exactly like no_signal.
+_ABSTAIN = ("held_for_calibration", "underpowered", "no_signal", "elastic_only")
 # Phase 4a: under-model falsification. `signal_unmodeled` = real signal the phonon model can't fit;
 # delivered to the human as a flagged-for-attention DESCRIPTOR result, but deliberately NOT an omega0
 # measurement — its own disposition so it stays out of _DELIVERED (gold/truth omega0 count) and

@@ -14,12 +14,24 @@ returned for audit, never a black box):
 The spec names the inputs but not the combination rule; the geometric mean + documented
 sub-score maps are this layer's choice. Sparse-prior / early-run / resolution-version P6 factors
 are future additions to ``s_provenance``.
+
+**Phonon-less winners (SCENE-1 PR-a).** When selection prefers ``elastic+bg`` the scan's claim is
+``elastic_only`` — scored by :func:`compute_null_confidence`, never by :func:`compute_confidence`
+(there is no ω₀ for the phonon sub-scores to read). The score is capped at
+:data:`S_SCOPE_ELASTIC` by construction: elastic intensity is ubiquitous (incoherent +
+can/sample background, strongest near Bragg) and can mask arbitrary signals, so "nothing beyond
+the elastic model was resolvable *in this scan*" is a categorically humble, scan-local claim —
+never region exclusion (owner ruling 2026-08-08; mapping/excluding elastic is future scene-level
+work).
 """
 from __future__ import annotations
 
 import numpy as np
 
 SIGMA_REF = 0.1  # meV — interval-tightness reference (a typical target ω₀ σ)
+# The categorical-humility cap on any elastic_only claim: applied as a product factor (hard
+# ceiling) and exposed as its own named component in the audit dict.
+S_SCOPE_ELASTIC = 0.5
 CONFIDENCE_SCORER_REVISION = "isar.confidence/1"
 _REGIME_S = {"asymptotic": 1.0, "unknown": 0.6, "sparse": 0.3}
 _PROVENANCE_S = {"absolute": 1.0, "needs_zero": 0.85, "needs_conversion_and_zero": 0.5}
@@ -55,7 +67,7 @@ def _s_paradigm(result) -> float:
 
 
 def _s_prior(result, prior) -> float:
-    if prior is None:
+    if prior is None or not np.isfinite(result.omega0):
         return 1.0                                       # neutral: absence is not 'wrong'
     sigma = prior.omega0_sigma if (prior.omega0_sigma and prior.omega0_sigma > 0) else 1.0
     z = (float(result.omega0) - float(prior.omega0)) / sigma
@@ -64,6 +76,25 @@ def _s_prior(result, prior) -> float:
 
 def _s_provenance(ctx) -> float:
     return _PROVENANCE_S.get(ctx.energy_status, 0.7)
+
+
+def _s_detectability(detection) -> float:
+    """Could this scan have seen the prior-expected mode above the elastic shoulder?
+
+    ``detection`` is the :func:`isar.analyze.verdict.detection_power` payload, or ``None`` when
+    no prior places a mode in the window (nothing to have missed → neutral 1). An abstaining
+    power test (no expected strength supplied) scores a mildly humble 0.7 — never confident.
+    Otherwise the expected significance maps monotonically to [0,1) with 0.5 at the detection
+    floor: ``sig / (sig + floor)``.
+    """
+    if detection is None:
+        return 1.0
+    sig = detection.get("expected_significance")
+    floor = float(detection.get("floor", 3.0))
+    if detection.get("detectable") is None or sig is None or not np.isfinite(sig):
+        return 0.7
+    sig = max(float(sig), 0.0)
+    return float(sig / (sig + floor)) if (sig + floor) > 0 else 0.0
 
 
 def compute_confidence(result, ctx, selection, *, prior=None) -> tuple[float, dict]:
@@ -78,6 +109,27 @@ def compute_confidence(result, ctx, selection, *, prior=None) -> tuple[float, di
     }
     vals = np.clip(np.array(list(comp.values()), dtype=float), 1e-6, 1.0)
     score = float(np.exp(np.mean(np.log(vals))))         # geometric mean
+    return score, comp
+
+
+def compute_null_confidence(ctx, selection, *, detection=None) -> tuple[float, dict]:
+    """Confidence for the ``elastic_only`` claim (a phonon-less ``elastic+bg`` winner).
+
+    ``S_SCOPE_ELASTIC × geomean(s_structure, s_provenance, s_detectability)`` — the cap is a
+    product factor (hard ceiling ≤ 0.5) and an explicit named component in the audit dict.
+    None of the phonon sub-scores (interval, paradigm, prior distance) apply: there is no ω₀.
+    ``detection`` is the verdict layer's :func:`~isar.analyze.verdict.detection_power` payload
+    (or ``None`` when no prior expects a mode in the window).
+    """
+    comp = {
+        "s_scope_elastic": S_SCOPE_ELASTIC,
+        "s_structure": _s_structure(selection),
+        "s_provenance": _s_provenance(ctx),
+        "s_detectability": _s_detectability(detection),
+    }
+    inner = np.clip(np.array([comp["s_structure"], comp["s_provenance"],
+                              comp["s_detectability"]], dtype=float), 1e-6, 1.0)
+    score = float(S_SCOPE_ELASTIC * np.exp(np.mean(np.log(inner))))
     return score, comp
 
 

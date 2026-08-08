@@ -81,7 +81,8 @@ def test_high_background_buries_an_otherwise_alive_antistokes():
 
 # --------------------------------------------------------------------------- enumeration wiring
 def test_enumeration_emits_stokes_only_when_buried():
-    hyps = S.enumerate_phonon_structures(_ctx(prior_omega=30.0, T=100.0))
+    hyps = [h for h in S.enumerate_phonon_structures(_ctx(prior_omega=30.0, T=100.0))
+            if "stokes" in h.label]                  # the phonon-less nulls carry no lineshape
     assert hyps and all(h.build().is_stokes_only() for h in hyps)
     # param set unchanged — Stokes-only is a lineshape choice, not fewer params
     assert hyps[0].build().param_names() == ["phonon.Omega_d", "phonon.Gamma", "phonon.A", "bg.BG"]

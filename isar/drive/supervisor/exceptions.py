@@ -29,8 +29,10 @@ BUDGET_WARN_FRACTION = 0.9
 # instrument that is beam spent pointing at the elastic peak (MVP-16 re-aimed at ΔE = 0.009 meV).
 ELASTIC_GUARD_K = 1.0
 
-# ISAR dispositions/verdicts that mean "no usable peak in this window".
-MISSED_VERDICTS = frozenset({"no_signal", "declined"})
+# ISAR dispositions/verdicts that mean "no usable peak in this window". `elastic_only` (SCENE-1
+# PR-a) is the phonon-less elastic+bg winner: for the driver's "did this window catch the peak"
+# question it is the same miss as no_signal (only elastic scattering was resolvable there).
+MISSED_VERDICTS = frozenset({"no_signal", "declined", "elastic_only"})
 # ISAR statuses that mean "held pending a context scan".
 HELD_STATUSES = frozenset({"held_for_calibration", "held_for_sample"})
 

@@ -1,6 +1,8 @@
 """Physics-gated enumeration of admissible structure hypotheses (§2).
 
-Step 1 emits {stokes+bg} and {elastic+stokes+bg}; the elastic gate encodes the IN8
+Step 1 emits the phonon-bearing structures ({stokes+bg} plus the gated elastic/QE variants)
+and, since SCENE-1 PR-a, the phonon-less nulls (`elastic+bg` when the elastic gate fires, `bg`
+always) — the `elastic_only` / `no_signal` selection candidates. The elastic gate encodes the IN8
 off-window-elastic degeneracy fix, and anti-Stokes is handled by the tie inside PhononDHO.
 """
 import numpy as np
@@ -30,26 +32,27 @@ def _tas_offwindow_ctx(quasielastic_fwhm=None):
 def test_in_window_ixs_emits_both_hypotheses():
     hyps = S.enumerate_phonon_structures(_ixs_ctx())
     by_label = {h.label: h for h in hyps}
-    assert set(by_label) == {"stokes+bg", "elastic+stokes+bg"}
+    assert set(by_label) == {"stokes+bg", "elastic+stokes+bg", "elastic+bg", "bg"}
     assert by_label["stokes+bg"].k == 4
     assert by_label["elastic+stokes+bg"].k == 5
+    assert by_label["elastic+bg"].k == 2 and by_label["bg"].k == 1
 
 
 def test_off_window_elastic_excluded():
     hyps = S.enumerate_phonon_structures(_tas_offwindow_ctx())
-    assert [h.label for h in hyps] == ["stokes+bg"]
+    assert [h.label for h in hyps] == ["stokes+bg", "bg"]
 
 
 def test_needs_conversion_refuses_elastic():
     hyps = S.enumerate_phonon_structures(_ixs_ctx(status="needs_conversion_and_zero"))
-    assert [h.label for h in hyps] == ["stokes+bg"]
+    assert [h.label for h in hyps] == ["stokes+bg", "bg"]
 
 
 def test_tas_quasielastic_admitted_when_card_enables_it():
     """IN8 (off-window elastic) + a card-declared QE width: the broad quasi-elastic
     hypothesis is added even though the sharp elastic is excluded (§8)."""
     hyps = S.enumerate_phonon_structures(_tas_offwindow_ctx(quasielastic_fwhm=1.5))
-    assert [h.label for h in hyps] == ["stokes+bg", "stokes+qe+bg"]
+    assert [h.label for h in hyps] == ["stokes+bg", "stokes+qe+bg", "bg"]
     qe = {h.label: h for h in hyps}["stokes+qe+bg"]
     assert qe.k == 5  # phonon (Omega_d, Gamma, A) + qe.QE + bg.BG
     assert qe.build().param_names() == ["phonon.Omega_d", "phonon.Gamma", "phonon.A",
@@ -60,7 +63,7 @@ def test_quasielastic_not_admitted_when_card_silent():
     """A TAS scan whose card does not declare a QE width stays single-structure — the
     quasi-elastic is opt-in per card, never enumerated by default."""
     hyps = S.enumerate_phonon_structures(_tas_offwindow_ctx())
-    assert [h.label for h in hyps] == ["stokes+bg"]
+    assert [h.label for h in hyps] == ["stokes+bg", "bg"]
 
 
 def test_in_window_elastic_and_quasielastic_emit_four_hypotheses():
@@ -68,7 +71,8 @@ def test_in_window_elastic_and_quasielastic_emit_four_hypotheses():
     QE-only, and elastic+QE structures are all admissible; model selection decides."""
     hyps = S.enumerate_phonon_structures(_ixs_ctx(quasielastic_fwhm=1.5))
     assert [h.label for h in hyps] == [
-        "stokes+bg", "elastic+stokes+bg", "stokes+qe+bg", "elastic+stokes+qe+bg"]
+        "stokes+bg", "elastic+stokes+bg", "stokes+qe+bg", "elastic+stokes+qe+bg",
+        "elastic+bg", "bg"]
     full = {h.label: h for h in hyps}["elastic+stokes+qe+bg"].build()
     assert full.param_names() == ["phonon.Omega_d", "phonon.Gamma", "phonon.A",
                                   "elastic.E", "qe.QE", "bg.BG"]

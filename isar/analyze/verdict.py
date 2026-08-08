@@ -6,9 +6,12 @@ The buckets: **resolved** (success), **held-for-calibration** (energy axis uncal
 proxy for the §6 "both paradigms wide+disagreeing" — a sparse regime with a pathologically
 wide interval), **underpowered** (the prior expects a phonon the scan lacked the counts to
 detect — *provisional*, the §0.4 circularity guard), **no-signal** (no excursion above
-background and the prior expects none), **junk** (catastrophic GoF with a structureless
-residual). The load-bearing **model-incomplete** route keeps a *structured* residual (the broad
-quasi-elastic tail, cost/dof >> 1 yet the phonon is real) out of the junk bucket.
+background and the prior expects none, or the bare-background structure won selection),
+**elastic-only** (the phonon-less ``elastic+bg`` structure won selection with a real fit: a
+positive but categorically humble scan-local claim, confidence capped — SCENE-1 PR-a), **junk**
+(catastrophic GoF with a structureless residual). The load-bearing **model-incomplete** route
+keeps a *structured* residual (the broad quasi-elastic tail, cost/dof >> 1 yet the phonon is
+real) out of the junk bucket.
 
 The detection-power test is the single-scan analog of ``synth.score.data_threshold``'s
 reliability-floor idea (it does not run the MC harness): predict the prior phonon's expected
@@ -37,6 +40,11 @@ RESID_Z = 4.0          # a descriptor peak is UNMATCHED when the fitted model le
 #                        Comparing to the model curve (not a fixed Ω_d position) is damping- and
 #                        side-aware by construction (a stokes-only model predicts no anti-Stokes lobe,
 #                        so a real anti-Stokes peak leaves a residual and is unmatched).
+ELASTIC_LRT_ALPHA = 0.05  # a phonon-less `elastic+bg` winner claims elastic_only only when the
+#                           elastic line is significant over bare background (the selection layer's
+#                           nested LRT vs `bg`). A marginal AIC preference on Poisson noise is not
+#                           an elastic line — without this gate a blank scan can read elastic_only.
+
 MODEL_FRAC = 0.05      # …AND the model must treat that location as ~background (its peak-normalised
 #                        signal there below this). Together these separate a DISTINCT unmodeled peak
 #                        (real excess where the model predicts background) from a shoulder/broad tail
@@ -112,6 +120,19 @@ def _freq_proxy_unconstrained(result) -> bool:
         return False
     hw = (float(fi[2]) - float(fi[0])) / 2.0
     return bool(result.omega0 > 0 and hw / result.omega0 > WIDE_REL)
+
+
+def _elastic_significant(selection, *, alpha: float = ELASTIC_LRT_ALPHA) -> bool:
+    """Whether the winning ``elastic+bg`` structure's elastic line is significant over bare
+    background (its nested LRT vs ``bg``). ``True`` when no comparison is available — the
+    selection layer's word then stands (unit paths that hand-build a Selection)."""
+    scores = getattr(selection, "scores", None) or []
+    sc = next((s for s in scores if s.label == "elastic+bg"), None)
+    nested = getattr(sc, "nested", None)
+    if not nested or nested.get("reduced") != "bg":
+        return True
+    p = nested.get("p_value")
+    return not (p is not None and np.isfinite(p) and p > alpha)
 
 
 def _prior_expects_phonon(prior, ctx) -> bool:
@@ -287,9 +308,10 @@ def held_for_calibration(reason: str) -> ScanVerdict:
 
 def classify(results, ctx, selection, *, prior=None, descriptor=None) -> ScanVerdict:
     """Classify one scan into a named bucket (§6) with a computed confidence (§9). Deterministic
-    precedence (held → unconstrained → junk/model-incomplete/**signal_unmodeled** → no-signal/
-    underpowered → resolved); never deletes (D7). When the data is flat, the prior + detection-power
-    test split no-signal from (provisional) underpowered.
+    precedence (held → unconstrained → junk/model-incomplete/**signal_unmodeled** →
+    elastic-only/no-signal (phonon-less winner) → no-signal/underpowered → resolved); never
+    deletes (D7). When the data is flat, the prior + detection-power test split no-signal from
+    (provisional) underpowered.
 
     ``descriptor`` (a :class:`~isar.schema.steering.ScanDescriptor`, Phase 4a) is the model-free
     peak list; when the winning model leaves a family-wise-significant peak unmatched the verdict is
@@ -346,6 +368,38 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None) -> ScanVer
                                                   "residual (missing component, not junk)"])
         return ScanVerdict("junk", 0.0,
                            reasons=reasons + [f"cost/dof={win.cost_per_dof:.1f}, structureless residual"])
+
+    # 5b. phonon-less winner (SCENE-1 PR-a): selection preferred a structure with no inelastic
+    #     component. `bg` keeps the existing null convention (the no-signal / underpowered
+    #     detection-power split, constant 0.0); `elastic+bg` is the positive scan-local
+    #     `elastic_only` claim — categorically humble (capped computed confidence), never region
+    #     exclusion. A significant descriptor peak the null leaves unexplained outranks both.
+    if win.label in ("bg", "elastic+bg"):
+        if unmatched:
+            return _signal_unmodeled(unmatched, reasons + ["phonon-less winner leaves descriptor "
+                                                           "peak(s) unexplained"], descriptor)
+        dp = detection_power(ctx, prior, win) if _prior_expects_phonon(prior, ctx) else None
+        claim_elastic = win.label == "elastic+bg" and _elastic_significant(selection)
+        if not claim_elastic:
+            base = ("background alone won selection" if win.label == "bg" else
+                    "elastic+bg won selection but the elastic line is not significant over "
+                    "background")
+            if dp is None:
+                return ScanVerdict("no_signal", 0.0, reasons=reasons + [base])
+            if dp["detectable"] is True:
+                return ScanVerdict("no_signal", 0.0, detection=dp,
+                                   reasons=reasons + [base + "; prior expected a phonon the scan "
+                                                      "had power to see (prior may be wrong)"])
+            return ScanVerdict("underpowered", 0.0, detection=dp, provisional=True,
+                               reasons=reasons + [base + "; prior expects a phonon below the "
+                                                  "detection threshold"])
+        score, comp = _confidence.compute_null_confidence(ctx, selection, detection=dp)
+        provisional = dp is not None and dp["detectable"] is not True
+        return ScanVerdict("elastic_only", score, components=comp, detection=dp,
+                           provisional=provisional,
+                           reasons=reasons + ["elastic line + background explain this scan; "
+                                              "scan-local claim only (elastic intensity can mask "
+                                              "signals), never region exclusion"])
 
     # 6. no excursion above background -> the exact-Poisson descriptor overrides the crude excursion
     #    test: a matched significant peak rescues toward resolved (weak high-q Stokes), an unmatched

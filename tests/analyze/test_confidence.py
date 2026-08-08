@@ -75,3 +75,34 @@ def test_provenance_penalizes_uncalibrated():
     cal = confidence.compute_confidence(_result(), _ctx("absolute"), _sel())[0]
     unc = confidence.compute_confidence(_result(), _ctx("needs_zero"), _sel())[0]
     assert unc < cal
+
+
+# --- phonon-less (elastic_only) confidence (SCENE-1 PR-a) ------------------------------------
+
+def test_null_confidence_is_hard_capped_at_the_scope_factor():
+    # best case: fold structure, absolute calibration, nothing expected in-window
+    s, comp = confidence.compute_null_confidence(_ctx("absolute"), _sel("fold"), detection=None)
+    assert math.isclose(s, confidence.S_SCOPE_ELASTIC, rel_tol=1e-9)   # ceiling reached, never crossed
+    assert comp["s_scope_elastic"] == confidence.S_SCOPE_ELASTIC
+    assert set(comp) == {"s_scope_elastic", "s_structure", "s_provenance", "s_detectability"}
+
+
+def test_null_confidence_detectability_orders_the_score():
+    strong = {"detectable": True, "expected_significance": 30.0, "floor": 3.0}
+    weak = {"detectable": False, "expected_significance": 1.0, "floor": 3.0}
+    abstain = {"detectable": None, "expected_significance": float("nan"), "floor": 3.0}
+    hi = confidence.compute_null_confidence(_ctx(), _sel(), detection=strong)[0]
+    mid = confidence.compute_null_confidence(_ctx(), _sel(), detection=abstain)[0]
+    lo = confidence.compute_null_confidence(_ctx(), _sel(), detection=weak)[0]
+    assert lo < mid < hi <= confidence.S_SCOPE_ELASTIC + 1e-12
+
+
+def test_compute_confidence_survives_a_nan_omega_winner():
+    """model_incomplete on a phonon-less winner reaches compute_confidence: no NaN score."""
+    res = _result()
+    res.omega0 = float("nan")
+    res.omega0_err_hesse = float("nan")
+    s, comp = confidence.compute_confidence(res, _ctx(), _sel(),
+                                            prior=PhononPrior(6.0, 300.0, 1.0))
+    assert math.isfinite(s) and 0.0 < s <= 1.0
+    assert comp["s_prior"] == 1.0                        # neutral, never NaN
