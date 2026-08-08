@@ -247,6 +247,20 @@ def test_available_measure_is_normalized_immutable_deterministic_and_shadow_only
             "predictive_complete_for_eig")}
 
 
+def test_measure_names_the_probability_measure_it_actually_mixes_over(monkeypatch):
+    """The measure's semantics travel inside design_measure_fingerprint, so a wrong weight kind
+    is not a label — it is a false statement inside the identity that authenticates the measure.
+
+    Since H4 the source weights are the evidence posterior, and the eligibility gate refuses any
+    selection record that is not on the posterior lane, so an available measure cannot rest on
+    Akaike weights even in principle."""
+    artifact, _projection, _qoi, eligibility = _bundle(monkeypatch)
+    measure = build_scan_window_design_measure(artifact, eligibility)
+
+    assert measure.status == "available"
+    assert dict(measure.semantics)["model_weight_kind"] == "posterior_probability"
+
+
 def test_unequal_draw_counts_preserve_model_aic_mass(monkeypatch):
     artifact, _projection, _qoi, eligibility = _bundle(monkeypatch, [
         {"label": "one", "weight": 0.75, "basis": "parametric_bootstrap",

@@ -36,7 +36,14 @@ _AVAILABLE_SCOPES = {
     "acquisition_selection": "ineligible",
 }
 _SEMANTICS = {
-    "model_weight_kind": "akaike_relative_weight",
+    # Posterior since H4: the source weights this measure mixes over are P(s) = π·Z/Σπ·Z, not
+    # Akaike weights. This is a contract statement rather than a variable, and it is guaranteed
+    # upstream: ``_selection_checks`` refuses any selection record whose ``model_weight_kind`` is
+    # not ``posterior_probability`` (isar/eig/eligibility.py), so a measure can only reach
+    # ``status="available"`` on the evidence lane. It was previously asserting the AIC lane it had
+    # already refused — and asserting it *inside* ``design_measure_fingerprint``, the identity that
+    # authenticates the measure downstream.
+    "model_weight_kind": "posterior_probability",
     "scenario_source_kind": "parametric_bootstrap_sampling_distribution",
     "scenario_measure_kind": "weighted_empirical_predictive_scenarios",
     "inference_paradigm": "frequentist_sampling_distribution",
