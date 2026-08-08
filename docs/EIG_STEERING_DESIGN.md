@@ -64,9 +64,9 @@ policy card, frozen into `ScanDesignContext`) chooses the regime:
   This implementation is opt-in until the SCENE world suite exercises it; H1 retired the O42
   release review that previously gated it.
 
-Because `scan_window_eig` was added additively to `isar.objective/2`, the `/2` reader treats an
-omitted block as the frozen no-policy/default-scoring configuration. This is historical read
-compatibility, not card supplementation: full specs, envelopes, and resume records remain
+`scan_window_eig` is optional in a targeted step payload: the reader treats an
+omitted block as the frozen no-policy/default-scoring configuration. This is a schema default, not
+card supplementation — frozen payloads, programs, and resume records remain
 self-contained. New writers always serialize the block, while explicit null, malformed records,
 unknown fields, and card authoring or scope-binding markers refuse. A retained `shadow` objective
 without a policy therefore remains a valid unscored legacy control.

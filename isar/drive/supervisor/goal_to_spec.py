@@ -1,17 +1,22 @@
-"""Goal → objective spec (LLM_HARNESS_DESIGN §2.1).
+"""Goal → campaign program (LLM_HARNESS_DESIGN §2.1, DECISIONS H1).
 
-Two entry points:
+Both entry points produce an :class:`~isar.schema.campaign_program.CampaignProgram` — the only
+input contract the driver accepts:
 
-- :func:`goal_to_spec` — the LLM supervisor path. Translate a natural-language goal ("map the acoustic
-  phonon dispersion from A to B, resolve ω₀ to ±0.5 meV, overnight") into a machine
-  :class:`~isar.drive.objective.ObjectiveSpec` via the shared
-  :class:`isar.reduce.llm_client.Dispatcher`, with the goal schema enforced as structured output. The
-  supervisor LLM is CLOUD via LLMM pinned routing (port 8766); LLMM must already be running — this
-  never auto-launches it. On a non-conforming reply it retries the repair prompt once and then **refuses
-  honestly** (:class:`GoalParseError`) rather than inventing a plan. If LLMM is unreachable the dispatch
-  returns an error and the refusal names it.
-- :func:`spec_from_json` — the LLM-free path. Load a JSON spec file (the goal schema, or a full
-  ``ObjectiveSpec.to_dict()``). This is what ``isar drive --spec`` uses, so a campaign runs with no LLM.
+- :func:`goal_to_program` — the LLM supervisor path. Translate a natural-language command ("map the
+  acoustic phonon dispersion from A to B, resolve ω₀ to ±0.5 meV, overnight", or "scan the region
+  from (2,0,0) to (3,0,0) up to 10 meV, map out all the phenomena of interest") into a one-step
+  program via the shared :class:`isar.reduce.llm_client.Dispatcher`, with the program schema
+  enforced as structured output. The supervisor LLM is CLOUD via LLMM pinned routing (port 8766);
+  LLMM must already be running — this never auto-launches it. On a non-conforming reply it retries
+  the repair prompt once and then **refuses honestly** (:class:`GoalParseError`) rather than
+  inventing a plan. If LLMM is unreachable the dispatch returns an error and the refusal names it.
+- :func:`program_from_json` — the LLM-free path. Load a JSON program file. This is what
+  ``isar drive --program`` uses, so a campaign runs with no LLM.
+
+P1 still holds: the LLM's output is *frozen into config* here — a targeted step is compiled to a
+full :class:`~isar.drive.objective.ObjectiveSpec` before anything deterministic runs, and no LLM
+sits in the runtime path of a number.
 """
 from __future__ import annotations
 
@@ -33,6 +38,14 @@ from isar.eig.policy import (
     canonical_scan_window_eig_policy_authoring,
     compile_card_eig_policy_set,
     policy_identity,
+)
+from isar.schema.campaign_program import (
+    PROGRAM_SCHEMA,
+    STEP_KINDS,
+    CampaignProgram,
+    CampaignStep,
+    DiscoverAndMapSpec,
+    targeted_program,
 )
 from isar.schema.eig_policy import ScanWindowEIGConfig
 from isar.schema.hypotheses import content_fingerprint
@@ -130,6 +143,45 @@ FILE_SPEC_SCHEMA["properties"]["steering"] = {
 # Compatibility alias for callers/tests that imported the original public name.
 GOAL_SCHEMA = LLM_GOAL_SCHEMA
 
+# --------------------------------------------------------------------------- discovery step schema
+# The discovery intent the supervisor may compile. ``intrinsic_omega_domain_meV`` is the INTRINSIC
+# excitation-energy domain (|ℏω| ≥ 0) — never a signed measurement window. "up to 10 meV" is a
+# domain of [0, 10], and whether the instrument counts the Stokes side, the anti-Stokes side, or
+# both is decided at acquisition against detailed balance, not frozen into the program.
+LLM_DISCOVER_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["q_start", "q_end", "intrinsic_omega_domain_meV"],
+    "properties": {
+        "q_start": _Q_ARRAY,
+        "q_end": _Q_ARRAY,
+        "maximum_initial_spacing_rlu": {"type": "number"},
+        "intrinsic_omega_domain_meV": {"type": "array", "items": {"type": "number"},
+                                       "minItems": 2, "maxItems": 2},
+        "catalogue_profile": {"type": "string"},
+        "deliverables": {"type": "array", "items": {"type": "object"}},
+        "include_unknown": {"type": "boolean"},
+        "notes": {"type": "string"},
+    },
+}
+
+#: One step, tagged by kind — what the supervisor returns.
+LLM_PROGRAM_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["kind"],
+    "properties": {
+        "kind": {"type": "string", "enum": list(STEP_KINDS)},
+        "targeted": LLM_GOAL_SCHEMA,
+        "discover_and_map": LLM_DISCOVER_SCHEMA,
+    },
+}
+
+#: Compiler defaults for a discovery step the command left unstated.
+DEFAULT_DISCOVER_SPACING_RLU = 0.05
+DEFAULT_CATALOGUE_PROFILE = "isar.catalogue.inelastic-default/1"
+DEFAULT_DELIVERABLES: tuple[dict[str, Any], ...] = ({"kind": "phenomenon_map"},)
+
 _EXAMPLE = {
     "path": {"h_start": 1.0, "h_end": 2.0, "k": 0.0, "l": 0.0},
     "step_h": 0.1,
@@ -140,13 +192,33 @@ _EXAMPLE = {
 
 # Canonical compiler defaults for the energy search band when the goal states none. These are the
 # single source for both the compile fallback and the LLM prompt guidance — the example
-# compact-goal.json ships the same acoustic band, so goal-path and spec-path campaigns agree.
+# example campaign program ships the same acoustic band, so goal-path and program-path campaigns agree.
 DEFAULT_ENERGY_SEARCH_ACOUSTIC_MEV = (-9.0, 9.0)
 DEFAULT_ENERGY_SEARCH_OPTIC_MEV = (-2.0, 12.0)
 
+_DISCOVER_EXAMPLE = {
+    "kind": "discover_and_map",
+    "discover_and_map": {
+        "q_start": [2.0, 0.0, 0.0], "q_end": [3.0, 0.0, 0.0],
+        "maximum_initial_spacing_rlu": 0.1,
+        "intrinsic_omega_domain_meV": [0.0, 10.0],
+        "notes": "map every phenomenon of interest along (2,0,0)->(3,0,0)",
+    },
+}
+
 SYSTEM = (
-    "You translate a neutron triple-axis measurement goal into a machine objective for an autonomous "
-    "driver. Express a general reciprocal-space line as q_start [h,k,l], q_end [h,k,l], and "
+    "You translate a neutron triple-axis measurement command into a one-step machine campaign "
+    "program for an autonomous driver. Choose kind='targeted' when the user names a specific "
+    "excitation to measure or refine (a branch, a mode, an energy) and put the objective under the "
+    "'targeted' key. Choose kind='discover_and_map' when the user asks what is there rather than "
+    "for a named excitation — surveying, mapping everything of interest, finding the phenomena in a "
+    "region — and put the discovery intent under the 'discover_and_map' key. A discovery intent is "
+    "q_start [h,k,l], q_end [h,k,l], an optional maximum_initial_spacing_rlu (default 0.05), and "
+    "intrinsic_omega_domain_meV [low, high] — the INTRINSIC excitation energy |hbar*omega|, which "
+    "is never negative: 'up to 10 meV' is [0, 10]. Do NOT emit a signed measurement window there; "
+    "whether the anti-Stokes side is counted is decided later at acquisition.\n\n"
+    "For a targeted objective: express a general reciprocal-space line as q_start [h,k,l], "
+    "q_end [h,k,l], and "
     "step_rlu (the maximum point spacing, default 0.05 if unstated). The legacy path/step_h shape is "
     "also valid for a segment purely along H. Extract tolerance_meV (the per-point target on the "
     "phonon energy ω₀; map '±X meV' to X). Include a measurement budget as EITHER budget_hours "
@@ -163,10 +235,12 @@ SYSTEM = (
     "put it in target_zc_energy_meV and put an explicitly stated uncertainty in "
     "target_zc_energy_sigma_meV. For optic goals use energy_search_meV [-2,12] and for acoustic "
     "goals [-9,9] unless the user provides a range. Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
-    "these keys, no wrapper object, no extra keys, and never enumerate grid points:\n"
-    + json.dumps(LLM_GOAL_SCHEMA)
-    + "\n\nExample. Goal: 'map the acoustic phonon from (1,0,0) to (2,0,0) to +-0.5 meV, steps of 0.1, "
-    "overnight'. Reply:\n" + json.dumps(_EXAMPLE)
+    "these keys, no extra keys, and never enumerate grid points:\n"
+    + json.dumps(LLM_PROGRAM_SCHEMA)
+    + "\n\nExample. Command: 'map the acoustic phonon from (1,0,0) to (2,0,0) to +-0.5 meV, steps "
+    "of 0.1, overnight'. Reply:\n" + json.dumps({"kind": "targeted", "targeted": _EXAMPLE})
+    + "\n\nExample. Command: 'Scan the region from (2,0,0) to (3,0,0) up to 10meV, map out all the "
+    "phenomena of interest.' Reply:\n" + json.dumps(_DISCOVER_EXAMPLE)
 )
 
 _REPAIR_SUFFIX = (
@@ -175,7 +249,6 @@ _REPAIR_SUFFIX = (
 )
 
 DEFAULTS: dict[str, Any] = {"step_h": 0.05, "tier": "deterministic"}
-ENVELOPE_SCHEMA = "isar.objective-envelope/2"
 
 # The canonical, tier-aware budget defaults. Defined next to the dataclass they configure
 # (:mod:`isar.drive.objective`) and re-exported here, which is the import site every other surface —
@@ -192,15 +265,21 @@ class GoalParseError(ValueError):
 
 
 # --------------------------------------------------------------------------- LLM path
-def goal_to_spec(goal: str, *, dispatcher: Dispatcher | None = None, defaults: dict | None = None,
-                 card_hypotheses: dict[str, Any] | None = None,
-                 card_eig_policy_set: dict[str, Any] | None = None,
-                 endpoint: str | None = None, model_pin: str | None = None,
-                 temperature: float = 0.1, max_tokens: int = 800) -> ObjectiveSpec:
-    """Parse ``goal`` into an :class:`ObjectiveSpec` via the LLM supervisor.
+def goal_to_program(goal: str, *, dispatcher: Dispatcher | None = None,
+                    defaults: dict | None = None,
+                    card_hypotheses: dict[str, Any] | None = None,
+                    card_eig_policy_set: dict[str, Any] | None = None,
+                    endpoint: str | None = None, model_pin: str | None = None,
+                    temperature: float = 0.1, max_tokens: int = 800) -> CampaignProgram:
+    """Compile ``goal`` into a one-step :class:`CampaignProgram` via the LLM supervisor.
+
+    A ``targeted`` reply is compiled all the way to a frozen :class:`ObjectiveSpec` here (P1: the
+    LLM's output becomes config before any deterministic stage runs); a ``discover_and_map`` reply
+    is validated and frozen as a :class:`DiscoverAndMapSpec`.
 
     Args:
-        goal: the natural-language measurement goal.
+        goal: the natural-language measurement command; kept verbatim as the program's
+            ``source_text``.
         dispatcher: an injected :class:`Dispatcher` (tests pass a fake). When ``None`` a pinned
             :class:`LLMMClient` is built from ``endpoint`` / ``model_pin`` (env-overridable).
         defaults: overrides for :data:`DEFAULTS` (``step_h``, ``tier``).
@@ -213,26 +292,52 @@ def goal_to_spec(goal: str, *, dispatcher: Dispatcher | None = None, defaults: d
         pin = model_pin or os.environ.get("LLMM_SUPERVISOR_MODEL", DEFAULT_SUPERVISOR_MODEL)
         dispatcher = LLMMClient(ep, pin)
 
-    res = dispatcher.dispatch(system=SYSTEM, user=goal, schema=LLM_GOAL_SCHEMA,
+    res = dispatcher.dispatch(system=SYSTEM, user=goal, schema=LLM_PROGRAM_SCHEMA,
                               temperature=temperature, max_tokens=max_tokens)
     data = _extract(res)
     if data is None:
-        res = dispatcher.dispatch(system=SYSTEM, user=goal + _REPAIR_SUFFIX, schema=LLM_GOAL_SCHEMA,
+        res = dispatcher.dispatch(system=SYSTEM, user=goal + _REPAIR_SUFFIX,
+                                  schema=LLM_PROGRAM_SCHEMA,
                                   temperature=temperature, max_tokens=max_tokens)
         data = _extract(res)
     if data is None:
         detail = f" ({res.error})" if getattr(res, "error", None) else ""
         raw = (res.output or "")[:200]
         raise GoalParseError(
-            "goal→ObjectiveSpec failed: the supervisor LLM did not return a schema-valid objective"
-            + detail + (f"; raw: {raw!r}" if raw else "")
-            + ". Use `isar drive --spec <file.json>` for an LLM-free run.")
-    return _build_spec(
-        data,
-        merged,
-        card_hypotheses=card_hypotheses,
-        card_eig_policy_set=card_eig_policy_set,
-    )
+            f"goal→{PROGRAM_SCHEMA} failed: the supervisor LLM did not return a schema-valid "
+            "campaign program" + detail + (f"; raw: {raw!r}" if raw else "")
+            + ". Use `isar drive --program <file.json>` for an LLM-free run.")
+    if data["kind"] == "discover_and_map":
+        return CampaignProgram(
+            steps=(CampaignStep(id="discover-1", kind="discover_and_map",
+                                payload=_discover_spec(data["discover_and_map"])),),
+            source_text=goal)
+    spec = _build_spec(data["targeted"], merged, card_hypotheses=card_hypotheses,
+                       card_eig_policy_set=card_eig_policy_set)
+    return targeted_program(spec.to_dict(), source_text=goal)
+
+
+def _discover_spec(data: dict) -> DiscoverAndMapSpec:
+    """Freeze a supervisor discovery reply, filling only the compiler's shipped defaults.
+
+    A default applies when the field is absent or JSON-null, never when it is merely falsy: an
+    explicit spacing of 0, an explicit empty catalogue reference, and an explicit empty
+    deliverables list are *wrong* declarations, not omissions, and rewriting them to the shipped
+    defaults would silently run a campaign the supervisor did not ask for. Every present value is
+    passed through so :class:`DiscoverAndMapSpec` validates it and refuses the invalid ones by name.
+    """
+    def declared(key, default):
+        value = data.get(key)
+        return default if value is None else value
+
+    return DiscoverAndMapSpec(
+        q_start=data["q_start"], q_end=data["q_end"],
+        maximum_initial_spacing_rlu=declared("maximum_initial_spacing_rlu",
+                                             DEFAULT_DISCOVER_SPACING_RLU),
+        intrinsic_omega_domain_meV=data["intrinsic_omega_domain_meV"],
+        catalogue_profile=declared("catalogue_profile", DEFAULT_CATALOGUE_PROFILE),
+        deliverables=declared("deliverables", DEFAULT_DELIVERABLES),
+        include_unknown=bool(data.get("include_unknown", True)))
 
 
 # --------------------------------------------------------------------------- LLM-free path
@@ -243,14 +348,17 @@ def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec"
 
     Accepts either the goal schema (``{"path": {"h_start", …}, "step_h", "tolerance_meV", …}``) or a
     full ``ObjectiveSpec.to_dict()`` (``path`` is a list of triples). This is the shared dict path that
-    both :func:`spec_from_json` (file → dict) and the ``isar drive --resume-latest`` path (frozen
-    campaign_start objective → dict) route through, so a resume never re-compiles a goal via the LLM.
+    both a targeted step of :func:`program_from_json` (file → dict) and the ``isar drive
+    --resume-latest`` path (frozen campaign_start objective → dict) route through, so a resume never
+    re-compiles a goal via the LLM.
 
     ``where`` is a short label (a file path, or ``"resume"``) used in error messages only.
     """
     if not isinstance(d, dict):
         raise GoalParseError(f"{where}: spec must be an object, got {type(d).__name__}")
-    if isinstance(d.get("path"), list):
+    # A payload that names any objective schema is already frozen content: hand it to
+    # ``ObjectiveSpec.from_dict``, whose refusal names the current contract for a retired one.
+    if d.get("schema") is not None or isinstance(d.get("path"), list):
         return ObjectiveSpec.from_dict(d)         # already a full ObjectiveSpec
     if not _conforms(d, FILE_SPEC_SCHEMA):
         raise GoalParseError(f"{where}: not a valid goal spec (needs path{{h_start,h_end,k,l}}, step_h, "
@@ -264,42 +372,23 @@ def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec"
     )
 
 
-def spec_from_json(path: str | Path, *, defaults: dict | None = None,
-                   card_hypotheses: dict[str, Any] | None = None,
-                   card_eig_policy_set: dict[str, Any] | None = None) -> ObjectiveSpec:
-    """Build an :class:`ObjectiveSpec` from a JSON file — no LLM.
+def program_from_json(path: str | Path) -> CampaignProgram:
+    """Read an ``isar.campaign-program/1`` file — no LLM, no card, no compilation.
 
-    Accepts either the goal schema (``{"path": {"h_start", …}, "step_h", "tolerance_meV", …}``) or a
-    full ``ObjectiveSpec.to_dict()`` (``path`` is a list of triples).
+    Step payloads are validated for *identity* only (:mod:`isar.schema.campaign_program`); a
+    targeted step is compiled with :func:`spec_from_dict` by the caller that knows which card
+    policy, tier and overrides apply. A file naming a retired contract is refused by name, never
+    adapted (DECISIONS H1).
     """
-    d = json.loads(Path(path).read_text(encoding="utf-8"))
-    return spec_from_dict(
-        d,
-        defaults=defaults,
-        where=str(path),
-        card_hypotheses=card_hypotheses,
-        card_eig_policy_set=card_eig_policy_set,
-    )
-
-
-def make_envelope(spec: ObjectiveSpec, *, source: dict, original_goal: str | None = None) -> dict:
-    """Freeze a compiled objective together with the fingerprint of its operator source."""
-    envelope = {"schema": ENVELOPE_SCHEMA, "objective": spec.to_dict(), "source": dict(source)}
-    if original_goal is not None:
-        envelope["original_goal"] = str(original_goal)
-    return envelope
-
-
-def envelope_from_json(path: str | Path) -> tuple[ObjectiveSpec, dict, str | None]:
-    """Read a versioned frozen objective envelope without invoking the supervisor LLM."""
     p = Path(path)
-    data = json.loads(p.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or data.get("schema") != ENVELOPE_SCHEMA:
-        raise GoalParseError(f"{p}: not an {ENVELOPE_SCHEMA} envelope")
-    if not isinstance(data.get("source"), dict):
-        raise GoalParseError(f"{p}: objective envelope has no source fingerprint")
-    spec = spec_from_dict(data.get("objective"), where=f"{p}:objective")
-    return spec, dict(data["source"]), data.get("original_goal")
+    return CampaignProgram.from_dict(
+        json.loads(p.read_text(encoding="utf-8")), where=str(p))
+
+
+def make_program(spec: ObjectiveSpec, *, source: dict,
+                 source_text: str | None = None) -> CampaignProgram:
+    """Freeze a compiled objective as a one-step targeted program with its source fingerprint."""
+    return targeted_program(spec.to_dict(), source_text=source_text, source=dict(source))
 
 
 # --------------------------------------------------------------------------- shared
@@ -500,15 +589,26 @@ def _budget(data: dict, *, tier: str) -> dict[str, Any] | None:
 
 
 def _extract(res) -> dict | None:
-    """The schema-valid goal object from a dispatch result, or None if it can't be recovered."""
-    if getattr(res, "structured", None) is not None and _conforms(res.structured, LLM_GOAL_SCHEMA):
-        return res.structured
-    out = getattr(res, "output", None)
-    if out:
-        obj = _loads_lenient(out)
-        if obj is not None and _conforms(obj, LLM_GOAL_SCHEMA):
-            return obj
+    """The schema-valid program object from a dispatch result, or None if unrecoverable."""
+    for candidate in (getattr(res, "structured", None),
+                      _loads_lenient(getattr(res, "output", None) or "")):
+        if candidate is not None and _program_conforms(candidate):
+            return candidate
     return None
+
+
+def _program_conforms(value) -> bool:
+    """Schema-valid AND tagged consistently: ``kind`` must name the branch that is present.
+
+    ``_conforms`` has no oneOf, so the tag/branch agreement is checked here. A reply tagged
+    ``targeted`` whose only payload is a discovery region is exactly the confusion that would
+    otherwise compile a survey into a one-point objective.
+    """
+    if not _conforms(value, LLM_PROGRAM_SCHEMA):
+        return False
+    kind = value["kind"]
+    other = next(k for k in STEP_KINDS if k != kind)
+    return kind in value and other not in value
 
 
 def _loads_lenient(text: str):

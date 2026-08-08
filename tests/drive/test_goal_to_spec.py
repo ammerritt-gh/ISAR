@@ -1,12 +1,21 @@
-"""goal→ObjectiveSpec: schema validation with a FAKE dispatcher, plus the LLM-free JSON path."""
+"""goal→campaign program: schema validation with a FAKE dispatcher, plus the LLM-free JSON path.
+
+``spec_from_dict`` is the objective *compiler* and is unchanged by SCENE-2 — it is exercised
+directly here because that is the layer these cases are about. What changed is the layer above it:
+the supervisor and the file reader now speak ``isar.campaign-program/1`` and nothing else.
+"""
 import copy
 import json
+from pathlib import Path
 
 import pytest
 
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.supervisor import goal_to_spec as g2s
 from isar.reduce.llm_client import DispatchResult
+from isar.schema.campaign_program import PROGRAM_SCHEMA, ProgramError
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class _FakeDispatcher:
@@ -24,10 +33,28 @@ _GOOD = {"path": {"h_start": 2.1, "h_end": 2.4, "k": 0.0, "l": 0.0},
          "step_h": 0.1, "tolerance_meV": 0.5, "budget_hours": 8.0, "notes": "acoustic branch"}
 
 
-def test_structured_output_builds_a_spec():
-    disp = _FakeDispatcher(DispatchResult(structured=_GOOD))
-    spec = g2s.goal_to_spec("map the acoustic phonon 2.1->2.4, 0.5 meV, overnight", dispatcher=disp)
-    assert isinstance(spec, ObjectiveSpec)
+def _targeted(payload):
+    """The supervisor reply for a targeted command — the tagged one-step program shape."""
+    return {"kind": "targeted", "targeted": payload}
+
+
+def _objective(goal, payload, **kwargs):
+    """Compile a targeted goal through the supervisor and return the step's ObjectiveSpec."""
+    program = g2s.goal_to_program(
+        goal, dispatcher=_FakeDispatcher(DispatchResult(structured=_targeted(payload))), **kwargs)
+    assert [step.kind for step in program.steps] == ["targeted"]
+    return ObjectiveSpec.from_dict(program.steps[0].payload)
+
+
+def test_structured_output_builds_a_one_step_targeted_program():
+    disp = _FakeDispatcher(DispatchResult(structured=_targeted(_GOOD)))
+    program = g2s.goal_to_program("map the acoustic phonon 2.1->2.4, 0.5 meV, overnight",
+                                  dispatcher=disp)
+    assert program.to_dict()["schema"] == PROGRAM_SCHEMA
+    assert [(s.id, s.kind) for s in program.steps] == [("targeted-1", "targeted")]
+    # The command is kept verbatim; the compiled objective is the step payload (P1: frozen config).
+    assert program.source_text == "map the acoustic phonon 2.1->2.4, 0.5 meV, overnight"
+    spec = ObjectiveSpec.from_dict(program.steps[0].payload)
     assert spec.path == [(2.1, 0.0, 0.0), (2.2, 0.0, 0.0), (2.3, 0.0, 0.0), (2.4, 0.0, 0.0)]
     assert spec.tolerance_meV == 0.5
     assert spec.budget == {"kind": "counting_seconds", "amount": 8 * 3600.0}
@@ -35,7 +62,7 @@ def test_structured_output_builds_a_spec():
 
 def test_budget_neutrons_mapping():
     payload = dict(_GOOD); payload.pop("budget_hours"); payload["budget_neutrons"] = 1e10
-    spec = g2s.goal_to_spec("x", dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
+    spec = _objective("x", payload)
     assert spec.budget == {"kind": "neutrons", "amount": 1e10}
 
 
@@ -69,67 +96,93 @@ def test_analysis_limit_is_clamped_to_the_counting_time_budget():
 
 
 def test_recovers_from_fenced_text_output():
-    fenced = "```json\n" + json.dumps(_GOOD) + "\n```"
+    fenced = "```json\n" + json.dumps(_targeted(_GOOD)) + "\n```"
     disp = _FakeDispatcher(DispatchResult(structured=None, output=fenced))
-    spec = g2s.goal_to_spec("x", dispatcher=disp)
-    assert spec.tolerance_meV == 0.5
+    program = g2s.goal_to_program("x", dispatcher=disp)
+    assert ObjectiveSpec.from_dict(program.steps[0].payload).tolerance_meV == 0.5
 
 
 def test_one_repair_retry_then_success():
     disp = _FakeDispatcher(DispatchResult(structured=None, output="sorry, no idea"),
-                           DispatchResult(structured=_GOOD))
-    spec = g2s.goal_to_spec("x", dispatcher=disp)
-    assert spec.tolerance_meV == 0.5
+                           DispatchResult(structured=_targeted(_GOOD)))
+    program = g2s.goal_to_program("x", dispatcher=disp)
+    assert ObjectiveSpec.from_dict(program.steps[0].payload).tolerance_meV == 0.5
     assert len(disp.calls) == 2                              # initial + one repair
     assert g2s._REPAIR_SUFFIX in disp.calls[1]["user"]
 
 
 def test_refuses_honestly_on_persistent_nonconforming():
-    disp = _FakeDispatcher(DispatchResult(structured={"path": {"h_start": 1}}),   # missing required
+    disp = _FakeDispatcher(DispatchResult(structured={"kind": "targeted",
+                                                      "targeted": {"path": {"h_start": 1}}}),
                            DispatchResult(structured=None, output="still nope"))
     with pytest.raises(g2s.GoalParseError):
-        g2s.goal_to_spec("x", dispatcher=disp)
+        g2s.goal_to_program("x", dispatcher=disp)
+
+
+def test_a_reply_tagged_targeted_but_carrying_a_discovery_region_is_refused():
+    """The tag and the branch must agree, or a survey compiles into a one-point objective."""
+    mistagged = {"kind": "targeted",
+                 "discover_and_map": {"q_start": [2, 0, 0], "q_end": [3, 0, 0],
+                                      "intrinsic_omega_domain_meV": [0, 10]}}
+    disp = _FakeDispatcher(DispatchResult(structured=mistagged),
+                           DispatchResult(structured=mistagged))
+    with pytest.raises(g2s.GoalParseError):
+        g2s.goal_to_program("x", dispatcher=disp)
 
 
 def test_refuses_on_llmm_unreachable():
     disp = _FakeDispatcher(DispatchResult(error="transport_error: connection refused"),
                            DispatchResult(error="transport_error: connection refused"))
     with pytest.raises(g2s.GoalParseError) as e:
-        g2s.goal_to_spec("x", dispatcher=disp)
+        g2s.goal_to_program("x", dispatcher=disp)
     assert "transport_error" in str(e.value)
 
 
 # --------------------------------------------------------------------------- LLM-free path
-def test_spec_from_json_goal_schema(tmp_path):
-    p = tmp_path / "spec.json"
-    p.write_text(json.dumps(_GOOD), encoding="utf-8")
-    spec = g2s.spec_from_json(p, defaults={"tier": "deterministic"})
+def _program_file(tmp_path, payload, *, kind="targeted", step_id="targeted-1", **extra):
+    p = tmp_path / "program.json"
+    p.write_text(json.dumps({"schema": PROGRAM_SCHEMA, **extra,
+                             "steps": [{"id": step_id, "kind": kind, "payload": payload}]}),
+                 encoding="utf-8")
+    return p
+
+
+def test_program_from_json_carries_compact_authoring_input(tmp_path):
+    program = g2s.program_from_json(_program_file(tmp_path, _GOOD))
+    spec = g2s.spec_from_dict(program.steps[0].payload, defaults={"tier": "deterministic"})
     assert len(spec.path) == 4 and spec.tolerance_meV == 0.5
 
 
-def test_spec_from_json_full_objective(tmp_path):
+def test_program_from_json_carries_a_frozen_objective_payload(tmp_path):
     full = ObjectiveSpec.along_h(h_start=2.1, h_end=2.2, step=0.1, tolerance_meV=0.3,
                                  budget={"kind": "neutrons", "amount": 1e9}).to_dict()
-    p = tmp_path / "obj.json"
-    p.write_text(json.dumps(full), encoding="utf-8")
-    spec = g2s.spec_from_json(p)
+    program = g2s.program_from_json(_program_file(tmp_path, full))
+    spec = g2s.spec_from_dict(program.steps[0].payload)
     assert spec.tolerance_meV == 0.3 and spec.budget["kind"] == "neutrons"
 
 
-def test_spec_from_json_rejects_garbage(tmp_path):
+def test_program_from_json_rejects_a_bare_objective_spec_file(tmp_path):
+    # The old --spec file shape is not a program; it is refused rather than wrapped implicitly.
     p = tmp_path / "bad.json"
-    p.write_text(json.dumps({"nonsense": 1}), encoding="utf-8")
-    with pytest.raises(g2s.GoalParseError):
-        g2s.spec_from_json(p)
+    p.write_text(json.dumps(_GOOD), encoding="utf-8")
+    with pytest.raises(ProgramError, match="schema must be 'isar.campaign-program/1'"):
+        g2s.program_from_json(p)
+
+
+def test_program_from_json_reads_a_frozen_discovery_step(tmp_path):
+    payload = json.loads((FIXTURES / "program_discover_challenge.json").read_text(
+        encoding="utf-8"))["steps"][0]["payload"]
+    program = g2s.program_from_json(_program_file(tmp_path, payload, kind="discover_and_map",
+                                                  step_id="discover-1"))
+    assert program.steps[0].payload.intrinsic_omega_domain_meV == (0.0, 10.0)
 
 
 def test_transverse_optic_k_segment_compiles_to_eleven_points():
     payload = {"q_start": [2, 0, 0], "q_end": [2, 0.5, 0], "step_rlu": 0.05,
                "tolerance_meV": 0.5, "budget_hours": 8,
                "target_branch": "optic", "target_label": "transverse optic"}
-    spec = g2s.goal_to_spec(
-        "map the transverse optic phonon from (2,0,0) along k, out to k=0.5",
-        dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
+    spec = _objective("map the transverse optic phonon from (2,0,0) along k, out to k=0.5",
+                      payload)
     assert len(spec.path) == 11 and spec.path[-1] == (2.0, 0.5, 0.0)
     assert spec.target_branch == "optic" and spec.target_label == "transverse optic"
     assert spec.energy_search_meV == (-2.0, 12.0)
@@ -139,9 +192,7 @@ def test_transverse_optic_k_segment_compiles_to_eleven_points():
 def test_acoustic_goal_without_a_range_gets_the_canonical_symmetric_band():
     payload = {"path": {"h_start": 2.0, "h_end": 3.0, "k": 0.0, "l": 0.0}, "step_h": 0.05,
                "tolerance_meV": 0.5, "target_branch": "acoustic"}
-    spec = g2s.goal_to_spec(
-        "map the acoustic phonon from (2,0,0) to (3,0,0)",
-        dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
+    spec = _objective("map the acoustic phonon from (2,0,0) to (3,0,0)", payload)
     assert spec.energy_search_meV == g2s.DEFAULT_ENERGY_SEARCH_ACOUSTIC_MEV == (-9.0, 9.0)
 
 
@@ -149,8 +200,7 @@ def test_supplied_target_energy_implies_nearest_selector():
     payload = {"q_start": [2, 0, 0], "q_end": [2, 0.5, 0], "step_rlu": 0.05,
                "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic",
                "target_energy_meV": 7.5}
-    spec = g2s.goal_to_spec("measure the optic phonon near 7.5 meV",
-                            dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
+    spec = _objective("measure the optic phonon near 7.5 meV", payload)
     assert spec.target_selector == "nearest_energy" and spec.target_energy_meV == 7.5
 
 
@@ -158,9 +208,7 @@ def test_optic_energy_identity_compiles_as_zone_center_tracked_branch():
     payload = {"q_start": [2, 0, 0], "q_end": [2.5, 0, 0], "step_rlu": 0.05,
                "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic",
                "target_selector": "tracked_branch", "target_zc_energy_meV": 6.0}
-    spec = g2s.goal_to_spec(
-        "map the optic phonon around 6 meV",
-        dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
+    spec = _objective("map the optic phonon around 6 meV", payload)
     optic = next(h for h in spec.hypotheses if h["name"] == "optic")
     assert spec.target_selector == "tracked_branch"
     assert spec.target_energy_meV is None
@@ -190,9 +238,7 @@ def test_explicit_nearest_energy_throughout_remains_global_nearest():
     payload = {"q_start": [2, 0, 0], "q_end": [2.5, 0, 0], "step_rlu": 0.05,
                "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic",
                "target_selector": "nearest_energy", "target_energy_meV": 6.0}
-    spec = g2s.goal_to_spec(
-        "at every q, measure the feature nearest 6 meV",
-        dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
+    spec = _objective("at every q, measure the feature nearest 6 meV", payload)
     assert spec.target_selector == "nearest_energy"
     assert spec.target_energy_meV == 6.0
 
@@ -228,35 +274,33 @@ def test_hypothesis_resolution_precedence_goal_then_card_then_shipped():
     card = {"optic": {"zc_energy": {"mean": 8.0, "sigma": 1.0}, "confidence": 0.7},
             "acoustic": {}}
 
-    card_spec = g2s.goal_to_spec(
-        "optic", dispatcher=_FakeDispatcher(DispatchResult(structured=base)),
-        card_hypotheses=card)
+    card_spec = _objective("optic", base, card_hypotheses=card)
     optic = next(h for h in card_spec.hypotheses if h["name"] == "optic")
     assert optic["zc_energy"] == {"mean": 8.0, "sigma": 1.0}
     assert card_spec.hypothesis_source == "card_policy"
 
     goal_payload = {**base, "target_zc_energy_meV": 10.0,
                     "target_zc_energy_sigma_meV": 0.5}
-    goal_spec = g2s.goal_to_spec(
-        "optic at 10 +- 0.5 meV",
-        dispatcher=_FakeDispatcher(DispatchResult(structured=goal_payload)),
-        card_hypotheses=card)
+    goal_spec = _objective("optic at 10 +- 0.5 meV", goal_payload, card_hypotheses=card)
     optic = next(h for h in goal_spec.hypotheses if h["name"] == "optic")
     assert optic["zc_energy"] == {"mean": 10.0, "sigma": 0.5}
     assert goal_spec.hypothesis_source == "goal_override"
 
-    shipped = g2s.goal_to_spec(
-        "optic", dispatcher=_FakeDispatcher(DispatchResult(structured=base)))
+    shipped = _objective("optic", base)
     assert shipped.hypothesis_source == "shipped_preset"
     assert next(h for h in shipped.hypotheses if h["name"] == "optic")["zc_energy"]["mean"] == 6.0
 
 
-def test_objective_envelope_v1_is_rejected_after_prerelease_reset(tmp_path):
+@pytest.mark.parametrize("retired", ["isar.objective-envelope/1", "isar.objective-envelope/2"])
+def test_the_retired_objective_envelope_is_unreadable_by_design(tmp_path, retired):
+    # H1: the old envelope is not deprecated, it is gone. The refusal names the contract that
+    # replaced it so an operator knows what to write instead - there is no adapter to reach for.
     path = tmp_path / "old-envelope.json"
-    path.write_text(json.dumps({"schema": "isar.objective-envelope/1",
-                                "objective": {}, "source": {}}), encoding="utf-8")
-    with pytest.raises(g2s.GoalParseError, match="objective-envelope/2"):
-        g2s.envelope_from_json(path)
+    path.write_text(json.dumps({"schema": retired, "objective": {}, "source": {}}),
+                    encoding="utf-8")
+    with pytest.raises(ProgramError, match="was retired by 'isar.campaign-program/1'"):
+        g2s.program_from_json(path)
+    assert not hasattr(g2s, "envelope_from_json") and not hasattr(g2s, "make_envelope")
 
 
 @pytest.mark.parametrize("payload, message", [
@@ -267,15 +311,14 @@ def test_gap_uncertainty_validation_is_explicit(payload, message):
     data = {"q_start": [2, 0, 0], "q_end": [2, 0.5, 0], "step_rlu": 0.05,
             "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic", **payload}
     with pytest.raises(g2s.GoalParseError, match=message):
-        g2s.goal_to_spec("optic", dispatcher=_FakeDispatcher(DispatchResult(structured=data)))
+        _objective("optic", data)
 
 
 def test_goal_layer_rejects_degenerate_segment():
     payload = {"q_start": [2, 0, 0], "q_end": [2, 0, 0], "step_rlu": 0.05,
                "tolerance_meV": 0.5, "budget_hours": 8}
     with pytest.raises(g2s.GoalParseError, match="degenerate"):
-        g2s.goal_to_spec("single accidental segment",
-                         dispatcher=_FakeDispatcher(DispatchResult(structured=payload)))
+        _objective("single accidental segment", payload)
 
 
 def test_schema_checker_enforces_array_shape_and_branch_enum():
@@ -420,3 +463,108 @@ def test_an_ordinary_campaign_can_switch_scan_window_eig_on():
     validate_o41_authoritative_profile(authoritative.scan_window_eig)
     assert [policy.policy_id for policy in _matches(authoritative)] == [
         "eig4_slice8_excitation_energy"]
+
+
+# ------------------------------------------------------- discovery compilation (golden programs)
+_DISCOVER_COMMAND = ("Scan the region from (2,0,0) to (3,0,0) up to 10meV, map out all the "
+                     "phenomena of interest.")
+_DISCOVER_REPLY = {"kind": "discover_and_map", "discover_and_map": {
+    "q_start": [2.0, 0.0, 0.0], "q_end": [3.0, 0.0, 0.0],
+    "maximum_initial_spacing_rlu": 0.1, "intrinsic_omega_domain_meV": [0.0, 10.0],
+    "notes": "map all phenomena of interest"}}
+
+_TARGETED_COMMAND = "Map the acoustic phonon from (2,0,0) to (3,0,0) to +-0.5 meV, overnight."
+_TARGETED_REPLY = {"kind": "targeted", "targeted": {
+    "path": {"h_start": 2.0, "h_end": 3.0, "k": 0.0, "l": 0.0}, "step_h": 0.05,
+    "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "acoustic",
+    "notes": "acoustic branch (2,0,0)->(3,0,0)"}}
+
+
+@pytest.mark.parametrize("command, reply, golden", [
+    (_DISCOVER_COMMAND, _DISCOVER_REPLY, "program_discover_challenge.json"),
+    (_TARGETED_COMMAND, _TARGETED_REPLY, "program_targeted_challenge.json"),
+])
+def test_a_frozen_supervisor_reply_compiles_to_the_golden_program(command, reply, golden):
+    """LLM-free goldens: the supervisor's reply is stubbed, so this pins the *compiler*.
+
+    The whole point of P1 is that the LLM's answer becomes config before anything deterministic
+    runs. These two files are that config for the two challenge commands; a change to them is a
+    deliberate re-baseline, never incidental.
+    """
+    program = g2s.goal_to_program(
+        command, dispatcher=_FakeDispatcher(DispatchResult(structured=reply)))
+    assert program.to_dict() == json.loads(
+        (FIXTURES / golden).read_text(encoding="utf-8"))
+
+
+def test_a_discovery_command_compiles_to_a_frozen_discover_step_not_an_objective():
+    program = g2s.goal_to_program(
+        _DISCOVER_COMMAND, dispatcher=_FakeDispatcher(DispatchResult(structured=_DISCOVER_REPLY)))
+    assert [(s.id, s.kind) for s in program.steps] == [("discover-1", "discover_and_map")]
+    spec = program.steps[0].payload
+    assert spec.q_start == (2.0, 0.0, 0.0) and spec.q_end == (3.0, 0.0, 0.0)
+    # "up to 10 meV" is an intrinsic domain [0, 10] — never a signed [-10, 10] measurement window.
+    assert spec.intrinsic_omega_domain_meV == (0.0, 10.0)
+    assert spec.include_unknown is True
+    assert spec.catalogue_profile == g2s.DEFAULT_CATALOGUE_PROFILE
+    assert program.source_text == _DISCOVER_COMMAND
+
+
+def test_a_discovery_reply_without_a_spacing_takes_the_compiler_default():
+    reply = copy.deepcopy(_DISCOVER_REPLY)
+    del reply["discover_and_map"]["maximum_initial_spacing_rlu"]
+    program = g2s.goal_to_program(
+        _DISCOVER_COMMAND, dispatcher=_FakeDispatcher(DispatchResult(structured=reply)))
+    assert (program.steps[0].payload.maximum_initial_spacing_rlu
+            == g2s.DEFAULT_DISCOVER_SPACING_RLU)
+
+
+def test_a_discovery_reply_with_an_explicit_zero_spacing_is_refused_not_defaulted():
+    """A default fills an OMISSION, never a wrong value: 0 r.l.u. is a declaration, and quietly
+    rewriting it to 0.05 would run a survey the supervisor did not ask for."""
+    reply = copy.deepcopy(_DISCOVER_REPLY)
+    reply["discover_and_map"]["maximum_initial_spacing_rlu"] = 0
+    with pytest.raises(ProgramError, match="must be positive and finite"):
+        g2s.goal_to_program(_DISCOVER_COMMAND,
+                            dispatcher=_FakeDispatcher(DispatchResult(structured=reply)))
+
+
+def test_a_discovery_reply_with_an_explicit_empty_catalogue_profile_is_refused():
+    reply = copy.deepcopy(_DISCOVER_REPLY)
+    reply["discover_and_map"]["catalogue_profile"] = ""
+    with pytest.raises(ProgramError, match="non-empty string reference"):
+        g2s.goal_to_program(_DISCOVER_COMMAND,
+                            dispatcher=_FakeDispatcher(DispatchResult(structured=reply)))
+
+
+def test_an_explicitly_empty_deliverables_list_stays_empty():
+    """"Deliver nothing" is a legal, if unusual, declaration — not the default phenomenon map."""
+    reply = copy.deepcopy(_DISCOVER_REPLY)
+    reply["discover_and_map"]["deliverables"] = []
+    program = g2s.goal_to_program(
+        _DISCOVER_COMMAND, dispatcher=_FakeDispatcher(DispatchResult(structured=reply)))
+    assert program.steps[0].payload.deliverables == ()
+
+
+@pytest.mark.parametrize("absent", [True, False])
+def test_absent_or_null_discovery_fields_still_take_the_compiler_defaults(absent):
+    """Only absent-or-null means "omitted". Driven through ``_discover_spec`` directly because the
+    supervisor's own reply schema rejects an explicit null before the compiler ever sees it."""
+    reply = copy.deepcopy(_DISCOVER_REPLY["discover_and_map"])
+    for name in ("maximum_initial_spacing_rlu", "catalogue_profile", "deliverables"):
+        if absent:
+            reply.pop(name, None)
+        else:
+            reply[name] = None
+    spec = g2s._discover_spec(reply)
+    assert spec.maximum_initial_spacing_rlu == g2s.DEFAULT_DISCOVER_SPACING_RLU
+    assert spec.catalogue_profile == g2s.DEFAULT_CATALOGUE_PROFILE
+    assert spec.deliverables == tuple(g2s.DEFAULT_DELIVERABLES)
+
+
+def test_a_discovery_reply_with_a_signed_energy_window_is_refused():
+    reply = copy.deepcopy(_DISCOVER_REPLY)
+    reply["discover_and_map"]["intrinsic_omega_domain_meV"] = [-10.0, 10.0]
+    with pytest.raises(ProgramError, match="not a signed measurement window"):
+        g2s.goal_to_program(_DISCOVER_COMMAND,
+                            dispatcher=_FakeDispatcher(DispatchResult(structured=reply)))

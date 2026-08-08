@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the workspace, session and CLI contract
 > **Provenance:** hand-written
-> **Verified against code revision:** `389f571` (2026-07-25)
+> **Verified against code revision:** `d483af1` (2026-08-08)
 
 What `isar` is from the outside: a directory per experiment, a ledger inside it, and a command
 set that reads and extends both. This document is the current contract. The design that produced
@@ -83,7 +83,7 @@ init  detect  ingest  run  status  profile  report  diagnose  score  view  drive
 | `isar diagnose --workspace DIR` | Render the architect's `CAMPAIGN_DIAGNOSTIC.md` for a campaign — see `CAMPAIGN_DIAGNOSTIC_SPEC.md`. `--eig` prints the scan-window EIG decision table to stdout instead (latest decision per Q, its outcome, reason codes, legacy/target point counts and information margin, plus a reason-code histogram) and writes nothing at all. |
 | `isar score --workspace DIR` | Score a run against a human gold CSV (`--gold`) or known analytic truth (`--truth-fn`/`--truth-csv`). Gold CSVs appear **nowhere** in the `run` path. |
 | `isar view [workspace]` | Open the desktop GUI on a workspace (needs the `[gui]` extra) — see `GUI_DESIGN.md`. |
-| `isar drive` | Run the autonomous measurement campaign — see `MEASUREMENT_STEERING.md`. |
+| `isar drive` | Run the autonomous measurement campaign from a natural-language `--goal`, an `isar.campaign-program/1` file (`--program`), or `--resume-latest` — see `MEASUREMENT_STEERING.md`. |
 
 `isar <command> --help` is the authority on flags; this table is deliberately not a flag
 reference, because a hand-maintained duplicate of argparse is a guaranteed drift source.
@@ -98,7 +98,16 @@ workspace) → read the report → correct the card if needed → next batch. Re
 Stage III (`isar drive`) consumes Stage II (`isar run`) through files only —
 `report/results.csv`, `<workspace>/report/report.json`, and `card.state.json`. The driver never imports fit
 internals. The one pre-release v1→v2 clean break was authorized on 2026-07-17 (DECISIONS O12);
-from v2 onward, contract changes are additive only (`DESIGN.md` §4).
+from v2 onward, contract changes are additive only (`DESIGN.md` §4) — except for the contracts the
+SCENE program rebuilds, where DECISIONS H1 supersedes that rule. The campaign contract is one of
+them: `isar.campaign-program/1` replaced the objective envelope outright, and the retired schema ids
+are refused rather than read (H2).
+
+`isar drive` exits **0** when the campaign's stop state is `met`, **3** `incomplete` (budget
+exhausted), **4** `operator_stopped`, **5** `pending_recovery`, **6** `infeasible`, and **2** on a
+parse or configuration error. Exit **7** is separate and means the campaign program parsed, validated
+and froze cleanly but this build cannot execute it — a discovery step or a multi-step program, both
+of which land in SCENE-4.
 
 ## Validation status
 

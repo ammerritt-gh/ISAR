@@ -441,9 +441,9 @@ def replay(workspace: Path) -> dict[str, Any]:
 
     card = Card.load(workspace / "card.policy.toml")
     policy_fingerprint = json_fingerprint(card.policy)
-    goal = _read_json(workspace / "compact-goal.json")
+    program = _read_json(workspace / "campaign-program.json")
     objective = spec_from_dict(
-        goal, card_hypotheses=card.policy.hypotheses,
+        program["steps"][0]["payload"], card_hypotheses=card.policy.hypotheses,
         card_eig_policy_set=card.policy.scan_window_eig_policy_set)
     eig_config = objective.scan_window_eig
     profile = validate_o41_authoritative_profile(eig_config)

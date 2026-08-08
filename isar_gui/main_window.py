@@ -833,7 +833,7 @@ class MainWindow(QMainWindow):
         try:
             shutil.copytree(source, staged)
             shutil.copy2(resources / "card.policy.toml", staged / "card.policy.toml")
-            shutil.copy2(resources / "compact-goal.json", staged / "compact-goal.json")
+            shutil.copy2(resources / "campaign-program.json", staged / "campaign-program.json")
             shutil.copy2(resources / "example-manifest.json", staged / "example-manifest.json")
             # Historical gate events are evidence for the seed, not the new operator campaign's
             # spend ledger. The copied prior/model artifacts remain; the campaign log starts clean.
@@ -854,8 +854,8 @@ class MainWindow(QMainWindow):
         self.load_workspace(str(destination))
         if self.campaign_dock is not None:
             self.campaign_dock.apply_form({
-                "source": "spec",
-                "spec_path": str(destination / "compact-goal.json"),
+                "source": "program",
+                "program_path": str(destination / "campaign-program.json"),
                 "tier": "deterministic",
                 "scan_window_eig_mode": "authoritative",
                 "budget": "",

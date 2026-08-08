@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for declaring expected excitations
 > **Provenance:** hand-written
-> **Verified against code revision:** `b6db5bc` (2026-08-03)
+> **Verified against code revision:** `d483af1` (2026-08-08)
 
 > **Status: Implemented (branch hypotheses).** The branch schema, shipped presets, frozen objective fingerprint, parameter
 > priors, branch-MI acquisition, opening moves, deterministic widening, incremental count batches,
@@ -51,8 +51,9 @@ re-acquired to resolve the disagreement.
 
 New natural-language and compact-file goals that ask to map a named branch along a multi-point path
 default to `tracked_branch`, for acoustic and optic targets alike. Explicit “lowest at every q”,
-“highest at every q”, and “nearest at every q” requests retain their local selectors. Previously frozen
-objective envelopes are replayed unchanged. Acoustic tracking anchors at the nearest
+“highest at every q”, and “nearest at every q” requests retain their local selectors. A frozen step
+payload replays with the selector it recorded; the default never rewrites it. Acoustic tracking
+anchors at the nearest
 predicted-resolvable point to reduced q=0 and walks in both directions; it does not demand a measurable
 nonzero acoustic energy at the exact zone centre.
 
@@ -179,16 +180,17 @@ changed, and a policy may bind to the current campaign without recursively hashi
 `scan_window_eig_mode` intent remains in the ordinary steering snapshot; card-only scope-binding
 markers and authoring records never survive into a frozen objective.
 
-The block was added without changing `isar.objective/2`, so historical `/2` records may omit it. On
-read, omission materializes the authenticated no-policy/default-scoring value; new serialization
-always writes the block. This compatibility rule does not merge current card intent into a frozen
-record: full specs, envelopes, and resumes remain self-contained, and explicit null or authoring
-markers are invalid.
+The block is optional on read: a step payload that omits it materializes the authenticated
+no-policy/default-scoring value, while new serialization always writes it. That default does not
+merge current card intent into a frozen record — frozen payloads, programs, and resumes remain
+self-contained, and explicit null or authoring markers are invalid.
 
 Resolution precedence is deterministic: an energy/gap stated in the natural-language goal wins;
 otherwise a matching `[hypotheses.<target>]` card declaration wins; otherwise the shipped preset is
-frozen. `hypothesis_source` records which source won. Frozen objectives use `isar.objective/2` inside
-`isar.objective-envelope/2`; pre-release v1 campaign files are intentionally rejected (O12).
+frozen. `hypothesis_source` records which source won. A frozen objective is the payload of an
+`isar.campaign-step.targeted/1` step inside an `isar.campaign-program/1` campaign program; the
+retired `isar.objective` and `isar.objective-envelope` documents are refused by design, with no
+compatibility reader (DECISIONS H1, H2).
 
 ## Viewer labels versus acquisition capability
 

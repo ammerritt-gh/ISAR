@@ -115,18 +115,21 @@ class DriveOptions:
     """The subset of ``isar drive`` knobs the Drive dock exposes. Defaults mirror the CLI defaults, so
     a default option adds no flag to the command (``build_drive_command`` stays minimal).
 
-    Exactly one campaign *source* must be chosen — a natural-language ``goal``, a ``spec_path`` JSON
-    file, or ``resume_latest`` (rebuild the frozen objective from the workspace session log). The
-    three are mutually exclusive; :func:`build_drive_command` enforces that (matching the CLI's
-    ``required=True`` mutually-exclusive group).
+    Exactly one campaign *source* must be chosen — a natural-language ``goal``, a
+    ``program_path`` (``isar.campaign-program/1`` JSON authoring input), a
+    ``compiled_program_path`` (the program ``--compile-only`` just wrote, whose objective the
+    operator confirmed), or ``resume_latest`` (rebuild the frozen objective from the workspace
+    session log). They are mutually exclusive; :func:`build_drive_command` enforces that (matching
+    the CLI's ``required=True`` mutually-exclusive group). The two program fields both emit
+    ``--program``; they differ only in whether the GUI still treats tier and budget as editable.
     """
 
     goal: str | None = None
-    spec_path: str | None = None
-    envelope_path: str | None = None
+    program_path: str | None = None
+    compiled_program_path: str | None = None
     resume_latest: bool = False
     tier: str = "deterministic"       # deterministic | mcstas
-    budget: str | None = None         # '<amount><unit>' e.g. '8h', '1e10n'; None => from spec/goal
+    budget: str | None = None         # '<amount><unit>' e.g. '8h', '1e10n'; None => from the program
     analysis_limit: str | None = None # duration or 'none'; None => tier default/frozen objective
     seed: int = 0
     tavi_url: str | None = None
@@ -140,32 +143,32 @@ def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list
     """The argv for ``isar drive --<source> --workspace <ws> [opts]`` run as ``<python> -m isar ...``.
 
     Validates (raising ``ValueError`` — unit-testable without Qt) that exactly ONE campaign source is
-    set (``goal`` / ``spec_path`` / ``resume_latest``), matching the CLI's mutually-exclusive source
-    group. Only non-default options add flags, so the command stays legible in the log dock.
+    set (``goal`` / ``program_path`` / ``compiled_program_path`` / ``resume_latest``), matching the
+    CLI's mutually-exclusive source group. Only non-default options add flags, so the command stays legible in the log dock.
     """
-    sources = [opts.goal is not None, opts.spec_path is not None,
-               opts.envelope_path is not None, opts.resume_latest]
+    sources = [opts.goal is not None, opts.program_path is not None,
+               opts.compiled_program_path is not None, opts.resume_latest]
     n_sources = sum(1 for s in sources if s)
     if n_sources != 1:
         raise ValueError(
-            "exactly one campaign source must be set (goal, spec_path, envelope_path, or resume_latest); "
-            f"got {n_sources}")
+            "exactly one campaign source must be set (goal, program_path, compiled_program_path, "
+            f"or resume_latest); got {n_sources}")
     if opts.scan_window_eig_mode not in {"off", "shadow", "authoritative"}:
         raise ValueError("scan_window_eig_mode must be off, shadow, or authoritative")
 
     cmd = [python, "-m", "isar", "drive"]
     if opts.goal is not None:
         cmd += ["--goal", opts.goal]
-    elif opts.spec_path is not None:
-        cmd += ["--spec", str(opts.spec_path)]
-    elif opts.envelope_path is not None:
-        cmd += ["--envelope", str(opts.envelope_path)]
+    elif opts.program_path is not None:
+        cmd += ["--program", str(opts.program_path)]
+    elif opts.compiled_program_path is not None:
+        cmd += ["--program", str(opts.compiled_program_path)]
     else:
         cmd.append("--resume-latest")
     cmd += ["--workspace", str(workspace)]
-    # Tier and budget are frozen in a confirmed envelope. Resume keeps its established tier but may
-    # still receive an explicit budget override for the new invocation.
-    if opts.tier != "deterministic" and not (opts.resume_latest or opts.envelope_path):
+    # Tier and budget are frozen in a confirmed compiled program. Resume keeps its established tier
+    # but may still receive an explicit budget override for the new invocation.
+    if opts.tier != "deterministic" and not (opts.resume_latest or opts.compiled_program_path):
         cmd += ["--tier", opts.tier]
     if opts.budget:
         cmd += ["--budget", opts.budget]
@@ -180,7 +183,7 @@ def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list
     if opts.control_token:
         cmd += ["--control-token", opts.control_token]
     if (opts.scan_window_eig_mode != "off"
-            and not (opts.resume_latest or opts.envelope_path)):
+            and not (opts.resume_latest or opts.compiled_program_path)):
         cmd += ["--scan-window-eig-mode", opts.scan_window_eig_mode]
     if not opts.worker:
         cmd.append("--no-worker")
@@ -189,13 +192,14 @@ def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list
 
 def build_compile_command(python: str, opts: DriveOptions, output_path: str, *,
                           workspace: str | None = None) -> list[str]:
-    """Compile goal/spec authoring input against a ready workspace without TAVI contact."""
-    if (opts.goal is None) == (opts.spec_path is None):
-        raise ValueError("compile needs exactly one of goal or spec_path")
+    """Compile goal/program authoring input against a ready workspace without TAVI contact."""
+    if (opts.goal is None) == (opts.program_path is None):
+        raise ValueError("compile needs exactly one of goal or program_path")
     if opts.scan_window_eig_mode not in {"off", "shadow", "authoritative"}:
         raise ValueError("scan_window_eig_mode must be off, shadow, or authoritative")
     cmd = [python, "-m", "isar", "drive"]
-    cmd += (["--goal", opts.goal] if opts.goal is not None else ["--spec", str(opts.spec_path)])
+    cmd += (["--goal", opts.goal] if opts.goal is not None
+            else ["--program", str(opts.program_path)])
     if workspace:
         cmd += ["--workspace", str(workspace)]
     cmd += ["--compile-only", str(output_path)]
@@ -210,24 +214,41 @@ def build_compile_command(python: str, opts: DriveOptions, output_path: str, *,
     return cmd
 
 
-def source_fingerprint(*, goal: str | None = None, spec_path: str | None = None) -> str:
+def source_fingerprint(*, goal: str | None = None, program_path: str | None = None) -> str:
     """The sha256 hexdigest identifying a campaign source, for Resume-vs-Start comparison in the dock.
 
-    Exactly one of ``goal`` / ``spec_path`` must be given (``ValueError`` otherwise). For a goal it is
-    the sha256 of the goal TEXT encoded utf-8; for a spec it is the sha256 of the file's raw BYTES
-    (never decoded — a spec with non-ASCII content hashes its bytes, not its text).
+    Exactly one of ``goal`` / ``program_path`` must be given (``ValueError`` otherwise). For a goal
+    it is the sha256 of the goal TEXT encoded utf-8. For a program it is the ``source.sha256``
+    embedded in the file when the program carries one (a ``--compile-only`` program keeps the
+    fingerprint of the authoring input it was compiled from), otherwise the sha256 of the file's
+    raw BYTES (never decoded — a program with non-ASCII content hashes its bytes, not its text).
 
     CONTRACT: this must match the ``source.sha256`` the CLI freezes into the ``campaign_start`` event
-    byte-for-byte (``isar/cli/main.py``: ``sha256(goal.encode("utf-8"))`` for a goal,
-    ``sha256(Path(spec).read_bytes())`` for a spec). The dock compares this against a resumed
-    campaign's stored fingerprint to tell the operator whether a Resume would continue the same
-    objective or a Start would launch a different one; a drift here silently breaks that comparison.
+    byte-for-byte (``isar/cli/main.py``: ``sha256(goal.encode("utf-8"))`` for a goal; for a program
+    ``dict(program.source) or {"kind": "program", "sha256": sha256(read_bytes())}`` — the embedded
+    block wins whenever it is non-empty, and only a source-less hand-written program is identified
+    by its own bytes). The dock compares this against a resumed campaign's stored fingerprint to
+    tell the operator whether a Resume would continue the same objective or a Start would launch a
+    different one; a drift here silently breaks that comparison.
+
+    A compiled program whose embedded ``sha256`` is absent or not a 64-hex digest falls back to the
+    file-bytes hash. The CLI stores ``None`` in that case, so no candidate can ever equal it: the
+    comparison degrades to "different", which is the safe direction (offer Start, not Resume).
     """
-    if (goal is None) == (spec_path is None):
-        raise ValueError("exactly one of goal or spec_path must be given")
+    if (goal is None) == (program_path is None):
+        raise ValueError("exactly one of goal or program_path must be given")
     if goal is not None:
         return hashlib.sha256(goal.encode("utf-8")).hexdigest()
-    return hashlib.sha256(Path(spec_path).read_bytes()).hexdigest()
+    raw = Path(program_path).read_bytes()
+    try:
+        document = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        document = None
+    if isinstance(document, dict) and isinstance(document.get("source"), dict) and document["source"]:
+        embedded = document["source"].get("sha256")
+        if isinstance(embedded, str) and re.fullmatch(r"[0-9a-f]{64}", embedded):
+            return embedded
+    return hashlib.sha256(raw).hexdigest()
 
 
 def default_workspace_dir(data: str, instrument: str, today: str | None = None) -> str:

@@ -50,14 +50,16 @@ class _Ops:
 
     def request_drive_compile(self, opts, *, env=None):
         self.compile_requests.append((opts, dict(env or {})))
-        objective = {"schema": "isar.objective/2",
+        objective = {"schema": "isar.campaign-step.targeted/1",
                      "path": [[2, 0, 0], [2, 0.5, 0]], "target_branch": "optic",
                      "target_label": "transverse optic", "energy_search_meV": [-2, 12],
                      "tolerance_meV": 0.5,
                      "budget": {"kind": "neutrons", "amount": 1e9}}
-        self.drive_compiled.emit({"schema": "isar.objective-envelope/2",
-                                  "objective": objective, "source": {"kind": "goal"}},
-                                 "frozen-objective.json")
+        self.drive_compiled.emit({"schema": "isar.campaign-program/1",
+                                  "source": {"kind": "goal"},
+                                  "steps": [{"id": "targeted-1", "kind": "targeted",
+                                             "payload": objective}]},
+                                 "frozen-program.json")
         return True
 
     def request_drive(self, opts, *, env=None):
@@ -97,7 +99,7 @@ def dock_env(qtbot, make_ws):
     vm = CampaignViewModel(ws)
     ops = _Ops()
     dock = CampaignDock(vm, ops, store=None, llm_env=lambda: {"ISAR_LLM": "x"})
-    dock._confirm_objective = lambda _envelope: True
+    dock._confirm_objective = lambda _program: True
     qtbot.addWidget(dock)
     dock.show()          # isVisible() on children is meaningless under an unshown parent
     return dock, vm, ops, ws, root
@@ -131,10 +133,10 @@ def test_start_maps_form_to_drive_options_with_llm_env(dock_env):
     assert len(ops.drive_requests) == 1
     opts, env = ops.drive_requests[0]
     compile_opts, compile_env = ops.compile_requests[0]
-    assert (compile_opts.goal == "map the branch" and compile_opts.spec_path is None
+    assert (compile_opts.goal == "map the branch" and compile_opts.program_path is None
             and compile_opts.budget == "1e9n" and compile_opts.analysis_limit == "10m")
     assert compile_env == {"ISAR_LLM": "x"}
-    assert opts.envelope_path == "frozen-objective.json" and not opts.resume_latest
+    assert opts.compiled_program_path == "frozen-program.json" and not opts.resume_latest
     assert opts.budget is None and opts.seed == 7
     assert not hasattr(opts, "max_iters")            # budgets are the only stop conditions now
     assert env == {"ISAR_LLM": "x"}
@@ -173,7 +175,7 @@ def test_resume_launches_resume_latest_without_goal(dock_env):
     dock._start_btn.click()
     opts, _env = ops.drive_requests[0]
     assert opts.resume_latest is True
-    assert opts.goal is None and opts.spec_path is None   # the frozen objective, no LLM re-compile
+    assert opts.goal is None and opts.program_path is None  # frozen objective, no LLM re-compile
 
 
 def test_resume_button_works_without_any_recomputable_fingerprint(dock_env):
@@ -190,21 +192,21 @@ def test_resume_button_works_without_any_recomputable_fingerprint(dock_env):
     assert dock._resume_btn.isVisible() and dock._resume_btn.isEnabled()
     dock._resume_btn.click()
     opts, _env = ops.drive_requests[0]
-    assert opts.resume_latest is True and opts.goal is None and opts.spec_path is None
+    assert opts.resume_latest is True and opts.goal is None and opts.program_path is None
 
 
-def test_resume_button_covers_a_moved_spec_file(dock_env, tmp_path):
-    # The original spec was moved/deleted: the form fingerprint is unreadable, so the primary
+def test_resume_button_covers_a_moved_program_file(dock_env, tmp_path):
+    # The original program was moved/deleted: the form fingerprint is unreadable, so the primary
     # button is disabled — but --resume-latest needs no source file at all.
     dock, vm, ops, ws, root = dock_env
     log_event(root / "report" / "session_log.jsonl", "decide", {
         "event": "campaign_start", "action": "campaign_start", "objective": {},
-        "source": {"kind": "spec", "sha256": "f" * 64}})
+        "source": {"kind": "program", "sha256": "f" * 64}})
     ws.refresh()
     vm.on_workspace_changed({"events"})
     dock.set_backend_status("tavi", "ok", "up")
-    dock._src_spec.setChecked(True)
-    dock._spec_path.setText(str(tmp_path / "moved-away.json"))   # does not exist
+    dock._src_program.setChecked(True)
+    dock._program_path.setText(str(tmp_path / "moved-away.json"))   # does not exist
     assert not dock._start_btn.isEnabled()
     assert dock._resume_btn.isVisible() and dock._resume_btn.isEnabled()
     dock._resume_btn.click()
@@ -289,7 +291,7 @@ def test_none_state_start_hands_off_instead_of_requesting(qtbot, dock_env, make_
     ops = _Ops()
     dock = CampaignDock(vm, ops, store=None, llm_env=lambda: {"ISAR_LLM": "x"},
                         workspace_state=lambda: "none")
-    dock._confirm_objective = lambda _envelope: True
+    dock._confirm_objective = lambda _program: True
     qtbot.addWidget(dock)
     dock.show()
     handed = []
@@ -300,7 +302,7 @@ def test_none_state_start_hands_off_instead_of_requesting(qtbot, dock_env, make_
     assert ops.drive_requests == []
     assert len(handed) == 1
     opts, env = handed[0]
-    assert opts.envelope_path == "frozen-objective.json" and env == {"ISAR_LLM": "x"}
+    assert opts.compiled_program_path == "frozen-program.json" and env == {"ISAR_LLM": "x"}
 
 
 def test_pending_running_status_names_the_coming_workspace(dock_env):
@@ -355,7 +357,7 @@ def test_selected_master_shows_revision_consistent_reasoning(dock_env):
     dock, vm, _ops, ws, root = dock_env
     path = root / "report" / "session_log.jsonl"
     log_event(path, "decide", {"event": "campaign_start", "action": "campaign_start",
-                               "objective": {}, "source": {"kind": "spec", "sha256": "x"}})
+                               "objective": {}, "source": {"kind": "program", "sha256": "x"}})
     log_event(path, "decide", {"event": "model_update", "action": "model_update", "per_q": [{
         "hkl": [2.5, 0, 0], "assessment_state": "uncertified", "omega0": 6.25,
         "calibrated_halfwidth": 0.12, "tolerance": 0.05, "master_revision": "rev-7",

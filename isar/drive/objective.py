@@ -17,6 +17,11 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from isar.schema.campaign_program import (
+    RETIRED_SCHEMAS,
+    TARGETED_STEP_SCHEMA,
+    retired_schema_error,
+)
 from isar.schema.eig_policy import ScanWindowEIGConfig
 from isar.schema.hypotheses import (
     SteeringPolicy,
@@ -30,7 +35,11 @@ from isar.schema.hypotheses import (
 TIERS = ("deterministic", "mcstas")
 TARGET_BRANCHES = ("acoustic", "optic")
 TARGET_SELECTORS = ("lowest_energy", "highest_energy", "nearest_energy", "tracked_branch")
-OBJECTIVE_SCHEMA = "isar.objective/2"
+# The objective *content* below is unchanged science; only its contract identity moved. It is now
+# the payload of a ``targeted`` step inside an ``isar.campaign-program/1`` (DECISIONS H1), so it
+# carries that step's schema string. ``isar.objective/2`` and its ``isar.objective-envelope/2``
+# wrapper are retired and unreadable by design — see :mod:`isar.schema.campaign_program`.
+OBJECTIVE_SCHEMA = TARGETED_STEP_SCHEMA
 CURRENT_OBJECTIVE_SCOPE_REVISION = "isar.current_objective_comparison_scope/1"
 _DEFAULT_ANALYSIS_LIMIT = object()
 
@@ -399,8 +408,11 @@ class ObjectiveSpec:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ObjectiveSpec":
-        if d.get("schema") != OBJECTIVE_SCHEMA:
-            raise ValueError(f"objective schema must be {OBJECTIVE_SCHEMA!r}")
+        schema = d.get("schema")
+        if schema in RETIRED_SCHEMAS:
+            raise retired_schema_error(str(schema), "objective")
+        if schema != OBJECTIVE_SCHEMA:
+            raise ValueError(f"objective schema must be {OBJECTIVE_SCHEMA!r}, got {schema!r}")
         unknown = set(d) - ({"schema"} | set(cls.__dataclass_fields__))
         if unknown:
             raise ValueError(f"full frozen objective fields are invalid: {sorted(unknown)}")

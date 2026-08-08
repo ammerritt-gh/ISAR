@@ -307,11 +307,15 @@ def test_live_campaign_sample_background(tmp_path):
 
 @pytest.mark.skipif(not os.environ.get("ISAR_LIVE_LLMM"),
                     reason="set ISAR_LIVE_LLMM (and run LLMM at 127.0.0.1:8766) to enable")
-def test_live_goal_to_spec():
-    """goal→ObjectiveSpec against a live LLMM (skipped unless ISAR_LIVE_LLMM is set)."""
-    from isar.drive.supervisor.goal_to_spec import goal_to_spec
-    spec = goal_to_spec("map the acoustic phonon dispersion from H=2.1 to H=2.4 at K=0 L=0, "
-                        "resolve the energy to +/- 0.5 meV, overnight")
-    assert spec.tolerance_meV == pytest.approx(0.5, abs=0.2)
-    assert spec.path[0][0] == pytest.approx(2.1, abs=0.05)
-    print(f"[live] goal->spec: {spec.to_dict()}")
+def test_live_goal_to_program():
+    """goal→CampaignProgram against a live LLMM (skipped unless ISAR_LIVE_LLMM is set)."""
+    from isar.drive.supervisor.goal_to_spec import goal_to_program
+    program = goal_to_program("map the acoustic phonon dispersion from H=2.1 to H=2.4 at K=0 L=0, "
+                              "resolve the energy to +/- 0.5 meV, overnight")
+    assert len(program.steps) == 1
+    step = program.steps[0]
+    assert step.kind == "targeted"
+    payload = step.payload
+    assert payload["tolerance_meV"] == pytest.approx(0.5, abs=0.2)
+    assert payload["path"][0][0] == pytest.approx(2.1, abs=0.05)
+    print(f"[live] goal->program: {program.to_dict()}")

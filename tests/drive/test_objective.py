@@ -47,10 +47,19 @@ def test_round_trip_dict():
     assert back.meta == spec.meta
 
 
-def test_persisted_objective_requires_prerelease_v2_schema():
+def test_persisted_objective_requires_the_targeted_step_schema():
     old = _spec().to_dict()
     old.pop("schema")
-    with pytest.raises(ValueError, match="isar.objective/2"):
+    with pytest.raises(ValueError, match="isar.campaign-step.targeted/1"):
+        ObjectiveSpec.from_dict(old)
+
+
+def test_a_retired_objective_schema_is_refused_by_name_not_adapted():
+    # H1: isar.objective/2 is unreadable by design. The refusal has to say which contract replaced
+    # it, or the only signal an operator gets is "schema mismatch" on a file that used to work.
+    old = _spec().to_dict()
+    old["schema"] = "isar.objective/2"
+    with pytest.raises(ValueError, match="was retired by 'isar.campaign-program/1'"):
         ObjectiveSpec.from_dict(old)
 
 

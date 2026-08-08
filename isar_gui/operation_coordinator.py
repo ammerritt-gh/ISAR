@@ -61,7 +61,7 @@ class WorkspaceOperationCoordinator(QObject):
     run_finished = Signal(int, bool)  # exit code, callback is still for the live workspace
     drive_started = Signal()
     drive_finished = Signal(int, bool)  # exit code (4 = stopped by operator), live workspace
-    drive_compiled = Signal(object, str)  # envelope dict, envelope path
+    drive_compiled = Signal(object, str)  # campaign program dict, program path
     drive_compile_failed = Signal(str)
 
     def __init__(self, python_exe: str, workspace_manager, log_sink, parent=None):
@@ -160,7 +160,7 @@ class WorkspaceOperationCoordinator(QObject):
 
     def request_drive_compile(self, opts: DriveOptions, *, env: dict | None = None) -> bool:
         """Queue the non-measuring compile step used by the campaign confirmation flow."""
-        if (opts.goal is None) == (opts.spec_path is None):
+        if (opts.goal is None) == (opts.program_path is None):
             return False
         root = self._wsm.root()
         if root is not None:
@@ -481,8 +481,8 @@ class WorkspaceOperationCoordinator(QObject):
         if active is not None and active.kind == "compile" and int(code) == 0:
             output = active.payload[2]
             try:
-                envelope = json.loads(Path(output).read_text(encoding="utf-8"))
-                self.drive_compiled.emit(envelope, output)
+                program = json.loads(Path(output).read_text(encoding="utf-8"))
+                self.drive_compiled.emit(program, output)
             except (OSError, ValueError) as exc:
                 self.drive_compile_failed.emit(f"compiled objective could not be read: {exc}")
         else:

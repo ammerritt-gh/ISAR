@@ -146,15 +146,16 @@ def build_parser() -> argparse.ArgumentParser:
     pd = sub.add_parser("drive", help="run the measurement driver campaign (LLM_HARNESS_DESIGN §8)")
     src = pd.add_mutually_exclusive_group(required=True)
     src.add_argument("--goal", help="natural-language measurement goal (LLM supervisor; needs LLMM)")
-    src.add_argument("--spec", help="objective spec JSON file (LLM-free path)")
-    src.add_argument("--envelope", help="frozen objective envelope JSON (LLM-free confirmed start)")
+    src.add_argument("--program", help="isar.campaign-program/1 JSON file (LLM-free path; also "
+                                       "what --compile-only writes for a confirmed start)")
     src.add_argument("--resume-latest", dest="resume_latest", action="store_true",
                      help="resume the last campaign in --workspace using its frozen objective from the "
                           "session log (LLM-free — never re-compiles a goal); --budget may still override")
     pd.add_argument("--workspace", required=False,
                     help="ISAR workspace the driver drives (auto-init'd after the first scan)")
     pd.add_argument("--compile-only", dest="compile_only", metavar="OUTPUT",
-                    help="compile --goal/--spec to a frozen envelope and exit without contacting TAVI")
+                    help="compile --goal/--program to a frozen campaign program and exit without "
+                         "contacting TAVI")
     pd.add_argument("--control-token", dest="control_token", default=None, type=_control_token,
                     help="opaque token ([A-Za-z0-9_-], max 64) enabling a cooperative operator stop: "
                          "writing <workspace>/report/control/stop-<token>.json makes the loop finish "
@@ -178,6 +179,32 @@ def build_parser() -> argparse.ArgumentParser:
                     help="disable the persistent analysis worker; run a fresh `isar run` subprocess "
                          "per iteration (the pre-worker cold-start path)")
     return p
+
+
+class _StepNotExecutable(Exception):
+    """A campaign program parsed, validated and froze, but this build cannot execute it.
+
+    Deliberately not a ``ValueError``: a refusal to run a well-formed program is a different
+    outcome from a malformed one, and ``isar drive`` gives it its own exit code (7) so an operator
+    script can tell "I asked for something that is not built yet" from "I wrote it wrong" (2) and
+    from a crash.
+    """
+
+
+def _single_executable_step(program, *, where: str):
+    """The one targeted step this build runs, or a refusal naming the slice that adds the rest."""
+    if len(program.steps) > 1:
+        raise _StepNotExecutable(
+            f"{where}: this campaign program declares {len(program.steps)} steps and froze "
+            "cleanly, but sequencing more than one step lands in SCENE-4. Run one step per "
+            "program for now.")
+    step = program.steps[0]
+    if step.kind != "targeted":
+        raise _StepNotExecutable(
+            f"{where}: step {step.id!r} is a {step.kind!r} step. It parsed, validated and froze "
+            "cleanly; executing discovery steps lands in SCENE-4. Declare a targeted step to "
+            "measure now.")
+    return step
 
 
 _SPEC_SUFFIXES = {".json", ".toml", ".yaml", ".yml"}
@@ -297,13 +324,15 @@ def main(argv=None) -> int:
         from isar.drive.loop import run_campaign
         from isar.drive.session_log import read_log
         from isar.drive.supervisor.goal_to_spec import (
-            ENVELOPE_SCHEMA, GoalParseError, envelope_from_json, goal_to_spec, make_envelope,
+            GoalParseError, goal_to_program, make_program, program_from_json,
             rebind_scan_window_eig_policy, spec_from_dict,
         )
+        from isar.drive.objective import OBJECTIVE_SCHEMA
+        from isar.schema.campaign_program import PROGRAM_SCHEMA
         from isar.schema.hypotheses import content_fingerprint
         try:
-            if args.compile_only and (args.resume_latest or args.envelope):
-                raise GoalParseError("--compile-only accepts --goal or --spec, not resume/envelope")
+            if args.compile_only and args.resume_latest:
+                raise GoalParseError("--compile-only accepts --goal or --program, not resume")
             if not args.compile_only and not args.workspace:
                 raise GoalParseError("--workspace is required unless --compile-only is used")
 
@@ -376,39 +405,54 @@ def main(argv=None) -> int:
                 for field in ("campaign_authoring_fingerprint", "objective_fingerprint"):
                     if prev_source.get(field) is not None:
                         source[field] = prev_source[field]
-            elif args.envelope:
-                objective, source, original_goal = envelope_from_json(args.envelope)
-                objective = apply_mode_override(objective, frozen=True)
-                source = dict(source)
-                source["envelope_schema"] = ENVELOPE_SCHEMA
-                if original_goal is not None:
-                    source["original_goal"] = original_goal
-            elif args.spec:
-                spec_data = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+            elif args.program:
+                program = program_from_json(args.program)
+                # Deep-validate EVERY step's payload before any refusal. A refusal says the program
+                # "parsed, validated and froze cleanly" and exits 7 (valid but unsupported); running
+                # it before the targeted payloads are compiled made a two-step program with a
+                # malformed payload report 7 instead of 2 (written wrong). Discovery payloads are
+                # already deep-validated by ``program_from_json`` via ``DiscoverAndMapSpec``.
+                targeted_steps = [s for s in program.steps if s.kind == "targeted"]
+                # A payload carrying the frozen targeted schema is already compiled and must never
+                # reread card policy; compact authoring input may inherit the human-owned card.
+                frozen_payloads = {s.id: s.payload.get("schema") == OBJECTIVE_SCHEMA
+                                   for s in targeted_steps}
                 card_hypotheses = None
                 card_eig_policy_set = None
-                # Compact goal-schema specs are authoring input and may inherit the human-owned
-                # card.  A full ObjectiveSpec is already frozen and must never reread card policy.
-                if not isinstance(spec_data, dict) or not isinstance(spec_data.get("path"), list):
+                if not all(frozen_payloads.values()):
                     card_hypotheses, card_eig_policy_set = card_objective_authoring()
-                objective = spec_from_dict(
-                    spec_data,
-                    defaults={"tier": args.tier or "deterministic"},
-                    where=str(args.spec),
-                    card_hypotheses=card_hypotheses,
-                    card_eig_policy_set=card_eig_policy_set,
-                )
+                compiled_objectives = {
+                    s.id: spec_from_dict(
+                        s.payload,
+                        defaults={"tier": args.tier or "deterministic"},
+                        where=f"{args.program}:{s.id}",
+                        card_hypotheses=None if frozen_payloads[s.id] else card_hypotheses,
+                        card_eig_policy_set=(None if frozen_payloads[s.id]
+                                             else card_eig_policy_set),
+                    )
+                    for s in targeted_steps
+                }
+                step = _single_executable_step(program, where=str(args.program))
+                payload = step.payload
+                frozen_payload = frozen_payloads[step.id]
+                objective = compiled_objectives[step.id]
                 declared_mode = None
-                if isinstance(spec_data, dict) and isinstance(spec_data.get("steering"), dict):
-                    declared_mode = spec_data["steering"].get("scan_window_eig_mode")
+                if isinstance(payload.get("steering"), dict):
+                    declared_mode = payload["steering"].get("scan_window_eig_mode")
                 objective = apply_mode_override(
-                    objective, frozen=isinstance(spec_data.get("path"), list),
-                    declared_mode=declared_mode,
+                    objective, frozen=frozen_payload, declared_mode=declared_mode,
                     card_eig_policy_set=card_eig_policy_set)
-                source = {"kind": "spec",
-                          "sha256": hashlib.sha256(Path(args.spec).read_bytes()).hexdigest()}
+                # A program written by --compile-only carries the fingerprint of the authoring
+                # input it was compiled from; a hand-written one is identified by its own bytes.
+                source = dict(program.source) or {
+                    "kind": "program",
+                    "sha256": hashlib.sha256(Path(args.program).read_bytes()).hexdigest()}
+                source["program_schema"] = PROGRAM_SCHEMA
+                source["program_step_id"] = step.id
+                if program.source_text is not None:
+                    source["source_text"] = program.source_text
             else:
-                # ``--goal`` is natural language for the LLM supervisor; ``--spec`` reads a file.
+                # ``--goal`` is natural language for the LLM supervisor; ``--program`` reads a file.
                 # Handing a path to the supervisor does not fail — it compiles *something*, and the
                 # campaign then runs a different objective than the file describes, silently. That
                 # cost a real run: a spec for the acoustic branch along h 2.0→3.0 compiled instead
@@ -417,14 +461,16 @@ def main(argv=None) -> int:
                 if _looks_like_a_path(args.goal):
                     print(f"error: --goal takes a natural-language measurement goal, not a file "
                           f"path ({args.goal!r}).\n"
-                          f"       Use --spec {args.goal} to read an objective spec from a file.",
-                          file=sys.stderr)
+                          f"       Use --program {args.goal} to read a campaign program from a "
+                          "file.", file=sys.stderr)
                     return 2
                 card_hypotheses, card_eig_policy_set = card_objective_authoring()
-                objective = goal_to_spec(
+                program = goal_to_program(
                     args.goal, defaults={"tier": args.tier or "deterministic"},
                     card_hypotheses=card_hypotheses,
                     card_eig_policy_set=card_eig_policy_set)
+                step = _single_executable_step(program, where="--goal")
+                objective = spec_from_dict(step.payload, where=f"--goal:{step.id}")
                 raw = objective.meta.get("raw") if isinstance(objective.meta, dict) else None
                 declared_mode = ((raw.get("steering") or {}).get("scan_window_eig_mode")
                                  if isinstance(raw, dict) else None)
@@ -432,7 +478,9 @@ def main(argv=None) -> int:
                     objective, frozen=False, declared_mode=declared_mode,
                     card_eig_policy_set=card_eig_policy_set)
                 source = {"kind": "goal",
-                          "sha256": hashlib.sha256(args.goal.encode("utf-8")).hexdigest()}
+                          "sha256": hashlib.sha256(args.goal.encode("utf-8")).hexdigest(),
+                          "program_schema": PROGRAM_SCHEMA, "program_step_id": step.id,
+                          "source_text": args.goal}
             if args.budget:
                 objective.budget = _parse_budget(args.budget)
                 objective.__post_init__()
@@ -460,13 +508,16 @@ def main(argv=None) -> int:
                     authoring_payload, sort_keys=True, separators=(",", ":"),
                     ensure_ascii=True).encode("utf-8")).hexdigest()
             if args.compile_only:
-                original_goal = args.goal if args.goal is not None else None
-                envelope = make_envelope(objective, source=source, original_goal=original_goal)
+                compiled = make_program(objective, source=source,
+                                        source_text=source.get("source_text")).to_dict()
                 out = Path(args.compile_only)
                 out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_text(json.dumps(envelope, indent=2) + "\n", encoding="utf-8")
-                print(json.dumps(envelope))
+                out.write_text(json.dumps(compiled, indent=2) + "\n", encoding="utf-8")
+                print(json.dumps(compiled))
                 return 0
+        except _StepNotExecutable as exc:
+            print(f"isar drive: {exc}", file=sys.stderr)
+            return 7
         except (GoalParseError, ValueError, OSError, KeyError) as exc:
             print(f"isar drive: {exc}", file=sys.stderr)
             return 2

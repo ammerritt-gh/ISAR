@@ -1,0 +1,275 @@
+{
+  "schema": "isar.campaign-program/1",
+  "source_text": "Map the acoustic phonon from (2,0,0) to (3,0,0) to +-0.5 meV, overnight.",
+  "steps": [
+    {
+      "id": "targeted-1",
+      "kind": "targeted",
+      "payload": {
+        "schema": "isar.campaign-step.targeted/1",
+        "path": [
+          [
+            2.0,
+            0.0,
+            0.0
+          ],
+          [
+            2.05,
+            0.0,
+            0.0
+          ],
+          [
+            2.1,
+            0.0,
+            0.0
+          ],
+          [
+            2.15,
+            0.0,
+            0.0
+          ],
+          [
+            2.2,
+            0.0,
+            0.0
+          ],
+          [
+            2.25,
+            0.0,
+            0.0
+          ],
+          [
+            2.3,
+            0.0,
+            0.0
+          ],
+          [
+            2.35,
+            0.0,
+            0.0
+          ],
+          [
+            2.4,
+            0.0,
+            0.0
+          ],
+          [
+            2.45,
+            0.0,
+            0.0
+          ],
+          [
+            2.5,
+            0.0,
+            0.0
+          ],
+          [
+            2.55,
+            0.0,
+            0.0
+          ],
+          [
+            2.6,
+            0.0,
+            0.0
+          ],
+          [
+            2.65,
+            0.0,
+            0.0
+          ],
+          [
+            2.7,
+            0.0,
+            0.0
+          ],
+          [
+            2.75,
+            0.0,
+            0.0
+          ],
+          [
+            2.8,
+            0.0,
+            0.0
+          ],
+          [
+            2.85,
+            0.0,
+            0.0
+          ],
+          [
+            2.9,
+            0.0,
+            0.0
+          ],
+          [
+            2.95,
+            0.0,
+            0.0
+          ],
+          [
+            3.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "tolerance_meV": 0.5,
+        "budget": {
+          "kind": "counting_seconds",
+          "amount": 28800.0
+        },
+        "analysis_limit_seconds": 3600.0,
+        "tier": "deterministic",
+        "name": "acoustic branch (2,0,0)->(3,0,0)",
+        "meta": {
+          "source": "goal_to_spec",
+          "raw": {
+            "path": {
+              "h_start": 2.0,
+              "h_end": 3.0,
+              "k": 0.0,
+              "l": 0.0
+            },
+            "step_h": 0.05,
+            "tolerance_meV": 0.5,
+            "budget_hours": 8,
+            "target_branch": "acoustic",
+            "notes": "acoustic branch (2,0,0)->(3,0,0)"
+          }
+        },
+        "target_branch": "acoustic",
+        "target_label": "acoustic",
+        "target_selector": "tracked_branch",
+        "target_energy_meV": null,
+        "energy_search_meV": [
+          -9.0,
+          9.0
+        ],
+        "identity_search_meV": null,
+        "target_search_source": "compiler",
+        "identity_search_source": null,
+        "target_temperature_K": null,
+        "hypotheses": [
+          {
+            "schema": "isar.excitation-hypothesis/1",
+            "name": "acoustic",
+            "dispersion_type": "branch",
+            "zc_energy": {
+              "mean": 0.0,
+              "sigma": 0.2
+            },
+            "slope_zc": {
+              "mean": 12.0,
+              "sigma": 12.0
+            },
+            "confidence": 0.8,
+            "preset": "acoustic",
+            "preset_version": "isar.hypothesis-presets/1"
+          },
+          {
+            "schema": "isar.excitation-hypothesis/1",
+            "name": "optic",
+            "dispersion_type": "branch",
+            "zc_energy": {
+              "mean": 4.5,
+              "sigma": 2.25
+            },
+            "slope_zc": {
+              "mean": 0.0,
+              "sigma": 8.0
+            },
+            "confidence": 0.6,
+            "preset": "optic",
+            "preset_version": "isar.hypothesis-presets/1"
+          }
+        ],
+        "target_hypothesis": "acoustic",
+        "hypothesis_source": "shipped_preset",
+        "hypothesis_fingerprint": "94b3813dd2fc6d50085815196c2804d317c9fa1ffd73bb6970edad37dddc18c4",
+        "steering": {
+          "classification_weight": 1.0,
+          "differentiation_tolerance_meV": null,
+          "assignment_entropy_stop_nats": 0.2,
+          "minimum_information_per_cost": 0.0,
+          "minimum_target_support_points": 6,
+          "max_scan_points": 220,
+          "absent_signal_widen_step": 0.5,
+          "absent_signal_widen_steps": 3,
+          "quadrature_order": 32,
+          "acquisition_estimator_version": "isar.branch-mi/gh32-component-v1",
+          "mismatch_z_threshold": 3.0,
+          "quicklook_ncount": 10000000,
+          "production_batch_ncount": 25000000,
+          "maximum_production_batches_per_q": 12,
+          "maximum_bridge_steps": 1,
+          "dynamic_ncount": true,
+          "max_ncount_per_scan": 10000000000,
+          "ncount_growth_cap": 4.0,
+          "tolerance_margin": 0.8,
+          "interval_floor_window": 3,
+          "interval_floor_min_improvement": 0.05,
+          "interval_floor_min_exposure_ratio": 2.0,
+          "scan_window_eig_mode": "off"
+        },
+        "scan_window_eig": {
+          "contract": "isar.scan_window_eig_objective_config/o36.6",
+          "policy_set": {
+            "contract": "isar.qoi_distinction_policy_set/o36.5",
+            "policies": [
+              {
+                "contract": "isar.qoi_distinction_policy/o36.5",
+                "policy_id": "eig4_slice8_excitation_energy",
+                "policy_kind": "isar.scalar_absolute_partitions/o36.5",
+                "source_qoi": {
+                  "id": "excitation.energy",
+                  "unit": "meV"
+                },
+                "scope": {
+                  "kind": "campaign_configuration",
+                  "fingerprint": "9602c70be32e0ff12bf3d19b87be888fbac03104338e5acb808f1b1aae8d98d1",
+                  "annotation": {
+                    "campaign_name": "default scan-window EIG policy",
+                    "date": "2026-08-05",
+                    "experiment_description": "excitation energy at the restricted 0.5 meV absolute partition"
+                  }
+                },
+                "provenance": {
+                  "kind": "explicit_user_analysis/1",
+                  "rationale": "Reviewed Slice 8 V3 positive authority envelope",
+                  "source_id": "O41"
+                },
+                "variants": [
+                  {
+                    "variant_id": "primary_0p5_mev",
+                    "parameters": {
+                      "origin": 0.0,
+                      "bin_width": 0.5,
+                      "offsets": [
+                        0.0,
+                        0.25
+                      ]
+                    },
+                    "variant_fingerprint": "c2f991a69f30ebed05d953c67fbdbca8b9c59bf7eb20796d4aee56eba5eefd9f"
+                  }
+                ],
+                "policy_fingerprint": "69d3778ff894be40746b51c5e95d9d0903c3e50581fe8fa538722a4e8d727631"
+              }
+            ],
+            "policy_set_fingerprint": "46b178bc37f6e9c7ca466cdbc30eb7a07b83358bc64ad0c0d10dba3eff4eb258"
+          },
+          "scoring_config": {
+            "contract": "isar.scan_window_shadow_scoring_config/o36.6",
+            "revision": "isar.scan_window_shadow_scoring/o36.6",
+            "simulation_count": 128,
+            "block_count": 8,
+            "max_runtime_variants": 8,
+            "seed_derivation_revision": "isar.scan_window_shadow_seed/o36.6",
+            "scoring_config_fingerprint": "c13778320ef113625e8a7784733d414d334d64908446db1334ef4a8f98ecc790"
+          },
+          "scan_window_eig_fingerprint": "dbfe1088b626b19a479d7fb20dbba68185713c3f345ea5ee9335b88999dc9294"
+        }
+      }
+    }
+  ]
+}

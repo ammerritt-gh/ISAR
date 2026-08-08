@@ -301,8 +301,9 @@ one of these, that is a design smell alarm: stop and re-derive.
 
 ### 4.2 Natural language is an input device, not a type (item 5)
 
-`goal_to_spec` already parses a natural-language goal into a formal objective spec at campaign
-start. Extend it (as `directive_from_text` or similar) to parse *incremental* directives into
+`goal_to_program` already compiles a natural-language goal into a frozen `isar.campaign-program/1` at
+campaign start (the GUI's campaign source key is `program_path`). Extend it (as
+`directive_from_text` or similar) to parse *incremental* directives into
 the same four schemas. LLM proposes structured output, schema validates, artifact freezes,
 driver disposes — P1 intact. The GUI shows the compiled directive for confirmation **before**
 writing it to the inbox (the user approves the artifact, not the sentence). Routing through

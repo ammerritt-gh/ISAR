@@ -1364,6 +1364,24 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   readers are defects under this ruling, not prudence. S8 (production model selection remains AIC)
   is not amended here; its supersession is a SCENE-1 ruling, recorded when the evidence-based
   selector lands.
+- **H2.** (2026-08-08, In force; SCENE-2 — the campaign contract) **`isar.campaign-program/1`
+  replaces `isar.objective-envelope/2` outright, exercising the H1 ruling.** A campaign program is
+  an ordered list of steps, each carrying its own schema — `isar.campaign-step.targeted/1` for the
+  per-point-tolerance objective that was the envelope's payload, and
+  `isar.campaign-step.discover_and_map/1` for target-free discovery. `isar.objective/1`,
+  `isar.objective/2`, `isar.objective-envelope/1`, and `isar.objective-envelope/2` are refused on
+  read with an error naming the replacement; they are unreadable by design and no compatibility
+  reader will be written, because under H1 a shim for a retired pre-release contract is a defect.
+  The CLI source flag is `isar drive --program <file.json>`, mutually exclusive with `--goal` and
+  `--resume-latest`; `--compile-only <OUTPUT>` writes the frozen program and exits 0. A well-formed
+  program this build cannot execute — a discovery step, or more than one step, both of which land
+  in SCENE-4 — exits **7**, deliberately distinct from the malformed-input exit 2 so an operator
+  script can tell "not built yet" from "written wrong". `--compile-only` on a discovery program
+  therefore exits 7 rather than freezing it; that refusal is accepted for now and lifts with
+  SCENE-4. The campaign fingerprint's comparison scope changes with the contract — start records
+  name `program_schema` and `program_step_id` where they named an envelope — and that change is
+  intended, judged against the SCENE world suite rather than against comparability with pre-SCENE
+  campaigns.
 
 ## Session status update
 
