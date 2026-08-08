@@ -276,8 +276,12 @@ def test_select_end_to_end_real_spectrum_folds():
     lo, med, hi = sel.pooled.interval
     assert lo <= 5.0 <= hi
     scores = {s.label: s for s in sel.scores}
-    assert all(s.evidence_method in ("laplace", "laplace_map", "dynesty", "invalid")
+    assert all(s.evidence_method in ("laplace", "laplace_map", "dynesty", "dominated",
+                                     "invalid")
                for s in sel.scores)
+    # the decisive scan's railed null is pruned by its evidence ceiling, not sampled
+    assert scores["elastic+bg"].evidence_method == "dominated"
+    assert scores["elastic+bg"].posterior_probability == 0.0
     assert scores["elastic+stokes+bg"].posterior_probability > 0.5
     win = {r.label: r for r in results}["elastic+stokes+bg"]
     assert win.across_model["scan"]["modality"] == "fold"

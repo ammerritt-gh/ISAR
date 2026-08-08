@@ -255,12 +255,13 @@ def _stamp(results, scores, pooled, fallback=None) -> None:
 
 
 def _candidate_evidence(results, hyps, ctx):
-    """One :class:`~isar.analyze.evidence.EvidenceSet` for the converged candidates, arena
-    pinned to this context. A converged label with no hypothesis is a wiring error and raises
-    loudly — silent partial evidence would quietly bias every posterior it entered."""
+    """One :class:`~isar.analyze.evidence.EvidenceSet` for the converged candidates (via
+    :func:`~isar.analyze.evidence.candidate_set_evidence`, which owns the escalation and
+    dominance-pruning policy). A converged label with no hypothesis is a wiring error and
+    raises loudly — silent partial evidence would quietly bias every posterior it entered."""
     from isar.analyze import catalogue, evidence, loop
 
-    es = evidence.EvidenceSet(arena_fingerprint=loop.data_likelihood_fingerprint(ctx))
+    triples = []
     for r in results:
         hyp = hyps.get(r.label)
         if hyp is None:
@@ -270,8 +271,8 @@ def _candidate_evidence(results, hyps, ctx):
         bundle = catalogue.resolve_priors(
             prob.composite, ctx, prob.bounds,
             exclude=[prob.free_names[i] for i in prob.fixed_pos])
-        es.add(evidence.structure_evidence(hyp, ctx, r, bundle))
-    return es
+        triples.append((hyp, r, bundle))
+    return evidence.candidate_set_evidence(triples, ctx)
 
 
 def select_models(results, hyps=None, ctx=None, *, evidence=None,

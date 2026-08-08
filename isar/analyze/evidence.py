@@ -46,6 +46,11 @@ from isar.analyze import loop
 # percent in log-density.
 CURVATURE_RATIO = 5.0
 EVIDENCE_REVISION = "isar.laplace_evidence/1"
+# Dominance pruning (owner ruling 2026-08-08): a deferred escalation whose evidence CEILING
+# (lnZ ≤ −cost/2) sits this many nats below the trusted leader is recorded "dominated" instead
+# of sampled. Reaching the 0.01 survivor floor needs the ceiling within ~ln(N/0.01) ≈ 7 nats
+# of the leader; 100 leaves ~93 nats of slack for optimizer slop before pruning could matter.
+PRUNE_MARGIN = 100.0
 
 _LN_2PI = math.log(2.0 * math.pi)
 log = logging.getLogger(__name__)
@@ -128,13 +133,21 @@ def _is_pd(sigma: np.ndarray) -> bool:
 def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit",
                        seed: int = 12345, n_live: int = 400,
                        max_iter: int | None = 50_000,
-                       sample: str = "rwalk", dlogz: float = 0.5) -> EvidenceRecord:
+                       sample: str = "rwalk", dlogz: float = 0.5,
+                       escalation: str = "run") -> EvidenceRecord:
     """Evidence for one fitted candidate through the validity ladder.
 
     ``bundle`` must be the :class:`~isar.analyze.catalogue.PriorBundle` resolved for exactly
     this candidate's free parameters — a name mismatch is a construction error, not a fit
     property, and raises. ``max_iter`` budgets the dynesty escalation (rung 3); a budget or
-    sampler failure yields ``log_evidence=NaN`` with the reason recorded, never an exception."""
+    sampler failure yields ``log_evidence=NaN`` with the reason recorded, never an exception.
+
+    ``escalation="defer"`` stops at the Gaussian rungs: a candidate that would escalate
+    returns a ``"deferred_escalation"`` marker carrying its rigorous evidence ceiling
+    (``log_evidence_upper_bound`` = −cost/2, from Z = ∫L·p ≤ L(θ̂) for a proper prior)
+    instead of paying for dynesty — :func:`candidate_set_evidence` uses this to prune
+    candidates whose ceiling cannot reach the survivor floor (dominance pruning, owner
+    ruling 2026-08-08)."""
     arena = loop.data_likelihood_fingerprint(ctx)
     names = list(fit_result.params)
     free_names = [p.name for p in bundle.params]
@@ -172,11 +185,17 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     else:
         validity["sigma_pd"] = False
 
-    if pinned or not validity["sigma_pd"]:
-        validity["escalation"] = "laplace_invalid"
+    def _escalate(reason: str) -> EvidenceRecord:
+        validity["escalation"] = reason
+        if escalation == "defer":
+            validity["log_evidence_upper_bound"] = -0.5 * float(fit_result.cost)
+            return _record(float("nan"), None, "deferred_escalation")
         return _dynesty_evidence(hyp, ctx, fit_result, bundle, _record, validity,
                                  seed=seed, n_live=n_live, max_iter=max_iter,
                                  sample=sample, dlogz=dlogz)
+
+    if pinned or not validity["sigma_pd"]:
+        return _escalate("laplace_invalid")
 
     # --- Rung 1: Laplace at θ̂ ----------------------------------------------------------------
     # Transport priors are already in the fit objective (θ̂ is their MAP, HESSE their posterior
@@ -191,10 +210,7 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
             return _record(laplace_ln_z(fit_result.cost, ln_prior, sigma_free), None, "laplace")
         except np.linalg.LinAlgError as exc:
             log.warning("laplace evidence failed for %s: %s", fit_result.label, exc)
-            validity["escalation"] = "laplace_invalid"
-            return _dynesty_evidence(hyp, ctx, fit_result, bundle, _record, validity,
-                                     seed=seed, n_live=n_live, max_iter=max_iter,
-                                     sample=sample, dlogz=dlogz)
+            return _escalate("laplace_invalid")
 
     # --- Rung 2: warm-started MAP refit under the full bundle --------------------------------
     prob = loop.build_problem(hyp, ctx, x0=dict(fit_result.params))
@@ -224,10 +240,62 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
             cost_map = float(prob.costv(np.asarray(br.x, dtype=float)))
             return _record(laplace_ln_z(cost_map, bundle.logpdf(theta_map), sigma_map),
                            None, "laplace_map")
-    validity["escalation"] = "map_refit_invalid"
-    return _dynesty_evidence(hyp, ctx, fit_result, bundle, _record, validity,
-                             seed=seed, n_live=n_live, max_iter=max_iter,
-                             sample=sample, dlogz=dlogz)
+    return _escalate("map_refit_invalid")
+
+
+def candidate_set_evidence(candidates, ctx, **kwargs) -> EvidenceSet:
+    """Evidence for one scan's candidate set, with dominance pruning of the dynesty rung.
+
+    ``candidates`` is ``[(hyp, fit_result, bundle), ...]`` (converged fits only — the caller
+    owns that filter). Strategy (owner ruling 2026-08-08): the Gaussian rungs run for every
+    candidate first; escalations are then processed in descending order of their evidence
+    ceiling ``lnZ ≤ −cost(θ̂)/2`` (exact for proper priors: Z = ∫L·p ≤ L(θ̂)·∫p = L(θ̂)).
+    A candidate whose ceiling sits more than ``PRUNE_MARGIN`` nats below the current leader
+    is recorded ``"dominated"`` — its true posterior is bounded above by e^−PRUNE_MARGIN of
+    the leader's, orders of magnitude under the survivor floor, so skipping the sampler
+    changes no decision and no reported number beyond float precision. Everything closer
+    than the margin pays for its dynesty run — precisely the genuinely ambiguous scans
+    (blank-scan null-vs-phonon contests, overdamped Γ-at-bound physics that FITS well).
+
+    The pruning inherits exactly the trust AIC always placed in the same number: cost(θ̂) is
+    the constrained optimum the optimizer reported. The leader only advances on evidence
+    worth trusting (Laplace lanes, or dynesty with its §5.4 gate passed), so a blown-up
+    sampler cannot over-prune the rest of the set."""
+    es = EvidenceSet(arena_fingerprint=loop.data_likelihood_fingerprint(ctx))
+    deferred = []
+    for hyp, fit, bundle in candidates:
+        rec = structure_evidence(hyp, ctx, fit, bundle, escalation="defer", **kwargs)
+        if rec.evidence_method == "deferred_escalation":
+            deferred.append((hyp, fit, bundle, rec))
+        else:
+            es.add(rec)
+
+    def _trusted(rec):
+        if not np.isfinite(rec.log_evidence):
+            return False
+        if rec.evidence_method == "dynesty":
+            return bool((rec.validity.get("dynesty") or {}).get("converged"))
+        return rec.evidence_method in ("laplace", "laplace_map")
+
+    leader = max((r.log_evidence for r in es.records if _trusted(r)), default=float("-inf"))
+    deferred.sort(key=lambda item: item[3].validity["log_evidence_upper_bound"], reverse=True)
+    for hyp, fit, bundle, marker in deferred:
+        bound = marker.validity["log_evidence_upper_bound"]
+        if bound < leader - PRUNE_MARGIN:
+            validity = dict(marker.validity)
+            validity["dominated_by_leader_log_evidence"] = float(leader)
+            validity["prune_margin"] = PRUNE_MARGIN
+            es.add(EvidenceRecord(label=marker.label, log_evidence=float("nan"),
+                                  log_evidence_err=None, evidence_method="dominated",
+                                  k_free=marker.k_free,
+                                  arena_fingerprint=marker.arena_fingerprint,
+                                  prior_spec=marker.prior_spec, validity=validity))
+            continue
+        rec = structure_evidence(hyp, ctx, fit, bundle, escalation="run", **kwargs)
+        es.add(rec)
+        if _trusted(rec):
+            leader = max(leader, rec.log_evidence)
+    return es
 
 
 def _dynesty_evidence(hyp, ctx, fit_result, bundle, _record, validity, *,

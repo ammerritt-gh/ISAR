@@ -203,6 +203,93 @@ def test_nonconverged_fit_yields_no_evidence(clean):
     assert rec.validity["reason"] == "fit did not converge"
 
 
+# ------------------------------------------------------------------ dominance pruning
+def _set_triples(ctx, results):
+    from isar.analyze.phonon import enumerate_phonon_structures
+    hyps = {h.label: h for h in enumerate_phonon_structures(ctx)}
+    triples = []
+    for r in results:
+        if not r.optimizer_converged:
+            continue
+        prob = loop.build_problem(hyps[r.label], ctx)
+        bundle = C.resolve_priors(prob.composite, ctx, prob.bounds,
+                                  exclude=[prob.free_names[i] for i in prob.fixed_pos])
+        triples.append((hyps[r.label], r, bundle))
+    return triples
+
+
+def test_dominated_candidate_never_pays_for_dynesty(clean, monkeypatch):
+    """On a decisive phonon scan the railed elastic+bg null's ceiling (−cost/2) sits
+    thousands of nats under the leader: it must be recorded dominated WITHOUT sampling."""
+    ctx, _hyp, _fit = clean
+    results = loop.fit_admissible_structures(ctx, errors=False)
+
+    def _no_sampling(*a, **k):
+        raise AssertionError("dynesty must not run for a dominated candidate")
+
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", _no_sampling)
+    es = E.candidate_set_evidence(_set_triples(ctx, results), ctx)
+    recs = es.by_label()
+    dom = recs["elastic+bg"]
+    assert dom.evidence_method == "dominated"
+    assert math.isnan(dom.log_evidence)
+    bound = dom.validity["log_evidence_upper_bound"]
+    leader = dom.validity["dominated_by_leader_log_evidence"]
+    assert bound < leader - E.PRUNE_MARGIN                # the certificate is quantitative
+    assert recs["elastic+stokes+bg"].evidence_method == "laplace"
+
+
+def test_genuine_contest_still_pays_for_dynesty():
+    """On a blank (bg-only) scan a railed phonon candidate fits AS WELL as the winner —
+    its ceiling is near the leader, so pruning must NOT fire and dynesty must run: the
+    ambiguous scans are exactly where the sampler earns its cost."""
+    x = np.linspace(-10.0, 10.0, 81)
+    counts = np.random.default_rng(11).poisson(np.full_like(x, 60.0)).astype(float)
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
+                      center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    results = loop.fit_admissible_structures(ctx, errors=False)
+    es = E.candidate_set_evidence(_set_triples(ctx, results), ctx, **FAST)
+    methods = {label: r.evidence_method for label, r in es.by_label().items()}
+    escalated = [m for m in methods.values() if m == "dynesty"]
+    assert escalated, f"expected at least one close-contest escalation, got {methods}"
+    assert "dominated" not in set(methods.values()) or all(
+        r.validity["log_evidence_upper_bound"]
+        < r.validity["dominated_by_leader_log_evidence"] - E.PRUNE_MARGIN
+        for r in es.records if r.evidence_method == "dominated")
+
+
+def test_all_railed_set_escalates_highest_ceiling_first(clean, monkeypatch):
+    """No trusted leader exists when every candidate railed: the highest-ceiling candidate
+    is sampled first, becomes the leader, and prunes the rest. Pinned with stubbed records
+    so only the ordering/leader policy is under test."""
+    ctx, hyp, fit = clean
+    bundle = _bundle(hyp, ctx)
+    strong = replace(fit, label="strong", cost=100.0)
+    weak = replace(fit, label="weak", cost=700.0)          # ceiling 300 nats below strong's
+    ran = []
+
+    def _stub(h, c, f, b, *, escalation="run", **k):
+        if escalation == "defer":
+            return E.EvidenceRecord(
+                label=f.label, log_evidence=float("nan"), log_evidence_err=None,
+                evidence_method="deferred_escalation", k_free=f.k,
+                arena_fingerprint=loop.data_likelihood_fingerprint(c), prior_spec=(),
+                validity={"log_evidence_upper_bound": -0.5 * f.cost})
+        ran.append(f.label)
+        return E.EvidenceRecord(
+            label=f.label, log_evidence=-0.5 * f.cost - 10.0, log_evidence_err=0.3,
+            evidence_method="dynesty", k_free=f.k,
+            arena_fingerprint=loop.data_likelihood_fingerprint(c), prior_spec=(),
+            validity={"dynesty": {"converged": True}})
+
+    monkeypatch.setattr(E, "structure_evidence", _stub)
+    es = E.candidate_set_evidence([(hyp, strong, bundle), (hyp, weak, bundle)], ctx)
+    assert ran == ["strong"]                               # exactly one sampler run
+    assert es.by_label()["strong"].evidence_method == "dynesty"
+    assert es.by_label()["weak"].evidence_method == "dominated"
+
+
 # ------------------------------------------------------------------ generalized bayes lane
 def test_prior_bundle_ppf_drives_the_sampler(clean):
     """The bundle enters via the prior transform: a near-delta prior on Ω_d pins the sampled
