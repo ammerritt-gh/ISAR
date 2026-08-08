@@ -119,6 +119,28 @@ def test_nested_lrt_pairs_one_mode_subset_two_mode():
 
 
 # --------------------------------------------------------- evidence posterior (D3)
+def test_supplied_evidence_from_another_arena_is_refused():
+    """A reused EvidenceSet is internally arena-consistent by construction — that says nothing
+    about whether it is THIS scan's. Applying another scan's lnZ by label is exactly the
+    comparison EvidenceSet.add refuses, so the wholesale handoff must refuse it too."""
+    from isar.analyze.evidence import ArenaMismatchError
+
+    a = _result("a", k=4, ndof=20, cost=100.0)
+    foreign = _toy_evidence({"a": -10.0}, arena="a-different-scan")
+
+    with pytest.raises(ArenaMismatchError, match="cross-arena"):
+        select.select_models([a], {}, _one_peak_ctx(), evidence=foreign, stamp=False)
+
+
+def test_toy_evidence_without_a_context_stays_usable():
+    """The guard is conditional on ctx for a reason: hand-built diagnostics pass an evidence set
+    with no context, and must keep working rather than being refused by a check they cannot
+    satisfy."""
+    a = _result("a", k=4, ndof=20, cost=100.0)
+    sel = select.select_models([a], evidence=_toy_evidence({"a": -10.0}), stamp=False)
+    assert sel.best == "a" and sel.selection_fallback is None
+
+
 def test_posterior_from_toy_evidence_matches_softmax():
     a = _result("a", k=4, ndof=20, cost=100.0)
     b = _result("b", k=5, ndof=19, cost=90.0)             # AIC prefers b…

@@ -305,6 +305,20 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
         else:
             fallback = "aic_no_evidence_inputs"
     if evidence is not None:
+        # A reused EvidenceSet is internally arena-consistent by construction, which says nothing
+        # about whether it belongs to THIS scan: applying another scan's lnZ by label would be the
+        # exact cross-arena comparison EvidenceSet.add exists to refuse. Only checkable with a
+        # context — hand-built diagnostics legitimately pass evidence with ctx=None.
+        if ctx is not None:
+            from isar.analyze.evidence import ArenaMismatchError
+            from isar.analyze.loop import data_likelihood_fingerprint
+
+            arena = data_likelihood_fingerprint(ctx)
+            supplied = getattr(evidence, "arena_fingerprint", None)
+            if supplied != arena:
+                raise ArenaMismatchError(
+                    f"supplied evidence carries arena {supplied!r}, this context is {arena!r}; "
+                    f"cross-arena evidence comparison is meaningless")
         recs = evidence.by_label()
         finite = []
         for s in scores:
