@@ -451,6 +451,13 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=()) -> PriorBu
         if name in excluded:
             continue
         lo, hi = float(lo), float(hi)
+        if not (np.isfinite(lo) and np.isfinite(hi)):
+            # A normalized flat prior over an infinite interval does not exist; letting it
+            # through silently zeroes the candidate's evidence (logpdf −inf) and a strictly
+            # better-fitting model loses with no flag. Fail at construction, loudly.
+            raise ValueError(f"free parameter {name!r} has non-finite optimizer bounds "
+                             f"({lo!r}, {hi!r}); evidence needs a proper prior — bound the "
+                             f"parameter in loop._bound or declare a ParamPrior for it")
         suffix = name.split(".", 1)[-1]
         if name in soft:
             mu, sigma = float(soft[name][0]), float(soft[name][1])

@@ -143,7 +143,11 @@ def _bound(name: str, x_max: float, cmax: float) -> tuple[float, float]:
         return (EPS_OMEGA_D, x_max)
     if name.endswith(".Gamma"):
         return (GAMMA_FLOOR, GAMMA_MAX)
-    if name.endswith(".A") or name.endswith(".E"):
+    if name.endswith(".A") or name.endswith(".E") or name.endswith(".QE"):
+        # .QE joined 2026-08-08: the quasielastic amplitude was the one unbounded amplitude,
+        # which iminuit tolerated but the evidence lane cannot — a normalized flat prior over
+        # (-inf, inf) does not exist, so an unbounded QE silently zeroed every qe-bearing
+        # candidate's lnZ (found by real IN8 data, first scan).
         return (0.0, 1e4 * cmax)
     if name.endswith(".BG"):
         return (0.0, 5.0 * cmax + 10.0)

@@ -203,6 +203,39 @@ def test_nonconverged_fit_yields_no_evidence(clean):
     assert rec.validity["reason"] == "fit did not converge"
 
 
+# ------------------------------------------------------------------ proper-prior guard
+def test_resolve_priors_refuses_non_finite_bounds(clean):
+    ctx, hyp, _fit = clean
+    prob = loop.build_problem(hyp, ctx)
+    bad = list(prob.bounds)
+    bad[-1] = (float("-inf"), float("inf"))
+    with pytest.raises(ValueError, match="non-finite optimizer bounds"):
+        C.resolve_priors(prob.composite, ctx, bad)
+
+
+def test_qe_candidate_gets_finite_laplace_evidence():
+    """Regression for the unbounded quasielastic amplitude: a qe-bearing candidate must get
+    finite lnZ on rung 1, not a silent −inf that drops it from the posterior (found on the
+    first real IN8 scan: the best-cost model lost with no flag)."""
+    x = np.linspace(-10.0, 10.0, 81)
+    lorentz = 40.0 / (1.0 + (x / 1.5) ** 2)
+    counts = np.random.default_rng(5).poisson(lorentz + 30.0).astype(float)
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
+                      center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero", quasielastic_fwhm=3.0)
+    hyps = {h.label: h for h in enumerate_phonon_structures(ctx)}
+    label = next(l for l in hyps if "qe" in l)
+    prob = loop.build_problem(hyps[label], ctx)
+    qe_lo, qe_hi = next(b for n, b in zip(prob.free_names, prob.bounds)
+                        if n.endswith(".QE"))
+    assert np.isfinite(qe_lo) and np.isfinite(qe_hi)      # the root cause, pinned directly
+    fit = loop.fit_hypothesis(hyps[label], ctx, minos=False)
+    assert fit.optimizer_converged
+    rec = E.structure_evidence(hyps[label], ctx, fit, _bundle(hyps[label], ctx))
+    assert np.isfinite(rec.log_evidence), rec.validity
+    assert rec.evidence_method in ("laplace", "laplace_map", "dynesty")
+
+
 # ------------------------------------------------------------------ dominance pruning
 def _set_triples(ctx, results):
     from isar.analyze.phonon import enumerate_phonon_structures
