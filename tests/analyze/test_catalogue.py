@@ -96,5 +96,11 @@ def test_catalogue_profile_names_are_frozen():
 
 def test_catalogue_entries_present():
     names = {d.name for d in catalogue.DEFAULT_CATALOGUE}
-    assert names == {"acoustic", "optic", "elastic", "unknown", "bg_only"}
+    assert names == {"acoustic", "optic", "elastic", "quasielastic", "unknown", "bg_only"}
     assert all(d.identity for d in catalogue.DEFAULT_CATALOGUE)
+
+
+def test_quasielastic_is_its_own_phenomenon():
+    """QE is measured in its own right, so it is an entry — not a second local model of elastic."""
+    assert [m.name for m in catalogue.entry("elastic").local_models] == ["sharp"]
+    assert [m.name for m in catalogue.entry("quasielastic").local_models] == ["broad"]

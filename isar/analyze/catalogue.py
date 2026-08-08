@@ -146,17 +146,41 @@ _OPTIC = PhenomenonDefinition(
     ),
 )
 
+# Three look-alikes sit near E=0 and are routinely conflated; they are distinct phenomena:
+#   elastic       — a resolution-limited *static* line at E=0 (incoherent scattering plus
+#                   can/sample background). No intrinsic width: its width is the resolution.
+#                   Bragg is not this entry — Bragg identity is scene-level (DECISIONS decision 20).
+#   quasielastic  — *relaxational/diffusive dynamics*: broad in ENERGY, centred at E=0. A
+#                   measurement target in its own right (linewidth ⇒ relaxation rate), not a
+#                   fallback shape for a poorly-fit elastic line.
+#   diffuse       — broad in Q, elastic in E (disorder/short-range correlations). A distinct
+#                   phenomenon, handled scene-level today; not yet a catalogue entry.
 _ELASTIC = PhenomenonDefinition(
     name="elastic",
-    identity="elastic scattering at the energy zero — generic and lattice-blind",
+    identity="static elastic scattering at the energy zero — resolution-limited, lattice-blind",
     local_models=(
         LocalModel("sharp", Elastic, phonon.elastic_admissible),
-        LocalModel("broad", QuasiElastic, phonon.quasielastic_admissible),
     ),
-    gates=(phonon.elastic_admissible, phonon.quasielastic_admissible),
+    gates=(phonon.elastic_admissible,),
     transport=(
         TransportedParameter("amplitude", "rough", 0.1,
                              "incoherent + can/sample elastic; strongest near Bragg, not smooth"),
+    ),
+)
+
+_QUASIELASTIC = PhenomenonDefinition(
+    name="quasielastic",
+    identity="quasi-elastic scattering — relaxational dynamics, broad in energy about E=0",
+    local_models=(
+        LocalModel("broad", QuasiElastic, phonon.quasielastic_admissible),
+    ),
+    gates=(phonon.quasielastic_admissible,),
+    transport=(
+        # No width transport: the QE width is card-declared (``quasielastic_fwhm``), not carried
+        # from a neighbouring q-point.
+        TransportedParameter("amplitude", "rough", 0.1,
+                             "shares the elastic channel's roughness — incoherent and sample-shape "
+                             "sensitive, not smooth in q"),
     ),
 )
 
@@ -177,7 +201,7 @@ _BG_ONLY = PhenomenonDefinition(
 )
 
 DEFAULT_CATALOGUE: tuple[PhenomenonDefinition, ...] = (
-    _ACOUSTIC, _OPTIC, _ELASTIC, _UNKNOWN, _BG_ONLY,
+    _ACOUSTIC, _OPTIC, _ELASTIC, _QUASIELASTIC, _UNKNOWN, _BG_ONLY,
 )
 
 PROFILES: dict[str, tuple[PhenomenonDefinition, ...]] = {DEFAULT_PROFILE: DEFAULT_CATALOGUE}
@@ -199,9 +223,8 @@ def enumerate_structures(ctx, profile: str = DEFAULT_PROFILE) -> list[Hypothesis
     enumerated component earns its parameter is model selection's decision (§4), not the
     catalogue's.
     """
-    elastic_entry = entry("elastic", profile)
-    sharp = elastic_entry.model("sharp")
-    broad = elastic_entry.model("broad")
+    sharp = entry("elastic", profile).model("sharp")
+    broad = entry("quasielastic", profile).model("broad")
     bg = entry("bg_only", profile).model("flat").recipe
 
     elastic = sharp.admissible(ctx)
