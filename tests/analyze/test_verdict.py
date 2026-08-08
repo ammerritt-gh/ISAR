@@ -177,6 +177,16 @@ def test_underpowered_is_provisional_and_split_from_no_signal():
 
 # --- phonon-less winners (SCENE-1 PR-a): elastic_only / no_signal ----------------------------
 
+def _sel_null(best="elastic+bg", *, p=1e-4, weight=0.9):
+    """A Selection whose elastic+bg score carries a real nested LRT vs bg — the significance
+    gate fails closed, so elastic_only expectations must supply the evidence (PR review)."""
+    sc = types.SimpleNamespace(
+        label="elastic+bg", weight=weight,
+        nested={"reduced": "bg", "delta_deviance": 15.0, "dof": 1, "p_value": p})
+    return select.Selection(scores=[sc], best=best, survivors=[best] if best else [],
+                            pooled=None, modality="unpooled")
+
+
 def _null_result(label, params, *, cost_per_dof=1.0, converged=True):
     """A converged phonon-less fit (elastic+bg / bg): NaN omega/gamma, zero modes."""
     return loop.StructureFitResult(
@@ -201,18 +211,34 @@ def test_elastic_only_when_elastic_bg_wins():
     x = np.linspace(-10.0, 10.0, 81)
     ctx = _ctx(_elastic_counts(x), x=x)
     res = _null_result("elastic+bg", {"elastic.E": 200.0, "bg.BG": 20.0})
-    v = verdict.classify([res], ctx, _sel("fold", best="elastic+bg"))
+    v = verdict.classify([res], ctx, _sel_null())
     assert v.verdict == "elastic_only"
     assert 0.0 < v.confidence <= 0.5 + 1e-12             # the categorical-humility cap
     assert v.components["s_scope_elastic"] == 0.5
     assert v.provisional is False and v.detection is None  # no prior expected anything here
 
 
+def test_elastic_only_fails_closed_without_the_bg_comparison():
+    """The positive claim requires its evidence: a missing/insignificant nested LRT vs bg
+    (bg not converged, diagnostic absent, p > alpha) must fall to the null convention,
+    never claim elastic_only (PR #13 review)."""
+    x = np.linspace(-10.0, 10.0, 81)
+    ctx = _ctx(_elastic_counts(x), x=x)
+    res = _null_result("elastic+bg", {"elastic.E": 200.0, "bg.BG": 20.0})
+    # no scores at all -> no LRT -> fail closed
+    bare = verdict.classify([res], ctx, _sel("fold", best="elastic+bg"))
+    assert bare.verdict == "no_signal" and bare.confidence == 0.0
+    # LRT present but insignificant -> same
+    weak = verdict.classify([res], ctx, _sel_null(p=0.2))
+    assert weak.verdict == "no_signal"
+    assert any("significance" in r for r in weak.reasons)
+
+
 def test_elastic_only_is_provisional_when_power_is_unconfirmed():
     x = np.linspace(-10.0, 10.0, 81)
     ctx = _ctx(_elastic_counts(x), x=x, prior_omega=6.0)
     res = _null_result("elastic+bg", {"elastic.E": 200.0, "bg.BG": 20.0})
-    sel = _sel("fold", best="elastic+bg")
+    sel = _sel_null()
     # prior expects a mode but declares no strength -> power abstains -> provisional (S0.4 guard)
     v = verdict.classify([res], ctx, sel, prior=PhononPrior(6.0, None, 1.0))
     assert v.verdict == "elastic_only" and v.provisional is True

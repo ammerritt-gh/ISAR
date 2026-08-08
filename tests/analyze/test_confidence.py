@@ -79,21 +79,38 @@ def test_provenance_penalizes_uncalibrated():
 
 # --- phonon-less (elastic_only) confidence (SCENE-1 PR-a) ------------------------------------
 
+def _sel_null(weight=1.0):
+    sc = types.SimpleNamespace(label="elastic+bg", weight=weight, nested=None)
+    return select.Selection(scores=[sc], best="elastic+bg", survivors=["elastic+bg"],
+                            pooled=None, modality="unpooled")
+
+
 def test_null_confidence_is_hard_capped_at_the_scope_factor():
-    # best case: fold structure, absolute calibration, nothing expected in-window
-    s, comp = confidence.compute_null_confidence(_ctx("absolute"), _sel("fold"), detection=None)
+    # best case: unanimous null winner, absolute calibration, nothing expected in-window
+    s, comp = confidence.compute_null_confidence(_ctx("absolute"), _sel_null(1.0), detection=None)
     assert math.isclose(s, confidence.S_SCOPE_ELASTIC, rel_tol=1e-9)   # ceiling reached, never crossed
     assert comp["s_scope_elastic"] == confidence.S_SCOPE_ELASTIC
-    assert set(comp) == {"s_scope_elastic", "s_structure", "s_provenance", "s_detectability"}
+    assert set(comp) == {"s_scope_elastic", "s_null_support", "s_provenance", "s_detectability"}
+
+
+def test_null_support_is_the_winners_weight_not_the_phonon_pool_modality():
+    """A near-tied null (weight ~ 0.5) must score BELOW a unanimous one; the phonon-pool
+    fold/fork modality is inverted for null claims and must not enter (PR #13 review)."""
+    decisive = confidence.compute_null_confidence(_ctx(), _sel_null(0.98))[0]
+    ambiguous = confidence.compute_null_confidence(_ctx(), _sel_null(0.51))[0]
+    assert ambiguous < decisive
+    assert math.isclose(confidence._s_null_support(_sel_null(0.51)), 0.51, rel_tol=1e-12)
+    # no scores at all -> neutral, not fold-boosted
+    assert confidence._s_null_support(_sel("fold")) == 0.6
 
 
 def test_null_confidence_detectability_orders_the_score():
     strong = {"detectable": True, "expected_significance": 30.0, "floor": 3.0}
     weak = {"detectable": False, "expected_significance": 1.0, "floor": 3.0}
     abstain = {"detectable": None, "expected_significance": float("nan"), "floor": 3.0}
-    hi = confidence.compute_null_confidence(_ctx(), _sel(), detection=strong)[0]
-    mid = confidence.compute_null_confidence(_ctx(), _sel(), detection=abstain)[0]
-    lo = confidence.compute_null_confidence(_ctx(), _sel(), detection=weak)[0]
+    hi = confidence.compute_null_confidence(_ctx(), _sel_null(), detection=strong)[0]
+    mid = confidence.compute_null_confidence(_ctx(), _sel_null(), detection=abstain)[0]
+    lo = confidence.compute_null_confidence(_ctx(), _sel_null(), detection=weak)[0]
     assert lo < mid < hi <= confidence.S_SCOPE_ELASTIC + 1e-12
 
 

@@ -112,22 +112,42 @@ def compute_confidence(result, ctx, selection, *, prior=None) -> tuple[float, di
     return score, comp
 
 
+def _s_null_support(selection) -> float:
+    """How decisively the phonon-less winner beat its competitors: its own selection weight.
+
+    The phonon-pool modality (fold/fork) is the wrong axis for a null claim — a null winner
+    contributes no ω₀ samples, so ``selection.modality`` reflects only the *rejected* phonon
+    runners: an ambiguous elastic+bg win over one surviving phonon would read "fold" (1.0)
+    while a completely unambiguous null with no phonon survivor reads "unpooled" (0.6) —
+    inverted. The winner's Akaike/selection weight measures exactly the right thing: near 1
+    when nothing phonon-shaped came close, near 1/2 when a phonon competitor nearly tied.
+    Neutral 0.6 when no scores are available."""
+    scores = getattr(selection, "scores", None) or []
+    best = getattr(selection, "best", None)
+    sc = next((s for s in scores if s.label == best), None)
+    w = getattr(sc, "weight", None)
+    if w is None or not np.isfinite(w):
+        return 0.6
+    return float(np.clip(w, 1e-6, 1.0))
+
+
 def compute_null_confidence(ctx, selection, *, detection=None) -> tuple[float, dict]:
     """Confidence for the ``elastic_only`` claim (a phonon-less ``elastic+bg`` winner).
 
-    ``S_SCOPE_ELASTIC × geomean(s_structure, s_provenance, s_detectability)`` — the cap is a
+    ``S_SCOPE_ELASTIC × geomean(s_null_support, s_provenance, s_detectability)`` — the cap is a
     product factor (hard ceiling ≤ 0.5) and an explicit named component in the audit dict.
-    None of the phonon sub-scores (interval, paradigm, prior distance) apply: there is no ω₀.
-    ``detection`` is the verdict layer's :func:`~isar.analyze.verdict.detection_power` payload
-    (or ``None`` when no prior expects a mode in the window).
+    None of the phonon sub-scores (interval, paradigm, prior distance, pool modality) apply:
+    there is no ω₀ and the winner is outside the across-model pool. ``detection`` is the
+    verdict layer's :func:`~isar.analyze.verdict.detection_power` payload (or ``None`` when no
+    prior expects a mode in the window).
     """
     comp = {
         "s_scope_elastic": S_SCOPE_ELASTIC,
-        "s_structure": _s_structure(selection),
+        "s_null_support": _s_null_support(selection),
         "s_provenance": _s_provenance(ctx),
         "s_detectability": _s_detectability(detection),
     }
-    inner = np.clip(np.array([comp["s_structure"], comp["s_provenance"],
+    inner = np.clip(np.array([comp["s_null_support"], comp["s_provenance"],
                               comp["s_detectability"]], dtype=float), 1e-6, 1.0)
     score = float(S_SCOPE_ELASTIC * np.exp(np.mean(np.log(inner))))
     return score, comp

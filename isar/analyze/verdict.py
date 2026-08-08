@@ -124,15 +124,18 @@ def _freq_proxy_unconstrained(result) -> bool:
 
 def _elastic_significant(selection, *, alpha: float = ELASTIC_LRT_ALPHA) -> bool:
     """Whether the winning ``elastic+bg`` structure's elastic line is significant over bare
-    background (its nested LRT vs ``bg``). ``True`` when no comparison is available — the
-    selection layer's word then stands (unit paths that hand-build a Selection)."""
+    background (its nested LRT vs ``bg``). **Fails closed**: the positive ``elastic_only``
+    claim requires an established LRT, so a missing ``bg`` comparison (bg not converged, no
+    nested diagnostic, invalid p) means NOT significant and the scan falls to the
+    ``no_signal``/``underpowered`` null convention — never a positive claim without its
+    evidence. Tests that expect ``elastic_only`` must therefore supply a real nested score."""
     scores = getattr(selection, "scores", None) or []
     sc = next((s for s in scores if s.label == "elastic+bg"), None)
     nested = getattr(sc, "nested", None)
     if not nested or nested.get("reduced") != "bg":
-        return True
+        return False
     p = nested.get("p_value")
-    return not (p is not None and np.isfinite(p) and p > alpha)
+    return bool(p is not None and np.isfinite(p) and p <= alpha)
 
 
 def _prior_expects_phonon(prior, ctx) -> bool:
@@ -382,8 +385,8 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None) -> ScanVer
         claim_elastic = win.label == "elastic+bg" and _elastic_significant(selection)
         if not claim_elastic:
             base = ("background alone won selection" if win.label == "bg" else
-                    "elastic+bg won selection but the elastic line is not significant over "
-                    "background")
+                    "elastic+bg won selection without established significance over "
+                    "background (insignificant or missing LRT vs bg)")
             if dp is None:
                 return ScanVerdict("no_signal", 0.0, reasons=reasons + [base])
             if dp["detectable"] is True:
