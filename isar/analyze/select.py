@@ -232,8 +232,12 @@ def _stamp(results, scores, pooled, fallback=None) -> None:
     ``{"score": <this structure's metrics>, "scan": {modality, folded_interval | fork}}``."""
     by_label = {s.label: s for s in scores}
     scan = None
+    # A recorded fallback must reach the stamp even with nothing to pool — a degraded selection
+    # whose survivors carried no bootstrap samples would otherwise stamp no flag at all. The
+    # pooling-less modality matches what ``Selection.modality`` already reports for that case.
+    if pooled is not None or fallback is not None:
+        scan = {"modality": pooled.modality if pooled is not None else "unpooled"}
     if pooled is not None:
-        scan = {"modality": pooled.modality}
         if pooled.modality == "fold":
             scan["folded_interval"] = pooled.interval
         else:

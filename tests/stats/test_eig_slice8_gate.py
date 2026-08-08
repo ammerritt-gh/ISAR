@@ -443,14 +443,16 @@ def test_repaired_slice8_bundle_fails_closed_under_the_v2_selection_contract(tmp
         "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3")
     bundle = tmp_path / "isolated-repaired-bundle"
     shutil.copytree(source, bundle)
+    frozen = (bundle / "gate-result.json").read_bytes()
 
     reproduced = gate.evaluate_bundle(bundle)
 
     assert reproduced["overall_disposition"] == "invalid"
     assert reproduced["invalid_reason_code"] == "case_contract_invalid"
     assert reproduced["invalid_stage"].startswith("case:")
-    # The frozen record of the 2026-08-04 evaluation is still in the bundle, unrewritten.
-    assert (bundle / "gate-result.json").read_bytes()
+    # The frozen record of the 2026-08-04 evaluation is still in the bundle, unrewritten — byte
+    # for byte, not merely non-empty: a rewritten verdict would also be non-empty.
+    assert (bundle / "gate-result.json").read_bytes() == frozen
 
 
 def _resign_replacement_bundle(bundle: Path) -> None:

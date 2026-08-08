@@ -442,7 +442,8 @@ ws.card                                      # policy (TOML, parsed) + state (JS
 ws.scans                                     # ScanRecords w/ provenance tags, QC masks
 ws.groups                                    # collation products per card key
 ws.results                                   # fits: params, interval ladder per tier,
-                                             #   interval_reliable, AIC candidate table,
+                                             #   interval_reliable, model-candidate table
+                                             #   (model, P(model), ΔAIC, n_modes),
                                              #   verdict, disposition, confidence, provenance,
                                              #   pooled members
 ws.branch_model                              # dispersion prior + branch posterior +

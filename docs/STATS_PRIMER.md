@@ -78,7 +78,9 @@ structured model/context records, so enumeration order is irrelevant, while chan
 route or Akaike denominator changes the complete selection identity. The selection record publishes
 its aggregate eligibility and every candidate-specific reason. STAT-2a consumes those
 producer-owned classifications in a diagnostics-only shadow comparison rather than re-deriving
-them; STAT-2c will enforce them for authority only after the STAT-2b evidence gate.
+them; production selection enforces them for authority now, since evidence selection is the
+production selector (H4) — a recorded AIC fallback lane is a named degraded mode and is
+selection-ineligible for acquisition steering.
 
 For intervals, producer capability and realized authority are separate. A bootstrap or profile
 producer may offer an interval to the delivery ladder, but only the value actually selected after

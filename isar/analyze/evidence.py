@@ -28,7 +28,8 @@ adds ``PriorBundle.logpdf`` once — a transported soft constraint IS the prior 
 (never the penalty on top of the prior), and hard-fixed parameters contribute nothing (their k
 is already reduced and :func:`~isar.analyze.catalogue.resolve_priors` excluded them).
 
-Nothing consumes this module yet (commit 3 of the PR-b plan); select.py rebuilds on it next.
+:mod:`isar.analyze.select` consumes this module: it calls :func:`candidate_set_evidence` for the
+converged candidates and carries the resulting :class:`EvidenceSet` on ``Selection.evidence``.
 """
 from __future__ import annotations
 
@@ -230,11 +231,11 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
         val = prob.costv(theta) - 2.0 * lp
         return val if np.isfinite(val) else 1e300
 
-    be_names = [n.replace(".", "_") for n in prob_names]
+    be_names = [loop._sanitize(n) for n in prob_names]
     br = loop._minimize_fixed(backend, neg2_log_posterior, prob.x0, prob.bounds, be_names,
                               prob.fixed_pos, prob.fixed_vals)
     map_pinned = [n for n in free_names
-                  if (br.at_limit or {}).get(n.replace(".", "_"), False)]
+                  if (br.at_limit or {}).get(loop._sanitize(n), False)]
     validity["map_refit"] = {"success": bool(br.success),
                              "covariance_ok": bool(br.covariance_ok),
                              "boundary_pinned": map_pinned}

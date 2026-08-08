@@ -33,17 +33,19 @@ def omega_d_from(omega0: float, gamma: float) -> float:
     return float(np.sqrt(disc)) if disc > 0 else 0.0
 
 
-def bose_occupation(omega0: float, T: float) -> float:
+def bose_occupation(omega0: float, T: float | None) -> float:
     """The thermal occupation factor (n(ω₀,T)+1) = 1/(1−e^(−ω₀/k_BT)) on the Stokes side.
 
     The universal factor of every phonon amplitude (H4 owner ruling 2026-08-08): the *fitted*
     amplitude is the intrinsic strength and the model multiplies by (n+1) explicitly, so the
     Stokes/anti-Stokes detailed-balance tie stays exact ((n+1)·e^(−ω/kT) = n) and the intrinsic
     amplitude is temperature/occupation-decoupled — the quantity constraint transport carries.
-    T ≤ 0 (no thermal occupation defined; the lineshape's own anti-Stokes guard) and ω₀ ≤ 0
-    (defensive; bounds keep Ω_d ≥ ε) both return 1.0 — the factor never silently blows up.
+    An absent temperature (``T is None``, the optional-temperature call sites), T ≤ 0 (no thermal
+    occupation defined; the lineshape's own anti-Stokes guard) and ω₀ ≤ 0 (defensive; bounds keep
+    Ω_d ≥ ε) all return 1.0 — the factor never silently blows up, and the no-occupation fallback
+    lives here rather than being re-derived by every caller.
     """
-    if T <= 0.0 or omega0 <= 0.0:
+    if T is None or T <= 0.0 or omega0 <= 0.0:
         return 1.0
     return float(1.0 / (1.0 - np.exp(-float(omega0) / (KB * float(T)))))
 
