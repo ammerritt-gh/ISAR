@@ -24,11 +24,14 @@ drift; never hard-fixed).
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
 import numpy as np
 
-from isar.schema.steering import ParamConstraints
+from isar.schema.steering import RETIRED_AMPLITUDE_BASES, ParamConstraints
 from isar.session.session_prior import is_unconstrained_prior_point
+
+log = logging.getLogger(__name__)
 
 BRANCH_ID = "acoustic"          # MVP: a single acoustic branch
 MIN_ANCHORS = 3                 # too few to fit a trend
@@ -125,7 +128,23 @@ def build_branch(points, *, sample, t_bin, branch_id: str = BRANCH_ID) -> dict |
     log ω₀ (the 1/ω acoustic law is the slope≈−1 fit itself). Anchors are branch-filtered (Phase A: an
     optic-assigned anchor can no longer seed the acoustic Γ/A branch) and weighted by their soft
     assignment weight. Returns a plain JSON-able dict (persists in ``CardState.branch_models``)."""
-    anchors = [p for p in points if _is_clean_anchor(p, sample, t_bin)
+    # H4/H1 clean break: a point persisted under a retired basis holds the MEASURED amplitude
+    # A·(n+1). Nothing in the stored number distinguishes it from an intrinsic one and the
+    # occupation is not recoverable after the fact, so mixing the two would fit log A(ω₀) across
+    # incomparable anchors and emit phonon.A constraints wrong by (n+1). Excluded, never
+    # reinterpreted — and said out loud, since a resumed campaign otherwise loses anchors silently.
+    usable, retired = [], 0
+    for p in points:
+        if ((p.get("intensity") or {}).get("basis")) in RETIRED_AMPLITUDE_BASES:
+            retired += 1
+            continue
+        usable.append(p)
+    if retired:
+        log.warning(
+            "branch %r: excluded %d anchor(s) carrying a retired intensity basis (pre-H4 measured "
+            "amplitude, not comparable with the intrinsic A this model fits); re-fit those scans "
+            "to restore them", branch_id, retired)
+    anchors = [p for p in usable if _is_clean_anchor(p, sample, t_bin)
                and (p.get("branch_id") or BRANCH_ID) == branch_id]
     if len(anchors) < MIN_ANCHORS:
         return None

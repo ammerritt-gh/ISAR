@@ -179,15 +179,18 @@ def _primary_amplitude(fit) -> float | None:
 
     Intrinsic, not measured (H4): the branch model's log A(ω₀) trend and the soft/hard
     constraints it emits target the fitted ``phonon.A``, which is the intrinsic strength — the
-    acoustic law is then literally A ∝ 1/ω with no occupation contamination. Falls back to the
-    measured ``amplitude`` for a mode record without the intrinsic field (equal when T was
-    unknown at fit time)."""
+    acoustic law is then literally A ∝ 1/ω with no occupation contamination.
+
+    A mode record without ``amplitude_intrinsic`` yields ``None`` rather than falling back to the
+    measured ``amplitude``: the two differ by (n+1), and relabelling a measured value as intrinsic
+    is the mis-scaling this function exists to prevent. Every post-H4 fit persists the field, so
+    the fallback only ever named a record this code should refuse to interpret."""
     modes = fit.get("modes")
     w0 = fit.get("omega0")
     if not modes or w0 is None:
         return None
     prim = min(modes, key=lambda m: abs(float(m.get("omega0", 1e18)) - float(w0)))
-    a = prim.get("amplitude_intrinsic", prim.get("amplitude"))
+    a = prim.get("amplitude_intrinsic")
     return float(a) if a is not None else None
 
 

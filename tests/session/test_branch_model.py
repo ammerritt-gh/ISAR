@@ -19,6 +19,38 @@ def _anchors():
     return [_pt(f"S:{i}", w, 0.3 + 0.05 * w, 600.0 / w) for i, w in enumerate((3.0, 4.0, 5.0, 6.0))]
 
 
+def test_retired_basis_anchors_are_excluded_and_said_out_loud(caplog):
+    """A pre-H4 point holds the MEASURED amplitude A·(n+1) under the retired basis. The stored
+    number cannot be told from an intrinsic one and the occupation is not recoverable, so fitting
+    log A(ω₀) across the mixture would emit phonon.A constraints wrong by (n+1).
+
+    Excluded, never reinterpreted — and logged, because a resumed campaign would otherwise lose
+    anchors in silence."""
+    fresh = _anchors()
+    stale = [_pt(f"old:{i}", w, 0.4, 900.0 / w) for i, w in enumerate((3.5, 4.5, 5.5))]
+    for point in stale:
+        point["intensity"]["basis"] = "amplitude_per_exposure"      # retired by H4
+
+    with caplog.at_level("WARNING"):
+        mixed = BM.build_branch(fresh + stale, sample="S", t_bin=100.0)
+    clean = BM.build_branch(fresh, sample="S", t_bin=100.0)
+
+    assert mixed is not None
+    assert mixed["n_anchors"] == clean["n_anchors"] == 4        # the stale three never entered
+    assert mixed["logA"] == clean["logA"]                       # …and moved no coefficient
+    assert "retired intensity basis" in caplog.text
+
+
+def test_retired_basis_can_starve_a_branch_rather_than_bias_it():
+    """Losing anchors is the acceptable outcome; a wrong 1/ω law is not. Below MIN_ANCHORS the
+    existing "too sparse" path returns None instead of fitting what is left plus the stale."""
+    stale = _anchors()
+    for point in stale:
+        point["intensity"]["basis"] = "amplitude_per_exposure"
+
+    assert BM.build_branch(stale, sample="S", t_bin=100.0) is None
+
+
 # --------------------------------------------------------------------------- build + predict
 def test_build_recovers_one_over_omega_intensity_and_gamma_trend():
     b = BM.build_branch(_anchors(), sample="S", t_bin=100.0)

@@ -1471,6 +1471,19 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   non-MLE estimator and on `selection_constrained`; a test pins that boundary explicitly. Letting
   soft-prior fits steer beam time is a new acquisition authority and needs its own owner-named
   ruling — this entry is not it.
+- **H6.** (2026-08-08, In force; PR-b review response) **The intensity basis is renamed by the H4
+  amplitude change, and the old name is a refusal, not a migration.** An `IntensityMeasure` value
+  is now `intrinsic_amplitude_per_exposure`; a pre-H4 point persisted the MEASURED amplitude
+  `A·(n+1)` under `amplitude_per_exposure`. Nothing in the stored number distinguishes the two and
+  the occupation is not recoverable after the fact, so a resumed workspace would fit `log A(ω₀)`
+  across incomparable anchors and emit `phonon.A` constraints wrong by `(n+1)`. Following the
+  `RETIRED_SCHEMAS` precedent (H1), `RETIRED_AMPLITUDE_BASES` is read as a refusal table:
+  `build_branch` **excludes** such anchors and logs one line naming the count and the remedy
+  (re-fit those scans). Exclusion rather than raising, because this is consumed mid-campaign — a
+  resumed campaign should lose incomparable anchors and say so, not abort; below `MIN_ANCHORS` the
+  existing "too sparse" path already returns no branch. Correspondingly the producer refuses to
+  interpret a mode record carrying only `amplitude`: `None`, never a measured value relabelled
+  intrinsic.
 
 ## Session status update
 

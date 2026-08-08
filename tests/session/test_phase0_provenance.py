@@ -42,13 +42,30 @@ def test_intensity_measure_from_fit_normalizes_by_exposure():
         counting_mode="monitor", monitor=np.array([1e6, 1e6, 2e6, 1e6]), time=None))
     ctx = types.SimpleNamespace(mask=np.array([True, True, False, True]),
                                 gauss_fwhm=1.5, lorentz_fwhm=0.0, instrument="S30")
-    fit = {"omega0": 5.0, "modes": [{"omega0": 5.0, "amplitude": 42.0}]}
+    # Post-H4 a mode record carries both: `amplitude` is the MEASURED Stokes strength A·(n+1),
+    # `amplitude_intrinsic` the fitted A. The measure is built from the intrinsic one.
+    fit = {"omega0": 5.0, "modes": [{"omega0": 5.0, "amplitude": 96.0,
+                                     "amplitude_intrinsic": 42.0}]}
     im = scan_delivery._intensity_measure(rec, ctx, fit)
     # exposure = median monitor over KEPT points [1e6, 1e6, 1e6] = 1e6
     assert im["exposure"] == pytest.approx(1e6)
-    assert im["value"] == pytest.approx(42.0 / 1e6)
+    assert im["value"] == pytest.approx(42.0 / 1e6)               # intrinsic, not the 96.0
     assert im["counting_mode"] == "monitor"
+    assert im["basis"] == "intrinsic_amplitude_per_exposure"
     assert IntensityMeasure.from_dict(im).expected_amplitude(2e6) == pytest.approx(84.0)
+
+
+def test_intensity_measure_refuses_a_mode_record_without_the_intrinsic_amplitude():
+    """H4/H1: `amplitude` alone is the measured strength. Reading it as intrinsic would seed the
+    branch model with an occupation-inflated anchor, so the producer declines to interpret it."""
+    from isar.session import scan_delivery
+    rec = types.SimpleNamespace(normalization=types.SimpleNamespace(
+        counting_mode="monitor", monitor=np.array([1e6]), time=None))
+    ctx = types.SimpleNamespace(mask=np.array([True]), gauss_fwhm=1.5, lorentz_fwhm=0.0,
+                                instrument="S30")
+    fit = {"omega0": 5.0, "modes": [{"omega0": 5.0, "amplitude": 96.0}]}
+
+    assert scan_delivery._intensity_measure(rec, ctx, fit) is None
 
 
 def test_intensity_measure_none_when_no_amplitude_or_exposure():
