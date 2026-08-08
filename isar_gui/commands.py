@@ -218,20 +218,37 @@ def source_fingerprint(*, goal: str | None = None, program_path: str | None = No
     """The sha256 hexdigest identifying a campaign source, for Resume-vs-Start comparison in the dock.
 
     Exactly one of ``goal`` / ``program_path`` must be given (``ValueError`` otherwise). For a goal
-    it is the sha256 of the goal TEXT encoded utf-8; for a program it is the sha256 of the file's
+    it is the sha256 of the goal TEXT encoded utf-8. For a program it is the ``source.sha256``
+    embedded in the file when the program carries one (a ``--compile-only`` program keeps the
+    fingerprint of the authoring input it was compiled from), otherwise the sha256 of the file's
     raw BYTES (never decoded — a program with non-ASCII content hashes its bytes, not its text).
 
     CONTRACT: this must match the ``source.sha256`` the CLI freezes into the ``campaign_start`` event
-    byte-for-byte (``isar/cli/main.py``: ``sha256(goal.encode("utf-8"))`` for a goal,
-    ``sha256(Path(program).read_bytes())`` for a program). The dock compares this against a resumed
-    campaign's stored fingerprint to tell the operator whether a Resume would continue the same
-    objective or a Start would launch a different one; a drift here silently breaks that comparison.
+    byte-for-byte (``isar/cli/main.py``: ``sha256(goal.encode("utf-8"))`` for a goal; for a program
+    ``dict(program.source) or {"kind": "program", "sha256": sha256(read_bytes())}`` — the embedded
+    block wins whenever it is non-empty, and only a source-less hand-written program is identified
+    by its own bytes). The dock compares this against a resumed campaign's stored fingerprint to
+    tell the operator whether a Resume would continue the same objective or a Start would launch a
+    different one; a drift here silently breaks that comparison.
+
+    A compiled program whose embedded ``sha256`` is absent or not a 64-hex digest falls back to the
+    file-bytes hash. The CLI stores ``None`` in that case, so no candidate can ever equal it: the
+    comparison degrades to "different", which is the safe direction (offer Start, not Resume).
     """
     if (goal is None) == (program_path is None):
         raise ValueError("exactly one of goal or program_path must be given")
     if goal is not None:
         return hashlib.sha256(goal.encode("utf-8")).hexdigest()
-    return hashlib.sha256(Path(program_path).read_bytes()).hexdigest()
+    raw = Path(program_path).read_bytes()
+    try:
+        document = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        document = None
+    if isinstance(document, dict) and isinstance(document.get("source"), dict) and document["source"]:
+        embedded = document["source"].get("sha256")
+        if isinstance(embedded, str) and re.fullmatch(r"[0-9a-f]{64}", embedded):
+            return embedded
+    return hashlib.sha256(raw).hexdigest()
 
 
 def default_workspace_dir(data: str, instrument: str, today: str | None = None) -> str:

@@ -407,22 +407,35 @@ def main(argv=None) -> int:
                         source[field] = prev_source[field]
             elif args.program:
                 program = program_from_json(args.program)
-                step = _single_executable_step(program, where=str(args.program))
-                payload = step.payload
+                # Deep-validate EVERY step's payload before any refusal. A refusal says the program
+                # "parsed, validated and froze cleanly" and exits 7 (valid but unsupported); running
+                # it before the targeted payloads are compiled made a two-step program with a
+                # malformed payload report 7 instead of 2 (written wrong). Discovery payloads are
+                # already deep-validated by ``program_from_json`` via ``DiscoverAndMapSpec``.
+                targeted_steps = [s for s in program.steps if s.kind == "targeted"]
                 # A payload carrying the frozen targeted schema is already compiled and must never
                 # reread card policy; compact authoring input may inherit the human-owned card.
-                frozen_payload = payload.get("schema") == OBJECTIVE_SCHEMA
+                frozen_payloads = {s.id: s.payload.get("schema") == OBJECTIVE_SCHEMA
+                                   for s in targeted_steps}
                 card_hypotheses = None
                 card_eig_policy_set = None
-                if not frozen_payload:
+                if not all(frozen_payloads.values()):
                     card_hypotheses, card_eig_policy_set = card_objective_authoring()
-                objective = spec_from_dict(
-                    payload,
-                    defaults={"tier": args.tier or "deterministic"},
-                    where=f"{args.program}:{step.id}",
-                    card_hypotheses=card_hypotheses,
-                    card_eig_policy_set=card_eig_policy_set,
-                )
+                compiled_objectives = {
+                    s.id: spec_from_dict(
+                        s.payload,
+                        defaults={"tier": args.tier or "deterministic"},
+                        where=f"{args.program}:{s.id}",
+                        card_hypotheses=None if frozen_payloads[s.id] else card_hypotheses,
+                        card_eig_policy_set=(None if frozen_payloads[s.id]
+                                             else card_eig_policy_set),
+                    )
+                    for s in targeted_steps
+                }
+                step = _single_executable_step(program, where=str(args.program))
+                payload = step.payload
+                frozen_payload = frozen_payloads[step.id]
+                objective = compiled_objectives[step.id]
                 declared_mode = None
                 if isinstance(payload.get("steering"), dict):
                     declared_mode = payload["steering"].get("scan_window_eig_mode")

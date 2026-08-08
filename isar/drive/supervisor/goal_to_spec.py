@@ -318,14 +318,25 @@ def goal_to_program(goal: str, *, dispatcher: Dispatcher | None = None,
 
 
 def _discover_spec(data: dict) -> DiscoverAndMapSpec:
-    """Freeze a supervisor discovery reply, filling only the compiler's shipped defaults."""
+    """Freeze a supervisor discovery reply, filling only the compiler's shipped defaults.
+
+    A default applies when the field is absent or JSON-null, never when it is merely falsy: an
+    explicit spacing of 0, an explicit empty catalogue reference, and an explicit empty
+    deliverables list are *wrong* declarations, not omissions, and rewriting them to the shipped
+    defaults would silently run a campaign the supervisor did not ask for. Every present value is
+    passed through so :class:`DiscoverAndMapSpec` validates it and refuses the invalid ones by name.
+    """
+    def declared(key, default):
+        value = data.get(key)
+        return default if value is None else value
+
     return DiscoverAndMapSpec(
         q_start=data["q_start"], q_end=data["q_end"],
-        maximum_initial_spacing_rlu=data.get("maximum_initial_spacing_rlu")
-        or DEFAULT_DISCOVER_SPACING_RLU,
+        maximum_initial_spacing_rlu=declared("maximum_initial_spacing_rlu",
+                                             DEFAULT_DISCOVER_SPACING_RLU),
         intrinsic_omega_domain_meV=data["intrinsic_omega_domain_meV"],
-        catalogue_profile=data.get("catalogue_profile") or DEFAULT_CATALOGUE_PROFILE,
-        deliverables=tuple(data.get("deliverables") or DEFAULT_DELIVERABLES),
+        catalogue_profile=declared("catalogue_profile", DEFAULT_CATALOGUE_PROFILE),
+        deliverables=declared("deliverables", DEFAULT_DELIVERABLES),
         include_unknown=bool(data.get("include_unknown", True)))
 
 

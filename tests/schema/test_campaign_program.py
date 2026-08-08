@@ -189,6 +189,33 @@ def test_deliverables_are_frozen_verbatim_including_fields_nothing_reads_yet():
         payload["deliverables"]
 
 
+@pytest.mark.parametrize("deliverables", [None, {}, {"kind": "phenomenon_map"}, "phenomenon_map"])
+def test_a_present_but_invalid_deliverables_field_is_refused_not_coerced(deliverables):
+    """``or ()`` made a malformed program round-trip as a DIFFERENT valid one.
+
+    A present null or object is a write-it-wrong error, never an omission: coercing it to an empty
+    tuple bypassed ``__post_init__`` and silently ran a campaign asked to deliver nothing.
+    """
+    payload = json.loads(json.dumps(_DISCOVER))
+    payload["deliverables"] = deliverables
+    with pytest.raises(ProgramError, match="deliverables"):
+        _program(payload)
+
+
+def test_an_absent_deliverables_field_is_an_empty_tuple():
+    payload = json.loads(json.dumps(_DISCOVER))
+    del payload["deliverables"]
+    assert _program(payload).steps[0].payload.deliverables == ()
+
+
+def test_a_present_but_invalid_program_source_is_refused_while_an_absent_one_is_empty():
+    assert _program().source == {}
+    for bad in (None, "deadbeef"):
+        with pytest.raises(ProgramError, match="source must be an object"):
+            _program(source=bad)
+    assert _program(source={"kind": "goal"}).source == {"kind": "goal"}
+
+
 # --------------------------------------------------------------------------- golden programs
 @pytest.mark.parametrize("name, kind", [
     ("program_discover_challenge.json", "discover_and_map"),

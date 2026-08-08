@@ -166,8 +166,9 @@ continues to execute the legacy request.
    `isar-eig4-o41-authoritative`, opens it through the normal workspace path, and prefills the
    ordinary Campaign controls. It never mutates the retained evidence seed.
 2. Start deterministic TAVI with the normal **Launch TAVI** control.
-3. Review the Campaign form. The source is the copied `compact-goal.json`, the mode is
-   **Authoritative — restricted O41**, and the deterministic tier is selected. Choose **Start**.
+3. Review the Campaign form. The source is the copied `campaign-program.json`, prefilled as the
+   program path; the mode is **Authoritative — restricted O41**, and the deterministic tier is
+   selected. Choose **Start**.
 4. Watch the EIG status in the Campaign dock or compact monitor. It shows the latest selected role,
    point-count reduction and lower-margin result. Predicate-failure counts make repeated legacy
    retention visible; an invalid profile is shown as a user-facing refusal rather than merely a

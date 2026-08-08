@@ -519,6 +519,49 @@ def test_a_discovery_reply_without_a_spacing_takes_the_compiler_default():
             == g2s.DEFAULT_DISCOVER_SPACING_RLU)
 
 
+def test_a_discovery_reply_with_an_explicit_zero_spacing_is_refused_not_defaulted():
+    """A default fills an OMISSION, never a wrong value: 0 r.l.u. is a declaration, and quietly
+    rewriting it to 0.05 would run a survey the supervisor did not ask for."""
+    reply = copy.deepcopy(_DISCOVER_REPLY)
+    reply["discover_and_map"]["maximum_initial_spacing_rlu"] = 0
+    with pytest.raises(ProgramError, match="must be positive and finite"):
+        g2s.goal_to_program(_DISCOVER_COMMAND,
+                            dispatcher=_FakeDispatcher(DispatchResult(structured=reply)))
+
+
+def test_a_discovery_reply_with_an_explicit_empty_catalogue_profile_is_refused():
+    reply = copy.deepcopy(_DISCOVER_REPLY)
+    reply["discover_and_map"]["catalogue_profile"] = ""
+    with pytest.raises(ProgramError, match="non-empty string reference"):
+        g2s.goal_to_program(_DISCOVER_COMMAND,
+                            dispatcher=_FakeDispatcher(DispatchResult(structured=reply)))
+
+
+def test_an_explicitly_empty_deliverables_list_stays_empty():
+    """"Deliver nothing" is a legal, if unusual, declaration — not the default phenomenon map."""
+    reply = copy.deepcopy(_DISCOVER_REPLY)
+    reply["discover_and_map"]["deliverables"] = []
+    program = g2s.goal_to_program(
+        _DISCOVER_COMMAND, dispatcher=_FakeDispatcher(DispatchResult(structured=reply)))
+    assert program.steps[0].payload.deliverables == ()
+
+
+@pytest.mark.parametrize("absent", [True, False])
+def test_absent_or_null_discovery_fields_still_take_the_compiler_defaults(absent):
+    """Only absent-or-null means "omitted". Driven through ``_discover_spec`` directly because the
+    supervisor's own reply schema rejects an explicit null before the compiler ever sees it."""
+    reply = copy.deepcopy(_DISCOVER_REPLY["discover_and_map"])
+    for name in ("maximum_initial_spacing_rlu", "catalogue_profile", "deliverables"):
+        if absent:
+            reply.pop(name, None)
+        else:
+            reply[name] = None
+    spec = g2s._discover_spec(reply)
+    assert spec.maximum_initial_spacing_rlu == g2s.DEFAULT_DISCOVER_SPACING_RLU
+    assert spec.catalogue_profile == g2s.DEFAULT_CATALOGUE_PROFILE
+    assert spec.deliverables == tuple(g2s.DEFAULT_DELIVERABLES)
+
+
 def test_a_discovery_reply_with_a_signed_energy_window_is_refused():
     reply = copy.deepcopy(_DISCOVER_REPLY)
     reply["discover_and_map"]["intrinsic_omega_domain_meV"] = [-10.0, 10.0]

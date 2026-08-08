@@ -214,7 +214,10 @@ class DiscoverAndMapSpec:
             maximum_initial_spacing_rlu=region["maximum_initial_spacing_rlu"],
             intrinsic_omega_domain_meV=energy["intrinsic_omega_domain_meV"],
             catalogue_profile=d["catalogue_profile"],
-            deliverables=tuple(d.get("deliverables") or ()),
+            # Present-but-invalid must reach __post_init__: ``or ()`` turned a null or an object
+            # into a valid empty tuple, so a malformed program round-tripped as a *different*
+            # valid program instead of being refused.
+            deliverables=d["deliverables"] if "deliverables" in d else (),
             include_unknown=d.get("include_unknown", True),
             region_kind=region.get("kind", "path"),
         )
@@ -338,7 +341,10 @@ class CampaignProgram:
             steps=tuple(CampaignStep.from_dict(step, where=f"{where}.steps[{i}]")
                         for i, step in enumerate(steps)),
             source_text=d.get("source_text"),
-            source=d.get("source") or {},
+            # Absent means "no provenance"; a present value must be an object. ``or {}`` accepted a
+            # null or a string and silently dropped it, discarding the fingerprint comparison the
+            # dock relies on without saying so.
+            source=d["source"] if "source" in d else {},
         )
 
 

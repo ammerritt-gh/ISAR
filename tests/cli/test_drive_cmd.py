@@ -468,6 +468,36 @@ def test_a_multi_step_program_freezes_but_refuses_to_sequence(tmp_path, monkeypa
     assert "2 steps" in capsys.readouterr().err
 
 
+def test_two_valid_targeted_steps_still_refuse_to_sequence(tmp_path, monkeypatch, capsys):
+    """Exit 7 stays exit 7 when every payload really does validate — that is what it claims."""
+    captured = _stub_run_campaign(monkeypatch)
+    document = _program(_GOAL_SPEC)
+    document["steps"].append({"id": "targeted-2", "kind": "targeted", "payload": _GOAL_SPEC})
+    path = tmp_path / "two-targeted.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    rc = main(["drive", "--program", str(path), "--workspace", str(tmp_path / "ws")])
+    assert rc == 7 and captured == []
+    assert "2 steps" in capsys.readouterr().err
+
+
+def test_a_malformed_later_step_is_a_parse_error_not_the_multi_step_refusal(tmp_path, monkeypatch,
+                                                                           capsys):
+    """The refusal says the program "froze cleanly" — so every payload must validate before it.
+
+    Refusing on the step count first reported "valid but unsupported" (7) for a program that was
+    simply written wrong (2), sending the operator after a missing feature instead of their typo.
+    """
+    captured = _stub_run_campaign(monkeypatch)
+    document = _program(_GOAL_SPEC)
+    document["steps"].append({"id": "targeted-2", "kind": "targeted",
+                              "payload": {"path": {"h_start": 2.0}, "step_h": 0.1}})
+    path = tmp_path / "two-step-malformed.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    rc = main(["drive", "--program", str(path), "--workspace", str(tmp_path / "ws")])
+    assert rc == 2 and captured == []
+    assert "targeted-2" in capsys.readouterr().err
+
+
 def test_a_retired_envelope_file_is_refused_with_the_new_contract_named(tmp_path, monkeypatch,
                                                                        capsys):
     _stub_run_campaign(monkeypatch)

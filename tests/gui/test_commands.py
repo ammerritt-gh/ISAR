@@ -350,6 +350,46 @@ def test_source_fingerprint_program_bytes_vector_non_ascii(tmp_path):
     assert commands.source_fingerprint(program_path=str(program)) == expected
 
 
+def test_source_fingerprint_prefers_a_compiled_programs_embedded_authoring_fingerprint(tmp_path):
+    """The CLI stamps ``dict(program.source)`` when it is non-empty — hashing the file would drift.
+
+    A ``--compile-only`` program carries the fingerprint of the goal it was compiled from, so a
+    Resume of that campaign compares against the authoring fingerprint, not the program's bytes.
+    """
+    import json
+    embedded = "a" * 64
+    program = tmp_path / "campaign-program.json"
+    program.write_text(json.dumps({
+        "schema": "isar.campaign-program/1",
+        "source": {"kind": "goal", "sha256": embedded},
+        "steps": [],
+    }), encoding="utf-8")
+    assert commands.source_fingerprint(program_path=str(program)) == embedded
+
+
+def test_source_fingerprint_falls_back_to_file_bytes_without_a_usable_embedded_digest(tmp_path):
+    """No source, a corrupt digest, or unparseable JSON all degrade to the file-bytes hash.
+
+    The CLI stores ``None`` for a non-empty source block with no valid sha256, which no candidate
+    hash can equal; reporting "different" is the safe direction (offer Start, never a wrong Resume).
+    """
+    import hashlib
+    import json
+    cases = {
+        "hand-written": json.dumps({"schema": "isar.campaign-program/1", "steps": []}),
+        "empty-source": json.dumps({"source": {}, "steps": []}),
+        "corrupt-digest": json.dumps({"source": {"kind": "goal", "sha256": "nope"}}),
+        "missing-digest": json.dumps({"source": {"kind": "goal"}}),
+        "unparseable": "{not json at all",
+        "not-an-object": json.dumps(["a", "list"]),
+    }
+    for name, text in cases.items():
+        program = tmp_path / f"{name}.json"
+        program.write_text(text, encoding="utf-8")
+        expected = hashlib.sha256(program.read_bytes()).hexdigest()
+        assert commands.source_fingerprint(program_path=str(program)) == expected, name
+
+
 def test_source_fingerprint_requires_exactly_one_arg():
     import pytest
     with pytest.raises(ValueError):
