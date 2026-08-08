@@ -102,6 +102,8 @@ def _diagnose(res, bounds, od_i, od_draws, omega0_interval, ess, max_iter):
         return False, f"ess={ess:.0f} below {ESS_MIN:.0f}"
     if not np.isfinite(logzerr) or logzerr > LOGZERR_MAX:    # coarse evidence blow-up guard
         return False, f"logzerr={logzerr:.2f} exceeds {LOGZERR_MAX}"
+    if od_i is None:                                         # phonon-less: position checks vacuous
+        return True, None
     od_lo, od_hi = bounds[od_i]
     if _rail_fraction(od_draws, od_lo, od_hi, RAIL_RTOL) > RAIL_FRAC:
         return False, "Omega_d railed against the window (ill-posed position)"
@@ -163,8 +165,16 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
     counts = ctx.counts_used
     est = estimators.get_estimator("baker_cousins")
     composite = prob.composite
-    od_i = names.index(next(n for n in names if n.endswith(".Omega_d")))
-    g_i = names.index(next(n for n in names if n.endswith(".Gamma")))
+    # Phonon-less composites (the PR-a first-class nulls: bg / elastic+bg) have no Ω_d/Γ —
+    # they sample and return evidence like any structure, with the ω₀/Γ deliverables vacuous
+    # (empty samples, NaN intervals) rather than faked. Only the evidence lane sends them here.
+    od_name = next((n for n in names if n.endswith(".Omega_d")), None)
+    od_i = names.index(od_name) if od_name is not None else None
+    g_name = next((n for n in names if n.endswith(".Gamma")), None)
+    g_i = names.index(g_name) if g_name is not None else None
+    if prior_used and od_i is None:
+        raise ValueError("PhononPrior is a prior on the derived omega0; it cannot apply to a "
+                         "phonon-less composite")
 
     lows = np.array([b[0] for b in prob.bounds], dtype=float)
     spans = np.array([b[1] - b[0] for b in prob.bounds], dtype=float)
@@ -231,7 +241,7 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
     def loglike(theta):
         f = composite.evaluate(x, theta, ctx)
         ll = -0.5 * est.cost(counts, f)                     # exact Baker–Cousins −2lnL/2
-        if prior_used:
+        if prior_used:                                      # guarded above: od_i/g_i exist
             w0 = math.sqrt(theta[od_i] ** 2 + theta[g_i] ** 2)
             ll += _gauss_logpdf(w0, mu, sig)
         return ll if np.isfinite(ll) else -1e300
@@ -251,11 +261,18 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
     except Exception as exc:                                # → frequentist fallback + flag
         return _failed(f"sampler failed: {exc}")
 
-    od, g = eq[:, od_i], eq[:, g_i]
-    omega0_samples = np.sqrt(od ** 2 + g ** 2)
-    gamma_samples = np.asarray(g, dtype=float)
-    omega0_interval = _percentile_interval(omega0_samples, level)
-    gamma_interval = _percentile_interval(gamma_samples, level)
+    if od_i is not None:
+        od, g = eq[:, od_i], eq[:, g_i]
+        omega0_samples = np.sqrt(od ** 2 + g ** 2)
+        gamma_samples = np.asarray(g, dtype=float)
+        omega0_interval = _percentile_interval(omega0_samples, level)
+        gamma_interval = _percentile_interval(gamma_samples, level)
+    else:
+        # No phonon → no ω₀/Γ deliverable. Empty samples and NaN intervals, never fakes —
+        # the delivery contract for "no number" is None/NaN (PR-a null-winner rule).
+        od = np.empty(0)
+        omega0_samples = gamma_samples = np.empty(0)
+        omega0_interval = gamma_interval = nan3
 
     ok, reason = _diagnose(res, prob.bounds, od_i, od, omega0_interval, ess, max_iter)
     return BayesResult(omega0_interval=omega0_interval, gamma_interval=gamma_interval,

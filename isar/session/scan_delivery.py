@@ -522,7 +522,9 @@ def _build_selection_semantics(
                     "cost": float(score.cost),
                     "effective_parameter_count": int(score.k),
                     "aic": float(score.aic),
-                    "akaike_weight": float(score.weight),
+                    # the /1 payload documents the AIC diagnostics lane; the selection-driving
+                    # posterior lands in the /2 schema (commit 5)
+                    "akaike_weight": float(score.akaike_weight),
                     "fit_semantics": score.fit_semantics,
                 }
             )
@@ -532,7 +534,9 @@ def _build_selection_semantics(
         canonical_route = _canonical_candidate_generation_route(route)
         selection_payload = {
             **component_fingerprints,
-            "ordinary_aic_revision": select.MODEL_SELECTION_REVISION,
+            # pinned: this /1 payload describes the AIC lane; MODEL_SELECTION_REVISION is /2
+            # now and the /2 semantics builder replaces this one wholesale (PR-b commit 5)
+            "ordinary_aic_revision": "isar.model_selection/1",
             "weight_floor": float(select.DEFAULT_WEIGHT_FLOOR),
             "candidate_generation_route": canonical_route,
             "selection_eligibility": aggregate_eligibility,
@@ -961,7 +965,7 @@ def _auto_escalation_reasons(prelim, fits, ctx) -> list[str]:
         (float(score.weight) for score in prelim.scores if score.label != prelim.best),
         reverse=True)
     if runner_weights and runner_weights[0] >= 0.10:
-        reasons.append("runner_up_akaike_weight_ge_0.10")
+        reasons.append("runner_up_model_weight_ge_0.10")
     return reasons
 
 
@@ -1399,7 +1403,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
 
     fits = {r.label: r for r in results}
 
-    prelim = select.select_models(results, stamp=False)
+    prelim = select.select_models(results, by_hyp, ctx, stamp=False)
     escalation_reasons = (_auto_escalation_reasons(prelim, fits, ctx)
                           if errors_tier == "auto" else [])
     if errors_tier == "auto" and escalation_reasons:
@@ -1423,7 +1427,10 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
             prior=_bayes_prior_for(prior, card), boot_workers=boot_workers,
             executor=boot_executor, boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
         errors_attach_seconds = round(time.perf_counter() - _t_errors, 4)
-    sel = select.select_models(results)
+    # Same fits, same arena: reuse the prelim evidence rather than paying the ladder twice.
+    # Sound because errors.attach_batch only adds within_model interval material — it never
+    # moves theta-hat, cost, covariance, or at_limit, which are all the ladder reads.
+    sel = select.select_models(results, by_hyp, ctx, evidence=prelim.evidence)
     candidate_generation_route["scored_labels"] = [str(score.label) for score in sel.scores]
     fit_selection_semantics = _build_selection_semantics(
         results,

@@ -195,12 +195,12 @@ def test_selection_publishes_each_distinct_model_set_transition():
     ]
     scores = [
         SimpleNamespace(
-            label="one", cost=10.0, k=2, aic=14.0, weight=0.8, survives=True,
-            fit_semantics=fit_semantics,
+            label="one", cost=10.0, k=2, aic=14.0, weight=0.8, akaike_weight=0.8,
+            survives=True, fit_semantics=fit_semantics,
         ),
         SimpleNamespace(
-            label="two", cost=11.0, k=3, aic=17.0, weight=0.2, survives=True,
-            fit_semantics=fit_semantics,
+            label="two", cost=11.0, k=3, aic=17.0, weight=0.2, akaike_weight=0.2,
+            survives=True, fit_semantics=fit_semantics,
         ),
     ]
     selection = SimpleNamespace(scores=scores, pooled=object())
@@ -320,11 +320,11 @@ def test_selection_fingerprints_are_order_invariant_and_route_sensitive():
     ]
     scores = [
         SimpleNamespace(
-            label="one", cost=10.0, k=2, aic=14.0, weight=0.7,
+            label="one", cost=10.0, k=2, aic=14.0, weight=0.7, akaike_weight=0.7,
             survives=True, fit_semantics=first,
         ),
         SimpleNamespace(
-            label="two", cost=11.0, k=2, aic=15.0, weight=0.3,
+            label="two", cost=11.0, k=2, aic=15.0, weight=0.3, akaike_weight=0.3,
             survives=True, fit_semantics=second,
         ),
     ]

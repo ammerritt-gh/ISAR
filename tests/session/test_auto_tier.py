@@ -59,7 +59,7 @@ def test_auto_escalation_reasons_are_stable_and_ordered(monkeypatch):
             "untrusted_hesse",
             "omega_d_within_2sigma_of_bound",
             "gamma_within_2sigma_of_bound",
-            "runner_up_akaike_weight_ge_0.10",
+            "runner_up_model_weight_ge_0.10",
         ]
 
 
