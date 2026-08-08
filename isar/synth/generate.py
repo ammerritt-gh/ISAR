@@ -9,6 +9,7 @@ Because the production model is linear in those three amplitudes, this is exact.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
@@ -17,7 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from . import config, dispersion, noise
-from isar.analyze.lineshapes import convolute_voigt_dho, voigt_area_for_height
+from isar.analyze.lineshapes import Voigt, convolute_voigt_dho, voigt_area_for_height
 
 
 def energy_grid(cfg: config.RunConfig) -> np.ndarray:
@@ -252,6 +253,152 @@ def plot_profile_variety(cfg: config.RunConfig, H: float = 2.5,
         f"ISAR Phase 1 — profile variety (tunable elastic & background), T={cfg.T:.0f} K",
         out_path,
     )
+
+
+# ----------------------------------------------------------------------------
+# World generation (SCENE world suite)
+# ----------------------------------------------------------------------------
+# A branch is only generatable where the Stokes DHO is underdamped (ω₀ > Γ). Below that
+# the mode is physically buried in the elastic line, which is exactly what the
+# endpoint-under-Bragg world is about: the component contributes nothing at that H and
+# the truth manifest still says it is there. Never fudged into a nonzero peak.
+_UNDERDAMPED_MARGIN = 1.0 + 1e-9
+
+# Q-envelope amplitudes below this are treated as absent (saves a convolution per point).
+_ENVELOPE_FLOOR = 1e-6
+
+
+@dataclass(frozen=True)
+class WorldData:
+    """One seeded realization of a world: the truth, the path, and the counts."""
+
+    truth: config.WorldTruth
+    H: np.ndarray            # (n_H,)
+    x: np.ndarray            # (n_x,)
+    lam: np.ndarray          # (n_H, n_x) noise-free expectation
+    counts: np.ndarray       # (n_H, n_x) Poisson draw
+
+
+def world_h_values(cfg: config.WorldConfig) -> np.ndarray:
+    """The Q-path sampling of a world (inclusive, rounded like `dispersion.h_values`)."""
+    n = int(round((cfg.H_stop - cfg.H_start) / cfg.H_step)) + 1
+    return np.round(cfg.H_start + cfg.H_step * np.arange(n), 4)
+
+
+def world_energy_grid(cfg: config.WorldConfig) -> np.ndarray:
+    return noise.energy_grid(cfg.x_min, cfg.x_max, cfg.x_step)
+
+
+def q_envelope(comp: config.ComponentTruth, H: float) -> float:
+    """Component strength at H relative to its maximum: 1 when unlocalized in Q."""
+    if not comp.q_centers:
+        return 1.0
+    k = 4.0 * np.log(2.0) / comp.q_fwhm**2
+    return float(max(np.exp(-k * (H - q) ** 2) for q in comp.q_centers))
+
+
+def component_lambda(truth: config.WorldTruth, comp: config.ComponentTruth,
+                     H: float, x: np.ndarray, *, peak: str | None = None) -> np.ndarray:
+    """Noise-free counts from one component at one H, background excluded.
+
+    ``peak`` selects a side ('stokes', 'astokes', 'elastic', or a '+' combination) for the
+    inelastic kinds; None means the component's natural whole. Amplitudes are solved so the
+    component maximum equals ``peak_counts`` × its Q-envelope — the same
+    height-targeting contract `make_ground_truth` uses.
+    """
+    cfg = truth.config
+    x = np.asarray(x, dtype=float)
+    if peak is not None and peak.lower() != "all":
+        tokens = peak.lower().split("+")
+        bad = [t for t in tokens if t not in ("stokes", "astokes", "elastic")]
+        if bad:
+            raise ValueError(
+                f"component_lambda: unrecognized peak token(s) {bad!r} in peak={peak!r}; "
+                "expected 'all' or a '+'-separated combination of 'stokes'/'astokes'/'elastic'"
+            )
+    env = q_envelope(comp, float(H))
+    if env < _ENVELOPE_FLOOR:
+        return np.zeros_like(x)
+    height = comp.peak_counts * env
+
+    if comp.kind == "elastic":
+        if (peak is not None and peak.lower() != "all"
+                and "elastic" not in peak.lower().split("+")):
+            return np.zeros_like(x)
+        area = voigt_area_for_height(height, cfg.gauss_fwhm, cfg.lorentz_fwhm)
+        return Voigt(x, area, cfg.gauss_fwhm, cfg.lorentz_fwhm, 0.0)
+
+    omega0 = float(comp.branch.omega0(H))
+    if omega0 <= comp.gamma * _UNDERDAMPED_MARGIN:
+        return np.zeros_like(x)          # overdamped / buried in the elastic line
+
+    if comp.kind == "unknown":
+        # The amplitude is always solved on the component's natural whole, never on the
+        # requested side: asking for the anti-Stokes side alone must return the Bose-scaled
+        # part of the same component, not a renormalized copy of it (hard rule 2).
+        whole = noise.convolute_voigt_unknown(
+            x, omega0, 0.0, cfg.gauss_fwhm, cfg.lorentz_fwhm, comp.width,
+            comp.asymmetry, 1.0, 0.0, truth.T, peak="stokes+astokes")
+        top = float(np.max(whole))
+        if top <= 0:
+            return np.zeros_like(x)
+        if peak is None or peak.lower() in ("all", "stokes+astokes"):
+            return whole * (height / top)
+        # A caller sweeping every side of a mixed world may ask an inelastic component for
+        # 'elastic'; that is an empty selection here, not an error.
+        sides = [p for p in peak.lower().split("+") if p in ("stokes", "astokes")]
+        if not sides:
+            return np.zeros_like(x)
+        peak = "+".join(sides)
+        side = noise.convolute_voigt_unknown(
+            x, omega0, 0.0, cfg.gauss_fwhm, cfg.lorentz_fwhm, comp.width,
+            comp.asymmetry, 1.0, 0.0, truth.T, peak=peak)
+        return side * (height / top)
+
+    unit_height = noise.phonon_peak_height(x, omega0, comp.gamma, 1.0,
+                                           cfg.gauss_fwhm, cfg.lorentz_fwhm, truth.T)
+    if unit_height <= 0:
+        return np.zeros_like(x)
+    return convolute_voigt_dho(x, omega0, 0.0, cfg.gauss_fwhm, cfg.lorentz_fwhm,
+                               comp.gamma, height / unit_height, 0.0, 0.0, truth.T,
+                               peak=peak or "stokes+astokes")
+
+
+def world_lambda(truth: config.WorldTruth, H: float, x: np.ndarray) -> np.ndarray:
+    """Total noise-free expectation at one H: all components + flat background."""
+    lam = np.full_like(np.asarray(x, dtype=float), float(truth.background_counts))
+    for comp in truth.components:
+        lam = lam + component_lambda(truth, comp, H, x)
+    return lam
+
+
+def generate_world(truth: config.WorldTruth) -> WorldData:
+    """Generate the whole Q-path of a world, Poisson-drawn from ``truth.config.seed``.
+
+    Deterministic: one generator seeded by the world seed draws the full (n_H, n_x) block
+    in one call, so the same truth always yields byte-identical counts.
+    """
+    cfg = truth.config
+    H = world_h_values(cfg)
+    x = world_energy_grid(cfg)
+    lam = np.vstack([world_lambda(truth, float(h), x) for h in H])
+    if not np.all(np.isfinite(lam)):
+        raise ValueError(f"world {cfg.name!r}: non-finite expectation")
+    lam = np.clip(lam, 0.0, None)
+    counts = np.random.default_rng(cfg.seed).poisson(lam)
+    return WorldData(truth=truth, H=H, x=x, lam=lam, counts=counts)
+
+
+def write_world_truth(truth: config.WorldTruth, path: Path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(truth.to_dict(), indent=2), encoding="utf-8")
+    return path
+
+
+def read_world_truth(path: Path) -> config.WorldTruth:
+    return config.WorldTruth.from_dict(
+        json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 # ----------------------------------------------------------------------------

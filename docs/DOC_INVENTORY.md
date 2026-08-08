@@ -109,7 +109,7 @@ and verified by `git grep` at deletion time rather than by bookkeeping.
 
 ## `docs/` — active plans
 
-All six are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
+All seven are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
 status block — `tests/docs/` fails the build if either is missing. Their shared statistical
 motivation and current sequence are recorded in the 2026-07-19 statistics-contract audit; its
 accepted findings were promoted once into `STATS_PRIMER.md` §7, so the plans do not carry drifting
@@ -121,6 +121,7 @@ copies.
 | `docs/STEERING_DESIGN.md` | Active plan | Phase 0 shipped as O27/O28/O29/O31; A→B→C Planned | Phase 0 is summarized only; the contract is `MEASUREMENT_STEERING.md` + DECISIONS O27–O31 |
 | `docs/BACKGROUND_DESIGN.md` | Active plan | approved 2026-07-19; implementation not started | — |
 | `docs/EIG_STEERING_DESIGN.md` | Active plan | predictive `/2`, arbitrary-grid evaluation, candidate generation, executed-grid identity, target projection, Slice 2 `o36.2.1` eligibility/QoI adaptation, Slice 3 `o36.3` homogeneous predictive-scenario design measure, Slice 4 `o36.4` pure full-vector Poisson scoring, Slice 5.1 `o36.5.1` controlled offline `off`→`shadow` comparison, and Slice 6 `o36.6` scored shadow inventories implemented; exact realized-request rescoring, authoritative selection, and EIG-4 SVP execution Planned | Documents same-action scan-window EIG, authenticated QoI evidence, bounded hand-authored distinction-policy provenance, objective `/2` omission compatibility, diagnostic-only score sets, exact-source live shadow integration, and the invariant that Slice 6 always executes legacy |
+| `docs/SCENE_DESIGN.md` | Active plan | H1 constitution + SCENE-0 world-suite foundation and SCENE-2 program contract in progress; SCENE-1/3–7 Planned | Canonical scene-layer contract (catalogue, scene posterior, question layer, scene-EIG); slices land as H-series rulings |
 | `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md` | Active plan | STAT-0/1/1.5 and STAT-2a/2b.1 complete; S8 recorded; STAT-2c through STAT-6 remain active, with the restricted O36 EIG-4 sequencing exception | Temporary producer/consumer audit; findings remain authoritative for the broader statistics program and STAT-6 closeout |
 | `docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md` | Active plan | STAT-2a and STAT-2b.1 complete; S8 retains AIC; STAT-2c and STAT-2d pending | Temporary execution plan; STAT-2d folds accepted behavior into canonical statistics documents, then deletes and tombstones it |
 

@@ -53,7 +53,8 @@ Things that are wrong now, as opposed to things not yet built.
       as a science blocker — and it invalidates the pending Slice-8 replacement candidate and the
       predictive/golden fixtures. Requires its own slice: fit robustness for degenerate candidates
       (or a shadow-availability contract that tolerates a non-converged superfluous candidate),
-      fixture/golden regeneration, and owner-sequenced Slice-8 candidate renewal around O42.
+      fixture/golden regeneration, and Slice-8 candidate renewal validated by the ordinary
+      deterministic world-suite lanes (H1 retired the O42 release review).
       `tests/analyze/test_lineshapes.py` pins the defect as a strict xfail that flips to XPASS
       when the grid is fixed.
       **Acceptance:** the xfail in `tests/analyze/test_lineshapes.py` passes un-marked, with no
@@ -202,12 +203,13 @@ Speedup work is governed by [SPEEDUP_DESIGN.md](docs/SPEEDUP_DESIGN.md); steerin
       **Acceptance:** a chronically flaky q is abandoned by policy, and triage output shows both.
 
 - [ ] **DRV-5 — EIG-4 Slice 10 deterministic TAVI demonstration.** Slice 9 implements the
-      O41-restricted authority path but does not itself supply the production demonstration or O42
-      owner acceptance. Run the maintained GUI-seeded positive case through deterministic TAVI and
-      exercise an ineligible return to the ordinary non-EIG path.
+      O41-restricted authority path but does not itself supply the production demonstration. Run the
+      maintained GUI-seeded positive case through deterministic TAVI and exercise an ineligible
+      return to the ordinary non-EIG path. H1 retired the O42 release review, so this is validated
+      by the ordinary deterministic world-suite lanes, with no release-review ceremony.
       **Acceptance:** one narrower target-selected scan proves exact scored/executed grid agreement,
       fewer executed points, normal fit/campaign rejoining, and a separate ineligible case returns
-      to non-EIG behavior; O42 records the owner's release decision without protected source changes.
+      to non-EIG behavior, all under the ordinary deterministic lanes.
 
 - [ ] **DOC-1 — Promote the remaining disposable-path evidence.** The three validation reports were
       committed under `docs/assets/` on 2026-07-25 with a provenance manifest, and `README.md`,
