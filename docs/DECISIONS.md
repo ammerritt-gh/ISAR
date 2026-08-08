@@ -1339,6 +1339,32 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   manifests" operation of the PR #9 review (R9), which S10 would otherwise have required an
   owner-named milestone to perform.
 
+## SCENE hypothesis layer (H-series)
+
+- **H1.** (2026-08-08, In force; opening ruling of the SCENE program — target-free
+  multi-phenomenon discovery with competing scene hypotheses; constitutional for the duration of
+  the SCENE transition) **ISAR remains pre-release and single-developer: during SCENE, schema/API
+  compatibility is not a goal.** Existing objective, tracking, fitting, and acquisition contracts
+  may be replaced or deleted where doing so yields a cleaner target architecture. The additive-only
+  contract-evolution rule that resumed after the v1→v2 reset (O12, DESIGN §4) is superseded for
+  contracts SCENE rebuilds: `isar.campaign-program/1` replaces the objective envelope outright,
+  with no compatibility reader, and the retired format becomes unreadable by design. Regressions
+  are judged against scientific behavior and the SCENE world suite, not historical serialization
+  compatibility; behavioral flips are re-baselined deliberately — one commit per flip set, with
+  enumerated rationale. Formal evidence freezes remain governed by S10 (owner-named milestones
+  only); for the duration of SCENE the owner names none of the program's internal authority
+  changes as freeze milestones — freezes are held for external ones (real-instrument deployment,
+  publication-grade claims). New *internal* acquisition authority during SCENE — including
+  scene-level EIG and the scan-window authoritative mode — is validated through ordinary
+  deterministic test suites and calibration batteries, never through shadow phases, release-review
+  ceremonies, or frozen evidence bundles. Under this ruling the pending O42 release review
+  (reserved in `docs/MEASUREMENT_STEERING.md`; never issued as a ledger entry) is retired: the
+  scan-window authoritative selector becomes default-on once the SCENE world suite exercises it
+  (the flip itself lands with that suite, not with this entry). Compatibility shims, adapters for retired formats, and defensive dual-path
+  readers are defects under this ruling, not prudence. S8 (production model selection remains AIC)
+  is not amended here; its supersession is a SCENE-1 ruling, recorded when the evidence-based
+  selector lands.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:

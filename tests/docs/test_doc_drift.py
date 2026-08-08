@@ -122,6 +122,17 @@ STALE_PHRASES = (
         "read-only viewer against",
         "same correction, README's repository-layout wording",
     ),
+    # Narrow forms only: the bare phrase "pending O42 release review" appears in the ledger
+    # sentence that retires it (DECISIONS H1), so forbidding it would self-trip.
+    (
+        "awaits separate O42 release review",
+        "H1 retired the O42 release review; the scan-window authoritative selector becomes "
+        "default-on once the SCENE world suite exercises it",
+    ),
+    (
+        "O42 release review pending",
+        "same correction, the heading form used in EIG_STEERING_DESIGN.md's slice list",
+    ),
 )
 
 

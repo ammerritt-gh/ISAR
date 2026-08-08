@@ -11,8 +11,9 @@
 
 ## Status and boundary
 
-**EIG-4 is complete as of 2026-08-05; restricted Slice 9 runtime authority is implemented and awaits
-the separate O42 release review. Authoritative selection is demonstrated, not merely implemented:
+**EIG-4 is complete as of 2026-08-05; restricted Slice 9 runtime authority is implemented and opt-in.
+The O42 release review is retired by H1: the selector becomes default-on once the SCENE world suite
+exercises it, and that flip lands at SCENE-4. Authoritative selection is demonstrated, not merely implemented:
 the first real target-core grant executed in deterministic simulation on 2026-08-05 (O41 Test 10
 iter 28: Δ/pt 0.0069 nats at 3.31× the paired SE, a 17-point core against the 50-point legacy), and
 a cold-start campaign now selects the core on every scored decision.**
@@ -37,8 +38,8 @@ producer's own `selection_eligibility`, and the reason a label went unscored is 
 authenticated per label.
 The pure full-vector Poisson score kernel, the controlled offline Slice 5 counterfactual, Slice 6
 scored shadow inventories, and Slice 7 exact realized-request rescoring are implemented. The coherent
-Slice 8 V3 gate is owner-accepted under O41 and authorizes the implemented Slice 9 selector, but O42
-has not yet accepted it for release. Candidate generation, predictive `/2`, arbitrary-grid evaluation, executed-grid identity, target
+Slice 8 V3 gate is owner-accepted under O41 and authorizes the implemented Slice 9 selector, which
+stays opt-in until the SCENE world suite exercises it (H1 retired the O42 release review). Candidate generation, predictive `/2`, arbitrary-grid evaluation, executed-grid identity, target
 projection, Slice 2 eligibility/QoI adaptation, the Slice 3 homogeneous design measure, the Slice 4
 caller-supplied score set, and Slice 5 completed-campaign comparison are implemented.
 Current acquisition ranks scientific actions and Q
@@ -60,7 +61,8 @@ policy card, frozen into `ScanDesignContext`) chooses the regime:
 - `authoritative` — accepts only the exact O41 profile, authenticates the final legacy/target pair,
   durably records the decision, and may submit `target_core/1`. Invalid profiles fail loudly; absent,
   ineligible, stale, malformed, or unauthenticated evidence returns to the bounded legacy/non-EIG path.
-  This implementation remains pending O42 release review.
+  This implementation is opt-in until the SCENE world suite exercises it; H1 retired the O42
+  release review that previously gated it.
 
 Because `scan_window_eig` was added additively to `isar.objective/2`, the `/2` reader treats an
 omitted block as the frozen no-policy/default-scoring configuration. This is historical read
@@ -225,8 +227,8 @@ positive envelope contains exactly one clean case. Its `delta - 2 * paired_SE > 
 pragmatic engineering margin, not calibrated 95% coverage. Here `delta` is the mean of the eight
 paired block target-minus-legacy per-point score deltas and `paired_SE` is their sample standard
 deviation (`ddof=1`) divided by `sqrt(8)`. The factor 2.0 is the sole selector safety margin; the
-profile does not apply a second advantage multiplier. Slice 9 implements this contract, while O42
-remains the separate release decision.
+profile does not apply a second advantage multiplier. Slice 9 implements this contract; H1 retired the
+separate O42 release decision, so the selector goes default-on once the SCENE world suite exercises it.
 
 The exact restricted profile is 128 simulations, 8 paired blocks, the two candidates
 `legacy_uniform/1` and `target_core/1`, equal finalized per-point `ncount`, resolved score status,
@@ -643,7 +645,8 @@ gated live scored-shadow step described by O38; it preserves those same authorit
    comparison-to-execution join, and byte-reproducible passed gate are implemented and accepted
    under O41. The positive envelope contains one clean case. The gate cannot select or submit a
    request.
-10. **Slice 9 — opt-in authoritative selector (implemented; O42 release review pending).**
+10. **Slice 9 — opt-in authoritative selector (implemented; O42 release review retired by H1,
+    default-on once the SCENE world suite exercises it, at SCENE-4).**
     `target_core` may win on authenticated, resolved EIG-per-point superiority; unresolved or
     inferior eligible comparisons retain the eligible control; ineligible states return to the
     existing non-EIG design/recovery path. The bounded lifecycle, durable decision binding,

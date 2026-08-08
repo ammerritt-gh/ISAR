@@ -155,7 +155,8 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
 ### Run the restricted O41 EIG example in the GUI
 
 Slice 9 adds an opt-in `authoritative` scan-window mode for the exact O41 profile. It remains a
-development-tier TAVI workflow pending O42 release review; `off` remains the default and `shadow`
+development-tier TAVI workflow until the SCENE world suite exercises the selector (H1 retired the
+O42 release review that previously gated it); `off` remains the default and `shadow`
 continues to execute the legacy request.
 
 1. Start the GUI and choose **File → Create O41 Authoritative Example…**. Select an empty parent
