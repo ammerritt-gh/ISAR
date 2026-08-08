@@ -130,6 +130,10 @@ class StructureFitResult:
     # Full fitted-parameter covariance in ``params`` insertion order.  Retained for posterior-
     # predictive acquisition; a missing/untrusted covariance is represented by ``None``.
     parameter_covariance: list | None = None
+    # Per-parameter boundary-pin flags keyed by the REAL (dotted) parameter names, in ``params``
+    # order. What the evidence validity ladder reads (SCENE-1 PR-b): a pinned free parameter
+    # invalidates the Laplace curvature and escalates to nested sampling.
+    at_limit: dict | None = None
     # Additive statistical provenance.  A construction failure leaves this ``None`` while the
     # numerical fit remains usable.
     fit_semantics: dict | None = None
@@ -668,6 +672,9 @@ def result_from_backend(label, composite, costv, n_used, k, br,
         message=br.message, modes=modes, n_modes=n_modes, gamma_at_bound=gamma_at_bound,
         prior_penalty=prior_penalty, posterior_cost=posterior_cost, fit_kind=fit_kind,
         parameter_covariance=(np.asarray(cov, dtype=float).tolist() if cov is not None else None),
+        # backend keys are sanitized identifiers; persist under the real dotted names. A
+        # hard-fixed param is absent from the backend map (it was never free) → False.
+        at_limit={n: bool((br.at_limit or {}).get(_sanitize(n), False)) for n in names},
     )
 
 
