@@ -1,7 +1,7 @@
 """C2 fit inspector tests: InspectorViewModel derives the interval ladder (with the correct
-certifying tier), AIC candidate rows, verdict/provenance; InspectorWidget renders each case
-offscreen; a browser selection drives the inspector. Offscreen (conftest forces QT offscreen),
-importorskip, xdist-safe (each test stamps its own workspace)."""
+certifying tier), model-candidate rows (posterior-weighted, ΔAIC diagnostic), verdict/provenance;
+InspectorWidget renders each case offscreen; a browser selection drives the inspector. Offscreen
+(conftest forces QT offscreen), importorskip, xdist-safe (each test stamps its own workspace)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -25,8 +25,10 @@ _X = np.linspace(-2.0, 8.0, 25)
 _COUNTS = (100.0 + 500.0 * np.exp(-((_X - 5.0) ** 2) / 2.0)).round()
 
 _DEFAULT_CANDS = [
-    {"label": "phonon", "delta_aic": 0.0, "akaike_weight": 0.82, "n_modes": 1},
-    {"label": "phonon+qe", "delta_aic": 3.4, "akaike_weight": 0.18, "n_modes": 1},
+    {"label": "phonon", "delta_aic": 0.0, "akaike_weight": 0.82,
+     "posterior_probability": 0.9, "n_modes": 1},
+    {"label": "phonon+qe", "delta_aic": 3.4, "akaike_weight": 0.18,
+     "posterior_probability": 0.1, "n_modes": 1},
 ]
 
 
@@ -111,12 +113,25 @@ def test_candidates_none_flags_not_recorded(make_ws):
     assert vm.state.candidate_rows == []
 
 
-def test_candidates_winner_is_delta_aic_zero(make_ws):
+def test_candidates_winner_is_best_label(make_ws):
+    """The winner is the row matching best_label — delta_aic==0 no longer decides (the
+    posterior does; ΔAIC is a persisted diagnostic)."""
     ws = _ws_with(make_ws, _outcome())
     vm = InspectorViewModel(ws)
     vm.set_fit(_fit(ws))
     winners = [r for r in vm.state.candidate_rows if r.winner]
     assert len(winners) == 1 and winners[0].label == "phonon"
+    assert winners[0].posterior == pytest.approx(0.9)
+
+
+def test_candidates_without_posterior_render_blank_not_invented(make_ws):
+    """A pre-/2 ledger (no posterior_probability) still rows up; posterior stays None."""
+    cands = [{"label": "phonon", "delta_aic": 0.0, "akaike_weight": 0.82, "n_modes": 1}]
+    ws = _ws_with(make_ws, _outcome(candidates=cands))
+    vm = InspectorViewModel(ws)
+    vm.set_fit(_fit(ws))
+    rows = vm.state.candidate_rows
+    assert len(rows) == 1 and rows[0].posterior is None and rows[0].winner
 
 
 def test_spec_changed_fires_and_empty_reset(qtbot, make_ws):
@@ -255,9 +270,14 @@ def test_widget_candidates_winner_bold(qtbot, make_ws):
     w = InspectorWidget(vm)
     qtbot.addWidget(w)
     vm.set_fit(_fit(ws))
+    headers = [w._candidates.horizontalHeaderItem(i).text()
+               for i in range(w._candidates.columnCount())]
+    assert headers == ["Model", "P(model)", "ΔAIC", "n_modes"]
     win_row = next(i for i in range(w._candidates.rowCount())
                    if w._candidates.item(i, 0).text() == "phonon")
     assert w._candidates.item(win_row, 0).font().bold()
+    assert w._candidates.item(win_row, 1).text() == "0.900"
+    assert w._candidates.item(win_row, 2).text() == "0.00"
 
 
 def test_widget_candidates_not_recorded_placeholder(qtbot, make_ws):

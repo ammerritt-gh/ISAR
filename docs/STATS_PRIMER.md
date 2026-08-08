@@ -11,8 +11,10 @@ Every fitted number ISAR reports answers one of three questions. **Minimize:** g
 which parameters do the counts support? ISAR minimizes the Baker–Cousins Poisson likelihood
 rather than a χ², because at triage-level counts the standard χ² choices are not approximately
 right — they are measurably biased, in opposite directions, by an exact identity (Fig. 2).
-**Select:** which model? Akaike weights, with a fork reported when the data genuinely cannot
-decide (Fig. 3). **Certify:** what uncertainty? A ladder of intervals — Hessian, profile,
+**Select:** which model? A posterior over structures from per-candidate Bayesian evidence
+(Laplace, with escalation to nested sampling), Akaike weights persisting as a recorded
+diagnostic, and a fork reported when the data genuinely cannot decide (Fig. 3).
+**Certify:** what uncertainty? A ladder of intervals — Hessian, profile,
 parametric bootstrap — whose 68% coverage we measured on known truth rather than assumed
 (Figs. 4–6), together with explicit flags for the regime where every rung fails at once (Fig. 7).
 
@@ -59,7 +61,8 @@ Vocabulary is discipline, not pedagogy, in this document:
 STAT-1 adds optional metadata without changing a fit, score, interval, verdict, stop, or action.
 Full records live in `session.json`; compact projections are appended to `results.csv`; legacy
 rows expose no semantics rather than inventing producer provenance. The four record schemas are
-`isar.fit_selection_semantics/1`, `isar.interval_semantics/1`,
+`isar.fit_selection_semantics/2` (which replaced `/1` outright when evidence selection landed —
+H1/H4; `/1` records are unreadable-legacy by design), `isar.interval_semantics/1`,
 `isar.probability_semantics/1`, and `isar.predictive_semantics/1`.
 
 Every authority declaration is scoped: for example, an interval can remain active for
@@ -75,7 +78,9 @@ structured model/context records, so enumeration order is irrelevant, while chan
 route or Akaike denominator changes the complete selection identity. The selection record publishes
 its aggregate eligibility and every candidate-specific reason. STAT-2a consumes those
 producer-owned classifications in a diagnostics-only shadow comparison rather than re-deriving
-them; STAT-2c will enforce them for authority only after the STAT-2b evidence gate.
+them; production selection enforces them for authority now, since evidence selection is the
+production selector (H4) — a recorded AIC fallback lane is a named degraded mode and is
+selection-ineligible for acquisition steering.
 
 For intervals, producer capability and realized authority are separate. A bootstrap or profile
 producer may offer an interval to the delivery ladder, but only the value actually selected after
@@ -124,17 +129,30 @@ Verify (no workspace; ~1–8 min depending on `--workers`):
 python docs/stats/make_figures.py --only cost_bias --workers 8
 ```
 
-## 2. Select: which model, decided by relative information-criterion support
+## 2. Select: which model, decided by Bayesian evidence
 
 Adding parameters always lowers the cost, so raw χ² (or raw likelihood) always votes for the
-more flexible model, and eyeballing a shoulder is not reproducible. ISAR scores each candidate
-model with **AIC** (= cost + 2 per free parameter) and reports **Akaike weights** — each model's
-relative weight within the exact scored denominator — plus a nested likelihood-ratio test for
-nested pairs **[Implemented]**. An Akaike weight is neither a Bayesian posterior model probability
-nor a Bayes factor. STAT-1 records estimator, effective constraints, candidate route, selection
-eligibility, and each model-set transition. It deliberately leaves the legacy calculation intact:
-soft-penalized and hard-conditioned candidates can still receive ordinary-AIC weights even when
-their new semantics mark them ineligible.
+more flexible model, and eyeballing a shoulder is not reproducible. Since H4, ISAR decides by
+**evidence**: each converged candidate gets a marginal likelihood lnZ through a validity ladder —
+a Laplace approximation at the fitted optimum, a warm-started MAP refit when the fit never saw a
+prior it must integrate, or dynesty nested sampling whenever a Gaussian volume cannot be trusted
+(boundary-pinned parameters, failed curvature) — and selection is the posterior
+**P(s) = π_s·Z_s / Σ π·Z**, uniform prior over admissible structures **[Implemented]**. The Occam
+penalty is the integral itself, not a parameter tax. Evidence is comparable only within one
+data-likelihood arena (the record carries the arena fingerprint; cross-arena comparison raises),
+priors enter exactly once (a transported soft constraint IS its parameter's prior), and a
+deferred escalation whose evidence ceiling sits ≥100 nats below a trusted leader is recorded
+`dominated` instead of sampled; surviving escalations sample at n_live=128, scoped to that lane.
+When evidence cannot be computed at all, selection falls back to AIC and *says so* — the record
+names the lane (`aic_no_evidence_inputs` / `aic_all_evidence_invalid`), and a fallback-lane
+record is ineligible to steer acquisition.
+
+**AIC** (= cost + 2 per free parameter) and **Akaike weights** are computed and persisted per
+candidate as the diagnostics lane, plus a nested likelihood-ratio test for nested pairs
+**[Implemented]**. An Akaike weight is neither a Bayesian posterior model probability nor a
+Bayes factor — under `/2` the two live side by side in the candidate table, and the posterior is
+the one that drives. STAT-1 records estimator, effective constraints, candidate route, selection
+eligibility, and each model-set transition.
 
 STAT-2a now also records a diagnostics-only `isar.model_selection/2-shadow` comparison
 **[Implemented]**. For an unconstrained complete route it reuses the exact fitted candidate objects;
@@ -146,15 +164,19 @@ verdict, intervals, certification, stopping, cache identities, and acquisition b
 The current `isar.shadow_model_selection/2` schema authenticates every candidate against the
 declared data-likelihood context and records whether shadow evidence was exactly reused, partly
 reused, freshly fitted, skipped, or unavailable. Those execution fields are provenance, not inputs
-to the standard-selection fingerprint; `/1` records remain readable.
-STAT-2c, not this shadow lane, owns authoritative enforcement after STAT-2b evidence.
+to the standard-selection fingerprint; `/1` shadow records remain readable.
+The shadow lane stays AIC-labeled by design (it measures criteria, D6); the authoritative
+successor it anticipated landed as evidence selection (H4), with the diagnostics/production
+separation carried by the two recorded lanes rather than a promotion ceremony.
 
 Fig. 3 is scan 507 of the archived workspace, chosen by criterion (`n_modes==2`,
 `verdict=="resolved"`, `interval_reliable`), not by eye. The one-mode fit (dashed) leaves
 coherent pull-residual structure near 7 meV that the two-mode fit removes — the lower panel
 carries the evidence. The second mode at 7.12 meV costs three extra parameters and buys
 ΔAIC = 18.8: the Akaike weight concentrates entirely on `stokes2+bg` (w = 1.000 vs 0.000). The
-second peak *earned* its parameters; nobody eyeballed a shoulder.
+second peak *earned* its parameters; nobody eyeballed a shoulder. (The figure renders the
+recorded AIC diagnostics table; live selection is driven by the evidence posterior, which on a
+separation this decisive agrees.)
 
 ![FIG. 3](stats/figures/akaike_example.png)
 
@@ -336,7 +358,8 @@ The certifying ω interval is taken across the retained model-weighted full-para
 ensemble, not from whichever individual scan or single fitted structure happened to look best. In
 the current `isar.master_predictive/2` contract, the parameter particles are selected model by model:
 nested posterior resamples first, then parametric-bootstrap draws, then a trusted HESSE/Laplace
-approximation. Retained ordinary-AIC weights are fixed at their observed-data values. The resulting
+approximation. Retained model weights (evidence posteriors since H4; the record names its
+`model_weight_kind`) are fixed at their observed-data values. The resulting
 `model_interval` is therefore a conditional-on-target-present, heterogeneous mixed-particle quantile;
 it is neither a Bayesian model-averaged credible interval nor a bootstrap distribution of the complete
 refit-and-reselect procedure. No-target mass is not included in its ω quantiles.
@@ -386,8 +409,10 @@ point estimate, not a stored posterior distribution or credible interval. The da
 kept separate (`cost` vs `posterior_cost`), but the data cost is evaluated at the constrained
 optimum. STAT-1 therefore labels effective soft constraints and unapproved hard conditioning as
 selection-ineligible while retaining the legacy scores. STAT-2a now observes comparable
-unconstrained selection fits beside constrained delivery fits without changing authority. STAT-2c
-must enforce that separation before ordinary-AIC eligibility controls production.
+unconstrained selection fits beside constrained delivery fits without changing authority. Under
+H4 the separation is enforced in production: evidence selection consumes transported
+(prespecified-origin) priors exactly once, and `data_dependent_rescue` / `post_selection`
+conditioning remains selection-ineligible.
 
 **Nested-sampler credible intervals [Implemented, diagnostics-only].** Under `--errors bayes` the
 nested sampler runs on the preliminary-best label and records `bayes_interval`,

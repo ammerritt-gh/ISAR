@@ -18,7 +18,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-FIT_SELECTION_SCHEMA = "isar.fit_selection_semantics/1"
+FIT_SELECTION_SCHEMA = "isar.fit_selection_semantics/2"
 INTERVAL_SCHEMA = "isar.interval_semantics/1"
 PROBABILITY_SCHEMA = "isar.probability_semantics/1"
 PREDICTIVE_SCHEMA = "isar.predictive_semantics/1"
@@ -62,6 +62,12 @@ CONSTRAINT_ORIGINS = frozenset(
         "mixed",
     }
 )
+#: Soft-constraint origins H4(c) recast as evidence-comparable: prespecified relative to the scan
+#: being fit, so the prior IS its parameter's prior and enters lnZ exactly once.
+#: ``data_dependent_rescue`` / ``post_selection`` read this scan's own counts and stay ineligible;
+#: an unrecognised origin is not prespecified. The producer (``isar.analyze.loop``) reads this, so
+#: the vocabulary and the rule that uses it stay in one place.
+PRESPECIFIED_SOFT_ORIGINS = frozenset({"prespecified_scientific", "prior_predictive"})
 SELECTION_ELIGIBILITIES = frozenset(
     {
         "eligible",
@@ -71,7 +77,14 @@ SELECTION_ELIGIBILITIES = frozenset(
         "ineligible_incomparable_context",
     }
 )
-MODEL_WEIGHT_KINDS = frozenset({"akaike_relative_weight", "none"})
+MODEL_WEIGHT_KINDS = frozenset(
+    {"posterior_probability", "akaike_relative_weight", "none"}
+)
+SELECTION_METHODS = frozenset({"laplace_evidence_selection", "aic_fallback", "none"})
+SELECTION_FALLBACKS = frozenset({"aic_no_evidence_inputs", "aic_all_evidence_invalid"})
+EVIDENCE_METHODS = frozenset(
+    {"laplace", "laplace_map", "dynesty", "deferred_escalation", "dominated", "invalid"}
+)
 BOOTSTRAP_MEASURE_KINDS = frozenset(
     {
         "unconstrained_parametric_bootstrap",
@@ -98,6 +111,7 @@ SOURCE_MEASURE_SEMANTICS = frozenset(
         "normalized_assignment_weight",
         "normalized_factor_graph_score",
         "akaike_relative_weight",
+        "posterior_probability",
         "heuristic_triage_score",
     }
 )
@@ -152,6 +166,9 @@ _VOCABULARIES = {
     "aggregate_constraint_origin": CONSTRAINT_ORIGINS,
     "selection_eligibility": SELECTION_ELIGIBILITIES,
     "model_weight_kind": MODEL_WEIGHT_KINDS,
+    "selection_method": SELECTION_METHODS,
+    "selection_fallback": SELECTION_FALLBACKS,
+    "evidence_method": EVIDENCE_METHODS,
     "bootstrap_measure_kind": BOOTSTRAP_MEASURE_KINDS,
     "particle_measure_kind": PARTICLE_MEASURE_KINDS,
     "actual_particle_measure_kind": PARTICLE_MEASURE_KINDS,
@@ -1083,6 +1100,64 @@ def _validate_semantics(record: Mapping[str, Any], expected_schema: str, *, for_
             raise SemanticsConstructionError("missing_aggregate_selection_eligibility")
         if "selection_ineligibility_reasons" not in record:
             raise SemanticsConstructionError("missing_aggregate_selection_reasons")
+        if "selection_method" not in record or "selection_fallback" not in record:
+            raise SemanticsConstructionError("missing_selection_lane_fields")
+        method = record["selection_method"]
+        fallback = record["selection_fallback"]
+        weight_kind = record.get("model_weight_kind")
+        has_arena = "evidence_arena_fingerprint" in record
+        if method == "laplace_evidence_selection" and not has_arena:
+            raise SemanticsConstructionError("missing_evidence_arena_fingerprint")
+        lane_coherent = (
+            (
+                method == "laplace_evidence_selection"
+                and weight_kind == "posterior_probability"
+                and fallback is None
+            )
+            or (
+                method == "aic_fallback"
+                and weight_kind == "akaike_relative_weight"
+                and fallback in SELECTION_FALLBACKS
+            )
+            or (
+                method == "none"
+                and weight_kind == "none"
+                and fallback is None
+                and not has_arena
+            )
+        )
+        if not lane_coherent:
+            raise SemanticsConstructionError(
+                "inconsistent_selection_lane", f"{method}/{weight_kind}/{fallback}"
+            )
+        if has_arena != ("evidence_revision" in record):
+            raise SemanticsConstructionError(
+                "inconsistent_selection_lane", "evidence_revision"
+            )
+        if has_arena:
+            revision = record["evidence_revision"]
+            if not isinstance(revision, str) or not revision:
+                raise SemanticsConstructionError(
+                    "inconsistent_selection_lane", "evidence_revision"
+                )
+            candidates = record.get("candidate_records")
+            if isinstance(candidates, list):
+                data_fingerprints = {
+                    candidate["fit_semantics"].get("data_likelihood_fingerprint")
+                    for candidate in candidates
+                    if isinstance(candidate, Mapping)
+                    and isinstance(candidate.get("fit_semantics"), Mapping)
+                }
+                data_fingerprints.discard(None)
+                # The arena is a single-likelihood guarantee: EVERY candidate's data
+                # fingerprint must equal it. A mixed set is exactly the cross-arena
+                # comparison the evidence engine refuses (ArenaMismatchError), so the
+                # persistence trust boundary refuses it too.
+                if any(
+                    fingerprint != record["evidence_arena_fingerprint"]
+                    for fingerprint in data_fingerprints
+                ):
+                    raise SemanticsConstructionError("evidence_arena_mismatch")
     for path, item in _walk(record):
         if not isinstance(item, Mapping):
             continue
@@ -1099,7 +1174,15 @@ def _validate_semantics(record: Mapping[str, Any], expected_schema: str, *, for_
                 raise SemanticsConstructionError("malformed_effective_constraints")
             for constraint in constraints:
                 _validate_constraint(constraint)
-            if item.get("selection_eligibility") == "eligible" and constraints:
+            # H4(c) narrowed this invariant rather than removing it: a prespecified-origin SOFT
+            # prior may be carried by an eligible record (it is the parameter's prior, counted
+            # once). Anything else that constrained the fit — any hard conditioning, any
+            # data-dependent or unrecognised soft origin — still may not.
+            if item.get("selection_eligibility") == "eligible" and not all(
+                constraint.get("constraint_kind") == "soft"
+                and constraint.get("origin") in PRESPECIFIED_SOFT_ORIGINS
+                for constraint in constraints
+            ):
                 raise SemanticsConstructionError("eligible_with_effective_constraints")
 
         if item.get("quantity_kind") == "entropy":

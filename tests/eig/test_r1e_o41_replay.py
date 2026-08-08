@@ -1,20 +1,26 @@
-"""Slice R1-E regression: one real O41 master must stay eligible, contained and scorable.
+"""Slice R1-E regression, re-baselined under ``isar.fit_selection_semantics/2``.
 
 The fixture under ``tests/fixtures/eig_r1e_o41_master_2p05`` is a verbatim single-master extract of
 the O41_Test4 campaign evidence (session entry, its authenticated predictive and target-projection
 artifacts, the retained production scan-design context and action intent, and the campaign card and
-goal).  It pins the three facts the R1-E replay established on real state:
+goal).  Its embedded selection records are ``/1`` — the retired AIC contract — and per H1 there is
+no compatibility reader: under the ``/2`` evidence contract the replay's eligibility check reads
+them as the observability gap ``selection_record_invalid`` and the master fails closed.
 
-* the master passes the merged eligibility policy at a canonical same-Q production action;
-* ``target_core/1`` is generated and stays inside the authorized energy domain under both the
-  global ω(q) basis and the master's own same-Q basis;
-* the legacy-versus-target-core comparison completes, carries nonzero information, and the O41
-  selector returns a role.
+What this file now pins:
 
-It also pins the partition degeneracy the replay found: under the ``0.25 meV`` offset alone the
-predictive falls inside a single partition cell and both candidates score exactly zero.  That is a
-real property of this campaign's 0.5 meV binning, not a defect to be silently normalised away — if
-it changes, the change is deliberate and this test should be updated with the reason.
+* the refusal is STRUCTURED — ``unassessable`` with observability codes, never a scientific
+  verdict, never a crash, and never a silently-granted grandfather pass;
+* ``target_core/1`` geometry is still generated and stays inside the authorized energy domain
+  under both bases (geometry does not depend on the selection record);
+* an unassessable master is never scored — no comparison, no selector role.
+
+Historical facts established by the original R1-E replay (the master passed the merged policy
+under /1; the 0.25 meV single-offset partition degeneracy of this campaign's 0.5 meV binning)
+remain true of that campaign and live in this docstring and git history.  Exercising them again
+would need a current-contract re-extract from a fresh campaign; fabricating /2 evidence fields
+inside verbatim hash-authenticated campaign evidence was rejected (H1: evidence is what it is).
+The live "clean current-contract master is eligible" pin is tests/eig/test_eligibility.py.
 """
 from __future__ import annotations
 
@@ -36,14 +42,16 @@ def replayed() -> dict:
     return report
 
 
-def test_real_master_is_eligible_under_the_merged_policy(replayed: dict):
+def test_old_contract_master_fails_closed_with_a_structured_refusal(replayed: dict):
     row = replayed["masters"][0]
     assert row["master_session_key"] == MASTER_KEY
     assert "replay_error" not in row
-    assert row["eligibility_replay"]["status"] == "eligible"
-    assert row["eligibility_replay"]["scientific_codes"] == []
-    assert row["eligibility_replay"]["observability_codes"] == []
-    # The retained decision point rejected this same master under the pre-fix policy.
+    replay = row["eligibility_replay"]
+    assert replay["status"] == "unassessable"
+    # An unreadable record is an observability gap, not a scientific verdict.
+    assert replay["scientific_codes"] == []
+    assert "selection_record_invalid" in replay["observability_codes"]
+    # The retained decision point (historical evidence, /1-era) is untouched by the flip.
     persisted = row["persisted_decision_point"]
     assert persisted["eligibility_status"] == "ineligible"
     assert "selection_comparison_incomplete" in persisted["scientific_codes"]
@@ -65,38 +73,15 @@ def test_target_core_geometry_is_generated_and_contained_on_both_bases(replayed:
         row["same_q_basis"]["mean_meV"], abs=1e-6)
 
 
-def test_legacy_versus_target_core_comparison_is_complete_and_nonzero(replayed: dict):
+def test_unassessable_master_is_never_scored(replayed: dict):
+    """Fail-closed means fail-closed: no comparison score, no selector role, no offset probe.
+
+    The pre-/2 versions of this file pinned the completed comparison (nonzero information,
+    granted selector authority) and the 0.25 meV single-offset partition degeneracy.  Those runs
+    required an assessable master; with the fixture's /1 records refused at the trust boundary,
+    their absence IS the regression pin — a scored-but-ineligible master here would mean the
+    eligibility gate leaks.
+    """
     row = replayed["masters"][0]
-    variants = [item for item in row["score_primary"]["variants"]
-                if item["status"] == "complete"]
-    assert row["score_primary"]["status"] == "complete"
-    assert len(variants) == 1
-    variant = variants[0]
-    assert variant["reason_codes"] == []
-    assert variant["partition"]["bin_width"] == 0.5
-    assert list(variant["partition"]["offsets"]) == [0.0, 0.25]
-    points = variant["candidate_points"]
-    assert len(points) == 2
-    assert all(item["executed_point_count"] > 0 for item in points.values())
-    assert any(item["information_nats"] > 0.0 for item in points.values())
-    assert len(variant["paired_blocks"]) == replayed["campaign_policy"]["block_count"]
-    assert variant["delta_information_per_executed_point_standard_error_nats"] >= 0.0
-
-    selector = row["selector"]
-    assert selector["available"] is True
-    assert selector["authority_status"] == "granted"
-    assert selector["physical_role"] in {"legacy", "target_core"}
-    # The target core is the strictly smaller, fully contained request the selector requires.
-    assert all(selector["structural_conditions"].values())
-
-
-def test_single_offset_partition_degeneracy_is_pinned(replayed: dict):
-    row = replayed["masters"][0]
-    stability = row["offset_role_stability"]
-    assert set(row["score_offset_probe"]) == {"0.0", "0.25"}
-    assert stability["stable"] is True
-    assert stability["zero_information_offsets"] == ["0.25"]
-    zeroed = row["score_offset_probe"]["0.25"]["score"]["variants"]
-    assert [item["status"] for item in zeroed] == ["complete"]
-    assert all(point["information_nats"] == 0.0
-               for point in zeroed[0]["candidate_points"].values())
+    for key in ("score_primary", "selector", "offset_role_stability", "score_offset_probe"):
+        assert key not in row, f"{key} present — an unassessable master was scored"

@@ -1339,6 +1339,23 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   manifests" operation of the PR #9 review (R9), which S10 would otherwise have required an
   owner-named milestone to perform.
 
+- **S12.** (2026-08-08, In force; validation governance under S10/H1; no production behavior
+  change) **Real-data golden gates are sealed held-out instruments: run only when the owner
+  names it, never consulted during development.** A golden gate is a frozen real-scan scenario
+  whose candidate specifications, seeds, declared priors, and expected claims live entirely in
+  the gitignored local `test_data/golden/<scenario>/scenario.json`; the repository carries only
+  the generic runner (`tests/real_data/test_golden_scenarios.py`, marker `golden`, enabled by
+  `ISAR_GOLDEN=1`). The failure this prevents is Goodhart drift: a benchmark whose expected
+  answers are visible in the tree quietly becomes a tuning target, and a system fitted to its
+  own exam proves nothing to a skeptical colleague. Expectations pin qualitative contracts and
+  toleranced quantities (winner identity, evidence orderings, mode positions), not exact
+  floats, so legitimate machinery evolution does not spuriously fail the gate; a genuine
+  divergence is adjudicated by the owner at the gate run, and per S10 the frozen scenario is
+  never refreshed to match current source without an owner-named re-freeze. First instance:
+  the H204 IN8 scan (T=1.5 K, B=−3.5 T; frozen 2026-08-08 at `26e4b75`), whose exam record —
+  including the blind/assisted evidence contrast that motivates the seal — is retained in the
+  bundle's `provenance/` directory.
+
 ## SCENE hypothesis layer (H-series)
 
 - **H1.** (2026-08-08, In force; opening ruling of the SCENE program — target-free
@@ -1409,6 +1426,64 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   stays excluded per O44). Consequential re-baselines under H1: the STAT-2b campaign-only null
   family shrinks to the QE-bearing nulls, `elastic_only` abstains on the gold axis, and counts as
   a missed window for the drive supervisor.
+- **H4.** (2026-08-08, In force; SCENE-1 PR-b — Laplace evidence) **Production model selection is
+  the posterior over structures, computed from per-candidate Bayesian evidence; AIC becomes a
+  persisted diagnostic. S8 is superseded.** Each converged candidate's lnZ is produced by a
+  validity ladder — Laplace at θ̂, warm-started MAP refit under the full prior bundle, or dynesty
+  nested sampling — with the rung and every escalation reason recorded per candidate; a silent
+  Gaussian volume on a boundary-pinned fit is structurally impossible. Priors obey the
+  exactly-once rule (a transported soft constraint IS its parameter's prior; hard-fixed
+  parameters contribute nothing), evidence is comparable only within one data-likelihood arena
+  (cross-arena comparison raises), and selection is P(s) = π_s·Z_s / Σ π·Z with π uniform over
+  admissible structures — the weight the pooling, EIG, and master consumers read. Dominance
+  pruning skips the sampler for a deferred escalation whose evidence ceiling (lnZ ≤ −cost/2)
+  sits ≥ `PRUNE_MARGIN` (100) nats below a trusted leader, recorded as `dominated`; surviving
+  escalations sample at n_live=128 (`ESCALATION_N_LIVE`, scoped to this lane; the bayes-tier
+  error diagnostics keep D4's n_live=400, and the n_live used is recorded in the candidate's
+  validity provenance). `isar.fit_selection_semantics/2` replaces `/1` outright per H1 — no
+  compatibility reader; the recorded AIC fallback lanes (`aic_no_evidence_inputs`,
+  `aic_all_evidence_invalid`) are named degraded modes and are selection-ineligible for
+  acquisition steering (fail closed). S8's retention of AIC as production authority is
+  superseded; its diagnostic content survives — AIC/AICc/BIC are computed and persisted per
+  candidate, and the STAT-2b harness and shadow-selection lane stay AIC-labeled by design (they
+  measure criteria, D6). Recorded with this entry, per the PR-b rulings of 2026-08-08: **(a)**
+  the Bose factor is universal — thermal occupation (n(ω₀,T)+1) is an explicit factor of every
+  phonon amplitude at the component layer, so the fitted amplitude is the intrinsic strength and
+  amplitude transport is physical; fitted-A values re-baseline deliberately, ω₀/Γ untouched;
+  **(b)** the acoustic/optic/unknown identity framing is deferred to its own design discussion —
+  PR-b evidence is per-structure, the prior machinery keeps the identity axis additive, and when
+  identity lands it records, it does not drive (branch assignment keeps driving until the
+  SCENE-6 swap); **(c)** STAT-1.5 is recast under `/2`: prespecified-origin soft-prior
+  (transport) MAP fits are evidence-comparable — the prior enters lnZ exactly once as itself —
+  while `data_dependent_rescue` and `post_selection` origins remain selection-ineligible.
+- **H5.** (2026-08-08, In force; PR-b review response) **H4(c) is implemented in the selection
+  lane only: a prespecified-origin soft prior costs no selection eligibility, and grants no
+  acquisition authority.** The producer gated on the *presence* of a soft constraint, so a
+  transported branch-model prior read as `ineligible_soft_penalized` — contradicting H4(c). It now
+  gates on origin: `prespecified_scientific` / `prior_predictive` (`PRESPECIFIED_SOFT_ORIGINS`,
+  owned by `isar/schema/statistics.py` so the vocabulary and the rule that reads it stay in one
+  place) no longer cost eligibility; `data_dependent_rescue` / `post_selection` still do, and an
+  unrecognised origin fails closed. The `/2` schema invariant is **narrowed, not removed**: an
+  eligible record may carry effective constraints only when every one of them is a prespecified
+  soft prior — any hard conditioning still raises `eligible_with_effective_constraints`.
+  **Acquisition is deliberately untouched.** `estimator_kind` stays `soft_penalized_likelihood`
+  and the constraint stays recorded, so `isar/eig/eligibility.py` still refuses the fit on the
+  non-MLE estimator and on `selection_constrained`; a test pins that boundary explicitly. Letting
+  soft-prior fits steer beam time is a new acquisition authority and needs its own owner-named
+  ruling — this entry is not it.
+- **H6.** (2026-08-08, In force; PR-b review response) **The intensity basis is renamed by the H4
+  amplitude change, and the old name is a refusal, not a migration.** An `IntensityMeasure` value
+  is now `intrinsic_amplitude_per_exposure`; a pre-H4 point persisted the MEASURED amplitude
+  `A·(n+1)` under `amplitude_per_exposure`. Nothing in the stored number distinguishes the two and
+  the occupation is not recoverable after the fact, so a resumed workspace would fit `log A(ω₀)`
+  across incomparable anchors and emit `phonon.A` constraints wrong by `(n+1)`. Following the
+  `RETIRED_SCHEMAS` precedent (H1), `RETIRED_AMPLITUDE_BASES` is read as a refusal table:
+  `build_branch` **excludes** such anchors and logs one line naming the count and the remedy
+  (re-fit those scans). Exclusion rather than raising, because this is consumed mid-campaign — a
+  resumed campaign should lose incomparable anchors and say so, not abort; below `MIN_ANCHORS` the
+  existing "too sparse" path already returns no branch. Correspondingly the producer refuses to
+  interpret a mode record carrying only `amplitude`: `None`, never a measured value relabelled
+  intrinsic.
 
 ## Session status update
 

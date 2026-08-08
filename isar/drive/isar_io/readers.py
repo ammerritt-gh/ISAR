@@ -41,6 +41,7 @@ _NUMERIC_COLUMNS = frozenset({
     "consistency_alpha", "model_interval_lo", "model_interval_med", "model_interval_hi",
     "model_entropy",
     "target_probability", "identity_entropy",
+    "best_model_posterior",
 })
 _INT_COLUMNS = frozenset({"scan", "prior_n", "n_modes", "n_members",
                           "selected_candidate_index", "track_revision", "consistency_seed"})

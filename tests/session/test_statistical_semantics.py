@@ -10,6 +10,7 @@ import pytest
 
 from isar.analyze import loop, select
 from isar.analyze import errors as errors_mod
+from isar.analyze.evidence import EVIDENCE_REVISION
 from isar.drive import loop as drive_loop
 from isar.predictive import (
     PREDICTIVE_SEMANTICS_INVALID,
@@ -25,6 +26,7 @@ from isar.schema.statistics import (
     compact_for_csv,
     read_optional,
     semantics_fingerprint,
+    validate_fit_selection_semantics,
     validate_predictive_semantics,
     validate_for_write,
 )
@@ -74,7 +76,8 @@ def _fit_semantics(*, estimator="data_likelihood_mle", eligibility="eligible", c
     )
 
 
-def _selection_semantics():
+def _v2_selection_record(_omit=(), **overrides):
+    """A hand-built /2 selection record on the evidence lane; override/omit to break it."""
     fingerprints = {
         name: semantics_fingerprint(f"test.{name}", ["one", "two"])
         for name in (
@@ -85,20 +88,31 @@ def _selection_semantics():
             "legacy_pool_set_fingerprint",
         )
     }
-    return validate_for_write(
-        {
-            "schema": FIT_SELECTION_SCHEMA,
-            **fingerprints,
-            "model_selection_fingerprint": semantics_fingerprint(
-                "test.selection", fingerprints
-            ),
-            "model_weight_kind": "akaike_relative_weight",
-            "selection_eligibility": "eligible",
-            "selection_ineligibility_reasons": [],
-            "authority_scopes": authority_scopes(single_fit_delivery="active"),
-        },
-        FIT_SELECTION_SCHEMA,
-    )
+    record = {
+        "schema": FIT_SELECTION_SCHEMA,
+        **fingerprints,
+        "model_selection_fingerprint": semantics_fingerprint(
+            "test.selection", fingerprints
+        ),
+        "selection_method": "laplace_evidence_selection",
+        "selection_fallback": None,
+        "model_weight_kind": "posterior_probability",
+        "evidence_arena_fingerprint": semantics_fingerprint(
+            "test.arena", {"counts": [2.0, 3.0]}
+        ),
+        "evidence_revision": EVIDENCE_REVISION,
+        "selection_eligibility": "eligible",
+        "selection_ineligibility_reasons": [],
+        "authority_scopes": authority_scopes(single_fit_delivery="active"),
+    }
+    record.update(overrides)
+    for key in _omit:
+        record.pop(key, None)
+    return record
+
+
+def _selection_semantics():
+    return validate_for_write(_v2_selection_record(), FIT_SELECTION_SCHEMA)
 
 
 def _fit_context(*, constraints=None, **changes):
@@ -155,14 +169,46 @@ def test_effective_constraints_are_classified_from_actual_origins():
     assert semantics["estimator_kind"] == "soft_penalized_likelihood"
     assert semantics["aggregate_constraint_origin"] == "mixed"
     assert semantics["selection_eligibility"] == "ineligible_data_dependent_conditioning"
+    # Re-baselined under H4(c): the prespecified soft prior is no longer a reason for anything —
+    # only the data-dependent hard rescue is. The verdict is unchanged; its justification shrank.
     assert semantics["selection_ineligibility_reasons"] == [
-        "effective_soft_constraint",
         "data_dependent_or_post_selection_hard_constraint",
     ]
     assert [item["parameter"] for item in semantics["effective_constraints"]] == [
         "phonon.A",
         "phonon.Gamma",
     ]
+
+
+def test_prespecified_soft_prior_is_selection_eligible_but_still_a_map_fit():
+    """H4(c): a prespecified-origin soft prior IS its parameter's prior and enters lnZ exactly
+    once, so it no longer costs selection eligibility.
+
+    The estimator stays ``soft_penalized_likelihood`` with the constraint still recorded — the
+    fit is a MAP, and that is what keeps it out of acquisition (see the eig eligibility test).
+    This ruling covers the selection lane only."""
+    constraints = ParamConstraints(soft={"phonon.Gamma": (0.3, 0.1)},
+                                   origins={"phonon.Gamma": "prior_predictive"})
+    semantics = loop._fit_semantics_for(
+        _problem(), _fit_context(constraints=constraints), "soft_prior")
+
+    assert semantics["selection_eligibility"] == "eligible"
+    assert semantics["selection_ineligibility_reasons"] == []
+    assert semantics["estimator_kind"] == "soft_penalized_likelihood"
+    assert semantics["effective_constraints"]          # still recorded, never hidden
+
+
+def test_data_dependent_soft_prior_stays_ineligible():
+    """The other half of H4(c): a rescue prior is fit from this scan's own counts, so it is not
+    prespecified and must keep costing eligibility. An unrecognised origin fails closed too."""
+    for origin, expected in (("data_dependent_rescue", "ineligible_data_dependent_conditioning"),
+                             ("post_selection", "ineligible_data_dependent_conditioning"),
+                             ("prespecified_scientific", "eligible")):
+        constraints = ParamConstraints(soft={"phonon.Gamma": (0.3, 0.1)},
+                                       origins={"phonon.Gamma": origin})
+        semantics = loop._fit_semantics_for(
+            _problem(), _fit_context(constraints=constraints), "soft_prior")
+        assert semantics["selection_eligibility"] == expected, origin
 
 
 def test_missing_constraint_origin_fails_soft_at_fit_producer(caplog):
@@ -195,15 +241,24 @@ def test_selection_publishes_each_distinct_model_set_transition():
     ]
     scores = [
         SimpleNamespace(
-            label="one", cost=10.0, k=2, aic=14.0, weight=0.8, survives=True,
-            fit_semantics=fit_semantics,
+            label="one", cost=10.0, k=2, aic=14.0, weight=0.8, akaike_weight=0.8,
+            posterior_probability=0.8, candidate_prior=0.5, log_evidence=-5.0,
+            log_evidence_err=None, evidence_method="laplace", evidence_validity={},
+            survives=True, fit_semantics=fit_semantics,
         ),
         SimpleNamespace(
-            label="two", cost=11.0, k=3, aic=17.0, weight=0.2, survives=True,
-            fit_semantics=fit_semantics,
+            label="two", cost=11.0, k=3, aic=17.0, weight=0.2, akaike_weight=0.2,
+            posterior_probability=0.2, candidate_prior=0.5, log_evidence=-6.4,
+            log_evidence_err=None, evidence_method="laplace", evidence_validity={},
+            survives=True, fit_semantics=fit_semantics,
         ),
     ]
-    selection = SimpleNamespace(scores=scores, pooled=object())
+    selection = SimpleNamespace(
+        scores=scores, pooled=object(), selection_fallback=None,
+        evidence=SimpleNamespace(
+            arena_fingerprint=fit_semantics["data_likelihood_fingerprint"]
+        ),
+    )
     record = scan_delivery._build_selection_semantics(
         results,
         selection,
@@ -230,6 +285,226 @@ def test_selection_publishes_each_distinct_model_set_transition():
     assert record["selection_eligibility"] == "eligible"
     assert record["selection_ineligibility_reasons"] == []
     assert record["model_selection_fingerprint"] not in {record[name] for name in names}
+    # /2 evidence lane: the record names its authority and pins the shared arena.
+    assert record["selection_method"] == "laplace_evidence_selection"
+    assert record["selection_fallback"] is None
+    assert record["model_weight_kind"] == "posterior_probability"
+    assert record["evidence_arena_fingerprint"] == (
+        fit_semantics["data_likelihood_fingerprint"]
+    )
+    assert record["evidence_revision"] == EVIDENCE_REVISION
+    by_label = {item["label"]: item for item in record["candidate_records"]}
+    assert by_label["one"]["posterior_probability"] == 0.8
+    assert by_label["one"]["log_evidence"] == -5.0
+    assert by_label["one"]["evidence_method"] == "laplace"
+    assert by_label["one"]["candidate_prior"] == 0.5
+    # And the persisted record survives a read-side validation round-trip.
+    assert validate_fit_selection_semantics(record) == record
+
+
+def test_v2_lane_coherence_is_validator_enforced():
+    fallback = _v2_selection_record(
+        _omit=("evidence_arena_fingerprint", "evidence_revision"),
+        selection_method="aic_fallback",
+        selection_fallback="aic_no_evidence_inputs",
+        model_weight_kind="akaike_relative_weight",
+    )
+    assert validate_for_write(fallback, FIT_SELECTION_SCHEMA)["selection_method"] == (
+        "aic_fallback"
+    )
+    with pytest.raises(SemanticsConstructionError) as raised:
+        validate_for_write(
+            _v2_selection_record(model_weight_kind="akaike_relative_weight"),
+            FIT_SELECTION_SCHEMA,
+        )
+    assert raised.value.reason_code == "inconsistent_selection_lane"
+    with pytest.raises(SemanticsConstructionError) as raised:
+        validate_for_write(
+            _v2_selection_record(
+                _omit=("evidence_arena_fingerprint", "evidence_revision")
+            ),
+            FIT_SELECTION_SCHEMA,
+        )
+    assert raised.value.reason_code == "missing_evidence_arena_fingerprint"
+    with pytest.raises(SemanticsConstructionError) as raised:
+        validate_for_write(
+            _v2_selection_record(_omit=("selection_method", "selection_fallback")),
+            FIT_SELECTION_SCHEMA,
+        )
+    assert raised.value.reason_code == "missing_selection_lane_fields"
+    # The arena travels with its revision: one without the other is incoherent.
+    with pytest.raises(SemanticsConstructionError) as raised:
+        validate_for_write(
+            _v2_selection_record(_omit=("evidence_revision",)),
+            FIT_SELECTION_SCHEMA,
+        )
+    assert raised.value.reason_code == "inconsistent_selection_lane"
+
+
+def test_v2_rejects_cross_arena_candidate_records():
+    candidate = {
+        "label": "one",
+        "cost": 10.0,
+        "effective_parameter_count": 2,
+        "aic": 14.0,
+        "akaike_weight": 1.0,
+        "log_evidence": -5.0,
+        "log_evidence_err": None,
+        "evidence_method": "laplace",
+        "evidence_validity": {},
+        "candidate_prior": 1.0,
+        "posterior_probability": 1.0,
+        "fit_semantics": _fit_semantics(),
+    }
+    with pytest.raises(SemanticsConstructionError) as raised:
+        validate_for_write(
+            _v2_selection_record(candidate_records=[candidate]),
+            FIT_SELECTION_SCHEMA,
+        )
+    assert raised.value.reason_code == "evidence_arena_mismatch"
+    assert validate_for_write(
+        _v2_selection_record(
+            candidate_records=[candidate],
+            evidence_arena_fingerprint=candidate["fit_semantics"][
+                "data_likelihood_fingerprint"
+            ],
+        ),
+        FIT_SELECTION_SCHEMA,
+    )
+    # A MIXED set is also refused: one matching candidate must not launder another
+    # arena's candidate through the single-arena guarantee.
+    stranger = copy.deepcopy(candidate)
+    stranger["label"] = "two"
+    stranger["fit_semantics"] = dict(stranger["fit_semantics"])
+    stranger["fit_semantics"]["data_likelihood_fingerprint"] = semantics_fingerprint(
+        "test.other_arena", {"counts": [9.0]}
+    )
+    with pytest.raises(SemanticsConstructionError) as raised:
+        validate_for_write(
+            _v2_selection_record(
+                candidate_records=[candidate, stranger],
+                evidence_arena_fingerprint=candidate["fit_semantics"][
+                    "data_likelihood_fingerprint"
+                ],
+            ),
+            FIT_SELECTION_SCHEMA,
+        )
+    assert raised.value.reason_code == "evidence_arena_mismatch"
+
+
+def test_dominated_candidate_persists_excluded_with_its_ceiling():
+    fit_semantics = _fit_semantics()
+    arena = fit_semantics["data_likelihood_fingerprint"]
+    leader = SimpleNamespace(
+        label="one", cost=10.0, k=2, aic=14.0, weight=1.0, akaike_weight=0.9,
+        posterior_probability=1.0, candidate_prior=1.0, log_evidence=-5.0,
+        log_evidence_err=None, evidence_method="laplace", evidence_validity={},
+        survives=True, fit_semantics=fit_semantics,
+    )
+    dominated = SimpleNamespace(
+        label="two", cost=300.0, k=7, aic=314.0, weight=0.0, akaike_weight=0.1,
+        posterior_probability=0.0, candidate_prior=0.0, log_evidence=float("nan"),
+        log_evidence_err=None, evidence_method="dominated",
+        evidence_validity={
+            "dominated_by_leader_log_evidence": -5.0,
+            "prune_margin": 100.0,
+        },
+        survives=False, fit_semantics=fit_semantics,
+    )
+    results = [
+        SimpleNamespace(label="one", fit_semantics=fit_semantics, within_model={}),
+        SimpleNamespace(label="two", fit_semantics=fit_semantics, within_model={}),
+    ]
+    record = scan_delivery._build_selection_semantics(
+        results,
+        SimpleNamespace(
+            scores=[leader, dominated], pooled=None, selection_fallback=None,
+            evidence=SimpleNamespace(arena_fingerprint=arena),
+        ),
+        {
+            "route": "full_two_stage",
+            "offered_labels": ["one", "two"],
+            "scored_labels": ["one", "two"],
+        },
+        error_attachment_labels=[],
+    )
+    by_label = {item["label"]: item for item in record["candidate_records"]}
+    assert by_label["two"]["log_evidence"] is None
+    assert by_label["two"]["evidence_method"] == "dominated"
+    assert by_label["two"]["posterior_probability"] == 0.0
+    assert by_label["two"]["evidence_validity"]["prune_margin"] == 100.0
+    # Excluded from the posterior normalization: the denominator is the leader alone.
+    assert record["weight_denominator_fingerprint"] == (
+        scan_delivery._model_set_fingerprint(
+            "model_weight_denominator",
+            [
+                {
+                    **scan_delivery._model_set_record("one", fit_semantics),
+                    "log_evidence": -5.0,
+                }
+            ],
+        )
+    )
+    assert validate_fit_selection_semantics(record) == record
+
+
+def test_evidence_lane_without_arena_fails_the_builder_soft(caplog):
+    fit_semantics = _fit_semantics()
+    scores = [
+        SimpleNamespace(
+            label="one", cost=10.0, k=2, aic=14.0, weight=1.0, akaike_weight=1.0,
+            posterior_probability=1.0, candidate_prior=1.0, log_evidence=-5.0,
+            log_evidence_err=None, evidence_method="laplace", evidence_validity={},
+            survives=True, fit_semantics=fit_semantics,
+        )
+    ]
+    results = [
+        SimpleNamespace(label="one", fit_semantics=fit_semantics, within_model={})
+    ]
+    record = scan_delivery._build_selection_semantics(
+        results,
+        SimpleNamespace(
+            scores=scores, pooled=None, selection_fallback=None, evidence=None
+        ),
+        {"route": "full_two_stage", "offered_labels": ["one"], "scored_labels": ["one"]},
+        error_attachment_labels=[],
+    )
+    assert record is None
+    assert "missing_evidence_arena" in caplog.text
+
+
+def test_fallback_lane_records_aic_authority():
+    fit_semantics = _fit_semantics()
+    scores = [
+        SimpleNamespace(
+            label="one", cost=10.0, k=2, aic=14.0, weight=1.0, akaike_weight=1.0,
+            posterior_probability=None, candidate_prior=None, log_evidence=None,
+            log_evidence_err=None, evidence_method=None, evidence_validity=None,
+            survives=True, fit_semantics=fit_semantics,
+        )
+    ]
+    results = [
+        SimpleNamespace(label="one", fit_semantics=fit_semantics, within_model={})
+    ]
+    record = scan_delivery._build_selection_semantics(
+        results,
+        SimpleNamespace(
+            scores=scores, pooled=None,
+            selection_fallback="aic_no_evidence_inputs", evidence=None,
+        ),
+        {"route": "full_two_stage", "offered_labels": ["one"], "scored_labels": ["one"]},
+        error_attachment_labels=[],
+    )
+    assert record["selection_method"] == "aic_fallback"
+    assert record["selection_fallback"] == "aic_no_evidence_inputs"
+    assert record["model_weight_kind"] == "akaike_relative_weight"
+    assert "evidence_arena_fingerprint" not in record
+    assert "evidence_revision" not in record
+    row = record["candidate_records"][0]
+    assert row["posterior_probability"] is None
+    assert row["log_evidence"] is None
+    assert row["evidence_method"] is None
+    assert validate_fit_selection_semantics(record) == record
 
 
 def test_comparison_fingerprint_mutation_matrix(monkeypatch):
@@ -318,13 +593,20 @@ def test_selection_fingerprints_are_order_invariant_and_route_sensitive():
             within_model={"omega0_samples": np.array([2.0])},
         ),
     ]
+    evidence = SimpleNamespace(
+        arena_fingerprint=first["data_likelihood_fingerprint"]
+    )
     scores = [
         SimpleNamespace(
-            label="one", cost=10.0, k=2, aic=14.0, weight=0.7,
+            label="one", cost=10.0, k=2, aic=14.0, weight=0.7, akaike_weight=0.7,
+            posterior_probability=0.7, candidate_prior=0.5, log_evidence=-5.0,
+            log_evidence_err=None, evidence_method="laplace", evidence_validity={},
             survives=True, fit_semantics=first,
         ),
         SimpleNamespace(
-            label="two", cost=11.0, k=2, aic=15.0, weight=0.3,
+            label="two", cost=11.0, k=2, aic=15.0, weight=0.3, akaike_weight=0.3,
+            posterior_probability=0.3, candidate_prior=0.5, log_evidence=-5.8,
+            log_evidence_err=None, evidence_method="laplace", evidence_validity={},
             survives=True, fit_semantics=second,
         ),
     ]
@@ -336,13 +618,18 @@ def test_selection_fingerprints_are_order_invariant_and_route_sensitive():
     }
     baseline = scan_delivery._build_selection_semantics(
         results,
-        SimpleNamespace(scores=scores, pooled=object()),
+        SimpleNamespace(
+            scores=scores, pooled=object(), selection_fallback=None, evidence=evidence
+        ),
         route,
         error_attachment_labels=["one", "two"],
     )
     permuted = scan_delivery._build_selection_semantics(
         list(reversed(results)),
-        SimpleNamespace(scores=list(reversed(scores)), pooled=object()),
+        SimpleNamespace(
+            scores=list(reversed(scores)), pooled=object(), selection_fallback=None,
+            evidence=evidence,
+        ),
         {
             **route,
             "offered_labels": ["two", "one"],
@@ -362,7 +649,9 @@ def test_selection_fingerprints_are_order_invariant_and_route_sensitive():
 
     changed_route = scan_delivery._build_selection_semantics(
         results,
-        SimpleNamespace(scores=scores, pooled=object()),
+        SimpleNamespace(
+            scores=scores, pooled=object(), selection_fallback=None, evidence=evidence
+        ),
         {**route, "multimode_route": "guideline_forced"},
         error_attachment_labels=["one", "two"],
     )
@@ -373,7 +662,10 @@ def test_selection_fingerprints_are_order_invariant_and_route_sensitive():
     changed_denominator_scores[0].weight = 1.0
     changed_denominator = scan_delivery._build_selection_semantics(
         results,
-        SimpleNamespace(scores=changed_denominator_scores, pooled=object()),
+        SimpleNamespace(
+            scores=changed_denominator_scores, pooled=object(),
+            selection_fallback=None, evidence=evidence,
+        ),
         route,
         error_attachment_labels=["one"],
     )
@@ -645,6 +937,12 @@ def test_predictive_semantics_exposes_heterogeneous_measures_and_bayesian_limits
     ] == "heterogeneous_model_dependent"
     assert record["formal_bayesian_model"] is False
     assert record["homogeneous_design_eligible"] is False
+    # The predictive re-publishes the selection record's weight kind, never a hardcode.
+    assert record["model_weight_kind"] == "posterior_probability"
+    assert record["quantities"]["model_interval"]["model_weight_kind"] == (
+        "posterior_probability"
+    )
+    assert by_label["nested"]["model_weight_kind"] == "posterior_probability"
     assert by_label["nested"]["prior_kind"] == "optimizer_bound_data_dependent"
     assert by_label["nested"]["prior_data_dependent"] is True
     assert by_label["nested"]["evidence_comparable"] is False
@@ -762,7 +1060,10 @@ def test_probability_like_fields_have_distinct_declared_measures():
     }
     record = scan_delivery._refresh_probability_semantics(
         outcome,
-        predictive_payload={"predictive_retained_set_fingerprint": retained},
+        predictive_payload={
+            "predictive_retained_set_fingerprint": retained,
+            "statistical_semantics": {"model_weight_kind": "posterior_probability"},
+        },
     )
     quantities = record["quantities"]
     assert quantities["confidence"]["quantity_kind"] == "heuristic_score"

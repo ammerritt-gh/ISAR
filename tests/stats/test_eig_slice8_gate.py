@@ -428,16 +428,31 @@ def test_retained_file_identity_is_eol_tolerant_but_content_sensitive():
     assert recorded not in gate._eol_variant_hashes(lf, text=False)
 
 
-def test_repaired_slice8_bundle_is_self_contained_and_reproduces_exact_bytes(tmp_path):
+def test_repaired_slice8_bundle_fails_closed_under_the_v2_selection_contract(tmp_path):
+    """Re-baselined under ``isar.fit_selection_semantics/2`` (H1/H4).
+
+    The retained bundle is verbatim /1-era campaign evidence; its eligibility sources no
+    longer reproduce their summaries under the current selection contract, and the gate must
+    say so with a structured refusal — never a silent pass and never a crash. The byte-exact
+    reproduction this test pinned before /2 was a property of contract-stable replay; H1 rules
+    out judging current code against retired-serialization compatibility, so the live pin is
+    now the refusal (same discipline as the r1e-o41 replay). The frozen ``gate-result.json``
+    stays untouched historical evidence of what the 2026-08-04 gate concluded.
+    """
     source = Path(
         "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3")
     bundle = tmp_path / "isolated-repaired-bundle"
     shutil.copytree(source, bundle)
+    frozen = (bundle / "gate-result.json").read_bytes()
 
     reproduced = gate.evaluate_bundle(bundle)
 
-    assert gate._canonical_bytes(reproduced) == (bundle / "gate-result.json").read_bytes()
-    assert reproduced["overall_disposition"] == "passed"
+    assert reproduced["overall_disposition"] == "invalid"
+    assert reproduced["invalid_reason_code"] == "case_contract_invalid"
+    assert reproduced["invalid_stage"].startswith("case:")
+    # The frozen record of the 2026-08-04 evaluation is still in the bundle, unrewritten — byte
+    # for byte, not merely non-empty: a rewritten verdict would also be non-empty.
+    assert (bundle / "gate-result.json").read_bytes() == frozen
 
 
 def _resign_replacement_bundle(bundle: Path) -> None:

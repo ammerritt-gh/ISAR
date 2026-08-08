@@ -23,6 +23,22 @@ def test_amendments_reject_plain_and_markdown_emphasized_negation():
     assert make_decision_index.amendments(rows) == {"O1": ["O4"]}
 
 
+def test_amendments_read_the_passive_voice_a_headline_supersession_uses():
+    """H4 writes "S8 is superseded", not "supersedes S8" — the same claim, so it must count.
+
+    The negated form must still be refused: the participle has to follow the copula immediately,
+    which is what keeps "is not superseded" (plain or emphasized) out.
+    """
+    rows = [
+        ("S8", "", "retain AIC"),
+        ("S9", "", "S8 is not superseded by this ruling"),
+        ("S10", "", "S8 is **not** superseded here either"),
+        ("H4", "", "AIC becomes a persisted diagnostic. S8 is superseded"),
+    ]
+
+    assert make_decision_index.amendments(rows) == {"S8": ["H4"]}
+
+
 def test_amendments_accept_only_targets_earlier_in_ledger_order():
     rows = [
         ("O1", "amends O2 and O999 and O1", "invalid forward, unknown, and self references"),

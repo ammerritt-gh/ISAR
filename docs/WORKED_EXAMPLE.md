@@ -63,7 +63,9 @@ quick number is trustworthy here. See
 
 ## 7. Model selection + modality
 
-Across the candidate models, AIC gives `elastic+stokes+bg` essentially all the Akaike weight, and the
+Across the candidate models, evidence selection gives `elastic+stokes+bg` essentially all the
+posterior probability (the linked figure shows the retained Akaike-weight diagnostic, which
+agrees on a separation this decisive), and the
 pooled energy distribution is unimodal → **fold** (a single agreed answer). See
 [`assets/phase3_step1/figures/selection_akaike_weights.png`](assets/phase3_step1/figures/selection_akaike_weights.png).
 

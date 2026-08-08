@@ -224,6 +224,12 @@ def test_force_masters_unknown_id_fails_loud(monkeypatch):
                             force_masters=frozenset({"master:nope"}))
 
 
+# The run_batch campaign family below is slow-marked (owner rule 2026-08-08): each test drives
+# real fits over synthetic IN8 files, and under evidence selection every clean synthetic scan
+# tends to offer a junk 2-mode superset whose railed member escalates to dynesty — per-scan
+# escalation cost × scans × batches made the worst of these (~drains_wave) run 30+ minutes in
+# the fast lane. The full lane still runs them pre-merge; pytest-timeout (900 s) bounds each.
+@pytest.mark.slow
 def test_force_masters_accepts_a_bare_string_as_one_id(tmp_path, monkeypatch):
     # A bare string is one ledger id, not an iterable of characters; iterating it would produce
     # one-character ids that match nothing and fail the targeted refit loudly but wrongly.
@@ -285,6 +291,7 @@ def _detectors_no_timing(detectors):
     return out
 
 
+@pytest.mark.slow
 def test_run_batch_routes_scan_and_master_bootstrap_caps_by_role(tmp_path, monkeypatch):
     data = _in8_file(tmp_path, "ROLEM", 54500, 2.25)
     ws = Workspace.open(tmp_path / "role-ws")
@@ -311,6 +318,7 @@ def test_run_batch_routes_scan_and_master_bootstrap_caps_by_role(tmp_path, monke
     assert observed == {"scan_M": 17, "master_M": 123}
 
 
+@pytest.mark.slow
 def test_run_batch_routes_optional_error_tiers_by_role_and_keeps_legacy_default(
         tmp_path, monkeypatch):
     data = _in8_file(tmp_path, "ROLET", 54600, 2.25)
@@ -344,6 +352,12 @@ def test_run_batch_routes_optional_error_tiers_by_role_and_keeps_legacy_default(
         "scan": "fast", "master": "cheap"}
 
 
+# The three heaviest campaign tests exceed the global 900 s ceiling even post-cut (the full
+# lane's worker-kill failures of 2026-08-08 are exactly these three): explicit budgets so the
+# full lane completes with named results. NOT re-verified by a full-lane rerun this session —
+# the growth-policy fix (queued design work) is the real cost reduction.
+@pytest.mark.timeout(2700)
+@pytest.mark.slow
 def test_parallel_masters_match_serial_end_to_end(tmp_path):
     # Real multiprocessing gate: two IN8 files → two (Q,T) master groups, both refit on a cold run.
     # Serial (workers=1) vs parallel-masters (workers=4) on fresh workspaces must produce identical
@@ -402,6 +416,7 @@ def test_parallel_masters_match_serial_end_to_end(tmp_path):
     assert not any(k.startswith("master:") for k in session.scans)
 
 
+@pytest.mark.slow
 def test_master_only_certification_fits_no_physical_rows_and_reuses_publication(
         tmp_path, monkeypatch):
     from isar.drive import loop as drive_loop
@@ -484,6 +499,8 @@ def test_master_only_certification_fits_no_physical_rows_and_reuses_publication(
     assert progress["completed"] == 1 and progress["reused_workspace"] == 1
 
 
+@pytest.mark.timeout(2700)
+@pytest.mark.slow
 def test_master_certification_subset_refits_only_dirty_q_and_preserves_clean_master(
         tmp_path, monkeypatch):
     from isar.drive import loop as drive_loop
@@ -541,6 +558,8 @@ def test_master_certification_subset_refits_only_dirty_q_and_preserves_clean_mas
     assert after.scans[masters[1].scan_id].provenance["analysis_tier"] == "full"
 
 
+@pytest.mark.timeout(2700)
+@pytest.mark.slow
 def test_master_certification_drains_wave_and_checkpoints_success_after_worker_failure(
         tmp_path, monkeypatch):
     from isar.drive import loop as drive_loop

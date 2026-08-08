@@ -130,6 +130,10 @@ class StructureFitResult:
     # Full fitted-parameter covariance in ``params`` insertion order.  Retained for posterior-
     # predictive acquisition; a missing/untrusted covariance is represented by ``None``.
     parameter_covariance: list | None = None
+    # Per-parameter boundary-pin flags keyed by the REAL (dotted) parameter names, in ``params``
+    # order. What the evidence validity ladder reads (SCENE-1 PR-b): a pinned free parameter
+    # invalidates the Laplace curvature and escalates to nested sampling.
+    at_limit: dict | None = None
     # Additive statistical provenance.  A construction failure leaves this ``None`` while the
     # numerical fit remains usable.
     fit_semantics: dict | None = None
@@ -362,6 +366,16 @@ def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
         "none" if not origin_set else origin_set[0] if len(origin_set) == 1 else "mixed"
     )
     has_soft = any(item["constraint_kind"] == "soft" for item in effective)
+    # Only a soft constraint the ruling did NOT recast costs eligibility (H4(c)); a prespecified
+    # one is comparable. ``has_soft`` still drives estimator_kind — the fit is a MAP either way,
+    # which is what keeps it out of acquisition (isar/eig/eligibility.py).
+    from isar.schema.statistics import PRESPECIFIED_SOFT_ORIGINS
+
+    has_nonprespecified_soft = any(
+        item["constraint_kind"] == "soft"
+        and item["origin"] not in PRESPECIFIED_SOFT_ORIGINS
+        for item in effective
+    )
     has_data_conditioning = any(
         item["origin"] in {"data_dependent_rescue", "post_selection"} for item in effective
     )
@@ -372,14 +386,14 @@ def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
     )
     if has_data_conditioning:
         eligibility = "ineligible_data_dependent_conditioning"
-    elif has_soft:
+    elif has_nonprespecified_soft:
         eligibility = "ineligible_soft_penalized"
     elif has_other_hard:
         eligibility = "ineligible_unapproved_conditioning"
     else:
         eligibility = "eligible"
     reasons = []
-    if has_soft:
+    if has_nonprespecified_soft:
         reasons.append("effective_soft_constraint")
     if has_data_conditioning:
         reasons.append("data_dependent_or_post_selection_hard_constraint")
@@ -572,7 +586,7 @@ def _minimize_fixed(backend, objective, x0, bounds, be_names, fixed_pos, fixed_v
 
 def result_from_backend(label, composite, costv, n_used, k, br,
                         *, prior_omega=None, acoustic_omega=None, penalty=None,
-                        hard_fixed=False) -> StructureFitResult:
+                        hard_fixed=False, T=None) -> StructureFitResult:
     """Build a :class:`StructureFitResult` from a backend result, reading the *raw,
     separated* convergence/covariance/profile signals (not the lossy combined success).
 
@@ -613,19 +627,26 @@ def result_from_backend(label, composite, costv, n_used, k, br,
     else:
         param_errors = {n: None for n in names}
 
-    # per-mode collection, canonicalized ascending by ω₀ (kills label switching)
+    # per-mode collection, canonicalized ascending by ω₀ (kills label switching). The fitted A is
+    # INTRINSIC (H4); ``amplitude`` stays the MEASURED Stokes strength A·(n+1)(ω₀,T) so every
+    # delivery-space consumer (intensity portability, branch features, detection power, reports)
+    # keeps its counts-scale meaning, with the intrinsic value alongside. With T unknown the two
+    # coincide by convention ((n+1)=1 — no occupation information).
+    from isar.analyze.phonon import bose_occupation
     modes = []
     for i in composite.phonon_indices():
         w0, w0e = composite._omega0_at(theta, cov, i)
         g_err = float(errs[i + 1]) if errs is not None else float("nan")
+        occ = bose_occupation(w0, T) if T is not None else 1.0
         modes.append({"omega0": w0, "omega0_err": w0e, "gamma": float(theta[i + 1]),
-                      "gamma_err": g_err, "amplitude": float(theta[i + 2])})
+                      "gamma_err": g_err, "amplitude": float(theta[i + 2]) * occ,
+                      "amplitude_intrinsic": float(theta[i + 2])})
     modes.sort(key=lambda m: m["omega0"])
     n_modes = len(modes)
 
     # primary mode → the reported scalar ω₀ / Γ (back-compat); the acoustic hint (Phase A) selects
     # which mode of a multi-mode fit is the acoustic QoI, ahead of the prior/amplitude fallbacks.
-    prim_i = composite.primary_phonon_index(theta, cov, prior_omega, acoustic_omega)
+    prim_i = composite.primary_phonon_index(theta, cov, prior_omega, acoustic_omega, T=T)
 
     optimizer_converged = bool(br.success)
     covariance_ok = bool(br.covariance_ok)
@@ -661,6 +682,9 @@ def result_from_backend(label, composite, costv, n_used, k, br,
         message=br.message, modes=modes, n_modes=n_modes, gamma_at_bound=gamma_at_bound,
         prior_penalty=prior_penalty, posterior_cost=posterior_cost, fit_kind=fit_kind,
         parameter_covariance=(np.asarray(cov, dtype=float).tolist() if cov is not None else None),
+        # backend keys are sanitized identifiers; persist under the real dotted names. A
+        # hard-fixed param is absent from the backend map (it was never free) → False.
+        at_limit={n: bool((br.at_limit or {}).get(_sanitize(n), False)) for n in names},
     )
 
 
@@ -682,6 +706,7 @@ def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False, x0=None) -> Stru
         acoustic_omega=getattr(ctx, "acoustic_omega", None),
         penalty=prob.penalty,
         hard_fixed=prob.is_hard_fixed,
+        T=getattr(ctx, "T", None),
     )
     _attach_fit_semantics(result, prob, ctx)
     return result

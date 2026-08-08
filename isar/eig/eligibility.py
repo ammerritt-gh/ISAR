@@ -348,7 +348,10 @@ def _selection_checks(record: Mapping[str, Any] | None, science: list[str], gaps
     except (SemanticsConstructionError, TypeError, ValueError, KeyError, OverflowError):
         gaps.append("selection_record_invalid")
         return None
-    if validated.get("model_weight_kind") != "akaike_relative_weight" or validated.get("selection_eligibility") != "eligible":
+    # Fail closed: only the evidence lane may steer acquisition. A recorded AIC-fallback
+    # selection (evidence degraded or absent) is exactly the record that must not drive
+    # beam time, so it reads as scientifically ineligible rather than being grandfathered.
+    if validated.get("model_weight_kind") != "posterior_probability" or validated.get("selection_eligibility") != "eligible":
         science.append("selection_ineligible")
     candidates = validated.get("candidate_records")
     if not isinstance(candidates, list) or not candidates:

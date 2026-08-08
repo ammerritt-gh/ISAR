@@ -100,17 +100,20 @@ def test_full_tier_leaves_all_bayes_fields_default():
 
 @pytest.mark.slow
 def test_posterior_sampled_once_on_prelim_best_only(monkeypatch):
+    """The §5.4 bayes TIER samples one label. The evidence ladder's dynesty escalations call
+    the same entry point with ``prior_bundle`` (PR-b) — a separately budgeted lane, filtered
+    out here so this test keeps pinning the tier's bounded-cost contract."""
     calls = []
 
     def _capture(hyp, *a, **k):
-        calls.append(getattr(hyp, "label", None))
+        calls.append((getattr(hyp, "label", None), "prior_bundle" in k))
         return _canned_bayes()
 
     monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", _capture)
     fit = scan_delivery.fit_one(_single_peak_ctx(), _card(), prior=None, M=20, seed=1, errors_tier="bayes")
 
-    assert len(calls) == 1                     # bounded cost: posterior on one label only
-    assert calls[0] == fit["best_label"]       # and that label is the (prelim==final) best
+    tier_calls = [label for label, bundled in calls if not bundled]
+    assert tier_calls == [fit["best_label"]]   # bounded cost: the tier samples the best only
 
 
 @pytest.mark.slow

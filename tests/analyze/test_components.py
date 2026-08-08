@@ -43,8 +43,11 @@ def test_phonon_matches_stokes_astokes_convolution():
     od, g, A = 4.0, 0.5, 300.0
     out = C.PhononDHO().evaluate(x, {"Omega_d": od, "Gamma": g, "A": A}, ctx)
     omega0 = omega0_from(od, g)
+    # H4: the fitted A is intrinsic; the lineshape sees the measured strength A·(n+1).
+    from isar.analyze.phonon import bose_occupation
     expected = convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
-                                   g, A, 0.0, 0.0, ctx.T, peak="stokes+astokes")
+                                   g, A * bose_occupation(omega0, ctx.T), 0.0, 0.0, ctx.T,
+                                   peak="stokes+astokes")
     assert np.allclose(out, expected)
 
 
@@ -103,8 +106,11 @@ def test_composite_equals_convolute_voigt_dho_all():
     theta = np.array([4.0, 0.5, 300.0, 50.0, 10.0])  # (Omega_d, Gamma, A, E, BG)
     out = comp.evaluate(x, theta, ctx)
     omega0 = omega0_from(theta[0], theta[1])
+    # H4: measured phonon strength = intrinsic A · (n+1); elastic/bg are occupation-free.
+    from isar.analyze.phonon import bose_occupation
     expected = convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
-                                   theta[1], theta[2], theta[3], theta[4], ctx.T, peak="all")
+                                   theta[1], theta[2] * bose_occupation(omega0, ctx.T),
+                                   theta[3], theta[4], ctx.T, peak="all")
     assert np.allclose(out, expected)
 
 
@@ -131,8 +137,11 @@ def test_composite_nnls_basis_matches_initial_guess_columns():
     assert names == ["phonon.A", "elastic.E", "bg.BG"]
     assert phi.shape == (x.size, 3)
     omega0 = omega0_from(od, g0)
+    from isar.analyze.phonon import bose_occupation
+    # H4: the phonon's unit column is the unit INTRINSIC amplitude response = (n+1)·lineshape(1).
     ph = convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
-                             g0, 1.0, 0.0, 0.0, ctx.T, peak="stokes+astokes")
+                             g0, bose_occupation(omega0, ctx.T), 0.0, 0.0, ctx.T,
+                             peak="stokes+astokes")
     el = convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
                              g0, 0.0, 1.0, 0.0, ctx.T, peak="elastic")
     assert np.allclose(phi[:, 0], ph)
@@ -247,3 +256,75 @@ def test_uniform_exposure_is_regression_identical():
     theta = np.array([4.0, 0.4, 200.0, 7.0])
     assert np.array_equal(comp.evaluate(x, theta, base_ctx),
                           comp.evaluate(x, theta, uniform_ctx))
+
+
+# --- universal Bose factor (H4): fitted A is intrinsic, model applies (n+1) ------------------
+
+def test_phonon_amplitude_is_intrinsic_times_bose():
+    """evaluate(A) == convolute(measured) with measured = A·(n+1)(ω₀,T) — the H4 relation."""
+    from isar.analyze.phonon import bose_occupation, omega0_from
+
+    x = np.linspace(-10.0, 10.0, 161)
+    ctx = _ctx(center=0.0, T=150.0)
+    od, g, A = 3.0, 0.5, 40.0
+    omega0 = omega0_from(od, g)
+    got = C.PhononDHO().evaluate(x, {"Omega_d": od, "Gamma": g, "A": A}, ctx)
+    expected = convolute_voigt_dho(x, omega0, 0.0, ctx.gauss_fwhm, ctx.lorentz_fwhm,
+                                   g, A * bose_occupation(omega0, ctx.T), 0.0, 0.0, ctx.T,
+                                   peak="stokes+astokes")
+    assert np.allclose(got, expected)
+
+
+def test_bose_occupation_limits():
+    from isar.analyze.phonon import bose_occupation, KB
+
+    assert bose_occupation(5.0, 0.0) == 1.0                     # T=0: no occupation
+    assert bose_occupation(5.0, -10.0) == 1.0                   # defensive
+    assert abs(bose_occupation(50.0, 10.0) - 1.0) < 1e-20       # Bose-dead limit
+    # classical limit: (n+1) ≈ kT/ω + 1/2
+    w, T = 0.05, 300.0
+    assert abs(bose_occupation(w, T) - (KB * T / w + 0.5)) < 0.01
+
+
+def test_same_intrinsic_amplitude_across_temperatures():
+    """One intrinsic A produces Stokes peaks scaled by the occupation ratio — the decoupling
+    that makes amplitude transport physical (H4)."""
+    from isar.analyze.phonon import bose_occupation, omega0_from
+
+    x = np.linspace(-10.0, 10.0, 401)
+    od, g, A = 4.0, 0.4, 100.0
+    omega0 = omega0_from(od, g)
+    cold = C.PhononDHO(peak="stokes").evaluate(x, {"Omega_d": od, "Gamma": g, "A": A},
+                                               _ctx(center=0.0, T=30.0))
+    hot = C.PhononDHO(peak="stokes").evaluate(x, {"Omega_d": od, "Gamma": g, "A": A},
+                                              _ctx(center=0.0, T=600.0))
+    ratio = np.max(hot) / np.max(cold)
+    expected = bose_occupation(omega0, 600.0) / bose_occupation(omega0, 30.0)
+    assert abs(ratio - expected) < 1e-6 * expected
+
+
+def test_detailed_balance_ratio_survives_reparameterization():
+    """The anti-Stokes/Stokes ratio stays exp(−ω/kT) — the tie is untouched by H4."""
+    from isar.analyze.lineshapes import KB
+    from isar.analyze.phonon import omega0_from
+
+    x = np.linspace(-12.0, 12.0, 961)
+    ctx = _ctx(center=0.0, gauss_fwhm=0.6, lorentz_fwhm=0.0, T=250.0)
+    od, g, A = 5.0, 0.3, 80.0
+    omega0 = omega0_from(od, g)
+    y = C.PhononDHO().evaluate(x, {"Omega_d": od, "Gamma": g, "A": A}, ctx)
+    stokes = float(np.max(y[x > 1.0]))
+    astokes = float(np.max(y[x < -1.0]))
+    assert abs(astokes / stokes - np.exp(-omega0 / (KB * ctx.T))) < 0.02
+
+
+def test_primary_phonon_index_bose_corrects_with_T():
+    """With T, 'strongest' means measured A·(n+1): a low-ω mode with smaller intrinsic A can be
+    the stronger measured peak. Without T, raw intrinsic A decides (old behaviour)."""
+    comp = C.CompositeModel([C.PhononDHO(), C.PhononDHO(prefix="phonon2"),
+                             C.ConstantBackground()])
+    # mode 1: ω≈1 meV, intrinsic 60; mode 2: ω≈8 meV, intrinsic 100. At T=300 K the low-ω
+    # occupation (~26×) makes mode 1 the far stronger measured peak.
+    theta = np.array([1.0, 0.1, 60.0, 8.0, 0.1, 100.0, 5.0])
+    assert comp.primary_phonon_index(theta) == 3                # raw intrinsic: mode 2
+    assert comp.primary_phonon_index(theta, T=300.0) == 0       # measured: mode 1

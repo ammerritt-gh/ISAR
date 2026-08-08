@@ -102,6 +102,8 @@ def _diagnose(res, bounds, od_i, od_draws, omega0_interval, ess, max_iter):
         return False, f"ess={ess:.0f} below {ESS_MIN:.0f}"
     if not np.isfinite(logzerr) or logzerr > LOGZERR_MAX:    # coarse evidence blow-up guard
         return False, f"logzerr={logzerr:.2f} exceeds {LOGZERR_MAX}"
+    if od_i is None:                                         # phonon-less: position checks vacuous
+        return True, None
     od_lo, od_hi = bounds[od_i]
     if _rail_fraction(od_draws, od_lo, od_hi, RAIL_RTOL) > RAIL_FRAC:
         return False, "Omega_d railed against the window (ill-posed position)"
@@ -111,7 +113,8 @@ def _diagnose(res, bounds, od_i, od_draws, omega0_interval, ess, max_iter):
     return True, None
 
 
-def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, seed: int = 12345,
+def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
+                       seed: int = 12345,
                        n_live: int = DEFAULT_NLIVE, dlogz: float = DEFAULT_DLOGZ,
                        level: float = 0.68, max_iter: int | None = None,
                        sample: str = "rwalk", bound: str = "multi") -> BayesResult:
@@ -120,7 +123,21 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, seed: int = 12345,
     §5.4 convergence gate. No-op (``converged=False``) on a non-converged fit, mirroring the
     bootstrap. ``prior`` (a :class:`~isar.analyze.prior.PhononPrior`) makes the dispersion
     expectation a literal Normal prior on ω₀; ``None`` ⇒ weakly-informative (posterior ≈
-    likelihood ≈ bootstrap in the well-counted regime, by Bernstein–von Mises)."""
+    likelihood ≈ bootstrap in the well-counted regime, by Bernstein–von Mises).
+
+    ``prior_bundle`` (a :class:`~isar.analyze.catalogue.PriorBundle`, SCENE-1 PR-b) is the
+    per-parameter proper-prior path the evidence ladder escalates to: each parameter is sampled
+    through its own truncated prior ppf, so the priors enter via the prior transform and the
+    loglike stays pure data — ``log_evidence`` is then the properly prior-weighted lnZ,
+    consistent with the Laplace lanes. Mutually exclusive with ``prior`` (the ω₀-diagnostics
+    tier), which stays a loglike term on the DERIVED ω₀ and is untouched. The bundle must cover
+    every sampled (free, non-hard-fixed) parameter — a missing name raises, because sampling a
+    parameter the bundle excluded (e.g. hard-fixed) would integrate a dimension the evidence
+    must not have."""
+    if prior is not None and prior_bundle is not None:
+        raise ValueError("prior and prior_bundle are mutually exclusive: the PhononPrior "
+                         "diagnostics tier and the evidence prior-transform tier answer "
+                         "different questions")
     prior_used = prior is not None
     prior_specification = None
     prior_fingerprint = None
@@ -148,42 +165,75 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, seed: int = 12345,
     counts = ctx.counts_used
     est = estimators.get_estimator("baker_cousins")
     composite = prob.composite
-    od_i = names.index(next(n for n in names if n.endswith(".Omega_d")))
-    g_i = names.index(next(n for n in names if n.endswith(".Gamma")))
+    # Phonon-less composites (the PR-a first-class nulls: bg / elastic+bg) have no Ω_d/Γ —
+    # they sample and return evidence like any structure, with the ω₀/Γ deliverables vacuous
+    # (empty samples, NaN intervals) rather than faked. Only the evidence lane sends them here.
+    od_name = next((n for n in names if n.endswith(".Omega_d")), None)
+    od_i = names.index(od_name) if od_name is not None else None
+    g_name = next((n for n in names if n.endswith(".Gamma")), None)
+    g_i = names.index(g_name) if g_name is not None else None
+    if prior_used and od_i is None:
+        raise ValueError("PhononPrior is a prior on the derived omega0; it cannot apply to a "
+                         "phonon-less composite")
 
     lows = np.array([b[0] for b in prob.bounds], dtype=float)
     spans = np.array([b[1] - b[0] for b in prob.bounds], dtype=float)
-    prior_specification = {
-        "prior_kind": "optimizer_bound_data_dependent",
-        "parameter_prior": "uniform_over_optimizer_bounds",
-        "optimizer_bounds": [
-            {"parameter": str(name), "lower": float(bounds[0]), "upper": float(bounds[1])}
-            for name, bounds in zip(names, prob.bounds)
-        ],
-        "omega_loglike_term": (
-            {
-                "kind": "normalized_gaussian",
-                "mean": float(prior.omega0),
-                "sigma": float(prior.omega0_sigma),
-            }
-            if prior_used
-            else None
-        ),
-    }
+    if prior_bundle is not None:
+        if prob.fixed_pos:
+            # The sampler works in the FULL parameter space (freezing happens only inside
+            # _minimize_fixed); sampling a hard-fixed coordinate would integrate a dimension
+            # the evidence must not have. Fail closed — the evidence ladder records it.
+            frozen = [names[i] for i in prob.fixed_pos]
+            raise ValueError(f"prior_bundle lane cannot sample a hard-fixed candidate "
+                             f"(frozen: {frozen}); evidence for it has no dynesty escalation")
+        by_name = prior_bundle.by_name()
+        missing = [n for n in names if n not in by_name]
+        if missing:
+            raise ValueError(f"prior_bundle has no prior for sampled parameter(s) {missing}; "
+                             f"every free parameter must carry exactly one prior factor")
+        ppfs = [by_name[n].ppf for n in names]
+        prior_specification = {
+            "prior_kind": "catalogue_prior_bundle",
+            "parameter_prior": "per_parameter_truncated_ppf",
+            "parameters": [by_name[n].spec() for n in names],
+            "omega_loglike_term": None,
+        }
+        semantics_id = "isar.catalogue_prior_bundle_nested_prior/1"
+
+        def ptform(u):
+            return np.array([f(v) for f, v in zip(ppfs, np.asarray(u, dtype=float))])
+    else:
+        prior_specification = {
+            "prior_kind": "optimizer_bound_data_dependent",
+            "parameter_prior": "uniform_over_optimizer_bounds",
+            "optimizer_bounds": [
+                {"parameter": str(name), "lower": float(bounds[0]), "upper": float(bounds[1])}
+                for name, bounds in zip(names, prob.bounds)
+            ],
+            "omega_loglike_term": (
+                {
+                    "kind": "normalized_gaussian",
+                    "mean": float(prior.omega0),
+                    "sigma": float(prior.omega0_sigma),
+                }
+                if prior_used
+                else None
+            ),
+        }
+        semantics_id = "isar.optimizer_bound_nested_prior/1"
+
+        def ptform(u):
+            return lows + np.asarray(u) * spans
+
     try:
-        prior_fingerprint = semantics_fingerprint(
-            "isar.optimizer_bound_nested_prior/1", prior_specification
-        )
+        prior_fingerprint = semantics_fingerprint(semantics_id, prior_specification)
     except SemanticsConstructionError as exc:
         log.warning(
             "semantics_construction_failed producer=isar.analyze.errors.bayes "
-            "quantity=optimizer_bound_prior reason_code=%s",
+            "quantity=nested_prior reason_code=%s",
             exc.reason_code,
         )
         prior_fingerprint = None
-
-    def ptform(u):
-        return lows + np.asarray(u) * spans
 
     mu = float(prior.omega0) if prior_used else 0.0
     sig = float(prior.omega0_sigma) if prior_used else 1.0
@@ -191,7 +241,7 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, seed: int = 12345,
     def loglike(theta):
         f = composite.evaluate(x, theta, ctx)
         ll = -0.5 * est.cost(counts, f)                     # exact Baker–Cousins −2lnL/2
-        if prior_used:
+        if prior_used:                                      # guarded above: od_i/g_i exist
             w0 = math.sqrt(theta[od_i] ** 2 + theta[g_i] ** 2)
             ll += _gauss_logpdf(w0, mu, sig)
         return ll if np.isfinite(ll) else -1e300
@@ -211,11 +261,18 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, seed: int = 12345,
     except Exception as exc:                                # → frequentist fallback + flag
         return _failed(f"sampler failed: {exc}")
 
-    od, g = eq[:, od_i], eq[:, g_i]
-    omega0_samples = np.sqrt(od ** 2 + g ** 2)
-    gamma_samples = np.asarray(g, dtype=float)
-    omega0_interval = _percentile_interval(omega0_samples, level)
-    gamma_interval = _percentile_interval(gamma_samples, level)
+    if od_i is not None:
+        od, g = eq[:, od_i], eq[:, g_i]
+        omega0_samples = np.sqrt(od ** 2 + g ** 2)
+        gamma_samples = np.asarray(g, dtype=float)
+        omega0_interval = _percentile_interval(omega0_samples, level)
+        gamma_interval = _percentile_interval(gamma_samples, level)
+    else:
+        # No phonon → no ω₀/Γ deliverable. Empty samples and NaN intervals, never fakes —
+        # the delivery contract for "no number" is None/NaN (PR-a null-winner rule).
+        od = np.empty(0)
+        omega0_samples = gamma_samples = np.empty(0)
+        omega0_interval = gamma_interval = nan3
 
     ok, reason = _diagnose(res, prob.bounds, od_i, od, omega0_interval, ess, max_iter)
     return BayesResult(omega0_interval=omega0_interval, gamma_interval=gamma_interval,

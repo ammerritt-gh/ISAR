@@ -95,6 +95,12 @@ def test_run_batch_emits_timer_stages(tmp_path):
 
 
 # --------------------------------------------------------------------------- IN8 real-data driver
+# The three IN8 campaign smokes are slow-marked (owner rule 2026-08-08, condition fired): under
+# evidence selection their guideline-declared peaks force 2-mode offers whose railed superset
+# candidates escalate to dynesty inside every master fit — ~76 s each at ESCALATION_N_LIVE=128
+# (measured serial, post-cut) against the not-slow lane's ~1 min contract. The full lane still
+# runs them pre-merge.
+@pytest.mark.slow
 @pytest.mark.skipif(not _have_in8, reason="IN8 test_data not present (gitignored)")
 def test_in8_provenance_carries_fit_seconds(tmp_path):
     """A fitted scan stamps entry.provenance['fit_seconds'] (+ two_stage/errors_attach), which rides
@@ -125,6 +131,7 @@ def test_in8_provenance_carries_fit_seconds(tmp_path):
 
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(not _have_in8, reason="IN8 test_data not present (gitignored)")
 def test_in8_driver_end_to_end(tmp_path):
     from isar.parsers import ill_in8
@@ -153,6 +160,7 @@ def test_in8_driver_end_to_end(tmp_path):
     assert (ws.report_dir / "results.csv").exists()
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(not _have_in8, reason="IN8 test_data not present (gitignored)")
 def test_in8_guideline_exclusion_refits_one(tmp_path):
     from isar.parsers import ill_in8

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from isar.analyze.lineshapes import Voigt, convolute_voigt_dho
-from isar.analyze.phonon import omega0_from, omega0_value_error
+from isar.analyze.phonon import bose_occupation, omega0_from, omega0_value_error
 
 
 @dataclass(frozen=True)
@@ -80,6 +80,12 @@ class PhononDHO(Component):
     Fit-space params: ``Omega_d``, ``Gamma`` (nonlinear) and ``A`` (linear). The reported
     ω₀ = √(Ω_d²+Γ²) is derived, never fit directly (keeps Ω_d ≥ 0, ω₀ ≥ Γ).
 
+    ``A`` is the **intrinsic** strength (H4): the thermal occupation (n(ω₀,T)+1) is applied
+    here, explicitly, before the frozen lineshape sees an amplitude — so the measured Stokes
+    peak strength is A·(n+1) and the anti-Stokes tie (n+1)·e^(−ω/kT) = n stays exact by
+    construction. The lineshape library itself is untouched; the Bose-dead high-q limit needs
+    no special case ((n+1) → 1 there).
+
     ``peak`` selects the lineshape sides passed to ``convolute_voigt_dho``. Default
     ``"stokes+astokes"`` keeps the Bose-tied pair (unchanged Step-1 behaviour). ``"stokes"``
     drops the anti-Stokes mirror for the high-q Bose-dead rescue (steering Phase 3a): where
@@ -98,8 +104,9 @@ class PhononDHO(Component):
 
     def evaluate(self, x, local: dict, ctx) -> np.ndarray:
         omega0 = omega0_from(local["Omega_d"], local["Gamma"])
+        measured = local["A"] * bose_occupation(omega0, ctx.T)   # intrinsic × (n+1), H4
         return convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
-                                   local["Gamma"], local["A"], 0.0, 0.0, ctx.T,
+                                   local["Gamma"], measured, 0.0, 0.0, ctx.T,
                                    peak=self.peak)
 
     def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
@@ -288,12 +295,15 @@ class CompositeModel:
         out.sort(key=lambda t: t[0])
         return out
 
-    def primary_phonon_index(self, theta, cov=None, prior_omega=None, acoustic_omega=None):
+    def primary_phonon_index(self, theta, cov=None, prior_omega=None, acoustic_omega=None,
+                             T=None):
         """Global Omega_d index of the *primary* phonon. Precedence (Phase A): the mode nearest the
         branch-assignment ``acoustic_omega`` hint (which mode IS the acoustic QoI) if given; else the
-        mode nearest the dispersion ``prior_omega``; else the largest-amplitude mode (A at ``i+2``).
-        ``None`` if there is no phonon. Bit-identical to the pre-Phase-A behaviour when both hints are
-        None."""
+        mode nearest the dispersion ``prior_omega``; else the strongest mode. "Strongest" means the
+        largest MEASURED Stokes strength A·(n+1)(ω₀ᵢ,T) when ``T`` is given — the fitted A is
+        intrinsic (H4), and comparing intrinsic amplitudes across modes at different ω₀ would bias
+        the primary toward high-ω modes. ``T=None`` compares raw A (no occupation information).
+        ``None`` if there is no phonon."""
         theta = np.asarray(theta, dtype=float)
         slots = self.phonon_indices()
         if not slots:
@@ -302,7 +312,10 @@ class CompositeModel:
         if target is not None:
             po = float(target)
             return min(slots, key=lambda i: abs(omega0_from(theta[i], theta[i + 1]) - po))
-        return max(slots, key=lambda i: theta[i + 2])
+        if T is None:
+            return max(slots, key=lambda i: theta[i + 2])
+        return max(slots, key=lambda i: theta[i + 2]
+                   * bose_occupation(omega0_from(theta[i], theta[i + 1]), T))
 
     def omega0(self, theta, cov, prior_omega=None, acoustic_omega=None):
         """Derived ω₀ and its (HESSE-propagated) error for the *primary* phonon (§ primary =

@@ -109,3 +109,39 @@ def test_quasielastic_is_its_own_phenomenon():
     """QE is measured in its own right, so it is an entry — not a second local model of elastic."""
     assert [m.name for m in catalogue.entry("elastic").local_models] == ["sharp"]
     assert [m.name for m in catalogue.entry("quasielastic").local_models] == ["broad"]
+
+
+# --- multimode enumeration is catalogue-driven (PR-b), pinned to the legacy list -------------
+
+_PHO2_TIED = ("instance", "PhononDHO", "phonon2", "stokes+astokes")
+_PHO2_STOKES = ("instance", "PhononDHO", "phonon2", "stokes")
+
+
+def _expected_multimode(elastic: bool, qe: bool, stokes_only: bool) -> list[tuple]:
+    pho = _PHO_STOKES if stokes_only else _PHO_TIED
+    pho2 = _PHO2_STOKES if stokes_only else _PHO2_TIED
+    out = [("stokes2+bg", (pho, pho2, _BG))]
+    if elastic:
+        out.append(("elastic+stokes2+bg", (pho, pho2, _ELASTIC, _BG)))
+    if qe:
+        out.append(("stokes2+qe+bg", (pho, pho2, _QE, _BG)))
+    if elastic and qe:
+        out.append(("elastic+stokes2+qe+bg", (pho, pho2, _ELASTIC, _QE, _BG)))
+    return out
+
+
+@pytest.mark.parametrize("elastic,qe,stokes_only", _COMBOS)
+def test_catalogue_multimode_matches_legacy(elastic, qe, stokes_only):
+    ctx = _ctx(elastic=elastic, qe=qe, stokes_only=stokes_only)
+    got = _shape(phonon.enumerate_phonon_multimode(ctx))
+    expected = _expected_multimode(elastic, qe, stokes_only)
+    # mode 1: class when tied (no prefix override), instance when stokes-only — same as 1-mode.
+    if not stokes_only:
+        expected = [(label, ((_PHO_TIED[0], _PHO_TIED[1], None, None), *rest[1:]))
+                    for label, rest in expected]
+    assert got == expected
+
+
+def test_multimode_below_two_is_empty():
+    assert phonon.enumerate_phonon_multimode(_ctx(elastic=True, qe=True,
+                                                  stokes_only=False), n_max=1) == []

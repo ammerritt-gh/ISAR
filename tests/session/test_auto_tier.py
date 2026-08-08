@@ -59,7 +59,7 @@ def test_auto_escalation_reasons_are_stable_and_ordered(monkeypatch):
             "untrusted_hesse",
             "omega_d_within_2sigma_of_bound",
             "gamma_within_2sigma_of_bound",
-            "runner_up_akaike_weight_ge_0.10",
+            "runner_up_model_weight_ge_0.10",
         ]
 
 
@@ -72,6 +72,8 @@ def test_auto_escalates_missing_best_and_covariance(monkeypatch):
     assert reasons[:2] == ["no_usable_covariance", "untrusted_hesse"]
 
 
+# Slow-marked (owner rule 2026-08-08): real fits with evidence escalations — 108 s measured.
+@pytest.mark.slow
 def test_auto_attaches_to_same_point_estimates_without_reenumeration(monkeypatch):
     enumeration_calls = []
     attach_calls = []

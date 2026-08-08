@@ -228,11 +228,13 @@ high). Baker–Cousins is exact at low counts and converges to χ² at high coun
 `cost_per_dof ≈ 1` keeps its meaning. Valid only because Stage I preserved raw counts.
 *(Implemented.)*
 
-**Question 2 — which model wins: Akaike weights.** Candidate structures (peak count, elastic vs
-anti-Stokes forms) are fit and compared by AIC; an extra peak must buy its parameters in
-likelihood — never raw χ², which systematically fits noise as phantom phonons. Akaike weights are
-relative evidence under equal priors, not posteriors; docs say so. *(Implemented: `best_model`,
-`n_modes`, secondary-peak columns.)*
+**Question 2 — which model wins: the evidence posterior (H4).** Candidate structures (peak
+count, elastic vs anti-Stokes forms) are fit and compared by per-candidate Bayesian evidence
+(Laplace with escalation to nested sampling, uniform prior over admissible structures); an extra
+peak must buy its parameters in marginal likelihood — never raw χ², which systematically fits
+noise as phantom phonons. AIC and Akaike weights persist per candidate as the recorded
+diagnostics lane. *(Implemented: `best_model`, `n_modes`, `best_model_posterior`,
+secondary-peak columns.)*
 
 **Physics constraints are encoded, not rediscovered per scan.** Detailed balance (I_AS/I_S =
 exp(−ℏω/k_BT)) decides whether an anti-Stokes peak is even admissible before one is fit; symmetry
@@ -429,7 +431,7 @@ DECISIONS W1–W3.)*
 |---|---|
 | Stage I: parsers (S30, IN8), reduce, calibration state, card | Implemented |
 | Adjudication (decide–record–defer) | Implemented (opt-in) |
-| Stage II: Baker–Cousins fit, Akaike selection, branch posterior, verdicts | Implemented |
+| Stage II: Baker–Cousins fit, evidence selection (H4; Akaike diagnostics retained), branch posterior, verdicts | Implemented |
 | Interval ladder through bootstrap; `interval_reliable` flag | Implemented |
 | Uniform `interval_reliable` convergence rule | Implemented (2026-07-10) |
 | Pooled-fit member provenance | Implemented (2026-07-10) |
@@ -457,7 +459,7 @@ DECISIONS W1–W3.)*
 | Bayesian interval tier (`--errors bayes`: nested-sampling ω₀/Γ credible intervals, posterior samples, three-method agreement) | Implemented, **diagnostics-only** (bootstrap still certifies; coverage validation and promotion to certifying authority Planned) |
 | Renegotiation protocol | Planned (design door open) |
 | Model-level (ARIANE-style) objective tier | Planned |
-| SCENE program: target-free multi-phenomenon discovery — catalogue-driven identity-conditional evidence, cluster-factorized scene posterior, question layer, scene-EIG | **Partial** (H1 constitution 2026-08-08; `docs/SCENE_DESIGN.md` governs; synthetic world-suite foundation Implemented 2026-08-08: 12 seeded adversarial worlds + ensemble runner in `isar/synth/worlds.py`; SCENE-1 PR-a Implemented 2026-08-08 (H3): six-entry phenomenon catalogue driving enumeration, phonon-less nulls `elastic+bg`/`bg` as first-class candidates, `elastic_only` verdict with the 0.5 categorical-humility cap + nested-LRT significance gate, dormant transport/prior/constrained-variant declarations; Laplace evidence PR-b and persistence PR-c Planned) |
+| SCENE program: target-free multi-phenomenon discovery — catalogue-driven identity-conditional evidence, cluster-factorized scene posterior, question layer, scene-EIG | **Partial** (H1 constitution 2026-08-08; `docs/SCENE_DESIGN.md` governs; synthetic world-suite foundation Implemented 2026-08-08: 12 seeded adversarial worlds + ensemble runner in `isar/synth/worlds.py`; SCENE-1 PR-a Implemented 2026-08-08 (H3): six-entry phenomenon catalogue driving enumeration, phonon-less nulls `elastic+bg`/`bg` as first-class candidates, `elastic_only` verdict with the 0.5 categorical-humility cap + nested-LRT significance gate, dormant transport/prior/constrained-variant declarations; SCENE-1 PR-b Implemented 2026-08-08 (H4): per-structure Laplace evidence through the validity ladder (Laplace at θ̂ / warm-started MAP refit / dynesty), the posterior over structures drives selection with AIC persisted as a diagnostic, the Bose factor is universal so a fitted amplitude is intrinsic, `isar.fit_selection_semantics/2` replaces `/1` outright, dominance pruning + scoped escalation `n_live`; the identity axis is deferred by ruling; persistence PR-c Planned) |
 | Branch-identity-aware acquisition (two-term scan value; excitation hypotheses; first-guess path) | Implemented for branch hypotheses (O6–O9/O11–O12, 2026-07-17; level/continuum plugins remain O10-Partial) |
 | Connected tracked-branch steering: identity vs precision adequacy, single same-q budget, rival-trajectory reconnection, controller invariant | Implemented for the tracked optic path (O27, 2026-07-21; OP10 replay reaches `met` 21/21). `identity_saturated` unit-tested but campaign-unproven; AP campaign replays outstanding, so O25/O26 remain Partial |
 | Action-inventory control plane: registry-driven generate/evaluate/select, three-stage lifecycle, failure-isolated exhaustion proof, evidence-sink contract, target/identity search-domain split, predicted-rival identity probe | **Partial** (O28, 2026-07-23; control plane + `narrow_rival_probe` Implemented and AP6 replay passes at the `enumerate_actions` reconstruction level, strict/migrated modes. Full driver-level AP6 campaign replay outstanding; zone-aware boundary probe deferred pending a cross-zone structure-factor consumer) |

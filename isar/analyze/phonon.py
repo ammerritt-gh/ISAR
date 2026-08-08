@@ -33,6 +33,23 @@ def omega_d_from(omega0: float, gamma: float) -> float:
     return float(np.sqrt(disc)) if disc > 0 else 0.0
 
 
+def bose_occupation(omega0: float, T: float | None) -> float:
+    """The thermal occupation factor (n(ω₀,T)+1) = 1/(1−e^(−ω₀/k_BT)) on the Stokes side.
+
+    The universal factor of every phonon amplitude (H4 owner ruling 2026-08-08): the *fitted*
+    amplitude is the intrinsic strength and the model multiplies by (n+1) explicitly, so the
+    Stokes/anti-Stokes detailed-balance tie stays exact ((n+1)·e^(−ω/kT) = n) and the intrinsic
+    amplitude is temperature/occupation-decoupled — the quantity constraint transport carries.
+    An absent temperature (``T is None``, the optional-temperature call sites), T ≤ 0 (no thermal
+    occupation defined; the lineshape's own anti-Stokes guard) and ω₀ ≤ 0 (defensive; bounds keep
+    Ω_d ≥ ε) all return 1.0 — the factor never silently blows up, and the no-occupation fallback
+    lives here rather than being re-derived by every caller.
+    """
+    if T is None or T <= 0.0 or omega0 <= 0.0:
+        return 1.0
+    return float(1.0 / (1.0 - np.exp(-float(omega0) / (KB * float(T)))))
+
+
 def omega0_value_error(omega_d: float, gamma: float, cov) -> tuple[float, float]:
     """ω₀ and its symmetric error, propagating the full (Ω_d,Γ) covariance.
 
@@ -128,7 +145,11 @@ def _bound(name: str, x_max: float, cmax: float) -> tuple[float, float]:
         return (EPS_OMEGA_D, x_max)
     if name.endswith(".Gamma"):
         return (GAMMA_FLOOR, GAMMA_MAX)
-    if name.endswith(".A") or name.endswith(".E"):
+    if name.endswith(".A") or name.endswith(".E") or name.endswith(".QE"):
+        # .QE joined 2026-08-08: the quasielastic amplitude was the one unbounded amplitude,
+        # which iminuit tolerated but the evidence lane cannot — a normalized flat prior over
+        # (-inf, inf) does not exist, so an unbounded QE silently zeroed every qe-bearing
+        # candidate's lnZ (found by real IN8 data, first scan).
         return (0.0, 1e4 * cmax)
     if name.endswith(".BG"):
         return (0.0, 5.0 * cmax + 10.0)
@@ -418,31 +439,11 @@ def enumerate_phonon_multimode(ctx, n_max: int = 2) -> list[Hypothesis]:
     mode 2 gets the ``phonon2`` namespace. Capped at N=2 this round (``n_max`` is accepted for
     the later N=3 extension; values >2 are treated as 2).
 
-    Still hand-enumerated: multiplicity (a second instance of the *same* phenomenon in its own
-    parameter namespace) is not a catalogue concept yet, so routing it through the catalogue would
-    not be a strict-equivalence change. It migrates with the evidence work in SCENE-1 PR-b."""
-    # local import: components imports this module, so the classes cannot come in at
-    # module level (components.py -> phonon.py cycle).
-    from isar.analyze.components import ConstantBackground, Elastic, QuasiElastic
+    Catalogue-driven since SCENE-1 PR-b (multiplicity is the catalogue's concept: a second
+    instance of the same phenomenon in the ``phonon2`` namespace); output pinned bit-identical
+    to the legacy hand enumeration by ``tests/analyze/test_catalogue.py``."""
+    # local import: catalogue imports components, which imports this module, so it cannot come
+    # in at module level (components.py -> phonon.py cycle).
+    from isar.analyze.catalogue import enumerate_multimode_structures
 
-    if n_max < 2:
-        return []
-    elastic = elastic_admissible(ctx)
-    qe = quasielastic_admissible(ctx)
-
-    def twophonon():
-        # mode 1 (default "phonon" prefix), mode 2 ("phonon2"). Both honour the Bose-dead
-        # Stokes-only choice so a two-mode high-q fit stays one-sided as well.
-        return (_phonon_for(ctx), _phonon_for(ctx, prefix="phonon2"))
-
-    hyps = [Hypothesis("stokes2+bg", (*twophonon(), ConstantBackground))]
-    if elastic:
-        hyps.append(Hypothesis("elastic+stokes2+bg",
-                               (*twophonon(), Elastic, ConstantBackground)))
-    if qe:
-        hyps.append(Hypothesis("stokes2+qe+bg",
-                               (*twophonon(), QuasiElastic, ConstantBackground)))
-    if elastic and qe:
-        hyps.append(Hypothesis("elastic+stokes2+qe+bg",
-                               (*twophonon(), Elastic, QuasiElastic, ConstantBackground)))
-    return hyps
+    return enumerate_multimode_structures(ctx, n_max)

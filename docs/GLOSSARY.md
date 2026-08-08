@@ -78,9 +78,22 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   called credible. See DECISIONS S5 and S6.
 - **AIC / Akaike weight** — a way to compare candidate models that penalizes extra parameters; the
   weight is relative information-criterion support within the exact scored model set (higher =
-  better supported), not a posterior model probability or Bayes factor. Legacy production weights
-  may still be evaluated at constrained optima; the STAT-2a shadow weights use comparable
-  unconstrained fits but have no production authority.
+  better supported), not a posterior model probability or Bayes factor. Since H4 this is the
+  recorded **diagnostics lane**: AIC/AICc/BIC and Akaike weights are computed and persisted per
+  candidate but drive nothing — selection is the evidence posterior — except on the named
+  fallback lanes (`aic_no_evidence_inputs`, `aic_all_evidence_invalid`), which are
+  selection-ineligible for acquisition steering.
+- **evidence (lnZ) / validity ladder** — the marginal likelihood of one candidate structure under
+  its declared priors, produced by a ladder that never trusts a Gaussian volume silently: Laplace
+  at the fitted optimum, a warm-started MAP refit when the fit did not see a prior it must
+  integrate, or dynesty nested sampling for boundary-pinned/curvature-failed fits. Every record
+  carries its rung, escalation reasons, and (for dynesty) the n_live used; evidence is comparable
+  only within one data-likelihood arena. Dominated candidates (evidence ceiling ≥100 nats below a
+  trusted leader) are excluded without sampling and recorded as such.
+- **posterior model probability** — P(s) = π_s·Z_s / Σ π·Z over admissible structures, uniform π;
+  the weight that drives selection, pooling, and the EIG/master consumers since H4. Persisted per
+  candidate in `isar.fit_selection_semantics/2` alongside the AIC diagnostics; `None` on the
+  recorded AIC fallback lanes rather than invented.
 - **statistical semantics** — additive producer metadata declaring what estimator, constraints,
   model denominator, interval/particle measure, probability-like score, and authority scope a
   quantity actually has. Missing metadata leaves a legacy quantity valid but semantically
@@ -93,16 +106,18 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   Schema `/2` binds each candidate to the declared data-likelihood context and distinguishes exact,
   partial, fresh, skipped, and unavailable execution while retaining `/1` read compatibility.
   Its weights and changed-selection flag cannot affect verdicts, intervals, certification,
-  stopping, acquisition, or cache identity. STAT-2c may promote an evidence-backed successor only
-  after the STAT-2b campaign.
+  stopping, acquisition, or cache identity. The evidence-backed successor it anticipated landed
+  as production selection under H4; the shadow lane stays AIC-labeled by design (it measures
+  criteria, D6).
 - **authority scope** — one named use for which a statistical quantity is active, diagnostic,
   shadow-only, inactive, or ineligible. Certification, stopping, EIG, acquisition selection, and
   user diagnostics are separate scopes. For intervals, a producer's capability is distinct from
   the realized authority of the value that survives reliability, triage, and tracking gates.
-- **model interval** — the current pooled-master ω quantile from retained ordinary-AIC-weighted
-  particles. It is conditional on target-present models and may mix nested, bootstrap, and
-  HESSE/Laplace particles. It remains active for legacy certification and stopping, but is
-  ineligible for EIG or acquisition.
+- **model interval** — the current pooled-master ω quantile from retained model-weighted
+  particles (evidence posteriors since H4; the record's `model_weight_kind` names the lane). It
+  is conditional on target-present models and may mix nested, bootstrap, and HESSE/Laplace
+  particles. It remains active for legacy certification and stopping, but is ineligible for EIG
+  or acquisition.
 - **fork / fold** — a *fork* is two or more equally-supported answers reported separately (the data are
   ambiguous); a *fold* is a single agreed answer.
 

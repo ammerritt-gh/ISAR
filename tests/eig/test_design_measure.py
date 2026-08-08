@@ -168,11 +168,19 @@ def _bundle(monkeypatch, specs=None):
     }
     scores = [SimpleNamespace(
         label=item["label"], cost=10.0 + index, k=2, aic=14.0 + index,
-        weight=item["weight"], survives=True, fit_semantics=semantics[item["label"]])
+        weight=item["weight"], akaike_weight=item["weight"],
+        posterior_probability=item["weight"], candidate_prior=1.0 / len(specs),
+        log_evidence=-5.0 - index, log_evidence_err=None, evidence_method="laplace",
+        evidence_validity={}, survives=True, fit_semantics=semantics[item["label"]])
         for index, item in enumerate(specs)]
     labels = [item["label"] for item in specs]
     selection = scan_delivery._build_selection_semantics(
-        list(results.values()), SimpleNamespace(scores=scores, pooled=object()),
+        list(results.values()),
+        SimpleNamespace(
+            scores=scores, pooled=object(), selection_fallback=None,
+            evidence=SimpleNamespace(
+                arena_fingerprint=semantics[labels[0]]["data_likelihood_fingerprint"]),
+        ),
         {"route": "full_two_stage", "labels_before_guideline": labels,
          "guideline_structure_filter": [], "guideline_changed_model_set": False,
          "offered_labels": labels, "scored_labels": labels},
@@ -237,6 +245,20 @@ def test_available_measure_is_normalized_immutable_deterministic_and_shadow_only
             "source_model_weight_total", "retained_model_weight_total", "pruned_model_weight",
             "model_weight_floor", "max_pruned_mass", "max_dropped_draw_mass",
             "predictive_complete_for_eig")}
+
+
+def test_measure_names_the_probability_measure_it_actually_mixes_over(monkeypatch):
+    """The measure's semantics travel inside design_measure_fingerprint, so a wrong weight kind
+    is not a label — it is a false statement inside the identity that authenticates the measure.
+
+    Since H4 the source weights are the evidence posterior, and the eligibility gate refuses any
+    selection record that is not on the posterior lane, so an available measure cannot rest on
+    Akaike weights even in principle."""
+    artifact, _projection, _qoi, eligibility = _bundle(monkeypatch)
+    measure = build_scan_window_design_measure(artifact, eligibility)
+
+    assert measure.status == "available"
+    assert dict(measure.semantics)["model_weight_kind"] == "posterior_probability"
 
 
 def test_unequal_draw_counts_preserve_model_aic_mass(monkeypatch):

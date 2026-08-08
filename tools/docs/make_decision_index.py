@@ -30,6 +30,11 @@ OUT = REPO / "docs" / "DECISION_INDEX.md"
 RULING = re.compile(r"^- \*\*([A-Z]+\d+)\.\*\*\s*(.*)$", re.M)
 AMENDS = re.compile(r"(\S+\s+\S+\s+)?\b(?:amends?|supersed(?:es|ing)|resolves it against)\b([^.)]*)", re.I)
 IDREF = re.compile(r"\b([A-Z]{1,2}\d+)\b")
+# The passive voice a ruling reaches for when the supersession is its headline, not an aside:
+# "…AIC becomes a persisted diagnostic. S8 is superseded." (H4). The participle must follow the
+# copula immediately, which is what makes "S8 is **not** superseded" fail to match — no separate
+# negation check is needed on this branch.
+PASSIVE = re.compile(r"\b([A-Z]{1,2}\d+)\s+(?:is|are|was|were)\s+(?:superseded|amended)\b", re.I)
 # "does not amend O24" must not register as amending O24.
 NEGATION = re.compile(r"\b(?:not|never|without|rather than|instead of|no)\b\s*$", re.I)
 
@@ -94,22 +99,32 @@ def amendments(rows) -> dict[str, list[str]]:
     so prose tokens that merely look like IDs cannot invent an amendment; and a clause negated
     immediately before the verb ("does **not** amend O24") is skipped, so a ruling that
     distinguishes itself from an earlier one is not recorded as overriding it.
+
+    Both voices count: "supersedes S8" and "S8 is superseded" are the same claim, and a ruling
+    whose supersession is its headline tends to write the latter.
     """
     position = {rid: i for i, (rid, _, _) in enumerate(rows)}
     out: dict[str, list[str]] = {}
+
+    def record(target: str, rid: str, source_index: int) -> None:
+        # The ledger is append-only: an amendment is valid only when its target has already
+        # appeared. This rejects self-references, unknown IDs, and accidental forward references
+        # in one ordering check.
+        if target in position and position[target] < source_index:
+            out.setdefault(target, []).append(rid)
+
     for source_index, (rid, meta, summary) in enumerate(rows):
-        for preceding, clause in AMENDS.findall(meta + " " + summary):
+        text = meta + " " + summary
+        for target in PASSIVE.findall(text):
+            record(target, rid, source_index)
+        for preceding, clause in AMENDS.findall(text):
             # Markdown emphasis can trail the negating token (``does **not** amend``). Strip
             # formatting markers before applying the end-anchored negation check.
             plain_preceding = re.sub(r"[*_~`]+", "", preceding or "")
             if NEGATION.search(plain_preceding):
                 continue
             for target in IDREF.findall(clause):
-                # The ledger is append-only: an amendment is valid only when its target has
-                # already appeared. This rejects self-references, unknown IDs, and accidental
-                # forward references in one ordering check.
-                if target in position and position[target] < source_index:
-                    out.setdefault(target, []).append(rid)
+                record(target, rid, source_index)
     return out
 
 

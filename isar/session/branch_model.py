@@ -4,8 +4,13 @@ Shares more than ω₀ across a dispersion branch: Γ and the (portable, exposur
 A, so a fit near the zone centre — where the acoustic peak merges with the elastic line and Γ/A go
 unidentifiable — can be softly constrained to the branch and recover ω₀ (the LOW-q rescue).
 
+The anchor intensity is the **intrinsic** amplitude per exposure (H4: the fitted ``phonon.A``
+carries no thermal occupation — the model applies (n+1) explicitly), so the constraints this
+module emits are already in the fit parameter's own space and the acoustic law below is exact.
+
 **Coordinate = ω₀, not q** (owner decision): Γ and A are modelled as functions of ω₀ itself, because
-the acoustic intensity law is literally A ∝ 1/ω. The dispersion prior already predicts ω₀(q), so a
+the acoustic intensity law is literally A ∝ 1/ω (intrinsic — the measured kT/ω² classical form is
+this law times the occupation the model now owns). The dispersion prior already predicts ω₀(q), so a
 target q's constraint is ``predict(branch, ω₀_pred)``. This is path-free (works in batch and drive)
 and avoids the fragile "dominant-varying-Q" heuristic. An explicit ``branch_id`` keeps anchors from a
 different branch (or across a mode-crossing) out; the MVP builds/uses only ``"acoustic"``.
@@ -19,11 +24,14 @@ drift; never hard-fixed).
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
 import numpy as np
 
-from isar.schema.steering import ParamConstraints
+from isar.schema.steering import RETIRED_AMPLITUDE_BASES, ParamConstraints
 from isar.session.session_prior import is_unconstrained_prior_point
+
+log = logging.getLogger(__name__)
 
 BRANCH_ID = "acoustic"          # MVP: a single acoustic branch
 MIN_ANCHORS = 3                 # too few to fit a trend
@@ -120,7 +128,23 @@ def build_branch(points, *, sample, t_bin, branch_id: str = BRANCH_ID) -> dict |
     log ω₀ (the 1/ω acoustic law is the slope≈−1 fit itself). Anchors are branch-filtered (Phase A: an
     optic-assigned anchor can no longer seed the acoustic Γ/A branch) and weighted by their soft
     assignment weight. Returns a plain JSON-able dict (persists in ``CardState.branch_models``)."""
-    anchors = [p for p in points if _is_clean_anchor(p, sample, t_bin)
+    # H4/H1 clean break: a point persisted under a retired basis holds the MEASURED amplitude
+    # A·(n+1). Nothing in the stored number distinguishes it from an intrinsic one and the
+    # occupation is not recoverable after the fact, so mixing the two would fit log A(ω₀) across
+    # incomparable anchors and emit phonon.A constraints wrong by (n+1). Excluded, never
+    # reinterpreted — and said out loud, since a resumed campaign otherwise loses anchors silently.
+    usable, retired = [], 0
+    for p in points:
+        if ((p.get("intensity") or {}).get("basis")) in RETIRED_AMPLITUDE_BASES:
+            retired += 1
+            continue
+        usable.append(p)
+    if retired:
+        log.warning(
+            "branch %r: excluded %d anchor(s) carrying a retired intensity basis (pre-H4 measured "
+            "amplitude, not comparable with the intrinsic A this model fits); re-fit those scans "
+            "to restore them", branch_id, retired)
+    anchors = [p for p in usable if _is_clean_anchor(p, sample, t_bin)
                and (p.get("branch_id") or BRANCH_ID) == branch_id]
     if len(anchors) < MIN_ANCHORS:
         return None

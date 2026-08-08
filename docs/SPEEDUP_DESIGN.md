@@ -147,7 +147,7 @@ and promotes that frozen revision to full errors when any of these deterministic
 
 1. the best-fit HESSE interval is untrusted;
 2. Ωd or Γ lies within two HESSE standard errors of a bound, including the existing Γ-bound rule;
-3. the runner-up Akaike weight is at least 0.10;
+3. the runner-up model weight (the evidence posterior since H4) is at least 0.10;
 4. no usable best fit or covariance exists.
 
 Promotion reuses the candidates already computed by point estimation; it does not repeat structure
@@ -252,7 +252,7 @@ above 20% of wall. Wrong-basin correctness bugs are silent, so the flag defaults
 3. **Prior pruning.** Keep the existing eligibility gate exactly: only Gaussian-equivalent priors
    with σ≤0.6 meV narrow Ωd to ±1.5 meV.
 4. **Enumeration.** Precompute existing admissibility gates once per scan. Do not add neighbor-history
-   pruning; null, elastic-only, and one-mode structures always remain available to AIC.
+   pruning; null, elastic-only, and one-mode structures always remain available to selection.
 5. **Deterministic audits.** Select by revision hash, averaging one full audit per ten accepted fast
    paths. Divergence means a different best structure/modality/verdict, or `|Δω₀|` above 25% of the
    cold authoritative half-width (0.05 meV fallback). Divergence disables the fast path for the
@@ -283,7 +283,7 @@ campaign is not rolled back (nothing is ever deleted), it is flagged.
 - **The AGENTS.md hard rules** — D3 variance convention, derived anti-Stokes, card
   ownership split, QC-masks-not-deletes, Qt-free layers — none are touched.
 - **Fit-vs-decide contract** (MEASUREMENT_STEERING §4.4): tier choice and warm-starting
-  affect *how fast* a number is computed, never which cost AIC/goodness-of-fit reads.
+  affect *how fast* a number is computed, never which cost selection or goodness-of-fit reads.
 - **Fold-only prior admission.** Trusted HESSE folds may refresh it under O21; forks never do.
 - **Determinism and replay:** every new decision (escalation, deferral, fallback, audit) is
   seeded/derived from persisted state and logged; shadow comparisons rely on this.

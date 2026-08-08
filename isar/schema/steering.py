@@ -17,6 +17,16 @@ from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
+#: What an :class:`IntensityMeasure` value means since H4: the exposure-normalised **intrinsic**
+#: amplitude, the fitted ``phonon.A`` with no thermal occupation in it.
+INTRINSIC_AMPLITUDE_BASIS = "intrinsic_amplitude_per_exposure"
+#: Bases retired by H4, read as a **refusal** table and never a migration table (H1). A point
+#: persisted under one of these carries the MEASURED amplitude ``A·(n+1)``; nothing in the stored
+#: number distinguishes it from an intrinsic one, and no ``(n+1)`` is recoverable after the fact
+#: without the temperature that produced it. A consumer excludes such a point — it never
+#: reinterprets it.
+RETIRED_AMPLITUDE_BASES = frozenset({"amplitude_per_exposure"})
+
 
 @dataclass(frozen=True)
 class IntensityMeasure:
@@ -35,6 +45,13 @@ class IntensityMeasure:
 
     The resolution FWHMs are provenance for a later height↔area refinement; ``basis`` names what
     ``value`` currently is so a future consumer can upgrade without silently mis-scaling old points.
+
+    Since H4 that naming is load-bearing rather than decorative. The amplitude carried here is the
+    **intrinsic** strength — the fitted ``phonon.A``, with the thermal occupation applied
+    explicitly by the model — so ``basis`` is :data:`INTRINSIC_AMPLITUDE_BASIS`. A pre-H4 point
+    persisted the **measured** amplitude ``A·(n+1)`` under the old name
+    :data:`RETIRED_AMPLITUDE_BASES`, and the two differ by an occupation factor that is invisible
+    in the number itself. Mixing them in one ``log A(ω₀)`` fit is what the retirement prevents.
     """
 
     value: float               # exposure-normalised primary-phonon amplitude (A / exposure)
@@ -45,7 +62,7 @@ class IntensityMeasure:
     instrument: str
     pooled: bool = False       # a master (combine-before-divide) fit
     n_members: int | None = None
-    basis: str = "amplitude_per_exposure"
+    basis: str = INTRINSIC_AMPLITUDE_BASIS
 
     def expected_amplitude(self, exposure: float) -> float:
         """Predicted fitted amplitude at a query scan's per-point ``exposure`` (portable)."""

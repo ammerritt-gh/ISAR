@@ -129,7 +129,11 @@ def _clean_selection(**route_updates) -> dict:
     results = [SimpleNamespace(label=label, fit_semantics=semantics[label],
                                within_model={"omega0_samples": [1.0, 1.1]}) for label in labels]
     scores = [SimpleNamespace(label=label, cost=10.0 + index, k=2, aic=14.0 + index,
-                              weight=0.75 - 0.5 * index, survives=True,
+                              weight=0.75 - 0.5 * index, akaike_weight=0.75 - 0.5 * index,
+                              posterior_probability=0.75 - 0.5 * index,
+                              candidate_prior=0.5, log_evidence=-5.0 - index,
+                              log_evidence_err=None, evidence_method="laplace",
+                              evidence_validity={}, survives=True,
                               fit_semantics=semantics[label])
               for index, label in enumerate(labels)]
     route = {"route": "full_two_stage", "supplied_hint": None, "hint_accepted": False,
@@ -138,7 +142,13 @@ def _clean_selection(**route_updates) -> dict:
              "offered_labels": list(labels), "scored_labels": list(labels)}
     route.update(route_updates)
     return scan_delivery._build_selection_semantics(
-        results, SimpleNamespace(scores=scores, pooled=object()), route,
+        results,
+        SimpleNamespace(
+            scores=scores, pooled=object(), selection_fallback=None,
+            evidence=SimpleNamespace(
+                arena_fingerprint=semantics["one"]["data_likelihood_fingerprint"]),
+        ),
+        route,
         error_attachment_labels=list(labels))
 
 
@@ -164,6 +174,54 @@ def test_clean_current_contract_is_eligible_and_deterministic():
     assert first.scientific_codes == ()
     assert first.observability_codes == ()
     assert first.to_dict() == second.to_dict()
+
+
+def test_aic_fallback_selection_is_ineligible_fail_closed():
+    """/2 gate: only the evidence lane may steer acquisition. A recorded AIC-fallback
+    selection (evidence degraded or absent) reads as scientifically ineligible."""
+    record = dict(_clean_selection())
+    record.pop("evidence_arena_fingerprint", None)
+    record.pop("evidence_revision", None)
+    record.update(selection_method="aic_fallback",
+                  selection_fallback="aic_no_evidence_inputs",
+                  model_weight_kind="akaike_relative_weight")
+    result = evaluate_eig_eligibility(
+        _input(selection_record=record, shadow_record=_neutral_shadow()))
+    assert "selection_ineligible" in result.scientific_codes
+    assert result.status != "eligible"
+
+
+def test_h4c_selection_eligibility_grants_no_acquisition_authority():
+    """H4(c) made a prespecified soft-prior MAP fit SELECTION-eligible. It must not thereby
+    become able to steer beam time.
+
+    Letting soft-prior fits drive acquisition is a new acquisition authority — an owner-named
+    milestone needing its own ruling — so this pins the boundary: the candidate arrives with
+    ``selection_eligibility="eligible"`` (the H4(c) change) and is still refused, because it is
+    a MAP fit carrying an effective constraint. If this test ever goes green on ``eligible``,
+    beam-time authority moved without a ruling."""
+    semantics = dict(_fit_semantics("one"))
+    semantics.update(
+        estimator_kind="soft_penalized_likelihood",
+        fit_kind="soft_prior",
+        selection_eligibility="eligible",          # H4(c): comparable for selection…
+        aggregate_constraint_origin="prior_predictive",
+        effective_constraints=[{
+            "parameter": "phonon.Gamma", "constraint_kind": "soft",
+            "mean": 0.3, "sigma": 0.1, "origin": "prior_predictive",
+        }],
+    )
+    record = dict(_clean_selection())
+    record["candidate_records"] = [{**item, "fit_semantics": semantics}
+                                   for item in record["candidate_records"]]
+
+    result = evaluate_eig_eligibility(
+        _input(selection_record=record, shadow_record=_neutral_shadow()))
+
+    # …and still not authorised to acquire: the estimator is not an MLE and a constraint is live.
+    assert "selection_ineligible" in result.scientific_codes
+    assert "selection_constrained" in result.scientific_codes
+    assert result.status != "eligible"
 
 
 def test_current_eligibility_contract_revision_is_exact():
