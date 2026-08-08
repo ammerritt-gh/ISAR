@@ -8,6 +8,8 @@ disk, so a future calibration number can never be a bookkeeping artifact.
 """
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -60,6 +62,8 @@ def test_ensemble_round_trips_through_disk(tmp_path):
     batch = ensemble.run_ensemble(WORLD_NAMES, SEEDS, out_dir=tmp_path)
     index_path = ensemble.write_index(batch, tmp_path / "index.json")
     assert index_path.is_file()
+    with index_path.open(encoding="utf-8") as fh:
+        assert json.load(fh) == ensemble.index(batch)
 
     for item in batch:
         restored = ensemble.read_realization(
@@ -68,3 +72,5 @@ def test_ensemble_round_trips_through_disk(tmp_path):
         assert restored.truth == item.truth
         assert np.array_equal(restored.data.counts, item.data.counts)
         assert np.array_equal(restored.data.lam, item.data.lam)
+        assert np.array_equal(restored.data.H, item.data.H)
+        assert np.array_equal(restored.data.x, item.data.x)

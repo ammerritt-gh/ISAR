@@ -69,6 +69,11 @@ class BranchSpec:
 
     @classmethod
     def from_dict(cls, d: dict) -> "BranchSpec":
+        # Same fail-loudly contract as config._reject_unknown_keys (inlined: config
+        # imports dispersion, so dispersion must not import config).
+        unexpected = set(d) - {"name", "e_zc", "e_zb", "H_start"}
+        if unexpected:
+            raise ValueError(f"BranchSpec.from_dict: unexpected key(s) {sorted(unexpected)!r}")
         return cls(name=str(d["name"]), e_zc=float(d["e_zc"]), e_zb=float(d["e_zb"]),
                    H_start=float(d.get("H_start", H_START)))
 

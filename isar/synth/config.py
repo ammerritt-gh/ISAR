@@ -165,6 +165,20 @@ class ComponentTruth:
             raise ValueError(f"unknown component kind {self.kind!r}; expected {COMPONENT_KINDS}")
         if self.kind in ("dho", "unknown") and self.branch is None:
             raise ValueError(f"component kind {self.kind!r} needs a branch")
+        if self.kind == "elastic" and self.branch is not None:
+            raise ValueError("elastic components must not declare a branch")
+        if self.q_centers and self.q_fwhm <= 0:
+            raise ValueError(
+                f"q_fwhm must be > 0 for a Q-localized component; got {self.q_fwhm!r}")
+        if self.kind == "unknown":
+            # width is the horn separation: 0 collapses the mismatch world into a
+            # single-horn DHO lookalike, defeating the world's whole purpose.
+            if self.width <= 0:
+                raise ValueError(
+                    f"unknown components need a positive horn separation; got width={self.width!r}")
+            if not -1.0 <= self.asymmetry <= 1.0:
+                raise ValueError(
+                    f"unknown component asymmetry must be in [-1, 1]; got {self.asymmetry!r}")
 
     def to_dict(self) -> dict:
         d = asdict(self)

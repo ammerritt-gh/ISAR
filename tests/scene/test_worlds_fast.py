@@ -83,6 +83,25 @@ def test_from_dict_rejects_an_unexpected_key_at_every_level():
         config.WorldTruth.from_dict(component_payload)
 
 
+def test_branch_spec_rejects_an_unexpected_key():
+    payload = dict(dispersion.ACOUSTIC.to_dict(), bogus=1)
+    with pytest.raises(ValueError, match="bogus"):
+        dispersion.BranchSpec.from_dict(payload)
+
+
+def test_component_truth_rejects_incoherent_manifests():
+    branch = dispersion.BranchSpec("b", 1.0, 2.0)
+    with pytest.raises(ValueError, match="elastic"):
+        config.ComponentTruth("elastic", "bragg", 100.0, branch=branch)
+    with pytest.raises(ValueError, match="q_fwhm"):
+        config.ComponentTruth("elastic", "bragg", 100.0, q_centers=(2.0,), q_fwhm=0.0)
+    with pytest.raises(ValueError, match="width"):
+        config.ComponentTruth("unknown", "unknown", 100.0, branch=branch, width=0.0)
+    with pytest.raises(ValueError, match="asymmetry"):
+        config.ComponentTruth("unknown", "unknown", 100.0, branch=branch,
+                              width=2.5, asymmetry=1.5)
+
+
 @pytest.mark.parametrize("name", sorted(worlds.WORLDS))
 def test_same_seed_replays_identically(name):
     _cfg, truth, first = _build(name)
@@ -279,6 +298,17 @@ def test_an_elastic_only_request_of_an_inelastic_component_is_empty():
     x = generate.world_energy_grid(truth.config)
     horn = next(c for c in truth.components if c.kind == "unknown")
     assert np.all(generate.component_lambda(truth, horn, 2.5, x, peak="elastic") == 0.0)
+
+
+def test_peak_all_includes_the_elastic_component():
+    # peak='all' means the whole model, exactly as peak=None does — an elastic component
+    # that returns zeros for 'all' would silently drop the elastic line from a full model.
+    _cfg, truth, _d = _build("canonical")
+    x = generate.world_energy_grid(truth.config)
+    bragg = next(c for c in truth.components if c.kind == "elastic")
+    whole = generate.component_lambda(truth, bragg, 2.0, x)
+    assert np.any(whole > 0)
+    assert np.array_equal(generate.component_lambda(truth, bragg, 2.0, x, peak="all"), whole)
 
 
 def test_component_lambda_rejects_a_mistyped_peak_token_for_every_kind():

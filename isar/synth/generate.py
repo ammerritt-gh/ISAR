@@ -322,7 +322,8 @@ def component_lambda(truth: config.WorldTruth, comp: config.ComponentTruth,
     height = comp.peak_counts * env
 
     if comp.kind == "elastic":
-        if peak is not None and "elastic" not in peak.lower().split("+"):
+        if (peak is not None and peak.lower() != "all"
+                and "elastic" not in peak.lower().split("+")):
             return np.zeros_like(x)
         area = voigt_area_for_height(height, cfg.gauss_fwhm, cfg.lorentz_fwhm)
         return Voigt(x, area, cfg.gauss_fwhm, cfg.lorentz_fwhm, 0.0)
