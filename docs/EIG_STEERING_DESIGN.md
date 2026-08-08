@@ -272,7 +272,8 @@ model averaging, general phenomenon support, TAVI virtual wall-clock completion,
 completion. It must not choose Q, scientific action, target identity, fit model, hypothesis,
 physical constraint, interval method, certification rule, or model-selection authority.
 Target-presence, model-identity, and branch-identity values may be calculated as diagnostics only.
-Current production AIC weights remain the input source and are not validated by the held-out campaign.
+Current production model weights (evidence posteriors since H4) remain the input source and are
+not validated by the held-out campaign.
 
 Slice 2 freezes the pre-comparison eligibility seam. Its action predicate admits only the selected
 `MeasurementIntent.action_class` values `production` and `confirm`, both with

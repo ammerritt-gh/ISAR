@@ -110,7 +110,7 @@ area.
 | Running it on data / the CLI contract | `docs/USING_ISAR.md`, `docs/WORKED_EXAMPLE.md` |
 | Workspace, session, and the CLI surface | `docs/WORKSPACE_AND_CLI.md` |
 | Fit/runtime performance and speedup gates | `docs/SPEEDUP_DESIGN.md` |
-| Statistics (cost, AIC, interval ladder, coverage) | `docs/STATS_PRIMER.md`, `docs/GLOSSARY.md` |
+| Statistics (cost, evidence/AIC, interval ladder, coverage) | `docs/STATS_PRIMER.md`, `docs/GLOSSARY.md` |
 | Verdicts — meaning & what to do | `docs/INTERPRETING_A_VERDICT.md`, GLOSSARY |
 | Card / schema across facilities | `docs/SCHEMA_LANDSCAPE.md` |
 | Flag adjudication (opt-in LLM) | `docs/ADJUDICATION.md` |

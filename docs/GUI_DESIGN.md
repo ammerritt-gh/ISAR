@@ -409,7 +409,7 @@ Item 3's interactive half ("nudge the priors, try a structure, see the fit *now*
 
 - **Sanctioned import:** the GUI may import the deterministic fit engine through **one**
   sanctioned entry point — the same frozen-config interface `isar run` uses (build a candidate
-  config → run the fitter → get fit result + intervals + AIC table). Nothing deeper. This is
+  config → run the fitter → get fit result + intervals + candidate table). Nothing deeper. This is
   the *only* place the GUI touches analysis code in-process.
 - **Sandbox results are ephemeral and marked.** Rendered with an unmistakable visual treatment
   (e.g. dashed curves + "SANDBOX — not a result" banner). Never written into class-two
@@ -504,7 +504,8 @@ figure hygiene: the render path becomes first-class instead of stranded in `out/
   pooled master is "pooled master — uncertifiable," never junk.
 - Interval-ladder comparison shows tiers side by side, *labeled by tier* (Hessian / profile /
   bootstrap), with the certifying tier visually primary.
-- The AIC candidate table (model, ΔAIC, Akaike weight, n_modes) is the standing answer to
+- The model-candidate table (model, P(model), ΔAIC, n_modes — posterior drives, ΔAIC is the
+  retained diagnostic since H4) is the standing answer to
   "what did ISAR choose and why" — render it wherever a fit is shown.
 - A plot specification owns its strip colour map (`viridis` by default). The Qt colourbar is
   attached only to a private proxy image; level and lookup-table edits propagate to every
@@ -645,7 +646,7 @@ model selection, branch model, verdicts, the driver, the ledger. The GUI adds no
 | # | Component | MVP items | Reads | Writes | Phase |
 |---|---|---|---|---|---|
 | C1 | Workspace browser (open, card summary, group tree per collation key) | — | card, groups | — | A |
-| C2 | Q-group / fit inspector page: data + fit + components + residuals; interval ladder side-by-side; authoritative horizontal ω₀ interval with source/method/endpoints; AIC table; verdict + confidence + adjudication narrative; provenance panel | 3 (view) | results, assessments, scans, evaluate_model | — | A |
+| C2 | Q-group / fit inspector page: data + fit + components + residuals; interval ladder side-by-side; authoritative horizontal ω₀ interval with source/method/endpoints; candidate table; verdict + confidence + adjudication narrative; provenance panel | 3 (view) | results, assessments, scans, evaluate_model | — | A |
 | C3 | Plane heatmap view: declared projection, viridis strips-and-gaps with one proxy-owned colourbar, latest completed-acquisition outline, state/entropy fit grammar with asymmetric energy errors, neutral branch curves, live growth via watch | 2 | results, assessments, branch_model, session_events, watch | — | A |
 | C4 | Waterfall / comparison view: 1D cuts at fixed q by T; dispersion overlays across T | 6 | groups, results | — | A |
 | C5 | Dispersion view: ω vs q with authoritative asymmetric intervals, the shared state/entropy fit grammar and matching status ribbon, neutral prior curve, off-curve flags | 3, 4 (view) | branch_model, assessments, results | — | A |

@@ -238,6 +238,10 @@ def test_hesse_trust_gate_unit():
     assert scan_delivery._hesse_interval_and_trust(bad, ctx_hi) == (None, False)  # non-PD → no interval
 
 
+# Slow-marked family (owner rule 2026-08-08): these fit_one/shadow tests run real fits whose
+# clean synthetic scans offer junk 2-mode supersets that escalate to dynesty — 95-313 s each
+# measured at ESCALATION_N_LIVE=128. The full lane runs them pre-merge; pytest-timeout bounds each.
+@pytest.mark.slow
 def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
     # A well-resolved single peak with plenty of counts: the fast tier reports a trusted HESSE
     # interval and runs NO bootstrap/profile (interval + omega0_profile stay None).
@@ -261,11 +265,19 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
     assert shadow["reused_model_identities"] == shadow["attempted_model_identities"]
     assert shadow["freshly_fitted_model_identities"] == []
     assert shadow["standard_selected_label"] == fit["best_label"]
-    assert {
-        item["label"]: item["weight"] for item in shadow["standard_model_weights"]
-    } == pytest.approx({
-        item["label"]: item["weight"] for item in shadow["legacy_model_weights"]
-    })
+    # /1-era this compared standard == legacy as a tautology (production WAS AIC). Under /2
+    # the comparison is the shadow lane's whole point: standard = the shadow's own AIC
+    # criterion (D6), legacy = the weights production actually used — evidence posteriors,
+    # verbatim from the delivered candidate table. Each lane is pinned to its own truth.
+    cands = {c["label"]: c for c in fit["candidates"]}
+    standard = {item["label"]: item["weight"] for item in shadow["standard_model_weights"]}
+    legacy = {item["label"]: item["weight"] for item in shadow["legacy_model_weights"]}
+    assert sum(standard.values()) == pytest.approx(1.0)
+    assert sum(legacy.values()) == pytest.approx(1.0)
+    assert standard == pytest.approx(
+        {label: cands[label]["akaike_weight"] for label in standard})
+    assert legacy == pytest.approx(
+        {label: cands[label]["posterior_probability"] for label in legacy})
 
     outcome = outcome_mod.FitOutcome(
         detector_id="ana7", verdict=fit["verdict"], disposition="resolved",
@@ -301,6 +313,7 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
         ),
     ],
 )
+@pytest.mark.slow
 def test_shadow_selection_is_invariant_to_delivery_constraints(constraints):
     ctx = _single_peak_ctx_for_csv()
     card = _card_with_fitting({})
@@ -377,6 +390,7 @@ def test_accepted_delivery_hint_records_partial_shadow_execution():
     }
 
 
+@pytest.mark.slow
 def test_soft_deadline_shadow_policy_skips_extra_candidate_fits(monkeypatch):
     ctx = replace(
         _single_peak_ctx_for_csv(),
@@ -407,6 +421,7 @@ def test_soft_deadline_shadow_policy_skips_extra_candidate_fits(monkeypatch):
     assert shadow["shadow_execution_kind"] == "skipped"
 
 
+@pytest.mark.slow
 def test_shadow_comparator_failure_cannot_change_delivery(monkeypatch):
     ctx = _single_peak_ctx_for_csv()
     card = _card_with_fitting({})

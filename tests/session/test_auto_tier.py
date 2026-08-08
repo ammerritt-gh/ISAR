@@ -72,6 +72,8 @@ def test_auto_escalates_missing_best_and_covariance(monkeypatch):
     assert reasons[:2] == ["no_usable_covariance", "untrusted_hesse"]
 
 
+# Slow-marked (owner rule 2026-08-08): real fits with evidence escalations — 108 s measured.
+@pytest.mark.slow
 def test_auto_attaches_to_same_point_estimates_without_reenumeration(monkeypatch):
     enumeration_calls = []
     attach_calls = []

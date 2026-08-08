@@ -228,11 +228,13 @@ high). Baker–Cousins is exact at low counts and converges to χ² at high coun
 `cost_per_dof ≈ 1` keeps its meaning. Valid only because Stage I preserved raw counts.
 *(Implemented.)*
 
-**Question 2 — which model wins: Akaike weights.** Candidate structures (peak count, elastic vs
-anti-Stokes forms) are fit and compared by AIC; an extra peak must buy its parameters in
-likelihood — never raw χ², which systematically fits noise as phantom phonons. Akaike weights are
-relative evidence under equal priors, not posteriors; docs say so. *(Implemented: `best_model`,
-`n_modes`, secondary-peak columns.)*
+**Question 2 — which model wins: the evidence posterior (H4).** Candidate structures (peak
+count, elastic vs anti-Stokes forms) are fit and compared by per-candidate Bayesian evidence
+(Laplace with escalation to nested sampling, uniform prior over admissible structures); an extra
+peak must buy its parameters in marginal likelihood — never raw χ², which systematically fits
+noise as phantom phonons. AIC and Akaike weights persist per candidate as the recorded
+diagnostics lane. *(Implemented: `best_model`, `n_modes`, `best_model_posterior`,
+secondary-peak columns.)*
 
 **Physics constraints are encoded, not rediscovered per scan.** Detailed balance (I_AS/I_S =
 exp(−ℏω/k_BT)) decides whether an anti-Stokes peak is even admissible before one is fit; symmetry
@@ -429,7 +431,7 @@ DECISIONS W1–W3.)*
 |---|---|
 | Stage I: parsers (S30, IN8), reduce, calibration state, card | Implemented |
 | Adjudication (decide–record–defer) | Implemented (opt-in) |
-| Stage II: Baker–Cousins fit, Akaike selection, branch posterior, verdicts | Implemented |
+| Stage II: Baker–Cousins fit, evidence selection (H4; Akaike diagnostics retained), branch posterior, verdicts | Implemented |
 | Interval ladder through bootstrap; `interval_reliable` flag | Implemented |
 | Uniform `interval_reliable` convergence rule | Implemented (2026-07-10) |
 | Pooled-fit member provenance | Implemented (2026-07-10) |

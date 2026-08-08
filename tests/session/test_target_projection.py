@@ -323,9 +323,14 @@ def test_the_facade_authenticates_projection_semantics_when_present(tmp_path):
         **_hand_artifact([[2.0, 5.0], [2.1, 5.1]]),
         "predictive_retained_set_fingerprint": "0" * 64,
         "statistical_semantics_fingerprint": "1" * 64,
+        # Under /2 the projection republishes the source predictive's model_weight_kind, so a
+        # semantics fingerprint without its embedded record is refused (commit-5 guard) — the
+        # hand artifact must carry the record it claims to have.
+        "statistical_semantics": {"model_weight_kind": "posterior_probability"},
     }
     projection = build_target_projection(artifact, _outcome(), **_AUTHORITY)
     assert projection["statistical_semantics"] is not None
+    assert projection["statistical_semantics"]["model_weight_kind"] == "posterior_probability"
 
     root = tmp_path / "ws"
     target_root = root / "data" / "target_projection"

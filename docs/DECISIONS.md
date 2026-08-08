@@ -1426,6 +1426,36 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   stays excluded per O44). Consequential re-baselines under H1: the STAT-2b campaign-only null
   family shrinks to the QE-bearing nulls, `elastic_only` abstains on the gold axis, and counts as
   a missed window for the drive supervisor.
+- **H4.** (2026-08-08, In force; SCENE-1 PR-b — Laplace evidence) **Production model selection is
+  the posterior over structures, computed from per-candidate Bayesian evidence; AIC becomes a
+  persisted diagnostic. S8 is superseded.** Each converged candidate's lnZ is produced by a
+  validity ladder — Laplace at θ̂, warm-started MAP refit under the full prior bundle, or dynesty
+  nested sampling — with the rung and every escalation reason recorded per candidate; a silent
+  Gaussian volume on a boundary-pinned fit is structurally impossible. Priors obey the
+  exactly-once rule (a transported soft constraint IS its parameter's prior; hard-fixed
+  parameters contribute nothing), evidence is comparable only within one data-likelihood arena
+  (cross-arena comparison raises), and selection is P(s) = π_s·Z_s / Σ π·Z with π uniform over
+  admissible structures — the weight the pooling, EIG, and master consumers read. Dominance
+  pruning skips the sampler for a deferred escalation whose evidence ceiling (lnZ ≤ −cost/2)
+  sits ≥ `PRUNE_MARGIN` (100) nats below a trusted leader, recorded as `dominated`; surviving
+  escalations sample at n_live=128 (`ESCALATION_N_LIVE`, scoped to this lane; the bayes-tier
+  error diagnostics keep D4's n_live=400, and the n_live used is recorded in the candidate's
+  validity provenance). `isar.fit_selection_semantics/2` replaces `/1` outright per H1 — no
+  compatibility reader; the recorded AIC fallback lanes (`aic_no_evidence_inputs`,
+  `aic_all_evidence_invalid`) are named degraded modes and are selection-ineligible for
+  acquisition steering (fail closed). S8's retention of AIC as production authority is
+  superseded; its diagnostic content survives — AIC/AICc/BIC are computed and persisted per
+  candidate, and the STAT-2b harness and shadow-selection lane stay AIC-labeled by design (they
+  measure criteria, D6). Recorded with this entry, per the PR-b rulings of 2026-08-08: **(a)**
+  the Bose factor is universal — thermal occupation (n(ω₀,T)+1) is an explicit factor of every
+  phonon amplitude at the component layer, so the fitted amplitude is the intrinsic strength and
+  amplitude transport is physical; fitted-A values re-baseline deliberately, ω₀/Γ untouched;
+  **(b)** the acoustic/optic/unknown identity framing is deferred to its own design discussion —
+  PR-b evidence is per-structure, the prior machinery keeps the identity axis additive, and when
+  identity lands it records, it does not drive (branch assignment keeps driving until the
+  SCENE-6 swap); **(c)** STAT-1.5 is recast under `/2`: prespecified-origin soft-prior
+  (transport) MAP fits are evidence-comparable — the prior enters lnZ exactly once as itself —
+  while `data_dependent_rescue` and `post_selection` origins remain selection-ineligible.
 
 ## Session status update
 

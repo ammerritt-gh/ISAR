@@ -462,7 +462,7 @@ is the target contract; STAT-1 exposes where the current implementation does not
 STAT-2 owns enforcement:
 
 - **Separate the data cost from the posterior cost.** A soft prior penalty enters the *optimiser's*
-  objective, while goodness-of-fit and AIC/BIC read the pure Poisson `data_cost`. Today that data cost
+  objective, while goodness-of-fit and the AIC/BIC diagnostics read the pure Poisson `data_cost`. Today that data cost
   is nevertheless evaluated at the constrained optimum, so it is not generally the comparable
   data-only MLE required by ordinary model comparison. STAT-1 labels such candidates
   selection-ineligible but leaves their scores and weights unchanged; STAT-2 must separate

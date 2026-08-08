@@ -327,15 +327,16 @@ def test_component_lambda_rejects_a_mistyped_peak_token_for_every_kind():
 
 
 # ----------------------------------------------------------------------------
-# Verdict classification on the phonon-less worlds (SCENE-1 PR-a)
+# Single-scan checks under evidence selection (SCENE-1 PR-a verdicts, PR-b selection)
 # ----------------------------------------------------------------------------
-# These two worlds are the exception to "pin the generator, not the analysis": they exist to
-# accept the phonon-less verdicts end-to-end. A pure-elastic scan must claim `elastic_only`
-# (positive, capped, scan-local) and a blank scan `no_signal` — per their truth manifests
-# (components: one elastic / none).
+# These worlds are the exception to "pin the generator, not the analysis": they accept the
+# analysis end-to-end. Since PR-b, selection here runs the EVIDENCE path (hyps + ctx supplied,
+# posterior over structures drives) — `selection_fallback is None` is load-bearing in every
+# check below: none of these tests can pass on the recorded AIC fallback.
 
 from isar.analyze import loop as _loop, select as _select, verdict as _verdict
 from isar.analyze.context import ScanContext
+from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 
 
 def _scan_ctx(name, h):
@@ -350,14 +351,23 @@ def _scan_ctx(name, h):
                        instrument="S30", energy_status="needs_zero")
 
 
-def _classify(ctx):
+def _run_selection(name, h):
+    ctx = _scan_ctx(name, h)
     results = _loop.fit_structures_two_stage(ctx)
-    sel = _select.select_models(results)
+    hyps = {hh.label: hh for hh in enumerate_phonon_structures(ctx)}
+    hyps.update({hh.label: hh for hh in enumerate_phonon_multimode(ctx)})
+    sel = _select.select_models(results, hyps, ctx)
+    assert sel.selection_fallback is None
+    return ctx, results, sel
+
+
+def _classify(name, h):
+    ctx, results, sel = _run_selection(name, h)
     return _verdict.classify(results, ctx, sel)
 
 
 def test_pure_elastic_world_classifies_elastic_only_at_the_zone_centre():
-    v = _classify(_scan_ctx("pure_elastic", 2.0))
+    v = _classify("pure_elastic", 2.0)
     assert v.verdict == "elastic_only"
     assert 0.0 < v.confidence <= 0.5 + 1e-12            # the categorical-humility cap
     assert v.components["s_scope_elastic"] == 0.5
@@ -365,12 +375,49 @@ def test_pure_elastic_world_classifies_elastic_only_at_the_zone_centre():
 
 def test_pure_elastic_world_off_centre_is_no_signal():
     # the elastic line is Bragg-localized (q_fwhm = 0.08): at H=2.5 there is nothing at all
-    v = _classify(_scan_ctx("pure_elastic", 2.5))
+    v = _classify("pure_elastic", 2.5)
     assert v.verdict == "no_signal"
     assert v.confidence == 0.0
 
 
 def test_blank_world_classifies_no_signal():
-    v = _classify(_scan_ctx("blank", 2.5))
+    v = _classify("blank", 2.5)
     assert v.verdict == "no_signal"
     assert v.confidence == 0.0
+
+
+def test_canonical_world_wins_both_branches_off_centre():
+    # H=2.25: acoustic 4.24 meV and optic 8.41 meV, no Bragg (offset 0.25 >> q_fwhm 0.08).
+    # Evidence selection must prefer the 2-mode structure and land both mode energies.
+    _ctx, results, sel = _run_selection("canonical", 2.25)
+    win = {r.label: r for r in results}[sel.best]
+    assert win.n_modes == 2
+    modes = sorted(v for n, v in win.params.items() if n.endswith(".Omega_d"))
+    assert abs(modes[0] - 4.24) < 0.8
+    assert abs(modes[1] - 8.41) < 0.8
+
+
+def test_no_acoustic_world_keeps_the_gap_at_the_zone_centre():
+    # H=2.0: Bragg + gapped 3.0 meV + optic 7.0 meV. A gapless-acoustic misreading would put
+    # a mode inside the elastic resolution; the winner must not. (The identity axis is
+    # deferred, so "not read as acoustic" is asserted structurally: no near-zero mode energy.)
+    _ctx, results, sel = _run_selection("no_acoustic", 2.0)
+    win = {r.label: r for r in results}[sel.best]
+    assert win.n_modes >= 1
+    modes = [v for n, v in win.params.items() if n.endswith(".Omega_d")]
+    assert min(modes) > 2.0
+    assert abs(min(modes) - 3.0) < 0.8
+
+
+@pytest.mark.slow
+def test_unknown_extra_world_extra_level_is_competitive():
+    # H=2.25: acoustic 4.24 + level 5.0 (blended) + optic 8.41 — three true modes against the
+    # 2-mode enumeration cap. A multimode structure must hold nonzero posterior, win or not:
+    # the machine may be honest at its ceiling, but it must not read the scan as one mode.
+    # Slow-marked (owner rule 2026-08-08): the genuinely ambiguous 3-vs-2 contest escalates to
+    # dynesty by design — 117 s measured at ESCALATION_N_LIVE=128, over the fast-lane budget.
+    _ctx, results, sel = _run_selection("unknown_extra", 2.25)
+    n_modes = {r.label: r.n_modes for r in results}
+    multi = [s for s in sel.scores if n_modes.get(s.label, 1) >= 2]
+    assert multi
+    assert max(s.posterior_probability for s in multi) > 0.0
