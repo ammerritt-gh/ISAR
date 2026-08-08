@@ -173,3 +173,120 @@ def test_underpowered_is_provisional_and_split_from_no_signal():
     assert up.detection is not None and up.detection["detectable"] is False
     ns = verdict.classify([res], flat, sel, prior=PhononPrior(6.0, 500.0, 1.0))
     assert ns.verdict == "no_signal" and ns.provisional is False     # had power -> genuine absence
+
+
+# --- phonon-less winners (SCENE-1 PR-a): elastic_only / no_signal ----------------------------
+
+def _sel_null(best="elastic+bg", *, p=1e-4, weight=0.9):
+    """A Selection whose elastic+bg score carries a real nested LRT vs bg — the significance
+    gate fails closed, so elastic_only expectations must supply the evidence (PR review)."""
+    sc = types.SimpleNamespace(
+        label="elastic+bg", weight=weight,
+        nested={"reduced": "bg", "delta_deviance": 15.0, "dof": 1, "p_value": p})
+    return select.Selection(scores=[sc], best=best, survivors=[best] if best else [],
+                            pooled=None, modality="unpooled")
+
+
+def _null_result(label, params, *, cost_per_dof=1.0, converged=True):
+    """A converged phonon-less fit (elastic+bg / bg): NaN omega/gamma, zero modes."""
+    return loop.StructureFitResult(
+        label=label, k=len(params), ndof=40, cost=cost_per_dof * 40, cost_per_dof=cost_per_dof,
+        optimizer_converged=converged, covariance_ok=True, profile_ok=False,
+        well_constrained=converged, analysis_usable=converged, params=dict(params),
+        param_errors={n: None for n in params}, gamma=float("nan"), gamma_err=float("nan"),
+        omega0=float("nan"), omega0_err_hesse=float("nan"), message="ok",
+        modes=[], n_modes=0)
+
+
+def _elastic_counts(x, *, area=400.0, bg=20.0, seed=11):
+    """Seeded Poisson counts from a resolution-shaped elastic line on flat background —
+    honest data, so AIC differences are noise-scaled, not inflated by a noiseless curve."""
+    from isar.analyze.lineshapes import Voigt
+
+    lam = bg + Voigt(np.asarray(x, dtype=float), area, 1.0, 0.0, 0.0)
+    return np.random.default_rng(seed).poisson(lam).astype(float)
+
+
+def test_elastic_only_when_elastic_bg_wins():
+    x = np.linspace(-10.0, 10.0, 81)
+    ctx = _ctx(_elastic_counts(x), x=x)
+    res = _null_result("elastic+bg", {"elastic.E": 200.0, "bg.BG": 20.0})
+    v = verdict.classify([res], ctx, _sel_null())
+    assert v.verdict == "elastic_only"
+    assert 0.0 < v.confidence <= 0.5 + 1e-12             # the categorical-humility cap
+    assert v.components["s_scope_elastic"] == 0.5
+    assert v.provisional is False and v.detection is None  # no prior expected anything here
+
+
+def test_elastic_only_fails_closed_without_the_bg_comparison():
+    """The positive claim requires its evidence: a missing/insignificant nested LRT vs bg
+    (bg not converged, diagnostic absent, p > alpha) must fall to the null convention,
+    never claim elastic_only (PR #13 review)."""
+    x = np.linspace(-10.0, 10.0, 81)
+    ctx = _ctx(_elastic_counts(x), x=x)
+    res = _null_result("elastic+bg", {"elastic.E": 200.0, "bg.BG": 20.0})
+    # no scores at all -> no LRT -> fail closed
+    bare = verdict.classify([res], ctx, _sel("fold", best="elastic+bg"))
+    assert bare.verdict == "no_signal" and bare.confidence == 0.0
+    # LRT present but insignificant -> same
+    weak = verdict.classify([res], ctx, _sel_null(p=0.2))
+    assert weak.verdict == "no_signal"
+    assert any("significance" in r for r in weak.reasons)
+
+
+def test_elastic_only_is_provisional_when_power_is_unconfirmed():
+    x = np.linspace(-10.0, 10.0, 81)
+    ctx = _ctx(_elastic_counts(x), x=x, prior_omega=6.0)
+    res = _null_result("elastic+bg", {"elastic.E": 200.0, "bg.BG": 20.0})
+    sel = _sel_null()
+    # prior expects a mode but declares no strength -> power abstains -> provisional (S0.4 guard)
+    v = verdict.classify([res], ctx, sel, prior=PhononPrior(6.0, None, 1.0))
+    assert v.verdict == "elastic_only" and v.provisional is True
+    assert v.detection is not None and v.detection["detectable"] is None
+    # prior expects a mode the scan HAD power to see -> a confident (still capped) claim
+    w = verdict.classify([res], ctx, sel, prior=PhononPrior(6.0, 500.0, 1.0))
+    assert w.verdict == "elastic_only" and w.provisional is False
+    assert w.confidence > v.confidence                   # confirmed power scores higher
+
+
+def test_bg_winner_is_no_signal_and_keeps_the_underpowered_split():
+    x = np.linspace(-10.0, 10.0, 81)
+    ctx = _ctx(np.full(81, 20.0), x=x)
+    res = _null_result("bg", {"bg.BG": 20.0})
+    sel = _sel("fold", best="bg")
+    plain = verdict.classify([res], ctx, sel)
+    assert plain.verdict == "no_signal" and plain.confidence == 0.0
+    ctx_p = _ctx(np.full(81, 20.0), x=x, prior_omega=6.0)
+    up = verdict.classify([res], ctx_p, sel, prior=PhononPrior(6.0, 5.0, 1.0))
+    assert up.verdict == "underpowered" and up.provisional is True
+    ns = verdict.classify([res], ctx_p, sel, prior=PhononPrior(6.0, 500.0, 1.0))
+    assert ns.verdict == "no_signal" and ns.detection["detectable"] is True
+
+
+def test_gof_bad_null_winner_is_not_elastic_only():
+    """A badly-fitting elastic+bg must route through the GoF branch, never claim elastic_only."""
+    x = np.linspace(-10.0, 10.0, 81)
+    rng = np.random.default_rng(7)
+    counts = np.maximum(_elastic_counts(x) + rng.normal(0.0, 40.0, x.size), 0.0)
+    ctx = _ctx(counts, x=x)
+    res = _null_result("elastic+bg", {"elastic.E": 200.0, "bg.BG": 20.0}, cost_per_dof=9.0)
+    v = verdict.classify([res], ctx, _sel("fold", best="elastic+bg"))
+    assert v.verdict in ("junk", "model_incomplete", "signal_unmodeled")
+
+
+def test_null_structures_fit_end_to_end():
+    """The enumerated nulls survive the real fit path: IC, minimize, result extraction."""
+    x = np.linspace(-10.0, 10.0, 81)
+    ctx = _ctx(_elastic_counts(x), x=x)
+    by_label = {h.label: h for h in enumerate_phonon_structures(ctx)}
+    assert "elastic+bg" in by_label and "bg" in by_label
+    for label in ("elastic+bg", "bg"):
+        r = loop.fit_hypothesis(by_label[label], ctx)
+        assert r.optimizer_converged
+        assert r.n_modes == 0 and r.modes == []
+        assert np.isnan(r.omega0) and np.isnan(r.gamma)   # NaN, never a fake 0.0
+    full = loop.fit_structures_two_stage(ctx)
+    sel = select.select_models(full)
+    assert sel.best == "elastic+bg"                       # the null wins on pure-elastic data
+    v = verdict.classify(full, ctx, sel)
+    assert v.verdict == "elastic_only"

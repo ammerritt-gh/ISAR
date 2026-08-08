@@ -163,6 +163,15 @@ def phonon_structure_ic(composite, ctx, *, gamma0=GAMMA0, estimator="baker_cousi
     est = estimators.get_estimator(estimator)
     linear_set = set(composite.linear_names())
 
+    if not composite.nonlinear_names():
+        # Phonon-less composite (elastic+bg / bg): every param is linear, so one NNLS solve IS
+        # the IC — no Ω_d to grid-scan, and the grid (empty on a Stokes-free window) is
+        # irrelevant to this structure.
+        phi, lin_names = composite.nnls_basis(x, {}, ctx)
+        coef, _ = nnls(phi, counts)
+        lin = dict(zip(lin_names, coef))
+        return np.array([max(float(lin[n]), 0.0) for n in composite.param_names()], dtype=float)
+
     best_cost, best = np.inf, None
     for od in omega_d_grid(x, x_max, ctx.prior_omega, eps=EPS_OMEGA_D):
         nl = {name: (od if name.endswith(".Omega_d") else gamma0)
@@ -371,23 +380,17 @@ def enumerate_phonon_structures(ctx) -> list[Hypothesis]:
     quasi-elastic width (§8 TAS), and ``elastic+stokes+qe+bg`` when both gates fire. The
     quasi-elastic is opt-in per card, not enumerated by default; model selection (§4)
     decides whether it earns its parameter. Second-phonon / sloped-BG remain later-step.
-    """
-    # local import: components imports this module, so the classes cannot come in at
-    # module level (components.py -> phonon.py cycle).
-    from isar.analyze.components import ConstantBackground, Elastic, QuasiElastic
 
-    elastic = elastic_admissible(ctx)
-    qe = quasielastic_admissible(ctx)
-    pho = _phonon_for(ctx)                          # class (tied) or Stokes-only instance (Bose-dead)
-    hyps = [Hypothesis("stokes+bg", (pho, ConstantBackground))]
-    if elastic:
-        hyps.append(Hypothesis("elastic+stokes+bg", (pho, Elastic, ConstantBackground)))
-    if qe:
-        hyps.append(Hypothesis("stokes+qe+bg", (pho, QuasiElastic, ConstantBackground)))
-    if elastic and qe:
-        hyps.append(Hypothesis("elastic+stokes+qe+bg",
-                               (pho, Elastic, QuasiElastic, ConstantBackground)))
-    return hyps
+    The structure set is now assembled from the phenomenon catalogue
+    (:mod:`isar.analyze.catalogue`, SCENE-1); the gates and the phonon recipe below still live
+    here. Output is unchanged — labels, order and components are pinned by
+    ``tests/analyze/test_catalogue.py``.
+    """
+    # local import: catalogue imports components, which imports this module, so it cannot come
+    # in at module level (components.py -> phonon.py cycle).
+    from isar.analyze.catalogue import enumerate_structures
+
+    return enumerate_structures(ctx)
 
 
 def _phonon_for(ctx, prefix: str | None = None):
@@ -413,7 +416,11 @@ def enumerate_phonon_multimode(ctx, n_max: int = 2) -> list[Hypothesis]:
     with a second phonon. Mode 1 keeps the default ``phonon`` prefix so each 1-mode hypothesis
     is *strictly nested* in its 2-mode counterpart (the LRT/AIC comparison in §4 is then exact);
     mode 2 gets the ``phonon2`` namespace. Capped at N=2 this round (``n_max`` is accepted for
-    the later N=3 extension; values >2 are treated as 2)."""
+    the later N=3 extension; values >2 are treated as 2).
+
+    Still hand-enumerated: multiplicity (a second instance of the *same* phenomenon in its own
+    parameter namespace) is not a catalogue concept yet, so routing it through the catalogue would
+    not be a strict-equivalence change. It migrates with the evidence work in SCENE-1 PR-b."""
     # local import: components imports this module, so the classes cannot come in at
     # module level (components.py -> phonon.py cycle).
     from isar.analyze.components import ConstantBackground, Elastic, QuasiElastic

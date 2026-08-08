@@ -324,3 +324,53 @@ def test_component_lambda_rejects_a_mistyped_peak_token_for_every_kind():
     for comp, comp_truth in ((bragg, truth), (dho, truth), (horn, mm)):
         with pytest.raises(ValueError, match="stokse"):
             generate.component_lambda(comp_truth, comp, 2.5, x, peak="stokse")
+
+
+# ----------------------------------------------------------------------------
+# Verdict classification on the phonon-less worlds (SCENE-1 PR-a)
+# ----------------------------------------------------------------------------
+# These two worlds are the exception to "pin the generator, not the analysis": they exist to
+# accept the phonon-less verdicts end-to-end. A pure-elastic scan must claim `elastic_only`
+# (positive, capped, scan-local) and a blank scan `no_signal` — per their truth manifests
+# (components: one elastic / none).
+
+from isar.analyze import loop as _loop, select as _select, verdict as _verdict
+from isar.analyze.context import ScanContext
+
+
+def _scan_ctx(name, h):
+    cfg, truth = worlds.build(name)
+    data = generate.generate_world(truth)
+    hs = generate.world_h_values(cfg)
+    i = int(np.argmin(np.abs(hs - h)))
+    x = generate.world_energy_grid(cfg)
+    return ScanContext(x=x, counts=data.counts[i].astype(float),
+                       mask=np.ones(x.size, dtype=bool), T=truth.T, center=0.0,
+                       gauss_fwhm=cfg.gauss_fwhm, lorentz_fwhm=cfg.lorentz_fwhm,
+                       instrument="S30", energy_status="needs_zero")
+
+
+def _classify(ctx):
+    results = _loop.fit_structures_two_stage(ctx)
+    sel = _select.select_models(results)
+    return _verdict.classify(results, ctx, sel)
+
+
+def test_pure_elastic_world_classifies_elastic_only_at_the_zone_centre():
+    v = _classify(_scan_ctx("pure_elastic", 2.0))
+    assert v.verdict == "elastic_only"
+    assert 0.0 < v.confidence <= 0.5 + 1e-12            # the categorical-humility cap
+    assert v.components["s_scope_elastic"] == 0.5
+
+
+def test_pure_elastic_world_off_centre_is_no_signal():
+    # the elastic line is Bragg-localized (q_fwhm = 0.08): at H=2.5 there is nothing at all
+    v = _classify(_scan_ctx("pure_elastic", 2.5))
+    assert v.verdict == "no_signal"
+    assert v.confidence == 0.0
+
+
+def test_blank_world_classifies_no_signal():
+    v = _classify(_scan_ctx("blank", 2.5))
+    assert v.verdict == "no_signal"
+    assert v.confidence == 0.0

@@ -92,7 +92,7 @@ def test_result_separates_convergence_from_covariance():
 
 def test_fit_admissible_structures_emits_both_then_offwindow_one():
     both = loop.fit_admissible_structures(_spectrum_ctx(), minos=False)
-    assert {r.label for r in both} == {"stokes+bg", "elastic+stokes+bg"}
+    assert {r.label for r in both} == {"stokes+bg", "elastic+stokes+bg", "elastic+bg", "bg"}
 
     x = np.arange(1.0, 21.5, 0.5)
     counts = convolute_voigt_dho(x, 4.0, 0.0, 0.6, 0.0, 0.3, 300.0, 0.0, 20.0, 290.0, peak="all")
@@ -100,7 +100,7 @@ def test_fit_admissible_structures_emits_both_then_offwindow_one():
                       center=0.0, gauss_fwhm=0.6, lorentz_fwhm=0.0, instrument="IN8",
                       energy_status="absolute")
     res = loop.fit_admissible_structures(off, minos=False)
-    assert [r.label for r in res] == ["stokes+bg"]
+    assert [r.label for r in res] == ["stokes+bg", "bg"]
 
 
 def _two_peak_ctx(o1=4.0, a1=500.0, o2=10.0, a2=350.0, g=0.35, bg=8.0, n=121, seed=None):
@@ -155,7 +155,7 @@ def test_two_stage_single_peak_stays_one_mode():
     results = loop.fit_structures_two_stage(ctx, minos=False)
     # gate did not fire → no 2-mode ("stokes2…") hypothesis was offered
     assert not any("stokes2" in r.label for r in results)
-    assert all(r.n_modes == 1 for r in results)
+    assert all(r.n_modes <= 1 for r in results)      # phonon-bearing: 1 mode; nulls: 0
 
 
 def test_two_stage_offers_multimode_when_two_peaks_declared():

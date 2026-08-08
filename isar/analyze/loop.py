@@ -21,14 +21,13 @@ log = logging.getLogger(__name__)
 from isar.analyze import backends, estimators
 from isar.analyze.backends import BackendResult
 from isar.analyze.phonon import (
-    EPS_OMEGA_D, GATE_COST, _bound, _gamma_at_bound, assess_success, elastic_admissible,
+    EPS_OMEGA_D, GATE_COST, _bound, _gamma_at_bound, assess_success,
     enumerate_phonon_multimode, enumerate_phonon_structures, greedy_multimode_ic,
     omega0_value_error, phonon_structure_ic,
 )
 # Re-imported for their module attributes, not for use here: scan_delivery.py and the
 # analyze tests read ``loop.GAMMA_FLOOR`` / ``loop.GAMMA_MAX``.
 from isar.analyze.phonon import GAMMA_FLOOR, GAMMA_MAX  # noqa: F401
-from isar.analyze.structures import Hypothesis
 
 # STAT-1.5 metadata revisions.  These are descriptive fingerprints only: changing either label
 # changes semantic comparability identity, never a fit/cache/scientific identity.
@@ -627,20 +626,28 @@ def result_from_backend(label, composite, costv, n_used, k, br,
     # primary mode → the reported scalar ω₀ / Γ (back-compat); the acoustic hint (Phase A) selects
     # which mode of a multi-mode fit is the acoustic QoI, ahead of the prior/amplitude fallbacks.
     prim_i = composite.primary_phonon_index(theta, cov, prior_omega, acoustic_omega)
-    omega0, omega0_err = composite._omega0_at(theta, cov, prim_i)
-    gamma = float(theta[prim_i + 1])
-    gamma_err = float(errs[prim_i + 1]) if errs is not None else float("nan")
 
     optimizer_converged = bool(br.success)
     covariance_ok = bool(br.covariance_ok)
     merrors = br.merrors or {}
     profile_ok = bool(merrors) and all(v[2] for v in merrors.values())
 
-    # strict Phase-1 rule, adapting the Ω_d at-limit key (Ω_d is the first free param)
-    od_key = _sanitize(names[0])
-    at_limit_adpt = {"omega_d": bool((br.at_limit or {}).get(od_key, False))}
-    well_constrained = bool(assess_success(theta, errs, at_limit_adpt, br.success,
-                                           br.covariance_ok, EPS_OMEGA_D))
+    if prim_i is None:
+        # Phonon-less structure (elastic+bg / bg, SCENE-1 PR-a): there is no ω to report. NaN,
+        # never 0.0 — a fake zero would read as a real zone-centre energy downstream. Ω_d
+        # separability is vacuous here, so well-constrained reduces to converged + covariance.
+        omega0 = omega0_err = gamma = gamma_err = float("nan")
+        at_limit_adpt = {"omega_d": False}
+        well_constrained = optimizer_converged and covariance_ok
+    else:
+        omega0, omega0_err = composite._omega0_at(theta, cov, prim_i)
+        gamma = float(theta[prim_i + 1])
+        gamma_err = float(errs[prim_i + 1]) if errs is not None else float("nan")
+        # strict Phase-1 rule, adapting the Ω_d at-limit key (Ω_d is the first free param)
+        od_key = _sanitize(names[0])
+        at_limit_adpt = {"omega_d": bool((br.at_limit or {}).get(od_key, False))}
+        well_constrained = bool(assess_success(theta, errs, at_limit_adpt, br.success,
+                                               br.covariance_ok, EPS_OMEGA_D))
     analysis_usable = optimizer_converged
 
     gamma_at_bound = _gamma_at_bound(m["gamma"] for m in modes)
@@ -953,27 +960,6 @@ def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors
     return results
 
 
-def _null_aic(ctx, *, backend="iminuit") -> float | None:
-    """AIC of the no-phonon baseline for this context (``elastic+bg`` when the elastic line is
-    admissible, else background-only), or ``None`` when that null does not converge.
-
-    Fit directly (not through :func:`fit_hypothesis`, whose ω₀ extraction assumes a phonon) so the
-    structure-hint shortcut can ask "does the hinted phonon actually earn its parameters over
-    fitting nothing?" without ever admitting a phonon-less result into the selection layer."""
-    from isar.analyze.components import ConstantBackground, Elastic
-
-    comps = (Elastic, ConstantBackground) if elastic_admissible(ctx) else (ConstantBackground,)
-    hyp = Hypothesis("elastic+bg" if len(comps) == 2 else "bg", comps)
-    prob = build_problem(hyp, ctx)
-    be_names = [_sanitize(n) for n in prob.free_names]
-    br = _minimize_fixed(backend, prob.objective, prob.x0, prob.bounds, be_names,
-                         prob.fixed_pos, prob.fixed_vals, minos=False)
-    if not br.success:
-        return None
-    cost = float(prob.costv(np.asarray(br.x, dtype=float)))
-    return cost + 2.0 * prob.k
-
-
 def _try_structure_hint(ctx, structure_hint, *, backend="iminuit", minos=False):
     """Fit ONLY the hinted structure (cold grid-IC) plus the no-phonon null, and accept the
     shortcut iff every gate the full enumeration relies on still passes. Returns the one-element
@@ -994,8 +980,13 @@ def _try_structure_hint(ctx, structure_hint, *, backend="iminuit", minos=False):
         return None
     if _offer_multimode([r], ctx):                     # cost/dof or structured-residual gate
         return None
-    null_aic = _null_aic(ctx, backend=backend)
-    if null_aic is not None and null_aic <= (r.cost + 2.0 * r.k):
+    # The no-phonon null is a first-class enumerated structure (elastic+bg when the elastic gate
+    # fires — it is then in by_label — else bg), and fit_hypothesis handles phonon-less composites,
+    # so the "does the phonon earn its parameters over fitting nothing?" comparison is an ordinary
+    # candidate fit. A non-converged null stays inconclusive (the hint stands, as before).
+    null_hyp = by_label.get("elastic+bg", by_label["bg"])
+    nr = fit_hypothesis(null_hyp, ctx, backend=backend, minos=False)
+    if nr.optimizer_converged and (nr.cost + 2.0 * nr.k) <= (r.cost + 2.0 * r.k):
         return None                                    # no-phonon preferred → hint assumption void
     return [r]
 

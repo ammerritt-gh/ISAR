@@ -1382,6 +1382,33 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   name `program_schema` and `program_step_id` where they named an envelope — and that change is
   intended, judged against the SCENE world suite rather than against comparability with pre-SCENE
   campaigns.
+- **H3.** (2026-08-08, In force; SCENE-1 PR-a — catalogue + grammar) **The phenomenon catalogue
+  (`isar/analyze/catalogue.py`, `isar.phenomenon-catalogue/1`) is the single authority for what
+  can be present in a scan, and the phonon-less nulls are first-class candidates.** Six entries —
+  acoustic, optic, elastic, quasielastic (its own phenomenon, measured in its own right and
+  distinct from the not-yet-catalogued diffuse entry — owner ruling 2026-08-08), unknown, bg_only.
+  The catalogue owns no physics: DHO gates and recipes stay in `analyze/phonon.py`; entries hold
+  references. `enumerate_phonon_structures` keeps its name as the catalogue-backed implementation
+  and now closes with `elastic+bg` (elastic gate) and `bg`, so selection can honestly prefer
+  "nothing inelastic here". Verdicts read that winner: a significant `elastic+bg` winner is
+  **`elastic_only`** — a positive but *categorically humble, scan-local* claim (owner ruling
+  2026-08-08: elastic intensity is ubiquitous — incoherent + can/sample background, strongest near
+  Bragg — and can mask arbitrary signals; mapping/excluding elastic is future scene-level work
+  tied to the TAVI-background workstream; it is never a region-exclusion verdict). Its confidence
+  is `S_SCOPE_ELASTIC (0.5) × geomean(s_structure, s_provenance, s_detectability)` — a hard
+  product cap, audited by name — and the claim requires the elastic line to be significant over
+  bare background (nested LRT vs `bg`, α=0.05), else the scan falls to the existing
+  `no_signal`/`underpowered` null convention; `provisional=True` whenever a prior expects a mode
+  the scan lacked confirmed power to exclude (§0.4 guard). Dormant declarations recorded now,
+  consumed at PR-b: per-entry parameter priors; **constraint transport** (transportable
+  parameters with per-parameter smoothness class + scale in r.l.u.; one-directional
+  clean→complicated through the existing `ParamConstraints` soft path, applied-exactly-once like
+  catalogue priors — never the banned parameter-compatibility re-scoring; a field break such as
+  an avoided crossing is a typed observation); and the near-degenerate acoustic **constrained
+  variant** (FWHM = resolution, Bose-tied amplitude I ∝ (n+1)/ω ≈ k_BT/ω²; exact reduced-q origin
+  stays excluded per O44). Consequential re-baselines under H1: the STAT-2b campaign-only null
+  family shrinks to the QE-bearing nulls, `elastic_only` abstains on the gold axis, and counts as
+  a missed window for the drive supervisor.
 
 ## Session status update
 

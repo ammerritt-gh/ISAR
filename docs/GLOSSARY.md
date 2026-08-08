@@ -23,6 +23,7 @@ Every scan gets one verdict. The point of the verdict is to tell you **where to 
 | **held_for_calibration** | Missing the energy zero (or other calibration) needed to fit. | Resolve calibration first, then re-run. |
 | **underpowered** | Too few counts to constrain a fit yet. | Recount if the point matters. |
 | **no_signal** | No peak detectable above background. | Skip, or recount much longer. |
+| **elastic_only** | Only the elastic line (+ background) was resolvable in this scan — a positive but scan-local claim, confidence capped at 0.5. | Treat like a miss for steering; recount or re-window if the point matters. |
 
 "Delivered" in the reports = **resolved + flagged** (ISAR handed you a usable number). Everything else
 is ISAR saying *"look here yourself"* — which is a feature, not a failure. **Nothing is ever deleted**
@@ -38,7 +39,24 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **Voigt** — a Gaussian convolved with a Lorentzian; ISAR's instrument-resolution shape.
 - **resolution** — the instrumental width the data is smeared by (a Gaussian width and a Lorentzian
   width); ISAR measures it from elastic/Bragg scans.
-- **quasi-elastic** — a broad component sitting near zero energy transfer (real signal, not resolution).
+- **quasi-elastic** — a broad component sitting near zero energy transfer (real signal, not
+  resolution). Since SCENE-1 it is its own catalogue phenomenon — a measurement target in its own
+  right (linewidth ⇒ relaxation rate), distinct from *diffuse* scattering (broad in Q, elastic in
+  E; scene-level, not yet catalogued).
+- **phenomenon catalogue** — the single registry (`isar.phenomenon-catalogue/1`) of what can be
+  present in a scan: acoustic, optic, elastic, quasielastic, unknown, bg_only. Each entry declares
+  its local models and gates (the physics stays in `analyze/phonon.py`), plus dormant parameter
+  priors, transport declarations, and constrained variants consumed when Laplace evidence lands.
+  Structure enumeration is catalogue-driven, including the phonon-less nulls `elastic+bg` and `bg`.
+- **elastic_only** — the verdict when the phonon-less `elastic+bg` candidate wins selection with a
+  significant elastic line: a positive, scan-local, categorically humble claim (confidence
+  hard-capped at 0.5); never region exclusion, never a Bragg identification.
+- **constraint transport** — carrying parameters fit in a clean region as *soft* constraints into
+  complicated regions (crossings, spurions), assuming slow variation; declared per catalogue entry
+  (smoothness class + scale in r.l.u.), one-directional, applied exactly once via the existing
+  soft-constraint path. Deviation from the transported expectation is itself a signal (an avoided
+  crossing shows as intensities swapping while energies hold) — a typed observation, never
+  silently absorbed. Declared at PR-a; consumed at PR-b.
 - **residual** — data minus fit. Flat noise is good; leftover structure means the model missed something.
 - **cost/dof** — the fit's misfit per degree of freedom; a reduced-χ²-like number (ISAR uses a Poisson
   likelihood, see the statistics primer). Near 1 is a good fit; ≫1 means the model doesn't match.

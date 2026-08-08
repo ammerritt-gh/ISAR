@@ -1579,12 +1579,30 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # tag descriptor_only, so the stop rule / gold / truth never count it as a delivered ω₀. The
     # descriptor peaks (stored separately) are the deliverable; the verdict routes to "unmodeled".
     omega0_err = best.omega0_err_hesse if best else None
+    gamma = best.gamma if best else None
     fit_kind = best.fit_kind if best else "unconstrained"
     if sv.verdict == "signal_unmodeled":
         omega0 = omega0_err = interval = omega0_profile = hesse_interval = None
         interval_reliable = False
         fit_kind = "descriptor_only"
         # Not an ω₀ measurement → null the bayes interval/diagnostics too, same as the other intervals.
+        bayes_interval = bayes_ess = None
+        log_evidence = log_evidence_err = None
+        bayes_freq_ratio = hesse_freq_ratio = None
+
+    # SCENE-1 PR-a — a phonon-less winner (`elastic_only`, or a bg winner's no_signal/underpowered):
+    # NOT an ω₀ measurement either. Two hard rules: (1) the delivery contract for "no number" is
+    # None — the fitter's NaN would pass every `is not None` guard in the branch layer and leak
+    # NaN into results.csv / report.json / exposure targeting; (2) no interval may be published,
+    # because the fold-pooled fallback above is built from the *rejected* phonon-bearing survivors
+    # (a phonon-less winner never carries omega0_samples), so that interval belongs to a structure
+    # selection just declined — publishing it as reliable would hand the driver a certifiable
+    # interval for a scan that measured no phonon.
+    if best is not None and int(getattr(best, "n_modes", 1) or 0) == 0:
+        omega0 = omega0_err = gamma = None
+        interval = omega0_profile = hesse_interval = None
+        interval_reliable = False
+        hesse_trusted = False
         bayes_interval = bayes_ess = None
         log_evidence = log_evidence_err = None
         bayes_freq_ratio = hesse_freq_ratio = None
@@ -1609,7 +1627,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "hesse_interval": (tuple(hesse_interval) if hesse_interval is not None else None),
         "hesse_trusted": hesse_trusted,
         "modality": sel.modality, "best_label": sel.best,
-        "gamma": (best.gamma if best else None),
+        "gamma": gamma,
         "cost_per_dof": (best.cost_per_dof if best else None),
         "n_modes": n_modes, "modes": modes,
         "amplitudes": amplitudes, "candidates": candidates,

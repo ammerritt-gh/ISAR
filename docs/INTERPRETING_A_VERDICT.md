@@ -40,7 +40,20 @@ keeps its raw data and is surfaced to you with its reason.
 - **`underpowered`** — too few counts to constrain a fit yet. This verdict is **provisional**: it is a
   statement about detection power given the current counts, and it never marks a region as
   confirmed-empty. *Recount if the point matters.*
-- **`no_signal`** — no peak detectable above background. *Skip, or recount much longer.*
+- **`no_signal`** — no peak detectable above background (including when the bare-background
+  candidate simply wins model selection). *Skip, or recount much longer.*
+- **`elastic_only`** — the elastic-line + background candidate won model selection with a real,
+  significant fit (the elastic line must be significant over bare background — a nested
+  likelihood-ratio test at α=0.05 — else the scan reads `no_signal`/`underpowered` instead):
+  nothing beyond the elastic model was resolvable **in this scan**. This is a
+  positive claim, but a *categorically humble* one, and its confidence is hard-capped at 0.5:
+  elastic intensity is ubiquitous (incoherent scattering plus can/sample background, strongest
+  near Bragg) and can mask arbitrary signals, so `elastic_only` never means "this region has no
+  excitation" — it is scan-local, never region exclusion. It is `provisional` when your declared
+  expectation places a mode in the window that the scan lacked confirmed power to exclude.
+  What it does **not** claim: that the elastic line is a Bragg peak (Bragg identity is
+  scene-level), that the window is confirmed empty, or that neighbouring q are elastic-only too.
+  *Treat like a miss for steering purposes; recount or re-window if the point matters.*
 
 ## The confidence score
 

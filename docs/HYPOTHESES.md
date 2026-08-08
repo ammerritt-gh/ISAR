@@ -26,9 +26,12 @@ A hypothesis **weights** the driver's Bayesian machinery; it never **forces** it
   where its predicted energy is resolvable);
 - it *informs* classification, as a prior over the branch labels — never as a veto.
 
-A hypothesis is **not** a fit model. The deterministic fitter fits what the data supports; the
-hypothesis only tells the *steering* where to look first and what the features it finds most
-plausibly are. If the data disagrees with your hypothesis, the system is designed to notice and
+A hypothesis is **not** a fit model, and it is **not** a catalogue entry. The phenomenon
+catalogue (`isar/analyze/catalogue.py`, SCENE-1/H3) is the system's registry of what *can* be
+present in any scan and drives the fitter's structure enumeration; an excitation hypothesis is
+*your* declaration of which of those phenomena this campaign is chasing and where. The
+deterministic fitter fits what the data supports; the hypothesis only tells the *steering* where
+to look first and what the features it finds most plausibly are. If the data disagrees with your hypothesis, the system is designed to notice and
 say so (see *When you're wrong*, below), not to fit your expectation anyway.
 
 For a tracked branch, a stated energy is an **anchor identity prior**, not an instruction

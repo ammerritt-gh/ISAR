@@ -78,6 +78,7 @@ _REASON_MARKER = {
     "interval_floored": ("^", True, False),          # filled triangle
     "fast_tier_only": ("D", False, False),
     "no_signal": ("x", False, True),                 # × on the bottom rug
+    "elastic_only": ("x", False, True),              # phonon-less winner: same rug as no_signal
     "infeasible": ("x", False, True),
     "signal_unmodeled": ("x", False, True),
     "info_saturated": ("s", False, False),

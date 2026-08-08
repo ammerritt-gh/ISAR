@@ -99,24 +99,16 @@ def test_complete_family_refuses_missing_or_failed_candidate():
 
 
 def test_null_family_obeys_production_gates_and_fits():
+    # bg / elastic+bg are production candidates since SCENE-1 PR-a; only the QE-bearing
+    # nulls remain campaign-only (fitting the promoted ones here would double-count them).
     ctx = _context(qe=True)
-    assert [hyp.label for hyp in null_hypotheses(ctx)] == [
-        "bg",
-        "elastic+bg",
-        "qe+bg",
-        "elastic+qe+bg",
-    ]
+    assert [hyp.label for hyp in null_hypotheses(ctx)] == ["qe+bg", "elastic+qe+bg"]
     evidence = fit_null_candidates(ctx)
-    assert [item.label for item in evidence] == [
-        "bg",
-        "elastic+bg",
-        "qe+bg",
-        "elastic+qe+bg",
-    ]
+    assert [item.label for item in evidence] == ["qe+bg", "elastic+qe+bg"]
     assert all(item.prediction.shape == ctx.x_used.shape for item in evidence)
 
     off_window = _context(qe=False, center=20.0)
-    assert [hyp.label for hyp in null_hypotheses(off_window)] == ["bg"]
+    assert [hyp.label for hyp in null_hypotheses(off_window)] == []
 
 
 def test_standard_evidence_refuses_missing_fit_selection_semantics():
