@@ -4,8 +4,13 @@ Shares more than ω₀ across a dispersion branch: Γ and the (portable, exposur
 A, so a fit near the zone centre — where the acoustic peak merges with the elastic line and Γ/A go
 unidentifiable — can be softly constrained to the branch and recover ω₀ (the LOW-q rescue).
 
+The anchor intensity is the **intrinsic** amplitude per exposure (H4: the fitted ``phonon.A``
+carries no thermal occupation — the model applies (n+1) explicitly), so the constraints this
+module emits are already in the fit parameter's own space and the acoustic law below is exact.
+
 **Coordinate = ω₀, not q** (owner decision): Γ and A are modelled as functions of ω₀ itself, because
-the acoustic intensity law is literally A ∝ 1/ω. The dispersion prior already predicts ω₀(q), so a
+the acoustic intensity law is literally A ∝ 1/ω (intrinsic — the measured kT/ω² classical form is
+this law times the occupation the model now owns). The dispersion prior already predicts ω₀(q), so a
 target q's constraint is ``predict(branch, ω₀_pred)``. This is path-free (works in batch and drive)
 and avoids the fragile "dominant-varying-Q" heuristic. An explicit ``branch_id`` keeps anchors from a
 different branch (or across a mode-crossing) out; the MVP builds/uses only ``"acoustic"``.

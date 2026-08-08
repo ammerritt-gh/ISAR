@@ -246,6 +246,18 @@ def _predictive_bundle(*, q: tuple[float, float, float], draw_energies: Sequence
         raise ValueError("fixture draw energies must contain at least two finite values")
     label = "phonon-constrained" if constrained else "phonon"
     selection = _selection(label, constrained=constrained)
+    # The declared case ``amplitude`` is the MEASURED Stokes strength (the physically tuned
+    # regime knob, unchanged since the gate froze). The model's amplitude slot is INTRINSIC
+    # since H4 (the evaluator applies (n+1)(ω,T) itself), so each draw converts at its own
+    # energy — the evaluated expected counts are exactly the pre-H4 ones, and the frozen
+    # calibration regimes hold by construction. T matches the fixture context below (100 K).
+    from isar.analyze.phonon import bose_occupation, omega0_from
+
+    fixture_T = 100.0                       # must match the ScanContext below
+
+    def _intrinsic(energy: float) -> float:
+        return float(amplitude) / bose_occupation(omega0_from(float(energy), 0.3), fixture_T)
+
     manifest = {
         "schema": "isar.model_manifest/1",
         "components": [
@@ -264,7 +276,7 @@ def _predictive_bundle(*, q: tuple[float, float, float], draw_energies: Sequence
 
     def draws_of(_result: Any, **_kwargs: Any) -> tuple[Any, ...]:
         rows = np.asarray([
-            [float(energy), 0.3, float(amplitude), 4.0] for energy in draw_energies
+            [float(energy), 0.3, _intrinsic(energy), 4.0] for energy in draw_energies
         ])
         return ("phonon.Omega_d", "phonon.Gamma", "phonon.A", "bg.BG"), rows, (
             "parametric_bootstrap"), {
@@ -277,7 +289,7 @@ def _predictive_bundle(*, q: tuple[float, float, float], draw_energies: Sequence
 
     context = ScanContext(
         x=np.linspace(-2.0, 7.0, 10), counts=np.zeros(10), mask=np.ones(10, bool),
-        T=100.0, center=0.0, gauss_fwhm=0.4, lorentz_fwhm=0.1,
+        T=fixture_T, center=0.0, gauss_fwhm=0.4, lorentz_fwhm=0.1,
         instrument="IN8", energy_status="absolute", exposure_scale=np.ones(10),
         exposure_reference=1.0)
     result = SimpleNamespace(

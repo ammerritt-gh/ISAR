@@ -1,0 +1,10 @@
+{
+  "status": "superseded_by_h4_universal_bose_factor",
+  "superseded_reason": "h4_intrinsic_amplitude_reparameterization_changed_model_content_fingerprints_and_reshuffled_seeded_mc_blocks_beyond_the_128x8_regime_margin",
+  "gate_commit": "0285e4d79663c5323811e36d28faa15348b31380",
+  "execution_disposition": "fully_executed_and_accepted_at_gate_commit",
+  "frozen_artifacts_remain_authentic_at_commit": true,
+  "development_regime_reverified_under_h4": true,
+  "development_reverification_note": "the 8-block development lane reproduces its declared regimes after the builder converts the declared measured amplitudes into the intrinsic parameter slot per draw; only the frozen 128x8 repair/replacement claims (case-2 lower margin <= 0, scorer seeds derived from content fingerprints) cannot reproduce under any parameter choice",
+  "machinery_disposition": "eig_shadow and realized_comparison are scheduled for deletion at SCENE-4/5 (plan-of-record decision 19); no successor freeze is named (S10, H1)"
+}

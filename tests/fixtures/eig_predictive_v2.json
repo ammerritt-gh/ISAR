@@ -1,1253 +1,1253 @@
 {
-  "fixture_schema": "isar.eig_predictive_fixture/1",
-  "description": "Normative per-model direct-component predictions for the arbitrary-grid predictive evaluator, including one exposure-heterogeneous pooled master (EIG-0 c5).",
-  "absolute_tolerance": 1e-09,
-  "artifact_contract": {
-    "schema": "isar.master_predictive/2",
-    "energy_meV": [
-      -2.0,
-      0.0,
-      2.0,
-      4.0,
-      6.0
-    ],
-    "evaluation_context": {
-      "center_meV": 0.0,
-      "gaussian_fwhm_meV": 0.4,
-      "lorentzian_fwhm_meV": 0.1,
-      "temperature_K": 100.0,
-      "quasielastic_fwhm_meV": null
-    },
-    "exposure_basis": {
-      "unit": "monitor_counts",
-      "request_unit": "number_neutrons",
-      "request_to_exposure_factor": 1.0,
-      "fit_reference_exposure": 1000.0,
-      "n_members": 2,
-      "reference_incremental_exposure": 500.0,
-      "per_energy_monitor": [
-        1000.0,
-        1000.0,
-        1000.0,
-        1000.0,
-        1000.0
+ "fixture_schema": "isar.eig_predictive_fixture/1",
+ "description": "Normative per-model direct-component predictions for the arbitrary-grid predictive evaluator, including one exposure-heterogeneous pooled master (EIG-0 c5).",
+ "absolute_tolerance": 1e-09,
+ "artifact_contract": {
+  "schema": "isar.master_predictive/2",
+  "energy_meV": [
+   -2.0,
+   0.0,
+   2.0,
+   4.0,
+   6.0
+  ],
+  "evaluation_context": {
+   "center_meV": 0.0,
+   "gaussian_fwhm_meV": 0.4,
+   "lorentzian_fwhm_meV": 0.1,
+   "temperature_K": 100.0,
+   "quasielastic_fwhm_meV": null
+  },
+  "exposure_basis": {
+   "unit": "monitor_counts",
+   "request_unit": "number_neutrons",
+   "request_to_exposure_factor": 1.0,
+   "fit_reference_exposure": 1000.0,
+   "n_members": 2,
+   "reference_incremental_exposure": 500.0,
+   "per_energy_monitor": [
+    1000.0,
+    1000.0,
+    1000.0,
+    1000.0,
+    1000.0
+   ],
+   "stored_exposure_ratio": [
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5
+   ],
+   "scalar_exposure_eligible": true,
+   "exposure_homogeneous": true,
+   "full_member_support": true,
+   "exposure_ratio_span": 1.0,
+   "kept_point_count": 5
+  },
+  "seed": 940301,
+  "uncertainty_provenance": {
+   "draw_basis": "fixed_contract_fixture",
+   "deterministic": true
+  },
+  "completeness": {
+   "source_model_weight_total": 1.0,
+   "retained_model_weight_total": 1.0,
+   "pruned_model_weight": 0.0,
+   "dropped_models": [],
+   "model_weight_floor": 0.005,
+   "max_pruned_mass": 0.01,
+   "max_dropped_draw_mass": 0.01,
+   "predictive_complete_for_eig": true
+  }
+ },
+ "evaluation_requests": [
+  {
+   "name": "original",
+   "energy_meV": [
+    -2.0,
+    0.0,
+    2.0,
+    4.0,
+    6.0
+   ],
+   "exposure_per_point": 500.0
+  },
+  {
+   "name": "shifted",
+   "energy_meV": [
+    -1.5,
+    0.5,
+    2.5,
+    4.5,
+    6.5
+   ],
+   "exposure_per_point": 250.0
+  },
+  {
+   "name": "narrower",
+   "energy_meV": [
+    1.0,
+    2.0,
+    3.0
+   ],
+   "exposure_per_point": 1000.0
+  },
+  {
+   "name": "coarser",
+   "energy_meV": [
+    -2.0,
+    2.0,
+    6.0
+   ],
+   "exposure_per_point": 750.0
+  }
+ ],
+ "cases": [
+  {
+   "name": "null_vs_one_phonon",
+   "model_order": [
+    "null+background",
+    "one-phonon+background"
+   ],
+   "models": [
+    {
+     "label": "null+background",
+     "identity_label": "null+background",
+     "weight": 0.35,
+     "draw_basis": "fixed_contract_fixture",
+     "draw_weighting": "equal_weight_resampled",
+     "draw_weights": null,
+     "draw_ids": [
+      "draw-0",
+      "draw-1"
+     ],
+     "parameter_names": [
+      "bg.BG"
+     ],
+     "parameter_draws": [
+      [
+       4.0
       ],
-      "stored_exposure_ratio": [
-        0.5,
-        0.5,
-        0.5,
-        0.5,
-        0.5
+      [
+       5.0
+      ]
+     ],
+     "model_manifest": {
+      "schema": "isar.model_manifest/1",
+      "components": [
+       {
+        "type": "constant_background",
+        "prefix": "bg"
+       }
       ],
-      "scalar_exposure_eligible": true,
-      "exposure_homogeneous": true,
-      "full_member_support": true,
-      "exposure_ratio_span": 1.0,
-      "kept_point_count": 5
+      "parameters": {
+       "bg.BG": 4.0
+      }
+     },
+     "omega0_draws": [],
+     "expected_counts_by_request": {
+      "original": [
+       [
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0
+       ],
+       [
+        2.5,
+        2.5,
+        2.5,
+        2.5,
+        2.5
+       ]
+      ],
+      "shifted": [
+       [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+       ],
+       [
+        1.25,
+        1.25,
+        1.25,
+        1.25,
+        1.25
+       ]
+      ],
+      "narrower": [
+       [
+        4.0,
+        4.0,
+        4.0
+       ],
+       [
+        5.0,
+        5.0,
+        5.0
+       ]
+      ],
+      "coarser": [
+       [
+        3.0,
+        3.0,
+        3.0
+       ],
+       [
+        3.75,
+        3.75,
+        3.75
+       ]
+      ]
+     },
+     "source_weight": 0.35,
+     "mode_energies": [
+      [],
+      []
+     ]
     },
-    "seed": 940301,
-    "uncertainty_provenance": {
-      "draw_basis": "fixed_contract_fixture",
-      "deterministic": true
-    },
-    "completeness": {
-      "source_model_weight_total": 1.0,
-      "retained_model_weight_total": 1.0,
-      "pruned_model_weight": 0.0,
-      "dropped_models": [],
-      "model_weight_floor": 0.005,
-      "max_pruned_mass": 0.01,
-      "max_dropped_draw_mass": 0.01,
-      "predictive_complete_for_eig": true
+    {
+     "label": "one-phonon+background",
+     "identity_label": "one-phonon+background",
+     "weight": 0.65,
+     "draw_basis": "fixed_contract_fixture",
+     "draw_weighting": "equal_weight_resampled",
+     "draw_weights": null,
+     "draw_ids": [
+      "draw-0",
+      "draw-1"
+     ],
+     "parameter_names": [
+      "phonon.Omega_d",
+      "phonon.Gamma",
+      "phonon.A",
+      "bg.BG"
+     ],
+     "parameter_draws": [
+      [
+       2.0,
+       0.3,
+       25.1017880220227,
+       4.0
+      ],
+      [
+       2.2,
+       0.4,
+       22.855117378106105,
+       5.0
+      ]
+     ],
+     "model_manifest": {
+      "schema": "isar.model_manifest/1",
+      "components": [
+       {
+        "type": "phonon_dho",
+        "prefix": "phonon",
+        "peak": "stokes+astokes"
+       },
+       {
+        "type": "constant_background",
+        "prefix": "bg"
+       }
+      ],
+      "parameters": {
+       "phonon.Omega_d": 2.0,
+       "phonon.Gamma": 0.3,
+       "phonon.A": 120.0,
+       "bg.BG": 4.0
+      }
+     },
+     "omega0_draws": [
+      2.0223748416166685,
+      2.23606797749979
+     ],
+     "expected_counts_by_request": {
+      "original": [
+       [
+        385.885793796079,
+        32.919015393828,
+        485.583687118741,
+        21.786619522139,
+        7.351255987001
+       ],
+       [
+        184.755953611775,
+        22.504662819862,
+        211.977104508665,
+        21.307038240606,
+        7.119005795525
+       ]
+      ],
+      "shifted": [
+       [
+        98.501357397511,
+        19.911968249475,
+        122.185238756293,
+        7.45939053838,
+        3.151610183394
+       ],
+       [
+        40.631698739069,
+        13.119970032866,
+        105.735303660757,
+        7.166629839754,
+        3.08656685767
+       ]
+      ],
+      "narrower": [
+       [
+        138.609958625476,
+        971.167304314332,
+        155.789412176962
+       ],
+       [
+        80.188018098945,
+        423.9541511274,
+        166.406980018935
+       ]
+      ],
+      "coarser": [
+       [
+        578.828690694118,
+        728.375530678111,
+        11.026883980502
+       ],
+       [
+        277.133930417662,
+        317.965656762997,
+        10.678508693287
+       ]
+      ]
+     },
+     "source_weight": 0.65,
+     "mode_energies": [
+      [
+       2.0223748416156684
+      ],
+      [
+       2.23606797749979
+      ]
+     ]
     }
+   ],
+   "predictive_basis_fingerprint": "c1d97cf334059a2a418d35270b55d9c2e67364d28a3e9108338b4cc4bc3b2d5f"
+  },
+  {
+   "name": "one_mode_vs_two_mode",
+   "model_order": [
+    "one-phonon+background",
+    "two-phonon+background"
+   ],
+   "models": [
+    {
+     "label": "one-phonon+background",
+     "identity_label": "one-phonon+background",
+     "weight": 0.55,
+     "draw_basis": "fixed_contract_fixture",
+     "draw_weighting": "equal_weight_resampled",
+     "draw_weights": null,
+     "draw_ids": [
+      "draw-0",
+      "draw-1"
+     ],
+     "parameter_names": [
+      "phonon.Omega_d",
+      "phonon.Gamma",
+      "phonon.A",
+      "bg.BG"
+     ],
+     "parameter_draws": [
+      [
+       2.0,
+       0.3,
+       25.1017880220227,
+       4.0
+      ],
+      [
+       2.2,
+       0.4,
+       22.855117378106105,
+       5.0
+      ]
+     ],
+     "model_manifest": {
+      "schema": "isar.model_manifest/1",
+      "components": [
+       {
+        "type": "phonon_dho",
+        "prefix": "phonon",
+        "peak": "stokes+astokes"
+       },
+       {
+        "type": "constant_background",
+        "prefix": "bg"
+       }
+      ],
+      "parameters": {
+       "phonon.Omega_d": 2.0,
+       "phonon.Gamma": 0.3,
+       "phonon.A": 120.0,
+       "bg.BG": 4.0
+      }
+     },
+     "omega0_draws": [
+      2.0223748416166685,
+      2.23606797749979
+     ],
+     "expected_counts_by_request": {
+      "original": [
+       [
+        385.885793796079,
+        32.919015393828,
+        485.583687118741,
+        21.786619522139,
+        7.351255987001
+       ],
+       [
+        184.755953611775,
+        22.504662819862,
+        211.977104508665,
+        21.307038240606,
+        7.119005795525
+       ]
+      ],
+      "shifted": [
+       [
+        98.501357397511,
+        19.911968249475,
+        122.185238756293,
+        7.45939053838,
+        3.151610183394
+       ],
+       [
+        40.631698739069,
+        13.119970032866,
+        105.735303660757,
+        7.166629839754,
+        3.08656685767
+       ]
+      ],
+      "narrower": [
+       [
+        138.609958625476,
+        971.167304314332,
+        155.789412176962
+       ],
+       [
+        80.188018098945,
+        423.9541511274,
+        166.406980018935
+       ]
+      ],
+      "coarser": [
+       [
+        578.828690694118,
+        728.375530678111,
+        11.026883980502
+       ],
+       [
+        277.133930417662,
+        317.965656762997,
+        10.678508693287
+       ]
+      ]
+     },
+     "source_weight": 0.55,
+     "mode_energies": [
+      [
+       2.0223748416156684
+      ],
+      [
+       2.23606797749979
+      ]
+     ]
+    },
+    {
+     "label": "two-phonon+background",
+     "identity_label": "two-phonon+background",
+     "weight": 0.45,
+     "draw_basis": "fixed_contract_fixture",
+     "draw_weighting": "equal_weight_resampled",
+     "draw_weights": null,
+     "draw_ids": [
+      "draw-0",
+      "draw-1"
+     ],
+     "parameter_names": [
+      "phonon.Omega_d",
+      "phonon.Gamma",
+      "phonon.A",
+      "phonon2.Omega_d",
+      "phonon2.Gamma",
+      "phonon2.A",
+      "bg.BG"
+     ],
+     "parameter_draws": [
+      [
+       2.0,
+       0.3,
+       20.918156685018918,
+       5.0,
+       0.5,
+       26.510743528252465,
+       3.0
+      ],
+      [
+       2.2,
+       0.4,
+       20.569605640295496,
+       5.3,
+       0.6,
+       25.3825103642779,
+       4.0
+      ]
+     ],
+     "model_manifest": {
+      "schema": "isar.model_manifest/1",
+      "components": [
+       {
+        "type": "phonon_dho",
+        "prefix": "phonon",
+        "peak": "stokes+astokes"
+       },
+       {
+        "type": "phonon_dho",
+        "prefix": "phonon2",
+        "peak": "stokes+astokes"
+       },
+       {
+        "type": "constant_background",
+        "prefix": "bg"
+       }
+      ],
+      "parameters": {
+       "phonon.Omega_d": 2.0,
+       "phonon.Gamma": 0.3,
+       "phonon.A": 100.0,
+       "phonon2.Omega_d": 5.0,
+       "phonon2.Gamma": 0.5,
+       "phonon2.A": 60.0,
+       "bg.BG": 3.0
+      }
+     },
+     "omega0_draws": [
+      2.0223748416166685,
+      2.23606797749979
+     ],
+     "expected_counts_by_request": {
+      "original": [
+       [
+        324.130354099605,
+        29.294002841302,
+        408.331786833916,
+        42.777444592943,
+        34.846180829051
+       ],
+       [
+        168.049855511846,
+        21.607898868794,
+        193.409258848483,
+        32.778345612375,
+        42.605295898147
+       ]
+      ],
+      "shifted": [
+       [
+        83.143580607804,
+        17.606493705533,
+        104.357225729556,
+        34.596000176034,
+        9.687731321606
+       ],
+       [
+        37.315691151454,
+        12.547417197693,
+        96.92952786142,
+        19.90787806903,
+        11.5408940691
+       ]
+      ],
+      "narrower": [
+       [
+        120.180147994946,
+        816.663481364713,
+        144.985569854571
+       ],
+       [
+        75.577007560048,
+        386.818434283158,
+        159.892460428643
+       ]
+      ],
+      "coarser": [
+       [
+        486.195531149408,
+        612.497680250873,
+        52.269271243577
+       ],
+       [
+        252.074783267769,
+        290.113888272724,
+        63.907943847221
+       ]
+      ]
+     },
+     "source_weight": 0.45,
+     "mode_energies": [
+      [
+       2.0223748416156684,
+       5.024937810560445
+      ],
+      [
+       2.23606797749979,
+       5.333854141237834
+      ]
+     ]
+    }
+   ],
+   "predictive_basis_fingerprint": "3cb981b61efa82294361b55de1bef04a4d739c776f6452e334f43d30f1874b2f"
+  },
+  {
+   "name": "branch_hypotheses",
+   "model_order": [
+    "acoustic-branch+background",
+    "optic-branch+background"
+   ],
+   "models": [
+    {
+     "label": "acoustic-branch+background",
+     "identity_label": "acoustic-branch+background",
+     "weight": 0.4,
+     "draw_basis": "fixed_contract_fixture",
+     "draw_weighting": "equal_weight_resampled",
+     "draw_weights": null,
+     "draw_ids": [
+      "draw-0",
+      "draw-1"
+     ],
+     "parameter_names": [
+      "phonon.Omega_d",
+      "phonon.Gamma",
+      "phonon.A",
+      "bg.BG"
+     ],
+     "parameter_draws": [
+      [
+       2.0,
+       0.3,
+       25.1017880220227,
+       4.0
+      ],
+      [
+       2.2,
+       0.4,
+       22.855117378106105,
+       5.0
+      ]
+     ],
+     "model_manifest": {
+      "schema": "isar.model_manifest/1",
+      "components": [
+       {
+        "type": "phonon_dho",
+        "prefix": "phonon",
+        "peak": "stokes+astokes"
+       },
+       {
+        "type": "constant_background",
+        "prefix": "bg"
+       }
+      ],
+      "parameters": {
+       "phonon.Omega_d": 2.0,
+       "phonon.Gamma": 0.3,
+       "phonon.A": 120.0,
+       "bg.BG": 4.0
+      }
+     },
+     "omega0_draws": [
+      2.0223748416166685,
+      2.23606797749979
+     ],
+     "expected_counts_by_request": {
+      "original": [
+       [
+        385.885793796079,
+        32.919015393828,
+        485.583687118741,
+        21.786619522139,
+        7.351255987001
+       ],
+       [
+        184.755953611775,
+        22.504662819862,
+        211.977104508665,
+        21.307038240606,
+        7.119005795525
+       ]
+      ],
+      "shifted": [
+       [
+        98.501357397511,
+        19.911968249475,
+        122.185238756293,
+        7.45939053838,
+        3.151610183394
+       ],
+       [
+        40.631698739069,
+        13.119970032866,
+        105.735303660757,
+        7.166629839754,
+        3.08656685767
+       ]
+      ],
+      "narrower": [
+       [
+        138.609958625476,
+        971.167304314332,
+        155.789412176962
+       ],
+       [
+        80.188018098945,
+        423.9541511274,
+        166.406980018935
+       ]
+      ],
+      "coarser": [
+       [
+        578.828690694118,
+        728.375530678111,
+        11.026883980502
+       ],
+       [
+        277.133930417662,
+        317.965656762997,
+        10.678508693287
+       ]
+      ]
+     },
+     "source_weight": 0.4,
+     "mode_energies": [
+      [
+       2.0223748416156684
+      ],
+      [
+       2.23606797749979
+      ]
+     ]
+    },
+    {
+     "label": "optic-branch+background",
+     "identity_label": "optic-branch+background",
+     "weight": 0.6,
+     "draw_basis": "fixed_contract_fixture",
+     "draw_weighting": "equal_weight_resampled",
+     "draw_weights": null,
+     "draw_ids": [
+      "draw-0",
+      "draw-1"
+     ],
+     "parameter_names": [
+      "phonon.Omega_d",
+      "phonon.Gamma",
+      "phonon.A",
+      "bg.BG"
+     ],
+     "parameter_draws": [
+      [
+       4.5,
+       0.35,
+       32.617823039276075,
+       4.0
+      ],
+      [
+       4.8,
+       0.45,
+       29.99374394648667,
+       5.0
+      ]
+     ],
+     "model_manifest": {
+      "schema": "isar.model_manifest/1",
+      "components": [
+       {
+        "type": "phonon_dho",
+        "prefix": "phonon",
+        "peak": "stokes+astokes"
+       },
+       {
+        "type": "constant_background",
+        "prefix": "bg"
+       }
+      ],
+      "parameters": {
+       "phonon.Omega_d": 4.5,
+       "phonon.Gamma": 0.35,
+       "phonon.A": 80.0,
+       "bg.BG": 4.0
+      }
+     },
+     "omega0_draws": [
+      4.513590588434002,
+      4.821047603996459
+     ],
+     "expected_counts_by_request": {
+      "original": [
+       [
+        7.518174963268,
+        5.562417257748,
+        9.599138296327,
+        110.577044010556,
+        23.191596305911
+       ],
+       [
+        6.201450689328,
+        5.119692426115,
+        7.677710782587,
+        45.190754962733,
+        28.551976728261
+       ]
+      ],
+      "shifted": [
+       [
+        3.165516237999,
+        2.938057175545,
+        6.621229467945,
+        125.060230494843,
+        7.004442853983
+       ],
+       [
+        2.76610511562,
+        2.669497321369,
+        4.877884234823,
+        53.959081310505,
+        8.05486908853
+       ]
+      ],
+      "narrower": [
+       [
+        13.030614309113,
+        19.198231377117,
+        41.813515835881
+       ],
+       [
+        11.5272044101,
+        15.355381934402,
+        27.385396385464
+       ]
+      ],
+      "coarser": [
+       [
+        11.277262444902,
+        14.398707444491,
+        34.787394458866
+       ],
+       [
+        9.302176033993,
+        11.516566173881,
+        42.827965092392
+       ]
+      ]
+     },
+     "source_weight": 0.6,
+     "mode_energies": [
+      [
+       4.513590588434002
+      ],
+      [
+       4.821047603996459
+      ]
+     ]
+    }
+   ],
+   "predictive_basis_fingerprint": "d52bb623a3a1208160778341c34ad317ff96ad8f46dc5e298da2f0aac3607d3b"
+  }
+ ],
+ "unavailable_contract": {
+  "missing_scalar_exposure_basis": {
+   "available": false,
+   "reason_code": "missing_exposure_basis",
+   "message": "master predictive artifact lacks a finite positive scalar fit-reference exposure"
+  },
+  "legacy_schema": {
+   "available": false,
+   "reason_code": "artifact_schema_unsupported",
+   "message": "isar.master_predictive/1 is never upconverted: it carries no fitted grid, evaluation context or exposure basis"
+  },
+  "incomplete_basis": {
+   "available": false,
+   "reason_code": "predictive_basis_incomplete",
+   "message": "the published probability measure was pruned beyond the ADR-014 floors"
+  }
+ },
+ "heterogeneous_pool": {
+  "description": "EIG-0 case c5: two members on the same window with different steps, so the per-bin summed monitor alternates 1e9/2e9. The stored fitted-grid matrices are reproduced ONLY by the per-energy exposure vector; the scalar reference_incremental_exposure path differs by a factor of two on half the bins. Forward evaluation of a new uniform-exposure candidate stays valid (ADR-017).",
+  "artifact_contract": {
+   "schema": "isar.master_predictive/2",
+   "energy_meV": [
+    -2.0,
+    0.0,
+    2.0,
+    4.0,
+    6.0
+   ],
+   "evaluation_context": {
+    "center_meV": 0.0,
+    "gaussian_fwhm_meV": 0.4,
+    "lorentzian_fwhm_meV": 0.1,
+    "temperature_K": 100.0,
+    "quasielastic_fwhm_meV": null
+   },
+   "exposure_basis": {
+    "unit": "monitor_counts",
+    "request_unit": "number_neutrons",
+    "request_to_exposure_factor": 1.0,
+    "fit_reference_exposure": 1000000000.0,
+    "n_members": 2,
+    "reference_incremental_exposure": 500000000.0,
+    "per_energy_monitor": [
+     1000000000.0,
+     2000000000.0,
+     1000000000.0,
+     2000000000.0,
+     1000000000.0
+    ],
+    "stored_exposure_ratio": [
+     0.5,
+     1.0,
+     0.5,
+     1.0,
+     0.5
+    ],
+    "scalar_exposure_eligible": false,
+    "exposure_homogeneous": false,
+    "full_member_support": null,
+    "exposure_ratio_span": 2.0,
+    "kept_point_count": 5
+   },
+   "completeness": {
+    "source_model_weight_total": 1.0,
+    "retained_model_weight_total": 1.0,
+    "pruned_model_weight": 0.0,
+    "dropped_models": [],
+    "model_weight_floor": 0.005,
+    "max_pruned_mass": 0.01,
+    "max_dropped_draw_mass": 0.01,
+    "predictive_complete_for_eig": true
+   },
+   "seed": 940301,
+   "uncertainty_provenance": {
+    "draw_basis": "fixed_contract_fixture",
+    "deterministic": true
+   }
   },
   "evaluation_requests": [
-    {
-      "name": "original",
-      "energy_meV": [
-        -2.0,
-        0.0,
-        2.0,
-        4.0,
-        6.0
-      ],
-      "exposure_per_point": 500.0
-    },
-    {
-      "name": "shifted",
-      "energy_meV": [
-        -1.5,
-        0.5,
-        2.5,
-        4.5,
-        6.5
-      ],
-      "exposure_per_point": 250.0
-    },
-    {
-      "name": "narrower",
-      "energy_meV": [
-        1.0,
-        2.0,
-        3.0
-      ],
-      "exposure_per_point": 1000.0
-    },
-    {
-      "name": "coarser",
-      "energy_meV": [
-        -2.0,
-        2.0,
-        6.0
-      ],
-      "exposure_per_point": 750.0
-    }
+   {
+    "name": "original",
+    "energy_meV": [
+     -2.0,
+     0.0,
+     2.0,
+     4.0,
+     6.0
+    ],
+    "exposure_per_point": 500000000.0
+   },
+   {
+    "name": "shifted",
+    "energy_meV": [
+     -1.5,
+     0.5,
+     2.5,
+     4.5,
+     6.5
+    ],
+    "exposure_per_point": 250000000.0
+   },
+   {
+    "name": "narrower",
+    "energy_meV": [
+     1.0,
+     2.0,
+     3.0
+    ],
+    "exposure_per_point": 1000000000.0
+   },
+   {
+    "name": "coarser",
+    "energy_meV": [
+     -2.0,
+     2.0,
+     6.0
+    ],
+    "exposure_per_point": 750000000.0
+   }
   ],
-  "cases": [
-    {
-      "name": "null_vs_one_phonon",
-      "model_order": [
-        "null+background",
-        "one-phonon+background"
-      ],
-      "models": [
-        {
-          "label": "null+background",
-          "identity_label": "null+background",
-          "weight": 0.35,
-          "draw_basis": "fixed_contract_fixture",
-          "draw_weighting": "equal_weight_resampled",
-          "draw_weights": null,
-          "draw_ids": [
-            "draw-0",
-            "draw-1"
-          ],
-          "parameter_names": [
-            "bg.BG"
-          ],
-          "parameter_draws": [
-            [
-              4.0
-            ],
-            [
-              5.0
-            ]
-          ],
-          "model_manifest": {
-            "schema": "isar.model_manifest/1",
-            "components": [
-              {
-                "type": "constant_background",
-                "prefix": "bg"
-              }
-            ],
-            "parameters": {
-              "bg.BG": 4.0
-            }
-          },
-          "omega0_draws": [],
-          "expected_counts_by_request": {
-            "original": [
-              [
-                2.0,
-                2.0,
-                2.0,
-                2.0,
-                2.0
-              ],
-              [
-                2.5,
-                2.5,
-                2.5,
-                2.5,
-                2.5
-              ]
-            ],
-            "shifted": [
-              [
-                1.0,
-                1.0,
-                1.0,
-                1.0,
-                1.0
-              ],
-              [
-                1.25,
-                1.25,
-                1.25,
-                1.25,
-                1.25
-              ]
-            ],
-            "narrower": [
-              [
-                4.0,
-                4.0,
-                4.0
-              ],
-              [
-                5.0,
-                5.0,
-                5.0
-              ]
-            ],
-            "coarser": [
-              [
-                3.0,
-                3.0,
-                3.0
-              ],
-              [
-                3.75,
-                3.75,
-                3.75
-              ]
-            ]
-          },
-          "source_weight": 0.35,
-          "mode_energies": [
-            [],
-            []
-          ]
-        },
-        {
-          "label": "one-phonon+background",
-          "identity_label": "one-phonon+background",
-          "weight": 0.65,
-          "draw_basis": "fixed_contract_fixture",
-          "draw_weighting": "equal_weight_resampled",
-          "draw_weights": null,
-          "draw_ids": [
-            "draw-0",
-            "draw-1"
-          ],
-          "parameter_names": [
-            "phonon.Omega_d",
-            "phonon.Gamma",
-            "phonon.A",
-            "bg.BG"
-          ],
-          "parameter_draws": [
-            [
-              2.0,
-              0.3,
-              120.0,
-              4.0
-            ],
-            [
-              2.2,
-              0.4,
-              100.0,
-              5.0
-            ]
-          ],
-          "model_manifest": {
-            "schema": "isar.model_manifest/1",
-            "components": [
-              {
-                "type": "phonon_dho",
-                "prefix": "phonon",
-                "peak": "stokes+astokes"
-              },
-              {
-                "type": "constant_background",
-                "prefix": "bg"
-              }
-            ],
-            "parameters": {
-              "phonon.Omega_d": 2.0,
-              "phonon.Gamma": 0.3,
-              "phonon.A": 120.0,
-              "bg.BG": 4.0
-            }
-          },
-          "omega0_draws": [
-            2.0223748416166685,
-            2.23606797749979
-          ],
-          "expected_counts_by_request": {
-            "original": [
-              [
-                385.885793796079,
-                32.919015393828,
-                485.583687118741,
-                21.786619522139,
-                7.351255987001
-              ],
-              [
-                184.755953611775,
-                22.504662819862,
-                211.977104508665,
-                21.307038240606,
-                7.119005795525
-              ]
-            ],
-            "shifted": [
-              [
-                98.501357397511,
-                19.911968249475,
-                122.185238756293,
-                7.45939053838,
-                3.151610183394
-              ],
-              [
-                40.631698739069,
-                13.119970032866,
-                105.735303660757,
-                7.166629839754,
-                3.08656685767
-              ]
-            ],
-            "narrower": [
-              [
-                138.609958625476,
-                971.167304314332,
-                155.789412176962
-              ],
-              [
-                80.188018098945,
-                423.9541511274,
-                166.406980018935
-              ]
-            ],
-            "coarser": [
-              [
-                578.828690694118,
-                728.375530678111,
-                11.026883980502
-              ],
-              [
-                277.133930417662,
-                317.965656762997,
-                10.678508693287
-              ]
-            ]
-          },
-          "source_weight": 0.65,
-          "mode_energies": [
-            [
-              2.0223748416156684
-            ],
-            [
-              2.23606797749979
-            ]
-          ]
-        }
-      ],
-      "predictive_basis_fingerprint": "fa0ec7f661a8ebae732ffd6a2a6aaf04ad2bcd076d0d03a2cfed033d98b70936"
-    },
-    {
-      "name": "one_mode_vs_two_mode",
-      "model_order": [
-        "one-phonon+background",
-        "two-phonon+background"
-      ],
-      "models": [
-        {
-          "label": "one-phonon+background",
-          "identity_label": "one-phonon+background",
-          "weight": 0.55,
-          "draw_basis": "fixed_contract_fixture",
-          "draw_weighting": "equal_weight_resampled",
-          "draw_weights": null,
-          "draw_ids": [
-            "draw-0",
-            "draw-1"
-          ],
-          "parameter_names": [
-            "phonon.Omega_d",
-            "phonon.Gamma",
-            "phonon.A",
-            "bg.BG"
-          ],
-          "parameter_draws": [
-            [
-              2.0,
-              0.3,
-              120.0,
-              4.0
-            ],
-            [
-              2.2,
-              0.4,
-              100.0,
-              5.0
-            ]
-          ],
-          "model_manifest": {
-            "schema": "isar.model_manifest/1",
-            "components": [
-              {
-                "type": "phonon_dho",
-                "prefix": "phonon",
-                "peak": "stokes+astokes"
-              },
-              {
-                "type": "constant_background",
-                "prefix": "bg"
-              }
-            ],
-            "parameters": {
-              "phonon.Omega_d": 2.0,
-              "phonon.Gamma": 0.3,
-              "phonon.A": 120.0,
-              "bg.BG": 4.0
-            }
-          },
-          "omega0_draws": [
-            2.0223748416166685,
-            2.23606797749979
-          ],
-          "expected_counts_by_request": {
-            "original": [
-              [
-                385.885793796079,
-                32.919015393828,
-                485.583687118741,
-                21.786619522139,
-                7.351255987001
-              ],
-              [
-                184.755953611775,
-                22.504662819862,
-                211.977104508665,
-                21.307038240606,
-                7.119005795525
-              ]
-            ],
-            "shifted": [
-              [
-                98.501357397511,
-                19.911968249475,
-                122.185238756293,
-                7.45939053838,
-                3.151610183394
-              ],
-              [
-                40.631698739069,
-                13.119970032866,
-                105.735303660757,
-                7.166629839754,
-                3.08656685767
-              ]
-            ],
-            "narrower": [
-              [
-                138.609958625476,
-                971.167304314332,
-                155.789412176962
-              ],
-              [
-                80.188018098945,
-                423.9541511274,
-                166.406980018935
-              ]
-            ],
-            "coarser": [
-              [
-                578.828690694118,
-                728.375530678111,
-                11.026883980502
-              ],
-              [
-                277.133930417662,
-                317.965656762997,
-                10.678508693287
-              ]
-            ]
-          },
-          "source_weight": 0.55,
-          "mode_energies": [
-            [
-              2.0223748416156684
-            ],
-            [
-              2.23606797749979
-            ]
-          ]
-        },
-        {
-          "label": "two-phonon+background",
-          "identity_label": "two-phonon+background",
-          "weight": 0.45,
-          "draw_basis": "fixed_contract_fixture",
-          "draw_weighting": "equal_weight_resampled",
-          "draw_weights": null,
-          "draw_ids": [
-            "draw-0",
-            "draw-1"
-          ],
-          "parameter_names": [
-            "phonon.Omega_d",
-            "phonon.Gamma",
-            "phonon.A",
-            "phonon2.Omega_d",
-            "phonon2.Gamma",
-            "phonon2.A",
-            "bg.BG"
-          ],
-          "parameter_draws": [
-            [
-              2.0,
-              0.3,
-              100.0,
-              5.0,
-              0.5,
-              60.0,
-              3.0
-            ],
-            [
-              2.2,
-              0.4,
-              90.0,
-              5.3,
-              0.6,
-              55.0,
-              4.0
-            ]
-          ],
-          "model_manifest": {
-            "schema": "isar.model_manifest/1",
-            "components": [
-              {
-                "type": "phonon_dho",
-                "prefix": "phonon",
-                "peak": "stokes+astokes"
-              },
-              {
-                "type": "phonon_dho",
-                "prefix": "phonon2",
-                "peak": "stokes+astokes"
-              },
-              {
-                "type": "constant_background",
-                "prefix": "bg"
-              }
-            ],
-            "parameters": {
-              "phonon.Omega_d": 2.0,
-              "phonon.Gamma": 0.3,
-              "phonon.A": 100.0,
-              "phonon2.Omega_d": 5.0,
-              "phonon2.Gamma": 0.5,
-              "phonon2.A": 60.0,
-              "bg.BG": 3.0
-            }
-          },
-          "omega0_draws": [
-            2.0223748416166685,
-            2.23606797749979
-          ],
-          "expected_counts_by_request": {
-            "original": [
-              [
-                324.130354099605,
-                29.294002841302,
-                408.331786833916,
-                42.777444592943,
-                34.846180829051
-              ],
-              [
-                168.049855511846,
-                21.607898868794,
-                193.409258848483,
-                32.778345612375,
-                42.605295898147
-              ]
-            ],
-            "shifted": [
-              [
-                83.143580607804,
-                17.606493705533,
-                104.357225729556,
-                34.596000176034,
-                9.687731321606
-              ],
-              [
-                37.315691151454,
-                12.547417197693,
-                96.92952786142,
-                19.90787806903,
-                11.5408940691
-              ]
-            ],
-            "narrower": [
-              [
-                120.180147994946,
-                816.663481364713,
-                144.985569854571
-              ],
-              [
-                75.577007560048,
-                386.818434283158,
-                159.892460428643
-              ]
-            ],
-            "coarser": [
-              [
-                486.195531149408,
-                612.497680250873,
-                52.269271243577
-              ],
-              [
-                252.074783267769,
-                290.113888272724,
-                63.907943847221
-              ]
-            ]
-          },
-          "source_weight": 0.45,
-          "mode_energies": [
-            [
-              2.0223748416156684,
-              5.024937810560445
-            ],
-            [
-              2.23606797749979,
-              5.333854141237834
-            ]
-          ]
-        }
-      ],
-      "predictive_basis_fingerprint": "454259b628569ba6e1affe6d049e7bdc9ae7e25fd511549cabbddd6a127e56c4"
-    },
-    {
-      "name": "branch_hypotheses",
-      "model_order": [
-        "acoustic-branch+background",
-        "optic-branch+background"
-      ],
-      "models": [
-        {
-          "label": "acoustic-branch+background",
-          "identity_label": "acoustic-branch+background",
-          "weight": 0.4,
-          "draw_basis": "fixed_contract_fixture",
-          "draw_weighting": "equal_weight_resampled",
-          "draw_weights": null,
-          "draw_ids": [
-            "draw-0",
-            "draw-1"
-          ],
-          "parameter_names": [
-            "phonon.Omega_d",
-            "phonon.Gamma",
-            "phonon.A",
-            "bg.BG"
-          ],
-          "parameter_draws": [
-            [
-              2.0,
-              0.3,
-              120.0,
-              4.0
-            ],
-            [
-              2.2,
-              0.4,
-              100.0,
-              5.0
-            ]
-          ],
-          "model_manifest": {
-            "schema": "isar.model_manifest/1",
-            "components": [
-              {
-                "type": "phonon_dho",
-                "prefix": "phonon",
-                "peak": "stokes+astokes"
-              },
-              {
-                "type": "constant_background",
-                "prefix": "bg"
-              }
-            ],
-            "parameters": {
-              "phonon.Omega_d": 2.0,
-              "phonon.Gamma": 0.3,
-              "phonon.A": 120.0,
-              "bg.BG": 4.0
-            }
-          },
-          "omega0_draws": [
-            2.0223748416166685,
-            2.23606797749979
-          ],
-          "expected_counts_by_request": {
-            "original": [
-              [
-                385.885793796079,
-                32.919015393828,
-                485.583687118741,
-                21.786619522139,
-                7.351255987001
-              ],
-              [
-                184.755953611775,
-                22.504662819862,
-                211.977104508665,
-                21.307038240606,
-                7.119005795525
-              ]
-            ],
-            "shifted": [
-              [
-                98.501357397511,
-                19.911968249475,
-                122.185238756293,
-                7.45939053838,
-                3.151610183394
-              ],
-              [
-                40.631698739069,
-                13.119970032866,
-                105.735303660757,
-                7.166629839754,
-                3.08656685767
-              ]
-            ],
-            "narrower": [
-              [
-                138.609958625476,
-                971.167304314332,
-                155.789412176962
-              ],
-              [
-                80.188018098945,
-                423.9541511274,
-                166.406980018935
-              ]
-            ],
-            "coarser": [
-              [
-                578.828690694118,
-                728.375530678111,
-                11.026883980502
-              ],
-              [
-                277.133930417662,
-                317.965656762997,
-                10.678508693287
-              ]
-            ]
-          },
-          "source_weight": 0.4,
-          "mode_energies": [
-            [
-              2.0223748416156684
-            ],
-            [
-              2.23606797749979
-            ]
-          ]
-        },
-        {
-          "label": "optic-branch+background",
-          "identity_label": "optic-branch+background",
-          "weight": 0.6,
-          "draw_basis": "fixed_contract_fixture",
-          "draw_weighting": "equal_weight_resampled",
-          "draw_weights": null,
-          "draw_ids": [
-            "draw-0",
-            "draw-1"
-          ],
-          "parameter_names": [
-            "phonon.Omega_d",
-            "phonon.Gamma",
-            "phonon.A",
-            "bg.BG"
-          ],
-          "parameter_draws": [
-            [
-              4.5,
-              0.35,
-              80.0,
-              4.0
-            ],
-            [
-              4.8,
-              0.45,
-              70.0,
-              5.0
-            ]
-          ],
-          "model_manifest": {
-            "schema": "isar.model_manifest/1",
-            "components": [
-              {
-                "type": "phonon_dho",
-                "prefix": "phonon",
-                "peak": "stokes+astokes"
-              },
-              {
-                "type": "constant_background",
-                "prefix": "bg"
-              }
-            ],
-            "parameters": {
-              "phonon.Omega_d": 4.5,
-              "phonon.Gamma": 0.35,
-              "phonon.A": 80.0,
-              "bg.BG": 4.0
-            }
-          },
-          "omega0_draws": [
-            4.513590588434002,
-            4.821047603996459
-          ],
-          "expected_counts_by_request": {
-            "original": [
-              [
-                7.518174963268,
-                5.562417257748,
-                9.599138296327,
-                110.577044010556,
-                23.191596305911
-              ],
-              [
-                6.201450689328,
-                5.119692426115,
-                7.677710782587,
-                45.190754962733,
-                28.551976728261
-              ]
-            ],
-            "shifted": [
-              [
-                3.165516237999,
-                2.938057175545,
-                6.621229467945,
-                125.060230494843,
-                7.004442853983
-              ],
-              [
-                2.76610511562,
-                2.669497321369,
-                4.877884234823,
-                53.959081310505,
-                8.05486908853
-              ]
-            ],
-            "narrower": [
-              [
-                13.030614309113,
-                19.198231377117,
-                41.813515835881
-              ],
-              [
-                11.5272044101,
-                15.355381934402,
-                27.385396385464
-              ]
-            ],
-            "coarser": [
-              [
-                11.277262444902,
-                14.398707444491,
-                34.787394458866
-              ],
-              [
-                9.302176033993,
-                11.516566173881,
-                42.827965092392
-              ]
-            ]
-          },
-          "source_weight": 0.6,
-          "mode_energies": [
-            [
-              4.513590588434002
-            ],
-            [
-              4.821047603996459
-            ]
-          ]
-        }
-      ],
-      "predictive_basis_fingerprint": "f6ed8f8b60401e2efaa8f2dab011932843f85b66fde9d9a3c587df7397dde6f5"
-    }
+  "model_order": [
+   "null+background",
+   "one-phonon+background"
   ],
-  "unavailable_contract": {
-    "missing_scalar_exposure_basis": {
-      "available": false,
-      "reason_code": "missing_exposure_basis",
-      "message": "master predictive artifact lacks a finite positive scalar fit-reference exposure"
+  "models": [
+   {
+    "label": "null+background",
+    "identity_label": "null+background",
+    "weight": 0.4,
+    "draw_basis": "fixed_contract_fixture",
+    "draw_weighting": "equal_weight_resampled",
+    "draw_weights": null,
+    "draw_ids": [
+     "draw-0",
+     "draw-1"
+    ],
+    "parameter_names": [
+     "bg.BG"
+    ],
+    "parameter_draws": [
+     [
+      4.0
+     ],
+     [
+      5.0
+     ]
+    ],
+    "model_manifest": {
+     "schema": "isar.model_manifest/1",
+     "components": [
+      {
+       "type": "constant_background",
+       "prefix": "bg"
+      }
+     ],
+     "parameters": {
+      "bg.BG": 4.0
+     }
     },
-    "legacy_schema": {
-      "available": false,
-      "reason_code": "artifact_schema_unsupported",
-      "message": "isar.master_predictive/1 is never upconverted: it carries no fitted grid, evaluation context or exposure basis"
-    },
-    "incomplete_basis": {
-      "available": false,
-      "reason_code": "predictive_basis_incomplete",
-      "message": "the published probability measure was pruned beyond the ADR-014 floors"
-    }
-  },
-  "heterogeneous_pool": {
-    "description": "EIG-0 case c5: two members on the same window with different steps, so the per-bin summed monitor alternates 1e9/2e9. The stored fitted-grid matrices are reproduced ONLY by the per-energy exposure vector; the scalar reference_incremental_exposure path differs by a factor of two on half the bins. Forward evaluation of a new uniform-exposure candidate stays valid (ADR-017).",
-    "artifact_contract": {
-      "schema": "isar.master_predictive/2",
-      "energy_meV": [
-        -2.0,
-        0.0,
-        2.0,
-        4.0,
-        6.0
+    "omega0_draws": [],
+    "stored_expected_counts": [
+     [
+      2.0,
+      4.0,
+      2.0,
+      4.0,
+      2.0
+     ],
+     [
+      2.5,
+      5.0,
+      2.5,
+      5.0,
+      2.5
+     ]
+    ],
+    "expected_counts_by_request": {
+     "original": [
+      [
+       2.0,
+       2.0,
+       2.0,
+       2.0,
+       2.0
       ],
-      "evaluation_context": {
-        "center_meV": 0.0,
-        "gaussian_fwhm_meV": 0.4,
-        "lorentzian_fwhm_meV": 0.1,
-        "temperature_K": 100.0,
-        "quasielastic_fwhm_meV": null
-      },
-      "exposure_basis": {
-        "unit": "monitor_counts",
-        "request_unit": "number_neutrons",
-        "request_to_exposure_factor": 1.0,
-        "fit_reference_exposure": 1000000000.0,
-        "n_members": 2,
-        "reference_incremental_exposure": 500000000.0,
-        "per_energy_monitor": [
-          1000000000.0,
-          2000000000.0,
-          1000000000.0,
-          2000000000.0,
-          1000000000.0
-        ],
-        "stored_exposure_ratio": [
-          0.5,
-          1.0,
-          0.5,
-          1.0,
-          0.5
-        ],
-        "scalar_exposure_eligible": false,
-        "exposure_homogeneous": false,
-        "full_member_support": null,
-        "exposure_ratio_span": 2.0,
-        "kept_point_count": 5
-      },
-      "completeness": {
-        "source_model_weight_total": 1.0,
-        "retained_model_weight_total": 1.0,
-        "pruned_model_weight": 0.0,
-        "dropped_models": [],
-        "model_weight_floor": 0.005,
-        "max_pruned_mass": 0.01,
-        "max_dropped_draw_mass": 0.01,
-        "predictive_complete_for_eig": true
-      },
-      "seed": 940301,
-      "uncertainty_provenance": {
-        "draw_basis": "fixed_contract_fixture",
-        "deterministic": true
-      }
+      [
+       2.5,
+       2.5,
+       2.5,
+       2.5,
+       2.5
+      ]
+     ],
+     "shifted": [
+      [
+       1.0,
+       1.0,
+       1.0,
+       1.0,
+       1.0
+      ],
+      [
+       1.25,
+       1.25,
+       1.25,
+       1.25,
+       1.25
+      ]
+     ],
+     "narrower": [
+      [
+       4.0,
+       4.0,
+       4.0
+      ],
+      [
+       5.0,
+       5.0,
+       5.0
+      ]
+     ],
+     "coarser": [
+      [
+       3.0,
+       3.0,
+       3.0
+      ],
+      [
+       3.75,
+       3.75,
+       3.75
+      ]
+     ]
     },
-    "evaluation_requests": [
+    "source_weight": 0.4,
+    "mode_energies": [
+     [],
+     []
+    ]
+   },
+   {
+    "label": "one-phonon+background",
+    "identity_label": "one-phonon+background",
+    "weight": 0.6,
+    "draw_basis": "fixed_contract_fixture",
+    "draw_weighting": "equal_weight_resampled",
+    "draw_weights": null,
+    "draw_ids": [
+     "draw-0",
+     "draw-1"
+    ],
+    "parameter_names": [
+     "phonon.Omega_d",
+     "phonon.Gamma",
+     "phonon.A",
+     "bg.BG"
+    ],
+    "parameter_draws": [
+     [
+      2.9,
+      0.3,
+      34.4445439648697,
+      4.0
+     ],
+     [
+      3.1,
+      0.35,
+      39.48561531800008,
+      5.0
+     ]
+    ],
+    "model_manifest": {
+     "schema": "isar.model_manifest/1",
+     "components": [
       {
-        "name": "original",
-        "energy_meV": [
-          -2.0,
-          0.0,
-          2.0,
-          4.0,
-          6.0
-        ],
-        "exposure_per_point": 500000000.0
+       "type": "phonon_dho",
+       "prefix": "phonon",
+       "peak": "stokes+astokes"
       },
       {
-        "name": "shifted",
-        "energy_meV": [
-          -1.5,
-          0.5,
-          2.5,
-          4.5,
-          6.5
-        ],
-        "exposure_per_point": 250000000.0
-      },
-      {
-        "name": "narrower",
-        "energy_meV": [
-          1.0,
-          2.0,
-          3.0
-        ],
-        "exposure_per_point": 1000000000.0
-      },
-      {
-        "name": "coarser",
-        "energy_meV": [
-          -2.0,
-          2.0,
-          6.0
-        ],
-        "exposure_per_point": 750000000.0
+       "type": "constant_background",
+       "prefix": "bg"
       }
+     ],
+     "parameters": {
+      "phonon.Omega_d": 2.9,
+      "phonon.Gamma": 0.3,
+      "phonon.A": 120.0,
+      "bg.BG": 4.0
+     }
+    },
+    "omega0_draws": [
+     2.9154759474226504,
+     3.1196954979613
     ],
-    "model_order": [
-      "null+background",
-      "one-phonon+background"
+    "stored_expected_counts": [
+     [
+      69.31892978772115,
+      32.25189025791899,
+      77.75725804281815,
+      128.0673034457364,
+      10.131912814340428
+     ],
+     [
+      48.78074445143089,
+      30.89230463412723,
+      57.31984306735511,
+      188.94180273293819,
+      12.192707031121454
+     ]
     ],
-    "models": [
-      {
-        "label": "null+background",
-        "identity_label": "null+background",
-        "weight": 0.4,
-        "draw_basis": "fixed_contract_fixture",
-        "draw_weighting": "equal_weight_resampled",
-        "draw_weights": null,
-        "draw_ids": [
-          "draw-0",
-          "draw-1"
-        ],
-        "parameter_names": [
-          "bg.BG"
-        ],
-        "parameter_draws": [
-          [
-            4.0
-          ],
-          [
-            5.0
-          ]
-        ],
-        "model_manifest": {
-          "schema": "isar.model_manifest/1",
-          "components": [
-            {
-              "type": "constant_background",
-              "prefix": "bg"
-            }
-          ],
-          "parameters": {
-            "bg.BG": 4.0
-          }
-        },
-        "omega0_draws": [],
-        "stored_expected_counts": [
-          [
-            2.0,
-            4.0,
-            2.0,
-            4.0,
-            2.0
-          ],
-          [
-            2.5,
-            5.0,
-            2.5,
-            5.0,
-            2.5
-          ]
-        ],
-        "expected_counts_by_request": {
-          "original": [
-            [
-              2.0,
-              2.0,
-              2.0,
-              2.0,
-              2.0
-            ],
-            [
-              2.5,
-              2.5,
-              2.5,
-              2.5,
-              2.5
-            ]
-          ],
-          "shifted": [
-            [
-              1.0,
-              1.0,
-              1.0,
-              1.0,
-              1.0
-            ],
-            [
-              1.25,
-              1.25,
-              1.25,
-              1.25,
-              1.25
-            ]
-          ],
-          "narrower": [
-            [
-              4.0,
-              4.0,
-              4.0
-            ],
-            [
-              5.0,
-              5.0,
-              5.0
-            ]
-          ],
-          "coarser": [
-            [
-              3.0,
-              3.0,
-              3.0
-            ],
-            [
-              3.75,
-              3.75,
-              3.75
-            ]
-          ]
-        },
-        "source_weight": 0.4,
-        "mode_energies": [
-          [],
-          []
-        ]
-      },
-      {
-        "label": "one-phonon+background",
-        "identity_label": "one-phonon+background",
-        "weight": 0.6,
-        "draw_basis": "fixed_contract_fixture",
-        "draw_weighting": "equal_weight_resampled",
-        "draw_weights": null,
-        "draw_ids": [
-          "draw-0",
-          "draw-1"
-        ],
-        "parameter_names": [
-          "phonon.Omega_d",
-          "phonon.Gamma",
-          "phonon.A",
-          "bg.BG"
-        ],
-        "parameter_draws": [
-          [
-            2.9,
-            0.3,
-            120.0,
-            4.0
-          ],
-          [
-            3.1,
-            0.35,
-            130.0,
-            5.0
-          ]
-        ],
-        "model_manifest": {
-          "schema": "isar.model_manifest/1",
-          "components": [
-            {
-              "type": "phonon_dho",
-              "prefix": "phonon",
-              "peak": "stokes+astokes"
-            },
-            {
-              "type": "constant_background",
-              "prefix": "bg"
-            }
-          ],
-          "parameters": {
-            "phonon.Omega_d": 2.9,
-            "phonon.Gamma": 0.3,
-            "phonon.A": 120.0,
-            "bg.BG": 4.0
-          }
-        },
-        "omega0_draws": [
-          2.9154759474226504,
-          3.1196954979613
-        ],
-        "stored_expected_counts": [
-          [
-            69.31892978772115,
-            32.25189025791899,
-            77.75725804281815,
-            128.0673034457364,
-            10.131912814340428
-          ],
-          [
-            48.78074445143089,
-            30.89230463412723,
-            57.31984306735511,
-            188.94180273293819,
-            12.192707031121454
-          ]
-        ],
-        "expected_counts_by_request": {
-          "original": [
-            [
-              69.31892978772115,
-              16.125945128959494,
-              77.75725804281815,
-              64.0336517228682,
-              10.131912814340428
-            ],
-            [
-              48.78074445143089,
-              15.446152317063614,
-              57.31984306735511,
-              94.47090136646909,
-              12.192707031121454
-            ]
-          ],
-          "shifted": [
-            [
-              16.151740131415963,
-              9.010945372944986,
-              121.6607870181494,
-              15.791011360294343,
-              4.0544428592109085
-            ],
-            [
-              13.382160421576943,
-              8.522921492779686,
-              71.98365580329005,
-              21.212894498728243,
-              4.821088201777957
-            ]
-          ],
-          "narrower": [
-            [
-              47.16652383361772,
-              155.5144476069348,
-              967.0014753170615
-            ],
-            [
-              42.89617489649743,
-              114.63961220450457,
-              758.2406883729943
-            ]
-          ],
-          "coarser": [
-            [
-              103.97839468158172,
-              116.63588706422723,
-              15.197869221510642
-            ],
-            [
-              73.17111667714633,
-              85.97976460103266,
-              18.28906054668218
-            ]
-          ]
-        },
-        "source_weight": 0.6,
-        "mode_energies": [
-          [
-            2.9154759474226504
-          ],
-          [
-            3.1196954979613
-          ]
-        ]
-      }
-    ],
-    "predictive_basis_fingerprint": "ad53e168ec988e2fa0c93a3110f88646df39deb8b185942ea6b601732c0f79fb"
-  }
+    "expected_counts_by_request": {
+     "original": [
+      [
+       69.31892978772115,
+       16.125945128959494,
+       77.75725804281815,
+       64.0336517228682,
+       10.131912814340428
+      ],
+      [
+       48.78074445143089,
+       15.446152317063614,
+       57.31984306735511,
+       94.47090136646909,
+       12.192707031121454
+      ]
+     ],
+     "shifted": [
+      [
+       16.151740131415963,
+       9.010945372944986,
+       121.6607870181494,
+       15.791011360294343,
+       4.0544428592109085
+      ],
+      [
+       13.382160421576943,
+       8.522921492779686,
+       71.98365580329005,
+       21.212894498728243,
+       4.821088201777957
+      ]
+     ],
+     "narrower": [
+      [
+       47.16652383361772,
+       155.5144476069348,
+       967.0014753170615
+      ],
+      [
+       42.89617489649743,
+       114.63961220450457,
+       758.2406883729943
+      ]
+     ],
+     "coarser": [
+      [
+       103.97839468158172,
+       116.63588706422723,
+       15.197869221510642
+      ],
+      [
+       73.17111667714633,
+       85.97976460103266,
+       18.28906054668218
+      ]
+     ]
+    },
+    "source_weight": 0.6,
+    "mode_energies": [
+     [
+      2.9154759474226504
+     ],
+     [
+      3.1196954979613
+     ]
+    ]
+   }
+  ],
+  "predictive_basis_fingerprint": "5a54d12503893adf56d239959e5406bf6229616aa7fa80035662e0cefc5e1545"
+ }
 }

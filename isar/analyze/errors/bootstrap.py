@@ -197,7 +197,8 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
     fit_w0 = [np.sqrt(theta_fit[i] ** 2 + theta_fit[i + 1] ** 2) for i in phonon_i]
     order = list(np.argsort(fit_w0))                    # component-order positions, ascending ω₀
     prim_global = prob.composite.primary_phonon_index(
-        theta_fit, None, getattr(ctx, "prior_omega", None), getattr(ctx, "acoustic_omega", None))
+        theta_fit, None, getattr(ctx, "prior_omega", None), getattr(ctx, "acoustic_omega", None),
+        T=getattr(ctx, "T", None))
     prim_pos = phonon_i.index(prim_global)
     prim_rank = order.index(prim_pos)                   # primary's rank in the sorted order
 

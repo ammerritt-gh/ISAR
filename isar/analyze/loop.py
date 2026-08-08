@@ -572,7 +572,7 @@ def _minimize_fixed(backend, objective, x0, bounds, be_names, fixed_pos, fixed_v
 
 def result_from_backend(label, composite, costv, n_used, k, br,
                         *, prior_omega=None, acoustic_omega=None, penalty=None,
-                        hard_fixed=False) -> StructureFitResult:
+                        hard_fixed=False, T=None) -> StructureFitResult:
     """Build a :class:`StructureFitResult` from a backend result, reading the *raw,
     separated* convergence/covariance/profile signals (not the lossy combined success).
 
@@ -613,19 +613,26 @@ def result_from_backend(label, composite, costv, n_used, k, br,
     else:
         param_errors = {n: None for n in names}
 
-    # per-mode collection, canonicalized ascending by ω₀ (kills label switching)
+    # per-mode collection, canonicalized ascending by ω₀ (kills label switching). The fitted A is
+    # INTRINSIC (H4); ``amplitude`` stays the MEASURED Stokes strength A·(n+1)(ω₀,T) so every
+    # delivery-space consumer (intensity portability, branch features, detection power, reports)
+    # keeps its counts-scale meaning, with the intrinsic value alongside. With T unknown the two
+    # coincide by convention ((n+1)=1 — no occupation information).
+    from isar.analyze.phonon import bose_occupation
     modes = []
     for i in composite.phonon_indices():
         w0, w0e = composite._omega0_at(theta, cov, i)
         g_err = float(errs[i + 1]) if errs is not None else float("nan")
+        occ = bose_occupation(w0, T) if T is not None else 1.0
         modes.append({"omega0": w0, "omega0_err": w0e, "gamma": float(theta[i + 1]),
-                      "gamma_err": g_err, "amplitude": float(theta[i + 2])})
+                      "gamma_err": g_err, "amplitude": float(theta[i + 2]) * occ,
+                      "amplitude_intrinsic": float(theta[i + 2])})
     modes.sort(key=lambda m: m["omega0"])
     n_modes = len(modes)
 
     # primary mode → the reported scalar ω₀ / Γ (back-compat); the acoustic hint (Phase A) selects
     # which mode of a multi-mode fit is the acoustic QoI, ahead of the prior/amplitude fallbacks.
-    prim_i = composite.primary_phonon_index(theta, cov, prior_omega, acoustic_omega)
+    prim_i = composite.primary_phonon_index(theta, cov, prior_omega, acoustic_omega, T=T)
 
     optimizer_converged = bool(br.success)
     covariance_ok = bool(br.covariance_ok)
@@ -682,6 +689,7 @@ def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False, x0=None) -> Stru
         acoustic_omega=getattr(ctx, "acoustic_omega", None),
         penalty=prob.penalty,
         hard_fixed=prob.is_hard_fixed,
+        T=getattr(ctx, "T", None),
     )
     _attach_fit_semantics(result, prob, ctx)
     return result

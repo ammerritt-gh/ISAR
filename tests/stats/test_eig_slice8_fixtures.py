@@ -168,13 +168,23 @@ def test_case1_retention_uses_strict_production_comparison_and_authentic_records
         encoding="utf-8")) == acquisition
 
 
-def test_repair_prefreeze_rejects_contrary_128_by_8_regime(tmp_path):
-    parameters = json.loads(PARAMETERS.read_text(encoding="utf-8"))
-    with pytest.raises(gate.GateEvidenceError, match=(
-            r'"case_1":\{"delta_positive":true,"lower_margin_positive":true\}.*'
-            r'"case_2":\{"delta_positive":true,"lower_margin_positive":true\}')):
-        fixtures.build_repair_development_inputs(
-            tmp_path, parameters, execute_live=False)
+SUPERSEDED_STATUS = Path("tools/stats/eig-slice8-gate.superseded-status.json")
+
+
+def test_slice8_gate_is_superseded_with_frozen_artifacts_intact():
+    """H4 (universal Bose factor) changed model content fingerprints, reshuffling the seeded-MC
+    blocks past the 128x8 regime margin: the frozen repair/replacement narrative cannot reproduce
+    under the current model, by mechanism rather than by defect. Owner ruling 2026-08-08:
+    supersede with a status record (the stat2b precedent); the freeze stays authentic at its
+    commit; no successor freeze (S10/H1) — the machinery deletes at SCENE-4/5."""
+    status = json.loads(SUPERSEDED_STATUS.read_text(encoding="utf-8"))
+    assert status["status"] == "superseded_by_h4_universal_bose_factor"
+    assert status["gate_commit"] == "0285e4d79663c5323811e36d28faa15348b31380"
+    assert status["frozen_artifacts_remain_authentic_at_commit"] is True
+    assert status["development_regime_reverified_under_h4"] is True
+    # the frozen artifacts themselves stay in the tree, untouched (S10)
+    for frozen in (CASE2_PROTOCOL, CASE2_TABLE, CASE2_REPRODUCIBILITY, REPLACEMENT_PARAMETERS):
+        assert frozen.exists()
 
 
 def test_case2_replacement_protocol_predeclares_only_an_amplitude_ladder():
@@ -220,33 +230,27 @@ def test_case2_calibration_retains_ladder_and_first_qualifying_value():
     assert reproducibility["scorer_seed"] == 8374860497622894989
 
 
-def test_replacement_prefreeze_reproduces_calibration_and_keeps_case2_unresolved(
-        tmp_path):
+def test_replacement_narrative_no_longer_reproduces_under_h4(tmp_path):
+    """The teeth of the supersession record: if this rebuild ever reproduces the frozen
+    replacement narrative again (calibration reproduced AND case-2 unresolvable at 128x8),
+    the supersession was unnecessary and must be revisited — most likely an accidental
+    reversion of the H4 reparameterization."""
     protocol = json.loads(CASE2_PROTOCOL.read_text(encoding="utf-8"))
     table = json.loads(CASE2_TABLE.read_text(encoding="utf-8"))
     reproducibility = json.loads(
         CASE2_REPRODUCIBILITY.read_text(encoding="utf-8"))
     parameters = json.loads(REPLACEMENT_PARAMETERS.read_text(encoding="utf-8"))
 
-    development = fixtures.build_replacement_development_inputs(
-        tmp_path, parameters, protocol, table, reproducibility,
-        execute_live=False)
-
-    assessment = development["fixture_definitions"]["regime_assessment"]
-    case_2 = development["diagnostics"]["s8-c02-weak-unresolved-confirmed"]
-    delta, standard_error, lower = gate._paired_summary(case_2["blocks"])
-    assert development["contract"] == fixtures.REPLACEMENT_DEVELOPMENT_SPEC_CONTRACT
-    assert development["calibration_reproduced_at_prefreeze"] is True
-    assert assessment["case_2"] == {
-        "delta_positive": True, "lower_margin_positive": False}
-    assert delta > 0.0
-    assert standard_error > 0.0
-    assert lower <= 0.0
-    assert gate.CASE_DEFINITIONS[1]["expected_outcome"] == gate.OUTCOME_LEGACY
-    assert development["faults"][0]["fault_id"] == gate.FAULT_DEFINITIONS[0][
-        "fault_id"]
-    gate_manifest = gate.build_replacement_gate_manifest("a" * 40)
-    case_manifest = gate.build_replacement_case_manifest(
-        gate_manifest, development["fixture_definitions"])
-    assert gate.validate_replacement_case_manifest(
-        case_manifest, gate_manifest) == case_manifest
+    reproduced = True
+    try:
+        development = fixtures.build_replacement_development_inputs(
+            tmp_path, parameters, protocol, table, reproducibility,
+            execute_live=False)
+        assessment = development["fixture_definitions"]["regime_assessment"]
+        reproduced = (
+            bool(development["calibration_reproduced_at_prefreeze"])
+            and assessment["case_2"] == {
+                "delta_positive": True, "lower_margin_positive": False})
+    except gate.GateEvidenceError:
+        reproduced = False
+    assert reproduced is False

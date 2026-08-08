@@ -174,18 +174,25 @@ def _exposure_per_point(rec, ctx) -> tuple[float, str]:
 
 
 def _primary_amplitude(fit) -> float | None:
-    """Fitted amplitude of the primary phonon (the mode nearest the reported ω₀)."""
+    """INTRINSIC amplitude of the primary phonon (the mode nearest the reported ω₀).
+
+    Intrinsic, not measured (H4): the branch model's log A(ω₀) trend and the soft/hard
+    constraints it emits target the fitted ``phonon.A``, which is the intrinsic strength — the
+    acoustic law is then literally A ∝ 1/ω with no occupation contamination. Falls back to the
+    measured ``amplitude`` for a mode record without the intrinsic field (equal when T was
+    unknown at fit time)."""
     modes = fit.get("modes")
     w0 = fit.get("omega0")
     if not modes or w0 is None:
         return None
     prim = min(modes, key=lambda m: abs(float(m.get("omega0", 1e18)) - float(w0)))
-    a = prim.get("amplitude")
+    a = prim.get("amplitude_intrinsic", prim.get("amplitude"))
     return float(a) if a is not None else None
 
 
 def _intensity_measure(rec, ctx, fit) -> dict | None:
-    """Portable :class:`IntensityMeasure` dict for the primary phonon, or None when not computable."""
+    """Portable :class:`IntensityMeasure` dict for the primary phonon (intrinsic amplitude per
+    exposure, H4), or None when not computable."""
     amp = _primary_amplitude(fit)
     if amp is None:
         return None

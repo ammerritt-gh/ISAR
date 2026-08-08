@@ -28,6 +28,10 @@ def test_structure_ic_matches_initial_guess_for_full_model():
     got = phonon.phonon_structure_ic(comp, ctx)
     expected = fit.initial_guess(ctx.x, ctx.counts, ctx.gauss_fwhm, ctx.lorentz_fwhm,
                                  ctx.T, center=ctx.center, x_max=float(np.max(ctx.x)))
+    # H4: the production IC's phonon amplitude is INTRINSIC; the frozen synth initial_guess
+    # stays measured. Identical up to the occupation factor at the IC's (Omega_d, GAMMA0).
+    expected = np.asarray(expected, dtype=float).copy()
+    expected[2] /= phonon.bose_occupation(phonon.omega0_from(expected[0], expected[1]), ctx.T)
     assert np.allclose(got, expected)
 
 
