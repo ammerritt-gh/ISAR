@@ -74,7 +74,8 @@ def test_fit_one_populates_amplitudes_and_candidates():
     cands = fit["candidates"]
     assert isinstance(cands, list) and cands
     keys = {"label", "k", "ndof", "cost", "cost_per_dof", "n_modes",
-            "delta_aic", "akaike_weight", "usable", "estimator_kind", "fit_kind",
+            "delta_aic", "akaike_weight", "posterior_probability", "log_evidence",
+            "evidence_method", "usable", "estimator_kind", "fit_kind",
             "constraint_origin", "selection_eligibility", "conditioning_fingerprint",
             "data_likelihood_fingerprint", "model_parameterization_fingerprint",
             "constraint_fingerprint", "comparison_context_fingerprint"}
@@ -89,17 +90,23 @@ def test_fit_one_populates_amplitudes_and_candidates():
         assert row["selection_eligibility"]
         assert len(row["conditioning_fingerprint"]) == 64
 
-    # delta_aic >= 0 with the winner at exactly 0, and the winner row equals best_label.
+    # The AIC diagnostics lane still travels: delta_aic >= 0 with a row at exactly 0.
     assert all(r["delta_aic"] >= -1e-9 for r in cands)
-    winners = [r for r in cands if r["delta_aic"] == min(c["delta_aic"] for c in cands)]
-    assert len(winners) >= 1
     assert min(r["delta_aic"] for r in cands) == pytest.approx(0.0, abs=1e-9)
-    winner = min(cands, key=lambda r: r["delta_aic"])
+    # Selection is evidence-driven: the winner is the max-posterior row and equals best_label.
+    assert all(r["posterior_probability"] is not None for r in cands)
+    winner = max(cands, key=lambda r: r["posterior_probability"])
     assert winner["label"] == fit["best_label"]
+    assert all(r["evidence_method"] is not None for r in cands)
 
-    # Akaike weights are a normalised distribution over the scored candidates.
+    # Both weight lanes are normalised distributions over the scored candidates.
     assert sum(r["akaike_weight"] for r in cands) == pytest.approx(1.0, abs=1e-6)
+    assert sum(r["posterior_probability"] for r in cands) == pytest.approx(1.0, abs=1e-6)
     semantics = fit["fit_selection_semantics"]
+    assert semantics["selection_method"] == "laplace_evidence_selection"
+    assert semantics["model_weight_kind"] == "posterior_probability"
+    assert semantics["selection_fallback"] is None
+    assert len(semantics["evidence_arena_fingerprint"]) == 64
     route = semantics["candidate_generation_route"]
     assert route["route"] == "full_two_stage"
     assert route["supplied_hint"] is None
@@ -164,9 +171,11 @@ def _outcome_with(amplitudes, candidates):
 def _cands():
     return [
         {"label": "stokes+bg", "k": 4, "ndof": 77, "cost": 80.0, "cost_per_dof": 1.04,
-         "n_modes": 1, "delta_aic": 0.0, "akaike_weight": 0.9, "usable": True},
+         "n_modes": 1, "delta_aic": 0.0, "akaike_weight": 0.9,
+         "posterior_probability": 0.93, "usable": True},
         {"label": "stokes+elastic+bg", "k": 5, "ndof": 76, "cost": 79.6, "cost_per_dof": 1.05,
-         "n_modes": 1, "delta_aic": 1.6, "akaike_weight": 0.1, "usable": True},
+         "n_modes": 1, "delta_aic": 1.6, "akaike_weight": 0.1,
+         "posterior_probability": 0.07, "usable": True},
     ]
 
 
@@ -237,8 +246,10 @@ def test_results_csv_roundtrips_amplitudes_and_candidates(tmp_path):
     assert row["amplitudes"] == amps
     assert row["candidates"] == _cands()
     # winner row inside the parsed candidate table still matches best_model.
-    winner = min(row["candidates"], key=lambda r: r["delta_aic"])
+    winner = max(row["candidates"], key=lambda r: r["posterior_probability"])
     assert winner["label"] == row["best_model"]
+    # the additive projection carries the winner's posterior as a plain float.
+    assert row["best_model_posterior"] == pytest.approx(0.93)
 
 
 def test_results_csv_roundtrips_exposure_and_candidate_provenance(tmp_path):
@@ -264,6 +275,9 @@ def test_results_csv_none_when_absent(tmp_path):
     row = _write_read(tmp_path, _outcome_with(None, None))
     assert row["amplitudes"] is None
     assert row["candidates"] is None
+    # the additive /2 projection columns read as honest absences, never fabricated values.
+    assert row["selection_method"] is None
+    assert row["best_model_posterior"] is None
 
 
 def test_full_session_and_compact_csv_semantics_roundtrip(tmp_path):

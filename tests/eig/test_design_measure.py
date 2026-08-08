@@ -168,11 +168,19 @@ def _bundle(monkeypatch, specs=None):
     }
     scores = [SimpleNamespace(
         label=item["label"], cost=10.0 + index, k=2, aic=14.0 + index,
-        weight=item["weight"], survives=True, fit_semantics=semantics[item["label"]])
+        weight=item["weight"], akaike_weight=item["weight"],
+        posterior_probability=item["weight"], candidate_prior=1.0 / len(specs),
+        log_evidence=-5.0 - index, log_evidence_err=None, evidence_method="laplace",
+        evidence_validity={}, survives=True, fit_semantics=semantics[item["label"]])
         for index, item in enumerate(specs)]
     labels = [item["label"] for item in specs]
     selection = scan_delivery._build_selection_semantics(
-        list(results.values()), SimpleNamespace(scores=scores, pooled=object()),
+        list(results.values()),
+        SimpleNamespace(
+            scores=scores, pooled=object(), selection_fallback=None,
+            evidence=SimpleNamespace(
+                arena_fingerprint=semantics[labels[0]]["data_likelihood_fingerprint"]),
+        ),
         {"route": "full_two_stage", "labels_before_guideline": labels,
          "guideline_structure_filter": [], "guideline_changed_model_set": False,
          "offered_labels": labels, "scored_labels": labels},

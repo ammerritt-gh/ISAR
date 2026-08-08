@@ -121,10 +121,12 @@ class FitOutcome:
     # fitter solved, kept so a params-only curve evaluator can rebuild the model without re-solving
     # NNLS against counts (report.audit.reconstruct_curve does the latter today). ``candidates``: one
     # compact row per SCORED structure ({label, k, ndof, cost, cost_per_dof, n_modes, delta_aic,
-    # akaike_weight, usable}) — the fit inspector's standing answer to "what did ISAR choose and
-    # why". Rows come straight from ``select.score_models`` (AIC = cost + 2k; Akaike weights), so the
-    # winner (delta_aic == 0) is exactly ``best_label``; non-converged fits are absent. Both None on
-    # older ledgers, when there is no delivered fit, or when nothing converged.
+    # akaike_weight, posterior_probability, log_evidence, evidence_method, usable}) — the fit
+    # inspector's standing answer to "what did ISAR choose and why". Selection is evidence-driven
+    # (isar.model_selection/2): the winner is the row whose label equals ``best_label``
+    # (delta_aic == 0 identifies it only on the recorded AIC fallback lane; AIC stays a persisted
+    # diagnostic); non-converged fits are absent. Both None on older ledgers, when there is no
+    # delivered fit, or when nothing converged.
     amplitudes: dict | None = None
     candidates: list | None = None
     # Declarative, versioned description of the delivered model.  This is the read-only viewer's
@@ -283,8 +285,14 @@ _CSV_COLUMNS = [
     "target_delivery_eligible", "identity_branch_id", "delivery_withheld_reason",
     # STAT-1 additive compact provenance. Full records remain in session.json.
     "fit_selection_semantics", "interval_semantics", "probability_semantics",
-    # STAT-2a diagnostics-only comparison. Kept last for positional legacy CSV readers.
+    # STAT-2a diagnostics-only comparison.
     "shadow_model_selection",
+    # Evidence-driven selection (isar.fit_selection_semantics/2), appended for positional legacy
+    # CSV readers. ``best_model_posterior`` is the winner's P(model) from the candidate table —
+    # deliberately NOT named log_evidence*: the log_evidence/log_evidence_err columns above are
+    # the bayes-tier within-model diagnostic, a different lane; per-candidate selection evidence
+    # lives inside the candidates/fit_selection_semantics JSON cells.
+    "selection_method", "best_model_posterior",
 ]
 
 
@@ -299,6 +307,21 @@ def _descriptor_summary(oc: dict) -> tuple:
     compact = "; ".join(f"{float(p.get('energy', 0.0)):.2f}@{float(p.get('significance', 0.0)):.1f}σ"
                         for p in peaks)
     return len(peaks), (compact or None)
+
+
+def _best_model_posterior(oc: dict):
+    """The winner's posterior probability from the candidate table.
+
+    None on the recorded AIC fallback lane (posterior_probability is None there), on older
+    ledgers, and when nothing converged — absence is the honest degraded-lane face.
+    """
+    best = oc.get("best_label")
+    if best is None:
+        return None
+    for row in oc.get("candidates") or ():
+        if row.get("label") == best:
+            return row.get("posterior_probability")
+    return None
 
 
 def _secondary_mode(oc: dict) -> tuple:
@@ -477,6 +500,10 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                     if oc.get("shadow_model_selection") is not None
                     else None
                 ),
+                "selection_method": (
+                    (oc.get("fit_selection_semantics") or {}).get("selection_method")
+                ),
+                "best_model_posterior": _best_model_posterior(oc),
             })
     temporary = path.with_name(path.name + ".tmp")
     with open(temporary, "w", newline="", encoding="utf-8") as f:

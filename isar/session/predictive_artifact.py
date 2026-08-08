@@ -187,6 +187,9 @@ def _predictive_statistical_semantics(models, fits, fit_selection_semantics, *, 
             raise SemanticsConstructionError(
                 "missing_selection_fingerprint", ",".join(missing)
             )
+        model_weight_kind = fit_selection_semantics.get("model_weight_kind")
+        if model_weight_kind is None:
+            raise SemanticsConstructionError("missing_model_weight_kind")
         retained_payload = {
             "retained_source_weight_total": float(
                 sum(float(model["source_weight"]) for model in models)
@@ -231,7 +234,7 @@ def _predictive_statistical_semantics(models, fits, fit_selection_semantics, *, 
                 "fit_semantics": fit_semantics,
                 "selection_eligibility": fit_semantics["selection_eligibility"],
                 "conditioning_fingerprint": fit_semantics["conditioning_fingerprint"],
-                "model_weight_kind": "akaike_relative_weight",
+                "model_weight_kind": model_weight_kind,
                 "particle_measure_kind": particle_kind,
                 "draw_measure_kind": "equal_weight_empirical_particles",
                 "draw_basis": basis,
@@ -309,7 +312,7 @@ def _predictive_statistical_semantics(models, fits, fit_selection_semantics, *, 
                 "weight_denominator_fingerprint"
             ],
             "predictive_retained_set_fingerprint": retained_fingerprint,
-            "model_weight_kind": "akaike_relative_weight",
+            "model_weight_kind": model_weight_kind,
             "particle_measure_kind": ensemble_particle_kind,
             "actual_particle_measure_kind": ensemble_particle_kind,
             "draw_measure_kind": "equal_weight_empirical_particles",
@@ -327,7 +330,7 @@ def _predictive_statistical_semantics(models, fits, fit_selection_semantics, *, 
                     "interval_kind": "conditional_target_present_mixed_particle_quantile",
                     "particle_measure_kind": ensemble_particle_kind,
                     "actual_particle_measure_kind": ensemble_particle_kind,
-                    "model_weight_kind": "akaike_relative_weight",
+                    "model_weight_kind": model_weight_kind,
                     "inference_paradigm": ensemble_inference_paradigm,
                     "contract_permits_heterogeneous_fallback": True,
                     "formal_bayesian_model": False,
@@ -808,7 +811,10 @@ def _target_projection_semantics(
     try:
         source_retained = artifact.get("predictive_retained_set_fingerprint")
         source_semantics = artifact.get("statistical_semantics_fingerprint")
-        if source_retained is None or source_semantics is None:
+        source_weight_kind = (artifact.get("statistical_semantics") or {}).get(
+            "model_weight_kind"
+        )
+        if source_retained is None or source_semantics is None or source_weight_kind is None:
             raise SemanticsConstructionError("missing_source_predictive_semantics")
         record = {
             "schema": PREDICTIVE_SCHEMA,
@@ -817,7 +823,7 @@ def _target_projection_semantics(
             "source_predictive_semantics_fingerprint": source_semantics,
             "target_projection_set_fingerprint": target_projection_set_fingerprint,
             "construction_complete": bool(complete),
-            "model_weight_kind": "akaike_relative_weight",
+            "model_weight_kind": source_weight_kind,
             "inference_paradigm": "mixed",
             "formal_bayesian_model": False,
             "conditioning": "authoritative_target_identity_and_target_present_draws",
@@ -844,19 +850,29 @@ def _target_projection_semantics(
 
 def model_entropy_probability_semantics(
     predictive_retained_set_fingerprint: str,
+    model_weight_kind: str,
 ) -> dict:
-    """Producer-owned declaration for ``model_entropy_nats`` / ``model_entropy``."""
+    """Producer-owned declaration for ``model_entropy_nats`` / ``model_entropy``.
+
+    ``model_weight_kind`` is whatever drove selection for the source predictive
+    (``posterior_probability`` on the evidence lane, ``akaike_relative_weight`` on the
+    recorded AIC fallback) — the entropy is over that distribution, so the declaration
+    names it rather than assuming a lane."""
     return {
         "quantity_kind": "entropy",
-        "source_measure_semantics": "akaike_relative_weight",
+        "source_measure_semantics": model_weight_kind,
         "state_space": {
             "kind": "predictive_retained_model_set",
             "fingerprint": predictive_retained_set_fingerprint,
         },
         "conditioning": "models_retained_after_draw_and_manifest_pruning",
-        "model_weight_kind": "akaike_relative_weight",
+        "model_weight_kind": model_weight_kind,
         "calibration_reference": None,
-        "inference_paradigm": "information_criterion_weight_distribution",
+        "inference_paradigm": (
+            "bayesian_posterior"
+            if model_weight_kind == "posterior_probability"
+            else "information_criterion_weight_distribution"
+        ),
         "authority_scopes": authority_scopes(user_diagnostic="active"),
     }
 

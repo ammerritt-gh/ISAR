@@ -16,6 +16,7 @@ from dataclasses import replace
 import numpy as np
 
 from isar.analyze import errors, loop, select, shadow_selection, verdict
+from isar.analyze.evidence import EVIDENCE_REVISION
 from isar.analyze import gold as gold_mod
 from isar.analyze.context import ScanContext, effective_exposure, select_exposure
 from isar.analyze.descriptor import describe_spectrum
@@ -310,9 +311,11 @@ def _amplitudes_of(best, by_hyp) -> dict | None:
 
 def _candidate_rows(scores, fits) -> list | None:
     """The model-selection candidate table (P0-4): one compact row per SCORED structure. ``scores``
-    is ``select.score_models``'s output (the exact ranking the driver selects on — AIC = cost + 2k,
-    Akaike weights ``w_i = exp(-Δ_i/2)/Σ exp(-Δ_j/2)``); this only reshapes it, never re-ranks, so
-    the winner (``delta_aic == 0``) equals ``Selection.best`` / ``FitOutcome.best_label``.
+    is the ``ModelScore`` list the driver selects on — posterior ``P(s) = π_s·Z_s / Σ π·Z`` in the
+    evidence lane, Akaike weights on the recorded AIC fallback; this only reshapes it, never
+    re-ranks. The winner is the row whose ``label`` equals ``Selection.best`` /
+    ``FitOutcome.best_label`` (``delta_aic == 0`` identifies it only on the fallback lane; AIC is a
+    persisted diagnostic under /2).
     Non-converged fits are already excluded by ``score_models``, so every row is a usable candidate.
     ``fits`` (label → ``StructureFitResult``) supplies ``cost_per_dof``/``n_modes``/``analysis_usable``
     that ``ModelScore`` does not carry. All values are coerced to plain Python scalars so the row
@@ -335,7 +338,18 @@ def _candidate_rows(scores, fits) -> list | None:
             "cost_per_dof": (cpd if np.isfinite(cpd) else None),
             "n_modes": int(r.n_modes) if r is not None else 1,
             "delta_aic": float(s.delta_aic),
-            "akaike_weight": float(s.weight),
+            "akaike_weight": float(s.akaike_weight),
+            "posterior_probability": (
+                None if getattr(s, "posterior_probability", None) is None
+                else float(s.posterior_probability)
+            ),
+            "log_evidence": (
+                float(s.log_evidence)
+                if getattr(s, "log_evidence", None) is not None
+                and np.isfinite(s.log_evidence)
+                else None
+            ),
+            "evidence_method": getattr(s, "evidence_method", None),
             "usable": bool(r.analysis_usable) if r is not None else True,
             "estimator_kind": (s.fit_semantics or {}).get("estimator_kind"),
             "fit_kind": (s.fit_semantics or {}).get("fit_kind"),
@@ -464,16 +478,49 @@ def _build_selection_semantics(
             ),
             key=lambda item: item["label"],
         )
-        denominator = sorted(
-            (
-                {
-                    **_model_set_record(score.label, score.fit_semantics),
-                    "aic": float(score.aic),
-                }
-                for score in selection.scores
-            ),
-            key=lambda item: item["label"],
+        fallback = getattr(selection, "selection_fallback", None)
+        arena_fingerprint = getattr(
+            getattr(selection, "evidence", None), "arena_fingerprint", None
         )
+        if not selection.scores:
+            selection_method, model_weight_kind = "none", "none"
+            arena_fingerprint = None
+        elif fallback is not None:
+            selection_method, model_weight_kind = "aic_fallback", "akaike_relative_weight"
+        else:
+            selection_method = "laplace_evidence_selection"
+            model_weight_kind = "posterior_probability"
+            if not arena_fingerprint:
+                raise SemanticsConstructionError("missing_evidence_arena")
+        if selection_method == "laplace_evidence_selection":
+            # The weight denominator is the posterior normalization: candidates with a
+            # nonzero prior AND finite trusted lnZ — the same set select.py normalizes
+            # over (prior 0 ⟺ non-finite lnZ by contract; the explicit finiteness guard
+            # keeps a contract breach from feeding NaN into the fingerprint payload).
+            denominator = sorted(
+                (
+                    {
+                        **_model_set_record(score.label, score.fit_semantics),
+                        "log_evidence": float(score.log_evidence),
+                    }
+                    for score in selection.scores
+                    if (score.candidate_prior or 0.0) > 0.0
+                    and score.log_evidence is not None
+                    and np.isfinite(score.log_evidence)
+                ),
+                key=lambda item: item["label"],
+            )
+        else:
+            denominator = sorted(
+                (
+                    {
+                        **_model_set_record(score.label, score.fit_semantics),
+                        "aic": float(score.aic),
+                    }
+                    for score in selection.scores
+                ),
+                key=lambda item: item["label"],
+            )
         pool_labels = []
         for score in selection.scores:
             if not score.survives:
@@ -505,7 +552,7 @@ def _build_selection_semantics(
                 "scored_model_set", scored_records
             ),
             "weight_denominator_fingerprint": _model_set_fingerprint(
-                "akaike_weight_denominator", denominator
+                "model_weight_denominator", denominator
             ),
             "error_attachment_set_fingerprint": _model_set_fingerprint(
                 "error_attachment_set", error_attachment_records
@@ -516,15 +563,33 @@ def _build_selection_semantics(
         }
         candidate_records = []
         for score in selection.scores:
+            log_evidence = getattr(score, "log_evidence", None)
+            if log_evidence is not None and not np.isfinite(log_evidence):
+                # Dominated/invalid candidates carry NaN lnZ in ModelScore; canonical JSON
+                # refuses NaN, so "no trusted number" persists as None.
+                log_evidence = None
+            log_evidence_err = getattr(score, "log_evidence_err", None)
+            candidate_prior = getattr(score, "candidate_prior", None)
+            posterior = getattr(score, "posterior_probability", None)
             candidate_records.append(
                 {
                     "label": str(score.label),
                     "cost": float(score.cost),
                     "effective_parameter_count": int(score.k),
                     "aic": float(score.aic),
-                    # the /1 payload documents the AIC diagnostics lane; the selection-driving
-                    # posterior lands in the /2 schema (commit 5)
                     "akaike_weight": float(score.akaike_weight),
+                    "log_evidence": None if log_evidence is None else float(log_evidence),
+                    "log_evidence_err": (
+                        None if log_evidence_err is None else float(log_evidence_err)
+                    ),
+                    "evidence_method": getattr(score, "evidence_method", None),
+                    "evidence_validity": getattr(score, "evidence_validity", None),
+                    "candidate_prior": (
+                        None if candidate_prior is None else float(candidate_prior)
+                    ),
+                    "posterior_probability": (
+                        None if posterior is None else float(posterior)
+                    ),
                     "fit_semantics": score.fit_semantics,
                 }
             )
@@ -534,24 +599,29 @@ def _build_selection_semantics(
         canonical_route = _canonical_candidate_generation_route(route)
         selection_payload = {
             **component_fingerprints,
-            # pinned: this /1 payload describes the AIC lane; MODEL_SELECTION_REVISION is /2
-            # now and the /2 semantics builder replaces this one wholesale (PR-b commit 5)
-            "ordinary_aic_revision": "isar.model_selection/1",
+            "model_selection_revision": select.MODEL_SELECTION_REVISION,
+            "selection_method": selection_method,
+            "selection_fallback": fallback,
             "weight_floor": float(select.DEFAULT_WEIGHT_FLOOR),
             "candidate_generation_route": canonical_route,
             "selection_eligibility": aggregate_eligibility,
             "selection_ineligibility_reasons": aggregate_reasons,
             "candidates": sorted(candidate_records, key=lambda item: item["label"]),
         }
+        if arena_fingerprint is not None:
+            selection_payload["evidence_arena_fingerprint"] = str(arena_fingerprint)
+            selection_payload["evidence_revision"] = EVIDENCE_REVISION
         record = {
             "schema": FIT_SELECTION_SCHEMA,
             "candidate_generation_route": route,
-            "model_weight_kind": "akaike_relative_weight" if selection.scores else "none",
+            "selection_method": selection_method,
+            "selection_fallback": fallback,
+            "model_weight_kind": model_weight_kind,
             "selection_eligibility": aggregate_eligibility,
             "selection_ineligibility_reasons": aggregate_reasons,
             **component_fingerprints,
             "model_selection_fingerprint": semantics_fingerprint(
-                "isar.model_selection_semantics/1", selection_payload
+                "isar.model_selection_semantics/2", selection_payload
             ),
             "candidate_records": candidate_records,
             "authority_scopes": authority_scopes(
@@ -559,6 +629,9 @@ def _build_selection_semantics(
                 user_diagnostic="active",
             ),
         }
+        if arena_fingerprint is not None:
+            record["evidence_arena_fingerprint"] = str(arena_fingerprint)
+            record["evidence_revision"] = EVIDENCE_REVISION
         return validate_for_write(record, FIT_SELECTION_SCHEMA)
     except SemanticsConstructionError as exc:
         log.warning(
@@ -640,7 +713,10 @@ def _outcome_interval_semantics(
                 "interval_kind": "akaike_weighted_parametric_bootstrap_pool",
                 "particle_measure_kind": "parametric_bootstrap_sampling_distribution",
                 "draw_measure_kind": "explicit_weight_empirical_particles",
-                "model_weight_kind": "akaike_relative_weight",
+                # The pool weights are whatever drove selection; the /2 record says which.
+                # (interval_kind keeps its historical name — vocab rename is interval-schema
+                # churn deferred to an owner ruling.)
+                "model_weight_kind": selection_semantics["model_weight_kind"],
                 "inference_paradigm": "frequentist_empirical_model_mixture",
                 "legacy_pool_set_fingerprint": legacy_pool_set_fingerprint,
                 "source_model_selection_fingerprint": (
@@ -895,9 +971,19 @@ def _refresh_probability_semantics(
                 (predictive_payload or {}).get("predictive_retained_set_fingerprint")
             )
             if predictive_retained is not None:
+                source_weight_kind = (
+                    (predictive_payload or {}).get("statistical_semantics") or {}
+                ).get("model_weight_kind")
+                if source_weight_kind is None:
+                    # An artifact carrying a retained-set fingerprint without its semantics
+                    # record is malformed; fail soft like the missing-fingerprint branch below.
+                    raise SemanticsConstructionError(
+                        "missing_model_weight_kind", "model_entropy"
+                    )
                 quantities["model_entropy"] = (
                     predictive_artifact.model_entropy_probability_semantics(
-                        predictive_retained
+                        predictive_retained,
+                        source_weight_kind,
                     )
                 )
             elif existing_model_entropy is not None:

@@ -94,9 +94,17 @@ def _authenticated_projection(monkeypatch, *, explicit_weights: bool = False):
     result = SimpleNamespace(label="one", omega0=3.0, fit_semantics=fit_semantics,
                              within_model={"omega0_samples": [3.0, 3.1]})
     score = SimpleNamespace(label="one", cost=10.0, k=2, aic=14.0, weight=1.0,
-                            survives=True, fit_semantics=fit_semantics)
+                            akaike_weight=1.0, posterior_probability=1.0,
+                            candidate_prior=1.0, log_evidence=-5.0,
+                            log_evidence_err=None, evidence_method="laplace",
+                            evidence_validity={}, survives=True,
+                            fit_semantics=fit_semantics)
     selection = scan_delivery._build_selection_semantics(
-        [result], SimpleNamespace(scores=[score], pooled=object()),
+        [result],
+        SimpleNamespace(
+            scores=[score], pooled=object(), selection_fallback=None,
+            evidence=SimpleNamespace(arena_fingerprint=data),
+        ),
         {"route": "full_two_stage", "labels_before_guideline": ["one"],
          "guideline_structure_filter": [], "guideline_changed_model_set": False,
          "offered_labels": ["one"], "scored_labels": ["one"]},

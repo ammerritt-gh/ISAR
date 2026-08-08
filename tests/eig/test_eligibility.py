@@ -129,7 +129,11 @@ def _clean_selection(**route_updates) -> dict:
     results = [SimpleNamespace(label=label, fit_semantics=semantics[label],
                                within_model={"omega0_samples": [1.0, 1.1]}) for label in labels]
     scores = [SimpleNamespace(label=label, cost=10.0 + index, k=2, aic=14.0 + index,
-                              weight=0.75 - 0.5 * index, survives=True,
+                              weight=0.75 - 0.5 * index, akaike_weight=0.75 - 0.5 * index,
+                              posterior_probability=0.75 - 0.5 * index,
+                              candidate_prior=0.5, log_evidence=-5.0 - index,
+                              log_evidence_err=None, evidence_method="laplace",
+                              evidence_validity={}, survives=True,
                               fit_semantics=semantics[label])
               for index, label in enumerate(labels)]
     route = {"route": "full_two_stage", "supplied_hint": None, "hint_accepted": False,
@@ -138,7 +142,13 @@ def _clean_selection(**route_updates) -> dict:
              "offered_labels": list(labels), "scored_labels": list(labels)}
     route.update(route_updates)
     return scan_delivery._build_selection_semantics(
-        results, SimpleNamespace(scores=scores, pooled=object()), route,
+        results,
+        SimpleNamespace(
+            scores=scores, pooled=object(), selection_fallback=None,
+            evidence=SimpleNamespace(
+                arena_fingerprint=semantics["one"]["data_likelihood_fingerprint"]),
+        ),
+        route,
         error_attachment_labels=list(labels))
 
 
@@ -164,6 +174,21 @@ def test_clean_current_contract_is_eligible_and_deterministic():
     assert first.scientific_codes == ()
     assert first.observability_codes == ()
     assert first.to_dict() == second.to_dict()
+
+
+def test_aic_fallback_selection_is_ineligible_fail_closed():
+    """/2 gate: only the evidence lane may steer acquisition. A recorded AIC-fallback
+    selection (evidence degraded or absent) reads as scientifically ineligible."""
+    record = dict(_clean_selection())
+    record.pop("evidence_arena_fingerprint", None)
+    record.pop("evidence_revision", None)
+    record.update(selection_method="aic_fallback",
+                  selection_fallback="aic_no_evidence_inputs",
+                  model_weight_kind="akaike_relative_weight")
+    result = evaluate_eig_eligibility(
+        _input(selection_record=record, shadow_record=_neutral_shadow()))
+    assert "selection_ineligible" in result.scientific_codes
+    assert result.status != "eligible"
 
 
 def test_current_eligibility_contract_revision_is_exact():

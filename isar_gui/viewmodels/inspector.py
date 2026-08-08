@@ -2,8 +2,9 @@
 
 The flagship read-side view: given the :class:`~isar.workspace_api.FitView` the browser selected, it
 assembles everything the inspector widget draws — the data+fit overlay spec, the residuals spec, the
-interval-ladder rows (labeled by tier, one certifying), the AIC candidate rows, and the
-verdict/provenance dicts. ALL derivation lives here; the widget only renders these outputs.
+interval-ladder rows (labeled by tier, one certifying), the model-candidate rows (posterior-weighted,
+ΔAIC as diagnostic), and the verdict/provenance dicts. ALL derivation lives here; the widget only
+renders these outputs.
 
 Interval-ladder derivation follows ``FitOutcome`` (isar/session/outcome.py) exactly:
 
@@ -53,7 +54,9 @@ def _fmt_q(hkl) -> str:
 class CandidateRow:
     label: str
     delta_aic: float | None
-    weight: float | None
+    # P(model) from evidence selection; None on the recorded AIC fallback lane and on
+    # pre-/2 ledgers — rendered blank, never invented.
+    posterior: float | None
     n_modes: int | None
     winner: bool = False
 
@@ -393,7 +396,7 @@ class InspectorViewModel(ViewModel):
             return np.linspace(c - 10.0, c + 10.0, _FINE_N)
         return None
 
-    # -- AIC candidates --
+    # -- model candidates --
     @staticmethod
     def _candidate_rows(fit):
         cands = fit.candidates
@@ -404,12 +407,13 @@ class InspectorViewModel(ViewModel):
             if not isinstance(c, dict):
                 continue
             da = c.get("delta_aic")
+            posterior = c.get("posterior_probability")
             rows.append(CandidateRow(
                 label=str(c.get("label", "?")),
                 delta_aic=None if da is None else float(da),
-                weight=None if c.get("akaike_weight") is None else float(c["akaike_weight"]),
+                posterior=None if posterior is None else float(posterior),
                 n_modes=c.get("n_modes"),
-                winner=(da is not None and float(da) == 0.0),
+                winner=(c.get("label") is not None and c.get("label") == fit.best_label),
             ))
         return rows, True
 

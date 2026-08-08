@@ -909,8 +909,11 @@ def test_selection_diagnostics_use_producer_candidate_fit_semantics_with_multipl
     ]
     scores = [
         SimpleNamespace(label=label, cost=10.0 + index, k=2, aic=14.0 + index,
-                        weight=0.6 - 0.2 * index, survives=True,
-                        fit_semantics=semantics[label])
+                        weight=0.6 - 0.2 * index, akaike_weight=0.6 - 0.2 * index,
+                        posterior_probability=0.6 - 0.2 * index, candidate_prior=0.5,
+                        log_evidence=-5.0 - index, log_evidence_err=None,
+                        evidence_method="laplace", evidence_validity={},
+                        survives=True, fit_semantics=semantics[label])
         for index, label in enumerate(("one", "two"))
     ]
     route = {
@@ -921,13 +924,21 @@ def test_selection_diagnostics_use_producer_candidate_fit_semantics_with_multipl
         "scored_labels": ["one", "two"],
     }
     record = scan_delivery._build_selection_semantics(
-        results, SimpleNamespace(scores=scores, pooled=object()), route,
+        results,
+        SimpleNamespace(
+            scores=scores, pooled=object(), selection_fallback=None,
+            evidence=SimpleNamespace(
+                arena_fingerprint=semantics["one"]["data_likelihood_fingerprint"]),
+        ),
+        route,
         error_attachment_labels=["one", "two"])
     assert record is not None
     strict = ENGINE._strict_block(record, ENGINE.validate_fit_selection_semantics)
     assert strict == {"status": "passed", "reason_code": None}
     assert all(set(candidate) == {
-        "label", "cost", "effective_parameter_count", "aic", "akaike_weight", "fit_semantics"
+        "label", "cost", "effective_parameter_count", "aic", "akaike_weight",
+        "log_evidence", "log_evidence_err", "evidence_method", "evidence_validity",
+        "candidate_prior", "posterior_probability", "fit_semantics"
     } for candidate in record["candidate_records"])
     assert record["candidate_generation_route"] == route
     diagnostics = ENGINE._selection_diagnostics(record, strict)

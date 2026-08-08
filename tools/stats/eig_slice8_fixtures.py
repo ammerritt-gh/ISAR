@@ -149,8 +149,10 @@ def _selection(label: str, *, constrained: bool = False) -> dict[str, Any]:
         within_model={"omega0_samples": [3.0, 3.1]},
     )
     score = SimpleNamespace(
-        label=label, cost=10.0, k=4, aic=18.0, weight=1.0, survives=True,
-        fit_semantics=semantics,
+        label=label, cost=10.0, k=4, aic=18.0, weight=1.0, akaike_weight=1.0,
+        posterior_probability=1.0, candidate_prior=1.0, log_evidence=-5.0,
+        log_evidence_err=None, evidence_method="laplace", evidence_validity={},
+        survives=True, fit_semantics=semantics,
     )
     route = {
         "route": "full_two_stage", "labels_before_guideline": [label],
@@ -158,7 +160,13 @@ def _selection(label: str, *, constrained: bool = False) -> dict[str, Any]:
         "scored_labels": [label],
     }
     return scan_delivery._build_selection_semantics(
-        [result], SimpleNamespace(scores=[score], pooled=object()), route,
+        [result],
+        SimpleNamespace(
+            scores=[score], pooled=object(), selection_fallback=None,
+            evidence=SimpleNamespace(
+                arena_fingerprint=semantics["data_likelihood_fingerprint"]),
+        ),
+        route,
         error_attachment_labels=[label])
 
 

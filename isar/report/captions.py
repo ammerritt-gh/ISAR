@@ -257,11 +257,13 @@ CAPTIONS: dict[str, Caption] = {
                 ("Bernstein–von Mises", "the result that the two agree when data is plentiful"))),
     "step1/selection_weights": Caption(
         title="Which model the data prefers",
-        what="for each scan, the Akaike weight on each candidate model (e.g. elastic+phonon+background "
-             "vs phonon+background); the bars sum to 1.",
+        what="for each scan, the model weight on each candidate model (e.g. elastic+phonon+background "
+             "vs phonon+background) — the posterior probability from per-structure Laplace evidence; "
+             "the bars sum to 1.",
         good="one model carries almost all the weight — the data clearly prefers a structure and ISAR "
              "isn't guessing between equally-good models.",
-        jargon=(("Akaike weight", "relative evidence for a model from AIC; higher = better supported"),
+        jargon=(("posterior probability", "P(model) from Bayesian evidence (lnZ) with uniform priors "
+                 "over admissible structures; higher = better supported"),
                 ("n/c", "that model did not converge"))),
     "step1/synthetic_fork": Caption(
         title="When the answer is ambiguous, say so",
@@ -372,7 +374,8 @@ CAPTIONS: dict[str, Caption] = {
     "stats/three_questions": Caption(
         title="Every results row answers one of three questions",
         what="a static map of the pipeline: MINIMIZE (which parameters, via Baker–Cousins), SELECT "
-             "(which model, via Akaike weights), CERTIFY (what uncertainty, via a four-rung interval "
+             "(which model, via evidence posteriors; AIC persisted as a diagnostic), CERTIFY (what "
+             "uncertainty, via a four-rung interval "
              "ladder — Hessian → profile → bootstrap → Bayesian); the columns list the actual "
              "results.csv columns each stage produces. The Bayesian rung is drawn dashed because it is "
              "diagnostics-only: it runs under --errors bayes but never certifies, so the preceding "
@@ -489,7 +492,8 @@ CAPTIONS: dict[str, Caption] = {
         good="the Akaike weight concentrates on the two-mode model and its pull residual is flat where "
              "the one-mode residual carried leftover structure — the second mode earned its parameters "
              "against the AIC tax, rather than being read off raw cost (which always prefers more "
-             "peaks).",
+             "peaks). (AIC is the recorded diagnostics lane; live selection is driven by Bayesian "
+             "evidence posteriors.)",
         jargon=(_J_PULL, _J_RESID,
                 ("Akaike weight", "relative evidence from AIC = cost + 2k; the parameter tax is why a "
                  "flexible model does not win automatically"),

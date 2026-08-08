@@ -3,8 +3,8 @@
 Left: a :class:`pyqtgraph.GraphicsLayoutWidget` with two x-linked rows — the data+fit+components
 overlay and the residuals — rendered through :func:`isar_gui.plotspec_pg.render_into` (so the app and
 the report draw the same spec with the same meaning). Right: the interval-ladder table (tier /
-interval / annotations, certifying tier visually primary), the AIC candidate table (winner bolded),
-and the verdict + provenance panels.
+interval / annotations, certifying tier visually primary), the model-candidate table (winner bolded,
+posterior-weighted with ΔAIC as diagnostic), and the verdict + provenance panels.
 
 Purely presentational: every value shown is computed by :class:`~isar_gui.viewmodels.inspector.
 InspectorViewModel`. The widget only lays out and renders VM outputs and reacts to ``spec_changed``.
@@ -41,7 +41,7 @@ def _bold(item: QTableWidgetItem) -> QTableWidgetItem:
 
 
 class InspectorWidget(QWidget):
-    """Data+fit+residuals plot, interval ladder, AIC candidates, verdict + provenance."""
+    """Data+fit+residuals plot, interval ladder, model candidates, verdict + provenance."""
 
     def __init__(self, vm, parent=None):
         super().__init__(parent)
@@ -84,9 +84,9 @@ class InspectorWidget(QWidget):
         self._ladder = self._make_table(["Tier", "Interval", "Notes"])
         side_l.addWidget(self._ladder)
 
-        self._candidates_header = QLabel("<b>AIC candidates</b>")
+        self._candidates_header = QLabel("<b>Model candidates</b>")
         side_l.addWidget(self._candidates_header)
-        self._candidates = self._make_table(["Model", "ΔAIC", "Weight", "n_modes"])
+        self._candidates = self._make_table(["Model", "P(model)", "ΔAIC", "n_modes"])
         side_l.addWidget(self._candidates)
 
         self._verdict_header = QLabel("<b>Verdict</b>")
@@ -185,8 +185,8 @@ class InspectorWidget(QWidget):
         for i, r in enumerate(rows):
             cells = [
                 QTableWidgetItem(r.label),
+                QTableWidgetItem("" if r.posterior is None else f"{r.posterior:.3f}"),
                 QTableWidgetItem("" if r.delta_aic is None else f"{r.delta_aic:.2f}"),
-                QTableWidgetItem("" if r.weight is None else f"{r.weight:.3f}"),
                 QTableWidgetItem("" if r.n_modes is None else str(r.n_modes)),
             ]
             for c, cell in enumerate(cells):
