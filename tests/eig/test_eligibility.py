@@ -191,6 +191,39 @@ def test_aic_fallback_selection_is_ineligible_fail_closed():
     assert result.status != "eligible"
 
 
+def test_h4c_selection_eligibility_grants_no_acquisition_authority():
+    """H4(c) made a prespecified soft-prior MAP fit SELECTION-eligible. It must not thereby
+    become able to steer beam time.
+
+    Letting soft-prior fits drive acquisition is a new acquisition authority — an owner-named
+    milestone needing its own ruling — so this pins the boundary: the candidate arrives with
+    ``selection_eligibility="eligible"`` (the H4(c) change) and is still refused, because it is
+    a MAP fit carrying an effective constraint. If this test ever goes green on ``eligible``,
+    beam-time authority moved without a ruling."""
+    semantics = dict(_fit_semantics("one"))
+    semantics.update(
+        estimator_kind="soft_penalized_likelihood",
+        fit_kind="soft_prior",
+        selection_eligibility="eligible",          # H4(c): comparable for selection…
+        aggregate_constraint_origin="prior_predictive",
+        effective_constraints=[{
+            "parameter": "phonon.Gamma", "constraint_kind": "soft",
+            "mean": 0.3, "sigma": 0.1, "origin": "prior_predictive",
+        }],
+    )
+    record = dict(_clean_selection())
+    record["candidate_records"] = [{**item, "fit_semantics": semantics}
+                                   for item in record["candidate_records"]]
+
+    result = evaluate_eig_eligibility(
+        _input(selection_record=record, shadow_record=_neutral_shadow()))
+
+    # …and still not authorised to acquire: the estimator is not an MLE and a constraint is live.
+    assert "selection_ineligible" in result.scientific_codes
+    assert "selection_constrained" in result.scientific_codes
+    assert result.status != "eligible"
+
+
 def test_current_eligibility_contract_revision_is_exact():
     result = evaluate_eig_eligibility(
         _input(selection_record=_clean_selection(), shadow_record=_neutral_shadow()))

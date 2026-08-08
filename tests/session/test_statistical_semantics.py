@@ -169,14 +169,46 @@ def test_effective_constraints_are_classified_from_actual_origins():
     assert semantics["estimator_kind"] == "soft_penalized_likelihood"
     assert semantics["aggregate_constraint_origin"] == "mixed"
     assert semantics["selection_eligibility"] == "ineligible_data_dependent_conditioning"
+    # Re-baselined under H4(c): the prespecified soft prior is no longer a reason for anything —
+    # only the data-dependent hard rescue is. The verdict is unchanged; its justification shrank.
     assert semantics["selection_ineligibility_reasons"] == [
-        "effective_soft_constraint",
         "data_dependent_or_post_selection_hard_constraint",
     ]
     assert [item["parameter"] for item in semantics["effective_constraints"]] == [
         "phonon.A",
         "phonon.Gamma",
     ]
+
+
+def test_prespecified_soft_prior_is_selection_eligible_but_still_a_map_fit():
+    """H4(c): a prespecified-origin soft prior IS its parameter's prior and enters lnZ exactly
+    once, so it no longer costs selection eligibility.
+
+    The estimator stays ``soft_penalized_likelihood`` with the constraint still recorded — the
+    fit is a MAP, and that is what keeps it out of acquisition (see the eig eligibility test).
+    This ruling covers the selection lane only."""
+    constraints = ParamConstraints(soft={"phonon.Gamma": (0.3, 0.1)},
+                                   origins={"phonon.Gamma": "prior_predictive"})
+    semantics = loop._fit_semantics_for(
+        _problem(), _fit_context(constraints=constraints), "soft_prior")
+
+    assert semantics["selection_eligibility"] == "eligible"
+    assert semantics["selection_ineligibility_reasons"] == []
+    assert semantics["estimator_kind"] == "soft_penalized_likelihood"
+    assert semantics["effective_constraints"]          # still recorded, never hidden
+
+
+def test_data_dependent_soft_prior_stays_ineligible():
+    """The other half of H4(c): a rescue prior is fit from this scan's own counts, so it is not
+    prespecified and must keep costing eligibility. An unrecognised origin fails closed too."""
+    for origin, expected in (("data_dependent_rescue", "ineligible_data_dependent_conditioning"),
+                             ("post_selection", "ineligible_data_dependent_conditioning"),
+                             ("prespecified_scientific", "eligible")):
+        constraints = ParamConstraints(soft={"phonon.Gamma": (0.3, 0.1)},
+                                       origins={"phonon.Gamma": origin})
+        semantics = loop._fit_semantics_for(
+            _problem(), _fit_context(constraints=constraints), "soft_prior")
+        assert semantics["selection_eligibility"] == expected, origin
 
 
 def test_missing_constraint_origin_fails_soft_at_fit_producer(caplog):

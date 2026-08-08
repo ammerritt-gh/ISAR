@@ -62,6 +62,12 @@ CONSTRAINT_ORIGINS = frozenset(
         "mixed",
     }
 )
+#: Soft-constraint origins H4(c) recast as evidence-comparable: prespecified relative to the scan
+#: being fit, so the prior IS its parameter's prior and enters lnZ exactly once.
+#: ``data_dependent_rescue`` / ``post_selection`` read this scan's own counts and stay ineligible;
+#: an unrecognised origin is not prespecified. The producer (``isar.analyze.loop``) reads this, so
+#: the vocabulary and the rule that uses it stay in one place.
+PRESPECIFIED_SOFT_ORIGINS = frozenset({"prespecified_scientific", "prior_predictive"})
 SELECTION_ELIGIBILITIES = frozenset(
     {
         "eligible",
@@ -1168,7 +1174,15 @@ def _validate_semantics(record: Mapping[str, Any], expected_schema: str, *, for_
                 raise SemanticsConstructionError("malformed_effective_constraints")
             for constraint in constraints:
                 _validate_constraint(constraint)
-            if item.get("selection_eligibility") == "eligible" and constraints:
+            # H4(c) narrowed this invariant rather than removing it: a prespecified-origin SOFT
+            # prior may be carried by an eligible record (it is the parameter's prior, counted
+            # once). Anything else that constrained the fit — any hard conditioning, any
+            # data-dependent or unrecognised soft origin — still may not.
+            if item.get("selection_eligibility") == "eligible" and not all(
+                constraint.get("constraint_kind") == "soft"
+                and constraint.get("origin") in PRESPECIFIED_SOFT_ORIGINS
+                for constraint in constraints
+            ):
                 raise SemanticsConstructionError("eligible_with_effective_constraints")
 
         if item.get("quantity_kind") == "entropy":

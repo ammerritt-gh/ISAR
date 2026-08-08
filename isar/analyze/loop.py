@@ -366,6 +366,16 @@ def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
         "none" if not origin_set else origin_set[0] if len(origin_set) == 1 else "mixed"
     )
     has_soft = any(item["constraint_kind"] == "soft" for item in effective)
+    # Only a soft constraint the ruling did NOT recast costs eligibility (H4(c)); a prespecified
+    # one is comparable. ``has_soft`` still drives estimator_kind — the fit is a MAP either way,
+    # which is what keeps it out of acquisition (isar/eig/eligibility.py).
+    from isar.schema.statistics import PRESPECIFIED_SOFT_ORIGINS
+
+    has_nonprespecified_soft = any(
+        item["constraint_kind"] == "soft"
+        and item["origin"] not in PRESPECIFIED_SOFT_ORIGINS
+        for item in effective
+    )
     has_data_conditioning = any(
         item["origin"] in {"data_dependent_rescue", "post_selection"} for item in effective
     )
@@ -376,14 +386,14 @@ def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
     )
     if has_data_conditioning:
         eligibility = "ineligible_data_dependent_conditioning"
-    elif has_soft:
+    elif has_nonprespecified_soft:
         eligibility = "ineligible_soft_penalized"
     elif has_other_hard:
         eligibility = "ineligible_unapproved_conditioning"
     else:
         eligibility = "eligible"
     reasons = []
-    if has_soft:
+    if has_nonprespecified_soft:
         reasons.append("effective_soft_constraint")
     if has_data_conditioning:
         reasons.append("data_dependent_or_post_selection_hard_constraint")

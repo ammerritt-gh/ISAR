@@ -1456,6 +1456,21 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   SCENE-6 swap); **(c)** STAT-1.5 is recast under `/2`: prespecified-origin soft-prior
   (transport) MAP fits are evidence-comparable — the prior enters lnZ exactly once as itself —
   while `data_dependent_rescue` and `post_selection` origins remain selection-ineligible.
+- **H5.** (2026-08-08, In force; PR-b review response) **H4(c) is implemented in the selection
+  lane only: a prespecified-origin soft prior costs no selection eligibility, and grants no
+  acquisition authority.** The producer gated on the *presence* of a soft constraint, so a
+  transported branch-model prior read as `ineligible_soft_penalized` — contradicting H4(c). It now
+  gates on origin: `prespecified_scientific` / `prior_predictive` (`PRESPECIFIED_SOFT_ORIGINS`,
+  owned by `isar/schema/statistics.py` so the vocabulary and the rule that reads it stay in one
+  place) no longer cost eligibility; `data_dependent_rescue` / `post_selection` still do, and an
+  unrecognised origin fails closed. The `/2` schema invariant is **narrowed, not removed**: an
+  eligible record may carry effective constraints only when every one of them is a prespecified
+  soft prior — any hard conditioning still raises `eligible_with_effective_constraints`.
+  **Acquisition is deliberately untouched.** `estimator_kind` stays `soft_penalized_likelihood`
+  and the constraint stays recorded, so `isar/eig/eligibility.py` still refuses the fit on the
+  non-MLE estimator and on `selection_constrained`; a test pins that boundary explicitly. Letting
+  soft-prior fits steer beam time is a new acquisition authority and needs its own owner-named
+  ruling — this entry is not it.
 
 ## Session status update
 
