@@ -1507,6 +1507,52 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   first concrete instance of the "budget-exhausted honesty" acceptance world of `SCENE_DESIGN.md`
   §4; the world itself is not yet built.
 
+- **H8.** (2026-08-09, In force; SCENE closeout — N-mode growth design) **A declared peak count is
+  a prior that permits a candidate, and "boundary-pinned" is three different physical situations,
+  not one.** Recorded now because each clause governs work that lands later (SCENE-1 PR-c,
+  SCENE-3/4); none of it is implemented by this entry.
+  **(a) Declaration permits, it does not force.** `loop.py`'s `_offer_multimode` gate
+  (`cost_per_dof > GATE_COST`, or a Wald–Wolfowitz structured residual) is a measurement;
+  `expected_two` — a guideline declaring ≥2 peaks — currently bypasses it outright. The gate
+  stands and a declaration *relaxes* it, on the same footing as every other declared prior. A
+  declaration must still be able to raise a candidate the diagnostic would not have offered,
+  because a candidate that is never enumerated can never be evaluated; what it may not do is
+  compel one. Hard enforcement ("exactly two, no more") is a separate future feature, explicitly
+  not authorized here. Note for the record that enumeration is not a probabilistic thumb on the
+  scale: with π uniform over admissible structures, adding a candidate dilutes every prior to
+  1/N, so forcing a candidate never helped it win — the objection to the bypass was always cost.
+  **(b) The three rails get three treatments.** *Amplitude → 0* is not a mode: no intensity, no
+  observable, no physics. It may be dropped without paying for evidence, recorded with a reason
+  (as `dominated` is) rather than deleted. *Ω_d at the window edge* is legitimate and sometimes
+  mandatory — real data carries excitations outside the fitted window (the IN8 H204 window starts
+  near 2 meV), and refusing them means being unable to fit the data at all; the dynesty
+  escalation it triggers is therefore spent on physics, not junk, and a DHO pinned against a wall
+  is a poor description of a mode outside the window. *Γ → 0* is ordinary — instrument resolution
+  dominates — so the hard floor is a modelling artifact putting a wall where the physics has
+  none. In each case the *statistics* of the escalation are correct as parameterized (an MLE at a
+  bound truncates the posterior, so the Gaussian volume genuinely is wrong); the remedy is to fix
+  the parameterization, e.g. a Γ prior with support to zero under the H4 bundle, which makes the
+  boundary integrable rather than pathological.
+  **(c) Growth is residual-located and earns its keep on evidence.** Offer mode N+1 where the
+  residual will actually accept one — `greedy_multimode_ic` already grid-scans exactly that — in
+  place of a global goodness-of-fit trigger. No admission test beyond the marginal likelihood is
+  needed or wanted: Z averages the likelihood over the prior, so an added mode that buys nothing
+  spreads the same fit quality over more volume and loses. That is the Occam factor, automatic
+  and untuned.
+  **(d) Near-degeneracy is reported, never silently skipped.** `greedy_multimode_ic` today drops
+  mode-2 candidates within one resolution FWHM of mode 1. A hard "cannot identify, skip" rule is
+  refused: attempt the fit under the declared-dormant constrained variant (FWHM pinned to
+  resolution) and state honestly that these tools cannot separate the pair, rather than returning
+  a candidate that never existed.
+  **(e) The stopping rule is neighbouring scans, never a hard-coded physical bound** — a
+  geometric cap on branches per window is precisely the kind of rule that invites a trap. A
+  phonon branch cannot appear at one q and vanish at the next, so mode count is testable across
+  scans in a way it never is inside one noisy scan. Two consequences bind SCENE-3/4: mode-count
+  uncertainty must be *representable* rather than collapsed to a winner, and an unresolved count
+  is an acquisition signal — "three modes, poorly constrained" is a reason to measure the
+  neighbour. The count question therefore belongs to the scene and question layers, not to
+  `loop.py`.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:

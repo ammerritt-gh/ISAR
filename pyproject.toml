@@ -41,6 +41,9 @@ testpaths = ["isar/synth/tests", "tests"]
 # pathological escalation chain becomes ONE named failure instead of a silent hour. The three
 # heaviest campaign tests carry explicit @pytest.mark.timeout budgets; everything else fits
 # far inside 900 s. Raising this global to accommodate a new test is a smell, not a fix.
+# The escalation sampler that made those three expensive is capped for the suite by the
+# repo-root conftest (ISAR_ESCALATION_N_LIVE); see its docstring for why that does not weaken
+# what the tests assert. Measured 2026-08-09: full parallel lane 11:25, heaviest test 614 s.
 timeout = 900
 markers = [
     "slow: marks tests that run many fits (deselect with '-m \"not slow\"')",

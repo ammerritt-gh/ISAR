@@ -352,10 +352,13 @@ def test_run_batch_routes_optional_error_tiers_by_role_and_keeps_legacy_default(
         "scan": "fast", "master": "cheap"}
 
 
-# The three heaviest campaign tests exceed the global 900 s ceiling even post-cut (the full
-# lane's worker-kill failures of 2026-08-08 are exactly these three): explicit budgets so the
-# full lane completes with named results. NOT re-verified by a full-lane rerun this session —
-# the growth-policy fix (queued design work) is the real cost reduction.
+# The three heaviest campaign tests once exceeded the global 900 s ceiling (the full lane's
+# worker-kill failures of 2026-08-08 are exactly these three): explicit budgets so the full lane
+# completes with named results. Verified by full-lane rerun 2026-08-09 — the budgets hold, and
+# under the suite's ISAR_ESCALATION_N_LIVE=32 cap these now run 614 s / 405 s / 385 s against a
+# 26:16 -> 11:25 whole-lane time, so the budgets are headroom rather than a live constraint.
+# They stay: the cap is a test-side measure, and the real cost reduction is still the N-mode
+# growth policy (H8, design recorded, not implemented).
 @pytest.mark.timeout(2700)
 @pytest.mark.slow
 def test_parallel_masters_match_serial_end_to_end(tmp_path):
