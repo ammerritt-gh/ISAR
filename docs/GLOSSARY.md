@@ -81,8 +81,8 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   better supported), not a posterior model probability or Bayes factor. Since H4 this is the
   recorded **diagnostics lane**: AIC/AICc/BIC and Akaike weights are computed and persisted per
   candidate but drive nothing — selection is the evidence posterior — except on the named
-  fallback lanes (`aic_no_evidence_inputs`, `aic_all_evidence_invalid`), which are
-  selection-ineligible for acquisition steering.
+  fallback lanes (`aic_no_evidence_inputs`, `aic_all_evidence_invalid`,
+  `evidence_budget_exhausted`), which are selection-ineligible for acquisition steering.
 - **evidence (lnZ) / validity ladder** — the marginal likelihood of one candidate structure under
   its declared priors, produced by a ladder that never trusts a Gaussian volume silently: Laplace
   at the fitted optimum, a warm-started MAP refit when the fit did not see a prior it must
@@ -90,6 +90,16 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   carries its rung, escalation reasons, and (for dynesty) the n_live used; evidence is comparable
   only within one data-likelihood arena. Dominated candidates (evidence ceiling ≥100 nats below a
   trusted leader) are excluded without sampling and recorded as such.
+- **unresolved candidate / escalation budget** — the escalation phase of one candidate set is
+  bounded in wall clock. A candidate skipped when the budget runs out is recorded `unresolved`
+  with its evidence ceiling: like a dominated candidate it holds no lnZ and enters no posterior,
+  but unlike one it was never *ruled out*. If its ceiling still reaches the best trusted evidence
+  in the set, the set cannot name a winner on evidence and selection degrades to the recorded AIC
+  lane (`evidence_budget_exhausted`). A skipped candidate whose own ceiling sits below the leader
+  is ruled out by that bound and costs the set nothing. The budget is a backstop against a
+  pathological set, not a speed control — the expensive class (a superset of the winner) has a
+  ceiling at or above the leader's by construction, which is exactly why dominance pruning cannot
+  touch it.
 - **posterior model probability** — P(s) = π_s·Z_s / Σ π·Z over admissible structures, uniform π;
   the weight that drives selection, pooling, and the EIG/master consumers since H4. Persisted per
   candidate in `isar.fit_selection_semantics/2` alongside the AIC diagnostics; `None` on the

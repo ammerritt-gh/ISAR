@@ -1484,6 +1484,28 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   existing "too sparse" path already returns no branch. Correspondingly the producer refuses to
   interpret a mode record carrying only `amplitude`: `None`, never a measured value relabelled
   intrinsic.
+- **H7.** (2026-08-09, In force; SCENE closeout — escalation cost) **The escalation phase of one
+  candidate set is bounded in wall clock, and an exhausted budget degrades selection instead of
+  hiding.** `candidate_set_evidence` gains `budget_s` (`ESCALATION_BUDGET_S`, `None` disables);
+  a candidate left unsampled is recorded `unresolved` carrying its evidence ceiling — no lnZ, no
+  posterior entry, and explicitly *not* ruled out, which is what separates it from `dominated`.
+  `EvidenceSet.unresolved_contenders()` reports the skipped candidates whose ceiling still
+  reaches the best trusted evidence; when any exists the comparison is **incomplete rather than
+  close**, and `select_models` degrades to the recorded AIC lane with the new
+  `evidence_budget_exhausted` fallback rather than ranking on a posterior over whichever
+  candidates happened to be sampled. That lane is already selection-ineligible for acquisition
+  (H4), so the degradation is owner-visible where it matters. Precedence is deliberate: dominance
+  is decided from an already-computed ceiling at no sampler cost, so it is evaluated first and a
+  certain ruling is never lost to the budget; a skipped candidate whose ceiling sits below the
+  leader is ruled out by its own bound and costs the set nothing. The budget is a **backstop
+  against a pathological set, not a throughput lever** — the expensive class is a superset of the
+  winner, whose ceiling is ≥ the leader's by construction (exactly why dominance pruning cannot
+  touch it), so a tight budget would push ordinary campaign scans into the degraded lane. It is
+  checked before each escalation begins rather than interrupting one, so a set may overrun by a
+  single dynesty run, itself bounded by `max_iter`. The cost *reduction* this backstop does not
+  provide is the N-mode growth policy, which remains an open physics decision. This entry is the
+  first concrete instance of the "budget-exhausted honesty" acceptance world of `SCENE_DESIGN.md`
+  §4; the world itself is not yet built.
 
 ## Session status update
 

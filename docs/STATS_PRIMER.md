@@ -143,9 +143,16 @@ data-likelihood arena (the record carries the arena fingerprint; cross-arena com
 priors enter exactly once (a transported soft constraint IS its parameter's prior), and a
 deferred escalation whose evidence ceiling sits ≥100 nats below a trusted leader is recorded
 `dominated` instead of sampled; surviving escalations sample at n_live=128, scoped to that lane.
-When evidence cannot be computed at all, selection falls back to AIC and *says so* — the record
-names the lane (`aic_no_evidence_inputs` / `aic_all_evidence_invalid`), and a fallback-lane
-record is ineligible to steer acquisition.
+The escalation phase also carries a wall-clock budget per candidate set (`ESCALATION_BUDGET_S`,
+a backstop against a pathological set rather than a throughput lever). A candidate the budget
+skips is recorded `unresolved` with its ceiling intact — kept out of the posterior like
+`dominated`, but *not* ruled out. If such a candidate's ceiling still reaches the best trusted
+evidence, the comparison is incomplete rather than close, and selection degrades rather than
+ranking on whichever candidates happened to be sampled.
+When evidence cannot be computed at all, or the set is incomplete in that sense, selection falls
+back to AIC and *says so* — the record names the lane (`aic_no_evidence_inputs` /
+`aic_all_evidence_invalid` / `evidence_budget_exhausted`), and a fallback-lane record is
+ineligible to steer acquisition.
 
 **AIC** (= cost + 2 per free parameter) and **Akaike weights** are computed and persisted per
 candidate as the diagnostics lane, plus a nested likelihood-ratio test for nested pairs
