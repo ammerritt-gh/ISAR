@@ -966,8 +966,8 @@ def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors
     gate (:func:`_offer_multimode`) fires OR ``peaks`` declares ≥2 expected peaks, also fit the
     2-mode set (:func:`~isar.analyze.phonon.enumerate_phonon_multimode`) seeded by
     :func:`~isar.analyze.phonon.greedy_multimode_ic`, and return the UNION for a single
-    :func:`~isar.analyze.select.select_models` pass — AIC/BIC then decide whether the second
-    mode earns its parameters. 2-mode hypotheses with no positive dof (``n_used − k ≤ 0``) are
+    :func:`~isar.analyze.select.select_models` pass — the evidence posterior then decides
+    whether the second mode earns its parameters (AIC/BIC persist as diagnostics, H4). 2-mode hypotheses with no positive dof (``n_used − k ≤ 0``) are
     skipped. ``peaks`` is threaded through untouched (the driver supplies it later); this
     function never imports session/guideline code.
 
