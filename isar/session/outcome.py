@@ -200,6 +200,24 @@ class FitOutcome:
     probability_semantics: dict | None = None
     # STAT-2a diagnostics only. It cannot drive any scientific or steering authority in this phase.
     shadow_model_selection: dict | None = None
+    # SCENE-1 PR-c persistence (commit D), all additive and all records-only.
+    # ``at_limit``: the DELIVERED (winning) fit's per-parameter boundary-pin flags, keyed by the real
+    # dotted parameter names — the same map the evidence validity ladder reads, kept so a reader can
+    # see which parameter railed without re-fitting. ``None`` on older ledgers and when nothing
+    # converged.
+    at_limit: dict | None = None
+    # ``evidence_identity``: the catalogue phenomenon the winning candidate CLAIMED (open vocabulary,
+    # never an enum); ``None`` for the identity-agnostic candidate, which is every candidate the
+    # production catalogue emits today. ``identity_ba_disagreement``: the records-only diagnostic
+    # noting that this identity and the branch-assignment label disagree. Nothing in the verdict,
+    # confidence, stopping or steering path reads either — the (Q,E) object that OWNS an identity
+    # lives in the scene store (SCENE-3); this scan only contributes evidence to it.
+    evidence_identity: str | None = None
+    identity_ba_disagreement: dict | None = None
+    # ``interpretation_ref``: pointer into the content-addressed interpretation store. That store is
+    # SCENE-3's to build; the field lands here None-defaulted so the persistence contract already has
+    # the slot when it arrives. Nothing writes it in SCENE-1.
+    interpretation_ref: str | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -293,6 +311,12 @@ _CSV_COLUMNS = [
     # the bayes-tier within-model diagnostic, a different lane; per-candidate selection evidence
     # lives inside the candidates/fit_selection_semantics JSON cells.
     "selection_method", "best_model_posterior",
+    # SCENE-1 PR-c, appended (this list stays positional for legacy CSV readers): the winning
+    # candidate's claimed catalogue identity — a plain string, empty on every historical row and on
+    # every identity-agnostic fit. The dict-valued companions (``at_limit``,
+    # ``identity_ba_disagreement``) deliberately stay out of the compact projection; they are
+    # per-parameter / diagnostic detail and session.json already carries them in full.
+    "evidence_identity",
 ]
 
 
@@ -504,6 +528,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                     (oc.get("fit_selection_semantics") or {}).get("selection_method")
                 ),
                 "best_model_posterior": _best_model_posterior(oc),
+                "evidence_identity": oc.get("evidence_identity"),
             })
     temporary = path.with_name(path.name + ".tmp")
     with open(temporary, "w", newline="", encoding="utf-8") as f:

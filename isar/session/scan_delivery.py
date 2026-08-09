@@ -354,6 +354,21 @@ def _candidate_rows(scores, fits) -> list | None:
             ),
             "evidence_method": getattr(s, "evidence_method", None),
             "usable": bool(r.analysis_usable) if r is not None else True,
+            # SCENE-1 PR-c persistence (commit D). ``at_limit`` is this candidate's per-parameter
+            # boundary-pin map — what the evidence validity ladder read when it priced the row, so a
+            # reader can see WHY a rung escalated. ``variant``/``identity`` are the candidate's
+            # catalogue provenance (constrained variant, claimed phenomenon), both ``None`` for an
+            # ordinary candidate. ``effective_constraints`` is read back from the recorded
+            # fit_semantics, never re-derived: the row must show the constraints the fit actually
+            # ran under. ``[]`` means "recorded, unconstrained"; ``None`` means no semantics record.
+            "at_limit": (dict(r.at_limit)
+                         if r is not None and getattr(r, "at_limit", None) is not None else None),
+            "variant": (getattr(r, "variant", None) if r is not None else None),
+            "identity": (getattr(r, "identity", None) if r is not None else None),
+            "effective_constraints": (
+                None if (s.fit_semantics or {}).get("effective_constraints") is None
+                else list((s.fit_semantics or {})["effective_constraints"])
+            ),
             "estimator_kind": (s.fit_semantics or {}).get("estimator_kind"),
             "fit_kind": (s.fit_semantics or {}).get("fit_kind"),
             "constraint_origin": (s.fit_semantics or {}).get("aggregate_constraint_origin"),
@@ -1743,6 +1758,11 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         # (:func:`_record_identity_ba_disagreement`). Both are records only.
         "evidence_identity": getattr(best, "identity", None) if best is not None else None,
         "identity_ba_disagreement": None,
+        # The WINNER's per-parameter boundary-pin map (SCENE-1 PR-c commit D). Persisted because a
+        # railed parameter is what invalidates the Laplace curvature and what makes the reported
+        # interval untrustworthy — the reader must not have to re-fit to learn which one railed.
+        "at_limit": (dict(best.at_limit)
+                     if best is not None and getattr(best, "at_limit", None) is not None else None),
         "gamma": gamma,
         "cost_per_dof": (best.cost_per_dof if best else None),
         "n_modes": n_modes, "modes": modes,
@@ -2317,6 +2337,9 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         fit_selection_semantics=fit.get("fit_selection_semantics"),
         interval_semantics=fit.get("interval_semantics"),
         shadow_model_selection=fit.get("shadow_model_selection"),
+        at_limit=fit.get("at_limit"),
+        evidence_identity=fit.get("evidence_identity"),
+        identity_ba_disagreement=fit.get("identity_ba_disagreement"),
         evidence_sink=evidence_sink_for(getattr(rec, "raw_header", None),
                                         getattr(card.state, "acquisition_provenance", None)))
     outcome.probability_semantics = _refresh_probability_semantics(outcome.__dict__)
