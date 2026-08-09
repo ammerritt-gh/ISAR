@@ -196,6 +196,32 @@ def test_railed_gamma_takes_the_truncated_laplace_rung(railed):
     assert rec.log_evidence < uncorrected - 0.4             # ≈ ln½ of mass shed
 
 
+def test_ceiling_railed_gamma_escalates_not_truncates():
+    """Γ has TWO bounds and only the floor is the H8 modelling artifact. A Γ railed at
+    GAMMA_MAX is overdamped physics the model cannot express — the likelihood gradient at the
+    bound is genuinely nonzero and an overdamped-vs-two-mode contest is selection-material —
+    so it must pay for the sampler, never take the cheap rung. Found by a fresh-context
+    verifier 2026-08-09: the original gate tested the NAME suffix only, and this exact fit
+    (Γ̂ = 4.9999… at GAMMA_MAX = 5.0) came back laplace_truncated."""
+    x = np.linspace(-15.0, 15.0, 101)
+    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 4.0, 200.0, 0.0, 20.0, 300.0, peak="all")
+    counts = np.random.default_rng(3).poisson(np.clip(lam, 0.0, None)).astype(float)
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=300.0,
+                      center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    hyp, fit = _fitted(ctx)
+    assert fit.optimizer_converged and fit.covariance_ok
+    pins = [n for n, v in fit.at_limit.items() if v]
+    assert pins == ["phonon.Gamma"]
+    assert fit.params["phonon.Gamma"] > 1.0                  # the CEILING, not the floor
+
+    bundle = _bundle(hyp, ctx)
+    rec = E.structure_evidence(hyp, ctx, fit, bundle, escalation="defer")
+    assert rec.evidence_method == "deferred_escalation"
+    assert rec.validity["escalation"] == "laplace_invalid"
+    assert "gamma_boundary_truncated" not in rec.validity
+
+
 def test_truncated_laplace_agrees_with_dynesty(railed):
     """The load-bearing one: the analytic shortcut must answer the same integral the sampler
     does. Same candidate, same bundle — the pin is widened to a non-Γ parameter only to force

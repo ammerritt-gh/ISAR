@@ -337,9 +337,17 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     # above all — keeps escalating: there the boundary IS physics (H8) and the sampler is
     # spent on a real question.
     # `at_limit is not None` keeps the fail-safe honest: an older fit with UNKNOWN pin status
-    # must escalate, never take the truncated rung on a name coincidence.
+    # must escalate, never take the truncated rung on a name coincidence. The value test against
+    # the FLOOR is load-bearing: Γ has two bounds (phonon.GAMMA_FLOOR and GAMMA_MAX), and only
+    # the floor is the H8 modelling artifact — a Γ railed at the CEILING is overdamped physics
+    # the model cannot express, its likelihood gradient at the bound is genuinely nonzero, and
+    # an overdamped-vs-two-mode contest is selection-material, so it pays for the sampler.
+    from isar.analyze.phonon import GAMMA_BOUND_TOL
+
     gamma_pinned = (at_limit is not None and bool(pinned)
-                    and all(n.endswith(".Gamma") for n in pinned))
+                    and all(n.endswith(".Gamma")
+                            and float(fit_result.params.get(n, float("inf"))) <= GAMMA_BOUND_TOL
+                            for n in pinned))
     if (pinned and not gamma_pinned) or not validity["sigma_pd"]:
         return _escalate("laplace_invalid")
 

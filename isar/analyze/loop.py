@@ -1151,8 +1151,10 @@ def fit_structures_two_stage_hinted(ctx, *, backend="iminuit", minos=False, peak
     enumeration would have produced. The gates keep the difference to fits where one structure
     already explains the data; it is opt-in and excluded from the bit-identity harness.
 
-    ``hypotheses_out`` behaves as in :func:`fit_structures_two_stage` (the accepted shortcut
-    offers no variants, so it contributes only the hinted structure's own hypothesis)."""
+    ``hypotheses_out`` behaves as in :func:`fit_structures_two_stage` on the full-enumeration
+    path; on the ACCEPTED-hint path it is left untouched (the early return precedes it), which
+    is safe because a hint label is always drawn from the standard enumerations the caller can
+    rebuild — only variant labels require the channel, and the shortcut offers no variants."""
     if structure_hint is not None:
         hinted = _try_structure_hint(ctx, structure_hint, backend=backend, minos=minos)
         if hinted is not None:
