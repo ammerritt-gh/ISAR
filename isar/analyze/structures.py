@@ -26,6 +26,13 @@ class Hypothesis:
     # fitted, instead of silently re-freeing the pinned parameter. Excluded from equality: it
     # holds numpy arrays, and the label already distinguishes the candidate.
     context: object | None = field(default=None, compare=False, repr=False)
+    # The catalogue phenomenon this candidate CLAIMS to be (SCENE-1 PR-c, commit E) — an
+    # open-vocabulary entry name ("acoustic", …), never an enum. ``None`` is the identity-agnostic
+    # candidate: the ordinary case, and the only one the production catalogue produces today.
+    # Identity conditions the candidate's priors (:func:`isar.analyze.catalogue.resolve_priors`);
+    # the (Q,E)-space object that OWNS an identity lives in the scene store (SCENE-3), and a scan's
+    # fit only contributes evidence to it.
+    identity: str | None = None
 
     @property
     def k(self) -> int:

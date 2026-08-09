@@ -141,6 +141,11 @@ class StructureFitResult:
     # ``"near_degenerate"``; ``None`` for an ordinary candidate. Provenance only — the candidate's
     # identity is its label, and ``fit_kind`` already carries the hard-conditioned nature of the fit.
     variant: str | None = None
+    # The catalogue phenomenon identity this candidate claims (SCENE-1 PR-c commit E), carried
+    # from its hypothesis at fit time; ``None`` for an identity-agnostic candidate. RECORDS ONLY —
+    # nothing in the verdict, confidence, stopping or steering path reads it. The object that OWNS
+    # an identity lives in the scene store (SCENE-3); this labels one scan's evidence contribution.
+    identity: str | None = None
 
 
 @dataclass
@@ -719,6 +724,7 @@ def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False, x0=None) -> Stru
         hard_fixed=prob.is_hard_fixed,
         T=getattr(ctx, "T", None),
     )
+    result.identity = getattr(hyp, "identity", None)
     _attach_fit_semantics(result, prob, ctx)
     return result
 

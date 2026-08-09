@@ -1738,6 +1738,11 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "hesse_interval": (tuple(hesse_interval) if hesse_interval is not None else None),
         "hesse_trusted": hesse_trusted,
         "modality": sel.modality, "best_label": sel.best,
+        # The catalogue identity the WINNING candidate claimed (SCENE-1 PR-c commit E), and the
+        # disagreement diagnostic the branch layer fills in once branch assignment has run
+        # (:func:`_record_identity_ba_disagreement`). Both are records only.
+        "evidence_identity": getattr(best, "identity", None) if best is not None else None,
+        "identity_ba_disagreement": None,
         "gamma": gamma,
         "cost_per_dof": (best.cost_per_dof if best else None),
         "n_modes": n_modes, "modes": modes,
@@ -2010,6 +2015,24 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
             "selected_energy": qoi.get("omega0")}
 
 
+def _record_identity_ba_disagreement(fit, branch_id):
+    """Record — never act on — a winning candidate whose catalogue identity contradicts the branch
+    assignment (SCENE-1 PR-c commit E).
+
+    Two independent claims about what was measured: evidence selection's identity-conditioned
+    winner, and branch assignment's posterior. BA keeps driving delivery until SCENE-6, so this
+    touches no verdict, confidence, stopping or steering decision; it exists so the disagreement
+    rate is measurable before the axes are ever allowed to swap authority. ``None`` whenever
+    either side is silent (the production catalogue's every scan today) or the two agree.
+    """
+    identity = fit.get("evidence_identity")
+    disagreement = None
+    if identity is not None and branch_id is not None and str(identity) != str(branch_id):
+        disagreement = {"evidence_identity": str(identity), "branch_id": str(branch_id)}
+    fit["identity_ba_disagreement"] = disagreement
+    return disagreement
+
+
 def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, near_gamma,
                          master: bool):
     """Run branch assignment + honest triage over ``fit`` and apply its verdict (Phase A). Shared by
@@ -2018,7 +2041,9 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
     Returns branch assignment, candidate posterior/state, and secondary features — all
     None when the posterior is off or the fit is a ``signal_unmodeled`` descriptor result. When the
     triage declines delivery it mutates ``fit`` in place: flips the verdict to ``branch_continuation``,
-    nulls the ω₀ fields, and appends a reason (worded per ``master``)."""
+    nulls the ω₀ fields, and appends a reason (worded per ``master``). It always writes the
+    records-only ``identity_ba_disagreement`` diagnostic (:func:`_record_identity_ba_disagreement`)
+    — the one place where the winner's catalogue identity and the assigned branch are both known."""
     branch_id = assignment_entropy = branch_weight = resolvable = None
     branch_posterior = candidate_id = candidate_state = selected_energy = None
     secondary_features = None
@@ -2050,6 +2075,7 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
                 fit["omega0_profile"] = fit["hesse_interval"] = None
                 fit["bayes_interval"] = None
                 fit["interval_reliable"] = False
+    _record_identity_ba_disagreement(fit, branch_id)
     _refresh_interval_semantics(fit)
     return (branch_id, assignment_entropy, branch_weight, resolvable, secondary_features,
             branch_posterior, candidate_id, candidate_state, selected_energy)

@@ -276,8 +276,14 @@ def _candidate_evidence(results, hyps, ctx):
         # pinned parameter and hand structure_evidence a bundle that does not match the fit's k.
         cctx = loop.candidate_context(hyp, ctx)
         prob = loop.build_problem(hyp, cctx)
+        # An identity-bearing candidate (SCENE-1 PR-c commit E) is priced under ITS entry's
+        # declared priors — that conditioning is the only thing that distinguishes identity twins
+        # of one structure, so resolving them all under no entry would give identical evidence.
+        # ponytail: the default profile, because no layer between enumeration and here carries a
+        # profile; plumb the program's ``catalogue_profile`` through when a second one goes live.
         bundle = catalogue.resolve_priors(
             prob.composite, cctx, prob.bounds,
+            entry=catalogue.identity_entry(getattr(hyp, "identity", None)),
             exclude=[prob.free_names[i] for i in prob.fixed_pos])
         triples.append((hyp, r, bundle))
     return evidence.candidate_set_evidence(triples, ctx)

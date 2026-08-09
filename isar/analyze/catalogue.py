@@ -17,8 +17,11 @@ catalogue-backed since SCENE-1 PR-b, pinned bit-identical to the legacy hand lis
 ``tests/analyze/test_catalogue.py``), extended by the phonon-less nulls ``elastic+bg`` and ``bg``
 (SCENE-1 PR-a — what the ``elastic_only`` / ``no_signal`` verdicts select on).
 ``parameter_priors`` is live: :func:`resolve_priors` turns declarations into the
-:class:`PriorBundle` the evidence layer counts exactly once (SCENE-1 PR-b), though no entry
-declares one until the identity framing lands (owner deferral 2026-08-08).
+:class:`PriorBundle` the evidence layer counts exactly once (SCENE-1 PR-b), and since PR-c
+commit E a declaration also *splits* the enumeration: entries competing for one local model slot
+become one identity-bearing candidate each (:func:`_identity_candidates`). No entry in the
+production catalogue declares a prior yet, so that enumeration is still bit-identical to the
+identity-agnostic list.
 ``constrained_variants`` is live (SCENE-1 PR-c): :func:`isar.analyze.loop._offer_variants` fires
 each declared ``when`` predicate against the converged one-mode fits and offers the pinned twin as
 an ADDITIONAL candidate. ``transport`` and ``delivery_profile`` remain **dormant declarations** —
@@ -280,6 +283,46 @@ def entry(name: str, profile: str = DEFAULT_PROFILE) -> PhenomenonDefinition:
     raise KeyError(f"no phenomenon {name!r} in catalogue profile {profile!r}")
 
 
+def identity_entry(identity: str | None, profile: str = DEFAULT_PROFILE):
+    """The catalogue entry a candidate's ``identity`` names, or ``None`` when it is
+    identity-agnostic. An identity naming no entry is a wiring error and raises (``entry``)."""
+    return None if identity is None else entry(identity, profile)
+
+
+def _identity_candidates(recipe, profile: str) -> tuple[PhenomenonDefinition, ...]:
+    """The catalogue entries competing for one local-model slot, or ``()`` for no identity split.
+
+    A split is only earned when the rivals are *distinguishable*: more than one entry declares
+    ``recipe`` as a local model AND at least one of them declares ``parameter_priors``. Splitting
+    without that gives twins with identical likelihoods and identical priors — identical evidence,
+    whose only effect is to divide the uniform structure prior between copies of one model. The
+    production catalogue declares no priors, so this returns ``()`` and enumeration stays
+    bit-identical to the identity-agnostic list (pinned by ``tests/analyze/test_catalogue.py``).
+    """
+    sharing = tuple(d for d in PROFILES[profile]
+                    if any(m.recipe is recipe for m in d.local_models))
+    return sharing if len(sharing) > 1 and any(d.parameter_priors for d in sharing) else ()
+
+
+def _phonon_bearing_adder(hyps: list, profile: str):
+    """An ``add(label, components)`` that appends one hypothesis per competing phonon identity —
+    or exactly one identity-agnostic hypothesis when the catalogue declares no split.
+
+    N-mode note: the identity applies to the CANDIDATE, so a two-mode candidate prices both of its
+    modes under one entry's priors. Per-mode identity assignment (an acoustic ⊗ optic pair) needs
+    the cross-mode structure SCENE-3 owns and is deliberately not invented here.
+    """
+    ids = _identity_candidates(PhononDHO, profile)
+
+    def add(label: str, components: tuple) -> None:
+        if not ids:
+            hyps.append(Hypothesis(label, components))
+            return
+        hyps.extend(Hypothesis(f"{label}@{d.name}", components, identity=d.name) for d in ids)
+
+    return add
+
+
 def enumerate_structures(ctx, profile: str = DEFAULT_PROFILE) -> list[Hypothesis]:
     """The admissible structure hypotheses for a scan context, driven by the catalogue.
 
@@ -290,6 +333,11 @@ def enumerate_structures(ctx, profile: str = DEFAULT_PROFILE) -> list[Hypothesis
     winner the ``elastic_only`` / ``no_signal`` verdicts read (SCENE-1 PR-a). Whether an
     enumerated component earns its parameter is model selection's decision (§4), not the
     catalogue's.
+
+    Each phonon-bearing structure becomes one candidate per competing *identity*
+    (``<label>@<entry>``, e.g. ``stokes+bg@acoustic``) when — and only when — the catalogue
+    distinguishes those identities by a declared prior (:func:`_identity_candidates`). The
+    phonon-less nulls carry no identity: there is no phenomenon in them to identify.
     """
     sharp = entry("elastic", profile).model("sharp")
     broad = entry("quasielastic", profile).model("broad")
@@ -299,14 +347,16 @@ def enumerate_structures(ctx, profile: str = DEFAULT_PROFILE) -> list[Hypothesis
     qe = broad.admissible(ctx)
     pho = phonon._phonon_for(ctx)   # Bose-tied class or Stokes-only instance (DHO physics)
 
-    hyps = [Hypothesis("stokes+bg", (pho, bg))]
+    hyps: list[Hypothesis] = []
+    add = _phonon_bearing_adder(hyps, profile)
+
+    add("stokes+bg", (pho, bg))
     if elastic:
-        hyps.append(Hypothesis("elastic+stokes+bg", (pho, sharp.recipe, bg)))
+        add("elastic+stokes+bg", (pho, sharp.recipe, bg))
     if qe:
-        hyps.append(Hypothesis("stokes+qe+bg", (pho, broad.recipe, bg)))
+        add("stokes+qe+bg", (pho, broad.recipe, bg))
     if elastic and qe:
-        hyps.append(Hypothesis("elastic+stokes+qe+bg",
-                               (pho, sharp.recipe, broad.recipe, bg)))
+        add("elastic+stokes+qe+bg", (pho, sharp.recipe, broad.recipe, bg))
     if elastic:
         hyps.append(Hypothesis("elastic+bg", (sharp.recipe, bg)))
     hyps.append(Hypothesis("bg", (bg,)))
@@ -339,14 +389,16 @@ def enumerate_multimode_structures(ctx, n_max: int = 2,
     def twophonon():
         return (phonon._phonon_for(ctx), phonon._phonon_for(ctx, prefix="phonon2"))
 
-    hyps = [Hypothesis("stokes2+bg", (*twophonon(), bg))]
+    hyps: list[Hypothesis] = []
+    add = _phonon_bearing_adder(hyps, profile)
+
+    add("stokes2+bg", (*twophonon(), bg))
     if elastic:
-        hyps.append(Hypothesis("elastic+stokes2+bg", (*twophonon(), sharp.recipe, bg)))
+        add("elastic+stokes2+bg", (*twophonon(), sharp.recipe, bg))
     if qe:
-        hyps.append(Hypothesis("stokes2+qe+bg", (*twophonon(), broad.recipe, bg)))
+        add("stokes2+qe+bg", (*twophonon(), broad.recipe, bg))
     if elastic and qe:
-        hyps.append(Hypothesis("elastic+stokes2+qe+bg",
-                               (*twophonon(), sharp.recipe, broad.recipe, bg)))
+        add("elastic+stokes2+qe+bg", (*twophonon(), sharp.recipe, broad.recipe, bg))
     return hyps
 
 
