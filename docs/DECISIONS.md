@@ -1356,6 +1356,29 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   including the blind/assisted evidence contrast that motivates the seal — is retained in the
   bundle's `provenance/` directory.
 
+- **S13.** (2026-08-09, In force; STAT-2 program closeout; no production behavior change)
+  **STAT-2c and STAT-2d are closed without further implementation: their substance was delivered
+  by H4 by another route, and what H4 did not deliver it made moot.** STAT-2c was written as the
+  first possible authority switch off plain AIC; H4 (SCENE-1 PR-b, 2026-08-08) performed that
+  switch — production selection is the evidence posterior over structures, stamped
+  `isar.model_selection/2`, with `isar.fit_selection_semantics/2` replacing `/1` outright and
+  EIG eligibility failing closed on anything but posterior weights. An audit of STAT-2c's
+  remaining requirement list against code found each item either delivered (revision bump,
+  weight-kind prohibition, downstream consumer rewiring, no-eligible-comparison refusal) or
+  dissolved (the constrained-fit lane move: under H4(c)/H5 a prespecified-origin soft prior *is*
+  the parameter's prior, entering lnZ exactly once, so those fits are evidence-comparable and no
+  lane move exists to perform; `score_models` keeps accepting all converged fits because it no
+  longer holds authority — it is the persisted AIC diagnostics lane). STAT-2d's "remove the
+  legacy constrained-AIC path" finds no dead path to remove: AIC survives in exactly three
+  deliberate places — the per-candidate diagnostics lane, the named recorded-fallback lanes
+  (selection-ineligible for acquisition), and the D6 shadow lane with the STAT-2b harness — and
+  all three are retained by design. The execution plan
+  `docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md` is deleted and tombstoned per documentation
+  policy (plans leave the tree when their work lands); the accepted behavior lives in H4/H5/H7,
+  `STATS_PRIMER.md`, and `GLOSSARY.md`. The STAT-2 lane discipline itself (estimator eligibility
+  must never silently influence weights) and STAT-3 through STAT-6 of the statistical-semantics
+  audit remain live.
+
 ## SCENE hypothesis layer (H-series)
 
 - **H1.** (2026-08-08, In force; opening ruling of the SCENE program — target-free

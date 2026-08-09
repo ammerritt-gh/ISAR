@@ -109,7 +109,7 @@ and verified by `git grep` at deletion time rather than by bookkeeping.
 
 ## `docs/` — active plans
 
-All seven are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
+All six are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
 status block — `tests/docs/` fails the build if either is missing. Their shared statistical
 motivation and current sequence are recorded in the 2026-07-19 statistics-contract audit; its
 accepted findings were promoted once into `STATS_PRIMER.md` §7, so the plans do not carry drifting
@@ -122,8 +122,7 @@ copies.
 | `docs/BACKGROUND_DESIGN.md` | Active plan | approved 2026-07-19; implementation not started | — |
 | `docs/EIG_STEERING_DESIGN.md` | Active plan | predictive `/2`, arbitrary-grid evaluation, candidate generation, executed-grid identity, target projection, Slice 2 `o36.2.1` eligibility/QoI adaptation, Slice 3 `o36.3` homogeneous predictive-scenario design measure, Slice 4 `o36.4` pure full-vector Poisson scoring, Slice 5.1 `o36.5.1` controlled offline `off`→`shadow` comparison, Slice 6 `o36.6` scored shadow inventories, Slice 7 exact realized-request rescoring/provenance, the retained Slice 8 tools-only gate, and the O41-restricted Slice 9 opt-in authority path implemented; EIG-4 complete (O43/O44). Authoritative selection remains Partial — opt-in today, default-on at SCENE-4 (the O42 release review is retired by H1) | Documents same-action scan-window EIG, authenticated QoI evidence, bounded hand-authored distinction-policy provenance, objective `/2` omission compatibility, diagnostic-only score sets, exact-source live shadow integration, and the invariant that Slice 6 always executes legacy |
 | `docs/SCENE_DESIGN.md` | Active plan | H1 constitution, SCENE-0 world-suite foundation, SCENE-2 program contract, and SCENE-1 PR-a/PR-b (H3/H4) Implemented; SCENE-1 PR-c and SCENE-3–7 Planned | Canonical scene-layer contract (catalogue, scene posterior, question layer, scene-EIG); slices land as H-series rulings |
-| `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md` | Active plan | STAT-0/1/1.5 and STAT-2a/2b.1 complete; S8 recorded; STAT-2c through STAT-6 remain active, with the restricted O36 EIG-4 sequencing exception | Temporary producer/consumer audit; findings remain authoritative for the broader statistics program and STAT-6 closeout |
-| `docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md` | Active plan | STAT-2a and STAT-2b.1 complete; S8 retains AIC; STAT-2c and STAT-2d pending | Temporary execution plan; STAT-2d folds accepted behavior into canonical statistics documents, then deletes and tombstones it |
+| `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md` | Active plan | STAT-0/1/1.5 and STAT-2a/2b.1 complete; S8 recorded; STAT-2 closed by H4/S13; STAT-3 through STAT-6 remain active, with the restricted O36 EIG-4 sequencing exception | Temporary producer/consumer audit; findings remain authoritative for the broader statistics program and STAT-6 closeout |
 
 ## `docs/` — historical evidence
 
@@ -148,14 +147,14 @@ a current behavioural contract.**
 | `docs/campaigns/2026-07-21_OP9_OP10_TRACKED_FRONTIER.md` | Historical evidence | Evidence behind O27; the contract itself is `MEASUREMENT_STEERING.md` |
 | `docs/campaigns/2026-07-23_AP6_ACTION_INVENTORY.md` | Historical evidence | Evidence behind O28 |
 | `docs/campaigns/2026-07-29_EIG_EXPOSURE_BASIS.md` | Historical evidence | EIG-0 spike evidence behind ADR-017; the contract itself is `EIG_STEERING_DESIGN.md` |
-| `docs/campaigns/2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md` | Historical evidence | Corrected STAT-2b.1 development, scaling, and superseded held-out disposition; the contract remains the STAT-2 plan |
+| `docs/campaigns/2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md` | Historical evidence | Corrected STAT-2b.1 development, scaling, and superseded held-out disposition; the STAT-2 plan is closed and tombstoned (S13), selection authority is H4 |
 | `docs/campaigns/2026-07-31_STAT2B1_HELDOUT.md` | Historical evidence | Completed STAT-2b.1 held-out evidence; the frozen gate withheld authority for an AICc switch, and S8 records the resulting retain-AIC disposition |
 | `docs/campaigns/2026-08-02_EIG4_SLICE1_CENSUS.md` | Historical evidence | Reviewed Slice 1 census evidence; the current contract remains `EIG_STEERING_DESIGN.md` |
 | `docs/campaigns/2026-08-03_EIG4_SLICE5_OFFLINE.md` | Historical evidence | Retained Slice 5.1 discovery and zero-policy score evidence; the current contract remains `EIG_STEERING_DESIGN.md` |
-| `docs/campaigns/2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md` | Historical evidence | STAT-2b.1 historical replay and unapproved production source-closure upkeep evidence; S9 and the STAT-2 plan govern the current approval boundary |
-| `docs/campaigns/2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md` | Historical evidence | Rejected schema-v1 candidate disposition and schema-v2 renewal/authentication repair; S9 and the STAT-2 plan govern approval |
-| `docs/campaigns/2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE.md` | Historical evidence | Slice 7 protected-boundary review and unapproved replacement bootstrap candidate; O40, S9, and the STAT-2 plan govern current behavior and approval |
-| `docs/campaigns/2026-08-04_EIG4_SLICE7_REPAIR_SOURCE_CLOSURE.md` | Historical evidence | Slice 7 repair verification, protected-adjacent event registration review, and unapproved renewed bootstrap candidate; O40, S9, and the STAT-2 plan govern current behavior and approval |
+| `docs/campaigns/2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md` | Historical evidence | STAT-2b.1 historical replay and unapproved production source-closure upkeep evidence; S9 governs the current approval boundary (the STAT-2 plan is closed and tombstoned, S13) |
+| `docs/campaigns/2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md` | Historical evidence | Rejected schema-v1 candidate disposition and schema-v2 renewal/authentication repair; S9 governs approval (the STAT-2 plan is closed and tombstoned, S13) |
+| `docs/campaigns/2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE.md` | Historical evidence | Slice 7 protected-boundary review and unapproved replacement bootstrap candidate; O40 and S9 govern current behavior and approval (the STAT-2 plan is closed and tombstoned, S13) |
+| `docs/campaigns/2026-08-04_EIG4_SLICE7_REPAIR_SOURCE_CLOSURE.md` | Historical evidence | Slice 7 repair verification, protected-adjacent event registration review, and unapproved renewed bootstrap candidate; O40 and S9 govern current behavior and approval (the STAT-2 plan is closed and tombstoned, S13) |
 | `docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE.md` | Historical evidence | Passed bounded Slice 8 tools-only shadow-gate evidence; owner acceptance and any O41 ruling remain pending, while `EIG_STEERING_DESIGN.md` governs current behavior |
 | `docs/campaigns/2026-07_AP1_BRANCH_MAPPING_DEADLOCK.md` | Historical evidence | — |
 | `docs/campaigns/2026-07_AP3_GLOBAL_BRANCH_EVIDENCE.md` | Historical evidence | — |
@@ -207,6 +206,7 @@ file cannot be named inside that same commit, so the last-containing commit is t
 | `docs/handoffs/HANDOFF_operator_workflow.md` | `5593f07` | Tied to a superseded GUI branch state; zero inbound |
 | `docs/handoffs/HANDOFF_pooled_member_provenance.md` | `74eaea4` | Marked done; `DESIGN.md` §7 states the fact inline instead |
 | `docs/handoffs/HANDOFF_stats_primer_gallery.md` | `24e1ab5` | Deliverables complete; `DESIGN.md` §13 points at `STATS_PRIMER.md` §3 instead |
+| `docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md` | `c442aed` | STAT-2 closed by H4/S13: the authority switch it planned was performed as the evidence posterior; accepted behavior lives in DECISIONS H4/H5/H7, `STATS_PRIMER.md`, and `GLOSSARY.md` |
 | `docs/handoffs/HANDOFF_statistics_contract_checkup.md` | `77121c0` | Findings promoted once into `STATS_PRIMER.md` §7 |
 | `docs/superpowers/plans/2026-07-19-speedup-sprint-phase1.md` | `64779aa` | Checkbox execution plan; its sprint's Phase 1 merged in `8fa1219` |
 | `docs/GPT-Generated/ISAR_ACOUSTIC_CAMPAIGN_HANDOFF.md` | `9a16a75` | Self-declared historical pre-repair analysis; shipped as O28/O29/O31 |

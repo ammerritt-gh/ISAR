@@ -35,8 +35,9 @@ The immediate result is a **hold on statistical authority**, not a hold on all d
 ### Owner amendment — S8/O36 restricted EIG-4 sequence
 
 S8 and O36 amend the execution sequence, not the audit findings. The completed STAT-2b.1 evidence
-is accepted, AIC remains production behavior, and no AICc or STAT-2c authority change is authorized.
-The full statistical cleanup remains active.
+is accepted. (2026-08-09: S8's sequencing hold was overtaken — H4 made the Bayesian evidence
+posterior the production selection authority, with AIC persisted as a diagnostic, and S13 closed
+STAT-2 on that basis.) The full statistical cleanup remains active.
 
 O36 creates one bounded exception to the earlier sequencing recommendation: a narrowly scoped EIG-4
 demonstration may proceed using conditional target-QoI information per executed point for clean,
@@ -531,13 +532,17 @@ does not change `PREDICTIVE_CONTRACT`, numerical behavior, legacy authority, or 
 Decision S7 records the closeout. STAT-2 enforcement is therefore unblocked; all later gates and the
 sequence below remain unchanged.
 
-### STAT-2 — Selection and constraint consistency — STAT-2a implemented 2026-07-30
+### STAT-2 — Selection and constraint consistency — STAT-2a implemented 2026-07-30; closed by H4/S13
+
+*(Closed 2026-08-09: the authority switch this stage was sequenced toward was performed by H4 as
+the evidence posterior, and S13 records the closeout. This section stays as the finding record.)*
 
 Separate the unconstrained data-only selection fit from penalized/conditional delivery fits, or make
 the latter explicitly ineligible for ordinary AIC-family weights.
 
-The bounded execution sequence and current code seams are in
-[`../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md`](../plans/STAT2_SELECTION_CONSISTENCY_PLAN.md).
+The bounded execution sequence lived in `docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md`, now
+deleted and tombstoned in `DOC_INVENTORY.md`; the accepted behavior is DECISIONS H4/H5/H7 plus
+`STATS_PRIMER.md` and `GLOSSARY.md`.
 
 STAT-2a now publishes a strict, authenticated `isar.model_selection/2-shadow` record beside the
 legacy result. A complete unconstrained route reuses the exact fit bundle; effective delivery
@@ -550,7 +555,8 @@ authority: every otherwise-valid candidate must match the declared selection-con
 and exact/partial/fresh/skipped/unavailable execution provenance records which candidate identities
 were reused or newly fitted. Execution provenance is intentionally outside the standard-selection
 fingerprint, and `/1` remains a supported read format.
-STAT-2b remains the frozen evidence campaign; STAT-2c remains the first possible authority switch.
+STAT-2b remains the frozen evidence campaign; the STAT-2c authority switch was executed as H4
+(production selection is the evidence posterior over structures; S13 records the closeout).
 S9 separates immutable historical execution evidence from the maintained production source
 closure. Protected-semantic drift requires selection/evidence review and proportionate proof;
 protected-adjacent drift requires bounded source review and focused parity. A newly reached local
