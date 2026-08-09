@@ -211,6 +211,31 @@ def test_data_dependent_soft_prior_stays_ineligible():
         assert semantics["selection_eligibility"] == expected, origin
 
 
+def test_user_declared_soft_prior_is_selection_eligible():
+    """SCENE-1 PR-c: a scientist's pre-fit soft declaration (``user_declared``) is prespecified
+    by construction, mirroring ``prespecified_scientific``/``prior_predictive`` above."""
+    constraints = ParamConstraints(soft={"phonon.Gamma": (0.3, 0.1)},
+                                   origins={"phonon.Gamma": "user_declared"})
+    semantics = loop._fit_semantics_for(
+        _problem(), _fit_context(constraints=constraints), "soft_prior")
+
+    assert semantics["selection_eligibility"] == "eligible"
+    assert semantics["estimator_kind"] == "soft_penalized_likelihood"
+    assert [item["origin"] for item in semantics["effective_constraints"]] == ["user_declared"]
+
+
+def test_user_declared_hard_constraint_is_unapproved_conditioning():
+    """A HARD pin from ``user_declared`` is not a prior — H4(c) recast soft priors only — so it
+    stays ineligible, same as any other prespecified-origin hard constraint."""
+    constraints = ParamConstraints(hard={"phonon.A": 25.0},
+                                   origins={"phonon.A": "user_declared"})
+    problem = _problem(fixed_pos=[1], fixed_vals=[25.0])
+    semantics = loop._fit_semantics_for(
+        problem, _fit_context(constraints=constraints), "branch_conditional")
+
+    assert semantics["selection_eligibility"] == "ineligible_unapproved_conditioning"
+
+
 def test_missing_constraint_origin_fails_soft_at_fit_producer(caplog):
     problem = _problem(
         free_names=["phonon.Gamma"],

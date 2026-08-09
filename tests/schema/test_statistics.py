@@ -154,6 +154,23 @@ def test_constraint_numbers_fail_with_stable_semantics_reason(constraint, reason
     assert read_optional(record, FIT_SELECTION_SCHEMA) is None
 
 
+def test_user_declared_soft_prior_passes_eligible_record_validation():
+    """SCENE-1 PR-c: ``user_declared`` is in ``PRESPECIFIED_SOFT_ORIGINS``, so an eligible record
+    may carry a soft constraint with that origin — same invariant as ``prior_predictive``."""
+    record = _fit_record(
+        effective_constraints=[
+            {
+                "parameter": "phonon.Gamma",
+                "constraint_kind": "soft",
+                "mean": 0.3,
+                "sigma": 0.1,
+                "origin": "user_declared",
+            }
+        ]
+    )
+    validate_for_write(record, FIT_SELECTION_SCHEMA)
+
+
 def test_entropy_requires_source_and_declared_state_space_or_conditioning():
     record = {
         "schema": PROBABILITY_SCHEMA,

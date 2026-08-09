@@ -379,9 +379,11 @@ def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
     has_data_conditioning = any(
         item["origin"] in {"data_dependent_rescue", "post_selection"} for item in effective
     )
+    # PRESPECIFIED_SOFT_ORIGINS, not a literal: a hard pin from ANY prespecified origin
+    # (including user_declared) is unapproved conditioning — H4(c) recast soft priors only.
     has_other_hard = any(
         item["constraint_kind"] == "hard"
-        and item["origin"] in {"prespecified_scientific", "prior_predictive"}
+        and item["origin"] in PRESPECIFIED_SOFT_ORIGINS
         for item in effective
     )
     if has_data_conditioning:

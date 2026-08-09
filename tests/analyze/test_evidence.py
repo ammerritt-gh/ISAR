@@ -139,6 +139,19 @@ def test_transport_prior_counts_exactly_once():
     assert rec.log_evidence != pytest.approx(wrong_double_count)
 
 
+def test_transport_prior_carries_user_declared_origin_detail():
+    """SCENE-1 PR-c: a ``user_declared`` soft constraint still resolves via the ``transport``
+    path (catalogue.py:465-468) with the origin string preserved in ``origin_detail``."""
+    constraints = ParamConstraints(soft={"phonon.Gamma": (0.5, 0.2)},
+                                   origins={"phonon.Gamma": "user_declared"})
+    ctx = _spectrum_ctx(constraints=constraints)
+    hyp, fit = _fitted(ctx)
+    bundle = _bundle(hyp, ctx)
+    (gamma_prior,) = [p for p in bundle.params if p.name == "phonon.Gamma"]
+    assert gamma_prior.origin == "transport"
+    assert gamma_prior.origin_detail == "user_declared"
+
+
 # ------------------------------------------------------------------ rung 2: MAP refit
 def _narrow_entry(fit, param_suffix="Gamma", sigma=1e-3):
     """A catalogue entry declaring a narrow identity prior the fit never saw, centred at the
