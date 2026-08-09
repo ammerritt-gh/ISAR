@@ -236,6 +236,39 @@ def test_user_declared_hard_constraint_is_unapproved_conditioning():
     assert semantics["selection_eligibility"] == "ineligible_unapproved_conditioning"
 
 
+def test_any_hard_constraint_is_unapproved_conditioning_whatever_its_origin():
+    """SCENE-1 PR-c hardening: eligibility is now an ANY-hard rule, not a prespecified-origin one.
+
+    ``catalogue_variant`` is deliberately absent from ``PRESPECIFIED_SOFT_ORIGINS``, so under the
+    old rule its hard pin walked through to ``eligible`` and then crashed in ``validate_for_write``
+    (eligible ⇒ every effective constraint soft AND prespecified). The producer now mirrors that
+    invariant, and the record it writes validates. (A literal ``"none"`` origin cannot be tested
+    here: the constraint validator rejects it as a per-constraint origin.)"""
+    constraints = ParamConstraints(hard={"phonon.A": 25.0},
+                                   origins={"phonon.A": "catalogue_variant"})
+    problem = _problem(fixed_pos=[1], fixed_vals=[25.0])
+    semantics = loop._fit_semantics_for(
+        problem, _fit_context(constraints=constraints), "branch_conditional")
+
+    assert semantics["selection_eligibility"] == "ineligible_unapproved_conditioning"
+    assert semantics["selection_ineligibility_reasons"] == ["unapproved_hard_constraint"]
+    assert validate_for_write(semantics, FIT_SELECTION_SCHEMA) == semantics
+
+
+def test_data_dependent_hard_constraint_keeps_only_its_own_reason():
+    """The two hard-constraint reasons stay disjoint: a rescue pin is named by the
+    data-dependent reason alone, not doubled by the ANY-hard rule above."""
+    constraints = ParamConstraints(hard={"phonon.A": 25.0},
+                                   origins={"phonon.A": "data_dependent_rescue"})
+    problem = _problem(fixed_pos=[1], fixed_vals=[25.0])
+    semantics = loop._fit_semantics_for(
+        problem, _fit_context(constraints=constraints), "branch_conditional")
+
+    assert semantics["selection_eligibility"] == "ineligible_data_dependent_conditioning"
+    assert semantics["selection_ineligibility_reasons"] == [
+        "data_dependent_or_post_selection_hard_constraint"]
+
+
 def test_missing_constraint_origin_fails_soft_at_fit_producer(caplog):
     problem = _problem(
         free_names=["phonon.Gamma"],

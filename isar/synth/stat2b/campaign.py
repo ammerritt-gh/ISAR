@@ -469,8 +469,12 @@ def _standard_evidence(
 
 
 def _legacy_evidence(ctx) -> tuple[list[CandidateEvidence], dict[str, Any]]:
-    results = loop.fit_structures_two_stage(ctx)
-    hypotheses = _all_production_hypotheses(ctx)
+    offered = {}
+    results = loop.fit_structures_two_stage(ctx, hypotheses_out=offered)
+    # The join refuses a label with no declared hypothesis, and a catalogue variant is offered by
+    # the fitting pass itself — re-enumeration cannot see it.
+    hypotheses = list(
+        {**{h.label: h for h in _all_production_hypotheses(ctx)}, **offered}.values())
     evidence = evidence_from_results(results, hypotheses, ctx, source="legacy")
     labels = [candidate.label for candidate in evidence]
     return evidence, {

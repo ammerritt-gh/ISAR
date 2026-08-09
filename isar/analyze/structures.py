@@ -6,7 +6,7 @@ enumeration and admissibility gates live in :mod:`isar.analyze.phonon`.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,14 @@ class Hypothesis:
 
     label: str
     components: tuple
+    # The DERIVED context this candidate is defined under, or None for the ordinary case where the
+    # candidate is fitted under whatever context the caller supplies. A catalogue constrained
+    # variant (SCENE-1 PR-c) carries the context whose ``constraints`` hold its pins, so every
+    # layer that rebuilds the problem from (hypothesis, context) — evidence rungs, prior
+    # resolution, survivor bootstraps — reconstructs the SAME reduced parameter space that was
+    # fitted, instead of silently re-freeing the pinned parameter. Excluded from equality: it
+    # holds numpy arrays, and the label already distinguishes the candidate.
+    context: object | None = field(default=None, compare=False, repr=False)
 
     @property
     def k(self) -> int:

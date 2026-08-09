@@ -271,9 +271,13 @@ def _candidate_evidence(results, hyps, ctx):
         if hyp is None:
             raise ValueError(f"no hypothesis supplied for converged candidate {r.label!r}; "
                              f"evidence selection needs every scored label in hyps")
-        prob = loop.build_problem(hyp, ctx)
+        # A catalogue variant is defined under its own derived context (its pins live in that
+        # context's constraints); resolving its bundle under the plain ctx would re-free the
+        # pinned parameter and hand structure_evidence a bundle that does not match the fit's k.
+        cctx = loop.candidate_context(hyp, ctx)
+        prob = loop.build_problem(hyp, cctx)
         bundle = catalogue.resolve_priors(
-            prob.composite, ctx, prob.bounds,
+            prob.composite, cctx, prob.bounds,
             exclude=[prob.free_names[i] for i in prob.fixed_pos])
         triples.append((hyp, r, bundle))
     return evidence.candidate_set_evidence(triples, ctx)

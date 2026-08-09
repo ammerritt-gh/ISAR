@@ -273,6 +273,10 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
 
     A dynesty run that fails its own convergence gate yields ``log_evidence=NaN`` with
     ``evidence_method="invalid"``; the untrusted value and the reason stay in ``validity``."""
+    # A constrained-variant candidate carries the derived context it was fitted under, so the MAP
+    # refit and the sampler see the same pinned parameter space as the fit. The arena is unchanged
+    # by construction: constraints are not part of the data-likelihood fingerprint.
+    ctx = loop.candidate_context(hyp, ctx)
     arena = loop.data_likelihood_fingerprint(ctx)
     names = list(fit_result.params)
     free_names = [p.name for p in bundle.params]

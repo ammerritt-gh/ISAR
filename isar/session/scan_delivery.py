@@ -1437,15 +1437,20 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     _t_two_stage = time.perf_counter()
     # Candidate enumeration is point-estimation only. Full-tier MINOS is authoritative only after
     # the preliminary AIC pass and runs once per survivor in errors.attach_batch below.
+    offered_hypotheses = {}
     results, structure_skipped = loop.fit_structures_two_stage_hinted(
         ctx, minos=False, peaks=peaks, structure_hint=structure_hint,
-        executor=boot_executor)
+        executor=boot_executor, hypotheses_out=offered_hypotheses)
     two_stage_seconds = round(time.perf_counter() - _t_two_stage, 4)
     all_results = results
     labels_before_guideline = [str(r.label) for r in results]
     # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
     by_hyp = {h.label: h for h in enumerate_phonon_structures(ctx)}
     by_hyp.update({h.label: h for h in enumerate_phonon_multimode(ctx)})
+    # …and the catalogue constrained variants (SCENE-1 PR-c), which no re-enumeration can produce:
+    # they exist only because a fit came out near-degenerate, and each carries the derived context
+    # its evidence and bootstrap must run under.
+    by_hyp.update(offered_hypotheses)
 
     warn = None
     guideline_changed_set = False
@@ -1508,7 +1513,10 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         for label in prelim.survivors:
             r = fits.get(label)
             if r is not None and r.optimizer_converged and label in by_hyp:
-                survivor_items.append((r, by_hyp[label], ctx))
+                # A variant survivor bootstraps under its own derived context, so the resampled
+                # refits keep its pin instead of quietly re-fitting a different model.
+                survivor_items.append(
+                    (r, by_hyp[label], loop.candidate_context(by_hyp[label], ctx)))
         error_attachment_labels = [str(item[0].label) for item in survivor_items]
         errors.attach_batch(
             survivor_items, M=M, seed=seed, with_profile=True,

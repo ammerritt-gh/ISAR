@@ -145,3 +145,29 @@ def test_catalogue_multimode_matches_legacy(elastic, qe, stokes_only):
 def test_multimode_below_two_is_empty():
     assert phonon.enumerate_phonon_multimode(_ctx(elastic=True, qe=True,
                                                   stokes_only=False), n_max=1) == []
+
+
+# --- constrained variants are executable declarations (PR-c) ---------------------------------
+def test_near_degenerate_variant_declaration_is_executable():
+    """The acoustic entry declares one live variant: a predicate on ω̂ and a pin builder."""
+    variant, = catalogue.entry("acoustic").constrained_variants
+    assert variant.name == "near_degenerate"
+    assert variant.label_suffix == "_neardeg"
+
+    ctx = _ctx(elastic=True, qe=False, stokes_only=False)      # gauss_fwhm = 1.2
+    assert variant.when(ctx, 0.5) is True
+    assert variant.when(ctx, ctx.gauss_fwhm) is True           # at the width, inclusive
+    assert variant.when(ctx, 5.0) is False
+
+
+def test_near_degenerate_pins_intrinsic_width_to_the_floor():
+    """Γ → the floor, so the OBSERVED width is the resolution: the DHO is convolved with the
+    resolution kernel downstream, and pinning Γ to ``gauss_fwhm`` would model a peak twice as
+    broad as the variant claims."""
+    variant, = catalogue.entry("acoustic").constrained_variants
+    ctx = _ctx(elastic=True, qe=False, stokes_only=False)
+
+    hard, origins = variant.pins(ctx, "phonon2")
+    assert hard == {"phonon2.Gamma": phonon.GAMMA_FLOOR}
+    assert origins == {"phonon2.Gamma": "catalogue_variant"}
+    assert hard["phonon2.Gamma"] != pytest.approx(ctx.gauss_fwhm)

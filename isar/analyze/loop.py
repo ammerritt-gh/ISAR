@@ -10,7 +10,7 @@ HESSE-propagated and **provisional** (review F4); the authoritative interval is 
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import logging
 from typing import Callable
 
@@ -137,6 +137,10 @@ class StructureFitResult:
     # Additive statistical provenance.  A construction failure leaves this ``None`` while the
     # numerical fit remains usable.
     fit_semantics: dict | None = None
+    # The catalogue constrained variant this candidate realises (SCENE-1 PR-c), e.g.
+    # ``"near_degenerate"``; ``None`` for an ordinary candidate. Provenance only — the candidate's
+    # identity is its label, and ``fit_kind`` already carries the hard-conditioned nature of the fit.
+    variant: str | None = None
 
 
 @dataclass
@@ -379,11 +383,16 @@ def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
     has_data_conditioning = any(
         item["origin"] in {"data_dependent_rescue", "post_selection"} for item in effective
     )
-    # PRESPECIFIED_SOFT_ORIGINS, not a literal: a hard pin from ANY prespecified origin
-    # (including user_declared) is unapproved conditioning — H4(c) recast soft priors only.
+    # ANY hard constraint, whatever its origin — H4(c) recast prespecified SOFT priors only, and
+    # a hard pin conditions the likelihood however prespecified the physics behind it is. This is
+    # the producer-side mirror of the write-time invariant in isar.schema.statistics
+    # (eligible ⇒ every effective constraint soft AND prespecified): keying on
+    # PRESPECIFIED_SOFT_ORIGINS instead let a hard pin with an unlisted origin (a catalogue
+    # variant's Γ floor) walk through to "eligible" and then fail validation at write time.
+    # ("other" = not already named by has_data_conditioning, so the two reasons stay disjoint.)
     has_other_hard = any(
         item["constraint_kind"] == "hard"
-        and item["origin"] in PRESPECIFIED_SOFT_ORIGINS
+        and item["origin"] not in {"data_dependent_rescue", "post_selection"}
         for item in effective
     )
     if has_data_conditioning:
@@ -400,7 +409,7 @@ def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
     if has_data_conditioning:
         reasons.append("data_dependent_or_post_selection_hard_constraint")
     if has_other_hard:
-        reasons.append("unapproved_prespecified_or_prior_predictive_hard_constraint")
+        reasons.append("unapproved_hard_constraint")
     estimator_kind = (
         "soft_penalized_likelihood"
         if has_soft
@@ -934,19 +943,107 @@ def _offer_multimode(results, ctx) -> bool:
     return bool(pull is not None and _residual_structured(pull))
 
 
+def candidate_context(hyp, ctx):
+    """The context a candidate is DEFINED under: its own derived context when it carries one
+    (a catalogue constrained variant, SCENE-1 PR-c), else ``ctx``.
+
+    Every layer that rebuilds a candidate's problem from ``(hypothesis, context)`` — prior
+    resolution, the evidence rungs, the parameterization fingerprint — must resolve through this,
+    or a variant's pinned parameter comes back free and its k, prior bundle and lnZ describe a
+    model that was never fitted. It is deliberately NOT applied inside :func:`build_problem`:
+    the bootstrap legitimately rebuilds the same hypothesis against RESAMPLED contexts, and
+    overriding there would fit the original counts."""
+    return getattr(hyp, "context", None) or ctx
+
+
+def _variant_context(ctx, hard, origins, *, variant: str, label: str):
+    """``ctx`` with the variant's pins merged into its constraints, or ``None`` to skip.
+
+    The scan's own constraints win: a parameter this context already constrains (from steering,
+    transport, a rescue, or the scientist) is not silently re-pinned by the catalogue — the
+    variant is dropped instead, and says so."""
+    from isar.schema.steering import ParamConstraints
+
+    base = getattr(ctx, "constraints", None)
+    soft = dict(getattr(base, "soft", None) or {})
+    existing_hard = dict(getattr(base, "hard", None) or {})
+    clashing = sorted(name for name in hard if name in existing_hard or name in soft)
+    if clashing:
+        log.info("catalogue variant %r not offered for %s: the context already constrains %s",
+                 variant, label, ", ".join(clashing))
+        return None
+    merged = ParamConstraints(
+        soft=soft,
+        hard={**existing_hard, **hard},
+        origins={**dict(getattr(base, "origins", None) or {}), **origins},
+    )
+    return replace(ctx, constraints=merged)
+
+
+def _offer_variants(pairs, ctx, *, backend="iminuit", minos=False, executor=None,
+                    profile=None):
+    """Offer every catalogue constrained variant whose predicate fires on a converged one-mode
+    fit, as ADDITIONAL candidates (2a ruling 2 — the variant never replaces its twin).
+
+    Each variant is fitted under a DERIVED context carrying its pins, seeded from the
+    unconstrained fit, and returned as ``(result, hypothesis, derived_context)`` for the single
+    :func:`~isar.analyze.select.select_models` pass. Constraints are outside the data-likelihood
+    fingerprint, so the pinned twin and its parent share one evidence arena legitimately and the
+    posterior prices the extra physics against the parameter it costs.
+
+    One-mode candidates only: an N-mode variant needs cross-component ties that do not exist yet
+    (deferred, C2)."""
+    from isar.analyze import catalogue
+
+    variants = catalogue.entry(
+        "acoustic", profile or catalogue.DEFAULT_PROFILE).constrained_variants
+    if not variants:
+        return []
+    tasks, meta = [], []
+    for result, hyp in pairs:
+        if not result.optimizer_converged or not result.modes:
+            continue                                   # nothing fitted, or a phonon-less null
+        prefixes = [n.rsplit(".", 1)[0] for n in result.params if n.endswith(".Omega_d")]
+        if len(prefixes) != 1:
+            continue
+        for variant in variants:
+            if not variant.when(ctx, result.omega0):
+                continue
+            hard, origins = variant.pins(ctx, prefixes[0])
+            derived = _variant_context(ctx, hard, origins,
+                                       variant=variant.name, label=hyp.label)
+            if derived is None:
+                continue
+            twin = replace(hyp, label=hyp.label + variant.label_suffix, context=derived)
+            tasks.append((twin, derived, backend, minos, dict(result.params)))
+            meta.append((twin, derived, variant.name))
+    if not tasks:
+        return []
+    fitted = _fit_hypothesis_batch(tasks, executor, phase="catalogue-variant candidate")
+    offered = []
+    for result, (twin, derived, name) in zip(fitted, meta):
+        result.variant = name
+        offered.append((result, twin, derived))
+    return offered
+
+
 def _enumerate_and_fit(ctx, *, backend="iminuit", minos=False, peaks=None, executor=None):
     """The full two-stage enumeration: fit the 1-mode set, escalate to the 2-mode set when the
-    gate fires or ``peaks`` declares ≥2 peaks. Returns ``[(result, hypothesis), ...]`` (both stages
-    unioned). Split out of :func:`fit_structures_two_stage` so the structure-hint shortcut
-    (:func:`fit_structures_two_stage_hinted`) can fall back to it verbatim."""
+    gate fires or ``peaks`` declares ≥2 peaks, then offer the catalogue's constrained variants of
+    the converged one-mode fits. Returns ``[(result, hypothesis, context), ...]`` (every stage
+    unioned). The context is ``ctx`` for ordinary candidates and the variant's derived context for
+    a variant — carry it, do not re-derive it. Split out of :func:`fit_structures_two_stage` so the
+    structure-hint shortcut (:func:`fit_structures_two_stage_hinted`) can fall back to it
+    verbatim."""
     one_hyps = enumerate_phonon_structures(ctx)
     one_tasks = [(h, ctx, backend, minos, None) for h in one_hyps]
     one_results = _fit_hypothesis_batch(one_tasks, executor, phase="one-mode candidate")
-    pairs = list(zip(one_results, one_hyps))
+    one_pairs = list(zip(one_results, one_hyps))
+    triples = [(r, h, ctx) for r, h in one_pairs]
 
     expected_two = peaks is not None and len(peaks) >= 2
-    if _offer_multimode([r for r, _ in pairs], ctx) or expected_two:
-        best_one = _best_converged([r for r, _ in pairs])
+    if _offer_multimode(one_results, ctx) or expected_two:
+        best_one = _best_converged(one_results)
         n_used = int(ctx.x_used.size)
         multi_hyps = []
         multi_tasks = []
@@ -958,12 +1055,15 @@ def _enumerate_and_fit(ctx, *, backend="iminuit", minos=False, peaks=None, execu
             multi_tasks.append((h, ctx, backend, minos, x0))
         multi_results = _fit_hypothesis_batch(
             multi_tasks, executor, phase="multi-mode candidate")
-        pairs.extend(zip(multi_results, multi_hyps))
-    return pairs
+        triples.extend((r, h, ctx) for r, h in zip(multi_results, multi_hyps))
+    triples.extend(_offer_variants(one_pairs, ctx, backend=backend, minos=minos,
+                                   executor=executor))
+    return triples
 
 
 def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors=False,
-                             M=200, seed=12345, peaks=None, executor=None) -> list[StructureFitResult]:
+                             M=200, seed=12345, peaks=None, executor=None,
+                             hypotheses_out=None) -> list[StructureFitResult]:
     """Two-stage, data-gated structure enumeration (§ multiplicity). Fit the 1-mode set; if the
     gate (:func:`_offer_multimode`) fires OR ``peaks`` declares ≥2 expected peaks, also fit the
     2-mode set (:func:`~isar.analyze.phonon.enumerate_phonon_multimode`) seeded by
@@ -974,13 +1074,21 @@ def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors
     function never imports session/guideline code.
 
     With ``with_errors`` the bootstrap error layer is attached to every returned fit (so the
-    select pass can pool survivors from both stages)."""
-    pairs = _enumerate_and_fit(
+    select pass can pool survivors from both stages).
+
+    ``hypotheses_out``: an optional dict filled with ``{label: hypothesis}`` for every candidate
+    actually offered. A caller that re-enumerates the hypothesis set by hand cannot see the
+    catalogue variants (they exist only because a fit came out a certain way), and a variant
+    carries the derived context its evidence must be resolved under — so any caller that needs
+    label → hypothesis must take it from here rather than rebuild it."""
+    triples = _enumerate_and_fit(
         ctx, backend=backend, minos=minos, peaks=peaks, executor=executor)
-    results = [r for r, _ in pairs]
+    if hypotheses_out is not None:
+        hypotheses_out.update({h.label: h for _, h, _ in triples})
+    results = [r for r, _, _ in triples]
     if with_errors:
         from isar.analyze import errors as _errors  # lazy: errors imports loop
-        items = [(r, h, ctx) for r, h in pairs]
+        items = [(r, h, c) for r, h, c in triples]
         _errors.attach_batch(
             items, M=M, seed=seed, backend=backend,
             boot_workers=(max(2, len(items)) if executor is not None else 1), executor=executor)
@@ -1019,7 +1127,8 @@ def _try_structure_hint(ctx, structure_hint, *, backend="iminuit", minos=False):
 
 
 def fit_structures_two_stage_hinted(ctx, *, backend="iminuit", minos=False, peaks=None,
-                                    structure_hint=None, executor=None) -> tuple[list[StructureFitResult], bool]:
+                                    structure_hint=None, executor=None,
+                                    hypotheses_out=None) -> tuple[list[StructureFitResult], bool]:
     """:func:`fit_structures_two_stage` with an optional ``structure_hint``. Returns
     ``(results, structure_skipped)``.
 
@@ -1034,10 +1143,16 @@ def fit_structures_two_stage_hinted(ctx, *, backend="iminuit", minos=False, peak
     layer a smaller candidate set (one structure, not the full admissible enumeration), so the
     AIC comparison, ``modality``, ``confidence`` and ``best_label`` can differ from what the full
     enumeration would have produced. The gates keep the difference to fits where one structure
-    already explains the data; it is opt-in and excluded from the bit-identity harness."""
+    already explains the data; it is opt-in and excluded from the bit-identity harness.
+
+    ``hypotheses_out`` behaves as in :func:`fit_structures_two_stage` (the accepted shortcut
+    offers no variants, so it contributes only the hinted structure's own hypothesis)."""
     if structure_hint is not None:
         hinted = _try_structure_hint(ctx, structure_hint, backend=backend, minos=minos)
         if hinted is not None:
             return hinted, True
-    return [r for r, _ in _enumerate_and_fit(
-        ctx, backend=backend, minos=minos, peaks=peaks, executor=executor)], False
+    triples = _enumerate_and_fit(
+        ctx, backend=backend, minos=minos, peaks=peaks, executor=executor)
+    if hypotheses_out is not None:
+        hypotheses_out.update({h.label: h for _, h, _ in triples})
+    return [r for r, _, _ in triples], False

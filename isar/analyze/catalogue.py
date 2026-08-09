@@ -18,9 +18,11 @@ catalogue-backed since SCENE-1 PR-b, pinned bit-identical to the legacy hand lis
 (SCENE-1 PR-a — what the ``elastic_only`` / ``no_signal`` verdicts select on).
 ``parameter_priors`` is live: :func:`resolve_priors` turns declarations into the
 :class:`PriorBundle` the evidence layer counts exactly once (SCENE-1 PR-b), though no entry
-declares one until the identity framing lands (owner deferral 2026-08-08). ``transport``,
-``constrained_variants`` and ``delivery_profile`` remain **dormant declarations** — nothing
-reads them yet; they are consumed at SCENE-1 PR-c.
+declares one until the identity framing lands (owner deferral 2026-08-08).
+``constrained_variants`` is live (SCENE-1 PR-c): :func:`isar.analyze.loop._offer_variants` fires
+each declared ``when`` predicate against the converged one-mode fits and offers the pinned twin as
+an ADDITIONAL candidate. ``transport`` and ``delivery_profile`` remain **dormant declarations** —
+nothing reads them yet.
 
 Import direction: :mod:`isar.analyze.components` imports :mod:`isar.analyze.phonon` at module
 level, so ``phonon`` never imports this module at module level — the delegation there is a
@@ -103,11 +105,22 @@ class TransportedParameter:
 
 @dataclass(frozen=True)
 class ConstrainedVariant:
-    """A physically constrained special case of a phenomenon. Declared now, wired at PR-b."""
+    """A physically constrained special case of a phenomenon, offered as its OWN candidate.
+
+    Live since SCENE-1 PR-c (H1: the prose ``when``/``constraints`` strings were replaced
+    outright, no compatibility form). ``when(ctx, omega0)`` decides, from a converged
+    unconstrained fit's ω̂ and the scan context, whether the special case is worth pricing here;
+    ``pins(ctx, mode_prefix)`` returns ``(hard, origins)`` dicts keyed by *global* parameter name
+    for that mode's prefix, exactly as :class:`isar.schema.steering.ParamConstraints` carries them.
+    The offering seam (:func:`isar.analyze.loop._offer_variants`) merges those pins into a derived
+    context and fits a twin candidate labelled ``<base><label_suffix>``; the variant never replaces
+    the unconstrained candidate, and evidence decides between them (2a ruling 2).
+    """
 
     name: str
-    when: str
-    constraints: tuple[str, ...]
+    when: Callable[[object, float], bool]
+    pins: Callable[[object, str], tuple[dict, dict]]
+    label_suffix: str
     note: str = ""
 
 
@@ -122,8 +135,9 @@ class PhenomenonDefinition:
     parameter_priors: tuple[ParamPrior, ...] = ()   # consumed by the evidence layer (PR-b);
     #                                                 entries declare none until the identity
     #                                                 framing lands (owner deferral 2026-08-08)
-    transport: tuple[TransportedParameter, ...] = ()  # dormant — consumed at PR-c
-    constrained_variants: tuple[ConstrainedVariant, ...] = ()  # dormant — wired at PR-c
+    transport: tuple[TransportedParameter, ...] = ()  # dormant — nothing reads it yet
+    constrained_variants: tuple[ConstrainedVariant, ...] = ()  # live: offered as additional
+    #                                                            candidates (SCENE-1 PR-c)
     delivery_profile: str = "triage"
 
     def model(self, name: str) -> LocalModel:
@@ -131,6 +145,25 @@ class PhenomenonDefinition:
             if m.name == name:
                 return m
         raise KeyError(f"{self.name!r} has no local model {name!r}")
+
+
+# --------------------------------------------------------------------------- variant physics
+def _near_degenerate(ctx, omega0) -> bool:
+    """A mode whose fitted ω₀ sits at or below the resolution width: the peak and the elastic
+    line are not separated by the instrument, so "this is a resolution-limited excitation" is a
+    real rival to "this is a broad low-energy mode"."""
+    return float(omega0) <= float(ctx.gauss_fwhm)
+
+
+def _near_degenerate_pins(ctx, mode_prefix: str) -> tuple[dict, dict]:
+    """Pin the DHO's INTRINSIC width to the floor, so the observed FWHM is the instrument
+    resolution alone (the DHO is convolved with the resolution downstream).
+
+    Not ``Γ = ctx.gauss_fwhm``: that would add a Lorentzian of resolution width *on top of* the
+    resolution kernel and model a peak twice as broad as the one the variant claims.
+    """
+    return ({f"{mode_prefix}.Gamma": phonon.GAMMA_FLOOR},
+            {f"{mode_prefix}.Gamma": "catalogue_variant"})
 
 
 # --------------------------------------------------------------------------- the default profile
@@ -153,10 +186,13 @@ _ACOUSTIC = PhenomenonDefinition(
     constrained_variants=(
         ConstrainedVariant(
             "near_degenerate",
-            "close to the zone centre, where ω is below or near the resolution width",
-            ("fwhm = instrument resolution",
-             "amplitude Bose-tied: I ∝ (n+1)/ω ≈ k_BT/ω² in the classical limit"),
-            "the exact reduced-q origin stays excluded (DECISIONS O44)",
+            when=_near_degenerate,
+            pins=_near_degenerate_pins,
+            label_suffix="_neardeg",
+            note="close to the zone centre, where ω sits below the resolution width; the exact "
+                 "reduced-q origin stays excluded (DECISIONS O44). The amplitude tie "
+                 "I ∝ (n+1)/ω is NOT applied here — it needs cross-component parameter ties "
+                 "(deferred, C2).",
         ),
     ),
 )
