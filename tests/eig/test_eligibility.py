@@ -144,7 +144,7 @@ def _clean_selection(**route_updates) -> dict:
     return scan_delivery._build_selection_semantics(
         results,
         SimpleNamespace(
-            scores=scores, pooled=object(), selection_fallback=None,
+            scores=scores, pooled=object(), selection_fallback=None, best="one",
             evidence=SimpleNamespace(
                 arena_fingerprint=semantics["one"]["data_likelihood_fingerprint"]),
         ),
@@ -219,6 +219,96 @@ def test_h4c_selection_eligibility_grants_no_acquisition_authority():
         _input(selection_record=record, shadow_record=_neutral_shadow()))
 
     # …and still not authorised to acquire: the estimator is not an MLE and a constraint is live.
+    assert "selection_ineligible" in result.scientific_codes
+    assert "selection_constrained" in result.scientific_codes
+    assert result.status != "eligible"
+
+
+def _catalogue_variant_fit_semantics(label: str) -> dict:
+    """A hard-constrained candidate whose sole constraint origin is ``catalogue_variant``."""
+    semantics = dict(_fit_semantics(label))
+    semantics.update(
+        estimator_kind="hard_conditioned_likelihood",
+        fit_kind="constrained",
+        selection_eligibility="ineligible_unapproved_conditioning",
+        aggregate_constraint_origin="catalogue_variant",
+        effective_constraints=[{
+            "parameter": "phonon.Omega_d", "constraint_kind": "hard",
+            "value": 0.001, "origin": "catalogue_variant",
+        }],
+        selection_ineligibility_reasons=["catalogue_variant_pin"],
+    )
+    return validate_for_write(semantics, FIT_SELECTION_SCHEMA)
+
+
+def test_nonwinning_catalogue_variant_no_longer_disqualifies_the_scan():
+    """Owner ruling 2026-08-09: a max-posterior unconstrained winner alongside a non-winning
+    offered catalogue variant is ELIGIBLE. Before the ruling, mere presence of the variant
+    poisoned the scan; the flip to ELIGIBLE here is the point of this test."""
+    record = dict(_clean_selection())
+    labels = [item["label"] for item in record["candidate_records"]]
+    record["candidate_records"] = [
+        {**item, "fit_semantics": _catalogue_variant_fit_semantics(item["label"])}
+        if item["label"] != labels[0] else item
+        for item in record["candidate_records"]
+    ]
+
+    result = evaluate_eig_eligibility(
+        _input(selection_record=record, shadow_record=_neutral_shadow()))
+
+    assert result.status == "eligible"
+    assert result.scientific_codes == ()
+
+
+def test_winning_catalogue_variant_still_disqualifies_the_scan():
+    """Owner ruling 2026-08-09: the exemption is presence-only. When the catalogue variant
+    carries the max posterior, it produces both selection_ineligible and selection_constrained."""
+    record = dict(_clean_selection())
+    winner_label = max(
+        record["candidate_records"],
+        key=lambda item: item.get("posterior_probability") or 0.0,
+    )["label"]
+    record["candidate_records"] = [
+        {**item, "fit_semantics": _catalogue_variant_fit_semantics(item["label"])}
+        if item["label"] == winner_label else item
+        for item in record["candidate_records"]
+    ]
+
+    result = evaluate_eig_eligibility(
+        _input(selection_record=record, shadow_record=_neutral_shadow()))
+
+    assert "selection_ineligible" in result.scientific_codes
+    assert "selection_constrained" in result.scientific_codes
+    assert result.status != "eligible"
+
+
+def test_nonwinning_non_variant_hard_constraint_still_disqualifies():
+    """Owner ruling 2026-08-09: the exemption is variant-only. A loser hard-constrained under a
+    different origin (e.g. ``prespecified_scientific``) still disqualifies the scan."""
+    record = dict(_clean_selection())
+    labels = [item["label"] for item in record["candidate_records"]]
+    other_semantics = dict(_fit_semantics(labels[1]))
+    other_semantics.update(
+        estimator_kind="hard_conditioned_likelihood",
+        fit_kind="constrained",
+        selection_eligibility="ineligible_unapproved_conditioning",
+        aggregate_constraint_origin="prespecified_scientific",
+        effective_constraints=[{
+            "parameter": "phonon.Omega_d", "constraint_kind": "hard",
+            "value": 0.001, "origin": "prespecified_scientific",
+        }],
+        selection_ineligibility_reasons=["prespecified_scientific_pin"],
+    )
+    other_semantics = validate_for_write(other_semantics, FIT_SELECTION_SCHEMA)
+    record["candidate_records"] = [
+        {**item, "fit_semantics": other_semantics}
+        if item["label"] == labels[1] else item
+        for item in record["candidate_records"]
+    ]
+
+    result = evaluate_eig_eligibility(
+        _input(selection_record=record, shadow_record=_neutral_shadow()))
+
     assert "selection_ineligible" in result.scientific_codes
     assert "selection_constrained" in result.scientific_codes
     assert result.status != "eligible"

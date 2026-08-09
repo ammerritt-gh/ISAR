@@ -435,17 +435,38 @@ def _model_set_record(label, fit_semantics: dict) -> dict:
     }
 
 
-def _aggregate_selection_eligibility(candidate_records: list[dict]) -> tuple[str, list[dict]]:
-    """Strongest complete normalization defect plus every candidate-specific cause."""
+def _is_offered_variant(fit_semantics: dict) -> bool:
+    """A deliberately-offered catalogue variant: constrained, and every constraint's origin is
+    ``catalogue_variant``. Owner ruling 2026-08-09: when the analysis is looking carefully at
+    close-together physics (near-zone-centre acoustic, crossings), the deliberately-offered
+    rival hypothesis must not disqualify the scan by mere presence — only by winning."""
+    constraints = fit_semantics.get("effective_constraints") or ()
+    return bool(constraints) and all(
+        isinstance(item, dict) and item.get("origin") == "catalogue_variant"
+        for item in constraints
+    )
+
+
+def _aggregate_selection_eligibility(
+    candidate_records: list[dict], *, winner: str | None = None
+) -> tuple[str, list[dict]]:
+    """Strongest complete normalization defect plus every candidate-specific cause.
+
+    A NON-winning offered catalogue variant (:func:`_is_offered_variant`) contributes neither
+    its eligibility nor its reasons to the aggregate — it was offered, priced, and rejected,
+    which conditions nothing about the winner. A variant that WINS is not exempt: a
+    hard-conditioned winner stays ineligible. Its data-likelihood fingerprint still counts in
+    the incomparable-context check — the arena guarantee is about the comparison itself."""
     reason_labels: dict[str, list[str]] = {}
     eligibilities = []
     likelihoods = set()
     for candidate in candidate_records:
         label = str(candidate["label"])
         fit_semantics = candidate["fit_semantics"]
-        eligibility = str(fit_semantics["selection_eligibility"])
-        eligibilities.append(eligibility)
         likelihoods.add(str(fit_semantics["data_likelihood_fingerprint"]))
+        if label != winner and _is_offered_variant(fit_semantics):
+            continue
+        eligibilities.append(str(fit_semantics["selection_eligibility"]))
         for reason in fit_semantics.get("selection_ineligibility_reasons") or ():
             reason_labels.setdefault(str(reason), []).append(label)
     if len(likelihoods) != 1:
@@ -612,7 +633,7 @@ def _build_selection_semantics(
                 }
             )
         aggregate_eligibility, aggregate_reasons = _aggregate_selection_eligibility(
-            candidate_records
+            candidate_records, winner=selection.best
         )
         canonical_route = _canonical_candidate_generation_route(route)
         selection_payload = {

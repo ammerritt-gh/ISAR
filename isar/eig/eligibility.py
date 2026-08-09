@@ -357,18 +357,40 @@ def _selection_checks(record: Mapping[str, Any] | None, science: list[str], gaps
     if not isinstance(candidates, list) or not candidates:
         science.append("selection_no_candidates")
         return validated
+    # Winner = the max-posterior candidate, the same rule the evidence lane selects by. On the
+    # fallback lane posteriors are absent and this stays None — harmless, because the record is
+    # already selection_ineligible above.
+    winner = None
+    best_posterior = None
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        posterior = candidate.get("posterior_probability")
+        if isinstance(posterior, (int, float)) and (
+                best_posterior is None or posterior > best_posterior):
+            winner, best_posterior = candidate.get("label"), posterior
     for candidate in candidates:
         semantics = candidate.get("fit_semantics") if isinstance(candidate, Mapping) else None
         if not isinstance(semantics, Mapping):
             science.append("selection_candidate_semantics_missing")
             continue
+        constraints = semantics.get("effective_constraints") or ()
+        # Owner ruling 2026-08-09: a NON-winning offered catalogue variant (every constraint
+        # origin == catalogue_variant) does not disqualify the scan — near-zone-centre acoustic
+        # and crossing regimes deliberately offer close-together rival hypotheses, and "offered,
+        # priced, rejected" conditions nothing about the winner. A variant that WINS still
+        # fails closed below.
+        if (candidate.get("label") != winner and bool(constraints) and all(
+                isinstance(item, Mapping) and item.get("origin") == "catalogue_variant"
+                for item in constraints)):
+            continue
         if semantics.get("estimator_kind") != "data_likelihood_mle":
             science.append("selection_ineligible")
         if semantics.get("selection_eligibility") != "eligible":
             science.append("selection_ineligible")
-        if semantics.get("effective_constraints"):
+        if constraints:
             science.append("selection_constrained")
-        if any(item.get("origin") is not None for item in semantics.get("effective_constraints") or ()
+        if any(item.get("origin") is not None for item in constraints
                if isinstance(item, Mapping)):
             science.append("selection_constrained")
         reasons = semantics.get("selection_ineligibility_reasons") or ()

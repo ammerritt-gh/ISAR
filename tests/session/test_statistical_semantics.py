@@ -312,7 +312,7 @@ def test_selection_publishes_each_distinct_model_set_transition():
         ),
     ]
     selection = SimpleNamespace(
-        scores=scores, pooled=object(), selection_fallback=None,
+        scores=scores, pooled=object(), selection_fallback=None, best="one",
         evidence=SimpleNamespace(
             arena_fingerprint=fit_semantics["data_likelihood_fingerprint"]
         ),
@@ -476,7 +476,7 @@ def test_dominated_candidate_persists_excluded_with_its_ceiling():
     record = scan_delivery._build_selection_semantics(
         results,
         SimpleNamespace(
-            scores=[leader, dominated], pooled=None, selection_fallback=None,
+            scores=[leader, dominated], pooled=None, selection_fallback=None, best="one",
             evidence=SimpleNamespace(arena_fingerprint=arena),
         ),
         {
@@ -522,7 +522,7 @@ def test_evidence_lane_without_arena_fails_the_builder_soft(caplog):
     record = scan_delivery._build_selection_semantics(
         results,
         SimpleNamespace(
-            scores=scores, pooled=None, selection_fallback=None, evidence=None
+            scores=scores, pooled=None, selection_fallback=None, best="one", evidence=None
         ),
         {"route": "full_two_stage", "offered_labels": ["one"], "scored_labels": ["one"]},
         error_attachment_labels=[],
@@ -547,7 +547,7 @@ def test_fallback_lane_records_aic_authority():
     record = scan_delivery._build_selection_semantics(
         results,
         SimpleNamespace(
-            scores=scores, pooled=None,
+            scores=scores, pooled=None, best="one",
             selection_fallback="aic_no_evidence_inputs", evidence=None,
         ),
         {"route": "full_two_stage", "offered_labels": ["one"], "scored_labels": ["one"]},
@@ -677,7 +677,7 @@ def test_selection_fingerprints_are_order_invariant_and_route_sensitive():
     baseline = scan_delivery._build_selection_semantics(
         results,
         SimpleNamespace(
-            scores=scores, pooled=object(), selection_fallback=None, evidence=evidence
+            scores=scores, pooled=object(), selection_fallback=None, best="one", evidence=evidence
         ),
         route,
         error_attachment_labels=["one", "two"],
@@ -686,7 +686,7 @@ def test_selection_fingerprints_are_order_invariant_and_route_sensitive():
         list(reversed(results)),
         SimpleNamespace(
             scores=list(reversed(scores)), pooled=object(), selection_fallback=None,
-            evidence=evidence,
+            best="one", evidence=evidence,
         ),
         {
             **route,
@@ -708,7 +708,7 @@ def test_selection_fingerprints_are_order_invariant_and_route_sensitive():
     changed_route = scan_delivery._build_selection_semantics(
         results,
         SimpleNamespace(
-            scores=scores, pooled=object(), selection_fallback=None, evidence=evidence
+            scores=scores, pooled=object(), selection_fallback=None, best="one", evidence=evidence
         ),
         {**route, "multimode_route": "guideline_forced"},
         error_attachment_labels=["one", "two"],
@@ -722,7 +722,7 @@ def test_selection_fingerprints_are_order_invariant_and_route_sensitive():
         results,
         SimpleNamespace(
             scores=changed_denominator_scores, pooled=object(),
-            selection_fallback=None, evidence=evidence,
+            selection_fallback=None, best="one", evidence=evidence,
         ),
         route,
         error_attachment_labels=["one"],
@@ -772,6 +772,80 @@ def test_selection_aggregate_preserves_strongest_reason_and_incomparability():
     assert {item["reason_code"] for item in reasons} == {
         "candidate_data_likelihood_contexts_differ",
         "data_dependent_or_post_selection_hard_constraint",
+    }
+
+
+def _catalogue_variant_loser():
+    """A non-winning candidate constrained solely by an offered catalogue variant."""
+    variant = _fit_semantics(
+        estimator="hard_conditioned_likelihood",
+        eligibility="ineligible_unapproved_conditioning",
+        constraints=[
+            {
+                "parameter": "phonon.Omega_d",
+                "constraint_kind": "hard",
+                "value": 0.001,
+                "origin": "catalogue_variant",
+            }
+        ],
+    )
+    variant["selection_ineligibility_reasons"] = ["catalogue_variant_pin"]
+    return validate_for_write(variant, FIT_SELECTION_SCHEMA)
+
+
+def test_offered_catalogue_variant_loser_does_not_disqualify_the_aggregate():
+    """Owner ruling 2026-08-09: a deliberately-offered catalogue variant that loses the
+    comparison contributes neither its eligibility nor its reasons to the aggregate."""
+    winner = _fit_semantics()
+    loser = _catalogue_variant_loser()
+    candidates = [
+        {"label": "unconstrained", "fit_semantics": winner},
+        {"label": "variant", "fit_semantics": loser},
+    ]
+    aggregate, reasons = scan_delivery._aggregate_selection_eligibility(
+        candidates, winner="unconstrained"
+    )
+    assert aggregate == "eligible"
+    assert reasons == []
+
+
+def test_offered_catalogue_variant_winner_still_disqualifies_the_aggregate():
+    """Owner ruling 2026-08-09: the exemption is presence-only — a catalogue variant that WINS
+    the comparison still fails closed."""
+    winner = _fit_semantics()
+    loser = _catalogue_variant_loser()
+    candidates = [
+        {"label": "unconstrained", "fit_semantics": winner},
+        {"label": "variant", "fit_semantics": loser},
+    ]
+    aggregate, reasons = scan_delivery._aggregate_selection_eligibility(
+        candidates, winner="variant"
+    )
+    assert aggregate == "ineligible_unapproved_conditioning"
+    assert {item["reason_code"] for item in reasons} == {"catalogue_variant_pin"}
+    assert {"variant"} <= {
+        label for item in reasons for label in item["candidate_labels"]
+    }
+
+
+def test_offered_catalogue_variant_exemption_does_not_weaken_the_arena_guard():
+    """Owner ruling 2026-08-09: the exempted variant's likelihood context still counts in the
+    incomparable-context check — the exemption is about eligibility/reasons, not the arena."""
+    winner = _fit_semantics()
+    loser = _catalogue_variant_loser()
+    loser["data_likelihood_fingerprint"] = semantics_fingerprint(
+        "test.other_data_likelihood", {"counts": [7.0]}
+    )
+    candidates = [
+        {"label": "unconstrained", "fit_semantics": winner},
+        {"label": "variant", "fit_semantics": loser},
+    ]
+    aggregate, reasons = scan_delivery._aggregate_selection_eligibility(
+        candidates, winner="unconstrained"
+    )
+    assert aggregate == "ineligible_incomparable_context"
+    assert "candidate_data_likelihood_contexts_differ" in {
+        item["reason_code"] for item in reasons
     }
 
 
