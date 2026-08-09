@@ -92,8 +92,8 @@ SELECTION_FALLBACKS = frozenset(
     {"aic_no_evidence_inputs", "aic_all_evidence_invalid", "evidence_budget_exhausted"}
 )
 EVIDENCE_METHODS = frozenset(
-    {"laplace", "laplace_map", "dynesty", "deferred_escalation", "dominated", "unresolved",
-     "invalid"}
+    {"laplace", "laplace_truncated", "laplace_map", "dynesty", "deferred_escalation",
+     "dominated", "unresolved", "invalid"}
 )
 BOOTSTRAP_MEASURE_KINDS = frozenset(
     {

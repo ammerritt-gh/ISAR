@@ -18,6 +18,7 @@ from isar.analyze.context import ScanContext
 from isar.analyze.errors import bayes as BZ
 from isar.analyze.lineshapes import convolute_voigt_dho
 from isar.analyze.phonon import enumerate_phonon_structures
+from isar.schema.statistics import EVIDENCE_METHODS
 from isar.schema.steering import ParamConstraints
 
 pytestmark = pytest.mark.filterwarnings("ignore:The enlargement factor")
@@ -150,6 +151,103 @@ def test_transport_prior_carries_user_declared_origin_detail():
     (gamma_prior,) = [p for p in bundle.params if p.name == "phonon.Gamma"]
     assert gamma_prior.origin == "transport"
     assert gamma_prior.origin_detail == "user_declared"
+
+
+# ------------------------------------------------- rung 1b: Γ railed at the floor (H8)
+@pytest.fixture(scope="module")
+def railed():
+    """A resolution-limited Stokes peak whose Γ̂ lands ON ``GAMMA_FLOOR`` with a converged fit
+    and a PD covariance, so the ONLY at_limit pin is ``phonon.Gamma`` — the precondition of the
+    H8 carve-out. Counts are deliberately modest: at high statistics σ_Γ shrinks until the
+    truncated mass is numerically 1 and the correction stops testing anything."""
+    x = np.linspace(-10.0, 10.0, 81)
+    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.01, 15.0, 20.0, 40.0, 100.0, peak="all")
+    counts = np.random.default_rng(4).poisson(np.clip(lam, 0.0, None)).astype(float)
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
+                      center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    hyp, fit = _fitted(ctx)
+    assert fit.optimizer_converged and fit.covariance_ok
+    assert [n for n, v in fit.at_limit.items() if v] == ["phonon.Gamma"]
+    return ctx, hyp, fit
+
+
+def test_railed_gamma_takes_the_truncated_laplace_rung(railed):
+    """GAMMA_FLOOR is a modelling artifact, not physics, so a Γ jammed against it is an
+    integrable boundary: rung 1 stands and sheds the Gaussian mass outside the support instead
+    of paying for dynesty. The correction must be MATERIAL here (Γ̂ is at the floor, so ~half the
+    Gaussian is outside), otherwise the rung would be indistinguishable from plain Laplace."""
+    ctx, hyp, fit = railed
+    bundle = _bundle(hyp, ctx)
+    rec = E.structure_evidence(hyp, ctx, fit, bundle)
+
+    assert rec.evidence_method == "laplace_truncated"
+    assert rec.evidence_method in EVIDENCE_METHODS          # persistable vocabulary
+    assert rec.validity["gamma_boundary_truncated"] == ["phonon.Gamma"]
+    assert rec.validity["boundary_pinned"] == ["phonon.Gamma"]
+    assert "escalation" not in rec.validity                 # no sampler was reached
+    assert rec.log_evidence_err is None and np.isfinite(rec.log_evidence)
+
+    names = list(fit.params)
+    free = [p.name for p in bundle.params]
+    sigma = np.asarray(fit.parameter_covariance)[np.ix_(
+        [names.index(n) for n in free], [names.index(n) for n in free])]
+    uncorrected = E.laplace_ln_z(fit.cost, bundle.logpdf(fit.params), sigma)
+    assert rec.log_evidence < uncorrected - 0.4             # ≈ ln½ of mass shed
+
+
+def test_truncated_laplace_agrees_with_dynesty(railed):
+    """The load-bearing one: the analytic shortcut must answer the same integral the sampler
+    does. Same candidate, same bundle — the pin is widened to a non-Γ parameter only to force
+    the escalation lane (coarse budget ⇒ coarse tolerance, as in the laplace_map test)."""
+    ctx, hyp, fit = railed
+    bundle = _bundle(hyp, ctx)
+    lap = E.structure_evidence(hyp, ctx, fit, bundle)
+    assert lap.evidence_method == "laplace_truncated"
+
+    # ``sample="unif"`` (the FAST default elsewhere) is hopeless on a boundary-sharp posterior —
+    # rejection sampling inside the bounding ellipsoid stalls for minutes. rwalk finishes in ~15 s.
+    forced = replace(fit, at_limit=dict(fit.at_limit, **{"phonon.A": True}))
+    dyn = E.structure_evidence(hyp, ctx, forced, bundle, **dict(FAST, sample="rwalk"))
+    assert dyn.evidence_method == "dynesty"
+    assert abs(lap.log_evidence - dyn.log_evidence) < max(2.0, 5.0 * dyn.log_evidence_err)
+
+
+def test_a_non_gamma_pin_never_takes_the_truncated_rung(railed):
+    """The carve-out is Γ-only. Ω_d at the window edge is real physics (H8) — a boundary the
+    Gaussian picture genuinely cannot describe — so it keeps escalating even alongside a Γ pin."""
+    ctx, hyp, fit = railed
+    forced = replace(fit, at_limit=dict(fit.at_limit, **{"phonon.Omega_d": True}))
+    rec = E.structure_evidence(hyp, ctx, forced, _bundle(hyp, ctx), escalation="defer")
+
+    assert rec.evidence_method == "deferred_escalation"     # i.e. NOT laplace_truncated
+    assert rec.validity["escalation"] == "laplace_invalid"
+    assert "gamma_boundary_truncated" not in rec.validity
+
+
+def test_boundary_mass_correction_sheds_half_a_gaussian_at_the_bound():
+    """Φ-exact sanity: one parameter sitting exactly on its lower bound with a symmetric
+    Gaussian curvature well inside the upper bound loses exactly half its mass, ln ½."""
+    prior = C.ResolvedPrior("phonon.Gamma", "flat", None, None, 1e-3, 5.0, "default_flat")
+    bundle = C.PriorBundle((prior,))
+    corr = E._boundary_mass_correction(["phonon.Gamma"], {"phonon.Gamma": 1e-3},
+                                       np.array([0.1]), ["phonon.Gamma"], bundle)
+    assert corr == pytest.approx(math.log(0.5), abs=0.1)
+
+
+def test_degenerate_boundary_mass_fails_safe():
+    """A mass the correction cannot compute must return None so the caller escalates — a
+    silently-zero correction would publish an uncorrected lnZ under a truncated label."""
+    prior = C.ResolvedPrior("phonon.Gamma", "flat", None, None, 1e-3, 5.0, "default_flat")
+    bundle = C.PriorBundle((prior,))
+    params, names = {"phonon.Gamma": 1e-3}, ["phonon.Gamma"]
+    for sigma in (0.0, float("nan"), float("inf"), -1.0):
+        assert E._boundary_mass_correction(names, params, np.array([sigma]), names,
+                                           bundle) is None
+    unrelated = C.PriorBundle((C.ResolvedPrior("bg.BG", "flat", None, None, 0.0, 1e3,
+                                               "default_flat"),))
+    assert E._boundary_mass_correction(names, params, np.array([0.1]), names,
+                                       unrelated) is None
 
 
 # ------------------------------------------------------------------ rung 2: MAP refit
