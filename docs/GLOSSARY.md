@@ -94,8 +94,11 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **laplace_truncated** — the evidence rung for a converged fit whose only pins are `.Gamma` at its
   floor: rung-1 Laplace with a boundary-mass correction, since the Γ floor is a modelling artifact
   and the boundary is integrable, not an invalidity (H9(b)). Ω_d window-edge pins and unknown pin
-  status still escalate to dynesty. Carries a measured ≈1–2 nat conservative bias at railed
-  bounds (one-sided-exponential vs half-Gaussian) — deliberate, never inflates a railed candidate.
+  status still escalate to dynesty. The mass factor is gradient- and offset-aware — exact for the
+  local linear-plus-quadratic exponent, so it no longer assumes a half-Gaussian at a railed bound
+  nor that θ̂ sits exactly on the floor. The residual gap against dynesty on the synthetic railed-Γ
+  probe is within the sampler's own seed scatter and traces to HESSE curvature at a railed axis,
+  not to the boundary factor.
 - **constraint origin** — where an effective soft constraint on a fit came from; selection
   eligibility requires every effective constraint be soft with a prespecified origin.
   `user_declared` is the scientist's pre-fit soft declaration, prespecified by construction, and

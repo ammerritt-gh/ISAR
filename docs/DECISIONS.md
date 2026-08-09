@@ -1606,6 +1606,26 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   is SCENE-3's; no production catalogue entry declares identity-conditioned priors yet — the
   numbers are the owner's to declare, the mechanism is ready.
 
+- **H10.** (2026-08-09, In force; SCENE-1 PR-c review response) **An offered variant only
+  disqualifies a scan from steering by winning, and the boundary-mass factor is exact for its
+  local model — with H9(b)'s bias story corrected on the record.** Two rulings. **(a)** The
+  near-zone-centre acoustic and crossing regimes deliberately offer close-together rival
+  hypotheses; "offered, priced, rejected" conditions nothing about the winner, so a NON-winning
+  candidate whose effective constraints all carry origin `catalogue_variant` contributes neither
+  eligibility nor reasons to the selection aggregate and adds no science codes in the EIG
+  consumer. Fail-closed edges kept: a variant that wins stays ineligible, any other constraint
+  origin still disqualifies, and the arena check still counts every candidate. **(b)** The
+  `laplace_truncated` mass factor is now gradient- and offset-aware — exact for the local
+  linear-plus-quadratic exponent: `ln mass = (gσ)²/2 + lnΦ(a/σ − gσ)` with g the inward
+  one-sided data-cost gradient and a = θ̂ − lo, quadrature-verified, reducing to the
+  half-Gaussian at g = 0, a = 0. **Premise correction:** H9(b) attributed the ≈1–2 nat
+  dynesty gap to a "conservative over-correction" of the half-Gaussian; measurement refuted the
+  direction — the exact factor sheds MORE mass than ln ½ for every g > 0 (the gradient means
+  less than half the Gaussian sits inside the support), so the boundary factor cannot be that
+  gap's source. The residual gap on the synthetic probe sits within the sampler's own
+  seed-to-seed scatter (~1 nat at n_live=400) and is attributable, if real, to trusting HESSE
+  curvature at a railed axis. H9(b)'s acceptance of the rung stands; its causal story does not.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:

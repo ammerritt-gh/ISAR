@@ -193,7 +193,12 @@ def test_railed_gamma_takes_the_truncated_laplace_rung(railed):
     sigma = np.asarray(fit.parameter_covariance)[np.ix_(
         [names.index(n) for n in free], [names.index(n) for n in free])]
     uncorrected = E.laplace_ln_z(fit.cost, bundle.logpdf(fit.params), sigma)
-    assert rec.log_evidence < uncorrected - 0.4             # ≈ ln½ of mass shed
+    # Measured 2026-08-09: g = 79.6, σ_Γ = 1.27e-3 ⇒ gσ = 0.1012, and Γ̂ sits a = 2.11e-5 above
+    # the floor (a/σ = 0.0166, well inside GAMMA_BOUND_TOL = 5e-3) ⇒ correction = −0.7578 nats.
+    # Direction: the gradient term sheds MORE than ln½ (= −0.693) and the tiny offset gives a
+    # little back, so a railed Γ still loses appreciably more than half its Gaussian mass.
+    assert rec.log_evidence < uncorrected - 0.4
+    assert rec.validity["boundary_gradient"]["phonon.Gamma"] > 0.0
 
 
 def test_ceiling_railed_gamma_escalates_not_truncates():
@@ -251,14 +256,63 @@ def test_a_non_gamma_pin_never_takes_the_truncated_rung(railed):
     assert "gamma_boundary_truncated" not in rec.validity
 
 
-def test_boundary_mass_correction_sheds_half_a_gaussian_at_the_bound():
-    """Φ-exact sanity: one parameter sitting exactly on its lower bound with a symmetric
-    Gaussian curvature well inside the upper bound loses exactly half its mass, ln ½."""
+def test_boundary_mass_correction_sheds_half_a_gaussian_at_a_flat_bound():
+    """The g → 0 limit of the gradient-aware factor is the plain half-Gaussian. A parameter on
+    its lower bound whose likelihood is locally FLAT along that axis keeps exactly the mass
+    inside the support: ½·erfcx(0) = ½. Backward-compatible with the pre-gradient factor."""
     prior = C.ResolvedPrior("phonon.Gamma", "flat", None, None, 1e-3, 5.0, "default_flat")
     bundle = C.PriorBundle((prior,))
     corr = E._boundary_mass_correction(["phonon.Gamma"], {"phonon.Gamma": 1e-3},
-                                       np.array([0.1]), ["phonon.Gamma"], bundle)
-    assert corr == pytest.approx(math.log(0.5), abs=0.1)
+                                       np.array([0.1]), ["phonon.Gamma"], bundle,
+                                       {"phonon.Gamma": 0.0})
+    assert corr == pytest.approx(math.log(0.5), abs=1e-12)
+
+
+def test_boundary_mass_correction_is_gradient_aware():
+    """With θ̂ ON the bound and a nonzero inward gradient the local likelihood is
+    exp(−g·t − t²/2σ²) on t ≥ 0, whose mass relative to the full Gaussian is
+    exp(g²σ²/2)·Φ(−gσ) = ½·erfcx(gσ/√2). The a = 0 case of the offset-aware form must reproduce
+    that EXACTLY, so the tolerance is float-tight.
+
+    Note the DIRECTION: erfcx is monotonically decreasing on [0, ∞), so this factor is ≤ ½ for
+    every g ≥ 0 and sheds MORE than the half-Gaussian, never less — a likelihood falling away
+    from θ̂ into the support leaves less than half the Gaussian's mass there, not more."""
+    from scipy.special import erfcx
+
+    prior = C.ResolvedPrior("phonon.Gamma", "flat", None, None, 1e-3, 5.0, "default_flat")
+    bundle = C.PriorBundle((prior,))
+    sigma = 0.1
+    g = 2.0 / sigma                                     # gσ = 2
+    corr = E._boundary_mass_correction(["phonon.Gamma"], {"phonon.Gamma": 1e-3},
+                                       np.array([sigma]), ["phonon.Gamma"], bundle,
+                                       {"phonon.Gamma": g})
+    assert corr == pytest.approx(math.log(0.5 * float(erfcx(math.sqrt(2.0)))), abs=1e-12)
+    assert corr < math.log(0.5)
+
+
+def test_boundary_mass_correction_is_offset_aware():
+    """θ̂ need not sit exactly ON the floor: the gate admits it up to GAMMA_BOUND_TOL inside,
+    where far less than half the mass is outside. With a = θ̂ − lo the exact mass fraction is
+    exp(g²σ²/2)·Φ(a/σ − gσ); assuming a = 0 there would over-shed by up to ~0.68 nats.
+
+    Both references are ``scipy.integrate.quad`` of the raw integrand exp(−g·t − t²/2σ²) over
+    t ∈ [−a, ∞), divided by σ√2π (agreement ≤ 3e-13 nats):
+      * a = 3σ, g = 0   → ln Φ(3)  = −0.00135080996474798
+      * a = 2σ, gσ = 1  → +0.32724622097655068  (the tilt pulls in mass from below θ̂)"""
+    prior = C.ResolvedPrior("phonon.Gamma", "flat", None, None, 1e-3, 5.0, "default_flat")
+    bundle = C.PriorBundle((prior,))
+    sigma = 1e-3                                        # so 3σ still fits inside GAMMA_BOUND_TOL
+
+    flat = E._boundary_mass_correction(["phonon.Gamma"], {"phonon.Gamma": 1e-3 + 3 * sigma},
+                                       np.array([sigma]), ["phonon.Gamma"], bundle,
+                                       {"phonon.Gamma": 0.0})
+    assert flat == pytest.approx(-0.00135080996474798, abs=1e-12)
+    assert flat == pytest.approx(math.log(0.5 * math.erfc(-3.0 / math.sqrt(2.0))), abs=1e-12)
+
+    tilted = E._boundary_mass_correction(["phonon.Gamma"], {"phonon.Gamma": 1e-3 + 2 * sigma},
+                                         np.array([sigma]), ["phonon.Gamma"], bundle,
+                                         {"phonon.Gamma": 1.0 / sigma})
+    assert tilted == pytest.approx(0.32724622097655068, abs=1e-12)
 
 
 def test_degenerate_boundary_mass_fails_safe():
@@ -267,13 +321,22 @@ def test_degenerate_boundary_mass_fails_safe():
     prior = C.ResolvedPrior("phonon.Gamma", "flat", None, None, 1e-3, 5.0, "default_flat")
     bundle = C.PriorBundle((prior,))
     params, names = {"phonon.Gamma": 1e-3}, ["phonon.Gamma"]
+    flat = {"phonon.Gamma": 0.0}
     for sigma in (0.0, float("nan"), float("inf"), -1.0):
         assert E._boundary_mass_correction(names, params, np.array([sigma]), names,
-                                           bundle) is None
+                                           bundle, flat) is None
+    # An unavailable gradient (non-finite cost at either probe point) is the same refusal.
+    for grad in ({}, {"phonon.Gamma": float("nan")}, {"phonon.Gamma": float("inf")}):
+        assert E._boundary_mass_correction(names, params, np.array([0.1]), names,
+                                           bundle, grad) is None
+    # θ̂ off the floor by more than the caller's gate allows: refuse rather than extrapolate the
+    # sits-ON-lo formula.
+    assert E._boundary_mass_correction(names, {"phonon.Gamma": 0.5}, np.array([0.1]), names,
+                                       bundle, flat) is None
     unrelated = C.PriorBundle((C.ResolvedPrior("bg.BG", "flat", None, None, 0.0, 1e3,
                                                "default_flat"),))
     assert E._boundary_mass_correction(names, params, np.array([0.1]), names,
-                                       unrelated) is None
+                                       unrelated, flat) is None
 
 
 # ------------------------------------------------------------------ rung 2: MAP refit

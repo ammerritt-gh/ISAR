@@ -193,39 +193,87 @@ def laplace_ln_z(cost: float, ln_prior: float, sigma_free: np.ndarray) -> float:
     return float(-0.5 * cost + ln_prior + 0.5 * k * _LN_2PI + 0.5 * logdet)
 
 
-def _phi(x: float) -> float:
-    """Standard normal CDF."""
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+def _inward_cost_gradients(hyp, ctx, fit_result, pinned, sig_post, free_names):
+    """One-sided inward ``g = ∂(cost/2)/∂θ`` at θ̂ for each pinned axis, from the DATA cost.
+
+    ``cost`` is −2lnL, so ``g`` is the decay rate of the likelihood as the parameter moves off
+    its bound into the support — the shape parameter :func:`_boundary_mass_correction` needs.
+    Forward difference with a step of 1e-2·σ (clipped to stay inside the box), since a pinned
+    axis has no usable outward side. A non-finite cost at either point yields NaN for that
+    axis, which the correction turns into an escalation."""
+    prob = loop.build_problem(hyp, ctx, x0=dict(fit_result.params))
+    order = list(prob.free_names)
+    theta = np.array([float(fit_result.params[n]) for n in order], dtype=float)
+    c0 = float(prob.costv(theta))
+    gradients = {}
+    for name in pinned:
+        i = order.index(name)
+        sigma = float(sig_post[free_names.index(name)])
+        step = min(1e-2 * sigma, float(prob.bounds[i][1]) - theta[i])
+        if not (np.isfinite(c0) and np.isfinite(step) and step > 0.0):
+            gradients[name] = float("nan")
+            continue
+        probe = theta.copy()
+        probe[i] += step
+        c1 = float(prob.costv(probe))
+        gradients[name] = (float("nan") if not np.isfinite(c1)
+                           else max(0.0, (c1 - c0) / (2.0 * step)))
+    return gradients
 
 
-def _boundary_mass_correction(pinned, params, sig_post, free_names, bundle):
-    """ln of the Gaussian mass fraction inside the prior bounds along each pinned axis.
+def _boundary_mass_correction(pinned, params, sig_post, free_names, bundle, gradients):
+    """ln of the likelihood mass fraction inside the support along each pinned axis.
 
     The Laplace rung integrates the full Gaussian over ℝ^k; for a parameter pinned at an
-    integrable boundary (the Γ floor, H8) roughly half that mass lies outside the support and
-    lnZ must shed it: correction = Σ_pinned ln(Φ((hi−θ̂)/σ) − Φ((lo−θ̂)/σ)) ≈ ln ½ per pin.
-    Cross-correlations with the pinned axes are ignored (the same independence the diagonal
-    σ read already assumes). KNOWN BIAS, deliberate: at a genuinely railed bound the likelihood
-    gradient is nonzero, so the local shape is one-sided-exponential rather than half-Gaussian
-    and this factor over-corrects — measured ≈1–2 nats conservative against dynesty on a railed-Γ
-    synthetic (2026-08-09). Selection-material gaps in this candidate class are 10–40 nats, so
-    the cheap rung stays; a gradient-aware factor is the upgrade path if the bias ever matters.
-    Returns None when the mass is degenerate or a pinned parameter has no resolved prior — the
-    caller must escalate, never guess."""
+    integrable boundary (the Γ floor, H8) the mass outside the support must be shed. Along a
+    pinned axis, with ``t = θ − θ̂`` and ``a = θ̂ − lo ≥ 0`` the offset of the estimate above the
+    floor, the local likelihood is ``L(t) ∝ exp(−g·t − t²/2σ²)`` on the support ``t ≥ −a``.
+    Completing the square gives the mass relative to the full Gaussian in closed form::
+
+        ∫_{−a}^{∞} exp(−g·t − t²/2σ²) dt / (σ√2π)  =  exp(g²σ²/2) · Φ(a/σ − gσ)
+
+    evaluated in log space as ``½·(gσ)² + log_ndtr(a/σ − gσ)``, which is stable in both tails:
+    ``a/σ ≫ gσ`` (θ̂ well inside, correction → 0) would overflow the equivalent
+    ``erfcx``-times-``exp`` product past ``a/σ ≈ 40``, and ``gσ`` large would underflow a plain
+    ``exp × Φ``. At ``a = 0`` it reduces exactly to ``ln ½·erfcx(gσ/√2)``, and at ``g = 0, a = 0``
+    to the plain half-Gaussian ``ln ½``; large ``gσ`` tends to ``1/(gσ√2π)``, the
+    one-sided-exponential integral. Verified against ``scipy.integrate.quad`` on the raw
+    integrand to ≤1e-15 nats. That gradient- and offset-awareness is what removes the old
+    half-Gaussian factor's conservative bias at a genuinely railed bound, where the local shape
+    is one-sided-exponential rather than half-Gaussian and θ̂ need not sit exactly on the floor.
+    ``g`` is the one-sided numerical gradient from :func:`_inward_cost_gradients` (step 1e-2·σ).
+
+    Cross-correlations with the pinned axes are ignored (the same independence the diagonal σ
+    read already assumes), and the far bound's mass is neglected: the caller's gate guarantees
+    θ̂ within ``GAMMA_BOUND_TOL`` of the floor while ``hi`` is ``GAMMA_MAX`` ≫ σ, so the upper
+    tail is numerically nothing. That gate is re-asserted below — beyond it the local expansion
+    is not the admitted-at-the-floor case this factor models, and the function refuses rather
+    than extrapolate.
+
+    Returns None when the mass is degenerate, a gradient is unavailable, or a pinned parameter
+    has no resolved prior — the caller must escalate, never guess."""
+    from scipy.special import log_ndtr
+
+    from isar.analyze.phonon import GAMMA_BOUND_TOL
+
     by_name = bundle.by_name()
     correction = 0.0
     for name in pinned:
         prior = by_name.get(name)
         if prior is None:
             return None
-        theta = float(params[name])
         sigma = float(sig_post[free_names.index(name)])
-        if not (np.isfinite(sigma) and sigma > 0):
+        g = float(gradients.get(name, float("nan")))
+        if not (np.isfinite(sigma) and sigma > 0 and np.isfinite(g) and g >= 0):
             return None
-        mass = _phi((prior.hi - theta) / sigma) - _phi((prior.lo - theta) / sigma)
-        if not (np.isfinite(mass) and mass > 0.0):
+        offset = float(params[name]) - float(prior.lo)
+        if not offset <= GAMMA_BOUND_TOL:
             return None
-        correction += math.log(mass)
+        a = max(0.0, offset)                            # θ̂ a hair below lo is numerical, not real
+        ln_mass = 0.5 * (g * sigma) ** 2 + float(log_ndtr(a / sigma - g * sigma))
+        if not np.isfinite(ln_mass):
+            return None
+        correction += ln_mass
     return correction
 
 
@@ -367,8 +415,10 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
             return _escalate("laplace_invalid")
         if not gamma_pinned:
             return _record(ln_z, None, "laplace")
+        gradients = _inward_cost_gradients(hyp, ctx, fit_result, pinned, sig_post, free_names)
+        validity["boundary_gradient"] = {n: float(g) for n, g in gradients.items()}
         correction = _boundary_mass_correction(
-            pinned, fit_result.params, sig_post, free_names, bundle)
+            pinned, fit_result.params, sig_post, free_names, bundle, gradients)
         if correction is None:
             return _escalate("laplace_invalid")
         validity["gamma_boundary_truncated"] = list(pinned)
