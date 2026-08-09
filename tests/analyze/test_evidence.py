@@ -334,6 +334,25 @@ def test_genuine_contest_still_pays_for_dynesty():
         for r in es.records if r.evidence_method == "dominated")
 
 
+def test_escalation_n_live_reads_the_environment_and_refuses_nonsense(monkeypatch):
+    """The cost knob exists so a SPAWNED pool child samples where the parent does — a module
+    constant cannot cross that boundary, an environment variable can. An explicit ``n_live``
+    still wins, and a malformed value raises instead of silently reverting: a run whose sampling
+    resolution is unknowable after the fact is worse than a run that refused to start."""
+    monkeypatch.delenv(E.ESCALATION_N_LIVE_ENV, raising=False)
+    assert E.escalation_n_live() == E.ESCALATION_N_LIVE
+
+    monkeypatch.setenv(E.ESCALATION_N_LIVE_ENV, "32")
+    assert E.escalation_n_live() == 32
+
+    monkeypatch.setenv(E.ESCALATION_N_LIVE_ENV, "not-a-number")
+    with pytest.raises(ValueError):
+        E.escalation_n_live()
+    monkeypatch.setenv(E.ESCALATION_N_LIVE_ENV, "0")
+    with pytest.raises(ValueError):
+        E.escalation_n_live()
+
+
 def _blank_scan_ctx():
     """The blank (bg-only) scan of :func:`test_genuine_contest_still_pays_for_dynesty`: a railed
     phonon candidate fits as well as the winner, so its ceiling sits near the leader and the
@@ -343,6 +362,27 @@ def _blank_scan_ctx():
     return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
                        center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
                        energy_status="needs_zero")
+
+
+def test_the_suite_cap_still_produces_sampling_that_counts():
+    """The cap must make escalations CHEAPER, not fake. A dynesty run that fails its own §5.4
+    convergence gate is fast and worthless — it yields no usable evidence, so a cap set too low
+    would quietly convert every escalation into invalid evidence and push selection onto the
+    recorded-AIC lane while the suite still went green. This runs the genuine-contest scan at
+    whatever n_live the environment actually imposes (the repo-root conftest's cap in a suite
+    run, ESCALATION_N_LIVE otherwise) and demands a converged sampler."""
+    ctx = _blank_scan_ctx()
+    results = loop.fit_admissible_structures(ctx, errors=False)
+    es = E.candidate_set_evidence(_set_triples(ctx, results), ctx)   # no explicit n_live
+
+    sampled = [r for r in es.records if r.evidence_method == "dynesty"]
+    assert sampled, "expected a contested escalation to reach the sampler"
+    for r in sampled:
+        assert r.validity["dynesty"]["converged"], (
+            f"{r.label} sampled at n_live={r.validity['dynesty'].get('n_live')} but failed its "
+            f"convergence gate ({r.validity['dynesty'].get('fail_reason')}) — the cap is too low "
+            f"and is buying speed by discarding evidence")
+        assert np.isfinite(r.log_evidence)
 
 
 def test_exhausted_budget_records_unresolved_and_never_samples(monkeypatch):
@@ -462,10 +502,15 @@ def test_all_railed_set_escalates_highest_ceiling_first(clean, monkeypatch):
 def test_candidate_set_escalations_use_the_scoped_n_live_cut(clean, monkeypatch):
     """Owner ruling 2026-08-08: post-pruning escalations sample at ESCALATION_N_LIVE=128;
     the direct-call default and the bayes diagnostics tier (D4) stay at 400. An explicit
-    caller n_live wins over the cut (setdefault, not override)."""
+    caller n_live wins over the cut (setdefault, not override).
+
+    The environment is cleared first, so this pins the PRODUCTION lane: the repo-root conftest
+    caps the suite at ``ISAR_ESCALATION_N_LIVE=32`` for cost, and without the delenv this test
+    would silently be asserting the test-suite cap rather than what ships."""
     import inspect
 
     ctx, hyp, fit = clean
+    monkeypatch.delenv(E.ESCALATION_N_LIVE_ENV, raising=False)
     bundle = _bundle(hyp, ctx)
     original = E.structure_evidence
     seen = []
@@ -493,6 +538,14 @@ def test_candidate_set_escalations_use_the_scoped_n_live_cut(clean, monkeypatch)
     seen.clear()
     E.candidate_set_evidence([(hyp, fit, bundle)], ctx, n_live=80)
     assert seen == [80]                                   # explicit caller n_live wins
+
+    # The cap must actually REACH the sampler — that is the whole point of routing it through the
+    # environment rather than a patched constant, since a spawned pool child re-imports the module.
+    seen.clear()
+    monkeypatch.setenv(E.ESCALATION_N_LIVE_ENV, "32")
+    es_capped = E.candidate_set_evidence([(hyp, fit, bundle)], ctx)
+    assert seen == [32]
+    assert es_capped.by_label()[fit.label].validity["dynesty"]["n_live"] == 32
 
     # the two-lane split: direct calls and the bayes diagnostics tier keep D4's 400
     assert inspect.signature(original).parameters["n_live"].default == 400

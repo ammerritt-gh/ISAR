@@ -51,6 +51,14 @@ area.
   worker spawns its own `min(30, cpu−2)` driver pool and fork-bombs the box. It does **not** reach
   `isar/synth/score.py` / `demo.py`, whose `n_workers` defaults to `cpu−2` with no env knob — every
   current test passes `n_workers` explicitly, and a new one must too.
+- **Escalation sampler cap:** the same conftest `setdefault`s `ISAR_ESCALATION_N_LIVE=32`. Under
+  evidence selection the dynesty escalation rung is ~90% of a campaign test's wall clock (measured
+  2026-08-09: one shadow-selection test, 348 s at `n_live=128` vs 35.6 s at 8, passing either way).
+  Production leaves the variable unset and samples at `ESCALATION_N_LIVE=128`. It travels by
+  *environment*, not a patched constant, because a spawned pool child re-imports
+  `isar.analyze.evidence` — a fixture would leave the parallel arm sampling at 128. An explicit
+  `n_live=` argument still wins over both. See the conftest docstring for why capping it does not
+  weaken what the suite asserts.
 - Offscreen GUI runs: pytest sets the platform via `tests/gui/conftest.py`; a test that leaves a
   modal path unmocked will hang the suite silently — debug that stall serially with
   `-o faulthandler_timeout=60`. Any interpreter with the dependencies installed runs the suite from

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import math
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -58,6 +59,12 @@ PRUNE_MARGIN = 100.0
 # (~0.6 vs ~0.3 nats) is decision-irrelevant. D4's n_live=400 stays for the bayes-tier error
 # diagnostics (errors --errors bayes) and for direct structure_evidence calls.
 ESCALATION_N_LIVE = 128
+# Cost knob, read at call time so a child process spawned by a session pool honours it too
+# (the constant alone cannot: a spawned child re-imports this module fresh). Production leaves it
+# unset and gets ESCALATION_N_LIVE; the test suite caps it from the repo-root conftest, where the
+# reasoning for that cap is written down. Documented alongside ISAR_WORKERS /
+# ISAR_BOOTSTRAP_WORKERS as an ISAR_* environment knob.
+ESCALATION_N_LIVE_ENV = "ISAR_ESCALATION_N_LIVE"
 # Escalation wall-clock budget for ONE candidate set. This is a backstop against a pathological
 # set, not a throughput lever: the expensive class (a superset of the winner) has an evidence
 # ceiling ≥ the leader's BY CONSTRUCTION — that is exactly why dominance pruning cannot touch it
@@ -124,6 +131,23 @@ class EvidenceSet:
         return [r.label for r in self.records
                 if r.evidence_method == "unresolved"
                 and float(r.validity.get("log_evidence_upper_bound", float("inf"))) >= best]
+
+
+def escalation_n_live() -> int:
+    """The n_live the post-pruning escalation lane samples at: ``$ISAR_ESCALATION_N_LIVE`` when
+    set, else :data:`ESCALATION_N_LIVE`. A malformed or non-positive value raises rather than
+    silently falling back — a cost knob that quietly ignores what it was told would make a run's
+    sampling resolution unknowable after the fact."""
+    raw = os.environ.get(ESCALATION_N_LIVE_ENV)
+    if raw is None or raw == "":
+        return ESCALATION_N_LIVE
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{ESCALATION_N_LIVE_ENV}={raw!r} is not an integer") from exc
+    if value <= 0:
+        raise ValueError(f"{ESCALATION_N_LIVE_ENV}={value} must be positive")
+    return value
 
 
 def _trusted_evidence(rec) -> bool:
@@ -325,7 +349,7 @@ def candidate_set_evidence(candidates, ctx, *, budget_s=ESCALATION_BUDGET_S,
     # ponytail: escalations run serially; parallelize the surviving dynesty runs through the
     # session process pool (fit_one's boot_executor, task tuples like _fit_hypothesis_task)
     # when per-scan latency matters — owner-flagged follow-up 2026-08-08.
-    kwargs.setdefault("n_live", ESCALATION_N_LIVE)
+    kwargs.setdefault("n_live", escalation_n_live())
     es = EvidenceSet(arena_fingerprint=loop.data_likelihood_fingerprint(ctx))
     deferred = []
     for hyp, fit, bundle in candidates:
