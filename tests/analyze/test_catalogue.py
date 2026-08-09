@@ -8,12 +8,15 @@ legacy implementation before it was deleted and must never drift; the phonon-les
 ``no_signal`` selection candidates) and are pinned from that point on. A drift here is a real
 regression, not a test to update.
 """
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
 from isar.analyze import catalogue, evidence, loop, phonon
 from isar.analyze.components import ConstantBackground, Elastic, PhononDHO, QuasiElastic
 from isar.analyze.context import ScanContext
+from isar.analyze.lineshapes import convolute_voigt_dho
 
 
 def _ctx(*, elastic: bool, qe: bool, stokes_only: bool) -> ScanContext:
@@ -302,6 +305,41 @@ def test_identity_entry_is_none_for_agnostic_and_loud_for_unknown(synth_profile)
     assert catalogue.identity_entry("a", profile=synth_profile).name == "a"
     with pytest.raises(KeyError):
         catalogue.identity_entry("no_such_phenomenon", profile=synth_profile)
+
+
+def _low_omega_ctx() -> ScanContext:
+    """A phonon whose ω₀ sits below the resolution width, so ``near_degenerate`` fires. The
+    elastic gate is closed (``needs_conversion_and_zero``) to keep the candidate list short."""
+    x = np.linspace(-6.0, 6.0, 81)
+    counts = convolute_voigt_dho(x, 0.6, 0.0, 1.2, 0.0, 0.3, 300.0, 0.0, 12.0, 150.0, peak="all")
+    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=150.0,
+                       center=0.0, gauss_fwhm=1.2, lorentz_fwhm=0.0, instrument="S30",
+                       energy_status="needs_conversion_and_zero", prior_omega=0.6)
+
+
+def test_variants_come_from_the_entry_that_owns_the_identity(monkeypatch):
+    """A constrained variant is a provision of ONE phenomenon. Once identity splitting is live,
+    the ``@a`` twin must be offered ``a``'s variant and the ``@b`` twin nothing — offering every
+    identity the same entry's variant would price physics the catalogue never declared there."""
+    with_variant = replace(_TWO_IDENTITIES[0],
+                           constrained_variants=catalogue.entry("acoustic").constrained_variants)
+    monkeypatch.setitem(catalogue.PROFILES, _SYNTH, (with_variant, *_TWO_IDENTITIES[1:]))
+    ctx = _low_omega_ctx()
+
+    hyps = catalogue.enumerate_structures(ctx, profile=_SYNTH)
+    assert [h.label for h in hyps] == ["stokes+bg@a", "stokes+bg@b", "bg"]   # incl. the null
+    pairs = [(loop.fit_hypothesis(h, ctx, minos=False), h) for h in hyps]
+    fits = {h.label: r for r, h in pairs}
+    assert all(fits[l].optimizer_converged and fits[l].omega0 <= ctx.gauss_fwhm
+               for l in ("stokes+bg@a", "stokes+bg@b"))      # both twins are near-degenerate
+
+    offered = loop._offer_variants(pairs, ctx, minos=False, profile=_SYNTH)
+
+    assert [twin.label for _, twin, _ in offered] == ["stokes+bg@a_neardeg"]
+    _, twin, derived = offered[0]
+    assert twin.identity == "a"                              # the twin inherits its parent's
+    assert derived.constraints.hard == {"phonon.Gamma": phonon.GAMMA_FLOOR}
+    assert derived.constraints.origins == {"phonon.Gamma": "catalogue_variant"}
 
 
 def test_identity_twins_share_one_arena_with_independent_evidence(synth_profile):

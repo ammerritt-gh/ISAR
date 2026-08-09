@@ -10,10 +10,11 @@ by a **ladder** that records which rung it came from and why:
    NOT see is much wider than the posterior curvature (the fit's transported soft priors are
    already inside its objective: θ̂ is their MAP and HESSE is the posterior curvature, so no
    refit is needed for them).
-2. ``"laplace_truncated"`` — rung 1 with a boundary-mass correction when the ONLY pins are
-   Γ at its floor (H8, SCENE-1 PR-c): GAMMA_FLOOR is a modelling artifact and the DHO ⊗
+2. ``"laplace_truncated"`` — rung 1 with a boundary-mass correction when the fit's SINGLE pin
+   is a Γ at its floor (H8, SCENE-1 PR-c): GAMMA_FLOOR is a modelling artifact and the DHO ⊗
    resolution model is regular as Γ → 0, so the one-sided pin is an integrable boundary —
    the Gaussian mass outside the support is shed analytically instead of paying for dynesty.
+   Two or more pinned Γs escalate: the per-axis mass product would ignore their covariance.
 3. ``"laplace_map"`` — a warm-started MAP refit under the full prior bundle, when an unseen
    prior is informative at the fit's scale. HESSE of the penalized objective IS the posterior
    curvature.
@@ -225,7 +226,13 @@ def _inward_cost_gradients(hyp, ctx, fit_result, pinned, sig_post, free_names):
 
 
 def _boundary_mass_correction(pinned, params, sig_post, free_names, bundle, gradients):
-    """ln of the likelihood mass fraction inside the support along each pinned axis.
+    """ln of the likelihood mass fraction inside the support along the pinned axis.
+
+    ``pinned`` holds exactly ONE name by construction — the caller's ``gamma_pinned`` gate admits
+    a single pin and escalates everything else — so the loop below sums one term and is exact.
+    It stays a loop only so the shape of the call site does not have to change if a multivariate
+    orthant mass ever lands; with two or more correlated pins a product of per-axis masses is
+    wrong (see the gate's note), which is why the gate, not this function, refuses them.
 
     The Laplace rung integrates the full Gaussian over ℝ^k; for a parameter pinned at an
     integrable boundary (the Γ floor, H8) the mass outside the support must be shed. Along a
@@ -395,7 +402,11 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     # an overdamped-vs-two-mode contest is selection-material, so it pays for the sampler.
     from isar.analyze.phonon import GAMMA_BOUND_TOL
 
-    gamma_pinned = (at_limit is not None and bool(pinned)
+    # ponytail: single-pin only — the product of per-axis masses ignores the pinned block's
+    # covariance (bivariate orthant ≈0.5-1.3 nats off at |rho|=0.9, which is selection-material);
+    # multivariate truncated-Gaussian orthant via scipy.stats.multivariate_normal if multi-railed
+    # candidates ever matter. Two or more pins escalate like any other invalid-Gaussian case.
+    gamma_pinned = (at_limit is not None and len(pinned) == 1
                     and all(n.endswith(".Gamma")
                             and float(fit_result.params.get(n, float("inf"))) <= GAMMA_BOUND_TOL
                             for n in pinned))

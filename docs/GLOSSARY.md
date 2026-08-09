@@ -91,10 +91,12 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   (for dynesty) the n_live used; evidence is comparable only within one data-likelihood arena.
   Dominated candidates (evidence ceiling ≥100 nats below a trusted leader) are excluded without
   sampling and recorded as such.
-- **laplace_truncated** — the evidence rung for a converged fit whose only pins are `.Gamma` at its
-  floor: rung-1 Laplace with a boundary-mass correction, since the Γ floor is a modelling artifact
-  and the boundary is integrable, not an invalidity (H9(b)). Ω_d window-edge pins and unknown pin
-  status still escalate to dynesty. The mass factor is gradient- and offset-aware — exact for the
+- **laplace_truncated** — the evidence rung for a converged fit whose single pin is one `.Gamma`
+  at its floor: rung-1 Laplace with a boundary-mass correction, since the Γ floor is a modelling
+  artifact and the boundary is integrable, not an invalidity (H9(b)). Ω_d window-edge pins,
+  unknown pin status, Γ at its ceiling, and two-plus pinned Γs (whose joint truncated mass
+  depends on their covariance, which the per-axis product cannot see) all still escalate to
+  dynesty. The mass factor is gradient- and offset-aware — exact for the
   local linear-plus-quadratic exponent, so it no longer assumes a half-Gaussian at a railed bound
   nor that θ̂ sits exactly on the floor. The residual gap against dynesty on the synthetic railed-Γ
   probe is within the sampler's own seed scatter and, if real at all, may be attributable to

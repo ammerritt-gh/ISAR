@@ -272,6 +272,47 @@ def test_a_non_gamma_pin_never_takes_the_truncated_rung(railed):
     assert "gamma_boundary_truncated" not in rec.validity
 
 
+def test_two_railed_gammas_escalate_instead_of_multiplying_per_axis_masses():
+    """The truncated rung is SINGLE-pin only. Two Γ pins would need the pinned block's joint
+    orthant mass; the per-axis product ignores their correlation and is selection-material
+    (bivariate orthant at |ρ| = 0.9 is 0.428 vs the product's 0.25, ~0.5-1.3 nats). The gate
+    must therefore escalate on two pins exactly as on any other invalid-Gaussian case.
+
+    Construction: a converged, PD, UNPINNED two-mode fit, with the pins forced on by hand —
+    a genuine double rail is fit-fragile, and the guard under test is the pin COUNT, so the
+    same fit with only one of the two pins is the control that must still take the cheap rung.
+    """
+    from isar.analyze.phonon import GAMMA_FLOOR, enumerate_phonon_multimode
+
+    x = np.linspace(-12.0, 12.0, 121)
+    lam = (convolute_voigt_dho(x, 3.0, 0.0, 1.0, 0.0, 0.01, 40.0, 0.0, 25.0, 100.0, peak="all")
+           + convolute_voigt_dho(x, 8.0, 0.0, 1.0, 0.0, 0.01, 30.0, 0.0, 0.0, 100.0, peak="all"))
+    counts = np.random.default_rng(4).poisson(np.clip(lam, 0.0, None)).astype(float)
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
+                      center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    hyp = {h.label: h for h in enumerate_phonon_multimode(ctx)}["stokes2+bg"]
+    fit = loop.fit_hypothesis(hyp, ctx, minos=False)
+    assert fit.optimizer_converged and fit.covariance_ok
+    gammas = ["phonon.Gamma", "phonon2.Gamma"]
+    bundle = _bundle(hyp, ctx)
+    assert set(gammas) <= {p.name for p in bundle.params}     # both Γ are genuinely free
+
+    # Both Γ at the floor and flagged: the ONLY thing the gate can object to is the count.
+    at_floor = replace(fit, params=dict(fit.params, **{n: GAMMA_FLOOR for n in gammas}))
+    both = replace(at_floor, at_limit=dict(fit.at_limit, **{n: True for n in gammas}))
+    rec = E.structure_evidence(hyp, ctx, both, bundle, escalation="defer")
+    assert rec.evidence_method == "deferred_escalation"       # i.e. NOT laplace_truncated
+    assert rec.validity["escalation"] == "laplace_invalid"
+    assert rec.validity["boundary_pinned"] == gammas
+    assert "gamma_boundary_truncated" not in rec.validity
+
+    one = replace(at_floor, at_limit=dict(fit.at_limit, **{gammas[0]: True}))
+    ctrl = E.structure_evidence(hyp, ctx, one, bundle, escalation="defer")
+    assert ctrl.evidence_method == "laplace_truncated"
+    assert ctrl.validity["gamma_boundary_truncated"] == [gammas[0]]
+
+
 def test_boundary_mass_correction_sheds_half_a_gaussian_at_a_flat_bound():
     """The g → 0 limit of the gradient-aware factor is the plain half-Gaussian. A parameter on
     its lower bound whose likelihood is locally FLAT along that axis keeps exactly the mass

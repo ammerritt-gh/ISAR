@@ -1001,10 +1001,7 @@ def _offer_variants(pairs, ctx, *, backend="iminuit", minos=False, executor=None
     (deferred, C2)."""
     from isar.analyze import catalogue
 
-    variants = catalogue.entry(
-        "acoustic", profile or catalogue.DEFAULT_PROFILE).constrained_variants
-    if not variants:
-        return []
+    profile = profile or catalogue.DEFAULT_PROFILE
     tasks, meta = [], []
     for result, hyp in pairs:
         if not result.optimizer_converged or not result.modes:
@@ -1012,7 +1009,17 @@ def _offer_variants(pairs, ctx, *, backend="iminuit", minos=False, executor=None
         prefixes = [n.rsplit(".", 1)[0] for n in result.params if n.endswith(".Omega_d")]
         if len(prefixes) != 1:
             continue
-        for variant in variants:
+        # Variants come from the entry that OWNS the candidate's identity: offering another
+        # entry's provision would price physics the catalogue never declared there (an `@optic`
+        # twin carrying the acoustic near-degenerate pins). An entry declaring none offers none.
+        entry = catalogue.identity_entry(hyp.identity, profile)
+        if entry is None:
+            # Identity-agnostic — every production candidate today, since no entry declares a
+            # prior yet. The acoustic entry stays the source deliberately: the near-degenerate
+            # provision is acoustic physics offered generically until identity splitting
+            # activates. Production behaviour is unchanged by the lookup above.
+            entry = catalogue.entry("acoustic", profile)
+        for variant in entry.constrained_variants:
             if not variant.when(ctx, result.omega0):
                 continue
             hard, origins = variant.pins(ctx, prefixes[0])
