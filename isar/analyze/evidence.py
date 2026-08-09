@@ -74,6 +74,11 @@ ESCALATION_N_LIVE_ENV = "ISAR_ESCALATION_N_LIVE"
 # would push ordinary campaign scans into that degraded lane. Checked BEFORE each escalation
 # starts, so a set may overrun by the duration of one dynesty run (itself bounded by max_iter).
 ESCALATION_BUDGET_S = 600.0
+# Sentinel so the budget is resolved at CALL time from the constant above. Binding
+# ``budget_s=ESCALATION_BUDGET_S`` directly in the signature would capture the value at import,
+# which makes monkeypatching the constant a silent no-op and a test that tried it pass vacuously
+# — the same trap ``escalation_n_live()`` exists to avoid. ``None`` still means "no budget".
+_BUDGET_DEFAULT = object()
 
 _LN_2PI = math.log(2.0 * math.pi)
 log = logging.getLogger(__name__)
@@ -128,9 +133,17 @@ class EvidenceSet:
         ``PRUNE_MARGIN`` of slack and is never a contender."""
         best = max((r.log_evidence for r in self.records if _trusted_evidence(r)),
                    default=float("-inf"))
+
+        def _contends(rec) -> bool:
+            # Fail safe on a missing or non-finite ceiling: a bound we cannot read is a bound we
+            # cannot use to rule the candidate out, so it counts as a contender. `nan >= best` is
+            # False, which would silently take the OTHER direction and let a winner stand on an
+            # incomplete set — the one outcome this method exists to prevent.
+            bound = float(rec.validity.get("log_evidence_upper_bound", float("inf")))
+            return True if not math.isfinite(bound) else bound >= best
+
         return [r.label for r in self.records
-                if r.evidence_method == "unresolved"
-                and float(r.validity.get("log_evidence_upper_bound", float("inf"))) >= best]
+                if r.evidence_method == "unresolved" and _contends(r)]
 
 
 def escalation_n_live() -> int:
@@ -320,7 +333,7 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     return _escalate("map_refit_invalid")
 
 
-def candidate_set_evidence(candidates, ctx, *, budget_s=ESCALATION_BUDGET_S,
+def candidate_set_evidence(candidates, ctx, *, budget_s=_BUDGET_DEFAULT,
                            **kwargs) -> EvidenceSet:
     """Evidence for one scan's candidate set, with dominance pruning of the dynesty rung.
 
@@ -349,6 +362,8 @@ def candidate_set_evidence(candidates, ctx, *, budget_s=ESCALATION_BUDGET_S,
     # ponytail: escalations run serially; parallelize the surviving dynesty runs through the
     # session process pool (fit_one's boot_executor, task tuples like _fit_hypothesis_task)
     # when per-scan latency matters — owner-flagged follow-up 2026-08-08.
+    if budget_s is _BUDGET_DEFAULT:
+        budget_s = ESCALATION_BUDGET_S
     kwargs.setdefault("n_live", escalation_n_live())
     es = EvidenceSet(arena_fingerprint=loop.data_likelihood_fingerprint(ctx))
     deferred = []

@@ -441,6 +441,34 @@ def test_a_ruled_out_budget_skip_is_not_a_contender():
     es.add(_rec("could_have_won", float("nan"), "unresolved", bound=-5.0))
     assert es.unresolved_contenders() == ["could_have_won"]
 
+    # Fail safe on an unreadable ceiling. A bound we cannot read cannot rule the candidate out, so
+    # it must COUNT as a contender: `nan >= best` is False, which would take the other direction
+    # and let a winner stand on a set that was never completed.
+    es_nan = E.EvidenceSet(arena_fingerprint="arena")
+    es_nan.add(_rec("stokes+bg", -10.0, "laplace"))
+    es_nan.add(_rec("unreadable", float("nan"), "unresolved", bound=float("nan")))
+    assert es_nan.unresolved_contenders() == ["unreadable"]
+    es_missing = E.EvidenceSet(arena_fingerprint="arena")
+    es_missing.add(_rec("stokes+bg", -10.0, "laplace"))
+    es_missing.add(_rec("no_bound", float("nan"), "unresolved"))       # no ceiling recorded at all
+    assert es_missing.unresolved_contenders() == ["no_bound"]
+
+
+def test_the_budget_default_is_resolved_at_call_time(monkeypatch):
+    """``budget_s`` must not bind ESCALATION_BUDGET_S in the signature: a default argument is
+    captured at import, so patching the constant would be a silent no-op and any test that tried
+    it would pass vacuously. Same trap ``escalation_n_live()`` exists to avoid."""
+    blank = _blank_scan_ctx()
+    results = loop.fit_admissible_structures(blank, errors=False)
+    monkeypatch.setattr(E, "ESCALATION_BUDGET_S", 0.0)
+
+    def _no_sampling(*a, **k):
+        raise AssertionError("a zero budget patched onto the constant must stop the sampler")
+
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", _no_sampling)
+    es = E.candidate_set_evidence(_set_triples(blank, results), blank)    # no explicit budget_s
+    assert any(r.evidence_method == "unresolved" for r in es.records)
+
 
 def test_unresolved_contender_degrades_selection_to_recorded_aic(clean):
     """The consumer half: an incomplete comparison must not be ranked as if it were complete.
