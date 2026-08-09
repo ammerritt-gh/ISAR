@@ -380,9 +380,10 @@ def _selection_checks(record: Mapping[str, Any] | None, science: list[str], gaps
         # and crossing regimes deliberately offer close-together rival hypotheses, and "offered,
         # priced, rejected" conditions nothing about the winner. A variant that WINS still
         # fails closed below.
-        if (candidate.get("label") != winner and bool(constraints) and all(
-                isinstance(item, Mapping) and item.get("origin") == "catalogue_variant"
-                for item in constraints)):
+        if (winner is not None and candidate.get("label") != winner
+                and bool(constraints) and all(
+                    isinstance(item, Mapping) and item.get("origin") == "catalogue_variant"
+                    for item in constraints)):
             continue
         if semantics.get("estimator_kind") != "data_likelihood_mle":
             science.append("selection_ineligible")

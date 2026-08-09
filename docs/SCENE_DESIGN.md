@@ -54,10 +54,14 @@ Load-bearing rules, each naming the failure it prevents:
   revisions. The cluster is the future representation seam (ToF-scale data may someday swap one
   cluster's local representation); a flat global scene list is forbidden. Sampling is confined to
   seeded predictive draws inside EIG integrals.
-- **Laplace evidence validity is checked, never assumed.** Boundary-pinned MLEs (amplitude→0,
-  Γ→bound) mark `laplace_invalid` and escalate (dynesty) rather than reporting a silent Gaussian
-  volume. Evidence comparisons require an identical data+mask arena (arena hash asserted) — the
-  Baker–Cousins saturated-model constant only cancels on same-masked data.
+- **Laplace evidence validity is checked, never assumed.** Boundary-pinned MLEs mark
+  `laplace_invalid` and escalate (dynesty) rather than reporting a silent Gaussian volume —
+  with one carved-out exception (H9(b)/H10(b)): a fit pinned ONLY at the Γ floor takes
+  `laplace_truncated`, rung-1 Laplace with the gradient- and offset-aware boundary-mass
+  factor, because the floor is a modelling artifact and the boundary integrable. Amplitude→0,
+  Ω_d window-edge, Γ-ceiling, and unknown-pin fits all still escalate. Evidence comparisons
+  require an identical data+mask arena (arena hash asserted) — the Baker–Cousins
+  saturated-model constant only cancels on same-masked data.
 - **No shadow ceremony (H1).** Scene-EIG is authoritative from birth, validated by the world
   suite as ordinary pytest; the deterministic question scheduler is the permanent fallback when
   scoring is unavailable.

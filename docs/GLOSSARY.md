@@ -97,8 +97,8 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   status still escalate to dynesty. The mass factor is gradient- and offset-aware — exact for the
   local linear-plus-quadratic exponent, so it no longer assumes a half-Gaussian at a railed bound
   nor that θ̂ sits exactly on the floor. The residual gap against dynesty on the synthetic railed-Γ
-  probe is within the sampler's own seed scatter and traces to HESSE curvature at a railed axis,
-  not to the boundary factor.
+  probe is within the sampler's own seed scatter and, if real at all, may be attributable to
+  HESSE curvature at a railed axis — not to the boundary factor (H10(b)).
 - **constraint origin** — where an effective soft constraint on a fit came from; selection
   eligibility requires every effective constraint be soft with a prespecified origin.
   `user_declared` is the scientist's pre-fit soft declaration, prespecified by construction, and
@@ -106,7 +106,10 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   `catalogue_variant` is a catalogue `ConstrainedVariant`'s hard pin (predicate + pins) — it
   competes as its own additional candidate rather than folding into the base structure, and is
   deliberately never prespecified-soft, since a hard-conditioned fit is not an unconditioned
-  data-likelihood estimate (H9(c)).
+  data-likelihood estimate (H9(c)). For steering it disqualifies the scan only by WINNING: a
+  non-winning offered variant contributes neither eligibility nor reasons to the selection
+  aggregate and adds no EIG science codes (H10(a)); any other constraint origin keeps the
+  all-soft-prespecified eligibility rule.
 - **evidence identity / identity axis** — identity is open-vocabulary, catalogue-driven, and lives
   in (Q,E) space as cross-scan objects (`label@entry`) alongside the structure axis: a scan's fit
   contributes per-candidate evidence, splitting structure × identity twins only where rival

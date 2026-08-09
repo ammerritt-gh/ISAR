@@ -201,6 +201,22 @@ def test_railed_gamma_takes_the_truncated_laplace_rung(railed):
     assert rec.validity["boundary_gradient"]["phonon.Gamma"] > 0.0
 
 
+def test_unavailable_gradient_escalates_and_persists_no_nan(railed, monkeypatch):
+    """A non-finite boundary gradient must escalate AND leave a JSON-safe validity payload:
+    evidence_validity is persisted through candidate rows, and canonical JSON refuses NaN.
+    Finite gradients go in boundary_gradient; unmeasurable axes are named separately."""
+    ctx, hyp, fit = railed
+    monkeypatch.setattr(E, "_inward_cost_gradients",
+                        lambda *a, **k: {"phonon.Gamma": float("nan")})
+    rec = E.structure_evidence(hyp, ctx, fit, _bundle(hyp, ctx), escalation="defer")
+    assert rec.evidence_method == "deferred_escalation"
+    assert rec.validity["escalation"] == "laplace_invalid"
+    assert rec.validity["boundary_gradient"] == {}
+    assert rec.validity["boundary_gradient_unavailable"] == ["phonon.Gamma"]
+    assert not any(isinstance(v, float) and math.isnan(v)
+                   for v in rec.validity["boundary_gradient"].values())
+
+
 def test_ceiling_railed_gamma_escalates_not_truncates():
     """Γ has TWO bounds and only the floor is the H8 modelling artifact. A Γ railed at
     GAMMA_MAX is overdamped physics the model cannot express — the likelihood gradient at the

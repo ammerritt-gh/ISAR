@@ -464,7 +464,7 @@ def _aggregate_selection_eligibility(
         label = str(candidate["label"])
         fit_semantics = candidate["fit_semantics"]
         likelihoods.add(str(fit_semantics["data_likelihood_fingerprint"]))
-        if label != winner and _is_offered_variant(fit_semantics):
+        if winner is not None and label != winner and _is_offered_variant(fit_semantics):
             continue
         eligibilities.append(str(fit_semantics["selection_eligibility"]))
         for reason in fit_semantics.get("selection_ineligibility_reasons") or ():

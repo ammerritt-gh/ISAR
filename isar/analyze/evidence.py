@@ -100,7 +100,10 @@ class EvidenceRecord:
     label: str
     log_evidence: float                 # lnZ (NaN ⇒ no valid evidence; see validity)
     log_evidence_err: float | None      # dynesty logzerr; None for the Laplace lanes
-    evidence_method: str    # "laplace" | "laplace_truncated" | "laplace_map" | "dynesty" | "invalid"
+    # Full vocabulary lives in isar.schema.statistics.EVIDENCE_METHODS: the ladder rungs
+    # ("laplace" | "laplace_truncated" | "laplace_map" | "dynesty") plus the non-rung records
+    # ("deferred_escalation" | "dominated" | "unresolved" | "invalid").
+    evidence_method: str
     k_free: int
     arena_fingerprint: str
     prior_spec: tuple                   # PriorBundle.spec(), frozen
@@ -416,7 +419,14 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
         if not gamma_pinned:
             return _record(ln_z, None, "laplace")
         gradients = _inward_cost_gradients(hyp, ctx, fit_result, pinned, sig_post, free_names)
-        validity["boundary_gradient"] = {n: float(g) for n, g in gradients.items()}
+        # Only finite gradients enter validity: this dict is persisted through candidate rows,
+        # and canonical JSON refuses NaN. Axes whose gradient could not be measured are named
+        # separately — on that path the correction returns None and the record escalates.
+        validity["boundary_gradient"] = {
+            n: float(g) for n, g in gradients.items() if np.isfinite(g)}
+        unavailable = sorted(n for n, g in gradients.items() if not np.isfinite(g))
+        if unavailable:
+            validity["boundary_gradient_unavailable"] = unavailable
         correction = _boundary_mass_correction(
             pinned, fit_result.params, sig_post, free_names, bundle, gradients)
         if correction is None:
