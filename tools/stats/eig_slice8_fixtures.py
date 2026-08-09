@@ -162,7 +162,7 @@ def _selection(label: str, *, constrained: bool = False) -> dict[str, Any]:
     return scan_delivery._build_selection_semantics(
         [result],
         SimpleNamespace(
-            scores=[score], pooled=object(), selection_fallback=None,
+            scores=[score], best=label, pooled=object(), selection_fallback=None,
             evidence=SimpleNamespace(
                 arena_fingerprint=semantics["data_likelihood_fingerprint"]),
         ),
