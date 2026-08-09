@@ -1576,6 +1576,36 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   neighbour. The count question therefore belongs to the scene and question layers, not to
   `loop.py`.
 
+- **H9.** (2026-08-09, In force; SCENE-1 PR-c) **Constrained variants, the local identity axis,
+  and declared-constraint vocabulary are live; identity records and never drives.** Five parts.
+  **(a)** `user_declared` joins the constraint-origin vocabulary and `PRESPECIFIED_SOFT_ORIGINS`:
+  a scientist's pre-fit soft declaration is prespecified by construction and enters lnZ exactly
+  once (H4(c)); eyeballed *seeding* deliberately has no origin class — initial conditions never
+  touch `ParamConstraints` and carry no evidence weight. **(b)** The Γ floor is an integrable
+  boundary, not an invalidity: a converged fit whose only pins are `.Gamma` takes the
+  `laplace_truncated` rung — rung-1 Laplace shedding the Gaussian mass outside the support —
+  instead of dynesty (per H8(b) the escalation there was a parameterization artifact). Ω_d
+  window-edge pins and unknown pin status still escalate. The mass factor carries a measured
+  ≈1–2 nat conservative bias at genuinely railed bounds (one-sided-exponential vs half-Gaussian);
+  accepted deliberately — the direction never inflates a railed candidate and selection-material
+  gaps in this class are 10–40 nats; a gradient-aware factor is the named upgrade path.
+  **(c)** A catalogue `ConstrainedVariant` is executable (predicate + pins) and competes as an
+  ADDITIONAL candidate under a derived per-candidate context — H8(d)'s near-degenerate acoustic
+  twin pins intrinsic Γ to the floor so the observed width is pure resolution; its origin
+  `catalogue_variant` is deliberately NOT prespecified-soft, because a hard-conditioned fit is
+  never an unconditioned data-likelihood estimate. Selection eligibility hardened to match the
+  schema invariant: eligible ⇔ every effective constraint is soft with a prespecified origin.
+  **(d)** Identity is open-vocabulary, catalogue-driven, and lives in (Q,E) space as cross-scan
+  objects: a scan's fit CONTRIBUTES per-candidate evidence (structure × identity twins split
+  only where rival entries declare distinguishing priors — the no-dilution rule) and the
+  persisted per-label lnZ is the scene store's aggregation input; branch assignment keeps
+  driving delivery until SCENE-6, with `identity_ba_disagreement` recorded, never acted on.
+  **(e)** Deferred by name: the unresolvable near-degenerate PAIR (amplitude tie
+  A₂ = A₁·ω₁/ω₂, classical Bose) awaits cross-component tie machinery and an owner design
+  pass; `greedy_multimode_ic`'s close-seed skip stands until then; out-of-window mode treatment
+  is SCENE-3's; no production catalogue entry declares identity-conditioned priors yet — the
+  numbers are the owner's to declare, the mechanism is ready.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:
