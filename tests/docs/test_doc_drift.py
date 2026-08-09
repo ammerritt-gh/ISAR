@@ -133,6 +133,22 @@ STALE_PHRASES = (
         "O42 release review pending",
         "same correction, the heading form used in EIG_STEERING_DESIGN.md's slice list",
     ),
+    # STAT-2 closeout (S13): H4 made the evidence posterior the production selection authority.
+    # Narrow claim forms only — "retain-AIC disposition" as a historical fact about S8 stays legal.
+    (
+        "AIC remains production behavior",
+        "H4 made the Bayesian evidence posterior the production selection authority; AIC is a "
+        "persisted diagnostic (the D6 shadow lane stays AIC-labeled by design)",
+    ),
+    (
+        "S8 retains AIC",
+        "S8 was superseded by H4; its diagnostic content survives, the authority claim does not "
+        "(S13 records the STAT-2 closeout)",
+    ),
+    (
+        "STAT-2c remains the first possible authority switch",
+        "the STAT-2c authority switch was executed as H4 (SCENE-1 PR-b); S13 closed STAT-2",
+    ),
 )
 
 
