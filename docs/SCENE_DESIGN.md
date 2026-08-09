@@ -66,9 +66,9 @@ Load-bearing rules, each naming the failure it prevents:
 
 | Slice | Goal | Status |
 |---|---|---|
-| SCENE-0 | Constitution (H1) + synthetic world-suite foundation (12 worlds, ensemble runner, world manifests) | In progress |
+| SCENE-0 | Constitution (H1) + synthetic world-suite foundation (12 worlds, ensemble runner, world manifests) | Implemented (2026-08-08; PR #11 merged at `edd6bf7`) |
 | SCENE-1 | Catalogue, identity-conditional Laplace evidence, global grammar (bg-only + elastic+bg first-class, `elastic_only` verdict), observation footprints, interpretation artifacts — three sequential PRs | PR-a Implemented (H3, 2026-08-08: six-entry catalogue drives enumeration; nulls first-class; `elastic_only` with the 0.5 cap + LRT gate; transport/prior/variant declarations dormant); PR-b Implemented (H4, 2026-08-08: per-structure Laplace evidence + validity ladder, posterior drives selection, AIC persisted diagnostic, `fit_selection_semantics/2` replaces `/1`, universal Bose factor, dominance pruning + scoped escalation n_live; identity axis deferred by ruling); PR-c (persistence + variants + identity discussion) Planned |
-| SCENE-2 | `isar.campaign-program/1` sole contract; old envelope unreadable by design | In progress |
+| SCENE-2 | `isar.campaign-program/1` sole contract; old envelope unreadable by design | Implemented (H2, 2026-08-08; PR #12 merged at `058fb40`) |
 | SCENE-3 | Scene layer core: clusters, structural factors, revisioned scene store, workspace_api read surface; tracker contracts ported as specifications | Planned |
 | SCENE-4 | Question layer, deterministic opening book, generalized stop; first challenge run; scan-window authoritative default-on; shadow machinery deleted | Planned |
 | SCENE-5 | Scene-EIG authoritative from birth | Planned |

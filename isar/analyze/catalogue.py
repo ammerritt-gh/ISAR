@@ -12,12 +12,15 @@ the catalogue holds *references* to them. It is also lattice-blind: the ``elasti
 generic incoherent/coherent elastic scattering, not a Bragg model — Bragg is scene-level knowledge
 (DECISIONS decision 20), and an elastic-only outcome is a scan-local claim, never region exclusion.
 
-**Status.** Only ``local_models`` and their gates drive anything: the enumeration is the legacy
-:func:`isar.analyze.phonon.enumerate_phonon_structures` list (pinned by
-``tests/analyze/test_catalogue.py``) extended by the phonon-less nulls ``elastic+bg`` and ``bg``
-(SCENE-1 PR-a — what the ``elastic_only`` / ``no_signal`` verdicts select on). ``parameter_priors``,
-``transport``, ``constrained_variants`` and ``delivery_profile`` are **dormant declarations** —
-nothing reads them yet; they are consumed when Laplace evidence lands (SCENE-1 PR-b).
+**Status.** ``local_models`` and their gates drive the one- and two-mode enumerations (both
+catalogue-backed since SCENE-1 PR-b, pinned bit-identical to the legacy hand lists by
+``tests/analyze/test_catalogue.py``), extended by the phonon-less nulls ``elastic+bg`` and ``bg``
+(SCENE-1 PR-a — what the ``elastic_only`` / ``no_signal`` verdicts select on).
+``parameter_priors`` is live: :func:`resolve_priors` turns declarations into the
+:class:`PriorBundle` the evidence layer counts exactly once (SCENE-1 PR-b), though no entry
+declares one until the identity framing lands (owner deferral 2026-08-08). ``transport``,
+``constrained_variants`` and ``delivery_profile`` remain **dormant declarations** — nothing
+reads them yet; they are consumed at SCENE-1 PR-c.
 
 Import direction: :mod:`isar.analyze.components` imports :mod:`isar.analyze.phonon` at module
 level, so ``phonon`` never imports this module at module level — the delegation there is a
@@ -119,8 +122,8 @@ class PhenomenonDefinition:
     parameter_priors: tuple[ParamPrior, ...] = ()   # consumed by the evidence layer (PR-b);
     #                                                 entries declare none until the identity
     #                                                 framing lands (owner deferral 2026-08-08)
-    transport: tuple[TransportedParameter, ...] = ()  # dormant — consumed at PR-b
-    constrained_variants: tuple[ConstrainedVariant, ...] = ()  # dormant — wired at PR-b
+    transport: tuple[TransportedParameter, ...] = ()  # dormant — consumed at PR-c
+    constrained_variants: tuple[ConstrainedVariant, ...] = ()  # dormant — wired at PR-c
     delivery_profile: str = "triage"
 
     def model(self, name: str) -> LocalModel:
