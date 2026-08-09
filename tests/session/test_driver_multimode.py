@@ -272,6 +272,13 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
     cands = {c["label"]: c for c in fit["candidates"]}
     standard = {item["label"]: item["weight"] for item in shadow["standard_model_weights"]}
     legacy = {item["label"]: item["weight"] for item in shadow["legacy_model_weights"]}
+    # Both lanes must cover the SAME candidate family, or the D6 comparison is comparing two
+    # different questions and the per-label agreement below is vacuous. Guaranteed by
+    # construction — `legacy_weights = list(selection.scores)` and `_candidate_rows(sel.scores)`
+    # read one object — so a divergence means the shadow projection silently dropped a candidate.
+    # Zero-weight candidates (evidence-invalid, dominated, unresolved) stay in the set: they are
+    # scored, they carry weight 0.0, and they must remain visible rather than vanish.
+    assert set(standard) == set(legacy) == set(cands)
     assert sum(standard.values()) == pytest.approx(1.0)
     assert sum(legacy.values()) == pytest.approx(1.0)
     assert standard == pytest.approx(
