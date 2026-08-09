@@ -54,10 +54,14 @@ Load-bearing rules, each naming the failure it prevents:
   revisions. The cluster is the future representation seam (ToF-scale data may someday swap one
   cluster's local representation); a flat global scene list is forbidden. Sampling is confined to
   seeded predictive draws inside EIG integrals.
-- **Laplace evidence validity is checked, never assumed.** Boundary-pinned MLEs (amplitude→0,
-  Γ→bound) mark `laplace_invalid` and escalate (dynesty) rather than reporting a silent Gaussian
-  volume. Evidence comparisons require an identical data+mask arena (arena hash asserted) — the
-  Baker–Cousins saturated-model constant only cancels on same-masked data.
+- **Laplace evidence validity is checked, never assumed.** Boundary-pinned MLEs mark
+  `laplace_invalid` and escalate (dynesty) rather than reporting a silent Gaussian volume —
+  with one carved-out exception (H9(b)/H10(b)): a fit pinned ONLY at the Γ floor takes
+  `laplace_truncated`, rung-1 Laplace with the gradient- and offset-aware boundary-mass
+  factor, because the floor is a modelling artifact and the boundary integrable. Amplitude→0,
+  Ω_d window-edge, Γ-ceiling, and unknown-pin fits all still escalate. Evidence comparisons
+  require an identical data+mask arena (arena hash asserted) — the Baker–Cousins
+  saturated-model constant only cancels on same-masked data.
 - **No shadow ceremony (H1).** Scene-EIG is authoritative from birth, validated by the world
   suite as ordinary pytest; the deterministic question scheduler is the permanent fallback when
   scoring is unavailable.
@@ -67,7 +71,7 @@ Load-bearing rules, each naming the failure it prevents:
 | Slice | Goal | Status |
 |---|---|---|
 | SCENE-0 | Constitution (H1) + synthetic world-suite foundation (12 worlds, ensemble runner, world manifests) | Implemented (2026-08-08; PR #11 merged at `edd6bf7`) |
-| SCENE-1 | Catalogue, identity-conditional Laplace evidence, global grammar (bg-only + elastic+bg first-class, `elastic_only` verdict), observation footprints, interpretation artifacts — three sequential PRs | PR-a Implemented (H3, 2026-08-08: six-entry catalogue drives enumeration; nulls first-class; `elastic_only` with the 0.5 cap + LRT gate; transport/prior/variant declarations dormant); PR-b Implemented (H4, 2026-08-08: per-structure Laplace evidence + validity ladder, posterior drives selection, AIC persisted diagnostic, `fit_selection_semantics/2` replaces `/1`, universal Bose factor, dominance pruning + scoped escalation n_live; identity axis deferred by ruling); PR-c (persistence + variants + identity discussion) Planned |
+| SCENE-1 | Catalogue, identity-conditional Laplace evidence, global grammar (bg-only + elastic+bg first-class, `elastic_only` verdict), observation footprints, interpretation artifacts — three sequential PRs | PR-a Implemented (H3, 2026-08-08: six-entry catalogue drives enumeration; nulls first-class; `elastic_only` with the 0.5 cap + LRT gate; transport/prior/variant declarations dormant); PR-b Implemented (H4, 2026-08-08: per-structure Laplace evidence + validity ladder, posterior drives selection, AIC persisted diagnostic, `fit_selection_semantics/2` replaces `/1`, universal Bose factor, dominance pruning + scoped escalation n_live; identity axis deferred by ruling); PR-c Implemented (H9, 2026-08-09: `user_declared` origin; `laplace_truncated` Γ-floor rung, its boundary-mass factor gradient- and offset-aware rather than half-Gaussian; executable constrained variants — near-degenerate acoustic twin as an additional candidate; local identity axis with the no-dilution rule, records-only BA disagreement; candidate rows persist at_limit/variant/identity/effective_constraints and per-label lnZ as the scene store's aggregation input. Deferred by H9(e): the near-degenerate pair's amplitude tie, out-of-window treatment → SCENE-3, identity prior payloads → owner) |
 | SCENE-2 | `isar.campaign-program/1` sole contract; old envelope unreadable by design | Implemented (H2, 2026-08-08; PR #12 merged at `058fb40`) |
 | SCENE-3 | Scene layer core: clusters, structural factors, revisioned scene store, workspace_api read surface; tracker contracts ported as specifications | Planned |
 | SCENE-4 | Question layer, deterministic opening book, generalized stop; first challenge run; scan-window authoritative default-on; shadow machinery deleted | Planned |

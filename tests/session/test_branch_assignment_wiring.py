@@ -231,3 +231,54 @@ def test_hard_constraints_fix_gamma_and_amplitude():
         "phonon.Gamma": "prior_predictive",
         "phonon.A": "prior_predictive",
     }
+
+
+# ------------------------------------------- identity vs branch assignment (SCENE-1 PR-c cmt E)
+#
+# Two independent claims about what was measured: the winning candidate's catalogue identity and
+# the branch-assignment posterior. BA keeps driving delivery until SCENE-6, so the disagreement is
+# RECORDED and nothing else — the point is to measure how often the axes differ before either is
+# ever allowed to override the other.
+def _fit(identity, **overrides):
+    fit = {"verdict": "resolved", "omega0": 5.0, "evidence_identity": identity,
+           "identity_ba_disagreement": None, "reasons": []}
+    fit.update(overrides)
+    return fit
+
+
+def test_identity_ba_disagreement_is_recorded_when_the_axes_differ():
+    fit = _fit("a")
+    assert scan_delivery._record_identity_ba_disagreement(fit, "optic") == {
+        "evidence_identity": "a", "branch_id": "optic"}
+    assert fit["identity_ba_disagreement"] == {"evidence_identity": "a", "branch_id": "optic"}
+
+
+@pytest.mark.parametrize("identity,branch_id", [
+    ("acoustic", "acoustic"),     # the axes agree
+    (None, "optic"),              # identity-agnostic candidate — today's every scan
+    ("a", None),                  # no branch assignment (posterior off / non-ω₀ result)
+    (None, None),
+])
+def test_identity_ba_disagreement_is_none_when_either_side_is_silent_or_they_agree(
+        identity, branch_id):
+    fit = _fit(identity)
+    assert scan_delivery._record_identity_ba_disagreement(fit, branch_id) is None
+    assert fit["identity_ba_disagreement"] is None
+
+
+def test_identity_ba_disagreement_records_only(monkeypatch):
+    """The diagnostic is written where branch triage runs, and changes nothing else about the fit."""
+    monkeypatch.setattr(scan_delivery, "_assign_and_triage",
+                        lambda *a, **k: {"deliver": True, "branch_id": "optic", "weight": 0.8,
+                                         "entropy": 0.1, "resolvable": True})
+    fit = _fit("a", confidence=0.7, interval=(4.0, 6.0), interval_reliable=True)
+    before = {k: v for k, v in fit.items() if k != "identity_ba_disagreement"}
+
+    branch_id, *_ = scan_delivery._apply_branch_triage(
+        fit, None, None, card=None, sample="S", T=200.0, q=[0.1, 0.0, 0.0],
+        t_round=200.0, near_gamma=False, master=False)
+
+    assert branch_id == "optic"
+    assert fit["identity_ba_disagreement"] == {"evidence_identity": "a", "branch_id": "optic"}
+    # verdict, confidence, ω₀ and its interval are untouched by the disagreement
+    assert {k: fit[k] for k in before} == before

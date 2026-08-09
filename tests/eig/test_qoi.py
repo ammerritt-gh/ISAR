@@ -102,7 +102,7 @@ def _authenticated_projection(monkeypatch, *, explicit_weights: bool = False):
     selection = scan_delivery._build_selection_semantics(
         [result],
         SimpleNamespace(
-            scores=[score], pooled=object(), selection_fallback=None,
+            scores=[score], pooled=object(), selection_fallback=None, best="one",
             evidence=SimpleNamespace(arena_fingerprint=data),
         ),
         {"route": "full_two_stage", "labels_before_guideline": ["one"],

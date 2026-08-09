@@ -970,12 +970,12 @@ def figure_akaike(ws: Path) -> Path:
     ctx, _ = _workspace_ctx(ws, card, _AKAIKE_SCAN, rows[_AKAIKE_SCAN])
 
     # Force the two-stage enumeration to also fit the 2-mode set (archived best_model=stokes2+bg).
-    pairs = loop._enumerate_and_fit(ctx, peaks=[(0.0,), (0.0,)])
-    by_label = {r.label: (r, h) for r, h in pairs}
+    triples = loop._enumerate_and_fit(ctx, peaks=[(0.0,), (0.0,)])
+    by_label = {r.label: (r, h) for r, h, _ in triples}
     if "stokes2+bg" not in by_label:            # gate/IC fallback: fit the 2-mode set explicitly
         from isar.analyze.phonon import enumerate_phonon_multimode as enumerate_multimode
         from isar.analyze.phonon import greedy_multimode_ic
-        best_one = loop._best_converged([r for r, _ in pairs])
+        best_one = loop._best_converged([r for r, _, _ in triples])
         for h in enumerate_multimode(ctx):
             x0 = greedy_multimode_ic(h.build(), ctx, best_one, peaks=[(0.0,), (0.0,)])
             r = loop.fit_hypothesis(h, ctx, x0=x0)

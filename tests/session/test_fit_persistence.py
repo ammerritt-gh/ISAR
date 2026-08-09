@@ -12,6 +12,7 @@ The fitting tests reuse the single-peak pattern from ``test_driver_multimode`` a
 """
 import dataclasses
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -78,7 +79,9 @@ def test_fit_one_populates_amplitudes_and_candidates():
             "evidence_method", "usable", "estimator_kind", "fit_kind",
             "constraint_origin", "selection_eligibility", "conditioning_fingerprint",
             "data_likelihood_fingerprint", "model_parameterization_fingerprint",
-            "constraint_fingerprint", "comparison_context_fingerprint"}
+            "constraint_fingerprint", "comparison_context_fingerprint",
+            # SCENE-1 PR-c (commit D)
+            "at_limit", "variant", "identity", "effective_constraints"}
     for row in cands:
         assert set(row) == keys
         assert isinstance(row["label"], str) and isinstance(row["k"], int)
@@ -89,6 +92,15 @@ def test_fit_one_populates_amplitudes_and_candidates():
             "data_likelihood_mle", "soft_penalized_likelihood", "hard_conditioned_likelihood"}
         assert row["selection_eligibility"]
         assert len(row["conditioning_fingerprint"]) == 64
+
+    # SCENE-1 PR-c: the production catalogue declares no identity or variant, so every row is
+    # identity-agnostic and unconstrained — but each still records the pin map it was priced with,
+    # and the WINNER's map is lifted onto the fit dict for FitOutcome.at_limit.
+    assert all(r["variant"] is None and r["identity"] is None for r in cands)
+    assert all(r["effective_constraints"] == [] for r in cands)
+    assert all(isinstance(r["at_limit"], dict) and r["at_limit"] for r in cands)
+    assert fit["at_limit"] == next(r["at_limit"] for r in cands if r["label"] == fit["best_label"])
+    assert fit["evidence_identity"] is None
 
     # The AIC diagnostics lane still travels: delta_aic >= 0 with a row at exactly 0.
     assert all(r["delta_aic"] >= -1e-9 for r in cands)
@@ -455,3 +467,103 @@ def test_session_json_roundtrips_new_fields(tmp_path):
     # A reconstructed FitOutcome carries them as first-class fields.
     oc = outcome_mod.FitOutcome(**det)
     assert oc.amplitudes == amps and oc.candidates == _cands()
+
+
+# --------------------------------------------------------------- SCENE-1 PR-c (commit D)
+def _score(label, *, log_evidence, posterior, effective_constraints=None):
+    """A ModelScore-shaped stand-in: `_candidate_rows` only reads attributes."""
+    return SimpleNamespace(
+        label=label, k=4, n=81, cost=80.0, delta_aic=0.0, akaike_weight=0.5,
+        posterior_probability=posterior, log_evidence=log_evidence, evidence_method="laplace",
+        fit_semantics={"estimator_kind": "data_likelihood_mle", "fit_kind": "unconstrained",
+                       "aggregate_constraint_origin": None, "selection_eligibility": "eligible",
+                       "effective_constraints": effective_constraints
+                       if effective_constraints is not None else []})
+
+
+def _fit_result(*, at_limit=None, variant=None, identity=None):
+    return SimpleNamespace(label="x", cost_per_dof=1.04, n_modes=1, analysis_usable=True,
+                           at_limit=at_limit, variant=variant, identity=identity)
+
+
+def test_candidate_rows_carry_variant_at_limit_and_effective_constraints():
+    """The near-degenerate twin (C1) must be legible in the persisted table: which parameter the
+    catalogue pinned, under which origin, and that a variant produced the row at all."""
+    pin = {"parameter": "phonon.Gamma", "constraint_kind": "hard",
+           "origin": "catalogue_variant", "value": 0.001}
+    scores = [_score("stokes+bg", log_evidence=-40.0, posterior=0.4),
+              _score("stokes+bg_neardeg", log_evidence=-39.0, posterior=0.6,
+                     effective_constraints=[pin])]
+    fits = {
+        "stokes+bg": _fit_result(at_limit={"phonon.Omega_d": False, "phonon.Gamma": False}),
+        "stokes+bg_neardeg": _fit_result(at_limit={"phonon.Omega_d": False},
+                                         variant="near_degenerate", identity="acoustic"),
+    }
+    rows = {r["label"]: r for r in scan_delivery._candidate_rows(scores, fits)}
+
+    plain, twin = rows["stokes+bg"], rows["stokes+bg_neardeg"]
+    assert plain["variant"] is None and plain["identity"] is None
+    assert plain["effective_constraints"] == []          # recorded, unconstrained
+    assert plain["at_limit"] == {"phonon.Omega_d": False, "phonon.Gamma": False}
+    assert twin["variant"] == "near_degenerate" and twin["identity"] == "acoustic"
+    assert twin["effective_constraints"] == [pin]        # read back, never re-derived
+    assert twin["at_limit"] == {"phonon.Omega_d": False}
+    # The rows must be JSON-clean: they are persisted as one CSV cell and one session.json value.
+    assert json.loads(json.dumps(list(rows.values())))
+
+
+def test_candidate_rows_tolerate_a_missing_fit_and_absent_semantics():
+    score = SimpleNamespace(label="ghost", k=4, n=81, cost=80.0, delta_aic=0.0,
+                            akaike_weight=1.0, fit_semantics=None)
+    row = scan_delivery._candidate_rows([score], {})[0]
+    assert row["at_limit"] is None and row["variant"] is None and row["identity"] is None
+    # None, not [] — no semantics record is not the same claim as "recorded, unconstrained".
+    assert row["effective_constraints"] is None
+
+
+def test_identity_twin_rows_keep_independent_log_evidence():
+    """SCENE-3's aggregation input. Two identities of one structure share the arena and the data
+    likelihood; only their catalogue priors differ, so each label's lnZ must survive to the
+    persisted rows as its own number (test_identity_twins_share_one_arena_with_independent_evidence
+    proves the evidence layer produces them; this is the layer that stores them)."""
+    scores = [_score("stokes+bg@a", log_evidence=-40.5, posterior=0.3),
+              _score("stokes+bg@b", log_evidence=-39.25, posterior=0.7)]
+    fits = {"stokes+bg@a": _fit_result(identity="a"), "stokes+bg@b": _fit_result(identity="b")}
+    rows = {r["label"]: r for r in scan_delivery._candidate_rows(scores, fits)}
+
+    assert rows["stokes+bg@a"]["identity"] == "a" and rows["stokes+bg@b"]["identity"] == "b"
+    assert rows["stokes+bg@a"]["log_evidence"] == pytest.approx(-40.5)
+    assert rows["stokes+bg@b"]["log_evidence"] == pytest.approx(-39.25)
+
+
+def _scene1_outcome():
+    outcome = _outcome_with(None, None)
+    outcome.at_limit = {"phonon.Omega_d": False, "phonon.Gamma": True}
+    outcome.evidence_identity = "acoustic"
+    outcome.identity_ba_disagreement = {"evidence_identity": "acoustic", "branch_id": "optic"}
+    outcome.interpretation_ref = "sha256:deadbeef"
+    return outcome
+
+
+def test_scene1_outcome_fields_roundtrip_to_dict_from_dict():
+    restored = driver._coerce_fit_outcome(json.loads(json.dumps(_scene1_outcome().to_dict())))
+    assert restored.at_limit == {"phonon.Omega_d": False, "phonon.Gamma": True}
+    assert restored.evidence_identity == "acoustic"
+    assert restored.identity_ba_disagreement == {"evidence_identity": "acoustic",
+                                                 "branch_id": "optic"}
+    assert restored.interpretation_ref == "sha256:deadbeef"
+
+
+def test_scene1_outcome_fields_default_absent():
+    """SCENE-3 owns the interpretation store; PR-c only reserves the pointer."""
+    oc = _outcome_with(None, None)
+    assert (oc.at_limit, oc.evidence_identity, oc.identity_ba_disagreement,
+            oc.interpretation_ref) == (None, None, None, None)
+
+
+def test_evidence_identity_survives_to_results_csv(tmp_path):
+    """Declaring a column is not populating it (the OP10 bug class), and the string column needs
+    no _NUMERIC_COLUMNS entry — it must read back verbatim."""
+    assert _write_read(tmp_path / "a", _scene1_outcome())["evidence_identity"] == "acoustic"
+    # The identity-agnostic fit every production catalogue emits today writes an empty cell.
+    assert _write_read(tmp_path / "b", _outcome_with(None, None))["evidence_identity"] is None

@@ -57,6 +57,8 @@ CONSTRAINT_ORIGINS = frozenset(
         "none",
         "prespecified_scientific",
         "prior_predictive",
+        "user_declared",
+        "catalogue_variant",
         "data_dependent_rescue",
         "post_selection",
         "mixed",
@@ -64,10 +66,20 @@ CONSTRAINT_ORIGINS = frozenset(
 )
 #: Soft-constraint origins H4(c) recast as evidence-comparable: prespecified relative to the scan
 #: being fit, so the prior IS its parameter's prior and enters lnZ exactly once.
+#: ``user_declared`` (SCENE-1 PR-c) is the scientist's pre-fit declaration — "ω₀ ≈ 5 ± 0.5 meV"
+#: as a soft Gaussian — priced identically: declared before the fit sees this scan's counts, it
+#: is prespecified by construction. (Eyeballed *seeding* needs no origin: initial conditions
+#: never touch ``ParamConstraints`` and carry no evidence weight.)
+#: ``catalogue_variant`` (SCENE-1 PR-c) is deliberately NOT here: a constrained variant pins a
+#: parameter HARD (the near-degenerate Γ floor), and a hard-conditioned fit is never an
+#: unconditioned data-likelihood estimate however prespecified the physics behind it is. The
+#: variant competes as its own candidate, priced by evidence.
 #: ``data_dependent_rescue`` / ``post_selection`` read this scan's own counts and stay ineligible;
 #: an unrecognised origin is not prespecified. The producer (``isar.analyze.loop``) reads this, so
 #: the vocabulary and the rule that uses it stay in one place.
-PRESPECIFIED_SOFT_ORIGINS = frozenset({"prespecified_scientific", "prior_predictive"})
+PRESPECIFIED_SOFT_ORIGINS = frozenset(
+    {"prespecified_scientific", "prior_predictive", "user_declared"}
+)
 SELECTION_ELIGIBILITIES = frozenset(
     {
         "eligible",
@@ -85,8 +97,8 @@ SELECTION_FALLBACKS = frozenset(
     {"aic_no_evidence_inputs", "aic_all_evidence_invalid", "evidence_budget_exhausted"}
 )
 EVIDENCE_METHODS = frozenset(
-    {"laplace", "laplace_map", "dynesty", "deferred_escalation", "dominated", "unresolved",
-     "invalid"}
+    {"laplace", "laplace_truncated", "laplace_map", "dynesty", "deferred_escalation",
+     "dominated", "unresolved", "invalid"}
 )
 BOOTSTRAP_MEASURE_KINDS = frozenset(
     {

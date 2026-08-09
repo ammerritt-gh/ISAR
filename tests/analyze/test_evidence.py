@@ -18,6 +18,7 @@ from isar.analyze.context import ScanContext
 from isar.analyze.errors import bayes as BZ
 from isar.analyze.lineshapes import convolute_voigt_dho
 from isar.analyze.phonon import enumerate_phonon_structures
+from isar.schema.statistics import EVIDENCE_METHODS
 from isar.schema.steering import ParamConstraints
 
 pytestmark = pytest.mark.filterwarnings("ignore:The enlargement factor")
@@ -137,6 +138,262 @@ def test_transport_prior_counts_exactly_once():
     assert rec.log_evidence == pytest.approx(expected)
     wrong_double_count = E.laplace_ln_z(fit.posterior_cost, bundle.logpdf(fit.params), sigma)
     assert rec.log_evidence != pytest.approx(wrong_double_count)
+
+
+def test_transport_prior_carries_user_declared_origin_detail():
+    """SCENE-1 PR-c: a ``user_declared`` soft constraint still resolves via the ``transport``
+    path (catalogue.py:465-468) with the origin string preserved in ``origin_detail``."""
+    constraints = ParamConstraints(soft={"phonon.Gamma": (0.5, 0.2)},
+                                   origins={"phonon.Gamma": "user_declared"})
+    ctx = _spectrum_ctx(constraints=constraints)
+    hyp, fit = _fitted(ctx)
+    bundle = _bundle(hyp, ctx)
+    (gamma_prior,) = [p for p in bundle.params if p.name == "phonon.Gamma"]
+    assert gamma_prior.origin == "transport"
+    assert gamma_prior.origin_detail == "user_declared"
+
+
+# ------------------------------------------------- rung 1b: Γ railed at the floor (H8)
+@pytest.fixture(scope="module")
+def railed():
+    """A resolution-limited Stokes peak whose Γ̂ lands ON ``GAMMA_FLOOR`` with a converged fit
+    and a PD covariance, so the ONLY at_limit pin is ``phonon.Gamma`` — the precondition of the
+    H8 carve-out. Counts are deliberately modest: at high statistics σ_Γ shrinks until the
+    truncated mass is numerically 1 and the correction stops testing anything."""
+    x = np.linspace(-10.0, 10.0, 81)
+    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.01, 15.0, 20.0, 40.0, 100.0, peak="all")
+    counts = np.random.default_rng(4).poisson(np.clip(lam, 0.0, None)).astype(float)
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
+                      center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    hyp, fit = _fitted(ctx)
+    assert fit.optimizer_converged and fit.covariance_ok
+    assert [n for n, v in fit.at_limit.items() if v] == ["phonon.Gamma"]
+    return ctx, hyp, fit
+
+
+def test_railed_gamma_takes_the_truncated_laplace_rung(railed):
+    """GAMMA_FLOOR is a modelling artifact, not physics, so a Γ jammed against it is an
+    integrable boundary: rung 1 stands and sheds the Gaussian mass outside the support instead
+    of paying for dynesty. The correction must be MATERIAL here (Γ̂ is at the floor, so ~half the
+    Gaussian is outside), otherwise the rung would be indistinguishable from plain Laplace."""
+    ctx, hyp, fit = railed
+    bundle = _bundle(hyp, ctx)
+    rec = E.structure_evidence(hyp, ctx, fit, bundle)
+
+    assert rec.evidence_method == "laplace_truncated"
+    assert rec.evidence_method in EVIDENCE_METHODS          # persistable vocabulary
+    assert rec.validity["gamma_boundary_truncated"] == ["phonon.Gamma"]
+    assert rec.validity["boundary_pinned"] == ["phonon.Gamma"]
+    assert "escalation" not in rec.validity                 # no sampler was reached
+    assert rec.log_evidence_err is None and np.isfinite(rec.log_evidence)
+
+    names = list(fit.params)
+    free = [p.name for p in bundle.params]
+    sigma = np.asarray(fit.parameter_covariance)[np.ix_(
+        [names.index(n) for n in free], [names.index(n) for n in free])]
+    uncorrected = E.laplace_ln_z(fit.cost, bundle.logpdf(fit.params), sigma)
+    # Measured 2026-08-09: g = 79.6, σ_Γ = 1.27e-3 ⇒ gσ = 0.1012, and Γ̂ sits a = 2.11e-5 above
+    # the floor (a/σ = 0.0166, well inside GAMMA_BOUND_TOL = 5e-3) ⇒ correction = −0.7578 nats.
+    # Direction: the gradient term sheds MORE than ln½ (= −0.693) and the tiny offset gives a
+    # little back, so a railed Γ still loses appreciably more than half its Gaussian mass.
+    assert rec.log_evidence < uncorrected - 0.4
+    assert rec.validity["boundary_gradient"]["phonon.Gamma"] > 0.0
+
+
+def test_unavailable_gradient_escalates_and_persists_no_nan(railed, monkeypatch):
+    """A non-finite boundary gradient must escalate AND leave a JSON-safe validity payload:
+    evidence_validity is persisted through candidate rows, and canonical JSON refuses NaN.
+    Finite gradients go in boundary_gradient; unmeasurable axes are named separately."""
+    ctx, hyp, fit = railed
+    monkeypatch.setattr(E, "_inward_cost_gradients",
+                        lambda *a, **k: {"phonon.Gamma": float("nan")})
+    rec = E.structure_evidence(hyp, ctx, fit, _bundle(hyp, ctx), escalation="defer")
+    assert rec.evidence_method == "deferred_escalation"
+    assert rec.validity["escalation"] == "laplace_invalid"
+    assert rec.validity["boundary_gradient"] == {}
+    assert rec.validity["boundary_gradient_unavailable"] == ["phonon.Gamma"]
+    assert not any(isinstance(v, float) and math.isnan(v)
+                   for v in rec.validity["boundary_gradient"].values())
+
+
+def test_ceiling_railed_gamma_escalates_not_truncates():
+    """Γ has TWO bounds and only the floor is the H8 modelling artifact. A Γ railed at
+    GAMMA_MAX is overdamped physics the model cannot express — the likelihood gradient at the
+    bound is genuinely nonzero and an overdamped-vs-two-mode contest is selection-material —
+    so it must pay for the sampler, never take the cheap rung. Found by a fresh-context
+    verifier 2026-08-09: the original gate tested the NAME suffix only, and this exact fit
+    (Γ̂ = 4.9999… at GAMMA_MAX = 5.0) came back laplace_truncated."""
+    x = np.linspace(-15.0, 15.0, 101)
+    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 4.0, 200.0, 0.0, 20.0, 300.0, peak="all")
+    counts = np.random.default_rng(3).poisson(np.clip(lam, 0.0, None)).astype(float)
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=300.0,
+                      center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    hyp, fit = _fitted(ctx)
+    assert fit.optimizer_converged and fit.covariance_ok
+    pins = [n for n, v in fit.at_limit.items() if v]
+    assert pins == ["phonon.Gamma"]
+    assert fit.params["phonon.Gamma"] > 1.0                  # the CEILING, not the floor
+
+    bundle = _bundle(hyp, ctx)
+    rec = E.structure_evidence(hyp, ctx, fit, bundle, escalation="defer")
+    assert rec.evidence_method == "deferred_escalation"
+    assert rec.validity["escalation"] == "laplace_invalid"
+    assert "gamma_boundary_truncated" not in rec.validity
+
+
+def test_truncated_laplace_agrees_with_dynesty(railed):
+    """The load-bearing one: the analytic shortcut must answer the same integral the sampler
+    does. Same candidate, same bundle — the pin is widened to a non-Γ parameter only to force
+    the escalation lane (coarse budget ⇒ coarse tolerance, as in the laplace_map test)."""
+    ctx, hyp, fit = railed
+    bundle = _bundle(hyp, ctx)
+    lap = E.structure_evidence(hyp, ctx, fit, bundle)
+    assert lap.evidence_method == "laplace_truncated"
+
+    # ``sample="unif"`` (the FAST default elsewhere) is hopeless on a boundary-sharp posterior —
+    # rejection sampling inside the bounding ellipsoid stalls for minutes. rwalk finishes in ~15 s.
+    forced = replace(fit, at_limit=dict(fit.at_limit, **{"phonon.A": True}))
+    dyn = E.structure_evidence(hyp, ctx, forced, bundle, **dict(FAST, sample="rwalk"))
+    assert dyn.evidence_method == "dynesty"
+    assert abs(lap.log_evidence - dyn.log_evidence) < max(2.0, 5.0 * dyn.log_evidence_err)
+
+
+def test_a_non_gamma_pin_never_takes_the_truncated_rung(railed):
+    """The carve-out is Γ-only. Ω_d at the window edge is real physics (H8) — a boundary the
+    Gaussian picture genuinely cannot describe — so it keeps escalating even alongside a Γ pin."""
+    ctx, hyp, fit = railed
+    forced = replace(fit, at_limit=dict(fit.at_limit, **{"phonon.Omega_d": True}))
+    rec = E.structure_evidence(hyp, ctx, forced, _bundle(hyp, ctx), escalation="defer")
+
+    assert rec.evidence_method == "deferred_escalation"     # i.e. NOT laplace_truncated
+    assert rec.validity["escalation"] == "laplace_invalid"
+    assert "gamma_boundary_truncated" not in rec.validity
+
+
+def test_two_railed_gammas_escalate_instead_of_multiplying_per_axis_masses():
+    """The truncated rung is SINGLE-pin only. Two Γ pins would need the pinned block's joint
+    orthant mass; the per-axis product ignores their correlation and is selection-material
+    (bivariate orthant at |ρ| = 0.9 is 0.428 vs the product's 0.25, ~0.5-1.3 nats). The gate
+    must therefore escalate on two pins exactly as on any other invalid-Gaussian case.
+
+    Construction: a converged, PD, UNPINNED two-mode fit, with the pins forced on by hand —
+    a genuine double rail is fit-fragile, and the guard under test is the pin COUNT, so the
+    same fit with only one of the two pins is the control that must still take the cheap rung.
+    """
+    from isar.analyze.phonon import GAMMA_FLOOR, enumerate_phonon_multimode
+
+    x = np.linspace(-12.0, 12.0, 121)
+    lam = (convolute_voigt_dho(x, 3.0, 0.0, 1.0, 0.0, 0.01, 40.0, 0.0, 25.0, 100.0, peak="all")
+           + convolute_voigt_dho(x, 8.0, 0.0, 1.0, 0.0, 0.01, 30.0, 0.0, 0.0, 100.0, peak="all"))
+    counts = np.random.default_rng(4).poisson(np.clip(lam, 0.0, None)).astype(float)
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
+                      center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    hyp = {h.label: h for h in enumerate_phonon_multimode(ctx)}["stokes2+bg"]
+    fit = loop.fit_hypothesis(hyp, ctx, minos=False)
+    assert fit.optimizer_converged and fit.covariance_ok
+    gammas = ["phonon.Gamma", "phonon2.Gamma"]
+    bundle = _bundle(hyp, ctx)
+    assert set(gammas) <= {p.name for p in bundle.params}     # both Γ are genuinely free
+
+    # Both Γ at the floor and flagged: the ONLY thing the gate can object to is the count.
+    at_floor = replace(fit, params=dict(fit.params, **{n: GAMMA_FLOOR for n in gammas}))
+    both = replace(at_floor, at_limit=dict(fit.at_limit, **{n: True for n in gammas}))
+    rec = E.structure_evidence(hyp, ctx, both, bundle, escalation="defer")
+    assert rec.evidence_method == "deferred_escalation"       # i.e. NOT laplace_truncated
+    assert rec.validity["escalation"] == "laplace_invalid"
+    assert rec.validity["boundary_pinned"] == gammas
+    assert "gamma_boundary_truncated" not in rec.validity
+
+    one = replace(at_floor, at_limit=dict(fit.at_limit, **{gammas[0]: True}))
+    ctrl = E.structure_evidence(hyp, ctx, one, bundle, escalation="defer")
+    assert ctrl.evidence_method == "laplace_truncated"
+    assert ctrl.validity["gamma_boundary_truncated"] == [gammas[0]]
+
+
+def test_boundary_mass_correction_sheds_half_a_gaussian_at_a_flat_bound():
+    """The g → 0 limit of the gradient-aware factor is the plain half-Gaussian. A parameter on
+    its lower bound whose likelihood is locally FLAT along that axis keeps exactly the mass
+    inside the support: ½·erfcx(0) = ½. Backward-compatible with the pre-gradient factor."""
+    prior = C.ResolvedPrior("phonon.Gamma", "flat", None, None, 1e-3, 5.0, "default_flat")
+    bundle = C.PriorBundle((prior,))
+    corr = E._boundary_mass_correction(["phonon.Gamma"], {"phonon.Gamma": 1e-3},
+                                       np.array([0.1]), ["phonon.Gamma"], bundle,
+                                       {"phonon.Gamma": 0.0})
+    assert corr == pytest.approx(math.log(0.5), abs=1e-12)
+
+
+def test_boundary_mass_correction_is_gradient_aware():
+    """With θ̂ ON the bound and a nonzero inward gradient the local likelihood is
+    exp(−g·t − t²/2σ²) on t ≥ 0, whose mass relative to the full Gaussian is
+    exp(g²σ²/2)·Φ(−gσ) = ½·erfcx(gσ/√2). The a = 0 case of the offset-aware form must reproduce
+    that EXACTLY, so the tolerance is float-tight.
+
+    Note the DIRECTION: erfcx is monotonically decreasing on [0, ∞), so this factor is ≤ ½ for
+    every g ≥ 0 and sheds MORE than the half-Gaussian, never less — a likelihood falling away
+    from θ̂ into the support leaves less than half the Gaussian's mass there, not more."""
+    from scipy.special import erfcx
+
+    prior = C.ResolvedPrior("phonon.Gamma", "flat", None, None, 1e-3, 5.0, "default_flat")
+    bundle = C.PriorBundle((prior,))
+    sigma = 0.1
+    g = 2.0 / sigma                                     # gσ = 2
+    corr = E._boundary_mass_correction(["phonon.Gamma"], {"phonon.Gamma": 1e-3},
+                                       np.array([sigma]), ["phonon.Gamma"], bundle,
+                                       {"phonon.Gamma": g})
+    assert corr == pytest.approx(math.log(0.5 * float(erfcx(math.sqrt(2.0)))), abs=1e-12)
+    assert corr < math.log(0.5)
+
+
+def test_boundary_mass_correction_is_offset_aware():
+    """θ̂ need not sit exactly ON the floor: the gate admits it up to GAMMA_BOUND_TOL inside,
+    where far less than half the mass is outside. With a = θ̂ − lo the exact mass fraction is
+    exp(g²σ²/2)·Φ(a/σ − gσ); assuming a = 0 there would over-shed by up to ~0.68 nats.
+
+    Both references are ``scipy.integrate.quad`` of the raw integrand exp(−g·t − t²/2σ²) over
+    t ∈ [−a, ∞), divided by σ√2π (agreement ≤ 3e-13 nats):
+      * a = 3σ, g = 0   → ln Φ(3)  = −0.00135080996474798
+      * a = 2σ, gσ = 1  → +0.32724622097655068  (the tilt pulls in mass from below θ̂)"""
+    prior = C.ResolvedPrior("phonon.Gamma", "flat", None, None, 1e-3, 5.0, "default_flat")
+    bundle = C.PriorBundle((prior,))
+    sigma = 1e-3                                        # so 3σ still fits inside GAMMA_BOUND_TOL
+
+    flat = E._boundary_mass_correction(["phonon.Gamma"], {"phonon.Gamma": 1e-3 + 3 * sigma},
+                                       np.array([sigma]), ["phonon.Gamma"], bundle,
+                                       {"phonon.Gamma": 0.0})
+    assert flat == pytest.approx(-0.00135080996474798, abs=1e-12)
+    assert flat == pytest.approx(math.log(0.5 * math.erfc(-3.0 / math.sqrt(2.0))), abs=1e-12)
+
+    tilted = E._boundary_mass_correction(["phonon.Gamma"], {"phonon.Gamma": 1e-3 + 2 * sigma},
+                                         np.array([sigma]), ["phonon.Gamma"], bundle,
+                                         {"phonon.Gamma": 1.0 / sigma})
+    assert tilted == pytest.approx(0.32724622097655068, abs=1e-12)
+
+
+def test_degenerate_boundary_mass_fails_safe():
+    """A mass the correction cannot compute must return None so the caller escalates — a
+    silently-zero correction would publish an uncorrected lnZ under a truncated label."""
+    prior = C.ResolvedPrior("phonon.Gamma", "flat", None, None, 1e-3, 5.0, "default_flat")
+    bundle = C.PriorBundle((prior,))
+    params, names = {"phonon.Gamma": 1e-3}, ["phonon.Gamma"]
+    flat = {"phonon.Gamma": 0.0}
+    for sigma in (0.0, float("nan"), float("inf"), -1.0):
+        assert E._boundary_mass_correction(names, params, np.array([sigma]), names,
+                                           bundle, flat) is None
+    # An unavailable gradient (non-finite cost at either probe point) is the same refusal.
+    for grad in ({}, {"phonon.Gamma": float("nan")}, {"phonon.Gamma": float("inf")}):
+        assert E._boundary_mass_correction(names, params, np.array([0.1]), names,
+                                           bundle, grad) is None
+    # θ̂ off the floor by more than the caller's gate allows: refuse rather than extrapolate the
+    # sits-ON-lo formula.
+    assert E._boundary_mass_correction(names, {"phonon.Gamma": 0.5}, np.array([0.1]), names,
+                                       bundle, flat) is None
+    unrelated = C.PriorBundle((C.ResolvedPrior("bg.BG", "flat", None, None, 0.0, 1e3,
+                                               "default_flat"),))
+    assert E._boundary_mass_correction(names, params, np.array([0.1]), names,
+                                       unrelated, flat) is None
 
 
 # ------------------------------------------------------------------ rung 2: MAP refit

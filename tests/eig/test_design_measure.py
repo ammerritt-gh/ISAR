@@ -174,10 +174,11 @@ def _bundle(monkeypatch, specs=None):
         evidence_validity={}, survives=True, fit_semantics=semantics[item["label"]])
         for index, item in enumerate(specs)]
     labels = [item["label"] for item in specs]
+    best_label = max(specs, key=lambda item: item["weight"])["label"]
     selection = scan_delivery._build_selection_semantics(
         list(results.values()),
         SimpleNamespace(
-            scores=scores, pooled=object(), selection_fallback=None,
+            scores=scores, pooled=object(), selection_fallback=None, best=best_label,
             evidence=SimpleNamespace(
                 arena_fingerprint=semantics[labels[0]]["data_likelihood_fingerprint"]),
         ),

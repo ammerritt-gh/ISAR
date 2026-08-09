@@ -5,6 +5,9 @@ full elastic+stokes+bg fit reproduces the frozen synth.fit(); and the result sep
 optimizer convergence from error availability (review F2) so step-3 bootstrap is not
 starved of converged-but-covariance-less fits.
 """
+import logging
+from dataclasses import replace
+
 import numpy as np
 
 from isar.analyze import loop
@@ -315,3 +318,79 @@ def test_result_flags_gamma_at_bound():
                         covariance=None, covariance_ok=False, at_limit={}, merrors=None)
     res2 = loop.result_from_backend("stokes+bg", comp, lambda th: 5.0, n_used=20, k=4, br=br2)
     assert res2.gamma_at_bound is False
+
+
+# --- catalogue constrained variants as additional candidates (SCENE-1 PR-c) -------------------
+def _near_degenerate_ctx(n=81):
+    """A phonon whose ω₀ sits below the resolution width — the near-degenerate case."""
+    x = np.linspace(-6.0, 6.0, n)
+    counts = convolute_voigt_dho(x, 0.6, 0.0, 0.9, 0.0, 0.3, 300.0, 60.0, 12.0, 150.0,
+                                 peak="all")
+    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=150.0,
+                       center=0.0, gauss_fwhm=0.9, lorentz_fwhm=0.0, instrument="S30",
+                       energy_status="needs_zero")
+
+
+def test_near_degenerate_variant_is_offered_as_an_additional_twin():
+    """A converged one-mode fit with ω̂ ≤ the resolution width earns a pinned twin candidate: same
+    components, ``_neardeg`` label, Γ frozen at the floor, one free parameter fewer. The
+    unconstrained parent stays in the set — the variant is an ADDITIONAL candidate, not a
+    replacement (2a ruling 2)."""
+    from isar.analyze.phonon import GAMMA_FLOOR
+
+    ctx = _near_degenerate_ctx()
+    results = {r.label: r for r in loop.fit_structures_two_stage(ctx, minos=False)}
+    assert "stokes+bg" in results
+    twin = results["stokes+bg_neardeg"]
+
+    assert twin.variant == "near_degenerate"
+    assert twin.fit_kind == "branch_conditional"           # the existing hard-fixed provenance tag
+    assert twin.optimizer_converged
+    assert twin.k == results["stokes+bg"].k - 1
+    assert twin.params["phonon.Gamma"] == GAMMA_FLOOR
+    assert results["stokes+bg"].variant is None
+
+
+def test_no_variant_offered_when_the_mode_is_resolved():
+    """ω₀ well above the resolution width: the near-degenerate special case is not a rival, so
+    nothing is offered and the candidate set is unchanged."""
+    ctx = _spectrum_ctx()                                   # ω₀ = 5 meV, gauss_fwhm = 1.1
+    results = loop.fit_structures_two_stage(ctx, minos=False)
+    assert not any(r.label.endswith("_neardeg") for r in results)
+    assert all(r.variant is None for r in results)
+
+
+def test_variant_semantics_are_ineligible_and_writable():
+    """The pin is recorded as an effective HARD constraint of origin ``catalogue_variant``, which
+    makes the candidate selection-ineligible — and the record must survive the write-time
+    invariant (eligible ⇒ all-soft-prespecified) rather than crash in it."""
+    from isar.schema.statistics import FIT_SELECTION_SCHEMA, validate_for_write
+
+    ctx = _near_degenerate_ctx()
+    results = {r.label: r for r in loop.fit_structures_two_stage(ctx, minos=False)}
+    semantics = results["stokes+bg_neardeg"].fit_semantics
+
+    assert semantics is not None
+    assert [(c["parameter"], c["constraint_kind"], c["origin"])
+            for c in semantics["effective_constraints"]] == [
+        ("phonon.Gamma", "hard", "catalogue_variant")]
+    assert semantics["selection_eligibility"] == "ineligible_unapproved_conditioning"
+    assert semantics["estimator_kind"] == "hard_conditioned_likelihood"
+    assert validate_for_write(semantics, FIT_SELECTION_SCHEMA) == semantics
+
+
+def test_variant_skipped_when_the_context_already_constrains_the_parameter(caplog):
+    """The scan's own constraints win: the catalogue never overwrites a Γ the steering layer,
+    a rescue, or the scientist already pinned. The variant is dropped, and says so."""
+    from isar.schema.steering import ParamConstraints
+
+    base = _near_degenerate_ctx()
+    ctx = replace(base, constraints=ParamConstraints(
+        hard={"phonon.Gamma": 0.25}, origins={"phonon.Gamma": "user_declared"}))
+    with caplog.at_level(logging.INFO, logger="isar.analyze.loop"):
+        results = loop.fit_structures_two_stage(ctx, minos=False)
+
+    assert not any(r.label.endswith("_neardeg") for r in results)
+    assert "already constrains phonon.Gamma" in caplog.text
+    # …and the ordinary candidates still fit under their own pin, untouched.
+    assert results[0].params["phonon.Gamma"] == 0.25

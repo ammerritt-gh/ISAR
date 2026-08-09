@@ -336,7 +336,6 @@ def test_component_lambda_rejects_a_mistyped_peak_token_for_every_kind():
 
 from isar.analyze import loop as _loop, select as _select, verdict as _verdict
 from isar.analyze.context import ScanContext
-from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 
 
 def _scan_ctx(name, h):
@@ -353,9 +352,11 @@ def _scan_ctx(name, h):
 
 def _run_selection(name, h):
     ctx = _scan_ctx(name, h)
-    results = _loop.fit_structures_two_stage(ctx)
-    hyps = {hh.label: hh for hh in enumerate_phonon_structures(ctx)}
-    hyps.update({hh.label: hh for hh in enumerate_phonon_multimode(ctx)})
+    # hypotheses_out, not hand re-enumeration: catalogue variants (H9) exist only because a fit
+    # came out a certain way, and each carries the derived context its evidence resolves under —
+    # a hand-built hyps dict cannot contain them and select_models refuses the orphan label.
+    hyps = {}
+    results = _loop.fit_structures_two_stage(ctx, hypotheses_out=hyps)
     sel = _select.select_models(results, hyps, ctx)
     assert sel.selection_fallback is None
     return ctx, results, sel

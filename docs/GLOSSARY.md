@@ -86,10 +86,38 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **evidence (lnZ) / validity ladder** — the marginal likelihood of one candidate structure under
   its declared priors, produced by a ladder that never trusts a Gaussian volume silently: Laplace
   at the fitted optimum, a warm-started MAP refit when the fit did not see a prior it must
-  integrate, or dynesty nested sampling for boundary-pinned/curvature-failed fits. Every record
-  carries its rung, escalation reasons, and (for dynesty) the n_live used; evidence is comparable
-  only within one data-likelihood arena. Dominated candidates (evidence ceiling ≥100 nats below a
-  trusted leader) are excluded without sampling and recorded as such.
+  integrate, `laplace_truncated` for a Γ-floor-only pin, or dynesty nested sampling for other
+  boundary-pinned/curvature-failed fits. Every record carries its rung, escalation reasons, and
+  (for dynesty) the n_live used; evidence is comparable only within one data-likelihood arena.
+  Dominated candidates (evidence ceiling ≥100 nats below a trusted leader) are excluded without
+  sampling and recorded as such.
+- **laplace_truncated** — the evidence rung for a converged fit whose single pin is one `.Gamma`
+  at its floor: rung-1 Laplace with a boundary-mass correction, since the Γ floor is a modelling
+  artifact and the boundary is integrable, not an invalidity (H9(b)). Ω_d window-edge pins,
+  unknown pin status, Γ at its ceiling, and two-plus pinned Γs (whose joint truncated mass
+  depends on their covariance, which the per-axis product cannot see) all still escalate to
+  dynesty. The mass factor is gradient- and offset-aware — exact for the
+  local linear-plus-quadratic exponent, so it no longer assumes a half-Gaussian at a railed bound
+  nor that θ̂ sits exactly on the floor. The residual gap against dynesty on the synthetic railed-Γ
+  probe is within the sampler's own seed scatter and, if real at all, may be attributable to
+  HESSE curvature at a railed axis — not to the boundary factor (H10(b)).
+- **constraint origin** — where an effective soft constraint on a fit came from; selection
+  eligibility requires every effective constraint be soft with a prespecified origin.
+  `user_declared` is the scientist's pre-fit soft declaration, prespecified by construction, and
+  enters lnZ exactly once (H4(c), H9(a)); eyeballed seeding carries no origin class at all.
+  `catalogue_variant` is a catalogue `ConstrainedVariant`'s hard pin (predicate + pins) — it
+  competes as its own additional candidate rather than folding into the base structure, and is
+  deliberately never prespecified-soft, since a hard-conditioned fit is not an unconditioned
+  data-likelihood estimate (H9(c)). For steering it disqualifies the scan only by WINNING: a
+  non-winning offered variant contributes neither eligibility nor reasons to the selection
+  aggregate and adds no EIG science codes (H10(a)); any other constraint origin keeps the
+  all-soft-prespecified eligibility rule.
+- **evidence identity / identity axis** — identity is open-vocabulary, catalogue-driven, and lives
+  in (Q,E) space as cross-scan objects (`label@entry`) alongside the structure axis: a scan's fit
+  contributes per-candidate evidence, splitting structure × identity twins only where rival
+  entries declare distinguishing priors (the no-dilution rule). The persisted per-label lnZ is the
+  scene store's aggregation input for SCENE-3; branch assignment keeps driving delivery until
+  SCENE-6, with `identity_ba_disagreement` recorded, never acted on (H9(d)).
 - **unresolved candidate / escalation budget** — the escalation phase of one candidate set is
   bounded in wall clock. A candidate skipped when the budget runs out is recorded `unresolved`
   with its evidence ceiling: like a dominated candidate it holds no lnZ and enters no posterior,

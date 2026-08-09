@@ -926,7 +926,7 @@ def test_selection_diagnostics_use_producer_candidate_fit_semantics_with_multipl
     record = scan_delivery._build_selection_semantics(
         results,
         SimpleNamespace(
-            scores=scores, pooled=object(), selection_fallback=None,
+            scores=scores, best="one", pooled=object(), selection_fallback=None,
             evidence=SimpleNamespace(
                 arena_fingerprint=semantics["one"]["data_likelihood_fingerprint"]),
         ),

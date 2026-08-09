@@ -354,6 +354,21 @@ def _candidate_rows(scores, fits) -> list | None:
             ),
             "evidence_method": getattr(s, "evidence_method", None),
             "usable": bool(r.analysis_usable) if r is not None else True,
+            # SCENE-1 PR-c persistence (commit D). ``at_limit`` is this candidate's per-parameter
+            # boundary-pin map — what the evidence validity ladder read when it priced the row, so a
+            # reader can see WHY a rung escalated. ``variant``/``identity`` are the candidate's
+            # catalogue provenance (constrained variant, claimed phenomenon), both ``None`` for an
+            # ordinary candidate. ``effective_constraints`` is read back from the recorded
+            # fit_semantics, never re-derived: the row must show the constraints the fit actually
+            # ran under. ``[]`` means "recorded, unconstrained"; ``None`` means no semantics record.
+            "at_limit": (dict(r.at_limit)
+                         if r is not None and getattr(r, "at_limit", None) is not None else None),
+            "variant": (getattr(r, "variant", None) if r is not None else None),
+            "identity": (getattr(r, "identity", None) if r is not None else None),
+            "effective_constraints": (
+                None if (s.fit_semantics or {}).get("effective_constraints") is None
+                else list((s.fit_semantics or {})["effective_constraints"])
+            ),
             "estimator_kind": (s.fit_semantics or {}).get("estimator_kind"),
             "fit_kind": (s.fit_semantics or {}).get("fit_kind"),
             "constraint_origin": (s.fit_semantics or {}).get("aggregate_constraint_origin"),
@@ -420,17 +435,38 @@ def _model_set_record(label, fit_semantics: dict) -> dict:
     }
 
 
-def _aggregate_selection_eligibility(candidate_records: list[dict]) -> tuple[str, list[dict]]:
-    """Strongest complete normalization defect plus every candidate-specific cause."""
+def _is_offered_variant(fit_semantics: dict) -> bool:
+    """A deliberately-offered catalogue variant: constrained, and every constraint's origin is
+    ``catalogue_variant``. Owner ruling 2026-08-09: when the analysis is looking carefully at
+    close-together physics (near-zone-centre acoustic, crossings), the deliberately-offered
+    rival hypothesis must not disqualify the scan by mere presence — only by winning."""
+    constraints = fit_semantics.get("effective_constraints") or ()
+    return bool(constraints) and all(
+        isinstance(item, dict) and item.get("origin") == "catalogue_variant"
+        for item in constraints
+    )
+
+
+def _aggregate_selection_eligibility(
+    candidate_records: list[dict], *, winner: str | None = None
+) -> tuple[str, list[dict]]:
+    """Strongest complete normalization defect plus every candidate-specific cause.
+
+    A NON-winning offered catalogue variant (:func:`_is_offered_variant`) contributes neither
+    its eligibility nor its reasons to the aggregate — it was offered, priced, and rejected,
+    which conditions nothing about the winner. A variant that WINS is not exempt: a
+    hard-conditioned winner stays ineligible. Its data-likelihood fingerprint still counts in
+    the incomparable-context check — the arena guarantee is about the comparison itself."""
     reason_labels: dict[str, list[str]] = {}
     eligibilities = []
     likelihoods = set()
     for candidate in candidate_records:
         label = str(candidate["label"])
         fit_semantics = candidate["fit_semantics"]
-        eligibility = str(fit_semantics["selection_eligibility"])
-        eligibilities.append(eligibility)
         likelihoods.add(str(fit_semantics["data_likelihood_fingerprint"]))
+        if winner is not None and label != winner and _is_offered_variant(fit_semantics):
+            continue
+        eligibilities.append(str(fit_semantics["selection_eligibility"]))
         for reason in fit_semantics.get("selection_ineligibility_reasons") or ():
             reason_labels.setdefault(str(reason), []).append(label)
     if len(likelihoods) != 1:
@@ -597,7 +633,7 @@ def _build_selection_semantics(
                 }
             )
         aggregate_eligibility, aggregate_reasons = _aggregate_selection_eligibility(
-            candidate_records
+            candidate_records, winner=selection.best
         )
         canonical_route = _canonical_candidate_generation_route(route)
         selection_payload = {
@@ -1437,15 +1473,20 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     _t_two_stage = time.perf_counter()
     # Candidate enumeration is point-estimation only. Full-tier MINOS is authoritative only after
     # the preliminary AIC pass and runs once per survivor in errors.attach_batch below.
+    offered_hypotheses = {}
     results, structure_skipped = loop.fit_structures_two_stage_hinted(
         ctx, minos=False, peaks=peaks, structure_hint=structure_hint,
-        executor=boot_executor)
+        executor=boot_executor, hypotheses_out=offered_hypotheses)
     two_stage_seconds = round(time.perf_counter() - _t_two_stage, 4)
     all_results = results
     labels_before_guideline = [str(r.label) for r in results]
     # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
     by_hyp = {h.label: h for h in enumerate_phonon_structures(ctx)}
     by_hyp.update({h.label: h for h in enumerate_phonon_multimode(ctx)})
+    # …and the catalogue constrained variants (SCENE-1 PR-c), which no re-enumeration can produce:
+    # they exist only because a fit came out near-degenerate, and each carries the derived context
+    # its evidence and bootstrap must run under.
+    by_hyp.update(offered_hypotheses)
 
     warn = None
     guideline_changed_set = False
@@ -1508,7 +1549,10 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         for label in prelim.survivors:
             r = fits.get(label)
             if r is not None and r.optimizer_converged and label in by_hyp:
-                survivor_items.append((r, by_hyp[label], ctx))
+                # A variant survivor bootstraps under its own derived context, so the resampled
+                # refits keep its pin instead of quietly re-fitting a different model.
+                survivor_items.append(
+                    (r, by_hyp[label], loop.candidate_context(by_hyp[label], ctx)))
         error_attachment_labels = [str(item[0].label) for item in survivor_items]
         errors.attach_batch(
             survivor_items, M=M, seed=seed, with_profile=True,
@@ -1730,6 +1774,16 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "hesse_interval": (tuple(hesse_interval) if hesse_interval is not None else None),
         "hesse_trusted": hesse_trusted,
         "modality": sel.modality, "best_label": sel.best,
+        # The catalogue identity the WINNING candidate claimed (SCENE-1 PR-c commit E), and the
+        # disagreement diagnostic the branch layer fills in once branch assignment has run
+        # (:func:`_record_identity_ba_disagreement`). Both are records only.
+        "evidence_identity": getattr(best, "identity", None) if best is not None else None,
+        "identity_ba_disagreement": None,
+        # The WINNER's per-parameter boundary-pin map (SCENE-1 PR-c commit D). Persisted because a
+        # railed parameter is what invalidates the Laplace curvature and what makes the reported
+        # interval untrustworthy — the reader must not have to re-fit to learn which one railed.
+        "at_limit": (dict(best.at_limit)
+                     if best is not None and getattr(best, "at_limit", None) is not None else None),
         "gamma": gamma,
         "cost_per_dof": (best.cost_per_dof if best else None),
         "n_modes": n_modes, "modes": modes,
@@ -2002,6 +2056,24 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
             "selected_energy": qoi.get("omega0")}
 
 
+def _record_identity_ba_disagreement(fit, branch_id):
+    """Record — never act on — a winning candidate whose catalogue identity contradicts the branch
+    assignment (SCENE-1 PR-c commit E).
+
+    Two independent claims about what was measured: evidence selection's identity-conditioned
+    winner, and branch assignment's posterior. BA keeps driving delivery until SCENE-6, so this
+    touches no verdict, confidence, stopping or steering decision; it exists so the disagreement
+    rate is measurable before the axes are ever allowed to swap authority. ``None`` whenever
+    either side is silent (the production catalogue's every scan today) or the two agree.
+    """
+    identity = fit.get("evidence_identity")
+    disagreement = None
+    if identity is not None and branch_id is not None and str(identity) != str(branch_id):
+        disagreement = {"evidence_identity": str(identity), "branch_id": str(branch_id)}
+    fit["identity_ba_disagreement"] = disagreement
+    return disagreement
+
+
 def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, near_gamma,
                          master: bool):
     """Run branch assignment + honest triage over ``fit`` and apply its verdict (Phase A). Shared by
@@ -2010,7 +2082,9 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
     Returns branch assignment, candidate posterior/state, and secondary features — all
     None when the posterior is off or the fit is a ``signal_unmodeled`` descriptor result. When the
     triage declines delivery it mutates ``fit`` in place: flips the verdict to ``branch_continuation``,
-    nulls the ω₀ fields, and appends a reason (worded per ``master``)."""
+    nulls the ω₀ fields, and appends a reason (worded per ``master``). It always writes the
+    records-only ``identity_ba_disagreement`` diagnostic (:func:`_record_identity_ba_disagreement`)
+    — the one place where the winner's catalogue identity and the assigned branch are both known."""
     branch_id = assignment_entropy = branch_weight = resolvable = None
     branch_posterior = candidate_id = candidate_state = selected_energy = None
     secondary_features = None
@@ -2042,6 +2116,7 @@ def _apply_branch_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, n
                 fit["omega0_profile"] = fit["hesse_interval"] = None
                 fit["bayes_interval"] = None
                 fit["interval_reliable"] = False
+    _record_identity_ba_disagreement(fit, branch_id)
     _refresh_interval_semantics(fit)
     return (branch_id, assignment_entropy, branch_weight, resolvable, secondary_features,
             branch_posterior, candidate_id, candidate_state, selected_energy)
@@ -2283,6 +2358,9 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         fit_selection_semantics=fit.get("fit_selection_semantics"),
         interval_semantics=fit.get("interval_semantics"),
         shadow_model_selection=fit.get("shadow_model_selection"),
+        at_limit=fit.get("at_limit"),
+        evidence_identity=fit.get("evidence_identity"),
+        identity_ba_disagreement=fit.get("identity_ba_disagreement"),
         evidence_sink=evidence_sink_for(getattr(rec, "raw_header", None),
                                         getattr(card.state, "acquisition_provenance", None)))
     outcome.probability_semantics = _refresh_probability_semantics(outcome.__dict__)

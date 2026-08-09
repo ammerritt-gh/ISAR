@@ -10,12 +10,18 @@ by a **ladder** that records which rung it came from and why:
    NOT see is much wider than the posterior curvature (the fit's transported soft priors are
    already inside its objective: θ̂ is their MAP and HESSE is the posterior curvature, so no
    refit is needed for them).
-2. ``"laplace_map"`` — a warm-started MAP refit under the full prior bundle, when an unseen
+2. ``"laplace_truncated"`` — rung 1 with a boundary-mass correction when the fit's SINGLE pin
+   is a Γ at its floor (H8, SCENE-1 PR-c): GAMMA_FLOOR is a modelling artifact and the DHO ⊗
+   resolution model is regular as Γ → 0, so the one-sided pin is an integrable boundary —
+   the Gaussian mass outside the support is shed analytically instead of paying for dynesty.
+   Two or more pinned Γs escalate: the per-axis mass product would ignore their covariance.
+3. ``"laplace_map"`` — a warm-started MAP refit under the full prior bundle, when an unseen
    prior is informative at the fit's scale. HESSE of the penalized objective IS the posterior
    curvature.
-3. ``"dynesty"`` — nested sampling through :func:`~isar.analyze.errors.bayes.bayesian_posterior`
+4. ``"dynesty"`` — nested sampling through :func:`~isar.analyze.errors.bayes.bayesian_posterior`
    with the same bundle in the prior transform, when the Gaussian picture itself is invalid
-   (boundary-pinned parameter, missing/non-PD covariance, failed MAP refit). Never silent: the
+   (non-Γ boundary-pinned parameter — Ω_d at the window edge is real physics and always pays
+   for the sampler — missing/non-PD covariance, failed MAP refit). Never silent: the
    escalation reason is recorded in ``validity``.
 
 Evidence is only comparable inside one **arena** — one observed-data likelihood. The arena is
@@ -95,7 +101,10 @@ class EvidenceRecord:
     label: str
     log_evidence: float                 # lnZ (NaN ⇒ no valid evidence; see validity)
     log_evidence_err: float | None      # dynesty logzerr; None for the Laplace lanes
-    evidence_method: str                # "laplace" | "laplace_map" | "dynesty" | "invalid"
+    # Full vocabulary lives in isar.schema.statistics.EVIDENCE_METHODS: the ladder rungs
+    # ("laplace" | "laplace_truncated" | "laplace_map" | "dynesty") plus the non-rung records
+    # ("deferred_escalation" | "dominated" | "unresolved" | "invalid").
+    evidence_method: str
     k_free: int
     arena_fingerprint: str
     prior_spec: tuple                   # PriorBundle.spec(), frozen
@@ -170,7 +179,7 @@ def _trusted_evidence(rec) -> bool:
         return False
     if rec.evidence_method == "dynesty":
         return bool((rec.validity.get("dynesty") or {}).get("converged"))
-    return rec.evidence_method in ("laplace", "laplace_map")
+    return rec.evidence_method in ("laplace", "laplace_truncated", "laplace_map")
 
 
 def laplace_ln_z(cost: float, ln_prior: float, sigma_free: np.ndarray) -> float:
@@ -186,6 +195,96 @@ def laplace_ln_z(cost: float, ln_prior: float, sigma_free: np.ndarray) -> float:
     if sign <= 0 or not np.isfinite(logdet):
         raise np.linalg.LinAlgError("covariance over free parameters is not positive definite")
     return float(-0.5 * cost + ln_prior + 0.5 * k * _LN_2PI + 0.5 * logdet)
+
+
+def _inward_cost_gradients(hyp, ctx, fit_result, pinned, sig_post, free_names):
+    """One-sided inward ``g = ∂(cost/2)/∂θ`` at θ̂ for each pinned axis, from the DATA cost.
+
+    ``cost`` is −2lnL, so ``g`` is the decay rate of the likelihood as the parameter moves off
+    its bound into the support — the shape parameter :func:`_boundary_mass_correction` needs.
+    Forward difference with a step of 1e-2·σ (clipped to stay inside the box), since a pinned
+    axis has no usable outward side. A non-finite cost at either point yields NaN for that
+    axis, which the correction turns into an escalation."""
+    prob = loop.build_problem(hyp, ctx, x0=dict(fit_result.params))
+    order = list(prob.free_names)
+    theta = np.array([float(fit_result.params[n]) for n in order], dtype=float)
+    c0 = float(prob.costv(theta))
+    gradients = {}
+    for name in pinned:
+        i = order.index(name)
+        sigma = float(sig_post[free_names.index(name)])
+        step = min(1e-2 * sigma, float(prob.bounds[i][1]) - theta[i])
+        if not (np.isfinite(c0) and np.isfinite(step) and step > 0.0):
+            gradients[name] = float("nan")
+            continue
+        probe = theta.copy()
+        probe[i] += step
+        c1 = float(prob.costv(probe))
+        gradients[name] = (float("nan") if not np.isfinite(c1)
+                           else max(0.0, (c1 - c0) / (2.0 * step)))
+    return gradients
+
+
+def _boundary_mass_correction(pinned, params, sig_post, free_names, bundle, gradients):
+    """ln of the likelihood mass fraction inside the support along the pinned axis.
+
+    ``pinned`` holds exactly ONE name by construction — the caller's ``gamma_pinned`` gate admits
+    a single pin and escalates everything else — so the loop below sums one term and is exact.
+    It stays a loop only so the shape of the call site does not have to change if a multivariate
+    orthant mass ever lands; with two or more correlated pins a product of per-axis masses is
+    wrong (see the gate's note), which is why the gate, not this function, refuses them.
+
+    The Laplace rung integrates the full Gaussian over ℝ^k; for a parameter pinned at an
+    integrable boundary (the Γ floor, H8) the mass outside the support must be shed. Along a
+    pinned axis, with ``t = θ − θ̂`` and ``a = θ̂ − lo ≥ 0`` the offset of the estimate above the
+    floor, the local likelihood is ``L(t) ∝ exp(−g·t − t²/2σ²)`` on the support ``t ≥ −a``.
+    Completing the square gives the mass relative to the full Gaussian in closed form::
+
+        ∫_{−a}^{∞} exp(−g·t − t²/2σ²) dt / (σ√2π)  =  exp(g²σ²/2) · Φ(a/σ − gσ)
+
+    evaluated in log space as ``½·(gσ)² + log_ndtr(a/σ − gσ)``, which is stable in both tails:
+    ``a/σ ≫ gσ`` (θ̂ well inside, correction → 0) would overflow the equivalent
+    ``erfcx``-times-``exp`` product past ``a/σ ≈ 40``, and ``gσ`` large would underflow a plain
+    ``exp × Φ``. At ``a = 0`` it reduces exactly to ``ln ½·erfcx(gσ/√2)``, and at ``g = 0, a = 0``
+    to the plain half-Gaussian ``ln ½``; large ``gσ`` tends to ``1/(gσ√2π)``, the
+    one-sided-exponential integral. Verified against ``scipy.integrate.quad`` on the raw
+    integrand to ≤1e-15 nats. That gradient- and offset-awareness is what removes the old
+    half-Gaussian factor's conservative bias at a genuinely railed bound, where the local shape
+    is one-sided-exponential rather than half-Gaussian and θ̂ need not sit exactly on the floor.
+    ``g`` is the one-sided numerical gradient from :func:`_inward_cost_gradients` (step 1e-2·σ).
+
+    Cross-correlations with the pinned axes are ignored (the same independence the diagonal σ
+    read already assumes), and the far bound's mass is neglected: the caller's gate guarantees
+    θ̂ within ``GAMMA_BOUND_TOL`` of the floor while ``hi`` is ``GAMMA_MAX`` ≫ σ, so the upper
+    tail is numerically nothing. That gate is re-asserted below — beyond it the local expansion
+    is not the admitted-at-the-floor case this factor models, and the function refuses rather
+    than extrapolate.
+
+    Returns None when the mass is degenerate, a gradient is unavailable, or a pinned parameter
+    has no resolved prior — the caller must escalate, never guess."""
+    from scipy.special import log_ndtr
+
+    from isar.analyze.phonon import GAMMA_BOUND_TOL
+
+    by_name = bundle.by_name()
+    correction = 0.0
+    for name in pinned:
+        prior = by_name.get(name)
+        if prior is None:
+            return None
+        sigma = float(sig_post[free_names.index(name)])
+        g = float(gradients.get(name, float("nan")))
+        if not (np.isfinite(sigma) and sigma > 0 and np.isfinite(g) and g >= 0):
+            return None
+        offset = float(params[name]) - float(prior.lo)
+        if not offset <= GAMMA_BOUND_TOL:
+            return None
+        a = max(0.0, offset)                            # θ̂ a hair below lo is numerical, not real
+        ln_mass = 0.5 * (g * sigma) ** 2 + float(log_ndtr(a / sigma - g * sigma))
+        if not np.isfinite(ln_mass):
+            return None
+        correction += ln_mass
+    return correction
 
 
 def _effective_sigma(p) -> float:
@@ -232,6 +331,10 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
 
     A dynesty run that fails its own convergence gate yields ``log_evidence=NaN`` with
     ``evidence_method="invalid"``; the untrusted value and the reason stay in ``validity``."""
+    # A constrained-variant candidate carries the derived context it was fitted under, so the MAP
+    # refit and the sampler see the same pinned parameter space as the fit. The arena is unchanged
+    # by construction: constraints are not part of the data-likelihood fingerprint.
+    ctx = loop.candidate_context(hyp, ctx)
     arena = loop.data_likelihood_fingerprint(ctx)
     names = list(fit_result.params)
     free_names = [p.name for p in bundle.params]
@@ -284,7 +387,30 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
                                  seed=seed, n_live=n_live, max_iter=max_iter,
                                  sample=sample, dlogz=dlogz)
 
-    if pinned or not validity["sigma_pd"]:
+    # Γ pins are carved out of the escalation rule (H8, SCENE-1 PR-c): GAMMA_FLOOR is a
+    # modelling artifact — the DHO ⊗ resolution model is regular as Γ → 0, so a Γ jammed
+    # against the floor is an integrable boundary, not broken physics. With a healthy PD
+    # covariance the one-sided pin is handled analytically below (truncated-Gaussian mass
+    # correction) instead of paying for dynesty. Every other pin — Ω_d at the window edge
+    # above all — keeps escalating: there the boundary IS physics (H8) and the sampler is
+    # spent on a real question.
+    # `at_limit is not None` keeps the fail-safe honest: an older fit with UNKNOWN pin status
+    # must escalate, never take the truncated rung on a name coincidence. The value test against
+    # the FLOOR is load-bearing: Γ has two bounds (phonon.GAMMA_FLOOR and GAMMA_MAX), and only
+    # the floor is the H8 modelling artifact — a Γ railed at the CEILING is overdamped physics
+    # the model cannot express, its likelihood gradient at the bound is genuinely nonzero, and
+    # an overdamped-vs-two-mode contest is selection-material, so it pays for the sampler.
+    from isar.analyze.phonon import GAMMA_BOUND_TOL
+
+    # ponytail: single-pin only — the product of per-axis masses ignores the pinned block's
+    # covariance (bivariate orthant ≈0.5-1.3 nats off at |rho|=0.9, which is selection-material);
+    # multivariate truncated-Gaussian orthant via scipy.stats.multivariate_normal if multi-railed
+    # candidates ever matter. Two or more pins escalate like any other invalid-Gaussian case.
+    gamma_pinned = (at_limit is not None and len(pinned) == 1
+                    and all(n.endswith(".Gamma")
+                            and float(fit_result.params.get(n, float("inf"))) <= GAMMA_BOUND_TOL
+                            for n in pinned))
+    if (pinned and not gamma_pinned) or not validity["sigma_pd"]:
         return _escalate("laplace_invalid")
 
     # --- Rung 1: Laplace at θ̂ ----------------------------------------------------------------
@@ -297,10 +423,27 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     if not narrow:
         ln_prior = bundle.logpdf(fit_result.params)
         try:
-            return _record(laplace_ln_z(fit_result.cost, ln_prior, sigma_free), None, "laplace")
+            ln_z = laplace_ln_z(fit_result.cost, ln_prior, sigma_free)
         except np.linalg.LinAlgError as exc:
             log.warning("laplace evidence failed for %s: %s", fit_result.label, exc)
             return _escalate("laplace_invalid")
+        if not gamma_pinned:
+            return _record(ln_z, None, "laplace")
+        gradients = _inward_cost_gradients(hyp, ctx, fit_result, pinned, sig_post, free_names)
+        # Only finite gradients enter validity: this dict is persisted through candidate rows,
+        # and canonical JSON refuses NaN. Axes whose gradient could not be measured are named
+        # separately — on that path the correction returns None and the record escalates.
+        validity["boundary_gradient"] = {
+            n: float(g) for n, g in gradients.items() if np.isfinite(g)}
+        unavailable = sorted(n for n, g in gradients.items() if not np.isfinite(g))
+        if unavailable:
+            validity["boundary_gradient_unavailable"] = unavailable
+        correction = _boundary_mass_correction(
+            pinned, fit_result.params, sig_post, free_names, bundle, gradients)
+        if correction is None:
+            return _escalate("laplace_invalid")
+        validity["gamma_boundary_truncated"] = list(pinned)
+        return _record(ln_z + correction, None, "laplace_truncated")
 
     # --- Rung 2: warm-started MAP refit under the full bundle --------------------------------
     prob = loop.build_problem(hyp, ctx, x0=dict(fit_result.params))
