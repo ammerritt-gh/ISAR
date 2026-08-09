@@ -330,7 +330,14 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
                 s.evidence_validity = rec.validity
                 if np.isfinite(rec.log_evidence):
                     finite.append(s)
-        if finite:
+        # A set that ran out of escalation budget with a candidate whose ceiling still reaches the
+        # leader has an incomplete comparison, not a close one: ranking on the posterior over what
+        # happened to get sampled would publish an evidence claim the set did not earn. Degrade to
+        # the recorded AIC lane, which EIG eligibility already fails closed on.
+        unresolved = evidence.unresolved_contenders()
+        if unresolved:
+            fallback = "evidence_budget_exhausted"
+        elif finite:
             # D3: P(s) = pi_s Z_s / sum pi Z, pi uniform over the admissible (finite-lnZ)
             # candidates; log-space with max-subtraction. Evidence-invalid candidates get
             # posterior 0 — excluded from the comparison, recorded, never silently AIC-ranked.

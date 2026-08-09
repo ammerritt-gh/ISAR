@@ -334,6 +334,100 @@ def test_genuine_contest_still_pays_for_dynesty():
         for r in es.records if r.evidence_method == "dominated")
 
 
+def _blank_scan_ctx():
+    """The blank (bg-only) scan of :func:`test_genuine_contest_still_pays_for_dynesty`: a railed
+    phonon candidate fits as well as the winner, so its ceiling sits near the leader and the
+    escalation is genuinely contested — the only case where the budget can bite."""
+    x = np.linspace(-10.0, 10.0, 81)
+    counts = np.random.default_rng(11).poisson(np.full_like(x, 60.0)).astype(float)
+    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
+                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                       energy_status="needs_zero")
+
+
+def test_exhausted_budget_records_unresolved_and_never_samples(monkeypatch):
+    """Budget-exhausted honesty: a contested candidate the budget skipped is RECORDED with its
+    ceiling, not dropped and not given a number. NaN lnZ keeps it out of the posterior, and
+    unresolved_contenders() reports it so selection can refuse to rank on an incomplete set."""
+    ctx = _blank_scan_ctx()
+    results = loop.fit_admissible_structures(ctx, errors=False)
+
+    def _no_sampling(*a, **k):
+        raise AssertionError("dynesty must not run once the escalation budget is exhausted")
+
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", _no_sampling)
+    es = E.candidate_set_evidence(_set_triples(ctx, results), ctx, budget_s=0.0, **FAST)
+
+    unresolved = [r for r in es.records if r.evidence_method == "unresolved"]
+    assert unresolved, f"expected a budget-skipped candidate, got {[r.evidence_method for r in es.records]}"
+    for r in unresolved:
+        assert math.isnan(r.log_evidence)                     # never a number it did not earn
+        assert math.isfinite(r.validity["log_evidence_upper_bound"])   # ceiling kept
+        assert r.validity["escalation_budget_s"] == 0.0
+    assert set(es.unresolved_contenders()) == {r.label for r in unresolved}
+
+
+def test_budget_never_costs_a_certain_dominance_ruling(clean, monkeypatch):
+    """The budget must not convert a FREE certain ruling into an unresolved one. Dominance is
+    decided from an already-computed ceiling at no sampler cost, so it is checked first: on a
+    decisive scan the railed null stays "dominated" (ruled out) under a zero budget, and the
+    set still names its winner on evidence."""
+    ctx, _hyp, _fit = clean
+    results = loop.fit_admissible_structures(ctx, errors=False)
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no sampling")))
+    es = E.candidate_set_evidence(_set_triples(ctx, results), ctx, budget_s=0.0)
+
+    assert es.by_label()["elastic+bg"].evidence_method == "dominated"
+    assert es.unresolved_contenders() == []                   # nothing left in doubt
+
+
+def test_a_ruled_out_budget_skip_is_not_a_contender():
+    """Symmetry check on the predicate itself: an unresolved candidate whose own ceiling sits
+    BELOW the best trusted evidence is already ruled out by that bound, so the winner stands
+    and the set stays resolvable. Only a ceiling that could still overtake the leader degrades
+    selection — otherwise the backstop would punish every set it ever touched."""
+    def _rec(label, lnz, method, bound=None):
+        validity = {} if bound is None else {"log_evidence_upper_bound": bound}
+        return E.EvidenceRecord(label=label, log_evidence=lnz, log_evidence_err=None,
+                                evidence_method=method, k_free=3, arena_fingerprint="arena",
+                                prior_spec=(), validity=validity)
+
+    es = E.EvidenceSet(arena_fingerprint="arena")
+    es.add(_rec("stokes+bg", -10.0, "laplace"))
+    es.add(_rec("ruled_out", float("nan"), "unresolved", bound=-40.0))
+    assert es.unresolved_contenders() == []
+
+    es.add(_rec("could_have_won", float("nan"), "unresolved", bound=-5.0))
+    assert es.unresolved_contenders() == ["could_have_won"]
+
+
+def test_unresolved_contender_degrades_selection_to_recorded_aic(clean):
+    """The consumer half: an incomplete comparison must not be ranked as if it were complete.
+    select_models records ``evidence_budget_exhausted`` and falls back to the AIC winner —
+    the lane EIG eligibility already fails closed on — instead of publishing a posterior
+    computed over whichever candidates happened to get sampled."""
+    from isar.analyze.select import select_models
+
+    ctx, _hyp, _fit = clean
+    results = loop.fit_admissible_structures(ctx, errors=False)
+    triples = _set_triples(ctx, results)
+    es = E.candidate_set_evidence(triples, ctx)
+    resolved = select_models(results, ctx=None, evidence=es, stamp=False)
+    assert resolved.selection_fallback is None                # precondition: the set was fine
+
+    best_lnz = max(r.log_evidence for r in es.records if math.isfinite(r.log_evidence))
+    es.records.append(E.EvidenceRecord(
+        label="stokes2+bg", log_evidence=float("nan"), log_evidence_err=None,
+        evidence_method="unresolved", k_free=7, arena_fingerprint=es.arena_fingerprint,
+        prior_spec=(), validity={"log_evidence_upper_bound": best_lnz + 1.0,
+                                 "escalation_budget_s": 600.0}))
+    degraded = select_models(results, ctx=None, evidence=es, stamp=False)
+
+    assert degraded.selection_fallback == "evidence_budget_exhausted"
+    assert degraded.best == min(degraded.scores, key=lambda s: s.aic).label
+
+
 def test_all_railed_set_escalates_highest_ceiling_first(clean, monkeypatch):
     """No trusted leader exists when every candidate railed: the highest-ceiling candidate
     is sampled first, becomes the leader, and prunes the rest. Pinned with stubbed records
