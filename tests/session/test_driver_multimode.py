@@ -272,6 +272,24 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
     cands = {c["label"]: c for c in fit["candidates"]}
     standard = {item["label"]: item["weight"] for item in shadow["standard_model_weights"]}
     legacy = {item["label"]: item["weight"] for item in shadow["legacy_model_weights"]}
+    # Both lanes must cover the SAME candidate family, or the D6 comparison answers two different
+    # questions and the per-label agreement below is vacuous. The two halves hold for DIFFERENT
+    # reasons, and only one of them is structural:
+    #   legacy == cands is by construction — `legacy_weights = list(selection.scores)`
+    #     (scan_delivery._finalize_shadow_selection) and `_candidate_rows(sel.scores, fits)` read
+    #     one object, so these cannot diverge.
+    #   standard == legacy is the shadow lane's CONTRACT, not construction: standard_model_weights
+    #     is scored by shadow_selection over `point["candidates"]`, which is a separate fitting
+    #     pass (fit_shadow_candidates) unless the delivery-aliasing branch is taken. It coincides
+    #     here because the assertions above already pin the preconditions — selection_status
+    #     complete/degenerate and shadow_execution_kind "exact", with every attempted identity
+    #     reused and nothing freshly fitted. An unavailable shadow lane empties
+    #     standard_model_weights legitimately, which is why those assertions must stay above this
+    #     one rather than this one being read as a universal invariant.
+    # Zero-weight candidates (evidence-invalid, dominated, unresolved) stay in the set either way:
+    # they are scored, carry weight 0.0, contribute nothing to the sum that must reach 1.0, and
+    # must remain visible in the table recording what was considered.
+    assert set(standard) == set(legacy) == set(cands)
     assert sum(standard.values()) == pytest.approx(1.0)
     assert sum(legacy.values()) == pytest.approx(1.0)
     assert standard == pytest.approx(

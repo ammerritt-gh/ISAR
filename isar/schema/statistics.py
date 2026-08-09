@@ -81,9 +81,12 @@ MODEL_WEIGHT_KINDS = frozenset(
     {"posterior_probability", "akaike_relative_weight", "none"}
 )
 SELECTION_METHODS = frozenset({"laplace_evidence_selection", "aic_fallback", "none"})
-SELECTION_FALLBACKS = frozenset({"aic_no_evidence_inputs", "aic_all_evidence_invalid"})
+SELECTION_FALLBACKS = frozenset(
+    {"aic_no_evidence_inputs", "aic_all_evidence_invalid", "evidence_budget_exhausted"}
+)
 EVIDENCE_METHODS = frozenset(
-    {"laplace", "laplace_map", "dynesty", "deferred_escalation", "dominated", "invalid"}
+    {"laplace", "laplace_map", "dynesty", "deferred_escalation", "dominated", "unresolved",
+     "invalid"}
 )
 BOOTSTRAP_MEASURE_KINDS = frozenset(
     {

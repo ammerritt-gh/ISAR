@@ -334,6 +334,168 @@ def test_genuine_contest_still_pays_for_dynesty():
         for r in es.records if r.evidence_method == "dominated")
 
 
+def test_escalation_n_live_reads_the_environment_and_refuses_nonsense(monkeypatch):
+    """The cost knob exists so a SPAWNED pool child samples where the parent does — a module
+    constant cannot cross that boundary, an environment variable can. An explicit ``n_live``
+    still wins, and a malformed value raises instead of silently reverting: a run whose sampling
+    resolution is unknowable after the fact is worse than a run that refused to start."""
+    monkeypatch.delenv(E.ESCALATION_N_LIVE_ENV, raising=False)
+    assert E.escalation_n_live() == E.ESCALATION_N_LIVE
+
+    monkeypatch.setenv(E.ESCALATION_N_LIVE_ENV, "32")
+    assert E.escalation_n_live() == 32
+
+    monkeypatch.setenv(E.ESCALATION_N_LIVE_ENV, "not-a-number")
+    with pytest.raises(ValueError):
+        E.escalation_n_live()
+    monkeypatch.setenv(E.ESCALATION_N_LIVE_ENV, "0")
+    with pytest.raises(ValueError):
+        E.escalation_n_live()
+
+
+def _blank_scan_ctx():
+    """The blank (bg-only) scan of :func:`test_genuine_contest_still_pays_for_dynesty`: a railed
+    phonon candidate fits as well as the winner, so its ceiling sits near the leader and the
+    escalation is genuinely contested — the only case where the budget can bite."""
+    x = np.linspace(-10.0, 10.0, 81)
+    counts = np.random.default_rng(11).poisson(np.full_like(x, 60.0)).astype(float)
+    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
+                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                       energy_status="needs_zero")
+
+
+def test_the_suite_cap_still_produces_sampling_that_counts():
+    """The cap must make escalations CHEAPER, not fake. A dynesty run that fails its own §5.4
+    convergence gate is fast and worthless — it yields no usable evidence, so a cap set too low
+    would quietly convert every escalation into invalid evidence and push selection onto the
+    recorded-AIC lane while the suite still went green. This runs the genuine-contest scan at
+    whatever n_live the environment actually imposes (the repo-root conftest's cap in a suite
+    run, ESCALATION_N_LIVE otherwise) and demands a converged sampler."""
+    ctx = _blank_scan_ctx()
+    results = loop.fit_admissible_structures(ctx, errors=False)
+    es = E.candidate_set_evidence(_set_triples(ctx, results), ctx)   # no explicit n_live
+
+    sampled = [r for r in es.records if r.evidence_method == "dynesty"]
+    assert sampled, "expected a contested escalation to reach the sampler"
+    for r in sampled:
+        assert r.validity["dynesty"]["converged"], (
+            f"{r.label} sampled at n_live={r.validity['dynesty'].get('n_live')} but failed its "
+            f"convergence gate ({r.validity['dynesty'].get('fail_reason')}) — the cap is too low "
+            f"and is buying speed by discarding evidence")
+        assert np.isfinite(r.log_evidence)
+
+
+def test_exhausted_budget_records_unresolved_and_never_samples(monkeypatch):
+    """Budget-exhausted honesty: a contested candidate the budget skipped is RECORDED with its
+    ceiling, not dropped and not given a number. NaN lnZ keeps it out of the posterior, and
+    unresolved_contenders() reports it so selection can refuse to rank on an incomplete set."""
+    ctx = _blank_scan_ctx()
+    results = loop.fit_admissible_structures(ctx, errors=False)
+
+    def _no_sampling(*a, **k):
+        raise AssertionError("dynesty must not run once the escalation budget is exhausted")
+
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", _no_sampling)
+    es = E.candidate_set_evidence(_set_triples(ctx, results), ctx, budget_s=0.0, **FAST)
+
+    unresolved = [r for r in es.records if r.evidence_method == "unresolved"]
+    assert unresolved, f"expected a budget-skipped candidate, got {[r.evidence_method for r in es.records]}"
+    for r in unresolved:
+        assert math.isnan(r.log_evidence)                     # never a number it did not earn
+        assert math.isfinite(r.validity["log_evidence_upper_bound"])   # ceiling kept
+        assert r.validity["escalation_budget_s"] == 0.0
+    assert set(es.unresolved_contenders()) == {r.label for r in unresolved}
+
+
+def test_budget_never_costs_a_certain_dominance_ruling(clean, monkeypatch):
+    """The budget must not convert a FREE certain ruling into an unresolved one. Dominance is
+    decided from an already-computed ceiling at no sampler cost, so it is checked first: on a
+    decisive scan the railed null stays "dominated" (ruled out) under a zero budget, and the
+    set still names its winner on evidence."""
+    ctx, _hyp, _fit = clean
+    results = loop.fit_admissible_structures(ctx, errors=False)
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no sampling")))
+    es = E.candidate_set_evidence(_set_triples(ctx, results), ctx, budget_s=0.0)
+
+    assert es.by_label()["elastic+bg"].evidence_method == "dominated"
+    assert es.unresolved_contenders() == []                   # nothing left in doubt
+
+
+def test_a_ruled_out_budget_skip_is_not_a_contender():
+    """Symmetry check on the predicate itself: an unresolved candidate whose own ceiling sits
+    BELOW the best trusted evidence is already ruled out by that bound, so the winner stands
+    and the set stays resolvable. Only a ceiling that could still overtake the leader degrades
+    selection — otherwise the backstop would punish every set it ever touched."""
+    def _rec(label, lnz, method, bound=None):
+        validity = {} if bound is None else {"log_evidence_upper_bound": bound}
+        return E.EvidenceRecord(label=label, log_evidence=lnz, log_evidence_err=None,
+                                evidence_method=method, k_free=3, arena_fingerprint="arena",
+                                prior_spec=(), validity=validity)
+
+    es = E.EvidenceSet(arena_fingerprint="arena")
+    es.add(_rec("stokes+bg", -10.0, "laplace"))
+    es.add(_rec("ruled_out", float("nan"), "unresolved", bound=-40.0))
+    assert es.unresolved_contenders() == []
+
+    es.add(_rec("could_have_won", float("nan"), "unresolved", bound=-5.0))
+    assert es.unresolved_contenders() == ["could_have_won"]
+
+    # Fail safe on an unreadable ceiling. A bound we cannot read cannot rule the candidate out, so
+    # it must COUNT as a contender: `nan >= best` is False, which would take the other direction
+    # and let a winner stand on a set that was never completed.
+    es_nan = E.EvidenceSet(arena_fingerprint="arena")
+    es_nan.add(_rec("stokes+bg", -10.0, "laplace"))
+    es_nan.add(_rec("unreadable", float("nan"), "unresolved", bound=float("nan")))
+    assert es_nan.unresolved_contenders() == ["unreadable"]
+    es_missing = E.EvidenceSet(arena_fingerprint="arena")
+    es_missing.add(_rec("stokes+bg", -10.0, "laplace"))
+    es_missing.add(_rec("no_bound", float("nan"), "unresolved"))       # no ceiling recorded at all
+    assert es_missing.unresolved_contenders() == ["no_bound"]
+
+
+def test_the_budget_default_is_resolved_at_call_time(monkeypatch):
+    """``budget_s`` must not bind ESCALATION_BUDGET_S in the signature: a default argument is
+    captured at import, so patching the constant would be a silent no-op and any test that tried
+    it would pass vacuously. Same trap ``escalation_n_live()`` exists to avoid."""
+    blank = _blank_scan_ctx()
+    results = loop.fit_admissible_structures(blank, errors=False)
+    monkeypatch.setattr(E, "ESCALATION_BUDGET_S", 0.0)
+
+    def _no_sampling(*a, **k):
+        raise AssertionError("a zero budget patched onto the constant must stop the sampler")
+
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", _no_sampling)
+    es = E.candidate_set_evidence(_set_triples(blank, results), blank)    # no explicit budget_s
+    assert any(r.evidence_method == "unresolved" for r in es.records)
+
+
+def test_unresolved_contender_degrades_selection_to_recorded_aic(clean):
+    """The consumer half: an incomplete comparison must not be ranked as if it were complete.
+    select_models records ``evidence_budget_exhausted`` and falls back to the AIC winner —
+    the lane EIG eligibility already fails closed on — instead of publishing a posterior
+    computed over whichever candidates happened to get sampled."""
+    from isar.analyze.select import select_models
+
+    ctx, _hyp, _fit = clean
+    results = loop.fit_admissible_structures(ctx, errors=False)
+    triples = _set_triples(ctx, results)
+    es = E.candidate_set_evidence(triples, ctx)
+    resolved = select_models(results, ctx=None, evidence=es, stamp=False)
+    assert resolved.selection_fallback is None                # precondition: the set was fine
+
+    best_lnz = max(r.log_evidence for r in es.records if math.isfinite(r.log_evidence))
+    es.records.append(E.EvidenceRecord(
+        label="stokes2+bg", log_evidence=float("nan"), log_evidence_err=None,
+        evidence_method="unresolved", k_free=7, arena_fingerprint=es.arena_fingerprint,
+        prior_spec=(), validity={"log_evidence_upper_bound": best_lnz + 1.0,
+                                 "escalation_budget_s": 600.0}))
+    degraded = select_models(results, ctx=None, evidence=es, stamp=False)
+
+    assert degraded.selection_fallback == "evidence_budget_exhausted"
+    assert degraded.best == min(degraded.scores, key=lambda s: s.aic).label
+
+
 def test_all_railed_set_escalates_highest_ceiling_first(clean, monkeypatch):
     """No trusted leader exists when every candidate railed: the highest-ceiling candidate
     is sampled first, becomes the leader, and prunes the rest. Pinned with stubbed records
@@ -368,10 +530,15 @@ def test_all_railed_set_escalates_highest_ceiling_first(clean, monkeypatch):
 def test_candidate_set_escalations_use_the_scoped_n_live_cut(clean, monkeypatch):
     """Owner ruling 2026-08-08: post-pruning escalations sample at ESCALATION_N_LIVE=128;
     the direct-call default and the bayes diagnostics tier (D4) stay at 400. An explicit
-    caller n_live wins over the cut (setdefault, not override)."""
+    caller n_live wins over the cut (setdefault, not override).
+
+    The environment is cleared first, so this pins the PRODUCTION lane: the repo-root conftest
+    caps the suite at ``ISAR_ESCALATION_N_LIVE=32`` for cost, and without the delenv this test
+    would silently be asserting the test-suite cap rather than what ships."""
     import inspect
 
     ctx, hyp, fit = clean
+    monkeypatch.delenv(E.ESCALATION_N_LIVE_ENV, raising=False)
     bundle = _bundle(hyp, ctx)
     original = E.structure_evidence
     seen = []
@@ -399,6 +566,14 @@ def test_candidate_set_escalations_use_the_scoped_n_live_cut(clean, monkeypatch)
     seen.clear()
     E.candidate_set_evidence([(hyp, fit, bundle)], ctx, n_live=80)
     assert seen == [80]                                   # explicit caller n_live wins
+
+    # The cap must actually REACH the sampler — that is the whole point of routing it through the
+    # environment rather than a patched constant, since a spawned pool child re-imports the module.
+    seen.clear()
+    monkeypatch.setenv(E.ESCALATION_N_LIVE_ENV, "32")
+    es_capped = E.candidate_set_evidence([(hyp, fit, bundle)], ctx)
+    assert seen == [32]
+    assert es_capped.by_label()[fit.label].validity["dynesty"]["n_live"] == 32
 
     # the two-lane split: direct calls and the bayes diagnostics tier keep D4's 400
     assert inspect.signature(original).parameters["n_live"].default == 400

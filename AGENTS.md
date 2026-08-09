@@ -51,6 +51,14 @@ area.
   worker spawns its own `min(30, cpu−2)` driver pool and fork-bombs the box. It does **not** reach
   `isar/synth/score.py` / `demo.py`, whose `n_workers` defaults to `cpu−2` with no env knob — every
   current test passes `n_workers` explicitly, and a new one must too.
+- **Escalation sampler cap:** the same conftest `setdefault`s `ISAR_ESCALATION_N_LIVE=32`. Under
+  evidence selection the dynesty escalation rung is ~90% of a campaign test's wall clock (measured
+  2026-08-09: one shadow-selection test, 348 s at `n_live=128` vs 35.6 s at 8, passing either way).
+  Production leaves the variable unset and samples at `ESCALATION_N_LIVE=128`. It travels by
+  *environment*, not a patched constant, because a spawned pool child re-imports
+  `isar.analyze.evidence` — a fixture would leave the parallel arm sampling at 128. An explicit
+  `n_live=` argument still wins over both. See the conftest docstring for why capping it does not
+  weaken what the suite asserts.
 - Offscreen GUI runs: pytest sets the platform via `tests/gui/conftest.py`; a test that leaves a
   modal path unmocked will hang the suite silently — debug that stall serially with
   `-o faulthandler_timeout=60`. Any interpreter with the dependencies installed runs the suite from
@@ -117,7 +125,7 @@ area.
 | The autonomous driver (`isar drive`) | `docs/MEASUREMENT_STEERING.md` |
 | Same-action scan-window EIG (candidate generation and exact realized scoring Partial; authoritative selection Partial — symmetric per-neutron comparison, O43; O42 release review retired by H1, default-on once the SCENE world suite exercises it) | `docs/EIG_STEERING_DESIGN.md`, then `docs/MEASUREMENT_STEERING.md` |
 | Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
-| The SCENE program (scene layer, catalogue, target-free discovery; H1 constitution, world-suite foundation, SCENE-1 PR-a catalogue + `elastic_only` Implemented, rest Planned) | `docs/SCENE_DESIGN.md` |
+| The SCENE program (scene layer, catalogue, target-free discovery; H1 constitution, world-suite foundation, SCENE-2 program contract, and SCENE-1 PR-a catalogue + `elastic_only` / PR-b evidence selection Implemented; PR-c and SCENE-3+ Planned) | `docs/SCENE_DESIGN.md` |
 | Campaign diagnostic report | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |
 | Why a decision was made | `docs/DECISIONS.md` (IDs P*/D*/V/R/S/O/T/W/H are stable, safe to cite) |
 | What happened in a run (historical, never load-bearing) | `docs/campaigns/` |

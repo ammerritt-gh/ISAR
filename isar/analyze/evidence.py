@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import math
 import logging
+import os
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -57,6 +59,26 @@ PRUNE_MARGIN = 100.0
 # (~0.6 vs ~0.3 nats) is decision-irrelevant. D4's n_live=400 stays for the bayes-tier error
 # diagnostics (errors --errors bayes) and for direct structure_evidence calls.
 ESCALATION_N_LIVE = 128
+# Cost knob, read at call time so a child process spawned by a session pool honours it too
+# (the constant alone cannot: a spawned child re-imports this module fresh). Production leaves it
+# unset and gets ESCALATION_N_LIVE; the test suite caps it from the repo-root conftest, where the
+# reasoning for that cap is written down. Documented alongside ISAR_WORKERS /
+# ISAR_BOOTSTRAP_WORKERS as an ISAR_* environment knob.
+ESCALATION_N_LIVE_ENV = "ISAR_ESCALATION_N_LIVE"
+# Escalation wall-clock budget for ONE candidate set. This is a backstop against a pathological
+# set, not a throughput lever: the expensive class (a superset of the winner) has an evidence
+# ceiling ≥ the leader's BY CONSTRUCTION — that is exactly why dominance pruning cannot touch it
+# — so a candidate skipped for budget is one whose posterior genuinely cannot be bounded away
+# from the winner's, and the set degrades to the recorded-AIC lane rather than delivering an
+# evidence claim it did not earn. Size it so only pathological sets reach it; a tight value
+# would push ordinary campaign scans into that degraded lane. Checked BEFORE each escalation
+# starts, so a set may overrun by the duration of one dynesty run (itself bounded by max_iter).
+ESCALATION_BUDGET_S = 600.0
+# Sentinel so the budget is resolved at CALL time from the constant above. Binding
+# ``budget_s=ESCALATION_BUDGET_S`` directly in the signature would capture the value at import,
+# which makes monkeypatching the constant a silent no-op and a test that tried it pass vacuously
+# — the same trap ``escalation_n_live()`` exists to avoid. ``None`` still means "no budget".
+_BUDGET_DEFAULT = object()
 
 _LN_2PI = math.log(2.0 * math.pi)
 log = logging.getLogger(__name__)
@@ -97,6 +119,58 @@ class EvidenceSet:
 
     def by_label(self) -> dict:
         return {r.label: r for r in self.records}
+
+    def unresolved_contenders(self) -> list:
+        """Labels the escalation budget skipped whose evidence ceiling still sits at or above the
+        best trusted evidence in the set — i.e. candidates that could have won had they been
+        sampled. Non-empty means the set **cannot name a winner on evidence**: the caller must
+        degrade to the recorded-AIC lane rather than rank on a posterior computed over an
+        admittedly incomplete candidate set.
+
+        A budget-skipped candidate whose ceiling is *below* the leader is not listed — its own
+        rigorous bound already rules it out, so the winner stands. Compare
+        :attr:`EvidenceRecord.evidence_method` ``"dominated"``, which is the same argument with
+        ``PRUNE_MARGIN`` of slack and is never a contender."""
+        best = max((r.log_evidence for r in self.records if _trusted_evidence(r)),
+                   default=float("-inf"))
+
+        def _contends(rec) -> bool:
+            # Fail safe on a missing or non-finite ceiling: a bound we cannot read is a bound we
+            # cannot use to rule the candidate out, so it counts as a contender. `nan >= best` is
+            # False, which would silently take the OTHER direction and let a winner stand on an
+            # incomplete set — the one outcome this method exists to prevent.
+            bound = float(rec.validity.get("log_evidence_upper_bound", float("inf")))
+            return True if not math.isfinite(bound) else bound >= best
+
+        return [r.label for r in self.records
+                if r.evidence_method == "unresolved" and _contends(r)]
+
+
+def escalation_n_live() -> int:
+    """The n_live the post-pruning escalation lane samples at: ``$ISAR_ESCALATION_N_LIVE`` when
+    set, else :data:`ESCALATION_N_LIVE`. A malformed or non-positive value raises rather than
+    silently falling back — a cost knob that quietly ignores what it was told would make a run's
+    sampling resolution unknowable after the fact."""
+    raw = os.environ.get(ESCALATION_N_LIVE_ENV)
+    if raw is None or raw == "":
+        return ESCALATION_N_LIVE
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{ESCALATION_N_LIVE_ENV}={raw!r} is not an integer") from exc
+    if value <= 0:
+        raise ValueError(f"{ESCALATION_N_LIVE_ENV}={value} must be positive")
+    return value
+
+
+def _trusted_evidence(rec) -> bool:
+    """Whether a record's lnZ may advance the leader / anchor a comparison: finite, and from a
+    Laplace lane or a dynesty run that passed its own convergence gate."""
+    if not np.isfinite(rec.log_evidence):
+        return False
+    if rec.evidence_method == "dynesty":
+        return bool((rec.validity.get("dynesty") or {}).get("converged"))
+    return rec.evidence_method in ("laplace", "laplace_map")
 
 
 def laplace_ln_z(cost: float, ln_prior: float, sigma_free: np.ndarray) -> float:
@@ -259,7 +333,8 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     return _escalate("map_refit_invalid")
 
 
-def candidate_set_evidence(candidates, ctx, **kwargs) -> EvidenceSet:
+def candidate_set_evidence(candidates, ctx, *, budget_s=_BUDGET_DEFAULT,
+                           **kwargs) -> EvidenceSet:
     """Evidence for one scan's candidate set, with dominance pruning of the dynesty rung.
 
     ``candidates`` is ``[(hyp, fit_result, bundle), ...]`` (converged fits only — the caller
@@ -277,11 +352,19 @@ def candidate_set_evidence(candidates, ctx, **kwargs) -> EvidenceSet:
     The pruning inherits exactly the trust AIC always placed in the same number: cost(θ̂) is
     the constrained optimum the optimizer reported. The leader only advances on evidence
     worth trusting (Laplace lanes, or dynesty with its §5.4 gate passed), so a blown-up
-    sampler cannot over-prune the rest of the set."""
+    sampler cannot over-prune the rest of the set.
+
+    ``budget_s`` (default :data:`ESCALATION_BUDGET_S`, ``None`` disables) caps the wall clock
+    the escalation phase may spend. Candidates left unsampled are recorded ``"unresolved"`` with
+    their ceiling — see :meth:`EvidenceSet.unresolved_contenders`, which decides whether the set
+    can still name a winner. The budget is a backstop against a pathological set, not a
+    throughput lever; see the constant."""
     # ponytail: escalations run serially; parallelize the surviving dynesty runs through the
     # session process pool (fit_one's boot_executor, task tuples like _fit_hypothesis_task)
     # when per-scan latency matters — owner-flagged follow-up 2026-08-08.
-    kwargs.setdefault("n_live", ESCALATION_N_LIVE)
+    if budget_s is _BUDGET_DEFAULT:
+        budget_s = ESCALATION_BUDGET_S
+    kwargs.setdefault("n_live", escalation_n_live())
     es = EvidenceSet(arena_fingerprint=loop.data_likelihood_fingerprint(ctx))
     deferred = []
     for hyp, fit, bundle in candidates:
@@ -291,15 +374,10 @@ def candidate_set_evidence(candidates, ctx, **kwargs) -> EvidenceSet:
         else:
             es.add(rec)
 
-    def _trusted(rec):
-        if not np.isfinite(rec.log_evidence):
-            return False
-        if rec.evidence_method == "dynesty":
-            return bool((rec.validity.get("dynesty") or {}).get("converged"))
-        return rec.evidence_method in ("laplace", "laplace_map")
-
-    leader = max((r.log_evidence for r in es.records if _trusted(r)), default=float("-inf"))
+    leader = max((r.log_evidence for r in es.records if _trusted_evidence(r)),
+                 default=float("-inf"))
     deferred.sort(key=lambda item: item[3].validity["log_evidence_upper_bound"], reverse=True)
+    started = time.monotonic()
     for hyp, fit, bundle, marker in deferred:
         bound = marker.validity["log_evidence_upper_bound"]
         if bound < leader - PRUNE_MARGIN:
@@ -312,9 +390,29 @@ def candidate_set_evidence(candidates, ctx, **kwargs) -> EvidenceSet:
                                   arena_fingerprint=marker.arena_fingerprint,
                                   prior_spec=marker.prior_spec, validity=validity))
             continue
+        elapsed = time.monotonic() - started
+        if budget_s is not None and elapsed >= budget_s:
+            # Budget-exhausted honesty: the candidate is RECORDED as unresolved with its ceiling
+            # intact, never dropped and never given a number it did not earn. NaN lnZ keeps it out
+            # of the posterior exactly like "dominated"; unlike "dominated" it is not ruled out, so
+            # unresolved_contenders() reports it and selection degrades. Ordered descending by
+            # ceiling, so what survives the budget is always the strongest remaining claim.
+            validity = dict(marker.validity)
+            validity["escalation_budget_s"] = float(budget_s)
+            validity["escalation_elapsed_s"] = float(elapsed)
+            validity["leader_log_evidence"] = float(leader)
+            log.warning("escalation budget %.1fs exhausted after %.1fs; %r left unresolved "
+                        "(ceiling %.2f vs leader %.2f)",
+                        budget_s, elapsed, marker.label, bound, leader)
+            es.add(EvidenceRecord(label=marker.label, log_evidence=float("nan"),
+                                  log_evidence_err=None, evidence_method="unresolved",
+                                  k_free=marker.k_free,
+                                  arena_fingerprint=marker.arena_fingerprint,
+                                  prior_spec=marker.prior_spec, validity=validity))
+            continue
         rec = structure_evidence(hyp, ctx, fit, bundle, escalation="run", **kwargs)
         es.add(rec)
-        if _trusted(rec):
+        if _trusted_evidence(rec):
             leader = max(leader, rec.log_evidence)
     return es
 
