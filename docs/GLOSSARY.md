@@ -280,8 +280,10 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   neighbouring scan must have been able to *see* the excitation, not merely to have looked at that
   energy: an anti-Stokes-only band must not be too Bose-suppressed to have shown anything, the
   neighbour must have counted comparably deep (within a factor of ~3 of the exposure that saw the
-  mode), and where a track should have reappeared must be knowable from a declared dispersion
-  slope. Anything unknown fails closed — the absence is demoted to **blocked_unresolved** with the
+  mode), and — where that neighbour holds other peaks of its own — where the track should have
+  reappeared must be knowable from a declared dispersion slope, since a neighbour full of other
+  features is no unambiguous non-detection (a covered neighbour holding nothing still counts).
+  Anything unknown fails closed — the absence is demoted to **blocked_unresolved** with the
   reason recorded, never charged.
 - **path topology / adjacency** — scans are ordered along the path they were measured on, derived
   from their q alone; two scans are neighbours only if they are *consecutive* on that path.

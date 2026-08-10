@@ -325,13 +325,14 @@ a crash between them leaves a valid old pointer and an orphan blob; the pointer 
 never authority, and no blob is ever deleted. A lost blob SELF-HEALS on the next build of the same
 content, because the blob is ensured before the unchanged test — so `unchanged` means the content
 really is on disk, not merely that the pointer names it. Absence is quiet (a workspace with no
-scene is ordinary); corruption raises on read and on write — a pointer naming a missing blob,
-unparseable JSON, or a payload that does not re-digest to its own name. Encoding is strict JSON
+scene is ordinary); corruption raises on read, and on write when the existing pointer is
+unreadable — on read that is a pointer naming a missing blob, unparseable JSON, or a payload that
+does not re-digest to its own name. Encoding is strict JSON
 (sorted keys, `allow_nan=False`): a non-finite lnZ persists as `null`, as the builder already
 treats it, and a bound with no finite spelling records `null` plus `discarded_mass_unbounded`.
 
 The GUI and notebooks read all of it through `workspace_api` only (Qt-free; hard rules 6/7
-unchanged): `scene_revision(ws)` for the stored revision — `None` when there is none, raising when the store
+unchanged): `ws.scene` / `scene_revision(ws)` for the stored revision — `None` when there is none, raising when the store
 is damaged — and `hypothesis_map(ws)` for the renderable projection (H14(c)): one entry per scoring
 arena plus gap rows for everything the scene does not claim, stating only what the revision already
 decided. It keeps THREE axes apart — markers and gap bounds in intrinsic `|ω|`, a delivered curve

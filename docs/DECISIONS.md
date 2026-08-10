@@ -1816,7 +1816,8 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   unchanged by their presence); ports O44's origin rule for zone geometry; H1 governs the
   fail-loudly treatment of a malformed declaration.
 
-- **H14.** (2026-08-10, In force; SCENE-3 PR 3c, and the PR #19 response waves it carries)
+- **H14.** (2026-08-10, In force; SCENE-3 PR 3c, and the PR #19 response waves it carries;
+  amends H13)
   **A scene revision is a content-addressed, replayable artifact whose lineage lives outside its
   digest; it is read back through the facade, built observe-only at every delivery, and it honours
   the branch tracker's four scientific contracts by its own route.** Five parts. Parts (a)–(c) also
@@ -1861,8 +1862,11 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   `AS_DETECT_WEIGHT` (1/3) — the scene's amplitude-free mirror of production's `AS_DETECT_Z`, with
   the dimensional difference between a weight floor and a z-score on predicted counts noted in the
   source rather than papered over; the neighbour must have counted comparably deep
-  (`DETECT_EXPOSURE_RATIO` 0.3); and the continuation must be reachable under a declared dispersion
-  slope. Unknowns fail closed with their own reasons. **Ratified consequence:** a workspace that
+  (`DETECT_EXPOSURE_RATIO` 0.3); and where the neighbour holds mode components of its own, the
+  continuation must be reachable under a declared dispersion slope — with none declared, such a
+  neighbour is `reachability_unknown` rather than a non-detection, while a covered neighbour
+  holding NO modes at all is unambiguous and still charges. Unknowns fail closed with their own
+  reasons. **Ratified consequence:** a workspace that
   persists no `effective_exposure` charges no absence anywhere. That is the correct direction — a
   glance that saw nothing is not a long count that saw nothing — and its blast radius is recorded
   here before real data meets it.
@@ -1887,9 +1891,11 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   orphan blob. A LOST BLOB SELF-HEALS on the next build of the same content, because the blob is
   ensured before the unchanged test — otherwise a workspace whose blob had been lost would
   short-circuit on the pointer and report a cheerful all-clear while every read went on raising, so
-  `unchanged=True` now means the content really is on disk. Corruption raises on read AND on write
-  (a pointer naming a missing blob, unparseable JSON, or a payload that does not re-digest to its
-  own name); absence is quiet, because a workspace with no scene is ordinary. Nothing here ever
+  `unchanged=True` now means the content really is on disk. Corruption raises on read, and on
+  write when the
+  existing pointer is unreadable — on read that is a pointer naming a missing blob, unparseable
+  JSON, or a payload that does not re-digest to its own name; absence is quiet, because a
+  workspace with no scene is ordinary. Nothing here ever
   deletes a blob. Strict JSON throughout: `canonical_bytes` refuses non-finite values
   (`allow_nan=False`), so a revision that digests cleanly can always be re-read — a non-finite lnZ
   therefore persists as `null`, matching the builder's own treatment of it as unsummable, and a
@@ -1900,8 +1906,10 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   **(c) The read surface, and what a hypothesis map may claim.** `isar.workspace_api.scene_view` is
   the scene's OUTPUT door, deliberately a separate module from the input adapter — which stays
   banned from importing the store at all, so an already-stored revision can never contaminate a
-  builder's inputs. `scene_revision(ws)` returns the pointer metadata plus the payload verbatim, with no typed re-modelling of it (H12(e)); absence reads as `None` and corruption
-  propagates rather than degrading into "no scene", because the two mean opposite things to an
+  builder's inputs. `ws.scene` (the property a reader uses) delegates to `scene_revision(ws)`,
+  which returns the pointer metadata plus the payload verbatim, with no typed re-modelling of it
+  (H12(e)); absence reads as `None` and corruption propagates rather than degrading into "no
+  scene", because the two mean opposite things to an
   operator. `hypothesis_map(ws)` is a projection for a renderer and re-derives no belief: posterior
   mass comes from the recorded cluster marginals, visibility from the recorded reports, coverage
   from the recorded footprints. It carries THREE axes and deliberately does not unify them —
