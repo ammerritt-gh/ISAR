@@ -15,7 +15,8 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 
-from isar.scene.model import CandidateRow, SceneObservation, observation_fingerprint
+from isar.scene.model import (CandidateRow, SampleKnowledge, SceneObservation,
+                              observation_fingerprint)
 from isar.schema.steering import CANONICAL_MASTER
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,9 @@ log = logging.getLogger(__name__)
 # adapter cannot read is re-delivered, never guessed at. A tolerant fallback here would put a
 # heuristic between the stored evidence and ln W(S), which is exactly what may not happen.
 REDELIVER = "re-deliver or rebuild this workspace before SCENE analysis"
+
+# The lattice-epoch cell fields, in the order ``SampleKnowledge.lattice`` records them.
+_CELL = ("a", "b", "c", "alpha", "beta", "gamma")
 
 
 def scene_observations(ws) -> list[SceneObservation]:
@@ -35,7 +39,8 @@ def scene_observations(ws) -> list[SceneObservation]:
     nothing to score) and is logged.
 
     Raises ``ValueError`` on a workspace this adapter cannot read faithfully — a results.csv with
-    no candidates column, or a master with unqualified member labels. Both mean re-deliver.
+    no candidates column, a master with unqualified member labels, or a row predating the current
+    delivery contract (:func:`_refuse_stale_delivery`). All of them mean re-deliver.
 
     Revisions need no handling here: ``results.csv`` is rewritten in full from the current
     ledger on every delivery (``isar/session/outcome.py:_write_results_csv``), so it holds
@@ -68,6 +73,7 @@ def scene_observations(ws) -> list[SceneObservation]:
             q=_q(fit),
             temperature_K=fit.T,
             energy_window=_window(fit),
+            energy_bands=_bands(fit),
             gauss_fwhm=fit.gauss_fwhm,
             lorentz_fwhm=fit.lorentz_fwhm,
             effective_exposure=fit.effective_exposure,
@@ -85,6 +91,70 @@ def scene_observations(ws) -> list[SceneObservation]:
         out.append(replace(obs, fingerprint=observation_fingerprint(obs)))
     out.sort(key=lambda o: o.scan_ref)
     return out
+
+
+def sample_knowledge(ws) -> SampleKnowledge:
+    """What ``ws``'s experiment card DECLARES about the sample, for the scene layer.
+
+    Two hand-authored policy keys and one machine-written state series, and the ownership split
+    is the card's (hard rule 1) — this function READS all three and writes none of them:
+
+    * ``policy.dispersion["zone_period"]`` — the reduced-zone fold period in rlu, the same key
+      the steering layer's branch-assignment geometry reads. Absent ⇒ no zone geometry, and the
+      ``zone_centre_approach`` factor is inert and says so;
+    * ``policy.dispersion["max_slope_meV_per_rlu"]`` — the steepest |dω/dq| any branch of this
+      sample is declared to have. Absent ⇒ track continuation has no declared reach, and the scene
+      declines to charge a non-continuation rather than substituting the energy resolution for a
+      dispersion bound (review finding 5);
+    * ``policy.sample["reflections"]`` — the scientist's declared Bragg positions along the scan
+      path, in the same axis rlu as an observation's q. It is a SEPARATE
+      declaration from the period on purpose: a fold position is not a reflection (FCC (300) is
+      integer-indexed, sits at a fold, and is extinct), so nothing here derives one from the
+      other, from integer indices, or from a space group;
+    * ``state.lattice_epochs`` — the highest-versioned epoch, recorded for provenance so a
+      revision cannot be replayed against a different lattice interpretation without the
+      fingerprint saying so.
+
+    Malformed declarations raise rather than degrade (H1): a card that says something unreadable
+    about the sample is a card to fix, and treating it as silence would leave the ledger claiming
+    the capability was never asked for.
+    """
+    card = ws.card
+    policy = card.policy
+    dispersion = dict(getattr(policy, "dispersion", None) or {}) if policy else {}
+    declared_sample = dict(getattr(policy, "sample", None) or {}) if policy else {}
+    period = dispersion.get("zone_period")
+    slope_max = dispersion.get("max_slope_meV_per_rlu")
+    reflections = declared_sample.get("reflections") or ()
+    epochs = [e for e in card.lattice_epochs
+              if isinstance(e, dict) and e.get("version") is not None]
+    try:
+        # Ordered by version as a NUMBER, and inside the guard. A string version would otherwise
+        # order lexically — "9" ahead of "10", so the newest epoch silently loses — and a mixed
+        # series would raise a bare TypeError instead of the message this function promises.
+        epoch = max(epochs, key=lambda e: int(e["version"]), default=None)
+        cell = (epoch or {}).get("lattice")
+        # All six cell parameters or nothing. An ABSENT cell is a declaration that was never made
+        # and stays ``None``; a PARTIAL one is malformed and raises (H1) — degrading it to "no
+        # lattice declared" would leave the revision claiming a provenance the card tried to give.
+        if isinstance(cell, dict) and 0 < sum(k in cell for k in _CELL) < len(_CELL):
+            raise ValueError(f"lattice cell declares {sorted(cell)}, expected all of {list(_CELL)}")
+        return SampleKnowledge(
+            zone_period=None if period is None else float(period),
+            reflections=tuple(float(r) for r in reflections),
+            dispersion_slope_max=None if slope_max is None else float(slope_max),
+            lattice_epoch=None if epoch is None else int(epoch["version"]),
+            lattice=None if not isinstance(cell, dict) or not cell
+            else tuple(float(cell[k]) for k in _CELL))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"scene: card declares an unreadable sample geometry "
+            f"(dispersion.zone_period={period!r}, "
+            f"dispersion.max_slope_meV_per_rlu={slope_max!r}, "
+            f"sample.reflections={declared_sample.get('reflections')!r}, "
+            # The candidate list, not the chosen epoch: choosing is itself inside the guard now,
+            # so a failure there leaves no chosen epoch to name.
+            f"lattice epochs={epochs!r}): {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -200,11 +270,41 @@ def _candidates(fit, ref: str):
         else:
             log.debug("scene: %s carries no delivered fit — no observation", ref)
         return None
+    _refuse_stale_delivery(fit, ref, raw)
     try:
         return tuple(CandidateRow.from_dict(c) for c in sorted(raw, key=lambda c: str(c["label"])))
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         log.warning("scene: %s has a malformed candidate table (%s) — no observation", ref, exc)
         return None
+
+
+def _refuse_stale_delivery(fit, ref: str, raw) -> None:
+    """Raise unless ``fit`` carries the current delivery contract's scene inputs.
+
+    Two fields, one refusal, because a row missing either was written by a delivery that predates
+    this contract and there is no honest way to fill in what it did not record:
+
+    * ``candidates[].components`` — what each candidate is MADE OF. Recovering it from the label
+      text is what this contract exists to stop: a display string is an identifier, and a scene
+      that parses it decides physics on a grammar nobody promised to keep.
+    * ``energy_bands`` — the contiguous kept runs behind ``energy_window``. Reading the envelope
+      alone would present the QC-masked holes inside it as searched coverage, so an absence in a
+      hole would be priced as evidence.
+
+    Refused rather than degraded, per the standing no-legacy rule (H1): the same posture as the
+    unqualified-member-label and missing-candidates-column refusals above.
+    """
+    stale = []
+    # ``"label" in c`` keeps this about STALE rows: a cell that is not a candidate table at all is
+    # malformed, and the parse path below logs it as such rather than blaming the contract.
+    if isinstance(raw, list) and any(isinstance(c, dict) and "label" in c and "components" not in c
+                                     for c in raw):
+        stale.append("candidate rows without component descriptors")
+    if fit.energy_window is not None and fit.energy_bands is None:
+        stale.append("an energy window with no energy_bands")
+    if stale:
+        raise ValueError(f"scene: {ref} predates the current delivery contract "
+                         f"({'; '.join(stale)}) — {REDELIVER}")
 
 
 def _q(fit):
@@ -219,6 +319,27 @@ def _window(fit):
     if w is None or len(w) != 2 or any(v is None for v in w):
         return None
     return (float(w[0]), float(w[1]))
+
+
+def _bands(fit):
+    """The kept energy runs as ``((lo, hi), …)``, or ``None`` when the row records none.
+
+    ABSENT and MALFORMED are two different diagnoses and get two different errors. Absent (``None``)
+    is a row that predates the field, which :func:`_refuse_stale_delivery` answers with re-deliver.
+    Present-but-unreadable — a cell that failed to parse as JSON arrives here as the raw string —
+    is a CORRUPT row, and telling its owner to re-deliver a stale workspace would send them after
+    the wrong problem.
+    """
+    bands = fit.energy_bands
+    if bands is None:
+        return None
+    try:
+        if not isinstance(bands, list):
+            raise TypeError(f"expected a list of [lo, hi] pairs, got {type(bands).__name__}")
+        return tuple((float(b[0]), float(b[1])) for b in bands)
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"scene: {_scan_ref(fit)} has a malformed energy_bands cell "
+                         f"({bands!r}): {exc}") from exc
 
 
 def _background(fit):

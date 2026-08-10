@@ -334,36 +334,14 @@ def test_component_lambda_rejects_a_mistyped_peak_token_for_every_kind():
 # posterior over structures drives) — `selection_fallback is None` is load-bearing in every
 # check below: none of these tests can pass on the recorded AIC fallback.
 
-from isar.analyze import loop as _loop, select as _select, verdict as _verdict
-from isar.analyze.context import ScanContext
+from isar.analyze import verdict as _verdict
 
-
-def _scan_ctx(name, h):
-    cfg, truth = worlds.build(name)
-    data = generate.generate_world(truth)
-    hs = generate.world_h_values(cfg)
-    i = int(np.argmin(np.abs(hs - h)))
-    x = generate.world_energy_grid(cfg)
-    return ScanContext(x=x, counts=data.counts[i].astype(float),
-                       mask=np.ones(x.size, dtype=bool), T=truth.T, center=0.0,
-                       gauss_fwhm=cfg.gauss_fwhm, lorentz_fwhm=cfg.lorentz_fwhm,
-                       instrument="S30", energy_status="needs_zero")
-
-
-def _run_selection(name, h):
-    ctx = _scan_ctx(name, h)
-    # hypotheses_out, not hand re-enumeration: catalogue variants (H9) exist only because a fit
-    # came out a certain way, and each carries the derived context its evidence resolves under —
-    # a hand-built hyps dict cannot contain them and select_models refuses the orphan label.
-    hyps = {}
-    results = _loop.fit_structures_two_stage(ctx, hypotheses_out=hyps)
-    sel = _select.select_models(results, hyps, ctx)
-    assert sel.selection_fallback is None
-    return ctx, results, sel
+# The context/selection pair lives in _world_helpers so the scene world tests run the SAME path.
+from ._world_helpers import run_selection as _run_selection
 
 
 def _classify(name, h):
-    ctx, results, sel = _run_selection(name, h)
+    ctx, results, sel, _hyps = _run_selection(name, h)
     return _verdict.classify(results, ctx, sel)
 
 
@@ -390,7 +368,7 @@ def test_blank_world_classifies_no_signal():
 def test_canonical_world_wins_both_branches_off_centre():
     # H=2.25: acoustic 4.24 meV and optic 8.41 meV, no Bragg (offset 0.25 >> q_fwhm 0.08).
     # Evidence selection must prefer the 2-mode structure and land both mode energies.
-    _ctx, results, sel = _run_selection("canonical", 2.25)
+    _ctx, results, sel, _hyps = _run_selection("canonical", 2.25)
     win = {r.label: r for r in results}[sel.best]
     assert win.n_modes == 2
     modes = sorted(v for n, v in win.params.items() if n.endswith(".Omega_d"))
@@ -402,7 +380,7 @@ def test_no_acoustic_world_keeps_the_gap_at_the_zone_centre():
     # H=2.0: Bragg + gapped 3.0 meV + optic 7.0 meV. A gapless-acoustic misreading would put
     # a mode inside the elastic resolution; the winner must not. (The identity axis is
     # deferred, so "not read as acoustic" is asserted structurally: no near-zero mode energy.)
-    _ctx, results, sel = _run_selection("no_acoustic", 2.0)
+    _ctx, results, sel, _hyps = _run_selection("no_acoustic", 2.0)
     win = {r.label: r for r in results}[sel.best]
     assert win.n_modes >= 1
     modes = [v for n, v in win.params.items() if n.endswith(".Omega_d")]
@@ -417,7 +395,7 @@ def test_unknown_extra_world_extra_level_is_competitive():
     # the machine may be honest at its ceiling, but it must not read the scan as one mode.
     # Slow-marked (owner rule 2026-08-08): the genuinely ambiguous 3-vs-2 contest escalates to
     # dynesty by design — 117 s measured at ESCALATION_N_LIVE=128, over the fast-lane budget.
-    _ctx, results, sel = _run_selection("unknown_extra", 2.25)
+    _ctx, results, sel, _hyps = _run_selection("unknown_extra", 2.25)
     n_modes = {r.label: r.n_modes for r in results}
     multi = [s for s in sel.scores if n_modes.get(s.label, 1) >= 2]
     assert multi

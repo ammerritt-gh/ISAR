@@ -665,7 +665,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         interval_semantics=fit.get("interval_semantics"),
         shadow_model_selection=fit.get("shadow_model_selection"),
         at_limit=fit.get("at_limit"),
-        energy_window=fit.get("energy_window"),
+        energy_window=fit.get("energy_window"), energy_bands=fit.get("energy_bands"),
         evidence_identity=fit.get("evidence_identity"),
         identity_ba_disagreement=fit.get("identity_ba_disagreement"),
         descriptor=(descriptor.to_dict() if descriptor is not None else None),

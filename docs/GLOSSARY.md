@@ -215,6 +215,54 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **repair / drop** — supervisor actions with deliberately different consequences: `repair`
   modifies a rejected proposal and retries it; `drop` skips that point rather than resubmitting it.
 
+## Scene vocabulary (the cross-scan layer)
+
+- **scene** — ISAR's reading of a whole stretch of q at once, rather than one scan at a time. It takes
+  each scan's finished candidate comparison as given and asks what set of readings hangs together
+  across neighbouring scans. See `docs/SCENE_DESIGN.md`.
+- **scene factor** — one declared term of the scene's score, or one declared non-scoring job. A factor
+  says up front what it reads, what it is tuned to, and how large its term can get; nothing may
+  contribute an undeclared bonus. Its jobs are: **couples** (which scans belong in one cluster),
+  **score** (a term in the belief), **propose** (offer an alternative reading), **classify** (label a
+  component without moving belief), **refine_visibility** (reinterpret why something was not seen),
+  **couples_arena** (cluster on a whole neighbouring scan's coverage rather than on one of its
+  components), and **degradations** (say why the factor had nothing declared to work with).
+- **visibility state** — why a hypothesized excitation is, or is not, present in a neighbouring scan.
+  **observed**: something was seen there. **searched_no_signal**: that scan looked at that energy and
+  found nothing — the *only* absence that counts against a claim, and only after the detectability
+  gate. **censored_outside_footprint**: that scan never looked there, so it is no evidence either
+  way. **blocked_unresolved**: something made the region uninformative — the elastic line, an
+  anti-Stokes band too Bose-suppressed to have shown anything, a look too shallow to compare, or a
+  continuation nothing declared says where to expect — look again with better data, and the
+  report's `reason` says which. **structural_endpoint**: see below.
+- **structural endpoint** — an absence the *declared physics* explains, so nothing is missing. A
+  gapless branch reaches zero energy at a zone centre and disappears under the elastic response; a
+  scan there sees nothing not because the branch is absent but because it has run out of energy to
+  have. It is granted to a READING, not to a mode: the scene must be looking at a linked track that
+  descends toward a declared fold through a run of elastic-bearing scans. A lone low-energy feature
+  beside a zone centre gets no such explanation, and neither does a flat track. Distinct from
+  **blocked_unresolved** in what you should do: blocked means count longer,
+  structural endpoint means no amount of counting will produce a peak. Never penalized.
+- **sample knowledge** — what the scientist DECLARED about the sample, read off the experiment card:
+  the reduced-zone period, the Bragg reflections along the scan path, the steepest dispersion slope
+  any branch may have (meV per rlu — the only thing that says how far a track could have moved
+  between two q, which the energy resolution does not), and the lattice epoch in force.
+  Never inferred from the data. Declaring nothing is allowed; the capabilities that need it then go
+  inert and say so in the revision's `sample_knowledge.degradations`.
+- **Bragg (at the scene)** — whether an elastic feature sits where a reflection was declared is a
+  *scene-level* classification (`bragg_compatible` / `off_lattice` / `unclassified` when no
+  reflections were declared / `unplaceable_q` when they were but this scan has no usable q), not a fit
+  result: a single scan's elastic fit is blind to where in reciprocal space it sits. Crucially, the zone period
+  does not confer a reflection — FCC (300) has integer indices, sits on a fold, and is extinct. The
+  classification moves no belief, because elastic intensity is ubiquitous: off-lattice elastic is not
+  improbable, only not-Bragg.
+- **unknown-physical / spurious / no_signal** — the three distinct outcomes for a feature that does
+  not cohere with the scene. *Unknown-physical* is real scattering the declared model does not
+  describe. *Spurious* is an instrument artifact — it coheres in the instrument's own coordinates
+  (analyzer and monochromator angles, incident energy) rather than in (Q, ω), which is how a spurion
+  is told from physics. *No_signal* is nothing there. Collapsing the three into "rejected" would throw
+  away the one discriminant that matters.
+
 ## Validation vocabulary
 
 - **gold / expert fit** — a human's by-hand fit of the same data (in their usual tool). ISAR is compared

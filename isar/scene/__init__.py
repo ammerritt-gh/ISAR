@@ -12,6 +12,7 @@ from isar.scene.model import (
     fingerprint,
     footprint_of,
     observation_fingerprint,
+    visibility_of,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "fingerprint",
     "footprint_of",
     "observation_fingerprint",
+    "visibility_of",
 ]

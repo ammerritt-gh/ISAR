@@ -16,27 +16,42 @@ from isar.scene.build import (SCENE_SCHEMA, ClusterView, SceneAlternative,
                               _discarded_bound, build_scene)
 from isar.scene import build as build_mod
 from isar.scene.factors import SceneFactor
-from isar.scene.model import (CandidateRow, SceneObservation, canonical_bytes, digest_bytes,
-                              observation_fingerprint)
+from isar.scene.model import (CandidateRow, ComponentDescriptor, SceneObservation, canonical_bytes,
+                              digest_bytes, observation_fingerprint)
 
 
 # ----------------------------------------------------------------------------
 # Hand-built observations
 # ----------------------------------------------------------------------------
-def cand(label, lnz, *, n_modes=1, omegas=None, usable=True, identity=None):
+def cand(label, lnz, *, n_modes=1, omegas=None, usable=True, identity=None, extra=()):
+    """One candidate for ``mk_obs``. ``extra`` declares the NON-MODE component kinds explicitly.
+
+    Mode descriptors follow the caller's ``n_modes``, which is already an explicit declaration of
+    how many modes the candidate has; ``elastic``/``quasielastic`` must be spelled, because the
+    label is an identifier and nothing derives structure from it any more.
+    """
     return (label, lnz, n_modes, (10.0,) * n_modes if omegas is None else tuple(omegas),
-            usable, identity)
+            usable, identity, tuple(extra))
 
 
-def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), q=(1.0, 0.0, 0.0),
-           status="complete", fallback=None, sink=None):
+def components(n_modes, extra=()):
+    return tuple([*(ComponentDescriptor("mode", i) for i in range(n_modes)),
+                  *(ComponentDescriptor(kind) for kind in extra)])
+
+
+def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), bands=None, q=(1.0, 0.0, 0.0),
+           status="complete", fallback=None, sink=None, temperature=300.0, exposure=1.0):
     rows = tuple(
         CandidateRow(label=label, k=None, n_modes=n_modes, log_evidence=lnz,
                      evidence_method="laplace", posterior_probability=None, usable=usable,
-                     identity=identity, variant=None, omegas=omegas)
-        for label, lnz, n_modes, omegas, usable, identity in candidates)
-    obs = SceneObservation(scan_ref=scan_ref, q=q, temperature_K=300.0, energy_window=window,
-                           gauss_fwhm=1.0, lorentz_fwhm=None, effective_exposure=1.0,
+                     identity=identity, variant=None, omegas=omegas,
+                     components=components(len(omegas), extra))
+        for label, lnz, n_modes, omegas, usable, identity, extra in candidates)
+    obs = SceneObservation(scan_ref=scan_ref, q=q, temperature_K=temperature, energy_window=window,
+                           energy_bands=(None if window is None
+                                         else (tuple(window),) if bands is None
+                                         else tuple(tuple(b) for b in bands)),
+                           gauss_fwhm=1.0, lorentz_fwhm=None, effective_exposure=exposure,
                            background=0.5, best_label=rows[0].label if rows else None,
                            candidates=rows, evidence_comparison_status=status,
                            selection_fallback=fallback, arena_fingerprint=None,
@@ -464,12 +479,16 @@ def test_a_bounded_truncation_widens_its_stated_bound_by_the_factor_span():
     assert cl["discarded_mass_bound"] > 1.0
 
 
-def test_the_empty_registry_keeps_the_bare_margin_and_the_bare_bound():
-    """The equivalence itself: with no scoring factor the span is 0, and every number is the
-    pre-contract arithmetic - the live (empty) registry must not change a single byte."""
+def test_an_empty_factor_set_keeps_the_bare_margin_and_the_bare_bound():
+    """With no scoring factor the span is 0 and every number is the bare arithmetic.
+
+    Re-pinned in SCENE-3 PR 3b: the LIVE registry is no longer empty (presence + connectivity,
+    both unbounded), so ``build_scene(obs)`` and ``build_scene(obs, factors=[])`` are deliberately
+    different scenes now — see ``test_the_live_registry_is_the_two_physics_factors``. What this
+    test protects is the empty-factor-set arithmetic itself.
+    """
     obs = chain_and_distant()
-    assert build_scene(obs).digest == build_scene(obs, factors=[]).digest
-    assert build_scene(obs).payload["score_span_nats"] == 0.0
+    assert build_scene(obs, factors=[]).payload["score_span_nats"] == 0.0
 
     pruned = [mk_obs("e:1:d", [cand("lead", -10.0), cand("far", -160.0)])]
     cl = cluster_of(build_scene(pruned, factors=[]), "e:1:d")
@@ -536,6 +555,27 @@ def test_an_excluded_candidate_cannot_bridge_two_clusters():
 
 
 # ----------------------------------------------------------------------------
+# The linkage variable (PR 3b), as the builder owns it
+# ----------------------------------------------------------------------------
+def test_the_default_linkage_chains_nearest_omega_and_leaves_the_unreachable_unlinked():
+    """Nearest-ω chaining, and the refusal that matters: the 9 meV mode has no partner within
+    tolerance at the neighbour, so it stays UNLINKED rather than being forced onto a distant one.
+    A forced link would invent a track the data does not support."""
+    obs = [mk_obs("e:1:d", [cand("A", -10.0, n_modes=2, omegas=(4.0, 9.0))], q=(1.0, 0.0, 0.0)),
+           mk_obs("e:2:d", [cand("A", -10.0, omegas=(4.3,))], q=(1.05, 0.0, 0.0))]
+    cl = cluster_of(build_scene(obs, factors=[COUPLER, ZERO]), "e:1:d")
+    alt, = cl["alternatives"]
+    assert alt["links"] == [["e:1:d#A#0", "e:2:d#A#0"]]
+
+
+def test_without_a_proposer_every_assignment_has_exactly_one_linkage():
+    """A factor set with no ``propose`` leaves the alternative count exactly what 3a enumerated."""
+    cl = cluster_of(build_scene(chain_and_distant(), factors=[COUPLER, ZERO]), "e:1:d")
+    assert cl["n_enumerated"] == cl["n_assignments"] == 8
+    assert cl["linkage_truncated"] is False
+
+
+# ----------------------------------------------------------------------------
 # Immutability
 # ----------------------------------------------------------------------------
 def test_a_factor_cannot_mutate_the_cluster_view():
@@ -575,14 +615,28 @@ DECLARED = SceneFactor(name="declared", kind="structural_likelihood", version="1
 
 
 def test_the_payload_carries_the_full_factor_declaration():
+    """Including the builder's OWN declared term: the per-assignment linkage prior is part of
+    what scored the scene, so it is in the manifest and in the fingerprint like any factor."""
     rev = build_scene(chain_and_distant(), factors=[COUPLER, DECLARED])
     assert rev.payload["factor_manifest"] == [
         {"name": "declared", "kind": "structural_likelihood", "version": "1",
          "consumes": ["q"], "roles": ["score"], "config": [["threshold", 0.25]],
          "score_bound": [0.0, 1.0]},
+        # v2, unbounded: the prior divides by the ENUMERATED linkage count rather than the kept
+        # one (review finding 10), and nothing bounds how many readings the proposers offer.
+        {"name": "linkage_prior", "kind": "scene_prior", "version": "2",
+         "consumes": ["links"], "roles": [],
+         "config": [["max_linkage_variants", float(build_mod.MAX_LINKAGE_VARIANTS)]],
+         "score_bound": None},
         {"name": "q_adjacency", "kind": "structural_likelihood", "version": "1",
          "consumes": ["q"], "roles": ["couples"], "config": [], "score_bound": None},
     ]
+
+
+def test_the_builders_linkage_prior_name_is_reserved():
+    reserved = replace(DECLARED, name="linkage_prior")
+    with pytest.raises(ValueError, match="reserved"):
+        build_scene(chain_and_distant(), factors=[reserved])
 
 
 @pytest.mark.parametrize("changed", [
@@ -590,6 +644,12 @@ def test_the_payload_carries_the_full_factor_declaration():
     {"config": (("threshold", 0.5),)},
     {"score_bound": (0.0, 2.0)},
     {"version": "2"},
+    # A factor that grows a non-scoring hook is a different declaration too: it classifies
+    # components, reinterprets absences, or draws cluster edges nothing else drew.
+    {"classify": lambda view: {}},
+    {"refine_visibility": lambda report, view: None},
+    {"couples_arena": lambda c, fp: False},
+    {"degradations": lambda sample: ()},
 ])
 def test_the_registry_fingerprint_moves_with_every_declaration(changed):
     """The doc/code mismatch this closes: the fingerprint was taken over (name, kind, version)
@@ -609,6 +669,10 @@ def test_the_registry_fingerprint_moves_with_every_declaration(changed):
     ({"score_bound": (1.0, 0.0)}, "score_bound"),
     ({"score_bound": (0.0, math.inf)}, "score_bound"),
     ({"score_bound": (0.0, 1.0), "score": None}, "no score"),
+    ({"classify": "not a function"}, "non-callable classify"),
+    ({"refine_visibility": 3}, "non-callable refine_visibility"),
+    ({"couples_arena": "nope"}, "non-callable couples_arena"),
+    ({"degradations": ()}, "non-callable degradations"),
 ])
 def test_a_malformed_declaration_is_refused(bad, match):
     with pytest.raises(ValueError, match=match):

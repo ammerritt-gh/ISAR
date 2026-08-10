@@ -1728,6 +1728,85 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   **Supersedes/relates:** amends H11(c) and refines H11(b); supersedes the SCENE-3 plan's
   decision 9; rests on H7 (comparison completeness) and H9 (conditioning provenance).
 
+- **H13.** (2026-08-10, In force; SCENE-3 PR 3b) **Sample knowledge is declared, never derived;
+  Bragg is a scene-level classification rather than a likelihood; a declared structure may
+  terminate a track without penalizing it; and absence inside coverage is priced even when the
+  neighbouring arena is empty.** Five parts.
+  **(a) Sample knowledge enters the scene as a DECLARATION, and zone geometry is independent of
+  the reflection list.** `build_scene(..., sample=SampleKnowledge(...))` carries the scientist's
+  declared reduced-zone period, Bragg reflections along the scan path, and the lattice epoch in
+  force, lifted off the experiment card by `isar.workspace_api.scene.sample_knowledge` — read
+  only, since the policy half of the card is hand-authored. Zone centres are the multiples of the
+  declared period anchored at the crystal origin `q = 0`, never at a measured or tracker-selected
+  q (the O44 rule, ported). The failure this prevents is the FCC (300) case: (300) has integer
+  indices, sits exactly on a fold of the reduced-zone period, and is EXTINCT. So the period never
+  confers a reflection, and no space group, structure-factor table, or integer-index shortcut
+  derives one declaration from the other — a scene that inferred reflections from periodicity
+  would confidently call an extinct position Bragg. Nothing is a required card key: an undeclared
+  field leaves the capability that consumes it inert and names itself in the revision's
+  `sample_knowledge.degradations`, because a capability that was never asked for and one that ran
+  and found nothing are different states and a silent scene cannot tell them apart. A malformed
+  declaration fails loudly instead (H1).
+  **(b) "Bragg" is classified at the scene, and in PR 3b it is classified and not scored.** The
+  local catalogue's elastic entry is lattice-blind by design — it fits a resolution-limited
+  feature at ω = 0 and knows nothing about where in reciprocal space it sits — so the local
+  evidence cannot have priced lattice position, and classifying it at the scene re-prices nothing
+  (H12(a)). `reciprocal_lattice_localization` labels every non-mode component `bragg_compatible` /
+  `off_lattice` / `unclassified` / `unplaceable_q` against the declared list, recorded per cluster
+  under `classification`. The last two are distinct on purpose: `unclassified` is "no reflections
+  were declared", whose reason is recorded build-level in `sample_knowledge.degradations`, while
+  `unplaceable_q` is a per-arena fact that a declaration-level ledger cannot see — merging them
+  would leave an unplaceable arena inert with no reason recorded anywhere. It attaches no likelihood, and the reason is categorical humility about the
+  elastic channel: elastic intensity is ubiquitous (sample environment, mounts, incoherent
+  scattering, powder on the plate), so an off-lattice elastic feature is not improbable — it is
+  merely not-Bragg. Scoring it would penalize a completely ordinary observation. Modes are not
+  classified at all: a phonon at a reflection's q is a phonon.
+  **(c) `structural_endpoint` is assigned by the zone-centre factor, and it carries no penalty by
+  EMERGENCE rather than by exception.** `zone_centre_approach` reinterprets one neighbour report
+  when a zone period is declared and the alternative READS the mode as that branch terminating: it
+  is the terminal node of a linked track, the track descends toward the centre over its final edge,
+  the declared geometry applies on the derived path, and a contiguous run of covered,
+  elastic-bearing consecutive arenas reaches the fold (a declared dispersion slope, where there is
+  one, must be able to carry the remaining energy to zero). The original PR 3b predicate — a low
+  |ω| next to a centre — was granted from energy alone and so exempted isolated features and flat
+  low-lying tracks that the declared gapless physics says nothing about; the reading competes with
+  the same assignment's other linkages and is priced against them instead.
+  `blocked_unresolved` says *unresolved pending better data* — count
+  longer and the answer may change; `structural_endpoint` says *the declared physics terminates
+  the track here* — nothing is missing, and no amount of counting will produce a peak. The
+  distinction is what an operator acts on. Presence and connectivity key on `searched_no_signal`
+  alone, so a reinterpreted report simply stops being priced; special-casing the exemption into
+  two score functions would have put the same physics in three places. A `refine_visibility` hook
+  may only replace an absence state — never `observed`, never `censored_outside_footprint` — and
+  the builder enforces that rather than trusting each factor, because a hook able to rewrite a
+  detection could argue a real measurement out of existence.
+  **(d) Coverage coupling closes the presence hole (carried item 15), and coupling stays
+  footprint- and discrete-deterministic.** A cluster edge required a component on both sides, so
+  an arena whose surviving candidates were all background-only emitted nothing and could never
+  join a cluster. The consequence was inverted physics exactly where absence evidence is
+  strongest: a track disappearing into a searched, covered, entirely empty neighbour went
+  unpriced, while the same track disappearing into a neighbour that happened to hold something
+  else was priced. The `couples_arena` hook couples a mode to a whole neighbouring ARENA through
+  its footprint, gated on the same coverage predicate `visibility_of` uses — no coverage is no
+  claim, so it grows no cluster. It is a graph-layer change, not a scoring one, and it reads
+  footprints and discrete component positions only, so the partition stays deterministic. Only
+  scoring arenas participate, so an H7-incomplete arena is never resurrected through its
+  footprint.
+  **(e) The spurion vocabulary is three distinct outcomes, and none of them is "not a mode"**
+  (program decision 11, recorded here before any code exists for it). A feature that does not
+  cohere with the scene is one of: *unknown-physical* — real scattering the declared model does
+  not describe; *spurious* — an artifact of the instrument, which coheres in ITS OWN coordinates
+  (analyzer/monochromator angles, incident energy) rather than in (Q, ω), which is exactly how a
+  spurion is told from physics; or *no_signal* — nothing there. The vocabulary is
+  registry-extensible because the list of known spurion mechanisms grows with the instrument, not
+  with this repo's release cycle. PR 3b adds no spurion catalogue code; recording the distinction
+  now prevents the cheaper collapse into a single "rejected" bucket, which would lose the one
+  discriminant that matters.
+  **Supersedes/relates:** rests on H11 (the scene input contract), H12(a) (what a factor may
+  price) and H12(c) (score-bound honesty — the two factors here declare no score, so pruning is
+  unchanged by their presence); ports O44's origin rule for zone geometry; H1 governs the
+  fail-loudly treatment of a malformed declaration.
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:

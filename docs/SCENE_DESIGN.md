@@ -112,12 +112,145 @@ influence by removing its SCORE terms over the FIXED alternative set — index-a
 edges (and so the cluster partition and the hypothesis space itself) are deliberately not
 removed; that is why the operation is not called leave-one-factor-out.
 
-**What SCENE-3 PR 3a's alternative is, and is not.** A 3a alternative is a per-cluster
-CANDIDATE ASSIGNMENT — one surviving candidate per participating arena — and is linkage-free.
-It is *not yet* the full scene alternative this section defines: component→phenomenon
-assignment, connectivity/topology states, and visibility states are the 3b extension, and
-until they land the scene scores which local hypothesis each arena holds, not what the
-phenomena are.
+**What a scene alternative is after PR 3b.** An alternative is a per-cluster CANDIDATE
+ASSIGNMENT — one surviving candidate per participating arena — *together with* a LINKAGE: which
+component at one arena is the same track as which component at an adjacent one, as
+`(component_id, component_id)` pairs. Two alternatives may share an assignment and differ only in
+their linkage; that is the branch-crossing ambiguity, and since they share the same local fits
+their base `Σ lnZ` is identical, so only factor terms can separate them. The default linkage is
+nearest-ω chaining within the REACH of a consecutive path edge — the resolution floor plus the
+declared dispersion slope over Δq, never the resolution alone; alternative linkages are proposed by
+a factor's `propose` hook and are capped per assignment (`MAX_LINKAGE_VARIANTS`). A truncated
+cluster records `linkage_truncated` and the exact share of prior mass the cap dropped
+(`linkage_dropped_prior_mass`, `(n_enumerated − n_kept)/n_enumerated` for the worst assignment),
+and it joins the `truncation_unbounded` lane: linkage variants share a base `Σ lnZ`, so there is
+no base ordering to bound the dropped readings' factor terms by, and a dropped reading can score
+differently from every kept one. Such a cluster's marginals are unresolved, never narrowed.
+Visibility states (`observed`, `searched_no_signal`, `censored_outside_footprint`,
+`blocked_unresolved`, `structural_endpoint`) are derived per component against the neighbouring
+footprint and annotate the leading alternative in the cluster payload; a report demoted by the
+detectability gate or terminated by a structural reading carries the `reason` that did it. A
+component is `observed` at a neighbour when the alternative's LINKAGE puts it there, never by an
+independent proximity match — the linkage is one-to-one per adjacent arena pair, so one observed
+peak supports at most one claimed mode.
+Component→phenomenon assignment remains a later extension.
+
+**What a component is, and what a footprint covers.** Both are read from what the delivery
+PERSISTED, never reconstructed from a display string or an envelope. Each candidate row carries
+ordered component descriptors (`kind` ∈ `mode` / `elastic` / `quasielastic`, plus the mode's `slot`
+into that row's `omegas`), derived at the writer from the enumerated structure the candidate was
+fitted as; a label is a stable identifier and nothing decides physics by parsing it. Each row also
+carries `energy_bands`: the measured CELLS of the kept bins, merged into runs, where
+`energy_window` is only the kept POINT extent. A QC mask or an excluded region in the middle of the
+axis is a HOLE, so absence inside it is `censored_outside_footprint` rather than evidence. Cell
+adjacency is read off the ORIGINAL grid — each kept bin covers midpoint to midpoint, two kept cells
+with no dropped bin between them share a boundary and merge — so there is no tunable gap threshold
+and there must not be one: any factor times a global spacing statistic mis-reads a stitched
+coarse-to-fine axis in one direction and a comb rejection (uniform kept spacing, holes everywhere)
+in the other. Both fields are inputs to `observation_fingerprint`, so changing the derivation moves
+every revision digest — which is the intended behaviour, not a hazard to work around. A workspace
+whose rows predate either field is refused with a re-deliver instruction (H1: no tolerant fallback
+between the stored evidence and `ln W(S)`).
+
+The two non-mode kinds are kept apart because they answer different questions. Both obscure a band
+at the elastic line, so either makes a low-ω absence `blocked_unresolved` — that is
+`blocking_present`. Only `elastic` is a Bragg-adjacent claim, so only it satisfies the zone-centre
+endpoint prerequisite and only it is classified against the reciprocal lattice; a quasielastic
+feature is diffusive scattering, and asking where it sits relative to a reflection is the wrong
+question.
+
+**Declared sample knowledge, and the factors that read it (H13).** `build_scene(..., sample=)`
+takes a `SampleKnowledge` — the scientist's DECLARED zone period, Bragg reflections along the scan
+path, steepest dispersion slope (`dispersion.max_slope_meV_per_rlu`, meV per rlu) and the lattice
+epoch in force — lifted off the experiment card by
+`isar.workspace_api.scene.sample_knowledge` (read-only; the card's policy half stays
+hand-authored). It is recorded in the revision's `sample_knowledge` block and digested with it, so
+a scene scored blind to the lattice can never look replayable against one that was not. Nothing is
+required: an undeclared field leaves the capability that consumes it inert and names itself in
+`sample_knowledge.degradations`, never a guessed default. Zone geometry and the reflection list are
+INDEPENDENT declarations — a fold position is not thereby a reflection (FCC (300) is
+integer-indexed, sits on a fold, and is extinct), so no space group, structure-factor rule, or
+integer-index shortcut derives one from the other.
+
+Two factors read it, and neither scores — so neither costs the builder its pruning:
+
+- `zone_centre_approach` assigns `structural_endpoint` through the `refine_visibility` hook, and
+  it is a READING OF THE ALTERNATIVE'S LINKAGE rather than an exemption granted from energy: the
+  mode must be the terminal node of a track this alternative LINKS (≥ 2 nodes), the track must
+  DESCEND toward the centre over its final edge, the declared geometry must apply on this path, and
+  a contiguous run of consecutive arenas from the neighbour to the fold must be covered and carry a
+  chosen ELASTIC component (a quasielastic one is no response for a branch to be swallowed by).
+  Where a slope is declared it must be able to carry the remaining ω to zero over the Δq to the
+  centre; where none is, the card's assertion that this fold has a gapless branch is what licenses
+  the reading. Competing readings of the same assignment — the track ending mid-zone unexplained,
+  or continuing — stay enumerated and priced, so the posterior decides and not the builder. An
+  isolated low-energy feature and a flat low-lying track therefore get no reading at all and stay
+  charged. `blocked_unresolved` says *unresolved pending better data*;
+  `structural_endpoint` says *the declared physics terminates the track here*. `presence` keys on
+  `searched_no_signal` alone, so the absence of a penalty at an endpoint is emergent from the
+  visibility grammar rather than special-cased into a score function.
+- `reciprocal_lattice_localization` classifies each ELASTIC component `bragg_compatible` /
+  `off_lattice` / `unclassified` (no reflections declared) / `unplaceable_q` (declared, but this
+  arena has no placeable q) through the `classify` hook, recorded per cluster under
+  `classification`. Modes and quasielastic components are absent from the map rather than
+  unclassified — they are not candidate reflections at all. It classifies and does not score: elastic intensity is ubiquitous, so an
+  off-lattice elastic feature is not improbable, merely not-Bragg.
+
+A refiner may only replace an absence state — never `observed`, never
+`censored_outside_footprint` — and the builder enforces that rather than trusting each factor.
+
+**The path is a topology, not a radius in q.** Arenas are ordered by the PATH they were measured
+along, derived from the q set alone: the direction is fixed by the two most-separated distinct q,
+every arena is projected onto it, and the set is a path only if every perpendicular residual is
+within `PATH_COLLINEAR_TOL` (0.01 rlu — the q-positioning scale, an order of magnitude under the
+0.05 rlu HKL grid step). Adjacency is CONSECUTIVE ordinals and nothing else, so inserting an
+intermediate scan between two arenas replaces their judgement with two new ones instead of leaving
+a skip-neighbour term standing beside them. A q set that is not a path fails closed: no ordinals,
+no cross-arena coupling, every arena its own cluster, and `path_topology_unavailable` recorded in
+`sample_knowledge.degradations`. `h` is never a path coordinate — a campaign walking (2,2,0) →
+(2,0,0) moves along k at constant h, so ranking on h would collapse the whole path onto one point.
+The card's SCALAR zone period and reflection positions are rlu ALONG a reciprocal axis, so they
+apply only where the derived direction IS an axis (`PATH_AXIS_TOL`); an off-axis collinear path
+keeps its topology and records `zone_geometry_inapplicable_on_path` /
+`lattice_geometry_inapplicable_on_path` instead of comparing them against a coordinate they do not
+mean.
+
+**Reach is dispersion, and absence is detectability.** Two gates stand between geometric inclusion
+and a priced absence, because neither is what "we looked and it was not there" needs. *Reach*: the
+ω a track may move over an edge is the resolution floor plus `dispersion_slope_max × Δq` from the
+declared sample knowledge — energy resolution says how well two peaks are told apart and nothing
+whatever about dω/dq. With no slope declared, reachability is UNKNOWN, and a neighbour that holds
+mode components at other energies is not a neighbour that found nothing: the absence is demoted to
+`blocked_unresolved` with reason `reachability_unknown`, and only a neighbour with NO mode
+components at all is an unambiguous non-detection. *Detectability*: an absence on a band covered
+only from the anti-Stokes side is informative only if the anti-Stokes intensity was there to see,
+so the detailed-balance weight `exp(−ω/k_BT)` must clear `AS_DETECT_WEIGHT` (the scene's
+amplitude-free mirror of production's `AS_DETECT_Z`) — below it the reason is `bose_dead`; and the
+neighbour must have counted comparably deep, `effective_exposure_j ≥ DETECT_EXPOSURE_RATIO ×
+effective_exposure_i`, or the reason is `insufficient_detection_power`. Facts the footprint does
+not carry (an unknown temperature, an unrecorded exposure) establish nothing and fail closed with
+their own reasons. Every gate demotes a state and records why; none of them adds a term, so the
+exactly-once factorization is untouched.
+
+**Coverage coupling (carried item 15).** A cluster edge needed a component on BOTH sides, so an
+arena whose surviving candidates were all background-only emitted nothing and could never join a
+cluster: a track disappearing into a searched, covered, entirely empty neighbour went unpriced,
+while the same track disappearing into a neighbour that happened to hold something else was
+priced — inverted exactly where absence evidence is strongest. The `couples_arena` hook couples a
+mode to a whole neighbouring ARENA through its footprint, gated on coverage (no coverage is no
+claim, so it grows no cluster). Only scoring arenas participate, so an H7-incomplete arena is
+never resurrected by it.
+
+**A linkage refines an assignment; it never adds prior mass to it.** An assignment that happens
+to admit two linkage readings must not outweigh a rival assignment that admits one — that would
+be ln 2 nats no evidence paid for, set by an enumeration knob (the crossing proposer's
+reachability tolerance) rather than by the data. Each `(assignment, linkage)` entry therefore
+carries the builder's declared `linkage_prior` term, `ln(1/n)` over that assignment's `n`
+enumerated linkages, itemized in the ledger and declared in the factor manifest like any other
+term. The assignment marginal is then exactly what linkage-free scoring would give, while the
+linkage ambiguity stays represented inside it. Every emitted link set is also structurally
+validated: a component continues as at most one track per adjacent arena, and a proposer that
+emits otherwise fails the build rather than publishing an impossible reading.
 
 ## 3. Slices
 
@@ -126,7 +259,7 @@ phenomena are.
 | SCENE-0 | Constitution (H1) + synthetic world-suite foundation (12 worlds, ensemble runner, world manifests) | Implemented (2026-08-08; PR #11 merged at `edd6bf7`) |
 | SCENE-1 | Catalogue, identity-conditional Laplace evidence, global grammar (bg-only + elastic+bg first-class, `elastic_only` verdict), observation footprints, interpretation artifacts — three sequential PRs | PR-a Implemented (H3, 2026-08-08: six-entry catalogue drives enumeration; nulls first-class; `elastic_only` with the 0.5 cap + LRT gate; transport/prior/variant declarations dormant); PR-b Implemented (H4, 2026-08-08: per-structure Laplace evidence + validity ladder, posterior drives selection, AIC persisted diagnostic, `fit_selection_semantics/2` replaces `/1`, universal Bose factor, dominance pruning + scoped escalation n_live; identity axis deferred by ruling); PR-c Implemented (H9, 2026-08-09: `user_declared` origin; `laplace_truncated` Γ-floor rung, its boundary-mass factor gradient- and offset-aware rather than half-Gaussian; executable constrained variants — near-degenerate acoustic twin as an additional candidate; local identity axis with the no-dilution rule, records-only BA disagreement; candidate rows persist at_limit/variant/identity/effective_constraints and per-label lnZ as the scene store's aggregation input. Deferred by H9(e): the near-degenerate pair's amplitude tie, out-of-window treatment → SCENE-3, identity prior payloads → owner) |
 | SCENE-2 | `isar.campaign-program/1` sole contract; old envelope unreadable by design | Implemented (H2, 2026-08-08; PR #12 merged at `058fb40`) |
-| SCENE-3 | Scene layer core: clusters, structural factors, revisioned scene store, workspace_api read surface; tracker contracts ported as specifications | Planned |
+| SCENE-3 | Scene layer core: clusters, structural factors, revisioned scene store, workspace_api read surface; tracker contracts ported as specifications | Partial — PR 3a Implemented (H11/H12, 2026-08-10: typed observation adapter over persisted candidate rows, ambiguity clusters, exact per-cluster scoring with recorded pruning/truncation bounds, score-term ablation ledger); PR 3b Implemented (H13, 2026-08-10: four live scene factors, declared sample knowledge from the card, structural-endpoint visibility, footprint-coverage coupling, endpoint/off-lattice/unknown-extra acceptance worlds); scene store, read surface, invocation sites, and the tracker-contract port = PR 3c Planned |
 | SCENE-4 | Question layer, deterministic opening book, generalized stop; first challenge run; scan-window authoritative default-on; shadow machinery deleted | Planned |
 | SCENE-5 | Scene-EIG authoritative from birth | Planned |
 | SCENE-6 | Single-engine swap: targeted campaigns as pinned question sets over scenes; tracker deleted; `campaign-program/2` question-native targeted payload | Planned |

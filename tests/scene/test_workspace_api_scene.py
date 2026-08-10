@@ -6,12 +6,13 @@ import pytest
 
 from isar.schema.statistics import FIT_SELECTION_SCHEMA, authority_scopes
 from isar.workspace_api import Workspace
-from isar.workspace_api.scene import scene_observations
-from synthetic_ws import FULL_COLUMNS, stamp_ws
+from isar.scene.model import ComponentDescriptor, SampleKnowledge, covers, footprint_of
+from isar.workspace_api.scene import sample_knowledge, scene_observations
+from synthetic_ws import _POLICY_TOML, FULL_COLUMNS, stamp_ws
 
 # The adapter reads persisted columns the shared stamper's base header predates.
-COLUMNS = FULL_COLUMNS + ["energy_lo", "energy_hi", "evidence_sink", "effective_exposure",
-                          "fit_selection_semantics"]
+COLUMNS = FULL_COLUMNS + ["energy_lo", "energy_hi", "energy_bands", "evidence_sink",
+                          "effective_exposure", "fit_selection_semantics"]
 
 
 def _selection(method="laplace_evidence_selection", fallback=None,
@@ -36,7 +37,8 @@ def _selection(method="laplace_evidence_selection", fallback=None,
 def _candidate(label, **kw):
     row = {"label": label, "k": 5, "n_modes": 1, "log_evidence": -12.5,
            "evidence_method": "nested", "posterior_probability": 0.7, "usable": True,
-           "identity": None, "variant": None, "omegas": [4.0]}
+           "identity": None, "variant": None, "omegas": [4.0],
+           "components": [{"kind": "mode", "slot": 0}]}
     row.update(kw)
     return row
 
@@ -46,7 +48,8 @@ def _row(scan, *, candidates, scan_id=None, **kw):
         "scan": scan, "detector": "det", "scan_id": scan_id or f"tavi:{scan}:det",
         "sample": "tavi", "T": 200.0, "h": 2.0, "k": 0.0, "l": 0.0, "status": "fitted",
         "verdict": "resolved", "best_model": "phonon+bg", "gauss_fwhm": 1.2, "lorentz_fwhm": 0.0,
-        "energy_lo": -5.0, "energy_hi": 10.0, "effective_exposure": 1000.0,
+        "energy_lo": -5.0, "energy_hi": 10.0,
+        "energy_bands": json.dumps([[-5.0, 10.0]]), "effective_exposure": 1000.0,
         "evidence_sink": "canonical_master",
         "fit_selection_semantics": _selection(),
         "amplitudes": json.dumps({"bg.BG": 3.0, "phonon.A": 20.0}),
@@ -259,6 +262,59 @@ def test_malformed_candidates_yield_no_observation_and_log(tmp_path, caplog, cel
     assert any("tavi:1:det" in r.getMessage() for r in caplog.records)
 
 
+def test_candidate_rows_carry_their_component_descriptors(tmp_path):
+    """Review finding 9: the scene reads what a candidate is MADE OF from the row, never from the
+    label. The descriptors survive the CSV JSON cell as typed DTOs."""
+    cands = [_candidate("phonon+bg"),
+             _candidate("elastic+2phonon+bg", n_modes=2, omegas=[4.0, 8.0],
+                        components=[{"kind": "mode", "slot": 0}, {"kind": "mode", "slot": 1},
+                                    {"kind": "elastic", "slot": None}])]
+    obs, = scene_observations(_ws(tmp_path, [_row(1, candidates=cands)]))
+    by_label = {c.label: c for c in obs.candidates}
+    assert by_label["phonon+bg"].components == (ComponentDescriptor("mode", 0),)
+    assert by_label["elastic+2phonon+bg"].components == (
+        ComponentDescriptor("mode", 0), ComponentDescriptor("mode", 1),
+        ComponentDescriptor("elastic"))
+
+
+def test_energy_bands_survive_the_csv_and_are_the_footprints_coverage(tmp_path):
+    """Review finding 4: the kept runs, not the envelope. The hole between them covers nothing."""
+    obs, = scene_observations(_ws(tmp_path, [_row(1, candidates=[_candidate("phonon+bg")],
+                                                  energy_lo=1.0,
+                                                  energy_bands=json.dumps([[1.0, 4.0],
+                                                                           [6.0, 10.0]]))]))
+    assert obs.energy_window == (1.0, 10.0)
+    assert obs.energy_bands == ((1.0, 4.0), (6.0, 10.0))
+    fp = footprint_of(obs)
+    assert covers(fp, 3.0) and covers(fp, 8.0)
+    assert not covers(fp, 5.0)
+
+
+@pytest.mark.parametrize("kw,message", [
+    ({"candidates": [{k: v for k, v in _candidate("phonon+bg").items() if k != "components"}]},
+     "component descriptors"),
+    ({"candidates": [_candidate("phonon+bg")], "energy_bands": None}, "energy_bands"),
+])
+def test_a_row_predating_the_delivery_contract_is_refused_not_guessed_at(tmp_path, kw, message):
+    """H1, the same posture as the bare-member-label refusal: a row written before these fields
+    existed cannot be read faithfully. Inferring components from the label would decide physics on
+    a display string, and reading the window as hole-free coverage would price absence against a
+    region no counting reached — so the workspace is re-delivered instead."""
+    ws = _ws(tmp_path, [_row(1, **kw)])
+    with pytest.raises(ValueError, match=rf"tavi:1:det.*{message}.*re-deliver"):
+        scene_observations(ws)
+
+
+@pytest.mark.parametrize("cell", ["{not json", json.dumps({"lo": 1.0}), json.dumps([[1.0]])])
+def test_a_malformed_energy_bands_cell_is_named_as_malformed_not_as_stale(tmp_path, cell):
+    """H1's point is the RIGHT diagnosis, not merely a refusal. An absent field means re-deliver a
+    stale workspace; a present-but-unreadable cell is a corrupt row, and sending its owner after a
+    re-delivery would send them after the wrong problem."""
+    ws = _ws(tmp_path, [_row(1, candidates=[_candidate("phonon+bg")], energy_bands=cell)])
+    with pytest.raises(ValueError, match="malformed energy_bands"):
+        scene_observations(ws)
+
+
 def test_a_header_without_the_candidates_column_is_refused(tmp_path):
     """Such a file can score nothing anywhere. Reading it as an empty scene would present a whole
     campaign as unmeasured, so it is refused with the same re-deliver instruction."""
@@ -276,3 +332,80 @@ def test_rows_that_never_had_a_fit_are_silent(tmp_path, caplog):
     with caplog.at_level(logging.DEBUG, logger="isar.workspace_api.scene"):
         assert scene_observations(_ws(tmp_path, [held])) == []
     assert [r.levelname for r in caplog.records] == ["DEBUG"]
+
+
+# ---------------------------------------------------------------------------
+# Declared sample knowledge
+# ---------------------------------------------------------------------------
+_SAMPLE_POLICY = _POLICY_TOML + """
+[dispersion]
+zone_period = 1.0
+
+[sample]
+name = "Al"
+reflections = [2.0, 3.0]
+"""
+
+
+def _knowledge_ws(root, policy_toml=_POLICY_TOML, state=None):
+    root.mkdir(parents=True, exist_ok=True)
+    stamp_ws(root, policy_toml=policy_toml, state=state or {}, rows=[], columns=COLUMNS)
+    return Workspace.open(root)
+
+
+def test_sample_knowledge_reads_the_two_declarations_and_the_lattice_epoch(tmp_path):
+    """Both keys are HAND-AUTHORED policy and the epoch series is machine-written state; the
+    adapter reads all three and writes none of them (card hard rule 1)."""
+    epochs = [{"version": 1, "lattice": {"a": 4.0, "b": 4.0, "c": 4.0,
+                                         "alpha": 90.0, "beta": 90.0, "gamma": 90.0}},
+              {"version": 2, "lattice": {"a": 4.05, "b": 4.05, "c": 4.05,
+                                         "alpha": 90.0, "beta": 90.0, "gamma": 90.0}}]
+    ws = _knowledge_ws(tmp_path, _SAMPLE_POLICY, {"lattice_epochs": epochs})
+    know = sample_knowledge(ws)
+    assert know.zone_period == 1.0
+    assert know.reflections == (2.0, 3.0)
+    # The LATEST epoch, not the first written: a scene stamped against a superseded lattice
+    # would claim a provenance the workspace no longer holds.
+    assert know.lattice_epoch == 2
+    assert know.lattice == (4.05, 4.05, 4.05, 90.0, 90.0, 90.0)
+
+
+def test_a_card_that_declares_nothing_yields_empty_knowledge(tmp_path):
+    """No new REQUIRED card key: an ordinary card is a legal scene input, and the builder records
+    the resulting inertness rather than the adapter guessing a period or a reflection."""
+    assert sample_knowledge(_knowledge_ws(tmp_path)) == SampleKnowledge()
+
+
+def test_an_unreadable_sample_declaration_is_refused(tmp_path):
+    """H1: no tolerant fallback between the card and ln W(S). Silently dropping a malformed
+    reflection list would make the ledger claim nothing was ever declared."""
+    bad = _POLICY_TOML + '\n[sample]\nreflections = ["not-a-number"]\n'
+    with pytest.raises(ValueError, match="unreadable sample geometry"):
+        sample_knowledge(_knowledge_ws(tmp_path, bad))
+
+
+def test_a_partially_declared_lattice_cell_is_refused(tmp_path):
+    """The one that would otherwise pass as silence. A cell missing gamma is a card someone tried
+    to fill in, so reading it as "no lattice declared" hides a real error behind a legal state —
+    while an absent cell really is nothing declared and stays None."""
+    half = [{"version": 1, "lattice": {"a": 4.05, "b": 4.05, "c": 4.05,
+                                       "alpha": 90.0, "beta": 90.0}}]
+    with pytest.raises(ValueError, match="expected all of"):
+        sample_knowledge(_knowledge_ws(tmp_path, state={"lattice_epochs": half}))
+
+    bare = [{"version": 1, "method": "manual"}]
+    know = sample_knowledge(_knowledge_ws(tmp_path / "bare", state={"lattice_epochs": bare}))
+    assert (know.lattice_epoch, know.lattice) == (1, None)
+
+
+def test_the_latest_epoch_is_chosen_by_version_number_not_by_string_order(tmp_path):
+    """A JSON-typed version is a real possibility, and lexical order gets it backwards: "9" sorts
+    above "10", so the newest epoch would silently lose to a superseded one. A version that is not
+    a number at all fails with the geometry message rather than a bare TypeError."""
+    typed = [{"version": "9"}, {"version": "10"}]
+    assert sample_knowledge(
+        _knowledge_ws(tmp_path, state={"lattice_epochs": typed})).lattice_epoch == 10
+
+    junk = [{"version": 1}, {"version": "epoch-two"}]
+    with pytest.raises(ValueError, match="unreadable sample geometry"):
+        sample_knowledge(_knowledge_ws(tmp_path / "junk", state={"lattice_epochs": junk}))

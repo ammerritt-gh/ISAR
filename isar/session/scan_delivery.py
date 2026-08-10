@@ -18,6 +18,7 @@ import numpy as np
 from isar.analyze import errors, loop, select, shadow_selection, verdict
 from isar.analyze.evidence import EVIDENCE_REVISION
 from isar.analyze import gold as gold_mod
+from isar.analyze.components import ConstantBackground, Elastic, PhononDHO, QuasiElastic
 from isar.analyze.context import ScanContext, effective_exposure, select_exposure
 from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
@@ -336,7 +337,102 @@ def _mode_omegas(result) -> list:
     return values if None in values else sorted(values)
 
 
-def _candidate_rows(scores, fits) -> list | None:
+def _energy_bands(x, mask, center) -> list:
+    """The measured energy CELLS of the kept bins, merged into runs, on the ω scale.
+
+    ``energy_window`` is the outer envelope of these; this is what the scan actually measured. A QC
+    mask, an ``exclude_region`` or a monitor-short stretch removes bins from the middle of the axis,
+    and a single (lo, hi) pair cannot express that — it claims the hole as measured.
+
+    Adjacency is STRUCTURAL, read off the original grid rather than from the kept points' spacing.
+    Each kept bin covers its cell — from the midpoint to its left neighbour on the ORIGINAL axis to
+    the midpoint to its right, with the end bins extending half their adjacent step outward — and two
+    kept cells with no dropped bin between them share a midpoint exactly, so they merge; a dropped
+    bin opens a hole exactly where it sits. There is no tunable gap threshold, and there must not be
+    one: any factor times a global spacing statistic gets a non-uniform axis wrong in both
+    directions. A coarse-to-fine stitched axis has no single spacing, so a threshold either shatters
+    the coarse half into zero-width points or claims dropped fine bins as measured; a comb rejection
+    (every other bin dropped) has a perfectly uniform kept spacing and no threshold can see the
+    holes at all. Reading the grid answers both without a knob.
+
+    A lone kept bin is a real cell of its neighbours' width, not a zero-width point: it WAS measured.
+    ``[]`` when nothing was kept — no coverage at all, which is not the same claim as one degenerate
+    band at an arbitrary position.
+    """
+    xs = np.asarray(x, dtype=float)
+    keep = np.asarray(mask, dtype=bool)
+    if not np.all(np.isfinite(xs)):
+        # A band derived through a NaN midpoint would persist a bare NaN token in the results.csv
+        # JSON cell and a footprint that covers nothing anywhere. The abscissa is instrument data,
+        # so a non-finite value in it is a delivery defect to fix, not a number to guard around.
+        raise ValueError(f"energy axis carries {int((~np.isfinite(xs)).sum())} non-finite value(s): "
+                         "a measured footprint cannot be derived from it")
+    order = np.argsort(xs, kind="stable")
+    xs, keep = xs[order] - float(center), keep[order]
+    if not keep.any():
+        return []
+    edges = _cell_edges(xs)
+    idx = np.flatnonzero(keep)
+    cuts = [0, *(int(i) + 1 for i in np.flatnonzero(np.diff(idx) > 1)), idx.size]
+    return [[float(edges[idx[a]]), float(edges[idx[b - 1] + 1])] for a, b in zip(cuts, cuts[1:])]
+
+
+def _cell_edges(xs) -> np.ndarray:
+    """``len(xs) + 1`` cell boundaries: the midpoints, with the ends extended half a step outward."""
+    if xs.size == 1:
+        # One bin and no neighbour to take a width from. Its cell is the point itself — degenerate,
+        # and honestly so: nothing in the axis says how wide the measurement was.
+        return np.array([xs[0], xs[0]])
+    mids = 0.5 * (xs[:-1] + xs[1:])
+    return np.concatenate([[xs[0] - 0.5 * (xs[1] - xs[0])], mids,
+                           [xs[-1] + 0.5 * (xs[-1] - xs[-2])]])
+
+
+# What each enumerated component class IS, for the scene layer's component descriptors. Matched by
+# class rather than by any name string: the enumerated structure is the single authority on what a
+# candidate is made of, and a label is an identifier the scene must never have to parse.
+# ``None`` = not a scene component (the background is everywhere and claims nothing).
+_COMPONENT_KINDS = ((PhononDHO, "mode"), (Elastic, "elastic"), (QuasiElastic, "quasielastic"),
+                    (ConstantBackground, None))
+# Distinct from the legitimate ``None`` above, which means "known, and not a scene component".
+_UNKNOWN_KIND = object()
+
+
+def _component_descriptors(label, hyp) -> list:
+    """The ordered component descriptors of one candidate, from the structure it was fitted as.
+
+    Canonical order — modes ascending by slot, then the non-mode kinds by name — so two builds of
+    the same fit persist byte-identical rows regardless of the order the catalogue happened to
+    assemble the composite in. ``slot`` indexes the row's ``omegas``, which the enumeration keeps
+    aligned: the ``phonon``/``phonon2`` instances are the modes, in that order.
+
+    Raises when a candidate's hypothesis is missing or holds a component class this map does not
+    know. Both are structural bugs (``select_models`` refuses a scored label with no hypothesis),
+    and both would otherwise persist a candidate whose composition the scene reads as "nothing" —
+    silently unpricing its physics rather than failing where the mistake is.
+    """
+    if hyp is None:
+        raise ValueError(f"candidate {label!r} was scored with no enumerated hypothesis: its "
+                         "component composition cannot be persisted, and the scene layer may not "
+                         "reconstruct it from the label")
+    out, slot = [], 0
+    for component in hyp.components:
+        cls = component if isinstance(component, type) else type(component)
+        kind = next((k for base, k in _COMPONENT_KINDS if issubclass(cls, base)), _UNKNOWN_KIND)
+        if kind is _UNKNOWN_KIND:
+            raise ValueError(f"candidate {label!r} holds component {cls.__name__}, which declares "
+                             "no scene component kind — add it to _COMPONENT_KINDS")
+        if kind is None:
+            continue
+        if kind == "mode":
+            out.append({"kind": kind, "slot": slot})
+            slot += 1
+        else:
+            out.append({"kind": kind, "slot": None})
+    return sorted(out, key=lambda d: (d["slot"] is None, d["slot"] or 0, d["kind"]))
+
+
+def _candidate_rows(scores, fits, by_hyp) -> list | None:
     """The model-selection candidate table (P0-4): one compact row per SCORED structure. ``scores``
     is the ``ModelScore`` list the driver selects on — posterior ``P(s) = π_s·Z_s / Σ π·Z`` in the
     evidence lane, Akaike weights on the recorded AIC fallback; this only reshapes it, never
@@ -345,8 +441,10 @@ def _candidate_rows(scores, fits) -> list | None:
     persisted diagnostic under /2).
     Non-converged fits are already excluded by ``score_models``, so every row is a usable candidate.
     ``fits`` (label → ``StructureFitResult``) supplies ``cost_per_dof``/``n_modes``/``analysis_usable``
-    that ``ModelScore`` does not carry. All values are coerced to plain Python scalars so the row
-    JSON-serialises cleanly. ``None`` when nothing converged (empty ``scores``)."""
+    that ``ModelScore`` does not carry; ``by_hyp`` (label → ``Hypothesis``) supplies the ENUMERATED
+    STRUCTURE each candidate was fitted as, which is the one authority on its component composition
+    (``components``). All values are coerced to plain Python scalars so the row JSON-serialises
+    cleanly. ``None`` when nothing converged (empty ``scores``)."""
     if not scores:
         return None
     rows = []
@@ -365,6 +463,9 @@ def _candidate_rows(scores, fits) -> list | None:
             "cost_per_dof": (cpd if np.isfinite(cpd) else None),
             "n_modes": int(r.n_modes) if r is not None else 1,
             "omegas": _mode_omegas(r),
+            # SCENE-3: what this candidate is MADE OF, so the scene layer never has to recover
+            # component semantics from the label text (review finding 9).
+            "components": _component_descriptors(s.label, by_hyp.get(s.label)),
             "delta_aic": float(s.delta_aic),
             "akaike_weight": float(s.akaike_weight),
             "posterior_probability": (
@@ -1735,7 +1836,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # and the delivered ``best`` — so an escalated re-fit (its own fit_one call) carries its own.
     amplitudes = _amplitudes_of(best, by_hyp)
     model_manifest = _model_manifest_of(best, by_hyp)
-    candidates = _candidate_rows(sel.scores, fits)
+    candidates = _candidate_rows(sel.scores, fits, by_hyp)
     # ADR-019 producer isolation: the predictive artifact is NOT built here. Its inputs are handed
     # to the caller, which constructs it after branch triage inside its own try/except — so a
     # predictive-construction failure can never convert this fit into a non_result, and the artifact
@@ -1800,12 +1901,15 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     if np.size(ctx.x_used) and np.isfinite(ctx.center):
         lo, hi = ctx.window
         energy_window = (lo - float(ctx.center), hi - float(ctx.center))
+        # The ORIGINAL axis plus the mask, not the kept points: cell adjacency is a fact about the
+        # measurement grid, and the kept points alone cannot say which bins were dropped.
+        energy_bands = _energy_bands(ctx.x, ctx.mask, ctx.center)
     else:
-        energy_window = None
+        energy_window = energy_bands = None
 
     return {
         "verdict": sv.verdict, "confidence": sv.confidence, "reasons": reasons,
-        "energy_window": energy_window,
+        "energy_window": energy_window, "energy_bands": energy_bands,
         "omega0": omega0, "omega0_err": omega0_err,
         "interval": (tuple(interval) if interval is not None else None),
         "omega0_profile": (tuple(omega0_profile) if omega0_profile is not None else None),
@@ -2398,7 +2502,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         interval_semantics=fit.get("interval_semantics"),
         shadow_model_selection=fit.get("shadow_model_selection"),
         at_limit=fit.get("at_limit"),
-        energy_window=fit.get("energy_window"),
+        energy_window=fit.get("energy_window"), energy_bands=fit.get("energy_bands"),
         evidence_identity=fit.get("evidence_identity"),
         identity_ba_disagreement=fit.get("identity_ba_disagreement"),
         evidence_sink=evidence_sink_for(getattr(rec, "raw_header", None),
