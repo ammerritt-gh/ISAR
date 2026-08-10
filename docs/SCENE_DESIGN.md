@@ -123,9 +123,46 @@ nearest-ω chaining within the resolution width; alternative linkages are propos
 recorded (`linkage_truncated`) — linkage variants share a base, so no dropped-mass bound is
 available for them and none is claimed. Visibility states (`observed`, `searched_no_signal`,
 `censored_outside_footprint`, `blocked_unresolved`) are derived per component against the
-neighbouring footprint and annotate the leading alternative in the cluster payload;
-`structural_endpoint` is reserved for the zone-centre factor. Component→phenomenon assignment
-remains a later extension.
+neighbouring footprint and annotate the leading alternative in the cluster payload.
+Component→phenomenon assignment remains a later extension.
+
+**Declared sample knowledge, and the factors that read it (H13).** `build_scene(..., sample=)`
+takes a `SampleKnowledge` — the scientist's DECLARED zone period, Bragg reflections along the scan
+path, and the lattice epoch in force — lifted off the experiment card by
+`isar.workspace_api.scene.sample_knowledge` (read-only; the card's policy half stays
+hand-authored). It is recorded in the revision's `sample_knowledge` block and digested with it, so
+a scene scored blind to the lattice can never look replayable against one that was not. Nothing is
+required: an undeclared field leaves the capability that consumes it inert and names itself in
+`sample_knowledge.degradations`, never a guessed default. Zone geometry and the reflection list are
+INDEPENDENT declarations — a fold position is not thereby a reflection (FCC (300) is
+integer-indexed, sits on a fold, and is extinct), so no space group, structure-factor rule, or
+integer-index shortcut derives one from the other.
+
+Two factors read it, and neither scores — so neither costs the builder its pruning:
+
+- `zone_centre_approach` assigns `structural_endpoint` through the `refine_visibility` hook, where
+  a declared gapless branch legitimately has nothing to show: the neighbouring arena sits at a
+  zone centre of the declared period, the elastic line is chosen there, and the mode's energy is
+  within a plausible descent to zero. `blocked_unresolved` says *unresolved pending better data*;
+  `structural_endpoint` says *the declared physics terminates the track here*. Presence and
+  connectivity key on `searched_no_signal` alone, so the absence of a penalty at an endpoint is
+  emergent from the visibility grammar rather than special-cased into two score functions.
+- `reciprocal_lattice_localization` classifies each non-mode component `bragg_compatible` /
+  `off_lattice` / `unclassified` through the `classify` hook, recorded per cluster under
+  `classification`. It classifies and does not score: elastic intensity is ubiquitous, so an
+  off-lattice elastic feature is not improbable, merely not-Bragg.
+
+A refiner may only replace an absence state — never `observed`, never
+`censored_outside_footprint` — and the builder enforces that rather than trusting each factor.
+
+**Coverage coupling (carried item 15).** A cluster edge needed a component on BOTH sides, so an
+arena whose surviving candidates were all background-only emitted nothing and could never join a
+cluster: a track disappearing into a searched, covered, entirely empty neighbour went unpriced,
+while the same track disappearing into a neighbour that happened to hold something else was
+priced — inverted exactly where absence evidence is strongest. The `couples_arena` hook couples a
+mode to a whole neighbouring ARENA through its footprint, gated on coverage (no coverage is no
+claim, so it grows no cluster). Only scoring arenas participate, so an H7-incomplete arena is
+never resurrected by it.
 
 **A linkage refines an assignment; it never adds prior mass to it.** An assignment that happens
 to admit two linkage readings must not outweigh a rival assignment that admits one — that would
