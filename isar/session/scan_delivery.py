@@ -313,14 +313,19 @@ def _amplitudes_of(best, by_hyp) -> dict | None:
 
 
 def _mode_omegas(result) -> list:
-    """The candidate's fitted Ω_d values (meV), ascending — one per phonon component (``phonon.Omega_d``,
-    ``phonon2.Omega_d``, …), so ``len == n_modes``. The scene layer places EVERY candidate's modes in
-    (Q,ω) space, not just the winner's, and only the winner's ``modes`` are persisted elsewhere.
-    ``[]`` for a phonon-less candidate (bg, elastic+bg, qe+bg) and for a candidate with no usable
-    params — an unavailable position is an absence, never a fabricated or non-finite energy."""
-    params = getattr(result, "params", None) or {}
-    return sorted(float(v) for k, v in params.items()
-                  if k.endswith(".Omega_d") and np.isfinite(v))
+    """The candidate's per-mode DERIVED ω₀ (meV), one entry per mode so ``len == n_modes``. The scene
+    layer places EVERY candidate's modes in (Q,ω) space, not just the winner's (only the winner's
+    ``modes`` are persisted elsewhere), and it must place them on the scale everything else publishes
+    — ``FitOutcome.omega0``, the branch models, the dispersion prior. The raw fitted Ω_d would be
+    off-scale for every damped mode. Ascending in the clean case (``modes`` is already canonicalized
+    ascending by ω₀); a mode with no usable ω₀ contributes ``None`` in its own slot — the delivery
+    contract for "no number" is None, never NaN — and mode order is then preserved rather than sorted.
+    ``[]`` for a phonon-less candidate (bg, elastic+bg, qe+bg) and for an unavailable one."""
+    values = []
+    for m in getattr(result, "modes", None) or ():
+        w = m.get("omega0") if isinstance(m, dict) else None
+        values.append(float(w) if w is not None and np.isfinite(w) else None)
+    return values if None in values else sorted(values)
 
 
 def _candidate_rows(scores, fits) -> list | None:

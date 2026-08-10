@@ -111,6 +111,10 @@ def test_fit_one_populates_amplitudes_and_candidates():
         assert len(row["omegas"]) == row["n_modes"]
     assert any(row["omegas"] for row in cands)
     assert all(row["omegas"] == [] for row in cands if row["n_modes"] == 0)
+    # …on the DERIVED ω₀ scale everything else publishes: the winner's single mode is the delivered
+    # omega0 itself, not the raw fitted Ω_d (which is lower for any damped mode).
+    winner_row = next(r for r in cands if r["label"] == fit["best_label"])
+    assert winner_row["omegas"] == [pytest.approx(fit["omega0"])]
 
     # SCENE-3 observation footprint: the calibrated, masked window the cost actually saw.
     assert fit["energy_window"] == (pytest.approx(float(ctx.x_used.min())),
@@ -495,10 +499,10 @@ def _score(label, *, log_evidence, posterior, effective_constraints=None):
                        if effective_constraints is not None else []})
 
 
-def _fit_result(*, at_limit=None, variant=None, identity=None, params=None, n_modes=1):
+def _fit_result(*, at_limit=None, variant=None, identity=None, modes=None, n_modes=1):
     return SimpleNamespace(label="x", cost_per_dof=1.04, n_modes=n_modes, analysis_usable=True,
                            at_limit=at_limit, variant=variant, identity=identity,
-                           params=params)
+                           modes=modes)
 
 
 def test_candidate_rows_carry_variant_at_limit_and_effective_constraints():
@@ -579,26 +583,37 @@ def test_scene1_outcome_fields_default_absent():
 # --------------------------------------------------------------- SCENE-3 (scene-layer inputs)
 def test_candidate_rows_carry_every_candidates_mode_positions():
     """The scene places the modes of NON-winning candidates too, and only the winner's ``modes``
-    are persisted elsewhere. Ω_d is read off the candidate's own params, ascending; a phonon-less
-    structure carries [] rather than a fabricated zone-centre energy."""
+    are persisted elsewhere. The values are the DERIVED ω₀ — the scale FitOutcome.omega0, the branch
+    models and the dispersion prior all publish — and a phonon-less structure carries [] rather than
+    a fabricated zone-centre energy."""
     scores = [_score("stokes2+bg", log_evidence=-39.0, posterior=0.6),
               _score("bg", log_evidence=-44.0, posterior=0.4)]
     fits = {
-        "stokes2+bg": _fit_result(n_modes=2, params={"phonon2.Omega_d": 9.5, "phonon2.Gamma": 0.3,
-                                                     "phonon2.A": 100.0, "phonon.Omega_d": 4.25,
-                                                     "phonon.Gamma": 0.4, "phonon.A": 500.0,
-                                                     "bg.BG": 8.0}),
-        "bg": _fit_result(n_modes=0, params={"bg.BG": 8.0}),
+        "stokes2+bg": _fit_result(n_modes=2, modes=[{"omega0": 4.25, "gamma": 0.4},
+                                                    {"omega0": 9.5, "gamma": 0.3}]),
+        "bg": _fit_result(n_modes=0, modes=[]),
     }
     rows = {r["label"]: r for r in scan_delivery._candidate_rows(scores, fits)}
 
     assert rows["stokes2+bg"]["omegas"] == [4.25, 9.5]
     assert len(rows["stokes2+bg"]["omegas"]) == rows["stokes2+bg"]["n_modes"]
     assert rows["bg"]["omegas"] == []
-    # An unscored/failed candidate has no params to read: absence, never NaN.
+    # An unscored/failed candidate has no modes to read: absence, never NaN.
     assert scan_delivery._candidate_rows([_score("ghost", log_evidence=-50.0, posterior=0.0)],
                                          {})[0]["omegas"] == []
     assert json.loads(json.dumps(list(rows.values())))
+
+
+def test_candidate_row_omegas_report_an_unusable_mode_as_none_in_its_own_slot():
+    """"No number" is None, never NaN — and the slot must stay put: the list is per-mode, so a
+    dropped or reordered entry would misplace the modes that ARE known."""
+    scores = [_score("stokes2+bg", log_evidence=-39.0, posterior=1.0)]
+    fits = {"stokes2+bg": _fit_result(n_modes=2, modes=[{"omega0": float("nan")},
+                                                        {"omega0": 9.5}])}
+    row = scan_delivery._candidate_rows(scores, fits)[0]
+    assert row["omegas"] == [None, 9.5]
+    assert len(row["omegas"]) == row["n_modes"]
+    assert json.loads(json.dumps(row))["omegas"] == [None, 9.5]
 
 
 def test_energy_window_roundtrips_through_the_ledger_and_results_csv(tmp_path):
