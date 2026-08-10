@@ -73,8 +73,9 @@ SCENE_ALT_CAP = 4096
 # Hard cap on the LINKAGE variants kept per candidate assignment. Owner-tunable. Linkage variants
 # multiply the assignment count, and a cluster with many ambiguous junctions would otherwise
 # enumerate 2^junctions readings of one assignment. Truncation is recorded per cluster
-# (``linkage_truncated``) with the same honesty as the alternative cap: linkage variants share a
-# base Σ lnZ exactly, so no bound on the dropped mass can be stated for them either.
+# (``linkage_truncated``, ``linkage_dropped_prior_mass``) and, because a dropped reading can carry
+# factor terms the kept ones do not and nothing bounds them, it puts the cluster in the same
+# UNRESOLVED lane as ``truncation_unbounded``.
 MAX_LINKAGE_VARIANTS = 8
 
 # The builder's own declared prior, and the failure it prevents. Linkage variants REFINE a
@@ -83,17 +84,27 @@ MAX_LINKAGE_VARIANTS = 8
 # with one — ln 2 nats nothing paid for, and worse, an amount set by an enumeration knob (the
 # proposer's reachability tolerance) rather than by the data. It is the owner's N-mode precedent
 # applied to connectivity: enumerating a hypothesis is no probabilistic boost, a uniform prior over
-# its refinements dilutes and never boosts. Each (assignment, linkage) entry therefore carries
-# ln(1/n) over that assignment's n enumerated linkages, so the ASSIGNMENT marginal is exactly what
-# linkage-free scoring would give, while the linkage ambiguity stays represented inside it.
+# its refinements dilutes and never boosts.
+#
+# The denominator is the number of linkage readings ENUMERATED for that assignment, before the cap,
+# not the number kept (review finding 10). Normalizing by the kept count would silently redistribute
+# a dropped reading's prior mass over its survivors, so a truncated assignment would carry exactly
+# the weight of an untruncated one and the truncation would be invisible in the arithmetic. Dividing
+# by the total instead leaves the kept variants summing to n_kept/n_total < 1, and the missing share
+# is recorded per cluster as ``linkage_dropped_prior_mass``.
 #
 # Declared like any other term (it enters the manifest and the registry fingerprint) but applied by
 # the builder rather than by a factor: only the builder knows how many linkages an assignment
 # ended up with, and a factor able to see that count could score on the enumeration itself.
+#
+# ``score_bound=None`` follows from that denominator: n_total is however many readings the
+# proposers offered, which no constant bounds, so −ln(n_total) has no floor to declare. The price
+# is stated where it is paid — ``_score_span`` returns ``None`` (no base-lnZ pruning, no stated
+# truncation bound) whenever a proposing factor is active.
 LINKAGE_PRIOR = SceneFactor(
-    name="linkage_prior", kind="scene_prior", version="1", consumes=("links",),
+    name="linkage_prior", kind="scene_prior", version="2", consumes=("links",),
     config=(("max_linkage_variants", float(MAX_LINKAGE_VARIANTS)),),
-    score_bound=(-math.log(MAX_LINKAGE_VARIANTS), 0.0))
+    score_bound=None)
 
 
 # ----------------------------------------------------------------------------
@@ -361,8 +372,15 @@ def _score_span(factor_list) -> float | None:
     # and only then. With no proposing factor every assignment has exactly one linkage, the term
     # is identically 0.0 across the cluster, and widening the margin for it would discard nothing
     # differently while changing every recorded bound.
-    lo, hi = LINKAGE_PRIOR.score_bound
-    linkage = (hi - lo) if any(f.propose is not None for f in factor_list) else 0.0
+    if not any(f.propose is not None for f in factor_list):
+        linkage = 0.0
+    elif LINKAGE_PRIOR.score_bound is None:
+        # −ln(n_total) over however many readings the proposers offered: no constant bounds it, so
+        # there is no honest slack to hand the pruner. Same posture as an unbounded scoring factor.
+        return None
+    else:
+        lo, hi = LINKAGE_PRIOR.score_bound
+        linkage = hi - lo
     return math.fsum([linkage, *(h - l for l, h in (f.score_bound for f in scorers))])
 
 
@@ -718,11 +736,15 @@ def _placeable_modes(components) -> list:
 
 
 def _linkage_variants(alt: SceneAlternative, view: ClusterView, factor_list):
-    """``(variants, truncated)`` — the linkage readings of ONE candidate assignment.
+    """``(kept variants, n_enumerated)`` — the linkage readings of ONE candidate assignment.
 
     The default chaining always comes first, so a truncation can never drop it. Proposals come
     from the factors' ``propose`` hooks (the crossing proposer), are deduplicated, and are ordered
     deterministically before the cap applies.
+
+    ``n_enumerated`` is the count BEFORE the cap and it is what ``LINKAGE_PRIOR`` divides by, so a
+    dropped reading's prior mass stays dropped instead of being redistributed over the survivors
+    (review finding 10). ``n_enumerated > len(kept)`` is the truncation.
     """
     default = _validated_links(_default_links(alt, view), alt)
     proposed = set()
@@ -734,7 +756,7 @@ def _linkage_variants(alt: SceneAlternative, view: ClusterView, factor_list):
             if variant != default:
                 proposed.add(variant)
     ordered = [default, *sorted(proposed)]
-    return tuple(ordered[:MAX_LINKAGE_VARIANTS]), len(ordered) > MAX_LINKAGE_VARIANTS
+    return tuple(ordered[:MAX_LINKAGE_VARIANTS]), len(ordered)
 
 
 def _validated_links(links, alt: SceneAlternative):
@@ -785,7 +807,7 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
     rows_of = {(r, c.label): c for r in refs for c in by_ref[r].candidates}
 
     entries = []
-    linkage_truncated = False
+    linkage_dropped = 0.0
     for assignment in assignments:
         chosen = {ref: label for ref, label in assignment}
         # ONE lnZ per arena. A chosen candidate with n_modes=2 contributes its evidence once;
@@ -795,11 +817,27 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
             cluster_id=cluster_id, assignment=assignment,
             components=tuple(c for ref in refs for c in components[ref]
                              if c.candidate_label == chosen[ref]))
-        variants, cut = _linkage_variants(assigned, view, factor_list)
-        linkage_truncated = linkage_truncated or cut
+        variants, n_linkages = _linkage_variants(assigned, view, factor_list)
+        # The share of THIS assignment's linkage prior the cap dropped. Exact, not a bound: the
+        # prior is uniform over the n enumerated readings by construction, so k kept readings
+        # retain exactly k/n of it. Reported per cluster as the worst assignment's share, which is
+        # the honest scalar — the assignments' own weights are only known after normalization, and
+        # weighting a dropped-prior statement by a posterior computed without that prior would be
+        # circular.
+        linkage_dropped = max(linkage_dropped, (n_linkages - len(variants)) / n_linkages)
         for links in variants:
             entries.append(_score_alternative(replace(assigned, links=links), view, base,
-                                              factor_list, cluster_id, len(variants)))
+                                              factor_list, cluster_id, n_linkages))
+
+    # A dropped linkage reading can carry factor terms none of the kept ones carry (the crossing
+    # proposer's pairings score differently whenever they link different modes), and no ordering
+    # bounds those terms — linkage variants share a base Σ lnZ exactly, so there is no base
+    # ranking to bound them by. A linkage-truncated cluster is therefore UNRESOLVED in the same
+    # sense ``truncation_unbounded`` already names, and it joins that lane rather than getting a
+    # quieter flag of its own: the marginals a reader lifts out must not look narrowed.
+    linkage_truncated = linkage_dropped > 0.0
+    if linkage_truncated:
+        truncated, unbounded, discarded = True, True, None
 
     log_norm = _logsumexp([e["total"] for e in entries])
     for e in entries:
@@ -829,14 +867,19 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
         "n_assignments": len(assignments),
         "n_possible": n_possible,
         "discarded_mass_bound": discarded,
-        # True when the cap dropped alternatives under a factor that declared no bound: the
-        # cluster is UNRESOLVED, not narrowed, and no reader may treat these posteriors as a
+        # True when the enumerated set is not the complete one AND nothing bounds what was
+        # dropped — an unbounded scoring factor over the alternative cap, or a linkage truncation.
+        # The cluster is UNRESOLVED, not narrowed, and no reader may treat these posteriors as a
         # bounded approximation of the full ones.
         "truncation_unbounded": unbounded,
-        # True when some assignment had more linkage readings than MAX_LINKAGE_VARIANTS. Linkage
-        # variants share a base Σ lnZ exactly, so there is no base ordering to bound them by and
-        # no honest mass bound to state — only the fact that readings were dropped.
+        # True when some assignment had more linkage readings than MAX_LINKAGE_VARIANTS.
         "linkage_truncated": linkage_truncated,
+        # The largest share of any single assignment's linkage prior that the cap dropped, exactly
+        # (n_enumerated − n_kept)/n_enumerated. 0.0 when nothing was dropped. It is a statement
+        # about PRIOR mass, not posterior mass: the dropped readings' factor terms are unknown, so
+        # this bounds nothing about the posterior and ``truncation_unbounded`` above is what says
+        # so.
+        "linkage_dropped_prior_mass": linkage_dropped,
         "pruning": {r: pruning[r]["excluded"] for r in refs},
         "log_norm": log_norm,
         "alternatives": entries,
@@ -872,8 +915,9 @@ def _score_alternative(alt: SceneAlternative, view: ClusterView, base: float, fa
     """One ledger entry: the terms of ``alt`` and the total they add up to.
 
     ``n_linkages`` is how many linkage readings this ALTERNATIVE'S ASSIGNMENT was enumerated
-    with; ``LINKAGE_PRIOR`` spreads one assignment's prior mass uniformly over them (see its
-    declaration) so that refining an assignment never boosts it.
+    with, BEFORE any cap; ``LINKAGE_PRIOR`` spreads one assignment's prior mass uniformly over
+    them (see its declaration) so that refining an assignment never boosts it, and so that a
+    capped assignment keeps only the share of its prior it still carries readings for.
     """
     assignment = alt.assignment
     factor_terms, reasons = {}, {}

@@ -119,9 +119,12 @@ component at one arena is the same track as which component at an adjacent one, 
 their linkage; that is the branch-crossing ambiguity, and since they share the same local fits
 their base `Σ lnZ` is identical, so only factor terms can separate them. The default linkage is
 nearest-ω chaining within the resolution width; alternative linkages are proposed by a factor's
-`propose` hook and are capped per assignment (`MAX_LINKAGE_VARIANTS`), with the truncation
-recorded (`linkage_truncated`) — linkage variants share a base, so no dropped-mass bound is
-available for them and none is claimed.
+`propose` hook and are capped per assignment (`MAX_LINKAGE_VARIANTS`). A truncated cluster records
+`linkage_truncated` and the exact share of prior mass the cap dropped
+(`linkage_dropped_prior_mass`, `(n_enumerated − n_kept)/n_enumerated` for the worst assignment),
+and it joins the `truncation_unbounded` lane: linkage variants share a base `Σ lnZ`, so there is
+no base ordering to bound the dropped readings' factor terms by, and a dropped reading can score
+differently from every kept one. Such a cluster's marginals are unresolved, never narrowed.
 Visibility states (`observed`, `searched_no_signal`, `censored_outside_footprint`,
 `blocked_unresolved`) are derived per component against the neighbouring footprint and annotate
 the leading alternative in the cluster payload. A component is `observed` at a neighbour when the

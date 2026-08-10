@@ -622,10 +622,12 @@ def test_the_payload_carries_the_full_factor_declaration():
         {"name": "declared", "kind": "structural_likelihood", "version": "1",
          "consumes": ["q"], "roles": ["score"], "config": [["threshold", 0.25]],
          "score_bound": [0.0, 1.0]},
-        {"name": "linkage_prior", "kind": "scene_prior", "version": "1",
+        # v2, unbounded: the prior divides by the ENUMERATED linkage count rather than the kept
+        # one (review finding 10), and nothing bounds how many readings the proposers offer.
+        {"name": "linkage_prior", "kind": "scene_prior", "version": "2",
          "consumes": ["links"], "roles": [],
          "config": [["max_linkage_variants", float(build_mod.MAX_LINKAGE_VARIANTS)]],
-         "score_bound": [-math.log(build_mod.MAX_LINKAGE_VARIANTS), 0.0]},
+         "score_bound": None},
         {"name": "q_adjacency", "kind": "structural_likelihood", "version": "1",
          "consumes": ["q"], "roles": ["couples"], "config": [], "score_bound": None},
     ]

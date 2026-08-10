@@ -401,6 +401,37 @@ def test_a_linkage_independent_miss_contributes_identically_to_every_variant():
     assert len(misses[0]) == 2 and misses[0] == misses[1]
 
 
+def test_a_linkage_truncation_records_its_dropped_prior_and_leaves_the_cluster_unresolved(
+        monkeypatch):
+    """Review finding 10, both halves. The dropped readings here are NOT interchangeable with the
+    kept one: the two complete pairings link all four modes (four matches) while the partial
+    default leaves two unsupported, so a cap that keeps only the default drops readings worth
+    3 nats more than what it published.
+
+    So the cap may not renormalize the loss away. The prior divides by the ENUMERATED count, which
+    leaves the kept variant carrying 1/3 of that assignment's prior and the missing 2/3 recorded;
+    and because nothing bounds the dropped readings' factor terms, the cluster goes into the
+    unresolved lane rather than looking like a narrowed one."""
+    obs = [mk_obs("e:1:d", [cand("stokes2+bg", -10.0, n_modes=2, omegas=(4.0, 7.0))], q=q(1.0)),
+           mk_obs("e:2:d", [cand("stokes2+bg", -10.0, n_modes=2, omegas=(4.5, 5.0))], q=q(1.1))]
+    full = cluster_of(build_scene(obs), "e:1:d")
+    assert full["n_enumerated"] == 3
+    assert len({a["factor_terms"]["presence"] for a in full["alternatives"]}) == 2
+
+    monkeypatch.setattr(build_mod, "MAX_LINKAGE_VARIANTS", 1)
+    cl = cluster_of(build_scene(obs), "e:1:d")
+    kept, = cl["alternatives"]
+    assert kept["factor_terms"]["presence"] == \
+        2 * PRESENCE_MATCH_NATS + 2 * PRESENCE_MISS_NATS      # the partial default survived
+    assert cl["linkage_truncated"] is True
+    assert cl["linkage_dropped_prior_mass"] == pytest.approx(2 / 3, rel=1e-12)
+    assert kept["prior_terms"]["linkage_prior"] == -math.log(3)
+    assert cl["truncated"] is True and cl["truncation_unbounded"] is True
+    assert cl["discarded_mass_bound"] is None
+    assert cl["marginals"]["truncated"] is True
+    assert cl["marginals"]["truncation_unbounded"] is True
+
+
 def test_an_impossible_linkage_is_refused_rather_than_scored():
     """The guard behind the fix: a proposer that emits a degree-2 link set fails loudly instead of
     publishing a reading that cannot exist."""
