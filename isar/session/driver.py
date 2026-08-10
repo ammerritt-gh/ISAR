@@ -605,8 +605,11 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
     with timer.stage("session_save"):
         workspace.save(card, session)
     # LAST, after results.csv and card.state are on disk: the scene is built from the persisted
-    # ledger through the read-only facade, so it must see the delivery that just landed.
-    _observe_scene(summary, workspace)
+    # ledger through the read-only facade, so it must see the delivery that just landed. Timed
+    # like every other stage — the scene walk is not free at campaign scale, and a cost that
+    # `isar profile` cannot see is a cost nobody can budget.
+    with timer.stage("scene_observe"):
+        _observe_scene(summary, workspace)
 
 
 def _observe_scene(summary, workspace) -> None:
@@ -625,6 +628,14 @@ def _observe_scene(summary, workspace) -> None:
     try:
         from isar.session import scene_hook
         result = scene_hook.build_and_store(workspace.root)
+    except ValueError as exc:
+        # The adapter's own refusals (no candidates column, an unqualified master, a row
+        # predating the delivery contract) and a corrupt scene pointer. Expected, and a workspace
+        # that refuses once refuses on EVERY delivery — a traceback per scan would bury the log
+        # for a condition whose message already says what to do.
+        log.warning("scene revision skipped for %s: %s", workspace.root, exc)
+        summary.context_lines.append(f"scene revision skipped: {exc}")
+        return
     except Exception as exc:  # noqa: BLE001 — see the docstring: a scene never fails a campaign
         log.exception("scene revision skipped for %s", workspace.root)
         summary.context_lines.append(f"scene revision skipped: {exc}")

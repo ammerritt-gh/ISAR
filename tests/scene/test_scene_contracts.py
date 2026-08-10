@@ -110,12 +110,11 @@ def test_a_structural_endpoint_claims_no_energy_of_its_own():
     endpoint, = _endpoints(knowing)
     assert (endpoint["scan_ref"], endpoint["neighbour"]) == ("e:2:d", "e:1:d")
 
-    # (a) No mode is placed at the endpoint arena by ANY alternative carrying posterior mass. The
-    # reading is granted from the elastic response there, and inventing a zero-DHO mode to
-    # "explain" the termination would hand a structural inference a measured position.
+    # (a) The reading places no mode at the endpoint arena: the scene's whole belief there is
+    # "zero modes", and it reports nothing anchored at that arena, because there is no mode of
+    # its own for the fold to be a neighbour of.
     cluster = _cluster_with(knowing, "e:1:d")
     assert cluster["marginals"]["n_modes"]["e:1:d"] == {"0": 1.0}
-    assert all(alt["posterior"] > 0.0 for alt in cluster["alternatives"])
     assert not [r for r in _reports(knowing) if r["scan_ref"] == "e:1:d"]
 
     # (b) The annotation carries the TERMINAL MODE's own measured energy, at its own arena, and no
@@ -128,6 +127,31 @@ def test_a_structural_endpoint_claims_no_energy_of_its_own():
     blind = build_scene(obs)
     assert not _endpoints(blind)
     assert Visibility.SEARCHED_NO_SIGNAL in {r["visibility"] for r in _reports(blind)}
+
+    # (d) The forbidden phantom, made a live competitor rather than assumed away: a candidate at
+    # the fold arena that DOES place a mode inside the elastic width is enumerated against the
+    # elastic-only one. The termination is still granted — it comes from the elastic response,
+    # which both candidates carry — and it rescues nothing: the phantom's own unsupported mode is
+    # charged its miss at its own neighbour, so it lands exactly one miss below and takes strictly
+    # less posterior mass. An endpoint that could pay for the mode it terminates into would be the
+    # scene laundering an inference into a measurement.
+    fold = mk_obs("e:1:d", [cand("elastic+bg", -10.0, n_modes=0, omegas=(), extra=("elastic",)),
+                            cand("elastic+low", -10.0, omegas=(0.3,), extra=("elastic",))],
+                  q=q(2.0))
+    # One searched, entirely empty arena on the FAR side of the fold, so the phantom mode has a
+    # neighbour that can price it. Without it the phantom's only neighbour is the track's own
+    # arena, whose other peaks make its silence uninformative with no declared slope
+    # (``reachability_unknown``) — the two readings would then tie for a reason that has nothing
+    # to do with the endpoint.
+    beyond = mk_obs("e:0:d", [cand("bg", -10.0, n_modes=0, omegas=())], q=q(1.9))
+    contested = build_scene([beyond, fold, *obs[1:]], sample=SampleKnowledge(zone_period=2.0))
+    assert [(r["scan_ref"], r["neighbour"]) for r in _endpoints(contested)] == [("e:2:d", "e:1:d")]
+    presence = _presence_by_label(contested, "e:1:d")
+    # The equality is what says the phantom reading ALSO terminates the track (two misses would
+    # mean it had lost the endpoint instead of merely paying for its extra mode).
+    assert presence["elastic+low"] == presence["elastic+bg"] + PRESENCE_MISS_NATS
+    mass = _cluster_with(contested, "e:1:d")["marginals"]["label"]["e:1:d"]
+    assert mass["elastic+bg"] > mass["elastic+low"]
 
 
 # ----------------------------------------------------------------------------
