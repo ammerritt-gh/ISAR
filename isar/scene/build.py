@@ -48,9 +48,9 @@ from isar.schema.steering import CANONICAL_MASTER, EVIDENCE_SINKS
 
 from .factors import (FACTORS, SceneFactor, factor_manifest, neighbour_reports,
                       registry_fingerprint, validate_factor)
-from .model import (CandidateRow, ComponentObservation, Footprint, SampleKnowledge,
-                    SceneObservation, Visibility, canonical_bytes, digest_bytes, footprint_of,
-                    is_mode, link_tol, q_adjacent)
+from .model import (NON_MODE_ID_TAGS, CandidateRow, ComponentObservation, Footprint,
+                    SampleKnowledge, SceneObservation, Visibility, canonical_bytes, digest_bytes,
+                    footprint_of, is_mode, link_tol, q_adjacent)
 
 SCENE_SCHEMA = "isar.scene-revision/1"
 
@@ -426,20 +426,6 @@ def _split_by_evidence(obs):
 # ----------------------------------------------------------------------------
 # 3. Components
 # ----------------------------------------------------------------------------
-def _structure_terms(label: str) -> tuple[str, ...]:
-    """The component terms of a candidate label, per the catalogue's label grammar.
-
-    Grammar, read off the code that builds it rather than guessed:
-    ``isar/analyze/catalogue.py:enumerate_structures`` / ``enumerate_multimode_structures`` join
-    the term names with ``+`` (``elastic+stokes+qe+bg``, ``stokes2+bg``);
-    ``_phonon_bearing_adder`` appends ``@<identity>`` to the WHOLE label; and
-    ``isar/analyze/loop.py:1030`` appends a variant suffix (``_neardeg``) to the whole label
-    after that. Both suffixes therefore land on the LAST term, and ``elastic``/``qe`` are never
-    last (``bg`` always is), so splitting the pre-``@`` part on ``+`` identifies them exactly.
-    """
-    return tuple(label.split("@", 1)[0].split("+"))
-
-
 def _components_of(o: SceneObservation, fp: Footprint,
                    labels: frozenset) -> tuple[ComponentObservation, ...]:
     """One component per mode of every SURVIVING candidate of ``o``, plus its non-mode components.
@@ -463,22 +449,33 @@ def _components_of(o: SceneObservation, fp: Footprint,
             scan_ref=o.scan_ref,
             component_id=f"{o.scan_ref}#{c.label}#{tag}",
             candidate_label=c.label,
+            kind=kind,
             q=o.q,
             omega=omega,
             footprint=fp,
             visibility=Visibility.OBSERVED)
         for c in o.candidates if c.label in labels
-        for tag, omega in _component_slots(c))
+        for tag, kind, omega in _component_slots(c))
 
 
 def _component_slots(c: CandidateRow):
-    """``(id tag, ω)`` for one candidate: its modes by index, then its non-mode terms."""
-    for i, w in enumerate(c.omegas):
-        yield str(i), (None if w is None else float(w))
-    terms = _structure_terms(c.label)
-    for term in ("elastic", "qe"):
-        if term in terms:
-            yield term, 0.0
+    """``(id tag, kind, ω)`` for one candidate, from its PERSISTED component descriptors.
+
+    The descriptors are the single authority on what a candidate is made of — they were derived
+    from the enumerated structure the candidate was fitted as, at the writer. Nothing here reads
+    the label: a label is an identifier, and recovering kinds from its text would make a display
+    string load-bearing for physics and would silently reclassify a structure the day the grammar
+    grows a suffix.
+
+    A mode whose slot has no ω (an unplaceable position, or a candidate with no fit result at all)
+    still emits its component with ``omega=None``: the mode exists, it is merely unplaceable.
+    """
+    for d in c.components:
+        if d.kind == "mode":
+            w = c.omegas[d.slot] if 0 <= d.slot < len(c.omegas) else None
+            yield str(d.slot), d.kind, (None if w is None else float(w))
+        else:
+            yield NON_MODE_ID_TAGS[d.kind], d.kind, 0.0
 
 
 # ----------------------------------------------------------------------------

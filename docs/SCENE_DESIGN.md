@@ -126,6 +126,24 @@ available for them and none is claimed. Visibility states (`observed`, `searched
 neighbouring footprint and annotate the leading alternative in the cluster payload.
 Component→phenomenon assignment remains a later extension.
 
+**What a component is, and what a footprint covers.** Both are read from what the delivery
+PERSISTED, never reconstructed from a display string or an envelope. Each candidate row carries
+ordered component descriptors (`kind` ∈ `mode` / `elastic` / `quasielastic`, plus the mode's `slot`
+into that row's `omegas`), derived at the writer from the enumerated structure the candidate was
+fitted as; a label is a stable identifier and nothing decides physics by parsing it. Each row also
+carries `energy_bands`, the contiguous kept runs of the fitted axis, of which `energy_window` is
+only the outer envelope: a QC mask or an excluded region in the middle of the axis is a HOLE, so
+absence inside it is `censored_outside_footprint` rather than evidence. A workspace whose rows
+predate either field is refused with a re-deliver instruction (H1: no tolerant fallback between the
+stored evidence and `ln W(S)`).
+
+The two non-mode kinds are kept apart because they answer different questions. Both obscure a band
+at the elastic line, so either makes a low-ω absence `blocked_unresolved` — that is
+`blocking_present`. Only `elastic` is a Bragg-adjacent claim, so only it satisfies the zone-centre
+endpoint prerequisite and only it is classified against the reciprocal lattice; a quasielastic
+feature is diffusive scattering, and asking where it sits relative to a reflection is the wrong
+question.
+
 **Declared sample knowledge, and the factors that read it (H13).** `build_scene(..., sample=)`
 takes a `SampleKnowledge` — the scientist's DECLARED zone period, Bragg reflections along the scan
 path, and the lattice epoch in force — lifted off the experiment card by
@@ -142,15 +160,17 @@ Two factors read it, and neither scores — so neither costs the builder its pru
 
 - `zone_centre_approach` assigns `structural_endpoint` through the `refine_visibility` hook, where
   a declared gapless branch legitimately has nothing to show: the neighbouring arena sits at a
-  zone centre of the declared period, the elastic line is chosen there, and the mode's energy is
-  within a plausible descent to zero. `blocked_unresolved` says *unresolved pending better data*;
+  zone centre of the declared period, an ELASTIC component is chosen there (a quasielastic one is
+  no response for a branch to be swallowed by), and the mode's energy is within a plausible descent
+  to zero. `blocked_unresolved` says *unresolved pending better data*;
   `structural_endpoint` says *the declared physics terminates the track here*. Presence and
   connectivity key on `searched_no_signal` alone, so the absence of a penalty at an endpoint is
   emergent from the visibility grammar rather than special-cased into two score functions.
-- `reciprocal_lattice_localization` classifies each non-mode component `bragg_compatible` /
+- `reciprocal_lattice_localization` classifies each ELASTIC component `bragg_compatible` /
   `off_lattice` / `unclassified` (no reflections declared) / `unplaceable_q` (declared, but this
   arena has no placeable q) through the `classify` hook, recorded per cluster under
-  `classification`. It classifies and does not score: elastic intensity is ubiquitous, so an
+  `classification`. Modes and quasielastic components are absent from the map rather than
+  unclassified — they are not candidate reflections at all. It classifies and does not score: elastic intensity is ubiquitous, so an
   off-lattice elastic feature is not improbable, merely not-Bragg.
 
 A refiner may only replace an absence state — never `observed`, never

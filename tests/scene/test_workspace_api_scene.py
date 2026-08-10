@@ -6,13 +6,13 @@ import pytest
 
 from isar.schema.statistics import FIT_SELECTION_SCHEMA, authority_scopes
 from isar.workspace_api import Workspace
-from isar.scene.model import SampleKnowledge
+from isar.scene.model import ComponentDescriptor, SampleKnowledge, covers, footprint_of
 from isar.workspace_api.scene import sample_knowledge, scene_observations
 from synthetic_ws import _POLICY_TOML, FULL_COLUMNS, stamp_ws
 
 # The adapter reads persisted columns the shared stamper's base header predates.
-COLUMNS = FULL_COLUMNS + ["energy_lo", "energy_hi", "evidence_sink", "effective_exposure",
-                          "fit_selection_semantics"]
+COLUMNS = FULL_COLUMNS + ["energy_lo", "energy_hi", "energy_bands", "evidence_sink",
+                          "effective_exposure", "fit_selection_semantics"]
 
 
 def _selection(method="laplace_evidence_selection", fallback=None,
@@ -37,7 +37,8 @@ def _selection(method="laplace_evidence_selection", fallback=None,
 def _candidate(label, **kw):
     row = {"label": label, "k": 5, "n_modes": 1, "log_evidence": -12.5,
            "evidence_method": "nested", "posterior_probability": 0.7, "usable": True,
-           "identity": None, "variant": None, "omegas": [4.0]}
+           "identity": None, "variant": None, "omegas": [4.0],
+           "components": [{"kind": "mode", "slot": 0}]}
     row.update(kw)
     return row
 
@@ -47,7 +48,8 @@ def _row(scan, *, candidates, scan_id=None, **kw):
         "scan": scan, "detector": "det", "scan_id": scan_id or f"tavi:{scan}:det",
         "sample": "tavi", "T": 200.0, "h": 2.0, "k": 0.0, "l": 0.0, "status": "fitted",
         "verdict": "resolved", "best_model": "phonon+bg", "gauss_fwhm": 1.2, "lorentz_fwhm": 0.0,
-        "energy_lo": -5.0, "energy_hi": 10.0, "effective_exposure": 1000.0,
+        "energy_lo": -5.0, "energy_hi": 10.0,
+        "energy_bands": json.dumps([[-5.0, 10.0]]), "effective_exposure": 1000.0,
         "evidence_sink": "canonical_master",
         "fit_selection_semantics": _selection(),
         "amplitudes": json.dumps({"bg.BG": 3.0, "phonon.A": 20.0}),
@@ -258,6 +260,49 @@ def test_malformed_candidates_yield_no_observation_and_log(tmp_path, caplog, cel
     with caplog.at_level(logging.WARNING, logger="isar.workspace_api.scene"):
         assert scene_observations(_ws(tmp_path, [_row(1, candidates=cell)])) == []
     assert any("tavi:1:det" in r.getMessage() for r in caplog.records)
+
+
+def test_candidate_rows_carry_their_component_descriptors(tmp_path):
+    """Review finding 9: the scene reads what a candidate is MADE OF from the row, never from the
+    label. The descriptors survive the CSV JSON cell as typed DTOs."""
+    cands = [_candidate("phonon+bg"),
+             _candidate("elastic+2phonon+bg", n_modes=2, omegas=[4.0, 8.0],
+                        components=[{"kind": "mode", "slot": 0}, {"kind": "mode", "slot": 1},
+                                    {"kind": "elastic", "slot": None}])]
+    obs, = scene_observations(_ws(tmp_path, [_row(1, candidates=cands)]))
+    by_label = {c.label: c for c in obs.candidates}
+    assert by_label["phonon+bg"].components == (ComponentDescriptor("mode", 0),)
+    assert by_label["elastic+2phonon+bg"].components == (
+        ComponentDescriptor("mode", 0), ComponentDescriptor("mode", 1),
+        ComponentDescriptor("elastic"))
+
+
+def test_energy_bands_survive_the_csv_and_are_the_footprints_coverage(tmp_path):
+    """Review finding 4: the kept runs, not the envelope. The hole between them covers nothing."""
+    obs, = scene_observations(_ws(tmp_path, [_row(1, candidates=[_candidate("phonon+bg")],
+                                                  energy_lo=1.0,
+                                                  energy_bands=json.dumps([[1.0, 4.0],
+                                                                           [6.0, 10.0]]))]))
+    assert obs.energy_window == (1.0, 10.0)
+    assert obs.energy_bands == ((1.0, 4.0), (6.0, 10.0))
+    fp = footprint_of(obs)
+    assert covers(fp, 3.0) and covers(fp, 8.0)
+    assert not covers(fp, 5.0)
+
+
+@pytest.mark.parametrize("kw,message", [
+    ({"candidates": [{k: v for k, v in _candidate("phonon+bg").items() if k != "components"}]},
+     "component descriptors"),
+    ({"candidates": [_candidate("phonon+bg")], "energy_bands": None}, "energy_bands"),
+])
+def test_a_row_predating_the_delivery_contract_is_refused_not_guessed_at(tmp_path, kw, message):
+    """H1, the same posture as the bare-member-label refusal: a row written before these fields
+    existed cannot be read faithfully. Inferring components from the label would decide physics on
+    a display string, and reading the window as hole-free coverage would price absence against a
+    region no counting reached — so the workspace is re-delivered instead."""
+    ws = _ws(tmp_path, [_row(1, **kw)])
+    with pytest.raises(ValueError, match=rf"tavi:1:det.*{message}.*re-deliver"):
+        scene_observations(ws)
 
 
 def test_a_header_without_the_candidates_column_is_refused(tmp_path):

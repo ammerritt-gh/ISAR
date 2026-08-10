@@ -210,7 +210,7 @@ def test_an_off_lattice_elastic_feature_is_classified_not_bragg():
     position. Only the scene, holding the declared reflection list, can say the feature sits
     nowhere the scientist declared a reflection — and it CLASSIFIES rather than penalizing,
     because elastic intensity is ubiquitous and off-lattice elastic is not improbable."""
-    ctx, results, sel = run_selection("off_lattice_elastic", 2.5)
+    ctx, results, sel, _hyps = run_selection("off_lattice_elastic", 2.5)
     assert _verdict.classify(results, ctx, sel).verdict == "elastic_only"
 
     obs = scene_observation("off_lattice_elastic", 2.5)

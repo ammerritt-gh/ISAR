@@ -16,26 +16,41 @@ from isar.scene.build import (SCENE_SCHEMA, ClusterView, SceneAlternative,
                               _discarded_bound, build_scene)
 from isar.scene import build as build_mod
 from isar.scene.factors import SceneFactor
-from isar.scene.model import (CandidateRow, SceneObservation, canonical_bytes, digest_bytes,
-                              observation_fingerprint)
+from isar.scene.model import (CandidateRow, ComponentDescriptor, SceneObservation, canonical_bytes,
+                              digest_bytes, observation_fingerprint)
 
 
 # ----------------------------------------------------------------------------
 # Hand-built observations
 # ----------------------------------------------------------------------------
-def cand(label, lnz, *, n_modes=1, omegas=None, usable=True, identity=None):
+def cand(label, lnz, *, n_modes=1, omegas=None, usable=True, identity=None, extra=()):
+    """One candidate for ``mk_obs``. ``extra`` declares the NON-MODE component kinds explicitly.
+
+    Mode descriptors follow the caller's ``n_modes``, which is already an explicit declaration of
+    how many modes the candidate has; ``elastic``/``quasielastic`` must be spelled, because the
+    label is an identifier and nothing derives structure from it any more.
+    """
     return (label, lnz, n_modes, (10.0,) * n_modes if omegas is None else tuple(omegas),
-            usable, identity)
+            usable, identity, tuple(extra))
 
 
-def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), q=(1.0, 0.0, 0.0),
+def components(n_modes, extra=()):
+    return tuple([*(ComponentDescriptor("mode", i) for i in range(n_modes)),
+                  *(ComponentDescriptor(kind) for kind in extra)])
+
+
+def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), bands=None, q=(1.0, 0.0, 0.0),
            status="complete", fallback=None, sink=None):
     rows = tuple(
         CandidateRow(label=label, k=None, n_modes=n_modes, log_evidence=lnz,
                      evidence_method="laplace", posterior_probability=None, usable=usable,
-                     identity=identity, variant=None, omegas=omegas)
-        for label, lnz, n_modes, omegas, usable, identity in candidates)
+                     identity=identity, variant=None, omegas=omegas,
+                     components=components(len(omegas), extra))
+        for label, lnz, n_modes, omegas, usable, identity, extra in candidates)
     obs = SceneObservation(scan_ref=scan_ref, q=q, temperature_K=300.0, energy_window=window,
+                           energy_bands=(None if window is None
+                                         else (tuple(window),) if bands is None
+                                         else tuple(tuple(b) for b in bands)),
                            gauss_fwhm=1.0, lorentz_fwhm=None, effective_exposure=1.0,
                            background=0.5, best_label=rows[0].label if rows else None,
                            candidates=rows, evidence_comparison_status=status,

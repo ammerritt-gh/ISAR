@@ -341,7 +341,7 @@ from ._world_helpers import run_selection as _run_selection
 
 
 def _classify(name, h):
-    ctx, results, sel = _run_selection(name, h)
+    ctx, results, sel, _hyps = _run_selection(name, h)
     return _verdict.classify(results, ctx, sel)
 
 
@@ -368,7 +368,7 @@ def test_blank_world_classifies_no_signal():
 def test_canonical_world_wins_both_branches_off_centre():
     # H=2.25: acoustic 4.24 meV and optic 8.41 meV, no Bragg (offset 0.25 >> q_fwhm 0.08).
     # Evidence selection must prefer the 2-mode structure and land both mode energies.
-    _ctx, results, sel = _run_selection("canonical", 2.25)
+    _ctx, results, sel, _hyps = _run_selection("canonical", 2.25)
     win = {r.label: r for r in results}[sel.best]
     assert win.n_modes == 2
     modes = sorted(v for n, v in win.params.items() if n.endswith(".Omega_d"))
@@ -380,7 +380,7 @@ def test_no_acoustic_world_keeps_the_gap_at_the_zone_centre():
     # H=2.0: Bragg + gapped 3.0 meV + optic 7.0 meV. A gapless-acoustic misreading would put
     # a mode inside the elastic resolution; the winner must not. (The identity axis is
     # deferred, so "not read as acoustic" is asserted structurally: no near-zero mode energy.)
-    _ctx, results, sel = _run_selection("no_acoustic", 2.0)
+    _ctx, results, sel, _hyps = _run_selection("no_acoustic", 2.0)
     win = {r.label: r for r in results}[sel.best]
     assert win.n_modes >= 1
     modes = [v for n, v in win.params.items() if n.endswith(".Omega_d")]
@@ -395,7 +395,7 @@ def test_unknown_extra_world_extra_level_is_competitive():
     # the machine may be honest at its ceiling, but it must not read the scan as one mode.
     # Slow-marked (owner rule 2026-08-08): the genuinely ambiguous 3-vs-2 contest escalates to
     # dynesty by design — 117 s measured at ESCALATION_N_LIVE=128, over the fast-lane budget.
-    _ctx, results, sel = _run_selection("unknown_extra", 2.25)
+    _ctx, results, sel, _hyps = _run_selection("unknown_extra", 2.25)
     n_modes = {r.label: r.n_modes for r in results}
     multi = [s for s in sel.scores if n_modes.get(s.label, 1) >= 2]
     assert multi

@@ -14,15 +14,16 @@ import json
 import pytest
 
 from isar.scene.model import (
-    CandidateRow, Footprint, FootprintBand, SceneObservation, Visibility,
-    canonical_bytes, fingerprint, footprint_of, observation_fingerprint,
+    CandidateRow, ComponentDescriptor, Footprint, FootprintBand, SceneObservation, Visibility,
+    canonical_bytes, covers, fingerprint, footprint_of, observation_fingerprint, visibility_of,
 )
 
 
 def _row(**over) -> CandidateRow:
     base = dict(label="phonon", k=5, n_modes=1, log_evidence=-12.5,
                 evidence_method="laplace", posterior_probability=0.7, usable=True,
-                identity=None, variant=None, omegas=(4.25,))
+                identity=None, variant=None, omegas=(4.25,),
+                components=(ComponentDescriptor("mode", 0),))
     return CandidateRow(**{**base, **over})
 
 
@@ -30,12 +31,16 @@ def _obs(**over) -> SceneObservation:
     base = dict(scan_ref="exp:scan:det", q=(1.0, 0.0, 0.5), temperature_K=300.0,
                 energy_window=(-3.0, 10.0), gauss_fwhm=0.9, lorentz_fwhm=0.2,
                 effective_exposure=120.0, background=1.5, best_label="phonon",
-                candidates=(_row(), _row(label="bg", n_modes=0, omegas=())),
+                candidates=(_row(), _row(label="bg", n_modes=0, omegas=(), components=())),
                 evidence_comparison_status="complete", selection_fallback=None,
                 arena_fingerprint="a" * 64, evidence_sink=None, fingerprint="")
-    obs = SceneObservation(**{**base, **over})
-    return SceneObservation(**{**base, **over,
-                               "fingerprint": observation_fingerprint(obs)})
+    fields = {**base, **over}
+    # A hole-free axis unless a test says otherwise: the bands ARE the coverage, and the window
+    # is only their envelope.
+    fields.setdefault("energy_bands",
+                      None if fields["energy_window"] is None else (fields["energy_window"],))
+    obs = SceneObservation(**fields)
+    return SceneObservation(**{**fields, "fingerprint": observation_fingerprint(obs)})
 
 
 # ----------------------------------------------------------------------------
@@ -101,6 +106,56 @@ def test_visibility_members_are_their_wire_strings():
 def test_footprint_bands(window, expected):
     fp = footprint_of(_obs(energy_window=window))
     assert [(b.lo, b.hi, b.sides) for b in fp.bands] == expected
+
+
+def test_a_mask_hole_is_a_hole_in_the_footprint_not_covered_ground():
+    """Review finding 4: coverage is the KEPT runs, never the outer envelope.
+
+    An excluded region between 4 and 7 meV was not measured, so a mode hypothesized there is
+    censored — no absence charge — while the runs on either side answer as before. Reading the
+    (0, 10) envelope instead would price a phantom miss against a region no counting reached.
+    """
+    fp = footprint_of(_obs(energy_window=(0.0, 10.0), energy_bands=((0.0, 4.0), (7.0, 10.0))))
+    assert [(b.lo, b.hi, b.sides) for b in fp.bands] == [(0.0, 4.0, "stokes"),
+                                                         (7.0, 10.0, "stokes")]
+    assert covers(fp, 3.0) and covers(fp, 8.0)
+    assert not covers(fp, 5.5)
+    assert visibility_of(5.5, fp, False) == Visibility.CENSORED_OUTSIDE_FOOTPRINT
+    assert visibility_of(3.0, fp, False) == Visibility.SEARCHED_NO_SIGNAL
+
+
+def test_bands_from_both_sides_of_zero_still_fold_onto_one_intrinsic_axis():
+    """Two kept runs straddling zero cover ``|ω|`` from both sides where they overlap."""
+    fp = footprint_of(_obs(energy_window=(-6.0, 8.0), energy_bands=((-6.0, -2.0), (1.0, 8.0))))
+    # The gain run folds onto |ω| ∈ [2, 6], the loss run covers [1, 8]: only their overlap is
+    # measured from both sides.
+    assert [(b.lo, b.hi, b.sides) for b in fp.bands] == [(1.0, 2.0, "stokes"), (2.0, 6.0, "both"),
+                                                         (6.0, 8.0, "stokes")]
+    # |ω| < 1 was looked at from NEITHER side: the gain run stops at −2 and the loss run starts at 1.
+    assert not covers(fp, 0.5)
+
+
+def test_a_row_without_component_descriptors_is_refused_like_a_legacy_row():
+    """Review finding 9: the descriptors are the only statement of what a candidate is made of,
+    so a payload lacking them must fail rather than read as a structureless candidate."""
+    payload = _row().to_dict()
+    assert payload["components"] == [{"kind": "mode", "slot": 0}]
+    payload.pop("components")
+    with pytest.raises(KeyError):
+        CandidateRow.from_dict(payload)
+
+
+def test_an_observation_without_energy_bands_is_refused():
+    payload = _obs().to_dict()
+    payload.pop("energy_bands")
+    with pytest.raises(KeyError):
+        SceneObservation.from_dict(payload)
+
+
+@pytest.mark.parametrize("kind,slot", [("mode", None), ("elastic", 0), ("bragg", None)])
+def test_component_descriptors_refuse_a_malformed_declaration(kind, slot):
+    with pytest.raises(ValueError):
+        ComponentDescriptor(kind, slot)
 
 
 def test_no_window_means_no_coverage_not_a_default_zero():

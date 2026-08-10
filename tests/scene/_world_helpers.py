@@ -14,7 +14,7 @@ import numpy as np
 from isar.analyze import loop as _loop, select as _select
 from isar.analyze.context import ScanContext
 from isar.scene.model import CandidateRow, SceneObservation, observation_fingerprint
-from isar.session.scan_delivery import _candidate_rows
+from isar.session.scan_delivery import _candidate_rows, _energy_bands
 from isar.synth import generate, worlds
 
 
@@ -31,16 +31,18 @@ def scan_ctx(name: str, h: float) -> ScanContext:
 
 
 def run_selection(name: str, h: float):
-    """``(ctx, results, selection)`` for one world node, on the evidence lane."""
+    """``(ctx, results, selection, hypotheses)`` for one world node, on the evidence lane."""
     ctx = scan_ctx(name, h)
     # hypotheses_out, not hand re-enumeration: catalogue variants (H9) exist only because a fit
     # came out a certain way, and each carries the derived context its evidence resolves under —
     # a hand-built hyps dict cannot contain them and select_models refuses the orphan label.
+    # The same dict is what the persisted component descriptors are derived from: the enumerated
+    # structure is the single authority on what a candidate is made of.
     hyps = {}
     results = _loop.fit_structures_two_stage(ctx, hypotheses_out=hyps)
     sel = _select.select_models(results, hyps, ctx)
     assert sel.selection_fallback is None
-    return ctx, results, sel
+    return ctx, results, sel, hyps
 
 
 def scene_observation(name: str, h: float, *, scan_ref: str | None = None) -> SceneObservation:
@@ -51,13 +53,16 @@ def scene_observation(name: str, h: float, *, scan_ref: str | None = None) -> Sc
     persist, not a hand-made approximation of them. The selection record is complete by
     construction: ``run_selection`` refuses anything but the Bayesian lane.
     """
-    ctx, results, sel = run_selection(name, h)
-    rows = _candidate_rows(sel.scores, {r.label: r for r in results}) or []
+    ctx, results, sel, hyps = run_selection(name, h)
+    rows = _candidate_rows(sel.scores, {r.label: r for r in results}, hyps) or []
     obs = SceneObservation(
         scan_ref=scan_ref or f"world:{h:.2f}:d",
         q=(float(h), 0.0, 0.0),
         temperature_K=float(ctx.T),
         energy_window=(float(ctx.x.min()), float(ctx.x.max())),
+        # Through the production helper, not a hand-made pair: the fixture's coverage must be the
+        # coverage a delivery would persist, holes and all.
+        energy_bands=tuple(tuple(b) for b in _energy_bands(ctx.x_used, ctx.center)),
         gauss_fwhm=float(ctx.gauss_fwhm),
         lorentz_fwhm=None if ctx.lorentz_fwhm is None else float(ctx.lorentz_fwhm),
         effective_exposure=None,

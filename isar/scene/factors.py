@@ -33,8 +33,8 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .model import (LINK_TOL_FLOOR, Q_ADJACENCY, Visibility, covers, fingerprint, is_mode,
-                    link_tol, path_coordinate, q_adjacent, visibility_of)
+from .model import (LINK_TOL_FLOOR, Q_ADJACENCY, Visibility, blocks_elastic_line, covers,
+                    fingerprint, is_mode, link_tol, path_coordinate, q_adjacent, visibility_of)
 
 FACTOR_KINDS = ("scene_prior", "structural_likelihood")
 
@@ -278,9 +278,14 @@ def neighbour_reports(alt, view) -> tuple[dict, ...]:
             if not q_adjacent(fp_i.q, fp_j.q):
                 continue
             here, there = chosen.get(i, ()), chosen.get(j, ())
-            # An elastic or quasielastic component chosen at j hides a band under the elastic
-            # line: absence there is not evidence (BLOCKED_UNRESOLVED).
-            elastic_j = any(not is_mode(c) for c in there)
+            # TWO facts, because they answer two different questions and conflating them made a
+            # quasielastic feature argue Bragg physics. ``elastic_present`` is the strict one: an
+            # elastic component is chosen at j, which is what the zone-centre endpoint argument
+            # needs (a branch descending to ω→0 is swallowed by the ELASTIC response).
+            # ``blocking_present`` is the detectability one: elastic or quasielastic, either of
+            # which hides a low-energy band and makes its absence uninformative.
+            elastic_j = any(c.kind == "elastic" for c in there)
+            blocking_j = any(blocks_elastic_line(c) for c in there)
             tol = link_tol(fp_i, fp_j)
             partners = _modes(there)
             linked = set(alt.links) | {(b, a) for a, b in alt.links}
@@ -293,14 +298,15 @@ def neighbour_reports(alt, view) -> tuple[dict, ...]:
                     "scan_ref": i,
                     "neighbour": j,
                     "omega": m.omega,
-                    # Carried as a FACT of the report rather than recomputed by every refiner:
-                    # "is the elastic line chosen at the neighbour" is the same question
-                    # ``visibility_of`` already answered here, and a second derivation of it
-                    # would be a second physics.
+                    # Carried as FACTS of the report rather than recomputed by every refiner: a
+                    # second derivation of either would be a second physics. A refiner that needs
+                    # the Bragg-adjacent claim reads ``elastic_present``; the visibilities below
+                    # key on ``blocking_present``, which is detectability alone.
                     "elastic_present": elastic_j,
-                    "visibility": visibility_of(w, fp_j, matched, elastic_present=elastic_j),
+                    "blocking_present": blocking_j,
+                    "visibility": visibility_of(w, fp_j, matched, blocking_present=blocking_j),
                     "link_visibility": visibility_of(w, fp_j, is_linked,
-                                                     elastic_present=elastic_j),
+                                                     blocking_present=blocking_j),
                 }
                 refined = {k: _refined(report[k], report, view)
                            for k in ("visibility", "link_visibility")}
@@ -579,7 +585,10 @@ def _zone_centre_degradations(sample) -> tuple[str, ...]:
 
 
 ZONE_CENTRE_APPROACH = SceneFactor(
-    name="zone_centre_approach", kind="structural_likelihood", version="1",
+    # v2: the endpoint prerequisite is the ELASTIC component strictly. Under v1 a quasielastic
+    # feature satisfied it, so a v1 revision may carry structural endpoints this factor no longer
+    # grants — the fingerprint has to say so.
+    name="zone_centre_approach", kind="structural_likelihood", version="2",
     consumes=("q", "omega", "footprint", "sample.zone_period"),
     config=(("endpoint_omega_tol_factor", ENDPOINT_OMEGA_TOL_FACTOR),
             ("link_tol_floor", LINK_TOL_FLOOR), ("zone_centre_q_tol", ZONE_CENTRE_Q_TOL)),
@@ -594,7 +603,7 @@ ZONE_CENTRE_APPROACH = SceneFactor(
 # reciprocal_lattice_localization
 # ----------------------------------------------------------------------------
 def _lattice_classify(view) -> dict:
-    """Bragg-compatible / off-lattice / unclassified, per non-mode component. Belief-neutral.
+    """Bragg-compatible / off-lattice / unclassified, per ELASTIC component. Belief-neutral.
 
     "Bragg" is a SCENE-level identity, and it has to be: the local catalogue's elastic entry is
     lattice-blind by design — it fits a resolution-limited feature at ω = 0 and knows nothing
@@ -609,12 +618,17 @@ def _lattice_classify(view) -> dict:
     relative to the declared lattice and leaves belief alone.
 
     Modes are not classified at all: a phonon at a reflection's q is a phonon, not a reflection.
+    Neither are QUASIELASTIC components, and they are ABSENT from the map rather than
+    ``unclassified``: a broad quasielastic response is diffusive scattering, not a candidate
+    reflection that happens to lack a declaration, so asking where it sits relative to the reciprocal
+    lattice is asking the wrong question. ``unclassified`` keeps its one meaning — an elastic
+    component with nothing declared to compare it against.
     """
     reflections = view.sample.reflections
     out = {}
     for ref in view.scan_refs:
         for c in view.components[ref]:
-            if is_mode(c):
+            if c.kind != "elastic":
                 continue
             h = path_coordinate(c.q)
             if h is None:
@@ -641,7 +655,9 @@ def _lattice_degradations(sample) -> tuple[str, ...]:
 
 
 RECIPROCAL_LATTICE_LOCALIZATION = SceneFactor(
-    name="reciprocal_lattice_localization", kind="structural_likelihood", version="1",
+    # v2: quasielastic components are no longer classified at all (they were "unclassified" or even
+    # "bragg_compatible" under v1), so a v1 map is not reproducible here.
+    name="reciprocal_lattice_localization", kind="structural_likelihood", version="2",
     consumes=("q", "sample.reflections"),
     config=(("bragg_q_tol", BRAGG_Q_TOL),),
     # Classification only: no score, so no bound, and no effect on the builder's pruning.

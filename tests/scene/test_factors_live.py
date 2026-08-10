@@ -39,8 +39,8 @@ def test_elastic_only_arenas_couple_through_their_elastic_components():
     """The deferral this closes: an ``elastic_only`` arena used to emit no component at all, so a
     run of phonon-less arenas could not be one scene structure — which is a physical claim
     ("nothing inelastic over this stretch of q"), not an absence of data."""
-    obs = [mk_obs("e:1:d", [cand("elastic+bg", -10.0, n_modes=0, omegas=())], q=q(1.0)),
-           mk_obs("e:2:d", [cand("elastic+bg", -11.0, n_modes=0, omegas=())], q=q(1.1))]
+    obs = [mk_obs("e:1:d", [cand("elastic+bg", -10.0, n_modes=0, omegas=(), extra=("elastic",))], q=q(1.0)),
+           mk_obs("e:2:d", [cand("elastic+bg", -11.0, n_modes=0, omegas=(), extra=("elastic",))], q=q(1.1))]
     rev = build_scene(obs)
     assert [c["scan_refs"] for c in rev.payload["clusters"]] == [["e:1:d", "e:2:d"]]
 
@@ -53,22 +53,27 @@ def test_a_bg_only_candidate_emits_nothing_and_couples_to_nothing():
     assert [c["scan_refs"] for c in rev.payload["clusters"]] == [["e:1:d"], ["e:2:d"]]
 
 
-@pytest.mark.parametrize("label,tags", [
-    ("bg", []),
-    ("elastic+bg", ["elastic"]),
-    ("stokes+bg", ["0"]),
-    ("elastic+stokes+qe+bg", ["0", "elastic", "qe"]),
-    ("stokes2+bg@acoustic", ["0", "1"]),
-    ("elastic+stokes2+bg@acoustic_neardeg", ["0", "1", "elastic"]),
+@pytest.mark.parametrize("label,n,extra,tags,kinds", [
+    ("bg", 0, (), [], []),
+    ("elastic+bg", 0, ("elastic",), ["elastic"], ["elastic"]),
+    ("stokes+bg", 1, (), ["0"], ["mode"]),
+    ("elastic+stokes+qe+bg", 1, ("elastic", "quasielastic"), ["0", "elastic", "qe"],
+     ["mode", "elastic", "quasielastic"]),
+    ("stokes2+bg@acoustic", 2, (), ["0", "1"], ["mode", "mode"]),
+    # The label says nothing this test reads: an identity (``@acoustic``) or variant (``_neardeg``)
+    # suffix, or a label with no structure grammar at all, changes no component.
+    ("whatever_the_label_says", 2, ("elastic",), ["0", "1", "elastic"],
+     ["mode", "mode", "elastic"]),
 ])
-def test_the_label_grammar_places_the_non_mode_components(label, tags):
-    """Identity (``@acoustic``) and variant (``_neardeg``) suffixes land on the LAST term, and
-    ``elastic``/``qe`` are never last — so they survive both."""
-    n = sum(1 for t in tags if t.isdigit())
-    obs = mk_obs("e:1:d", [cand(label, -10.0, n_modes=n, omegas=tuple(4.0 + i for i in range(n)))])
+def test_the_persisted_descriptors_place_the_components(label, n, extra, tags, kinds):
+    """Review finding 9: component KIND comes from the persisted descriptors, never from the
+    label. The id keeps its tag as an identifier, but nothing decides physics by reading it."""
+    obs = mk_obs("e:1:d", [cand(label, -10.0, n_modes=n, extra=extra,
+                                omegas=tuple(4.0 + i for i in range(n)))])
     comps = build_mod._components_of(obs, footprint_of(obs), frozenset({label}))
     assert [c.component_id.rsplit("#", 1)[-1] for c in comps] == tags
-    assert all(c.omega == 0.0 for c in comps if not c.component_id.rsplit("#", 1)[-1].isdigit())
+    assert [c.kind for c in comps] == kinds
+    assert all(c.omega == 0.0 for c in comps if c.kind != "mode")
 
 
 # ----------------------------------------------------------------------------
@@ -101,13 +106,13 @@ def test_visibility_blocked_under_the_elastic_line():
     there, is hidden — not absent. Penalizing it would invent a missing phonon under every Bragg
     peak."""
     fp = _footprint()
-    assert visibility_of(0.5, fp, False, elastic_present=True) == Visibility.BLOCKED_UNRESOLVED
+    assert visibility_of(0.5, fp, False, blocking_present=True) == Visibility.BLOCKED_UNRESOLVED
     # No elastic component there: the same band was genuinely searched.
     assert visibility_of(0.5, fp, False) == Visibility.SEARCHED_NO_SIGNAL
     # Outside the elastic width, the elastic line hides nothing.
-    assert visibility_of(4.0, fp, False, elastic_present=True) == Visibility.SEARCHED_NO_SIGNAL
+    assert visibility_of(4.0, fp, False, blocking_present=True) == Visibility.SEARCHED_NO_SIGNAL
     # A detection under the elastic line stays a detection.
-    assert visibility_of(0.5, fp, True, elastic_present=True) == Visibility.OBSERVED
+    assert visibility_of(0.5, fp, True, blocking_present=True) == Visibility.OBSERVED
 
 
 def test_structural_endpoint_is_never_assigned_without_declared_zone_knowledge():
@@ -146,7 +151,8 @@ def test_a_neighbour_that_never_looked_at_the_band_costs_nothing():
     narrow = mk_obs("e:2:d", [cand("stokes+bg", -10.0, omegas=(2.0,))], q=q(1.1),
                     window=(-9.0, 9.0))
     # The same neighbour with a window that never reaches the disputed 8 meV band.
-    blind = replace(narrow, energy_window=(-3.0, 3.0))
+    # Both fields: the bands ARE the coverage now, and the window is only their envelope.
+    blind = replace(narrow, energy_window=(-3.0, 3.0), energy_bands=((-3.0, 3.0),))
     blind = replace(blind, fingerprint=observation_fingerprint(replace(blind, fingerprint="")))
 
     censored = cluster_of(build_scene([wide, blind]), "e:1:d")
@@ -162,6 +168,31 @@ def test_a_neighbour_that_never_looked_at_the_band_costs_nothing():
     by_label = {a[0][1]: t for (a, _links), t in searched.items()}
     assert by_label["stokes+bg"] == PRESENCE_MATCH_NATS * 2
     assert by_label["stokes2+bg"] == PRESENCE_MATCH_NATS * 2 + PRESENCE_MISS_NATS
+
+
+def test_a_band_inside_a_neighbours_mask_hole_costs_nothing_either():
+    """Review finding 4, at the builder. The neighbour's axis spans 8 meV but an excluded region
+    took 6–10 out of it, so nothing ever counted there. Priced off the outer window the disputed
+    mode would look searched-and-missing; priced off the kept runs it is censored, exactly like a
+    neighbour that never reached the band at all."""
+    wide = mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(2.0,)),
+                            cand("stokes2+bg", -10.0, n_modes=2, omegas=(2.0, 8.0))], q=q(1.0))
+    holed = mk_obs("e:2:d", [cand("stokes+bg", -10.0, omegas=(2.0,))], q=q(1.1),
+                   window=(-10.0, 10.0), bands=((-10.0, -6.0), (-4.0, 4.0), (6.0, 10.0)))
+    # The hole is at |ω| ∈ (4, 6); the 8 meV band sits in a KEPT run on both sides of zero.
+    assert visibility_of(5.0, footprint_of(holed), False) == Visibility.CENSORED_OUTSIDE_FOOTPRINT
+    assert visibility_of(8.0, footprint_of(holed), False) == Visibility.SEARCHED_NO_SIGNAL
+
+    # A mode inside the hole: both readings of e:1:d score identically — no absence charge.
+    in_hole = mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(2.0,)),
+                               cand("stokes2+bg", -10.0, n_modes=2, omegas=(2.0, 5.0))], q=q(1.0))
+    assert len(set(terms(cluster_of(build_scene([in_hole, holed]), "e:1:d"),
+                         "presence").values())) == 1
+    # ... and the same mode moved out of the hole is charged its miss, so the exemption is the
+    # hole and not the scene.
+    scored = terms(cluster_of(build_scene([wide, holed]), "e:1:d"), "presence")
+    by_label = {a[0][1]: t for (a, _links), t in scored.items()}
+    assert by_label["stokes2+bg"] == by_label["stokes+bg"] + PRESENCE_MISS_NATS
 
 
 def test_a_one_q_spurion_is_priced_against_the_empty_arena_that_searched_for_it():
@@ -245,7 +276,7 @@ def test_an_absence_under_the_elastic_line_is_not_a_break():
     """The middle arena's chosen candidate is elastic-only, and the track sits inside the elastic
     width: blocked, not broken — no penalty from either factor."""
     obs = [mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(0.4,))], q=q(1.0)),
-           mk_obs("e:2:d", [cand("elastic+bg", -10.0, n_modes=0, omegas=())], q=q(1.1))]
+           mk_obs("e:2:d", [cand("elastic+bg", -10.0, n_modes=0, omegas=(), extra=("elastic",))], q=q(1.1))]
     cl = cluster_of(build_scene(obs), "e:1:d")
     alt, = cl["alternatives"]
     assert alt["factor_terms"] == {"connectivity": 0.0, "presence": 0.0}
@@ -376,14 +407,16 @@ def test_well_separated_branches_are_not_treated_as_ambiguous():
 # ----------------------------------------------------------------------------
 # Part 5 — declared sample knowledge: the zone-centre and localization factors
 # ----------------------------------------------------------------------------
-def _endpoint_scene(centre_h=1.0, mode_h=1.1, omega=1.5, neighbour="elastic+bg"):
+def _endpoint_scene(centre_h=1.0, mode_h=1.1, omega=1.5, neighbour="elastic+bg",
+                    kinds=("elastic",)):
     """A mode at ``mode_h`` whose track runs into an elastic-bearing arena at ``centre_h``.
 
     With mk_obs's gauss_fwhm of 1.0 the mode at 1.5 meV is OUTSIDE the elastic width, so the
     baseline reading is a genuine searched-and-empty absence — the endpoint exemption has to be
     earned by the declaration, not handed over by ``blocked_unresolved``.
     """
-    return [mk_obs("e:1:d", [cand(neighbour, -10.0, n_modes=0, omegas=())], q=q(centre_h)),
+    return [mk_obs("e:1:d", [cand(neighbour, -10.0, n_modes=0, omegas=(), extra=kinds)],
+                   q=q(centre_h)),
             mk_obs("e:2:d", [cand("stokes+bg", -10.0, omegas=(omega,))], q=q(mode_h))]
 
 
@@ -424,11 +457,39 @@ def test_the_zone_centre_exemption_is_zone_local_and_not_a_blanket_amnesty():
 def test_the_endpoint_claim_needs_an_elastic_response_to_hide_in():
     """A gapless branch reaching zero at a bare zone centre would have been SEEN there. Without a
     chosen elastic component the neighbour's silence is still evidence."""
-    obs = _endpoint_scene(neighbour="bg")
+    obs = _endpoint_scene(neighbour="bg", kinds=())
     # bg-only neighbour, so the arenas are one cluster only via coverage coupling (item 15).
     rev = build_scene(obs, sample=SampleKnowledge(zone_period=1.0))
     assert cluster_of(rev, "e:1:d")["scan_refs"] == ["e:1:d", "e:2:d"]
     assert _states(rev) == {Visibility.SEARCHED_NO_SIGNAL}
+
+
+def test_a_quasielastic_neighbour_blocks_a_low_band_but_earns_no_endpoint():
+    """Review finding 6, all three halves of the QE/elastic split in one scene.
+
+    A quasielastic feature is diffusive scattering, not a Bragg response. It DOES obscure a
+    low-energy peak, so an absence under it is uninformative (``blocked_unresolved``, priced at
+    zero) — but it is no elastic line for a gapless branch to be swallowed by, so the declared
+    zone centre may not terminate the track there, and it is not a candidate reflection to be
+    localized against the lattice at all.
+    """
+    obs = _endpoint_scene(neighbour="qe+bg", kinds=("quasielastic",), omega=0.4)
+    rev = build_scene(obs, sample=SampleKnowledge(zone_period=1.0, reflections=(1.0,)))
+
+    # (b) the QE feature blocks the low-ω absence, and neither factor prices it.
+    assert _states(rev) == {Visibility.BLOCKED_UNRESOLVED}
+    cl = cluster_of(rev, "e:1:d")
+    assert list(terms(cl, "presence").values()) == [0.0]
+    assert list(terms(cl, "connectivity").values()) == [0.0]
+    # (a) ... but the endpoint prerequisite is unmet, so the state is NOT terminated. An elastic
+    # neighbour under the same declaration is (the contrast is the whole finding).
+    assert Visibility.STRUCTURAL_ENDPOINT not in _states(rev)
+    assert _states(build_scene(_endpoint_scene(omega=0.4),
+                               sample=SampleKnowledge(zone_period=1.0))) == {
+        Visibility.STRUCTURAL_ENDPOINT}
+    # (c) and it never enters the lattice classification — absent, not "unclassified", which keeps
+    # its one meaning: an elastic component with nothing declared to compare it against.
+    assert _classification(rev) == {}
 
 
 def test_a_mode_too_high_to_have_descended_to_zero_is_not_an_endpoint():
@@ -465,7 +526,7 @@ def test_an_observed_mode_can_never_be_refined_away():
 
 
 def _elastic_at(h, scan_ref="e:1:d"):
-    return mk_obs(scan_ref, [cand("elastic+bg", -10.0, n_modes=0, omegas=())], q=q(h))
+    return mk_obs(scan_ref, [cand("elastic+bg", -10.0, n_modes=0, omegas=(), extra=("elastic",))], q=q(h))
 
 
 def _classification(rev, cluster_id="e:1:d"):
@@ -503,7 +564,7 @@ def test_an_unplaceable_arena_names_its_own_reason_rather_than_going_quiet():
     """The degradation ledger keys on the DECLARATION, which cannot see the arenas — so an
     unplaceable q under a perfectly good reflection list would record "unclassified" with no
     reason recorded anywhere. It gets a state of its own instead."""
-    obs = [mk_obs("e:1:d", [cand("elastic+bg", -10.0, n_modes=0, omegas=())], q=None)]
+    obs = [mk_obs("e:1:d", [cand("elastic+bg", -10.0, n_modes=0, omegas=(), extra=("elastic",))], q=None)]
     rev = build_scene(obs, sample=SampleKnowledge(reflections=(2.0,)))
     assert _classification(rev) == {"e:1:d#elastic+bg#elastic": "unplaceable_q"}
     assert rev.payload["sample_knowledge"]["degradations"] == ["no_declared_zone_period"]
@@ -512,7 +573,7 @@ def test_an_unplaceable_arena_names_its_own_reason_rather_than_going_quiet():
 def test_modes_are_not_lattice_classified():
     """A phonon at a reflection's q is a phonon. Classifying it as Bragg-compatible would put a
     lattice identity on an inelastic feature."""
-    obs = [mk_obs("e:1:d", [cand("elastic+stokes+bg", -10.0, omegas=(5.0,))], q=q(2.0))]
+    obs = [mk_obs("e:1:d", [cand("elastic+stokes+bg", -10.0, omegas=(5.0,), extra=("elastic",))], q=q(2.0))]
     rev = build_scene(obs, sample=SampleKnowledge(reflections=(2.0,)))
     assert _classification(rev) == {"e:1:d#elastic+stokes+bg#elastic": "bragg_compatible"}
 

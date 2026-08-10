@@ -132,6 +132,48 @@ def fingerprint(payload) -> str:
 # ----------------------------------------------------------------------------
 # Hypothesis-map side: what one scan's candidates claim
 # ----------------------------------------------------------------------------
+# The component kinds a candidate may declare. ``mode`` is a phonon; ``elastic`` is the sharp
+# resolution-limited response at ω=0; ``quasielastic`` is the broad one. They are kept apart because
+# only ``elastic`` is Bragg-adjacent — the endpoint and lattice-localization arguments are about the
+# elastic line specifically — while BOTH obscure a low-energy band (``blocking_present``).
+COMPONENT_KINDS = ("mode", "elastic", "quasielastic")
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentDescriptor:
+    """What one component of a fitted candidate IS, as the writer enumerated it.
+
+    Persisted per candidate row by :func:`isar.session.scan_delivery._candidate_rows`, derived from
+    the ENUMERATED STRUCTURE the candidate was fitted as. The scene consumes these and derives
+    component semantics from nothing else: a display label is a stable identifier, not a second
+    schema for a reader to reverse-engineer, and a label grammar that drifts (a new suffix, a
+    renamed term) would silently reclassify physics rather than fail.
+
+    ``slot`` is the index into the row's ``omegas`` for a ``mode`` and ``None`` for every other
+    kind, which sit at the elastic line by construction.
+    """
+
+    kind: str
+    slot: int | None = None
+
+    def __post_init__(self):
+        if self.kind not in COMPONENT_KINDS:
+            raise ValueError(f"component descriptor declares kind {self.kind!r}; "
+                             f"allowed: {COMPONENT_KINDS}")
+        if (self.slot is None) == (self.kind == "mode"):
+            raise ValueError(f"component descriptor {self.kind!r} carries slot {self.slot!r}: a "
+                             "mode is placed by its index into omegas, and nothing else is placed "
+                             "at all")
+
+    def to_dict(self) -> dict:
+        return {"kind": self.kind, "slot": self.slot}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ComponentDescriptor":
+        slot = d.get("slot")
+        return cls(kind=str(d["kind"]), slot=None if slot is None else int(slot))
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateRow:
     """One locally-fitted structure×identity alternative, as the scene reads it.
@@ -158,6 +200,11 @@ class CandidateRow:
     # is unplaceable; ``()`` is a phonon-less or result-less candidate, so the length agrees
     # with ``n_modes`` except in the no-result case.
     omegas: tuple[float | None, ...]
+    # What this candidate is MADE OF, in the writer's canonical order (modes by slot, then the
+    # non-mode kinds by name). Required, with no default: a row that declares no components is a
+    # row written before the descriptors existed, and defaulting it to ``()`` would present a
+    # multimode candidate as structureless instead of refusing the stale workspace.
+    components: tuple[ComponentDescriptor, ...]
     # Conditioning provenance (H9), carried VERBATIM as the row persists it: the aggregate
     # ``constraint_origin`` and the ``effective_constraints`` list the fit actually ran under
     # (``None`` = no semantics record, ``()`` = recorded and unconstrained). This is
@@ -171,6 +218,7 @@ class CandidateRow:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["omegas"] = list(self.omegas)
+        d["components"] = [c.to_dict() for c in self.components]
         d["effective_constraints"] = (None if self.effective_constraints is None
                                       else [dict(c) for c in self.effective_constraints])
         return d
@@ -188,6 +236,9 @@ class CandidateRow:
             identity=_opt_str(d.get("identity")),
             variant=_opt_str(d.get("variant")),
             omegas=tuple(_opt_float(w) for w in d.get("omegas") or ()),
+            # ``d["components"]``, not ``d.get(...)``: a payload without descriptors predates the
+            # delivery contract and must fail rather than read as a componentless candidate.
+            components=tuple(ComponentDescriptor.from_dict(c) for c in d["components"]),
             constraint_origin=_opt_str(d.get("constraint_origin")),
             effective_constraints=(
                 None if d.get("effective_constraints") is None
@@ -205,18 +256,20 @@ class ComponentObservation:
     once in ``base``), and the local ``posterior_probability`` (multiplying normalized
     per-scan posteriors double-counts the local priors — SCENE_DESIGN §2b).
 
-    ``component_id`` is ``"<scan_ref>#<candidate_label>#<mode_index>"`` for a mode, and
-    ``"<scan_ref>#<candidate_label>#elastic"`` / ``"#qe"`` for the non-mode components of a
-    phonon-less or elastic-bearing structure (:func:`is_mode` tells them apart). ``omega`` is
-    the derived ω₀ of this mode on the same scale as ``CandidateRow.omegas`` — ``0.0`` for the
-    non-mode components, which sit at the elastic line by construction; ``None`` is an
-    unplaceable mode, which stays a component (it exists) while contributing no position a
-    factor could couple on.
+    ``kind`` is the persisted :class:`ComponentDescriptor` kind, carried through verbatim — it is
+    the ONLY thing that says what a component is. ``component_id`` is
+    ``"<scan_ref>#<candidate_label>#<mode_index>"`` for a mode and
+    ``"<scan_ref>#<candidate_label>#elastic"`` / ``"#qe"`` for the non-mode components: a stable
+    identifier, never a source of semantics. ``omega`` is the derived ω₀ of this mode on the same
+    scale as ``CandidateRow.omegas`` — ``0.0`` for the non-mode components, which sit at the elastic
+    line by construction; ``None`` is an unplaceable mode, which stays a component (it exists) while
+    contributing no position a factor could couple on.
     """
 
     scan_ref: str
     component_id: str
     candidate_label: str
+    kind: str
     q: tuple[float, float, float] | None
     omega: float | None
     footprint: "Footprint"
@@ -238,6 +291,11 @@ class SceneObservation:
     # of the axis actually fitted. ``None`` when the calibration zero is unusable: a scan is
     # held until calibration exists, never placed by assuming a zero of 0.0.
     energy_window: tuple[float, float] | None
+    # The CONTIGUOUS kept runs of that axis, on the same scale — the mask-hole-honest form of the
+    # window above. An ``exclude_region`` or a monitor-short stretch splits the run, so a band the
+    # scan never actually fitted is not claimed as searched. ``None`` when the window is
+    # unplaceable; the window stays the outer envelope of these runs for the consumers that want it.
+    energy_bands: tuple[tuple[float, float], ...] | None
     gauss_fwhm: float | None
     lorentz_fwhm: float | None
     effective_exposure: float | None
@@ -270,6 +328,8 @@ class SceneObservation:
             "q": None if self.q is None else list(self.q),
             "temperature_K": self.temperature_K,
             "energy_window": None if self.energy_window is None else list(self.energy_window),
+            "energy_bands": (None if self.energy_bands is None
+                             else [list(b) for b in self.energy_bands]),
             "gauss_fwhm": self.gauss_fwhm,
             "lorentz_fwhm": self.lorentz_fwhm,
             "effective_exposure": self.effective_exposure,
@@ -290,6 +350,10 @@ class SceneObservation:
             q=_opt_triple(d.get("q")),
             temperature_K=_opt_float(d.get("temperature_K")),
             energy_window=_opt_pair(d.get("energy_window")),
+            # Required like ``evidence_comparison_status``: a payload that cannot say which runs of
+            # the axis were fitted cannot be read as coverage, and defaulting it to the outer
+            # window would claim the mask holes as searched.
+            energy_bands=_opt_bands(d["energy_bands"]),
             gauss_fwhm=_opt_float(d.get("gauss_fwhm")),
             lorentz_fwhm=_opt_float(d.get("lorentz_fwhm")),
             effective_exposure=_opt_float(d.get("effective_exposure")),
@@ -395,32 +459,36 @@ class Footprint:
 
 
 def footprint_of(obs: SceneObservation) -> Footprint:
-    """Fold an observation's signed energy window onto intrinsic ``|ω|``. Pure, deterministic.
+    """Fold an observation's KEPT energy runs onto intrinsic ``|ω|``. Pure, deterministic.
 
-    The signed window ``(lo, hi)`` covers the Stokes side over ``[max(0, lo), hi]`` (when
-    ``hi > 0``) and the anti-Stokes side over ``[max(0, -hi), -lo]`` (when ``lo < 0``). A
-    window spanning zero therefore covers part of ``|ω|`` from both sides, which is a
-    stronger statement than either alone, so the overlap is reported as one ``both`` band
-    and the remainders keep their own side. ``energy_window is None`` → no bands: a scan
-    with no usable calibration zero has no placeable footprint at all.
+    Each signed run ``(lo, hi)`` covers the Stokes side over ``[max(0, lo), hi]`` (when ``hi > 0``)
+    and the anti-Stokes side over ``[max(0, -hi), -lo]`` (when ``lo < 0``). A run spanning zero
+    therefore covers part of ``|ω|`` from both sides, which is a stronger statement than either
+    alone, so the overlap is reported as one ``both`` band and the remainders keep their own side.
+
+    Built from ``energy_bands`` rather than the outer window, because a footprint is a claim about
+    what was MEASURED: a QC-masked or excluded stretch in the middle of the axis was not searched,
+    and a footprint spanning it would let ``covers`` answer "we looked there" for a region no
+    counting ever reached — absence priced against a hole. ``energy_bands is None`` → no bands: a
+    scan with no usable calibration zero has no placeable footprint at all.
     """
-    window = obs.energy_window
-    if window is None:
+    if obs.energy_bands is None:
         return _footprint(obs, ())
-    lo, hi = float(window[0]), float(window[1])
-    intervals = {}
-    if hi > 0.0:
-        intervals["stokes"] = (max(0.0, lo), hi)
-    if lo < 0.0:
-        intervals["anti_stokes"] = (max(0.0, -hi), -lo)
-    edges = sorted({e for span in intervals.values() for e in span})
+    intervals = []
+    for band in obs.energy_bands:
+        lo, hi = float(band[0]), float(band[1])
+        if hi > 0.0:
+            intervals.append((max(0.0, lo), hi, "stokes"))
+        if lo < 0.0:
+            intervals.append((max(0.0, -hi), -lo, "anti_stokes"))
+    edges = sorted({e for a, b, _ in intervals for e in (a, b)})
     bands = []
     for left, right in zip(edges, edges[1:]):
         if right <= left:                        # zero-length slivers carry no coverage
             continue
         mid = 0.5 * (left + right)
-        sides = sorted(s for s, (a, b) in intervals.items() if a <= mid <= b)
-        if not sides:
+        sides = sorted({s for a, b, s in intervals if a <= mid <= b})
+        if not sides:                            # a hole between two kept runs: no coverage at all
             continue
         bands.append(FootprintBand(left, right, "both" if len(sides) == 2 else sides[0]))
     return _footprint(obs, tuple(bands))
@@ -451,13 +519,24 @@ Q_ADJACENCY = 0.15
 # never resolved as one track.
 LINK_TOL_FLOOR = 0.1
 
-# The non-mode component suffixes (see ``ComponentObservation.component_id``).
-NON_MODE_COMPONENTS = ("elastic", "qe")
+# The ``component_id`` suffix each non-mode kind is identified by. An IDENTIFIER, read by nothing
+# that decides physics: what a component is comes from ``ComponentObservation.kind``.
+NON_MODE_ID_TAGS = {"elastic": "elastic", "quasielastic": "qe"}
+
+# The kinds that obscure a band at the elastic line. Both the sharp elastic response and a broad
+# quasielastic one hide a low-energy peak, so both make an absence there uninformative — but only
+# ``elastic`` is a Bragg-adjacent claim, which is why this set is NOT the endpoint prerequisite.
+BLOCKING_KINDS = ("elastic", "quasielastic")
 
 
 def is_mode(component: ComponentObservation) -> bool:
-    """True for a phonon mode, False for the ``#elastic`` / ``#qe`` non-mode components."""
-    return component.component_id.rsplit("#", 1)[-1] not in NON_MODE_COMPONENTS
+    """True for a phonon mode, False for the elastic / quasielastic components."""
+    return component.kind == "mode"
+
+
+def blocks_elastic_line(component: ComponentObservation) -> bool:
+    """True for a component that hides a band at ``|ω| ≈ 0`` (elastic or quasielastic)."""
+    return component.kind in BLOCKING_KINDS
 
 
 def path_coordinate(q) -> float | None:
@@ -483,20 +562,22 @@ def covers(footprint: Footprint, band_omega: float) -> bool:
 
 
 def visibility_of(band_omega: float, footprint: Footprint, has_match: bool, *,
-                  elastic_present: bool = False) -> Visibility:
+                  blocking_present: bool = False) -> Visibility:
     """Why a hypothesized band at ``|ω| = band_omega`` is, or is not, seen in ``footprint``.
 
     The one gate every "expected but missing" penalty must pass (SCENE_DESIGN §2b): absence is
     evidence ONLY inside coverage. A band the neighbouring scan never looked at is
     ``censored_outside_footprint`` and can never be penalized — the gap is not a measurement.
 
-    ``elastic_present`` says an ``#elastic``/``#qe`` component is chosen at that arena, so a band
-    within one Gaussian FWHM of zero is hidden under the elastic line rather than absent from the
-    data: ``blocked_unresolved``, also never penalized. (This is the endpoint-under-Bragg
-    ingredient. ``structural_endpoint`` is a STRONGER statement that this function cannot make:
-    it needs declared sample knowledge, so it is assigned afterwards by the
-    ``zone_centre_approach`` factor's ``refine_visibility`` hook, which may only replace the two
-    absence states below and never ``observed`` or ``censored_outside_footprint``.)
+    ``blocking_present`` says an elastic OR quasielastic component is chosen at that arena, so a
+    band within one Gaussian FWHM of zero is hidden under that response rather than absent from the
+    data: ``blocked_unresolved``, also never penalized. Detectability is the whole question here —
+    a broad quasielastic feature obscures a low-energy peak exactly as a sharp elastic line does,
+    while being no Bragg claim at all, so the two are only ever conflated in the one place they
+    genuinely agree. (``structural_endpoint`` is a STRONGER statement that this function cannot
+    make: it needs declared sample knowledge AND the elastic line specifically, so it is assigned
+    afterwards by the ``zone_centre_approach`` factor's ``refine_visibility`` hook, which may only
+    replace the two absence states below and never ``observed`` or ``censored_outside_footprint``.)
 
     A matched band is ``observed`` even when it sits under the elastic line: something WAS seen
     there, and calling it blocked would throw away a real detection.
@@ -505,7 +586,7 @@ def visibility_of(band_omega: float, footprint: Footprint, has_match: bool, *,
         return Visibility.CENSORED_OUTSIDE_FOOTPRINT
     if has_match:
         return Visibility.OBSERVED
-    if elastic_present and abs(float(band_omega)) <= (footprint.gauss_fwhm or 0.0):
+    if blocking_present and abs(float(band_omega)) <= (footprint.gauss_fwhm or 0.0):
         return Visibility.BLOCKED_UNRESOLVED
     return Visibility.SEARCHED_NO_SIGNAL
 
@@ -524,6 +605,10 @@ def _opt_str(v) -> str | None:
 
 def _opt_pair(v) -> tuple[float, float] | None:
     return None if v is None else (float(v[0]), float(v[1]))
+
+
+def _opt_bands(v) -> tuple[tuple[float, float], ...] | None:
+    return None if v is None else tuple((float(b[0]), float(b[1])) for b in v)
 
 
 def _opt_triple(v) -> tuple[float, float, float] | None:

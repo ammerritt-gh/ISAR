@@ -39,7 +39,8 @@ def scene_observations(ws) -> list[SceneObservation]:
     nothing to score) and is logged.
 
     Raises ``ValueError`` on a workspace this adapter cannot read faithfully — a results.csv with
-    no candidates column, or a master with unqualified member labels. Both mean re-deliver.
+    no candidates column, a master with unqualified member labels, or a row predating the current
+    delivery contract (:func:`_refuse_stale_delivery`). All of them mean re-deliver.
 
     Revisions need no handling here: ``results.csv`` is rewritten in full from the current
     ledger on every delivery (``isar/session/outcome.py:_write_results_csv``), so it holds
@@ -72,6 +73,7 @@ def scene_observations(ws) -> list[SceneObservation]:
             q=_q(fit),
             temperature_K=fit.T,
             energy_window=_window(fit),
+            energy_bands=_bands(fit),
             gauss_fwhm=fit.gauss_fwhm,
             lorentz_fwhm=fit.lorentz_fwhm,
             effective_exposure=fit.effective_exposure,
@@ -261,11 +263,41 @@ def _candidates(fit, ref: str):
         else:
             log.debug("scene: %s carries no delivered fit — no observation", ref)
         return None
+    _refuse_stale_delivery(fit, ref, raw)
     try:
         return tuple(CandidateRow.from_dict(c) for c in sorted(raw, key=lambda c: str(c["label"])))
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         log.warning("scene: %s has a malformed candidate table (%s) — no observation", ref, exc)
         return None
+
+
+def _refuse_stale_delivery(fit, ref: str, raw) -> None:
+    """Raise unless ``fit`` carries the current delivery contract's scene inputs.
+
+    Two fields, one refusal, because a row missing either was written by a delivery that predates
+    this contract and there is no honest way to fill in what it did not record:
+
+    * ``candidates[].components`` — what each candidate is MADE OF. Recovering it from the label
+      text is what this contract exists to stop: a display string is an identifier, and a scene
+      that parses it decides physics on a grammar nobody promised to keep.
+    * ``energy_bands`` — the contiguous kept runs behind ``energy_window``. Reading the envelope
+      alone would present the QC-masked holes inside it as searched coverage, so an absence in a
+      hole would be priced as evidence.
+
+    Refused rather than degraded, per the standing no-legacy rule (H1): the same posture as the
+    unqualified-member-label and missing-candidates-column refusals above.
+    """
+    stale = []
+    # ``"label" in c`` keeps this about STALE rows: a cell that is not a candidate table at all is
+    # malformed, and the parse path below logs it as such rather than blaming the contract.
+    if isinstance(raw, list) and any(isinstance(c, dict) and "label" in c and "components" not in c
+                                     for c in raw):
+        stale.append("candidate rows without component descriptors")
+    if fit.energy_window is not None and fit.energy_bands is None:
+        stale.append("an energy window with no energy_bands")
+    if stale:
+        raise ValueError(f"scene: {ref} predates the current delivery contract "
+                         f"({'; '.join(stale)}) — {REDELIVER}")
 
 
 def _q(fit):
@@ -280,6 +312,18 @@ def _window(fit):
     if w is None or len(w) != 2 or any(v is None for v in w):
         return None
     return (float(w[0]), float(w[1]))
+
+
+def _bands(fit):
+    """The kept energy runs as ``((lo, hi), …)``, or ``None`` when the row records none."""
+    bands = fit.energy_bands
+    if bands is None:
+        return None
+    try:
+        return tuple((float(b[0]), float(b[1])) for b in bands)
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"scene: {_scan_ref(fit)} has an unreadable energy_bands cell "
+                         f"({bands!r}: {exc}) — {REDELIVER}") from exc
 
 
 def _background(fit):
