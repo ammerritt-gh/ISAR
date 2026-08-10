@@ -1626,6 +1626,44 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   seed-to-seed scatter (~1 nat at n_live=400) and is attributable, if real, to trusting HESSE
   curvature at a railed axis. H9(b)'s acceptance of the rung stands; its causal story does not.
 
+- **H11.** (2026-08-10, In force; SCENE-3 PR 3a) **Scene layer input contract, probability model,
+  and the scene-factor ban.** Three parts, and one retirement.
+  **(a) The interpretation artifact is retired as an input channel.** Decision 8 of the
+  2026-08-07/08 SCENE program grilling planned a per-scan interpretation artifact for the scene to
+  read; it is narrowed out of existence. The scene consumes the persisted candidate rows through
+  the typed `workspace_api` adapter, `FitOutcome.interpretation_ref` stays dormant and is never
+  written, and a scene revision EMBEDS the rows it consumed. The reason is auditability, not
+  economy: a revision that carries its own inputs and a digest over them can be replayed and
+  disputed years later, whereas a revision pointing at a mutable artifact can only be believed.
+  **(b) The scoring contract is SCENE_DESIGN §2b, and its invariants are test obligations.**
+  `ln W(S) = Σ_j lnZ(j, h_j(S)) + Σ_f ln φ_f(S)`, normalized within a cluster. One arena
+  contributes its local evidence exactly once and a pooled master supersedes its member scans (the
+  adapter's ownership rule); normalized per-scan posteriors are never multiplied, because that
+  arithmetic re-applies the local priors once per scan; a multimode structure's lnZ enters once
+  even when an alternative assigns its components to different phenomena, since the modes were
+  fitted jointly to the same counts and splitting the evidence per component would manufacture
+  evidence that was never measured; a gap in coverage contributes no update in either direction;
+  an arena with no usable finite lnZ is experiment-map-only — no evidence, no term, no cluster
+  membership, footprint still recorded; identity may be `None` locally (H9(d)) and arise purely at
+  scene level. Enumeration is capped and pruned rather than approximated: the kept set is exactly
+  the top of the base ordering, and both the cap and the per-arena margin record a stated upper
+  bound on the mass they dropped.
+  **(c) The scene-factor ban, refined to the two cases that would be easy to write by accident.**
+  No factor term may depend on a single observation's parameters alone — that is a local
+  likelihood wearing a scene factor's clothes — and none may re-apply an identity or parameter
+  prior already priced into local lnZ. Factors read only the typed `ComponentObservation` surface,
+  which carries no counts, no θ, no covariance, no lnZ and no local posterior, so the ban is
+  structural rather than a reviewer's memory. Fitted parameters may inform the BUILDER's discrete
+  structure derivation (what couples to what, what the alternatives are); they may never enter a
+  scored smoothness or compatibility term. Cross-scan parameter coupling has exactly one sanctioned
+  channel, and it is constraint transport in local evidence, per the PR-a transport design. Every
+  factor declares `scene_prior` or `structural_likelihood`, a version, and the scene variables it
+  consumes; the declaration set is fingerprinted into each revision, so a scored scene names the
+  factor set that scored it.
+  **Supersedes/relates:** narrows the SCENE program plan's decision 8; rests on H1 (validation by
+  the world suite, no shadow ceremony), H4 (the evidence posterior these lnZ values come from) and
+  H9(d) (the local identity axis).
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:
