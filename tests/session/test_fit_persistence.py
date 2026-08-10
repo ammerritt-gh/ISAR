@@ -74,7 +74,7 @@ def test_fit_one_populates_amplitudes_and_candidates():
     # candidates: >=1 row, each with the compact schema, plain scalar types (JSON-clean).
     cands = fit["candidates"]
     assert isinstance(cands, list) and cands
-    keys = {"label", "k", "ndof", "cost", "cost_per_dof", "n_modes",
+    keys = {"label", "k", "ndof", "cost", "cost_per_dof", "n_modes", "omegas",
             "delta_aic", "akaike_weight", "posterior_probability", "log_evidence",
             "evidence_method", "usable", "estimator_kind", "fit_kind",
             "constraint_origin", "selection_eligibility", "conditioning_fingerprint",
@@ -101,6 +101,20 @@ def test_fit_one_populates_amplitudes_and_candidates():
     assert all(isinstance(r["at_limit"], dict) and r["at_limit"] for r in cands)
     assert fit["at_limit"] == next(r["at_limit"] for r in cands if r["label"] == fit["best_label"])
     assert fit["evidence_identity"] is None
+
+    # SCENE-3: every candidate — winner or not — carries its own mode positions, so the scene can
+    # place a rejected structure's modes without re-fitting. Phonon-less candidates carry [].
+    for row in cands:
+        assert isinstance(row["omegas"], list)
+        assert all(isinstance(w, float) and np.isfinite(w) for w in row["omegas"])
+        assert row["omegas"] == sorted(row["omegas"])
+        assert len(row["omegas"]) == row["n_modes"]
+    assert any(row["omegas"] for row in cands)
+    assert all(row["omegas"] == [] for row in cands if row["n_modes"] == 0)
+
+    # SCENE-3 observation footprint: the calibrated, masked window the cost actually saw.
+    assert fit["energy_window"] == (pytest.approx(float(ctx.x_used.min())),
+                                    pytest.approx(float(ctx.x_used.max())))
 
     # The AIC diagnostics lane still travels: delta_aic >= 0 with a row at exactly 0.
     assert all(r["delta_aic"] >= -1e-9 for r in cands)
@@ -481,9 +495,10 @@ def _score(label, *, log_evidence, posterior, effective_constraints=None):
                        if effective_constraints is not None else []})
 
 
-def _fit_result(*, at_limit=None, variant=None, identity=None):
-    return SimpleNamespace(label="x", cost_per_dof=1.04, n_modes=1, analysis_usable=True,
-                           at_limit=at_limit, variant=variant, identity=identity)
+def _fit_result(*, at_limit=None, variant=None, identity=None, params=None, n_modes=1):
+    return SimpleNamespace(label="x", cost_per_dof=1.04, n_modes=n_modes, analysis_usable=True,
+                           at_limit=at_limit, variant=variant, identity=identity,
+                           params=params)
 
 
 def test_candidate_rows_carry_variant_at_limit_and_effective_constraints():
@@ -559,6 +574,48 @@ def test_scene1_outcome_fields_default_absent():
     oc = _outcome_with(None, None)
     assert (oc.at_limit, oc.evidence_identity, oc.identity_ba_disagreement,
             oc.interpretation_ref) == (None, None, None, None)
+
+
+# --------------------------------------------------------------- SCENE-3 (scene-layer inputs)
+def test_candidate_rows_carry_every_candidates_mode_positions():
+    """The scene places the modes of NON-winning candidates too, and only the winner's ``modes``
+    are persisted elsewhere. Ω_d is read off the candidate's own params, ascending; a phonon-less
+    structure carries [] rather than a fabricated zone-centre energy."""
+    scores = [_score("stokes2+bg", log_evidence=-39.0, posterior=0.6),
+              _score("bg", log_evidence=-44.0, posterior=0.4)]
+    fits = {
+        "stokes2+bg": _fit_result(n_modes=2, params={"phonon2.Omega_d": 9.5, "phonon2.Gamma": 0.3,
+                                                     "phonon2.A": 100.0, "phonon.Omega_d": 4.25,
+                                                     "phonon.Gamma": 0.4, "phonon.A": 500.0,
+                                                     "bg.BG": 8.0}),
+        "bg": _fit_result(n_modes=0, params={"bg.BG": 8.0}),
+    }
+    rows = {r["label"]: r for r in scan_delivery._candidate_rows(scores, fits)}
+
+    assert rows["stokes2+bg"]["omegas"] == [4.25, 9.5]
+    assert len(rows["stokes2+bg"]["omegas"]) == rows["stokes2+bg"]["n_modes"]
+    assert rows["bg"]["omegas"] == []
+    # An unscored/failed candidate has no params to read: absence, never NaN.
+    assert scan_delivery._candidate_rows([_score("ghost", log_evidence=-50.0, posterior=0.0)],
+                                         {})[0]["omegas"] == []
+    assert json.loads(json.dumps(list(rows.values())))
+
+
+def test_energy_window_roundtrips_through_the_ledger_and_results_csv(tmp_path):
+    """The measured window is the scene's observation footprint — a searched-and-empty window is
+    evidence, so it must survive both persistence projections."""
+    outcome = _outcome_with(None, None)
+    outcome.energy_window = (-8.0, 16.0)
+    restored = driver._coerce_fit_outcome(json.loads(json.dumps(outcome.to_dict())))
+    assert list(restored.energy_window) == [-8.0, 16.0]
+
+    row = _write_read(tmp_path / "a", outcome)
+    # Floats, not strings: a new float column also needs its _NUMERIC_COLUMNS entry (the trap).
+    assert row["energy_lo"] == pytest.approx(-8.0) and row["energy_hi"] == pytest.approx(16.0)
+    assert isinstance(row["energy_lo"], float) and isinstance(row["energy_hi"], float)
+
+    absent = _write_read(tmp_path / "b", _outcome_with(None, None))
+    assert absent["energy_lo"] is None and absent["energy_hi"] is None
 
 
 def test_evidence_identity_survives_to_results_csv(tmp_path):

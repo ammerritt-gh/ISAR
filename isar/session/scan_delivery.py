@@ -312,6 +312,17 @@ def _amplitudes_of(best, by_hyp) -> dict | None:
     return {n: float(best.params[n]) for n in hyp.build().linear_names() if n in best.params}
 
 
+def _mode_omegas(result) -> list:
+    """The candidate's fitted Ω_d values (meV), ascending — one per phonon component (``phonon.Omega_d``,
+    ``phonon2.Omega_d``, …), so ``len == n_modes``. The scene layer places EVERY candidate's modes in
+    (Q,ω) space, not just the winner's, and only the winner's ``modes`` are persisted elsewhere.
+    ``[]`` for a phonon-less candidate (bg, elastic+bg, qe+bg) and for a candidate with no usable
+    params — an unavailable position is an absence, never a fabricated or non-finite energy."""
+    params = getattr(result, "params", None) or {}
+    return sorted(float(v) for k, v in params.items()
+                  if k.endswith(".Omega_d") and np.isfinite(v))
+
+
 def _candidate_rows(scores, fits) -> list | None:
     """The model-selection candidate table (P0-4): one compact row per SCORED structure. ``scores``
     is the ``ModelScore`` list the driver selects on — posterior ``P(s) = π_s·Z_s / Σ π·Z`` in the
@@ -340,6 +351,7 @@ def _candidate_rows(scores, fits) -> list | None:
             # never carries a nonstandard NaN token that a strict-JSON reader would reject.
             "cost_per_dof": (cpd if np.isfinite(cpd) else None),
             "n_modes": int(r.n_modes) if r is not None else 1,
+            "omegas": _mode_omegas(r),
             "delta_aic": float(s.delta_aic),
             "akaike_weight": float(s.akaike_weight),
             "posterior_probability": (
@@ -1765,8 +1777,14 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         interval_reliable=interval_reliable,
     )
 
+    # The calibrated, QC-masked energy axis this fit actually saw (``ctx.window`` over ``x_used``) —
+    # the scene layer's observation footprint: what a scan looked at, whether or not it found
+    # anything. ``None`` when nothing survived the mask; never a window over unfitted points.
+    energy_window = ctx.window if np.size(ctx.x_used) else None
+
     return {
         "verdict": sv.verdict, "confidence": sv.confidence, "reasons": reasons,
+        "energy_window": energy_window,
         "omega0": omega0, "omega0_err": omega0_err,
         "interval": (tuple(interval) if interval is not None else None),
         "omega0_profile": (tuple(omega0_profile) if omega0_profile is not None else None),
@@ -2359,6 +2377,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         interval_semantics=fit.get("interval_semantics"),
         shadow_model_selection=fit.get("shadow_model_selection"),
         at_limit=fit.get("at_limit"),
+        energy_window=fit.get("energy_window"),
         evidence_identity=fit.get("evidence_identity"),
         identity_ba_disagreement=fit.get("identity_ba_disagreement"),
         evidence_sink=evidence_sink_for(getattr(rec, "raw_header", None),
