@@ -46,8 +46,8 @@ from types import MappingProxyType
 
 from isar.schema.steering import CANONICAL_MASTER, EVIDENCE_SINKS
 
-from .factors import (FACTORS, factor_manifest, neighbour_reports, registry_fingerprint,
-                      validate_factor)
+from .factors import (FACTORS, SceneFactor, factor_manifest, neighbour_reports,
+                      registry_fingerprint, validate_factor)
 from .model import (CandidateRow, ComponentObservation, Footprint, SceneObservation,
                     Visibility, canonical_bytes, digest_bytes, footprint_of, is_mode, link_tol,
                     q_adjacent)
@@ -76,6 +76,24 @@ SCENE_ALT_CAP = 4096
 # (``linkage_truncated``) with the same honesty as the alternative cap: linkage variants share a
 # base Σ lnZ exactly, so no bound on the dropped mass can be stated for them either.
 MAX_LINKAGE_VARIANTS = 8
+
+# The builder's own declared prior, and the failure it prevents. Linkage variants REFINE a
+# candidate assignment; they must never add prior mass to it. Without this term an assignment that
+# happens to admit two linkage readings carries twice the unnormalized weight of a rival assignment
+# with one — ln 2 nats nothing paid for, and worse, an amount set by an enumeration knob (the
+# proposer's reachability tolerance) rather than by the data. It is the owner's N-mode precedent
+# applied to connectivity: enumerating a hypothesis is no probabilistic boost, a uniform prior over
+# its refinements dilutes and never boosts. Each (assignment, linkage) entry therefore carries
+# ln(1/n) over that assignment's n enumerated linkages, so the ASSIGNMENT marginal is exactly what
+# linkage-free scoring would give, while the linkage ambiguity stays represented inside it.
+#
+# Declared like any other term (it enters the manifest and the registry fingerprint) but applied by
+# the builder rather than by a factor: only the builder knows how many linkages an assignment
+# ended up with, and a factor able to see that count could score on the enumeration itself.
+LINKAGE_PRIOR = SceneFactor(
+    name="linkage_prior", kind="scene_prior", version="1", consumes=("links",),
+    config=(("max_linkage_variants", float(MAX_LINKAGE_VARIANTS)),),
+    score_bound=(-math.log(MAX_LINKAGE_VARIANTS), 0.0))
 
 
 # ----------------------------------------------------------------------------
@@ -199,10 +217,10 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
     payload = {
         "schema": SCENE_SCHEMA,
         "catalogue_version": str(catalogue_version),
-        "registry_fingerprint": registry_fingerprint(factor_list),
+        "registry_fingerprint": registry_fingerprint(_declared(factor_list)),
         # The declarations that fingerprint stands for, in full, so a reader can see WHAT scored
         # the scene rather than only that something did.
-        "factor_manifest": factor_manifest(factor_list),
+        "factor_manifest": factor_manifest(_declared(factor_list)),
         # The values ACTUALLY used, not the module constants: a revision built with a tuned
         # margin must say so, or a replay would silently use a different model.
         "margin_nats": margin,
@@ -265,7 +283,17 @@ def _factor_list(factors) -> tuple:
     names = [f.name for f in values]
     if len(set(names)) != len(names):
         raise ValueError(f"duplicate scene factor names: {sorted(names)}")
+    if LINKAGE_PRIOR.name in names:
+        # The builder applies that term itself; a second one under the same name would be summed
+        # twice into every total and would be indistinguishable in the ledger.
+        raise ValueError(f"scene factor name {LINKAGE_PRIOR.name!r} is reserved for the builder's "
+                         "per-assignment linkage prior")
     return tuple(sorted(values, key=lambda f: f.name))
+
+
+def _declared(factor_list) -> tuple:
+    """What SCORED the scene: the caller's factors plus the builder's own declared prior."""
+    return tuple(sorted([*factor_list, LINKAGE_PRIOR], key=lambda f: f.name))
 
 
 def _score_span(factor_list) -> float | None:
@@ -281,7 +309,14 @@ def _score_span(factor_list) -> float | None:
     scorers = [f for f in factor_list if f.score is not None]
     if any(f.score_bound is None for f in scorers):
         return None
-    return math.fsum(hi - lo for lo, hi in (f.score_bound for f in scorers))
+    # LINKAGE_PRIOR has no ``score`` callable (the builder applies it) but it is a term of the
+    # total all the same, so its declared span belongs in the slack the pruner must allow for —
+    # and only then. With no proposing factor every assignment has exactly one linkage, the term
+    # is identically 0.0 across the cluster, and widening the margin for it would discard nothing
+    # differently while changing every recorded bound.
+    lo, hi = LINKAGE_PRIOR.score_bound
+    linkage = (hi - lo) if any(f.propose is not None for f in factor_list) else 0.0
+    return math.fsum([linkage, *(h - l for l, h in (f.score_bound for f in scorers))])
 
 
 # ----------------------------------------------------------------------------
@@ -630,17 +665,40 @@ def _linkage_variants(alt: SceneAlternative, view: ClusterView, factor_list):
     from the factors' ``propose`` hooks (the crossing proposer), are deduplicated, and are ordered
     deterministically before the cap applies.
     """
-    default = _default_links(alt, view)
+    default = _validated_links(_default_links(alt, view), alt)
     proposed = set()
     for f in factor_list:
         if f.propose is None:
             continue
         for links in f.propose(replace(alt, links=default), view):
-            variant = tuple(sorted(tuple(pair) for pair in links))
+            variant = _validated_links(tuple(sorted(tuple(pair) for pair in links)), alt)
             if variant != default:
                 proposed.add(variant)
     ordered = [default, *sorted(proposed)]
     return tuple(ordered[:MAX_LINKAGE_VARIANTS]), len(ordered) > MAX_LINKAGE_VARIANTS
+
+
+def _validated_links(links, alt: SceneAlternative):
+    """Return ``links``, or raise if a component continues as more than one track in a direction.
+
+    A track is one continuation per neighbouring arena: a component linked to two components of
+    the SAME arena is not a reading of the data, it is a linkage that cannot exist. Such a set
+    would score like any other and publish real posterior mass, so it is refused at the one place
+    every emitted linkage passes through — the default chaining and every proposal alike — rather
+    than trusted to whichever proposer produced it.
+    """
+    seen = set()
+    for pair in links:
+        for tail, head in (pair, pair[::-1]):
+            key = (tail, head.split("#", 1)[0])
+            if key in seen:
+                raise ValueError(
+                    f"scene linkage for cluster {alt.cluster_id!r}, alternative "
+                    f"{list(alt.assignment)}: component {tail!r} is linked to more than one "
+                    f"component of arena {key[1]!r}. A component continues as at most one track "
+                    "per adjacent arena; a proposer that emits otherwise is broken.")
+            seen.add(key)
+    return links
 
 
 # ----------------------------------------------------------------------------
@@ -679,7 +737,7 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
         linkage_truncated = linkage_truncated or cut
         for links in variants:
             entries.append(_score_alternative(replace(assigned, links=links), view, base,
-                                              factor_list, cluster_id))
+                                              factor_list, cluster_id, len(variants)))
 
     log_norm = _logsumexp([e["total"] for e in entries])
     for e in entries:
@@ -743,10 +801,16 @@ def _leader(entries, refs, components, cluster_id) -> SceneAlternative:
 
 
 def _score_alternative(alt: SceneAlternative, view: ClusterView, base: float, factor_list,
-                       cluster_id: str) -> dict:
-    """One ledger entry: the factor terms of ``alt`` and the total they add up to."""
+                       cluster_id: str, n_linkages: int) -> dict:
+    """One ledger entry: the terms of ``alt`` and the total they add up to.
+
+    ``n_linkages`` is how many linkage readings this ALTERNATIVE'S ASSIGNMENT was enumerated
+    with; ``LINKAGE_PRIOR`` spreads one assignment's prior mass uniformly over them (see its
+    declaration) so that refining an assignment never boosts it.
+    """
     assignment = alt.assignment
-    factor_terms, prior_terms, reasons = {}, {}, {}
+    factor_terms, reasons = {}, {}
+    prior_terms = {LINKAGE_PRIOR.name: -math.log(n_linkages)}
     for f in factor_list:
         if f.score is None:
             continue

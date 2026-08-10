@@ -259,6 +259,77 @@ def test_linkage_variants_are_capped_and_the_truncation_is_recorded(monkeypatch)
                                               ["e:1:d#stokes2+bg#1", "e:2:d#stokes2+bg#1"]]
 
 
+def test_a_partly_linked_junction_yields_two_valid_pairings_and_no_impossible_one():
+    """The reviewer's repro. The default chaining links only ONE pair here (4.0→4.5 is inside the
+    tolerance, 7.0→5.0 is not), so both pairings are alternatives for the SAME junction. Applying
+    them as if they were independent junctions produced a linkage where one mode continued as two
+    tracks — an impossible reading, published with real posterior mass."""
+    obs = [mk_obs("e:1:d", [cand("stokes2+bg", -10.0, n_modes=2, omegas=(4.0, 7.0))], q=q(1.0)),
+           mk_obs("e:2:d", [cand("stokes2+bg", -10.0, n_modes=2, omegas=(4.5, 5.0))], q=q(1.1))]
+    cl = cluster_of(build_scene(obs), "e:1:d")
+    # Three readings, all of them possible: the partial default (the 7 meV mode's track ends
+    # here), and the two complete pairings. The impossible fourth — one mode continuing as two
+    # tracks — is now ungeneratable rather than merely unlikely.
+    assert cl["n_enumerated"] == 3
+    for a in cl["alternatives"]:
+        ends = [l[0] for l in a["links"]] + [l[1] for l in a["links"]]
+        assert len(ends) == len(set(ends))            # no component continues as two tracks
+    complete = [a for a in cl["alternatives"] if len(a["links"]) == 2]
+    partial = [a for a in cl["alternatives"] if len(a["links"]) == 1]
+    assert len(complete) == 2 and len(partial) == 1
+    # The two complete pairings are break-free and therefore equal; the partial one pays its
+    # break rather than being ranked by ω.
+    assert complete[0]["posterior"] == pytest.approx(complete[1]["posterior"], rel=1e-12)
+    assert partial[0]["factor_terms"]["connectivity"] == 2 * CONNECT_BREAK_NATS
+    assert partial[0]["posterior"] < complete[0]["posterior"]
+
+
+def test_an_impossible_linkage_is_refused_rather_than_scored():
+    """The guard behind the fix: a proposer that emits a degree-2 link set fails loudly instead of
+    publishing a reading that cannot exist."""
+    both = (("e:1:d#stokes2+bg#0", "e:2:d#stokes2+bg#0"),
+            ("e:1:d#stokes2+bg#0", "e:2:d#stokes2+bg#1"))
+    broken = replace(FACTORS["connectivity"], propose=lambda alt, view: (both,))
+    with pytest.raises(ValueError, match="more than one component of arena"):
+        build_scene(_crossing_scene(), factors=[FACTORS["presence"], broken])
+
+
+def _tolerance_probe(monkeypatch, tol_factor):
+    """One ambiguous two-mode assignment against a rival with no crossing, at a chosen tolerance."""
+    monkeypatch.setattr("isar.scene.factors.CROSSING_LINK_TOL_FACTOR", tol_factor)
+    obs = [mk_obs("e:1:d", [cand("amb", -10.0, n_modes=2, omegas=(4.0, 5.0)),
+                            cand("sep", -10.0, n_modes=2, omegas=(4.0, 5.0))], q=q(1.0)),
+           mk_obs("e:2:d", [cand("amb", -10.0, n_modes=2, omegas=(4.2, 5.3))], q=q(1.1))]
+    return cluster_of(build_scene(obs), "e:1:d")
+
+
+@pytest.mark.parametrize("tol_factor", [1.0, 3.0])
+def test_the_assignment_marginal_does_not_move_with_the_proposer_tolerance(monkeypatch,
+                                                                           tol_factor):
+    """Enumerating a second linkage is no probabilistic boost (the owner's N-mode precedent: a
+    uniform prior over refinements dilutes, never boosts). Two assignments with identical evidence
+    and identical factor terms must stay 50/50 whether the proposer offers one linkage each or
+    two — otherwise an enumeration knob, not the data, would be moving belief by ln 2 nats."""
+    cl = _tolerance_probe(monkeypatch, tol_factor)
+    marginal = cl["marginals"]["label"]["e:1:d"]
+    assert marginal["amb"] == pytest.approx(0.5, abs=1e-12)
+    assert marginal["sep"] == pytest.approx(0.5, abs=1e-12)
+    # ... and the ambiguity is still represented INSIDE each assignment that has it.
+    variants = [a for a in cl["alternatives"] if a["assignment"][0][1] == "amb"]
+    assert len(variants) == (2 if tol_factor == 3.0 else 1)
+    assert all(a["prior_terms"]["linkage_prior"] == -math.log(len(variants)) for a in variants)
+
+
+def test_the_proposer_tolerance_changes_what_is_enumerated_but_not_the_marginals(monkeypatch):
+    """Guards the test above from passing because the tolerance never did anything."""
+    tight, loose = _tolerance_probe(monkeypatch, 1.0), _tolerance_probe(monkeypatch, 3.0)
+    assert tight["n_enumerated"] == 2 and loose["n_enumerated"] == 4
+    # Equal to float noise, not bit-identical: the same marginal is summed over a different number
+    # of terms, so the float summation path differs where the model does not.
+    for ref, marginal in tight["marginals"]["label"].items():
+        assert marginal == pytest.approx(loose["marginals"]["label"][ref], rel=1e-12)
+
+
 def test_well_separated_branches_are_not_treated_as_ambiguous():
     """The proposer reaches only as far as the dispersion plausibly could: two branches 6 meV
     apart at both arenas have one reading, not two."""

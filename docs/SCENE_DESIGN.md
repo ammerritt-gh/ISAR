@@ -127,6 +127,17 @@ neighbouring footprint and annotate the leading alternative in the cluster paylo
 `structural_endpoint` is reserved for the zone-centre factor. Component→phenomenon assignment
 remains a later extension.
 
+**A linkage refines an assignment; it never adds prior mass to it.** An assignment that happens
+to admit two linkage readings must not outweigh a rival assignment that admits one — that would
+be ln 2 nats no evidence paid for, set by an enumeration knob (the crossing proposer's
+reachability tolerance) rather than by the data. Each `(assignment, linkage)` entry therefore
+carries the builder's declared `linkage_prior` term, `ln(1/n)` over that assignment's `n`
+enumerated linkages, itemized in the ledger and declared in the factor manifest like any other
+term. The assignment marginal is then exactly what linkage-free scoring would give, while the
+linkage ambiguity stays represented inside it. Every emitted link set is also structurally
+validated: a component continues as at most one track per adjacent arena, and a proposer that
+emits otherwise fails the build rather than publishing an impossible reading.
+
 ## 3. Slices
 
 | Slice | Goal | Status |

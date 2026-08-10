@@ -600,14 +600,26 @@ DECLARED = SceneFactor(name="declared", kind="structural_likelihood", version="1
 
 
 def test_the_payload_carries_the_full_factor_declaration():
+    """Including the builder's OWN declared term: the per-assignment linkage prior is part of
+    what scored the scene, so it is in the manifest and in the fingerprint like any factor."""
     rev = build_scene(chain_and_distant(), factors=[COUPLER, DECLARED])
     assert rev.payload["factor_manifest"] == [
         {"name": "declared", "kind": "structural_likelihood", "version": "1",
          "consumes": ["q"], "roles": ["score"], "config": [["threshold", 0.25]],
          "score_bound": [0.0, 1.0]},
+        {"name": "linkage_prior", "kind": "scene_prior", "version": "1",
+         "consumes": ["links"], "roles": [],
+         "config": [["max_linkage_variants", float(build_mod.MAX_LINKAGE_VARIANTS)]],
+         "score_bound": [-math.log(build_mod.MAX_LINKAGE_VARIANTS), 0.0]},
         {"name": "q_adjacency", "kind": "structural_likelihood", "version": "1",
          "consumes": ["q"], "roles": ["couples"], "config": [], "score_bound": None},
     ]
+
+
+def test_the_builders_linkage_prior_name_is_reserved():
+    reserved = replace(DECLARED, name="linkage_prior")
+    with pytest.raises(ValueError, match="reserved"):
+        build_scene(chain_and_distant(), factors=[reserved])
 
 
 @pytest.mark.parametrize("changed", [

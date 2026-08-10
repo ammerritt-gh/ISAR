@@ -26,6 +26,7 @@ Stdlib-only, like ``model.py`` — see ``tests/scene/test_import_ban.py``.
 """
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -306,12 +307,17 @@ def _connectivity_score(alt, view):
 
 
 def _junction_pairings(alt, view):
-    """``[(current_links, alternative_links), ...]`` for every ambiguous 2×2 junction.
+    """``[(current_links, (alternative_pairing, ...)), ...]`` — ONE entry per ambiguous junction.
 
     The crossing ambiguity in its pure form: two modes at each of two adjacent arenas, and two
-    ways to connect them — rank-preserving and rank-crossing. Both are proposed whenever both are
-    reachable within ``CROSSING_LINK_TOL_FACTOR × link_tol``; the alternative that is not already
-    in the linkage becomes a proposal.
+    ways to connect them — rank-preserving and rank-crossing. Both are considered whenever both
+    are reachable within ``CROSSING_LINK_TOL_FACTOR × link_tol``; whichever is not already in the
+    linkage becomes an alternative for that junction.
+
+    A junction's alternatives are MUTUALLY EXCLUSIVE, which is why one junction is one entry.
+    Emitting them as two independent entries let a caller apply both to the same junction: the
+    second application would remove the first's links again and leave a linkage in which one mode
+    continues as two tracks — an impossible reading, published with real posterior mass.
 
     ponytail: exactly 2×2 junctions only. Three modes crossing at one q is a real but rarer
     configuration; the upgrade path is the full permutation set, bounded by the same cap.
@@ -342,40 +348,34 @@ def _junction_pairings(alt, view):
                 continue
             ids = {c.component_id for c in here} | {c.component_id for c in there}
             mine = frozenset(l for l in current if l[0] in ids and l[1] in ids)
-            for pairing in reachable:
-                if pairing != mine:
-                    out.append((mine, pairing))
+            alternatives = tuple(p for p in reachable if p != mine)
+            if alternatives:
+                out.append((mine, alternatives))
     return out
 
 
 def _propose_crossings(alt, view):
     """Alternative LINK SETS for ``alt``, given its default linkage. Deterministic, deduplicated.
 
-    Every combination of junction swaps is offered; the builder caps how many it keeps and records
-    the truncation. The candidate assignment is untouched — a linkage variant shares its base
-    Σ lnZ exactly, so only factor terms can separate the two readings of a crossing.
+    Every combination of junctions is offered, with exactly ONE alternative pairing chosen per
+    junction in the combination — a junction's pairings are mutually exclusive, so applying two of
+    them to the same junction would produce a mode continuing as two tracks. The builder caps how
+    many variants it keeps, records the truncation, and validates every emitted link set. The
+    candidate assignment is untouched: a linkage variant shares its base Σ lnZ exactly, so only
+    factor terms can separate the two readings of a crossing.
     """
     junctions = _junction_pairings(alt, view)
     variants, links = set(), set(alt.links)
     for n in range(1, len(junctions) + 1):
-        for combo in _combinations(junctions, n):
-            swapped = set(links)
-            for mine, other in combo:
-                swapped -= mine
-                swapped |= other
-            variants.add(tuple(sorted(swapped)))
+        for combo in itertools.combinations(junctions, n):
+            for choice in itertools.product(*(alternatives for _, alternatives in combo)):
+                swapped = set(links)
+                for (mine, _), pairing in zip(combo, choice):
+                    swapped -= mine
+                    swapped |= pairing
+                variants.add(tuple(sorted(swapped)))
     variants.discard(tuple(sorted(links)))
     return tuple(sorted(variants))
-
-
-def _combinations(items, n):
-    """``itertools.combinations`` without the import — the module is deliberately import-thin."""
-    if n == 0:
-        yield ()
-        return
-    for i, item in enumerate(items):
-        for rest in _combinations(items[i + 1:], n - 1):
-            yield (item, *rest)
 
 
 CONNECTIVITY = SceneFactor(
