@@ -189,6 +189,9 @@ def test_the_endpoint_world_never_places_a_phonon_on_the_elastic_line(endpoint_s
     omegas = {(o["scan_ref"], c["label"]): c["omegas"]
               for o in payload["observations"] for c in o["candidates"]}
     cl, = payload["clusters"]
+    # "No surviving candidate" is only what the alternative set says when the enumeration is
+    # exhaustive; a truncated cluster would make this a claim about the top of the base ordering.
+    assert cl["truncated"] is False
     for alt in cl["alternatives"]:
         for ref, label in alt["assignment"]:
             for w in omegas[(ref, label)]:

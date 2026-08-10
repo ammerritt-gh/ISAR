@@ -114,33 +114,34 @@ def sample_knowledge(ws) -> SampleKnowledge:
     the capability was never asked for.
     """
     card = ws.card
-    policy, state = card.policy, card.state
+    policy = card.policy
     dispersion = dict(getattr(policy, "dispersion", None) or {}) if policy else {}
     declared_sample = dict(getattr(policy, "sample", None) or {}) if policy else {}
-
     period = dispersion.get("zone_period")
     reflections = declared_sample.get("reflections") or ()
+    epoch = max((e for e in card.lattice_epochs
+                 if isinstance(e, dict) and e.get("version") is not None),
+                key=lambda e: e["version"], default=None)
+    cell = (epoch or {}).get("lattice")
+    # All six cell parameters or nothing. An ABSENT cell is a declaration that was never made and
+    # stays ``None``; a PARTIAL one is malformed and raises (H1) — degrading it to "no lattice
+    # declared" would leave the revision claiming a provenance the card actually tried to give.
+    partial = isinstance(cell, dict) and 0 < sum(k in cell for k in _CELL) < len(_CELL)
     try:
-        period = None if period is None else float(period)
-        reflections = tuple(sorted(float(r) for r in reflections))
+        if partial:
+            raise ValueError(f"lattice cell declares {sorted(cell)}, expected all of {list(_CELL)}")
+        return SampleKnowledge(
+            zone_period=None if period is None else float(period),
+            reflections=tuple(float(r) for r in reflections),
+            lattice_epoch=None if epoch is None else int(epoch["version"]),
+            lattice=None if not isinstance(cell, dict) or not cell
+            else tuple(float(cell[k]) for k in _CELL))
     except (TypeError, ValueError) as exc:
         raise ValueError(
             f"scene: card declares an unreadable sample geometry "
-            f"(dispersion.zone_period={dispersion.get('zone_period')!r}, "
-            f"sample.reflections={declared_sample.get('reflections')!r}): {exc}") from exc
-
-    epoch = max((e for e in (getattr(state, "lattice_epochs", None) or [])
-                 if isinstance(e, dict) and e.get("version") is not None),
-                key=lambda e: int(e["version"]), default=None)
-    lattice = None
-    cell = (epoch or {}).get("lattice")
-    if isinstance(cell, dict) and all(k in cell for k in _CELL):
-        # All six or none: a partial cell recorded as a short tuple would be a silently
-        # truncated lattice that still fingerprints as a declaration.
-        lattice = tuple(float(cell[k]) for k in _CELL)
-    return SampleKnowledge(zone_period=period, reflections=reflections,
-                           lattice_epoch=None if epoch is None else int(epoch["version"]),
-                           lattice=lattice)
+            f"(dispersion.zone_period={period!r}, "
+            f"sample.reflections={declared_sample.get('reflections')!r}, "
+            f"lattice epoch={epoch!r}): {exc}") from exc
 
 
 # ---------------------------------------------------------------------------

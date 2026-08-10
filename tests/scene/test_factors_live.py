@@ -449,6 +449,12 @@ def test_an_observed_mode_can_never_be_refined_away():
     with pytest.raises(ValueError, match="manufacture a measurement"):
         build_scene(obs, factors=[FACTORS["presence"], liar],
                     sample=SampleKnowledge(zone_period=1.0))
+    # A value that is not a visibility state at all fails the same way, naming the same factor —
+    # not with the enum's own message, which names neither the factor nor the report.
+    garbage = replace(liar, refine_visibility=lambda report, view: "probably_fine")
+    with pytest.raises(ValueError, match="zone_centre_approach.*probably_fine"):
+        build_scene(obs, factors=[FACTORS["presence"], garbage],
+                    sample=SampleKnowledge(zone_period=1.0))
     # ... and a refiner is not even consulted where the mode WAS seen: two matching modes leave
     # nothing for it to reinterpret.
     seen = [mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(5.0,))], q=q(1.0)),
@@ -479,6 +485,28 @@ def test_a_zone_centre_is_not_a_declared_reflection():
     rev = build_scene([_elastic_at(3.0)],
                       sample=SampleKnowledge(zone_period=1.0, reflections=(2.0, 3.0)))
     assert _classification(rev) == {"e:1:d#elastic+bg#elastic": "bragg_compatible"}
+
+
+def test_a_reflection_list_is_a_set_of_positions_however_it_was_typed():
+    """The declaration is a SET: order and repetition are typing, not physics. Left verbatim they
+    would digest to different revisions, so two cards saying the same thing would look
+    unreplayable against each other — and the difference would be invisible to any reader."""
+    assert SampleKnowledge(reflections=(3.0, 2.0, 2.0)).reflections == (2.0, 3.0)
+    obs = [_elastic_at(2.0)]
+    canonical = build_scene(obs, sample=SampleKnowledge(reflections=(2.0, 3.0)))
+    for typed in ((3.0, 2.0), (2.0, 3.0, 2.0), (3.0, 3.0, 2.0)):
+        assert build_scene(obs, sample=SampleKnowledge(reflections=typed)).digest == \
+            canonical.digest
+
+
+def test_an_unplaceable_arena_names_its_own_reason_rather_than_going_quiet():
+    """The degradation ledger keys on the DECLARATION, which cannot see the arenas — so an
+    unplaceable q under a perfectly good reflection list would record "unclassified" with no
+    reason recorded anywhere. It gets a state of its own instead."""
+    obs = [mk_obs("e:1:d", [cand("elastic+bg", -10.0, n_modes=0, omegas=())], q=None)]
+    rev = build_scene(obs, sample=SampleKnowledge(reflections=(2.0,)))
+    assert _classification(rev) == {"e:1:d#elastic+bg#elastic": "unplaceable_q"}
+    assert rev.payload["sample_knowledge"]["degradations"] == ["no_declared_zone_period"]
 
 
 def test_modes_are_not_lattice_classified():

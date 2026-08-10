@@ -144,6 +144,12 @@ class ClusterView:
     build) so its three consumers walk the arenas once between them. It is scoped to the view on
     purpose — a module-level cache would outlive the build and hand one revision's reports to the
     next.
+
+    ponytail: the memo retains one report tuple per ENUMERATED alternative for the whole cluster
+    (up to ``SCENE_ALT_CAP`` × ``MAX_LINKAGE_VARIANTS`` entries), because the leading-alternative
+    annotation runs after every alternative has scored. Bounded and deliberate; scoping the cache
+    to the scoring pass and re-deriving the leader's reports afterwards is the upgrade path if a
+    large cluster's peak memory ever matters.
     """
 
     cluster_id: str

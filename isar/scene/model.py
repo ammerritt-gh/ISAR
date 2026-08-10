@@ -87,6 +87,13 @@ class SampleKnowledge:
         if not all(math.isfinite(r) for r in self.reflections):
             raise ValueError(f"sample reflections must all be finite rlu positions, got "
                              f"{list(self.reflections)!r}")
+        # Canonicalized HERE rather than at the one caller that happens to sort: the declaration
+        # is a SET of positions, so ``(3.0, 2.0)`` and ``(2.0, 3.0)`` are the same physics, and
+        # ``(2.0, 2.0)`` declares nothing ``(2.0,)`` does not. Left verbatim, each of those pairs
+        # would digest to a different revision — a replay that is not replayable because a card
+        # was retyped in another order.
+        object.__setattr__(self, "reflections",
+                           tuple(sorted({float(r) for r in self.reflections})))
 
     def to_dict(self) -> dict:
         return {"zone_period": self.zone_period,

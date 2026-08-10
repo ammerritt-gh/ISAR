@@ -327,3 +327,17 @@ def test_an_unreadable_sample_declaration_is_refused(tmp_path):
     bad = _POLICY_TOML + '\n[sample]\nreflections = ["not-a-number"]\n'
     with pytest.raises(ValueError, match="unreadable sample geometry"):
         sample_knowledge(_knowledge_ws(tmp_path, bad))
+
+
+def test_a_partially_declared_lattice_cell_is_refused(tmp_path):
+    """The one that would otherwise pass as silence. A cell missing gamma is a card someone tried
+    to fill in, so reading it as "no lattice declared" hides a real error behind a legal state —
+    while an absent cell really is nothing declared and stays None."""
+    half = [{"version": 1, "lattice": {"a": 4.05, "b": 4.05, "c": 4.05,
+                                       "alpha": 90.0, "beta": 90.0}}]
+    with pytest.raises(ValueError, match="expected all of"):
+        sample_knowledge(_knowledge_ws(tmp_path, state={"lattice_epochs": half}))
+
+    bare = [{"version": 1, "method": "manual"}]
+    know = sample_knowledge(_knowledge_ws(tmp_path / "bare", state={"lattice_epochs": bare}))
+    assert (know.lattice_epoch, know.lattice) == (1, None)

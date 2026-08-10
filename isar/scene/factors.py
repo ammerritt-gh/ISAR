@@ -325,15 +325,17 @@ def _refined(state, report, view):
         out = refine(report, view)
         if out is None:
             continue
-        replacement = Visibility(out)
-        if replacement not in REFINABLE and replacement != Visibility.STRUCTURAL_ENDPOINT:
+        # Checked as a VALUE before it becomes a Visibility: ``Visibility("nonsense")`` raises the
+        # enum's own message, which names neither the factor nor the report, so a broken refiner
+        # in a growing registry would have to be found by elimination.
+        if out not in REFINABLE and out != Visibility.STRUCTURAL_ENDPOINT:
             raise ValueError(
                 f"scene factor {name!r} returned {out!r} for {report['component_id']!r} at "
                 f"{report['neighbour']!r}: a refiner may only reinterpret an absence "
                 f"({[str(s) for s in REFINABLE]}) or terminate it as "
                 f"{Visibility.STRUCTURAL_ENDPOINT!s}. Turning an absence into an observation, or "
                 "a coverage gap into anything, would manufacture a measurement.")
-        return replacement
+        return Visibility(out)
     return state
 
 
@@ -615,9 +617,17 @@ def _lattice_classify(view) -> dict:
             if is_mode(c):
                 continue
             h = path_coordinate(c.q)
-            if not reflections or h is None:
-                # No declaration (or no placeable q) is not evidence of being off-lattice — the
-                # question was never asked. Recorded as unclassified, with a degradation reason.
+            if h is None:
+                # Two different reasons to have no answer, and they get two different states.
+                # This one is per-COMPONENT and invisible to ``degradations(sample)``, which sees
+                # the declaration and not the arenas — so an unplaceable arena under a perfectly
+                # good reflection list would otherwise record "unclassified" with no reason
+                # anywhere, which is exactly the silent inertness the degradation ledger exists
+                # to prevent. The state names it instead.
+                out[c.component_id] = "unplaceable_q"
+            elif not reflections:
+                # Nothing declared is not evidence of being off-lattice — the question was never
+                # asked. The reason is build-level (``no_declared_reflections``).
                 out[c.component_id] = "unclassified"
             elif any(abs(h - float(r)) <= BRAGG_Q_TOL for r in reflections):
                 out[c.component_id] = "bragg_compatible"
