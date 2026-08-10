@@ -156,11 +156,12 @@ dominating acquisition.
 
 ## 6. Persistence
 
-Per scan: content-addressed interpretation artifact (structure × identity candidates, evidences,
-methods, validity flags, arena hash) + `FitOutcome.interpretation_ref` + flat projection columns
-in results.csv. Per scene update: content-addressed revision under `<workspace>/report/scene/`
-with a current-pointer and the per-factor evidence ledger (leave-one-factor-out deltas). The GUI
-reads all of it through `workspace_api` only (Qt-free; hard rules 6/7 unchanged).
+Per scan: the persisted candidate rows on `FitOutcome`/results.csv are the scene's input
+contract (H11(a), H12(e) — no separate interpretation artifact; scene revisions embed the
+exact rows they consumed, with completeness status and conditioning provenance). Per scene
+update: content-addressed revision under `<workspace>/report/scene/` with a current-pointer
+and the per-factor evidence ledger (score-term ablation deltas, H12(f)). The GUI reads all
+of it through `workspace_api` only (Qt-free; hard rules 6/7 unchanged).
 
 ## 7. Status discipline
 
