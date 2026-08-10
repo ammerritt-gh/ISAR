@@ -702,30 +702,75 @@ def test_a_candidate_with_no_enumerated_hypothesis_is_refused():
         scan_delivery._candidate_rows([_score("orphan", log_evidence=-1.0, posterior=1.0)], {}, {})
 
 
-@pytest.mark.parametrize("x,expected", [
-    # A clean grid is one run; the outer window and the single band agree.
-    (np.linspace(0.0, 10.0, 11), [[0.0, 10.0]]),
-    # One dropped bin at 5 already opens a hole — an excluded region is not searched ground.
-    ([0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 7.0, 8.0], [[0.0, 4.0], [6.0, 8.0]]),
-    # Grid jitter of a few percent is not a hole: it must not shatter a scan into per-bin bands.
-    ([0.0, 1.0, 2.05, 3.0, 4.1, 5.0], [[0.0, 5.0]]),
-    # Degenerate axes have no gap structure to read.
-    ([3.0], [[3.0, 3.0]]),
-    ([3.0, 3.0, 3.0], [[3.0, 3.0]]),
+def _bands(x, mask=None, center=0.0):
+    x = np.asarray(x, dtype=float)
+    return scan_delivery._energy_bands(
+        x, np.ones(x.size, dtype=bool) if mask is None else np.asarray(mask, dtype=bool), center)
+
+
+@pytest.mark.parametrize("x,mask,expected", [
+    # A fully-kept uniform grid is ONE band, covering half a step past each end bin: the end bin was
+    # measured, so its cell is real coverage rather than a point.
+    (np.linspace(0.0, 10.0, 11), None, [[-0.5, 10.5]]),
+    # One dropped bin opens the hole exactly at that bin's cell — an excluded region is not
+    # searched ground, and the two kept runs merge internally because their cells touch.
+    ([0.0, 1.0, 2.0, 3.0, 4.0, 5.0], [1, 1, 1, 0, 1, 1], [[-0.5, 2.5], [3.5, 5.5]]),
+    # A lone kept bin is a CELL of its neighbours' width, not a zero-width point.
+    ([0.0, 1.0, 2.0, 3.0], [0, 1, 0, 0], [[0.5, 1.5]]),
+    # Nothing kept is no coverage — not one degenerate band at an arbitrary position.
+    ([0.0, 1.0, 2.0], [0, 0, 0], []),
+    # A one-bin axis has no neighbour to take a width from; degenerate, and honestly so.
+    ([3.0], None, [[3.0, 3.0]]),
 ])
-def test_energy_bands_are_the_contiguous_kept_runs(x, expected):
-    """Review finding 4, at the writer: ``energy_window`` is the envelope, these are the runs."""
-    assert scan_delivery._energy_bands(np.asarray(x, dtype=float), 0.0) == expected
+def test_energy_bands_are_the_merged_cells_of_the_kept_bins(x, mask, expected):
+    """Review finding 4, at the writer: coverage is the measured CELLS of the kept bins, and
+    adjacency is read off the original grid rather than from a spacing statistic."""
+    assert [[pytest.approx(v) for v in b] for b in _bands(x, mask)] == expected
+
+
+def test_a_stitched_coarse_to_fine_axis_is_fully_covered_with_no_zero_width_runs():
+    """The first counterexample to a global-spacing threshold. This axis has no single spacing, so
+    any factor times a median splits the coarse half into zero-width points — measured ground that
+    ``covers()`` then answers False for. Grid-derived cells have no such failure mode."""
+    x = np.concatenate([np.arange(0.0, 5.0, 1.0), np.arange(5.0, 7.0, 0.2)])
+    bands = _bands(x)
+
+    assert len(bands) == 1                                  # every bin kept, every cell adjacent
+    assert all(hi > lo for lo, hi in bands)                 # no zero-width runs
+    # ... and every measured point is inside the coverage, coarse half included.
+    assert all(any(lo <= float(v) <= hi for lo, hi in bands) for v in x)
+
+
+def test_a_comb_rejection_opens_a_hole_at_every_dropped_bin():
+    """The second counterexample. Dropping every other bin leaves a perfectly UNIFORM kept spacing,
+    so no gap threshold can see the holes at all and every dropped bin is claimed as searched."""
+    x = np.arange(0.0, 10.0, 0.5)
+    mask = np.zeros(x.size, dtype=bool)
+    mask[::2] = True
+    bands = _bands(x, mask)
+
+    assert len(bands) == int(mask.sum())                    # one cell each, none merged
+    assert all(hi - lo == pytest.approx(0.5) for lo, hi in bands)
+    # Every dropped bin sits in a hole, and every kept one inside coverage.
+    for v, kept in zip(x, mask):
+        assert any(lo <= float(v) <= hi for lo, hi in bands) is bool(kept)
+
+
+def test_a_non_finite_abscissa_is_a_delivery_defect_not_a_nan_band():
+    """A NaN midpoint would persist a bare NaN token in the results.csv JSON cell and a footprint
+    covering nothing. It fails here, naming the axis."""
+    with pytest.raises(ValueError, match="non-finite"):
+        _bands([0.0, float("nan"), 2.0])
 
 
 def test_energy_bands_are_on_the_omega_scale_like_the_window():
-    assert scan_delivery._energy_bands(np.array([0.0, 1.0, 2.0]), 2.0) == [[-2.0, 0.0]]
+    assert _bands([0.0, 1.0, 2.0], center=2.0) == [[pytest.approx(-2.5), pytest.approx(0.5)]]
 
 
 @pytest.mark.slow
 def test_fit_one_stamps_bands_that_honour_the_qc_mask():
     """End to end through the real fitter: masking out the middle of the axis leaves two runs, and
-    the window stays their envelope."""
+    the window (the kept POINT extent) sits inside their outer edges."""
     ctx = _single_peak_ctx()
     mask = np.asarray(ctx.mask, dtype=bool).copy()
     hole = (ctx.x > 2.0) & (ctx.x < 6.0)
@@ -734,9 +779,11 @@ def test_fit_one_stamps_bands_that_honour_the_qc_mask():
                                 M=20, seed=1)
 
     bands = fit["energy_bands"]
+    lo, hi = fit["energy_window"]
     assert len(bands) == 2
-    assert bands[0][1] <= 2.0 and bands[1][0] >= 6.0
-    assert fit["energy_window"] == (pytest.approx(bands[0][0]), pytest.approx(bands[-1][1]))
+    assert bands[0][1] <= 6.0 and bands[1][0] >= 2.0        # the hole is between the two runs
+    # The bands are CELLS, so they reach half a bin outside the kept points the window reports.
+    assert bands[0][0] < lo and bands[-1][1] > hi
 
 
 def test_energy_bands_roundtrip_through_the_ledger_and_results_csv(tmp_path):

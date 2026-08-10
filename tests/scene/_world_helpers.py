@@ -62,7 +62,7 @@ def scene_observation(name: str, h: float, *, scan_ref: str | None = None) -> Sc
         energy_window=(float(ctx.x.min()), float(ctx.x.max())),
         # Through the production helper, not a hand-made pair: the fixture's coverage must be the
         # coverage a delivery would persist, holes and all.
-        energy_bands=tuple(tuple(b) for b in _energy_bands(ctx.x_used, ctx.center)),
+        energy_bands=tuple(tuple(b) for b in _energy_bands(ctx.x, ctx.mask, ctx.center)),
         gauss_fwhm=float(ctx.gauss_fwhm),
         lorentz_fwhm=None if ctx.lorentz_fwhm is None else float(ctx.lorentz_fwhm),
         effective_exposure=None,

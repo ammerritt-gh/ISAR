@@ -315,15 +315,24 @@ def _window(fit):
 
 
 def _bands(fit):
-    """The kept energy runs as ``((lo, hi), …)``, or ``None`` when the row records none."""
+    """The kept energy runs as ``((lo, hi), …)``, or ``None`` when the row records none.
+
+    ABSENT and MALFORMED are two different diagnoses and get two different errors. Absent (``None``)
+    is a row that predates the field, which :func:`_refuse_stale_delivery` answers with re-deliver.
+    Present-but-unreadable — a cell that failed to parse as JSON arrives here as the raw string —
+    is a CORRUPT row, and telling its owner to re-deliver a stale workspace would send them after
+    the wrong problem.
+    """
     bands = fit.energy_bands
     if bands is None:
         return None
     try:
+        if not isinstance(bands, list):
+            raise TypeError(f"expected a list of [lo, hi] pairs, got {type(bands).__name__}")
         return tuple((float(b[0]), float(b[1])) for b in bands)
     except (IndexError, KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"scene: {_scan_ref(fit)} has an unreadable energy_bands cell "
-                         f"({bands!r}: {exc}) — {REDELIVER}") from exc
+        raise ValueError(f"scene: {_scan_ref(fit)} has a malformed energy_bands cell "
+                         f"({bands!r}): {exc}") from exc
 
 
 def _background(fit):

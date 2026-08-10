@@ -219,10 +219,11 @@ class FitOutcome:
     # searched-and-empty window is evidence). Distinct from ``search_energy_lo/hi``, which is an
     # auxiliary probe's REQUESTED window. ``None`` on older ledgers and when no point survived the mask.
     energy_window: tuple | None = None
-    # ``energy_bands``: the CONTIGUOUS kept runs of that same axis, ``[[lo, hi], …]``. The window
-    # above is their outer envelope; these are what was actually fitted, so a QC mask or an
-    # excluded region in the middle of the axis stays a hole instead of being claimed as searched
-    # coverage. ``None`` on older ledgers and wherever the window is.
+    # ``energy_bands``: the measured CELLS of that same axis's kept bins, merged into runs,
+    # ``[[lo, hi], …]``. The window above is the kept POINT extent; these are the measured ground,
+    # so a QC mask or an excluded region in the middle of the axis stays a hole instead of being
+    # claimed as searched coverage, and the end cells reach half a bin past the window.
+    # ``None`` on older ledgers and wherever the window is.
     energy_bands: list | None = None
 
     def to_dict(self) -> dict:

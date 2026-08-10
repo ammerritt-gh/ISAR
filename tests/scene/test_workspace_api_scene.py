@@ -305,6 +305,16 @@ def test_a_row_predating_the_delivery_contract_is_refused_not_guessed_at(tmp_pat
         scene_observations(ws)
 
 
+@pytest.mark.parametrize("cell", ["{not json", json.dumps({"lo": 1.0}), json.dumps([[1.0]])])
+def test_a_malformed_energy_bands_cell_is_named_as_malformed_not_as_stale(tmp_path, cell):
+    """H1's point is the RIGHT diagnosis, not merely a refusal. An absent field means re-deliver a
+    stale workspace; a present-but-unreadable cell is a corrupt row, and sending its owner after a
+    re-delivery would send them after the wrong problem."""
+    ws = _ws(tmp_path, [_row(1, candidates=[_candidate("phonon+bg")], energy_bands=cell)])
+    with pytest.raises(ValueError, match="malformed energy_bands"):
+        scene_observations(ws)
+
+
 def test_a_header_without_the_candidates_column_is_refused(tmp_path):
     """Such a file can score nothing anywhere. Reading it as an empty scene would present a whole
     campaign as unmeasured, so it is refused with the same re-deliver instruction."""

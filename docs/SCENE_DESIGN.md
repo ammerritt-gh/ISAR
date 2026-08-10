@@ -131,11 +131,17 @@ PERSISTED, never reconstructed from a display string or an envelope. Each candid
 ordered component descriptors (`kind` ∈ `mode` / `elastic` / `quasielastic`, plus the mode's `slot`
 into that row's `omegas`), derived at the writer from the enumerated structure the candidate was
 fitted as; a label is a stable identifier and nothing decides physics by parsing it. Each row also
-carries `energy_bands`, the contiguous kept runs of the fitted axis, of which `energy_window` is
-only the outer envelope: a QC mask or an excluded region in the middle of the axis is a HOLE, so
-absence inside it is `censored_outside_footprint` rather than evidence. A workspace whose rows
-predate either field is refused with a re-deliver instruction (H1: no tolerant fallback between the
-stored evidence and `ln W(S)`).
+carries `energy_bands`: the measured CELLS of the kept bins, merged into runs, where
+`energy_window` is only the kept POINT extent. A QC mask or an excluded region in the middle of the
+axis is a HOLE, so absence inside it is `censored_outside_footprint` rather than evidence. Cell
+adjacency is read off the ORIGINAL grid — each kept bin covers midpoint to midpoint, two kept cells
+with no dropped bin between them share a boundary and merge — so there is no tunable gap threshold
+and there must not be one: any factor times a global spacing statistic mis-reads a stitched
+coarse-to-fine axis in one direction and a comb rejection (uniform kept spacing, holes everywhere)
+in the other. Both fields are inputs to `observation_fingerprint`, so changing the derivation moves
+every revision digest — which is the intended behaviour, not a hazard to work around. A workspace
+whose rows predate either field is refused with a re-deliver instruction (H1: no tolerant fallback
+between the stored evidence and `ln W(S)`).
 
 The two non-mode kinds are kept apart because they answer different questions. Both obscure a band
 at the elastic line, so either makes a low-ω absence `blocked_unresolved` — that is

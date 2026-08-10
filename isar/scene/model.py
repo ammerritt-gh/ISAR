@@ -291,10 +291,12 @@ class SceneObservation:
     # of the axis actually fitted. ``None`` when the calibration zero is unusable: a scan is
     # held until calibration exists, never placed by assuming a zero of 0.0.
     energy_window: tuple[float, float] | None
-    # The CONTIGUOUS kept runs of that axis, on the same scale — the mask-hole-honest form of the
-    # window above. An ``exclude_region`` or a monitor-short stretch splits the run, so a band the
-    # scan never actually fitted is not claimed as searched. ``None`` when the window is
-    # unplaceable; the window stays the outer envelope of these runs for the consumers that want it.
+    # The measured energy CELLS of the kept bins, merged into runs, on the same scale — the
+    # mask-hole-honest form of the window above. An ``exclude_region`` or a monitor-short stretch
+    # opens a hole exactly at the dropped bins, so a band the scan never fitted is not claimed as
+    # searched. Being cells rather than points, the runs reach half a bin outside the window's kept
+    # POINT extent at each end; the window is unchanged for the consumers that read it. ``None``
+    # when the window is unplaceable.
     energy_bands: tuple[tuple[float, float], ...] | None
     gauss_fwhm: float | None
     lorentz_fwhm: float | None

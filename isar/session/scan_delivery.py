@@ -337,31 +337,55 @@ def _mode_omegas(result) -> list:
     return values if None in values else sorted(values)
 
 
-# A break between two kept energy bins once their gap exceeds this multiple of the median kept
-# spacing. 1.5 sits between "one grid step" and "two", so a single dropped bin already opens a hole
-# while ordinary grid jitter (a scan whose step wobbles by a few percent, or a coarse-to-fine
-# stitched axis) does not manufacture one. The failure it prevents is a footprint that claims an
-# excluded region as searched, which turns a coverage gap into absence evidence.
-BAND_GAP_FACTOR = 1.5
+def _energy_bands(x, mask, center) -> list:
+    """The measured energy CELLS of the kept bins, merged into runs, on the ω scale.
 
-
-def _energy_bands(x_used, center) -> list:
-    """The CONTIGUOUS runs of the kept energy axis, on the ω scale, as ``[[lo, hi], …]``.
-
-    ``energy_window`` is the outer envelope of these; this is what the scan actually fitted. A QC
+    ``energy_window`` is the outer envelope of these; this is what the scan actually measured. A QC
     mask, an ``exclude_region`` or a monitor-short stretch removes bins from the middle of the axis,
     and a single (lo, hi) pair cannot express that — it claims the hole as measured.
 
-    Degenerate spacings (one kept bin, or duplicated abscissae leaving a zero median step) yield the
-    single enclosing run: there is no gap structure to read, and inventing breaks from a zero
-    reference would split every scan into per-bin bands."""
-    xs = np.sort(np.asarray(x_used, dtype=float)) - float(center)
-    steps = np.diff(xs)
-    median = float(np.median(steps)) if steps.size else 0.0
-    if not np.isfinite(median) or median <= 0.0:
-        return [[float(xs[0]), float(xs[-1])]]
-    cuts = [0, *(int(i) + 1 for i in np.flatnonzero(steps > BAND_GAP_FACTOR * median)), xs.size]
-    return [[float(xs[a]), float(xs[b - 1])] for a, b in zip(cuts, cuts[1:])]
+    Adjacency is STRUCTURAL, read off the original grid rather than from the kept points' spacing.
+    Each kept bin covers its cell — from the midpoint to its left neighbour on the ORIGINAL axis to
+    the midpoint to its right, with the end bins extending half their adjacent step outward — and two
+    kept cells with no dropped bin between them share a midpoint exactly, so they merge; a dropped
+    bin opens a hole exactly where it sits. There is no tunable gap threshold, and there must not be
+    one: any factor times a global spacing statistic gets a non-uniform axis wrong in both
+    directions. A coarse-to-fine stitched axis has no single spacing, so a threshold either shatters
+    the coarse half into zero-width points or claims dropped fine bins as measured; a comb rejection
+    (every other bin dropped) has a perfectly uniform kept spacing and no threshold can see the
+    holes at all. Reading the grid answers both without a knob.
+
+    A lone kept bin is a real cell of its neighbours' width, not a zero-width point: it WAS measured.
+    ``[]`` when nothing was kept — no coverage at all, which is not the same claim as one degenerate
+    band at an arbitrary position.
+    """
+    xs = np.asarray(x, dtype=float)
+    keep = np.asarray(mask, dtype=bool)
+    if not np.all(np.isfinite(xs)):
+        # A band derived through a NaN midpoint would persist a bare NaN token in the results.csv
+        # JSON cell and a footprint that covers nothing anywhere. The abscissa is instrument data,
+        # so a non-finite value in it is a delivery defect to fix, not a number to guard around.
+        raise ValueError(f"energy axis carries {int((~np.isfinite(xs)).sum())} non-finite value(s): "
+                         "a measured footprint cannot be derived from it")
+    order = np.argsort(xs, kind="stable")
+    xs, keep = xs[order] - float(center), keep[order]
+    if not keep.any():
+        return []
+    edges = _cell_edges(xs)
+    idx = np.flatnonzero(keep)
+    cuts = [0, *(int(i) + 1 for i in np.flatnonzero(np.diff(idx) > 1)), idx.size]
+    return [[float(edges[idx[a]]), float(edges[idx[b - 1] + 1])] for a, b in zip(cuts, cuts[1:])]
+
+
+def _cell_edges(xs) -> np.ndarray:
+    """``len(xs) + 1`` cell boundaries: the midpoints, with the ends extended half a step outward."""
+    if xs.size == 1:
+        # One bin and no neighbour to take a width from. Its cell is the point itself — degenerate,
+        # and honestly so: nothing in the axis says how wide the measurement was.
+        return np.array([xs[0], xs[0]])
+    mids = 0.5 * (xs[:-1] + xs[1:])
+    return np.concatenate([[xs[0] - 0.5 * (xs[1] - xs[0])], mids,
+                           [xs[-1] + 0.5 * (xs[-1] - xs[-2])]])
 
 
 # What each enumerated component class IS, for the scene layer's component descriptors. Matched by
@@ -1877,7 +1901,9 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     if np.size(ctx.x_used) and np.isfinite(ctx.center):
         lo, hi = ctx.window
         energy_window = (lo - float(ctx.center), hi - float(ctx.center))
-        energy_bands = _energy_bands(ctx.x_used, ctx.center)
+        # The ORIGINAL axis plus the mask, not the kept points: cell adjacency is a fact about the
+        # measurement grid, and the kept points alone cannot say which bins were dropped.
+        energy_bands = _energy_bands(ctx.x, ctx.mask, ctx.center)
     else:
         energy_window = energy_bands = None
 

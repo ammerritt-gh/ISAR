@@ -242,9 +242,12 @@ class FitView:
         ``energy_window`` is their outer envelope. A row that carries a window but no bands
         predates the field — the distinction matters to the scene layer, which refuses such a
         workspace rather than reading the envelope as hole-free coverage.
+
+        Returned VERBATIM, including a cell that failed to parse as JSON (which arrives as the raw
+        string). Coercing a malformed cell to ``None`` here would make it indistinguishable from an
+        absent field, and the consumer would then diagnose a corrupt row as a stale one.
         """
-        v = self._pick("energy_bands", "energy_bands")
-        return v if isinstance(v, list) else None
+        return self._pick("energy_bands", "energy_bands")
 
     @property
     def cost_per_dof(self) -> float | None:
