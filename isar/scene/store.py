@@ -55,7 +55,16 @@ def _scene_dir(report_dir) -> Path:
 
 
 def _write_atomic(target: Path, payload: bytes) -> None:
-    """Replace ``target`` with ``payload``, atomically, durably, or not at all."""
+    """Replace ``target`` with ``payload`` in one step, or leave it as it was.
+
+    A reader never sees a half-written file: the content is fully written and fsynced under a
+    temporary name first, and ``os.replace`` swaps it in atomically. Deliberately NOT a
+    crash-durability guarantee — the containing directory is not fsynced (there is no portable
+    way to on Windows), so a power loss can still lose the newly published name. That is the
+    case the layout already handles: a lost pointer reads as absence, a lost blob under a
+    surviving pointer raises loudly rather than replaying something wrong, and either is
+    republished by the next build of the same workspace.
+    """
     fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
     try:
         with os.fdopen(fd, "wb") as stream:
@@ -132,9 +141,10 @@ def read_current(report_dir) -> tuple[dict, dict] | None:
     except (ValueError, UnicodeDecodeError) as error:
         raise ValueError(f"unreadable scene revision {blob_path}: {error}") from error
 
-    # Recomputed from the parsed payload, not from the raw bytes: this checks that the file both
-    # hashes to its name AND is in canonical form, so a hand-edit that preserved the byte count
-    # or a rewrite by a non-canonical encoder is caught rather than replayed as authentic.
+    # Recomputed from the PARSED payload, not from the raw bytes: the question a replay asks is
+    # "is this the content the digest names?", so an edit to any value is caught while a
+    # re-indented or differently-ordered file that still means the same thing is accepted. What
+    # this therefore does NOT assert is that the bytes on disk are themselves canonical.
     actual = digest_bytes(canonical_bytes(payload))
     if actual != pointer["digest"]:
         raise ValueError(f"scene revision {blob_path} does not match its digest "
