@@ -16,8 +16,9 @@ from isar.scene.model import SampleKnowledge, Visibility
 from ._world_helpers import run_selection, scene_observation
 
 # Five nodes straddling the branch crossing of the ``crossing`` world (branch A rises 2→7 meV,
-# branch B falls 6.5→3 meV, degenerate at H≈2.178). Spacing 0.05 keeps consecutive nodes inside
-# Q_ADJACENCY (0.15), so the cluster spans the crossing instead of breaking at it.
+# branch B falls 6.5→3 meV, degenerate at H≈2.178). The nodes are collinear along H, so
+# consecutive-ordinal adjacency chains them and the cluster spans the crossing instead of
+# breaking at it.
 CROSSING_NODES = (2.05, 2.10, 2.15, 2.20, 2.25)
 
 

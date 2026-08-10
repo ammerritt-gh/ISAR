@@ -311,6 +311,11 @@ def neighbour_reports(alt, view) -> tuple[dict, ...]:
     can turn an unexplained absence into a ``structural_endpoint``. Computed ONCE per
     (alternative, view) and memoized on the view: the consumers used to run this walk three times
     over identical inputs.
+
+    A row's ``reason`` records why the detectability gate demoted it and is kept even when a
+    refiner later upgrades the state (e.g. ``structural_endpoint`` alongside ``bose_dead``):
+    the pair means "demoted for this reason, then explained by a reading" — the reason never
+    describes the final state.
     """
     cached = view.reports_cache.get(alt)
     if cached is not None:
