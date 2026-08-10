@@ -85,8 +85,16 @@ def scene_revision(ws) -> SceneRevisionView | None:
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class Curve:
-    """A delivered model curve on a chosen grid. ``pure`` is the evaluator's own flag: True when
-    it rebuilt from stored amplitudes, False when it re-solved amplitudes from re-parsed counts."""
+    """A delivered model curve on a chosen grid.
+
+    ``x`` is the SIGNED calibrated energy grid of the observation's window (meV) — the only signed
+    axis in this module. A :class:`ModeMarker` at intrinsic ω corresponds to peaks at ``±ω`` here,
+    both rendered by the model itself (the Stokes/anti-Stokes tie lives inside the component
+    layer), so a renderer overlays markers by folding, never by drawing one side.
+
+    ``pure`` is the evaluator's own flag: True when it rebuilt from stored amplitudes, False when
+    it re-solved amplitudes from re-parsed counts.
+    """
 
     x: tuple[float, ...]
     total: tuple[float, ...]
@@ -96,6 +104,9 @@ class Curve:
 @dataclass(frozen=True, slots=True)
 class ModeMarker:
     """One candidate's mode at ``omega``, carrying that candidate's cluster posterior mass.
+
+    ``omega`` is INTRINSIC (unsigned) mode energy in meV, the scale ``CandidateRow.omegas`` and the
+    footprint bands use — not a position on a signed curve grid; see :class:`Curve`.
 
     ``weight`` is the arena's marginal P(label) as the revision recorded it — every candidate that
     took part in the cluster's enumeration gets markers, not only the winner, so a renderer can
@@ -151,9 +162,16 @@ class HypothesisMap:
 
 
 def hypothesis_map(ws, *, x_points: int = 200) -> HypothesisMap | None:
-    """Project ``ws``'s stored scene revision into renderable (Q, |ω|) data. ``None`` if no scene.
+    """Project ``ws``'s stored scene revision into renderable data. ``None`` if no scene.
 
     One entry per SCORING arena and one or more gap rows for everything the scene does not claim.
+
+    THREE axes, deliberately not unified — each part states what it knows and nothing more:
+    ``ModeMarker.omega`` and ``GapEntry`` bounds are intrinsic (unsigned) ``|ω|``, which is what
+    the revision itself records; ``Curve.x`` is the SIGNED energy window of the observation,
+    because that is the axis the delivered model was fitted on. Folding a marker onto the curve is
+    the renderer's ±ω overlay, and doing it here would either discard the curve's anti-Stokes side
+    or invent a sign for a mode that has none.
     Deterministic: same revision + same workspace ⇒ identical structure, with every sequence in
     sorted order.
     """
