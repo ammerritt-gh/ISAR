@@ -241,11 +241,16 @@ def test_margin_pruning_records_the_bound_and_keeps_the_near_rival():
 def test_unusable_and_nonfinite_candidates_are_excluded_without_a_bound():
     obs = [mk_obs("e:1:d", [cand("lead", -10.0), cand("dead", -11.0, usable=False),
                             cand("inf", -math.inf), cand("none", None)])]
-    cl = cluster_of(build_scene(obs, factors=[ZERO]), "e:1:d")
+    rev = build_scene(obs, factors=[ZERO])
+    cl = cluster_of(rev, "e:1:d")
     excluded = {e["label"]: e for e in cl["pruning"]["e:1:d"]}
     assert set(excluded) == {"dead", "inf", "none"}
     assert all(e["reason"] == "no_evidence" and e["mass_bound"] is None
                for e in excluded.values())
+    # The verbatim row persists ±inf as null — the same "no lnZ to sum" the builder already
+    # read it as, and the only spelling that survives strict JSON.
+    rows = {c["label"]: c for c in rev.payload["observations"][0]["candidates"]}
+    assert rows["inf"]["log_evidence"] is None and rows["none"]["log_evidence"] is None
 
 
 def test_arena_without_usable_evidence_is_experiment_map_only():
@@ -339,6 +344,25 @@ def test_discarded_bound_survives_counts_far_outside_the_float_range():
     huge = 2 ** 1100                                     # unconvertible to float at all
     assert _discarded_bound(huge, -800.0, 0.0) == pytest.approx(math.exp(1100 * math.log(2) - 800))
     assert _discarded_bound(huge, -1.0, 0.0) == math.inf  # honestly unbounded, not a crash
+
+
+def test_an_overflowing_bound_reaches_the_payload_as_none_and_serializes_strictly():
+    """``inf`` is honest but is not JSON: it would encode as the non-standard token ``Infinity``
+    and break every strict reader replaying the revision. The cluster states no bound and flags
+    it, and the whole payload survives ``allow_nan=False``."""
+    # A factor spanning 1000 nats widens the bound past the float range: exp(-5 + 1000) = inf.
+    obs = [mk_obs("e:1:d", [cand("A", 0.0), cand("B", -5.0), cand("C", -9.0)])]
+    rev = build_scene(obs, factors=[biased(label="B", term=1000.0)], alt_cap=2)
+    cl = cluster_of(rev, "e:1:d")
+    assert cl["truncated"] is True and cl["truncation_unbounded"] is False
+    assert cl["discarded_mass_bound"] is None and cl["discarded_mass_unbounded"] is True
+    assert b"Infinity" not in canonical_bytes(cl)
+
+
+def test_canonical_bytes_refuses_a_non_finite_payload():
+    for bad in (math.inf, -math.inf, math.nan):
+        with pytest.raises(ValueError):
+            canonical_bytes({"x": bad})
 
 
 def test_score_ablation_alignment_is_declared_in_the_payload():

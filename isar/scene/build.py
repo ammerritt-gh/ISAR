@@ -692,7 +692,11 @@ def _enumerate(arenas, cap: int, span: float | None):
         # truth is 0.993.
         return sorted(tuple(sorted(a)) for a in kept), n_possible, True, None, True
     discarded = _discarded_bound(n_possible - len(kept), lowest_base, leader_base, span)
-    return sorted(tuple(sorted(a)) for a in kept), n_possible, True, discarded, False
+    # A bound that overflowed to inf is stated as "no bound" (``None``) rather than as the
+    # non-standard JSON token ``Infinity``: the payload has to survive a strict reader, and
+    # "unbounded" is exactly what inf meant. The cluster flags it below.
+    return (sorted(tuple(sorted(a)) for a in kept), n_possible, True,
+            discarded if math.isfinite(discarded) else None, False)
 
 
 def _discarded_bound(n_dropped: int, lowest_base: float, leader_base: float,
@@ -904,6 +908,16 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
         "n_assignments": len(assignments),
         "n_possible": n_possible,
         "discarded_mass_bound": discarded,
+        # No finite bound on the dropped mass is stated at all — because no factor would declare
+        # one, because a linkage truncation dropped readings nothing can bound, or because the
+        # arithmetic bound overflowed the float range. Distinct lanes: this one says "the number
+        # is absent", ``truncation_unbounded`` below says "the cluster is UNRESOLVED". The first
+        # two causes raise both; the float overflow raises only this one, since an overflowing
+        # bound is still a bound — it just has no finite spelling. A reader that only wants to
+        # know whether it may trust the posteriors as a bounded approximation reads
+        # ``truncation_unbounded``; one that wants to know whether ``discarded_mass_bound``
+        # carries a number reads this.
+        "discarded_mass_unbounded": discarded is None,
         # True when the enumerated set is not the complete one AND nothing bounds what was
         # dropped — an unbounded scoring factor over the alternative cap, or a linkage truncation.
         # The cluster is UNRESOLVED, not narrowed, and no reader may treat these posteriors as a
