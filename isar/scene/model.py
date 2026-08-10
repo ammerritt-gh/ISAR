@@ -142,10 +142,12 @@ class ComponentObservation:
     per-scan posteriors double-counts the local priors — SCENE_DESIGN §2b).
 
     ``component_id`` is ``"<scan_ref>#<candidate_label>#<mode_index>"`` for a mode, and
-    reserves ``"<scan_ref>#<candidate_label>#elastic"`` / ``"#qe"`` for the non-mode
-    components a later slice will emit. ``omega`` is the derived ω₀ of this mode on the same
-    scale as ``CandidateRow.omegas``; ``None`` is an unplaceable mode, which stays a
-    component (it exists) while contributing no position a factor could couple on.
+    ``"<scan_ref>#<candidate_label>#elastic"`` / ``"#qe"`` for the non-mode components of a
+    phonon-less or elastic-bearing structure (:func:`is_mode` tells them apart). ``omega`` is
+    the derived ω₀ of this mode on the same scale as ``CandidateRow.omegas`` — ``0.0`` for the
+    non-mode components, which sit at the elastic line by construction; ``None`` is an
+    unplaceable mode, which stays a component (it exists) while contributing no position a
+    factor could couple on.
     """
 
     scan_ref: str
@@ -365,6 +367,80 @@ def _footprint(obs: SceneObservation, bands: tuple[FootprintBand, ...]) -> Footp
                      temperature_K=obs.temperature_K, background=obs.background,
                      gauss_fwhm=obs.gauss_fwhm, lorentz_fwhm=obs.lorentz_fwhm,
                      effective_exposure=obs.effective_exposure)
+
+
+# ----------------------------------------------------------------------------
+# Cross-arena geometry: the vocabulary both the builder and the factors need
+# ----------------------------------------------------------------------------
+# Owner-tunable, and declared in every factor's ``config`` that closes over them, so a retuning
+# moves the registry fingerprint. They live here rather than in ``factors``/``build`` because
+# both sides need the same numbers and a second copy would be a second physics.
+#
+# Q_ADJACENCY: path-coordinate (h) distance within which two arenas are NEIGHBOURS — the
+# distance over which "a phonon cannot appear at one q and vanish at the next" is a claim about
+# the same physics. Sample knowledge (a real path parameterization) replaces the bare |Δh| in
+# the next task.
+Q_ADJACENCY = 0.15
+# LINK_TOL_FLOOR: the smallest ω jump two arenas' modes may be linked across when the resolution
+# width is unknown or absurdly small. The tolerance itself is the coarser of the two arenas'
+# Gaussian widths — a track moves between neighbouring q by less than the resolution, or it was
+# never resolved as one track.
+LINK_TOL_FLOOR = 0.1
+
+# The non-mode component suffixes (see ``ComponentObservation.component_id``).
+NON_MODE_COMPONENTS = ("elastic", "qe")
+
+
+def is_mode(component: ComponentObservation) -> bool:
+    """True for a phonon mode, False for the ``#elastic`` / ``#qe`` non-mode components."""
+    return component.component_id.rsplit("#", 1)[-1] not in NON_MODE_COMPONENTS
+
+
+def path_coordinate(q) -> float | None:
+    """The scalar path coordinate of an arena: h of ``(h, k, l)``. ``None`` when unplaceable."""
+    return None if q is None else float(q[0])
+
+
+def q_adjacent(a, b, tol: float = Q_ADJACENCY) -> bool:
+    """Are two arenas neighbours on the q path? ``q is None`` couples to nothing."""
+    ha, hb = path_coordinate(a), path_coordinate(b)
+    return ha is not None and hb is not None and abs(ha - hb) <= tol
+
+
+def link_tol(fp_a: Footprint, fp_b: Footprint) -> float:
+    """The ω tolerance within which two arenas' modes may be the same track."""
+    return max(fp_a.gauss_fwhm or 0.0, fp_b.gauss_fwhm or 0.0, LINK_TOL_FLOOR)
+
+
+def covers(footprint: Footprint, band_omega: float) -> bool:
+    """Did this observation look at intrinsic ``|ω| = band_omega``? Geometric coverage only."""
+    w = abs(float(band_omega))
+    return any(b.lo <= w <= b.hi for b in footprint.bands)
+
+
+def visibility_of(band_omega: float, footprint: Footprint, has_match: bool, *,
+                  elastic_present: bool = False) -> Visibility:
+    """Why a hypothesized band at ``|ω| = band_omega`` is, or is not, seen in ``footprint``.
+
+    The one gate every "expected but missing" penalty must pass (SCENE_DESIGN §2b): absence is
+    evidence ONLY inside coverage. A band the neighbouring scan never looked at is
+    ``censored_outside_footprint`` and can never be penalized — the gap is not a measurement.
+
+    ``elastic_present`` says an ``#elastic``/``#qe`` component is chosen at that arena, so a band
+    within one Gaussian FWHM of zero is hidden under the elastic line rather than absent from the
+    data: ``blocked_unresolved``, also never penalized. (This is the endpoint-under-Bragg
+    ingredient; the zone-centre factor that assigns ``structural_endpoint`` lands next.)
+
+    A matched band is ``observed`` even when it sits under the elastic line: something WAS seen
+    there, and calling it blocked would throw away a real detection.
+    """
+    if not covers(footprint, band_omega):
+        return Visibility.CENSORED_OUTSIDE_FOOTPRINT
+    if has_match:
+        return Visibility.OBSERVED
+    if elastic_present and abs(float(band_omega)) <= (footprint.gauss_fwhm or 0.0):
+        return Visibility.BLOCKED_UNRESOLVED
+    return Visibility.SEARCHED_NO_SIGNAL
 
 
 # ----------------------------------------------------------------------------

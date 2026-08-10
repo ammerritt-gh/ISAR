@@ -1,7 +1,8 @@
 """Observations → a cluster-factorized, exactly-scored scene revision (SCENE-3 PR 3a).
 
 This is the arithmetic of SCENE_DESIGN §2b and nothing else. For a cluster of observation
-arenas, an alternative ``S`` picks exactly one surviving candidate per arena, and
+arenas, an alternative ``S`` picks exactly one surviving candidate per arena AND one linkage
+reading of those candidates' components (the connectivity variable, SCENE-3 PR 3b), and
 
     ln W(S) = Σ_j lnZ(j, h_j(S)) + Σ_f ln φ_f(S),   P(S|D) = exp(ln W(S) − lse)
 
@@ -45,9 +46,11 @@ from types import MappingProxyType
 
 from isar.schema.steering import CANONICAL_MASTER, EVIDENCE_SINKS
 
-from .factors import FACTORS, factor_manifest, registry_fingerprint, validate_factor
+from .factors import (FACTORS, factor_manifest, neighbour_reports, registry_fingerprint,
+                      validate_factor)
 from .model import (CandidateRow, ComponentObservation, Footprint, SceneObservation,
-                    Visibility, canonical_bytes, digest_bytes, footprint_of)
+                    Visibility, canonical_bytes, digest_bytes, footprint_of, is_mode, link_tol,
+                    q_adjacent)
 
 SCENE_SCHEMA = "isar.scene-revision/1"
 
@@ -67,6 +70,13 @@ SCENE_PRUNE_MARGIN = 100.0
 # default, so every such scene published a capped posterior with a bound instead of the answer.
 SCENE_ALT_CAP = 4096
 
+# Hard cap on the LINKAGE variants kept per candidate assignment. Owner-tunable. Linkage variants
+# multiply the assignment count, and a cluster with many ambiguous junctions would otherwise
+# enumerate 2^junctions readings of one assignment. Truncation is recorded per cluster
+# (``linkage_truncated``) with the same honesty as the alternative cap: linkage variants share a
+# base Σ lnZ exactly, so no bound on the dropped mass can be stated for them either.
+MAX_LINKAGE_VARIANTS = 8
+
 
 # ----------------------------------------------------------------------------
 # What a factor is allowed to see
@@ -82,6 +92,12 @@ class SceneAlternative:
     cluster_id: str
     assignment: tuple[tuple[str, str], ...]          # (scan_ref, chosen label), by scan_ref
     components: tuple[ComponentObservation, ...]     # components of the chosen candidates only
+    # The scene's connectivity variable (SCENE_DESIGN §2b: "connectivity/topology states"): which
+    # component at one arena is the SAME TRACK as which component at an adjacent one, as sorted
+    # ``(component_id_a, component_id_b)`` pairs. Two alternatives may share an assignment and
+    # differ only here — that is the branch-crossing ambiguity, and since they share the same local
+    # fits their base Σ lnZ is identical, so only factor terms can separate them.
+    links: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,9 +344,23 @@ def _split_by_evidence(obs):
 # ----------------------------------------------------------------------------
 # 3. Components
 # ----------------------------------------------------------------------------
+def _structure_terms(label: str) -> tuple[str, ...]:
+    """The component terms of a candidate label, per the catalogue's label grammar.
+
+    Grammar, read off the code that builds it rather than guessed:
+    ``isar/analyze/catalogue.py:enumerate_structures`` / ``enumerate_multimode_structures`` join
+    the term names with ``+`` (``elastic+stokes+qe+bg``, ``stokes2+bg``);
+    ``_phonon_bearing_adder`` appends ``@<identity>`` to the WHOLE label; and
+    ``isar/analyze/loop.py:1030`` appends a variant suffix (``_neardeg``) to the whole label
+    after that. Both suffixes therefore land on the LAST term, and ``elastic``/``qe`` are never
+    last (``bg`` always is), so splitting the pre-``@`` part on ``+`` identifies them exactly.
+    """
+    return tuple(label.split("@", 1)[0].split("+"))
+
+
 def _components_of(o: SceneObservation, fp: Footprint,
                    labels: frozenset) -> tuple[ComponentObservation, ...]:
-    """One component per mode of every SURVIVING candidate of ``o``.
+    """One component per mode of every SURVIVING candidate of ``o``, plus its non-mode components.
 
     ``labels`` is the surviving set from ``_prune``. A discarded candidate emits no component,
     so it can neither be coupled on nor scored — a candidate excluded for having no evidence,
@@ -339,18 +369,34 @@ def _components_of(o: SceneObservation, fp: Footprint,
 
     A ``None`` ω is kept as a component with ``omega=None`` — the mode exists, it is merely
     unplaceable, and dropping it would make a candidate look like it had fewer modes.
+
+    A structure's ELASTIC and QUASIELASTIC terms are components too, at ω=0: without them an
+    ``elastic_only`` arena would emit nothing and could never couple to its neighbours, so the
+    scene could say nothing about a run of phonon-less arenas — which is a physical claim
+    ("nothing inelastic here, over this stretch of q"), not an absence of data. A bg-only
+    candidate still emits nothing: there really is nothing there.
     """
     return tuple(
         ComponentObservation(
             scan_ref=o.scan_ref,
-            component_id=f"{o.scan_ref}#{c.label}#{i}",
+            component_id=f"{o.scan_ref}#{c.label}#{tag}",
             candidate_label=c.label,
             q=o.q,
-            omega=None if w is None else float(w),
+            omega=omega,
             footprint=fp,
             visibility=Visibility.OBSERVED)
         for c in o.candidates if c.label in labels
-        for i, w in enumerate(c.omegas))
+        for tag, omega in _component_slots(c))
+
+
+def _component_slots(c: CandidateRow):
+    """``(id tag, ω)`` for one candidate: its modes by index, then its non-mode terms."""
+    for i, w in enumerate(c.omegas):
+        yield str(i), (None if w is None else float(w))
+    terms = _structure_terms(c.label)
+    for term in ("elastic", "qe"):
+        if term in terms:
+            yield term, 0.0
 
 
 # ----------------------------------------------------------------------------
@@ -536,10 +582,78 @@ def _discarded_bound(n_dropped: int, lowest_base: float, leader_base: float,
 
 
 # ----------------------------------------------------------------------------
+# 6b. Linkage variants (the connectivity variable)
+# ----------------------------------------------------------------------------
+def _default_links(alt: SceneAlternative, view: ClusterView) -> tuple[tuple[str, str], ...]:
+    """Nearest-ω chaining between adjacent arenas: the linkage assumed unless a factor proposes.
+
+    Deterministic and greedy: for each adjacent arena pair in scan_ref order, each mode of the
+    lower arena takes the closest unclaimed mode of the higher one within ``link_tol`` (ties by
+    component id). A mode with no partner in tolerance stays UNLINKED rather than being forced
+    onto a distant one — a forced link would invent a track the data does not support, and an
+    unlinked mode is exactly what the connectivity factor prices as a possible break.
+    """
+    chosen: dict[str, list] = {}
+    for c in alt.components:
+        chosen.setdefault(c.scan_ref, []).append(c)
+    links = []
+    for a in range(len(view.scan_refs)):
+        for b in range(a + 1, len(view.scan_refs)):
+            i, j = view.scan_refs[a], view.scan_refs[b]
+            fp_i, fp_j = view.footprints[i], view.footprints[j]
+            if not q_adjacent(fp_i.q, fp_j.q):
+                continue
+            tol = link_tol(fp_i, fp_j)
+            partners = _placeable_modes(chosen.get(j, ()))
+            taken = set()
+            for m in _placeable_modes(chosen.get(i, ())):
+                reach = [(abs(abs(p.omega) - abs(m.omega)), p.component_id) for p in partners
+                         if p.component_id not in taken
+                         and abs(abs(p.omega) - abs(m.omega)) <= tol]
+                if not reach:
+                    continue
+                _, partner_id = min(reach)
+                taken.add(partner_id)
+                links.append((m.component_id, partner_id))
+    return tuple(sorted(links))
+
+
+def _placeable_modes(components) -> list:
+    return sorted((c for c in components if is_mode(c) and c.omega is not None),
+                  key=lambda c: (abs(c.omega), c.component_id))
+
+
+def _linkage_variants(alt: SceneAlternative, view: ClusterView, factor_list):
+    """``(variants, truncated)`` — the linkage readings of ONE candidate assignment.
+
+    The default chaining always comes first, so a truncation can never drop it. Proposals come
+    from the factors' ``propose`` hooks (the crossing proposer), are deduplicated, and are ordered
+    deterministically before the cap applies.
+    """
+    default = _default_links(alt, view)
+    proposed = set()
+    for f in factor_list:
+        if f.propose is None:
+            continue
+        for links in f.propose(replace(alt, links=default), view):
+            variant = tuple(sorted(tuple(pair) for pair in links))
+            if variant != default:
+                proposed.add(variant)
+    ordered = [default, *sorted(proposed)]
+    return tuple(ordered[:MAX_LINKAGE_VARIANTS]), len(ordered) > MAX_LINKAGE_VARIANTS
+
+
+# ----------------------------------------------------------------------------
 # 7-9. Scoring, ledger, marginals
 # ----------------------------------------------------------------------------
 def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, cap,
                    span) -> dict:
+    """One cluster's ledger. Alternatives = candidate assignments × their linkage readings.
+
+    The cap and its bound are about ASSIGNMENTS (``n_possible``, ``n_assignments``); linkage
+    variants expand each surviving assignment afterwards, so the heap enumeration never sees them
+    and cannot collapse two readings of one assignment into a single kept entry.
+    """
     cluster_id = refs[0]
     arenas = [(r, [(c.label, lnz) for c, lnz in pruning[r]["survivors"]]) for r in refs]
     assignments, n_possible, truncated, discarded, unbounded = _enumerate(arenas, cap, span)
@@ -551,55 +665,21 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
     rows_of = {(r, c.label): c for r in refs for c in by_ref[r].candidates}
 
     entries = []
+    linkage_truncated = False
     for assignment in assignments:
         chosen = {ref: label for ref, label in assignment}
         # ONE lnZ per arena. A chosen candidate with n_modes=2 contributes its evidence once;
         # its modes are components below, and components carry no evidence at all.
         base = math.fsum(lnz_of[(ref, label)] for ref, label in assignment)
-        alt = SceneAlternative(
+        assigned = SceneAlternative(
             cluster_id=cluster_id, assignment=assignment,
             components=tuple(c for ref in refs for c in components[ref]
                              if c.candidate_label == chosen[ref]))
-        factor_terms, prior_terms, reasons = {}, {}, {}
-        for f in factor_list:
-            if f.score is None:
-                continue
-            term, why = f.score(alt, view)
-            term = float(term)
-            if not math.isfinite(term):
-                # A NaN term poisons the log-sum-exp into an all-NaN posterior that still
-                # "normalizes"; a −inf term silently deletes an alternative from the cluster
-                # without a pruning record. Both are caught at the source, naming it.
-                raise ValueError(
-                    f"scene factor {f.name!r} returned a non-finite term {term!r} for cluster "
-                    f"{cluster_id!r}, alternative {list(assignment)}. A veto by −inf is NOT a "
-                    "supported semantic in v1: a factor that must forbid an alternative needs a "
-                    "declared veto semantic, so the exclusion is recorded and bounded like every "
-                    "other one, rather than vanishing into the normalization.")
-            if f.score_bound is not None and not f.score_bound[0] <= term <= f.score_bound[1]:
-                # The declared bound is not documentation: the margin pruning and truncation
-                # bounds recorded in this payload were DERIVED from it, and candidates were
-                # discarded on its strength. A factor that exceeds its own bound has already
-                # invalidated them, so it fails here rather than publishing them.
-                raise ValueError(
-                    f"scene factor {f.name!r} returned {term!r} for cluster {cluster_id!r}, "
-                    f"alternative {list(assignment)}, outside its declared score_bound "
-                    f"{f.score_bound}. Candidates were pruned and alternatives truncated under "
-                    "that bound, so exceeding it makes the recorded mass bounds false; widen "
-                    "the declaration or declare None and pay for it in pruning.")
-            (prior_terms if f.kind == "scene_prior" else factor_terms)[f.name] = term
-            if why:
-                reasons[f.name] = list(why)
-        entries.append({
-            "assignment": [list(pair) for pair in assignment],
-            "base": base,
-            "factor_terms": factor_terms,
-            "prior_terms": prior_terms,
-            "reasons": reasons,
-            # Summed in sorted-name order over both term maps, so a reader recomputing
-            # total = fsum([base, *terms-by-sorted-name]) reproduces this float exactly.
-            "total": _total(base, factor_terms, prior_terms),
-        })
+        variants, cut = _linkage_variants(assigned, view, factor_list)
+        linkage_truncated = linkage_truncated or cut
+        for links in variants:
+            entries.append(_score_alternative(replace(assigned, links=links), view, base,
+                                              factor_list, cluster_id))
 
     log_norm = _logsumexp([e["total"] for e in entries])
     for e in entries:
@@ -626,17 +706,89 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
         "scan_refs": list(refs),
         "truncated": truncated,
         "n_enumerated": len(entries),
+        "n_assignments": len(assignments),
         "n_possible": n_possible,
         "discarded_mass_bound": discarded,
         # True when the cap dropped alternatives under a factor that declared no bound: the
         # cluster is UNRESOLVED, not narrowed, and no reader may treat these posteriors as a
         # bounded approximation of the full ones.
         "truncation_unbounded": unbounded,
+        # True when some assignment had more linkage readings than MAX_LINKAGE_VARIANTS. Linkage
+        # variants share a base Σ lnZ exactly, so there is no base ordering to bound them by and
+        # no honest mass bound to state — only the fact that readings were dropped.
+        "linkage_truncated": linkage_truncated,
         "pruning": {r: pruning[r]["excluded"] for r in refs},
         "log_norm": log_norm,
         "alternatives": entries,
+        # Why each chosen mode's absence at a neighbour was, or was not, priced — for the leading
+        # alternative only, which is what a reader is looking at. Additive: a consumer that does
+        # not know the key is unaffected.
+        "visibility": (list(neighbour_reports(_leader(entries, refs, components, cluster_id), view))
+                       if entries else []),
         "score_ablation": score_ablation,
         "marginals": _marginals(refs, entries, rows_of, truncated, unbounded),
+    }
+
+
+def _leader(entries, refs, components, cluster_id) -> SceneAlternative:
+    """The highest-posterior alternative, rebuilt as a ``SceneAlternative``. Ties by position."""
+    best = max(entries, key=lambda e: e["posterior"])
+    assignment = tuple(tuple(pair) for pair in best["assignment"])
+    chosen = {ref: label for ref, label in assignment}
+    return SceneAlternative(
+        cluster_id=cluster_id, assignment=assignment,
+        components=tuple(c for ref in refs for c in components[ref]
+                         if c.candidate_label == chosen[ref]),
+        links=tuple(tuple(pair) for pair in best["links"]))
+
+
+def _score_alternative(alt: SceneAlternative, view: ClusterView, base: float, factor_list,
+                       cluster_id: str) -> dict:
+    """One ledger entry: the factor terms of ``alt`` and the total they add up to."""
+    assignment = alt.assignment
+    factor_terms, prior_terms, reasons = {}, {}, {}
+    for f in factor_list:
+        if f.score is None:
+            continue
+        term, why = f.score(alt, view)
+        term = float(term)
+        if not math.isfinite(term):
+            # A NaN term poisons the log-sum-exp into an all-NaN posterior that still
+            # "normalizes"; a −inf term silently deletes an alternative from the cluster
+            # without a pruning record. Both are caught at the source, naming it.
+            raise ValueError(
+                f"scene factor {f.name!r} returned a non-finite term {term!r} for cluster "
+                f"{cluster_id!r}, alternative {list(assignment)}. A veto by −inf is NOT a "
+                "supported semantic in v1: a factor that must forbid an alternative needs a "
+                "declared veto semantic, so the exclusion is recorded and bounded like every "
+                "other one, rather than vanishing into the normalization.")
+        if f.score_bound is not None and not f.score_bound[0] <= term <= f.score_bound[1]:
+            # The declared bound is not documentation: the margin pruning and truncation
+            # bounds recorded in this payload were DERIVED from it, and candidates were
+            # discarded on its strength. A factor that exceeds its own bound has already
+            # invalidated them, so it fails here rather than publishing them.
+            raise ValueError(
+                f"scene factor {f.name!r} returned {term!r} for cluster {cluster_id!r}, "
+                f"alternative {list(assignment)}, outside its declared score_bound "
+                f"{f.score_bound}. Candidates were pruned and alternatives truncated under "
+                "that bound, so exceeding it makes the recorded mass bounds false; widen "
+                "the declaration or declare None and pay for it in pruning.")
+        (prior_terms if f.kind == "scene_prior" else factor_terms)[f.name] = term
+        if why:
+            reasons[f.name] = list(why)
+    return {
+        "assignment": [list(pair) for pair in assignment],
+        # The linkage this alternative reads the assignment under. Two entries with the same
+        # assignment and different links are the two readings of a crossing, and they carry the
+        # SAME ``base`` by construction.
+        "links": [list(pair) for pair in alt.links],
+        "base": base,
+        "factor_terms": factor_terms,
+        "prior_terms": prior_terms,
+        "reasons": reasons,
+        # Summed in sorted-name order over both term maps, so a reader recomputing
+        # total = fsum([base, *terms-by-sorted-name]) reproduces this float exactly.
+        "total": _total(base, factor_terms, prior_terms),
     }
 
 
