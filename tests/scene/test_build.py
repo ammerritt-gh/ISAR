@@ -13,7 +13,7 @@ from dataclasses import replace
 import pytest
 
 from isar.scene.build import (SCENE_SCHEMA, ClusterView, SceneAlternative,
-                              _discarded_bound, build_scene)
+                              _log_discarded_bound, build_scene)
 from isar.scene import build as build_mod
 from isar.scene.factors import SceneFactor
 from isar.scene.model import (CandidateRow, ComponentDescriptor, SceneObservation, canonical_bytes,
@@ -241,11 +241,16 @@ def test_margin_pruning_records_the_bound_and_keeps_the_near_rival():
 def test_unusable_and_nonfinite_candidates_are_excluded_without_a_bound():
     obs = [mk_obs("e:1:d", [cand("lead", -10.0), cand("dead", -11.0, usable=False),
                             cand("inf", -math.inf), cand("none", None)])]
-    cl = cluster_of(build_scene(obs, factors=[ZERO]), "e:1:d")
+    rev = build_scene(obs, factors=[ZERO])
+    cl = cluster_of(rev, "e:1:d")
     excluded = {e["label"]: e for e in cl["pruning"]["e:1:d"]}
     assert set(excluded) == {"dead", "inf", "none"}
     assert all(e["reason"] == "no_evidence" and e["mass_bound"] is None
                for e in excluded.values())
+    # The verbatim row persists ±inf as null — the same "no lnZ to sum" the builder already
+    # read it as, and the only spelling that survives strict JSON.
+    rows = {c["label"]: c for c in rev.payload["observations"][0]["candidates"]}
+    assert rows["inf"]["log_evidence"] is None and rows["none"]["log_evidence"] is None
 
 
 def test_arena_without_usable_evidence_is_experiment_map_only():
@@ -329,16 +334,39 @@ def test_cap_keeps_exactly_the_top_alternatives_and_states_the_dropped_bound():
 
     leader = math.fsum(lnz[p] for p in ranked[0])
     lowest = math.fsum(lnz[p] for p in ranked[9])
-    assert cl["discarded_mass_bound"] == pytest.approx(115 * math.exp(lowest - leader), rel=1e-12)
+    assert cl["log_discarded_mass_bound"] == pytest.approx(math.log(115) + lowest - leader,
+                                                           rel=1e-12)
 
 
 def test_discarded_bound_survives_counts_far_outside_the_float_range():
-    """A cluster of a few hundred binary arenas overflows float long before the bound does."""
-    assert _discarded_bound(0, -5.0, -1.0) == 0.0
-    assert _discarded_bound(115, -30.0, -6.0) == pytest.approx(115 * math.exp(-24.0), rel=1e-12)
+    """A cluster of a few hundred binary arenas overflows float long before the bound does — and
+    in log space the bound itself never does."""
+    assert _log_discarded_bound(115, -30.0, -6.0) == pytest.approx(math.log(115) - 24.0, rel=1e-12)
     huge = 2 ** 1100                                     # unconvertible to float at all
-    assert _discarded_bound(huge, -800.0, 0.0) == pytest.approx(math.exp(1100 * math.log(2) - 800))
-    assert _discarded_bound(huge, -1.0, 0.0) == math.inf  # honestly unbounded, not a crash
+    assert _log_discarded_bound(huge, -800.0, 0.0) == pytest.approx(1100 * math.log(2) - 800)
+    # The case the linear form reported as ``inf``: still a finite, usable number here.
+    assert _log_discarded_bound(huge, -1.0, 0.0) == pytest.approx(1100 * math.log(2) - 1.0)
+
+
+def test_a_bound_beyond_the_linear_float_range_is_still_a_finite_log_bound():
+    """Review finding E: the linear bound overflowed to ``inf``, which is not JSON, so the payload
+    recorded "no bound" for a truncation that HAD one — and a vacuous ``inf`` read as a bounded
+    approximation before that. In log space the number is always there, and the only unbounded
+    lane left is the real one."""
+    # A factor spanning 1000 nats: exp(-5 + 1000) overflowed, -5 + 1000 does not.
+    obs = [mk_obs("e:1:d", [cand("A", 0.0), cand("B", -5.0), cand("C", -9.0)])]
+    rev = build_scene(obs, factors=[biased(label="B", term=1000.0)], alt_cap=2)
+    cl = cluster_of(rev, "e:1:d")
+    assert cl["truncated"] is True and cl["truncation_unbounded"] is False
+    assert cl["log_discarded_mass_bound"] == pytest.approx(995.0, rel=1e-12)
+    assert "discarded_mass_unbounded" not in cl        # the flag the log-space bound retires
+    canonical_bytes(rev.payload)                       # strict JSON, no Infinity anywhere
+
+
+def test_canonical_bytes_refuses_a_non_finite_payload():
+    for bad in (math.inf, -math.inf, math.nan):
+        with pytest.raises(ValueError):
+            canonical_bytes({"x": bad})
 
 
 def test_score_ablation_alignment_is_declared_in_the_payload():
@@ -462,7 +490,7 @@ def test_an_unbounded_factor_over_the_cap_states_no_bound_at_all():
     obs = [mk_obs("e:1:d", [cand("A", 0.0), cand("B", -1.0), cand("C", -2.0)])]
     cl = cluster_of(build_scene(obs, factors=[UNBOUNDED], alt_cap=2), "e:1:d")
     assert cl["truncated"] is True and cl["truncation_unbounded"] is True
-    assert cl["discarded_mass_bound"] is None
+    assert cl["log_discarded_mass_bound"] is None
     assert cl["marginals"]["truncation_unbounded"] is True
 
 
@@ -473,10 +501,10 @@ def test_a_bounded_truncation_widens_its_stated_bound_by_the_factor_span():
     cl = cluster_of(rev, "e:1:d")
     assert cl["truncated"] is True and cl["truncation_unbounded"] is False
     # One dropped alternative (C), lowest kept base -5, leader base 0, span 10.
-    assert cl["discarded_mass_bound"] == pytest.approx(math.exp(-5.0 + 10.0), rel=1e-12)
+    assert cl["log_discarded_mass_bound"] == pytest.approx(5.0, rel=1e-12)
     # A bound above 1 is a true bound that constrains nothing - and says so, rather than
     # claiming e^-5 of dropped mass while a +10 nat factor sits on the dropped alternative.
-    assert cl["discarded_mass_bound"] > 1.0
+    assert cl["log_discarded_mass_bound"] > 0.0
 
 
 def test_an_empty_factor_set_keeps_the_bare_margin_and_the_bare_bound():
@@ -500,7 +528,7 @@ def test_an_empty_factor_set_keeps_the_bare_margin_and_the_bare_bound():
     capped = cluster_of(build_scene(
         [mk_obs("e:1:d", [cand("A", 0.0), cand("B", -5.0), cand("C", -9.0)])],
         factors=[], alt_cap=2), "e:1:d")
-    assert capped["discarded_mass_bound"] == pytest.approx(math.exp(-5.0), rel=1e-12)
+    assert capped["log_discarded_mass_bound"] == pytest.approx(-5.0, rel=1e-12)
     assert capped["truncation_unbounded"] is False
 
 
@@ -512,7 +540,7 @@ def test_the_default_cap_enumerates_a_realistic_cluster_exactly():
                   q=(1.0 + 0.1 * i, 0.0, 0.0)) for i in range(6)]
     cl = cluster_of(build_scene(obs, factors=[COUPLER, ZERO]), "e:0:d")
     assert cl["n_possible"] == 729 and cl["n_enumerated"] == 729
-    assert cl["truncated"] is False and cl["discarded_mass_bound"] == 0.0
+    assert cl["truncated"] is False and cl["log_discarded_mass_bound"] is None
 
 
 # ----------------------------------------------------------------------------

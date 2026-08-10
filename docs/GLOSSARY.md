@@ -256,6 +256,52 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   does not confer a reflection — FCC (300) has integer indices, sits on a fold, and is extinct. The
   classification moves no belief, because elastic intensity is ubiquitous: off-lattice elastic is not
   improbable, only not-Bragg.
+- **scene revision / scene pointer** — one scored scene, stored as a content-addressed file under
+  `<workspace>/report/scene/<digest>.json`, plus `current.json` (`isar.scene-pointer/1`) naming the
+  revision the workspace is currently showing and the one it succeeded. Lineage and the write time
+  live in the pointer and never inside the digested revision, so rebuilding an unchanged workspace
+  reproduces the same digest and "did anything change?" is answerable by comparing hashes. Nothing
+  is ever deleted; a missing scene reads as "no scene", while a damaged one (a pointer naming a
+  missing file, or content that no longer matches its digest) is an error rather than an empty
+  answer.
+- **hypothesis map** — the renderable projection of a stored revision: what the scene expects at
+  each scan it scored, and where it claims nothing. Three axes are kept apart on purpose — mode
+  markers and coverage gaps are in intrinsic |ω| (unsigned mode energy), while a fitted curve is on
+  the signed energy axis the scan was measured on, and folding one onto the other is the plot's
+  job. Where the scene's leading reading is not the model the scan actually delivered, no curve is
+  drawn and the reason is recorded: drawing it would put one hypothesis's intensity under another
+  hypothesis's name.
+- **footprint (coverage)** — where a scan actually looked, in intrinsic |ω|: the *cells* of the
+  bins it kept, merged into runs, folded onto the unsigned axis (a window spanning zero covers part
+  of |ω| from both the Stokes and anti-Stokes sides). Built from the kept bins rather than from the
+  window's end points, so a QC-masked or excluded stretch in the middle is a hole in coverage, not
+  a searched region — absence inside a hole is never evidence.
+- **detectability gate** — the checks an absence must pass before it counts against a claim. The
+  neighbouring scan must have been able to *see* the excitation, not merely to have looked at that
+  energy: an anti-Stokes-only band must not be too Bose-suppressed to have shown anything, the
+  neighbour must have counted comparably deep (within a factor of ~3 of the exposure that saw the
+  mode), and — where that neighbour holds other peaks of its own — where the track should have
+  reappeared must be knowable from a declared dispersion slope, since a neighbour full of other
+  features is no unambiguous non-detection (a covered neighbour holding nothing still counts).
+  Anything unknown fails closed — the absence is demoted to **blocked_unresolved** with the
+  reason recorded, never charged.
+- **path topology / adjacency** — scans are ordered along the path they were measured on, derived
+  from their q alone; two scans are neighbours only if they are *consecutive* on that path.
+  Adjacency is never a radius in q: a radius makes every scan inside it a neighbour of every other,
+  so adding an intermediate scan would leave the old skip-neighbour judgement standing beside the
+  two new ones and price one absence twice. A q set that is not a path at all fails closed — no
+  ordering, no cross-scan coupling, and the reason recorded.
+- **linkage / linkage prior** — which component at one scan is the *same track* as which component
+  at its neighbour. Two readings of the same scans can differ only in their linkage; that is the
+  branch-crossing ambiguity. An assignment that admits several linkage readings must not thereby
+  outweigh one that admits a single reading, so each reading carries a `ln(1/n)` prior over the
+  readings *enumerated* for it — a hypothesis is never boosted by being enumerated. If the cap
+  drops readings, the share of prior mass dropped is recorded and the cluster is reported
+  unresolved rather than narrowed.
+- **component descriptor** — what a fitted candidate is made of, written down at fit time: an
+  ordered list of `mode` / `elastic` / `quasielastic` entries (with the mode's slot into that
+  candidate's energies). The scene reads component meaning from these and from nothing else — a
+  display label is a name, never a schema to be parsed back into physics.
 - **unknown-physical / spurious / no_signal** — the three distinct outcomes for a feature that does
   not cohere with the scene. *Unknown-physical* is real scattering the declared model does not
   describe. *Spurious* is an instrument artifact — it coheres in the instrument's own coordinates

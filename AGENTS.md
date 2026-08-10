@@ -125,7 +125,7 @@ area.
 | The autonomous driver (`isar drive`) | `docs/MEASUREMENT_STEERING.md` |
 | Same-action scan-window EIG (candidate generation and exact realized scoring Partial; authoritative selection Partial — symmetric per-neutron comparison, O43; O42 release review retired by H1, default-on once the SCENE world suite exercises it) | `docs/EIG_STEERING_DESIGN.md`, then `docs/MEASUREMENT_STEERING.md` |
 | Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
-| The SCENE program (scene layer, catalogue, target-free discovery; H1 constitution, world-suite foundation, SCENE-2 program contract, and SCENE-1 PR-a catalogue + `elastic_only` / PR-b evidence selection Implemented; PR-c and SCENE-3+ Planned) | `docs/SCENE_DESIGN.md` |
+| The SCENE program (scene layer, catalogue, target-free discovery; H1 constitution, world-suite foundation, SCENE-2 program contract, and SCENE-1 PR-a catalogue + `elastic_only` / PR-b evidence selection / PR-c constrained variants, and the whole of SCENE-3 — scene scoring, factors, revision store, `workspace_api` read surface — Implemented; SCENE-4+ Planned) | `docs/SCENE_DESIGN.md` |
 | Campaign diagnostic report | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |
 | Why a decision was made | `docs/DECISIONS.md` (IDs P*/D*/V/R/S/O/T/W/H are stable, safe to cite) |
 | What happened in a run (historical, never load-bearing) | `docs/campaigns/` |

@@ -20,6 +20,7 @@ One directory per experiment (`isar/session/workspace.py`):
   card.state.json     # machine-owned accumulated state — experiment-critical, not deletable
   session.json        # machine bookkeeping (manifest + ledger) — deletable, rebuildable
   report/             # report.md/.html/.json, reduction.*, results.csv, figures/
+    scene/            # scene revisions: <digest>.json blobs + current.json pointer
 ```
 
 **The two card files have opposite ownership, and that is the point.**
@@ -79,7 +80,7 @@ init  detect  ingest  run  status  profile  report  diagnose  score  view  drive
 | `isar run <data>... --workspace DIR` | The whole pipeline: ingest → parse/classify → route context events → QC/combine → optional LLM adjudication → calibration-gated fit with prior → verdict/confidence → collate → report. Idempotent; re-run per batch. |
 | `isar status --workspace DIR` | Ledger summary without reprocessing: counts by status and verdict, held scans with reasons, scan-number and coverage gaps, calibration versions, prior population. |
 | `isar profile --workspace DIR` | Where a campaign spent its time, from the session log; `--compare-workspace` diffs scientific decisions and certified outputs against another workspace. |
-| `isar report --workspace DIR` | Re-render `report.md`/`.html`/`.json` and the dispersion figure. **Reads the ledger only — no reparse, no refit** (`isar/cli/report_cmd.py`). |
+| `isar report --workspace DIR` | Re-render `report.md`/`.html`/`.json` and the dispersion figure. **Reads the ledger only — no reparse, no refit** (`isar/cli/report_cmd.py`). `--scene` additionally rebuilds the scene revision from the persisted ledger and publishes it under `report/scene/` — read-only in the same sense (no re-fit, no re-collation); a workspace the scene adapter cannot read faithfully exits **3** rather than writing an empty scene. |
 | `isar diagnose --workspace DIR` | Render the architect's `CAMPAIGN_DIAGNOSTIC.md` for a campaign — see `CAMPAIGN_DIAGNOSTIC_SPEC.md`. `--eig` prints the scan-window EIG decision table to stdout instead (latest decision per Q, its outcome, reason codes, legacy/target point counts and information margin, plus a reason-code histogram) and writes nothing at all. |
 | `isar score --workspace DIR` | Score a run against a human gold CSV (`--gold`) or known analytic truth (`--truth-fn`/`--truth-csv`). Gold CSVs appear **nowhere** in the `run` path. |
 | `isar view [workspace]` | Open the desktop GUI on a workspace (needs the `[gui]` extra) — see `GUI_DESIGN.md`. |

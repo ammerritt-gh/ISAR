@@ -149,6 +149,18 @@ STALE_PHRASES = (
         "STAT-2c remains the first possible authority switch",
         "the STAT-2c authority switch was executed as H4 (SCENE-1 PR-b); S13 closed STAT-2",
     ),
+    # SCENE-3 closeout (H14). Narrow claim forms only: H11(a)/H12(e) legitimately narrate the
+    # artifact's retirement, and H14 names the deleted constants, so neither may be forbidden.
+    (
+        "content-addressed interpretation artifact",
+        "H11(a) retired the per-scan interpretation artifact before it existed; the scene reads "
+        "the persisted candidate rows and embeds them in the revision",
+    ),
+    (
+        "invocation sites (PR 3c) remain Planned",
+        "SCENE-3 PR 3c landed as H14: the store, the workspace_api read surface, the observe-only "
+        "driver hook and `isar report --scene` are Implemented",
+    ),
 )
 
 

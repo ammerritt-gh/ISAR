@@ -120,12 +120,27 @@ class SampleKnowledge:
 # ----------------------------------------------------------------------------
 # Canonical form
 # ----------------------------------------------------------------------------
+# The revision payload's schema name lives HERE, with the serialization contract, so readers
+# (the workspace facade's schema gate) can name it without importing the builder — the G16
+# allow-list admits isar.scene.model, never isar.scene.build.
+SCENE_SCHEMA = "isar.scene-revision/1"
+
+
 # Byte-identical to isar/session/master_delivery.py:_persist_content_addressed, so a scene
 # fingerprint and a content-addressed artifact digest agree on what "the same payload"
 # means. Deliberately NOT imported from there: this module stays session-free.
 def canonical_bytes(payload) -> bytes:
-    """The one canonical JSON encoding: sorted keys, no whitespace, UTF-8."""
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True,
+    """The one canonical JSON encoding: sorted keys, no whitespace, UTF-8, strict JSON.
+
+    ``allow_nan=False`` because the encoding is what gets *stored and re-read*: Python's default
+    emits the non-standard tokens ``Infinity``/``NaN``, which a strict reader (``json.loads``, and
+    every non-Python consumer) rejects — a revision that digests cleanly and then cannot be
+    replayed. A non-finite anywhere in a payload is therefore a loud ``ValueError`` here rather
+    than a blob that is unreadable later; producers state such a quantity as ``None`` plus an
+    explicit unbounded flag instead. Byte-identical to master_delivery's encoder on finite
+    payloads, which is every payload that may exist.
+    """
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False,
                       separators=(",", ":")).encode("utf-8")
 
 
@@ -232,6 +247,15 @@ class CandidateRow:
 
     def to_dict(self) -> dict:
         d = asdict(self)
+        # A non-finite lnZ (±inf, and the NaN an evidence lane actually tends to produce)
+        # persists as ``null``. Not a coercion of a meaningful number: the builder
+        # already declares a non-finite lnZ unsummable and routes it exactly like ``None``
+        # (``build._usable_lnz``, excluded as ``no_evidence``), so the two spellings are already
+        # indistinguishable to every consumer. Collapsing them at the serialization boundary is
+        # what lets the row travel as strict JSON; leaving ``Infinity`` in would make the whole
+        # revision unreadable to protect a distinction nothing may act on.
+        if d["log_evidence"] is not None and not math.isfinite(d["log_evidence"]):
+            d["log_evidence"] = None
         d["omegas"] = list(self.omegas)
         d["components"] = [c.to_dict() for c in self.components]
         d["effective_constraints"] = (None if self.effective_constraints is None

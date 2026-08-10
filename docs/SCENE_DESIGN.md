@@ -30,8 +30,8 @@ natural-language goal ──goal compiler──> isar.campaign-program (frozen; 
       └─ discover_and_map intent: path region, intrinsic ω-domain, catalogue profile, profiles
 scan data ──catalogue-driven grammar──> structure × identity candidates
       └─ identity-conditional Laplace evidences (catalogue priors applied exactly once, locally)
-      └─ content-addressed interpretation artifact + results.csv projection columns
-interpretation artifacts ──> cluster-factorized scene posterior (report/scene/ revisions)
+      └─ persisted candidate rows on FitOutcome/results.csv (no separate artifact — H11(a))
+persisted candidate rows ──> cluster-factorized scene posterior (report/scene/ revisions)
       └─ structural/cross-scan factors ONLY + per-factor evidence ledger
 scene posterior ──> open scientific questions (completion predicates → generalized stop)
       └─ scene-EIG (MI on question-relevant variables, additive across clusters) selects action
@@ -134,6 +134,16 @@ component is `observed` at a neighbour when the alternative's LINKAGE puts it th
 independent proximity match — the linkage is one-to-one per adjacent arena pair, so one observed
 peak supports at most one claimed mode.
 Component→phenomenon assignment remains a later extension.
+
+**One null, one charge (H14(a)).** Every ln-term is charged against one `(chosen mode at arena i,
+adjacent arena j)` report; there is exactly one such row per pair, it carries exactly one
+visibility state, and exactly one factor reads it — `presence` is the only factor in the live
+registry with a `score`. `connectivity` supplies `couples` and `propose` and declares `score=None`:
+its `CONNECT_BREAK_NATS` charged the same null `presence` charges as a miss, so it was deleted
+rather than re-homed, and the effective penalty on a vanishing track is `PRESENCE_MISS_NATS` = −1
+nats per (mode, neighbour) with `PRESENCE_MATCH_NATS` = +0.5 for a linked continuation. Those two
+weights are provisional v1 declarations tuned by the SCENE-7 calibration battery; they live in the
+factor's `config`, so a retuning moves the registry fingerprint.
 
 **What a component is, and what a footprint covers.** Both are read from what the delivery
 PERSISTED, never reconstructed from a display string or an envelope. Each candidate row carries
@@ -257,9 +267,9 @@ emits otherwise fails the build rather than publishing an impossible reading.
 | Slice | Goal | Status |
 |---|---|---|
 | SCENE-0 | Constitution (H1) + synthetic world-suite foundation (12 worlds, ensemble runner, world manifests) | Implemented (2026-08-08; PR #11 merged at `edd6bf7`) |
-| SCENE-1 | Catalogue, identity-conditional Laplace evidence, global grammar (bg-only + elastic+bg first-class, `elastic_only` verdict), observation footprints, interpretation artifacts — three sequential PRs | PR-a Implemented (H3, 2026-08-08: six-entry catalogue drives enumeration; nulls first-class; `elastic_only` with the 0.5 cap + LRT gate; transport/prior/variant declarations dormant); PR-b Implemented (H4, 2026-08-08: per-structure Laplace evidence + validity ladder, posterior drives selection, AIC persisted diagnostic, `fit_selection_semantics/2` replaces `/1`, universal Bose factor, dominance pruning + scoped escalation n_live; identity axis deferred by ruling); PR-c Implemented (H9, 2026-08-09: `user_declared` origin; `laplace_truncated` Γ-floor rung, its boundary-mass factor gradient- and offset-aware rather than half-Gaussian; executable constrained variants — near-degenerate acoustic twin as an additional candidate; local identity axis with the no-dilution rule, records-only BA disagreement; candidate rows persist at_limit/variant/identity/effective_constraints and per-label lnZ as the scene store's aggregation input. Deferred by H9(e): the near-degenerate pair's amplitude tie, out-of-window treatment → SCENE-3, identity prior payloads → owner) |
+| SCENE-1 | Catalogue, identity-conditional Laplace evidence, global grammar (bg-only + elastic+bg first-class, `elastic_only` verdict), observation footprints, persisted candidate rows — three sequential PRs | PR-a Implemented (H3, 2026-08-08: six-entry catalogue drives enumeration; nulls first-class; `elastic_only` with the 0.5 cap + LRT gate; transport/prior/variant declarations dormant); PR-b Implemented (H4, 2026-08-08: per-structure Laplace evidence + validity ladder, posterior drives selection, AIC persisted diagnostic, `fit_selection_semantics/2` replaces `/1`, universal Bose factor, dominance pruning + scoped escalation n_live; identity axis deferred by ruling); PR-c Implemented (H9, 2026-08-09: `user_declared` origin; `laplace_truncated` Γ-floor rung, its boundary-mass factor gradient- and offset-aware rather than half-Gaussian; executable constrained variants — near-degenerate acoustic twin as an additional candidate; local identity axis with the no-dilution rule, records-only BA disagreement; candidate rows persist at_limit/variant/identity/effective_constraints and per-label lnZ as the scene store's aggregation input. Deferred by H9(e): the near-degenerate pair's amplitude tie, out-of-window treatment → SCENE-3, identity prior payloads → owner) |
 | SCENE-2 | `isar.campaign-program/1` sole contract; old envelope unreadable by design | Implemented (H2, 2026-08-08; PR #12 merged at `058fb40`) |
-| SCENE-3 | Scene layer core: clusters, structural factors, revisioned scene store, workspace_api read surface; tracker contracts ported as specifications | Partial — PR 3a Implemented (H11/H12, 2026-08-10: typed observation adapter over persisted candidate rows, ambiguity clusters, exact per-cluster scoring with recorded pruning/truncation bounds, score-term ablation ledger); PR 3b Implemented (H13, 2026-08-10: four live scene factors, declared sample knowledge from the card, structural-endpoint visibility, footprint-coverage coupling, endpoint/off-lattice/unknown-extra acceptance worlds); scene store, read surface, invocation sites, and the tracker-contract port = PR 3c Planned |
+| SCENE-3 | Scene layer core: clusters, structural factors, revisioned scene store, workspace_api read surface; tracker contracts ported as specifications | Implemented (H11–H14, 2026-08-10, incl. the PR #19 response waves) — PR 3a Implemented (H11/H12, 2026-08-10: typed observation adapter over persisted candidate rows, ambiguity clusters, exact per-cluster scoring with recorded pruning/truncation bounds, score-term ablation ledger); PR 3b Implemented (H13, 2026-08-10: four live scene factors, declared sample knowledge from the card, structural-endpoint visibility, footprint-coverage coupling, endpoint/off-lattice/unknown-extra acceptance worlds); PR 3c Implemented (H14, 2026-08-10: content-addressed revision store with lineage in the pointer, the `workspace_api` read surface + hypothesis map, the observe-only driver hook and `isar report --scene`, and the four branch-tracker contracts ported as scene specifications; carries the PR #19 response waves — component descriptors, bin-cell footprints, linkage-derived support, single-charge factorization, path topology, the detectability gate and the endpoint reading) |
 | SCENE-4 | Question layer, deterministic opening book, generalized stop; first challenge run; scan-window authoritative default-on; shadow machinery deleted | Planned |
 | SCENE-5 | Scene-EIG authoritative from birth | Planned |
 | SCENE-6 | Single-engine swap: targeted campaigns as pinned question sets over scenes; tracker deleted; `campaign-program/2` question-native targeted payload | Planned |
@@ -291,10 +301,81 @@ dominating acquisition.
 
 Per scan: the persisted candidate rows on `FitOutcome`/results.csv are the scene's input
 contract (H11(a), H12(e) — no separate interpretation artifact; scene revisions embed the
-exact rows they consumed, with completeness status and conditioning provenance). Per scene
-update: content-addressed revision under `<workspace>/report/scene/` with a current-pointer
-and the per-factor evidence ledger (score-term ablation deltas, H12(f)). The GUI reads all
-of it through `workspace_api` only (Qt-free; hard rules 6/7 unchanged).
+exact rows they consumed, with completeness status and conditioning provenance).
+
+Per scene update (H14(b)), under `<workspace>/report/scene/`:
+
+```
+<digest>.json      the canonical bytes of one revision — exactly what the digest covers
+current.json       isar.scene-pointer/1: {schema, digest, parent, written_at}
+history.jsonl      one append-only line per pointer flip: {digest, parent, written_at, source}
+last_attempt.json  what the last build-and-store attempt did, including that it failed
+```
+
+The revision payload (`isar.scene-revision/1`) carries the factor manifest and its
+`registry_fingerprint`, the margin/cap/score-span actually used, the `sample_knowledge` block with
+its `degradations`, the embedded observations and their candidate rows, the footprints, the
+`non_scoring` arenas with reasons, and per cluster: the alternatives with their itemized ln-terms,
+the marginals, the visibility reports of the leading alternative, the `classification` map
+(`{factor: {component: state}}`), and the score-term ablation ledger (`score_ablation`, positional
+per `score_ablation_alignment`, H12(f)).
+
+**Lineage and time live outside the blob.** A revision records what it succeeded, and an unchanged
+workspace must rebuild to the same digest; both are only possible if `parent` and `written_at` sit
+outside the digested payload. The DURABLE lineage is `history.jsonl`, one appended line per flip:
+`current.json` carries the latest link only, so A→B→C would otherwise leave nothing on disk that
+remembers B→A. A rebuild that changed nothing appends nothing, because no flip happened.
+
+The blob is written first and the pointer second, so a crash between them leaves a valid old
+pointer and an orphan blob; the pointer is convenience, never authority, and no blob is ever
+deleted. **Existence is not integrity**: a blob already at the target name is compared byte for
+byte with the revision and rewritten when it differs, before the unchanged test and before any
+pointer flip — so a lost OR corrupted blob self-heals on the next build of the same content,
+`unchanged` means the content really is on disk, and a corrupt orphan is repaired before the
+pointer can flip onto it. Absence is quiet (a workspace with no scene is ordinary); corruption
+raises on read, and on write when the existing pointer is unreadable — on read that is a pointer
+naming a missing blob, unparseable JSON, a payload that does not re-digest to its own name, or a
+pointer that breaks its own contract (a foreign `schema`, a `digest`/`parent` that is not a sha256
+hexdigest, a missing `written_at`), each checked before any field of it is used.
+
+**Two writers, no lock.** `isar report --scene` can run against a live campaign, so concurrency is
+optimistic rather than locked: each writer captures the pointer digest when it snapshots its inputs
+and passes it back as the expected parent, and the flip refuses with `ConcurrentSceneWrite` (a
+`ValueError`, so both callers' existing handling applies) if the pointer moved meanwhile. The
+losing writer's blob is still written and addressable. A lock file is deliberately rejected: a
+stale lock after a crash would block every later campaign, which is worse than the race.
+
+Encoding is strict JSON (sorted keys, `allow_nan=False`): a non-finite lnZ persists as `null`, as
+the builder already treats it. The truncation bound is recorded in LOG space
+(`log_discarded_mass_bound`): the linear form overflowed to `inf`, which is neither JSON nor
+informative, and a vacuous bound must not read as a bounded approximation. It is finite for every
+finite input, so `null` means either "nothing was dropped" (`truncated` false) or "nothing bounds
+what was dropped" (`truncated` and `truncation_unbounded` both true) — no third case.
+
+The GUI and notebooks read all of it through `workspace_api` only (Qt-free; hard rules 6/7
+unchanged): `ws.scene` / `scene_revision(ws)` for the stored revision — `None` when there is none, raising when the store
+is damaged — and `hypothesis_map(ws)` for the renderable projection (H14(c)): one entry per scoring
+arena plus gap rows for everything the scene does not claim, stating only what the revision already
+decided. It keeps THREE axes apart — markers and gap bounds in intrinsic `|ω|`, a delivered curve
+on the SIGNED energy window it was fitted on, folding left to the renderer.
+
+The read surface gates what it interprets and binds what it renders (H14(c)): a payload whose
+`schema` is not `isar.scene-revision/1`, or which lacks the keys the projection reads, refuses
+rather than reading as an empty scene; the view holds canonical bytes and decodes a fresh payload
+per access; every read recompares the live rows' observation fingerprints with the revision's and
+reports `stale`; and a curve is withheld with a recorded reason unless the cluster is resolved, the
+row still fingerprints as the observation that was scored, the leading alternative IS the delivered
+model, and the evaluator's PURE path (stored amplitudes) rendered it — the fallback re-solves
+amplitudes, which is fitting. Every entry carries `cluster_authority` (`exact` / `bounded` /
+`unresolved`) with the finite `log_discarded_mass_bound` when there is one; an unresolved cluster's
+marker weights are conditional masses over the retained set, flagged
+`conditional_on_retained_set`, never projected as ordinary posteriors.
+
+A scene is built by one function, `isar.session.scene_hook.build_and_store` (H14(d)): the driver
+calls it observe-only after `workspace.save`, timed as the `scene_observe` stage and never able to
+fail a delivery, and `isar report --scene` calls it offline, where a refusal is visible and exits
+3. `catalogue_version` is stamped from the catalogue's `DEFAULT_PROFILE` until a per-fit profile is
+persisted.
 
 ## 7. Status discipline
 
