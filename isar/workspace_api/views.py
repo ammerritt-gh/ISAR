@@ -236,6 +236,17 @@ class FitView:
         return _seq_or_none(self._outcome.get("energy_window"))
 
     @property
+    def energy_bands(self) -> list | None:
+        """The contiguous kept runs of the fitted axis as ``[[lo, hi], …]``; ``None`` when absent.
+
+        ``energy_window`` is their outer envelope. A row that carries a window but no bands
+        predates the field — the distinction matters to the scene layer, which refuses such a
+        workspace rather than reading the envelope as hole-free coverage.
+        """
+        v = self._pick("energy_bands", "energy_bands")
+        return v if isinstance(v, list) else None
+
+    @property
     def cost_per_dof(self) -> float | None:
         return _f(self._pick("cost_per_dof", "cost_per_dof"))
 

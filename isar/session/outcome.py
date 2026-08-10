@@ -219,6 +219,11 @@ class FitOutcome:
     # searched-and-empty window is evidence). Distinct from ``search_energy_lo/hi``, which is an
     # auxiliary probe's REQUESTED window. ``None`` on older ledgers and when no point survived the mask.
     energy_window: tuple | None = None
+    # ``energy_bands``: the CONTIGUOUS kept runs of that same axis, ``[[lo, hi], …]``. The window
+    # above is their outer envelope; these are what was actually fitted, so a QC mask or an
+    # excluded region in the middle of the axis stays a hole instead of being claimed as searched
+    # coverage. ``None`` on older ledgers and wherever the window is.
+    energy_bands: list | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -323,6 +328,9 @@ _CSV_COLUMNS = [
     # energy window this fit ran on. Empty on every historical row and wherever no point survived
     # the mask. Both are floats — see _NUMERIC_COLUMNS in isar.drive.isar_io.readers.
     "energy_lo", "energy_hi",
+    # SCENE-3, appended: the kept energy runs as one JSON cell (variable length, so not float
+    # columns) — see _JSON_COLUMNS in isar.drive.isar_io.readers. Empty wherever energy_lo/hi are.
+    "energy_bands",
 ]
 
 
@@ -537,6 +545,8 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "best_model_posterior": _best_model_posterior(oc),
                 "evidence_identity": oc.get("evidence_identity"),
                 "energy_lo": (ew[0] if ew else None), "energy_hi": (ew[-1] if ew else None),
+                "energy_bands": (json.dumps(oc.get("energy_bands"), sort_keys=True)
+                                 if oc.get("energy_bands") is not None else None),
             })
     temporary = path.with_name(path.name + ".tmp")
     with open(temporary, "w", newline="", encoding="utf-8") as f:

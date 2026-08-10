@@ -18,7 +18,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from isar.analyze.components import CompositeModel, ConstantBackground, Elastic, PhononDHO
+from isar.analyze.components import (CompositeModel, ConstantBackground, Elastic, PhononDHO,
+                                     QuasiElastic)
+from isar.analyze.structures import Hypothesis
 from isar.analyze.context import ScanContext
 from isar.drive.isar_io import readers
 from isar.report.audit import reconstruct_curve
@@ -82,7 +84,9 @@ def test_fit_one_populates_amplitudes_and_candidates():
             "data_likelihood_fingerprint", "model_parameterization_fingerprint",
             "constraint_fingerprint", "comparison_context_fingerprint",
             # SCENE-1 PR-c (commit D)
-            "at_limit", "variant", "identity", "effective_constraints"}
+            "at_limit", "variant", "identity", "effective_constraints",
+            # SCENE-3 (review finding 9)
+            "components"}
     for row in cands:
         assert set(row) == keys
         assert isinstance(row["label"], str) and isinstance(row["k"], int)
@@ -525,6 +529,15 @@ def _score(label, *, log_evidence, posterior, effective_constraints=None):
                        if effective_constraints is not None else []})
 
 
+def _hyp(label, *, n_modes=1, extra=()):
+    """The enumerated structure a candidate was fitted as — the one authority on its components.
+
+    Spelled per candidate rather than derived from the label: that is the whole point of review
+    finding 9, and a fixture that re-parsed the label here would pin the behaviour it removed.
+    """
+    return Hypothesis(label, (*(PhononDHO for _ in range(n_modes)), *extra, ConstantBackground))
+
+
 def _fit_result(*, at_limit=None, variant=None, identity=None, modes=None, n_modes=1):
     return SimpleNamespace(label="x", cost_per_dof=1.04, n_modes=n_modes, analysis_usable=True,
                            at_limit=at_limit, variant=variant, identity=identity,
@@ -544,7 +557,8 @@ def test_candidate_rows_carry_variant_at_limit_and_effective_constraints():
         "stokes+bg_neardeg": _fit_result(at_limit={"phonon.Omega_d": False},
                                          variant="near_degenerate", identity="acoustic"),
     }
-    rows = {r["label"]: r for r in scan_delivery._candidate_rows(scores, fits)}
+    hyps = {"stokes+bg": _hyp("stokes+bg"), "stokes+bg_neardeg": _hyp("stokes+bg_neardeg")}
+    rows = {r["label"]: r for r in scan_delivery._candidate_rows(scores, fits, hyps)}
 
     plain, twin = rows["stokes+bg"], rows["stokes+bg_neardeg"]
     assert plain["variant"] is None and plain["identity"] is None
@@ -560,7 +574,7 @@ def test_candidate_rows_carry_variant_at_limit_and_effective_constraints():
 def test_candidate_rows_tolerate_a_missing_fit_and_absent_semantics():
     score = SimpleNamespace(label="ghost", k=4, n=81, cost=80.0, delta_aic=0.0,
                             akaike_weight=1.0, fit_semantics=None)
-    row = scan_delivery._candidate_rows([score], {})[0]
+    row = scan_delivery._candidate_rows([score], {}, {"ghost": _hyp("ghost")})[0]
     assert row["at_limit"] is None and row["variant"] is None and row["identity"] is None
     # None, not [] — no semantics record is not the same claim as "recorded, unconstrained".
     assert row["effective_constraints"] is None
@@ -574,7 +588,8 @@ def test_identity_twin_rows_keep_independent_log_evidence():
     scores = [_score("stokes+bg@a", log_evidence=-40.5, posterior=0.3),
               _score("stokes+bg@b", log_evidence=-39.25, posterior=0.7)]
     fits = {"stokes+bg@a": _fit_result(identity="a"), "stokes+bg@b": _fit_result(identity="b")}
-    rows = {r["label"]: r for r in scan_delivery._candidate_rows(scores, fits)}
+    hyps = {label: _hyp(label) for label in fits}
+    rows = {r["label"]: r for r in scan_delivery._candidate_rows(scores, fits, hyps)}
 
     assert rows["stokes+bg@a"]["identity"] == "a" and rows["stokes+bg@b"]["identity"] == "b"
     assert rows["stokes+bg@a"]["log_evidence"] == pytest.approx(-40.5)
@@ -628,14 +643,15 @@ def test_candidate_rows_carry_every_candidates_mode_positions():
                                                     {"omega0": 9.5, "gamma": 0.3}]),
         "bg": _fit_result(n_modes=0, modes=[]),
     }
-    rows = {r["label"]: r for r in scan_delivery._candidate_rows(scores, fits)}
+    hyps = {"stokes2+bg": _hyp("stokes2+bg", n_modes=2), "bg": _hyp("bg", n_modes=0)}
+    rows = {r["label"]: r for r in scan_delivery._candidate_rows(scores, fits, hyps)}
 
     assert rows["stokes2+bg"]["omegas"] == [4.25, 9.5]
     assert len(rows["stokes2+bg"]["omegas"]) == rows["stokes2+bg"]["n_modes"]
     assert rows["bg"]["omegas"] == []
     # An unscored/failed candidate has no modes to read: absence, never NaN.
     assert scan_delivery._candidate_rows([_score("ghost", log_evidence=-50.0, posterior=0.0)],
-                                         {})[0]["omegas"] == []
+                                         {}, {"ghost": _hyp("ghost")})[0]["omegas"] == []
     assert json.loads(json.dumps(list(rows.values())))
 
 
@@ -645,10 +661,96 @@ def test_candidate_row_omegas_report_an_unusable_mode_as_none_in_its_own_slot():
     scores = [_score("stokes2+bg", log_evidence=-39.0, posterior=1.0)]
     fits = {"stokes2+bg": _fit_result(n_modes=2, modes=[{"omega0": float("nan")},
                                                         {"omega0": 9.5}])}
-    row = scan_delivery._candidate_rows(scores, fits)[0]
+    row = scan_delivery._candidate_rows(scores, fits,
+                                        {"stokes2+bg": _hyp("stokes2+bg", n_modes=2)})[0]
     assert row["omegas"] == [None, 9.5]
     assert len(row["omegas"]) == row["n_modes"]
     assert json.loads(json.dumps(row))["omegas"] == [None, 9.5]
+
+
+def test_candidate_rows_declare_their_components_from_the_enumerated_structure():
+    """Review finding 9. What a candidate is MADE OF is read off the structure it was fitted as,
+    never off its label — so the descriptors are right even when the label says nothing about the
+    composition, and the mode slots index the row's ``omegas``."""
+    scores = [_score("elastic+stokes2+qe+bg", log_evidence=-39.0, posterior=0.6),
+              _score("a label with no grammar at all", log_evidence=-44.0, posterior=0.4)]
+    fits = {"elastic+stokes2+qe+bg": _fit_result(n_modes=2, modes=[{"omega0": 4.25},
+                                                                   {"omega0": 9.5}]),
+            "a label with no grammar at all": _fit_result(n_modes=0, modes=[])}
+    hyps = {"elastic+stokes2+qe+bg": _hyp("elastic+stokes2+qe+bg", n_modes=2,
+                                          extra=(Elastic, QuasiElastic)),
+            "a label with no grammar at all": _hyp("a label with no grammar at all", n_modes=0,
+                                                   extra=(Elastic,))}
+    rows = {r["label"]: r for r in scan_delivery._candidate_rows(scores, fits, hyps)}
+
+    # Canonical order: modes ascending by slot, then the non-mode kinds by name. The background is
+    # everywhere and claims nothing, so it is no scene component.
+    assert rows["elastic+stokes2+qe+bg"]["components"] == [
+        {"kind": "mode", "slot": 0}, {"kind": "mode", "slot": 1},
+        {"kind": "elastic", "slot": None}, {"kind": "quasielastic", "slot": None}]
+    assert rows["a label with no grammar at all"]["components"] == [
+        {"kind": "elastic", "slot": None}]
+    # The slots index omegas, which is what lets the scene place each mode.
+    assert rows["elastic+stokes2+qe+bg"]["omegas"] == [4.25, 9.5]
+    assert json.loads(json.dumps(list(rows.values())))
+
+
+def test_a_candidate_with_no_enumerated_hypothesis_is_refused():
+    """Persisting it would publish a candidate whose composition the scene reads as nothing —
+    unpricing its physics silently. select_models cannot produce this; it fails loudly if it does."""
+    with pytest.raises(ValueError, match="no enumerated hypothesis"):
+        scan_delivery._candidate_rows([_score("orphan", log_evidence=-1.0, posterior=1.0)], {}, {})
+
+
+@pytest.mark.parametrize("x,expected", [
+    # A clean grid is one run; the outer window and the single band agree.
+    (np.linspace(0.0, 10.0, 11), [[0.0, 10.0]]),
+    # One dropped bin at 5 already opens a hole — an excluded region is not searched ground.
+    ([0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 7.0, 8.0], [[0.0, 4.0], [6.0, 8.0]]),
+    # Grid jitter of a few percent is not a hole: it must not shatter a scan into per-bin bands.
+    ([0.0, 1.0, 2.05, 3.0, 4.1, 5.0], [[0.0, 5.0]]),
+    # Degenerate axes have no gap structure to read.
+    ([3.0], [[3.0, 3.0]]),
+    ([3.0, 3.0, 3.0], [[3.0, 3.0]]),
+])
+def test_energy_bands_are_the_contiguous_kept_runs(x, expected):
+    """Review finding 4, at the writer: ``energy_window`` is the envelope, these are the runs."""
+    assert scan_delivery._energy_bands(np.asarray(x, dtype=float), 0.0) == expected
+
+
+def test_energy_bands_are_on_the_omega_scale_like_the_window():
+    assert scan_delivery._energy_bands(np.array([0.0, 1.0, 2.0]), 2.0) == [[-2.0, 0.0]]
+
+
+@pytest.mark.slow
+def test_fit_one_stamps_bands_that_honour_the_qc_mask():
+    """End to end through the real fitter: masking out the middle of the axis leaves two runs, and
+    the window stays their envelope."""
+    ctx = _single_peak_ctx()
+    mask = np.asarray(ctx.mask, dtype=bool).copy()
+    hole = (ctx.x > 2.0) & (ctx.x < 6.0)
+    mask &= ~hole
+    fit = scan_delivery.fit_one(dataclasses.replace(ctx, mask=mask), _card(), prior=None,
+                                M=20, seed=1)
+
+    bands = fit["energy_bands"]
+    assert len(bands) == 2
+    assert bands[0][1] <= 2.0 and bands[1][0] >= 6.0
+    assert fit["energy_window"] == (pytest.approx(bands[0][0]), pytest.approx(bands[-1][1]))
+
+
+def test_energy_bands_roundtrip_through_the_ledger_and_results_csv(tmp_path):
+    """A JSON cell, not float columns: the run list is variable-length, and reading the envelope
+    instead would present the holes as searched coverage."""
+    outcome = _outcome_with(None, None)
+    outcome.energy_window = (-8.0, 16.0)
+    outcome.energy_bands = [[-8.0, -2.0], [2.0, 16.0]]
+    restored = driver._coerce_fit_outcome(json.loads(json.dumps(outcome.to_dict())))
+    assert restored.energy_bands == [[-8.0, -2.0], [2.0, 16.0]]
+
+    row = _write_read(tmp_path / "a", outcome)
+    assert row["energy_bands"] == [[-8.0, -2.0], [2.0, 16.0]]
+    assert _write_read(tmp_path / "b", _outcome_with(None, None))["energy_bands"] is None
 
 
 def test_energy_window_roundtrips_through_the_ledger_and_results_csv(tmp_path):
