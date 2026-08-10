@@ -334,32 +334,10 @@ def test_component_lambda_rejects_a_mistyped_peak_token_for_every_kind():
 # posterior over structures drives) — `selection_fallback is None` is load-bearing in every
 # check below: none of these tests can pass on the recorded AIC fallback.
 
-from isar.analyze import loop as _loop, select as _select, verdict as _verdict
-from isar.analyze.context import ScanContext
+from isar.analyze import verdict as _verdict
 
-
-def _scan_ctx(name, h):
-    cfg, truth = worlds.build(name)
-    data = generate.generate_world(truth)
-    hs = generate.world_h_values(cfg)
-    i = int(np.argmin(np.abs(hs - h)))
-    x = generate.world_energy_grid(cfg)
-    return ScanContext(x=x, counts=data.counts[i].astype(float),
-                       mask=np.ones(x.size, dtype=bool), T=truth.T, center=0.0,
-                       gauss_fwhm=cfg.gauss_fwhm, lorentz_fwhm=cfg.lorentz_fwhm,
-                       instrument="S30", energy_status="needs_zero")
-
-
-def _run_selection(name, h):
-    ctx = _scan_ctx(name, h)
-    # hypotheses_out, not hand re-enumeration: catalogue variants (H9) exist only because a fit
-    # came out a certain way, and each carries the derived context its evidence resolves under —
-    # a hand-built hyps dict cannot contain them and select_models refuses the orphan label.
-    hyps = {}
-    results = _loop.fit_structures_two_stage(ctx, hypotheses_out=hyps)
-    sel = _select.select_models(results, hyps, ctx)
-    assert sel.selection_fallback is None
-    return ctx, results, sel
+# The context/selection pair lives in _world_helpers so the scene world tests run the SAME path.
+from ._world_helpers import run_selection as _run_selection
 
 
 def _classify(name, h):

@@ -464,12 +464,16 @@ def test_a_bounded_truncation_widens_its_stated_bound_by_the_factor_span():
     assert cl["discarded_mass_bound"] > 1.0
 
 
-def test_the_empty_registry_keeps_the_bare_margin_and_the_bare_bound():
-    """The equivalence itself: with no scoring factor the span is 0, and every number is the
-    pre-contract arithmetic - the live (empty) registry must not change a single byte."""
+def test_an_empty_factor_set_keeps_the_bare_margin_and_the_bare_bound():
+    """With no scoring factor the span is 0 and every number is the bare arithmetic.
+
+    Re-pinned in SCENE-3 PR 3b: the LIVE registry is no longer empty (presence + connectivity,
+    both unbounded), so ``build_scene(obs)`` and ``build_scene(obs, factors=[])`` are deliberately
+    different scenes now — see ``test_the_live_registry_is_the_two_physics_factors``. What this
+    test protects is the empty-factor-set arithmetic itself.
+    """
     obs = chain_and_distant()
-    assert build_scene(obs).digest == build_scene(obs, factors=[]).digest
-    assert build_scene(obs).payload["score_span_nats"] == 0.0
+    assert build_scene(obs, factors=[]).payload["score_span_nats"] == 0.0
 
     pruned = [mk_obs("e:1:d", [cand("lead", -10.0), cand("far", -160.0)])]
     cl = cluster_of(build_scene(pruned, factors=[]), "e:1:d")
@@ -533,6 +537,27 @@ def test_an_excluded_candidate_cannot_bridge_two_clusters():
         [canonical_bytes(c["marginals"]) for c in plain.payload["clusters"]]
     assert [(e["label"], e["reason"]) for e in cluster_of(bridged, "e:1:d")["pruning"]["e:2:d"]] \
         == [("bridge", "no_evidence")]
+
+
+# ----------------------------------------------------------------------------
+# The linkage variable (PR 3b), as the builder owns it
+# ----------------------------------------------------------------------------
+def test_the_default_linkage_chains_nearest_omega_and_leaves_the_unreachable_unlinked():
+    """Nearest-ω chaining, and the refusal that matters: the 9 meV mode has no partner within
+    tolerance at the neighbour, so it stays UNLINKED rather than being forced onto a distant one.
+    A forced link would invent a track the data does not support."""
+    obs = [mk_obs("e:1:d", [cand("A", -10.0, n_modes=2, omegas=(4.0, 9.0))], q=(1.0, 0.0, 0.0)),
+           mk_obs("e:2:d", [cand("A", -10.0, omegas=(4.3,))], q=(1.05, 0.0, 0.0))]
+    cl = cluster_of(build_scene(obs, factors=[COUPLER, ZERO]), "e:1:d")
+    alt, = cl["alternatives"]
+    assert alt["links"] == [["e:1:d#A#0", "e:2:d#A#0"]]
+
+
+def test_without_a_proposer_every_assignment_has_exactly_one_linkage():
+    """A factor set with no ``propose`` leaves the alternative count exactly what 3a enumerated."""
+    cl = cluster_of(build_scene(chain_and_distant(), factors=[COUPLER, ZERO]), "e:1:d")
+    assert cl["n_enumerated"] == cl["n_assignments"] == 8
+    assert cl["linkage_truncated"] is False
 
 
 # ----------------------------------------------------------------------------

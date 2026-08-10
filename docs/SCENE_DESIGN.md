@@ -112,12 +112,20 @@ influence by removing its SCORE terms over the FIXED alternative set — index-a
 edges (and so the cluster partition and the hypothesis space itself) are deliberately not
 removed; that is why the operation is not called leave-one-factor-out.
 
-**What SCENE-3 PR 3a's alternative is, and is not.** A 3a alternative is a per-cluster
-CANDIDATE ASSIGNMENT — one surviving candidate per participating arena — and is linkage-free.
-It is *not yet* the full scene alternative this section defines: component→phenomenon
-assignment, connectivity/topology states, and visibility states are the 3b extension, and
-until they land the scene scores which local hypothesis each arena holds, not what the
-phenomena are.
+**What a scene alternative is after PR 3b.** An alternative is a per-cluster CANDIDATE
+ASSIGNMENT — one surviving candidate per participating arena — *together with* a LINKAGE: which
+component at one arena is the same track as which component at an adjacent one, as
+`(component_id, component_id)` pairs. Two alternatives may share an assignment and differ only in
+their linkage; that is the branch-crossing ambiguity, and since they share the same local fits
+their base `Σ lnZ` is identical, so only factor terms can separate them. The default linkage is
+nearest-ω chaining within the resolution width; alternative linkages are proposed by a factor's
+`propose` hook and are capped per assignment (`MAX_LINKAGE_VARIANTS`), with the truncation
+recorded (`linkage_truncated`) — linkage variants share a base, so no dropped-mass bound is
+available for them and none is claimed. Visibility states (`observed`, `searched_no_signal`,
+`censored_outside_footprint`, `blocked_unresolved`) are derived per component against the
+neighbouring footprint and annotate the leading alternative in the cluster payload;
+`structural_endpoint` is reserved for the zone-centre factor. Component→phenomenon assignment
+remains a later extension.
 
 ## 3. Slices
 
