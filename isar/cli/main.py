@@ -113,6 +113,9 @@ def build_parser() -> argparse.ArgumentParser:
     prp = sub.add_parser("report", help="re-render the report from persisted state")
     prp.add_argument("--workspace", required=True)
     prp.add_argument("--formats", default="html,markdown", help="report formats (comma-separated)")
+    prp.add_argument("--scene", action="store_true",
+                     help="also rebuild the SCENE revision from persisted state into "
+                          "<workspace>/report/scene/ (read-only: no re-fit, no re-collation)")
 
     pdg = sub.add_parser("diagnose", help="render the architect's CAMPAIGN_DIAGNOSTIC.md for a campaign")
     pdg.add_argument("--workspace", required=True)
