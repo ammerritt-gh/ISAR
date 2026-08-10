@@ -106,9 +106,23 @@ def test_footprint_bands(window, expected):
 def test_no_window_means_no_coverage_not_a_default_zero():
     fp = footprint_of(_obs(energy_window=None))
     assert fp.bands == ()
-    # The detectability inputs still travel: the Bose cut is projection-time, per hypothesis.
+    # The detectability inputs still travel, and ALL of them: the Bose cut is projection-time,
+    # per hypothesis, and it needs both resolution components (a Voigt's Lorentzian wings decide
+    # whether a weak neighbour was resolvable) and how deep the look was. A footprint carrying
+    # only gauss_fwhm would let a projection call a region "searched" on the wrong resolution.
     assert (fp.temperature_K, fp.background, fp.gauss_fwhm) == (300.0, 1.5, 0.9)
+    assert (fp.lorentz_fwhm, fp.effective_exposure) == (0.2, 120.0)
     assert (fp.scan_ref, fp.q) == ("exp:scan:det", (1.0, 0.0, 0.5))
+
+
+def test_footprint_detectability_fields_survive_the_json_boundary():
+    fp = footprint_of(_obs())
+    assert Footprint.from_dict(json.loads(json.dumps(fp.to_dict()))) == fp
+    # Absent is a real state, not a zero: an observation with no recorded exposure must not
+    # come back claiming one.
+    bare = footprint_of(_obs(lorentz_fwhm=None, effective_exposure=None))
+    assert (bare.lorentz_fwhm, bare.effective_exposure) == (None, None)
+    assert Footprint.from_dict(json.loads(json.dumps(bare.to_dict()))) == bare
 
 
 # ----------------------------------------------------------------------------

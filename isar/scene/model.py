@@ -50,9 +50,19 @@ def canonical_bytes(payload) -> bytes:
                       separators=(",", ":")).encode("utf-8")
 
 
+def digest_bytes(blob: bytes) -> str:
+    """sha256 hexdigest of already-canonical bytes.
+
+    Exists so a holder of the canonical encoding (``SceneRevision``) digests the exact bytes
+    it stores instead of re-encoding a dict that may since have been handed out and mutated —
+    one hash function, one definition of "the same payload".
+    """
+    return hashlib.sha256(blob).hexdigest()
+
+
 def fingerprint(payload) -> str:
     """sha256 hexdigest of the canonical encoding of ``payload``."""
-    return hashlib.sha256(canonical_bytes(payload)).hexdigest()
+    return digest_bytes(canonical_bytes(payload))
 
 
 # ----------------------------------------------------------------------------
@@ -274,6 +284,13 @@ class Footprint:
     hypothesis was actually detectable there depends on its own amplitude and on the Bose
     factor for the side in question, so the detectability inputs travel alongside the bands
     and the cut is made at projection time, per hypothesis, never baked in here.
+
+    The detectability inputs are the FULL set the observation carries: resolution has two
+    components (``gauss_fwhm`` and ``lorentz_fwhm`` — a Voigt whose Lorentzian wings decide
+    whether a weak neighbour was resolvable at all), and ``effective_exposure`` is how deep
+    the look was. A footprint carrying only the Gaussian width would let a projection call a
+    region "searched" on the wrong resolution, and one carrying no exposure could not tell a
+    long look that saw nothing from a glance that saw nothing.
     """
 
     scan_ref: str
@@ -282,6 +299,8 @@ class Footprint:
     temperature_K: float | None
     background: float | None
     gauss_fwhm: float | None
+    lorentz_fwhm: float | None = None
+    effective_exposure: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -291,6 +310,8 @@ class Footprint:
             "temperature_K": self.temperature_K,
             "background": self.background,
             "gauss_fwhm": self.gauss_fwhm,
+            "lorentz_fwhm": self.lorentz_fwhm,
+            "effective_exposure": self.effective_exposure,
         }
 
     @classmethod
@@ -302,6 +323,8 @@ class Footprint:
             temperature_K=_opt_float(d.get("temperature_K")),
             background=_opt_float(d.get("background")),
             gauss_fwhm=_opt_float(d.get("gauss_fwhm")),
+            lorentz_fwhm=_opt_float(d.get("lorentz_fwhm")),
+            effective_exposure=_opt_float(d.get("effective_exposure")),
         )
 
 
@@ -340,7 +363,8 @@ def footprint_of(obs: SceneObservation) -> Footprint:
 def _footprint(obs: SceneObservation, bands: tuple[FootprintBand, ...]) -> Footprint:
     return Footprint(scan_ref=obs.scan_ref, q=obs.q, bands=bands,
                      temperature_K=obs.temperature_K, background=obs.background,
-                     gauss_fwhm=obs.gauss_fwhm)
+                     gauss_fwhm=obs.gauss_fwhm, lorentz_fwhm=obs.lorentz_fwhm,
+                     effective_exposure=obs.effective_exposure)
 
 
 # ----------------------------------------------------------------------------
