@@ -147,8 +147,11 @@ def test_a_structural_endpoint_claims_no_energy_of_its_own():
     contested = build_scene([beyond, fold, *obs[1:]], sample=SampleKnowledge(zone_period=2.0))
     assert [(r["scan_ref"], r["neighbour"]) for r in _endpoints(contested)] == [("e:2:d", "e:1:d")]
     presence = _presence_by_label(contested, "e:1:d")
-    # The equality is what says the phantom reading ALSO terminates the track (two misses would
-    # mean it had lost the endpoint instead of merely paying for its extra mode).
+    # The equality says the phantom's ONLY extra cost is its own unlinked mode's miss. Under
+    # elastic+low the (e:2:d -> e:1:d) row is demoted to blocked_unresolved by
+    # reachability_unknown (the fold now holds a mode, no slope declared) — a blocked row
+    # prices 0.0 like an endpoint row, so this equality does not distinguish the two; the
+    # endpoint's own contribution is pinned by the refiner-drop contrast in the (a) arm.
     assert presence["elastic+low"] == presence["elastic+bg"] + PRESENCE_MISS_NATS
     mass = _cluster_with(contested, "e:1:d")["marginals"]["label"]["e:1:d"]
     assert mass["elastic+bg"] > mass["elastic+low"]
