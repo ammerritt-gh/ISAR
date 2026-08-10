@@ -703,7 +703,7 @@ def _default_links(alt: SceneAlternative, view: ClusterView) -> tuple[tuple[str,
     lower arena takes the closest unclaimed mode of the higher one within ``link_tol`` (ties by
     component id). A mode with no partner in tolerance stays UNLINKED rather than being forced
     onto a distant one — a forced link would invent a track the data does not support, and an
-    unlinked mode is exactly what the connectivity factor prices as a possible break.
+    unlinked mode is exactly what presence prices as an unsupported claim.
     """
     chosen: dict[str, list] = {}
     for c in alt.components:

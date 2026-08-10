@@ -44,8 +44,8 @@ def test_the_crossing_world_is_one_cluster_spanning_the_crossing(crossing_scene)
 def test_the_crossing_world_enumerates_both_linkages_and_chooses_neither_by_rank(crossing_scene):
     """The failure this world exists to catch: 'lowest = acoustic' relabels the same physical
     branch halfway along the path. The scene must instead hold BOTH linkages with real posterior
-    mass — and since neither reading breaks a track, they come out equal, which is the honest
-    answer for a symmetric crossing.
+    mass — and since neither reading leaves a mode unsupported, they come out equal, which is
+    the honest answer for a symmetric crossing.
     """
     cl = crossing_scene.payload["clusters"][0]
     by_assignment = {}
@@ -60,8 +60,8 @@ def test_the_crossing_world_enumerates_both_linkages_and_chooses_neither_by_rank
         assert len({a["base"] for a in alts}) == 1
         # ... they are distinct readings, not duplicates ...
         assert len({tuple(tuple(p) for p in a["links"]) for a in alts}) == len(alts)
-        # ... and neither is preferred: equal connectivity, equal belief. No ω-rank rule ran.
-        assert len({a["factor_terms"]["connectivity"] for a in alts}) == 1
+        # ... and neither is preferred: equal presence terms, equal belief. No ω-rank rule ran.
+        assert len({a["factor_terms"]["presence"] for a in alts}) == 1
         assert len({a["posterior"] for a in alts}) == 1
 
     # The leading ambiguous assignment holds REAL mass — the 50/50 is a live answer, not a pair of
@@ -146,7 +146,7 @@ def test_the_endpoint_says_what_blocked_unresolved_could_not(endpoint_arenas, en
     the answer may change*; structural endpoint says *the declared gapless branch ends here, so
     it never will*.
 
-    The absence-penalty half of the claim (``searched_no_signal`` → no miss, no break) is pinned
+    The absence-penalty half of the claim (``searched_no_signal`` → no miss) is pinned
     on hand-built arenas in ``test_factors_live.py``, where the mode is far enough above the
     elastic line for a real penalty to be there to remove."""
     blind = build_scene(endpoint_arenas)
@@ -154,14 +154,13 @@ def test_the_endpoint_says_what_blocked_unresolved_could_not(endpoint_arenas, en
             for r in blind.payload["clusters"][0]["visibility"]}
     cl, = endpoint_scene.payload["clusters"]
     best = _leading(cl)
-    priced = best["reasons"].get("presence", []) + best["reasons"].get("connectivity", [])
+    priced = [why for reasons in best["reasons"].values() for why in reasons]
     for r in cl["visibility"]:
         if r["visibility"] != Visibility.STRUCTURAL_ENDPOINT:
             continue
         assert base[(r["component_id"], r["neighbour"])] in (Visibility.BLOCKED_UNRESOLVED,
                                                              Visibility.SEARCHED_NO_SIGNAL)
         assert f"miss {r['component_id']} not seen at {r['neighbour']}" not in priced
-        assert f"break {r['component_id']} has no continuation at {r['neighbour']}" not in priced
     # The leading alternative is the same either way: reinterpreting an absence that was already
     # unpriced must move no belief at all.
     assert _leading(blind.payload["clusters"][0])["assignment"] == best["assignment"]

@@ -304,9 +304,9 @@ def test_a_track_that_vanishes_mid_cluster_pays_one_miss_per_searched_neighbour(
     assert by_middle["stokes+bg"]["posterior"] > by_middle["bg"]["posterior"]
 
 
-def test_an_absence_under_the_elastic_line_is_not_a_break():
+def test_an_absence_under_the_elastic_line_is_not_evidence():
     """The middle arena's chosen candidate is elastic-only, and the track sits inside the elastic
-    width: blocked, not broken — no penalty from either factor."""
+    width: blocked, not missing — no penalty at all."""
     obs = [mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(0.4,))], q=q(1.0)),
            mk_obs("e:2:d", [cand("elastic+bg", -10.0, n_modes=0, omegas=(), extra=("elastic",))], q=q(1.1))]
     cl = cluster_of(build_scene(obs), "e:1:d")
@@ -326,8 +326,8 @@ def _crossing_scene():
 
 def test_a_crossing_enumerates_both_linkages_at_equal_posterior():
     """The whole point of the factor: no ω-rank rule picks a track. Both readings are present,
-    they share a base Σ lnZ exactly, neither has a break, so belief splits 50/50 — and the ledger
-    itemizes both rather than reporting one winner."""
+    they share a base Σ lnZ exactly, both link every mode on both sides, so belief splits
+    50/50 — and the ledger itemizes both rather than reporting one winner."""
     cl = cluster_of(build_scene(_crossing_scene()), "e:1:d")
     assert cl["n_assignments"] == 1 and cl["n_enumerated"] == 2
     assert cl["linkage_truncated"] is False
@@ -374,8 +374,8 @@ def test_a_partly_linked_junction_yields_two_valid_pairings_and_no_impossible_on
     complete = [a for a in cl["alternatives"] if len(a["links"]) == 2]
     partial = [a for a in cl["alternatives"] if len(a["links"]) == 1]
     assert len(complete) == 2 and len(partial) == 1
-    # The two complete pairings are break-free and therefore equal; the partial one pays its
-    # break rather than being ranked by ω.
+    # The two complete pairings support every mode and are therefore equal; the partial one pays
+    # for the two it leaves unsupported rather than being ranked by ω.
     assert complete[0]["posterior"] == pytest.approx(complete[1]["posterior"], rel=1e-12)
     # Each complete pairing links all four modes, so every report is a match; the partial reading
     # leaves the 7.0 mode and the 5.0 mode unsupported and pays two misses against two matches.
