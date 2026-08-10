@@ -266,13 +266,22 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
 - **G16.** `isar_gui` sanctioned imports: `isar_gui` may import only `isar.workspace_api`,
   `isar.geometry`, `isar.plotspec`; G7 additionally permits only the sandbox viewmodel to import
   the Qt-free `isar.sandbox_api` frozen-config entry point. `isar.workspace_api` may use `isar.schema.card`,
-  `isar.session.state`, `isar.session.workspace`, `isar.session.unit_data` (the per-unit ingest
-  data reader behind `ws.unit_data`; Qt-free, scipy-free), `isar.drive.session_log`,
-  `isar.drive.isar_io.readers`, `isar.report.audit`, `isar.analyze.components`, `isar.geometry`,
+  `isar.schema.statistics` (the canonical statistical-semantics read gate, so the facade duplicates
+  no validation), `isar.session.state`, `isar.session.workspace`, `isar.session.unit_data` (the
+  per-unit ingest data reader behind `ws.unit_data`; Qt-free, scipy-free), `isar.drive.session_log`,
+  `isar.drive.isar_io.readers`, `isar.report.audit`, `isar.analyze.components`,
+  `isar.analyze.model_manifest` (the shared manifest→curve reconstruction the predictive producer
+  and the evaluator also use), `isar.predictive` (the one strict predictive-artifact validator,
+  ADR-020), `isar.geometry`,
   `isar.reduce.collate` (the canonical collation key — one definition of "a dataset"),
   `isar.reduce.llm_client` + `isar.reduce.adjudicate` (Qt-free/scipy-free config validators the GUI
   settings/credential editors reach through the facade — LLM endpoint safety + cloud-fallback
-  default; re-exported by `isar/workspace_api/config_gates.py`). Enforced
+  default; re-exported by `isar/workspace_api/config_gates.py`), `isar.scene.model` (the stdlib-only
+  scene DTO vocabulary the input adapter constructs), `isar.scene.store` (its READ surface only —
+  `scene_view.py` calls `read_current`, and `tests/scene/test_import_ban.py` bans the input adapter
+  from the module entirely, so a stored revision can never leak back into a build's inputs), and
+  `isar.schema.steering` (`CANONICAL_MASTER`, the one definition of ordinary canonical evidence).
+  Enforced
   by an AST import-contract test, `tests/test_import_contract.py` (task A-11; allow-lists kept in
   sync with this entry). Implemented (Phase 0/A).
 - **G17.** Rendering semantics live in the spec layer: `isar/plotspec` spec objects carry the
@@ -1806,6 +1815,139 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   price) and H12(c) (score-bound honesty — the two factors here declare no score, so pruning is
   unchanged by their presence); ports O44's origin rule for zone geometry; H1 governs the
   fail-loudly treatment of a malformed declaration.
+
+- **H14.** (2026-08-10, In force; SCENE-3 PR 3c, and the PR #19 response waves it carries)
+  **A scene revision is a content-addressed, replayable artifact whose lineage lives outside its
+  digest; it is read back through the facade, built observe-only at every delivery, and it honours
+  the branch tracker's four scientific contracts by its own route.** Five parts. Parts (a)–(c) also
+  record the response-wave semantics of PR 3a/3b, ratified by the owner on 2026-08-10; (a) amends
+  H13(c)'s account of which factors read a neighbour report.
+  **(a) What the response waves settled about the scene's own vocabulary** (owner rulings,
+  2026-08-10), each clause naming the failure it prevents.
+  *Component descriptors, not label grammar.* A candidate row persists ordered
+  `ComponentDescriptor`s (`kind` ∈ `mode`/`elastic`/`quasielastic`, plus a mode's `slot` into that
+  row's `omegas`), derived at the writer from the ENUMERATED STRUCTURE the candidate was fitted as.
+  A display label is a stable identifier and never a second schema — a label grammar that drifted
+  by one suffix would silently reclassify physics instead of failing.
+  *Footprints are merged bin CELLS of the original grid under the kept mask.* Coverage is built
+  from the kept bins' cells (midpoint to midpoint, adjacency read structurally off the grid index),
+  not from the window: an interior QC hole or excluded region censors, so absence inside it is
+  `censored_outside_footprint` rather than evidence. `energy_window` is the kept-POINT extent and
+  is NOT the coverage envelope. There is deliberately no gap-threshold knob (`BAND_GAP_FACTOR` is
+  deleted): any factor times a global spacing statistic misreads a stitched coarse-to-fine axis one
+  way and a comb rejection the other.
+  *Support follows the alternative's linkage.* A mode is `observed` at a neighbour when THIS
+  alternative links it there; the any-partner-within-tolerance proximity match is deleted rather
+  than kept alongside, because a second assignment channel could disagree with the linkage the
+  alternative asserts, and one observed peak would otherwise support every nearby mode.
+  *One null, one charge.* Detection is `presence`'s, and connectivity is score-free structure:
+  `connectivity` keeps `couples` and `propose` and declares `score=None`, its `CONNECT_BREAK_NATS`
+  deleted rather than re-homed, because a neighbour that looked and found nothing is the same null
+  `presence` already charges as a miss. **Ratified consequence:** the effective penalty on a
+  vanishing track is now −1 nats per (mode, neighbour), not −3. Re-pricing the weights belongs to
+  the SCENE-7 calibration battery, not to a review response. This amends H13(c)'s "presence and
+  connectivity key on `searched_no_signal`": only `presence` reads a neighbour report at all.
+  *Topology, not radius.* Adjacency is CONSECUTIVE ordinals along the path derived from the q set
+  alone (`PATH_COLLINEAR_TOL`); `Q_ADJACENCY`/`q_adjacent` are deleted. A radius made every arena
+  inside it a neighbour of every other, so inserting an intermediate scan left the skip-neighbour
+  term standing beside the two new ones and priced one absence twice. A non-collinear set fails
+  closed — no ordinals, no coupling, `path_topology_unavailable` — and the card's SCALAR zone
+  period and reflection list apply only where the derived direction IS a reciprocal axis
+  (`PATH_AXIS_TOL`), else `zone_geometry_inapplicable_on_path` /
+  `lattice_geometry_inapplicable_on_path`. A program-carried topology is the named upgrade, not a
+  default to drift into.
+  *Detectability gates every would-be absence.* Before a `searched_no_signal` may be charged: on a
+  band covered only from the anti-Stokes side the detailed-balance weight `exp(−ω/k_BT)` must clear
+  `AS_DETECT_WEIGHT` (1/3) — the scene's amplitude-free mirror of production's `AS_DETECT_Z`, with
+  the dimensional difference between a weight floor and a z-score on predicted counts noted in the
+  source rather than papered over; the neighbour must have counted comparably deep
+  (`DETECT_EXPOSURE_RATIO` 0.3); and the continuation must be reachable under a declared dispersion
+  slope. Unknowns fail closed with their own reasons. **Ratified consequence:** a workspace that
+  persists no `effective_exposure` charges no absence anywhere. That is the correct direction — a
+  glance that saw nothing is not a long count that saw nothing — and its blast radius is recorded
+  here before real data meets it.
+  *`structural_endpoint` is a proposed, priced reading of the linkage, never an energy-only state.*
+  It requires a ≥2-node linked track whose final edge DESCENDS centre-ward into a contiguous,
+  covered, elastic-bearing run of consecutive arenas reaching a declared fold
+  (`ENDPOINT_OMEGA_TOL_FACTOR` is deleted with the predicate it served). The old |ω| tolerance
+  handed the amnesty to an isolated feature or a flat low-lying optic branch, about which the
+  declared gapless physics says nothing. Elastic strictly, not `blocking_present`: a quasielastic
+  feature is no response for a branch to terminate into.
+  *Linkage truncation is unresolved, not narrowed.* A capped assignment records the dropped PRIOR
+  mass over the PRE-cap enumerated count and marks the cluster `truncation_unbounded` — linkage
+  variants share a base `Σ lnZ`, so no base ordering bounds the dropped readings' factor terms.
+  **(b) The scene store: content-addressed blobs, and lineage in the pointer only.**
+  `<workspace>/report/scene/` holds one `<digest>.json` per revision plus a `current.json` pointer
+  (`isar.scene-pointer/1`) carrying `digest`, `parent` and `written_at`. **Lineage and time live in
+  the pointer, never in the blob**: a revision must record what it succeeded AND an unchanged
+  workspace must rebuild to the SAME digest, and those are compatible only if `parent`/`written_at`
+  sit outside the digested payload — inside, every rerun mints a blob and "did anything actually
+  change?" stops being answerable by comparing hashes. Blob first, pointer second, and the pointer
+  is convenience rather than authority: a crash between them leaves a valid old pointer beside an
+  orphan blob. A LOST BLOB SELF-HEALS on the next build of the same content, because the blob is
+  ensured before the unchanged test — otherwise a workspace whose blob had been lost would
+  short-circuit on the pointer and report a cheerful all-clear while every read went on raising, so
+  `unchanged=True` now means the content really is on disk. Corruption raises on read AND on write
+  (a pointer naming a missing blob, unparseable JSON, or a payload that does not re-digest to its
+  own name); absence is quiet, because a workspace with no scene is ordinary. Nothing here ever
+  deletes a blob. Strict JSON throughout: `canonical_bytes` refuses non-finite values
+  (`allow_nan=False`), so a revision that digests cleanly can always be re-read — a non-finite lnZ
+  therefore persists as `null`, matching the builder's own treatment of it as unsummable, and a
+  discarded-mass bound with no finite spelling records `null` plus `discarded_mass_unbounded`. That
+  flag is deliberately distinct from `truncation_unbounded`: the first says the NUMBER is absent
+  (no factor declared a bound, a linkage truncation dropped readings nothing can bound, or the
+  arithmetic overflowed), the second says the CLUSTER is unresolved.
+  **(c) The read surface, and what a hypothesis map may claim.** `isar.workspace_api.scene_view` is
+  the scene's OUTPUT door, deliberately a separate module from the input adapter — which stays
+  banned from importing the store at all, so an already-stored revision can never contaminate a
+  builder's inputs. `scene_revision(ws)` returns the pointer metadata plus the payload verbatim, with no typed re-modelling of it (H12(e)); absence reads as `None` and corruption
+  propagates rather than degrading into "no scene", because the two mean opposite things to an
+  operator. `hypothesis_map(ws)` is a projection for a renderer and re-derives no belief: posterior
+  mass comes from the recorded cluster marginals, visibility from the recorded reports, coverage
+  from the recorded footprints. It carries THREE axes and deliberately does not unify them —
+  markers and gap bounds are intrinsic `|ω|`, which is what the revision records, while a curve's
+  `x` is the SIGNED energy window the delivered model was fitted on; folding is the renderer's ±ω
+  overlay, and doing it here would either discard the curve's anti-Stokes side or invent a sign for
+  a mode that has none. When the cluster's leading alternative names a candidate the row did not
+  deliver, the curve is WITHHELD with a recorded reason: there are no stored amplitudes for it, and
+  drawing the delivered model under the winner's name would attribute one hypothesis's intensity to
+  another. The per-cluster classification payload key is the generic
+  `classification: {factor: {component: state}}` (ratified over a factor-specific
+  `lattice_classification`), so a second classifying factor needs no schema change.
+  **(d) Invocation: observe-only at every delivery, explicit offline.** One function
+  (`isar.session.scene_hook.build_and_store`) serves both callers, so a scene built by the campaign
+  and one built offline from the same ledger cannot be different revisions. The driver runs it
+  LAST, after `results.csv` and `card.state` are on disk, inside its own
+  `timer.stage("scene_observe")` — a cost `isar profile` cannot see is a cost nobody can budget. It
+  NEVER raises: a scene that cannot be built is a missing explanation, never a failed delivery, and
+  the only trace is a summary context line plus the log. Adapter refusals are logged as one WARNING
+  line — a workspace that refuses once refuses on EVERY delivery, and a traceback per scan would
+  bury the log for a condition whose message already says to re-deliver — while an unexpected
+  failure logs the full traceback. Measured cost per delivery: **7.4 s at 50 arenas, 22.7 s at
+  100**; acceptable while the scene only explains, and the per-delivery cadence is to be revisited
+  at SCENE-4, when the scene starts steering. `isar report --scene` is a FLAG on the existing
+  command, not a subcommand: the report is written first and its exit semantics are unchanged, and
+  only the explicitly requested scene step can exit **3** — distinct from 2 ("no workspace here")
+  so a script can tell a workspace that cannot be scored from one that is not there. Asked for by
+  name, a refusal must be visible rather than an empty scene reading as "this campaign measured
+  nothing". Named limitation: `catalogue_version` is stamped from the catalogue's `DEFAULT_PROFILE`
+  at the hook, because no per-fit profile is persisted; a campaign fitted under another profile
+  would stamp the wrong one, and the fix is to persist the profile with the fit.
+  **(e) The four branch-tracker contracts are ported as scene SPECIFICATIONS, never as oracle
+  equality.** The tracker earned four rules the hard way on real campaigns — an inferred endpoint
+  claims no measured precision, absence is evidence only after a relevant search, a resolution
+  blockage is not repaired by counting (while a detection-power blockage is exactly what counting
+  repairs), and the zone centre is the declared period anchored at `q = 0` (O44). They are rules
+  about physics, so the scene layer honours them by a completely different route: no target, no
+  anchor, no selected candidate, no per-point track state. `tests/scene/test_scene_contracts.py`
+  cites the tracker source lines each test ports, states the rule, and then checks the scene's OWN
+  vocabulary — visibility states, presence terms, marginals. A field-for-field oracle would make
+  the scene a second implementation of the thing SCENE exists to replace. The tracker is untouched
+  and keeps driving delivery until SCENE-6.
+  **Supersedes/relates:** amends H13(c) (which factors read a neighbour report); implements the
+  store and read surface H11(a)/H12(e) require; rests on H12(c) (the bound honesty the two
+  unbounded flags spell out) and H1 (loud refusal and no compatibility reader for a workspace whose
+  rows predate the delivery contract); ports O44's origin rule as a scene specification.
 
 ## Session status update
 
