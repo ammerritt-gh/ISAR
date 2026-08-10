@@ -604,6 +604,33 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
         _write_results_csv(workspace, session)
     with timer.stage("session_save"):
         workspace.save(card, session)
+    # LAST, after results.csv and card.state are on disk: the scene is built from the persisted
+    # ledger through the read-only facade, so it must see the delivery that just landed.
+    _observe_scene(summary, workspace)
+
+
+def _observe_scene(summary, workspace) -> None:
+    """Score the delivered workspace into a scene revision and store it. NEVER raises.
+
+    Observe-only (SCENE-3): the scene explains the campaign and steers nothing, so a scene that
+    cannot be built is a missing explanation, never a failed delivery. The fits, results.csv and
+    session.json are already written and unaffected; the only trace of a failure is the context
+    line and the logged traceback. Revisiting that posture — a scene the campaign refuses to
+    proceed without — is a SCENE-4 decision, not a default to drift into.
+
+    Runs on every delivery, including one that fitted nothing: the store's content-addressed
+    unchanged path makes a rebuild of an unchanged workspace free and leaves the pointer where
+    it was.
+    """
+    try:
+        from isar.session import scene_hook
+        result = scene_hook.build_and_store(workspace.root)
+    except Exception as exc:  # noqa: BLE001 — see the docstring: a scene never fails a campaign
+        log.exception("scene revision skipped for %s", workspace.root)
+        summary.context_lines.append(f"scene revision skipped: {exc}")
+        return
+    summary.context_lines.append(f"scene revision {result.digest[:12]}"
+                                 + (" (unchanged)" if result.unchanged else ""))
 
 
 def _run_master_certification(workspace, card, session, records, runcal, g, checkpoint_store,
