@@ -116,9 +116,10 @@ def test_fit_one_populates_amplitudes_and_candidates():
     winner_row = next(r for r in cands if r["label"] == fit["best_label"])
     assert winner_row["omegas"] == [pytest.approx(fit["omega0"])]
 
-    # SCENE-3 observation footprint: the calibrated, masked window the cost actually saw.
-    assert fit["energy_window"] == (pytest.approx(float(ctx.x_used.min())),
-                                    pytest.approx(float(ctx.x_used.max())))
+    # SCENE-3 observation footprint: the masked window the cost actually saw, on the ω scale
+    # (this fixture's zero is 0.0; the shift itself is pinned by the nonzero-centre test below).
+    assert fit["energy_window"] == (pytest.approx(float(ctx.x_used.min()) - ctx.center),
+                                    pytest.approx(float(ctx.x_used.max()) - ctx.center))
 
     # The AIC diagnostics lane still travels: delta_aic >= 0 with a row at exactly 0.
     assert all(r["delta_aic"] >= -1e-9 for r in cands)
@@ -154,6 +155,30 @@ def test_fit_one_populates_amplitudes_and_candidates():
             "model_selection_fingerprint",
         )
     )
+
+
+@pytest.mark.slow
+def test_energy_window_is_on_the_omega_scale_not_the_raw_abscissa():
+    """The raw abscissa and the ω scale differ by the calibration zero, which ISAR carries in
+    ``ctx.center`` and applies inside the model (``x - center``) rather than by shifting ``ctx.x``.
+    Persisting the raw extent would put the footprint on a different scale from the ω₀/omegas it has
+    to contain — invisible whenever the zero happens to be 0.0, as in the fixture above."""
+    center = 2.0
+    x = np.linspace(-8.0, 16.0, 81)
+    counts = convolute_voigt_dho(x, 5.0, center, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
+                                 peak="stokes+astokes") + 8.0
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                      center=center, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    fit = scan_delivery.fit_one(ctx, _card(), prior=None, M=20, seed=1)
+
+    assert fit["energy_window"] == (pytest.approx(-10.0), pytest.approx(14.0))
+    # …and the fitted mode it must place lies inside it, which the raw (-8, 16) would also satisfy
+    # here only by accident of the peak sitting mid-window.
+    lo, hi = fit["energy_window"]
+    assert lo < fit["omega0"] < hi
+    winner = next(r for r in fit["candidates"] if r["label"] == fit["best_label"])
+    assert all(lo < w < hi for w in winner["omegas"])
 
 
 @pytest.mark.slow
