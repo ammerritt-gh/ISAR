@@ -66,6 +66,30 @@ Load-bearing rules, each naming the failure it prevents:
   suite as ordinary pytest; the deterministic question scheduler is the permanent fallback when
   scoring is unavailable.
 
+### 2b. Scene scoring contract (SCENE-3)
+
+For observation arena `j` with local candidates `h`, SCENE-1 persists `lnZ(j, h)`. A
+scene alternative `S` — one coherent per-cluster assignment — chooses exactly one active
+candidate `h_j(S)` per participating arena, plus discrete scene variables
+(component→phenomenon assignment, connectivity/topology states, visibility states). Its
+unnormalized score is
+
+    ln W(S) = Σ_j lnZ(j, h_j(S)) + Σ_f ln φ_f(S)
+
+and the cluster posterior is `P(S|D) = exp(ln W(S)) / Σ_{S'} exp(ln W(S'))`, normalized
+within the cluster. Every scene factor `φ_f` declares probabilistic semantics —
+`scene_prior` or `structural_likelihood` — never an undeclared heuristic bonus.
+
+Invariants, each preventing a named failure: one observation arena contributes its local
+evidence exactly once (a pooled master supersedes its member scans; audit rows never
+score); normalized per-scan posteriors are never multiplied together (that arithmetic
+double-counts the local priors); a multimode structure's lnZ enters once even when a
+scene alternative assigns its components to different phenomena (the modes were fitted
+jointly to the same counts — splitting or duplicating the evidence per component would
+manufacture evidence); a gap in coverage contributes no update in either direction. The
+scene operates when local candidates carry `identity=None` — identity may arise purely
+from scene-level evidence.
+
 ## 3. Slices
 
 | Slice | Goal | Status |
