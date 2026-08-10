@@ -112,6 +112,7 @@ def _leading(cluster):
 
 
 def _at_zone_centre(scan_ref):
+    """``ENDPOINT_SAMPLE``'s period is 1.0, so the centres are the integers."""
     h = float(scan_ref.split(":")[1])
     return abs(h - round(h)) <= ZONE_CENTRE_Q_TOL
 
