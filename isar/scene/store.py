@@ -18,7 +18,9 @@ The DURABLE lineage is ``history.jsonl``, not the pointer. ``current.json`` carr
 link, so A→B→C leaves nothing on disk that remembers B→A; the append-only log keeps every link,
 in keeping with the house posture that nothing is ever deleted. Each line records ``digest``,
 ``parent``, ``written_at`` and the ``source`` that flipped the pointer. A rebuild that changed
-nothing appends nothing — no flip happened.
+nothing appends nothing — no flip happened. The guarantee is COMPLETED flips: a crash between the
+pointer flip and the append leaves the newest link unlogged, so the pointer stays authoritative for
+the latest state and the log is authoritative for the chain behind it.
 
 **Blob first, pointer second.** A crash between the two leaves a valid old pointer plus an
 orphaned new blob, which is safe and self-healing on the next write. The pointer is convenience,

@@ -394,6 +394,21 @@ def test_an_unresolved_cluster_withholds_its_curve_and_labels_its_masses(tmp_pat
     assert entry.mode_markers, "the conditional masses are kept, only labelled"
 
 
+def test_a_damaged_cluster_record_fails_safe_rather_than_reading_as_exact(tmp_path):
+    """Truncated, no bound, neither unbounded flag — a combination the builder cannot emit. An
+    entry that cannot prove it enumerated everything must not project as one that did."""
+    ws = _ws(tmp_path, [_row(1, candidates=TWO_CANDIDATES, **EVALUABLE)])
+    payload = build_scene(scene_observations(ws), factors=[]).payload
+    payload["clusters"][0].update(truncated=True, log_discarded_mass_bound=None,
+                                  truncation_unbounded=False, linkage_truncated=False)
+    _publish(ws, payload)
+    ws.refresh()
+
+    entry, = hypothesis_map(ws).entries
+    assert entry.cluster_authority == "unresolved"
+    assert entry.winner_curve is None and entry.curve_absent_reason == "cluster_unresolved"
+
+
 def test_a_linkage_truncated_cluster_is_unresolved_too(tmp_path, monkeypatch):
     """The other unresolved lane: dropped linkage readings that no base ordering bounds."""
     cands = [_candidate("2phonon+bg", n_modes=2, omegas=[4.0, 6.0],

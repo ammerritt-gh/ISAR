@@ -328,9 +328,14 @@ def _cluster_authority(cluster: dict) -> tuple[str, float | None]:
     if cluster.get("truncation_unbounded") or cluster.get("linkage_truncated"):
         return "unresolved", None
     bound = cluster.get("log_discarded_mass_bound")
-    if bound is None:
+    if bound is not None:
+        return "bounded", float(bound)
+    if not cluster.get("truncated"):
         return "exact", None
-    return "bounded", float(bound)
+    # Truncated, no bound, and neither unbounded flag set: the builder cannot emit this, so it is a
+    # damaged or foreign cluster record. It fails SAFE — an entry that cannot prove it enumerated
+    # everything must not project as one that did.
+    return "unresolved", None
 
 
 def _rows_by_scan_ref(ws) -> dict:
