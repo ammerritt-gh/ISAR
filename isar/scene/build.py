@@ -234,6 +234,13 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
     obs = _validated(observations)
     # The ordered path FIRST: every adjacency, every declared-geometry coordinate and every edge
     # length downstream is read off it, and it is a property of the arena SET (review finding 3).
+    #
+    # Over ALL arenas, not only the scoring ones: the path is the experiment map, and an arena
+    # whose evidence may not be summed was still MEASURED at its q. The consequence is deliberate —
+    # an unscoreable scan between two scoring ones separates them by two ordinals, so they no
+    # longer judge each other, exactly as inserting any intermediate scan does. Deriving the path
+    # from the scoring subset instead would make the ordering depend on which comparisons happened
+    # to finish, and one arena's H7 timeout would silently re-price its neighbours' absences.
     topology = path_topology({o.scan_ref: o.q for o in obs})
     footprints = {o.scan_ref: footprint_of(o, topology) for o in obs}
 
