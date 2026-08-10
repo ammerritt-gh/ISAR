@@ -640,17 +640,18 @@ def test_master_certification_drains_wave_and_checkpoints_success_after_worker_f
 # ---------------------------------------------------------------------------
 # Member provenance (chain of custody)
 # ---------------------------------------------------------------------------
-def test_member_labels_unique_are_bare_strings():
-    # Distinct scan numbers → bare native scan numbers as strings, in ms.members order.
+def test_member_labels_are_always_fully_qualified():
+    # Every label is the full ledger key exp:scan:det, in ms.members order — never a bare scan
+    # number. A bare label names no detector, and the collation key (sample, q, T) can span
+    # detectors, so a reader could not tell which arena the member came from.
     members = [("tavi", 473, "det"), ("tavi", 493, "det"), ("tavi", 494, "det")]
-    assert master_delivery._member_labels(members) == ["473", "493", "494"]
+    assert master_delivery._member_labels(members) == ["tavi:473:det", "tavi:493:det",
+                                                       "tavi:494:det"]
 
 
-def test_member_labels_repeated_scan_is_qualified():
-    # A scan number that repeats within the list (multi-detector merge) is qualified exp:scan:det;
-    # a non-repeating one stays bare.
+def test_member_labels_keep_a_repeated_scan_number_distinct():
     members = [("tavi", 473, "a"), ("tavi", 473, "b"), ("tavi", 500, "a")]
-    assert master_delivery._member_labels(members) == ["tavi:473:a", "tavi:473:b", "500"]
+    assert master_delivery._member_labels(members) == ["tavi:473:a", "tavi:473:b", "tavi:500:a"]
 
 
 def test_carry_backfills_members_without_refit(monkeypatch):

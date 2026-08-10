@@ -56,8 +56,10 @@ def _absolute(module: str, level: int, py: Path) -> str:
 def _offenders_in(source: str, py: Path, forbidden):
     """``[(lineno, resolved module)]`` for every banned import in ``source``.
 
-    Static only: a dynamic ``importlib.import_module(name)`` is out of scope here — the
-    fresh-interpreter probe below is the backstop for that.
+    Static only: a dynamic ``importlib.import_module(name)`` is out of scope. The fresh-interpreter
+    probe below backstops that for ``isar.scene.model`` ONLY — it cannot cover the adapter, whose
+    package ``__init__`` legitimately imports ``isar.session.state``, so there a dynamic import
+    would go unseen and the static check is the whole enforcement.
     """
     out = []
     for node in ast.walk(ast.parse(source, filename=str(py))):

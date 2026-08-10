@@ -8,7 +8,7 @@ writer), the scene store's write surface, or Qt; ``tests/scene/test_import_ban.p
 The scoring contract (SCENE_DESIGN §2b) says local evidence enters ``ln W(S)`` **once per
 observation arena**. That is not only a rule about factors: it is a rule about *which rows the
 scene is allowed to see at all*, and it is enforced here, at the door — see
-:func:`_superseding_member_labels`.
+:func:`_superseded_by_masters`.
 """
 from __future__ import annotations
 
@@ -34,6 +34,11 @@ def scene_observations(ws) -> list[SceneObservation]:
     current state only — an older revision of a row is not present to be preferred.
     """
     fits = list(getattr(ws, "results", ()) or ())
+    # A results.csv written before the candidates column existed has nothing to score anywhere —
+    # that is one fact about the file, not a per-row anomaly, so it is said once and at INFO.
+    legacy_schema = bool(fits) and not any("candidates" in fit.columns for fit in fits)
+    if legacy_schema:
+        log.info("scene: this results.csv predates the candidates column — no observations")
     qualified, bare = _superseded_by_masters(fits)
     out: list[SceneObservation] = []
     for fit in fits:
@@ -46,7 +51,7 @@ def scene_observations(ws) -> list[SceneObservation]:
             # The master fitted the SAME neutrons this row did (combine-before-divide). Letting
             # both into the scene would enter one dataset's local evidence twice.
             continue
-        candidates = _candidates(fit, ref)
+        candidates = _candidates(fit, ref, quiet=legacy_schema)
         if candidates is None:
             continue
         # A non-canonical sink was acquired to answer a narrower question; its evidence is barred
@@ -83,36 +88,42 @@ def _superseded_by_masters(fits):
     (it delivered no interpretation), so its members stay.
 
     Keys on what ``results.csv`` persists: the master row's ``members`` cell, written by
-    ``isar/session/master_delivery.py:_member_labels`` as a bare native scan number, qualified
-    ``experiment:scan:detector`` only where a scan number repeats inside one member list.
-    Qualified labels are matched exactly. A bare label carries no detector, so it is matched on
-    ``(scan number, detector, sample)`` of the CLAIMING master — a master pooled one detector's
-    group, and must not suppress the same scan number's arena on a different detector.
+    ``isar/session/master_delivery.py:_member_labels`` as the full ledger key
+    ``experiment:scan:detector`` — matched exactly against the member row's ``scan_id``. That is
+    the whole rule for anything this ISAR wrote.
 
-    Deliberately NOT part of that key: ``h``/``k``/``l``/``T``. A master persists its GROUP's
-    collated q and T (hkl_round_step / t_round), which need not equal a member row's own values,
-    so an equality test there could fail spuriously — and a spurious failure re-admits a
-    superseded row, i.e. double-counts the same neutrons. The remaining ambiguity is inherited
-    from the cell: two experiments sharing a scan number, detector and sample in one workspace
-    cannot be told apart from a bare label.
+    A workspace written BEFORE that qualification carries bare scan numbers, which name no
+    detector: the collation key is (sample, q, T) and may span detectors, so a bare label cannot
+    say which detector's arena it meant. Those fall back to ``(scan number, sample)``, ignoring
+    the detector — deliberately the OVER-suppressing direction, and warned about once per master.
+    The asymmetry is the point: under-suppression lets one dataset's evidence enter ``ln W(S)``
+    twice, violating the once-per-arena invariant (SCENE_DESIGN §2b) silently; over-suppression
+    drops an arena, loudly. Neither direction is ever silent.
+
+    Deliberately NOT part of the legacy key: ``h``/``k``/``l``/``T``. A master persists its
+    GROUP's collated q and T (hkl_round_step / t_round), which need not equal a member row's own
+    values, so an equality test there could fail spuriously — and a spurious failure is exactly
+    the under-suppression that double-counts.
     """
     qualified: set[str] = set()
     bare: set[tuple] = set()
     for fit in fits:
         if not fit.pooled or not isinstance(fit.candidates, list):
             continue
-        for member in fit.members or []:
-            label = str(member)
-            if ":" in label:
-                qualified.add(label)
-            else:
-                bare.add((label, fit.detector_id, fit.sample))
+        legacy = [str(m) for m in (fit.members or []) if ":" not in str(m)]
+        qualified.update(str(m) for m in (fit.members or []) if ":" in str(m))
+        bare.update((label, fit.sample) for label in legacy)
+        if legacy:
+            log.warning("scene: master %s carries pre-qualification member labels %s — they name "
+                        "no detector, so every arena with those scan numbers and sample is "
+                        "suppressed (dropping an arena is preferred to counting one twice)",
+                        _scan_ref(fit), legacy)
     return qualified, bare
 
 
 def _bare_key(fit) -> tuple:
-    """How this per-scan row would be named by a bare member label of the master that pooled it."""
-    return (str(fit.scan_number), fit.detector_id, fit.sample)
+    """How this per-scan row would be named by a legacy (unqualified) member label."""
+    return (str(fit.scan_number), fit.sample)
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +147,7 @@ def _scan_ref(fit) -> str | None:
     return str(unit)
 
 
-def _candidates(fit, ref: str):
+def _candidates(fit, ref: str, *, quiet: bool = False):
     """The row's candidate table as DTOs sorted by label, or ``None`` when there is none.
 
     The sort is the adapter's job: ``observation_fingerprint`` is candidate-order-sensitive by
@@ -149,7 +160,7 @@ def _candidates(fit, ref: str):
         # candidate table: a real campaign has many, and warning on each would bury the signal that
         # matters. Only a DELIVERED fit (detector + winning label) whose table is absent or
         # unparseable is anomalous, and that is what warns.
-        if fit.detector_id and fit.best_label:
+        if fit.detector_id and fit.best_label and not quiet:
             log.warning("scene: %s has no usable candidate table (absent or malformed cell) — "
                         "no observation", ref)
         else:

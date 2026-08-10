@@ -477,6 +477,16 @@ class FitView:
         return v if isinstance(v, list) else None
 
     @property
+    def columns(self) -> frozenset:
+        """Which ``results.csv`` columns this row was built from (empty for a ledger-only view).
+
+        An absent COLUMN is not an absent value: it means the artifact predates the field, which a
+        reader must be able to distinguish from a present-but-empty cell (the same distinction
+        ``isar/drive/loop.py`` makes with ``members_field_present``).
+        """
+        return frozenset(self._row)
+
+    @property
     def calib(self) -> dict | None:
         v = self._outcome.get("calib")
         return v if isinstance(v, dict) else None

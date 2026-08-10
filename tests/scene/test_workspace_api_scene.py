@@ -34,9 +34,9 @@ def _row(scan, *, candidates, scan_id=None, **kw):
     return row
 
 
-def _ws(root, rows):
+def _ws(root, rows, columns=COLUMNS):
     root.mkdir(parents=True, exist_ok=True)
-    stamp_ws(root, rows=rows, columns=COLUMNS)
+    stamp_ws(root, rows=rows, columns=columns)
     return Workspace.open(root)
 
 
@@ -83,7 +83,7 @@ def test_deterministic_across_calls_and_candidate_permutation(tmp_path):
 def test_master_supersedes_its_member_scans(tmp_path):
     cands = [_candidate("phonon+bg")]
     master = _row(9_000_001, candidates=cands, scan_id="master:tavi_2.0,0,0_300",
-                  pooled=True, n_members=2, members="1;2")
+                  pooled=True, n_members=2, members="tavi:1:det;tavi:2:det")
     refs = [o.scan_ref for o in scene_observations(
         _ws(tmp_path, [_row(1, candidates=cands), _row(2, candidates=cands),
                        _row(3, candidates=cands), master]))]
@@ -91,12 +91,27 @@ def test_master_supersedes_its_member_scans(tmp_path):
     assert refs == ["master:tavi_2.0,0,0_300:det", "tavi:3:det"]
 
 
-def test_bare_member_label_does_not_suppress_another_detector(tmp_path):
-    """A master pooled ONE detector's group; a bare member label carries no detector, so it must
-    not take out the same scan number's arena on a detector the master never pooled."""
+def test_master_supersedes_a_member_on_a_detector_it_is_not_stamped_with(tmp_path):
+    """The collation key is (sample, q, T) and can span detectors, while the master row carries
+    only members[0]'s detector. The qualified member cell is what makes det2 findable — missing it
+    would let scan 2's neutrons enter the scene twice."""
     cands = [_candidate("phonon+bg")]
     master = _row(9_000_001, candidates=cands, scan_id="master:tavi_2.0,0,0_300",
-                  detector="det1", pooled=True, n_members=1, members="1")
+                  detector="det1", pooled=True, n_members=2,
+                  members="tavi:1:det1;tavi:2:det2")
+    refs = [o.scan_ref for o in scene_observations(_ws(tmp_path, [
+        _row(1, candidates=cands, detector="det1", scan_id="tavi:1:det1"),
+        _row(2, candidates=cands, detector="det2", scan_id="tavi:2:det2"),
+        master]))]
+    assert refs == ["master:tavi_2.0,0,0_300:det1"]
+
+
+def test_a_non_member_on_another_detector_survives(tmp_path):
+    """Same scan number, different detector, NOT in the member cell (different q → different
+    group): its arena stands."""
+    cands = [_candidate("phonon+bg")]
+    master = _row(9_000_001, candidates=cands, scan_id="master:tavi_2.0,0,0_300",
+                  detector="det1", pooled=True, n_members=1, members="tavi:1:det1")
     refs = [o.scan_ref for o in scene_observations(_ws(tmp_path, [
         _row(1, candidates=cands, detector="det1", scan_id="tavi:1:det1"),
         _row(1, candidates=cands, detector="det2", scan_id="tavi:1:det2"),
@@ -104,10 +119,26 @@ def test_bare_member_label_does_not_suppress_another_detector(tmp_path):
     assert refs == ["master:tavi_2.0,0,0_300:det1", "tavi:1:det2"]
 
 
+def test_legacy_bare_member_labels_suppress_conservatively_and_warn(tmp_path, caplog):
+    """A workspace written before member labels were qualified: a bare label names no detector, so
+    every arena with that scan number and sample goes. Dropping an arena loudly beats counting one
+    twice silently."""
+    cands = [_candidate("phonon+bg")]
+    master = _row(9_000_001, candidates=cands, scan_id="master:tavi_2.0,0,0_300",
+                  detector="det1", pooled=True, n_members=1, members="1")
+    with caplog.at_level(logging.WARNING, logger="isar.workspace_api.scene"):
+        refs = [o.scan_ref for o in scene_observations(_ws(tmp_path, [
+            _row(1, candidates=cands, detector="det1", scan_id="tavi:1:det1"),
+            _row(1, candidates=cands, detector="det2", scan_id="tavi:1:det2"),
+            master]))]
+    assert refs == ["master:tavi_2.0,0,0_300:det1"]
+    assert sum("pre-qualification member labels" in r.getMessage() for r in caplog.records) == 1
+
+
 def test_candidateless_master_supersedes_nothing(tmp_path):
     cands = [_candidate("phonon+bg")]
     master = _row(9_000_001, candidates=None, scan_id="master:tavi_2.0,0,0_300",
-                  pooled=True, n_members=1, members="1")
+                  pooled=True, n_members=1, members="tavi:1:det")
     refs = [o.scan_ref for o in scene_observations(
         _ws(tmp_path, [_row(1, candidates=cands), master]))]
     assert refs == ["tavi:1:det"]
@@ -126,6 +157,15 @@ def test_malformed_candidates_yield_no_observation_and_log(tmp_path, caplog, cel
     with caplog.at_level(logging.WARNING, logger="isar.workspace_api.scene"):
         assert scene_observations(_ws(tmp_path, [_row(1, candidates=cell)])) == []
     assert any("tavi:1:det" in r.getMessage() for r in caplog.records)
+
+
+def test_legacy_header_without_the_candidates_column_says_so_once(tmp_path, caplog):
+    """The column's absence is one fact about the file, not an anomaly per fitted row."""
+    legacy = [c for c in COLUMNS if c != "candidates"]
+    rows = [_row(1, candidates=None), _row(2, candidates=None)]
+    with caplog.at_level(logging.INFO, logger="isar.workspace_api.scene"):
+        assert scene_observations(_ws(tmp_path, rows, columns=legacy)) == []
+    assert [r.levelname for r in caplog.records] == ["INFO"]
 
 
 def test_rows_that_never_had_a_fit_are_silent(tmp_path, caplog):
