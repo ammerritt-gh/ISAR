@@ -1932,16 +1932,43 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   which returns the pointer metadata plus the payload verbatim, with no typed re-modelling of it
   (H12(e)); absence reads as `None` and corruption propagates rather than degrading into "no
   scene", because the two mean opposite things to an
-  operator. `hypothesis_map(ws)` is a projection for a renderer and re-derives no belief: posterior
+  operator. The reader GATES what it interprets: the payload's `schema` must be exactly
+  `isar.scene-revision/1` and the keys it projects (`observations`, `clusters`, `footprints`,
+  `non_scoring`) must be present and be lists, so a `{}` or a future revision refuses by name
+  instead of reading as an empty scene — "the scene claims nothing here" and "this reader cannot
+  read the scene" are opposite statements. The view holds the CANONICAL BYTES and decodes a fresh
+  payload per access, like `SceneRevision` itself: a shared dict is mutable shared state, where one
+  reader's edit becomes another's belief and the content stops matching `digest`.
+  **A revision is about the rows it was built from, and the facade checks that it still is.** Every
+  read recomputes the live rows' observation fingerprints through the builder's own adapter and
+  compares them with the ones the revision embedded; any difference — a re-fitted row, an arena the
+  revision never saw, one it saw that is gone, or a workspace the adapter now refuses outright —
+  sets `stale` on the view and the map. Unconfirmable is not confirmed. Without it a scene frozen
+  three deliveries ago renders as the current belief over current data, which is exactly what a
+  hook that can never fail a delivery makes possible; `last_attempt` on the view then says why it
+  froze. `hypothesis_map(ws)` is a projection for a renderer and re-derives no belief: posterior
   mass comes from the recorded cluster marginals, visibility from the recorded reports, coverage
   from the recorded footprints. It carries THREE axes and deliberately does not unify them —
   markers and gap bounds are intrinsic `|ω|`, which is what the revision records, while a curve's
   `x` is the SIGNED energy window the delivered model was fitted on; folding is the renderer's ±ω
   overlay, and doing it here would either discard the curve's anti-Stokes side or invent a sign for
-  a mode that has none. When the cluster's leading alternative names a candidate the row did not
-  deliver, the curve is WITHHELD with a recorded reason: there are no stored amplitudes for it, and
-  drawing the delivered model under the winner's name would attribute one hypothesis's intensity to
-  another. The per-cluster classification payload key is the generic
+  a mode that has none. A curve is joined to an entry only when every source claim holds, and is
+  WITHHELD with a recorded reason otherwise: `cluster_unresolved` (see below), no delivered row,
+  `source_mismatch` (the live row no longer fingerprints as the observation the revision scored),
+  the leading alternative naming a candidate the row did not deliver (no stored amplitudes for it,
+  and drawing the delivered model under the winner's name would attribute one hypothesis's
+  intensity to another), an unplaceable window, an evaluator refusal, or `no_pure_model` — the
+  evaluator's reconstruct-from-counts fallback re-solves amplitudes, which is fitting, and a read
+  surface never fits (hard rule 7). Only the pure path renders.
+  **Cluster authority travels with every entry.** An entry carries `cluster_authority` ∈
+  `exact` / `bounded` / `unresolved`, derived from the cluster record (unresolved on
+  `truncation_unbounded` or `linkage_truncated`; bounded when a finite `log_discarded_mass_bound`
+  records dropped mass; exact otherwise), plus that bound when it is finite. An UNRESOLVED
+  cluster's marginals are conditional masses over the RETAINED set, not posteriors over the
+  hypothesis space: its curve is withheld and its markers are flagged
+  `conditional_on_retained_set`. The numbers are kept — they are what the scene computed — and
+  labelled for what they are, rather than projecting as an ordinary winner beside a fully
+  enumerated one. The per-cluster classification payload key is the generic
   `classification: {factor: {component: state}}` (ratified over a factor-specific
   `lattice_classification`), so a second classifying factor needs no schema change.
   **(d) Invocation: observe-only at every delivery, explicit offline.** One function

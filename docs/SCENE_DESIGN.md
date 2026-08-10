@@ -357,9 +357,19 @@ unchanged): `ws.scene` / `scene_revision(ws)` for the stored revision — `None`
 is damaged — and `hypothesis_map(ws)` for the renderable projection (H14(c)): one entry per scoring
 arena plus gap rows for everything the scene does not claim, stating only what the revision already
 decided. It keeps THREE axes apart — markers and gap bounds in intrinsic `|ω|`, a delivered curve
-on the SIGNED energy window it was fitted on, folding left to the renderer — and it withholds the
-curve with a recorded reason when the cluster's leading alternative is not the model the row
-delivered, since there are no stored amplitudes for it.
+on the SIGNED energy window it was fitted on, folding left to the renderer.
+
+The read surface gates what it interprets and binds what it renders (H14(c)): a payload whose
+`schema` is not `isar.scene-revision/1`, or which lacks the keys the projection reads, refuses
+rather than reading as an empty scene; the view holds canonical bytes and decodes a fresh payload
+per access; every read recompares the live rows' observation fingerprints with the revision's and
+reports `stale`; and a curve is withheld with a recorded reason unless the cluster is resolved, the
+row still fingerprints as the observation that was scored, the leading alternative IS the delivered
+model, and the evaluator's PURE path (stored amplitudes) rendered it — the fallback re-solves
+amplitudes, which is fitting. Every entry carries `cluster_authority` (`exact` / `bounded` /
+`unresolved`) with the finite `log_discarded_mass_bound` when there is one; an unresolved cluster's
+marker weights are conditional masses over the retained set, flagged
+`conditional_on_retained_set`, never projected as ordinary posteriors.
 
 A scene is built by one function, `isar.session.scene_hook.build_and_store` (H14(d)): the driver
 calls it observe-only after `workspace.save`, timed as the `scene_observe` stage and never able to
