@@ -1664,6 +1664,70 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   the world suite, no shadow ceremony), H4 (the evidence posterior these lnZ values come from) and
   H9(d) (the local identity axis).
 
+- **H12.** (2026-08-10, In force; SCENE-3 PR 3a review response) **The scene-factor ban admits
+  genuine joint likelihoods, evidence sinks are channels rather than noise, and nothing may be
+  discarded on evidence a factor has not yet contributed.** Six parts; **(a) amends H11(c)**.
+  **(a) H11(c) amended — the ban is about double-counting, not about arity** (external-review
+  adoption, owner ruling). H11(c)'s "no factor term may depend on a single observation's
+  parameters alone" was the right prohibition stated as the wrong rule. The prohibition is: a
+  scene factor may not score a function of a single observation alone when that information could
+  have been priced in its local evidence, and may not reapply any prior or constraint already
+  contained in local lnZ. Genuine joint cross-observation structural likelihoods ARE permitted —
+  when they carry declared probabilistic semantics and propagate the relevant uncertainty rather
+  than asserting a preferred configuration. Constraint transport is therefore one sanctioned
+  mechanism for cross-scan parameter coupling, not the only one, correcting H11(c)'s "exactly one
+  sanctioned channel". Enforcement is mechanical, not rhetorical: conditioning provenance
+  (`constraint_origin`, `effective_constraints`, the evidence arena fingerprint) travels with
+  scene evidence, so the builder can see which arena already priced a transported constraint and
+  hold the exactly-once rule itself. *Corollary, and the failure this prevents:* an unpriced
+  builder heuristic doing a likelihood's job — a hard threshold, a smoothness bonus, a
+  compatibility reward — is exactly what the ban exists to stop, and it stops it whether the
+  heuristic reads one observation or ten.
+  **(b) Ownership rule refined: an evidence sink is a scientific evidence channel.** A
+  non-canonical sink is not lesser evidence, it answers a different question:
+  `auxiliary_track_node` is identity evidence, `track_edge_evidence` is connectivity evidence,
+  `branch_belief_only` is transition evidence. The adapter therefore PRESERVES those candidate
+  rows with the sink attached instead of emptying the table, the builder makes the routing
+  decision (retained and deferred, or quarantined when the string is uninterpretable), and
+  scene-level routing of the three channels is named deferred work rather than silent loss.
+  Supersession considers canonical masters only, so a barred master no longer erases its members'
+  arenas. **Supersedes** the footprint-only treatment of auxiliary sinks in the SCENE-3 plan's
+  decision 9.
+  **(c) The pruning and cap contract: base-lnZ discarding is legal only under declared factor
+  bounds.** Pruning candidates and capping alternatives on Σ lnZ before factor terms exist is
+  exact only for an empty factor registry; with a scoring factor active a discarded candidate may
+  be rescued by its term, and the recorded mass bound can point the wrong way by orders of
+  magnitude. So: every factor declares `score_bound`, a bound on its total ln-term per
+  alternative; margin pruning is permitted only within the summed span of the active scoring
+  factors, with the effective margin and the widened bound both recorded; the truncation bound
+  carries the same span; and ONE unbounded scoring factor disables margin pruning entirely and
+  makes a truncated cluster record `truncation_unbounded` with no bound at all. An unbounded
+  truncation is an unresolved cluster, never a silently narrowed one — a false bound is worse
+  than no bound. Exact enumeration is the default posture (`SCENE_ALT_CAP` 64 → 4096), and the
+  declared bound is enforced during scoring rather than trusted. Refines H11(b)'s "the kept set
+  is exactly the top of the base ordering": it still is, and under active factors the base
+  ordering is no longer the total ordering, which is why the recorded bound must widen.
+  **(d) The legacy fallback is deleted, and the standing posture is recorded** (owner ruling).
+  Bare member labels and a candidates-column-less workspace now refuse scene construction with a
+  message naming the workspace to re-deliver, instead of guessing at ownership or reporting a
+  stale file as an empty scene. General posture, so this is not re-argued per slice: pre-release,
+  with a sole developer and user, there is no backwards-facing code by default — no compatibility
+  shims, no dual-path readers, no aliases for renamed keys. The owner re-decides this before any
+  major campaign, at which point data in flight starts to have a claim.
+  **(e) H11(a) restated: one self-contained immutable layer, not two.** The revision embeds the
+  exact evidence inputs it consumed — the candidate rows, the comparison-completeness status, the
+  conditioning provenance — and digests them, so it can be replayed and disputed rather than
+  believed. The vestigial `interpretation_ref` pointer is removed outright rather than left
+  dormant: a reserved field that nothing writes is an invitation to build the second layer this
+  decision declined.
+  **(f) LOFO is named score-term ablation.** The operation holds the hypothesis space fixed and
+  removes one factor's SCORE terms; a factor's `couples` and `propose` contributions to what the
+  alternatives are remain. That is the useful question ("given the same hypotheses, how much did
+  this term move belief?") but it is not leave-one-factor-out, and the old name promised a
+  rebuild the code deliberately does not do.
+  **Supersedes/relates:** amends H11(c) and refines H11(b); supersedes the SCENE-3 plan's
+  decision 9; rests on H7 (comparison completeness) and H9 (conditioning provenance).
+
 ## Session status update
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:

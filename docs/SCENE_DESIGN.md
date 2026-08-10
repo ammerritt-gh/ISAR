@@ -90,6 +90,35 @@ manufacture evidence); a gap in coverage contributes no update in either directi
 scene operates when local candidates carry `identity=None` — identity may arise purely
 from scene-level evidence.
 
+**Completeness (H7).** Only an arena whose local candidate comparison FINISHED may score.
+A fit whose evidence escalation budget expired with a contender unresolved publishes no
+Bayesian winner, and the lnZ values that survive are not the arena — scoring them turns an
+unfinished comparison into a confident posterior. Such an arena is experiment-map-only:
+footprint recorded, rows embedded, no term and no cluster membership. The same applies to
+an arena routed to a non-canonical evidence sink (H12(b)), whose channel the scene routes in
+a later slice.
+
+**Pruning and truncation are bounded, never optimistic (H12(c)).** Margin pruning and the
+enumeration cap both decide on base `Σ lnZ` before any factor term exists, so both are
+permitted only within the declared span `Σ_f (hi_f − lo_f)` of the active scoring factors'
+`score_bound`s: the effective margin is `margin_nats + span`, the recorded mass bounds are
+widened by it, and one unbounded scoring factor disables margin pruning outright and makes a
+truncated cluster record `truncation_unbounded` with no bound at all. An unbounded truncation
+is an unresolved cluster, not a narrowed one. Exact enumeration is the default posture.
+
+**Score-term ablation (H12(f)).** The per-cluster `score_ablation` lists give each factor's
+influence by removing its SCORE terms over the FIXED alternative set — index-aligned with
+`alternatives`, as the payload's `score_ablation_alignment` declares. A factor's `couples`
+edges (and so the cluster partition and the hypothesis space itself) are deliberately not
+removed; that is why the operation is not called leave-one-factor-out.
+
+**What SCENE-3 PR 3a's alternative is, and is not.** A 3a alternative is a per-cluster
+CANDIDATE ASSIGNMENT — one surviving candidate per participating arena — and is linkage-free.
+It is *not yet* the full scene alternative this section defines: component→phenomenon
+assignment, connectivity/topology states, and visibility states are the 3b extension, and
+until they land the scene scores which local hypothesis each arena holds, not what the
+phenomena are.
+
 ## 3. Slices
 
 | Slice | Goal | Status |
