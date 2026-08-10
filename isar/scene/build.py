@@ -137,7 +137,9 @@ class ClusterView:
     declarations are told apart by the revision's ``sample_knowledge`` block, not by a factor set
     that quietly differs.
 
-    ``refiners`` are the registry's ``refine_visibility`` hooks; ``reports_cache`` memoizes
+    ``refiners`` are the registry's ``refine_visibility`` hooks as ``(factor name, hook)``
+    pairs — the name travels with the callable so a hook that breaks the refinement rule can be
+    named in the error rather than left for a reader to identify by elimination; ``reports_cache`` memoizes
     :func:`isar.scene.factors.neighbour_reports` for the life of this view (one cluster of one
     build) so its three consumers walk the arenas once between them. It is scoped to the view on
     purpose — a module-level cache would outlive the build and hand one revision's reports to the
@@ -774,7 +776,7 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
                        components=MappingProxyType({r: components[r] for r in refs}),
                        footprints=MappingProxyType({r: footprints[r] for r in refs}),
                        sample=declared,
-                       refiners=tuple(f.refine_visibility for f in factor_list
+                       refiners=tuple((f.name, f.refine_visibility) for f in factor_list
                                       if f.refine_visibility is not None))
     lnz_of = {(r, c.label): lnz for r in refs for c, lnz in pruning[r]["survivors"]}
     rows_of = {(r, c.label): c for r in refs for c in by_ref[r].candidates}

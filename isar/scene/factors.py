@@ -321,14 +321,14 @@ def _refined(state, report, view):
     """``state`` after the view's refiners, first non-``None`` answer wins."""
     if state not in REFINABLE:
         return state
-    for refine in view.refiners:
+    for name, refine in view.refiners:
         out = refine(report, view)
         if out is None:
             continue
         replacement = Visibility(out)
         if replacement not in REFINABLE and replacement != Visibility.STRUCTURAL_ENDPOINT:
             raise ValueError(
-                f"a refine_visibility hook returned {out!r} for {report['component_id']!r} at "
+                f"scene factor {name!r} returned {out!r} for {report['component_id']!r} at "
                 f"{report['neighbour']!r}: a refiner may only reinterpret an absence "
                 f"({[str(s) for s in REFINABLE]}) or terminate it as "
                 f"{Visibility.STRUCTURAL_ENDPOINT!s}. Turning an absence into an observation, or "
