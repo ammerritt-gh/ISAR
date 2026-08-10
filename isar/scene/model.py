@@ -241,7 +241,8 @@ class CandidateRow:
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        # ±inf lnZ persists as ``null``. Not a coercion of a meaningful number: the builder
+        # A non-finite lnZ (±inf, and the NaN an evidence lane actually tends to produce)
+        # persists as ``null``. Not a coercion of a meaningful number: the builder
         # already declares a non-finite lnZ unsummable and routes it exactly like ``None``
         # (``build._usable_lnz``, excluded as ``no_evidence``), so the two spellings are already
         # indistinguishable to every consumer. Collapsing them at the serialization boundary is

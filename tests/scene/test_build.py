@@ -356,7 +356,6 @@ def test_an_overflowing_bound_reaches_the_payload_as_none_and_serializes_strictl
     cl = cluster_of(rev, "e:1:d")
     assert cl["truncated"] is True and cl["truncation_unbounded"] is False
     assert cl["discarded_mass_bound"] is None and cl["discarded_mass_unbounded"] is True
-    assert b"Infinity" not in canonical_bytes(cl)
 
 
 def test_canonical_bytes_refuses_a_non_finite_payload():

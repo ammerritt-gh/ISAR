@@ -130,6 +130,38 @@ def test_a_blob_written_without_its_pointer_leaves_the_old_revision_current(tmp_
     assert read_current(tmp_path)[0]["digest"] == orphan.digest
 
 
+def test_rewriting_a_revision_whose_blob_was_lost_restores_it(tmp_path):
+    """The state the unchanged short-circuit must not skip past: pointer intact, blob gone.
+    Short-circuiting on the pointer alone would report a cheerful ``unchanged`` at a workspace
+    that ``read_current`` can only raise on — the one corruption a rebuild cannot heal."""
+    rev = scene(chain_and_distant())
+    blob = write_revision(tmp_path, rev).path
+    before = pointer_bytes(tmp_path)
+    blob.unlink()
+
+    result = write_revision(tmp_path, rev)
+    assert result.unchanged is True                  # honest: the content on disk IS this one
+    assert blob.read_bytes() == rev.canonical        # ...because it was healed first
+    assert pointer_bytes(tmp_path) == before         # and the pointer never moved
+    assert read_current(tmp_path)[0]["digest"] == rev.digest
+
+
+def test_a_lost_pointer_restarts_lineage_over_the_surviving_blobs(tmp_path):
+    """Accepted by design: the pointer is convenience, never authority. Lineage restarts, the
+    superseded revisions stay addressable, and nothing that carries evidence is lost."""
+    first = scene(chain_and_distant())
+    write_revision(tmp_path, first)
+    moved = chain_and_distant()
+    moved[0] = mk_obs("e:1:d", [cand("A", -10.5), cand("B", -11.0)], q=(1.0, 0.0, 0.0))
+    second = scene(moved)
+    write_revision(tmp_path, second)
+
+    (tmp_path / "scene" / "current.json").unlink()
+    again = write_revision(tmp_path, second)
+    assert again.unchanged is False and again.parent is None
+    assert sorted(blobs(tmp_path)) == sorted([f"{first.digest}.json", f"{second.digest}.json"])
+
+
 # ----------------------------------------------------------------------------
 # Corruption is loud
 # ----------------------------------------------------------------------------
@@ -165,6 +197,16 @@ def test_a_corrupt_pointer_raises(tmp_path):
     (tmp_path / "scene" / "current.json").write_bytes(b"{not json")
     with pytest.raises(ValueError, match="unreadable scene pointer"):
         read_current(tmp_path)
+
+
+def test_writing_over_a_corrupt_pointer_raises_rather_than_losing_lineage(tmp_path):
+    """The write path reads the pointer first, so corruption is loud there too — a driver hook
+    must expect ValueError from ``write_revision``, not only from ``read_current``."""
+    rev = scene(chain_and_distant())
+    write_revision(tmp_path, rev)
+    (tmp_path / "scene" / "current.json").write_bytes(b"{not json")
+    with pytest.raises(ValueError, match="unreadable scene pointer"):
+        write_revision(tmp_path, rev)
 
 
 def test_a_pointer_without_a_digest_raises(tmp_path):

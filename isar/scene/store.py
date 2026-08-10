@@ -94,24 +94,37 @@ def _read_pointer(root: Path) -> dict | None:
     return pointer
 
 
-def write_revision(report_dir, revision: SceneRevision) -> StoreResult:
+def write_revision(report_dir: Path, revision: SceneRevision) -> StoreResult:
     """Publish ``revision`` and point ``current.json`` at it.
 
-    Idempotent in both halves: a pointer already naming this digest is left completely alone
-    (``unchanged``), and an existing blob is never rewritten — content-addressed bytes cannot
-    differ from themselves.
+    Idempotent in both halves: an existing blob is never rewritten (content-addressed bytes
+    cannot differ from themselves), and a pointer already naming this digest is left completely
+    alone — ``unchanged``, down to its ``written_at``.
+
+    The blob is ensured to exist BEFORE the unchanged test, not after. Otherwise a workspace
+    whose current blob had been lost would short-circuit on the pointer and report a cheerful
+    ``unchanged`` while ``read_current`` went on raising forever — the one state from which
+    rebuilding the same scene could not heal itself. Ensuring first makes ``unchanged`` honest
+    again: the content on disk really is this revision.
+
+    A lost *pointer* with surviving blobs restarts lineage (``parent`` is ``None`` again). That
+    is by design and costs nothing that matters: the pointer is convenience, never authority,
+    and every superseded revision stays addressable by its digest.
+
+    No locking. Two concurrent writers can interleave their pointer flips and drop a parent
+    link; the campaign model is one driver per workspace, and the blobs — the actual record —
+    are unharmed either way.
     """
     root = _scene_dir(report_dir)
     root.mkdir(parents=True, exist_ok=True)
     previous = _read_pointer(root)
     target = root / f"{revision.digest}.json"
+    if not target.exists():
+        _write_atomic(target, revision.canonical)
 
     if previous is not None and previous["digest"] == revision.digest:
         return StoreResult(digest=revision.digest, path=target, unchanged=True,
                            parent=previous.get("parent"))
-
-    if not target.exists():
-        _write_atomic(target, revision.canonical)
 
     parent = None if previous is None else previous["digest"]
     pointer = {"schema": POINTER_SCHEMA, "digest": revision.digest, "parent": parent,
@@ -120,7 +133,7 @@ def write_revision(report_dir, revision: SceneRevision) -> StoreResult:
     return StoreResult(digest=revision.digest, path=target, unchanged=False, parent=parent)
 
 
-def read_current(report_dir) -> tuple[dict, dict] | None:
+def read_current(report_dir: Path) -> tuple[dict, dict] | None:
     """``(pointer, payload)`` for the current revision, or ``None`` if there is not one yet.
 
     Absence is normal — a workspace with no scene, or a crash between blob and pointer, both
