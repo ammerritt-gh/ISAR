@@ -17,7 +17,14 @@ failure it prevents:
 * **No evidence, no term.** An arena with no usable finite ``lnZ`` contributes nothing to any
   score, so it is experiment-map-only: its footprint is recorded, it joins no cluster.
 * **Disconnected clusters are independent.** Normalization is per cluster, so adding an
-  unrelated arena cannot move an existing cluster's posteriors by a single bit.
+  unrelated arena cannot move an existing cluster's posteriors by a single bit. Only SURVIVING
+  candidates build the graph: a candidate nobody will score may not merge two clusters into a
+  joint normalization it takes no part in.
+* **Nothing is discarded on base lnZ that a factor could rescue.** Margin pruning and the
+  enumeration cap both decide on ``Σ lnZ`` before any factor term exists, so both are permitted
+  only within the factor set's DECLARED score span, and both record bounds widened by it. One
+  unbounded scoring factor disables margin pruning outright and makes a truncated cluster state
+  no bound at all — an unresolved cluster is honest, a false bound is not.
 * **Byte-identical replay.** The revision carries no timestamp and no machine identity; every
   ordering is derived from the data (scan_ref, then label), so two builds of the same inputs
   produce the same digest.
@@ -31,25 +38,34 @@ from __future__ import annotations
 
 import heapq
 import itertools
+import json
 import math
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 
 from isar.schema.steering import CANONICAL_MASTER, EVIDENCE_SINKS
 
-from .factors import FACTORS, registry_fingerprint, validate_factor
+from .factors import FACTORS, factor_manifest, registry_fingerprint, validate_factor
 from .model import (CandidateRow, ComponentObservation, Footprint, SceneObservation,
-                    Visibility, fingerprint, footprint_of)
+                    Visibility, canonical_bytes, digest_bytes, footprint_of)
 
 SCENE_SCHEMA = "isar.scene-revision/1"
 
 # Same currency and idiom as isar/analyze/evidence.py PRUNE_MARGIN: nats below the cluster's
 # per-arena leader, beyond which a candidate's posterior mass is bounded by e^−margin and it
-# stops being a contender. Owner-tunable.
+# stops being a contender. Owner-tunable. NOTE this is the BARE margin: under active scoring
+# factors the builder widens it by the declared factor span (``_score_span``), because a factor
+# term the pruner has not seen yet can rescue a candidate the bare margin would discard.
 SCENE_PRUNE_MARGIN = 100.0
 
 # Hard cap on alternatives enumerated per cluster. Owner-tunable; a truncated cluster says so
-# and carries a stated bound on the mass it dropped.
-SCENE_ALT_CAP = 64
+# and carries a stated bound on the mass it dropped — or, when a factor declares no bound, says
+# it can state no bound at all.
+#
+# 4096 makes EXACT enumeration the ordinary posture rather than the lucky one: a realistic
+# cluster (six arenas × three candidates = 729) sat above the old 64 and was truncated by
+# default, so every such scene published a capped posterior with a bound instead of the answer.
+SCENE_ALT_CAP = 4096
 
 
 # ----------------------------------------------------------------------------
@@ -72,28 +88,45 @@ class SceneAlternative:
 class ClusterView:
     """The cluster context handed to ``score`` alongside the alternative.
 
-    ``components`` holds every arena's components (not only the chosen ones) so a factor can
-    reason about what *could* have been there; ``footprints`` is the experiment map, which is
-    how a factor prices a coverage gap without inventing an update for it.
+    ``components`` holds every arena's SURVIVING components (not only the chosen ones) so a
+    factor can reason about what *could* have been there; ``footprints`` is the experiment map,
+    which is how a factor prices a coverage gap without inventing an update for it.
+
+    Both mappings are read-only views. A frozen dataclass freezes the *fields*, not the dicts
+    behind them: a factor that wrote into ``view.components`` would mutate the state every later
+    factor and every later alternative of the same cluster then scores against, making the
+    revision depend on factor order and on nothing recorded anywhere.
     """
 
     cluster_id: str
     scan_refs: tuple[str, ...]
-    components: dict[str, tuple[ComponentObservation, ...]]   # by scan_ref
-    footprints: dict[str, Footprint]                          # by scan_ref
+    components: MappingProxyType   # scan_ref -> tuple[ComponentObservation, ...]
+    footprints: MappingProxyType   # scan_ref -> Footprint
 
 
 @dataclass(frozen=True, slots=True)
 class SceneRevision:
-    """A scored scene, as a canonical payload plus its digest.
+    """A scored scene, as its canonical bytes plus their digest.
 
-    ``payload`` is the digest-free content — everything the digest is taken over. Keeping the
-    revision as one canonical dict rather than a parallel set of typed fields means there is
-    exactly one marshalling of it, so ``to_dict`` cannot drift out of step with ``digest``.
+    The bytes are the revision. They are encoded ONCE, at construction, and digested from the
+    same object that is stored — so ``payload`` can hand out a fresh dict per call without any
+    risk that a caller's edit to that dict desynchronizes the content from ``digest``. Keeping
+    the revision as one canonical encoding rather than a parallel set of typed fields means
+    there is exactly one marshalling of it, so ``to_dict`` cannot drift out of step either.
     """
 
-    payload: dict
+    canonical: bytes
     digest: str
+
+    @classmethod
+    def of(cls, payload: dict) -> "SceneRevision":
+        blob = canonical_bytes(payload)
+        return cls(canonical=blob, digest=digest_bytes(blob))
+
+    @property
+    def payload(self) -> dict:
+        """A FRESH copy of the digested content, every call. Mutating it changes nothing."""
+        return json.loads(self.canonical)
 
     def to_dict(self) -> dict:
         return {**self.payload, "digest": self.digest}
@@ -110,10 +143,11 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
     ``factors`` defaults to the live ``FACTORS`` registry; ``catalogue_version`` is a
     caller-supplied stamp, because the scene never imports the catalogue.
 
-    Payload alignment contract: a cluster's ``lofo[name]`` is a POSITIONAL list, index-aligned
-    with that cluster's ``alternatives`` — ``lofo[name][i]`` is the posterior of
-    ``alternatives[i]`` with factor ``name``'s terms removed. The payload states this as
-    ``lofo_alignment`` so an external consumer cannot silently read it as a mapping.
+    Payload alignment contract: a cluster's ``score_ablation[name]`` is a POSITIONAL list,
+    index-aligned with that cluster's ``alternatives`` — ``score_ablation[name][i]`` is the
+    posterior of ``alternatives[i]`` with factor ``name``'s score terms removed. The payload
+    states this as ``score_ablation_alignment`` so an external consumer cannot silently read it
+    as a mapping.
     """
     # Constants resolve AT CALL TIME, never as default-argument captures: a default evaluated
     # at import binds the module constant's value forever, so monkeypatching or an
@@ -128,27 +162,42 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
     footprints = {o.scan_ref: footprint_of(o) for o in obs}
 
     scoring, non_scoring = _split_by_evidence(obs)
-    components = {o.scan_ref: _components_of(o, footprints[o.scan_ref]) for o in scoring}
+    # Order matters and is the contract: evidence split → margin pruning → components of the
+    # SURVIVORS → coupling edges → clusters → enumeration. A candidate that will not be
+    # enumerated must not shape the partition either: an excluded candidate's component could
+    # otherwise couple two arenas and merge two clusters, and since truncation and normalization
+    # are joint over a cluster, a candidate nobody scores would still move everyone's posterior.
+    span = _score_span(factor_list)
+    pruning = {o.scan_ref: _prune(o, margin, span) for o in scoring}
+    components = {o.scan_ref: _components_of(o, footprints[o.scan_ref],
+                                             _survivor_labels(pruning[o.scan_ref]))
+                  for o in scoring}
 
     clusters = _clusters(scoring, components, factor_list)
-    pruning = {o.scan_ref: _prune(o, margin) for o in scoring}
 
     by_ref = {o.scan_ref: o for o in scoring}
     cluster_payloads = [
-        _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, cap)
+        _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, cap, span)
         for refs in clusters]
 
     payload = {
         "schema": SCENE_SCHEMA,
         "catalogue_version": str(catalogue_version),
         "registry_fingerprint": registry_fingerprint(factor_list),
+        # The declarations that fingerprint stands for, in full, so a reader can see WHAT scored
+        # the scene rather than only that something did.
+        "factor_manifest": factor_manifest(factor_list),
         # The values ACTUALLY used, not the module constants: a revision built with a tuned
         # margin must say so, or a replay would silently use a different model.
         "margin_nats": margin,
         "alt_cap": cap,
-        # Declares how to read every cluster's lofo lists: positionally, against that
+        # Σ_f (hi_f − lo_f) over the active scoring factors — the nats of rescue the pruner had
+        # to allow for. ``None`` = at least one factor declared no bound, so no base-lnZ pruning
+        # or truncation bound was permitted at all.
+        "score_span_nats": span,
+        # Declares how to read every cluster's score_ablation lists: positionally, against that
         # cluster's ``alternatives``.
-        "lofo_alignment": "by_alternative_index",
+        "score_ablation_alignment": "by_alternative_index",
         # Constraint-transport provenance: declared and dormant (the transport channel lives
         # in local evidence, per the PR-a design), so the field exists before it is filled.
         "transport": None,
@@ -158,7 +207,7 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
         "footprints": [footprints[o.scan_ref].to_dict() for o in obs],
         "clusters": cluster_payloads,
     }
-    return SceneRevision(payload=payload, digest=fingerprint(payload))
+    return SceneRevision.of(payload)
 
 
 # ----------------------------------------------------------------------------
@@ -201,6 +250,22 @@ def _factor_list(factors) -> tuple:
     if len(set(names)) != len(names):
         raise ValueError(f"duplicate scene factor names: {sorted(names)}")
     return tuple(sorted(values, key=lambda f: f.name))
+
+
+def _score_span(factor_list) -> float | None:
+    """``Σ_f (hi_f − lo_f)`` over the ACTIVE SCORING factors, or ``None`` if any is unbounded.
+
+    This is the total nats by which factor terms can reorder two alternatives that the base
+    Σ lnZ has already separated. Everything the builder discards without enumerating it — a
+    margin-pruned candidate, a capped alternative — is discarded on base alone, so this span is
+    exactly the slack those decisions must carry, and its absence is exactly the reason to stop
+    discarding. A coupling-only factor is irrelevant here: it changes the partition, not the
+    score, and cannot rescue anything.
+    """
+    scorers = [f for f in factor_list if f.score is not None]
+    if any(f.score_bound is None for f in scorers):
+        return None
+    return math.fsum(hi - lo for lo, hi in (f.score_bound for f in scorers))
 
 
 # ----------------------------------------------------------------------------
@@ -263,8 +328,14 @@ def _split_by_evidence(obs):
 # ----------------------------------------------------------------------------
 # 3. Components
 # ----------------------------------------------------------------------------
-def _components_of(o: SceneObservation, fp: Footprint) -> tuple[ComponentObservation, ...]:
-    """One component per mode of every candidate of ``o``.
+def _components_of(o: SceneObservation, fp: Footprint,
+                   labels: frozenset) -> tuple[ComponentObservation, ...]:
+    """One component per mode of every SURVIVING candidate of ``o``.
+
+    ``labels`` is the surviving set from ``_prune``. A discarded candidate emits no component,
+    so it can neither be coupled on nor scored — a candidate excluded for having no evidence,
+    or pruned as hopeless, must not be able to bridge two otherwise-independent clusters into
+    one joint normalization it takes no part in.
 
     A ``None`` ω is kept as a component with ``omega=None`` — the mode exists, it is merely
     unplaceable, and dropping it would make a candidate look like it had fewer modes.
@@ -278,7 +349,8 @@ def _components_of(o: SceneObservation, fp: Footprint) -> tuple[ComponentObserva
             omega=None if w is None else float(w),
             footprint=fp,
             visibility=Visibility.OBSERVED)
-        for c in o.candidates for i, w in enumerate(c.omegas))
+        for c in o.candidates if c.label in labels
+        for i, w in enumerate(c.omegas))
 
 
 # ----------------------------------------------------------------------------
@@ -321,47 +393,82 @@ def _clusters(scoring, components, factor_list) -> list[tuple[str, ...]]:
 # ----------------------------------------------------------------------------
 # 5. Per-arena margin pruning
 # ----------------------------------------------------------------------------
-def _prune(o: SceneObservation, margin: float) -> dict:
-    """Split one arena's candidates into survivors and recorded exclusions."""
+def _prune(o: SceneObservation, margin: float, span: float | None) -> dict:
+    """Split one arena's candidates into survivors and recorded exclusions.
+
+    Margin pruning is a statement about the FULL score, not about lnZ, so it is only legal
+    within the declared factor span. Take an alternative S using candidate ``c``, and S′ the
+    same alternative with ``c`` swapped for the arena leader. Then
+
+        ln W(S) − ln W(S′) = (lnZ(c) − lnZ(leader)) + Σ_f (φ_f(S) − φ_f(S′))
+                           ≤ −delta + Σ_f (hi_f − lo_f) = −delta + span,
+
+    so ``c``'s weight relative to that swapped rival is bounded by ``exp(span − delta)``: the
+    candidate is only safe to discard once ``delta > margin + span``, and the honest bound to
+    record is the widened one. With ``span = 0`` (no scoring factors, or all neutral) both
+    collapse to the bare margin and ``exp(−delta)`` — the empty-registry behaviour, unchanged.
+
+    ``span is None`` means some scoring factor declared no bound: an arbitrarily large term
+    could rescue any candidate, so NO margin pruning happens at all. Only the exclusions a
+    factor cannot reverse remain — a candidate with no summable lnZ has no term to be rescued.
+    """
     leader = max(z for z in (_usable_lnz(c) for c in o.candidates) if z is not None)
+    effective = None if span is None else margin + span
     survivors, excluded = [], []
     for c in o.candidates:
         lnz = _usable_lnz(c)
         if lnz is None:
             # Never had a bound to state: an unusable or non-finite candidate is not a
             # candidate that is merely improbable.
-            excluded.append({"label": c.label, "reason": "no_evidence",
-                             "delta_nats": None, "mass_bound": None})
-        elif lnz < leader - margin:
+            excluded.append({"label": c.label, "reason": "no_evidence", "delta_nats": None,
+                             "mass_bound": None, "effective_margin_nats": None})
+        elif effective is not None and lnz < leader - effective:
             delta = leader - lnz
             excluded.append({"label": c.label, "reason": "margin_pruned",
                              "delta_nats": delta,
                              # Upper bound on the posterior mass dropped relative to the
-                             # arena leader. Recorded once, here, so no later reader has to
-                             # re-derive it from a margin that may since have been retuned.
-                             "mass_bound": math.exp(-delta)})
+                             # arena leader, factor rescue included. Recorded once, here, so no
+                             # later reader has to re-derive it from a margin or a factor set
+                             # that may since have been retuned.
+                             "mass_bound": math.exp(span - delta),
+                             # The margin actually applied, which is not the payload's
+                             # ``margin_nats`` whenever a scoring factor is active.
+                             "effective_margin_nats": effective})
         else:
             survivors.append((c, lnz))
     return {"survivors": survivors, "excluded": excluded, "leader": leader}
 
 
+def _survivor_labels(pruned: dict) -> frozenset:
+    return frozenset(c.label for c, _ in pruned["survivors"])
+
+
 # ----------------------------------------------------------------------------
 # 6. Alternative enumeration
 # ----------------------------------------------------------------------------
-def _enumerate(arenas, cap: int):
-    """``(assignments, n_possible, truncated, discarded_mass_bound)`` for one cluster.
+def _enumerate(arenas, cap: int, span: float | None):
+    """``(assignments, n_possible, truncated, discarded_mass_bound, unbounded)`` for a cluster.
 
     ``arenas`` is ``[(scan_ref, [(label, lnZ), ...]), ...]`` in scan_ref order. Below the cap
     the full Cartesian product is enumerated. Above it the kept set is EXACTLY the top-``cap``
     alternatives by base Σ lnZ (ties by label tuple), found by a best-first walk over the
     product — an approximation here would put an unstated bias in the posterior, whereas a
     truncation with a stated mass bound is honest.
+
+    Why the base ordering IS the optimistic ordering. A factor's declared bound is a bound on
+    its total term for *any* alternative, so the optimistic score ``base(S) + Σ_f hi_f`` differs
+    from ``base(S)`` by a constant across the whole cluster; ranking by it therefore selects the
+    same set in the same order. There is no bounded re-ranking to be had, and the consequence is
+    stated rather than hidden: a cap under active factors keeps the top of the BASE ordering,
+    which is not necessarily the top of the total ordering, and the widened bound below is what
+    makes the payload honest about it. (A bound ≥ 1 is a true bound that states it constrains
+    nothing — which is the point at which the operator should raise ``alt_cap``.)
     """
     n_possible = math.prod(len(cands) for _, cands in arenas)
     if n_possible <= cap:
         assignments = [tuple((ref, cands[i][0]) for (ref, cands), i in zip(arenas, idx))
                        for idx in itertools.product(*(range(len(c)) for _, c in arenas))]
-        return sorted(assignments), n_possible, False, 0.0
+        return sorted(assignments), n_possible, False, 0.0, False
 
     # Best-first: each arena's candidates sorted by lnZ descending, so incrementing any index
     # can only lower the base score — the frontier heap therefore pops in exact base order.
@@ -388,15 +495,31 @@ def _enumerate(arenas, cap: int):
             if nxt[pos] < len(ranked[pos][1]) and nxt not in seen:
                 seen.add(nxt)
                 heapq.heappush(heap, (-base_of(nxt), labels_of(nxt), nxt))
-    discarded = _discarded_bound(n_possible - len(kept), lowest_base, leader_base)
-    return sorted(tuple(sorted(a)) for a in kept), n_possible, True, discarded
+    if span is None:
+        # World-11 honesty: an unbounded factor can lift any dropped alternative arbitrarily far,
+        # so there is NO number here that is both true and useful. A truncated cluster with no
+        # bound is an unresolved cluster, and says so — inventing exp(lowest − leader) would be
+        # the reviewer's failure exactly: a payload claiming ≤0.0067 of dropped mass where the
+        # truth is 0.993.
+        return sorted(tuple(sorted(a)) for a in kept), n_possible, True, None, True
+    discarded = _discarded_bound(n_possible - len(kept), lowest_base, leader_base, span)
+    return sorted(tuple(sorted(a)) for a in kept), n_possible, True, discarded, False
 
 
-def _discarded_bound(n_dropped: int, lowest_base: float, leader_base: float) -> float:
-    """Upper bound on the mass a cap dropped: ``n_dropped × exp(lowest − leader)``.
+def _discarded_bound(n_dropped: int, lowest_base: float, leader_base: float,
+                     span: float = 0.0) -> float:
+    """Upper bound on the mass a cap dropped: ``n_dropped × exp(lowest − leader + span)``.
 
-    Conservative and stated: every dropped alternative has base ≤ the lowest kept base, so its
-    unnormalized weight relative to the leader is at most ``exp(lowest − leader)``.
+    Conservative and stated. Every dropped alternative D has ``base(D) ≤ lowest`` (the kept set
+    is the top of the base ordering) and, for the best kept alternative L with ``base(L) =
+    leader``,
+
+        ln W(D) − ln W(L) = base(D) − base(L) + Σ_f (φ_f(D) − φ_f(L))
+                          ≤ (lowest − leader) + Σ_f (hi_f − lo_f) = lowest − leader + span,
+
+    so each dropped alternative's unnormalized weight relative to the leader is at most
+    ``exp(lowest − leader + span)``, and there are ``n_dropped`` of them. ``span = 0`` is the
+    no-scoring-factor case and reproduces the bare ``n_dropped × exp(lowest − leader)``.
 
     Computed in log space because ``n_dropped`` is an exact Python int over the full product
     and can exceed the float range long before the bound itself does — ``math.log`` takes the
@@ -407,7 +530,7 @@ def _discarded_bound(n_dropped: int, lowest_base: float, leader_base: float) -> 
     if n_dropped <= 0:
         return 0.0
     try:
-        return math.exp(math.log(n_dropped) + (lowest_base - leader_base))
+        return math.exp(math.log(n_dropped) + (lowest_base - leader_base) + span)
     except OverflowError:
         return math.inf
 
@@ -415,14 +538,15 @@ def _discarded_bound(n_dropped: int, lowest_base: float, leader_base: float) -> 
 # ----------------------------------------------------------------------------
 # 7-9. Scoring, ledger, marginals
 # ----------------------------------------------------------------------------
-def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, cap) -> dict:
+def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, cap,
+                   span) -> dict:
     cluster_id = refs[0]
     arenas = [(r, [(c.label, lnz) for c, lnz in pruning[r]["survivors"]]) for r in refs]
-    assignments, n_possible, truncated, discarded = _enumerate(arenas, cap)
+    assignments, n_possible, truncated, discarded, unbounded = _enumerate(arenas, cap, span)
 
     view = ClusterView(cluster_id=cluster_id, scan_refs=refs,
-                       components={r: components[r] for r in refs},
-                       footprints={r: footprints[r] for r in refs})
+                       components=MappingProxyType({r: components[r] for r in refs}),
+                       footprints=MappingProxyType({r: footprints[r] for r in refs}))
     lnz_of = {(r, c.label): lnz for r in refs for c, lnz in pruning[r]["survivors"]}
     rows_of = {(r, c.label): c for r in refs for c in by_ref[r].candidates}
 
@@ -441,7 +565,29 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
             if f.score is None:
                 continue
             term, why = f.score(alt, view)
-            (prior_terms if f.kind == "scene_prior" else factor_terms)[f.name] = float(term)
+            term = float(term)
+            if not math.isfinite(term):
+                # A NaN term poisons the log-sum-exp into an all-NaN posterior that still
+                # "normalizes"; a −inf term silently deletes an alternative from the cluster
+                # without a pruning record. Both are caught at the source, naming it.
+                raise ValueError(
+                    f"scene factor {f.name!r} returned a non-finite term {term!r} for cluster "
+                    f"{cluster_id!r}, alternative {list(assignment)}. A veto by −inf is NOT a "
+                    "supported semantic in v1: a factor that must forbid an alternative needs a "
+                    "declared veto semantic, so the exclusion is recorded and bounded like every "
+                    "other one, rather than vanishing into the normalization.")
+            if f.score_bound is not None and not f.score_bound[0] <= term <= f.score_bound[1]:
+                # The declared bound is not documentation: the margin pruning and truncation
+                # bounds recorded in this payload were DERIVED from it, and candidates were
+                # discarded on its strength. A factor that exceeds its own bound has already
+                # invalidated them, so it fails here rather than publishing them.
+                raise ValueError(
+                    f"scene factor {f.name!r} returned {term!r} for cluster {cluster_id!r}, "
+                    f"alternative {list(assignment)}, outside its declared score_bound "
+                    f"{f.score_bound}. Candidates were pruned and alternatives truncated under "
+                    "that bound, so exceeding it makes the recorded mass bounds false; widen "
+                    "the declaration or declare None and pay for it in pruning.")
+            (prior_terms if f.kind == "scene_prior" else factor_terms)[f.name] = term
             if why:
                 reasons[f.name] = list(why)
         entries.append({
@@ -459,18 +605,21 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
     for e in entries:
         e["posterior"] = math.exp(e["total"] - log_norm)
 
-    lofo = {}
+    score_ablation = {}
     for f in factor_list:
         if f.score is None:
             continue
-        # Leave-one-factor-out over the FIXED alternative set, index-aligned with ``entries``
-        # (payload ``lofo_alignment``): the question is what that
-        # factor's terms did to the posterior, not what a differently-enumerated scene would
-        # have looked like, so re-enumeration would answer a different question.
+        # SCORE-TERM ablation over the FIXED alternative set, index-aligned with ``entries``
+        # (payload ``score_ablation_alignment``): the question is what that factor's SCORE terms
+        # did to the posterior over these hypotheses. It is deliberately not a rebuild without
+        # the factor: the factor's ``couples`` edges (which alternatives exist at all, how the
+        # cluster is partitioned) and its ``propose`` contributions are NOT removed, so the
+        # comparison is like-for-like. Re-enumerating would answer a different question and the
+        # honest name says so.
         totals = [_total(e["base"], _without(e["factor_terms"], f.name),
                          _without(e["prior_terms"], f.name)) for e in entries]
         norm = _logsumexp(totals)
-        lofo[f.name] = [math.exp(t - norm) for t in totals]
+        score_ablation[f.name] = [math.exp(t - norm) for t in totals]
 
     return {
         "cluster_id": cluster_id,
@@ -479,11 +628,15 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
         "n_enumerated": len(entries),
         "n_possible": n_possible,
         "discarded_mass_bound": discarded,
+        # True when the cap dropped alternatives under a factor that declared no bound: the
+        # cluster is UNRESOLVED, not narrowed, and no reader may treat these posteriors as a
+        # bounded approximation of the full ones.
+        "truncation_unbounded": unbounded,
         "pruning": {r: pruning[r]["excluded"] for r in refs},
         "log_norm": log_norm,
         "alternatives": entries,
-        "lofo": lofo,
-        "marginals": _marginals(refs, entries, rows_of, truncated),
+        "score_ablation": score_ablation,
+        "marginals": _marginals(refs, entries, rows_of, truncated, unbounded),
     }
 
 
@@ -504,13 +657,15 @@ def _logsumexp(values) -> float:
     return top + math.log(math.fsum(math.exp(v - top) for v in values))
 
 
-def _marginals(refs, entries, rows_of, truncated: bool) -> dict:
+def _marginals(refs, entries, rows_of, truncated: bool, unbounded: bool) -> dict:
     """Exact sums over the enumerated alternative set: per arena, P(label) and P(n_modes=k).
 
     The mode-count marginal is the N-mode ruling's representable uncertainty (H8(e)):
     "three modes, poorly constrained" has to survive as a distribution, not collapse to a
     winner. ``truncated`` travels with the numbers so a reader never mistakes a capped sum
-    for a complete one.
+    for a complete one, and ``truncation_unbounded`` travels with it so a reader never mistakes
+    an unresolved cluster for a narrowed one — a marginal read out of the payload without its
+    cluster is precisely where that distinction would otherwise be lost.
     """
     labels: dict[str, dict[str, float]] = {r: {} for r in refs}
     counts: dict[str, dict[str, float]] = {r: {} for r in refs}
@@ -519,4 +674,5 @@ def _marginals(refs, entries, rows_of, truncated: bool) -> dict:
             labels[ref][label] = labels[ref].get(label, 0.0) + e["posterior"]
             k = str(rows_of[(ref, label)].n_modes)
             counts[ref][k] = counts[ref].get(k, 0.0) + e["posterior"]
-    return {"label": labels, "n_modes": counts, "truncated": truncated}
+    return {"label": labels, "n_modes": counts, "truncated": truncated,
+            "truncation_unbounded": unbounded}

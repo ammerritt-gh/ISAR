@@ -16,7 +16,7 @@ from isar.scene.build import (SCENE_SCHEMA, ClusterView, SceneAlternative,
                               _discarded_bound, build_scene)
 from isar.scene import build as build_mod
 from isar.scene.factors import SceneFactor
-from isar.scene.model import (CandidateRow, SceneObservation, canonical_bytes,
+from isar.scene.model import (CandidateRow, SceneObservation, canonical_bytes, digest_bytes,
                               observation_fingerprint)
 
 
@@ -56,17 +56,23 @@ def _q_adjacent(a, b):
 
 COUPLER = SceneFactor(name="q_adjacency", kind="structural_likelihood", version="1",
                       consumes=("q",), couples=_q_adjacent)
+# Declares its true (zero) range, so it costs the builder no pruning: a neutral factor that left
+# score_bound=None would silently disable margin pruning for the whole scene.
 ZERO = SceneFactor(name="zero", kind="structural_likelihood", version="1",
-                   score=lambda alt, view: (0.0, ()))
+                   score_bound=(0.0, 0.0), score=lambda alt, view: (0.0, ()))
+UNBOUNDED = SceneFactor(name="unbounded", kind="structural_likelihood", version="1",
+                        score=lambda alt, view: (0.0, ()))
 
 
-def biased(label="B", term=1.5):
+def biased(label="B", term=1.5, bound=True):
     def score(alt, view):
         assert isinstance(alt, SceneAlternative) and isinstance(view, ClusterView)
         hit = any(chosen == label for _, chosen in alt.assignment)
         return (term if hit else 0.0), (("biased_hit",) if hit else ())
 
-    return SceneFactor(name="biased", kind="structural_likelihood", version="1", score=score)
+    return SceneFactor(name="biased", kind="structural_likelihood", version="1",
+                       score_bound=(min(0.0, term), max(0.0, term)) if bound else None,
+                       score=score)
 
 
 def chain_and_distant():
@@ -320,11 +326,11 @@ def test_discarded_bound_survives_counts_far_outside_the_float_range():
     assert _discarded_bound(huge, -1.0, 0.0) == math.inf  # honestly unbounded, not a crash
 
 
-def test_lofo_alignment_is_declared_in_the_payload():
+def test_score_ablation_alignment_is_declared_in_the_payload():
     rev = build_scene(chain_and_distant(), factors=[COUPLER, ZERO])
-    assert rev.payload["lofo_alignment"] == "by_alternative_index"
+    assert rev.payload["score_ablation_alignment"] == "by_alternative_index"
     for cl in rev.payload["clusters"]:
-        assert len(cl["lofo"]["zero"]) == len(cl["alternatives"])
+        assert len(cl["score_ablation"]["zero"]) == len(cl["alternatives"])
 
 
 def test_tied_base_scores_at_the_cap_boundary_break_by_label_tuple():
@@ -358,7 +364,7 @@ def test_margin_constant_resolves_at_call_time(monkeypatch):
 
 
 # ----------------------------------------------------------------------------
-# Ledger and LOFO
+# Ledger and score-term ablation
 # ----------------------------------------------------------------------------
 def test_ledger_reconstructs_to_the_stored_numbers_exactly():
     rev = build_scene(chain_and_distant(), factors=[COUPLER, ZERO, biased()])
@@ -370,24 +376,24 @@ def test_ledger_reconstructs_to_the_stored_numbers_exactly():
             assert math.exp(total - cl["log_norm"]) == a["posterior"]
 
 
-def test_lofo_reproduces_the_build_without_that_factor():
+def test_score_ablation_reproduces_the_build_without_that_factor():
     obs = chain_and_distant()
     with_bias = build_scene(obs, factors=[COUPLER, ZERO, biased()])
     without = build_scene(obs, factors=[COUPLER, ZERO])
     for cl, ref_cl in zip(with_bias.payload["clusters"], without.payload["clusters"]):
         assert [a["assignment"] for a in cl["alternatives"]] == \
             [a["assignment"] for a in ref_cl["alternatives"]]
-        assert cl["lofo"]["biased"] == [a["posterior"] for a in ref_cl["alternatives"]]
+        assert cl["score_ablation"]["biased"] == [a["posterior"] for a in ref_cl["alternatives"]]
 
 
-def test_lofo_of_a_neutral_factor_is_the_posterior_itself():
+def test_score_ablation_of_a_neutral_factor_is_the_posterior_itself():
     rev = build_scene(chain_and_distant(), factors=[COUPLER, ZERO])
     for cl in rev.payload["clusters"]:
-        assert cl["lofo"]["zero"] == [a["posterior"] for a in cl["alternatives"]]
+        assert cl["score_ablation"]["zero"] == [a["posterior"] for a in cl["alternatives"]]
 
 
 def test_the_biased_factor_actually_moves_the_posterior():
-    """Guards the LOFO tests above from passing because nothing ever changed."""
+    """Guards the ablation tests above from passing because nothing ever changed."""
     obs = chain_and_distant()
     biased_rev = build_scene(obs, factors=[COUPLER, biased(term=3.0)])
     neutral = build_scene(obs, factors=[COUPLER, ZERO])
@@ -395,3 +401,272 @@ def test_the_biased_factor_actually_moves_the_posterior():
     assert [a["posterior"] for a in cl["alternatives"]] != \
         [a["posterior"] for a in ref["alternatives"]]
     assert any(a["reasons"].get("biased") == ["biased_hit"] for a in cl["alternatives"])
+
+
+# ----------------------------------------------------------------------------
+# The pruning/cap contract under declared factor bounds
+# ----------------------------------------------------------------------------
+def test_a_bounded_factor_rescues_the_candidate_the_bare_margin_would_have_dropped():
+    """The reviewer's example, verbatim. A at lnZ 0, B at lnZ -5, and a factor worth +10 nats
+    to B. Deciding on base lnZ alone drops B and states a mass bound of e^-5 = 0.0067 - while
+    B's true posterior is 0.993, so the recorded bound points the wrong way by two orders of
+    magnitude. The declared bound widens the margin by the factor span, so B survives to be
+    scored, and wins."""
+    obs = [mk_obs("e:1:d", [cand("A", 0.0), cand("B", -5.0)])]
+    cl = cluster_of(build_scene(obs, factors=[biased(label="B", term=10.0)], margin_nats=1.0),
+                    "e:1:d")
+    assert cl["pruning"]["e:1:d"] == []                     # 5 nats < margin 1 + span 10
+    posterior = {a["assignment"][0][1]: a["posterior"] for a in cl["alternatives"]}
+    assert posterior["B"] == pytest.approx(1.0 / (1.0 + math.exp(-5.0)), rel=1e-12)
+    assert posterior["B"] > 0.99
+
+    # Same margin, no factor to rescue anything: B goes, and the bare bound is then the truth.
+    bare = cluster_of(build_scene(obs, factors=[], margin_nats=1.0), "e:1:d")
+    dropped, = bare["pruning"]["e:1:d"]
+    assert (dropped["label"], dropped["reason"]) == ("B", "margin_pruned")
+    assert dropped["mass_bound"] == pytest.approx(math.exp(-5.0), rel=1e-12)
+    assert dropped["effective_margin_nats"] == 1.0
+
+
+def test_an_unbounded_scoring_factor_disables_margin_pruning_entirely():
+    """A factor that will not declare a bound could rescue anything, so nothing may be discarded
+    on base lnZ - a candidate 150 nats down is retained and scored."""
+    obs = [mk_obs("e:1:d", [cand("lead", -10.0), cand("hopeless", -160.0),
+                            cand("dead", -11.0, usable=False)])]
+    rev = build_scene(obs, factors=[UNBOUNDED])
+    assert rev.payload["score_span_nats"] is None
+    cl = cluster_of(rev, "e:1:d")
+    assert {a["assignment"][0][1] for a in cl["alternatives"]} == {"lead", "hopeless"}
+    # The one exclusion a factor CANNOT reverse still stands: no summable lnZ, no term to rescue.
+    assert [(e["label"], e["reason"]) for e in cl["pruning"]["e:1:d"]] == [("dead", "no_evidence")]
+
+
+def test_an_unbounded_factor_over_the_cap_states_no_bound_at_all():
+    """World-11 honesty: an unbounded truncation is an UNRESOLVED cluster, never a silently
+    narrowed one, and the marginals a reader lifts out of it carry that with them."""
+    obs = [mk_obs("e:1:d", [cand("A", 0.0), cand("B", -1.0), cand("C", -2.0)])]
+    cl = cluster_of(build_scene(obs, factors=[UNBOUNDED], alt_cap=2), "e:1:d")
+    assert cl["truncated"] is True and cl["truncation_unbounded"] is True
+    assert cl["discarded_mass_bound"] is None
+    assert cl["marginals"]["truncation_unbounded"] is True
+
+
+def test_a_bounded_truncation_widens_its_stated_bound_by_the_factor_span():
+    obs = [mk_obs("e:1:d", [cand("A", 0.0), cand("B", -5.0), cand("C", -9.0)])]
+    rev = build_scene(obs, factors=[biased(label="B", term=10.0)], alt_cap=2)
+    assert rev.payload["score_span_nats"] == 10.0
+    cl = cluster_of(rev, "e:1:d")
+    assert cl["truncated"] is True and cl["truncation_unbounded"] is False
+    # One dropped alternative (C), lowest kept base -5, leader base 0, span 10.
+    assert cl["discarded_mass_bound"] == pytest.approx(math.exp(-5.0 + 10.0), rel=1e-12)
+    # A bound above 1 is a true bound that constrains nothing - and says so, rather than
+    # claiming e^-5 of dropped mass while a +10 nat factor sits on the dropped alternative.
+    assert cl["discarded_mass_bound"] > 1.0
+
+
+def test_the_empty_registry_keeps_the_bare_margin_and_the_bare_bound():
+    """The equivalence itself: with no scoring factor the span is 0, and every number is the
+    pre-contract arithmetic - the live (empty) registry must not change a single byte."""
+    obs = chain_and_distant()
+    assert build_scene(obs).digest == build_scene(obs, factors=[]).digest
+    assert build_scene(obs).payload["score_span_nats"] == 0.0
+
+    pruned = [mk_obs("e:1:d", [cand("lead", -10.0), cand("far", -160.0)])]
+    cl = cluster_of(build_scene(pruned, factors=[]), "e:1:d")
+    dropped, = cl["pruning"]["e:1:d"]
+    assert dropped["delta_nats"] == 150.0
+    assert dropped["mass_bound"] == math.exp(-150.0)
+    assert dropped["effective_margin_nats"] == build_mod.SCENE_PRUNE_MARGIN
+
+    capped = cluster_of(build_scene(
+        [mk_obs("e:1:d", [cand("A", 0.0), cand("B", -5.0), cand("C", -9.0)])],
+        factors=[], alt_cap=2), "e:1:d")
+    assert capped["discarded_mass_bound"] == pytest.approx(math.exp(-5.0), rel=1e-12)
+    assert capped["truncation_unbounded"] is False
+
+
+def test_the_default_cap_enumerates_a_realistic_cluster_exactly():
+    """Six arenas x three candidates = 729 sat above the old cap of 64, so every such scene
+    published a truncated posterior by default. Exact enumeration is the intended posture."""
+    assert build_mod.SCENE_ALT_CAP == 4096
+    obs = [mk_obs(f"e:{i}:d", [cand(lbl, -1.0 * (i + 1)) for lbl in "ABC"],
+                  q=(1.0 + 0.1 * i, 0.0, 0.0)) for i in range(6)]
+    cl = cluster_of(build_scene(obs, factors=[COUPLER, ZERO]), "e:0:d")
+    assert cl["n_possible"] == 729 and cl["n_enumerated"] == 729
+    assert cl["truncated"] is False and cl["discarded_mass_bound"] == 0.0
+
+
+# ----------------------------------------------------------------------------
+# The graph is built from scoreable survivors only
+# ----------------------------------------------------------------------------
+OMEGA_COUPLER = SceneFactor(
+    name="omega_adjacency", kind="structural_likelihood", version="1", consumes=("omega",),
+    couples=lambda a, b: (a.omega is not None and b.omega is not None
+                          and abs(a.omega - b.omega) <= 0.5))
+
+
+def _bridged_scene(with_bridge: bool):
+    """Two omega-separated arena pairs, optionally bridged by ONE unusable candidate."""
+    middle = [cand("A", -12.0, omegas=(10.1,))]
+    if with_bridge:
+        middle.append(cand("bridge", -3.0, usable=False, omegas=(30.0,)))
+    return build_scene([
+        mk_obs("e:1:d", [cand("A", -10.0, omegas=(10.0,)), cand("B", -11.0, omegas=(10.2,))]),
+        mk_obs("e:2:d", middle),
+        mk_obs("e:5:d", [cand("A", -9.0, omegas=(30.0,))]),
+        mk_obs("e:6:d", [cand("A", -9.4, omegas=(30.1,))]),
+    ], factors=[OMEGA_COUPLER, ZERO])
+
+
+def test_an_excluded_candidate_cannot_bridge_two_clusters():
+    """Reviewer #8. The bridging candidate has no usable evidence, so it is never enumerated -
+    but building the graph before pruning let it merge two independent clusters into one joint
+    normalization it takes no part in, and truncation is joint over a cluster."""
+    bridged, plain = _bridged_scene(True), _bridged_scene(False)
+    assert [c["scan_refs"] for c in plain.payload["clusters"]] == \
+        [["e:1:d", "e:2:d"], ["e:5:d", "e:6:d"]]
+    assert [c["scan_refs"] for c in bridged.payload["clusters"]] == \
+        [["e:1:d", "e:2:d"], ["e:5:d", "e:6:d"]]
+    # Byte-identical numbers, not merely the same partition. (The pruning ledger differs, by
+    # design: the excluded candidate is recorded, it is only barred from scoring.)
+    assert [canonical_bytes(c["marginals"]) for c in bridged.payload["clusters"]] == \
+        [canonical_bytes(c["marginals"]) for c in plain.payload["clusters"]]
+    assert [(e["label"], e["reason"]) for e in cluster_of(bridged, "e:1:d")["pruning"]["e:2:d"]] \
+        == [("bridge", "no_evidence")]
+
+
+# ----------------------------------------------------------------------------
+# Immutability
+# ----------------------------------------------------------------------------
+def test_a_factor_cannot_mutate_the_cluster_view():
+    """Reviewer #5. A frozen dataclass freezes the fields, not the dicts behind them: a factor
+    writing into the view would change what every later factor and alternative scores against."""
+    def score(alt, view):
+        with pytest.raises(TypeError):
+            view.components[alt.cluster_id] = ()
+        with pytest.raises(TypeError):
+            view.footprints[alt.cluster_id] = None
+        return 0.0, ()
+
+    f = SceneFactor(name="mutator", kind="structural_likelihood", version="1",
+                    score_bound=(0.0, 0.0), score=score)
+    assert build_scene(chain_and_distant(), factors=[COUPLER, f]).digest
+
+
+def test_the_payload_handed_out_cannot_desynchronize_from_the_digest():
+    """Reviewer #6. The digest is taken over stored bytes, and every ``payload`` read is a fresh
+    copy of them, so no holder of a payload dict can leave the revision self-inconsistent."""
+    rev = build_scene(chain_and_distant(), factors=[COUPLER, ZERO])
+    scribbled = rev.payload
+    scribbled["schema"] = "tampered"
+    scribbled["clusters"][0]["alternatives"][0]["posterior"] = 0.5
+    assert rev.payload["schema"] == SCENE_SCHEMA
+    assert rev.payload["clusters"][0]["alternatives"][0]["posterior"] != 0.5
+    assert rev.digest == digest_bytes(canonical_bytes(rev.payload))
+    assert rev.digest == build_scene(chain_and_distant(), factors=[COUPLER, ZERO]).digest
+
+
+# ----------------------------------------------------------------------------
+# The factor manifest
+# ----------------------------------------------------------------------------
+DECLARED = SceneFactor(name="declared", kind="structural_likelihood", version="1",
+                       consumes=("q",), config=(("threshold", 0.25),), score_bound=(0.0, 1.0),
+                       score=lambda alt, view: (0.0, ()))
+
+
+def test_the_payload_carries_the_full_factor_declaration():
+    rev = build_scene(chain_and_distant(), factors=[COUPLER, DECLARED])
+    assert rev.payload["factor_manifest"] == [
+        {"name": "declared", "kind": "structural_likelihood", "version": "1",
+         "consumes": ["q"], "roles": ["score"], "config": [["threshold", 0.25]],
+         "score_bound": [0.0, 1.0]},
+        {"name": "q_adjacency", "kind": "structural_likelihood", "version": "1",
+         "consumes": ["q"], "roles": ["couples"], "config": [], "score_bound": None},
+    ]
+
+
+@pytest.mark.parametrize("changed", [
+    {"consumes": ("q", "omega")},
+    {"config": (("threshold", 0.5),)},
+    {"score_bound": (0.0, 2.0)},
+    {"version": "2"},
+])
+def test_the_registry_fingerprint_moves_with_every_declaration(changed):
+    """The doc/code mismatch this closes: the fingerprint was taken over (name, kind, version)
+    while the docstring promised ``consumes`` participated. A factor reading new variables, run
+    at a new tuning, or promising a new bound is a different factor, and a revision that could
+    not say so would look replayable against one it is not."""
+    obs = chain_and_distant()
+    a = build_scene(obs, factors=[DECLARED])
+    b = build_scene(obs, factors=[replace(DECLARED, **changed)])
+    assert a.payload["registry_fingerprint"] != b.payload["registry_fingerprint"]
+    assert a.digest != b.digest
+
+
+@pytest.mark.parametrize("bad,match", [
+    ({"config": (("b", 1.0), ("a", 2.0))}, "unsorted config"),
+    ({"config": (("a",),)}, "malformed config"),
+    ({"score_bound": (1.0, 0.0)}, "score_bound"),
+    ({"score_bound": (0.0, math.inf)}, "score_bound"),
+    ({"score_bound": (0.0, 1.0), "score": None}, "no score"),
+])
+def test_a_malformed_declaration_is_refused(bad, match):
+    with pytest.raises(ValueError, match=match):
+        build_scene(chain_and_distant(), factors=[replace(DECLARED, **bad)])
+
+
+# ----------------------------------------------------------------------------
+# Score-term ablation keeps the hypothesis space fixed
+# ----------------------------------------------------------------------------
+def test_score_ablation_removes_the_score_terms_but_not_the_partition_that_factor_built():
+    """Reviewer #10, and the reason for the honest name: ablation answers "given the SAME
+    hypotheses, how much did this factor's score terms move belief?". A factor's ``couples``
+    contribution to what the hypotheses even are is deliberately not removed."""
+    def score(alt, view):
+        hit = any(chosen == "B" for _, chosen in alt.assignment)
+        return (3.0 if hit else 0.0), ()
+
+    both = SceneFactor(name="both_roles", kind="structural_likelihood", version="1",
+                       consumes=("q",), score_bound=(0.0, 3.0), couples=_q_adjacent, score=score)
+    obs = chain_and_distant()
+    cl = cluster_of(build_scene(obs, factors=[both]), "e:1:d")
+    # Its edges stand under ablation: the cluster is still the three-arena chain it built.
+    assert cl["scan_refs"] == ["e:1:d", "e:2:d", "e:3:d"]
+    ref = cluster_of(build_scene(obs, factors=[COUPLER, ZERO]), "e:1:d")
+    assert [a["assignment"] for a in cl["alternatives"]] == \
+        [a["assignment"] for a in ref["alternatives"]]
+    assert cl["score_ablation"]["both_roles"] == \
+        pytest.approx([a["posterior"] for a in ref["alternatives"]], rel=1e-12)
+    # Guard: the score terms really were doing something before they were ablated away.
+    assert [a["posterior"] for a in cl["alternatives"]] != \
+        [a["posterior"] for a in ref["alternatives"]]
+    # And ablation is NOT a rebuild without the factor - that scene has no chain at all.
+    assert [c["scan_refs"] for c in build_scene(obs, factors=[]).payload["clusters"]] == \
+        [["e:1:d"], ["e:2:d"], ["e:3:d"], ["e:9:d"]]
+
+
+# ----------------------------------------------------------------------------
+# Non-finite factor terms
+# ----------------------------------------------------------------------------
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_a_non_finite_factor_term_is_refused_naming_the_factor(bad):
+    """Reviewer #9. A NaN term poisons the log-sum-exp into an all-NaN posterior that still
+    "normalizes"; a -inf term deletes an alternative with no pruning record."""
+    f = SceneFactor(name="broken", kind="structural_likelihood", version="1",
+                    score_bound=(0.0, 0.0), score=lambda alt, view: (bad, ()))
+    with pytest.raises(ValueError) as excinfo:
+        build_scene(chain_and_distant(), factors=[COUPLER, f])
+    message = str(excinfo.value)
+    assert "broken" in message and "e:1:d" in message
+    # -inf is not a veto in v1, and the message says what a vetoing factor would need instead.
+    assert "veto" in message
+
+
+def test_a_factor_that_exceeds_its_declared_bound_is_refused():
+    """The bound is not documentation: pruning and truncation bounds are derived from it and
+    candidates are discarded on its strength, so a factor that exceeds it has already made the
+    recorded mass bounds false."""
+    f = SceneFactor(name="liar", kind="structural_likelihood", version="1",
+                    score_bound=(0.0, 0.0), score=lambda alt, view: (1.0, ()))
+    with pytest.raises(ValueError, match="outside its declared score_bound"):
+        build_scene(chain_and_distant(), factors=[f])
