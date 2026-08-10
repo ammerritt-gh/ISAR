@@ -214,10 +214,11 @@ class FitOutcome:
     # lives in the scene store (SCENE-3); this scan only contributes evidence to it.
     evidence_identity: str | None = None
     identity_ba_disagreement: dict | None = None
-    # ``interpretation_ref``: pointer into the content-addressed interpretation store. That store is
-    # SCENE-3's to build; the field lands here None-defaulted so the persistence contract already has
-    # the slot when it arrives. Nothing writes it in SCENE-1.
-    interpretation_ref: str | None = None
+    # ``energy_window``: (lo, hi) meV of the calibrated, QC-masked energy axis this fit ran on — the
+    # window the scan actually measured, which the scene layer reads as an observation footprint (a
+    # searched-and-empty window is evidence). Distinct from ``search_energy_lo/hi``, which is an
+    # auxiliary probe's REQUESTED window. ``None`` on older ledgers and when no point survived the mask.
+    energy_window: tuple | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -226,6 +227,7 @@ class FitOutcome:
         d["hesse_interval"] = list(self.hesse_interval) if self.hesse_interval is not None else None
         d["bayes_interval"] = list(self.bayes_interval) if self.bayes_interval is not None else None
         d["model_interval"] = list(self.model_interval) if self.model_interval is not None else None
+        d["energy_window"] = list(self.energy_window) if self.energy_window is not None else None
         return d
 
 
@@ -317,6 +319,10 @@ _CSV_COLUMNS = [
     # ``identity_ba_disagreement``) deliberately stay out of the compact projection; they are
     # per-parameter / diagnostic detail and session.json already carries them in full.
     "evidence_identity",
+    # SCENE-3, appended (this list stays positional for legacy CSV readers): the calibrated, masked
+    # energy window this fit ran on. Empty on every historical row and wherever no point survived
+    # the mask. Both are floats — see _NUMERIC_COLUMNS in isar.drive.isar_io.readers.
+    "energy_lo", "energy_hi",
 ]
 
 
@@ -380,6 +386,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
             hiv = oc.get("hesse_interval")
             biv = oc.get("bayes_interval")
             miv = oc.get("model_interval")
+            ew = oc.get("energy_window")
             cal = oc.get("calib") or {}
             pr = oc.get("prior_used") or {}
             # Member provenance (chain of custody): pooled masters join their member labels with ";".
@@ -529,6 +536,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 ),
                 "best_model_posterior": _best_model_posterior(oc),
                 "evidence_identity": oc.get("evidence_identity"),
+                "energy_lo": (ew[0] if ew else None), "energy_hi": (ew[-1] if ew else None),
             })
     temporary = path.with_name(path.name + ".tmp")
     with open(temporary, "w", newline="", encoding="utf-8") as f:

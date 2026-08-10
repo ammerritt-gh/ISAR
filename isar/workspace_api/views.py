@@ -208,6 +208,34 @@ class FitView:
         return _b(self._pick("gamma_provisional", "gamma_provisional"))
 
     @property
+    def gauss_fwhm(self) -> float | None:
+        """Resolution Gaussian FWHM: the flattened CSV column, else ``FitOutcome.calib``."""
+        v = _f(self._row.get("gauss_fwhm"))
+        return v if v is not None else _f((self.calib or {}).get("gauss_fwhm"))
+
+    @property
+    def lorentz_fwhm(self) -> float | None:
+        v = _f(self._row.get("lorentz_fwhm"))
+        return v if v is not None else _f((self.calib or {}).get("lorentz_fwhm"))
+
+    @property
+    def effective_exposure(self) -> float | None:
+        return _f(self._pick("effective_exposure", "effective_exposure"))
+
+    @property
+    def energy_window(self) -> tuple | None:
+        """The fitted, QC-masked energy extent (ω scale) as ``(lo, hi)``; ``None`` when unplaceable.
+
+        A partially-populated row (only one of ``energy_lo``/``energy_hi``) falls through to the
+        ledger form rather than inventing an edge — the same rule as the interval ladder.
+        """
+        if self._row:
+            t = _complete_tuple(_f(self._row.get("energy_lo")), _f(self._row.get("energy_hi")))
+            if t is not None:
+                return t
+        return _seq_or_none(self._outcome.get("energy_window"))
+
+    @property
     def cost_per_dof(self) -> float | None:
         return _f(self._pick("cost_per_dof", "cost_per_dof"))
 
@@ -315,6 +343,16 @@ class FitView:
         if isinstance(v, (list, tuple)):
             return list(v)
         return None
+
+    @property
+    def evidence_sink(self) -> str | None:
+        """Where this row's evidence was routed (``isar.schema.steering.EVIDENCE_SINKS``).
+
+        ``None`` only when neither source carries the field — an absent sink reads as
+        ``canonical_master`` at the consumer, never here (this view does not invent values).
+        """
+        value = self._pick("evidence_sink", "evidence_sink")
+        return str(value) if value not in (None, "") else None
 
     @property
     def spectrum_ref(self) -> str | None:
@@ -437,6 +475,16 @@ class FitView:
     def candidates(self) -> list | None:
         v = self._pick("candidates", "candidates")
         return v if isinstance(v, list) else None
+
+    @property
+    def columns(self) -> frozenset:
+        """Which ``results.csv`` columns this row was built from (empty for a ledger-only view).
+
+        An absent COLUMN is not an absent value: it means the artifact predates the field, which a
+        reader must be able to distinguish from a present-but-empty cell (the same distinction
+        ``isar/drive/loop.py`` makes with ``members_field_present``).
+        """
+        return frozenset(self._row)
 
     @property
     def calib(self) -> dict | None:

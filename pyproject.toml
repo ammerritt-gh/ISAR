@@ -24,7 +24,7 @@ gui = ["PySide6", "pyqtgraph>=0.13,<0.15", "watchdog"]
 isar = "isar.cli.main:main"
 
 [tool.setuptools]
-packages = ["isar", "isar.synth", "isar.synth.stat2b", "isar.schema", "isar.parsers", "isar.synth_format", "isar.reduce", "isar.report", "isar.analyze", "isar.analyze.errors", "isar.calibrate", "isar.session", "isar.cli", "isar.drive", "isar.drive.supervisor", "isar.drive.acquisition", "isar.drive.instrument", "isar.drive.isar_io", "isar.geometry", "isar.workspace_api", "isar.plotspec", "isar.plotspec.backends", "isar.eig", "isar_gui", "isar_gui.viewmodels", "isar_gui.views"]
+packages = ["isar", "isar.synth", "isar.synth.stat2b", "isar.schema", "isar.parsers", "isar.synth_format", "isar.reduce", "isar.report", "isar.analyze", "isar.analyze.errors", "isar.calibrate", "isar.session", "isar.cli", "isar.drive", "isar.drive.supervisor", "isar.drive.acquisition", "isar.drive.instrument", "isar.drive.isar_io", "isar.geometry", "isar.scene", "isar.workspace_api", "isar.plotspec", "isar.plotspec.backends", "isar.eig", "isar_gui", "isar_gui.viewmodels", "isar_gui.views"]
 
 [tool.setuptools.package-data]
 # Ship the human-authored card policy templates (D8) inside the wheel.

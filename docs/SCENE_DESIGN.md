@@ -66,6 +66,59 @@ Load-bearing rules, each naming the failure it prevents:
   suite as ordinary pytest; the deterministic question scheduler is the permanent fallback when
   scoring is unavailable.
 
+### 2b. Scene scoring contract (SCENE-3)
+
+For observation arena `j` with local candidates `h`, SCENE-1 persists `lnZ(j, h)`. A
+scene alternative `S` — one coherent per-cluster assignment — chooses exactly one active
+candidate `h_j(S)` per participating arena, plus discrete scene variables
+(component→phenomenon assignment, connectivity/topology states, visibility states). Its
+unnormalized score is
+
+    ln W(S) = Σ_j lnZ(j, h_j(S)) + Σ_f ln φ_f(S)
+
+and the cluster posterior is `P(S|D) = exp(ln W(S)) / Σ_{S'} exp(ln W(S'))`, normalized
+within the cluster. Every scene factor `φ_f` declares probabilistic semantics —
+`scene_prior` or `structural_likelihood` — never an undeclared heuristic bonus.
+
+Invariants, each preventing a named failure: one observation arena contributes its local
+evidence exactly once (a pooled master supersedes its member scans; audit rows never
+score); normalized per-scan posteriors are never multiplied together (that arithmetic
+double-counts the local priors); a multimode structure's lnZ enters once even when a
+scene alternative assigns its components to different phenomena (the modes were fitted
+jointly to the same counts — splitting or duplicating the evidence per component would
+manufacture evidence); a gap in coverage contributes no update in either direction. The
+scene operates when local candidates carry `identity=None` — identity may arise purely
+from scene-level evidence.
+
+**Completeness (H7).** Only an arena whose local candidate comparison FINISHED may score.
+A fit whose evidence escalation budget expired with a contender unresolved publishes no
+Bayesian winner, and the lnZ values that survive are not the arena — scoring them turns an
+unfinished comparison into a confident posterior. Such an arena is experiment-map-only:
+footprint recorded, rows embedded, no term and no cluster membership. The same applies to
+an arena routed to a non-canonical evidence sink (H12(b)), whose channel the scene routes in
+a later slice.
+
+**Pruning and truncation are bounded, never optimistic (H12(c)).** Margin pruning and the
+enumeration cap both decide on base `Σ lnZ` before any factor term exists, so both are
+permitted only within the declared span `Σ_f (hi_f − lo_f)` of the active scoring factors'
+`score_bound`s: the effective margin is `margin_nats + span`, the recorded mass bounds are
+widened by it, and one unbounded scoring factor disables margin pruning outright and makes a
+truncated cluster record `truncation_unbounded` with no bound at all. An unbounded truncation
+is an unresolved cluster, not a narrowed one. Exact enumeration is the default posture.
+
+**Score-term ablation (H12(f)).** The per-cluster `score_ablation` lists give each factor's
+influence by removing its SCORE terms over the FIXED alternative set — index-aligned with
+`alternatives`, as the payload's `score_ablation_alignment` declares. A factor's `couples`
+edges (and so the cluster partition and the hypothesis space itself) are deliberately not
+removed; that is why the operation is not called leave-one-factor-out.
+
+**What SCENE-3 PR 3a's alternative is, and is not.** A 3a alternative is a per-cluster
+CANDIDATE ASSIGNMENT — one surviving candidate per participating arena — and is linkage-free.
+It is *not yet* the full scene alternative this section defines: component→phenomenon
+assignment, connectivity/topology states, and visibility states are the 3b extension, and
+until they land the scene scores which local hypothesis each arena holds, not what the
+phenomena are.
+
 ## 3. Slices
 
 | Slice | Goal | Status |
@@ -103,11 +156,12 @@ dominating acquisition.
 
 ## 6. Persistence
 
-Per scan: content-addressed interpretation artifact (structure × identity candidates, evidences,
-methods, validity flags, arena hash) + `FitOutcome.interpretation_ref` + flat projection columns
-in results.csv. Per scene update: content-addressed revision under `<workspace>/report/scene/`
-with a current-pointer and the per-factor evidence ledger (leave-one-factor-out deltas). The GUI
-reads all of it through `workspace_api` only (Qt-free; hard rules 6/7 unchanged).
+Per scan: the persisted candidate rows on `FitOutcome`/results.csv are the scene's input
+contract (H11(a), H12(e) — no separate interpretation artifact; scene revisions embed the
+exact rows they consumed, with completeness status and conditioning provenance). Per scene
+update: content-addressed revision under `<workspace>/report/scene/` with a current-pointer
+and the per-factor evidence ledger (score-term ablation deltas, H12(f)). The GUI reads all
+of it through `workspace_api` only (Qt-free; hard rules 6/7 unchanged).
 
 ## 7. Status discipline
 

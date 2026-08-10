@@ -312,6 +312,30 @@ def _amplitudes_of(best, by_hyp) -> dict | None:
     return {n: float(best.params[n]) for n in hyp.build().linear_names() if n in best.params}
 
 
+def _mode_omegas(result) -> list:
+    """The candidate's per-mode DERIVED ω₀ (meV), one entry per mode OF A REAL RESULT. The scene layer
+    places EVERY candidate's modes in (Q,ω) space, not just the winner's (only the winner's ``modes``
+    are persisted elsewhere), and it must place them on the scale everything else publishes —
+    ``FitOutcome.omega0``, the branch models, the dispersion prior. The raw fitted Ω_d would be
+    off-scale for every damped mode. Ascending in the clean case (``modes`` is already canonicalized
+    ascending by ω₀); a mode with no usable ω₀ contributes ``None`` in its own slot — the delivery
+    contract for "no number" is None, never NaN — and mode order is then preserved rather than sorted.
+    ``[]`` for a phonon-less candidate (bg, elastic+bg, qe+bg) and when no result is available at all,
+    in which case the row's ``n_modes`` (defaulted to 1 without a result) disagrees with this length."""
+    values = []
+    for m in getattr(result, "modes", None) or ():
+        if not isinstance(m, dict):
+            # A non-dict mode is a structural bug upstream, not a missing measurement: report it
+            # rather than let it read as an unplaceable mode.
+            log.warning("candidate %r: mode entry is %s, not a dict — omitting its ω₀ position",
+                        getattr(result, "label", None), type(m).__name__)
+            values.append(None)
+            continue
+        w = m.get("omega0")
+        values.append(float(w) if w is not None and np.isfinite(w) else None)
+    return values if None in values else sorted(values)
+
+
 def _candidate_rows(scores, fits) -> list | None:
     """The model-selection candidate table (P0-4): one compact row per SCORED structure. ``scores``
     is the ``ModelScore`` list the driver selects on — posterior ``P(s) = π_s·Z_s / Σ π·Z`` in the
@@ -340,6 +364,7 @@ def _candidate_rows(scores, fits) -> list | None:
             # never carries a nonstandard NaN token that a strict-JSON reader would reject.
             "cost_per_dof": (cpd if np.isfinite(cpd) else None),
             "n_modes": int(r.n_modes) if r is not None else 1,
+            "omegas": _mode_omegas(r),
             "delta_aic": float(s.delta_aic),
             "akaike_weight": float(s.akaike_weight),
             "posterior_probability": (
@@ -1765,8 +1790,22 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         interval_reliable=interval_reliable,
     )
 
+    # The QC-masked energy window this fit actually saw — the scene layer's observation footprint:
+    # what a scan looked at, whether or not it found anything. Shifted onto the ω scale by the
+    # calibration zero, because ``ctx.x`` is the RAW abscissa and the zero is carried separately in
+    # ``ctx.center`` (the model evaluates at ``x - center``, lineshapes.convolute_voigt_dho). Without
+    # the shift the window and the ω₀/omegas it must contain would be two different scales. ``None``
+    # when nothing survived the mask, and when the zero is unusable — a scan is held until
+    # calibration exists (DESIGN §5), so a non-finite centre is a broken fit, never an implied 0.0.
+    if np.size(ctx.x_used) and np.isfinite(ctx.center):
+        lo, hi = ctx.window
+        energy_window = (lo - float(ctx.center), hi - float(ctx.center))
+    else:
+        energy_window = None
+
     return {
         "verdict": sv.verdict, "confidence": sv.confidence, "reasons": reasons,
+        "energy_window": energy_window,
         "omega0": omega0, "omega0_err": omega0_err,
         "interval": (tuple(interval) if interval is not None else None),
         "omega0_profile": (tuple(omega0_profile) if omega0_profile is not None else None),
@@ -2359,6 +2398,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         interval_semantics=fit.get("interval_semantics"),
         shadow_model_selection=fit.get("shadow_model_selection"),
         at_limit=fit.get("at_limit"),
+        energy_window=fit.get("energy_window"),
         evidence_identity=fit.get("evidence_identity"),
         identity_ba_disagreement=fit.get("identity_ba_disagreement"),
         evidence_sink=evidence_sink_for(getattr(rec, "raw_header", None),

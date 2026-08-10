@@ -12,6 +12,7 @@ The fitting tests reuse the single-peak pattern from ``test_driver_multimode`` a
 """
 import dataclasses
 import json
+import logging
 from types import SimpleNamespace
 
 import numpy as np
@@ -74,7 +75,7 @@ def test_fit_one_populates_amplitudes_and_candidates():
     # candidates: >=1 row, each with the compact schema, plain scalar types (JSON-clean).
     cands = fit["candidates"]
     assert isinstance(cands, list) and cands
-    keys = {"label", "k", "ndof", "cost", "cost_per_dof", "n_modes",
+    keys = {"label", "k", "ndof", "cost", "cost_per_dof", "n_modes", "omegas",
             "delta_aic", "akaike_weight", "posterior_probability", "log_evidence",
             "evidence_method", "usable", "estimator_kind", "fit_kind",
             "constraint_origin", "selection_eligibility", "conditioning_fingerprint",
@@ -101,6 +102,25 @@ def test_fit_one_populates_amplitudes_and_candidates():
     assert all(isinstance(r["at_limit"], dict) and r["at_limit"] for r in cands)
     assert fit["at_limit"] == next(r["at_limit"] for r in cands if r["label"] == fit["best_label"])
     assert fit["evidence_identity"] is None
+
+    # SCENE-3: every candidate — winner or not — carries its own mode positions, so the scene can
+    # place a rejected structure's modes without re-fitting. Phonon-less candidates carry [].
+    for row in cands:
+        assert isinstance(row["omegas"], list)
+        assert all(isinstance(w, float) and np.isfinite(w) for w in row["omegas"])
+        assert row["omegas"] == sorted(row["omegas"])
+        assert len(row["omegas"]) == row["n_modes"]
+    assert any(row["omegas"] for row in cands)
+    assert all(row["omegas"] == [] for row in cands if row["n_modes"] == 0)
+    # …on the DERIVED ω₀ scale everything else publishes: the winner's single mode is the delivered
+    # omega0 itself, not the raw fitted Ω_d (which is lower for any damped mode).
+    winner_row = next(r for r in cands if r["label"] == fit["best_label"])
+    assert winner_row["omegas"] == [pytest.approx(fit["omega0"])]
+
+    # SCENE-3 observation footprint: the masked window the cost actually saw, on the ω scale
+    # (this fixture's zero is 0.0; the shift itself is pinned by the nonzero-centre test below).
+    assert fit["energy_window"] == (pytest.approx(float(ctx.x_used.min()) - ctx.center),
+                                    pytest.approx(float(ctx.x_used.max()) - ctx.center))
 
     # The AIC diagnostics lane still travels: delta_aic >= 0 with a row at exactly 0.
     assert all(r["delta_aic"] >= -1e-9 for r in cands)
@@ -136,6 +156,30 @@ def test_fit_one_populates_amplitudes_and_candidates():
             "model_selection_fingerprint",
         )
     )
+
+
+@pytest.mark.slow
+def test_energy_window_is_on_the_omega_scale_not_the_raw_abscissa():
+    """The raw abscissa and the ω scale differ by the calibration zero, which ISAR carries in
+    ``ctx.center`` and applies inside the model (``x - center``) rather than by shifting ``ctx.x``.
+    Persisting the raw extent would put the footprint on a different scale from the ω₀/omegas it has
+    to contain — invisible whenever the zero happens to be 0.0, as in the fixture above."""
+    center = 2.0
+    x = np.linspace(-8.0, 16.0, 81)
+    counts = convolute_voigt_dho(x, 5.0, center, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
+                                 peak="stokes+astokes") + 8.0
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                      center=center, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    fit = scan_delivery.fit_one(ctx, _card(), prior=None, M=20, seed=1)
+
+    assert fit["energy_window"] == (pytest.approx(-10.0), pytest.approx(14.0))
+    # …and the fitted mode it must place lies inside it, which the raw (-8, 16) would also satisfy
+    # here only by accident of the peak sitting mid-window.
+    lo, hi = fit["energy_window"]
+    assert lo < fit["omega0"] < hi
+    winner = next(r for r in fit["candidates"] if r["label"] == fit["best_label"])
+    assert all(lo < w < hi for w in winner["omegas"])
 
 
 @pytest.mark.slow
@@ -481,9 +525,10 @@ def _score(label, *, log_evidence, posterior, effective_constraints=None):
                        if effective_constraints is not None else []})
 
 
-def _fit_result(*, at_limit=None, variant=None, identity=None):
-    return SimpleNamespace(label="x", cost_per_dof=1.04, n_modes=1, analysis_usable=True,
-                           at_limit=at_limit, variant=variant, identity=identity)
+def _fit_result(*, at_limit=None, variant=None, identity=None, modes=None, n_modes=1):
+    return SimpleNamespace(label="x", cost_per_dof=1.04, n_modes=n_modes, analysis_usable=True,
+                           at_limit=at_limit, variant=variant, identity=identity,
+                           modes=modes)
 
 
 def test_candidate_rows_carry_variant_at_limit_and_effective_constraints():
@@ -541,7 +586,6 @@ def _scene1_outcome():
     outcome.at_limit = {"phonon.Omega_d": False, "phonon.Gamma": True}
     outcome.evidence_identity = "acoustic"
     outcome.identity_ba_disagreement = {"evidence_identity": "acoustic", "branch_id": "optic"}
-    outcome.interpretation_ref = "sha256:deadbeef"
     return outcome
 
 
@@ -551,14 +595,77 @@ def test_scene1_outcome_fields_roundtrip_to_dict_from_dict():
     assert restored.evidence_identity == "acoustic"
     assert restored.identity_ba_disagreement == {"evidence_identity": "acoustic",
                                                  "branch_id": "optic"}
-    assert restored.interpretation_ref == "sha256:deadbeef"
 
 
 def test_scene1_outcome_fields_default_absent():
-    """SCENE-3 owns the interpretation store; PR-c only reserves the pointer."""
     oc = _outcome_with(None, None)
-    assert (oc.at_limit, oc.evidence_identity, oc.identity_ba_disagreement,
-            oc.interpretation_ref) == (None, None, None, None)
+    assert (oc.at_limit, oc.evidence_identity,
+            oc.identity_ba_disagreement) == (None, None, None)
+
+
+def test_the_reserved_interpretation_pointer_is_gone(caplog):
+    """H1, no vestigial contracts: SCENE-3 embeds the candidate rows it consumed in the revision
+    rather than pointing at an artifact (DECISIONS H-series), so ``interpretation_ref`` was never
+    written and is deleted. A ledger that carries the old key still loads — the tolerant reader
+    drops it with a warning, which is what a retired additive field is supposed to do."""
+    assert not hasattr(_outcome_with(None, None), "interpretation_ref")
+    payload = {**_outcome_with(None, None).to_dict(), "interpretation_ref": "sha256:deadbeef"}
+    with caplog.at_level(logging.WARNING, logger="isar.session.outcome"):
+        assert not hasattr(driver._coerce_fit_outcome(payload), "interpretation_ref")
+    assert any("interpretation_ref" in r.getMessage() for r in caplog.records)
+
+
+# --------------------------------------------------------------- SCENE-3 (scene-layer inputs)
+def test_candidate_rows_carry_every_candidates_mode_positions():
+    """The scene places the modes of NON-winning candidates too, and only the winner's ``modes``
+    are persisted elsewhere. The values are the DERIVED ω₀ — the scale FitOutcome.omega0, the branch
+    models and the dispersion prior all publish — and a phonon-less structure carries [] rather than
+    a fabricated zone-centre energy."""
+    scores = [_score("stokes2+bg", log_evidence=-39.0, posterior=0.6),
+              _score("bg", log_evidence=-44.0, posterior=0.4)]
+    fits = {
+        "stokes2+bg": _fit_result(n_modes=2, modes=[{"omega0": 4.25, "gamma": 0.4},
+                                                    {"omega0": 9.5, "gamma": 0.3}]),
+        "bg": _fit_result(n_modes=0, modes=[]),
+    }
+    rows = {r["label"]: r for r in scan_delivery._candidate_rows(scores, fits)}
+
+    assert rows["stokes2+bg"]["omegas"] == [4.25, 9.5]
+    assert len(rows["stokes2+bg"]["omegas"]) == rows["stokes2+bg"]["n_modes"]
+    assert rows["bg"]["omegas"] == []
+    # An unscored/failed candidate has no modes to read: absence, never NaN.
+    assert scan_delivery._candidate_rows([_score("ghost", log_evidence=-50.0, posterior=0.0)],
+                                         {})[0]["omegas"] == []
+    assert json.loads(json.dumps(list(rows.values())))
+
+
+def test_candidate_row_omegas_report_an_unusable_mode_as_none_in_its_own_slot():
+    """"No number" is None, never NaN — and the slot must stay put: the list is per-mode, so a
+    dropped or reordered entry would misplace the modes that ARE known."""
+    scores = [_score("stokes2+bg", log_evidence=-39.0, posterior=1.0)]
+    fits = {"stokes2+bg": _fit_result(n_modes=2, modes=[{"omega0": float("nan")},
+                                                        {"omega0": 9.5}])}
+    row = scan_delivery._candidate_rows(scores, fits)[0]
+    assert row["omegas"] == [None, 9.5]
+    assert len(row["omegas"]) == row["n_modes"]
+    assert json.loads(json.dumps(row))["omegas"] == [None, 9.5]
+
+
+def test_energy_window_roundtrips_through_the_ledger_and_results_csv(tmp_path):
+    """The measured window is the scene's observation footprint — a searched-and-empty window is
+    evidence, so it must survive both persistence projections."""
+    outcome = _outcome_with(None, None)
+    outcome.energy_window = (-8.0, 16.0)
+    restored = driver._coerce_fit_outcome(json.loads(json.dumps(outcome.to_dict())))
+    assert list(restored.energy_window) == [-8.0, 16.0]
+
+    row = _write_read(tmp_path / "a", outcome)
+    # Floats, not strings: a new float column also needs its _NUMERIC_COLUMNS entry (the trap).
+    assert row["energy_lo"] == pytest.approx(-8.0) and row["energy_hi"] == pytest.approx(16.0)
+    assert isinstance(row["energy_lo"], float) and isinstance(row["energy_hi"], float)
+
+    absent = _write_read(tmp_path / "b", _outcome_with(None, None))
+    assert absent["energy_lo"] is None and absent["energy_hi"] is None
 
 
 def test_evidence_identity_survives_to_results_csv(tmp_path):

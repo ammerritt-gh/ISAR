@@ -11,7 +11,6 @@ import logging
 import os
 import time
 import tempfile
-from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
@@ -43,11 +42,16 @@ _MASTER_SCAN_BASE = 9_000_000
 
 def _member_labels(members) -> list[str]:
     """Chain-of-custody labels for a pooled master's members (MergedSpectrum.members tuples
-    ``(experiment_id, scan_number, detector_id)``). A bare native scan number as a string, EXCEPT a
-    scan number that repeats within this member list (multi-detector merge), which is qualified
-    ``experiment:scan:detector`` to stay unambiguous. Preserves ``ms.members`` order."""
-    counts = Counter(m[1] for m in members)
-    return [str(m[1]) if counts[m[1]] == 1 else f"{m[0]}:{m[1]}:{m[2]}" for m in members]
+    ``(experiment_id, scan_number, detector_id)``): always the full ledger key
+    ``experiment:scan:detector``. Preserves ``ms.members`` order.
+
+    Never a bare scan number. The collation key is (sample, q, T) and may span detectors, while the
+    master row itself is stamped with only ``members[0]``'s detector — so a bare label left a
+    consumer unable to tell which detector's arena a member belongs to. A reader that must not
+    count the same neutrons twice (the scene layer's observation arenas) then either misses a
+    member (double-counting its evidence) or suppresses an unrelated detector's scan. Qualifying
+    every label is the only form that answers the question from the cell alone."""
+    return [f"{m[0]}:{m[1]}:{m[2]}" for m in members]
 
 
 _MASTER_FIT_CONTRACT = "isar.master_fit/2"
@@ -661,6 +665,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         interval_semantics=fit.get("interval_semantics"),
         shadow_model_selection=fit.get("shadow_model_selection"),
         at_limit=fit.get("at_limit"),
+        energy_window=fit.get("energy_window"),
         evidence_identity=fit.get("evidence_identity"),
         identity_ba_disagreement=fit.get("identity_ba_disagreement"),
         descriptor=(descriptor.to_dict() if descriptor is not None else None),

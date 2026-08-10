@@ -1,0 +1,230 @@
+"""The scene layer's one door into a workspace: persisted rows in, frozen DTOs out.
+
+Read-only and re-fit-free like the rest of :mod:`isar.workspace_api` — everything here comes
+from what ``results.csv`` and ``session.json`` already hold, through :class:`FitView`, which
+already reconciles the two sources. Nothing in this module imports :mod:`isar.session` (the
+writer), the scene store's write surface, or Qt; ``tests/scene/test_import_ban.py`` pins that.
+
+The scoring contract (SCENE_DESIGN §2b) says local evidence enters ``ln W(S)`` **once per
+observation arena**. That is not only a rule about factors: it is a rule about *which rows the
+scene is allowed to see at all*, and it is enforced here, at the door — see
+:func:`_superseded_by_masters`.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import replace
+
+from isar.scene.model import CandidateRow, SceneObservation, observation_fingerprint
+from isar.schema.steering import CANONICAL_MASTER
+
+log = logging.getLogger(__name__)
+
+# Both refusals below are one ruling (H1, no backwards-facing code): a persisted format this
+# adapter cannot read is re-delivered, never guessed at. A tolerant fallback here would put a
+# heuristic between the stored evidence and ln W(S), which is exactly what may not happen.
+REDELIVER = "re-deliver or rebuild this workspace before SCENE analysis"
+
+
+def scene_observations(ws) -> list[SceneObservation]:
+    """Every currently-authoritative observation arena of ``ws``, sorted by ``scan_ref``.
+
+    ``ws`` is an :class:`isar.workspace_api.Workspace`. One observation per delivered
+    ``(ledger entry, detector)`` row that carries a candidate table, minus the rows a pooled
+    master supersedes. A row with no parseable candidate table yields no observation (it has
+    nothing to score) and is logged.
+
+    Raises ``ValueError`` on a workspace this adapter cannot read faithfully — a results.csv with
+    no candidates column, or a master with unqualified member labels. Both mean re-deliver.
+
+    Revisions need no handling here: ``results.csv`` is rewritten in full from the current
+    ledger on every delivery (``isar/session/outcome.py:_write_results_csv``), so it holds
+    current state only — an older revision of a row is not present to be preferred.
+    """
+    fits = list(getattr(ws, "results", ()) or ())
+    # A results.csv written before the candidates column existed carries no candidate table for
+    # any row, so nothing in it can be scored. That is a stale file, not an empty scene: reading
+    # it as "no observations" would silently present a whole campaign as unmeasured.
+    if fits and not any("candidates" in fit.columns for fit in fits):
+        raise ValueError(f"scene: results.csv has no candidates column — {REDELIVER}")
+    qualified = _superseded_by_masters(fits)
+    out: list[SceneObservation] = []
+    for fit in fits:
+        ref = _scan_ref(fit)
+        if ref is None:
+            log.warning("scene: row with no usable identity (scan=%r detector=%r) — skipped",
+                        fit.scan_number, fit.detector_id)
+            continue
+        if not fit.pooled and fit.unit_id in qualified:
+            # The master fitted the SAME neutrons this row did (combine-before-divide). Letting
+            # both into the scene would enter one dataset's local evidence twice.
+            continue
+        candidates = _candidates(fit, ref)
+        if candidates is None:
+            continue
+        status, fallback, arena = _evidence_comparison(fit, ref)
+        obs = SceneObservation(
+            scan_ref=ref,
+            q=_q(fit),
+            temperature_K=fit.T,
+            energy_window=_window(fit),
+            gauss_fwhm=fit.gauss_fwhm,
+            lorentz_fwhm=fit.lorentz_fwhm,
+            effective_exposure=fit.effective_exposure,
+            background=_background(fit),
+            best_label=fit.best_label,
+            candidates=candidates,
+            evidence_comparison_status=status,
+            selection_fallback=fallback,
+            arena_fingerprint=arena,
+            # Verbatim, including a sink this adapter does not recognize: classifying routing is
+            # the builder's job, and a value rewritten here could not be quarantined there.
+            evidence_sink=fit.evidence_sink,
+            fingerprint="",
+        )
+        out.append(replace(obs, fingerprint=observation_fingerprint(obs)))
+    out.sort(key=lambda o: o.scan_ref)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# ownership / active arena
+# ---------------------------------------------------------------------------
+def _superseded_by_masters(fits) -> set:
+    """The member labels that CANONICAL pooled masters carrying candidates claim.
+
+    A master's row IS the interpretation of its members' pooled counts, so its members' own rows
+    are not a second, independent arena. Three conditions, each naming what it prevents:
+
+    * carries a candidate table — a master with none delivered no interpretation and has
+      superseded nothing, so its members stay;
+    * canonical sink — a master barred from the canonical pool did not become the authoritative
+      reading of those neutrons, so erasing its members' arenas would delete the only evidence
+      the scene has for them (the barred master is still kept as an arena of its own, and the
+      builder is what declines to score it);
+    * fully-qualified member labels — the ``members`` cell as
+      ``isar/session/master_delivery.py:_member_labels`` writes it, the full ledger key
+      ``experiment:scan:detector``, matched exactly against the member row's ``scan_id``.
+
+    A bare label names no detector, and the collation key is (sample, q, T) which may span
+    detectors — so it cannot say which detector's arena it meant. There is no heuristic for that
+    and no tolerant path: guessing under-suppresses (one dataset's evidence enters ``ln W(S)``
+    twice) or over-suppresses (an arena silently vanishes). Such a workspace is refused.
+    """
+    qualified: set[str] = set()
+    for fit in fits:
+        if not fit.pooled or not isinstance(fit.candidates, list):
+            continue
+        if (fit.evidence_sink or CANONICAL_MASTER) != CANONICAL_MASTER:
+            continue
+        members = [str(m) for m in (fit.members or [])]
+        bare = [m for m in members if m.count(":") < 2]
+        if bare:
+            raise ValueError(
+                f"scene: master {_scan_ref(fit)} carries unqualified member label(s) {bare} "
+                f"(expected experiment:scan:detector) — {REDELIVER}")
+        qualified.update(members)
+    return qualified
+
+
+def _evidence_comparison(fit, ref: str):
+    """``(status, selection_fallback, arena_fingerprint)`` from the persisted selection record.
+
+    H7: an evidence comparison whose escalation budget expired with a contender unresolved is
+    INCOMPLETE — local selection refuses a Bayesian winner and records
+    ``selection_fallback="evidence_budget_exhausted"``. The surviving lnZ set is then not the
+    arena, so a scene posterior built from it would be a confident answer to a question the
+    comparison never finished; only the Bayesian lane with no fallback may score.
+
+    The mapping is exhaustive over ``isar.schema.statistics.SELECTION_FALLBACKS``
+    (``aic_no_evidence_inputs`` / ``aic_all_evidence_invalid`` / ``evidence_budget_exhausted``)
+    and fails closed: anything unrecognized — a fallback this reader does not know, an absent or
+    unreadable record, the recorded-AIC lane, ``selection_method="none"`` — is "unavailable",
+    never "complete".
+    """
+    record = fit.fit_selection_semantics
+    if not record:
+        return "unavailable", None, None
+    fallback = record.get("selection_fallback")
+    arena = record.get("evidence_arena_fingerprint")
+    if record.get("selection_method") == "laplace_evidence_selection" and fallback is None:
+        return "complete", None, arena
+    if fallback == "evidence_budget_exhausted":
+        # The AIC lane it fell back to is a within-arena diagnostic, not a comparison the scene
+        # may re-read as evidence: the missing contender's lnZ was never computed at all.
+        return "incomplete", fallback, arena
+    if fallback is not None and fallback not in ("aic_no_evidence_inputs",
+                                                 "aic_all_evidence_invalid"):
+        log.warning("scene: %s records an unrecognized selection_fallback %r — treated as "
+                    "unavailable evidence", ref, fallback)
+    return "unavailable", fallback, arena
+
+
+# ---------------------------------------------------------------------------
+# per-row field extraction
+# ---------------------------------------------------------------------------
+def _scan_ref(fit) -> str | None:
+    """The arena key: the ledger ``scan_id`` (``exp:scan:det``), detector-qualified.
+
+    Pooled masters are ledgered as ``master:<group key>`` with no detector segment, and one
+    master can deliver several detectors — so the detector is appended when it is not already
+    the last segment, or two arenas would collide on one key.
+    """
+    unit = fit.unit_id or None
+    det = fit.detector_id or None
+    if unit is None:
+        if fit.scan_number is None:
+            return None
+        unit = str(fit.scan_number)
+    if det and not str(unit).endswith(f":{det}"):
+        return f"{unit}:{det}"
+    return str(unit)
+
+
+def _candidates(fit, ref: str):
+    """The row's candidate table as DTOs sorted by label, or ``None`` when there is none.
+
+    The sort is the adapter's job: ``observation_fingerprint`` is candidate-order-sensitive by
+    design, so a stable digest across rebuilds needs a fixed order fixed here.
+    """
+    raw = fit.candidates
+    if raw is None:
+        # A ledger row that never produced a fit (held_for_calibration, excluded, context_applied,
+        # ingested — written detectorless, or delivered with nothing converged) legitimately has no
+        # candidate table: a real campaign has many, and warning on each would bury the signal that
+        # matters. Only a DELIVERED fit (detector + winning label) whose table is absent or
+        # unparseable is anomalous, and that is what warns.
+        if fit.detector_id and fit.best_label:
+            log.warning("scene: %s has no usable candidate table (absent or malformed cell) — "
+                        "no observation", ref)
+        else:
+            log.debug("scene: %s carries no delivered fit — no observation", ref)
+        return None
+    try:
+        return tuple(CandidateRow.from_dict(c) for c in sorted(raw, key=lambda c: str(c["label"])))
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        log.warning("scene: %s has a malformed candidate table (%s) — no observation", ref, exc)
+        return None
+
+
+def _q(fit):
+    q = fit.q
+    if not q or len(q) != 3 or any(v is None for v in q):
+        return None
+    return (float(q[0]), float(q[1]), float(q[2]))
+
+
+def _window(fit):
+    w = fit.energy_window
+    if w is None or len(w) != 2 or any(v is None for v in w):
+        return None
+    return (float(w[0]), float(w[1]))
+
+
+def _background(fit):
+    """The delivered flat-background amplitude (``bg.BG`` — ``isar.analyze.components.FlatBG``)."""
+    v = (fit.amplitudes or {}).get("bg.BG")
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
