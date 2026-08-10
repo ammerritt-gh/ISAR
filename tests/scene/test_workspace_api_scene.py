@@ -91,6 +91,19 @@ def test_master_supersedes_its_member_scans(tmp_path):
     assert refs == ["master:tavi_2.0,0,0_300:det", "tavi:3:det"]
 
 
+def test_bare_member_label_does_not_suppress_another_detector(tmp_path):
+    """A master pooled ONE detector's group; a bare member label carries no detector, so it must
+    not take out the same scan number's arena on a detector the master never pooled."""
+    cands = [_candidate("phonon+bg")]
+    master = _row(9_000_001, candidates=cands, scan_id="master:tavi_2.0,0,0_300",
+                  detector="det1", pooled=True, n_members=1, members="1")
+    refs = [o.scan_ref for o in scene_observations(_ws(tmp_path, [
+        _row(1, candidates=cands, detector="det1", scan_id="tavi:1:det1"),
+        _row(1, candidates=cands, detector="det2", scan_id="tavi:1:det2"),
+        master]))]
+    assert refs == ["master:tavi_2.0,0,0_300:det1", "tavi:1:det2"]
+
+
 def test_candidateless_master_supersedes_nothing(tmp_path):
     cands = [_candidate("phonon+bg")]
     master = _row(9_000_001, candidates=None, scan_id="master:tavi_2.0,0,0_300",
@@ -113,3 +126,13 @@ def test_malformed_candidates_yield_no_observation_and_log(tmp_path, caplog, cel
     with caplog.at_level(logging.WARNING, logger="isar.workspace_api.scene"):
         assert scene_observations(_ws(tmp_path, [_row(1, candidates=cell)])) == []
     assert any("tavi:1:det" in r.getMessage() for r in caplog.records)
+
+
+def test_rows_that_never_had_a_fit_are_silent(tmp_path, caplog):
+    """A real campaign carries many held/context/excluded ledger rows (written detectorless).
+    They yield no observation, and must not drown the malformed-cell warning in noise."""
+    held = {"scan": 7, "scan_id": "tavi:7:", "status": "held_for_calibration",
+            "reasons": "no energy zero"}
+    with caplog.at_level(logging.DEBUG, logger="isar.workspace_api.scene"):
+        assert scene_observations(_ws(tmp_path, [held])) == []
+    assert [r.levelname for r in caplog.records] == ["DEBUG"]

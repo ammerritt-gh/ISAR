@@ -32,27 +32,55 @@ ADAPTER_FORBIDDEN_PREFIXES = (
 )
 
 
-def _imported_modules(py: Path):
-    tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
-    for node in ast.walk(tree):
+SCENE_FILES = sorted(SCENE_DIR.rglob("*.py"))
+# Checked at module level, not inside a test: a renamed/moved directory would otherwise collect
+# zero parametrized cases and pass vacuously.
+assert SCENE_DIR.is_dir() and SCENE_FILES, f"no modules found under {SCENE_DIR} (renamed?)"
+assert ADAPTER.is_file(), f"missing {ADAPTER}"
+
+
+def _absolute(module: str, level: int, py: Path) -> str:
+    """The absolute module name a (possibly relative) import resolves to from inside ``py``.
+
+    A relative import is NOT automatically inside the package: ``from ..session.outcome import X``
+    in ``isar/workspace_api/scene.py`` reaches ``isar.session`` exactly like the absolute form, so
+    the ban list has to be applied to the resolved name.
+    """
+    if not level:
+        return module
+    package = py.resolve().parent.relative_to(REPO_ROOT).parts     # __init__.py included: same pkg
+    base = package[:len(package) - (level - 1)] if level > 1 else package
+    return ".".join((*base, module)) if module else ".".join(base)
+
+
+def _offenders_in(source: str, py: Path, forbidden):
+    """``[(lineno, resolved module)]`` for every banned import in ``source``.
+
+    Static only: a dynamic ``importlib.import_module(name)`` is out of scope here — the
+    fresh-interpreter probe below is the backstop for that.
+    """
+    out = []
+    for node in ast.walk(ast.parse(source, filename=str(py))):
         if isinstance(node, ast.Import):
-            for alias in node.names:
-                yield node.lineno, alias.name
+            names = [alias.name for alias in node.names]
         elif isinstance(node, ast.ImportFrom):
-            if node.level:            # relative import — stays inside the package
-                continue
-            yield node.lineno, (node.module or "")
+            # ``from .. import session`` names the module in the alias, not in node.module.
+            names = ([_absolute(node.module, node.level, py)] if node.module else
+                     [_absolute(alias.name, node.level, py) for alias in node.names])
+        else:
+            continue
+        for name in names:
+            if any(name == f or name.startswith(f + ".") for f in forbidden):
+                out.append((node.lineno, name))
+    return out
 
 
 def _offenders(py: Path, forbidden):
-    return [(lineno, mod) for lineno, mod in _imported_modules(py)
-            if any(mod == f or mod.startswith(f + ".") for f in forbidden)]
+    return _offenders_in(py.read_text(encoding="utf-8"), py, forbidden)
 
 
-@pytest.mark.parametrize("py", sorted(SCENE_DIR.rglob("*.py")),
-                         ids=lambda p: str(p.relative_to(SCENE_DIR)))
+@pytest.mark.parametrize("py", SCENE_FILES, ids=lambda p: str(p.relative_to(SCENE_DIR)))
 def test_scene_package_imports_nothing_forbidden(py):
-    assert SCENE_DIR.is_dir() and py.is_file()
     assert not _offenders(py, FORBIDDEN_PREFIXES), (
         f"isar/scene/{py.relative_to(SCENE_DIR)} imports a banned module: "
         f"{_offenders(py, FORBIDDEN_PREFIXES)}")
@@ -62,6 +90,21 @@ def test_adapter_imports_nothing_forbidden():
     assert not _offenders(ADAPTER, ADAPTER_FORBIDDEN_PREFIXES), (
         f"isar/workspace_api/scene.py imports a banned module: "
         f"{_offenders(ADAPTER, ADAPTER_FORBIDDEN_PREFIXES)}")
+
+
+@pytest.mark.parametrize("source, expected", [
+    ("from ..session.outcome import FitOutcome", "isar.session.outcome"),
+    ("from ..scene.store import write", "isar.scene.store"),
+    ("from .. import session", "isar.session"),               # module named in the alias
+    ("from . import views", "isar.workspace_api.views"),      # in-package: allowed
+    ("from isar.session import state", "isar.session"),
+])
+def test_the_checker_bites_on_relative_imports(source, expected):
+    """The checker itself, on synthetic source placed at the adapter's path."""
+    found = _offenders_in(source, ADAPTER, ADAPTER_FORBIDDEN_PREFIXES)
+    banned = any(expected == f or expected.startswith(f + ".")
+                 for f in ADAPTER_FORBIDDEN_PREFIXES)
+    assert found == ([(1, expected)] if banned else []), f"{source!r} resolved wrong: {found}"
 
 
 def test_importing_scene_model_pulls_in_nothing_heavy():

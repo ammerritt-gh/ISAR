@@ -34,7 +34,7 @@ def scene_observations(ws) -> list[SceneObservation]:
     current state only — an older revision of a row is not present to be preferred.
     """
     fits = list(getattr(ws, "results", ()) or ())
-    superseded = _superseding_member_labels(fits)
+    qualified, bare = _superseded_by_masters(fits)
     out: list[SceneObservation] = []
     for fit in fits:
         ref = _scan_ref(fit)
@@ -42,7 +42,7 @@ def scene_observations(ws) -> list[SceneObservation]:
             log.warning("scene: row with no usable identity (scan=%r detector=%r) — skipped",
                         fit.scan_number, fit.detector_id)
             continue
-        if not fit.pooled and _member_labels_of(fit) & superseded:
+        if not fit.pooled and (fit.unit_id in qualified or _bare_key(fit) in bare):
             # The master fitted the SAME neutrons this row did (combine-before-divide). Letting
             # both into the scene would enter one dataset's local evidence twice.
             continue
@@ -75,8 +75,8 @@ def scene_observations(ws) -> list[SceneObservation]:
 # ---------------------------------------------------------------------------
 # ownership / active arena
 # ---------------------------------------------------------------------------
-def _superseding_member_labels(fits) -> set[str]:
-    """The member labels claimed by pooled masters that actually carry candidates.
+def _superseded_by_masters(fits):
+    """What pooled masters that actually carry candidates claim: ``(qualified, bare)`` label sets.
 
     A master's row IS the interpretation of its members' pooled counts, so its members' own rows
     are not a second, independent arena. A master with no candidate table has superseded nothing
@@ -84,30 +84,35 @@ def _superseding_member_labels(fits) -> set[str]:
 
     Keys on what ``results.csv`` persists: the master row's ``members`` cell, written by
     ``isar/session/master_delivery.py:_member_labels`` as a bare native scan number, qualified
-    ``experiment:scan:detector`` only where a scan number repeats inside one member list. Bare
-    labels are therefore matched on scan number alone, which is exactly as ambiguous as the
-    persisted form is: two experiments sharing a scan number in one workspace cannot be told
-    apart from this cell.
+    ``experiment:scan:detector`` only where a scan number repeats inside one member list.
+    Qualified labels are matched exactly. A bare label carries no detector, so it is matched on
+    ``(scan number, detector, sample)`` of the CLAIMING master — a master pooled one detector's
+    group, and must not suppress the same scan number's arena on a different detector.
+
+    Deliberately NOT part of that key: ``h``/``k``/``l``/``T``. A master persists its GROUP's
+    collated q and T (hkl_round_step / t_round), which need not equal a member row's own values,
+    so an equality test there could fail spuriously — and a spurious failure re-admits a
+    superseded row, i.e. double-counts the same neutrons. The remaining ambiguity is inherited
+    from the cell: two experiments sharing a scan number, detector and sample in one workspace
+    cannot be told apart from a bare label.
     """
-    labels: set[str] = set()
+    qualified: set[str] = set()
+    bare: set[tuple] = set()
     for fit in fits:
-        if not fit.pooled:
+        if not fit.pooled or not isinstance(fit.candidates, list):
             continue
-        members = fit.members or []
-        if not members or not isinstance(fit.candidates, list):
-            continue
-        labels.update(str(m) for m in members)
-    return labels
+        for member in fit.members or []:
+            label = str(member)
+            if ":" in label:
+                qualified.add(label)
+            else:
+                bare.add((label, fit.detector_id, fit.sample))
+    return qualified, bare
 
 
-def _member_labels_of(fit) -> set[str]:
-    """The labels under which this per-scan row could appear in a master's ``members`` cell."""
-    out = set()
-    if fit.scan_number is not None:
-        out.add(str(fit.scan_number))
-    if fit.unit_id:
-        out.add(str(fit.unit_id))
-    return out
+def _bare_key(fit) -> tuple:
+    """How this per-scan row would be named by a bare member label of the master that pooled it."""
+    return (str(fit.scan_number), fit.detector_id, fit.sample)
 
 
 # ---------------------------------------------------------------------------
@@ -139,10 +144,16 @@ def _candidates(fit, ref: str):
     """
     raw = fit.candidates
     if raw is None:
-        # FitView.candidates already degrades a missing OR unparseable cell to None, so the two
-        # cases share one message: either way the row has nothing the scene can score.
-        log.warning("scene: %s has no usable candidate table (absent or malformed cell) — "
-                    "no observation", ref)
+        # A ledger row that never produced a fit (held_for_calibration, excluded, context_applied,
+        # ingested — written detectorless, or delivered with nothing converged) legitimately has no
+        # candidate table: a real campaign has many, and warning on each would bury the signal that
+        # matters. Only a DELIVERED fit (detector + winning label) whose table is absent or
+        # unparseable is anomalous, and that is what warns.
+        if fit.detector_id and fit.best_label:
+            log.warning("scene: %s has no usable candidate table (absent or malformed cell) — "
+                        "no observation", ref)
+        else:
+            log.debug("scene: %s carries no delivered fit — no observation", ref)
         return None
     try:
         return tuple(CandidateRow.from_dict(c) for c in sorted(raw, key=lambda c: str(c["label"])))
