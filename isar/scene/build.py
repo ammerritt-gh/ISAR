@@ -48,11 +48,10 @@ from isar.schema.steering import CANONICAL_MASTER, EVIDENCE_SINKS
 
 from .factors import (FACTORS, SceneFactor, factor_manifest, neighbour_reports,
                       registry_fingerprint, validate_factor)
-from .model import (NON_MODE_ID_TAGS, CandidateRow, ComponentObservation, Footprint,
-                    PathTopology, SampleKnowledge, SceneObservation, Visibility, canonical_bytes,
-                    digest_bytes, footprint_of, is_mode, link_reach, path_adjacent, path_topology)
-
-SCENE_SCHEMA = "isar.scene-revision/1"
+from .model import (NON_MODE_ID_TAGS, SCENE_SCHEMA, CandidateRow, ComponentObservation,
+                    Footprint, PathTopology, SampleKnowledge, SceneObservation, Visibility,
+                    canonical_bytes, digest_bytes, footprint_of, is_mode, link_reach,
+                    path_adjacent, path_topology)
 
 # Same currency and idiom as isar/analyze/evidence.py PRUNE_MARGIN: nats below the cluster's
 # per-arena leader, beyond which a candidate's posterior mass is bounded by e^−margin and it

@@ -120,6 +120,12 @@ class SampleKnowledge:
 # ----------------------------------------------------------------------------
 # Canonical form
 # ----------------------------------------------------------------------------
+# The revision payload's schema name lives HERE, with the serialization contract, so readers
+# (the workspace facade's schema gate) can name it without importing the builder — the G16
+# allow-list admits isar.scene.model, never isar.scene.build.
+SCENE_SCHEMA = "isar.scene-revision/1"
+
+
 # Byte-identical to isar/session/master_delivery.py:_persist_content_addressed, so a scene
 # fingerprint and a content-addressed artifact digest agree on what "the same payload"
 # means. Deliberately NOT imported from there: this module stays session-free.

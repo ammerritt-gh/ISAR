@@ -36,8 +36,7 @@ import json
 import logging
 from dataclasses import dataclass
 
-from isar.scene.build import SCENE_SCHEMA
-from isar.scene.model import canonical_bytes
+from isar.scene.model import SCENE_SCHEMA, canonical_bytes
 from isar.scene.store import read_current, read_last_attempt
 
 from .scene import _scan_ref, scene_observations
