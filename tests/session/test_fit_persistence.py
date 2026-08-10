@@ -12,6 +12,7 @@ The fitting tests reuse the single-peak pattern from ``test_driver_multimode`` a
 """
 import dataclasses
 import json
+import logging
 from types import SimpleNamespace
 
 import numpy as np
@@ -585,7 +586,6 @@ def _scene1_outcome():
     outcome.at_limit = {"phonon.Omega_d": False, "phonon.Gamma": True}
     outcome.evidence_identity = "acoustic"
     outcome.identity_ba_disagreement = {"evidence_identity": "acoustic", "branch_id": "optic"}
-    outcome.interpretation_ref = "sha256:deadbeef"
     return outcome
 
 
@@ -595,14 +595,24 @@ def test_scene1_outcome_fields_roundtrip_to_dict_from_dict():
     assert restored.evidence_identity == "acoustic"
     assert restored.identity_ba_disagreement == {"evidence_identity": "acoustic",
                                                  "branch_id": "optic"}
-    assert restored.interpretation_ref == "sha256:deadbeef"
 
 
 def test_scene1_outcome_fields_default_absent():
-    """SCENE-3 owns the interpretation store; PR-c only reserves the pointer."""
     oc = _outcome_with(None, None)
-    assert (oc.at_limit, oc.evidence_identity, oc.identity_ba_disagreement,
-            oc.interpretation_ref) == (None, None, None, None)
+    assert (oc.at_limit, oc.evidence_identity,
+            oc.identity_ba_disagreement) == (None, None, None)
+
+
+def test_the_reserved_interpretation_pointer_is_gone(caplog):
+    """H1, no vestigial contracts: SCENE-3 embeds the candidate rows it consumed in the revision
+    rather than pointing at an artifact (DECISIONS H-series), so ``interpretation_ref`` was never
+    written and is deleted. A ledger that carries the old key still loads — the tolerant reader
+    drops it with a warning, which is what a retired additive field is supposed to do."""
+    assert not hasattr(_outcome_with(None, None), "interpretation_ref")
+    payload = {**_outcome_with(None, None).to_dict(), "interpretation_ref": "sha256:deadbeef"}
+    with caplog.at_level(logging.WARNING, logger="isar.session.outcome"):
+        assert not hasattr(driver._coerce_fit_outcome(payload), "interpretation_ref")
+    assert any("interpretation_ref" in r.getMessage() for r in caplog.records)
 
 
 # --------------------------------------------------------------- SCENE-3 (scene-layer inputs)

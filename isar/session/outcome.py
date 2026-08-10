@@ -219,10 +219,6 @@ class FitOutcome:
     # searched-and-empty window is evidence). Distinct from ``search_energy_lo/hi``, which is an
     # auxiliary probe's REQUESTED window. ``None`` on older ledgers and when no point survived the mask.
     energy_window: tuple | None = None
-    # ``interpretation_ref``: pointer into the content-addressed interpretation store. That store is
-    # SCENE-3's to build; the field lands here None-defaulted so the persistence contract already has
-    # the slot when it arrives. Nothing writes it in SCENE-1.
-    interpretation_ref: str | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
