@@ -104,6 +104,11 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
 
     ``factors`` defaults to the live ``FACTORS`` registry; ``catalogue_version`` is a
     caller-supplied stamp, because the scene never imports the catalogue.
+
+    Payload alignment contract: a cluster's ``lofo[name]`` is a POSITIONAL list, index-aligned
+    with that cluster's ``alternatives`` — ``lofo[name][i]`` is the posterior of
+    ``alternatives[i]`` with factor ``name``'s terms removed. The payload states this as
+    ``lofo_alignment`` so an external consumer cannot silently read it as a mapping.
     """
     # Constants resolve AT CALL TIME, never as default-argument captures: a default evaluated
     # at import binds the module constant's value forever, so monkeypatching or an
@@ -136,6 +141,9 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
         # margin must say so, or a replay would silently use a different model.
         "margin_nats": margin,
         "alt_cap": cap,
+        # Declares how to read every cluster's lofo lists: positionally, against that
+        # cluster's ``alternatives``.
+        "lofo_alignment": "by_alternative_index",
         # Constraint-transport provenance: declared and dormant (the transport channel lives
         # in local evidence, per the PR-a design), so the field exists before it is filled.
         "transport": None,
@@ -168,6 +176,14 @@ def _validated(observations) -> tuple[SceneObservation, ...]:
         if not o.fingerprint or o.fingerprint == "None":
             raise ValueError(f"observation {o.scan_ref!r} carries no fingerprint: "
                              "an unidentified arena cannot be replayed")
+        labels = [c.label for c in o.candidates]
+        if len(set(labels)) != len(labels):
+            # The scorer keys evidence and rows on (scan_ref, label). Two rows sharing a label
+            # would silently drop one row's lnZ, enumerate the survivor once per duplicate, and
+            # double its posterior mass — and the cluster would still normalize to 1.0, so
+            # nothing downstream could notice.
+            raise ValueError(f"observation {o.scan_ref!r} has duplicate candidate labels: "
+                             f"{sorted(l for l in set(labels) if labels.count(l) > 1)}")
         out.append(replace(o, candidates=tuple(sorted(o.candidates, key=lambda c: c.label))))
     return tuple(sorted(out, key=lambda o: o.scan_ref))
 
@@ -334,10 +350,28 @@ def _enumerate(arenas, cap: int):
             if nxt[pos] < len(ranked[pos][1]) and nxt not in seen:
                 seen.add(nxt)
                 heapq.heappush(heap, (-base_of(nxt), labels_of(nxt), nxt))
-    # Conservative and stated: every dropped alternative has base ≤ the lowest kept base, so
-    # its unnormalized weight relative to the leader is at most exp(lowest − leader).
-    discarded = (n_possible - len(kept)) * math.exp(lowest_base - leader_base)
+    discarded = _discarded_bound(n_possible - len(kept), lowest_base, leader_base)
     return sorted(tuple(sorted(a)) for a in kept), n_possible, True, discarded
+
+
+def _discarded_bound(n_dropped: int, lowest_base: float, leader_base: float) -> float:
+    """Upper bound on the mass a cap dropped: ``n_dropped × exp(lowest − leader)``.
+
+    Conservative and stated: every dropped alternative has base ≤ the lowest kept base, so its
+    unnormalized weight relative to the leader is at most ``exp(lowest − leader)``.
+
+    Computed in log space because ``n_dropped`` is an exact Python int over the full product
+    and can exceed the float range long before the bound itself does — ``math.log`` takes the
+    big int exactly, where multiplying would raise ``OverflowError`` on the conversion. A bound
+    that genuinely overflows is recorded as ``inf``: an infinite stated bound is honest (it
+    says the cap dropped an unbounded share), a crash in the scorer is not.
+    """
+    if n_dropped <= 0:
+        return 0.0
+    try:
+        return math.exp(math.log(n_dropped) + (lowest_base - leader_base))
+    except OverflowError:
+        return math.inf
 
 
 # ----------------------------------------------------------------------------
@@ -391,7 +425,8 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
     for f in factor_list:
         if f.score is None:
             continue
-        # Leave-one-factor-out over the FIXED alternative set: the question is what that
+        # Leave-one-factor-out over the FIXED alternative set, index-aligned with ``entries``
+        # (payload ``lofo_alignment``): the question is what that
         # factor's terms did to the posterior, not what a differently-enumerated scene would
         # have looked like, so re-enumeration would answer a different question.
         totals = [_total(e["base"], _without(e["factor_terms"], f.name),

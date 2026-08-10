@@ -12,7 +12,8 @@ from dataclasses import replace
 
 import pytest
 
-from isar.scene.build import (SCENE_SCHEMA, ClusterView, SceneAlternative, build_scene)
+from isar.scene.build import (SCENE_SCHEMA, ClusterView, SceneAlternative,
+                              _discarded_bound, build_scene)
 from isar.scene import build as build_mod
 from isar.scene.factors import SceneFactor
 from isar.scene.model import (CandidateRow, SceneObservation, canonical_bytes,
@@ -86,6 +87,15 @@ def test_duplicate_scan_ref_raises():
     obs = mk_obs("e:1:d", [cand("A", -10.0)])
     with pytest.raises(ValueError, match="duplicate scan_ref"):
         build_scene([obs, obs])
+
+
+def test_duplicate_candidate_labels_in_one_arena_raise():
+    """Silent evidence corruption if unchecked: the scorer keys on (scan_ref, label), so one
+    row's lnZ would be dropped, the survivor enumerated twice, its mass doubled — and the
+    cluster would still sum to 1.0."""
+    obs = mk_obs("e:1:d", [cand("A", -1.0), cand("A", -5.0), cand("B", -2.0)])
+    with pytest.raises(ValueError, match="duplicate candidate labels"):
+        build_scene([obs], factors=[ZERO])
 
 
 @pytest.mark.parametrize("bad", ["", "None"])
@@ -245,6 +255,22 @@ def test_cap_keeps_exactly_the_top_alternatives_and_states_the_dropped_bound():
     leader = math.fsum(lnz[p] for p in ranked[0])
     lowest = math.fsum(lnz[p] for p in ranked[9])
     assert cl["discarded_mass_bound"] == pytest.approx(115 * math.exp(lowest - leader), rel=1e-12)
+
+
+def test_discarded_bound_survives_counts_far_outside_the_float_range():
+    """A cluster of a few hundred binary arenas overflows float long before the bound does."""
+    assert _discarded_bound(0, -5.0, -1.0) == 0.0
+    assert _discarded_bound(115, -30.0, -6.0) == pytest.approx(115 * math.exp(-24.0), rel=1e-12)
+    huge = 2 ** 1100                                     # unconvertible to float at all
+    assert _discarded_bound(huge, -800.0, 0.0) == pytest.approx(math.exp(1100 * math.log(2) - 800))
+    assert _discarded_bound(huge, -1.0, 0.0) == math.inf  # honestly unbounded, not a crash
+
+
+def test_lofo_alignment_is_declared_in_the_payload():
+    rev = build_scene(chain_and_distant(), factors=[COUPLER, ZERO])
+    assert rev.payload["lofo_alignment"] == "by_alternative_index"
+    for cl in rev.payload["clusters"]:
+        assert len(cl["lofo"]["zero"]) == len(cl["alternatives"])
 
 
 def test_tied_base_scores_at_the_cap_boundary_break_by_label_tuple():
