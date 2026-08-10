@@ -341,3 +341,16 @@ def test_a_partially_declared_lattice_cell_is_refused(tmp_path):
     bare = [{"version": 1, "method": "manual"}]
     know = sample_knowledge(_knowledge_ws(tmp_path / "bare", state={"lattice_epochs": bare}))
     assert (know.lattice_epoch, know.lattice) == (1, None)
+
+
+def test_the_latest_epoch_is_chosen_by_version_number_not_by_string_order(tmp_path):
+    """A JSON-typed version is a real possibility, and lexical order gets it backwards: "9" sorts
+    above "10", so the newest epoch would silently lose to a superseded one. A version that is not
+    a number at all fails with the geometry message rather than a bare TypeError."""
+    typed = [{"version": "9"}, {"version": "10"}]
+    assert sample_knowledge(
+        _knowledge_ws(tmp_path, state={"lattice_epochs": typed})).lattice_epoch == 10
+
+    junk = [{"version": 1}, {"version": "epoch-two"}]
+    with pytest.raises(ValueError, match="unreadable sample geometry"):
+        sample_knowledge(_knowledge_ws(tmp_path / "junk", state={"lattice_epochs": junk}))

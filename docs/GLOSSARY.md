@@ -243,8 +243,9 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   Never inferred from the data. Declaring nothing is allowed; the capabilities that need it then go
   inert and say so in the revision's `sample_knowledge.degradations`.
 - **Bragg (at the scene)** — whether an elastic feature sits where a reflection was declared is a
-  *scene-level* classification (`bragg_compatible` / `off_lattice` / `unclassified`), not a fit result:
-  a single scan's elastic fit is blind to where in reciprocal space it sits. Crucially, the zone period
+  *scene-level* classification (`bragg_compatible` / `off_lattice` / `unclassified` when no
+  reflections were declared / `unplaceable_q` when they were but this scan has no usable q), not a fit
+  result: a single scan's elastic fit is blind to where in reciprocal space it sits. Crucially, the zone period
   does not confer a reflection — FCC (300) has integer indices, sits on a fold, and is extinct. The
   classification moves no belief, because elastic intensity is ubiquitous: off-lattice elastic is not
   improbable, only not-Bragg.

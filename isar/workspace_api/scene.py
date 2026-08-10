@@ -119,16 +119,18 @@ def sample_knowledge(ws) -> SampleKnowledge:
     declared_sample = dict(getattr(policy, "sample", None) or {}) if policy else {}
     period = dispersion.get("zone_period")
     reflections = declared_sample.get("reflections") or ()
-    epoch = max((e for e in card.lattice_epochs
-                 if isinstance(e, dict) and e.get("version") is not None),
-                key=lambda e: e["version"], default=None)
-    cell = (epoch or {}).get("lattice")
-    # All six cell parameters or nothing. An ABSENT cell is a declaration that was never made and
-    # stays ``None``; a PARTIAL one is malformed and raises (H1) — degrading it to "no lattice
-    # declared" would leave the revision claiming a provenance the card actually tried to give.
-    partial = isinstance(cell, dict) and 0 < sum(k in cell for k in _CELL) < len(_CELL)
+    epochs = [e for e in card.lattice_epochs
+              if isinstance(e, dict) and e.get("version") is not None]
     try:
-        if partial:
+        # Ordered by version as a NUMBER, and inside the guard. A string version would otherwise
+        # order lexically — "9" ahead of "10", so the newest epoch silently loses — and a mixed
+        # series would raise a bare TypeError instead of the message this function promises.
+        epoch = max(epochs, key=lambda e: int(e["version"]), default=None)
+        cell = (epoch or {}).get("lattice")
+        # All six cell parameters or nothing. An ABSENT cell is a declaration that was never made
+        # and stays ``None``; a PARTIAL one is malformed and raises (H1) — degrading it to "no
+        # lattice declared" would leave the revision claiming a provenance the card tried to give.
+        if isinstance(cell, dict) and 0 < sum(k in cell for k in _CELL) < len(_CELL):
             raise ValueError(f"lattice cell declares {sorted(cell)}, expected all of {list(_CELL)}")
         return SampleKnowledge(
             zone_period=None if period is None else float(period),
@@ -141,7 +143,9 @@ def sample_knowledge(ws) -> SampleKnowledge:
             f"scene: card declares an unreadable sample geometry "
             f"(dispersion.zone_period={period!r}, "
             f"sample.reflections={declared_sample.get('reflections')!r}, "
-            f"lattice epoch={epoch!r}): {exc}") from exc
+            # The candidate list, not the chosen epoch: choosing is itself inside the guard now,
+            # so a failure there leaves no chosen epoch to name.
+            f"lattice epochs={epochs!r}): {exc}") from exc
 
 
 # ---------------------------------------------------------------------------

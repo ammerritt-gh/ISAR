@@ -148,7 +148,8 @@ Two factors read it, and neither scores — so neither costs the builder its pru
   connectivity key on `searched_no_signal` alone, so the absence of a penalty at an endpoint is
   emergent from the visibility grammar rather than special-cased into two score functions.
 - `reciprocal_lattice_localization` classifies each non-mode component `bragg_compatible` /
-  `off_lattice` / `unclassified` through the `classify` hook, recorded per cluster under
+  `off_lattice` / `unclassified` (no reflections declared) / `unplaceable_q` (declared, but this
+  arena has no placeable q) through the `classify` hook, recorded per cluster under
   `classification`. It classifies and does not score: elastic intensity is ubiquitous, so an
   off-lattice elastic feature is not improbable, merely not-Bragg.
 

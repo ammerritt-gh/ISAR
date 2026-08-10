@@ -1752,8 +1752,11 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   feature at ω = 0 and knows nothing about where in reciprocal space it sits — so the local
   evidence cannot have priced lattice position, and classifying it at the scene re-prices nothing
   (H12(a)). `reciprocal_lattice_localization` labels every non-mode component `bragg_compatible` /
-  `off_lattice` / `unclassified` against the declared list, recorded per cluster under
-  `classification`. It attaches no likelihood, and the reason is categorical humility about the
+  `off_lattice` / `unclassified` / `unplaceable_q` against the declared list, recorded per cluster
+  under `classification`. The last two are distinct on purpose: `unclassified` is "no reflections
+  were declared", whose reason is recorded build-level in `sample_knowledge.degradations`, while
+  `unplaceable_q` is a per-arena fact that a declaration-level ledger cannot see — merging them
+  would leave an unplaceable arena inert with no reason recorded anywhere. It attaches no likelihood, and the reason is categorical humility about the
   elastic channel: elastic intensity is ubiquitous (sample environment, mounts, incoherent
   scattering, powder on the plate), so an off-lattice elastic feature is not improbable — it is
   merely not-Bragg. Scoring it would penalize a completely ordinary observation. Modes are not
