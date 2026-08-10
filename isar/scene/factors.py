@@ -18,9 +18,11 @@ module exists to make the factor ban mechanical rather than a matter of reviewer
   fitted parameters, counts or local posteriors, so a factor *cannot* re-score local data or
   re-apply a prior already priced into ``lnZ`` even by mistake.
 
-The live registry holds the first two physics factors — ``presence`` and ``connectivity``
-(SCENE-3 PR 3b). ``RESERVED_FACTOR_NAMES`` reserves the names the remaining ones will take so
-two slices cannot pick the same name for different terms.
+The live registry holds the four physics factors of SCENE-3 PR 3b: ``presence`` and
+``connectivity`` score, while ``zone_centre_approach`` and ``reciprocal_lattice_localization``
+read DECLARED sample knowledge and only reinterpret a visibility state or classify a component —
+they move no belief, so they cost the builder no pruning. ``RESERVED_FACTOR_NAMES`` reserves the
+names the remaining ones will take so two slices cannot pick the same name for different terms.
 
 Stdlib-only, like ``model.py`` — see ``tests/scene/test_import_ban.py``.
 """
@@ -31,8 +33,8 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .model import (LINK_TOL_FLOOR, Q_ADJACENCY, Visibility, fingerprint, is_mode, link_tol,
-                    q_adjacent, visibility_of)
+from .model import (LINK_TOL_FLOOR, Q_ADJACENCY, Visibility, covers, fingerprint, is_mode,
+                    link_tol, path_coordinate, q_adjacent, visibility_of)
 
 FACTOR_KINDS = ("scene_prior", "structural_likelihood")
 
@@ -62,6 +64,26 @@ class SceneFactor:
     pairs. It exists because a retuned constant is a different factor: without it two revisions
     scored under different tunings would carry the same ``registry_fingerprint`` and look
     replayable against each other.
+
+    ``classify``, ``refine_visibility``, ``couples_arena`` and ``degradations`` are the
+    non-scoring hooks (SCENE-3 PR 3b, task 2). They exist because not every structural claim is
+    a ln-term: some of them name what a component IS, or what an absence MEANS, or say that a
+    declared capability had nothing to work with. Each is recorded in ``factor_manifest``'s
+    ``roles``, so a factor that grows one is a different declaration and fingerprints as one.
+
+    * ``classify(view) -> dict[component_id, state]`` — a per-component label the builder folds
+      into the cluster payload. It moves no belief; a factor that wants to move belief declares
+      a ``score``.
+    * ``refine_visibility(report, view) -> str | None`` — given one neighbour report, a
+      replacement visibility state or ``None``. The builder enforces that it may only replace
+      the two absence states: an ``observed`` mode stays observed and a coverage gap stays a
+      no-claim, whatever a factor believes.
+    * ``couples_arena(component, footprint) -> bool`` — an ambiguity-graph edge from a component
+      to a whole neighbouring ARENA rather than to one of its components. It is what lets a
+      searched-but-empty arena join the cluster whose track disappears into it.
+    * ``degradations(sample) -> tuple[str, ...]`` — why this factor is inert under the declared
+      sample knowledge. Absent declarations must never raise and never silently change scoring,
+      so the ledger is where they show up.
     """
 
     name: str
@@ -73,6 +95,15 @@ class SceneFactor:
     couples: Callable | None = None
     score: Callable | None = None
     propose: Callable | None = None
+    classify: Callable | None = None
+    refine_visibility: Callable | None = None
+    couples_arena: Callable | None = None
+    degradations: Callable | None = None
+
+
+# Every optional callable of ``SceneFactor``, in the order ``factor_manifest`` reports them.
+HOOKS = ("couples", "score", "propose", "classify", "refine_visibility", "couples_arena",
+         "degradations")
 
 
 def validate_factor(f: SceneFactor) -> None:
@@ -86,7 +117,7 @@ def validate_factor(f: SceneFactor) -> None:
             f"scene factor {f.name!r} declares kind {f.kind!r}; allowed: {FACTOR_KINDS}")
     if not f.version:
         raise ValueError(f"scene factor {f.name!r} declares no version")
-    for attr in ("couples", "score", "propose"):
+    for attr in HOOKS:
         value = getattr(f, attr)
         if value is not None and not callable(value):
             raise ValueError(f"scene factor {f.name!r} has a non-callable {attr}")
@@ -127,7 +158,7 @@ def factor_manifest(factors) -> list[dict]:
           "kind": f.kind,
           "version": f.version,
           "consumes": list(f.consumes),
-          "roles": [r for r in ("couples", "score", "propose") if getattr(f, r) is not None],
+          "roles": [r for r in HOOKS if getattr(f, r) is not None],
           "config": [[k, v] for k, v in f.config],
           "score_bound": None if f.score_bound is None else list(f.score_bound)}
          for f in values),
@@ -172,6 +203,33 @@ CONNECT_BREAK_NATS = -2.0
 # the single failure this factor exists to prevent.
 CROSSING_LINK_TOL_FACTOR = 3.0
 
+# zone_centre_approach — how close to a declared zone centre an arena must SIT before the
+# gapless-branch termination argument applies to it. This is a statement about q positioning,
+# not about dispersion: an arena is *at* a zone centre or it is not. The default is well under
+# the 0.05 rlu scan-grid step ISAR rounds HKL to (``CardPolicy.hkl_round_step``), so "near the
+# centre" can never spread to the neighbouring grid node — the failure that would turn a
+# zone-local exemption into a blanket amnesty for every absence in the neighbourhood. It is
+# necessarily far tighter than Q_ADJACENCY (0.15), which is the NEIGHBOUR scale.
+ZONE_CENTRE_Q_TOL = 0.02
+# ... and how much energy a gapless branch may plausibly have shed between the arena where the
+# mode was seen and the zone centre where it terminates. Not the resolution: a branch descending
+# to ω→0 over Δq moves by however much the dispersion carries it, which is several resolution
+# widths — the same physics as CROSSING_LINK_TOL_FACTOR. Deliberately tighter than that 3.0,
+# because this factor grants an absence AMNESTY rather than proposing a hypothesis: where the
+# crossing proposer errs toward offering both readings, this one errs toward still penalizing.
+ENDPOINT_OMEGA_TOL_FACTOR = 2.0
+
+# reciprocal_lattice_localization — how far from a declared reflection an elastic feature may sit
+# and still BE that reflection. One scan-grid step (``CardPolicy.hkl_round_step``, 0.05 rlu):
+# the arena either sits on the reflection's grid node or it does not, and the width of a real
+# Bragg peak in q (0.08 rlu in the world suite) comfortably contains one step. Two steps away is
+# a different position on the path, not a mis-centred reflection.
+# ponytail: one tolerance for every reflection. A real peak's q width is instrument- and
+# sample-dependent, so an arena two grid steps out on the tail of a broad reflection classifies
+# ``off_lattice`` here; a declared per-reflection width is the upgrade path, and it is a
+# declaration to add to the card rather than a number for this module to infer.
+BRAGG_Q_TOL = 0.05
+
 
 # ----------------------------------------------------------------------------
 # The one cross-arena walk both factors (and the builder's payload annotation) read
@@ -201,7 +259,15 @@ def neighbour_reports(alt, view) -> tuple[dict, ...]:
     whether THIS mode is linked to one under the alternative's linkage. Both go through
     :func:`isar.scene.model.visibility_of`, so both inherit the coverage gate: a band the
     neighbour never looked at is censored and is never penalized by either factor.
+
+    Both are then offered to the view's ``refine_visibility`` hooks, which is where declared
+    sample knowledge can turn an unexplained absence into a ``structural_endpoint``. Computed
+    ONCE per (alternative, view) and memoized on the view: the three consumers used to run this
+    walk three times over identical inputs, and a fourth consumer would have made it four.
     """
+    cached = view.reports_cache.get(alt)
+    if cached is not None:
+        return cached
     chosen = _by_ref(alt)
     reports = []
     for i in view.scan_refs:
@@ -222,16 +288,53 @@ def neighbour_reports(alt, view) -> tuple[dict, ...]:
                 w = abs(m.omega)
                 matched = any(abs(abs(p.omega) - w) <= tol for p in partners)
                 is_linked = any((m.component_id, p.component_id) in linked for p in partners)
-                reports.append({
+                report = {
                     "component_id": m.component_id,
                     "scan_ref": i,
                     "neighbour": j,
                     "omega": m.omega,
-                    "visibility": str(visibility_of(w, fp_j, matched, elastic_present=elastic_j)),
-                    "link_visibility": str(
-                        visibility_of(w, fp_j, is_linked, elastic_present=elastic_j)),
-                })
-    return tuple(reports)
+                    # Carried as a FACT of the report rather than recomputed by every refiner:
+                    # "is the elastic line chosen at the neighbour" is the same question
+                    # ``visibility_of`` already answered here, and a second derivation of it
+                    # would be a second physics.
+                    "elastic_present": elastic_j,
+                    "visibility": visibility_of(w, fp_j, matched, elastic_present=elastic_j),
+                    "link_visibility": visibility_of(w, fp_j, is_linked,
+                                                     elastic_present=elastic_j),
+                }
+                refined = {k: _refined(report[k], report, view)
+                           for k in ("visibility", "link_visibility")}
+                reports.append({**report, **{k: str(v) for k, v in refined.items()}})
+    out = tuple(reports)
+    view.reports_cache[alt] = out
+    return out
+
+
+# The only states a ``refine_visibility`` hook may replace. An OBSERVED mode was SEEN and no
+# declared structure may argue it away; a CENSORED band was never looked at, and a factor
+# turning a coverage gap into any other state would manufacture a measurement. Enforced here,
+# once, rather than trusted to each refiner.
+REFINABLE = (Visibility.SEARCHED_NO_SIGNAL, Visibility.BLOCKED_UNRESOLVED)
+
+
+def _refined(state, report, view):
+    """``state`` after the view's refiners, first non-``None`` answer wins."""
+    if state not in REFINABLE:
+        return state
+    for refine in view.refiners:
+        out = refine(report, view)
+        if out is None:
+            continue
+        replacement = Visibility(out)
+        if replacement not in REFINABLE and replacement != Visibility.STRUCTURAL_ENDPOINT:
+            raise ValueError(
+                f"a refine_visibility hook returned {out!r} for {report['component_id']!r} at "
+                f"{report['neighbour']!r}: a refiner may only reinterpret an absence "
+                f"({[str(s) for s in REFINABLE]}) or terminate it as "
+                f"{Visibility.STRUCTURAL_ENDPOINT!s}. Turning an absence into an observation, or "
+                "a coverage gap into anything, would manufacture a measurement.")
+        return replacement
+    return state
 
 
 # ----------------------------------------------------------------------------
@@ -268,8 +371,28 @@ def _couples(a, b) -> bool:
     return abs(abs(a.omega) - abs(b.omega)) <= link_tol(a.footprint, b.footprint)
 
 
+def _couples_arena(c, fp) -> bool:
+    """Does a mode at one arena have a stake in what a neighbouring ARENA saw? (Carried item 15.)
+
+    ``couples`` needs a component on both sides, so an arena whose surviving candidates are all
+    background-only emitted nothing and could never join a cluster — and the scene was therefore
+    SILENT exactly where absence evidence is strongest: a track disappearing into a neighbour
+    that looked hard and found nothing at all went unpriced, while a track disappearing into a
+    neighbour that found *something else* was priced. Inverted physics.
+
+    The edge this adds is deliberately narrow: the neighbour must be q-adjacent AND its footprint
+    must COVER the mode's band. No coverage is no claim, so it grows no cluster — the same gate
+    ``visibility_of`` applies, reused rather than restated. Deterministic on footprints and
+    discrete component positions only.
+    """
+    return (is_mode(c) and c.omega is not None
+            and q_adjacent(c.q, fp.q) and covers(fp, abs(c.omega)))
+
+
 PRESENCE = SceneFactor(
-    name="presence", kind="structural_likelihood", version="1",
+    # v2: coverage coupling (``couples_arena``) changed which arenas share a cluster, so a v1
+    # revision's partition is not reproducible under this factor.
+    name="presence", kind="structural_likelihood", version="2",
     consumes=("q", "omega", "footprint"),
     config=(("link_tol_floor", LINK_TOL_FLOOR), ("presence_match_nats", PRESENCE_MATCH_NATS),
             ("presence_miss_nats", PRESENCE_MISS_NATS), ("q_adjacency", Q_ADJACENCY)),
@@ -282,7 +405,7 @@ PRESENCE = SceneFactor(
     # ponytail: per-cluster-size bound is the upgrade path — a factor that could declare
     # ``bound(n_arenas, n_components)`` would restore pruning without lying about it.
     score_bound=None,
-    couples=_couples, score=_presence_score)
+    couples=_couples, couples_arena=_couples_arena, score=_presence_score)
 
 
 # ----------------------------------------------------------------------------
@@ -390,5 +513,133 @@ CONNECTIVITY = SceneFactor(
     couples=_couples, score=_connectivity_score, propose=_propose_crossings)
 
 
+# ----------------------------------------------------------------------------
+# zone_centre_approach
+# ----------------------------------------------------------------------------
+def _zone_centres_declared(sample) -> bool:
+    return sample.zone_period is not None
+
+
+def _at_zone_centre(h: float, period: float) -> bool:
+    """Is the path coordinate ``h`` a multiple of ``period``, to within the declared tolerance?
+
+    Anchored at the crystal origin ``q = 0`` and nowhere else (O44). Deriving the fold positions
+    from a measured or tracker-selected q would let the scene's own choice of where to look
+    define where the zone centres are, and the geometry would then confirm whatever the campaign
+    happened to visit.
+    """
+    return abs(h - round(h / period) * period) <= ZONE_CENTRE_Q_TOL
+
+
+def _zone_centre_refine(report, view):
+    """``structural_endpoint`` where a declared gapless branch legitimately has nothing to show.
+
+    ``blocked_unresolved`` and ``structural_endpoint`` are different claims and the difference
+    matters to what an operator does next. Blocked says *unresolved pending better data* — look
+    again, longer or with finer resolution, and the answer may change. Structural endpoint says
+    *the declared physics terminates the track here* — nothing is missing, and no amount of
+    counting will produce a peak, because a gapless branch reaches ω → 0 at the zone centre and
+    is swallowed by the elastic response.
+
+    Four conditions, each of which must hold, and the absence of any one of them leaves the
+    absence exactly as it was:
+
+    1. a zone period is DECLARED (nothing here is derived from the data);
+    2. the neighbour arena sits at a zone centre of that period;
+    3. the elastic line is chosen there, so there IS an elastic response to be swallowed by;
+    4. the mode's energy is within a plausible descent of zero over the ω tolerance the linkage
+       grammar already uses — a 9 meV optic mode is not explained away by an acoustic branch's
+       endpoint.
+
+    What this factor does NOT do is price anything. ``presence`` and ``connectivity`` key on
+    ``searched_no_signal`` alone, so a report reinterpreted here silently stops carrying a miss
+    or a break — the no-penalty-at-an-endpoint behaviour is EMERGENT from the visibility grammar
+    rather than special-cased into two score functions, which is what keeps the exemption in one
+    place instead of three.
+    """
+    sample = view.sample
+    if not _zone_centres_declared(sample):
+        return None
+    if not report["elastic_present"]:
+        return None
+    fp_j = view.footprints[report["neighbour"]]
+    h = path_coordinate(fp_j.q)
+    if h is None or not _at_zone_centre(h, sample.zone_period):
+        return None
+    fp_i = view.footprints[report["scan_ref"]]
+    if abs(report["omega"]) > ENDPOINT_OMEGA_TOL_FACTOR * link_tol(fp_i, fp_j):
+        return None
+    return Visibility.STRUCTURAL_ENDPOINT
+
+
+def _zone_centre_degradations(sample) -> tuple[str, ...]:
+    return () if _zone_centres_declared(sample) else ("no_declared_zone_period",)
+
+
+ZONE_CENTRE_APPROACH = SceneFactor(
+    name="zone_centre_approach", kind="structural_likelihood", version="1",
+    consumes=("q", "omega", "footprint", "sample.zone_period"),
+    config=(("endpoint_omega_tol_factor", ENDPOINT_OMEGA_TOL_FACTOR),
+            ("link_tol_floor", LINK_TOL_FLOOR), ("zone_centre_q_tol", ZONE_CENTRE_Q_TOL)),
+    # No score, therefore no bound to declare — and, because ``_score_span`` looks only at
+    # SCORING factors, no pruning cost either. A visibility-grammar factor changes what the
+    # scoring factors see, not what they may add.
+    score_bound=None,
+    refine_visibility=_zone_centre_refine, degradations=_zone_centre_degradations)
+
+
+# ----------------------------------------------------------------------------
+# reciprocal_lattice_localization
+# ----------------------------------------------------------------------------
+def _lattice_classify(view) -> dict:
+    """Bragg-compatible / off-lattice / unclassified, per non-mode component. Belief-neutral.
+
+    "Bragg" is a SCENE-level identity, and it has to be: the local catalogue's elastic entry is
+    lattice-blind by design — it fits a resolution-limited feature at ω = 0 and knows nothing
+    about where in reciprocal space it sits. So the local evidence cannot have priced lattice
+    position, and classifying it here re-prices nothing (H12(a)).
+
+    It CLASSIFIES and does not score, and that is the categorical humility the elastic channel
+    demands. Elastic intensity is ubiquitous — sample environment, mounts, incoherent scattering,
+    a bit of powder on the plate. An off-lattice elastic feature is therefore *not* improbable;
+    it is merely not-Bragg. Attaching a likelihood to "elastic where no reflection is declared"
+    would penalize a completely ordinary observation, so the scene records what the feature is
+    relative to the declared lattice and leaves belief alone.
+
+    Modes are not classified at all: a phonon at a reflection's q is a phonon, not a reflection.
+    """
+    reflections = view.sample.reflections
+    out = {}
+    for ref in view.scan_refs:
+        for c in view.components[ref]:
+            if is_mode(c):
+                continue
+            h = path_coordinate(c.q)
+            if not reflections or h is None:
+                # No declaration (or no placeable q) is not evidence of being off-lattice — the
+                # question was never asked. Recorded as unclassified, with a degradation reason.
+                out[c.component_id] = "unclassified"
+            elif any(abs(h - float(r)) <= BRAGG_Q_TOL for r in reflections):
+                out[c.component_id] = "bragg_compatible"
+            else:
+                out[c.component_id] = "off_lattice"
+    return dict(sorted(out.items()))
+
+
+def _lattice_degradations(sample) -> tuple[str, ...]:
+    return () if sample.reflections else ("no_declared_reflections",)
+
+
+RECIPROCAL_LATTICE_LOCALIZATION = SceneFactor(
+    name="reciprocal_lattice_localization", kind="structural_likelihood", version="1",
+    consumes=("q", "sample.reflections"),
+    config=(("bragg_q_tol", BRAGG_Q_TOL),),
+    # Classification only: no score, so no bound, and no effect on the builder's pruning.
+    score_bound=None,
+    classify=_lattice_classify, degradations=_lattice_degradations)
+
+
 # The live registry: the builder falls back to it when a caller passes no explicit factor set.
-FACTORS: dict[str, SceneFactor] = {f.name: f for f in (PRESENCE, CONNECTIVITY)}
+FACTORS: dict[str, SceneFactor] = {f.name: f for f in (PRESENCE, CONNECTIVITY,
+                                                       ZONE_CENTRE_APPROACH,
+                                                       RECIPROCAL_LATTICE_LOCALIZATION)}

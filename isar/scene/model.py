@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 
@@ -36,6 +37,62 @@ class Visibility(StrEnum):
     CENSORED_OUTSIDE_FOOTPRINT = "censored_outside_footprint"
     BLOCKED_UNRESOLVED = "blocked_unresolved"
     STRUCTURAL_ENDPOINT = "structural_endpoint"
+
+
+# ----------------------------------------------------------------------------
+# Declared sample knowledge
+# ----------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class SampleKnowledge:
+    """What the scientist DECLARED about the sample, as the scene reads it. Never derived.
+
+    Every field is hand-authored intent lifted out of ``card.policy.toml`` by
+    :func:`isar.workspace_api.scene.sample_knowledge` — this module stays card-free and
+    stdlib-only. Nothing here is inferred from the data, and nothing here is optional in the
+    sense of "guess it if absent": an undeclared field leaves the capability that consumes it
+    inert, with a recorded degradation reason, and never a default that would let the scene
+    invent geometry.
+
+    **Zone geometry and the reflection list are INDEPENDENT declarations**, and conflating them
+    is the failure this split exists to prevent. ``zone_period`` says where the reduced-zone
+    folds are — the multiples of the period anchored at the crystal origin ``q = 0``, never at a
+    measured or tracker-selected q (the O44 rule). ``reflections`` says where the scientist
+    declares Bragg reflections actually are. A periodic position is NOT thereby a reflection:
+    FCC (300) has integer indices, sits at a fold, and is extinct. So no code here derives
+    reflections from the period, from integer indices, from a space group, or from a
+    structure-factor rule — the only source is the declaration.
+
+    ``lattice_epoch``/``lattice`` record WHICH lattice interpretation was current when the scene
+    was built (``card.state.lattice_epochs``), so a revision cannot be replayed against a
+    different one without the fingerprint saying so. Nothing consumes them yet.
+    ponytail: they become load-bearing when multi-D geometry lands — declared HKL reflections
+    projected onto the scan path through the epoch's lattice and orientation is the upgrade
+    path, and it is the reason the scalar ``reflections`` here are path-coordinate rlu.
+    """
+
+    zone_period: float | None = None
+    reflections: tuple[float, ...] = ()
+    lattice_epoch: int | None = None
+    lattice: tuple[float, ...] | None = None
+
+    def __post_init__(self):
+        # Malformed declarations fail HERE, loudly (H1): a scene that silently dropped an
+        # unreadable zone period would publish "no zone geometry declared" over a card that
+        # declares one, and the degradation ledger would say the capability was inert when in
+        # truth it was misread.
+        if self.zone_period is not None and not (math.isfinite(self.zone_period)
+                                                 and self.zone_period > 0.0):
+            raise ValueError(f"sample zone_period must be a finite positive rlu period, got "
+                             f"{self.zone_period!r}")
+        if not all(math.isfinite(r) for r in self.reflections):
+            raise ValueError(f"sample reflections must all be finite rlu positions, got "
+                             f"{list(self.reflections)!r}")
+
+    def to_dict(self) -> dict:
+        return {"zone_period": self.zone_period,
+                "reflections": list(self.reflections),
+                "lattice_epoch": self.lattice_epoch,
+                "lattice": None if self.lattice is None else list(self.lattice)}
 
 
 # ----------------------------------------------------------------------------
@@ -429,7 +486,10 @@ def visibility_of(band_omega: float, footprint: Footprint, has_match: bool, *,
     ``elastic_present`` says an ``#elastic``/``#qe`` component is chosen at that arena, so a band
     within one Gaussian FWHM of zero is hidden under the elastic line rather than absent from the
     data: ``blocked_unresolved``, also never penalized. (This is the endpoint-under-Bragg
-    ingredient; the zone-centre factor that assigns ``structural_endpoint`` lands next.)
+    ingredient. ``structural_endpoint`` is a STRONGER statement that this function cannot make:
+    it needs declared sample knowledge, so it is assigned afterwards by the
+    ``zone_centre_approach`` factor's ``refine_visibility`` hook, which may only replace the two
+    absence states below and never ``observed`` or ``censored_outside_footprint``.)
 
     A matched band is ``observed`` even when it sits under the elastic line: something WAS seen
     there, and calling it blocked would throw away a real detection.

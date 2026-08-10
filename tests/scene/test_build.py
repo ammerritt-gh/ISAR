@@ -627,6 +627,12 @@ def test_the_builders_linkage_prior_name_is_reserved():
     {"config": (("threshold", 0.5),)},
     {"score_bound": (0.0, 2.0)},
     {"version": "2"},
+    # A factor that grows a non-scoring hook is a different declaration too: it classifies
+    # components, reinterprets absences, or draws cluster edges nothing else drew.
+    {"classify": lambda view: {}},
+    {"refine_visibility": lambda report, view: None},
+    {"couples_arena": lambda c, fp: False},
+    {"degradations": lambda sample: ()},
 ])
 def test_the_registry_fingerprint_moves_with_every_declaration(changed):
     """The doc/code mismatch this closes: the fingerprint was taken over (name, kind, version)
@@ -646,6 +652,10 @@ def test_the_registry_fingerprint_moves_with_every_declaration(changed):
     ({"score_bound": (1.0, 0.0)}, "score_bound"),
     ({"score_bound": (0.0, math.inf)}, "score_bound"),
     ({"score_bound": (0.0, 1.0), "score": None}, "no score"),
+    ({"classify": "not a function"}, "non-callable classify"),
+    ({"refine_visibility": 3}, "non-callable refine_visibility"),
+    ({"couples_arena": "nope"}, "non-callable couples_arena"),
+    ({"degradations": ()}, "non-callable degradations"),
 ])
 def test_a_malformed_declaration_is_refused(bad, match):
     with pytest.raises(ValueError, match=match):

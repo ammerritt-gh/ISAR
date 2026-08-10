@@ -15,7 +15,8 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 
-from isar.scene.model import CandidateRow, SceneObservation, observation_fingerprint
+from isar.scene.model import (CandidateRow, SampleKnowledge, SceneObservation,
+                              observation_fingerprint)
 from isar.schema.steering import CANONICAL_MASTER
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,9 @@ log = logging.getLogger(__name__)
 # adapter cannot read is re-delivered, never guessed at. A tolerant fallback here would put a
 # heuristic between the stored evidence and ln W(S), which is exactly what may not happen.
 REDELIVER = "re-deliver or rebuild this workspace before SCENE analysis"
+
+# The lattice-epoch cell fields, in the order ``SampleKnowledge.lattice`` records them.
+_CELL = ("a", "b", "c", "alpha", "beta", "gamma")
 
 
 def scene_observations(ws) -> list[SceneObservation]:
@@ -85,6 +89,58 @@ def scene_observations(ws) -> list[SceneObservation]:
         out.append(replace(obs, fingerprint=observation_fingerprint(obs)))
     out.sort(key=lambda o: o.scan_ref)
     return out
+
+
+def sample_knowledge(ws) -> SampleKnowledge:
+    """What ``ws``'s experiment card DECLARES about the sample, for the scene layer.
+
+    Two hand-authored policy keys and one machine-written state series, and the ownership split
+    is the card's (hard rule 1) — this function READS all three and writes none of them:
+
+    * ``policy.dispersion["zone_period"]`` — the reduced-zone fold period in rlu, the same key
+      the steering layer's branch-assignment geometry reads. Absent ⇒ no zone geometry, and the
+      ``zone_centre_approach`` factor is inert and says so;
+    * ``policy.sample["reflections"]`` — the scientist's declared Bragg positions along the scan
+      path, in the same reduced path coordinate as an observation's q. It is a SEPARATE
+      declaration from the period on purpose: a fold position is not a reflection (FCC (300) is
+      integer-indexed, sits at a fold, and is extinct), so nothing here derives one from the
+      other, from integer indices, or from a space group;
+    * ``state.lattice_epochs`` — the highest-versioned epoch, recorded for provenance so a
+      revision cannot be replayed against a different lattice interpretation without the
+      fingerprint saying so.
+
+    Malformed declarations raise rather than degrade (H1): a card that says something unreadable
+    about the sample is a card to fix, and treating it as silence would leave the ledger claiming
+    the capability was never asked for.
+    """
+    card = ws.card
+    policy, state = card.policy, card.state
+    dispersion = dict(getattr(policy, "dispersion", None) or {}) if policy else {}
+    declared_sample = dict(getattr(policy, "sample", None) or {}) if policy else {}
+
+    period = dispersion.get("zone_period")
+    reflections = declared_sample.get("reflections") or ()
+    try:
+        period = None if period is None else float(period)
+        reflections = tuple(sorted(float(r) for r in reflections))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"scene: card declares an unreadable sample geometry "
+            f"(dispersion.zone_period={dispersion.get('zone_period')!r}, "
+            f"sample.reflections={declared_sample.get('reflections')!r}): {exc}") from exc
+
+    epoch = max((e for e in (getattr(state, "lattice_epochs", None) or [])
+                 if isinstance(e, dict) and e.get("version") is not None),
+                key=lambda e: int(e["version"]), default=None)
+    lattice = None
+    cell = (epoch or {}).get("lattice")
+    if isinstance(cell, dict) and all(k in cell for k in _CELL):
+        # All six or none: a partial cell recorded as a short tuple would be a silently
+        # truncated lattice that still fingerprints as a declaration.
+        lattice = tuple(float(cell[k]) for k in _CELL)
+    return SampleKnowledge(zone_period=period, reflections=reflections,
+                           lattice_epoch=None if epoch is None else int(epoch["version"]),
+                           lattice=lattice)
 
 
 # ---------------------------------------------------------------------------

@@ -7,15 +7,17 @@ no workspace — so a failure here is a failure of the factor, not of a fit.
 """
 import math
 from dataclasses import replace
+from types import MappingProxyType
 
 import pytest
 
 from isar.scene import build as build_mod
-from isar.scene.build import build_scene
+from isar.scene.build import ClusterView, SceneAlternative, build_scene
 from isar.scene.factors import (CONNECT_BREAK_NATS, FACTORS, PRESENCE_MATCH_NATS,
-                                PRESENCE_MISS_NATS, factor_manifest, registry_fingerprint)
-from isar.scene.model import (Visibility, footprint_of, observation_fingerprint,
-                              visibility_of)
+                                PRESENCE_MISS_NATS, factor_manifest, neighbour_reports,
+                                registry_fingerprint)
+from isar.scene.model import (SampleKnowledge, Visibility, footprint_of,
+                              observation_fingerprint, visibility_of)
 
 from .test_build import cand, cluster_of, mk_obs
 
@@ -108,8 +110,9 @@ def test_visibility_blocked_under_the_elastic_line():
     assert visibility_of(0.5, fp, True, elastic_present=True) == Visibility.OBSERVED
 
 
-def test_structural_endpoint_is_reserved_for_the_zone_centre_factor():
-    """It exists in the vocabulary and nothing assigns it yet — the next task's job."""
+def test_structural_endpoint_is_never_assigned_without_declared_zone_knowledge():
+    """The state is not a free-floating excuse for an absence: with nothing declared about the
+    sample there is no physics that could terminate a track, so it can never appear."""
     assert Visibility.STRUCTURAL_ENDPOINT == "structural_endpoint"
     obs = [mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(5.0,))], q=q(1.0)),
            mk_obs("e:2:d", [cand("stokes+bg", -10.0, omegas=(5.1,))], q=q(1.1))]
@@ -161,20 +164,51 @@ def test_a_neighbour_that_never_looked_at_the_band_costs_nothing():
     assert by_label["stokes2+bg"] == PRESENCE_MATCH_NATS * 2 + PRESENCE_MISS_NATS
 
 
-def test_a_one_q_spurion_earns_no_cross_support_but_survives():
-    """No neighbour saw it, so it gets no reward and a miss — and it is still enumerated with a
-    real posterior. The scene weights hypotheses; it does not delete them."""
+def test_a_one_q_spurion_is_priced_against_the_empty_arena_that_searched_for_it():
+    """Carried item 15, and the physics it had inverted. The neighbour's surviving candidates are
+    background-only — it looked at 8 meV and found NOTHING AT ALL, which is the strongest absence
+    evidence there is. Component-pair coupling could not see it (an empty arena emits no
+    component), so the spurion used to sit in its own cluster completely unpriced, while the same
+    spurion beside a neighbour that happened to hold something else WAS priced.
+
+    Coverage coupling closes it: the arenas are one cluster, the miss and the break are charged,
+    and the spurion is still enumerated with a real posterior — the scene weights hypotheses, it
+    does not delete them."""
     obs = [mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(8.0,)),
                             cand("bg", -10.5, n_modes=0, omegas=())], q=q(1.0)),
            mk_obs("e:2:d", [cand("bg", -10.0, n_modes=0, omegas=())], q=q(1.1))]
-    # The bg-only neighbour emits no component, so nothing couples: the spurion arena is its own
-    # cluster and its local evidence stands untouched.
-    rev = build_scene(obs)
-    cl = cluster_of(rev, "e:1:d")
-    assert cl["scan_refs"] == ["e:1:d"]
+    cl = cluster_of(build_scene(obs), "e:1:d")
+    assert cl["scan_refs"] == ["e:1:d", "e:2:d"]
+    by_label = {a[0][1]: t for (a, _links), t in terms(cl, "presence").items()}
+    assert by_label["stokes+bg"] == PRESENCE_MISS_NATS
+    assert by_label["bg"] == 0.0
+    assert {a[0][1]: t for (a, _l), t in terms(cl, "connectivity").items()} == \
+        {"stokes+bg": CONNECT_BREAK_NATS, "bg": 0.0}
     posterior = {a["assignment"][0][1]: a["posterior"] for a in cl["alternatives"]}
     assert posterior["stokes+bg"] > 0.0 and posterior["bg"] > 0.0
-    assert all(t == 0.0 for t in terms(cl, "presence").values())
+
+
+def test_coverage_coupling_needs_coverage():
+    """No coverage is no claim, so it must draw no edge either: a cluster that grew on a band the
+    neighbour never looked at would put an arena into a joint normalization on the strength of a
+    gap. The neighbour's window stops at 3 meV; the mode sits at 8."""
+    obs = [mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(8.0,))], q=q(1.0)),
+           mk_obs("e:2:d", [cand("bg", -10.0, n_modes=0, omegas=())], q=q(1.1),
+                  window=(-3.0, 3.0))]
+    assert [c["scan_refs"] for c in build_scene(obs).payload["clusters"]] == \
+        [["e:1:d"], ["e:2:d"]]
+
+
+def test_coverage_coupling_does_not_resurrect_an_incomplete_arena():
+    """H7 is upstream of the graph and stays there. An arena whose candidate comparison never
+    finished is experiment-map-only; giving components a way to couple to a whole ARENA must not
+    become a way for an unscoreable one to re-enter the scene through its footprint."""
+    obs = [mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(8.0,))], q=q(1.0)),
+           mk_obs("e:2:d", [cand("bg", -10.0, n_modes=0, omegas=())], q=q(1.1),
+                  status="incomplete", fallback="evidence_budget_exhausted")]
+    rev = build_scene(obs)
+    assert [c["scan_refs"] for c in rev.payload["clusters"]] == [["e:1:d"]]
+    assert rev.payload["non_scoring"] == [{"scan_ref": "e:2:d", "reason": "evidence_incomplete"}]
 
 
 # ----------------------------------------------------------------------------
@@ -340,6 +374,184 @@ def test_well_separated_branches_are_not_treated_as_ambiguous():
 
 
 # ----------------------------------------------------------------------------
+# Part 5 — declared sample knowledge: the zone-centre and localization factors
+# ----------------------------------------------------------------------------
+def _endpoint_scene(centre_h=1.0, mode_h=1.1, omega=1.5, neighbour="elastic+bg"):
+    """A mode at ``mode_h`` whose track runs into an elastic-bearing arena at ``centre_h``.
+
+    With mk_obs's gauss_fwhm of 1.0 the mode at 1.5 meV is OUTSIDE the elastic width, so the
+    baseline reading is a genuine searched-and-empty absence — the endpoint exemption has to be
+    earned by the declaration, not handed over by ``blocked_unresolved``.
+    """
+    return [mk_obs("e:1:d", [cand(neighbour, -10.0, n_modes=0, omegas=())], q=q(centre_h)),
+            mk_obs("e:2:d", [cand("stokes+bg", -10.0, omegas=(omega,))], q=q(mode_h))]
+
+
+def _states(rev, cluster_id="e:1:d"):
+    return {r["visibility"] for r in cluster_of(rev, cluster_id)["visibility"]}
+
+
+def test_a_declared_zone_centre_terminates_the_track_instead_of_penalizing_it():
+    """The whole point of the state. Without the declaration the scene says "you looked and saw
+    nothing, so this mode is less likely"; with it the scene says "a gapless branch reaches ω→0
+    here and is swallowed by the elastic response — nothing is missing".
+
+    The no-penalty half is EMERGENT, not special-cased: presence and connectivity key on
+    ``searched_no_signal`` alone, so reinterpreting the state is all it takes."""
+    obs = _endpoint_scene()
+    blind = build_scene(obs)
+    assert _states(blind) == {Visibility.SEARCHED_NO_SIGNAL}
+    cl = cluster_of(blind, "e:1:d")
+    assert list(terms(cl, "presence").values()) == [PRESENCE_MISS_NATS]
+    assert list(terms(cl, "connectivity").values()) == [CONNECT_BREAK_NATS]
+
+    knowing = build_scene(obs, sample=SampleKnowledge(zone_period=1.0))
+    assert _states(knowing) == {Visibility.STRUCTURAL_ENDPOINT}
+    cl = cluster_of(knowing, "e:1:d")
+    assert list(terms(cl, "presence").values()) == [0.0]
+    assert list(terms(cl, "connectivity").values()) == [0.0]
+    assert cl["alternatives"][0]["reasons"] == {}
+
+
+def test_the_zone_centre_exemption_is_zone_local_and_not_a_blanket_amnesty():
+    """An absence one fold away from a centre is still an absence. If proximity to *any* q could
+    buy the exemption, the factor would quietly stop presence from ever pricing anything."""
+    obs = _endpoint_scene(centre_h=1.4, mode_h=1.5)
+    rev = build_scene(obs, sample=SampleKnowledge(zone_period=1.0))
+    assert _states(rev) == {Visibility.SEARCHED_NO_SIGNAL}
+
+
+def test_the_endpoint_claim_needs_an_elastic_response_to_hide_in():
+    """A gapless branch reaching zero at a bare zone centre would have been SEEN there. Without a
+    chosen elastic component the neighbour's silence is still evidence."""
+    obs = _endpoint_scene(neighbour="bg")
+    # bg-only neighbour, so the arenas are one cluster only via coverage coupling (item 15).
+    rev = build_scene(obs, sample=SampleKnowledge(zone_period=1.0))
+    assert cluster_of(rev, "e:1:d")["scan_refs"] == ["e:1:d", "e:2:d"]
+    assert _states(rev) == {Visibility.SEARCHED_NO_SIGNAL}
+
+
+def test_a_mode_too_high_to_have_descended_to_zero_is_not_an_endpoint():
+    """The energy gate. A 3 meV mode at the arena next to the centre is three resolution widths
+    up: an acoustic branch's endpoint does not explain it away, and claiming otherwise would
+    exempt every unexplained absence that happened to sit beside a Bragg peak."""
+    rev = build_scene(_endpoint_scene(omega=3.0), sample=SampleKnowledge(zone_period=1.0))
+    assert _states(rev) == {Visibility.SEARCHED_NO_SIGNAL}
+
+
+def test_an_observed_mode_can_never_be_refined_away():
+    """The constraint the builder enforces on every refiner, not on the zone factor's honour: a
+    hook that could rewrite ``observed`` could argue a real detection out of existence, and one
+    that could rewrite ``censored`` could turn a coverage gap into a measurement."""
+    liar = replace(FACTORS["zone_centre_approach"],
+                   refine_visibility=lambda report, view: Visibility.OBSERVED)
+    obs = _endpoint_scene()
+    with pytest.raises(ValueError, match="manufacture a measurement"):
+        build_scene(obs, factors=[FACTORS["presence"], liar],
+                    sample=SampleKnowledge(zone_period=1.0))
+    # ... and a refiner is not even consulted where the mode WAS seen: two matching modes leave
+    # nothing for it to reinterpret.
+    seen = [mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(5.0,))], q=q(1.0)),
+            mk_obs("e:2:d", [cand("stokes+bg", -10.0, omegas=(5.1,))], q=q(1.1))]
+    rev = build_scene(seen, factors=[FACTORS["presence"], liar],
+                      sample=SampleKnowledge(zone_period=1.0))
+    assert _states(rev) == {Visibility.OBSERVED}
+
+
+def _elastic_at(h, scan_ref="e:1:d"):
+    return mk_obs(scan_ref, [cand("elastic+bg", -10.0, n_modes=0, omegas=())], q=q(h))
+
+
+def _classification(rev, cluster_id="e:1:d"):
+    return cluster_of(rev, cluster_id)["classification"]["reciprocal_lattice_localization"]
+
+
+def test_a_zone_centre_is_not_a_declared_reflection():
+    """The FCC (300) pin, and the reason zone geometry and the reflection list are two
+    declarations rather than one. (300) has integer indices, sits exactly on a fold of the
+    reduced-zone period, and is EXTINCT — so an elastic feature at a periodic position is not
+    thereby Bragg. Any shortcut that derived reflections from the period, from integer indices,
+    or from a space group would classify this one wrong."""
+    rev = build_scene([_elastic_at(3.0)],
+                      sample=SampleKnowledge(zone_period=1.0, reflections=(2.0,)))
+    assert _classification(rev) == {"e:1:d#elastic+bg#elastic": "off_lattice"}
+    # The same position with the reflection actually declared is compatible with it.
+    rev = build_scene([_elastic_at(3.0)],
+                      sample=SampleKnowledge(zone_period=1.0, reflections=(2.0, 3.0)))
+    assert _classification(rev) == {"e:1:d#elastic+bg#elastic": "bragg_compatible"}
+
+
+def test_modes_are_not_lattice_classified():
+    """A phonon at a reflection's q is a phonon. Classifying it as Bragg-compatible would put a
+    lattice identity on an inelastic feature."""
+    obs = [mk_obs("e:1:d", [cand("elastic+stokes+bg", -10.0, omegas=(5.0,))], q=q(2.0))]
+    rev = build_scene(obs, sample=SampleKnowledge(reflections=(2.0,)))
+    assert _classification(rev) == {"e:1:d#elastic+stokes+bg#elastic": "bragg_compatible"}
+
+
+def test_undeclared_knowledge_is_inert_and_says_so():
+    """Absence of a declaration must never raise, never move a number, and never be silent. An
+    unclassified component is a question that was never asked, not an off-lattice answer."""
+    rev = build_scene([_elastic_at(2.0)])
+    assert rev.payload["sample_knowledge"] == {
+        "zone_period": None, "reflections": [], "lattice_epoch": None, "lattice": None,
+        "degradations": ["no_declared_reflections", "no_declared_zone_period"]}
+    assert _classification(rev) == {"e:1:d#elastic+bg#elastic": "unclassified"}
+
+    declared = build_scene([_elastic_at(2.0)],
+                           sample=SampleKnowledge(zone_period=1.0, reflections=(2.0,),
+                                                  lattice_epoch=3,
+                                                  lattice=(4.05, 4.05, 4.05, 90.0, 90.0, 90.0)))
+    assert declared.payload["sample_knowledge"]["degradations"] == []
+    assert declared.payload["sample_knowledge"]["lattice_epoch"] == 3
+    # Declaring knowledge is a different scene even where it changes no number here: a revision
+    # scored blind to the lattice must never look replayable against one that was not.
+    assert declared.digest != rev.digest
+
+
+def test_the_classify_only_factors_cost_the_builder_no_pruning():
+    """H12(c) in the other direction. ``_score_span`` looks at SCORING factors, so a factor with
+    no score legally declares no bound — and adding it must leave margin pruning exactly as it
+    was, or a knowledge factor would silently disable the pruner."""
+    obs = [mk_obs("e:1:d", [cand("A", -10.0, omegas=(5.0,)),
+                            cand("B", -400.0, omegas=(5.0,))], q=q(1.0))]
+    bounded = replace(FACTORS["presence"], score_bound=(-5.0, 5.0))
+    without = build_scene(obs, factors=[bounded])
+    with_knowledge = build_scene(obs, factors=[bounded, FACTORS["zone_centre_approach"],
+                                               FACTORS["reciprocal_lattice_localization"]])
+    assert without.payload["score_span_nats"] == with_knowledge.payload["score_span_nats"] == 10.0
+    assert [e["label"] for e in cluster_of(with_knowledge, "e:1:d")["pruning"]["e:1:d"]] == ["B"]
+    assert cluster_of(without, "e:1:d")["pruning"] == cluster_of(with_knowledge, "e:1:d")["pruning"]
+
+
+@pytest.mark.parametrize("bad,match", [
+    ({"zone_period": 0.0}, "zone_period"),
+    ({"zone_period": -1.0}, "zone_period"),
+    ({"zone_period": math.inf}, "zone_period"),
+    ({"reflections": (math.nan,)}, "reflections"),
+])
+def test_a_malformed_declaration_fails_loudly(bad, match):
+    """H1: no tolerant fallback. A card that says something unreadable about the sample is a card
+    to fix — degrading it to silence would leave the ledger claiming nothing was ever declared."""
+    with pytest.raises(ValueError, match=match):
+        SampleKnowledge(**bad)
+
+
+def test_neighbour_reports_are_computed_once_per_alternative():
+    """Carried item 16. Three consumers walked the same arenas three times over identical inputs;
+    the memo is scoped to the cluster view, so it dies with the build rather than handing one
+    revision's reports to the next."""
+    view = ClusterView(cluster_id="c", scan_refs=("e:1:d",),
+                       components=MappingProxyType({"e:1:d": ()}),
+                       footprints=MappingProxyType({"e:1:d": footprint_of(
+                           mk_obs("e:1:d", [cand("A", -1.0)]))}))
+    alt = SceneAlternative(cluster_id="c", assignment=(("e:1:d", "A"),), components=())
+    first = neighbour_reports(alt, view)
+    assert neighbour_reports(alt, view) is first
+    assert list(view.reports_cache) == [alt]
+
+
+# ----------------------------------------------------------------------------
 # Determinism and the registry declaration
 # ----------------------------------------------------------------------------
 def test_determinism_with_the_live_registry():
@@ -349,14 +561,23 @@ def test_determinism_with_the_live_registry():
     assert build_scene(obs).canonical == build_scene(obs).canonical
 
 
-def test_the_live_registry_is_the_two_physics_factors():
-    assert sorted(FACTORS) == ["connectivity", "presence"]
+def test_the_live_registry_is_the_four_physics_factors():
+    assert sorted(FACTORS) == ["connectivity", "presence", "reciprocal_lattice_localization",
+                               "zone_centre_approach"]
     manifest = {m["name"]: m for m in factor_manifest(FACTORS)}
     assert manifest["presence"]["score_bound"] is None
     assert manifest["connectivity"]["score_bound"] is None
     assert dict(manifest["presence"]["config"])["presence_miss_nats"] == PRESENCE_MISS_NATS
     assert dict(manifest["connectivity"]["config"])["connect_break_nats"] == CONNECT_BREAK_NATS
     assert manifest["connectivity"]["roles"] == ["couples", "score", "propose"]
+    assert manifest["presence"]["roles"] == ["couples", "score", "couples_arena"]
+    # The two knowledge factors move no belief, so neither declares a score — and the manifest
+    # is where a reader can see that rather than having to trust it.
+    assert manifest["zone_centre_approach"]["roles"] == ["refine_visibility", "degradations"]
+    assert manifest["reciprocal_lattice_localization"]["roles"] == ["classify", "degradations"]
+    assert manifest["zone_centre_approach"]["consumes"] == [
+        "q", "omega", "footprint", "sample.zone_period"]
+    assert manifest["reciprocal_lattice_localization"]["consumes"] == ["q", "sample.reflections"]
 
 
 def test_retuning_a_nats_constant_moves_the_registry_fingerprint():

@@ -6,8 +6,9 @@ import pytest
 
 from isar.schema.statistics import FIT_SELECTION_SCHEMA, authority_scopes
 from isar.workspace_api import Workspace
-from isar.workspace_api.scene import scene_observations
-from synthetic_ws import FULL_COLUMNS, stamp_ws
+from isar.scene.model import SampleKnowledge
+from isar.workspace_api.scene import sample_knowledge, scene_observations
+from synthetic_ws import _POLICY_TOML, FULL_COLUMNS, stamp_ws
 
 # The adapter reads persisted columns the shared stamper's base header predates.
 COLUMNS = FULL_COLUMNS + ["energy_lo", "energy_hi", "evidence_sink", "effective_exposure",
@@ -276,3 +277,53 @@ def test_rows_that_never_had_a_fit_are_silent(tmp_path, caplog):
     with caplog.at_level(logging.DEBUG, logger="isar.workspace_api.scene"):
         assert scene_observations(_ws(tmp_path, [held])) == []
     assert [r.levelname for r in caplog.records] == ["DEBUG"]
+
+
+# ---------------------------------------------------------------------------
+# Declared sample knowledge
+# ---------------------------------------------------------------------------
+_SAMPLE_POLICY = _POLICY_TOML + """
+[dispersion]
+zone_period = 1.0
+
+[sample]
+name = "Al"
+reflections = [2.0, 3.0]
+"""
+
+
+def _knowledge_ws(root, policy_toml=_POLICY_TOML, state=None):
+    root.mkdir(parents=True, exist_ok=True)
+    stamp_ws(root, policy_toml=policy_toml, state=state or {}, rows=[], columns=COLUMNS)
+    return Workspace.open(root)
+
+
+def test_sample_knowledge_reads_the_two_declarations_and_the_lattice_epoch(tmp_path):
+    """Both keys are HAND-AUTHORED policy and the epoch series is machine-written state; the
+    adapter reads all three and writes none of them (card hard rule 1)."""
+    epochs = [{"version": 1, "lattice": {"a": 4.0, "b": 4.0, "c": 4.0,
+                                         "alpha": 90.0, "beta": 90.0, "gamma": 90.0}},
+              {"version": 2, "lattice": {"a": 4.05, "b": 4.05, "c": 4.05,
+                                         "alpha": 90.0, "beta": 90.0, "gamma": 90.0}}]
+    ws = _knowledge_ws(tmp_path, _SAMPLE_POLICY, {"lattice_epochs": epochs})
+    know = sample_knowledge(ws)
+    assert know.zone_period == 1.0
+    assert know.reflections == (2.0, 3.0)
+    # The LATEST epoch, not the first written: a scene stamped against a superseded lattice
+    # would claim a provenance the workspace no longer holds.
+    assert know.lattice_epoch == 2
+    assert know.lattice == (4.05, 4.05, 4.05, 90.0, 90.0, 90.0)
+
+
+def test_a_card_that_declares_nothing_yields_empty_knowledge(tmp_path):
+    """No new REQUIRED card key: an ordinary card is a legal scene input, and the builder records
+    the resulting inertness rather than the adapter guessing a period or a reflection."""
+    assert sample_knowledge(_knowledge_ws(tmp_path)) == SampleKnowledge()
+
+
+def test_an_unreadable_sample_declaration_is_refused(tmp_path):
+    """H1: no tolerant fallback between the card and ln W(S). Silently dropping a malformed
+    reflection list would make the ledger claim nothing was ever declared."""
+    bad = _POLICY_TOML + '\n[sample]\nreflections = ["not-a-number"]\n'
+    with pytest.raises(ValueError, match="unreadable sample geometry"):
+        sample_knowledge(_knowledge_ws(tmp_path, bad))

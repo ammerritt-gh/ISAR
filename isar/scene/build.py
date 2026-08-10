@@ -41,16 +41,16 @@ import heapq
 import itertools
 import json
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 
 from isar.schema.steering import CANONICAL_MASTER, EVIDENCE_SINKS
 
 from .factors import (FACTORS, SceneFactor, factor_manifest, neighbour_reports,
                       registry_fingerprint, validate_factor)
-from .model import (CandidateRow, ComponentObservation, Footprint, SceneObservation,
-                    Visibility, canonical_bytes, digest_bytes, footprint_of, is_mode, link_tol,
-                    q_adjacent)
+from .model import (CandidateRow, ComponentObservation, Footprint, SampleKnowledge,
+                    SceneObservation, Visibility, canonical_bytes, digest_bytes, footprint_of,
+                    is_mode, link_tol, q_adjacent)
 
 SCENE_SCHEMA = "isar.scene-revision/1"
 
@@ -130,12 +130,27 @@ class ClusterView:
     behind them: a factor that wrote into ``view.components`` would mutate the state every later
     factor and every later alternative of the same cluster then scores against, making the
     revision depend on factor order and on nothing recorded anywhere.
+
+    ``sample`` is the DECLARED sample knowledge (never derived), threaded through the view rather
+    than closed over by the factors: the factor singletons stay frozen and their registry
+    fingerprints stay declaration-only, so two revisions of the same registry under different
+    declarations are told apart by the revision's ``sample_knowledge`` block, not by a factor set
+    that quietly differs.
+
+    ``refiners`` are the registry's ``refine_visibility`` hooks; ``reports_cache`` memoizes
+    :func:`isar.scene.factors.neighbour_reports` for the life of this view (one cluster of one
+    build) so its three consumers walk the arenas once between them. It is scoped to the view on
+    purpose — a module-level cache would outlive the build and hand one revision's reports to the
+    next.
     """
 
     cluster_id: str
     scan_refs: tuple[str, ...]
     components: MappingProxyType   # scan_ref -> tuple[ComponentObservation, ...]
     footprints: MappingProxyType   # scan_ref -> Footprint
+    sample: SampleKnowledge = SampleKnowledge()
+    refiners: tuple = ()
+    reports_cache: dict = field(default_factory=dict, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,12 +185,16 @@ class SceneRevision:
 # Build
 # ----------------------------------------------------------------------------
 def build_scene(observations, *, factors=None, catalogue_version: str = "",
+                sample: SampleKnowledge | None = None,
                 margin_nats: float | None = None,
                 alt_cap: int | None = None) -> SceneRevision:
     """Score ``observations`` into a ``SceneRevision``. Pure, deterministic, replayable.
 
     ``factors`` defaults to the live ``FACTORS`` registry; ``catalogue_version`` is a
-    caller-supplied stamp, because the scene never imports the catalogue.
+    caller-supplied stamp, because the scene never imports the catalogue. ``sample`` is the
+    scientist's DECLARED sample knowledge (:func:`isar.workspace_api.scene.sample_knowledge`
+    lifts it off the card); ``None`` means nothing was declared, which is a legal scene in which
+    the knowledge-consuming factors are inert and say so in ``sample_knowledge.degradations``.
 
     Payload alignment contract: a cluster's ``score_ablation[name]`` is a POSITIONAL list,
     index-aligned with that cluster's ``alternatives`` — ``score_ablation[name][i]`` is the
@@ -191,6 +210,7 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
     if cap < 1:
         raise ValueError(f"alt_cap must be >= 1, got {cap}")
     factor_list = _factor_list(FACTORS if factors is None else factors)
+    declared = SampleKnowledge() if sample is None else sample
 
     obs = _validated(observations)
     footprints = {o.scan_ref: footprint_of(o) for o in obs}
@@ -207,11 +227,12 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
                                              _survivor_labels(pruning[o.scan_ref]))
                   for o in scoring}
 
-    clusters = _clusters(scoring, components, factor_list)
+    clusters = _clusters(scoring, components, footprints, factor_list)
 
     by_ref = {o.scan_ref: o for o in scoring}
     cluster_payloads = [
-        _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, cap, span)
+        _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, cap, span,
+                       declared)
         for refs in clusters]
 
     payload = {
@@ -235,6 +256,12 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
         # Constraint-transport provenance: declared and dormant (the transport channel lives
         # in local evidence, per the PR-a design), so the field exists before it is filled.
         "transport": None,
+        # What the scientist DECLARED about the sample, and which declared-input capabilities
+        # were consequently inert. It is part of the digested payload, so declaring knowledge
+        # moves the revision digest even where it changes no number — a scene scored against a
+        # zone period is not the same scene as one scored blind to it.
+        "sample_knowledge": {**declared.to_dict(),
+                             "degradations": _degradations(factor_list, declared)},
         "observations": [{"scan_ref": o.scan_ref, "fingerprint": o.fingerprint,
                           "candidates": [c.to_dict() for c in o.candidates]} for o in obs],
         "non_scoring": non_scoring,
@@ -294,6 +321,18 @@ def _factor_list(factors) -> tuple:
 def _declared(factor_list) -> tuple:
     """What SCORED the scene: the caller's factors plus the builder's own declared prior."""
     return tuple(sorted([*factor_list, LINKAGE_PRIOR], key=lambda f: f.name))
+
+
+def _degradations(factor_list, declared: SampleKnowledge) -> list[str]:
+    """Every factor's reasons for being inert under ``declared``, sorted and deduplicated.
+
+    The honesty this buys: a capability with nothing declared to work on must neither raise nor
+    quietly change what the scene believes, so the only trace it can leave is a ledger entry.
+    Without one, a revision built against a card that declares no zone period is
+    indistinguishable from one where the zone factor ran and found no endpoints.
+    """
+    return sorted({reason for f in factor_list if f.degradations is not None
+                   for reason in f.degradations(declared)})
 
 
 def _score_span(factor_list) -> float | None:
@@ -437,8 +476,17 @@ def _component_slots(c: CandidateRow):
 # ----------------------------------------------------------------------------
 # 4. Ambiguity graph → clusters
 # ----------------------------------------------------------------------------
-def _clusters(scoring, components, factor_list) -> list[tuple[str, ...]]:
+def _clusters(scoring, components, footprints, factor_list) -> list[tuple[str, ...]]:
     """Connected components of the ambiguity graph, recomputed from scratch every call.
+
+    Two kinds of edge, and the second exists because the first alone got the physics backwards.
+    ``couples`` needs a component on BOTH sides, so an arena whose surviving candidates are all
+    background-only could never join a cluster — and a track disappearing into a searched,
+    covered, entirely empty neighbour went unpriced, while the same track disappearing into a
+    neighbour that happened to hold something else was priced. ``couples_arena`` closes that:
+    a component may couple to a whole neighbouring ARENA through its footprint. Only SCORING
+    arenas are considered on either side, so an H7-incomplete or evidence-less arena stays
+    experiment-map-only — coverage never resurrects one.
 
     With no coupling factor every arena is its own cluster — the correct degenerate case: the
     scene then reduces to independent per-arena posteriors, which is exactly what independent
@@ -454,7 +502,8 @@ def _clusters(scoring, components, factor_list) -> list[tuple[str, ...]]:
         return r
 
     couplers = [f.couples for f in factor_list if f.couples is not None]
-    if couplers:
+    arena_couplers = [f.couples_arena for f in factor_list if f.couples_arena is not None]
+    if couplers or arena_couplers:
         # ponytail: O(arenas² × components²) all-pairs probe. Fine at campaign scale (tens of
         # arenas); a q-bucketed index is the upgrade path if a scene ever holds thousands.
         for a, b in itertools.combinations(refs, 2):
@@ -463,6 +512,11 @@ def _clusters(scoring, components, factor_list) -> list[tuple[str, ...]]:
             if any(couples(ca, cb)
                    for couples in couplers
                    for ca in components[a] for cb in components[b]):
+                parent[find(a)] = find(b)
+            elif any(couples(c, footprints[other])
+                     for couples in arena_couplers
+                     for this, other in ((a, b), (b, a))
+                     for c in components[this]):
                 parent[find(a)] = find(b)
 
     groups: dict[str, list[str]] = {}
@@ -705,7 +759,7 @@ def _validated_links(links, alt: SceneAlternative):
 # 7-9. Scoring, ledger, marginals
 # ----------------------------------------------------------------------------
 def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, cap,
-                   span) -> dict:
+                   span, declared: SampleKnowledge) -> dict:
     """One cluster's ledger. Alternatives = candidate assignments × their linkage readings.
 
     The cap and its bound are about ASSIGNMENTS (``n_possible``, ``n_assignments``); linkage
@@ -718,7 +772,10 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
 
     view = ClusterView(cluster_id=cluster_id, scan_refs=refs,
                        components=MappingProxyType({r: components[r] for r in refs}),
-                       footprints=MappingProxyType({r: footprints[r] for r in refs}))
+                       footprints=MappingProxyType({r: footprints[r] for r in refs}),
+                       sample=declared,
+                       refiners=tuple(f.refine_visibility for f in factor_list
+                                      if f.refine_visibility is not None))
     lnz_of = {(r, c.label): lnz for r in refs for c, lnz in pruning[r]["survivors"]}
     rows_of = {(r, c.label): c for r in refs for c in by_ref[r].candidates}
 
@@ -783,6 +840,11 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
         # not know the key is unaffected.
         "visibility": (list(neighbour_reports(_leader(entries, refs, components, cluster_id), view))
                        if entries else []),
+        # Belief-neutral per-component labels from the ``classify`` hooks, by factor name. A
+        # classification says what a component IS relative to declared knowledge; it enters no
+        # total, so it can never be mistaken for a term that moved a posterior.
+        "classification": {f.name: f.classify(view)
+                           for f in factor_list if f.classify is not None},
         "score_ablation": score_ablation,
         "marginals": _marginals(refs, entries, rows_of, truncated, unbounded),
     }
