@@ -107,6 +107,32 @@ class CandidateRow:
 
 
 @dataclass(frozen=True, slots=True)
+class ComponentObservation:
+    """The one surface a scene factor may read about a component. An allowlist, not a view.
+
+    Deliberately absent, and the reason each absence is structural rather than stylistic:
+    counts, θ vectors and covariances (a factor able to see them could re-fit the local
+    data), ``log_evidence`` (a factor able to see it could re-price evidence already summed
+    once in ``base``), and the local ``posterior_probability`` (multiplying normalized
+    per-scan posteriors double-counts the local priors — SCENE_DESIGN §2b).
+
+    ``component_id`` is ``"<scan_ref>#<candidate_label>#<mode_index>"`` for a mode, and
+    reserves ``"<scan_ref>#<candidate_label>#elastic"`` / ``"#qe"`` for the non-mode
+    components a later slice will emit. ``omega`` is the derived ω₀ of this mode on the same
+    scale as ``CandidateRow.omegas``; ``None`` is an unplaceable mode, which stays a
+    component (it exists) while contributing no position a factor could couple on.
+    """
+
+    scan_ref: str
+    component_id: str
+    candidate_label: str
+    q: tuple[float, float, float] | None
+    omega: float | None
+    footprint: "Footprint"
+    visibility: Visibility
+
+
+@dataclass(frozen=True, slots=True)
 class SceneObservation:
     """One observation arena: what was measured, and what the local fits made of it.
 
