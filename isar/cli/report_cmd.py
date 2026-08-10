@@ -32,7 +32,7 @@ def run(args) -> int:
             # Imported inside the try so an ImportError is reported exactly like every other
             # scene failure, rather than escaping as a traceback from one lane of the envelope.
             from isar.session import scene_hook
-            result = scene_hook.build_and_store(ws.root)
+            result = scene_hook.build_and_store(ws.root, source="report_cli")
         except Exception as exc:  # noqa: BLE001 — reported to the operator, not swallowed
             # 3, not 2: 2 already means "no workspace here", and a workspace that exists but
             # cannot be scored is a different thing for a script to branch on.

@@ -1880,23 +1880,40 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   *Linkage truncation is unresolved, not narrowed.* A capped assignment records the dropped PRIOR
   mass over the PRE-cap enumerated count and marks the cluster `truncation_unbounded` — linkage
   variants share a base `Σ lnZ`, so no base ordering bounds the dropped readings' factor terms.
-  **(b) The scene store: content-addressed blobs, and lineage in the pointer only.**
-  `<workspace>/report/scene/` holds one `<digest>.json` per revision plus a `current.json` pointer
-  (`isar.scene-pointer/1`) carrying `digest`, `parent` and `written_at`. **Lineage and time live in
-  the pointer, never in the blob**: a revision must record what it succeeded AND an unchanged
-  workspace must rebuild to the SAME digest, and those are compatible only if `parent`/`written_at`
-  sit outside the digested payload — inside, every rerun mints a blob and "did anything actually
-  change?" stops being answerable by comparing hashes. Blob first, pointer second, and the pointer
+  **(b) The scene store: content-addressed blobs, and lineage in an append-only log.**
+  `<workspace>/report/scene/` holds one `<digest>.json` per revision, a `current.json` pointer
+  (`isar.scene-pointer/1`) carrying `digest`, `parent` and `written_at`, an append-only
+  `history.jsonl` (`digest`, `parent`, `written_at`, `source`), and a `last_attempt.json`
+  diagnostic. **Lineage and time live outside the blob**: a revision must record what it succeeded
+  AND an unchanged workspace must rebuild to the SAME digest, and those are compatible only if
+  `parent`/`written_at` sit outside the digested payload — inside, every rerun mints a blob and
+  "did anything actually change?" stops being answerable by comparing hashes. The DURABLE lineage
+  is the log, not the pointer: `current.json` carries the latest link only, so A→B→C leaves nothing
+  on disk that remembers B→A, and one appended line per flip keeps every link (nothing is ever
+  deleted). An unchanged rebuild appends nothing, because no flip happened.
+  Blob first, pointer second, and the pointer
   is convenience rather than authority: a crash between them leaves a valid old pointer beside an
-  orphan blob. A LOST BLOB SELF-HEALS on the next build of the same content, because the blob is
-  ensured before the unchanged test — otherwise a workspace whose blob had been lost would
-  short-circuit on the pointer and report a cheerful all-clear while every read went on raising, so
-  `unchanged=True` now means the content really is on disk. Corruption raises on read, and on
-  write when the
-  existing pointer is unreadable — on read that is a pointer naming a missing blob, unparseable
-  JSON, or a payload that does not re-digest to its own name; absence is quiet, because a
-  workspace with no scene is ordinary. Nothing here ever
-  deletes a blob. Strict JSON throughout: `canonical_bytes` refuses non-finite values
+  orphan blob. **Existence is not integrity**: an existing blob is compared BYTE FOR BYTE with the
+  revision and rewritten when it differs, before the unchanged test and before any pointer flip —
+  otherwise a workspace whose blob had been lost or silently corrupted would short-circuit on the
+  pointer and report a cheerful all-clear while every read went on raising, and a corrupt orphan
+  would have the pointer flipped onto it. `unchanged=True` therefore means the content really is on
+  disk. Corruption raises on read, and on
+  write when the existing pointer is unreadable — on read that is a pointer naming a missing blob,
+  unparseable JSON, a payload that does not re-digest to its own name, or a pointer that breaks its
+  own contract: the `schema` must be exactly `isar.scene-pointer/1` (a foreign or future one
+  refuses by name rather than being read as a `/1`), `digest` and any `parent` must be sha256
+  hexdigests (which is also what stops a pointer naming a path instead of a blob), and `written_at`
+  must be a string — all validated before any field is used, on the read and the write path alike.
+  Absence is quiet, because a workspace with no scene is ordinary. Nothing here ever
+  deletes a blob.
+  **Two writers, no lock.** `isar report --scene` can run against a live campaign, so single-writer
+  is false and concurrency is OPTIMISTIC: each writer captures the pointer digest when it snapshots
+  its inputs and passes it back as `expected_parent`; the flip refuses with `ConcurrentSceneWrite`
+  (a `ValueError` subclass, so the driver hook's skip and the CLI's exit 3 apply unchanged) when
+  the pointer moved meanwhile, and the losing writer's blob is still written and addressable. A
+  lock file is rejected: a stale lock left by a crash would block every subsequent campaign, which
+  is worse than the race it prevents. Strict JSON throughout: `canonical_bytes` refuses non-finite values
   (`allow_nan=False`), so a revision that digests cleanly can always be re-read — a non-finite lnZ
   therefore persists as `null`, matching the builder's own treatment of it as unsummable, and a
   discarded-mass bound with no finite spelling records `null` plus `discarded_mass_unbounded`. That
@@ -1928,7 +1945,12 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   LAST, after `results.csv` and `card.state` are on disk, inside its own
   `timer.stage("scene_observe")` — a cost `isar profile` cannot see is a cost nobody can budget. It
   NEVER raises: a scene that cannot be built is a missing explanation, never a failed delivery, and
-  the only trace is a summary context line plus the log. Adapter refusals are logged as one WARNING
+  the traces are a summary context line, the log, and `report/scene/last_attempt.json` — the hook
+  records every attempt, `{"status": "ok", "digest"}` or `{"status": "failed", "reason"}`, because
+  a hook that cannot fail a delivery otherwise leaves a scene that STOPPED building looking exactly
+  like one with nothing to rebuild (the pointer simply stays put). The sidecar is a diagnostic and
+  never authority: it decides nothing, its own write failure is logged and dropped, and an
+  unreadable one reads as absent rather than refusing to show a perfectly good revision. Adapter refusals are logged as one WARNING
   line — a workspace that refuses once refuses on EVERY delivery, and a traceback per scan would
   bury the log for a condition whose message already says to re-deliver — while an unexpected
   failure logs the full traceback. Measured cost per delivery: **7.4 s at 50 arenas, 22.7 s at

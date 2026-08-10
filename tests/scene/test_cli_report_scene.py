@@ -64,4 +64,8 @@ def test_a_workspace_the_adapter_refuses_fails_visibly(ws, capsys):
     assert report_cmd.run(_args(ws, scene=True)) == 3
     captured = capsys.readouterr()
     assert "re-deliver" in captured.err
-    assert not (ws / "report" / "scene").exists()
+    # No revision was published — and the refusal is recorded where a later reader will see it.
+    assert list((ws / "report" / "scene").glob("*.json")) == \
+        [ws / "report" / "scene" / "last_attempt.json"]
+    attempt = store.read_last_attempt(ws / "report")
+    assert attempt["status"] == "failed" and "re-deliver" in attempt["reason"]

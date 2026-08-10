@@ -306,8 +306,10 @@ exact rows they consumed, with completeness status and conditioning provenance).
 Per scene update (H14(b)), under `<workspace>/report/scene/`:
 
 ```
-<digest>.json    the canonical bytes of one revision — exactly what the digest covers
-current.json     isar.scene-pointer/1: {schema, digest, parent, written_at}
+<digest>.json      the canonical bytes of one revision — exactly what the digest covers
+current.json       isar.scene-pointer/1: {schema, digest, parent, written_at}
+history.jsonl      one append-only line per pointer flip: {digest, parent, written_at, source}
+last_attempt.json  what the last build-and-store attempt did, including that it failed
 ```
 
 The revision payload (`isar.scene-revision/1`) carries the factor manifest and its
@@ -318,18 +320,34 @@ the marginals, the visibility reports of the leading alternative, the `classific
 (`{factor: {component: state}}`), and the score-term ablation ledger (`score_ablation`, positional
 per `score_ablation_alignment`, H12(f)).
 
-**Lineage and time live in the pointer, never in the blob.** A revision records what it succeeded,
-and an unchanged workspace must rebuild to the same digest; both are only possible if `parent` and
-`written_at` sit outside the digested payload. The blob is written first and the pointer second, so
-a crash between them leaves a valid old pointer and an orphan blob; the pointer is convenience,
-never authority, and no blob is ever deleted. A lost blob SELF-HEALS on the next build of the same
-content, because the blob is ensured before the unchanged test — so `unchanged` means the content
-really is on disk, not merely that the pointer names it. Absence is quiet (a workspace with no
-scene is ordinary); corruption raises on read, and on write when the existing pointer is
-unreadable — on read that is a pointer naming a missing blob, unparseable JSON, or a payload that
-does not re-digest to its own name. Encoding is strict JSON
-(sorted keys, `allow_nan=False`): a non-finite lnZ persists as `null`, as the builder already
-treats it, and a bound with no finite spelling records `null` plus `discarded_mass_unbounded`.
+**Lineage and time live outside the blob.** A revision records what it succeeded, and an unchanged
+workspace must rebuild to the same digest; both are only possible if `parent` and `written_at` sit
+outside the digested payload. The DURABLE lineage is `history.jsonl`, one appended line per flip:
+`current.json` carries the latest link only, so A→B→C would otherwise leave nothing on disk that
+remembers B→A. A rebuild that changed nothing appends nothing, because no flip happened.
+
+The blob is written first and the pointer second, so a crash between them leaves a valid old
+pointer and an orphan blob; the pointer is convenience, never authority, and no blob is ever
+deleted. **Existence is not integrity**: a blob already at the target name is compared byte for
+byte with the revision and rewritten when it differs, before the unchanged test and before any
+pointer flip — so a lost OR corrupted blob self-heals on the next build of the same content,
+`unchanged` means the content really is on disk, and a corrupt orphan is repaired before the
+pointer can flip onto it. Absence is quiet (a workspace with no scene is ordinary); corruption
+raises on read, and on write when the existing pointer is unreadable — on read that is a pointer
+naming a missing blob, unparseable JSON, a payload that does not re-digest to its own name, or a
+pointer that breaks its own contract (a foreign `schema`, a `digest`/`parent` that is not a sha256
+hexdigest, a missing `written_at`), each checked before any field of it is used.
+
+**Two writers, no lock.** `isar report --scene` can run against a live campaign, so concurrency is
+optimistic rather than locked: each writer captures the pointer digest when it snapshots its inputs
+and passes it back as the expected parent, and the flip refuses with `ConcurrentSceneWrite` (a
+`ValueError`, so both callers' existing handling applies) if the pointer moved meanwhile. The
+losing writer's blob is still written and addressable. A lock file is deliberately rejected: a
+stale lock after a crash would block every later campaign, which is worse than the race.
+
+Encoding is strict JSON (sorted keys, `allow_nan=False`): a non-finite lnZ persists as `null`, as
+the builder already treats it, and a bound with no finite spelling records `null` plus
+`discarded_mass_unbounded`.
 
 The GUI and notebooks read all of it through `workspace_api` only (Qt-free; hard rules 6/7
 unchanged): `ws.scene` / `scene_revision(ws)` for the stored revision — `None` when there is none, raising when the store

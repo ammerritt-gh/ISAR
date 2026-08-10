@@ -49,8 +49,14 @@ def test_a_raising_scene_build_is_logged_and_skipped(tmp_path, monkeypatch):
     _card, session = ws.load()
     assert {e.status for e in session.scans.values()} == {"held_for_calibration"}
     assert (ws.report_dir / "results.csv").exists()
-    # Nothing was published, not even an empty directory.
-    assert not (ws.report_dir / "scene").exists()
+    # Nothing was PUBLISHED — no pointer, no blob, no lineage line.
+    assert list((ws.report_dir / "scene").glob("*.json")) == \
+        [ws.report_dir / "scene" / "last_attempt.json"]
+    assert not (ws.report_dir / "scene" / "history.jsonl").exists()
+    # ...but the failure is visible: a hook that cannot fail a delivery would otherwise leave a
+    # scene that STOPPED building looking exactly like one with nothing to rebuild.
+    attempt = store.read_last_attempt(ws.report_dir)
+    assert attempt["status"] == "failed" and "scene scoring exploded" in attempt["reason"]
 
 
 def test_a_delivery_with_nothing_to_score_still_publishes_a_scene(tmp_path):
@@ -67,6 +73,12 @@ def test_a_delivery_with_nothing_to_score_still_publishes_a_scene(tmp_path):
     assert line == f"scene revision {pointer['digest'][:12]}"
     assert payload["observations"] == []
     assert payload["catalogue_version"] == "isar.catalogue.default/1"
+    assert store.read_last_attempt(ws.report_dir) == {
+        "status": "ok", "digest": pointer["digest"],
+        "written_at": store.read_last_attempt(ws.report_dir)["written_at"]}
+    # The driver is the writer of record, and the flip is in the durable lineage.
+    history = (ws.report_dir / "scene" / "history.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(history) == 1 and '"source":"driver"' in history[0].replace(" ", "")
 
 
 @pytest.mark.slow
