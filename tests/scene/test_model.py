@@ -3,7 +3,8 @@
 Three things are load-bearing here and nothing else in the layer re-checks them: the DTOs
 are immutable and survive the JSON boundary unchanged (tuples would silently become lists),
 the signed→intrinsic window fold is exactly the geometry SCENE_DESIGN specifies, and the
-fingerprint depends on content alone — not on the order the payload happened to be built in.
+fingerprint depends on the observation's content rather than on the order its JSON payload
+happened to be built in — while candidate order IS content, and is pinned as such.
 """
 from __future__ import annotations
 
@@ -128,3 +129,13 @@ def test_observation_fingerprint_tracks_content_not_field_order():
     reordered = dict(reversed(list(obs.to_dict().items())))
     reordered.pop("fingerprint")
     assert fingerprint(reordered) == obs.fingerprint
+    # Candidate order, however, IS content at this layer: a builder must fix a deterministic
+    # order, not rely on the digest to forgive one.
+    assert _obs(candidates=tuple(reversed(obs.candidates))).fingerprint != obs.fingerprint
+
+
+def test_from_dict_refuses_a_payload_with_no_fingerprint():
+    payload = _obs().to_dict()
+    payload.pop("fingerprint")
+    with pytest.raises(KeyError):
+        SceneObservation.from_dict(payload)

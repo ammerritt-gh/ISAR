@@ -157,7 +157,7 @@ class SceneObservation:
             background=_opt_float(d.get("background")),
             best_label=_opt_str(d.get("best_label")),
             candidates=tuple(CandidateRow.from_dict(c) for c in d.get("candidates") or ()),
-            fingerprint=str(d.get("fingerprint") or ""),
+            fingerprint=str(d["fingerprint"]),
         )
 
 
@@ -167,6 +167,10 @@ def observation_fingerprint(obs: SceneObservation) -> str:
     The builder's pattern is construct-then-stamp:
     ``obs = replace(obs, fingerprint=observation_fingerprint(obs))`` — so whatever the
     field held while building cannot feed back into the digest.
+
+    Candidate ORDER is content here, not presentation: the same rows in a different tuple
+    order digest differently. A caller that needs a stable digest across rebuilds must fix a
+    deterministic candidate order before constructing the observation.
     """
     payload = obs.to_dict()
     payload.pop("fingerprint", None)
