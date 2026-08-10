@@ -147,8 +147,11 @@ def test_an_unplaceable_mode_contributes_no_marker(tmp_path):
 
 
 def test_a_window_that_misses_the_elastic_line_leaves_a_gap(tmp_path):
+    # The footprint is built from the KEPT RUNS, not the outer window, so the runs are what has
+    # to miss the elastic line for the gap to be real.
     ws, _ = _workspace(tmp_path, [_row(1, candidates=[_candidate("phonon+bg")],
-                                       energy_lo=2.0, energy_hi=10.0, **EVALUABLE)])
+                                       energy_lo=2.0, energy_hi=10.0,
+                                       energy_bands=json.dumps([[2.0, 10.0]]), **EVALUABLE)])
     gap, = hypothesis_map(ws).gaps
     assert (gap.scan_ref, gap.lo, gap.hi, gap.reason) == ("tavi:1:det", 0.0, 2.0, "uncovered")
 
@@ -171,7 +174,7 @@ def test_a_non_scoring_arena_is_a_whole_arena_gap_with_its_reason(tmp_path):
 
 
 def test_visibility_flags_are_the_clusters_own_rows_for_that_arena(tmp_path):
-    """Two adjacent arenas (Δh = 0.1 < Q_ADJACENCY) cluster, so the revision records neighbour
+    """Two arenas at consecutive path ordinals cluster, so the revision records neighbour
     reports for the leading alternative — and each entry gets its own arena's rows, verbatim."""
     cands = [_candidate("phonon+bg")]
     ws, _ = _workspace(tmp_path, [_row(1, candidates=cands, **EVALUABLE),
