@@ -31,7 +31,8 @@ def _obs(**over) -> SceneObservation:
                 energy_window=(-3.0, 10.0), gauss_fwhm=0.9, lorentz_fwhm=0.2,
                 effective_exposure=120.0, background=1.5, best_label="phonon",
                 candidates=(_row(), _row(label="bg", n_modes=0, omegas=())),
-                fingerprint="")
+                evidence_comparison_status="complete", selection_fallback=None,
+                arena_fingerprint="a" * 64, evidence_sink=None, fingerprint="")
     obs = SceneObservation(**{**base, **over})
     return SceneObservation(**{**base, **over,
                                "fingerprint": observation_fingerprint(obs)})
@@ -56,6 +57,13 @@ def test_dtos_are_frozen(dto, field, value):
     (_row(k=None, log_evidence=None, evidence_method=None, posterior_probability=None,
           usable=False, identity="acoustic", variant="near_degenerate", n_modes=2,
           omegas=(3.0, None)), CandidateRow),
+    # Conditioning provenance (H9) survives the boundary verbatim: the constraint list is
+    # persisted mappings, not a re-encoding, and "recorded but unconstrained" (``()``) must stay
+    # distinguishable from "no semantics record" (``None``).
+    (_row(constraint_origin="transported_prior",
+          effective_constraints=({"constraint_kind": "hard", "parameter": "phonon.Gamma",
+                                  "origin": "transported_prior", "value": 0.5},)), CandidateRow),
+    (_row(constraint_origin="none", effective_constraints=()), CandidateRow),
     (_obs(), SceneObservation),
     (_obs(q=None, temperature_K=None, energy_window=None, best_label=None,
           candidates=()), SceneObservation),

@@ -4,12 +4,33 @@ import logging
 
 import pytest
 
+from isar.schema.statistics import FIT_SELECTION_SCHEMA, authority_scopes
 from isar.workspace_api import Workspace
 from isar.workspace_api.scene import scene_observations
 from synthetic_ws import FULL_COLUMNS, stamp_ws
 
 # The adapter reads persisted columns the shared stamper's base header predates.
-COLUMNS = FULL_COLUMNS + ["energy_lo", "energy_hi", "evidence_sink", "effective_exposure"]
+COLUMNS = FULL_COLUMNS + ["energy_lo", "energy_hi", "evidence_sink", "effective_exposure",
+                          "fit_selection_semantics"]
+
+
+def _selection(method="laplace_evidence_selection", fallback=None,
+               weight_kind="posterior_probability", arena="c" * 64):
+    """A minimal ``isar.fit_selection_semantics/2`` record the schema reader accepts.
+
+    Only the selection-lane triple and the arena fingerprint matter here; the record is written
+    through the real validator's rules so a lane the writer could never produce cannot be pinned.
+    """
+    record = {"schema": FIT_SELECTION_SCHEMA,
+              "authority_scopes": authority_scopes(single_fit_delivery="active"),
+              "model_selection_fingerprint": "b" * 64,
+              "selection_eligibility": "eligible", "selection_ineligibility_reasons": [],
+              "selection_method": method, "selection_fallback": fallback,
+              "model_weight_kind": weight_kind}
+    if arena is not None:
+        record["evidence_arena_fingerprint"] = arena
+        record["evidence_revision"] = "rev-1"
+    return json.dumps(record)
 
 
 def _candidate(label, **kw):
@@ -27,6 +48,7 @@ def _row(scan, *, candidates, scan_id=None, **kw):
         "verdict": "resolved", "best_model": "phonon+bg", "gauss_fwhm": 1.2, "lorentz_fwhm": 0.0,
         "energy_lo": -5.0, "energy_hi": 10.0, "effective_exposure": 1000.0,
         "evidence_sink": "canonical_master",
+        "fit_selection_semantics": _selection(),
         "amplitudes": json.dumps({"bg.BG": 3.0, "phonon.A": 20.0}),
         "candidates": candidates if isinstance(candidates, str) else json.dumps(candidates),
     }
@@ -119,20 +141,17 @@ def test_a_non_member_on_another_detector_survives(tmp_path):
     assert refs == ["master:tavi_2.0,0,0_300:det1", "tavi:1:det2"]
 
 
-def test_legacy_bare_member_labels_suppress_conservatively_and_warn(tmp_path, caplog):
-    """A workspace written before member labels were qualified: a bare label names no detector, so
-    every arena with that scan number and sample goes. Dropping an arena loudly beats counting one
-    twice silently."""
+def test_a_bare_member_label_is_refused_not_guessed_at(tmp_path):
+    """A workspace written before member labels were qualified. A bare label names no detector and
+    the collation key can span detectors, so there is no honest reading: guessing wide drops an
+    arena, guessing narrow counts one dataset's evidence twice. It is re-delivered instead."""
     cands = [_candidate("phonon+bg")]
     master = _row(9_000_001, candidates=cands, scan_id="master:tavi_2.0,0,0_300",
                   detector="det1", pooled=True, n_members=1, members="1")
-    with caplog.at_level(logging.WARNING, logger="isar.workspace_api.scene"):
-        refs = [o.scan_ref for o in scene_observations(_ws(tmp_path, [
-            _row(1, candidates=cands, detector="det1", scan_id="tavi:1:det1"),
-            _row(1, candidates=cands, detector="det2", scan_id="tavi:1:det2"),
-            master]))]
-    assert refs == ["master:tavi_2.0,0,0_300:det1"]
-    assert sum("pre-qualification member labels" in r.getMessage() for r in caplog.records) == 1
+    ws = _ws(tmp_path, [_row(1, candidates=cands, detector="det1", scan_id="tavi:1:det1"),
+                        master])
+    with pytest.raises(ValueError, match=r"master:tavi_2.0,0,0_300:det1.*re-deliver"):
+        scene_observations(ws)
 
 
 def test_candidateless_master_supersedes_nothing(tmp_path):
@@ -144,12 +163,93 @@ def test_candidateless_master_supersedes_nothing(tmp_path):
     assert refs == ["tavi:1:det"]
 
 
-def test_non_canonical_sink_keeps_the_arena_but_scores_nothing(tmp_path):
-    ws = _ws(tmp_path, [_row(1, candidates=[_candidate("phonon+bg")],
-                             evidence_sink="auxiliary_track_node")])
+@pytest.mark.parametrize("sink", ["auxiliary_track_node", "track_edge_evidence",
+                                  "branch_belief_only", "some_future_routing"])
+def test_a_non_canonical_sink_keeps_its_candidates_and_its_sink(tmp_path, sink):
+    """Auxiliary sinks are scientific evidence channels (identity, connectivity, transition), not
+    lesser evidence. The adapter preserves what they measured verbatim — including a sink string it
+    does not recognize — and the builder is what decides to defer or quarantine it."""
+    ws = _ws(tmp_path, [_row(1, candidates=[_candidate("phonon+bg")], evidence_sink=sink)])
     obs, = scene_observations(ws)
-    assert obs.candidates == ()
+    assert [c.label for c in obs.candidates] == ["phonon+bg"]
+    assert obs.evidence_sink == sink
     assert obs.energy_window == (-5.0, 10.0)      # still footprint-bearing
+
+
+def test_a_barred_master_neither_supersedes_its_members_nor_scores(tmp_path):
+    """A master routed to a non-canonical sink never became the authoritative reading of those
+    neutrons. Erasing its members would delete the only canonical evidence for them; scoring the
+    master itself would score barred evidence. It stays an arena, and the builder declines it."""
+    cands = [_candidate("phonon+bg")]
+    master = _row(9_000_001, candidates=cands, scan_id="master:tavi_2.0,0,0_300",
+                  pooled=True, n_members=1, members="tavi:1:det",
+                  evidence_sink="auxiliary_track_node")
+    by_ref = {o.scan_ref: o for o in scene_observations(
+        _ws(tmp_path, [_row(1, candidates=cands), master]))}
+    assert sorted(by_ref) == ["master:tavi_2.0,0,0_300:det", "tavi:1:det"]
+    assert by_ref["master:tavi_2.0,0,0_300:det"].evidence_sink == "auxiliary_track_node"
+    assert by_ref["tavi:1:det"].evidence_sink == "canonical_master"
+
+
+@pytest.mark.parametrize("cell,status,fallback", [
+    (_selection(), "complete", None),
+    (_selection("aic_fallback", "evidence_budget_exhausted", "akaike_relative_weight"),
+     "incomplete", "evidence_budget_exhausted"),
+    (_selection("aic_fallback", "aic_no_evidence_inputs", "akaike_relative_weight", arena=None),
+     "unavailable", "aic_no_evidence_inputs"),
+    (_selection("aic_fallback", "aic_all_evidence_invalid", "akaike_relative_weight", arena=None),
+     "unavailable", "aic_all_evidence_invalid"),
+    (_selection("none", None, "none", arena=None), "unavailable", None),
+    ("", "unavailable", None),                      # no record at all
+])
+def test_evidence_comparison_status_maps_the_persisted_selection_lane(tmp_path, cell, status,
+                                                                     fallback):
+    """H7: only the Bayesian lane with no fallback is a COMPLETE candidate comparison. Every other
+    lane, and every unreadable record, fails closed to unavailable — never to complete."""
+    obs, = scene_observations(_ws(tmp_path, [_row(1, candidates=[_candidate("phonon+bg")],
+                                                  fit_selection_semantics=cell)]))
+    assert (obs.evidence_comparison_status, obs.selection_fallback) == (status, fallback)
+
+
+def test_an_unrecognized_selection_fallback_fails_closed_and_warns(tmp_path, caplog):
+    """The fallback vocabulary is validated on read, so an unknown value cannot reach here through
+    a valid record — but the mapping must still refuse to invent completeness if it ever does."""
+    from isar.workspace_api import scene as scene_mod
+    fit = type("F", (), {"fit_selection_semantics": {
+        "selection_method": "aic_fallback", "selection_fallback": "invented_lane",
+        "evidence_arena_fingerprint": None}})()
+    with caplog.at_level(logging.WARNING, logger="isar.workspace_api.scene"):
+        assert scene_mod._evidence_comparison(fit, "tavi:1:det")[0] == "unavailable"
+    assert any("invented_lane" in r.getMessage() for r in caplog.records)
+
+
+def test_the_budget_exhausted_arena_does_not_score(tmp_path):
+    """The reviewer's scenario end to end: candidate A resolved, B unresolved, budget exhausted.
+    The scene must record an incomplete comparison, not a singleton P(A)=1 posterior."""
+    from isar.scene.build import build_scene
+    cands = [_candidate("A"), _candidate("B", log_evidence=None, posterior_probability=None)]
+    obs = scene_observations(_ws(tmp_path, [_row(1, candidates=cands, fit_selection_semantics=(
+        _selection("aic_fallback", "evidence_budget_exhausted", "akaike_relative_weight")))]))
+    payload = build_scene(obs).payload
+    assert payload["clusters"] == []
+    assert payload["non_scoring"] == [{"scan_ref": "tavi:1:det", "reason": "evidence_incomplete"}]
+    assert obs[0].arena_fingerprint == "c" * 64
+
+
+def test_conditioning_provenance_survives_the_adapter(tmp_path):
+    """H9's per-candidate conditioning record is carried verbatim, so the builder can tell whether
+    a transported constraint has already been priced in this arena."""
+    constraints = [{"constraint_kind": "hard", "parameter": "phonon.Gamma",
+                    "origin": "transported_prior", "value": 0.5}]
+    obs, = scene_observations(_ws(tmp_path, [_row(1, candidates=[
+        _candidate("phonon+bg", constraint_origin="transported_prior",
+                   effective_constraints=constraints),
+        _candidate("bg", constraint_origin="none", effective_constraints=[])])]))
+    by_label = {c.label: c for c in obs.candidates}
+    assert by_label["phonon+bg"].constraint_origin == "transported_prior"
+    assert by_label["phonon+bg"].effective_constraints == tuple(constraints)
+    # "recorded, unconstrained" stays distinguishable from "no semantics record".
+    assert by_label["bg"].effective_constraints == ()
 
 
 @pytest.mark.parametrize("cell", ["{not json", json.dumps([{"k": 5}])])
@@ -159,13 +259,13 @@ def test_malformed_candidates_yield_no_observation_and_log(tmp_path, caplog, cel
     assert any("tavi:1:det" in r.getMessage() for r in caplog.records)
 
 
-def test_legacy_header_without_the_candidates_column_says_so_once(tmp_path, caplog):
-    """The column's absence is one fact about the file, not an anomaly per fitted row."""
+def test_a_header_without_the_candidates_column_is_refused(tmp_path):
+    """Such a file can score nothing anywhere. Reading it as an empty scene would present a whole
+    campaign as unmeasured, so it is refused with the same re-deliver instruction."""
     legacy = [c for c in COLUMNS if c != "candidates"]
-    rows = [_row(1, candidates=None), _row(2, candidates=None)]
-    with caplog.at_level(logging.INFO, logger="isar.workspace_api.scene"):
-        assert scene_observations(_ws(tmp_path, rows, columns=legacy)) == []
-    assert [r.levelname for r in caplog.records] == ["INFO"]
+    ws = _ws(tmp_path, [_row(1, candidates=None), _row(2, candidates=None)], columns=legacy)
+    with pytest.raises(ValueError, match=r"no candidates column.*re-deliver"):
+        scene_observations(ws)
 
 
 def test_rows_that_never_had_a_fit_are_silent(tmp_path, caplog):

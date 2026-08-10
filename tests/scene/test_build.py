@@ -28,7 +28,8 @@ def cand(label, lnz, *, n_modes=1, omegas=None, usable=True, identity=None):
             usable, identity)
 
 
-def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), q=(1.0, 0.0, 0.0)):
+def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), q=(1.0, 0.0, 0.0),
+           status="complete", fallback=None, sink=None):
     rows = tuple(
         CandidateRow(label=label, k=None, n_modes=n_modes, log_evidence=lnz,
                      evidence_method="laplace", posterior_probability=None, usable=usable,
@@ -37,7 +38,9 @@ def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), q=(1.0, 0.0, 0.0)):
     obs = SceneObservation(scan_ref=scan_ref, q=q, temperature_K=300.0, energy_window=window,
                            gauss_fwhm=1.0, lorentz_fwhm=None, effective_exposure=1.0,
                            background=0.5, best_label=rows[0].label if rows else None,
-                           candidates=rows, fingerprint="x")
+                           candidates=rows, evidence_comparison_status=status,
+                           selection_fallback=fallback, arena_fingerprint=None,
+                           evidence_sink=sink, fingerprint="x")
     # Stamped from a label-sorted copy: the builder sorts candidates, so permuting the input
     # tuple in a test must be a real permutation of the same observation, not a different one.
     canon = replace(obs, candidates=tuple(sorted(rows, key=lambda c: c.label)))
@@ -234,6 +237,57 @@ def test_arena_without_usable_evidence_is_experiment_map_only():
     assert [c["scan_refs"] for c in rev.payload["clusters"]] == [["e:1:d"]]
     # Still on the experiment map: we looked there, and the footprint says so.
     assert {f["scan_ref"] for f in rev.payload["footprints"]} == {"e:1:d", "e:8:d", "e:9:d"}
+
+
+def test_an_incomplete_comparison_never_becomes_a_confident_singleton():
+    """H7's failure mode, exactly: the evidence budget expired with candidate B unresolved, so A
+    is the only lnZ present. Scoring it would publish P(A)=1 for a comparison that never finished
+    — the arena is experiment-map-only until the comparison is."""
+    obs = [mk_obs("e:1:d", [cand("A", -10.0), cand("B", None)],
+                  status="incomplete", fallback="evidence_budget_exhausted")]
+    rev = build_scene(obs, factors=[ZERO])
+    assert rev.payload["non_scoring"] == [{"scan_ref": "e:1:d", "reason": "evidence_incomplete"}]
+    assert rev.payload["clusters"] == []
+    # Nothing is deleted: the rows it did have travel with the revision.
+    assert [c["label"] for c in rev.payload["observations"][0]["candidates"]] == ["A", "B"]
+
+
+@pytest.mark.parametrize("sink,reason", [
+    ("auxiliary_track_node", "aux_sink_deferred"),
+    ("track_edge_evidence", "aux_sink_deferred"),
+    ("branch_belief_only", "aux_sink_deferred"),
+    ("unknown_sink", "unknown_sink"),          # the reader's own quarantine marker
+    ("some_future_routing", "unknown_sink"),   # anything this repo cannot interpret
+])
+def test_non_canonical_sinks_defer_or_quarantine_but_keep_their_rows(sink, reason):
+    obs = [mk_obs("e:1:d", [cand("A", -10.0), cand("B", -11.0)], sink=sink)]
+    rev = build_scene(obs, factors=[ZERO])
+    assert rev.payload["non_scoring"] == [{"scan_ref": "e:1:d", "reason": reason}]
+    assert rev.payload["clusters"] == []
+    # Deferred routing, not discarded evidence: the candidate rows are embedded verbatim.
+    assert [c["label"] for c in rev.payload["observations"][0]["candidates"]] == ["A", "B"]
+    assert rev.payload["footprints"][0]["scan_ref"] == "e:1:d"
+
+
+@pytest.mark.parametrize("sink", [None, "canonical_master"])
+def test_canonical_and_absent_sinks_both_score(sink):
+    rev = build_scene([mk_obs("e:1:d", [cand("A", -10.0)], sink=sink)], factors=[ZERO])
+    assert [c["scan_refs"] for c in rev.payload["clusters"]] == [["e:1:d"]]
+
+
+def test_conditioning_provenance_rides_into_the_revision():
+    """H9 provenance is builder-level bookkeeping for the exactly-once rule, so it must survive
+    into the embedded rows — while staying off ComponentObservation, which factors see."""
+    constraints = ({"constraint_kind": "hard", "parameter": "phonon.Gamma",
+                    "origin": "transported_prior", "value": 0.5},)
+    obs = mk_obs("e:1:d", [cand("A", -10.0)])
+    obs = replace(obs, candidates=(replace(obs.candidates[0],
+                                           constraint_origin="transported_prior",
+                                           effective_constraints=constraints),))
+    obs = replace(obs, fingerprint=observation_fingerprint(replace(obs, fingerprint="")))
+    row, = build_scene([obs], factors=[ZERO]).payload["observations"][0]["candidates"]
+    assert row["constraint_origin"] == "transported_prior"
+    assert row["effective_constraints"] == [dict(constraints[0])]
 
 
 def test_cap_keeps_exactly_the_top_alternatives_and_states_the_dropped_bound():

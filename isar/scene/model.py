@@ -84,10 +84,21 @@ class CandidateRow:
     # is unplaceable; ``()`` is a phonon-less or result-less candidate, so the length agrees
     # with ``n_modes`` except in the no-result case.
     omegas: tuple[float | None, ...]
+    # Conditioning provenance (H9), carried VERBATIM as the row persists it: the aggregate
+    # ``constraint_origin`` and the ``effective_constraints`` list the fit actually ran under
+    # (``None`` = no semantics record, ``()`` = recorded and unconstrained). This is
+    # builder-level bookkeeping for the exactly-once rule — which arena a transported
+    # constraint already priced — and is deliberately NOT projected onto
+    # ``ComponentObservation``: a scene factor that could see conditioning could re-price the
+    # local evidence it is forbidden to touch.
+    constraint_origin: str | None = None
+    effective_constraints: tuple | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["omegas"] = list(self.omegas)
+        d["effective_constraints"] = (None if self.effective_constraints is None
+                                      else [dict(c) for c in self.effective_constraints])
         return d
 
     @classmethod
@@ -103,6 +114,10 @@ class CandidateRow:
             identity=_opt_str(d.get("identity")),
             variant=_opt_str(d.get("variant")),
             omegas=tuple(_opt_float(w) for w in d.get("omegas") or ()),
+            constraint_origin=_opt_str(d.get("constraint_origin")),
+            effective_constraints=(
+                None if d.get("effective_constraints") is None
+                else tuple(dict(c) for c in d["effective_constraints"])),
         )
 
 
@@ -153,6 +168,24 @@ class SceneObservation:
     background: float | None
     best_label: str | None
     candidates: tuple[CandidateRow, ...]
+    # Is the local candidate comparison this arena's evidence came from COMPLETE (H7)?
+    #   "complete"    — selection ran the Bayesian lane and named a winner on evidence.
+    #   "incomplete"  — the comparison was cut short with a contender unresolved (the evidence
+    #                   escalation budget expired); the surviving lnZ set is not the whole
+    #                   arena, so a posterior built from it would be confidently wrong.
+    #   "unavailable" — no readable selection semantics, or a lane that publishes no evidence.
+    # Only "complete" may score. ``selection_fallback`` is the verbatim persisted reason (the
+    # ``isar.fit_selection_semantics/2`` field of the same name) and ``arena_fingerprint`` the
+    # persisted ``evidence_arena_fingerprint`` — the single-likelihood guarantee the compared
+    # lnZ values share, kept so a later slice can refuse to pool across arenas.
+    evidence_comparison_status: str              # "complete" | "incomplete" | "unavailable"
+    selection_fallback: str | None
+    arena_fingerprint: str | None
+    # Where this scan's evidence was routed (``isar.schema.steering.EVIDENCE_SINKS``), verbatim;
+    # ``None`` when nothing persisted a sink, which reads as canonical. Non-canonical sinks are
+    # scientific evidence channels of their own (identity, connectivity, transition), so the
+    # candidates are PRESERVED here and the routing decision is the builder's.
+    evidence_sink: str | None
     fingerprint: str                             # sha256 of this observation's canonical payload
 
     def to_dict(self) -> dict:
@@ -167,6 +200,10 @@ class SceneObservation:
             "background": self.background,
             "best_label": self.best_label,
             "candidates": [c.to_dict() for c in self.candidates],
+            "evidence_comparison_status": self.evidence_comparison_status,
+            "selection_fallback": self.selection_fallback,
+            "arena_fingerprint": self.arena_fingerprint,
+            "evidence_sink": self.evidence_sink,
             "fingerprint": self.fingerprint,
         }
 
@@ -183,6 +220,13 @@ class SceneObservation:
             background=_opt_float(d.get("background")),
             best_label=_opt_str(d.get("best_label")),
             candidates=tuple(CandidateRow.from_dict(c) for c in d.get("candidates") or ()),
+            # Required, like the fingerprint: a payload that cannot say whether its comparison
+            # was complete is not readable as an arena, and defaulting it either way would be a
+            # guess about evidence. Old payloads fail loudly here — rebuild the scene.
+            evidence_comparison_status=str(d["evidence_comparison_status"]),
+            selection_fallback=_opt_str(d.get("selection_fallback")),
+            arena_fingerprint=_opt_str(d.get("arena_fingerprint")),
+            evidence_sink=_opt_str(d.get("evidence_sink")),
             fingerprint=str(d["fingerprint"]),
         )
 

@@ -22,7 +22,10 @@ failure it prevents:
   ordering is derived from the data (scan_ref, then label), so two builds of the same inputs
   produce the same digest.
 
-Stdlib-only and pure: no filesystem, no ``isar.session``/``analyze``/``drive``.
+Stdlib-only and pure: no filesystem, no ``isar.session``/``analyze``/``drive``. The one
+exception is ``isar.schema.steering``'s evidence-sink vocabulary — itself stdlib-only, and the
+single definition of what routing a scan's evidence was acquired for; a local copy of those
+strings would silently diverge from the schema the writer stamps.
 """
 from __future__ import annotations
 
@@ -30,6 +33,8 @@ import heapq
 import itertools
 import math
 from dataclasses import dataclass, replace
+
+from isar.schema.steering import CANONICAL_MASTER, EVIDENCE_SINKS
 
 from .factors import FACTORS, registry_fingerprint, validate_factor
 from .model import (CandidateRow, ComponentObservation, Footprint, SceneObservation,
@@ -208,17 +213,50 @@ def _usable_lnz(c: CandidateRow) -> float | None:
     return float(c.log_evidence)
 
 
+def _non_scoring_reason(o: SceneObservation) -> str | None:
+    """Why this arena may not enter ``ln W(S)``, or ``None`` if it may.
+
+    Fail-closed, and in this order: routing first (what this evidence IS), then whether the
+    comparison it came from was finished, then whether there is a summable lnZ at all. A
+    non-scoring arena keeps its footprint and its candidate rows either way — nothing is
+    deleted, the information is retained and only its use is declined.
+    """
+    sink = o.evidence_sink
+    if sink is not None and sink not in EVIDENCE_SINKS:
+        # Includes the reader's own UNKNOWN_SINK marker. A routing this repo cannot interpret is
+        # quarantined, never read as ordinary evidence — ``canonical_master`` is the most
+        # privileged sink there is, not a safe default.
+        return "unknown_sink"
+    if sink is not None and sink != CANONICAL_MASTER:
+        # An auxiliary sink is a scientific evidence channel of its own (identity, connectivity,
+        # transition), not lesser evidence — but it answers a different question than the
+        # canonical pool, and the scene routes it in a later slice. Deferred, not discarded.
+        return "aux_sink_deferred"
+    if not o.candidates:
+        return "no_candidates"
+    if o.evidence_comparison_status == "incomplete":
+        # H7: the candidate comparison expired with a contender unresolved, so the lnZ values
+        # present are not the arena. Scoring them would turn an unfinished comparison into a
+        # confident posterior — the one failure this status exists to prevent.
+        return "evidence_incomplete"
+    if o.evidence_comparison_status != "complete":
+        return "no_evidence"
+    if not any(_usable_lnz(c) is not None for c in o.candidates):
+        # No lnZ → no term in ln W(S). Such an arena is not "excluded"; it simply has nothing to
+        # contribute, and its footprint still records that we looked.
+        return "no_evidence"
+    return None
+
+
 def _split_by_evidence(obs):
     """Arenas that participate in scoring, and the experiment-map-only rest with a reason."""
     scoring, non_scoring = [], []
     for o in obs:
-        if any(_usable_lnz(c) is not None for c in o.candidates):
+        reason = _non_scoring_reason(o)
+        if reason is None:
             scoring.append(o)
         else:
-            # No lnZ → no term in ln W(S). Such an arena is not "excluded"; it simply has
-            # nothing to contribute, and its footprint still records that we looked.
-            non_scoring.append({"scan_ref": o.scan_ref,
-                                "reason": "no_candidates" if not o.candidates else "no_evidence"})
+            non_scoring.append({"scan_ref": o.scan_ref, "reason": reason})
     return tuple(scoring), non_scoring
 
 
