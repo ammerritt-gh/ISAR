@@ -67,6 +67,12 @@ WORKSPACE_API_ALLOWED = {
     # the scene STORE's write surface stays outside this list, and tests/scene/test_import_ban.py
     # bans it from the adapter explicitly.
     "isar.scene.model",
+    # The scene store's READ surface (SCENE-3 PR 3c): workspace_api/scene_view.py reads back the
+    # revision the driver stored. Stdlib-only and non-mutating on this path — the facade calls
+    # ``read_current`` and nothing else, and the input adapter (workspace_api/scene.py) stays
+    # banned from the module entirely by tests/scene/test_import_ban.py, so a stored revision can
+    # never leak back into a build's inputs.
+    "isar.scene.store",
     # CANONICAL_MASTER: the one definition of "this scan's evidence is ordinary canonical evidence",
     # read by the adapter's sink check. A local copy of the string would silently diverge from the
     # schema the writer stamps.

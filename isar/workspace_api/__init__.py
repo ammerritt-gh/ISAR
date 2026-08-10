@@ -25,6 +25,9 @@ from .config_gates import (DEFAULT_CLOUD_FALLBACK_MODEL, PolicyValidation, valid
 from .display import (AcquisitionSelection, DisplayInterval, FitDisplay, FitDisplayState,
                       fit_certifying_interval, fit_display, latest_completed_acquisition,
                       matching_assessment, resolve_interval)
+from .scene import sample_knowledge, scene_observations
+from .scene_view import (Curve, GapEntry, HypothesisEntry, HypothesisMap, ModeMarker,
+                         SceneRevisionView, hypothesis_map, scene_revision)
 
 __all__ = [
     "Workspace",
@@ -55,4 +58,15 @@ __all__ = [
     "AcquisitionSelection",
     "latest_completed_acquisition",
     "fit_certifying_interval",
+    # The scene layer's two doors: observations INTO a build, and a stored revision back out.
+    "scene_observations",
+    "sample_knowledge",
+    "scene_revision",
+    "SceneRevisionView",
+    "hypothesis_map",
+    "HypothesisMap",
+    "HypothesisEntry",
+    "ModeMarker",
+    "GapEntry",
+    "Curve",
 ]

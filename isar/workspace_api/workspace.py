@@ -529,6 +529,20 @@ class Workspace:
         return view
 
     @property
+    def scene(self):
+        """The stored scene revision (``SceneRevisionView``), or ``None`` if there is none.
+
+        Deliberately NOT routed through ``_parse``: absence is normal and reads as ``None``, but a
+        corrupt scene store raises ``ValueError`` out of this property instead of degrading into a
+        warning. The two states mean opposite things — "no scene yet" vs "the scene on disk cannot
+        be vouched for" — and burying the second in ``ws.warnings`` is how it would go unnoticed.
+        """
+        if "scene" not in self._views:
+            from .scene_view import scene_revision
+            self._views["scene"] = scene_revision(self)
+        return self._views["scene"]
+
+    @property
     def master_assessments(self) -> list[MasterAssessmentView]:
         """Latest durable pooled-master assessment snapshot, in objective-path order."""
         if "master_assessments" in self._views:
