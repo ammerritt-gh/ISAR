@@ -1664,7 +1664,7 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   the world suite, no shadow ceremony), H4 (the evidence posterior these lnZ values come from) and
   H9(d) (the local identity axis).
 
-- **H12.** (2026-08-10, In force; SCENE-3 PR 3a review response) **The scene-factor ban admits
+- **H12.** (2026-08-10, In force; SCENE-3 PR 3a review response; amends H11) **The scene-factor ban admits
   genuine joint likelihoods, evidence sinks are channels rather than noise, and nothing may be
   discarded on evidence a factor has not yet contributed.** Six parts; **(a) amends H11(c)**.
   **(a) H11(c) amended — the ban is about double-counting, not about arity** (external-review
