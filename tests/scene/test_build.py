@@ -247,6 +247,19 @@ def test_cap_keeps_exactly_the_top_alternatives_and_states_the_dropped_bound():
     assert cl["discarded_mass_bound"] == pytest.approx(115 * math.exp(lowest - leader), rel=1e-12)
 
 
+def test_tied_base_scores_at_the_cap_boundary_break_by_label_tuple():
+    """Ties straddling the cap must resolve one way, always: 3×3 candidates all at -1.0."""
+    obs = [mk_obs(f"e:{i}:d", [cand(lbl, -1.0) for lbl in "ABC"], q=(1.0 + 0.1 * i, 0.0, 0.0))
+           for i in range(2)]
+    rev = build_scene(obs, factors=[COUPLER, ZERO], alt_cap=4)
+    cl = cluster_of(rev, "e:0:d")
+    kept = [tuple(tuple(p) for p in a["assignment"]) for a in cl["alternatives"]]
+    assert cl["truncated"] is True and cl["n_possible"] == 9
+    assert kept == [(("e:0:d", "A"), ("e:1:d", "A")), (("e:0:d", "A"), ("e:1:d", "B")),
+                    (("e:0:d", "A"), ("e:1:d", "C")), (("e:0:d", "B"), ("e:1:d", "A"))]
+    assert build_scene(obs, factors=[COUPLER, ZERO], alt_cap=4).digest == rev.digest
+
+
 def test_alt_cap_constant_resolves_at_call_time(monkeypatch):
     """The sentinel trap: a default-argument capture would ignore this monkeypatch."""
     obs = [mk_obs("e:1:d", [cand("A", -1.0), cand("B", -2.0), cand("C", -3.0)])]
