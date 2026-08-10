@@ -62,6 +62,15 @@ WORKSPACE_API_ALLOWED = {
     # endpoint safety check + cloud-fallback default, both Qt-free/scipy-free.
     "isar.reduce.llm_client",
     "isar.reduce.adjudicate",
+    # The stdlib-only scene vocabulary (SCENE-3): the frozen DTOs workspace_api/scene.py constructs
+    # from persisted rows. It is the read direction of the scene layer and imports nothing itself —
+    # the scene STORE's write surface stays outside this list, and tests/scene/test_import_ban.py
+    # bans it from the adapter explicitly.
+    "isar.scene.model",
+    # CANONICAL_MASTER: the one definition of "this scan's evidence is ordinary canonical evidence",
+    # read by the adapter's sink check. A local copy of the string would silently diverge from the
+    # schema the writer stamps.
+    "isar.schema.steering",
 }
 
 

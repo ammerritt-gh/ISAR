@@ -657,6 +657,7 @@ def test_member_labels_keep_a_repeated_scan_number_distinct():
 def test_carry_backfills_members_without_refit(monkeypatch):
     # An older ledger master (fit before the members field existed) is backfilled on the carry path:
     # the content-hash match proves the member set is identical, so labels are recomputed exactly —
+    # in the CURRENT fully-qualified exp:scan:det form, since backfill runs today's _member_labels —
     # no refit (the fit stub must NOT be called again).
     calls = _stub(monkeypatch)
     ms = _MS([("tavi", 473, "det"), ("tavi", 493, "det"), ("tavi", 494, "det")])
@@ -675,7 +676,7 @@ def test_carry_backfills_members_without_refit(monkeypatch):
     assert master_delivery._fit_masters(col, [], None, None, None, s, M=10, seed_base=6000) == 0
     assert len(calls) == 1                                     # no refit
     restored = s.scans[mid].detectors["det"]["members"]
-    assert restored == ["473", "493", "494"]
+    assert restored == ["tavi:473:det", "tavi:493:det", "tavi:494:det"]
     assert len(restored) == s.scans[mid].detectors["det"]["n_members"]
     assert s.scans[mid].provenance["members"] == [["tavi", 473, "det"], ["tavi", 493, "det"],
                                                   ["tavi", 494, "det"]]
