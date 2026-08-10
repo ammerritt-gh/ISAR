@@ -278,9 +278,11 @@ def hypothesis_map(ws, *, x_points: int = 200) -> HypothesisMap | None:
     candidates = {o["scan_ref"]: (o.get("candidates") or [])
                   for o in payload.get("observations") or ()}
     # What the revision says each arena was built from, against what the workspace holds now.
+    # ``stale`` is False only when the two fingerprint maps were EQUAL, so the per-arena detail is
+    # needed only when it is True — the common path costs one adapter walk, not two.
     stored_fingerprints = {str(o.get("scan_ref")): o.get("fingerprint")
                            for o in payload.get("observations") or ()}
-    live_fingerprints = _live_fingerprints(ws)
+    live_fingerprints = _live_fingerprints(ws) if revision.stale else stored_fingerprints
     rows = _rows_by_scan_ref(ws)
 
     entries, gaps = [], []
