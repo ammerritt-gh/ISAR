@@ -25,6 +25,14 @@ def q(h):
     return (h, 0.0, 0.0)
 
 
+# A declared dispersion support, which is the ONLY thing that makes a track's continuation
+# reachable over a finite Δq (review finding 5). 2 meV/rlu over the 0.1 rlu edges these arenas sit
+# on widens the reach by 0.2 meV — enough to say where a track could have gone, far too little to
+# change which peaks chain to which. Tests that need an absence to be CHARGED declare it; tests
+# about coverage, blocking or the undeclared-reach rule deliberately do not.
+SLOPE = SampleKnowledge(dispersion_slope_max=2.0)
+
+
 def terms(cluster, name):
     """``{assignment tuple: factor term}`` for one factor, over a cluster's alternatives."""
     return {(tuple(tuple(p) for p in a["assignment"]), tuple(tuple(l) for l in a["links"])):
@@ -154,7 +162,7 @@ def test_a_neighbour_that_never_looked_at_the_band_costs_nothing():
     blind = replace(narrow, energy_window=(-3.0, 3.0), energy_bands=((-3.0, 3.0),))
     blind = replace(blind, fingerprint=observation_fingerprint(replace(blind, fingerprint="")))
 
-    censored = cluster_of(build_scene([wide, blind]), "e:1:d")
+    censored = cluster_of(build_scene([wide, blind], sample=SLOPE), "e:1:d")
     assert visibility_of(8.0, footprint_of(blind), False) == Visibility.CENSORED_OUTSIDE_FOOTPRINT
     # The 8 meV mode was never looked at, so the two readings of e:1:d score identically: the
     # gap moved belief in neither direction.
@@ -163,7 +171,7 @@ def test_a_neighbour_that_never_looked_at_the_band_costs_nothing():
 
     # Same arenas, the neighbour now looking at 2 meV as well: the absence becomes evidence, and
     # the extra mode costs exactly one miss.
-    searched = terms(cluster_of(build_scene([wide, narrow]), "e:1:d"), "presence")
+    searched = terms(cluster_of(build_scene([wide, narrow], sample=SLOPE), "e:1:d"), "presence")
     by_label = {a[0][1]: t for (a, _links), t in searched.items()}
     assert by_label["stokes+bg"] == PRESENCE_MATCH_NATS * 2
     assert by_label["stokes2+bg"] == PRESENCE_MATCH_NATS * 2 + PRESENCE_MISS_NATS
@@ -185,11 +193,11 @@ def test_a_band_inside_a_neighbours_mask_hole_costs_nothing_either():
     # A mode inside the hole: both readings of e:1:d score identically — no absence charge.
     in_hole = mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(2.0,)),
                                cand("stokes2+bg", -10.0, n_modes=2, omegas=(2.0, 5.0))], q=q(1.0))
-    assert len(set(terms(cluster_of(build_scene([in_hole, holed]), "e:1:d"),
+    assert len(set(terms(cluster_of(build_scene([in_hole, holed], sample=SLOPE), "e:1:d"),
                          "presence").values())) == 1
     # ... and the same mode moved out of the hole is charged its miss, so the exemption is the
     # hole and not the scene.
-    scored = terms(cluster_of(build_scene([wide, holed]), "e:1:d"), "presence")
+    scored = terms(cluster_of(build_scene([wide, holed], sample=SLOPE), "e:1:d"), "presence")
     by_label = {a[0][1]: t for (a, _links), t in scored.items()}
     assert by_label["stokes2+bg"] == by_label["stokes+bg"] + PRESENCE_MISS_NATS
 
@@ -228,7 +236,7 @@ def test_one_neighbouring_peak_cannot_support_two_claimed_modes():
     obs = [mk_obs("e:1:d", [cand("one", -10.0, omegas=(4.0,)),
                             cand("two", -10.0, n_modes=2, omegas=(4.0, 4.5))], q=q(1.0)),
            mk_obs("e:2:d", [cand("stokes+bg", -10.0, omegas=(4.2,))], q=q(1.1))]
-    cl = cluster_of(build_scene(obs), "e:1:d")
+    cl = cluster_of(build_scene(obs, sample=SLOPE), "e:1:d")
     by_label = {a[0][1]: t for (a, _l), t in terms(cl, "presence").items()}
     assert by_label["one"] == 2 * PRESENCE_MATCH_NATS
     assert by_label["two"] == 2 * PRESENCE_MATCH_NATS + PRESENCE_MISS_NATS
@@ -363,7 +371,7 @@ def test_a_partly_linked_junction_yields_two_valid_pairings_and_no_impossible_on
     tracks — an impossible reading, published with real posterior mass."""
     obs = [mk_obs("e:1:d", [cand("stokes2+bg", -10.0, n_modes=2, omegas=(4.0, 7.0))], q=q(1.0)),
            mk_obs("e:2:d", [cand("stokes2+bg", -10.0, n_modes=2, omegas=(4.5, 5.0))], q=q(1.1))]
-    cl = cluster_of(build_scene(obs), "e:1:d")
+    cl = cluster_of(build_scene(obs, sample=SLOPE), "e:1:d")
     # Three readings, all of them possible: the partial default (the 7 meV mode's track ends
     # here), and the two complete pairings. The impossible fourth — one mode continuing as two
     # tracks — is now ungeneratable rather than merely unlikely.
@@ -414,12 +422,12 @@ def test_a_linkage_truncation_records_its_dropped_prior_and_leaves_the_cluster_u
     unresolved lane rather than looking like a narrowed one."""
     obs = [mk_obs("e:1:d", [cand("stokes2+bg", -10.0, n_modes=2, omegas=(4.0, 7.0))], q=q(1.0)),
            mk_obs("e:2:d", [cand("stokes2+bg", -10.0, n_modes=2, omegas=(4.5, 5.0))], q=q(1.1))]
-    full = cluster_of(build_scene(obs), "e:1:d")
+    full = cluster_of(build_scene(obs, sample=SLOPE), "e:1:d")
     assert full["n_enumerated"] == 3
     assert len({a["factor_terms"]["presence"] for a in full["alternatives"]}) == 2
 
     monkeypatch.setattr(build_mod, "MAX_LINKAGE_VARIANTS", 1)
-    cl = cluster_of(build_scene(obs), "e:1:d")
+    cl = cluster_of(build_scene(obs, sample=SLOPE), "e:1:d")
     kept, = cl["alternatives"]
     assert kept["factor_terms"]["presence"] == \
         2 * PRESENCE_MATCH_NATS + 2 * PRESENCE_MISS_NATS      # the partial default survived
@@ -490,21 +498,30 @@ def test_well_separated_branches_are_not_treated_as_ambiguous():
 # ----------------------------------------------------------------------------
 # Part 5 — declared sample knowledge: the zone-centre and localization factors
 # ----------------------------------------------------------------------------
-def _endpoint_scene(centre_h=1.0, mode_h=1.1, omega=1.5, neighbour="elastic+bg",
-                    kinds=("elastic",)):
-    """A mode at ``mode_h`` whose track runs into an elastic-bearing arena at ``centre_h``.
+def _endpoint_scene(centre_h=1.0, mode_h=1.1, up_h=1.2, omega=1.5, up_omega=2.4,
+                    neighbour="elastic+bg", kinds=("elastic",)):
+    """A descending two-node TRACK whose lower end runs into an elastic-bearing arena.
 
-    With mk_obs's gauss_fwhm of 1.0 the mode at 1.5 meV is OUTSIDE the elastic width, so the
-    baseline reading is a genuine searched-and-empty absence — the endpoint exemption has to be
-    earned by the declaration, not handed over by ``blocked_unresolved``.
+    The endpoint is a reading of the linkage, never an amnesty granted from energy (review finding
+    1), so the fixture has to carry a real track: the mode at ``up_h`` links to the mode at
+    ``mode_h`` (0.9 meV apart, inside mk_obs's 1.0 meV resolution), and the track descends toward
+    the arena at ``centre_h``. With mk_obs's gauss_fwhm of 1.0 the terminal mode at 1.5 meV is
+    OUTSIDE the elastic width, so the baseline reading is a genuine searched-and-empty absence —
+    the exemption has to be earned by the declaration, not handed over by ``blocked_unresolved``.
     """
     return [mk_obs("e:1:d", [cand(neighbour, -10.0, n_modes=0, omegas=(), extra=kinds)],
                    q=q(centre_h)),
-            mk_obs("e:2:d", [cand("stokes+bg", -10.0, omegas=(omega,))], q=q(mode_h))]
+            mk_obs("e:2:d", [cand("stokes+bg", -10.0, omegas=(omega,))], q=q(mode_h)),
+            mk_obs("e:3:d", [cand("stokes+bg", -10.0, omegas=(up_omega,))], q=q(up_h))]
 
 
 def _states(rev, cluster_id="e:1:d"):
     return {r["visibility"] for r in cluster_of(rev, cluster_id)["visibility"]}
+
+
+def _endpoints(rev, cluster_id="e:1:d"):
+    return [r for r in cluster_of(rev, cluster_id)["visibility"]
+            if r["visibility"] == Visibility.STRUCTURAL_ENDPOINT]
 
 
 def test_a_declared_zone_centre_terminates_the_track_instead_of_penalizing_it():
@@ -512,37 +529,61 @@ def test_a_declared_zone_centre_terminates_the_track_instead_of_penalizing_it():
     nothing, so this mode is less likely"; with it the scene says "a gapless branch reaches ω→0
     here and is swallowed by the elastic response — nothing is missing".
 
-    The no-penalty half is EMERGENT, not special-cased: presence and connectivity key on
-    ``searched_no_signal`` alone, so reinterpreting the state is all it takes."""
+    The no-penalty half is EMERGENT, not special-cased: presence keys on ``searched_no_signal``
+    alone, so reinterpreting the state is all it takes."""
     obs = _endpoint_scene()
     blind = build_scene(obs)
-    assert _states(blind) == {Visibility.SEARCHED_NO_SIGNAL}
+    assert Visibility.SEARCHED_NO_SIGNAL in _states(blind)
     cl = cluster_of(blind, "e:1:d")
-    assert list(terms(cl, "presence").values()) == [PRESENCE_MISS_NATS]
+    assert list(terms(cl, "presence").values()) == [2 * PRESENCE_MATCH_NATS + PRESENCE_MISS_NATS]
 
     knowing = build_scene(obs, sample=SampleKnowledge(zone_period=1.0))
-    assert _states(knowing) == {Visibility.STRUCTURAL_ENDPOINT}
+    assert Visibility.SEARCHED_NO_SIGNAL not in _states(knowing)
+    assert [r["component_id"] for r in _endpoints(knowing)] == ["e:2:d#stokes+bg#0"]
     cl = cluster_of(knowing, "e:1:d")
-    assert list(terms(cl, "presence").values()) == [0.0]
-    assert cl["alternatives"][0]["reasons"] == {}
+    # The track's two observed continuations still score; only the terminated absence stops.
+    assert list(terms(cl, "presence").values()) == [2 * PRESENCE_MATCH_NATS]
+
+
+def test_an_isolated_low_energy_mode_gets_no_endpoint_and_stays_charged():
+    """Control (ii) of review finding 1, and the failure the old predicate actually had: a single
+    low-energy feature at one q, beside a declared zone centre, was handed the exemption on its
+    energy alone. It is no branch — there is no track for a gapless dispersion to be the end of —
+    so its absence at the centre is exactly as unexplained as it was."""
+    obs = _endpoint_scene()[:2]                     # the centre arena and the lone mode
+    rev = build_scene(obs, sample=SampleKnowledge(zone_period=1.0))
+    assert _states(rev) == {Visibility.SEARCHED_NO_SIGNAL}
+    assert list(terms(cluster_of(rev, "e:1:d"), "presence").values()) == [PRESENCE_MISS_NATS]
+
+
+def test_a_flat_track_running_into_the_centre_gets_no_endpoint_either():
+    """Control (iii): the low-lying optic case. The track is linked and sits next to the declared
+    centre, but it is not DESCENDING — it has the same energy at both nodes, so nothing about it
+    says it reaches ω → 0 at the fold. A gapless branch is a claim about the descent, and this is
+    a branch that simply stopped being seen."""
+    rev = build_scene(_endpoint_scene(up_omega=1.5), sample=SampleKnowledge(zone_period=1.0))
+    assert Visibility.STRUCTURAL_ENDPOINT not in _states(rev)
+    assert Visibility.SEARCHED_NO_SIGNAL in _states(rev)
 
 
 def test_the_zone_centre_exemption_is_zone_local_and_not_a_blanket_amnesty():
     """An absence one fold away from a centre is still an absence. If proximity to *any* q could
     buy the exemption, the factor would quietly stop presence from ever pricing anything."""
-    obs = _endpoint_scene(centre_h=1.4, mode_h=1.5)
+    obs = _endpoint_scene(centre_h=1.4, mode_h=1.5, up_h=1.6)
     rev = build_scene(obs, sample=SampleKnowledge(zone_period=1.0))
-    assert _states(rev) == {Visibility.SEARCHED_NO_SIGNAL}
+    assert Visibility.STRUCTURAL_ENDPOINT not in _states(rev)
 
 
-def test_the_endpoint_claim_needs_an_elastic_response_to_hide_in():
-    """A gapless branch reaching zero at a bare zone centre would have been SEEN there. Without a
-    chosen elastic component the neighbour's silence is still evidence."""
+def test_the_endpoint_run_must_reach_the_centre_through_arenas_that_explain_the_silence():
+    """The contiguity half of condition (c). A gapless branch reaching zero at a bare zone centre
+    would have been SEEN there: without a chosen elastic component the arena explains nothing, the
+    centre-ward run is broken, and the silence is still evidence."""
     obs = _endpoint_scene(neighbour="bg", kinds=())
     # bg-only neighbour, so the arenas are one cluster only via coverage coupling (item 15).
     rev = build_scene(obs, sample=SampleKnowledge(zone_period=1.0))
-    assert cluster_of(rev, "e:1:d")["scan_refs"] == ["e:1:d", "e:2:d"]
-    assert _states(rev) == {Visibility.SEARCHED_NO_SIGNAL}
+    assert cluster_of(rev, "e:1:d")["scan_refs"] == ["e:1:d", "e:2:d", "e:3:d"]
+    assert Visibility.STRUCTURAL_ENDPOINT not in _states(rev)
+    assert Visibility.SEARCHED_NO_SIGNAL in _states(rev)
 
 
 def test_a_quasielastic_neighbour_blocks_a_low_band_but_earns_no_endpoint():
@@ -551,33 +592,40 @@ def test_a_quasielastic_neighbour_blocks_a_low_band_but_earns_no_endpoint():
     A quasielastic feature is diffusive scattering, not a Bragg response. It DOES obscure a
     low-energy peak, so an absence under it is uninformative (``blocked_unresolved``, priced at
     zero) — but it is no elastic line for a gapless branch to be swallowed by, so the declared
-    zone centre may not terminate the track there, and it is not a candidate reflection to be
-    localized against the lattice at all.
+    zone centre may not terminate the track there even when the track is a real descending one,
+    and it is not a candidate reflection to be localized against the lattice at all.
     """
-    obs = _endpoint_scene(neighbour="qe+bg", kinds=("quasielastic",), omega=0.4)
+    obs = _endpoint_scene(neighbour="qe+bg", kinds=("quasielastic",), omega=0.4, up_omega=1.3)
     rev = build_scene(obs, sample=SampleKnowledge(zone_period=1.0, reflections=(1.0,)))
 
-    # (b) the QE feature blocks the low-ω absence, and neither factor prices it.
-    assert _states(rev) == {Visibility.BLOCKED_UNRESOLVED}
+    # (b) the QE feature blocks the low-ω absence, and presence prices nothing.
+    assert Visibility.BLOCKED_UNRESOLVED in _states(rev)
     cl = cluster_of(rev, "e:1:d")
-    assert list(terms(cl, "presence").values()) == [0.0]
-    # (a) ... but the endpoint prerequisite is unmet, so the state is NOT terminated. An elastic
-    # neighbour under the same declaration is (the contrast is the whole finding).
+    assert list(terms(cl, "presence").values()) == [2 * PRESENCE_MATCH_NATS]
+    # (a) ... but the endpoint prerequisite is unmet, so the state is NOT terminated. The same
+    # descending track into an ELASTIC arena under the same declaration is (the contrast is the
+    # whole finding).
     assert Visibility.STRUCTURAL_ENDPOINT not in _states(rev)
-    assert _states(build_scene(_endpoint_scene(omega=0.4),
-                               sample=SampleKnowledge(zone_period=1.0))) == {
-        Visibility.STRUCTURAL_ENDPOINT}
+    assert _endpoints(build_scene(_endpoint_scene(omega=0.4, up_omega=1.3),
+                                  sample=SampleKnowledge(zone_period=1.0)))
     # (c) and it never enters the lattice classification — absent, not "unclassified", which keeps
     # its one meaning: an elastic component with nothing declared to compare it against.
     assert _classification(rev) == {}
 
 
-def test_a_mode_too_high_to_have_descended_to_zero_is_not_an_endpoint():
-    """The energy gate. A 3 meV mode at the arena next to the centre is three resolution widths
-    up: an acoustic branch's endpoint does not explain it away, and claiming otherwise would
-    exempt every unexplained absence that happened to sit beside a Bragg peak."""
-    rev = build_scene(_endpoint_scene(omega=3.0), sample=SampleKnowledge(zone_period=1.0))
-    assert _states(rev) == {Visibility.SEARCHED_NO_SIGNAL}
+def test_a_declared_slope_that_cannot_carry_the_track_to_zero_refuses_the_endpoint():
+    """Condition (d), and the only honest form of the old energy gate. "3 meV is too high to be an
+    acoustic endpoint" is not a statement the resolution can make — it is a statement about
+    DISPERSION, so it needs a declared slope. At 2 meV/rlu a branch sheds 0.2 meV over the 0.1 rlu
+    to the centre, which cannot account for 3 meV; with no slope declared the card's assertion that
+    this fold carries a gapless branch is what licenses the reading, and the scene says so rather
+    than substituting a resolution multiple for a dispersion bound."""
+    obs = _endpoint_scene(omega=3.0, up_omega=3.9)
+    bounded = build_scene(obs, sample=SampleKnowledge(zone_period=1.0, dispersion_slope_max=2.0))
+    assert Visibility.STRUCTURAL_ENDPOINT not in _states(bounded)
+    assert Visibility.SEARCHED_NO_SIGNAL in _states(bounded)
+    undeclared = build_scene(obs, sample=SampleKnowledge(zone_period=1.0))
+    assert _endpoints(undeclared)
 
 
 def test_an_observed_mode_can_never_be_refined_away():
@@ -585,14 +633,14 @@ def test_an_observed_mode_can_never_be_refined_away():
     hook that could rewrite ``observed`` could argue a real detection out of existence, and one
     that could rewrite ``censored`` could turn a coverage gap into a measurement."""
     liar = replace(FACTORS["zone_centre_approach"],
-                   refine_visibility=lambda report, view: Visibility.OBSERVED)
+                   refine_visibility=lambda report, alt, view: Visibility.OBSERVED)
     obs = _endpoint_scene()
     with pytest.raises(ValueError, match="manufacture a measurement"):
         build_scene(obs, factors=[FACTORS["presence"], liar],
                     sample=SampleKnowledge(zone_period=1.0))
     # A value that is not a visibility state at all fails the same way, naming the same factor —
     # not with the enum's own message, which names neither the factor nor the report.
-    garbage = replace(liar, refine_visibility=lambda report, view: "probably_fine")
+    garbage = replace(liar, refine_visibility=lambda report, alt, view: "probably_fine")
     with pytest.raises(ValueError, match="zone_centre_approach.*probably_fine"):
         build_scene(obs, factors=[FACTORS["presence"], garbage],
                     sample=SampleKnowledge(zone_period=1.0))
@@ -663,7 +711,8 @@ def test_undeclared_knowledge_is_inert_and_says_so():
     unclassified component is a question that was never asked, not an off-lattice answer."""
     rev = build_scene([_elastic_at(2.0)])
     assert rev.payload["sample_knowledge"] == {
-        "zone_period": None, "reflections": [], "lattice_epoch": None, "lattice": None,
+        "zone_period": None, "reflections": [], "dispersion_slope_max": None,
+        "lattice_epoch": None, "lattice": None,
         "degradations": ["no_declared_reflections", "no_declared_zone_period"]}
     assert _classification(rev) == {"e:1:d#elastic+bg#elastic": "unclassified"}
 
@@ -721,6 +770,183 @@ def test_neighbour_reports_are_computed_once_per_alternative():
 
 
 # ----------------------------------------------------------------------------
+# Part 6 — the path topology, the reach grammar and the detectability gates
+# ----------------------------------------------------------------------------
+def _spurion_at(h, omega=8.0, scan_ref="e:1:d"):
+    return mk_obs(scan_ref, [cand("stokes+bg", -10.0, omegas=(omega,))], q=q(h))
+
+
+def _empty_at(h, scan_ref, **kw):
+    return mk_obs(scan_ref, [cand("bg", -10.0, n_modes=0, omegas=())], q=q(h), **kw)
+
+
+def test_only_consecutive_arenas_judge_each_other():
+    """Review finding 3, as the regression the owner named. Under a radius in q, a and c stayed
+    "neighbours" after an intermediate scan b was inserted between them, so one absence was priced
+    twice — once against b and once against c, over the same stretch of path. Adjacency is now the
+    EDGE of the path, so inserting b replaces the (a, c) judgement with (a, b); no skip-neighbour
+    term survives."""
+    direct = cluster_of(build_scene([_spurion_at(1.0), _empty_at(1.2, "e:2:d")]), "e:1:d")
+    assert {r["neighbour"] for r in direct["visibility"]} == {"e:2:d"}
+    assert list(terms(direct, "presence").values()) == [PRESENCE_MISS_NATS]
+
+    inserted = cluster_of(build_scene([_spurion_at(1.0), _empty_at(1.1, "e:2:d"),
+                                       _empty_at(1.2, "e:3:d")]), "e:1:d")
+    # ONE judgement, against the arena the path actually reaches next — not two. (e:3:d holds no
+    # component and no mode reaches it, so it is a cluster of its own; what matters here is that
+    # the mode at e:1:d no longer reports against it.)
+    assert {r["neighbour"] for r in inserted["visibility"]} == {"e:2:d"}
+    assert list(terms(inserted, "presence").values()) == [PRESENCE_MISS_NATS]
+
+
+def test_a_constant_h_path_along_k_orders_and_couples_like_any_other():
+    """The failure that made h-as-path-coordinate a P0: a campaign walking (2,2,0) → (2,0,0) moves
+    along k at constant h, so ranking on h collapses every arena onto one point — no ordering, and
+    under a |Δh| radius every arena "adjacent" to every other. The path is derived from the q set,
+    so this one orders and couples exactly like an h scan."""
+    obs = [mk_obs(f"e:{i}:d", [cand("stokes+bg", -10.0, omegas=(5.0 + 0.1 * i,))],
+                  q=(2.0, 2.0 - 0.1 * i, 0.0)) for i in range(3)]
+    cl = cluster_of(build_scene(obs), "e:0:d")
+    assert cl["scan_refs"] == ["e:0:d", "e:1:d", "e:2:d"]
+    # Consecutive along k, so the ends do not judge each other.
+    assert {(r["scan_ref"], r["neighbour"]) for r in cl["visibility"]} == {
+        ("e:0:d", "e:1:d"), ("e:1:d", "e:0:d"), ("e:1:d", "e:2:d"), ("e:2:d", "e:1:d")}
+
+
+def test_declared_geometry_is_read_along_the_path_axis_not_along_h():
+    """The same failure, on the declared side. On a path along k every arena shares h = 2.0, so a
+    reflection declared at 2.0 would make EVERY arena Bragg-compatible if the scene compared h.
+    The coordinate is the rlu along the axis the path runs on, so the declaration lands where the
+    scientist meant it."""
+    obs = [mk_obs(f"e:{i}:d", [cand("elastic+bg", -10.0, n_modes=0, omegas=(), extra=("elastic",))],
+                  q=(2.0, 0.1 * i, 0.0)) for i in range(3)]
+    on_h = build_scene(obs, sample=SampleKnowledge(reflections=(2.0,)))
+    assert set(_classification(on_h, "e:0:d").values()) == {"off_lattice"}
+    on_k = build_scene(obs, sample=SampleKnowledge(reflections=(0.0,)))
+    assert _classification(on_k, "e:0:d") == {"e:0:d#elastic+bg#elastic": "bragg_compatible",
+                                              "e:1:d#elastic+bg#elastic": "off_lattice",
+                                              "e:2:d#elastic+bg#elastic": "off_lattice"}
+
+
+def test_a_scattered_q_set_fails_closed_with_a_recorded_reason():
+    """The fail-closed arm. Three q that are not a path have no ordering, so there is no honest
+    adjacency to derive: every arena is its own cluster, nothing cross-arena is priced, and the
+    build says why rather than inventing an order and pricing absences against it."""
+    obs = [_spurion_at(1.0), mk_obs("e:2:d", [cand("bg", -10.0, n_modes=0, omegas=())],
+                                    q=(1.1, 0.4, 0.0)),
+           mk_obs("e:3:d", [cand("bg", -10.0, n_modes=0, omegas=())], q=(1.2, -0.3, 0.2))]
+    rev = build_scene(obs)
+    assert [c["scan_refs"] for c in rev.payload["clusters"]] == [["e:1:d"], ["e:2:d"], ["e:3:d"]]
+    assert "path_topology_unavailable" in rev.payload["sample_knowledge"]["degradations"]
+
+
+def test_an_off_axis_path_keeps_its_topology_and_loses_its_declared_geometry():
+    """A collinear path that is not a reciprocal axis is still a path — it orders and couples. What
+    it cannot do is carry the card's SCALAR zone period and reflection positions, which are rlu
+    along an axis: (2,2,0) → (2,0,0) is honest here only because it runs along k, and a diagonal
+    is not. The capability goes inert with a reason instead of picking a component to pretend
+    with."""
+    obs = [mk_obs(f"e:{i}:d", [cand("elastic+bg", -10.0, n_modes=0, omegas=(), extra=("elastic",))],
+                  q=(1.0 + 0.1 * i, 1.0 + 0.1 * i, 0.0)) for i in range(3)]
+    rev = build_scene(obs, sample=SampleKnowledge(zone_period=1.0, reflections=(1.0,)))
+    assert cluster_of(rev, "e:0:d")["scan_refs"] == ["e:0:d", "e:1:d", "e:2:d"]
+    assert rev.payload["sample_knowledge"]["degradations"] == [
+        "lattice_geometry_inapplicable_on_path", "zone_geometry_inapplicable_on_path"]
+    assert set(_classification(rev, "e:0:d").values()) == {"path_axis_unavailable"}
+
+
+@pytest.mark.parametrize("offset,collinear", [(0.005, True), (0.02, False)])
+def test_collinearity_is_judged_at_the_q_positioning_scale(offset, collinear):
+    """The tolerance is a positioning tolerance, not a grid one: sub-step jitter about a line is
+    the same path, and a deliberate step onto another row of the 0.05 rlu HKL grid is not."""
+    obs = [_spurion_at(1.0), mk_obs("e:2:d", [cand("bg", -10.0, n_modes=0, omegas=())],
+                                    q=(1.1, offset, 0.0)),
+           mk_obs("e:3:d", [cand("bg", -10.0, n_modes=0, omegas=())], q=(1.2, 0.0, 0.0))]
+    degradations = build_scene(obs).payload["sample_knowledge"]["degradations"]
+    assert ("path_topology_unavailable" not in degradations) is collinear
+
+
+def test_a_declared_slope_links_a_track_the_resolution_alone_would_break():
+    """Review finding 5. Two arenas 0.1 rlu apart hold peaks 2 meV apart, which is twice the
+    resolution — so nearest-ω chaining on the resolution width calls them different tracks. But
+    energy resolution says how well two peaks are TOLD APART and nothing about how far a branch
+    MOVED: at a declared 25 meV/rlu a branch sheds 2.5 meV over that edge, and the continuation is
+    reachable. Only a declared dispersion support may say so."""
+    obs = [mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(4.0,))], q=q(1.0)),
+           mk_obs("e:2:d", [cand("stokes+bg", -10.0, omegas=(6.0,))], q=q(1.1))]
+    blind, = cluster_of(build_scene(obs), "e:1:d")["alternatives"]
+    assert blind["links"] == []
+    steep, = cluster_of(build_scene(obs, sample=SampleKnowledge(dispersion_slope_max=25.0)),
+                        "e:1:d")["alternatives"]
+    assert steep["links"] == [["e:1:d#stokes+bg#0", "e:2:d#stokes+bg#0"]]
+    assert steep["factor_terms"]["presence"] == 2 * PRESENCE_MATCH_NATS
+
+
+def test_without_a_declared_slope_a_neighbour_holding_other_peaks_charges_nothing():
+    """The other half of finding 5, and the one that used to charge. The neighbour looked and holds
+    a peak — at 2 meV, not at 8. Charging the 8 meV mode as missing asserts that the track should
+    have reappeared near where it was, which is the smoothness assumption an undeclared dispersion
+    gives the scene no right to make. An absent partner at ANY ω is a different fact, and a
+    neighbour with no modes at all is still charged."""
+    seen = mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(8.0,))], q=q(1.0))
+    holds_other = mk_obs("e:2:d", [cand("stokes+bg", -10.0, omegas=(2.0,))], q=q(1.1))
+    cl = cluster_of(build_scene([seen, holds_other]), "e:1:d")
+    report, = [r for r in cl["visibility"] if r["component_id"].startswith("e:1:d")]
+    assert report["visibility"] == Visibility.BLOCKED_UNRESOLVED
+    assert report["reason"] == "reachability_unknown"
+    assert list(terms(cl, "presence").values()) == [0.0]
+    # Declare the support and the same silence is evidence again.
+    declared = cluster_of(build_scene([seen, holds_other], sample=SLOPE), "e:1:d")
+    # Both silences are evidence now: neither arena holds the other's peak.
+    assert list(terms(declared, "presence").values()) == [2 * PRESENCE_MISS_NATS]
+    # ... and an entirely empty neighbour never needed the declaration: nothing was there at any ω.
+    empty = cluster_of(build_scene([seen, _empty_at(1.1, "e:2:d")]), "e:1:d")
+    assert list(terms(empty, "presence").values()) == [PRESENCE_MISS_NATS]
+
+
+def _anti_stokes_only(scan_ref, h, temperature):
+    """A neighbour whose kept axis lies entirely on the ENERGY-GAIN side."""
+    return _empty_at(h, scan_ref, window=(-10.0, -0.5), temperature=temperature)
+
+
+def test_a_bose_dead_anti_stokes_band_cannot_exclude_anything():
+    """Review finding 2, warm-and-cold. The neighbour looked at |ω| = 5 meV — but only from the
+    anti-Stokes side, whose intensity is the Stokes side's times exp(−ω/k_BT). At 300 K that is
+    0.82 and the absence is real evidence; at 10 K it is 0.003, so the band could not have shown
+    the mode however long anyone counted, and calling it searched-and-empty would price a
+    measurement nobody could make."""
+    seen = mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(5.0,))], q=q(1.0))
+    warm = cluster_of(build_scene([seen, _anti_stokes_only("e:2:d", 1.1, 300.0)]), "e:1:d")
+    assert list(terms(warm, "presence").values()) == [PRESENCE_MISS_NATS]
+
+    cold = cluster_of(build_scene([seen, _anti_stokes_only("e:2:d", 1.1, 10.0)]), "e:1:d")
+    report, = [r for r in cold["visibility"] if r["component_id"].startswith("e:1:d")]
+    assert report["visibility"] == Visibility.BLOCKED_UNRESOLVED
+    assert report["reason"] == "bose_dead"
+    assert list(terms(cold, "presence").values()) == [0.0]
+    # An unknown temperature establishes nothing either, and says which of the two it is.
+    unknown = cluster_of(build_scene([seen, _anti_stokes_only("e:2:d", 1.1, None)]), "e:1:d")
+    assert [r["reason"] for r in unknown["visibility"]
+            if r["component_id"].startswith("e:1:d")] == ["bose_unknown"]
+
+
+@pytest.mark.parametrize("exposure,reason", [
+    (1.0, None), (0.5, None), (0.05, "insufficient_detection_power"),
+    (None, "detection_power_unknown")])
+def test_absence_is_evidence_only_from_a_comparably_deep_look(exposure, reason):
+    """The counting-power half of finding 2. A glance that saw nothing is not the measurement a
+    long count that saw nothing is, and geometric inclusion cannot tell them apart. Comparable is
+    order-of-magnitude (``DETECT_EXPOSURE_RATIO``), not equal — half the exposure still excludes,
+    a twentieth does not, and an unrecorded exposure establishes nothing at all."""
+    seen = mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(5.0,))], q=q(1.0))
+    cl = cluster_of(build_scene([seen, _empty_at(1.1, "e:2:d", exposure=exposure)]), "e:1:d")
+    report, = [r for r in cl["visibility"] if r["component_id"].startswith("e:1:d")]
+    assert report["reason"] == reason
+    assert list(terms(cl, "presence").values()) == \
+        [PRESENCE_MISS_NATS if reason is None else 0.0]
+
+
+# ----------------------------------------------------------------------------
 # Determinism and the registry declaration
 # ----------------------------------------------------------------------------
 def test_determinism_with_the_live_registry():
@@ -748,7 +974,7 @@ def test_the_live_registry_is_the_four_physics_factors():
     assert manifest["zone_centre_approach"]["roles"] == ["refine_visibility", "degradations"]
     assert manifest["reciprocal_lattice_localization"]["roles"] == ["classify", "degradations"]
     assert manifest["zone_centre_approach"]["consumes"] == [
-        "q", "omega", "footprint", "sample.zone_period"]
+        "q", "omega", "footprint", "links", "sample.zone_period", "sample.dispersion_slope_max"]
     assert manifest["reciprocal_lattice_localization"]["consumes"] == ["q", "sample.reflections"]
 
 

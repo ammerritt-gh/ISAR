@@ -49,8 +49,8 @@ from isar.schema.steering import CANONICAL_MASTER, EVIDENCE_SINKS
 from .factors import (FACTORS, SceneFactor, factor_manifest, neighbour_reports,
                       registry_fingerprint, validate_factor)
 from .model import (NON_MODE_ID_TAGS, CandidateRow, ComponentObservation, Footprint,
-                    SampleKnowledge, SceneObservation, Visibility, canonical_bytes, digest_bytes,
-                    footprint_of, is_mode, link_tol, q_adjacent)
+                    PathTopology, SampleKnowledge, SceneObservation, Visibility, canonical_bytes,
+                    digest_bytes, footprint_of, is_mode, link_reach, path_adjacent, path_topology)
 
 SCENE_SCHEMA = "isar.scene-revision/1"
 
@@ -232,7 +232,10 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
     declared = SampleKnowledge() if sample is None else sample
 
     obs = _validated(observations)
-    footprints = {o.scan_ref: footprint_of(o) for o in obs}
+    # The ordered path FIRST: every adjacency, every declared-geometry coordinate and every edge
+    # length downstream is read off it, and it is a property of the arena SET (review finding 3).
+    topology = path_topology({o.scan_ref: o.q for o in obs})
+    footprints = {o.scan_ref: footprint_of(o, topology) for o in obs}
 
     scoring, non_scoring = _split_by_evidence(obs)
     # Order matters and is the contract: evidence split → margin pruning → components of the
@@ -280,7 +283,7 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
         # moves the revision digest even where it changes no number — a scene scored against a
         # zone period is not the same scene as one scored blind to it.
         "sample_knowledge": {**declared.to_dict(),
-                             "degradations": _degradations(factor_list, declared)},
+                             "degradations": _degradations(factor_list, declared, topology)},
         "observations": [{"scan_ref": o.scan_ref, "fingerprint": o.fingerprint,
                           "candidates": [c.to_dict() for c in o.candidates]} for o in obs],
         "non_scoring": non_scoring,
@@ -342,16 +345,37 @@ def _declared(factor_list) -> tuple:
     return tuple(sorted([*factor_list, LINKAGE_PRIOR], key=lambda f: f.name))
 
 
-def _degradations(factor_list, declared: SampleKnowledge) -> list[str]:
-    """Every factor's reasons for being inert under ``declared``, sorted and deduplicated.
+def _degradations(factor_list, declared: SampleKnowledge, topology: PathTopology) -> list[str]:
+    """Every reason a declared capability was inert on this scene, sorted and deduplicated.
 
     The honesty this buys: a capability with nothing declared to work on must neither raise nor
     quietly change what the scene believes, so the only trace it can leave is a ledger entry.
     Without one, a revision built against a card that declares no zone period is
     indistinguishable from one where the zone factor ran and found no endpoints.
+
+    Two of the reasons are the builder's rather than a factor's, because they are facts about the
+    arena SET that no ``degradations(sample)`` hook can see (review finding 3):
+
+    * ``path_topology_unavailable`` — the q set is not a path, so there is no ordering and no
+      adjacency. The scene still classifies and localizes per arena; it prices no cross-arena
+      absence at all, which is the fail-closed arm rather than a guessed ordering.
+    * ``zone_geometry_inapplicable_on_path`` / ``lattice_geometry_inapplicable_on_path`` — the
+      path is collinear but does not run along a reciprocal axis, so the card's SCALAR period and
+      reflection positions (declared in rlu along an axis) have no coordinate here. Recorded only
+      when the corresponding declaration exists, since an undeclared one already names itself.
     """
-    return sorted({reason for f in factor_list if f.degradations is not None
-                   for reason in f.degradations(declared)})
+    reasons = {reason for f in factor_list if f.degradations is not None
+               for reason in f.degradations(declared)}
+    if not topology.collinear:
+        reasons.add("path_topology_unavailable")
+    elif topology.index and topology.axis is None:
+        # ``topology.index`` non-empty: with no placeable arena at all there is no path to be off
+        # the axis of, and the per-component ``unplaceable_q`` state already names that.
+        if declared.zone_period is not None:
+            reasons.add("zone_geometry_inapplicable_on_path")
+        if declared.reflections:
+            reasons.add("lattice_geometry_inapplicable_on_path")
+    return sorted(reasons)
 
 
 def _score_span(factor_list) -> float | None:
@@ -697,13 +721,19 @@ def _discarded_bound(n_dropped: int, lowest_base: float, leader_base: float,
 # 6b. Linkage variants (the connectivity variable)
 # ----------------------------------------------------------------------------
 def _default_links(alt: SceneAlternative, view: ClusterView) -> tuple[tuple[str, str], ...]:
-    """Nearest-ω chaining between adjacent arenas: the linkage assumed unless a factor proposes.
+    """Nearest-ω chaining between CONSECUTIVE arenas: the linkage assumed unless a factor proposes.
 
-    Deterministic and greedy: for each adjacent arena pair in scan_ref order, each mode of the
-    lower arena takes the closest unclaimed mode of the higher one within ``link_tol`` (ties by
-    component id). A mode with no partner in tolerance stays UNLINKED rather than being forced
-    onto a distant one — a forced link would invent a track the data does not support, and an
-    unlinked mode is exactly what presence prices as an unsupported claim.
+    Deterministic and greedy: for each consecutive arena pair on the derived path (review finding
+    3) in scan_ref order, each mode of the lower arena takes the closest unclaimed mode of the
+    higher one within ``link_reach`` (ties by component id). A mode with no partner in reach stays
+    UNLINKED rather than being forced onto a distant one — a forced link would invent a track the
+    data does not support, and an unlinked mode is exactly what presence prices as an unsupported
+    claim.
+
+    Reach is the resolution floor PLUS the declared dispersion slope over the edge (review finding
+    5). Chaining on the resolution width alone said a branch may not move further between two q
+    than two peaks must be apart to be told apart — an energy-resolution number standing in for a
+    dispersion bound, which is not a bound on it at all.
     """
     chosen: dict[str, list] = {}
     for c in alt.components:
@@ -713,9 +743,9 @@ def _default_links(alt: SceneAlternative, view: ClusterView) -> tuple[tuple[str,
         for b in range(a + 1, len(view.scan_refs)):
             i, j = view.scan_refs[a], view.scan_refs[b]
             fp_i, fp_j = view.footprints[i], view.footprints[j]
-            if not q_adjacent(fp_i.q, fp_j.q):
+            if not path_adjacent(fp_i, fp_j):
                 continue
-            tol = link_tol(fp_i, fp_j)
+            tol = link_reach(fp_i, fp_j, view.sample.dispersion_slope_max)
             partners = _placeable_modes(chosen.get(j, ()))
             taken = set()
             for m in _placeable_modes(chosen.get(i, ())):

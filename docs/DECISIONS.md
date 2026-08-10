@@ -1763,9 +1763,15 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   classified at all: a phonon at a reflection's q is a phonon.
   **(c) `structural_endpoint` is assigned by the zone-centre factor, and it carries no penalty by
   EMERGENCE rather than by exception.** `zone_centre_approach` reinterprets one neighbour report
-  when four things hold: a zone period is declared, the neighbouring arena sits at a centre of it,
-  the elastic line is chosen there, and the mode's energy is within a plausible descent to zero
-  over the linkage tolerance. `blocked_unresolved` says *unresolved pending better data* — count
+  when a zone period is declared and the alternative READS the mode as that branch terminating: it
+  is the terminal node of a linked track, the track descends toward the centre over its final edge,
+  the declared geometry applies on the derived path, and a contiguous run of covered,
+  elastic-bearing consecutive arenas reaches the fold (a declared dispersion slope, where there is
+  one, must be able to carry the remaining energy to zero). The original PR 3b predicate — a low
+  |ω| next to a centre — was granted from energy alone and so exempted isolated features and flat
+  low-lying tracks that the declared gapless physics says nothing about; the reading competes with
+  the same assignment's other linkages and is priced against them instead.
+  `blocked_unresolved` says *unresolved pending better data* — count
   longer and the answer may change; `structural_endpoint` says *the declared physics terminates
   the track here* — nothing is missing, and no amount of counting will produce a peak. The
   distinction is what an operator acts on. Presence and connectivity key on `searched_no_signal`

@@ -65,7 +65,11 @@ def scene_observation(name: str, h: float, *, scan_ref: str | None = None) -> Sc
         energy_bands=tuple(tuple(b) for b in _energy_bands(ctx.x, ctx.mask, ctx.center)),
         gauss_fwhm=float(ctx.gauss_fwhm),
         lorentz_fwhm=None if ctx.lorentz_fwhm is None else float(ctx.lorentz_fwhm),
-        effective_exposure=None,
+        # Every node of a synthetic world is generated with the same counting statistics, so the
+        # arenas carry equal exposure — which is what the scene's detection-power gate needs to
+        # see before an absence at one node may exclude a mode seen at another. Left ``None`` the
+        # gate would (correctly) refuse to charge anything anywhere on these worlds.
+        effective_exposure=1.0,
         background=None,
         best_label=sel.best,
         candidates=tuple(CandidateRow.from_dict(r)

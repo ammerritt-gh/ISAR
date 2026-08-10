@@ -40,18 +40,18 @@ def components(n_modes, extra=()):
 
 
 def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), bands=None, q=(1.0, 0.0, 0.0),
-           status="complete", fallback=None, sink=None):
+           status="complete", fallback=None, sink=None, temperature=300.0, exposure=1.0):
     rows = tuple(
         CandidateRow(label=label, k=None, n_modes=n_modes, log_evidence=lnz,
                      evidence_method="laplace", posterior_probability=None, usable=usable,
                      identity=identity, variant=None, omegas=omegas,
                      components=components(len(omegas), extra))
         for label, lnz, n_modes, omegas, usable, identity, extra in candidates)
-    obs = SceneObservation(scan_ref=scan_ref, q=q, temperature_K=300.0, energy_window=window,
+    obs = SceneObservation(scan_ref=scan_ref, q=q, temperature_K=temperature, energy_window=window,
                            energy_bands=(None if window is None
                                          else (tuple(window),) if bands is None
                                          else tuple(tuple(b) for b in bands)),
-                           gauss_fwhm=1.0, lorentz_fwhm=None, effective_exposure=1.0,
+                           gauss_fwhm=1.0, lorentz_fwhm=None, effective_exposure=exposure,
                            background=0.5, best_label=rows[0].label if rows else None,
                            candidates=rows, evidence_comparison_status=status,
                            selection_fallback=fallback, arena_fingerprint=None,

@@ -229,17 +229,24 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   components), and **degradations** (say why the factor had nothing declared to work with).
 - **visibility state** — why a hypothesized excitation is, or is not, present in a neighbouring scan.
   **observed**: something was seen there. **searched_no_signal**: that scan looked at that energy and
-  found nothing — the *only* absence that counts against a claim. **censored_outside_footprint**: that
-  scan never looked there, so it is no evidence either way. **blocked_unresolved**: the elastic line
-  (or a stronger neighbour) made the region uninformative — look again with better data.
-  **structural_endpoint**: see below.
+  found nothing — the *only* absence that counts against a claim, and only after the detectability
+  gate. **censored_outside_footprint**: that scan never looked there, so it is no evidence either
+  way. **blocked_unresolved**: something made the region uninformative — the elastic line, an
+  anti-Stokes band too Bose-suppressed to have shown anything, a look too shallow to compare, or a
+  continuation nothing declared says where to expect — look again with better data, and the
+  report's `reason` says which. **structural_endpoint**: see below.
 - **structural endpoint** — an absence the *declared physics* explains, so nothing is missing. A
   gapless branch reaches zero energy at a zone centre and disappears under the elastic response; a
   scan there sees nothing not because the branch is absent but because it has run out of energy to
-  have. Distinct from **blocked_unresolved** in what you should do: blocked means count longer,
+  have. It is granted to a READING, not to a mode: the scene must be looking at a linked track that
+  descends toward a declared fold through a run of elastic-bearing scans. A lone low-energy feature
+  beside a zone centre gets no such explanation, and neither does a flat track. Distinct from
+  **blocked_unresolved** in what you should do: blocked means count longer,
   structural endpoint means no amount of counting will produce a peak. Never penalized.
 - **sample knowledge** — what the scientist DECLARED about the sample, read off the experiment card:
-  the reduced-zone period, the Bragg reflections along the scan path, and the lattice epoch in force.
+  the reduced-zone period, the Bragg reflections along the scan path, the steepest dispersion slope
+  any branch may have (meV per rlu — the only thing that says how far a track could have moved
+  between two q, which the energy resolution does not), and the lattice epoch in force.
   Never inferred from the data. Declaring nothing is allowed; the capabilities that need it then go
   inert and say so in the revision's `sample_knowledge.degradations`.
 - **Bragg (at the scene)** — whether an elastic feature sits where a reflection was declared is a

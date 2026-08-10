@@ -11,7 +11,6 @@ import pytest
 
 from isar.analyze import verdict as _verdict
 from isar.scene.build import build_scene
-from isar.scene.factors import ZONE_CENTRE_Q_TOL
 from isar.scene.model import SampleKnowledge, Visibility
 
 from ._world_helpers import run_selection, scene_observation
@@ -93,8 +92,10 @@ def test_the_scene_replays_byte_identically_from_the_same_seed(crossing_scene, c
 # branch alone. That is the world's whole point, and the scene has to price the disappearance
 # without inventing a phonon at zero.
 ENDPOINT_NODES = (2.00, 2.05, 2.10, 2.15, 2.20)
-ZONE_CENTRE_REF = "world:2.00:d"
 ENDPOINT_SAMPLE = SampleKnowledge(zone_period=1.0, reflections=(2.0,))
+# The same path with a period whose folds (1.8, 2.7) miss it entirely — the control for "the
+# exemption is anchored to a declared fold, not to being low-energy near a Bragg peak".
+OFF_FOLD_SAMPLE = SampleKnowledge(zone_period=0.9, reflections=(2.0,))
 
 
 @pytest.fixture(scope="module")
@@ -111,28 +112,37 @@ def _leading(cluster):
     return max(cluster["alternatives"], key=lambda a: a["posterior"])
 
 
-def _at_zone_centre(scan_ref):
-    """``ENDPOINT_SAMPLE``'s period is 1.0, so the centres are the integers."""
-    h = float(scan_ref.split(":")[1])
-    return abs(h - round(h)) <= ZONE_CENTRE_Q_TOL
-
-
 @pytest.mark.slow
 def test_the_endpoint_world_terminates_the_acoustic_track_at_the_declared_zone_centre(
         endpoint_scene):
     """The declared physics, doing the work the data cannot. The acoustic branch really is there
     at every one of these H; below ~2.15 it is inside the elastic response and no amount of
     counting would separate it. Told where the zone centre is, the scene says the track ENDS
-    there rather than that it went missing."""
+    there rather than that it went missing.
+
+    What the world actually delivers, and what this therefore pins: the local layer resolves the
+    acoustic branch only from H = 2.15 (0.741 meV) outwards, so the LINKED track is the two nodes
+    2.20 → 2.15, descending toward the centre. The endpoint is granted at the terminal node's
+    centre-ward edge — against the CONSECUTIVE arena 2.10, not against 2.00 four grid steps away
+    (review finding 3) — and it is granted because the contiguous run 2.10 → 2.05 → 2.00 is
+    covered, elastic-bearing, and ends on the declared fold."""
     cl, = endpoint_scene.payload["clusters"]
     assert cl["scan_refs"] == [f"world:{h:.2f}:d" for h in ENDPOINT_NODES]
     endpoints = [r for r in cl["visibility"]
                  if r["visibility"] == Visibility.STRUCTURAL_ENDPOINT]
     assert endpoints, "no track terminated at the zone centre"
     for r in endpoints:
-        assert r["neighbour"] == ZONE_CENTRE_REF        # zone-local, by construction
+        assert r["scan_ref"] == "world:2.15:d"          # the terminal node of the resolved track
+        assert r["neighbour"] == "world:2.10:d"         # its centre-ward path edge
         assert r["elastic_present"] is True             # there IS an elastic response to hide in
         assert abs(r["omega"]) < 2.0                    # the acoustic branch, not the optic one
+    # A reading of the LINKAGE, not of one mode's energy: the track it terminates is really there,
+    # and it continues away from the centre into H = 2.20. Asserted on the linkage rather than on
+    # a candidate label, because which 2-mode reading of H = 2.15 wins (with or without its own
+    # elastic term) is the local layer's business and not this claim's.
+    endpoint, = endpoints
+    partners = [b for a, b in _leading(cl)["links"] if a == endpoint["component_id"]]
+    assert [p for p in partners if p.startswith("world:2.20:d#")], _leading(cl)["links"]
 
 
 @pytest.mark.slow
@@ -167,15 +177,24 @@ def test_the_endpoint_says_what_blocked_unresolved_could_not(endpoint_arenas, en
 
 
 @pytest.mark.slow
-def test_the_zone_centre_exemption_does_not_spread_to_the_rest_of_the_path(endpoint_scene):
-    """The control the exemption needs to be worth anything. The same acoustic track disappears
-    into arenas that are equally covered and equally elastic-bearing but are NOT zone centres,
-    and those silences are still evidence."""
+def test_the_zone_centre_exemption_does_not_spread_to_the_rest_of_the_path(endpoint_arenas,
+                                                                          endpoint_scene):
+    """The control the exemption needs to be worth anything: it is anchored to a DECLARED fold and
+    to nothing else. Re-scored with a period whose folds (1.8, 2.7) miss this stretch of path, the
+    identical arenas, the identical descending track and the identical elastic responses produce
+    NO endpoint — the same absence goes back to being unresolved, which is what "look again with
+    better data" means. If proximity to a Bragg peak or low energy could buy the reading, this
+    scene would carry one."""
     cl, = endpoint_scene.payload["clusters"]
-    off_centre = [r for r in cl["visibility"]
-                  if r["visibility"] == Visibility.SEARCHED_NO_SIGNAL and abs(r["omega"]) < 2.0]
-    assert off_centre, "the acoustic track never went missing anywhere off the zone centre"
-    assert all(not _at_zone_centre(r["neighbour"]) for r in off_centre)
+    terminated = {(r["component_id"], r["neighbour"]) for r in cl["visibility"]
+                  if r["visibility"] == Visibility.STRUCTURAL_ENDPOINT}
+    assert terminated
+
+    off_fold, = build_scene(endpoint_arenas, sample=OFF_FOLD_SAMPLE).payload["clusters"]
+    assert not [r for r in off_fold["visibility"]
+                if r["visibility"] == Visibility.STRUCTURAL_ENDPOINT]
+    assert {(r["component_id"], r["neighbour"]) for r in off_fold["visibility"]
+            if r["visibility"] == Visibility.BLOCKED_UNRESOLVED} >= terminated
 
 
 @pytest.mark.slow

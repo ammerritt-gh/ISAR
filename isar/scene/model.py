@@ -16,6 +16,7 @@ vectors, no covariances, no raw counts and no likelihood callables, so no scene 
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 from dataclasses import asdict, dataclass
@@ -62,16 +63,25 @@ class SampleKnowledge:
     reflections from the period, from integer indices, from a space group, or from a
     structure-factor rule — the only source is the declaration.
 
+    ``dispersion_slope_max`` is the steepest |dω/dq| the scientist declares any branch of this
+    sample can have, in meV per rlu. It is the ONLY thing that makes a track's continuation
+    *reachable* over a finite Δq (review finding 5): energy resolution bounds how well two peaks
+    are told apart, and bounds nothing at all about how far a dispersing branch moved between two
+    q. Undeclared, reachability is UNKNOWN and the scene must fail toward not charging an absence,
+    because "the track should have reappeared at ω ≈ ω_m" is exactly the smoothness assumption a
+    scene with no declared dispersion support may not invent.
+
     ``lattice_epoch``/``lattice`` record WHICH lattice interpretation was current when the scene
     was built (``card.state.lattice_epochs``), so a revision cannot be replayed against a
     different one without the fingerprint saying so. Nothing consumes them yet.
     ponytail: they become load-bearing when multi-D geometry lands — declared HKL reflections
     projected onto the scan path through the epoch's lattice and orientation is the upgrade
-    path, and it is the reason the scalar ``reflections`` here are path-coordinate rlu.
+    path, and it is the reason the scalar ``reflections`` here are axis rlu.
     """
 
     zone_period: float | None = None
     reflections: tuple[float, ...] = ()
+    dispersion_slope_max: float | None = None
     lattice_epoch: int | None = None
     lattice: tuple[float, ...] | None = None
 
@@ -84,6 +94,10 @@ class SampleKnowledge:
                                                  and self.zone_period > 0.0):
             raise ValueError(f"sample zone_period must be a finite positive rlu period, got "
                              f"{self.zone_period!r}")
+        if self.dispersion_slope_max is not None and not (
+                math.isfinite(self.dispersion_slope_max) and self.dispersion_slope_max > 0.0):
+            raise ValueError(f"sample dispersion_slope_max must be a finite positive meV per rlu, "
+                             f"got {self.dispersion_slope_max!r}")
         if not all(math.isfinite(r) for r in self.reflections):
             raise ValueError(f"sample reflections must all be finite rlu positions, got "
                              f"{list(self.reflections)!r}")
@@ -98,6 +112,7 @@ class SampleKnowledge:
     def to_dict(self) -> dict:
         return {"zone_period": self.zone_period,
                 "reflections": list(self.reflections),
+                "dispersion_slope_max": self.dispersion_slope_max,
                 "lattice_epoch": self.lattice_epoch,
                 "lattice": None if self.lattice is None else list(self.lattice)}
 
@@ -423,6 +438,14 @@ class Footprint:
     the look was. A footprint carrying only the Gaussian width would let a projection call a
     region "searched" on the wrong resolution, and one carrying no exposure could not tell a
     long look that saw nothing from a glance that saw nothing.
+
+    ``path_index`` and ``axis_coordinate`` are this arena's place in the scene's derived path
+    topology (:func:`path_topology`), stamped by the builder because they are facts about the
+    arena SET rather than about one observation. ``path_index`` is the ordinal of its node along
+    the ordered path — the only thing adjacency is ever read from — and ``axis_coordinate`` is its
+    position in rlu along the reciprocal axis the path runs on, which is the only coordinate the
+    card's scalar zone period and reflection list can be compared against. Both are ``None`` when
+    the topology could not be derived, and every consumer then couples and classifies nothing.
     """
 
     scan_ref: str
@@ -433,6 +456,8 @@ class Footprint:
     gauss_fwhm: float | None
     lorentz_fwhm: float | None = None
     effective_exposure: float | None = None
+    path_index: int | None = None
+    axis_coordinate: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -444,6 +469,8 @@ class Footprint:
             "gauss_fwhm": self.gauss_fwhm,
             "lorentz_fwhm": self.lorentz_fwhm,
             "effective_exposure": self.effective_exposure,
+            "path_index": self.path_index,
+            "axis_coordinate": self.axis_coordinate,
         }
 
     @classmethod
@@ -457,10 +484,12 @@ class Footprint:
             gauss_fwhm=_opt_float(d.get("gauss_fwhm")),
             lorentz_fwhm=_opt_float(d.get("lorentz_fwhm")),
             effective_exposure=_opt_float(d.get("effective_exposure")),
+            path_index=None if d.get("path_index") is None else int(d["path_index"]),
+            axis_coordinate=_opt_float(d.get("axis_coordinate")),
         )
 
 
-def footprint_of(obs: SceneObservation) -> Footprint:
+def footprint_of(obs: SceneObservation, topology: "PathTopology | None" = None) -> Footprint:
     """Fold an observation's KEPT energy runs onto intrinsic ``|ω|``. Pure, deterministic.
 
     Each signed run ``(lo, hi)`` covers the Stokes side over ``[max(0, lo), hi]`` (when ``hi > 0``)
@@ -475,7 +504,7 @@ def footprint_of(obs: SceneObservation) -> Footprint:
     scan with no usable calibration zero has no placeable footprint at all.
     """
     if obs.energy_bands is None:
-        return _footprint(obs, ())
+        return _footprint(obs, (), topology)
     intervals = []
     for band in obs.energy_bands:
         lo, hi = float(band[0]), float(band[1])
@@ -493,14 +522,18 @@ def footprint_of(obs: SceneObservation) -> Footprint:
         if not sides:                            # a hole between two kept runs: no coverage at all
             continue
         bands.append(FootprintBand(left, right, "both" if len(sides) == 2 else sides[0]))
-    return _footprint(obs, tuple(bands))
+    return _footprint(obs, tuple(bands), topology)
 
 
-def _footprint(obs: SceneObservation, bands: tuple[FootprintBand, ...]) -> Footprint:
+def _footprint(obs: SceneObservation, bands: tuple[FootprintBand, ...],
+               topology: "PathTopology | None") -> Footprint:
     return Footprint(scan_ref=obs.scan_ref, q=obs.q, bands=bands,
                      temperature_K=obs.temperature_K, background=obs.background,
                      gauss_fwhm=obs.gauss_fwhm, lorentz_fwhm=obs.lorentz_fwhm,
-                     effective_exposure=obs.effective_exposure)
+                     effective_exposure=obs.effective_exposure,
+                     path_index=None if topology is None else topology.index.get(obs.scan_ref),
+                     axis_coordinate=(None if topology is None
+                                      else topology.axis_coordinate.get(obs.scan_ref)))
 
 
 # ----------------------------------------------------------------------------
@@ -510,11 +543,19 @@ def _footprint(obs: SceneObservation, bands: tuple[FootprintBand, ...]) -> Footp
 # moves the registry fingerprint. They live here rather than in ``factors``/``build`` because
 # both sides need the same numbers and a second copy would be a second physics.
 #
-# Q_ADJACENCY: path-coordinate (h) distance within which two arenas are NEIGHBOURS — the
-# distance over which "a phonon cannot appear at one q and vanish at the next" is a claim about
-# the same physics. Sample knowledge (a real path parameterization) replaces the bare |Δh| in
-# the next task.
-Q_ADJACENCY = 0.15
+# PATH_COLLINEAR_TOL: how far off the straight line through the two most-separated arenas a q may
+# sit and still be read as a point OF that line, in rlu. It is a Q-POSITIONING tolerance, not a
+# grid tolerance: a spectrometer places a requested q to well inside the 0.05 rlu step ISAR rounds
+# HKL to (``CardPolicy.hkl_round_step``), so 0.01 rlu is an order of magnitude below the smallest
+# deliberate step between two grid nodes. That gap is the whole point — two nodes the scientist
+# deliberately put on different rows of the grid can never read as positioning noise about one
+# line, and a real path's sub-step jitter never reads as a scattered q set.
+PATH_COLLINEAR_TOL = 0.01
+# PATH_AXIS_TOL: how far the unit path direction may tilt off a reciprocal axis and still be that
+# axis. The declared ``zone_period`` and ``reflections`` are scalars in rlu ALONG an axis, so they
+# mean nothing on a path that runs across two of them; 0.01 of a unit direction (~0.6°) is again
+# the positioning scale rather than a physics knob.
+PATH_AXIS_TOL = 0.01
 # LINK_TOL_FLOOR: the smallest ω jump two arenas' modes may be linked across when the resolution
 # width is unknown or absurdly small. The tolerance itself is the coarser of the two arenas'
 # Gaussian widths — a track moves between neighbouring q by less than the resolution, or it was
@@ -541,20 +582,221 @@ def blocks_elastic_line(component: ComponentObservation) -> bool:
     return component.kind in BLOCKING_KINDS
 
 
-def path_coordinate(q) -> float | None:
-    """The scalar path coordinate of an arena: h of ``(h, k, l)``. ``None`` when unplaceable."""
-    return None if q is None else float(q[0])
+@dataclass(frozen=True, slots=True)
+class PathTopology:
+    """The ORDERED path the arenas were measured along, derived from the q set alone.
+
+    ``h`` is not a path coordinate and a radius in q is not path adjacency (review finding 3): a
+    campaign that walks (2,2,0) → (2,0,0) moves along k at constant h, so ranking or thresholding
+    on h collapses the whole path onto one point, and a radius predicate makes every arena inside
+    it a "neighbour" of every other — so inserting an intermediate scan between a and c leaves the
+    a–c term standing beside the two new ones, and one absence is priced twice over.
+
+    This carries the path instead. ``index`` is each arena's ordinal along the ordered projection
+    and adjacency is CONSECUTIVE ordinals only, so the edges are the segments of the path and
+    nothing else; ``axis_coordinate`` is the arena's rlu position along the reciprocal axis the
+    path runs on, present only when the path IS an axis, because the card's scalar zone period and
+    reflection list are declared along an axis and mean nothing across two of them.
+
+    ``collinear`` false is the fail-closed arm: a genuinely scattered q set has no path, so it
+    yields no index at all, every arena is its own cluster, and the build records
+    ``path_topology_unavailable``. A scene may still classify and localize per arena; what it may
+    not do is invent an ordering that decides which absences are evidence.
+    """
+
+    collinear: bool
+    axis: int | None                             # 0/1/2 when the path runs along a reciprocal axis
+    index: dict                                  # scan_ref -> ordinal along the path
+    axis_coordinate: dict                        # scan_ref -> rlu along ``axis``
 
 
-def q_adjacent(a, b, tol: float = Q_ADJACENCY) -> bool:
-    """Are two arenas neighbours on the q path? ``q is None`` couples to nothing."""
-    ha, hb = path_coordinate(a), path_coordinate(b)
-    return ha is not None and hb is not None and abs(ha - hb) <= tol
+def path_topology(q_by_ref) -> PathTopology:
+    """Derive the ordered path from the arenas' q. Pure, deterministic, stdlib.
+
+    Take the distinct q vectors; the direction is fixed by the two most-separated of them (a
+    deterministic choice — ties break on the sorted vectors themselves), every point is projected
+    onto it, and the set is a PATH only if every perpendicular residual is within
+    ``PATH_COLLINEAR_TOL``. Ordinals are the rank of the projection among the distinct projected
+    values, so two arenas at the same q (two detectors, one position) share an ordinal and are
+    neighbours a fortiori, while everything else is a neighbour of its immediate predecessor and
+    successor only.
+
+    With a single distinct q there is no path and therefore no direction. The only axis such a
+    scene can establish is the one the arena itself sits on, so a q with exactly one nonzero
+    component declares that axis and anything else declares none — a one-arena scene keeps its
+    lattice classification without inventing a direction it never traversed.
+
+    ponytail: O(n²) over distinct q to pick the extremes. Campaign scale is tens of arenas; a
+    convex-hull or PCA pass is the upgrade path, and neither is stdlib.
+    """
+    placeable = {r: (float(q[0]), float(q[1]), float(q[2]))
+                 for r, q in sorted(q_by_ref.items()) if q is not None}
+    points = sorted(set(placeable.values()))
+    if not points:
+        return PathTopology(collinear=True, axis=None, index={}, axis_coordinate={})
+    if len(points) == 1:
+        axis = _sole_nonzero(points[0])
+        return PathTopology(collinear=True, axis=axis,
+                            index={r: 0 for r in placeable},
+                            axis_coordinate=_axis_coordinates(placeable, axis))
+    a, b = max(itertools.combinations(points, 2), key=lambda pair: _dist2(*pair))
+    span = math.sqrt(_dist2(a, b))
+    direction = tuple((bi - ai) / span for ai, bi in zip(a, b))
+    projected = {}
+    for ref, q in placeable.items():
+        offset = tuple(qi - ai for qi, ai in zip(q, a))
+        t = math.fsum(oi * di for oi, di in zip(offset, direction))
+        residual = math.sqrt(math.fsum((oi - t * di) ** 2 for oi, di in zip(offset, direction)))
+        if residual > PATH_COLLINEAR_TOL:
+            return PathTopology(collinear=False, axis=None, index={}, axis_coordinate={})
+        projected[ref] = t
+    order = sorted(set(projected.values()))
+    axis = _sole_nonzero(direction, tol=PATH_AXIS_TOL)
+    return PathTopology(collinear=True, axis=axis,
+                        index={r: order.index(t) for r, t in projected.items()},
+                        axis_coordinate=_axis_coordinates(placeable, axis))
+
+
+def _dist2(a, b) -> float:
+    return math.fsum((ai - bi) ** 2 for ai, bi in zip(a, b))
+
+
+def _sole_nonzero(vector, tol: float = 0.0) -> int | None:
+    """The index of ``vector``'s only nonzero component, or ``None`` if it has none or several."""
+    nonzero = [i for i, v in enumerate(vector) if abs(v) > tol]
+    return nonzero[0] if len(nonzero) == 1 else None
+
+
+def _axis_coordinates(placeable, axis: int | None) -> dict:
+    return {} if axis is None else {r: q[axis] for r, q in placeable.items()}
+
+
+def path_adjacent(fp_a: Footprint, fp_b: Footprint) -> bool:
+    """Are two arenas CONSECUTIVE nodes of the derived path (or the same node)?
+
+    The one adjacency predicate in the layer. An arena with no ordinal — an unplaceable q, or a
+    scene whose q set is not a path at all — is adjacent to nothing, which is the fail-closed arm:
+    no cross-arena coupling, no absence priced across an ordering nobody established.
+    """
+    ia, ib = fp_a.path_index, fp_b.path_index
+    return ia is not None and ib is not None and abs(ia - ib) <= 1
+
+
+def path_delta_q(fp_a: Footprint, fp_b: Footprint) -> float | None:
+    """The edge length |Δq| in rlu between two arenas, or ``None`` when either is unplaceable.
+
+    Euclidean in rlu, which on a collinear path is exactly the difference of the two projections —
+    the segment length a declared dispersion slope is multiplied by.
+    """
+    if fp_a.q is None or fp_b.q is None:
+        return None
+    return math.sqrt(_dist2(fp_a.q, fp_b.q))
 
 
 def link_tol(fp_a: Footprint, fp_b: Footprint) -> float:
-    """The ω tolerance within which two arenas' modes may be the same track."""
+    """The RESOLUTION-scale ω tolerance within which two arenas' peaks are one unresolved track."""
     return max(fp_a.gauss_fwhm or 0.0, fp_b.gauss_fwhm or 0.0, LINK_TOL_FLOOR)
+
+
+def link_reach(fp_a: Footprint, fp_b: Footprint, slope_max: float | None,
+               factor: float = 1.0) -> float:
+    """How far in ω a track may move between two arenas: resolution floor + declared dispersion.
+
+    ``factor × link_tol`` is the resolution-scale floor — two peaks closer than the resolution were
+    never resolved as two tracks, whatever the dispersion does — and ``slope_max × Δq`` is the only
+    term that says how far a branch could actually have MOVED (review finding 5). Energy resolution
+    is a statement about telling two peaks apart and none whatever about dω/dq, so with no declared
+    slope this returns the floor alone and the caller must treat non-continuation as UNKNOWN rather
+    than as an absence (see :func:`exclusion_blocked_reason`).
+
+    One grammar for both consumers: the crossing proposer passes its ``factor`` and gets the same
+    formula, so proposal reach and linkage reach can never drift into two physics.
+    """
+    floor = factor * link_tol(fp_a, fp_b)
+    dq = path_delta_q(fp_a, fp_b)
+    if slope_max is None or dq is None:
+        return floor
+    return floor + float(slope_max) * dq
+
+
+# ----------------------------------------------------------------------------
+# Detectability: what has to hold before an absence may be evidence at all
+# ----------------------------------------------------------------------------
+# Boltzmann constant in meV/K, the value isar/analyze/lineshapes.py:KB uses. Restated rather than
+# imported: isar/scene is stdlib-only by construction (tests/scene/test_import_ban.py), and the
+# scene may not drag the fitter in to read a constant.
+KB_MEV_PER_K = 0.086173324
+
+# The detailed-balance weight n(ω,T)/(n(ω,T)+1) = exp(−ω/k_BT) below which an anti-Stokes band
+# cannot exclude anything. Production drops the anti-Stokes side when its PREDICTED COUNTS —
+# Stokes excursion × that weight — fall below AS_DETECT_Z=3 times the background noise
+# (isar/analyze/phonon.py:AS_DETECT_Z / antistokes_mode, the same physics). The scene holds no
+# amplitudes by construction, so it mirrors that z as a floor on the weight itself: a band whose
+# anti-Stokes intensity is suppressed more than the detection z-score below the Stokes side cannot
+# be read as "we looked and it was not there".
+# ponytail: a weight floor, not a projection. The real upgrade is per-hypothesis anti-Stokes
+# amplitude projection against this footprint's background — which needs an amplitude the scene
+# deliberately cannot see, so it belongs to a later slice that carries a declared intensity model.
+AS_DETECT_WEIGHT = 1.0 / 3.0
+
+# How much shallower than the arena where a mode was SEEN a neighbour's look may be and still
+# exclude it. Absence is evidence only if the neighbour counted comparably deep: a glance that saw
+# nothing is not the same measurement as a long count that saw nothing, and pricing them alike is
+# how a steering run that spent its neutrons elsewhere would come back as evidence against the
+# mode it never looked hard for. 0.3 is an ORDER-OF-MAGNITUDE-comparable test rather than equality
+# — a factor of ~3 in counting time is ~1.7 in Poisson σ, so a peak detected with any real margin
+# at i is still detectable at j — and nothing finer is defensible without an amplitude.
+# ponytail: the honest upgrade is the same per-hypothesis amplitude projection named above; this
+# ratio is the exposure-only stand-in for it.
+DETECT_EXPOSURE_RATIO = 0.3
+
+
+def bose_weight(omega: float, temperature_K: float) -> float:
+    """The detailed-balance weight ``exp(−ω/k_BT)`` — anti-Stokes intensity over Stokes."""
+    if temperature_K <= 0.0:
+        return 0.0
+    return math.exp(-abs(float(omega)) / (KB_MEV_PER_K * float(temperature_K)))
+
+
+def _covering_sides(footprint: Footprint, band_omega: float) -> set:
+    w = abs(float(band_omega))
+    return {b.sides for b in footprint.bands if b.lo <= w <= b.hi}
+
+
+def exclusion_blocked_reason(band_omega: float, here: Footprint, there: Footprint, *,
+                             partners_present: bool, slope_max: float | None) -> str | None:
+    """Why ``there``'s silence at ``|ω| = band_omega`` cannot exclude the mode, or ``None``.
+
+    Geometric coverage says a scan LOOKED at a band; it does not say the scan could have SEEN
+    anything there (review finding 2), and only the second is evidence. Three gates, each a
+    fail-closed answer computed from footprint facts alone:
+
+    * **reachability** — with no declared dispersion slope the scene cannot say where a track
+      should have reappeared, so a neighbour holding mode components at other energies is not a
+      neighbour that found nothing: charging it would be the smoothness assumption of finding 5.
+      Only a neighbour with NO mode components at all is an unambiguous non-detection.
+    * **Bose** — a band covered only from the anti-Stokes side is only informative if the
+      anti-Stokes intensity was there to see. Below ``AS_DETECT_WEIGHT`` it was not, and an
+      unknown temperature cannot establish that it was.
+    * **detection power** — the look must be comparable in depth to the one that saw the mode
+      (``DETECT_EXPOSURE_RATIO``). An unrecorded exposure on either side establishes nothing.
+
+    Failing any gate makes the region uninformative, which is exactly ``blocked_unresolved``: the
+    caller demotes the absence and records the reason, so the ledger says WHY nothing was charged
+    rather than showing an absence that silently priced at zero.
+    """
+    if partners_present and slope_max is None:
+        return "reachability_unknown"
+    if _covering_sides(there, band_omega) == {"anti_stokes"}:
+        if there.temperature_K is None:
+            return "bose_unknown"
+        if bose_weight(band_omega, there.temperature_K) < AS_DETECT_WEIGHT:
+            return "bose_dead"
+    if here.effective_exposure is None or there.effective_exposure is None:
+        return "detection_power_unknown"
+    if there.effective_exposure < DETECT_EXPOSURE_RATIO * here.effective_exposure:
+        return "insufficient_detection_power"
+    return None
 
 
 def covers(footprint: Footprint, band_omega: float) -> bool:

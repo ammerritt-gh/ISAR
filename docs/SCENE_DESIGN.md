@@ -118,18 +118,21 @@ component at one arena is the same track as which component at an adjacent one, 
 `(component_id, component_id)` pairs. Two alternatives may share an assignment and differ only in
 their linkage; that is the branch-crossing ambiguity, and since they share the same local fits
 their base `Σ lnZ` is identical, so only factor terms can separate them. The default linkage is
-nearest-ω chaining within the resolution width; alternative linkages are proposed by a factor's
-`propose` hook and are capped per assignment (`MAX_LINKAGE_VARIANTS`). A truncated cluster records
-`linkage_truncated` and the exact share of prior mass the cap dropped
+nearest-ω chaining within the REACH of a consecutive path edge — the resolution floor plus the
+declared dispersion slope over Δq, never the resolution alone; alternative linkages are proposed by
+a factor's `propose` hook and are capped per assignment (`MAX_LINKAGE_VARIANTS`). A truncated
+cluster records `linkage_truncated` and the exact share of prior mass the cap dropped
 (`linkage_dropped_prior_mass`, `(n_enumerated − n_kept)/n_enumerated` for the worst assignment),
 and it joins the `truncation_unbounded` lane: linkage variants share a base `Σ lnZ`, so there is
 no base ordering to bound the dropped readings' factor terms by, and a dropped reading can score
 differently from every kept one. Such a cluster's marginals are unresolved, never narrowed.
 Visibility states (`observed`, `searched_no_signal`, `censored_outside_footprint`,
-`blocked_unresolved`) are derived per component against the neighbouring footprint and annotate
-the leading alternative in the cluster payload. A component is `observed` at a neighbour when the
-alternative's LINKAGE puts it there, never by an independent proximity match — the linkage is
-one-to-one per adjacent arena pair, so one observed peak supports at most one claimed mode.
+`blocked_unresolved`, `structural_endpoint`) are derived per component against the neighbouring
+footprint and annotate the leading alternative in the cluster payload; a report demoted by the
+detectability gate or terminated by a structural reading carries the `reason` that did it. A
+component is `observed` at a neighbour when the alternative's LINKAGE puts it there, never by an
+independent proximity match — the linkage is one-to-one per adjacent arena pair, so one observed
+peak supports at most one claimed mode.
 Component→phenomenon assignment remains a later extension.
 
 **What a component is, and what a footprint covers.** Both are read from what the delivery
@@ -158,7 +161,8 @@ question.
 
 **Declared sample knowledge, and the factors that read it (H13).** `build_scene(..., sample=)`
 takes a `SampleKnowledge` — the scientist's DECLARED zone period, Bragg reflections along the scan
-path, and the lattice epoch in force — lifted off the experiment card by
+path, steepest dispersion slope (`dispersion.max_slope_meV_per_rlu`, meV per rlu) and the lattice
+epoch in force — lifted off the experiment card by
 `isar.workspace_api.scene.sample_knowledge` (read-only; the card's policy half stays
 hand-authored). It is recorded in the revision's `sample_knowledge` block and digested with it, so
 a scene scored blind to the lattice can never look replayable against one that was not. Nothing is
@@ -170,11 +174,18 @@ integer-index shortcut derives one from the other.
 
 Two factors read it, and neither scores — so neither costs the builder its pruning:
 
-- `zone_centre_approach` assigns `structural_endpoint` through the `refine_visibility` hook, where
-  a declared gapless branch legitimately has nothing to show: the neighbouring arena sits at a
-  zone centre of the declared period, an ELASTIC component is chosen there (a quasielastic one is
-  no response for a branch to be swallowed by), and the mode's energy is within a plausible descent
-  to zero. `blocked_unresolved` says *unresolved pending better data*;
+- `zone_centre_approach` assigns `structural_endpoint` through the `refine_visibility` hook, and
+  it is a READING OF THE ALTERNATIVE'S LINKAGE rather than an exemption granted from energy: the
+  mode must be the terminal node of a track this alternative LINKS (≥ 2 nodes), the track must
+  DESCEND toward the centre over its final edge, the declared geometry must apply on this path, and
+  a contiguous run of consecutive arenas from the neighbour to the fold must be covered and carry a
+  chosen ELASTIC component (a quasielastic one is no response for a branch to be swallowed by).
+  Where a slope is declared it must be able to carry the remaining ω to zero over the Δq to the
+  centre; where none is, the card's assertion that this fold has a gapless branch is what licenses
+  the reading. Competing readings of the same assignment — the track ending mid-zone unexplained,
+  or continuing — stay enumerated and priced, so the posterior decides and not the builder. An
+  isolated low-energy feature and a flat low-lying track therefore get no reading at all and stay
+  charged. `blocked_unresolved` says *unresolved pending better data*;
   `structural_endpoint` says *the declared physics terminates the track here*. `presence` keys on
   `searched_no_signal` alone, so the absence of a penalty at an endpoint is emergent from the
   visibility grammar rather than special-cased into a score function.
@@ -187,6 +198,39 @@ Two factors read it, and neither scores — so neither costs the builder its pru
 
 A refiner may only replace an absence state — never `observed`, never
 `censored_outside_footprint` — and the builder enforces that rather than trusting each factor.
+
+**The path is a topology, not a radius in q.** Arenas are ordered by the PATH they were measured
+along, derived from the q set alone: the direction is fixed by the two most-separated distinct q,
+every arena is projected onto it, and the set is a path only if every perpendicular residual is
+within `PATH_COLLINEAR_TOL` (0.01 rlu — the q-positioning scale, an order of magnitude under the
+0.05 rlu HKL grid step). Adjacency is CONSECUTIVE ordinals and nothing else, so inserting an
+intermediate scan between two arenas replaces their judgement with two new ones instead of leaving
+a skip-neighbour term standing beside them. A q set that is not a path fails closed: no ordinals,
+no cross-arena coupling, every arena its own cluster, and `path_topology_unavailable` recorded in
+`sample_knowledge.degradations`. `h` is never a path coordinate — a campaign walking (2,2,0) →
+(2,0,0) moves along k at constant h, so ranking on h would collapse the whole path onto one point.
+The card's SCALAR zone period and reflection positions are rlu ALONG a reciprocal axis, so they
+apply only where the derived direction IS an axis (`PATH_AXIS_TOL`); an off-axis collinear path
+keeps its topology and records `zone_geometry_inapplicable_on_path` /
+`lattice_geometry_inapplicable_on_path` instead of comparing them against a coordinate they do not
+mean.
+
+**Reach is dispersion, and absence is detectability.** Two gates stand between geometric inclusion
+and a priced absence, because neither is what "we looked and it was not there" needs. *Reach*: the
+ω a track may move over an edge is the resolution floor plus `dispersion_slope_max × Δq` from the
+declared sample knowledge — energy resolution says how well two peaks are told apart and nothing
+whatever about dω/dq. With no slope declared, reachability is UNKNOWN, and a neighbour that holds
+mode components at other energies is not a neighbour that found nothing: the absence is demoted to
+`blocked_unresolved` with reason `reachability_unknown`, and only a neighbour with NO mode
+components at all is an unambiguous non-detection. *Detectability*: an absence on a band covered
+only from the anti-Stokes side is informative only if the anti-Stokes intensity was there to see,
+so the detailed-balance weight `exp(−ω/k_BT)` must clear `AS_DETECT_WEIGHT` (the scene's
+amplitude-free mirror of production's `AS_DETECT_Z`) — below it the reason is `bose_dead`; and the
+neighbour must have counted comparably deep, `effective_exposure_j ≥ DETECT_EXPOSURE_RATIO ×
+effective_exposure_i`, or the reason is `insufficient_detection_power`. Facts the footprint does
+not carry (an unknown temperature, an unrecorded exposure) establish nothing and fail closed with
+their own reasons. Every gate demotes a state and records why; none of them adds a term, so the
+exactly-once factorization is untouched.
 
 **Coverage coupling (carried item 15).** A cluster edge needed a component on BOTH sides, so an
 arena whose surviving candidates were all background-only emitted nothing and could never join a

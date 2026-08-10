@@ -102,8 +102,12 @@ def sample_knowledge(ws) -> SampleKnowledge:
     * ``policy.dispersion["zone_period"]`` — the reduced-zone fold period in rlu, the same key
       the steering layer's branch-assignment geometry reads. Absent ⇒ no zone geometry, and the
       ``zone_centre_approach`` factor is inert and says so;
+    * ``policy.dispersion["max_slope_meV_per_rlu"]`` — the steepest |dω/dq| any branch of this
+      sample is declared to have. Absent ⇒ track continuation has no declared reach, and the scene
+      declines to charge a non-continuation rather than substituting the energy resolution for a
+      dispersion bound (review finding 5);
     * ``policy.sample["reflections"]`` — the scientist's declared Bragg positions along the scan
-      path, in the same reduced path coordinate as an observation's q. It is a SEPARATE
+      path, in the same axis rlu as an observation's q. It is a SEPARATE
       declaration from the period on purpose: a fold position is not a reflection (FCC (300) is
       integer-indexed, sits at a fold, and is extinct), so nothing here derives one from the
       other, from integer indices, or from a space group;
@@ -120,6 +124,7 @@ def sample_knowledge(ws) -> SampleKnowledge:
     dispersion = dict(getattr(policy, "dispersion", None) or {}) if policy else {}
     declared_sample = dict(getattr(policy, "sample", None) or {}) if policy else {}
     period = dispersion.get("zone_period")
+    slope_max = dispersion.get("max_slope_meV_per_rlu")
     reflections = declared_sample.get("reflections") or ()
     epochs = [e for e in card.lattice_epochs
               if isinstance(e, dict) and e.get("version") is not None]
@@ -137,6 +142,7 @@ def sample_knowledge(ws) -> SampleKnowledge:
         return SampleKnowledge(
             zone_period=None if period is None else float(period),
             reflections=tuple(float(r) for r in reflections),
+            dispersion_slope_max=None if slope_max is None else float(slope_max),
             lattice_epoch=None if epoch is None else int(epoch["version"]),
             lattice=None if not isinstance(cell, dict) or not cell
             else tuple(float(cell[k]) for k in _CELL))
@@ -144,6 +150,7 @@ def sample_knowledge(ws) -> SampleKnowledge:
         raise ValueError(
             f"scene: card declares an unreadable sample geometry "
             f"(dispersion.zone_period={period!r}, "
+            f"dispersion.max_slope_meV_per_rlu={slope_max!r}, "
             f"sample.reflections={declared_sample.get('reflections')!r}, "
             # The candidate list, not the chosen epoch: choosing is itself inside the guard now,
             # so a failure there leaves no chosen epoch to name.
