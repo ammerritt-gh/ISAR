@@ -435,7 +435,7 @@ def test_a_linkage_truncation_records_its_dropped_prior_and_leaves_the_cluster_u
     assert cl["linkage_dropped_prior_mass"] == pytest.approx(2 / 3, rel=1e-12)
     assert kept["prior_terms"]["linkage_prior"] == -math.log(3)
     assert cl["truncated"] is True and cl["truncation_unbounded"] is True
-    assert cl["discarded_mass_bound"] is None
+    assert cl["log_discarded_mass_bound"] is None
     assert cl["marginals"]["truncated"] is True
     assert cl["marginals"]["truncation_unbounded"] is True
 

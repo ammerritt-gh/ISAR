@@ -346,8 +346,11 @@ losing writer's blob is still written and addressable. A lock file is deliberate
 stale lock after a crash would block every later campaign, which is worse than the race.
 
 Encoding is strict JSON (sorted keys, `allow_nan=False`): a non-finite lnZ persists as `null`, as
-the builder already treats it, and a bound with no finite spelling records `null` plus
-`discarded_mass_unbounded`.
+the builder already treats it. The truncation bound is recorded in LOG space
+(`log_discarded_mass_bound`): the linear form overflowed to `inf`, which is neither JSON nor
+informative, and a vacuous bound must not read as a bounded approximation. It is finite for every
+finite input, so `null` means either "nothing was dropped" (`truncated` false) or "nothing bounds
+what was dropped" (`truncated` and `truncation_unbounded` both true) — no third case.
 
 The GUI and notebooks read all of it through `workspace_api` only (Qt-free; hard rules 6/7
 unchanged): `ws.scene` / `scene_revision(ws)` for the stored revision — `None` when there is none, raising when the store

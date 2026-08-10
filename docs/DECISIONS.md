@@ -1915,11 +1915,16 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   lock file is rejected: a stale lock left by a crash would block every subsequent campaign, which
   is worse than the race it prevents. Strict JSON throughout: `canonical_bytes` refuses non-finite values
   (`allow_nan=False`), so a revision that digests cleanly can always be re-read — a non-finite lnZ
-  therefore persists as `null`, matching the builder's own treatment of it as unsummable, and a
-  discarded-mass bound with no finite spelling records `null` plus `discarded_mass_unbounded`. That
-  flag is deliberately distinct from `truncation_unbounded`: the first says the NUMBER is absent
-  (no factor declared a bound, a linkage truncation dropped readings nothing can bound, or the
-  arithmetic overflowed), the second says the CLUSTER is unresolved.
+  therefore persists as `null`, matching the builder's own treatment of it as unsummable.
+  **The truncation bound is recorded in LOG space** (`log_discarded_mass_bound`), replacing the
+  linear `discarded_mass_bound` outright with no dual field (H1). The linear form overflowed to
+  `inf` for a wide factor span over a large product, and `inf` is neither JSON nor informative: a
+  vacuous bound must never read as a bounded approximation, and downgrading it to "absent" hid a
+  truncation that did have a bound. The log-space value is finite for every finite input, so
+  `discarded_mass_unbounded` is deleted with the overflow arm it existed for, and `null` now means
+  exactly one of two things, told apart by `truncated`: FALSE, nothing was dropped (the bound would
+  be −inf, which strict JSON cannot carry); TRUE, nothing bounds what was dropped — and then
+  `truncation_unbounded`, the single remaining unbounded lane, is True as well.
   **(c) The read surface, and what a hypothesis map may claim.** `isar.workspace_api.scene_view` is
   the scene's OUTPUT door, deliberately a separate module from the input adapter — which stays
   banned from importing the store at all, so an already-stored revision can never contaminate a

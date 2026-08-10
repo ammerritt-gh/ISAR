@@ -636,7 +636,7 @@ def _survivor_labels(pruned: dict) -> frozenset:
 # 6. Alternative enumeration
 # ----------------------------------------------------------------------------
 def _enumerate(arenas, cap: int, span: float | None):
-    """``(assignments, n_possible, truncated, discarded_mass_bound, unbounded)`` for a cluster.
+    """``(assignments, n_possible, truncated, log_discarded_mass_bound, unbounded)`` for a cluster.
 
     ``arenas`` is ``[(scan_ref, [(label, lnZ), ...]), ...]`` in scan_ref order. Below the cap
     the full Cartesian product is enumerated. Above it the kept set is EXACTLY the top-``cap``
@@ -657,7 +657,10 @@ def _enumerate(arenas, cap: int, span: float | None):
     if n_possible <= cap:
         assignments = [tuple((ref, cands[i][0]) for (ref, cands), i in zip(arenas, idx))
                        for idx in itertools.product(*(range(len(c)) for _, c in arenas))]
-        return sorted(assignments), n_possible, False, 0.0, False
+        # Nothing was dropped, so there is no bound to state — in log space the honest value is
+        # −inf, which strict JSON cannot carry. ``truncated=False`` is what says so instead, and
+        # it is the flag a reader checks first (see the cluster payload).
+        return sorted(assignments), n_possible, False, None, False
 
     # Best-first: each arena's candidates sorted by lnZ descending, so incrementing any index
     # can only lower the base score — the frontier heap therefore pops in exact base order.
@@ -691,17 +694,13 @@ def _enumerate(arenas, cap: int, span: float | None):
         # the reviewer's failure exactly: a payload claiming ≤0.0067 of dropped mass where the
         # truth is 0.993.
         return sorted(tuple(sorted(a)) for a in kept), n_possible, True, None, True
-    discarded = _discarded_bound(n_possible - len(kept), lowest_base, leader_base, span)
-    # A bound that overflowed to inf is stated as "no bound" (``None``) rather than as the
-    # non-standard JSON token ``Infinity``: the payload has to survive a strict reader, and
-    # "unbounded" is exactly what inf meant. The cluster flags it below.
     return (sorted(tuple(sorted(a)) for a in kept), n_possible, True,
-            discarded if math.isfinite(discarded) else None, False)
+            _log_discarded_bound(n_possible - len(kept), lowest_base, leader_base, span), False)
 
 
-def _discarded_bound(n_dropped: int, lowest_base: float, leader_base: float,
-                     span: float = 0.0) -> float:
-    """Upper bound on the mass a cap dropped: ``n_dropped × exp(lowest − leader + span)``.
+def _log_discarded_bound(n_dropped: int, lowest_base: float, leader_base: float,
+                         span: float = 0.0) -> float:
+    """LOG of an upper bound on the mass a cap dropped: ``ln n_dropped + lowest − leader + span``.
 
     Conservative and stated. Every dropped alternative D has ``base(D) ≤ lowest`` (the kept set
     is the top of the base ordering) and, for the best kept alternative L with ``base(L) =
@@ -714,18 +713,21 @@ def _discarded_bound(n_dropped: int, lowest_base: float, leader_base: float,
     ``exp(lowest − leader + span)``, and there are ``n_dropped`` of them. ``span = 0`` is the
     no-scoring-factor case and reproduces the bare ``n_dropped × exp(lowest − leader)``.
 
-    Computed in log space because ``n_dropped`` is an exact Python int over the full product
-    and can exceed the float range long before the bound itself does — ``math.log`` takes the
-    big int exactly, where multiplying would raise ``OverflowError`` on the conversion. A bound
-    that genuinely overflows is recorded as ``inf``: an infinite stated bound is honest (it
-    says the cap dropped an unbounded share), a crash in the scorer is not.
+    STATED IN LOG SPACE, and that is the recorded quantity (review finding E). The linear bound
+    overflowed to a stated ``inf`` — a vacuous number that a reader glancing at
+    ``discarded_mass_bound`` could take for a bounded approximation, when it says exactly nothing.
+    The log-space value is finite for every finite input, so the bound never has to be
+    downgraded to "absent" by arithmetic, and the only unbounded lane left is the real one
+    (``truncation_unbounded``: no factor declared a bound, or a linkage truncation dropped
+    readings nothing can bound). ``n_dropped`` is an exact Python int over the full product and
+    can exceed the float range; ``math.log`` takes the big int exactly, where multiplying would
+    raise ``OverflowError`` on the conversion.
+
+    A reader that wants the mass takes ``exp`` of it and accepts the underflow to 0.0 that the
+    linear form would have had anyway; a bound ≥ 0 in log space (≥ 1 in mass) is a true bound
+    that constrains nothing, which is the point at which the operator raises ``alt_cap``.
     """
-    if n_dropped <= 0:
-        return 0.0
-    try:
-        return math.exp(math.log(n_dropped) + (lowest_base - leader_base) + span)
-    except OverflowError:
-        return math.inf
+    return math.log(n_dropped) + (lowest_base - leader_base) + span
 
 
 # ----------------------------------------------------------------------------
@@ -907,17 +909,17 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
         "n_enumerated": len(entries),
         "n_assignments": len(assignments),
         "n_possible": n_possible,
-        "discarded_mass_bound": discarded,
-        # No finite bound on the dropped mass is stated at all — because no factor would declare
-        # one, because a linkage truncation dropped readings nothing can bound, or because the
-        # arithmetic bound overflowed the float range. Distinct lanes: this one says "the number
-        # is absent", ``truncation_unbounded`` below says "the cluster is UNRESOLVED". The first
-        # two causes raise both; the float overflow raises only this one, since an overflowing
-        # bound is still a bound — it just has no finite spelling. A reader that only wants to
-        # know whether it may trust the posteriors as a bounded approximation reads
-        # ``truncation_unbounded``; one that wants to know whether ``discarded_mass_bound``
-        # carries a number reads this.
-        "discarded_mass_unbounded": discarded is None,
+        # ln of the upper bound on the posterior mass the enumeration cap dropped, relative to
+        # the leader. LOG space is the recorded form (review finding E): the linear bound
+        # overflowed to a vacuous ``inf`` that a reader could take for a bounded approximation,
+        # while this one is finite for every finite input.
+        #
+        # ``None`` means no number, and ``truncated`` says which kind of no-number it is: FALSE
+        # means nothing was dropped (the bound would be −inf, which strict JSON cannot carry);
+        # TRUE means nothing bounds what was dropped — no factor declared a bound, or a linkage
+        # truncation dropped readings that no base ordering ranks — and ``truncation_unbounded``
+        # below is then True as well. There is no third cause: the arithmetic cannot overflow.
+        "log_discarded_mass_bound": discarded,
         # True when the enumerated set is not the complete one AND nothing bounds what was
         # dropped — an unbounded scoring factor over the alternative cap, or a linkage truncation.
         # The cluster is UNRESOLVED, not narrowed, and no reader may treat these posteriors as a
