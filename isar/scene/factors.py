@@ -18,11 +18,49 @@ module exists to make the factor ban mechanical rather than a matter of reviewer
   fitted parameters, counts or local posteriors, so a factor *cannot* re-score local data or
   re-apply a prior already priced into ``lnZ`` even by mistake.
 
-The live registry holds the four physics factors of SCENE-3 PR 3b: ``presence`` and
-``connectivity`` score, while ``zone_centre_approach`` and ``reciprocal_lattice_localization``
-read DECLARED sample knowledge and only reinterpret a visibility state or classify a component —
-they move no belief, so they cost the builder no pruning. ``RESERVED_FACTOR_NAMES`` reserves the
-names the remaining ones will take so two slices cannot pick the same name for different terms.
+The live registry holds the four physics factors of SCENE-3 PR 3b. Only ``presence`` scores;
+``connectivity`` supplies the ambiguity edges and the crossing proposals, and
+``zone_centre_approach`` / ``reciprocal_lattice_localization`` read DECLARED sample knowledge and
+only reinterpret a visibility state or classify a component. None of the three moves belief, so
+none of them costs the builder its pruning. ``RESERVED_FACTOR_NAMES`` reserves the names the
+remaining ones will take so two slices cannot pick the same name for different terms.
+
+The factorization, and why no null is charged twice (review findings 7 and 8)
+----------------------------------------------------------------------------
+Every ln-term of a scene alternative is charged against one ``(mode m at arena i, adjacent arena
+j)`` report — the rows :func:`neighbour_reports` emits, one per ordered adjacent pair per chosen
+mode. There is exactly ONE such row per (mode, neighbour), it carries exactly ONE visibility
+state, and exactly ONE factor reads it. That is the whole argument, and it is checkable three
+ways:
+
+1. **One judgement per row.** A row's ``visibility`` is a single
+   :class:`~isar.scene.model.Visibility`, so its five states partition the possibilities: an
+   ``observed`` row is a match, a ``searched_no_signal`` row is a miss, and the other three are
+   free. No arithmetic anywhere adds two states of one row.
+2. **One reader.** ``presence`` is the only factor in the registry with a ``score``. There is no
+   second scoring factor that could look at the same row, so a null cannot be summed twice even
+   in principle. This is what the review's finding 8 bought: ``connectivity`` used to charge
+   ``CONNECT_BREAK_NATS`` on the *absence of a neighbouring component*, which is the same null
+   ``presence`` was already charging as a miss. That term is gone rather than re-homed — a
+   neighbour that looked and found nothing is a detection fact, and detection is presence's.
+   ``connectivity`` was left with no term that discriminates two readings of the SAME observed
+   components (the crossing variants link every mode on both sides, so they differ nowhere a
+   topology-only term could see), so it honestly declares ``score=None`` rather than inventing
+   one to stay busy.
+3. **Support follows the linkage, so one peak supports one mode.** ``has_match`` for the row is
+   "m is LINKED to a component at j under THIS alternative", never "some component at j sits
+   within tolerance of m" (finding 7). The builder's structural degree guard makes the linkage
+   one-to-one per adjacent arena pair, so a single observed peak at j can be the support of at
+   most one mode at i; the second mode claiming it is unlinked and is charged (or censored, or
+   blocked) on its own coverage facts. The proximity match that allowed two claims on one peak
+   is deleted, not kept alongside — a second assignment channel could disagree with the linkage
+   the alternative asserts.
+
+The one consequence worth stating plainly: a miss that is linkage-INDEPENDENT (no reachable
+partner at j at all, so the mode is unlinked under every reading) contributes identically to
+every linkage variant of its assignment, because those variants share their components and
+differ only in links the unreachable mode cannot carry. It is charged once per (mode, neighbour)
+in each variant and therefore cancels out of the within-assignment comparison entirely.
 
 Stdlib-only, like ``model.py`` — see ``tests/scene/test_import_ban.py``.
 """
@@ -185,15 +223,16 @@ def registry_fingerprint(factors) -> str:
 # size lives in the ledger: every nonzero contribution is itemized per alternative.
 #
 # presence — a phonon does not appear at one q and vanish at the next. A neighbouring arena that
-# LOOKED and saw nothing where a mode is claimed is evidence against the claim; one that saw
-# something there supports it, more weakly (a coincidence of two unrelated features is not rare
-# enough to price at the same size as a contradiction).
+# LOOKED and found nothing to link this mode to is evidence against the claim; one that supplied
+# the mode's linked continuation supports it, more weakly (a coincidence of two unrelated features
+# is not rare enough to price at the same size as a contradiction).
 PRESENCE_MISS_NATS = -1.0
 PRESENCE_MATCH_NATS = 0.5
-# connectivity — a track that stops mid-cluster where its continuation was searched for and not
-# found is a broken track. Priced harder than a presence miss because it is a stronger claim: not
-# "something is missing" but "this identified track ends here".
-CONNECT_BREAK_NATS = -2.0
+# connectivity declares no weight of its own. It had one — CONNECT_BREAK_NATS, charged when a
+# mode's track had no continuation at a searched neighbour — and that is the SAME null presence
+# charges as a miss (review finding 8). Deleted rather than retuned: see the factorization block
+# in the module docstring.
+#
 # How far the crossing proposer may reach when it asks whether the OTHER pairing is plausible.
 # The default chaining tolerance is the resolution width — a track moves less than the resolution
 # between neighbouring q or it was never one resolved track. At a branch crossing that bound is
@@ -249,21 +288,24 @@ def _modes(components) -> list:
 def neighbour_reports(alt, view) -> tuple[dict, ...]:
     """Every (chosen mode at arena i, adjacent arena j) judgement, in deterministic order.
 
-    One walk, three consumers: ``presence`` prices ``visibility`` (was the mode seen where a
-    neighbour looked?), ``connectivity`` prices ``link_visibility`` (does this mode's TRACK
-    continue?), and the builder annotates the cluster payload with the same rows so a reader can
-    see why an absence was or was not penalized.
+    ONE row per (chosen mode, adjacent arena), carrying ONE ``visibility`` — which is what makes
+    the exactly-once claim of the module docstring checkable rather than asserted. Two consumers:
+    ``presence`` prices the state, and the builder annotates the cluster payload with the same
+    rows so a reader can see why an absence was or was not penalized.
 
-    The two visibilities differ in what counts as a match, and only in that: ``visibility`` asks
-    whether any chosen mode of ``j`` sits within the linking tolerance, ``link_visibility``
-    whether THIS mode is linked to one under the alternative's linkage. Both go through
-    :func:`isar.scene.model.visibility_of`, so both inherit the coverage gate: a band the
-    neighbour never looked at is censored and is never penalized by either factor.
+    A mode is supported at ``j`` when it is LINKED to a component there under this alternative's
+    linkage, and by nothing else (review finding 7). The independent proximity match this walk
+    used to compute alongside — "some chosen mode of ``j`` sits within ``link_tol``" — is gone: it
+    was a second assignment channel that could disagree with the linkage the alternative asserts,
+    and because it was many-to-one it let two modes at ``i`` both claim one observed peak at ``j``
+    as support for their existence.
 
-    Both are then offered to the view's ``refine_visibility`` hooks, which is where declared
-    sample knowledge can turn an unexplained absence into a ``structural_endpoint``. Computed
-    ONCE per (alternative, view) and memoized on the view: the three consumers used to run this
-    walk three times over identical inputs, and a fourth consumer would have made it four.
+    The state goes through :func:`isar.scene.model.visibility_of`, so it inherits the coverage
+    gate: a band the neighbour never looked at is censored and is never penalized. It is then
+    offered to the view's ``refine_visibility`` hooks, which is where declared sample knowledge
+    can turn an unexplained absence into a ``structural_endpoint``. Computed ONCE per
+    (alternative, view) and memoized on the view: the consumers used to run this walk three times
+    over identical inputs.
     """
     cached = view.reports_cache.get(alt)
     if cached is not None:
@@ -286,12 +328,10 @@ def neighbour_reports(alt, view) -> tuple[dict, ...]:
             # which hides a low-energy band and makes its absence uninformative.
             elastic_j = any(c.kind == "elastic" for c in there)
             blocking_j = any(blocks_elastic_line(c) for c in there)
-            tol = link_tol(fp_i, fp_j)
             partners = _modes(there)
             linked = set(alt.links) | {(b, a) for a, b in alt.links}
             for m in _modes(here):
                 w = abs(m.omega)
-                matched = any(abs(abs(p.omega) - w) <= tol for p in partners)
                 is_linked = any((m.component_id, p.component_id) in linked for p in partners)
                 report = {
                     "component_id": m.component_id,
@@ -300,17 +340,14 @@ def neighbour_reports(alt, view) -> tuple[dict, ...]:
                     "omega": m.omega,
                     # Carried as FACTS of the report rather than recomputed by every refiner: a
                     # second derivation of either would be a second physics. A refiner that needs
-                    # the Bragg-adjacent claim reads ``elastic_present``; the visibilities below
-                    # key on ``blocking_present``, which is detectability alone.
+                    # the Bragg-adjacent claim reads ``elastic_present``; the visibility below
+                    # keys on ``blocking_present``, which is detectability alone.
                     "elastic_present": elastic_j,
                     "blocking_present": blocking_j,
-                    "visibility": visibility_of(w, fp_j, matched, blocking_present=blocking_j),
-                    "link_visibility": visibility_of(w, fp_j, is_linked,
-                                                     blocking_present=blocking_j),
+                    "visibility": visibility_of(w, fp_j, is_linked, blocking_present=blocking_j),
                 }
-                refined = {k: _refined(report[k], report, view)
-                           for k in ("visibility", "link_visibility")}
-                reports.append({**report, **{k: str(v) for k, v in refined.items()}})
+                reports.append({**report,
+                                "visibility": str(_refined(report["visibility"], report, view))})
     out = tuple(reports)
     view.reports_cache[alt] = out
     return out
@@ -351,11 +388,17 @@ def _refined(state, report, view):
 def _presence_score(alt, view):
     """``PRESENCE_MISS_NATS`` per searched-and-missing neighbour, ``PRESENCE_MATCH_NATS`` per hit.
 
+    The ONE scoring term of the live registry, and the sole reader of a neighbour report — which
+    is what makes "no null is charged twice" structural here rather than a review promise (see the
+    module docstring). Exactly one term per row, and at most one row per (chosen mode, adjacent
+    arena).
+
     A function of the cross-arena CONFIGURATION only: it reads no parameter of any single
-    observation beyond the component positions the builder already derived, and two alternatives
-    that share the same local fits differ here only by which candidates they chose (H11(c),
-    H12(a)). Censored and blocked neighbours contribute exactly 0.0 — the coverage gate is where
-    "absence is evidence only inside coverage" is actually enforced.
+    observation beyond the component positions and the linkage the builder already derived, and
+    two alternatives that share the same local fits differ here only by which candidates they
+    chose and how those components are linked (H11(c), H12(a)). Censored and blocked neighbours
+    contribute exactly 0.0 — the coverage gate is where "absence is evidence only inside coverage"
+    is actually enforced.
     """
     total, reasons = 0.0, []
     for r in neighbour_reports(alt, view):
@@ -398,10 +441,12 @@ def _couples_arena(c, fp) -> bool:
 
 
 PRESENCE = SceneFactor(
-    # v2: coverage coupling (``couples_arena``) changed which arenas share a cluster, so a v1
-    # revision's partition is not reproducible under this factor.
-    name="presence", kind="structural_likelihood", version="2",
-    consumes=("q", "omega", "footprint"),
+    # v3: support for a claimed mode now derives from the alternative's LINKAGE rather than from an
+    # independent any-partner-within-tolerance proximity match (review finding 7), so a v2 revision
+    # scored one observed peak as support for every nearby mode and is not reproducible here. (v2
+    # was coverage coupling via ``couples_arena``, which changed which arenas share a cluster.)
+    name="presence", kind="structural_likelihood", version="3",
+    consumes=("q", "omega", "footprint", "links"),
     config=(("link_tol_floor", LINK_TOL_FLOOR), ("presence_match_nats", PRESENCE_MATCH_NATS),
             ("presence_miss_nats", PRESENCE_MISS_NATS), ("q_adjacency", Q_ADJACENCY)),
     # Unbounded BY DECLARATION, and the consequence is accepted rather than hidden: the total
@@ -419,24 +464,6 @@ PRESENCE = SceneFactor(
 # ----------------------------------------------------------------------------
 # connectivity
 # ----------------------------------------------------------------------------
-def _connectivity_score(alt, view):
-    """``CONNECT_BREAK_NATS`` per broken track. Penalties only — no smoothness reward.
-
-    A break is a track whose next arena LOOKED where the track would have continued and found
-    nothing to link to. Two break-free linkages therefore score EQUAL: at a symmetric crossing
-    the swap and the straight-through come out 50/50, which is the honest answer. Rewarding the
-    smoother linkage would be exactly the "lowest is acoustic" rule wearing a factor's clothes,
-    and the intensity anomalies that really do discriminate an eigenvector exchange are constraint
-    transport's business, not this factor's.
-    """
-    total, reasons = 0.0, []
-    for r in neighbour_reports(alt, view):
-        if r["link_visibility"] == Visibility.SEARCHED_NO_SIGNAL:
-            total += CONNECT_BREAK_NATS
-            reasons.append(f"break {r['component_id']} has no continuation at {r['neighbour']}")
-    return total, tuple(reasons)
-
-
 def _junction_pairings(alt, view):
     """``[(current_links, (alternative_pairing, ...)), ...]`` — ONE entry per ambiguous junction.
 
@@ -509,16 +536,27 @@ def _propose_crossings(alt, view):
     return tuple(sorted(variants))
 
 
+# v2: the factor no longer SCORES. Its ``CONNECT_BREAK_NATS`` term charged the absence of a
+# neighbouring component, which presence already charges as a miss — the same null in two factors
+# (review finding 8). Presence keeps it, because a neighbour that looked and found nothing is a
+# detection fact. What connectivity was left to own is topology among components that EXIST on
+# both sides, and on the readings this registry enumerates there is nothing there to price: a
+# crossing's two pairings link every mode at both arenas, so they are indistinguishable to any
+# term that may not look at an absence. So it declares no score rather than a manufactured one,
+# and a v1 revision's connectivity terms are not reproducible under it.
+#
+# It remains a factor, and a load-bearing one: ``couples`` supplies ambiguity-graph edges and
+# ``propose`` supplies the crossing variants that make the linkage a scene variable at all. A
+# factor that shapes the hypothesis space without pricing it is exactly what the ``roles``
+# manifest exists to make visible.
 CONNECTIVITY = SceneFactor(
-    name="connectivity", kind="structural_likelihood", version="1",
+    name="connectivity", kind="structural_likelihood", version="2",
     consumes=("q", "omega", "footprint", "links"),
-    config=(("connect_break_nats", CONNECT_BREAK_NATS),
-            ("crossing_link_tol_factor", CROSSING_LINK_TOL_FACTOR),
+    config=(("crossing_link_tol_factor", CROSSING_LINK_TOL_FACTOR),
             ("link_tol_floor", LINK_TOL_FLOOR), ("q_adjacency", Q_ADJACENCY)),
-    # Unbounded for the same reason as ``presence``: breaks are counted per (mode, neighbour) pair.
-    # ponytail: per-cluster-size bound is the upgrade path.
+    # No score, therefore no bound to declare, and ``_score_span`` ignores it entirely.
     score_bound=None,
-    couples=_couples, score=_connectivity_score, propose=_propose_crossings)
+    couples=_couples, propose=_propose_crossings)
 
 
 # ----------------------------------------------------------------------------
@@ -559,11 +597,10 @@ def _zone_centre_refine(report, view):
        grammar already uses — a 9 meV optic mode is not explained away by an acoustic branch's
        endpoint.
 
-    What this factor does NOT do is price anything. ``presence`` and ``connectivity`` key on
-    ``searched_no_signal`` alone, so a report reinterpreted here silently stops carrying a miss
-    or a break — the no-penalty-at-an-endpoint behaviour is EMERGENT from the visibility grammar
-    rather than special-cased into two score functions, which is what keeps the exemption in one
-    place instead of three.
+    What this factor does NOT do is price anything. ``presence`` keys on ``searched_no_signal``
+    alone, so a report reinterpreted here simply stops carrying a miss — the
+    no-penalty-at-an-endpoint behaviour is EMERGENT from the visibility grammar rather than
+    special-cased into a score function, which is what keeps the exemption in one place.
     """
     sample = view.sample
     if not _zone_centres_declared(sample):

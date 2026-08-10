@@ -121,9 +121,12 @@ their base `Σ lnZ` is identical, so only factor terms can separate them. The de
 nearest-ω chaining within the resolution width; alternative linkages are proposed by a factor's
 `propose` hook and are capped per assignment (`MAX_LINKAGE_VARIANTS`), with the truncation
 recorded (`linkage_truncated`) — linkage variants share a base, so no dropped-mass bound is
-available for them and none is claimed. Visibility states (`observed`, `searched_no_signal`,
-`censored_outside_footprint`, `blocked_unresolved`) are derived per component against the
-neighbouring footprint and annotate the leading alternative in the cluster payload.
+available for them and none is claimed.
+Visibility states (`observed`, `searched_no_signal`, `censored_outside_footprint`,
+`blocked_unresolved`) are derived per component against the neighbouring footprint and annotate
+the leading alternative in the cluster payload. A component is `observed` at a neighbour when the
+alternative's LINKAGE puts it there, never by an independent proximity match — the linkage is
+one-to-one per adjacent arena pair, so one observed peak supports at most one claimed mode.
 Component→phenomenon assignment remains a later extension.
 
 **What a component is, and what a footprint covers.** Both are read from what the delivery
@@ -169,9 +172,9 @@ Two factors read it, and neither scores — so neither costs the builder its pru
   zone centre of the declared period, an ELASTIC component is chosen there (a quasielastic one is
   no response for a branch to be swallowed by), and the mode's energy is within a plausible descent
   to zero. `blocked_unresolved` says *unresolved pending better data*;
-  `structural_endpoint` says *the declared physics terminates the track here*. Presence and
-  connectivity key on `searched_no_signal` alone, so the absence of a penalty at an endpoint is
-  emergent from the visibility grammar rather than special-cased into two score functions.
+  `structural_endpoint` says *the declared physics terminates the track here*. `presence` keys on
+  `searched_no_signal` alone, so the absence of a penalty at an endpoint is emergent from the
+  visibility grammar rather than special-cased into a score function.
 - `reciprocal_lattice_localization` classifies each ELASTIC component `bragg_compatible` /
   `off_lattice` / `unclassified` (no reflections declared) / `unplaceable_q` (declared, but this
   arena has no placeable q) through the `classify` hook, recorded per cluster under

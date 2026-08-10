@@ -1,4 +1,4 @@
-"""The live physics factors: presence, connectivity, and the machinery they need (PR 3b).
+"""The live physics factors: presence, and the machinery it and the linkage need (PR 3b).
 
 Every test here is a physical claim rather than a snapshot: a phonon does not appear at one q
 and vanish at the next, absence is evidence ONLY where the neighbour actually looked, and which
@@ -13,9 +13,8 @@ import pytest
 
 from isar.scene import build as build_mod
 from isar.scene.build import ClusterView, SceneAlternative, build_scene
-from isar.scene.factors import (CONNECT_BREAK_NATS, FACTORS, PRESENCE_MATCH_NATS,
-                                PRESENCE_MISS_NATS, factor_manifest, neighbour_reports,
-                                registry_fingerprint)
+from isar.scene.factors import (FACTORS, PRESENCE_MATCH_NATS, PRESENCE_MISS_NATS,
+                                factor_manifest, neighbour_reports, registry_fingerprint)
 from isar.scene.model import (SampleKnowledge, Visibility, footprint_of,
                               observation_fingerprint, visibility_of)
 
@@ -202,9 +201,9 @@ def test_a_one_q_spurion_is_priced_against_the_empty_arena_that_searched_for_it(
     component), so the spurion used to sit in its own cluster completely unpriced, while the same
     spurion beside a neighbour that happened to hold something else WAS priced.
 
-    Coverage coupling closes it: the arenas are one cluster, the miss and the break are charged,
-    and the spurion is still enumerated with a real posterior — the scene weights hypotheses, it
-    does not delete them."""
+    Coverage coupling closes it: the arenas are one cluster, the miss is charged, and the
+    spurion is still enumerated with a real posterior — the scene weights hypotheses, it does not
+    delete them."""
     obs = [mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(8.0,)),
                             cand("bg", -10.5, n_modes=0, omegas=())], q=q(1.0)),
            mk_obs("e:2:d", [cand("bg", -10.0, n_modes=0, omegas=())], q=q(1.1))]
@@ -213,10 +212,41 @@ def test_a_one_q_spurion_is_priced_against_the_empty_arena_that_searched_for_it(
     by_label = {a[0][1]: t for (a, _links), t in terms(cl, "presence").items()}
     assert by_label["stokes+bg"] == PRESENCE_MISS_NATS
     assert by_label["bg"] == 0.0
-    assert {a[0][1]: t for (a, _l), t in terms(cl, "connectivity").items()} == \
-        {"stokes+bg": CONNECT_BREAK_NATS, "bg": 0.0}
     posterior = {a["assignment"][0][1]: a["posterior"] for a in cl["alternatives"]}
     assert posterior["stokes+bg"] > 0.0 and posterior["bg"] > 0.0
+
+
+def test_one_neighbouring_peak_cannot_support_two_claimed_modes():
+    """Review finding 7. The neighbour holds ONE peak at 4.2 meV, and the two-mode reading of the
+    first arena claims both 4.0 and 4.5. Under the old any-partner-within-tolerance match that one
+    observed peak supported BOTH claims, so the two-mode reading collected two matches from one
+    observation and the mode-count marginal was pushed to 2 by an accounting artefact.
+
+    Support now comes from the alternative's linkage, which the builder's degree guard keeps
+    one-to-one: 4.0 takes the peak, 4.5 is unsupported and pays its miss. Asserted on the marginal
+    a reader actually looks at, not only on the report states."""
+    obs = [mk_obs("e:1:d", [cand("one", -10.0, omegas=(4.0,)),
+                            cand("two", -10.0, n_modes=2, omegas=(4.0, 4.5))], q=q(1.0)),
+           mk_obs("e:2:d", [cand("stokes+bg", -10.0, omegas=(4.2,))], q=q(1.1))]
+    cl = cluster_of(build_scene(obs), "e:1:d")
+    by_label = {a[0][1]: t for (a, _l), t in terms(cl, "presence").items()}
+    assert by_label["one"] == 2 * PRESENCE_MATCH_NATS
+    assert by_label["two"] == 2 * PRESENCE_MATCH_NATS + PRESENCE_MISS_NATS
+    n_modes = cl["marginals"]["n_modes"]["e:1:d"]
+    assert n_modes["1"] > n_modes["2"]
+
+
+def test_one_absent_continuation_is_charged_exactly_once_across_every_factor():
+    """Review finding 8, as a ledger grep. The neighbour looked at 8 meV and found nothing at all;
+    that is ONE null. It used to be charged twice — a presence miss and a connectivity break — so
+    the same silence moved the posterior by 3 nats where the model says 1."""
+    obs = [mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(8.0,))], q=q(1.0)),
+           mk_obs("e:2:d", [cand("bg", -10.0, n_modes=0, omegas=())], q=q(1.1))]
+    cl = cluster_of(build_scene(obs), "e:1:d")
+    alt, = cl["alternatives"]
+    assert [why for reasons in alt["reasons"].values() for why in reasons] == \
+        ["miss e:1:d#stokes+bg#0 not seen at e:2:d"]
+    assert [t for t in alt["factor_terms"].values() if t != 0.0] == [PRESENCE_MISS_NATS]
 
 
 def test_coverage_coupling_needs_coverage():
@@ -254,21 +284,23 @@ def _chain(middle_labels):
 def test_a_linear_chain_links_into_one_track_with_no_penalty():
     cl = cluster_of(build_scene(_chain([cand("stokes+bg", -10.0, omegas=(5.1,))])), "e:1:d")
     alt, = cl["alternatives"]
-    assert alt["factor_terms"]["connectivity"] == 0.0
     # One track: each adjacent pair linked once (1-2 and 2-3; 1 and 3 are not adjacent).
     assert len(alt["links"]) == 2
     assert alt["factor_terms"]["presence"] == 4 * PRESENCE_MATCH_NATS
 
 
-def test_a_track_that_vanishes_mid_cluster_pays_one_break_per_searched_neighbour():
+def test_a_track_that_vanishes_mid_cluster_pays_one_miss_per_searched_neighbour():
     """The middle arena looked at 5 meV and (on this reading) found nothing there, so both
-    neighbours' tracks terminate into a searched, covered, empty band."""
+    neighbours' tracks terminate into a searched, covered, empty band.
+
+    Re-pinned for review finding 8: this used to be charged TWICE, once by presence as a missing
+    peak and once by connectivity as a broken track. It is one null — the middle arena's silence
+    at 5 meV, seen from each side — and presence owns it."""
     obs = _chain([cand("stokes+bg", -10.0, omegas=(5.1,)), cand("bg", -10.0, n_modes=0, omegas=())])
     cl = cluster_of(build_scene(obs), "e:1:d")
     by_middle = {a["assignment"][1][1]: a for a in cl["alternatives"]}
-    assert by_middle["bg"]["factor_terms"]["connectivity"] == 2 * CONNECT_BREAK_NATS
-    assert by_middle["stokes+bg"]["factor_terms"]["connectivity"] == 0.0
-    assert len(by_middle["bg"]["reasons"]["connectivity"]) == 2
+    assert by_middle["bg"]["factor_terms"] == {"presence": 2 * PRESENCE_MISS_NATS}
+    assert len(by_middle["bg"]["reasons"]["presence"]) == 2
     assert by_middle["stokes+bg"]["posterior"] > by_middle["bg"]["posterior"]
 
 
@@ -279,7 +311,7 @@ def test_an_absence_under_the_elastic_line_is_not_a_break():
            mk_obs("e:2:d", [cand("elastic+bg", -10.0, n_modes=0, omegas=(), extra=("elastic",))], q=q(1.1))]
     cl = cluster_of(build_scene(obs), "e:1:d")
     alt, = cl["alternatives"]
-    assert alt["factor_terms"] == {"connectivity": 0.0, "presence": 0.0}
+    assert alt["factor_terms"] == {"presence": 0.0}
     assert {r["visibility"] for r in cl["visibility"]} == {Visibility.BLOCKED_UNRESOLVED}
 
 
@@ -302,7 +334,7 @@ def test_a_crossing_enumerates_both_linkages_at_equal_posterior():
     a, b = cl["alternatives"]
     assert a["links"] != b["links"]
     assert a["base"] == b["base"]
-    assert a["factor_terms"]["connectivity"] == b["factor_terms"]["connectivity"] == 0.0
+    assert a["factor_terms"]["presence"] == b["factor_terms"]["presence"]
     assert a["posterior"] == pytest.approx(0.5, abs=1e-12)
     assert b["posterior"] == pytest.approx(0.5, abs=1e-12)
 
@@ -345,8 +377,28 @@ def test_a_partly_linked_junction_yields_two_valid_pairings_and_no_impossible_on
     # The two complete pairings are break-free and therefore equal; the partial one pays its
     # break rather than being ranked by ω.
     assert complete[0]["posterior"] == pytest.approx(complete[1]["posterior"], rel=1e-12)
-    assert partial[0]["factor_terms"]["connectivity"] == 2 * CONNECT_BREAK_NATS
+    # Each complete pairing links all four modes, so every report is a match; the partial reading
+    # leaves the 7.0 mode and the 5.0 mode unsupported and pays two misses against two matches.
+    assert complete[0]["factor_terms"]["presence"] == 4 * PRESENCE_MATCH_NATS
+    assert partial[0]["factor_terms"]["presence"] == \
+        2 * PRESENCE_MATCH_NATS + 2 * PRESENCE_MISS_NATS
     assert partial[0]["posterior"] < complete[0]["posterior"]
+
+
+def test_a_linkage_independent_miss_contributes_identically_to_every_variant():
+    """Review finding 8's other half. Presence charges detection at the ASSIGNMENT level: a mode
+    with no reachable partner at a covered neighbour is unlinked under EVERY linkage reading of
+    that assignment, so its miss must appear once in each variant and cancel out of the
+    within-assignment comparison. A miss that varied with the linkage would let the crossing's two
+    readings be separated by a null neither of them explains."""
+    obs = [*_crossing_scene(),
+           mk_obs("e:3:d", [cand("bg", -10.0, n_modes=0, omegas=())], q=q(1.2))]
+    cl = cluster_of(build_scene(obs), "e:1:d")
+    assert cl["scan_refs"] == ["e:1:d", "e:2:d", "e:3:d"]
+    assert cl["n_assignments"] == 1 and cl["n_enumerated"] == 2
+    misses = [sorted(w for w in a["reasons"]["presence"] if w.endswith("at e:3:d"))
+              for a in cl["alternatives"]]
+    assert len(misses[0]) == 2 and misses[0] == misses[1]
 
 
 def test_an_impossible_linkage_is_refused_rather_than_scored():
@@ -436,13 +488,11 @@ def test_a_declared_zone_centre_terminates_the_track_instead_of_penalizing_it():
     assert _states(blind) == {Visibility.SEARCHED_NO_SIGNAL}
     cl = cluster_of(blind, "e:1:d")
     assert list(terms(cl, "presence").values()) == [PRESENCE_MISS_NATS]
-    assert list(terms(cl, "connectivity").values()) == [CONNECT_BREAK_NATS]
 
     knowing = build_scene(obs, sample=SampleKnowledge(zone_period=1.0))
     assert _states(knowing) == {Visibility.STRUCTURAL_ENDPOINT}
     cl = cluster_of(knowing, "e:1:d")
     assert list(terms(cl, "presence").values()) == [0.0]
-    assert list(terms(cl, "connectivity").values()) == [0.0]
     assert cl["alternatives"][0]["reasons"] == {}
 
 
@@ -480,7 +530,6 @@ def test_a_quasielastic_neighbour_blocks_a_low_band_but_earns_no_endpoint():
     assert _states(rev) == {Visibility.BLOCKED_UNRESOLVED}
     cl = cluster_of(rev, "e:1:d")
     assert list(terms(cl, "presence").values()) == [0.0]
-    assert list(terms(cl, "connectivity").values()) == [0.0]
     # (a) ... but the endpoint prerequisite is unmet, so the state is NOT terminated. An elastic
     # neighbour under the same declaration is (the contrast is the whole finding).
     assert Visibility.STRUCTURAL_ENDPOINT not in _states(rev)
@@ -655,10 +704,13 @@ def test_the_live_registry_is_the_four_physics_factors():
                                "zone_centre_approach"]
     manifest = {m["name"]: m for m in factor_manifest(FACTORS)}
     assert manifest["presence"]["score_bound"] is None
-    assert manifest["connectivity"]["score_bound"] is None
     assert dict(manifest["presence"]["config"])["presence_miss_nats"] == PRESENCE_MISS_NATS
-    assert dict(manifest["connectivity"]["config"])["connect_break_nats"] == CONNECT_BREAK_NATS
-    assert manifest["connectivity"]["roles"] == ["couples", "score", "propose"]
+    # Review finding 8: connectivity shapes the hypothesis space (edges, crossing proposals) and
+    # prices nothing. Its one term charged the absence of a neighbouring component, which is the
+    # null presence already charges as a miss, and no topology-only term is left to replace it —
+    # so the manifest is where a reader sees that it moves no belief.
+    assert manifest["connectivity"]["roles"] == ["couples", "propose"]
+    assert "connect_break_nats" not in dict(manifest["connectivity"]["config"])
     assert manifest["presence"]["roles"] == ["couples", "score", "couples_arena"]
     # The two knowledge factors move no belief, so neither declares a score — and the manifest
     # is where a reader can see that rather than having to trust it.
