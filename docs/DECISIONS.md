@@ -2011,7 +2011,34 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   unbounded flags spell out) and H1 (loud refusal and no compatibility reader for a workspace whose
   rows predate the delivery contract); ports O44's origin rule as a scene specification.
 
-## Session status update
+- **H15.** (2026-08-13, In force; SCENE-4 PR 4.0) **A declared peak count RELAXES the
+  ``_offer_multimode`` diagnostic, it never bypasses it — H8(a) implemented.** `loop.py`'s
+  `_offer_multimode` (`isar/analyze/loop.py`) gains a `declared_count` input; with a declaration
+  ≥ 2 it evaluates the SAME two triggers (cost/dof, Wald–Wolfowitz runs-test residual) at named
+  relaxed thresholds — `GATE_COST_DECLARED` (1.3, < the global `GATE_COST` 2.0) and
+  `RUNS_ALPHA_DECLARED` (1.5, < the global `RUNS_Z` 2.0 — a smaller runs-test z-critical is a
+  more permissive alpha), both provisional v1, SCENE-7-calibrated. Natural abstention holds: a
+  declared scan clean under BOTH relaxed diagnostics is still not offered. The `or expected_two`
+  disjunct that unconditionally forced the 2-mode offer is removed at every call site —
+  `fit_shadow_candidates`, the production two-stage `_enumerate_and_fit`, and the structure-hint
+  shortcut gate `_try_structure_hint` (reached from `fit_structures_two_stage_hinted`) — because
+  the diagnostic is one function and a declared scan's offer must not depend on whether a
+  structure hint happened to be in scope; a declared hinted scan with between-threshold structure
+  rejects the shortcut and receives the full two-mode offer. **Route vocabulary:**
+  `multimode_route="guideline_forced"` is retired for `"declaration_relaxed"`, recorded ONLY when
+  the relaxed thresholds (not the global ones) made the offer — re-derived from the gate outcome
+  via a new `route_out` provenance channel threaded through `_enumerate_and_fit` /
+  `fit_structures_two_stage` / `fit_structures_two_stage_hinted`, never guessed from `peaks`
+  presence. The production writer (`isar/session/scan_delivery.py::fit_one`) and the aliased
+  shadow-selection bundle (`loop.shadow_bundle_from_complete_results`) both read this same
+  provenance rather than recomputing it from `peaks`. The eligibility science flag
+  `selection_guideline_forced` is renamed `selection_declaration_relaxed`
+  (`isar/eig/eligibility.py`) with no vocabulary-index shift (straight rename, not a split — no
+  `RETIRED, never emitted` placeholder was needed, since nothing depended on the old string's
+  continued presence at its rank). `isar/synth/stat2b/campaign.py`'s legacy/standard route
+  builders were checked and left unchanged: neither passes a declared count into the fit, so
+  their `residual_triggered`/`not_offered` derivation is already correct as the identity case of
+  the same rule.
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:
 user-facing campaign report (deferred until post-testing); renegotiation protocol (O3, future);
