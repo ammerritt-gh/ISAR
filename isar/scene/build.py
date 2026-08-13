@@ -44,6 +44,7 @@ import math
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 
+from isar.schema.statistics import CONSTRAINT_ORIGINS
 from isar.schema.steering import CANONICAL_MASTER, EVIDENCE_SINKS
 
 from .factors import (FACTORS, SceneFactor, factor_manifest, neighbour_reports,
@@ -52,6 +53,20 @@ from .model import (NON_MODE_ID_TAGS, SCENE_SCHEMA, CandidateRow, ComponentObser
                     ConditionSet, Footprint, PathTopology, SampleKnowledge, SceneObservation,
                     Visibility, canonical_bytes, digest_bytes, fingerprint, footprint_of, is_mode,
                     link_reach, path_adjacent, path_topology)
+
+# SCENE-4 PR 4.0 (#21): the lane split over isar.schema.statistics.CONSTRAINT_ORIGINS. A
+# candidate's provenance is DECLARED (prespecified relative to this scan, exactly-once by
+# construction) or it is DATA-DERIVED transported conditioning (accumulated from other scans'
+# counts, the exactly-once risk H204 named) — every member of the schema's enum is one or the
+# other, and the assertion below makes a THIRD, unaccounted-for member a loud import-time failure
+# rather than a silent fall into whichever lane happened to have an ``in`` check written first.
+SCORING_CONSTRAINT_ORIGINS = frozenset(
+    {"none", "user_declared", "prespecified_scientific", "catalogue_variant"})
+TRANSPORTED_CONSTRAINT_ORIGINS = frozenset(
+    {"prior_predictive", "data_dependent_rescue", "post_selection", "mixed"})
+assert SCORING_CONSTRAINT_ORIGINS | TRANSPORTED_CONSTRAINT_ORIGINS == CONSTRAINT_ORIGINS, (
+    "isar.schema.statistics.CONSTRAINT_ORIGINS has a member neither scoring lane accounts for — "
+    "the scene intake lane split (#21) must be updated before this schema change is safe")
 
 # Same currency and idiom as isar/analyze/evidence.py PRUNE_MARGIN: nats below the cluster's
 # per-arena leader, beyond which a candidate's posterior mass is bounded by e^−margin and it
@@ -526,6 +541,49 @@ def _usable_lnz(c: CandidateRow) -> float | None:
     return float(c.log_evidence)
 
 
+def _arena_constraint_origin(o: SceneObservation) -> str:
+    """The #21 arena-level ``CONSTRAINT_ORIGINS`` verdict, over every USABLE candidate.
+
+    "Usable" (:func:`_usable_lnz` is not ``None``) rather than every candidate in the row: an
+    excluded/no-evidence candidate can never be summed into any alternative's ``ln W(S)``
+    (:func:`_prune`), so its provenance carries no exactly-once risk for this arena — only a
+    candidate that COULD be chosen (this arena enumerates every surviving candidate as an
+    alternative, not only ``best_label``) can taint the comparison.
+
+    NOT a reduction across candidates the way ``isar.analyze.loop.aggregate_constraint_origin``
+    reduces across ONE fit's own constraint list: there, several constraint terms jointly shape a
+    SINGLE lnZ, so one data-derived term among them taints that one number and the fit-level
+    aggregate correctly folds to ``"mixed"``. Here, two DIFFERENT candidates are two SEPARATE,
+    independently-computed numbers — a ``"none"``-origin candidate sitting beside a
+    ``"catalogue_variant"``-origin candidate in the same arena is not a mixed anything, it is two
+    cleanly-classified alternatives, and collapsing that heterogeneity to ``"mixed"`` would
+    non-score an arena no candidate of which is actually tainted. The correct arena rule is ANY:
+    one candidate carrying transported (or already fit-level-``"mixed"``) provenance taints the
+    whole arena, because THAT candidate's lnZ could be the one an alternative sums — so a single
+    unsafe usable candidate decides the lane, never a set-reduction over however many candidates
+    happen to differ.
+
+    Raises when a usable candidate's ``constraint_origin`` is the tri-state ``None`` (no semantics
+    record — a delivery from before this contract existed) or a string outside
+    ``isar.schema.statistics.CONSTRAINT_ORIGINS`` (schema drift) — REFUSE, per the #21 ruling,
+    never a silent lane guess.
+    """
+    origins = [c.constraint_origin for c in o.candidates if _usable_lnz(c) is not None]
+    if any(g is None for g in origins):
+        raise ValueError(
+            f"scene: {o.scan_ref!r} carries a usable candidate with no constraint_origin "
+            "semantics record — this workspace predates persisted fit semantics; re-deliver or "
+            "rebuild it before SCENE analysis")
+    unknown = sorted({g for g in origins if g not in CONSTRAINT_ORIGINS})
+    if unknown:
+        raise ValueError(
+            f"scene: {o.scan_ref!r} carries a candidate with constraint_origin {unknown!r}, not "
+            "a member of isar.schema.statistics.CONSTRAINT_ORIGINS — schema drift: re-deliver or "
+            "rebuild this workspace before SCENE analysis")
+    unsafe = sorted(g for g in origins if g in TRANSPORTED_CONSTRAINT_ORIGINS)
+    return unsafe[0] if unsafe else "none"
+
+
 def _non_scoring_reason(o: SceneObservation) -> str | None:
     """Why this arena may not enter ``ln W(S)``, or ``None`` if it may.
 
@@ -561,6 +619,13 @@ def _non_scoring_reason(o: SceneObservation) -> str | None:
         # No lnZ → no term in ln W(S). Such an arena is not "excluded"; it simply has nothing to
         # contribute, and its footprint still records that we looked.
         return "no_evidence"
+    # SCENE-4 PR 4.0 (#21, Variant A): the WINNING comparison's constraint provenance decides
+    # scoring eligibility, evaluated only now that the arena would otherwise score. See
+    # ``_arena_constraint_origin`` for why this is an ARENA verdict over every candidate that
+    # could actually be summed, not the single chosen candidate's origin alone.
+    origin = _arena_constraint_origin(o)
+    if origin in TRANSPORTED_CONSTRAINT_ORIGINS:
+        return "transported_conditioning"
     return None
 
 

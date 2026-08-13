@@ -23,15 +23,21 @@ from isar.scene.model import (CandidateRow, ComponentDescriptor, SceneObservatio
 # ----------------------------------------------------------------------------
 # Hand-built observations
 # ----------------------------------------------------------------------------
-def cand(label, lnz, *, n_modes=1, omegas=None, usable=True, identity=None, extra=()):
+def cand(label, lnz, *, n_modes=1, omegas=None, usable=True, identity=None, extra=(),
+        constraint_origin="none"):
     """One candidate for ``mk_obs``. ``extra`` declares the NON-MODE component kinds explicitly.
 
     Mode descriptors follow the caller's ``n_modes``, which is already an explicit declaration of
     how many modes the candidate has; ``elastic``/``quasielastic`` must be spelled, because the
     label is an identifier and nothing derives structure from it any more.
+
+    ``constraint_origin`` defaults to ``"none"`` (recorded, unconstrained) — a normal delivered
+    row under the current contract, never the tri-state ``None`` production reserves for a
+    pre-H9 workspace (SCENE-4 PR 4.0 #21): a test that wants the refusal lane passes
+    ``constraint_origin=None`` explicitly.
     """
     return (label, lnz, n_modes, (10.0,) * n_modes if omegas is None else tuple(omegas),
-            usable, identity, tuple(extra))
+            usable, identity, tuple(extra), constraint_origin)
 
 
 def components(n_modes, extra=()):
@@ -47,8 +53,8 @@ def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), bands=None, q=(1.0, 0.
         CandidateRow(label=label, k=None, n_modes=n_modes, log_evidence=lnz,
                      evidence_method="laplace", posterior_probability=None, usable=usable,
                      identity=identity, variant=None, omegas=omegas,
-                     components=components(len(omegas), extra))
-        for label, lnz, n_modes, omegas, usable, identity, extra in candidates)
+                     components=components(len(omegas), extra), constraint_origin=origin)
+        for label, lnz, n_modes, omegas, usable, identity, extra, origin in candidates)
     if conditions is None:
         # Deliberately NOT derived from ``temperature`` (the per-observation PHYSICS field,
         # e.g. the Bose-detectability tests that vary it per arena on purpose): ``conditions``
@@ -343,13 +349,17 @@ def test_conditioning_provenance_rides_into_the_revision():
     into the embedded rows — while staying off ComponentObservation, which factors see."""
     constraints = ({"constraint_kind": "hard", "parameter": "phonon.Gamma",
                     "origin": "transported_prior", "value": 0.5},)
+    # A real ``CONSTRAINT_ORIGINS`` member (SCENE-4 PR 4.0 #21 gives the field a closed
+    # vocabulary): ``prior_predictive`` is data-derived transported conditioning, so this
+    # arena is non-scoring under #21 — irrelevant here, since ``payload["observations"]`` carries
+    # every validated row regardless of scoring status, which is the one thing this test checks.
     obs = mk_obs("e:1:d", [cand("A", -10.0)])
     obs = replace(obs, candidates=(replace(obs.candidates[0],
-                                           constraint_origin="transported_prior",
+                                           constraint_origin="prior_predictive",
                                            effective_constraints=constraints),))
     obs = replace(obs, fingerprint=observation_fingerprint(replace(obs, fingerprint="")))
     row, = build_scene([obs], factors=[ZERO]).payload["observations"][0]["candidates"]
-    assert row["constraint_origin"] == "transported_prior"
+    assert row["constraint_origin"] == "prior_predictive"
     assert row["effective_constraints"] == [dict(constraints[0])]
 
 

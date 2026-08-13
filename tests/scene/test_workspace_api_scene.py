@@ -39,7 +39,11 @@ def _candidate(label, **kw):
     row = {"label": label, "k": 5, "n_modes": 1, "log_evidence": -12.5,
            "evidence_method": "nested", "posterior_probability": 0.7, "usable": True,
            "identity": None, "variant": None, "omegas": [4.0],
-           "components": [{"kind": "mode", "slot": 0}]}
+           "components": [{"kind": "mode", "slot": 0}],
+           # SCENE-4 PR 4.0 (#21): "recorded, unconstrained" — an ordinary current-contract row,
+           # never the tri-state ``None`` production reserves for a pre-H9 delivery. A test that
+           # wants the #21 refusal lane passes ``constraint_origin=None`` explicitly.
+           "constraint_origin": "none"}
     row.update(kw)
     return row
 
