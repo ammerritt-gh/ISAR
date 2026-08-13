@@ -33,7 +33,9 @@ def _obs(**over) -> SceneObservation:
                 effective_exposure=120.0, background=1.5, best_label="phonon",
                 candidates=(_row(), _row(label="bg", n_modes=0, omegas=(), components=())),
                 evidence_comparison_status="complete", selection_fallback=None,
-                arena_fingerprint="a" * 64, evidence_sink=None, fingerprint="")
+                arena_fingerprint="a" * 64, evidence_sink=None,
+                sample="LiHoF4", conditions=(("temperature_K", 300.0),),
+                count_trust="trusted", lattice_epoch=None, fingerprint="")
     fields = {**base, **over}
     # A hole-free axis unless a test says otherwise: the bands ARE the coverage, and the window
     # is only their envelope.

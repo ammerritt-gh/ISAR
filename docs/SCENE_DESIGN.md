@@ -303,6 +303,22 @@ Per scan: the persisted candidate rows on `FitOutcome`/results.csv are the scene
 contract (H11(a), H12(e) — no separate interpretation artifact; scene revisions embed the
 exact rows they consumed, with completeness status and conditioning provenance).
 
+**Counts are authoritative, fits are disposable** (PR 4.0, #26). Alongside results.csv,
+`isar.session.scan_delivery` appends one line of `isar.measurement-arena/1`
+(`isar.schema.measurement.MeasurementArena`) per measured arena to
+`<workspace>/report/measurements.jsonl`, at the point a `ScanContext` is built — BEFORE `fit_one`
+is ever called, so the record survives a fit crash untouched. Same fsync-append idiom as the
+scene store's `history.jsonl`; last record per `scan_ref` wins on read. `count_trust` names three
+honest states: `"trusted"` (a usable QC-masked measurement; a fitted candidate table, if any, is a
+separate, disposable interpretation of it — a trusted arena with none yet is `no_interpretation`,
+not a failure), `"excluded"` / `"held_for_calibration"` / `"undersampled"` (a terminal gate
+outcome — attempted, never coverage). `isar.workspace_api.scene.scene_observations` joins
+candidate rows onto these records; a delivered candidate table with no matching record, or none
+at all, is refused (H1, re-deliver) rather than guessed at. `isar.scene.build.build_scene` prices
+this at intake: a `"trusted"` arena (fitless or not) is footprinted like any other measured arena;
+a count-untrusted one takes no part in the footprint set or the path topology at all — it was
+attempted, never measured — and is recorded `non_scoring` with reason `count_untrusted`.
+
 Per scene update (H14(b)), under `<workspace>/report/scene/`:
 
 ```

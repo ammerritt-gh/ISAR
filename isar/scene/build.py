@@ -231,19 +231,30 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
     declared = SampleKnowledge() if sample is None else sample
 
     obs = _validated(observations)
+    # PR 4.0 (#26): a count-untrusted arena (``count_trust`` off "trusted" — a gate refusal
+    # recorded as ATTEMPTED, never a measurement) was never actually MEASURED, so it takes no
+    # part in the path, the footprints, or any cluster below — unlike an arena whose counts are
+    # trusted but whose local comparison could not score (still measured, still footprinted, see
+    # the note below). It is folded into ``non_scoring`` directly, with no footprint entry.
+    trusted_obs = tuple(o for o in obs if o.count_trust == "trusted")
+    untrusted_reasons = [{"scan_ref": o.scan_ref, "reason": "count_untrusted"}
+                         for o in obs if o.count_trust != "trusted"]
+
     # The ordered path FIRST: every adjacency, every declared-geometry coordinate and every edge
     # length downstream is read off it, and it is a property of the arena SET (review finding 3).
     #
-    # Over ALL arenas, not only the scoring ones: the path is the experiment map, and an arena
-    # whose evidence may not be summed was still MEASURED at its q. The consequence is deliberate —
-    # an unscoreable scan between two scoring ones separates them by two ordinals, so they no
-    # longer judge each other, exactly as inserting any intermediate scan does. Deriving the path
-    # from the scoring subset instead would make the ordering depend on which comparisons happened
-    # to finish, and one arena's H7 timeout would silently re-price its neighbours' absences.
-    topology = path_topology({o.scan_ref: o.q for o in obs})
-    footprints = {o.scan_ref: footprint_of(o, topology) for o in obs}
+    # Over ALL TRUSTED arenas, not only the scoring ones: the path is the experiment map, and an
+    # arena whose evidence may not be summed was still MEASURED at its q. The consequence is
+    # deliberate — an unscoreable scan between two scoring ones separates them by two ordinals, so
+    # they no longer judge each other, exactly as inserting any intermediate scan does. Deriving
+    # the path from the scoring subset instead would make the ordering depend on which comparisons
+    # happened to finish, and one arena's H7 timeout would silently re-price its neighbours'
+    # absences.
+    topology = path_topology({o.scan_ref: o.q for o in trusted_obs})
+    footprints = {o.scan_ref: footprint_of(o, topology) for o in trusted_obs}
 
-    scoring, non_scoring = _split_by_evidence(obs)
+    scoring, non_scoring = _split_by_evidence(trusted_obs)
+    non_scoring = sorted(non_scoring + untrusted_reasons, key=lambda d: d["scan_ref"])
     # Order matters and is the contract: evidence split → margin pruning → components of the
     # SURVIVORS → coupling edges → clusters → enumeration. A candidate that will not be
     # enumerated must not shape the partition either: an excluded candidate's component could
@@ -293,7 +304,7 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
         "observations": [{"scan_ref": o.scan_ref, "fingerprint": o.fingerprint,
                           "candidates": [c.to_dict() for c in o.candidates]} for o in obs],
         "non_scoring": non_scoring,
-        "footprints": [footprints[o.scan_ref].to_dict() for o in obs],
+        "footprints": [footprints[o.scan_ref].to_dict() for o in trusted_obs],
         "clusters": cluster_payloads,
     }
     return SceneRevision.of(payload)
@@ -444,7 +455,10 @@ def _non_scoring_reason(o: SceneObservation) -> str | None:
         # canonical pool, and the scene routes it in a later slice. Deferred, not discarded.
         return "aux_sink_deferred"
     if not o.candidates:
-        return "no_candidates"
+        # A TRUSTED measurement (PR 4.0 #26) with no usable interpretation yet — not a broken
+        # arena, and not the same claim as "excluded"/"held"/"undersampled": the counts are good,
+        # nothing has been fitted to them (or was fitted and produced no candidate at all).
+        return "no_interpretation"
     if o.evidence_comparison_status == "incomplete":
         # H7: the candidate comparison expired with a contender unresolved, so the lnZ values
         # present are not the arena. Scoring them would turn an unfinished comparison into a

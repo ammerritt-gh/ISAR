@@ -361,6 +361,17 @@ class SceneObservation:
     # scientific evidence channels of their own (identity, connectivity, transition), so the
     # candidates are PRESERVED here and the routing decision is the builder's.
     evidence_sink: str | None
+    # SCENE-4 PR 4.0 (#26): the sample/conditions/trust identity this arena's measurement-arena
+    # record (isar.schema.measurement.MeasurementArena) carried. ALL four enter the fingerprint —
+    # a scene scored under a different sample, a different condition set, a different lattice
+    # frame, or a different trust status is not the same observation, even when its q and
+    # candidates are byte-identical. Digest moves are intended here (the #25/#28 footprint-fields
+    # precedent).
+    sample: str | None
+    conditions: tuple                            # sorted (name, value) pairs; v1: temperature_K
+    count_trust: str                              # "trusted" / "excluded" / "held_for_calibration"
+                                                   # / "undersampled" — only "trusted" may score
+    lattice_epoch: int | None
     fingerprint: str                             # sha256 of this observation's canonical payload
 
     def to_dict(self) -> dict:
@@ -381,6 +392,10 @@ class SceneObservation:
             "selection_fallback": self.selection_fallback,
             "arena_fingerprint": self.arena_fingerprint,
             "evidence_sink": self.evidence_sink,
+            "sample": self.sample,
+            "conditions": [[k, v] for k, v in self.conditions],
+            "count_trust": self.count_trust,
+            "lattice_epoch": self.lattice_epoch,
             "fingerprint": self.fingerprint,
         }
 
@@ -408,6 +423,12 @@ class SceneObservation:
             selection_fallback=_opt_str(d.get("selection_fallback")),
             arena_fingerprint=_opt_str(d.get("arena_fingerprint")),
             evidence_sink=_opt_str(d.get("evidence_sink")),
+            sample=_opt_str(d.get("sample")),
+            conditions=_conditions(d.get("conditions")),
+            # Required, like evidence_comparison_status: a payload that cannot say whether this
+            # arena was ever trusted is not readable as an observation — rebuild the scene.
+            count_trust=str(d["count_trust"]),
+            lattice_epoch=_opt_int(d.get("lattice_epoch")),
             fingerprint=str(d["fingerprint"]),
         )
 
@@ -881,3 +902,12 @@ def _opt_bands(v) -> tuple[tuple[float, float], ...] | None:
 
 def _opt_triple(v) -> tuple[float, float, float] | None:
     return None if v is None else (float(v[0]), float(v[1]), float(v[2]))
+
+
+def _opt_int(v) -> int | None:
+    return None if v is None else int(v)
+
+
+def _conditions(v) -> tuple:
+    """Name -> value pairs, sorted by name — the canonical form the fingerprint relies on."""
+    return tuple(sorted(((str(k), float(val)) for k, val in (v or ())), key=lambda kv: kv[0]))

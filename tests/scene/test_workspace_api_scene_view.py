@@ -15,7 +15,8 @@ from isar.scene.store import write_revision
 from isar.session import scene_hook
 from isar.workspace_api import Workspace, hypothesis_map, scene_revision
 from isar.workspace_api.scene import sample_knowledge, scene_observations
-from scene.test_workspace_api_scene import COLUMNS, _candidate, _row, _selection, _ws
+from scene.test_workspace_api_scene import (
+    COLUMNS, _candidate, _row, _selection, _write_measurements, _ws)
 from synthetic_ws import stamp_ws
 
 # A row the params-only evaluator can render: a calibration zero (so ``resolution_context`` exists)
@@ -260,6 +261,7 @@ def test_mutating_a_returned_payload_changes_nothing(tmp_path):
 def _restamp(tmp_path, rows):
     """Move the workspace on UNDER a stored revision, exactly as a later delivery would."""
     stamp_ws(tmp_path, rows=rows, columns=COLUMNS)
+    _write_measurements(tmp_path, rows)
     return Workspace.open(tmp_path)
 
 

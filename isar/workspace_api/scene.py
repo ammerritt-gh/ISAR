@@ -12,11 +12,13 @@ scene is allowed to see at all*, and it is enforced here, at the door — see
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import replace
 
 from isar.scene.model import (CandidateRow, SampleKnowledge, SceneObservation,
                               observation_fingerprint)
+from isar.schema.measurement import MeasurementArena, current_lattice_epoch
 from isar.schema.steering import CANONICAL_MASTER
 
 log = logging.getLogger(__name__)
@@ -26,8 +28,57 @@ log = logging.getLogger(__name__)
 # heuristic between the stored evidence and ln W(S), which is exactly what may not happen.
 REDELIVER = "re-deliver or rebuild this workspace before SCENE analysis"
 
+# SCENE-4 PR 4.0 (#26): the counts-authoritative measurement-arena log,
+# isar.session.measurement_store.FILENAME — duplicated as a literal rather than imported, since
+# isar.workspace_api may not import isar.session (hard rule 6).
+MEASUREMENTS_FILENAME = "measurements.jsonl"
+
 # The lattice-epoch cell fields, in the order ``SampleKnowledge.lattice`` records them.
 _CELL = ("a", "b", "c", "alpha", "beta", "gamma")
+
+
+def _read_measurements(ws) -> dict | None:
+    """``{scan_ref: MeasurementArena}`` off ``report/measurements.jsonl``, last line per ref
+    wins — or ``None`` when the file does not exist at all (an absent log, distinct from an empty
+    one, which is what a fresh workspace with no delivered scan yet legitimately has).
+
+    An unreadable line — bad JSON, or a record whose ``schema`` this reader does not recognize —
+    refuses the whole workspace (H1): a partially-readable counts ledger is not a safe partial
+    answer, the same posture as every other refusal in this module.
+    """
+    path = ws._report_dir / MEASUREMENTS_FILENAME
+    if not path.is_file():
+        return None
+    out: dict[str, MeasurementArena] = {}
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = MeasurementArena.from_dict(json.loads(line))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ValueError(f"scene: {path} line {lineno} is unreadable ({exc}) — "
+                             f"{REDELIVER}") from exc
+        out[record.scan_ref] = record          # last record per scan_ref wins
+    return out
+
+
+def _synthetic_observation(record: "MeasurementArena") -> SceneObservation:
+    """A :class:`SceneObservation` for an arena that ``results.csv`` has no delivered-fit row
+    for: a TRUSTED measurement with no usable interpretation yet (candidates empty — the scene
+    still records "no_interpretation" and fills the experiment map), or a count-untrusted gate
+    outcome (excluded / held_for_calibration / undersampled — recorded as attempted, scored as
+    ``non_scoring`` with NO footprint, per :func:`isar.scene.build.build_scene`)."""
+    obs = SceneObservation(
+        scan_ref=record.scan_ref, q=record.q,
+        temperature_K=dict(record.conditions).get("temperature_K"),
+        energy_window=record.energy_window, energy_bands=record.energy_bands,
+        gauss_fwhm=None, lorentz_fwhm=None, effective_exposure=record.effective_exposure,
+        background=None, best_label=None, candidates=(),
+        evidence_comparison_status="unavailable", selection_fallback=None, arena_fingerprint=None,
+        evidence_sink=None, sample=record.sample, conditions=record.conditions,
+        count_trust=record.count_trust, lattice_epoch=record.lattice_epoch, fingerprint="")
+    return replace(obs, fingerprint=observation_fingerprint(obs))
 
 
 def scene_observations(ws) -> list[SceneObservation]:
@@ -35,12 +86,20 @@ def scene_observations(ws) -> list[SceneObservation]:
 
     ``ws`` is an :class:`isar.workspace_api.Workspace`. One observation per delivered
     ``(ledger entry, detector)`` row that carries a candidate table, minus the rows a pooled
-    master supersedes. A row with no parseable candidate table yields no observation (it has
-    nothing to score) and is logged.
+    master supersedes, PLUS one synthetic observation (:func:`_synthetic_observation`) for every
+    measurement-arena record (``report/measurements.jsonl``, SCENE-4 PR 4.0 #26) that never
+    produced such a row — a trusted-but-fitless arena (its fit crashed, or converged to nothing),
+    or a count-untrusted gate outcome, both of which the ledger writes with an EMPTY
+    ``detectors`` dict and so never reach ``results.csv`` as a detector-qualified row at all. A
+    row with no parseable candidate table (a different case — a delivered fit whose cell is
+    absent or malformed) yields no observation and is logged.
 
     Raises ``ValueError`` on a workspace this adapter cannot read faithfully — a results.csv with
-    no candidates column, a master with unqualified member labels, or a row predating the current
-    delivery contract (:func:`_refuse_stale_delivery`). All of them mean re-deliver.
+    no candidates column, a master with unqualified member labels, a row predating the current
+    delivery contract (:func:`_refuse_stale_delivery`), a delivered scan row with no matching
+    measurement-arena record, or delivered candidates with no ``measurements.jsonl`` at all
+    (the same H1 precedent as the missing-``energy_bands`` refusal: re-deliver). All of them mean
+    re-deliver.
 
     Revisions need no handling here: ``results.csv`` is rewritten in full from the current
     ledger on every delivery (``isar/session/outcome.py:_write_results_csv``), so it holds
@@ -52,8 +111,18 @@ def scene_observations(ws) -> list[SceneObservation]:
     # it as "no observations" would silently present a whole campaign as unmeasured.
     if fits and not any("candidates" in fit.columns for fit in fits):
         raise ValueError(f"scene: results.csv has no candidates column — {REDELIVER}")
+
+    measurements = _read_measurements(ws)
+    has_delivered_candidates = any(getattr(fit, "candidates", None) is not None for fit in fits)
+    if measurements is None:
+        if has_delivered_candidates:
+            raise ValueError(f"scene: {ws._report_dir / MEASUREMENTS_FILENAME} does not exist "
+                             f"but results.csv carries delivered candidates — {REDELIVER}")
+        measurements = {}
+
     qualified = _superseded_by_masters(fits)
     out: list[SceneObservation] = []
+    covered: set = set()
     for fit in fits:
         ref = _scan_ref(fit)
         if ref is None:
@@ -67,6 +136,14 @@ def scene_observations(ws) -> list[SceneObservation]:
         candidates = _candidates(fit, ref)
         if candidates is None:
             continue
+        covered.add(ref)
+        record = measurements.get(ref)
+        if record is None and not fit.pooled:
+            # A pooled master never goes through isar.session.scan_delivery (it has its own
+            # certification path, out of this work package's scope) so it legitimately carries no
+            # measurement-arena record; a plain scan row does, always, once it is delivered — an
+            # absent one means a pre-4.0 delivery or a partially-rebuilt log, not silence.
+            raise ValueError(f"scene: {ref} carries no measurement-arena record — {REDELIVER}")
         status, fallback, arena = _evidence_comparison(fit, ref)
         obs = SceneObservation(
             scan_ref=ref,
@@ -86,9 +163,29 @@ def scene_observations(ws) -> list[SceneObservation]:
             # Verbatim, including a sink this adapter does not recognize: classifying routing is
             # the builder's job, and a value rewritten here could not be quarantined there.
             evidence_sink=fit.evidence_sink,
+            # A master carries no record (see above): it delivered a fit at all only because its
+            # pooled counts were trusted, so it defaults to "trusted" with the CURRENT lattice
+            # epoch rather than one stamped at some member's measurement time.
+            sample=(record.sample if record is not None
+                   else (None if getattr(fit, "sample", None) is None else str(fit.sample))),
+            conditions=(record.conditions if record is not None
+                       else (("temperature_K", float(fit.T)),) if fit.T is not None else ()),
+            count_trust=(record.count_trust if record is not None else "trusted"),
+            lattice_epoch=(record.lattice_epoch if record is not None
+                          else current_lattice_epoch(ws.card.lattice_epochs)),
             fingerprint="",
         )
         out.append(replace(obs, fingerprint=observation_fingerprint(obs)))
+
+    for ref, record in measurements.items():
+        if ref in covered or ref in qualified:
+            # ``qualified``: a member a canonical master superseded. Its measurement was real and
+            # trusted, but its ARENA is intentionally suppressed (combine-before-divide) — surfacing
+            # it here as a synthetic "trusted, no interpretation" observation would double-count
+            # exactly the neutrons the master already scored.
+            continue
+        out.append(_synthetic_observation(record))
+
     out.sort(key=lambda o: o.scan_ref)
     return out
 

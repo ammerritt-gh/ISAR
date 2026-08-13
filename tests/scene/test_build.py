@@ -40,13 +40,16 @@ def components(n_modes, extra=()):
 
 
 def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), bands=None, q=(1.0, 0.0, 0.0),
-           status="complete", fallback=None, sink=None, temperature=300.0, exposure=1.0):
+           status="complete", fallback=None, sink=None, temperature=300.0, exposure=1.0,
+           count_trust="trusted", sample=None, conditions=None, lattice_epoch=None):
     rows = tuple(
         CandidateRow(label=label, k=None, n_modes=n_modes, log_evidence=lnz,
                      evidence_method="laplace", posterior_probability=None, usable=usable,
                      identity=identity, variant=None, omegas=omegas,
                      components=components(len(omegas), extra))
         for label, lnz, n_modes, omegas, usable, identity, extra in candidates)
+    if conditions is None:
+        conditions = (("temperature_K", float(temperature)),) if temperature is not None else ()
     obs = SceneObservation(scan_ref=scan_ref, q=q, temperature_K=temperature, energy_window=window,
                            energy_bands=(None if window is None
                                          else (tuple(window),) if bands is None
@@ -55,7 +58,8 @@ def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), bands=None, q=(1.0, 0.
                            background=0.5, best_label=rows[0].label if rows else None,
                            candidates=rows, evidence_comparison_status=status,
                            selection_fallback=fallback, arena_fingerprint=None,
-                           evidence_sink=sink, fingerprint="x")
+                           evidence_sink=sink, sample=sample, conditions=conditions,
+                           count_trust=count_trust, lattice_epoch=lattice_epoch, fingerprint="x")
     # Stamped from a label-sorted copy: the builder sorts candidates, so permuting the input
     # tuple in a test must be a real permutation of the same observation, not a different one.
     canon = replace(obs, candidates=tuple(sorted(rows, key=lambda c: c.label)))
@@ -259,10 +263,36 @@ def test_arena_without_usable_evidence_is_experiment_map_only():
            mk_obs("e:9:d", [], q=(6.0, 0.0, 0.0))]
     rev = build_scene(obs, factors=[COUPLER, ZERO])
     assert rev.payload["non_scoring"] == [{"scan_ref": "e:8:d", "reason": "no_evidence"},
-                                          {"scan_ref": "e:9:d", "reason": "no_candidates"}]
+                                          {"scan_ref": "e:9:d", "reason": "no_interpretation"}]
     assert [c["scan_refs"] for c in rev.payload["clusters"]] == [["e:1:d"]]
     # Still on the experiment map: we looked there, and the footprint says so.
     assert {f["scan_ref"] for f in rev.payload["footprints"]} == {"e:1:d", "e:8:d", "e:9:d"}
+
+
+def test_a_trusted_fitless_arena_fills_the_experiment_map():
+    """SCENE-4 PR 4.0 (#26): a TRUSTED measurement with no usable interpretation (candidates
+    empty — a fit crashed, or converged to nothing) is a different claim from a broken arena. It
+    still fills the experiment map: non-scoring, but footprinted, exactly like any other
+    non-scoring-but-measured arena above."""
+    obs = [mk_obs("e:1:d", [cand("A", -10.0)]),
+           mk_obs("e:9:d", [], q=(6.0, 0.0, 0.0), count_trust="trusted")]
+    rev = build_scene(obs, factors=[ZERO])
+    assert {"scan_ref": "e:9:d", "reason": "no_interpretation"} in rev.payload["non_scoring"]
+    assert {f["scan_ref"] for f in rev.payload["footprints"]} == {"e:1:d", "e:9:d"}
+
+
+def test_a_count_untrusted_arena_earns_no_footprint_but_is_recorded():
+    """A gate outcome (excluded / held_for_calibration / undersampled) was ATTEMPTED but never
+    actually measured, unlike every other non-scoring arena above — so it takes NO part in the
+    footprint set or the path topology, while still appearing in ``non_scoring`` (nothing here is
+    ever silently dropped)."""
+    obs = [mk_obs("e:1:d", [cand("A", -10.0)]),
+           mk_obs("e:5:d", [], q=(3.0, 0.0, 0.0), count_trust="excluded")]
+    rev = build_scene(obs, factors=[ZERO])
+    assert {"scan_ref": "e:5:d", "reason": "count_untrusted"} in rev.payload["non_scoring"]
+    assert {f["scan_ref"] for f in rev.payload["footprints"]} == {"e:1:d"}
+    # Nothing is deleted: the arena still travels with the revision, just with no coverage.
+    assert {o["scan_ref"] for o in rev.payload["observations"]} == {"e:1:d", "e:5:d"}
 
 
 def test_an_incomplete_comparison_never_becomes_a_confident_singleton():

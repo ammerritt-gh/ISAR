@@ -4,6 +4,7 @@ import logging
 
 import pytest
 
+from isar.schema.measurement import MeasurementArena
 from isar.schema.statistics import FIT_SELECTION_SCHEMA, authority_scopes
 from isar.workspace_api import Workspace
 from isar.scene.model import ComponentDescriptor, SampleKnowledge, covers, footprint_of
@@ -59,9 +60,43 @@ def _row(scan, *, candidates, scan_id=None, **kw):
     return row
 
 
+def _write_measurements(root, rows) -> None:
+    """The counts-authoritative record (SCENE-4 PR 4.0, #26) a real ``isar run`` would have
+    written BEFORE every delivered-fit row in ``rows`` — every test in this file predates that
+    contract, so this fixture backfills it to keep them exercising the SAME adapter path a real
+    campaign does, rather than one this file happens not to need. A pooled master carries no
+    record of its own (masters never go through ``isar.session.scan_delivery`` — out of this work
+    package's scope), so pooled rows are skipped, matching production."""
+    lines = []
+    for r in rows:
+        if r.get("candidates") is None or r.get("pooled"):
+            continue
+        scan = r.get("scan")
+        det = r.get("detector") or "det"
+        scan_id = r.get("scan_id") or f"tavi:{scan}:{det}"
+        h, k, l = r.get("h"), r.get("k"), r.get("l")
+        elo, ehi = r.get("energy_lo"), r.get("energy_hi")
+        record = MeasurementArena(
+            scan_ref=scan_id, scan_id=scan_id, scan_number=scan, detector=det,
+            sample=r.get("sample"),
+            conditions=(("temperature_K", float(r["T"])),) if r.get("T") is not None else (),
+            q=(None if h is None or k is None or l is None else (float(h), float(k), float(l))),
+            lattice_epoch=None,
+            energy_window=(None if elo is None or ehi is None else (float(elo), float(ehi))),
+            energy_bands=None, effective_exposure=r.get("effective_exposure"),
+            exposure_provenance=None, count_trust="trusted", reasons=(),
+            written_at="2026-01-01T00:00:00+00:00")
+        lines.append(json.dumps(record.to_dict(), sort_keys=True))
+    if lines:
+        rd = root / "report"
+        rd.mkdir(parents=True, exist_ok=True)
+        (rd / "measurements.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _ws(root, rows, columns=COLUMNS):
     root.mkdir(parents=True, exist_ok=True)
     stamp_ws(root, rows=rows, columns=columns)
+    _write_measurements(root, rows)
     return Workspace.open(root)
 
 
@@ -256,9 +291,15 @@ def test_conditioning_provenance_survives_the_adapter(tmp_path):
 
 
 @pytest.mark.parametrize("cell", ["{not json", json.dumps([{"k": 5}])])
-def test_malformed_candidates_yield_no_observation_and_log(tmp_path, caplog, cell):
+def test_malformed_candidates_yield_a_trusted_fitless_observation_and_log(tmp_path, caplog, cell):
+    """SCENE-4 PR 4.0 (#26) re-baseline: a malformed candidates cell used to make the arena
+    vanish entirely. The measurement-arena record is written BEFORE the candidates ever exist, so
+    it is unaffected by a later corrupt cell — the arena is still trusted, still logged as having
+    no usable candidate table, and now correctly still fills the experiment map (candidates
+    empty) rather than disappearing (hard rule 5: nothing is ever deleted)."""
     with caplog.at_level(logging.WARNING, logger="isar.workspace_api.scene"):
-        assert scene_observations(_ws(tmp_path, [_row(1, candidates=cell)])) == []
+        obs, = scene_observations(_ws(tmp_path, [_row(1, candidates=cell)]))
+    assert (obs.scan_ref, obs.candidates, obs.count_trust) == ("tavi:1:det", (), "trusted")
     assert any("tavi:1:det" in r.getMessage() for r in caplog.records)
 
 
@@ -332,6 +373,78 @@ def test_rows_that_never_had_a_fit_are_silent(tmp_path, caplog):
     with caplog.at_level(logging.DEBUG, logger="isar.workspace_api.scene"):
         assert scene_observations(_ws(tmp_path, [held])) == []
     assert [r.levelname for r in caplog.records] == ["DEBUG"]
+
+
+# ---------------------------------------------------------------------------
+# Measurement-arena records (SCENE-4 PR 4.0, #26): counts-authoritative intake
+# ---------------------------------------------------------------------------
+def _write_measurement(root, record: MeasurementArena) -> None:
+    rd = root / "report"
+    rd.mkdir(parents=True, exist_ok=True)
+    with open(rd / "measurements.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(record.to_dict(), sort_keys=True) + "\n")
+
+
+def _measurement(**over) -> MeasurementArena:
+    base = dict(scan_ref="tavi:4:det", scan_id="tavi:4:det", scan_number=4, detector="det",
+                sample="tavi", conditions=(("temperature_K", 200.0),), q=(2.0, 0.0, 0.0),
+                lattice_epoch=None, energy_window=(-5.0, 10.0), energy_bands=((-5.0, 10.0),),
+                effective_exposure=1000.0, exposure_provenance=None, count_trust="trusted",
+                reasons=(), written_at="2026-01-01T00:00:00+00:00")
+    return MeasurementArena(**{**base, **over})
+
+
+def test_a_trusted_fitless_arena_becomes_a_synthetic_observation(tmp_path):
+    """A scan whose fit crashed (or converged to nothing) never produces a detector-qualified
+    results.csv row (the ledger writes it with an EMPTY ``detectors`` cell) — but its
+    measurement-arena record still says the counts were trusted, and the adapter must surface it
+    so the scene layer can fill the experiment map with it."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[], columns=COLUMNS)
+    _write_measurement(tmp_path, _measurement())
+    obs, = scene_observations(Workspace.open(tmp_path))
+    assert (obs.scan_ref, obs.candidates, obs.count_trust) == ("tavi:4:det", (), "trusted")
+    assert obs.q == (2.0, 0.0, 0.0)
+    assert obs.energy_bands == ((-5.0, 10.0),)
+    assert obs.sample == "tavi"
+    assert obs.conditions == (("temperature_K", 200.0),)
+
+
+def test_a_count_untrusted_arena_becomes_a_synthetic_observation(tmp_path):
+    """A gate refusal (excluded / held_for_calibration / undersampled) never reaches a fit either,
+    but it is a DIFFERENT claim than a trusted-but-fitless arena — the adapter carries the
+    distinction through verbatim; deciding what it means for scoring is the builder's job."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[], columns=COLUMNS)
+    _write_measurement(tmp_path, _measurement(
+        scan_ref="tavi:5:det", scan_id="tavi:5:det", scan_number=5,
+        count_trust="held_for_calibration", energy_window=None, energy_bands=None,
+        effective_exposure=None, reasons=("no energy zero",)))
+    obs, = scene_observations(Workspace.open(tmp_path))
+    assert (obs.scan_ref, obs.candidates, obs.count_trust) == (
+        "tavi:5:det", (), "held_for_calibration")
+
+
+def test_missing_measurements_log_with_delivered_candidates_is_refused(tmp_path):
+    """H1, the same posture as the missing-candidates-column and missing-energy_bands refusals: a
+    results.csv that already carries delivered candidates but no measurements.jsonl at all is a
+    stale delivery, not a silently empty counts ledger."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[_row(1, candidates=[_candidate("phonon+bg")])], columns=COLUMNS)
+    with pytest.raises(ValueError, match=r"measurements\.jsonl.*re-deliver"):
+        scene_observations(Workspace.open(tmp_path))
+
+
+def test_a_delivered_row_with_no_matching_measurement_record_is_refused(tmp_path):
+    """A partially-rebuilt or pre-4.0 log: measurements.jsonl exists but does not name this
+    scan_ref. Guessing "trusted" would let a broken arena's evidence silently score."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[_row(1, candidates=[_candidate("phonon+bg")]),
+                             _row(2, candidates=[_candidate("phonon+bg")])], columns=COLUMNS)
+    _write_measurement(tmp_path, _measurement(scan_ref="tavi:1:det", scan_id="tavi:1:det",
+                                              scan_number=1))
+    with pytest.raises(ValueError, match=r"tavi:2:det.*measurement-arena record.*re-deliver"):
+        scene_observations(Workspace.open(tmp_path))
 
 
 # ---------------------------------------------------------------------------
