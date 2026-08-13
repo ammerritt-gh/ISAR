@@ -60,10 +60,14 @@ def test_a_raising_scene_build_is_logged_and_skipped(tmp_path, monkeypatch):
 
 
 def test_a_delivery_with_nothing_to_score_still_publishes_a_scene(tmp_path):
-    """The same held delivery, hook intact. An arena-less workspace is a legal scene (there is
-    nothing to score yet), and publishing it is what makes the unchanged-digest path free on
-    every later delivery — the alternative is a workspace whose scene appears only once
-    something happens to fit."""
+    """The same held delivery, hook intact. A workspace with nothing SCORED is still a legal
+    scene, and publishing it is what makes the unchanged-digest path free on every later delivery
+    — the alternative is a workspace whose scene appears only once something happens to fit.
+
+    SCENE-4 PR 4.0 (#26) re-baseline: the three held-for-calibration scans are still ATTEMPTED,
+    so each now carries its own measurement-arena record and a synthetic observation with empty
+    candidates — non-scoring (``count_untrusted``, no footprint), but no longer silently absent
+    from the revision the way a pre-4.0 held scan was."""
     ws, data = _s30_batch(tmp_path)
     summary = driver.run_batch(ws, [data], M=10, detectors="ana5")
 
@@ -71,7 +75,11 @@ def test_a_delivery_with_nothing_to_score_still_publishes_a_scene(tmp_path):
     assert not line.startswith("scene revision skipped")
     pointer, payload = store.read_current(ws.report_dir)
     assert line == f"scene revision {pointer['digest'][:12]}"
-    assert payload["observations"] == []
+    assert len(payload["observations"]) == 3
+    assert all(o["candidates"] == [] for o in payload["observations"])
+    assert {n["reason"] for n in payload["non_scoring"]} == {"count_untrusted"}
+    assert payload["footprints"] == []
+    assert payload["clusters"] == []
     assert payload["catalogue_version"] == "isar.catalogue.default/1"
     assert store.read_last_attempt(ws.report_dir) == {
         "status": "ok", "digest": pointer["digest"],
