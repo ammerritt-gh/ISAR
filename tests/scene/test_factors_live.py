@@ -727,6 +727,38 @@ def test_undeclared_knowledge_is_inert_and_says_so():
     assert declared.digest != rev.digest
 
 
+def test_a_stale_epoch_partition_gets_no_lattice_semantics():
+    """PR #30 review response (disposition 12): an arena EXPLICITLY stamped a lattice epoch other
+    than the CURRENTLY declared one must not receive the current frame's classification — a
+    stale-epoch elastic feature is not necessarily near THIS epoch's declared reflection, and
+    classifying it as though it were would silently misattribute a re-orientation. A different
+    partition (``lattice_epoch`` is part of the partition key), so the two arenas never share a
+    cluster and the contrast is entirely in what each one's OWN cluster is handed."""
+    current = _elastic_at(2.0, scan_ref="e:1:d")
+    stale = replace(_elastic_at(2.0, scan_ref="e:2:d"), lattice_epoch=2)
+    current = replace(current, lattice_epoch=1)
+    rev = build_scene([current, stale],
+                      sample=SampleKnowledge(zone_period=1.0, reflections=(2.0,), lattice_epoch=1))
+    assert _classification(rev, "e:1:d") == {"e:1:d#elastic+bg#elastic": "bragg_compatible"}
+    assert _classification(rev, "e:2:d") == {"e:2:d#elastic+bg#elastic": "unclassified"}
+    assert "knowledge_epoch_mismatch" in rev.payload["sample_knowledge"]["degradations"]
+
+
+def test_a_stale_epoch_partition_gets_no_zone_centre_termination_either():
+    """The same mismatch, on the OTHER knowledge-consuming factor: a track that would terminate at
+    a declared zone centre under the current epoch stays a plain, charged absence when its arena
+    is stamped a different one — ``structural_endpoint`` never fires, and the ordinary
+    ``searched_no_signal`` miss the un-declared case already charges stands."""
+    stale_obs = [replace(o, lattice_epoch=2) for o in _endpoint_scene()]
+    current = build_scene(_endpoint_scene(), sample=SampleKnowledge(zone_period=1.0, lattice_epoch=1))
+    assert Visibility.STRUCTURAL_ENDPOINT in _states(current)
+
+    stale = build_scene(stale_obs, sample=SampleKnowledge(zone_period=1.0, lattice_epoch=1))
+    assert Visibility.STRUCTURAL_ENDPOINT not in _states(stale)
+    assert Visibility.SEARCHED_NO_SIGNAL in _states(stale)
+    assert "knowledge_epoch_mismatch" in stale.payload["sample_knowledge"]["degradations"]
+
+
 def test_the_classify_only_factor_costs_the_builder_no_pruning():
     """H12(c) in the other direction, RE-PINNED for #22 (was
     ``test_the_classify_only_factors_cost_the_builder_no_pruning``, which pinned the unsafe

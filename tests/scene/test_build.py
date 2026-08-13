@@ -8,6 +8,8 @@ workspace, no filesystem — so a failure here is a failure of the math.
 """
 import itertools
 import math
+import subprocess
+import sys
 from dataclasses import replace
 
 import pytest
@@ -122,6 +124,45 @@ def cluster_of(rev, cluster_id):
 
 
 # ----------------------------------------------------------------------------
+# PR #30 review response (disposition 16): the #21 lane-split invariant survives ``python -O``
+# ----------------------------------------------------------------------------
+def test_the_constraint_origin_lane_split_invariant_fires_even_under_python_dash_o():
+    """An ``assert`` disappears under ``python -O`` — this check MUST NOT, because a silently
+    unaccounted-for ``CONSTRAINT_ORIGINS`` member would fall through to whichever scoring lane's
+    ``in`` check happened to run first, the exact silent-fallthrough failure the #21 split exists
+    to prevent. A subprocess is the only honest way to prove ``-O`` behaviour: monkeypatching the
+    schema module in-process and only checking for ``ValueError`` would pass equally well against
+    the OLD ``assert`` when pytest itself is not run with ``-O`` (its default)."""
+    script = (
+        "import isar.schema.statistics as st\n"
+        "st.CONSTRAINT_ORIGINS = frozenset({'none', 'a_third_unaccounted_member'})\n"
+        "import isar.scene.build\n")
+    result = subprocess.run([sys.executable, "-O", "-c", script],
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode != 0, result.stdout
+    assert "neither scoring lane accounts for" in result.stderr
+
+
+def test_the_constraint_origin_lane_split_raises_valueerror_not_assertionerror():
+    """The invariant is a ``ValueError`` a caller could catch and act on, not an ``AssertionError``
+    (the ``assert`` statement's spelling) — a caller that already catches ``ValueError`` from every
+    other builder refusal should not need a second exception class for this one."""
+    script = (
+        "import isar.schema.statistics as st\n"
+        "st.CONSTRAINT_ORIGINS = frozenset({'none', 'a_third_unaccounted_member'})\n"
+        "try:\n"
+        "    import isar.scene.build\n"
+        "except ValueError:\n"
+        "    print('VALUEERROR_RAISED')\n"
+        "    raise SystemExit(0)\n"
+        "raise SystemExit(1)\n")
+    result = subprocess.run([sys.executable, "-c", script],
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "VALUEERROR_RAISED" in result.stdout
+
+
+# ----------------------------------------------------------------------------
 # Intake
 # ----------------------------------------------------------------------------
 def test_duplicate_scan_ref_raises():
@@ -144,6 +185,26 @@ def test_blank_fingerprint_raises(bad):
     obs = replace(mk_obs("e:1:d", [cand("A", -10.0)]), fingerprint=bad)
     with pytest.raises(ValueError, match="no fingerprint"):
         build_scene([obs])
+
+
+def test_the_embedded_observation_is_the_full_to_dict_not_a_three_key_subset():
+    """PR #30 review response (disposition 11, W5): sample, conditions, count_trust,
+    lattice_epoch and topology_role were already hashed INTO the fingerprint but were not
+    reconstructable from the stored payload — an auditor reading a revision back could not recover
+    what partitioned it without rejoining against the workspace that built it. Now they are."""
+    obs = mk_obs("e:1:d", [cand("A", -10.0)], sample="LiHoF4",
+                 conditions=(("temperature_K", 12.5), ("field_T", 3.0)),
+                 count_trust="trusted", lattice_epoch=7, topology_role="canonical_path")
+    rev = build_scene([obs], factors=[ZERO])
+    payload_obs, = rev.payload["observations"]
+    assert payload_obs == obs.to_dict()
+    assert payload_obs["sample"] == "LiHoF4"
+    assert payload_obs["conditions"] == [["field_T", 3.0], ["temperature_K", 12.5]]
+    assert payload_obs["count_trust"] == "trusted"
+    assert payload_obs["lattice_epoch"] == 7
+    assert payload_obs["topology_role"] == "canonical_path"
+    # Round-trips through the stored form exactly like a standalone observation would.
+    assert SceneObservation.from_dict(payload_obs) == obs
 
 
 # ----------------------------------------------------------------------------

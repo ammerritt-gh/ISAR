@@ -53,9 +53,17 @@ def build_and_store(root, *, source: str = "driver"):
         # The catalogue profile the fitter enumerates under (isar/analyze/loop.py). The scene never
         # imports the catalogue itself, so the stamp is supplied here, at the one place that knows
         # both layers.
+        # PR #30 review response (W1): the card's OWN declared collation.t_round, Stage II's
+        # default rule (isar.session.driver / master_delivery / scan_delivery all read
+        # ``.get("t_round", 5.0)``) — omitting this argument silently fell back to
+        # ``build_scene``'s own 0.1 default, which is collate.py's S30-legacy default, not Stage
+        # II's. Two arenas the reducer pooled at Stage II must be the same arenas the scene
+        # partitions together; a different t_round here would disagree with the workspace it reads.
+        condition_t_round = float(ws.card.collation.get("t_round", 5.0))
         revision = build_scene(tuple(scene_observations(ws)),
                                catalogue_version=DEFAULT_PROFILE,
-                               sample=sample_knowledge(ws))
+                               sample=sample_knowledge(ws),
+                               condition_t_round=condition_t_round)
         result = store.write_revision(report_dir, revision, expected_parent=expected_parent,
                                       source=source)
     except Exception as exc:

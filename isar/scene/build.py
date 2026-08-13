@@ -64,9 +64,14 @@ SCORING_CONSTRAINT_ORIGINS = frozenset(
     {"none", "user_declared", "prespecified_scientific", "catalogue_variant"})
 TRANSPORTED_CONSTRAINT_ORIGINS = frozenset(
     {"prior_predictive", "data_dependent_rescue", "post_selection", "mixed"})
-assert SCORING_CONSTRAINT_ORIGINS | TRANSPORTED_CONSTRAINT_ORIGINS == CONSTRAINT_ORIGINS, (
-    "isar.schema.statistics.CONSTRAINT_ORIGINS has a member neither scoring lane accounts for — "
-    "the scene intake lane split (#21) must be updated before this schema change is safe")
+# PR #30 review response (disposition 16): an unconditional ``raise`` rather than ``assert`` — an
+# ``assert`` disappears under ``python -O``, which would silently let a third, unaccounted-for
+# CONSTRAINT_ORIGINS member fall through to whichever lane's ``in`` check happened to run first,
+# exactly the silent-fallthrough failure this check exists to prevent.
+if SCORING_CONSTRAINT_ORIGINS | TRANSPORTED_CONSTRAINT_ORIGINS != CONSTRAINT_ORIGINS:
+    raise ValueError(
+        "isar.schema.statistics.CONSTRAINT_ORIGINS has a member neither scoring lane accounts for — "
+        "the scene intake lane split (#21) must be updated before this schema change is safe")
 
 # Same currency and idiom as isar/analyze/evidence.py PRUNE_MARGIN: nats below the cluster's
 # per-arena leader, beyond which a candidate's posterior mass is bounded by e^−margin and it
@@ -322,17 +327,31 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
         key=lambda refs: refs[0])
 
     by_ref = {o.scan_ref: o for o in scoring}
+    # PR #30 review response (disposition 12): every arena of ONE cluster shares one partition
+    # (``_partition_key`` includes ``lattice_epoch``), so any single member's epoch is the
+    # cluster's. A cluster whose epoch does not match the CURRENTLY declared
+    # ``SampleKnowledge.lattice_epoch`` is scored against a blank sample instead — see
+    # ``_cluster_sample``'s docstring for why this, rather than filtering the factor list, is what
+    # keeps ``zone_centre_approach``/``reciprocal_lattice_localization`` inert for it.
     cluster_payloads = [
         _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, cap, span,
-                       declared)
+                       _cluster_sample(by_ref[refs[0]], declared))
         for refs in clusters]
+    epoch_mismatch = any(
+        by_ref[refs[0]].lattice_epoch is not None and declared.lattice_epoch is not None
+        and by_ref[refs[0]].lattice_epoch != declared.lattice_epoch
+        for refs in clusters)
 
     # #28: a temperature present with no declared binning policy leaves that arena's condition key
     # unresolved (``ConditionSet.temperature_K_binned=None``) — legal, and recorded once here
     # rather than per-partition, since it is a fact about the DECLARATION, not about any one
     # partition's geometry.
+    # PR #30 review response (disposition 15): the SAME threshold ``ConditionSet.of`` fails closed
+    # at (``>= 1e-6``, not merely ``> 0.0``) — a ``condition_t_round`` between 0 and 1e-6 already
+    # makes every temperature-bearing arena's key unresolved there, so this ledger check must agree
+    # or it would silently omit the reason exactly in that band.
     condition_binning_unavailable = (
-        not (condition_t_round is not None and float(condition_t_round) > 0.0)
+        not (condition_t_round is not None and float(condition_t_round) >= 1e-6)
         and any(dict(o.conditions).get("temperature_K") is not None for o in trusted_obs))
 
     payload = {
@@ -368,9 +387,15 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
         # zone period is not the same scene as one scored blind to it.
         "sample_knowledge": {**declared.to_dict(),
                              "degradations": _degradations(factor_list, declared, topologies,
-                                                          condition_binning_unavailable)},
-        "observations": [{"scan_ref": o.scan_ref, "fingerprint": o.fingerprint,
-                          "candidates": [c.to_dict() for c in o.candidates]} for o in obs],
+                                                          condition_binning_unavailable,
+                                                          epoch_mismatch)},
+        # PR #30 review response (disposition 11, W5): the FULL observation, not only
+        # ``{scan_ref, fingerprint, candidates}`` — sample, conditions, count_trust,
+        # lattice_epoch and topology_role were already hashed INTO the fingerprint but were not
+        # reconstructable from the stored payload, so an auditor reading a revision back could not
+        # recover what partitioned it without rejoining against the workspace that built it (which
+        # may since have moved on). Digest move: every existing revision's digest changes.
+        "observations": [o.to_dict() for o in obs],
         "non_scoring": non_scoring,
         "footprints": [footprints[o.scan_ref].to_dict() for o in trusted_obs],
         "clusters": cluster_payloads,
@@ -462,8 +487,42 @@ def _declared(factor_list) -> tuple:
     return tuple(sorted([*factor_list, LINKAGE_PRIOR], key=lambda f: f.name))
 
 
+def _cluster_sample(leader: SceneObservation, declared: SampleKnowledge) -> SampleKnowledge:
+    """PR #30 review response (disposition 12): declared sample knowledge, scoped to ONE cluster.
+
+    ``leader`` is any one member of the cluster (every arena of a cluster shares one partition,
+    and ``_partition_key`` includes ``lattice_epoch``, so its epoch is the cluster's own). A
+    cluster measured under a lattice epoch that is not the one CURRENTLY declared must not receive
+    the CURRENT frame's zone/reflection semantics — a stale-epoch arena's elastic feature is not
+    necessarily near this epoch's zone centre or reflection, and scoring it as though it were would
+    silently misattribute a re-orientation.
+
+    Handing the mismatched cluster a BLANK ``SampleKnowledge()`` — rather than filtering
+    ``zone_centre_approach``/``reciprocal_lattice_localization`` out of that cluster's
+    ``factor_list`` — is what keeps every cluster scored by the same declared factor SET: the
+    payload's ``registry_fingerprint``/``factor_manifest`` stay global and honest (a revision
+    with a mismatched cluster still says which factors COULD have scored, same as one without),
+    and the factors' own ``_zone_centres_declared``/``sample.reflections`` checks then see
+    nothing declared and go inert on THIS cluster exactly the way they already do for a workspace
+    that declared nothing at all — no change to ``factors.py`` needed.
+
+    A match requires BOTH sides to actually declare an epoch and disagree — ``leader.lattice_epoch
+    is None`` (no production writer stamps it yet: PR 4.1-4.3 wire the campaign-provenance
+    producer, per ``SceneObservation.topology_role``'s docstring) is "not yet known", not "known
+    to differ", so it is treated as compatible with whatever epoch IS declared rather than as a
+    mismatch — the ``H13`` null-coupling rule is a statement about which arenas may share a
+    PARTITION, and does not extend to demanding a stamp that does not exist yet before a
+    workspace may use declared knowledge at all. Only an arena EXPLICITLY stamped a DIFFERENT
+    epoch than the one currently declared is withheld.
+    """
+    if leader.lattice_epoch is None or declared.lattice_epoch is None:
+        return declared
+    return declared if leader.lattice_epoch == declared.lattice_epoch else SampleKnowledge()
+
+
 def _degradations(factor_list, declared: SampleKnowledge, topologies: list[PathTopology],
-                  condition_binning_unavailable: bool = False) -> list[str]:
+                  condition_binning_unavailable: bool = False,
+                  epoch_mismatch: bool = False) -> list[str]:
     """Every reason a declared capability was inert on this scene, sorted and deduplicated.
 
     The honesty this buys: a capability with nothing declared to work on must neither raise nor
@@ -491,6 +550,13 @@ def _degradations(factor_list, declared: SampleKnowledge, topologies: list[PathT
     * ``condition_binning_unavailable`` (#28) — an arena declares a raw temperature but the caller
       declared no (or a non-positive) ``condition_t_round``, so that arena's PARTITION key could
       not be resolved and it fails closed to no-coupling (:class:`isar.scene.model.ConditionSet`).
+    * ``knowledge_epoch_mismatch`` (PR #30 review response, disposition 12) — at least one cluster
+      was EXPLICITLY measured under a ``lattice_epoch`` other than the one CURRENTLY declared
+      (both sides stamped, and different — an unstamped, ``None`` epoch is "not yet known" and is
+      never this), so :func:`_cluster_sample` handed it a blank ``SampleKnowledge`` and its
+      ``zone_centre_approach``/``reciprocal_lattice_localization`` semantics were withheld for
+      that cluster specifically — a per-scene ledger entry, like the other two builder reasons,
+      because it is a fact about a CLUSTER that no ``degradations(sample)`` hook can see.
     """
     reasons = {reason for f in factor_list if f.degradations is not None
                for reason in f.degradations(declared)}
@@ -506,6 +572,8 @@ def _degradations(factor_list, declared: SampleKnowledge, topologies: list[PathT
                 reasons.add("lattice_geometry_inapplicable_on_path")
     if condition_binning_unavailable:
         reasons.add("condition_binning_unavailable")
+    if epoch_mismatch:
+        reasons.add("knowledge_epoch_mismatch")
     return sorted(reasons)
 
 

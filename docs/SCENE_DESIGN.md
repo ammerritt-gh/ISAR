@@ -356,12 +356,16 @@ last_attempt.json  what the last build-and-store attempt did, including that it 
 
 The revision payload (`isar.scene-revision/1`) carries the factor manifest and its
 `registry_fingerprint`, the margin/cap/score-span actually used, the `sample_knowledge` block with
-its `degradations`, the embedded observations and their candidate rows, the footprints, the
-`non_scoring` arenas with reasons, and per cluster: the alternatives with their itemized ln-terms,
-the marginals, the visibility reports of the leading alternative, the `classification` map
-(`{factor: {component: state}}`), the score-term ablation ledger (`score_ablation`, positional
-per `score_ablation_alignment`, H12(f)), and the transformation ablation ledger
-(`transformation_ablation`, positional per `transformation_ablation_alignment`, #22 — see below).
+its `degradations`, the fully-embedded observations (PR 4.0 review response, W5: each
+observation's whole `to_dict()` — sample, conditions, count_trust, lattice_epoch, topology_role
+included, not only its fingerprint and candidate rows — so the stored revision is
+reconstructable/auditable on its own, with no need to rejoin it against the workspace it was
+built from) and their candidate rows, the footprints, the `non_scoring` arenas with reasons, and
+per cluster: the alternatives with their itemized ln-terms, the marginals, the visibility reports
+of the leading alternative, the `classification` map (`{factor: {component: state}}`), the
+score-term ablation ledger (`score_ablation`, positional per `score_ablation_alignment`, H12(f)),
+and the transformation ablation ledger (`transformation_ablation`, positional per
+`transformation_ablation_alignment`, #22 — see below).
 
 **Lineage and time live outside the blob.** A revision records what it succeeded, and an unchanged
 workspace must rebuild to the same digest; both are only possible if `parent` and `written_at` sit
