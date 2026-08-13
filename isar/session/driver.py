@@ -18,6 +18,7 @@ import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,7 @@ from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
 from isar.predictive import json_fingerprint as _json_fingerprint
 from isar.schema.card import Card
+from isar.schema.measurement import MeasurementArena, current_lattice_epoch
 from isar.session import calibrations, guidelines as guide_mod, ingest, router, session_prior
 from isar.session import measurement_store
 from isar.session.outcome import (
@@ -416,6 +418,26 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             else:
                 remaining = list(tasks)
                 remaining_indices = list(range(len(tasks)))
+
+            # Pre-dispatch stub records (SCENE-4 PR 4.0 review response, W4): the parent is the
+            # single writer of report/measurements.jsonl (workers never touch the file), so one
+            # stub per fresh task is appended here, BEFORE any worker starts. A hard worker kill
+            # (or an ``on_complete`` that never runs) then still leaves proof a scan was attempted
+            # — the enriched record ``checkpoint_entry`` appends below is a later line for the
+            # same ``scan_ref`` and wins on read (last-line-wins, measurement_store's contract).
+            for task in remaining:
+                _rec, _det, _q, _T, _sample, _scan_id, _chash, _ghash, _seed = task
+                stub = MeasurementArena(
+                    scan_ref=_scan_id, scan_id=_scan_id, scan_number=_rec.scan_number,
+                    detector=_det, sample=_sample,
+                    conditions=(("temperature_K", float(_T)),) if _T is not None else (),
+                    q=(tuple(float(v) for v in _q) if _q is not None else None),
+                    lattice_epoch=current_lattice_epoch(
+                        getattr(card.state, "lattice_epochs", None) or []),
+                    energy_window=None, energy_bands=None, effective_exposure=None,
+                    exposure_provenance=None, count_trust="attempted", reasons=(),
+                    written_at=datetime.now(timezone.utc).isoformat(), content_hash=_chash)
+                measurement_store.append_measurement(workspace.report_dir, stub.to_dict())
 
             def checkpoint_entry(entry):
                 # Measurement-arena records first, and unconditionally (SCENE-4 PR 4.0, #26): a

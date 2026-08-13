@@ -21,9 +21,10 @@ def _record(**over) -> dict:
     return base
 
 
-def test_the_shared_vocabulary_is_exactly_the_declared_states():
+def test_attempted_joins_the_shared_vocabulary():
     assert COUNT_TRUST_STATES == (
-        "trusted", "excluded", "held_for_calibration", "undersampled")
+        "trusted", "excluded", "held_for_calibration", "undersampled", "attempted")
+    MeasurementArena(**_record(count_trust="attempted"))  # does not raise
 
 
 @pytest.mark.parametrize("factory", [

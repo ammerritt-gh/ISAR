@@ -2586,15 +2586,32 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
     # TRUSTED — recorded BEFORE fit_one is even attempted (PR 4.0 #26 hard constraint), so a fit
     # crash below still leaves this record behind. Same band derivation the delivered fit uses
     # (_ctx_energy_window / _energy_bands), so the two never disagree about what was measured.
-    _energy_window = _ctx_energy_window(ctx)
-    _energy_bands_kept = (_energy_bands(ctx.x, ctx.mask, ctx.center)
-                          if _energy_window is not None else None)
+    #
+    # _ctx_energy_window / _energy_bands can raise (a non-finite energy axis, review finding 9:
+    # _energy_bands rejects a non-finite value anywhere in ctx.x, even outside the mask): guarded
+    # here so a single broken axis yields a terminal non_result WITH its measurement record
+    # (energy fields None, the error recorded as a reason), never a batch abort — the same
+    # posture as the fit_one except-block just below.
+    try:
+        _energy_window = _ctx_energy_window(ctx)
+        _energy_bands_kept = (_energy_bands(ctx.x, ctx.mask, ctx.center)
+                              if _energy_window is not None else None)
+    except ValueError as exc:
+        measurement_record = _measurement_record(
+            rec, det, q, T, sample, scan_id, card, chash, count_trust="trusted",
+            reasons=[f"energy window error ({type(exc).__name__}): {exc}"] + region_reasons)
+        return ScanEntry(status="non_result",
+                         reasons=[f"energy window error ({type(exc).__name__}): {exc}"]
+                                 + region_reasons,
+                         provenance={"resolution_version": calres.resolution_version}, **base,
+                         measurement_record=measurement_record)
     _acq_id, _acq = _acquisition_provenance_for(rec, card, scan_id)
     _exposure_info = _effective_exposure_for(
         rec, ctx, {}, acquisition_target_energy=(_acq or {}).get("acquisition_target_energy"),
         submitted_ncount=(_acq or {}).get("submitted_ncount"))
     measurement_record = _measurement_record(
-        rec, det, q, T, sample, scan_id, card, chash, count_trust="trusted", reasons=[],
+        rec, det, q, T, sample, scan_id, card, chash, count_trust="trusted",
+        reasons=region_reasons,
         energy_window=_energy_window, energy_bands=_energy_bands_kept,
         effective_exposure=_exposure_info.get("value"), exposure_provenance=_exposure_info)
 

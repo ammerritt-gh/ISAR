@@ -10,7 +10,7 @@ get their own count-untrusted record. The durable jsonl log itself
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pytest
@@ -161,6 +161,30 @@ def test_undersampled_is_recorded_attempted_not_trusted(monkeypatch):
     assert entry.measurement_record["count_trust"] == "undersampled"
 
 
+def test_a_non_finite_energy_axis_is_a_terminal_non_result_not_a_batch_abort(monkeypatch):
+    """Review finding 9: ``_energy_bands`` rejects a non-finite value anywhere in ``ctx.x`` (even
+    a masked-out one). That ValueError must not escape ``_process_one`` and abort the whole batch
+    — it becomes a terminal ``non_result`` carrying its (energy-field-less) measurement record."""
+    ctx = _elastic_ctx()
+    broken_x = ctx.x.copy()
+    broken_x[0] = float("nan")
+    ctx = replace(ctx, x=broken_x)
+    monkeypatch.setattr(scan_delivery, "_gate_scan", lambda *a, **k: (None, _CalRes()))
+    _stub_context(monkeypatch, ctx)
+
+    entry = scan_delivery._process_one(
+        _rec(), "ana7", [1.0, 0.0, 0.0], 50.0, "FeSe", "exp:1:ana7", _card(), None, None, set(),
+        "ch", "gh", M=10, seed=1)
+
+    assert entry.status == "non_result"
+    assert any("energy window error" in r for r in entry.reasons)
+    record = entry.measurement_record
+    assert record is not None
+    assert record["count_trust"] == "trusted"
+    assert record["energy_window"] is None and record["energy_bands"] is None
+    assert any("energy window error" in r for r in record["reasons"])
+
+
 def test_lattice_epoch_is_the_current_one_at_write_time(monkeypatch):
     ctx = _elastic_ctx()
     monkeypatch.setattr(scan_delivery, "_gate_scan", lambda *a, **k: (None, _CalRes()))
@@ -231,9 +255,39 @@ def test_measurements_jsonl_is_written_by_a_real_delivery(tmp_path):
     path = ws.report_dir / measurement_store.FILENAME
     assert path.is_file()
     lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-    assert len(lines) == 3
-    assert {r["count_trust"] for r in lines} == {"held_for_calibration"}
+    # Two lines per scan (W4): the pre-dispatch "attempted" stub, then the gate's terminal
+    # outcome — last-line-wins per scan_ref is exercised in test_append_is_fsynced_...; here the
+    # real driver seam just needs both lines to have landed.
+    assert len(lines) == 6
+    assert {r["count_trust"] for r in lines} == {"attempted", "held_for_calibration"}
     assert {r["schema"] for r in lines} == {MEASUREMENT_ARENA_SCHEMA}
+    latest = {}
+    for r in lines:
+        latest[r["scan_ref"]] = r
+    assert len(latest) == 3
+    assert {r["count_trust"] for r in latest.values()} == {"held_for_calibration"}
+
+
+def test_a_hard_worker_kill_still_leaves_the_pre_dispatch_stub(tmp_path, monkeypatch):
+    """W4: the parent writes one ``count_trust="attempted"`` stub per fresh task BEFORE any
+    worker starts — so even a worker that never returns (simulated here by ``_run_tasks`` raising
+    before ``on_complete`` ever runs for any task) leaves proof the scan was attempted."""
+    from isar.session import driver
+    ws, data = _s30_held_batch(tmp_path)
+
+    def killed(*_a, **_kw):
+        raise RuntimeError("worker killed before returning")
+    monkeypatch.setattr(scan_delivery, "_run_tasks", killed)
+
+    with pytest.raises(RuntimeError, match="worker killed"):
+        driver.run_batch(ws, [data], M=10, detectors="ana5")
+
+    path = ws.report_dir / measurement_store.FILENAME
+    assert path.is_file()
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 3
+    assert {r["count_trust"] for r in lines} == {"attempted"}
+    assert all(r["content_hash"] for r in lines)          # stamped, not left blank
 
 
 def test_measurements_jsonl_survives_a_later_stage_failing(tmp_path, monkeypatch):
@@ -253,5 +307,6 @@ def test_measurements_jsonl_survives_a_later_stage_failing(tmp_path, monkeypatch
     path = ws.report_dir / measurement_store.FILENAME
     assert path.is_file()
     lines = path.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 3
+    # Stub + enriched line per scan (W4) — see test_measurements_jsonl_is_written_by_a_real_delivery.
+    assert len(lines) == 6
     assert not (ws.report_dir / "results.csv").exists()

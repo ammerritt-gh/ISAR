@@ -1,9 +1,14 @@
 """Measurement-arena record (SCENE-4 PR 4.0, work package #26): counts are authoritative, fits
 are disposable.
 
-One line of ``isar.measurement-arena/1`` is written per measured arena, at QC-complete BEFORE any
-fit is attempted (:mod:`isar.session.scan_delivery`), so the record survives a fit crash. It is
-what makes the scene layer's three honest states possible:
+One line of ``isar.measurement-arena/1`` is written per measured arena. The durability contract is
+precise, not one blanket claim (PR 4.0 review response, W4): the record is CONSTRUCTED pre-fit
+(:mod:`isar.session.scan_delivery`); a ``count_trust="attempted"`` STUB is PERSISTED pre-dispatch,
+before any worker starts (:mod:`isar.session.driver`, the single-writer parent) — this is what
+survives a hard worker kill or an ``on_complete`` that never runs; the enriched record is persisted
+at checkpoint (post-fit, last-line-wins on read) — this survives a caught ``fit_one`` exception and
+any later-stage failure, but NOT a hard kill mid-fit, which leaves only the stub. It is what makes
+the scene layer's honest states possible:
 
 * ``count_trust="trusted"`` — the QC-masked measurement is usable; a fitted candidate table (if
   any) is a SEPARATE, disposable interpretation of it. A trusted arena with no candidates is not
@@ -13,6 +18,11 @@ what makes the scene layer's three honest states possible:
   outcome. The scan was ATTEMPTED but never reached a usable measurement, so it earns no
   coverage credit downstream (:mod:`isar.scene.build`), but it is never silently dropped either —
   the record itself is the durable proof of the attempt.
+* ``count_trust="attempted"`` — the pre-dispatch STUB (W4): a task was handed to a worker and
+  nothing else is known yet. Non-trusted like the three states above (no coverage credit), and
+  overwritten by whatever terminal state the worker eventually reaches — unless the worker is
+  killed before it reaches one, in which case this stub is the only record that a scan was ever
+  started at all.
 
 Stdlib-only, like :mod:`isar.scene.model` (whose ``SceneObservation`` this record eventually
 feeds via :func:`isar.workspace_api.scene.scene_observations`): the schema layer is imported from
@@ -25,10 +35,10 @@ from dataclasses import dataclass
 
 MEASUREMENT_ARENA_SCHEMA = "isar.measurement-arena/1"
 
-# Terminal states a scan can be recorded under. Only "trusted" may ever feed a scene footprint or
-# coverage credit (isar.scene.build); the other three are gate outcomes recorded as ATTEMPTED,
-# never as coverage.
-COUNT_TRUST_STATES = ("trusted", "excluded", "held_for_calibration", "undersampled")
+# States a scan can be recorded under. Only "trusted" may ever feed a scene footprint or coverage
+# credit (isar.scene.build); the other four are recorded as ATTEMPTED, never as coverage —
+# "attempted" (W4) is the pre-dispatch stub state, before a worker has reached any terminal outcome.
+COUNT_TRUST_STATES = ("trusted", "excluded", "held_for_calibration", "undersampled", "attempted")
 
 
 def _opt_float(v):
