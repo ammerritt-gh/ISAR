@@ -187,6 +187,26 @@ def test_blank_fingerprint_raises(bad):
         build_scene([obs])
 
 
+def test_the_embedded_observation_is_the_full_to_dict_not_a_three_key_subset():
+    """PR #30 review response (disposition 11, W5): sample, conditions, count_trust,
+    lattice_epoch and topology_role were already hashed INTO the fingerprint but were not
+    reconstructable from the stored payload — an auditor reading a revision back could not recover
+    what partitioned it without rejoining against the workspace that built it. Now they are."""
+    obs = mk_obs("e:1:d", [cand("A", -10.0)], sample="LiHoF4",
+                 conditions=(("temperature_K", 12.5), ("field_T", 3.0)),
+                 count_trust="trusted", lattice_epoch=7, topology_role="canonical_path")
+    rev = build_scene([obs], factors=[ZERO])
+    payload_obs, = rev.payload["observations"]
+    assert payload_obs == obs.to_dict()
+    assert payload_obs["sample"] == "LiHoF4"
+    assert payload_obs["conditions"] == [["field_T", 3.0], ["temperature_K", 12.5]]
+    assert payload_obs["count_trust"] == "trusted"
+    assert payload_obs["lattice_epoch"] == 7
+    assert payload_obs["topology_role"] == "canonical_path"
+    # Round-trips through the stored form exactly like a standalone observation would.
+    assert SceneObservation.from_dict(payload_obs) == obs
+
+
 # ----------------------------------------------------------------------------
 # Clusters
 # ----------------------------------------------------------------------------

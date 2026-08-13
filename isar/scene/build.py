@@ -389,8 +389,13 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
                              "degradations": _degradations(factor_list, declared, topologies,
                                                           condition_binning_unavailable,
                                                           epoch_mismatch)},
-        "observations": [{"scan_ref": o.scan_ref, "fingerprint": o.fingerprint,
-                          "candidates": [c.to_dict() for c in o.candidates]} for o in obs],
+        # PR #30 review response (disposition 11, W5): the FULL observation, not only
+        # ``{scan_ref, fingerprint, candidates}`` — sample, conditions, count_trust,
+        # lattice_epoch and topology_role were already hashed INTO the fingerprint but were not
+        # reconstructable from the stored payload, so an auditor reading a revision back could not
+        # recover what partitioned it without rejoining against the workspace that built it (which
+        # may since have moved on). Digest move: every existing revision's digest changes.
+        "observations": [o.to_dict() for o in obs],
         "non_scoring": non_scoring,
         "footprints": [footprints[o.scan_ref].to_dict() for o in trusted_obs],
         "clusters": cluster_payloads,
