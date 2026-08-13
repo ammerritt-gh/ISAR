@@ -12,6 +12,7 @@ import logging
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
+from datetime import datetime, timezone
 
 import numpy as np
 
@@ -24,6 +25,7 @@ from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 from isar.schema.card import Card
 from isar.schema.hypotheses import preset as hypothesis_preset
+from isar.schema.measurement import MeasurementArena, current_lattice_epoch
 from isar.schema.statistics import (
     FIT_SELECTION_SCHEMA,
     INTERVAL_SCHEMA,
@@ -255,6 +257,31 @@ def _acquisition_provenance_for(rec, card, scan_id: str) -> tuple[str, dict | No
     return f"scan:{scan_id}", None
 
 
+def _measurement_record(rec, det, q, T, sample, scan_id, card, *, count_trust, reasons,
+                        energy_window=None, energy_bands=None, effective_exposure=None,
+                        exposure_provenance=None) -> dict:
+    """The counts-authoritative record for this arena (SCENE-4 PR 4.0, work package #26).
+
+    Built at every terminal outcome of :func:`_process_one` — a gate refusal, an undersampled
+    context, or a built context — and, for the built-context case, BEFORE ``fit_one`` is even
+    called, so it survives a fit crash on the same arena untouched (the hard constraint the tests
+    in ``tests/session/test_measurement_record.py`` pin). ``count_trust="trusted"`` is the only
+    state a scene may ever build coverage from (:mod:`isar.scene.build`); the other three states
+    are gate outcomes, recorded as attempted but never as coverage.
+    """
+    return MeasurementArena(
+        scan_ref=scan_id, scan_id=scan_id, scan_number=rec.scan_number, detector=det,
+        sample=sample,
+        conditions=(("temperature_K", float(T)),) if T is not None else (),
+        q=(tuple(float(v) for v in q) if q is not None else None),
+        lattice_epoch=current_lattice_epoch(getattr(card.state, "lattice_epochs", None) or []),
+        energy_window=energy_window, energy_bands=energy_bands,
+        effective_exposure=effective_exposure, exposure_provenance=exposure_provenance,
+        count_trust=count_trust, reasons=tuple(reasons),
+        written_at=datetime.now(timezone.utc).isoformat(),
+    ).to_dict()
+
+
 def _build_descriptor(ctx):
     """The model-free L0 :class:`ScanDescriptor` for this scan, or None on any failure — a report
     aid + Phase-4 falsification input, never a reason to fail a fit. Built once per scan and reused
@@ -375,6 +402,21 @@ def _energy_bands(x, mask, center) -> list:
     idx = np.flatnonzero(keep)
     cuts = [0, *(int(i) + 1 for i in np.flatnonzero(np.diff(idx) > 1)), idx.size]
     return [[float(edges[idx[a]]), float(edges[idx[b - 1] + 1])] for a, b in zip(cuts, cuts[1:])]
+
+
+def _ctx_energy_window(ctx) -> tuple | None:
+    """The QC-masked signed energy window a context covers, or ``None`` when nothing survived the
+    mask or the calibration zero is unusable (a scan is held until calibration exists — DESIGN
+    §5 — so a non-finite centre is a broken fit, never an implied 0.0).
+
+    Shared by the pre-fit measurement-arena record (PR 4.0 #26, built before ``fit_one`` even
+    runs) and the delivered fit's own ``energy_window`` — one derivation, so the two never
+    disagree about what a context measured.
+    """
+    if np.size(ctx.x_used) and np.isfinite(ctx.center):
+        lo, hi = ctx.window
+        return (lo - float(ctx.center), hi - float(ctx.center))
+    return None
 
 
 def _cell_edges(xs) -> np.ndarray:
@@ -1895,17 +1937,11 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # what a scan looked at, whether or not it found anything. Shifted onto the ω scale by the
     # calibration zero, because ``ctx.x`` is the RAW abscissa and the zero is carried separately in
     # ``ctx.center`` (the model evaluates at ``x - center``, lineshapes.convolute_voigt_dho). Without
-    # the shift the window and the ω₀/omegas it must contain would be two different scales. ``None``
-    # when nothing survived the mask, and when the zero is unusable — a scan is held until
-    # calibration exists (DESIGN §5), so a non-finite centre is a broken fit, never an implied 0.0.
-    if np.size(ctx.x_used) and np.isfinite(ctx.center):
-        lo, hi = ctx.window
-        energy_window = (lo - float(ctx.center), hi - float(ctx.center))
-        # The ORIGINAL axis plus the mask, not the kept points: cell adjacency is a fact about the
-        # measurement grid, and the kept points alone cannot say which bins were dropped.
-        energy_bands = _energy_bands(ctx.x, ctx.mask, ctx.center)
-    else:
-        energy_window = energy_bands = None
+    # the shift the window and the ω₀/omegas it must contain would be two different scales.
+    energy_window = _ctx_energy_window(ctx)
+    # The ORIGINAL axis plus the mask, not the kept points: cell adjacency is a fact about the
+    # measurement grid, and the kept points alone cannot say which bins were dropped.
+    energy_bands = _energy_bands(ctx.x, ctx.mask, ctx.center) if energy_window is not None else None
 
     return {
         "verdict": sv.verdict, "confidence": sv.confidence, "reasons": reasons,
@@ -2532,13 +2568,33 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
 
     gated, calres = _gate_scan(rec, det, card, g, runcal, exclusions, base)
     if gated is not None:
-        return gated
+        return replace(gated, measurement_record=_measurement_record(
+            rec, det, q, T, sample, scan_id, card,
+            count_trust=gated.status, reasons=gated.reasons))
 
     working = _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres, base)
     if isinstance(working, ScanEntry):
-        return working
+        return replace(working, measurement_record=_measurement_record(
+            rec, det, q, T, sample, scan_id, card,
+            count_trust="undersampled", reasons=working.reasons))
     (ctx, prior, prior_source, n_neighbors, near_gamma, t_round, labels, peaks,
      descriptor, region_reasons) = working
+
+    # Counts are authoritative from here on: the arena reached a built ScanContext, so it is
+    # TRUSTED — recorded BEFORE fit_one is even attempted (PR 4.0 #26 hard constraint), so a fit
+    # crash below still leaves this record behind. Same band derivation the delivered fit uses
+    # (_ctx_energy_window / _energy_bands), so the two never disagree about what was measured.
+    _energy_window = _ctx_energy_window(ctx)
+    _energy_bands_kept = (_energy_bands(ctx.x, ctx.mask, ctx.center)
+                          if _energy_window is not None else None)
+    _acq_id, _acq = _acquisition_provenance_for(rec, card, scan_id)
+    _exposure_info = _effective_exposure_for(
+        rec, ctx, {}, acquisition_target_energy=(_acq or {}).get("acquisition_target_energy"),
+        submitted_ncount=(_acq or {}).get("submitted_ncount"))
+    measurement_record = _measurement_record(
+        rec, det, q, T, sample, scan_id, card, count_trust="trusted", reasons=[],
+        energy_window=_energy_window, energy_bands=_energy_bands_kept,
+        effective_exposure=_exposure_info.get("value"), exposure_provenance=_exposure_info)
 
     try:
         fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
@@ -2548,13 +2604,15 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
     except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
         return ScanEntry(status="non_result",
                          reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,
-                         provenance={"resolution_version": calres.resolution_version}, **base)
+                         provenance={"resolution_version": calres.resolution_version}, **base,
+                         measurement_record=measurement_record)
 
     fit = _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descriptor,
                                region_reasons, M=M, seed=seed, errors_tier=errors_tier,
                                boot_workers=boot_workers, boot_executor=boot_executor,
                                boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
 
-    return _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calres, prior,
-                           prior_source, n_neighbors, near_gamma, t_round, region_reasons, base,
-                           M=M, seed=seed, t_fit0=_t_fit0)
+    entry = _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calres, prior,
+                            prior_source, n_neighbors, near_gamma, t_round, region_reasons, base,
+                            M=M, seed=seed, t_fit0=_t_fit0)
+    return replace(entry, measurement_record=measurement_record)

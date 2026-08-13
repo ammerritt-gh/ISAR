@@ -27,6 +27,7 @@ from isar.reduce import combine, qc
 from isar.predictive import json_fingerprint as _json_fingerprint
 from isar.schema.card import Card
 from isar.session import calibrations, guidelines as guide_mod, ingest, router, session_prior
+from isar.session import measurement_store
 from isar.session.outcome import (
     _coerce_fit_outcome, _outcome_from_entry, _write_results_csv,
 )
@@ -417,6 +418,16 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                 remaining_indices = list(range(len(tasks)))
 
             def checkpoint_entry(entry):
+                # Measurement-arena records first, and unconditionally (SCENE-4 PR 4.0, #26): a
+                # TRUSTED record is built before fit_one is even attempted, so it must reach
+                # report/measurements.jsonl regardless of what the entry's fit did — including a
+                # caught fit_one exception (non_result) — and independent of, and before,
+                # results.csv (written later in _apply_and_finish). ``on_complete`` is the single
+                # seam that sees every fresh entry, serial or pooled, so appending here can never
+                # be skipped by a later stage failing.
+                if entry.measurement_record is not None:
+                    measurement_store.append_measurement(
+                        workspace.report_dir, entry.measurement_record)
                 if checkpoint_store is not None:
                     checkpoint_store.save(f"scan:{entry.scan_id}", entry)
 
