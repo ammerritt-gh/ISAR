@@ -41,7 +41,8 @@ def components(n_modes, extra=()):
 
 def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), bands=None, q=(1.0, 0.0, 0.0),
            status="complete", fallback=None, sink=None, temperature=300.0, exposure=1.0,
-           count_trust="trusted", sample=None, conditions=None, lattice_epoch=None):
+           count_trust="trusted", sample=None, conditions=None, lattice_epoch=None,
+           topology_role=None):
     rows = tuple(
         CandidateRow(label=label, k=None, n_modes=n_modes, log_evidence=lnz,
                      evidence_method="laplace", posterior_probability=None, usable=usable,
@@ -49,7 +50,12 @@ def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), bands=None, q=(1.0, 0.
                      components=components(len(omegas), extra))
         for label, lnz, n_modes, omegas, usable, identity, extra in candidates)
     if conditions is None:
-        conditions = (("temperature_K", float(temperature)),) if temperature is not None else ()
+        # Deliberately NOT derived from ``temperature`` (the per-observation PHYSICS field,
+        # e.g. the Bose-detectability tests that vary it per arena on purpose): ``conditions``
+        # is the #28 PARTITION identity, a separate declaration in production too
+        # (``isar.schema.measurement.MeasurementArena.conditions`` vs. ``fit.T``), and a fixture
+        # that wants a different PARTITION passes ``conditions=`` explicitly.
+        conditions = (("temperature_K", 300.0),)
     obs = SceneObservation(scan_ref=scan_ref, q=q, temperature_K=temperature, energy_window=window,
                            energy_bands=(None if window is None
                                          else (tuple(window),) if bands is None
@@ -59,7 +65,8 @@ def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), bands=None, q=(1.0, 0.
                            candidates=rows, evidence_comparison_status=status,
                            selection_fallback=fallback, arena_fingerprint=None,
                            evidence_sink=sink, sample=sample, conditions=conditions,
-                           count_trust=count_trust, lattice_epoch=lattice_epoch, fingerprint="x")
+                           count_trust=count_trust, lattice_epoch=lattice_epoch,
+                           topology_role=topology_role, fingerprint="x")
     # Stamped from a label-sorted copy: the builder sorts candidates, so permuting the input
     # tuple in a test must be a real permutation of the same observation, not a different one.
     canon = replace(obs, candidates=tuple(sorted(rows, key=lambda c: c.label)))

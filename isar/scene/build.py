@@ -49,9 +49,9 @@ from isar.schema.steering import CANONICAL_MASTER, EVIDENCE_SINKS
 from .factors import (FACTORS, SceneFactor, factor_manifest, neighbour_reports,
                       registry_fingerprint, validate_factor)
 from .model import (NON_MODE_ID_TAGS, SCENE_SCHEMA, CandidateRow, ComponentObservation,
-                    Footprint, PathTopology, SampleKnowledge, SceneObservation, Visibility,
-                    canonical_bytes, digest_bytes, footprint_of, is_mode, link_reach,
-                    path_adjacent, path_topology)
+                    ConditionSet, Footprint, PathTopology, SampleKnowledge, SceneObservation,
+                    Visibility, canonical_bytes, digest_bytes, fingerprint, footprint_of, is_mode,
+                    link_reach, path_adjacent, path_topology)
 
 # Same currency and idiom as isar/analyze/evidence.py PRUNE_MARGIN: nats below the cluster's
 # per-arena leader, beyond which a candidate's posterior mass is bounded by e^−margin and it
@@ -205,7 +205,8 @@ class SceneRevision:
 def build_scene(observations, *, factors=None, catalogue_version: str = "",
                 sample: SampleKnowledge | None = None,
                 margin_nats: float | None = None,
-                alt_cap: int | None = None) -> SceneRevision:
+                alt_cap: int | None = None,
+                condition_t_round: float | None = 0.1) -> SceneRevision:
     """Score ``observations`` into a ``SceneRevision``. Pure, deterministic, replayable.
 
     ``factors`` defaults to the live ``FACTORS`` registry; ``catalogue_version`` is a
@@ -213,6 +214,12 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
     scientist's DECLARED sample knowledge (:func:`isar.workspace_api.scene.sample_knowledge`
     lifts it off the card); ``None`` means nothing was declared, which is a legal scene in which
     the knowledge-consuming factors are inert and say so in ``sample_knowledge.degradations``.
+
+    ``condition_t_round`` (SCENE-4 PR 4.0, #28) is the temperature-binning width the PARTITION key
+    compares by — the same policy field ``isar.reduce.collate`` used to pool this workspace's raw
+    scans (``card.policy.collation["t_round"]``), so two arenas coupled at the scene layer are
+    exactly the ones Stage II would have treated as the same condition. ``0.1`` reproduces
+    collate.py's own default for a caller that declares nothing.
 
     Payload alignment contract: a cluster's ``score_ablation[name]`` is a POSITIONAL list,
     index-aligned with that cluster's ``alternatives`` — ``score_ablation[name][i]`` is the
@@ -240,18 +247,34 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
     untrusted_reasons = [{"scan_ref": o.scan_ref, "reason": "count_untrusted"}
                          for o in obs if o.count_trust != "trusted"]
 
-    # The ordered path FIRST: every adjacency, every declared-geometry coordinate and every edge
-    # length downstream is read off it, and it is a property of the arena SET (review finding 3).
+    # PR 4.0 (#25/#28): PARTITION first, before any path/topology/cluster arithmetic — a
+    # cross-partition edge is not a rare mistake to prune later, it is not a fact the geometry
+    # below is even allowed to compute. Two arenas of different sample identity, different binned
+    # condition, or different lattice epoch share nothing downstream: not a path, not a footprint
+    # adjacency, not a cluster, not a normalization.
+    partitions: dict[tuple, list[SceneObservation]] = {}
+    for o in trusted_obs:
+        partitions.setdefault(_partition_key(o, condition_t_round), []).append(o)
+
+    # The ordered path FIRST within each partition: every adjacency, every declared-geometry
+    # coordinate and every edge length downstream is read off it, and it is a property of the
+    # arena SET (review finding 3) — now the arena set of ONE partition, never the whole scene.
     #
-    # Over ALL TRUSTED arenas, not only the scoring ones: the path is the experiment map, and an
-    # arena whose evidence may not be summed was still MEASURED at its q. The consequence is
-    # deliberate — an unscoreable scan between two scoring ones separates them by two ordinals, so
-    # they no longer judge each other, exactly as inserting any intermediate scan does. Deriving
-    # the path from the scoring subset instead would make the ordering depend on which comparisons
-    # happened to finish, and one arena's H7 timeout would silently re-price its neighbours'
-    # absences.
-    topology = path_topology({o.scan_ref: o.q for o in trusted_obs})
-    footprints = {o.scan_ref: footprint_of(o, topology) for o in trusted_obs}
+    # Over every TRUSTED, TOPOLOGY-ELIGIBLE arena of the partition, not only the scoring ones: the
+    # path is the experiment map, and an arena whose evidence may not be summed was still MEASURED
+    # at its q. A ``"context_probe"``-tagged arena (#25) is withheld from the topology input
+    # entirely — it never perturbs the path's collinearity check — but still receives a footprint
+    # below, with no path ordinal (``path_index=None``), so it can neither collapse the path nor
+    # accidentally chain to another off-path arena through it.
+    footprints: dict[str, Footprint] = {}
+    topologies: list[PathTopology] = []
+    for key, members in partitions.items():
+        pid = _partition_id(key)
+        eligible = {o.scan_ref: o.q for o in members if o.topology_role != "context_probe"}
+        topology = path_topology(eligible)
+        topologies.append(topology)
+        for o in members:
+            footprints[o.scan_ref] = footprint_of(o, topology, partition_id=pid)
 
     scoring, non_scoring = _split_by_evidence(trusted_obs)
     non_scoring = sorted(non_scoring + untrusted_reasons, key=lambda d: d["scan_ref"])
@@ -266,13 +289,31 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
                                              _survivor_labels(pruning[o.scan_ref]))
                   for o in scoring}
 
-    clusters = _clusters(scoring, components, footprints, factor_list)
+    # #28: clustering runs PER PARTITION, never across one — the ambiguity graph and the
+    # normalization it feeds must not see two arenas of different sample/condition/lattice-epoch
+    # as candidates for the same edge. ``_clusters`` already builds its ``itertools.combinations``
+    # only over the ``refs`` it is handed, so scoping the call scopes the coupling search.
+    scoring_by_partition: dict[tuple, list[SceneObservation]] = {}
+    for o in scoring:
+        scoring_by_partition.setdefault(_partition_key(o, condition_t_round), []).append(o)
+    clusters = sorted(
+        (cl for members in scoring_by_partition.values()
+         for cl in _clusters(members, components, footprints, factor_list)),
+        key=lambda refs: refs[0])
 
     by_ref = {o.scan_ref: o for o in scoring}
     cluster_payloads = [
         _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, cap, span,
                        declared)
         for refs in clusters]
+
+    # #28: a temperature present with no declared binning policy leaves that arena's condition key
+    # unresolved (``ConditionSet.temperature_K_binned=None``) — legal, and recorded once here
+    # rather than per-partition, since it is a fact about the DECLARATION, not about any one
+    # partition's geometry.
+    condition_binning_unavailable = (
+        not (condition_t_round is not None and float(condition_t_round) > 0.0)
+        and any(dict(o.conditions).get("temperature_K") is not None for o in trusted_obs))
 
     payload = {
         "schema": SCENE_SCHEMA,
@@ -285,6 +326,9 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
         # margin must say so, or a replay would silently use a different model.
         "margin_nats": margin,
         "alt_cap": cap,
+        # The values ACTUALLY used for the #28 partition's condition binning — see
+        # ``condition_t_round``'s docstring above.
+        "condition_t_round": condition_t_round,
         # Σ_f (hi_f − lo_f) over the active scoring factors — the nats of rescue the pruner had
         # to allow for. ``None`` = at least one factor declared no bound, so no base-lnZ pruning
         # or truncation bound was permitted at all.
@@ -300,7 +344,8 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
         # moves the revision digest even where it changes no number — a scene scored against a
         # zone period is not the same scene as one scored blind to it.
         "sample_knowledge": {**declared.to_dict(),
-                             "degradations": _degradations(factor_list, declared, topology)},
+                             "degradations": _degradations(factor_list, declared, topologies,
+                                                          condition_binning_unavailable)},
         "observations": [{"scan_ref": o.scan_ref, "fingerprint": o.fingerprint,
                           "candidates": [c.to_dict() for c in o.candidates]} for o in obs],
         "non_scoring": non_scoring,
@@ -308,6 +353,38 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
         "clusters": cluster_payloads,
     }
     return SceneRevision.of(payload)
+
+
+def _partition_key(o: SceneObservation, t_round: float | None) -> tuple:
+    """The #25/#28 partition identity: ``(sample, ConditionSet key, lattice_epoch)``.
+
+    Two arenas whose keys differ are, by construction, never adjacent, never clustered, never
+    normalized together — the geometry above never even sees both in one ``path_topology`` call.
+    ``None`` is an ordinary tuple-key value here, which is what makes "undeclared couples only
+    with undeclared" (H13) fall out of dict grouping alone rather than needing a special case: a
+    ``None`` sample only equals ``None``, a ``None`` lattice epoch only equals ``None``, and a
+    condition key with no temperature declared at all only equals another one exactly like it.
+
+    An UNRESOLVED condition (:class:`isar.scene.model.ConditionSet`: a temperature is declared but
+    there is no binning policy to compare it by) is different — the #28 ruling's fail-closed-to-
+    NO-COUPLING arm, which the H13 symmetric rule does not extend to. Salting the key with the
+    observation's own ``scan_ref`` makes it unique to this one arena, so it never couples with
+    ANYTHING — not even another arena an as-yet-undeclared policy would have binned identically.
+    """
+    condition = ConditionSet.of(o.conditions, t_round)
+    condition_key = condition.key if condition.resolved else (*condition.key, o.scan_ref)
+    return (o.sample, condition_key, o.lattice_epoch)
+
+
+def _partition_id(key: tuple) -> str:
+    """A short, stable, JSON-safe id for a partition key — what ``Footprint.partition_id`` stores.
+
+    Not the raw tuple: a partition key's condition leg is itself a nested tuple, and stamping the
+    raw structure onto every footprint would duplicate it once per arena. The digest is the same
+    canonical encoding every other scene fingerprint uses (:func:`isar.scene.model.fingerprint`),
+    so two builds of the same partition set always agree byte-for-byte.
+    """
+    return fingerprint(list(key))
 
 
 # ----------------------------------------------------------------------------
@@ -362,7 +439,8 @@ def _declared(factor_list) -> tuple:
     return tuple(sorted([*factor_list, LINKAGE_PRIOR], key=lambda f: f.name))
 
 
-def _degradations(factor_list, declared: SampleKnowledge, topology: PathTopology) -> list[str]:
+def _degradations(factor_list, declared: SampleKnowledge, topologies: list[PathTopology],
+                  condition_binning_unavailable: bool = False) -> list[str]:
     """Every reason a declared capability was inert on this scene, sorted and deduplicated.
 
     The honesty this buys: a capability with nothing declared to work on must neither raise nor
@@ -370,28 +448,41 @@ def _degradations(factor_list, declared: SampleKnowledge, topology: PathTopology
     Without one, a revision built against a card that declares no zone period is
     indistinguishable from one where the zone factor ran and found no endpoints.
 
-    Two of the reasons are the builder's rather than a factor's, because they are facts about the
+    ``topologies`` is one entry per #28 PARTITION (:func:`build_scene`); a reason is recorded once
+    for the whole scene the moment ANY partition triggers it — this is a per-scene ledger, not a
+    per-partition one, so a reader learns THAT some part of the scene degraded and reads the
+    per-arena ``footprints``/``partition_id`` to find which.
+
+    Three of the reasons are the builder's rather than a factor's, because they are facts about an
     arena SET that no ``degradations(sample)`` hook can see (review finding 3):
 
-    * ``path_topology_unavailable`` — the q set is not a path, so there is no ordering and no
-      adjacency. The scene still classifies and localizes per arena; it prices no cross-arena
-      absence at all, which is the fail-closed arm rather than a guessed ordering.
-    * ``zone_geometry_inapplicable_on_path`` / ``lattice_geometry_inapplicable_on_path`` — the
-      path is collinear but does not run along a reciprocal axis, so the card's SCALAR period and
-      reflection positions (declared in rlu along an axis) have no coordinate here. Recorded only
-      when the corresponding declaration exists, since an undeclared one already names itself.
+    * ``path_topology_unavailable`` — some partition's q set is not a path, so there is no
+      ordering and no adjacency THERE. The scene still classifies and localizes per arena; it
+      prices no cross-arena absence at all within that partition, which is the fail-closed arm
+      rather than a guessed ordering.
+    * ``zone_geometry_inapplicable_on_path`` / ``lattice_geometry_inapplicable_on_path`` — some
+      partition's path is collinear but does not run along a reciprocal axis, so the card's
+      SCALAR period and reflection positions (declared in rlu along an axis) have no coordinate
+      there. Recorded only when the corresponding declaration exists, since an undeclared one
+      already names itself.
+    * ``condition_binning_unavailable`` (#28) — an arena declares a raw temperature but the caller
+      declared no (or a non-positive) ``condition_t_round``, so that arena's PARTITION key could
+      not be resolved and it fails closed to no-coupling (:class:`isar.scene.model.ConditionSet`).
     """
     reasons = {reason for f in factor_list if f.degradations is not None
                for reason in f.degradations(declared)}
-    if not topology.collinear:
-        reasons.add("path_topology_unavailable")
-    elif topology.index and topology.axis is None:
-        # ``topology.index`` non-empty: with no placeable arena at all there is no path to be off
-        # the axis of, and the per-component ``unplaceable_q`` state already names that.
-        if declared.zone_period is not None:
-            reasons.add("zone_geometry_inapplicable_on_path")
-        if declared.reflections:
-            reasons.add("lattice_geometry_inapplicable_on_path")
+    for topology in topologies:
+        if not topology.collinear:
+            reasons.add("path_topology_unavailable")
+        elif topology.index and topology.axis is None:
+            # ``topology.index`` non-empty: with no placeable arena at all there is no path to be
+            # off the axis of, and the per-component ``unplaceable_q`` state already names that.
+            if declared.zone_period is not None:
+                reasons.add("zone_geometry_inapplicable_on_path")
+            if declared.reflections:
+                reasons.add("lattice_geometry_inapplicable_on_path")
+    if condition_binning_unavailable:
+        reasons.add("condition_binning_unavailable")
     return sorted(reasons)
 
 
