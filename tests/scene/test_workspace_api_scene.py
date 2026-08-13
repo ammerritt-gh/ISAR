@@ -13,7 +13,7 @@ from synthetic_ws import _POLICY_TOML, FULL_COLUMNS, stamp_ws
 
 # The adapter reads persisted columns the shared stamper's base header predates.
 COLUMNS = FULL_COLUMNS + ["energy_lo", "energy_hi", "energy_bands", "evidence_sink",
-                          "effective_exposure", "fit_selection_semantics"]
+                          "effective_exposure", "fit_selection_semantics", "content_hash"]
 
 
 def _selection(method="laplace_evidence_selection", fallback=None,
@@ -48,7 +48,7 @@ def _candidate(label, **kw):
     return row
 
 
-def _row(scan, *, candidates, scan_id=None, **kw):
+def _row(scan, *, candidates, scan_id=None, content_hash="ch-1", **kw):
     row = {
         "scan": scan, "detector": "det", "scan_id": scan_id or f"tavi:{scan}:det",
         "sample": "tavi", "T": 200.0, "h": 2.0, "k": 0.0, "l": 0.0, "status": "fitted",
@@ -59,6 +59,7 @@ def _row(scan, *, candidates, scan_id=None, **kw):
         "fit_selection_semantics": _selection(),
         "amplitudes": json.dumps({"bg.BG": 3.0, "phonon.A": 20.0}),
         "candidates": candidates if isinstance(candidates, str) else json.dumps(candidates),
+        "content_hash": content_hash,
     }
     row.update(kw)
     return row
@@ -80,6 +81,19 @@ def _write_measurements(root, rows) -> None:
         scan_id = r.get("scan_id") or f"tavi:{scan}:{det}"
         h, k, l = r.get("h"), r.get("k"), r.get("l")
         elo, ehi = r.get("energy_lo"), r.get("energy_hi")
+        # Parsed loosely: a MALFORMED cell here exercises the FIT ROW's own parse-failure path
+        # (isar.workspace_api.scene._bands), not this fixture's — a real record's bands are
+        # derived independently of the delivered CSV cell (isar.session.scan_delivery), so a
+        # synthetic fixture that cannot parse the row's cell just leaves the record's bands None
+        # rather than raising here, one test-setup step before the assertion under test.
+        bands = None
+        bands_cell = r.get("energy_bands")
+        if bands_cell is not None:
+            try:
+                parsed = json.loads(bands_cell) if isinstance(bands_cell, str) else bands_cell
+                bands = tuple((float(b[0]), float(b[1])) for b in parsed)
+            except (TypeError, ValueError, IndexError, json.JSONDecodeError):
+                bands = None
         record = MeasurementArena(
             scan_ref=scan_id, scan_id=scan_id, scan_number=scan, detector=det,
             sample=r.get("sample"),
@@ -87,9 +101,9 @@ def _write_measurements(root, rows) -> None:
             q=(None if h is None or k is None or l is None else (float(h), float(k), float(l))),
             lattice_epoch=None,
             energy_window=(None if elo is None or ehi is None else (float(elo), float(ehi))),
-            energy_bands=None, effective_exposure=r.get("effective_exposure"),
+            energy_bands=bands, effective_exposure=r.get("effective_exposure"),
             exposure_provenance=None, count_trust="trusted", reasons=(),
-            written_at="2026-01-01T00:00:00+00:00")
+            written_at="2026-01-01T00:00:00+00:00", content_hash=r.get("content_hash") or "ch-1")
         lines.append(json.dumps(record.to_dict(), sort_keys=True))
     if lines:
         rd = root / "report"
@@ -392,7 +406,7 @@ def _measurement(**over) -> MeasurementArena:
                 sample="tavi", conditions=(("temperature_K", 200.0),), q=(2.0, 0.0, 0.0),
                 lattice_epoch=None, energy_window=(-5.0, 10.0), energy_bands=((-5.0, 10.0),),
                 effective_exposure=1000.0, exposure_provenance=None, count_trust="trusted",
-                reasons=(), written_at="2026-01-01T00:00:00+00:00")
+                reasons=(), written_at="2026-01-01T00:00:00+00:00", content_hash="ch-1")
     return MeasurementArena(**{**base, **over})
 
 
@@ -447,6 +461,116 @@ def test_a_delivered_row_with_no_matching_measurement_record_is_refused(tmp_path
                                               scan_number=1))
     with pytest.raises(ValueError, match=r"tavi:2:det.*measurement-arena record.*re-deliver"):
         scene_observations(Workspace.open(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# Provenance join hardening (SCENE-4 PR 4.0 review response, W3)
+# ---------------------------------------------------------------------------
+def test_a_content_hash_mismatch_between_fit_row_and_record_is_refused(tmp_path):
+    """A record from a LATER delivery generation must never join a fit row from an earlier one
+    (or vice versa) — the join key is scan_ref AND content_hash, not scan_ref alone."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[_row(1, candidates=[_candidate("phonon+bg")],
+                                  content_hash="ch-generation-2")], columns=COLUMNS)
+    _write_measurement(tmp_path, _measurement(scan_ref="tavi:1:det", scan_id="tavi:1:det",
+                                              scan_number=1, content_hash="ch-generation-1"))
+    with pytest.raises(ValueError, match=r"tavi:1:det.*different delivery generation"):
+        scene_observations(Workspace.open(tmp_path))
+
+
+def test_a_legacy_row_with_no_content_hash_skips_the_join_check(tmp_path):
+    """A row predating the column carries ``content_hash=None`` — nothing to compare, not a
+    license to guess a mismatch. The record still supplies the observation's facts."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    columns_no_hash = [c for c in COLUMNS if c != "content_hash"]
+    stamp_ws(tmp_path, rows=[_row(1, candidates=[_candidate("phonon+bg")])],
+             columns=columns_no_hash)
+    _write_measurement(tmp_path, _measurement(scan_ref="tavi:1:det", scan_id="tavi:1:det",
+                                              scan_number=1, content_hash="ch-record-only"))
+    obs, = scene_observations(Workspace.open(tmp_path))
+    assert obs.scan_ref == "tavi:1:det"
+
+
+def test_counts_own_the_facts_the_record_wins_over_the_fit_row(tmp_path):
+    """W3, disposition 4: for a row WITH a record, q/temperature/conditions/sample/window/bands/
+    exposure come FROM THE RECORD — the fit row may not silently disagree with what was measured.
+    The fixture stamps the record with values that deliberately differ from the row's."""
+    record = _measurement(
+        scan_ref="tavi:1:det", scan_id="tavi:1:det", scan_number=1, sample="record-sample",
+        conditions=(("temperature_K", 77.0),), q=(1.0, 1.0, 1.0),
+        energy_window=(-2.0, 2.0), energy_bands=((-2.0, 2.0),), effective_exposure=42.0)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[_row(1, candidates=[_candidate("phonon+bg")], sample="row-sample",
+                                  T=200.0, h=2.0, k=0.0, l=0.0, energy_lo=-5.0, energy_hi=10.0,
+                                  energy_bands=json.dumps([[-5.0, 10.0]]),
+                                  effective_exposure=1000.0)], columns=COLUMNS)
+    _write_measurement(tmp_path, record)
+    obs, = scene_observations(Workspace.open(tmp_path))
+    assert obs.sample == "record-sample"
+    assert obs.conditions == (("temperature_K", 77.0),)
+    assert obs.temperature_K == 77.0
+    assert obs.q == (1.0, 1.0, 1.0)
+    assert obs.energy_window == (-2.0, 2.0)
+    assert obs.energy_bands == ((-2.0, 2.0),)
+    assert obs.effective_exposure == 42.0
+    # The fit row still contributes candidates/resolution/best_label/evidence_sink — unaffected.
+    assert obs.best_label == "phonon+bg"
+
+
+def test_an_empty_but_parseable_candidates_list_on_a_delivered_winner_is_refused(tmp_path):
+    """A DELIVERED non-pooled winner (detector + best_label set) whose candidates cell parses to
+    an EMPTY list is a contradictory interpretation artifact — something won, so a table must
+    exist — and gets the same refuse-don't-degrade posture as the absent/malformed cases."""
+    ws = _ws(tmp_path, [_row(1, candidates=[])])
+    with pytest.raises(ValueError, match=r"tavi:1:det.*empty candidate table.*re-deliver"):
+        scene_observations(ws)
+
+
+def test_a_master_only_workspace_needs_no_measurements_log(tmp_path):
+    """The missing-measurements refusal requires >=1 NON-POOLED candidate-bearing fit; a
+    workspace whose only candidate-bearing rows are pooled masters (which legitimately carry no
+    measurement-arena record) must proceed with an empty measurements dict, not refuse."""
+    cands = [_candidate("phonon+bg")]
+    master = _row(9_000_001, candidates=cands, scan_id="master:tavi_2.0,0,0_300",
+                  pooled=True, n_members=0, members="")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[master], columns=COLUMNS)
+    assert not (tmp_path / "report" / "measurements.jsonl").exists()
+    obs, = scene_observations(Workspace.open(tmp_path))
+    assert obs.scan_ref == "master:tavi_2.0,0,0_300:det"
+
+
+def test_compatible_master_members_derive_provenance_and_stay_suppressed(tmp_path):
+    """W3, disposition 5: sample/conditions/lattice_epoch come from the QUALIFIED MEMBERS'
+    records, not the current frame, when every member's record agrees."""
+    cands = [_candidate("phonon+bg")]
+    master = _row(9_000_001, candidates=cands, scan_id="master:tavi_2.0,0,0_300",
+                  pooled=True, n_members=2, members="tavi:1:det;tavi:2:det")
+    ws = _ws(tmp_path, [_row(1, candidates=cands, sample="tavi", T=200.0),
+                        _row(2, candidates=cands, sample="tavi", T=200.0), master])
+    by_ref = {o.scan_ref: o for o in scene_observations(ws)}
+    assert sorted(by_ref) == ["master:tavi_2.0,0,0_300:det"]   # members suppressed
+    m = by_ref["master:tavi_2.0,0,0_300:det"]
+    assert m.count_trust == "trusted"
+    assert m.sample == "tavi"
+    assert m.conditions == (("temperature_K", 200.0),)
+
+
+def test_incompatible_master_members_degrade_and_their_arenas_survive(tmp_path):
+    """W3, disposition 5: members whose records DISAGREE (mixed conditions here) mean the pooled
+    interpretation cannot be presented under one frame — the master degrades to non-scoring
+    (count_trust off "trusted") rather than guessing, and its members are NOT erased: an
+    incompatible master must not both fail AND suppress the only evidence its members have."""
+    cands = [_candidate("phonon+bg")]
+    master = _row(9_000_001, candidates=cands, scan_id="master:tavi_2.0,0,0_300",
+                  pooled=True, n_members=2, members="tavi:1:det;tavi:2:det")
+    ws = _ws(tmp_path, [_row(1, candidates=cands, sample="tavi", T=200.0),
+                        _row(2, candidates=cands, sample="tavi", T=250.0), master])
+    by_ref = {o.scan_ref: o for o in scene_observations(ws)}
+    assert sorted(by_ref) == ["master:tavi_2.0,0,0_300:det", "tavi:1:det", "tavi:2:det"]
+    assert by_ref["master:tavi_2.0,0,0_300:det"].count_trust != "trusted"
+    assert by_ref["tavi:1:det"].count_trust == "trusted"
+    assert by_ref["tavi:2:det"].count_trust == "trusted"
 
 
 # ---------------------------------------------------------------------------

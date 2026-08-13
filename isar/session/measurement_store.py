@@ -30,6 +30,10 @@ def append_measurement(report_dir, record: dict) -> None:
     root = Path(report_dir)
     root.mkdir(parents=True, exist_ok=True)
     with open(root / FILENAME, "a", encoding="utf-8") as stream:
-        stream.write(json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n")
+        # allow_nan=False mirrors isar.scene.model.canonical_bytes: the encoding is what gets
+        # stored and re-read, and Python's default emits the non-standard Infinity/NaN tokens a
+        # strict reader rejects — a non-finite value belongs to MeasurementArena's own validation
+        # (schema/measurement.py __post_init__), not a blob this writer accepts and cannot replay.
+        stream.write(json.dumps(record, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n")
         stream.flush()
         os.fsync(stream.fileno())

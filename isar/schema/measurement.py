@@ -20,6 +20,7 @@ everywhere, so it carries no dependency on :mod:`isar.session` or :mod:`isar.sce
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 MEASUREMENT_ARENA_SCHEMA = "isar.measurement-arena/1"
@@ -92,6 +93,13 @@ class MeasurementArena:
     :class:`isar.analyze.context.ScanContext` exists, or once a terminal gate fires — and NEVER
     depends on whether a fit was attempted, converged, or raised. That independence is precisely
     the honesty this schema exists to keep: counts are authoritative, fits are disposable.
+
+    ``content_hash`` is the DELIVERY-GENERATION identity (the same value stamped into
+    ``results.csv``/the ledger for this scan): the scene adapter joins a delivered fit row to this
+    record on ``scan_ref`` AND ``content_hash``, so a record from delivery N+1 can never be read
+    against a fit row still on delivery N. ``program_fingerprint``/``program_step`` are campaign
+    provenance (PR 4.3 deliverable) — ``None`` until that producer stamps them; declared here now
+    so the schema does not need a second migration when it lands.
     """
 
     scan_ref: str                              # "exp:scan:det" — matches the scene adapter's key
@@ -113,7 +121,47 @@ class MeasurementArena:
     count_trust: str                            # one of COUNT_TRUST_STATES
     reasons: tuple
     written_at: str                             # ISO-8601 UTC, stamped by the writer
+    content_hash: str                           # the delivery-generation identity (required)
+    program_fingerprint: str | None = None      # PR 4.3: campaign-program identity, None until then
+    program_step: str | None = None             # PR 4.3: CampaignStep.id, None until then
     schema: str = MEASUREMENT_ARENA_SCHEMA
+
+    def __post_init__(self) -> None:
+        if self.count_trust not in COUNT_TRUST_STATES:
+            raise ValueError(f"measurement-arena record {self.scan_ref!r}: count_trust "
+                             f"{self.count_trust!r} is not one of {COUNT_TRUST_STATES}")
+        names = [name for name, _ in self.conditions]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            raise ValueError(f"measurement-arena record {self.scan_ref!r}: duplicate condition "
+                             f"name(s) {dupes} in {self.conditions!r}")
+        for name, value in self.conditions:
+            if not math.isfinite(value):
+                raise ValueError(f"measurement-arena record {self.scan_ref!r}: condition "
+                                 f"{name!r} carries non-finite value {value!r}")
+        if self.q is not None and not all(math.isfinite(v) for v in self.q):
+            raise ValueError(f"measurement-arena record {self.scan_ref!r}: q {self.q!r} carries "
+                             f"a non-finite component")
+        if self.effective_exposure is not None and not math.isfinite(self.effective_exposure):
+            raise ValueError(f"measurement-arena record {self.scan_ref!r}: effective_exposure "
+                             f"{self.effective_exposure!r} is not finite")
+        if self.energy_window is not None:
+            lo, hi = self.energy_window
+            if not (math.isfinite(lo) and math.isfinite(hi)):
+                raise ValueError(f"measurement-arena record {self.scan_ref!r}: energy_window "
+                                 f"{self.energy_window!r} carries a non-finite bound")
+            if lo > hi:
+                raise ValueError(f"measurement-arena record {self.scan_ref!r}: energy_window "
+                                 f"{self.energy_window!r} has lo > hi")
+        if self.energy_bands is not None:
+            for band in self.energy_bands:
+                lo, hi = band
+                if not (math.isfinite(lo) and math.isfinite(hi)):
+                    raise ValueError(f"measurement-arena record {self.scan_ref!r}: energy_bands "
+                                     f"entry {band!r} carries a non-finite bound")
+                if lo > hi:
+                    raise ValueError(f"measurement-arena record {self.scan_ref!r}: energy_bands "
+                                     f"entry {band!r} has lo > hi")
 
     def to_dict(self) -> dict:
         return {
@@ -135,6 +183,9 @@ class MeasurementArena:
             "count_trust": self.count_trust,
             "reasons": list(self.reasons),
             "written_at": self.written_at,
+            "content_hash": self.content_hash,
+            "program_fingerprint": self.program_fingerprint,
+            "program_step": self.program_step,
         }
 
     @classmethod
@@ -161,4 +212,7 @@ class MeasurementArena:
             count_trust=str(d["count_trust"]),
             reasons=tuple(str(r) for r in (d.get("reasons") or ())),
             written_at=str(d["written_at"]),
+            content_hash=str(d["content_hash"]),
+            program_fingerprint=_opt_str(d.get("program_fingerprint")),
+            program_step=_opt_str(d.get("program_step")),
         )

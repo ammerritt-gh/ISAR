@@ -257,7 +257,7 @@ def _acquisition_provenance_for(rec, card, scan_id: str) -> tuple[str, dict | No
     return f"scan:{scan_id}", None
 
 
-def _measurement_record(rec, det, q, T, sample, scan_id, card, *, count_trust, reasons,
+def _measurement_record(rec, det, q, T, sample, scan_id, card, chash, *, count_trust, reasons,
                         energy_window=None, energy_bands=None, effective_exposure=None,
                         exposure_provenance=None) -> dict:
     """The counts-authoritative record for this arena (SCENE-4 PR 4.0, work package #26).
@@ -266,8 +266,11 @@ def _measurement_record(rec, det, q, T, sample, scan_id, card, *, count_trust, r
     context, or a built context — and, for the built-context case, BEFORE ``fit_one`` is even
     called, so it survives a fit crash on the same arena untouched (the hard constraint the tests
     in ``tests/session/test_measurement_record.py`` pin). ``count_trust="trusted"`` is the only
-    state a scene may ever build coverage from (:mod:`isar.scene.build`); the other three states
-    are gate outcomes, recorded as attempted but never as coverage.
+    state a scene may ever build coverage from (:mod:`isar.scene.build`); the other states
+    (``"excluded"`` / ``"held_for_calibration"`` / ``"undersampled"`` / the pre-dispatch
+    ``"attempted"`` stub) are recorded as attempted but never as coverage. ``chash`` is the
+    delivery-generation identity (the same ``content_hash`` stamped into ``results.csv``): the
+    scene adapter joins a delivered fit row to this record on ``scan_ref`` AND ``content_hash``.
     """
     return MeasurementArena(
         scan_ref=scan_id, scan_id=scan_id, scan_number=rec.scan_number, detector=det,
@@ -278,7 +281,7 @@ def _measurement_record(rec, det, q, T, sample, scan_id, card, *, count_trust, r
         energy_window=energy_window, energy_bands=energy_bands,
         effective_exposure=effective_exposure, exposure_provenance=exposure_provenance,
         count_trust=count_trust, reasons=tuple(reasons),
-        written_at=datetime.now(timezone.utc).isoformat(),
+        written_at=datetime.now(timezone.utc).isoformat(), content_hash=chash,
     ).to_dict()
 
 
@@ -2568,13 +2571,13 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
     gated, calres = _gate_scan(rec, det, card, g, runcal, exclusions, base)
     if gated is not None:
         return replace(gated, measurement_record=_measurement_record(
-            rec, det, q, T, sample, scan_id, card,
+            rec, det, q, T, sample, scan_id, card, chash,
             count_trust=gated.status, reasons=gated.reasons))
 
     working = _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres, base)
     if isinstance(working, ScanEntry):
         return replace(working, measurement_record=_measurement_record(
-            rec, det, q, T, sample, scan_id, card,
+            rec, det, q, T, sample, scan_id, card, chash,
             count_trust="undersampled", reasons=working.reasons))
     (ctx, prior, prior_source, n_neighbors, near_gamma, t_round, labels, peaks,
      descriptor, region_reasons) = working
@@ -2591,7 +2594,7 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         rec, ctx, {}, acquisition_target_energy=(_acq or {}).get("acquisition_target_energy"),
         submitted_ncount=(_acq or {}).get("submitted_ncount"))
     measurement_record = _measurement_record(
-        rec, det, q, T, sample, scan_id, card, count_trust="trusted", reasons=[],
+        rec, det, q, T, sample, scan_id, card, chash, count_trust="trusted", reasons=[],
         energy_window=_energy_window, energy_bands=_energy_bands_kept,
         effective_exposure=_exposure_info.get("value"), exposure_provenance=_exposure_info)
 
