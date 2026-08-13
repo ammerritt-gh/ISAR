@@ -12,7 +12,7 @@ from isar.cli import main as main_mod
 from isar.cli import report_cmd
 from isar.scene import store
 
-from .test_workspace_api_scene import COLUMNS, _candidate, _row
+from .test_workspace_api_scene import COLUMNS, _candidate, _row, _write_measurements
 from synthetic_ws import stamp_ws
 
 
@@ -21,7 +21,9 @@ def ws(tmp_path, monkeypatch):
     """A stamped workspace with one scoreable arena, and no real report rendering."""
     root = tmp_path / "ws"
     root.mkdir(parents=True)
-    stamp_ws(root, rows=[_row(1, candidates=[_candidate("phonon+bg")])], columns=COLUMNS)
+    rows = [_row(1, candidates=[_candidate("phonon+bg")])]
+    stamp_ws(root, rows=rows, columns=COLUMNS)
+    _write_measurements(root, rows)
     monkeypatch.setattr(report_cmd.run_report, "write_run_report", lambda *a, **k: {})
     return root
 

@@ -54,6 +54,12 @@ class ScanEntry:
     detectors: dict = field(default_factory=dict)   # detector_id -> FitOutcome.to_dict()
     reasons: list = field(default_factory=list)
     provenance: dict = field(default_factory=dict)   # resolution_version, zero_source, prior_*, M, seed
+    # The counts-authoritative measurement-arena record for this scan (SCENE-4 PR 4.0, #26), as
+    # isar.schema.measurement.MeasurementArena.to_dict() — carried on the entry so a pool worker
+    # can hand it back to the parent process, which appends it to report/measurements.jsonl as
+    # entries are collected (isar/session/driver.py). None only for an entry this WP never
+    # touches (a pooled master, or a pre-4.0 checkpoint replayed from an older ledger).
+    measurement_record: dict | None = None
 
 
 @dataclass
@@ -115,6 +121,8 @@ def _scan_entry_from_dict(row: dict) -> ScanEntry:
         detectors=dict(row.get("detectors") or {}),
         reasons=list(row.get("reasons") or []),
         provenance=dict(row.get("provenance") or {}),
+        measurement_record=(dict(row["measurement_record"])
+                            if row.get("measurement_record") is not None else None),
     )
 
 

@@ -21,9 +21,14 @@ module exists to make the factor ban mechanical rather than a matter of reviewer
 The live registry holds the four physics factors of SCENE-3 PR 3b. Only ``presence`` scores;
 ``connectivity`` supplies the ambiguity edges and the crossing proposals, and
 ``zone_centre_approach`` / ``reciprocal_lattice_localization`` read DECLARED sample knowledge and
-only reinterpret a visibility state or classify a component. None of the three moves belief, so
-none of them costs the builder its pruning. ``RESERVED_FACTOR_NAMES`` reserves the names the
-remaining ones will take so two slices cannot pick the same name for different terms.
+only reinterpret a visibility state or classify a component. None of the three moves belief
+directly, so none declares a ``score`` — but ``zone_centre_approach`` REWRITES what ``presence``
+reads (a ``structural_endpoint`` report prices at 0.0 where a ``searched_no_signal`` one would not),
+which does cost the builder pruning: SCENE-4 PR 4.0 (#22) gives every ``refine_visibility`` factor
+a declared ``rescue_bound_per_report`` for exactly this reason (see ``isar.scene.build``'s
+``_score_span``). ``reciprocal_lattice_localization`` only classifies, so it alone still costs
+nothing. ``RESERVED_FACTOR_NAMES`` reserves the names the remaining ones will take so two slices
+cannot pick the same name for different terms.
 
 The factorization, and why no null is charged twice (review findings 7 and 8)
 ----------------------------------------------------------------------------
@@ -102,6 +107,17 @@ class SceneFactor:
     factor that declares a bound it can exceed corrupts the stated mass bounds. A neutral factor
     declares ``(0.0, 0.0)``.
 
+    ``rescue_bound_per_report`` is the SCENE-4 PR 4.0 (#22) declaration a ``refine_visibility``
+    factor owes the builder: the most nats ONE refined report can move a scoring factor's total
+    (for ``zone_centre_approach``, a report the builder would otherwise price at
+    ``PRESENCE_MISS_NATS`` and prices at 0.0 once ``structural_endpoint``, so the bound is
+    ``-PRESENCE_MISS_NATS``). A refiner moves no term of its own — it rewrites what a SCORING
+    factor (``presence``) reads — so ``score_bound`` cannot describe its effect; this is the
+    per-report analogue for a factor with no ``score`` at all. ``None`` means "I will not bound
+    even one report", which the builder treats exactly like an unbounded ``score_bound``: no
+    margin pruning while this refiner is active. Meaningless (and refused by ``validate_factor``)
+    on a factor with no ``refine_visibility``.
+
     ``config`` is every tunable constant the factor closes over, as sorted ``(name, value)``
     pairs. It exists because a retuned constant is a different factor: without it two revisions
     scored under different tunings would carry the same ``registry_fingerprint`` and look
@@ -136,6 +152,7 @@ class SceneFactor:
     consumes: tuple[str, ...] = ()
     config: tuple[tuple[str, float], ...] = ()
     score_bound: tuple[float, float] | None = None
+    rescue_bound_per_report: float | None = None
     couples: Callable | None = None
     score: Callable | None = None
     propose: Callable | None = None
@@ -181,6 +198,14 @@ def validate_factor(f: SceneFactor) -> None:
                              "expected finite (lo, hi) with lo <= hi, or None for unbounded")
     if f.score is None and f.score_bound is not None:
         raise ValueError(f"scene factor {f.name!r} declares a score_bound but has no score")
+    if f.rescue_bound_per_report is not None:
+        if f.refine_visibility is None:
+            raise ValueError(f"scene factor {f.name!r} declares a rescue_bound_per_report but "
+                             "has no refine_visibility to bound")
+        if not math.isfinite(f.rescue_bound_per_report) or f.rescue_bound_per_report < 0.0:
+            raise ValueError(f"scene factor {f.name!r} declares rescue_bound_per_report "
+                             f"{f.rescue_bound_per_report!r}: expected a finite value >= 0.0, or "
+                             "None for unbounded")
 
 
 def factor_manifest(factors) -> list[dict]:
@@ -204,7 +229,8 @@ def factor_manifest(factors) -> list[dict]:
           "consumes": list(f.consumes),
           "roles": [r for r in HOOKS if getattr(f, r) is not None],
           "config": [[k, v] for k, v in f.config],
-          "score_bound": None if f.score_bound is None else list(f.score_bound)}
+          "score_bound": None if f.score_bound is None else list(f.score_bound),
+          "rescue_bound_per_report": f.rescue_bound_per_report}
          for f in values),
         key=lambda m: m["name"])
 
@@ -788,10 +814,14 @@ ZONE_CENTRE_APPROACH = SceneFactor(
               "sample.dispersion_slope_max"),
     config=(("link_tol_floor", LINK_TOL_FLOOR), ("path_axis_tol", PATH_AXIS_TOL),
             ("zone_centre_q_tol", ZONE_CENTRE_Q_TOL)),
-    # No score, therefore no bound to declare — and, because ``_score_span`` looks only at
-    # SCORING factors, no pruning cost either. A visibility-grammar factor changes what the
-    # scoring factors see, not what they may add.
+    # No score, therefore no score_bound to declare — but this factor's ``refine_visibility``
+    # rewrites a ``searched_no_signal`` report to ``structural_endpoint``, which moves the ONE
+    # scoring factor that reads it (``presence``) by ``PRESENCE_MISS_NATS`` per rewritten report
+    # (SCENE-4 PR 4.0, #22: a "no score" factor is not a "no pruning cost" factor once it can
+    # rewrite what a scorer sees). Declared as ``-PRESENCE_MISS_NATS`` rather than a second
+    # literal, so retuning presence's miss weight cannot silently desynchronize the two numbers.
     score_bound=None,
+    rescue_bound_per_report=-PRESENCE_MISS_NATS,
     refine_visibility=_zone_centre_refine, degradations=_zone_centre_degradations)
 
 

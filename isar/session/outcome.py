@@ -332,6 +332,12 @@ _CSV_COLUMNS = [
     # SCENE-3, appended: the kept energy runs as one JSON cell (variable length, so not float
     # columns) — see _JSON_COLUMNS in isar.drive.isar_io.readers. Empty wherever energy_lo/hi are.
     "energy_bands",
+    # SCENE-4 PR 4.0 review response (W3, #26 join hardening): the delivery-generation identity
+    # (``ScanEntry.content_hash``) this row was fitted against — the same value the measurement-
+    # arena record stamps, so the scene adapter can refuse to join a fit row from delivery N to a
+    # measurement record from delivery N+1. Scan-level, not per-detector, so every detector row of
+    # the same scan carries the same value. Empty on every historical row.
+    "content_hash",
 ]
 
 
@@ -386,7 +392,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
     for e in sorted(session.scans.values(), key=lambda e: e.scan_number):
         if not e.detectors:
             rows.append({"scan_id": e.scan_id, "scan": e.scan_number, "status": e.status,
-                         "reasons": "; ".join(e.reasons)})
+                         "reasons": "; ".join(e.reasons), "content_hash": e.content_hash})
             continue
         for det, oc in e.detectors.items():
             q = oc.get("q") or [None, None, None]
@@ -410,6 +416,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                     f"len(members)={len(members)} — member provenance corrupt")
             rows.append({
                 "scan_id": e.scan_id, "scan": e.scan_number, "detector": det, "sample": oc.get("sample"),
+                "content_hash": e.content_hash,
                 "target_branch": oc.get("target_branch", "acoustic"),
                 "target_label": oc.get("target_label", oc.get("target_branch", "acoustic")),
                 "effective_exposure": oc.get("effective_exposure"),

@@ -44,14 +44,34 @@ import math
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 
+from isar.schema.statistics import CONSTRAINT_ORIGINS
 from isar.schema.steering import CANONICAL_MASTER, EVIDENCE_SINKS
 
 from .factors import (FACTORS, SceneFactor, factor_manifest, neighbour_reports,
                       registry_fingerprint, validate_factor)
 from .model import (NON_MODE_ID_TAGS, SCENE_SCHEMA, CandidateRow, ComponentObservation,
-                    Footprint, PathTopology, SampleKnowledge, SceneObservation, Visibility,
-                    canonical_bytes, digest_bytes, footprint_of, is_mode, link_reach,
-                    path_adjacent, path_topology)
+                    ConditionSet, Footprint, PathTopology, SampleKnowledge, SceneObservation,
+                    Visibility, canonical_bytes, digest_bytes, fingerprint, footprint_of, is_mode,
+                    link_reach, path_adjacent, path_topology)
+
+# SCENE-4 PR 4.0 (#21): the lane split over isar.schema.statistics.CONSTRAINT_ORIGINS. A
+# candidate's provenance is DECLARED (prespecified relative to this scan, exactly-once by
+# construction) or it is DATA-DERIVED transported conditioning (accumulated from other scans'
+# counts, the exactly-once risk H204 named) — every member of the schema's enum is one or the
+# other, and the assertion below makes a THIRD, unaccounted-for member a loud import-time failure
+# rather than a silent fall into whichever lane happened to have an ``in`` check written first.
+SCORING_CONSTRAINT_ORIGINS = frozenset(
+    {"none", "user_declared", "prespecified_scientific", "catalogue_variant"})
+TRANSPORTED_CONSTRAINT_ORIGINS = frozenset(
+    {"prior_predictive", "data_dependent_rescue", "post_selection", "mixed"})
+# PR #30 review response (disposition 16): an unconditional ``raise`` rather than ``assert`` — an
+# ``assert`` disappears under ``python -O``, which would silently let a third, unaccounted-for
+# CONSTRAINT_ORIGINS member fall through to whichever lane's ``in`` check happened to run first,
+# exactly the silent-fallthrough failure this check exists to prevent.
+if SCORING_CONSTRAINT_ORIGINS | TRANSPORTED_CONSTRAINT_ORIGINS != CONSTRAINT_ORIGINS:
+    raise ValueError(
+        "isar.schema.statistics.CONSTRAINT_ORIGINS has a member neither scoring lane accounts for — "
+        "the scene intake lane split (#21) must be updated before this schema change is safe")
 
 # Same currency and idiom as isar/analyze/evidence.py PRUNE_MARGIN: nats below the cluster's
 # per-arena leader, beyond which a candidate's posterior mass is bounded by e^−margin and it
@@ -205,7 +225,8 @@ class SceneRevision:
 def build_scene(observations, *, factors=None, catalogue_version: str = "",
                 sample: SampleKnowledge | None = None,
                 margin_nats: float | None = None,
-                alt_cap: int | None = None) -> SceneRevision:
+                alt_cap: int | None = None,
+                condition_t_round: float | None = 0.1) -> SceneRevision:
     """Score ``observations`` into a ``SceneRevision``. Pure, deterministic, replayable.
 
     ``factors`` defaults to the live ``FACTORS`` registry; ``catalogue_version`` is a
@@ -214,11 +235,22 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
     lifts it off the card); ``None`` means nothing was declared, which is a legal scene in which
     the knowledge-consuming factors are inert and say so in ``sample_knowledge.degradations``.
 
+    ``condition_t_round`` (SCENE-4 PR 4.0, #28) is the temperature-binning width the PARTITION key
+    compares by — the same policy field ``isar.reduce.collate`` used to pool this workspace's raw
+    scans (``card.policy.collation["t_round"]``), so two arenas coupled at the scene layer are
+    exactly the ones Stage II would have treated as the same condition. ``0.1`` reproduces
+    collate.py's own default for a caller that declares nothing.
+
     Payload alignment contract: a cluster's ``score_ablation[name]`` is a POSITIONAL list,
     index-aligned with that cluster's ``alternatives`` — ``score_ablation[name][i]`` is the
     posterior of ``alternatives[i]`` with factor ``name``'s score terms removed. The payload
     states this as ``score_ablation_alignment`` so an external consumer cannot silently read it
-    as a mapping.
+    as a mapping. ``transformation_ablation[name]`` (SCENE-4 PR 4.0, #22) is the same shape for a
+    REFINER named ``name``: the posterior of ``alternatives[i]`` with that refiner's visibility
+    rewrite removed and every scoring factor rerun against the unrewritten visibility — a
+    distinct ledger from ``score_ablation`` because a refiner has no score term to zero out; see
+    ``_transformation_ablation``'s docstring. ``transformation_ablation_alignment`` states the
+    same positional contract.
     """
     # Constants resolve AT CALL TIME, never as default-argument captures: a default evaluated
     # at import binds the module constant's value forever, so monkeypatching or an
@@ -231,37 +263,96 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
     declared = SampleKnowledge() if sample is None else sample
 
     obs = _validated(observations)
-    # The ordered path FIRST: every adjacency, every declared-geometry coordinate and every edge
-    # length downstream is read off it, and it is a property of the arena SET (review finding 3).
-    #
-    # Over ALL arenas, not only the scoring ones: the path is the experiment map, and an arena
-    # whose evidence may not be summed was still MEASURED at its q. The consequence is deliberate —
-    # an unscoreable scan between two scoring ones separates them by two ordinals, so they no
-    # longer judge each other, exactly as inserting any intermediate scan does. Deriving the path
-    # from the scoring subset instead would make the ordering depend on which comparisons happened
-    # to finish, and one arena's H7 timeout would silently re-price its neighbours' absences.
-    topology = path_topology({o.scan_ref: o.q for o in obs})
-    footprints = {o.scan_ref: footprint_of(o, topology) for o in obs}
+    # PR 4.0 (#26): a count-untrusted arena (``count_trust`` off "trusted" — a gate refusal
+    # recorded as ATTEMPTED, never a measurement) was never actually MEASURED, so it takes no
+    # part in the path, the footprints, or any cluster below — unlike an arena whose counts are
+    # trusted but whose local comparison could not score (still measured, still footprinted, see
+    # the note below). It is folded into ``non_scoring`` directly, with no footprint entry.
+    trusted_obs = tuple(o for o in obs if o.count_trust == "trusted")
+    untrusted_reasons = [{"scan_ref": o.scan_ref, "reason": "count_untrusted"}
+                         for o in obs if o.count_trust != "trusted"]
 
-    scoring, non_scoring = _split_by_evidence(obs)
+    # PR 4.0 (#25/#28): PARTITION first, before any path/topology/cluster arithmetic — a
+    # cross-partition edge is not a rare mistake to prune later, it is not a fact the geometry
+    # below is even allowed to compute. Two arenas of different sample identity, different binned
+    # condition, or different lattice epoch share nothing downstream: not a path, not a footprint
+    # adjacency, not a cluster, not a normalization.
+    partitions: dict[tuple, list[SceneObservation]] = {}
+    for o in trusted_obs:
+        partitions.setdefault(_partition_key(o, condition_t_round), []).append(o)
+
+    # The ordered path FIRST within each partition: every adjacency, every declared-geometry
+    # coordinate and every edge length downstream is read off it, and it is a property of the
+    # arena SET (review finding 3) — now the arena set of ONE partition, never the whole scene.
+    #
+    # Over every TRUSTED, TOPOLOGY-ELIGIBLE arena of the partition, not only the scoring ones: the
+    # path is the experiment map, and an arena whose evidence may not be summed was still MEASURED
+    # at its q. A ``"context_probe"``-tagged arena (#25) is withheld from the topology input
+    # entirely — it never perturbs the path's collinearity check — but still receives a footprint
+    # below, with no path ordinal (``path_index=None``), so it can neither collapse the path nor
+    # accidentally chain to another off-path arena through it.
+    footprints: dict[str, Footprint] = {}
+    topologies: list[PathTopology] = []
+    for key, members in partitions.items():
+        pid = _partition_id(key)
+        eligible = {o.scan_ref: o.q for o in members if o.topology_role != "context_probe"}
+        topology = path_topology(eligible)
+        topologies.append(topology)
+        for o in members:
+            footprints[o.scan_ref] = footprint_of(o, topology, partition_id=pid)
+
+    scoring, non_scoring = _split_by_evidence(trusted_obs)
+    non_scoring = sorted(non_scoring + untrusted_reasons, key=lambda d: d["scan_ref"])
     # Order matters and is the contract: evidence split → margin pruning → components of the
     # SURVIVORS → coupling edges → clusters → enumeration. A candidate that will not be
     # enumerated must not shape the partition either: an excluded candidate's component could
     # otherwise couple two arenas and merge two clusters, and since truncation and normalization
     # are joint over a cluster, a candidate nobody scores would still move everyone's posterior.
-    span = _score_span(factor_list)
+    span = _score_span(factor_list, scoring, footprints)
     pruning = {o.scan_ref: _prune(o, margin, span) for o in scoring}
     components = {o.scan_ref: _components_of(o, footprints[o.scan_ref],
                                              _survivor_labels(pruning[o.scan_ref]))
                   for o in scoring}
 
-    clusters = _clusters(scoring, components, footprints, factor_list)
+    # #28: clustering runs PER PARTITION, never across one — the ambiguity graph and the
+    # normalization it feeds must not see two arenas of different sample/condition/lattice-epoch
+    # as candidates for the same edge. ``_clusters`` already builds its ``itertools.combinations``
+    # only over the ``refs`` it is handed, so scoping the call scopes the coupling search.
+    scoring_by_partition: dict[tuple, list[SceneObservation]] = {}
+    for o in scoring:
+        scoring_by_partition.setdefault(_partition_key(o, condition_t_round), []).append(o)
+    clusters = sorted(
+        (cl for members in scoring_by_partition.values()
+         for cl in _clusters(members, components, footprints, factor_list)),
+        key=lambda refs: refs[0])
 
     by_ref = {o.scan_ref: o for o in scoring}
+    # PR #30 review response (disposition 12): every arena of ONE cluster shares one partition
+    # (``_partition_key`` includes ``lattice_epoch``), so any single member's epoch is the
+    # cluster's. A cluster whose epoch does not match the CURRENTLY declared
+    # ``SampleKnowledge.lattice_epoch`` is scored against a blank sample instead — see
+    # ``_cluster_sample``'s docstring for why this, rather than filtering the factor list, is what
+    # keeps ``zone_centre_approach``/``reciprocal_lattice_localization`` inert for it.
     cluster_payloads = [
         _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, cap, span,
-                       declared)
+                       _cluster_sample(by_ref[refs[0]], declared))
         for refs in clusters]
+    epoch_mismatch = any(
+        by_ref[refs[0]].lattice_epoch is not None and declared.lattice_epoch is not None
+        and by_ref[refs[0]].lattice_epoch != declared.lattice_epoch
+        for refs in clusters)
+
+    # #28: a temperature present with no declared binning policy leaves that arena's condition key
+    # unresolved (``ConditionSet.temperature_K_binned=None``) — legal, and recorded once here
+    # rather than per-partition, since it is a fact about the DECLARATION, not about any one
+    # partition's geometry.
+    # PR #30 review response (disposition 15): the SAME threshold ``ConditionSet.of`` fails closed
+    # at (``>= 1e-6``, not merely ``> 0.0``) — a ``condition_t_round`` between 0 and 1e-6 already
+    # makes every temperature-bearing arena's key unresolved there, so this ledger check must agree
+    # or it would silently omit the reason exactly in that band.
+    condition_binning_unavailable = (
+        not (condition_t_round is not None and float(condition_t_round) >= 1e-6)
+        and any(dict(o.conditions).get("temperature_K") is not None for o in trusted_obs))
 
     payload = {
         "schema": SCENE_SCHEMA,
@@ -274,6 +365,9 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
         # margin must say so, or a replay would silently use a different model.
         "margin_nats": margin,
         "alt_cap": cap,
+        # The values ACTUALLY used for the #28 partition's condition binning — see
+        # ``condition_t_round``'s docstring above.
+        "condition_t_round": condition_t_round,
         # Σ_f (hi_f − lo_f) over the active scoring factors — the nats of rescue the pruner had
         # to allow for. ``None`` = at least one factor declared no bound, so no base-lnZ pruning
         # or truncation bound was permitted at all.
@@ -281,6 +375,9 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
         # Declares how to read every cluster's score_ablation lists: positionally, against that
         # cluster's ``alternatives``.
         "score_ablation_alignment": "by_alternative_index",
+        # Same alignment contract for #22's transformation_ablation lists — declared separately
+        # so a consumer that reads one payload key never has to assume the other's convention.
+        "transformation_ablation_alignment": "by_alternative_index",
         # Constraint-transport provenance: declared and dormant (the transport channel lives
         # in local evidence, per the PR-a design), so the field exists before it is filled.
         "transport": None,
@@ -289,14 +386,53 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
         # moves the revision digest even where it changes no number — a scene scored against a
         # zone period is not the same scene as one scored blind to it.
         "sample_knowledge": {**declared.to_dict(),
-                             "degradations": _degradations(factor_list, declared, topology)},
-        "observations": [{"scan_ref": o.scan_ref, "fingerprint": o.fingerprint,
-                          "candidates": [c.to_dict() for c in o.candidates]} for o in obs],
+                             "degradations": _degradations(factor_list, declared, topologies,
+                                                          condition_binning_unavailable,
+                                                          epoch_mismatch)},
+        # PR #30 review response (disposition 11, W5): the FULL observation, not only
+        # ``{scan_ref, fingerprint, candidates}`` — sample, conditions, count_trust,
+        # lattice_epoch and topology_role were already hashed INTO the fingerprint but were not
+        # reconstructable from the stored payload, so an auditor reading a revision back could not
+        # recover what partitioned it without rejoining against the workspace that built it (which
+        # may since have moved on). Digest move: every existing revision's digest changes.
+        "observations": [o.to_dict() for o in obs],
         "non_scoring": non_scoring,
-        "footprints": [footprints[o.scan_ref].to_dict() for o in obs],
+        "footprints": [footprints[o.scan_ref].to_dict() for o in trusted_obs],
         "clusters": cluster_payloads,
     }
     return SceneRevision.of(payload)
+
+
+def _partition_key(o: SceneObservation, t_round: float | None) -> tuple:
+    """The #25/#28 partition identity: ``(sample, ConditionSet key, lattice_epoch)``.
+
+    Two arenas whose keys differ are, by construction, never adjacent, never clustered, never
+    normalized together — the geometry above never even sees both in one ``path_topology`` call.
+    ``None`` is an ordinary tuple-key value here, which is what makes "undeclared couples only
+    with undeclared" (H13) fall out of dict grouping alone rather than needing a special case: a
+    ``None`` sample only equals ``None``, a ``None`` lattice epoch only equals ``None``, and a
+    condition key with no temperature declared at all only equals another one exactly like it.
+
+    An UNRESOLVED condition (:class:`isar.scene.model.ConditionSet`: a temperature is declared but
+    there is no binning policy to compare it by) is different — the #28 ruling's fail-closed-to-
+    NO-COUPLING arm, which the H13 symmetric rule does not extend to. Salting the key with the
+    observation's own ``scan_ref`` makes it unique to this one arena, so it never couples with
+    ANYTHING — not even another arena an as-yet-undeclared policy would have binned identically.
+    """
+    condition = ConditionSet.of(o.conditions, t_round)
+    condition_key = condition.key if condition.resolved else (*condition.key, o.scan_ref)
+    return (o.sample, condition_key, o.lattice_epoch)
+
+
+def _partition_id(key: tuple) -> str:
+    """A short, stable, JSON-safe id for a partition key — what ``Footprint.partition_id`` stores.
+
+    Not the raw tuple: a partition key's condition leg is itself a nested tuple, and stamping the
+    raw structure onto every footprint would duplicate it once per arena. The digest is the same
+    canonical encoding every other scene fingerprint uses (:func:`isar.scene.model.fingerprint`),
+    so two builds of the same partition set always agree byte-for-byte.
+    """
+    return fingerprint(list(key))
 
 
 # ----------------------------------------------------------------------------
@@ -351,7 +487,42 @@ def _declared(factor_list) -> tuple:
     return tuple(sorted([*factor_list, LINKAGE_PRIOR], key=lambda f: f.name))
 
 
-def _degradations(factor_list, declared: SampleKnowledge, topology: PathTopology) -> list[str]:
+def _cluster_sample(leader: SceneObservation, declared: SampleKnowledge) -> SampleKnowledge:
+    """PR #30 review response (disposition 12): declared sample knowledge, scoped to ONE cluster.
+
+    ``leader`` is any one member of the cluster (every arena of a cluster shares one partition,
+    and ``_partition_key`` includes ``lattice_epoch``, so its epoch is the cluster's own). A
+    cluster measured under a lattice epoch that is not the one CURRENTLY declared must not receive
+    the CURRENT frame's zone/reflection semantics — a stale-epoch arena's elastic feature is not
+    necessarily near this epoch's zone centre or reflection, and scoring it as though it were would
+    silently misattribute a re-orientation.
+
+    Handing the mismatched cluster a BLANK ``SampleKnowledge()`` — rather than filtering
+    ``zone_centre_approach``/``reciprocal_lattice_localization`` out of that cluster's
+    ``factor_list`` — is what keeps every cluster scored by the same declared factor SET: the
+    payload's ``registry_fingerprint``/``factor_manifest`` stay global and honest (a revision
+    with a mismatched cluster still says which factors COULD have scored, same as one without),
+    and the factors' own ``_zone_centres_declared``/``sample.reflections`` checks then see
+    nothing declared and go inert on THIS cluster exactly the way they already do for a workspace
+    that declared nothing at all — no change to ``factors.py`` needed.
+
+    A match requires BOTH sides to actually declare an epoch and disagree — ``leader.lattice_epoch
+    is None`` (no production writer stamps it yet: PR 4.1-4.3 wire the campaign-provenance
+    producer, per ``SceneObservation.topology_role``'s docstring) is "not yet known", not "known
+    to differ", so it is treated as compatible with whatever epoch IS declared rather than as a
+    mismatch — the ``H13`` null-coupling rule is a statement about which arenas may share a
+    PARTITION, and does not extend to demanding a stamp that does not exist yet before a
+    workspace may use declared knowledge at all. Only an arena EXPLICITLY stamped a DIFFERENT
+    epoch than the one currently declared is withheld.
+    """
+    if leader.lattice_epoch is None or declared.lattice_epoch is None:
+        return declared
+    return declared if leader.lattice_epoch == declared.lattice_epoch else SampleKnowledge()
+
+
+def _degradations(factor_list, declared: SampleKnowledge, topologies: list[PathTopology],
+                  condition_binning_unavailable: bool = False,
+                  epoch_mismatch: bool = False) -> list[str]:
     """Every reason a declared capability was inert on this scene, sorted and deduplicated.
 
     The honesty this buys: a capability with nothing declared to work on must neither raise nor
@@ -359,32 +530,54 @@ def _degradations(factor_list, declared: SampleKnowledge, topology: PathTopology
     Without one, a revision built against a card that declares no zone period is
     indistinguishable from one where the zone factor ran and found no endpoints.
 
-    Two of the reasons are the builder's rather than a factor's, because they are facts about the
+    ``topologies`` is one entry per #28 PARTITION (:func:`build_scene`); a reason is recorded once
+    for the whole scene the moment ANY partition triggers it — this is a per-scene ledger, not a
+    per-partition one, so a reader learns THAT some part of the scene degraded and reads the
+    per-arena ``footprints``/``partition_id`` to find which.
+
+    Three of the reasons are the builder's rather than a factor's, because they are facts about an
     arena SET that no ``degradations(sample)`` hook can see (review finding 3):
 
-    * ``path_topology_unavailable`` — the q set is not a path, so there is no ordering and no
-      adjacency. The scene still classifies and localizes per arena; it prices no cross-arena
-      absence at all, which is the fail-closed arm rather than a guessed ordering.
-    * ``zone_geometry_inapplicable_on_path`` / ``lattice_geometry_inapplicable_on_path`` — the
-      path is collinear but does not run along a reciprocal axis, so the card's SCALAR period and
-      reflection positions (declared in rlu along an axis) have no coordinate here. Recorded only
-      when the corresponding declaration exists, since an undeclared one already names itself.
+    * ``path_topology_unavailable`` — some partition's q set is not a path, so there is no
+      ordering and no adjacency THERE. The scene still classifies and localizes per arena; it
+      prices no cross-arena absence at all within that partition, which is the fail-closed arm
+      rather than a guessed ordering.
+    * ``zone_geometry_inapplicable_on_path`` / ``lattice_geometry_inapplicable_on_path`` — some
+      partition's path is collinear but does not run along a reciprocal axis, so the card's
+      SCALAR period and reflection positions (declared in rlu along an axis) have no coordinate
+      there. Recorded only when the corresponding declaration exists, since an undeclared one
+      already names itself.
+    * ``condition_binning_unavailable`` (#28) — an arena declares a raw temperature but the caller
+      declared no (or a non-positive) ``condition_t_round``, so that arena's PARTITION key could
+      not be resolved and it fails closed to no-coupling (:class:`isar.scene.model.ConditionSet`).
+    * ``knowledge_epoch_mismatch`` (PR #30 review response, disposition 12) — at least one cluster
+      was EXPLICITLY measured under a ``lattice_epoch`` other than the one CURRENTLY declared
+      (both sides stamped, and different — an unstamped, ``None`` epoch is "not yet known" and is
+      never this), so :func:`_cluster_sample` handed it a blank ``SampleKnowledge`` and its
+      ``zone_centre_approach``/``reciprocal_lattice_localization`` semantics were withheld for
+      that cluster specifically — a per-scene ledger entry, like the other two builder reasons,
+      because it is a fact about a CLUSTER that no ``degradations(sample)`` hook can see.
     """
     reasons = {reason for f in factor_list if f.degradations is not None
                for reason in f.degradations(declared)}
-    if not topology.collinear:
-        reasons.add("path_topology_unavailable")
-    elif topology.index and topology.axis is None:
-        # ``topology.index`` non-empty: with no placeable arena at all there is no path to be off
-        # the axis of, and the per-component ``unplaceable_q`` state already names that.
-        if declared.zone_period is not None:
-            reasons.add("zone_geometry_inapplicable_on_path")
-        if declared.reflections:
-            reasons.add("lattice_geometry_inapplicable_on_path")
+    for topology in topologies:
+        if not topology.collinear:
+            reasons.add("path_topology_unavailable")
+        elif topology.index and topology.axis is None:
+            # ``topology.index`` non-empty: with no placeable arena at all there is no path to be
+            # off the axis of, and the per-component ``unplaceable_q`` state already names that.
+            if declared.zone_period is not None:
+                reasons.add("zone_geometry_inapplicable_on_path")
+            if declared.reflections:
+                reasons.add("lattice_geometry_inapplicable_on_path")
+    if condition_binning_unavailable:
+        reasons.add("condition_binning_unavailable")
+    if epoch_mismatch:
+        reasons.add("knowledge_epoch_mismatch")
     return sorted(reasons)
 
 
-def _score_span(factor_list) -> float | None:
+def _score_span(factor_list, scoring_obs, footprints) -> float | None:
     """``Σ_f (hi_f − lo_f)`` over the ACTIVE SCORING factors, or ``None`` if any is unbounded.
 
     This is the total nats by which factor terms can reorder two alternatives that the base
@@ -393,10 +586,28 @@ def _score_span(factor_list) -> float | None:
     exactly the slack those decisions must carry, and its absence is exactly the reason to stop
     discarding. A coupling-only factor is irrelevant here: it changes the partition, not the
     score, and cannot rescue anything.
+
+    SCENE-4 PR 4.0 (#22): a REFINER (``refine_visibility``) is not a coupling-only factor even
+    when it declares no ``score`` — it rewrites what a scoring factor reads, so a rescued cluster
+    of reports can move the total by up to ``rescue_bound_per_report × N`` nats, where ``N`` is a
+    CONSERVATIVE upper bound on how many reports any alternative could have had refined, counted
+    over every USABLE candidate of the whole build BEFORE any pruning (:func:`_max_refinable_reports`)
+    — a global, pre-partition count is a superset of any one cluster's true count, so it can only
+    WIDEN the pruning margin, never narrow it (H12(c): bounded, never optimistic). A refiner that
+    will not declare ``rescue_bound_per_report`` is treated exactly like an unbounded scoring
+    factor: the whole span collapses to ``None`` and margin pruning is disabled outright,
+    joining the ``truncation_unbounded`` lane semantics — an unresolved cluster, not a narrowed
+    one, is the only honest posture when a refiner's worst case cannot be bounded.
     """
     scorers = [f for f in factor_list if f.score is not None]
     if any(f.score_bound is None for f in scorers):
         return None
+    refiners = [f for f in factor_list if f.refine_visibility is not None]
+    if any(f.rescue_bound_per_report is None for f in refiners):
+        return None
+    refiner_span = (math.fsum(f.rescue_bound_per_report
+                              for f in refiners) * _max_refinable_reports(scoring_obs, footprints)
+                    if refiners else 0.0)
     # LINKAGE_PRIOR has no ``score`` callable (the builder applies it) but it is a term of the
     # total all the same, so its declared span belongs in the slack the pruner must allow for —
     # and only then. With no proposing factor every assignment has exactly one linkage, the term
@@ -411,7 +622,45 @@ def _score_span(factor_list) -> float | None:
     else:
         lo, hi = LINKAGE_PRIOR.score_bound
         linkage = hi - lo
-    return math.fsum([linkage, *(h - l for l, h in (f.score_bound for f in scorers))])
+    return math.fsum([linkage, refiner_span, *(h - l for l, h in (f.score_bound for f in scorers))])
+
+
+def _max_refinable_reports(scoring_obs, footprints) -> int:
+    """Conservative upper bound on refinable ``(mode, adjacent neighbour)`` reports, GLOBAL to the
+    whole build and computed BEFORE any pruning (#22) — "every usable candidate" the plan text
+    means literally, not one cluster's share of it.
+
+    One report per mode component of the arena's most-mode-heavy USABLE candidate (only one
+    candidate is ever CHOSEN per arena by any one alternative, so the max over its candidates
+    already bounds what one alternative could contribute) times the number of OTHER scoring
+    arenas it is path-adjacent to. Both factors overcount relative to any single alternative —
+    an alternative chooses one candidate, not the richest one, and links at most one mode per
+    neighbour, not every mode to every neighbour — and the sum runs over the whole build rather
+    than one cluster. All three are overcounts in the SAFE direction: a larger ``N`` only widens
+    the margin the pruner must allow, never narrows it.
+
+    Structurally always obtainable here (component descriptors and footprint adjacency are both
+    persisted, pre-pruning facts) — see ``_score_span``'s docstring for the case this codebase
+    actually models as "unobtainable": a refiner that declines to bound even one report.
+    """
+    total = 0
+    for o in scoring_obs:
+        max_modes = max((sum(1 for d in c.components if d.kind == "mode")
+                         for c in o.candidates if _usable_lnz(c) is not None), default=0)
+        if max_modes == 0:
+            continue
+        fp_o = footprints[o.scan_ref]
+        # ``path_adjacent`` alone compares raw ``path_index`` ordinals, which are assigned
+        # PER PARTITION (#28) — two different partitions can each start numbering at 0, so an
+        # unguarded adjacency check could call arenas of unrelated partitions "neighbours" purely
+        # by ordinal coincidence. The partition_id equality is the same fail-closed boundary the
+        # rest of the builder holds arenas to (H13): nothing crosses it, including this count.
+        neighbours = sum(1 for other in scoring_obs
+                         if other.scan_ref != o.scan_ref
+                         and footprints[other.scan_ref].partition_id == fp_o.partition_id
+                         and path_adjacent(fp_o, footprints[other.scan_ref]))
+        total += max_modes * neighbours
+    return total
 
 
 # ----------------------------------------------------------------------------
@@ -422,6 +671,49 @@ def _usable_lnz(c: CandidateRow) -> float | None:
     if not c.usable or c.log_evidence is None or not math.isfinite(c.log_evidence):
         return None
     return float(c.log_evidence)
+
+
+def _arena_constraint_origin(o: SceneObservation) -> str:
+    """The #21 arena-level ``CONSTRAINT_ORIGINS`` verdict, over every USABLE candidate.
+
+    "Usable" (:func:`_usable_lnz` is not ``None``) rather than every candidate in the row: an
+    excluded/no-evidence candidate can never be summed into any alternative's ``ln W(S)``
+    (:func:`_prune`), so its provenance carries no exactly-once risk for this arena — only a
+    candidate that COULD be chosen (this arena enumerates every surviving candidate as an
+    alternative, not only ``best_label``) can taint the comparison.
+
+    NOT a reduction across candidates the way ``isar.analyze.loop.aggregate_constraint_origin``
+    reduces across ONE fit's own constraint list: there, several constraint terms jointly shape a
+    SINGLE lnZ, so one data-derived term among them taints that one number and the fit-level
+    aggregate correctly folds to ``"mixed"``. Here, two DIFFERENT candidates are two SEPARATE,
+    independently-computed numbers — a ``"none"``-origin candidate sitting beside a
+    ``"catalogue_variant"``-origin candidate in the same arena is not a mixed anything, it is two
+    cleanly-classified alternatives, and collapsing that heterogeneity to ``"mixed"`` would
+    non-score an arena no candidate of which is actually tainted. The correct arena rule is ANY:
+    one candidate carrying transported (or already fit-level-``"mixed"``) provenance taints the
+    whole arena, because THAT candidate's lnZ could be the one an alternative sums — so a single
+    unsafe usable candidate decides the lane, never a set-reduction over however many candidates
+    happen to differ.
+
+    Raises when a usable candidate's ``constraint_origin`` is the tri-state ``None`` (no semantics
+    record — a delivery from before this contract existed) or a string outside
+    ``isar.schema.statistics.CONSTRAINT_ORIGINS`` (schema drift) — REFUSE, per the #21 ruling,
+    never a silent lane guess.
+    """
+    origins = [c.constraint_origin for c in o.candidates if _usable_lnz(c) is not None]
+    if any(g is None for g in origins):
+        raise ValueError(
+            f"scene: {o.scan_ref!r} carries a usable candidate with no constraint_origin "
+            "semantics record — this workspace predates persisted fit semantics; re-deliver or "
+            "rebuild it before SCENE analysis")
+    unknown = sorted({g for g in origins if g not in CONSTRAINT_ORIGINS})
+    if unknown:
+        raise ValueError(
+            f"scene: {o.scan_ref!r} carries a candidate with constraint_origin {unknown!r}, not "
+            "a member of isar.schema.statistics.CONSTRAINT_ORIGINS — schema drift: re-deliver or "
+            "rebuild this workspace before SCENE analysis")
+    unsafe = sorted(g for g in origins if g in TRANSPORTED_CONSTRAINT_ORIGINS)
+    return unsafe[0] if unsafe else "none"
 
 
 def _non_scoring_reason(o: SceneObservation) -> str | None:
@@ -444,7 +736,10 @@ def _non_scoring_reason(o: SceneObservation) -> str | None:
         # canonical pool, and the scene routes it in a later slice. Deferred, not discarded.
         return "aux_sink_deferred"
     if not o.candidates:
-        return "no_candidates"
+        # A TRUSTED measurement (PR 4.0 #26) with no usable interpretation yet — not a broken
+        # arena, and not the same claim as "excluded"/"held"/"undersampled": the counts are good,
+        # nothing has been fitted to them (or was fitted and produced no candidate at all).
+        return "no_interpretation"
     if o.evidence_comparison_status == "incomplete":
         # H7: the candidate comparison expired with a contender unresolved, so the lnZ values
         # present are not the arena. Scoring them would turn an unfinished comparison into a
@@ -456,6 +751,13 @@ def _non_scoring_reason(o: SceneObservation) -> str | None:
         # No lnZ → no term in ln W(S). Such an arena is not "excluded"; it simply has nothing to
         # contribute, and its footprint still records that we looked.
         return "no_evidence"
+    # SCENE-4 PR 4.0 (#21, Variant A): the WINNING comparison's constraint provenance decides
+    # scoring eligibility, evaluated only now that the arena would otherwise score. See
+    # ``_arena_constraint_origin`` for why this is an ARENA verdict over every candidate that
+    # could actually be summed, not the single chosen candidate's origin alone.
+    origin = _arena_constraint_origin(o)
+    if origin in TRANSPORTED_CONSTRAINT_ORIGINS:
+        return "transported_conditioning"
     return None
 
 
@@ -901,6 +1203,11 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
         norm = _logsumexp(totals)
         score_ablation[f.name] = [math.exp(t - norm) for t in totals]
 
+    # SCENE-4 PR 4.0 (#22): distinct from score_ablation above — see
+    # ``_transformation_ablation``'s docstring for why a refiner needs a rerun, not a term zeroed.
+    transformation_ablation = _transformation_ablation(entries, view, refs, components,
+                                                        factor_list, cluster_id)
+
     return {
         "cluster_id": cluster_id,
         "scan_refs": list(refs),
@@ -946,34 +1253,46 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
         "classification": {f.name: f.classify(view)
                            for f in factor_list if f.classify is not None},
         "score_ablation": score_ablation,
+        # #22: per-refiner posterior with that refiner's visibility rewrite removed, index-aligned
+        # with ``alternatives`` like ``score_ablation`` (payload
+        # ``transformation_ablation_alignment``). Empty when no factor in the registry refines.
+        "transformation_ablation": transformation_ablation,
         "marginals": _marginals(refs, entries, rows_of, truncated, unbounded),
     }
 
 
-def _leader(entries, refs, components, cluster_id) -> SceneAlternative:
-    """The highest-posterior alternative, rebuilt as a ``SceneAlternative``. Ties by position."""
-    best = max(entries, key=lambda e: e["posterior"])
-    assignment = tuple(tuple(pair) for pair in best["assignment"])
+def _alt_of(entry: dict, cluster_id: str, refs, components) -> SceneAlternative:
+    """Rebuild the ``SceneAlternative`` a ledger ``entry`` was scored from.
+
+    Shared by ``_leader`` and the #22 transformation ablation, both of which need to re-derive a
+    typed alternative from an already-scored ledger row rather than a second enumeration.
+    """
+    assignment = tuple(tuple(pair) for pair in entry["assignment"])
     chosen = {ref: label for ref, label in assignment}
     return SceneAlternative(
         cluster_id=cluster_id, assignment=assignment,
         components=tuple(c for ref in refs for c in components[ref]
                          if c.candidate_label == chosen[ref]),
-        links=tuple(tuple(pair) for pair in best["links"]))
+        links=tuple(tuple(pair) for pair in entry["links"]))
 
 
-def _score_alternative(alt: SceneAlternative, view: ClusterView, base: float, factor_list,
-                       cluster_id: str, n_linkages: int) -> dict:
-    """One ledger entry: the terms of ``alt`` and the total they add up to.
+def _leader(entries, refs, components, cluster_id) -> SceneAlternative:
+    """The highest-posterior alternative, rebuilt as a ``SceneAlternative``. Ties by position."""
+    best = max(entries, key=lambda e: e["posterior"])
+    return _alt_of(best, cluster_id, refs, components)
 
-    ``n_linkages`` is how many linkage readings this ALTERNATIVE'S ASSIGNMENT was enumerated
-    with, BEFORE any cap; ``LINKAGE_PRIOR`` spreads one assignment's prior mass uniformly over
-    them (see its declaration) so that refining an assignment never boosts it, and so that a
-    capped assignment keeps only the share of its prior it still carries readings for.
+
+def _score_terms(alt: SceneAlternative, view: ClusterView, factor_list, cluster_id: str,
+                 assignment) -> tuple[dict, dict, dict]:
+    """``(factor_terms, prior_terms, reasons)`` from every SCORING factor's ``score(alt, view)``.
+
+    Split out of ``_score_alternative`` (SCENE-4 PR 4.0, #22) because the transformation ablation
+    reruns exactly this loop under a view with one refiner's ``refine_visibility`` removed —
+    ``presence`` reads the view's REFINED visibility, so its term cannot be zeroed out after the
+    fact the way ``score_ablation`` zeroes a factor's own term; it has to be recomputed against a
+    scene that never made the rewrite.
     """
-    assignment = alt.assignment
-    factor_terms, reasons = {}, {}
-    prior_terms = {LINKAGE_PRIOR.name: -math.log(n_linkages)}
+    factor_terms, prior_terms, reasons = {}, {}, {}
     for f in factor_list:
         if f.score is None:
             continue
@@ -1003,6 +1322,22 @@ def _score_alternative(alt: SceneAlternative, view: ClusterView, base: float, fa
         (prior_terms if f.kind == "scene_prior" else factor_terms)[f.name] = term
         if why:
             reasons[f.name] = list(why)
+    return factor_terms, prior_terms, reasons
+
+
+def _score_alternative(alt: SceneAlternative, view: ClusterView, base: float, factor_list,
+                       cluster_id: str, n_linkages: int) -> dict:
+    """One ledger entry: the terms of ``alt`` and the total they add up to.
+
+    ``n_linkages`` is how many linkage readings this ALTERNATIVE'S ASSIGNMENT was enumerated
+    with, BEFORE any cap; ``LINKAGE_PRIOR`` spreads one assignment's prior mass uniformly over
+    them (see its declaration) so that refining an assignment never boosts it, and so that a
+    capped assignment keeps only the share of its prior it still carries readings for.
+    """
+    assignment = alt.assignment
+    factor_terms, prior_terms, reasons = _score_terms(alt, view, factor_list, cluster_id,
+                                                       assignment)
+    prior_terms[LINKAGE_PRIOR.name] = -math.log(n_linkages)
     return {
         "assignment": [list(pair) for pair in assignment],
         # The linkage this alternative reads the assignment under. Two entries with the same
@@ -1017,6 +1352,45 @@ def _score_alternative(alt: SceneAlternative, view: ClusterView, base: float, fa
         # total = fsum([base, *terms-by-sorted-name]) reproduces this float exactly.
         "total": _total(base, factor_terms, prior_terms),
     }
+
+
+def _transformation_ablation(entries, view: ClusterView, refs, components, factor_list,
+                             cluster_id: str) -> dict:
+    """SCENE-4 PR 4.0 (#22): per REFINER, the posterior over the FIXED alternative set with that
+    refiner's ``refine_visibility`` hook removed.
+
+    A distinct ledger from ``score_ablation`` (H12(f) untouched in meaning): score_ablation asks
+    what a factor's SCORE TERM did, holding the alternative set and every OTHER term fixed
+    including the refined visibility. A refiner declares no score term to remove — it rewrites
+    what ``presence`` reads — so the only honest question is what the scene would have said had
+    the rewrite never happened, which needs the visibility RECOMPUTED, not a term zeroed out.
+    Everything else stays fixed exactly like ``score_ablation`` fixes it: the enumerated
+    alternatives (no re-enumeration), each alternative's ``base`` Σ lnZ, and its linkage-prior
+    share (the linkage variable does not depend on refined visibility).
+
+    Index-aligned with ``entries``, like ``score_ablation`` — the payload's
+    ``transformation_ablation_alignment`` says so for a reader who has not seen this docstring.
+    Empty when the registry carries no refiner, so a scene scored under ``presence`` alone (no
+    zone/lattice factors) publishes no misleading entries.
+    """
+    refiners = [f for f in factor_list if f.refine_visibility is not None]
+    out: dict[str, list[float]] = {}
+    for rf in refiners:
+        ablated = replace(view,
+                          refiners=tuple((n, r) for n, r in view.refiners if n != rf.name),
+                          reports_cache={})
+        totals = []
+        for e in entries:
+            alt = _alt_of(e, cluster_id, refs, components)
+            factor_terms, prior_terms, _ = _score_terms(alt, ablated, factor_list, cluster_id,
+                                                         alt.assignment)
+            # The linkage share is a fact about the ASSIGNMENT's enumerated readings, never about
+            # refined visibility — held at its original value rather than recomputed.
+            prior_terms[LINKAGE_PRIOR.name] = e["prior_terms"][LINKAGE_PRIOR.name]
+            totals.append(_total(e["base"], factor_terms, prior_terms))
+        norm = _logsumexp(totals)
+        out[rf.name] = [math.exp(t - norm) for t in totals]
+    return out
 
 
 def _without(terms: dict, name: str) -> dict:

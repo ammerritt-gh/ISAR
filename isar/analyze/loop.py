@@ -34,6 +34,15 @@ from isar.analyze.phonon import GAMMA_FLOOR, GAMMA_MAX  # noqa: F401
 DATA_LIKELIHOOD_REVISION = "isar.baker_cousins_data_likelihood/1"
 MODEL_PARAMETERIZATION_REVISION = "isar.fit_model_parameterization/1"
 
+# Declared-count relaxation (2026-08-09 ruling, DECISIONS H8(a)): a declared peak count is a
+# PRIOR that RELAXES the :func:`_offer_multimode` diagnostic, never a bypass of it — the same
+# two triggers fire at more permissive thresholds instead of being skipped outright. Provisional
+# v1 values, SCENE-7-calibrated.
+GATE_COST_DECLARED = 1.3   # < GATE_COST (isar/analyze/phonon.py, currently 2.0)
+RUNS_ALPHA_DECLARED = 1.5  # < verdict.RUNS_Z (currently 2.0): a smaller runs-test z-critical is
+#                            a more permissive alpha -- less evidence of a coherent residual is
+#                            needed to call it structured.
+
 
 def _sanitize(name: str) -> str:
     """Backend parameter names must be plain identifiers (iminuit); drop the dotted prefix."""
@@ -796,16 +805,16 @@ def _fit_shadow_stage(hypotheses, ctx, reusable_by_label, *, backend, minos, exe
     )
 
 
-def shadow_bundle_from_complete_results(results, *, peaks=None) -> ShadowCandidateBundle:
-    """Wrap an already-complete unconstrained two-stage result list without copying it."""
+def shadow_bundle_from_complete_results(results, *, multimode_route=None) -> ShadowCandidateBundle:
+    """Wrap an already-complete unconstrained two-stage result list without copying it.
+
+    ``multimode_route`` should be the route the production fit already derived for these SAME
+    results (this call aliases them, it never re-fits). When omitted — the offline/test callers
+    with no delivery route to hand — it falls back to a has-multimode observation only: it never
+    guesses ``"declaration_relaxed"`` from anything other than the recorded gate outcome."""
     has_multimode = any(int(getattr(result, "n_modes", 1)) > 1 for result in results)
-    multimode_route = (
-        "guideline_forced"
-        if has_multimode and peaks is not None and len(peaks) >= 2
-        else "residual_triggered"
-        if has_multimode
-        else "not_offered"
-    )
+    if multimode_route is None:
+        multimode_route = "residual_triggered" if has_multimode else "not_offered"
     labels = [str(result.label) for result in results]
     converged = [
         str(result.label) for result in results if result.optimizer_converged
@@ -847,12 +856,13 @@ def fit_shadow_candidates(ctx, *, reusable_results=(), backend="iminuit", minos=
         phase="shadow one-mode candidate",
     )
 
-    expected_two = peaks is not None and len(peaks) >= 2
-    residual_two = _offer_multimode(one_results, ctx)
+    declared_count = int(len(peaks)) if peaks is not None else None
+    multimode_offered, multimode_route = _multimode_offer_route(
+        one_results, ctx, declared_count=declared_count)
     multi_hypotheses = []
     multi_results = []
     reused_multi = []
-    if residual_two or expected_two:
+    if multimode_offered:
         best_one = _best_converged(one_results)
         n_used = int(ctx.x_used.size)
         multi_hypotheses = [
@@ -896,13 +906,7 @@ def fit_shadow_candidates(ctx, *, reusable_results=(), backend="iminuit", minos=
             for result in results
             if str(result.label) not in set(reused_one + reused_multi)
         ],
-        multimode_route=(
-            "guideline_forced"
-            if expected_two
-            else "residual_triggered"
-            if residual_two
-            else "not_offered"
-        ),
+        multimode_route=multimode_route,
     )
 
 
@@ -933,20 +937,49 @@ def _best_converged(results):
     return min(conv, key=lambda r: r.cost + 2.0 * r.k)
 
 
-def _offer_multimode(results, ctx) -> bool:
+def _offer_multimode(results, ctx, *, declared_count: int | None = None) -> bool:
     """Whether to escalate to the 2-mode hypothesis set. Fires when the best converged 1-mode
     fit has ``cost_per_dof > GATE_COST`` OR its residual is structured by the Wald–Wolfowitz
     runs test (:func:`isar.analyze.verdict._residual_structured` — the wide-window trap where
     one DHO spans two peaks and cost/dof still looks acceptable). ``False`` if nothing
-    converged (there is no fit to diagnose)."""
+    converged (there is no fit to diagnose).
+
+    ``declared_count``: a user/card-declared expected peak count. When ``>= 2`` it is a PRIOR
+    that RELAXES this SAME diagnostic (2026-08-09 ruling, DECISIONS H8(a)) — never a bypass: the
+    two thresholds move to :data:`GATE_COST_DECLARED` and :data:`RUNS_ALPHA_DECLARED`, both more
+    permissive than the defaults, and a declared scan whose one-mode fit is clean under BOTH
+    relaxed diagnostics is still not offered. ``None`` or ``< 2`` reproduces today's behaviour
+    exactly (the global ``GATE_COST``/``RUNS_Z`` thresholds)."""
     best = _best_converged(results)
     if best is None:
         return False
-    if np.isfinite(best.cost_per_dof) and best.cost_per_dof > GATE_COST:
+    relaxed = declared_count is not None and declared_count >= 2
+    gate_cost = GATE_COST_DECLARED if relaxed else GATE_COST
+    if np.isfinite(best.cost_per_dof) and best.cost_per_dof > gate_cost:
         return True
     from isar.analyze.verdict import _pull, _residual_structured  # lazy: verdict → structures
     pull = _pull(best, ctx)
-    return bool(pull is not None and _residual_structured(pull))
+    if pull is None:
+        return False
+    runs_kwargs = {"z": RUNS_ALPHA_DECLARED} if relaxed else {}
+    return bool(_residual_structured(pull, **runs_kwargs))
+
+
+def _multimode_offer_route(one_results, ctx, *, declared_count: int | None) -> tuple[bool, str]:
+    """Whether to escalate to the 2-mode set, and the route provenance for it.
+
+    Evaluates the SAME diagnostic at both the global and (when declared) relaxed thresholds so
+    the route is RE-DERIVED FROM THE GATE OUTCOME, never guessed from ``declared_count``
+    presence: ``"declaration_relaxed"`` is recorded only when the relaxed thresholds made the
+    offer and the global thresholds alone would not have. A declared scan the global thresholds
+    would already have offered persists the ordinary ``"residual_triggered"`` route."""
+    offered_global = _offer_multimode(one_results, ctx)
+    if declared_count is not None and declared_count >= 2:
+        offered = _offer_multimode(one_results, ctx, declared_count=declared_count)
+        if offered and not offered_global:
+            return True, "declaration_relaxed"
+        return offered, ("residual_triggered" if offered else "not_offered")
+    return offered_global, ("residual_triggered" if offered_global else "not_offered")
 
 
 def candidate_context(hyp, ctx):
@@ -1040,22 +1073,31 @@ def _offer_variants(pairs, ctx, *, backend="iminuit", minos=False, executor=None
     return offered
 
 
-def _enumerate_and_fit(ctx, *, backend="iminuit", minos=False, peaks=None, executor=None):
+def _enumerate_and_fit(ctx, *, backend="iminuit", minos=False, peaks=None, executor=None,
+                       route_out=None):
     """The full two-stage enumeration: fit the 1-mode set, escalate to the 2-mode set when the
-    gate fires or ``peaks`` declares ≥2 peaks, then offer the catalogue's constrained variants of
-    the converged one-mode fits. Returns ``[(result, hypothesis, context), ...]`` (every stage
-    unioned). The context is ``ctx`` for ordinary candidates and the variant's derived context for
-    a variant — carry it, do not re-derive it. Split out of :func:`fit_structures_two_stage` so the
-    structure-hint shortcut (:func:`fit_structures_two_stage_hinted`) can fall back to it
-    verbatim."""
+    gate fires (:func:`_multimode_offer_route`; ``peaks`` supplies the declared count that
+    relaxes it), then offer the catalogue's constrained variants of the converged one-mode fits.
+    Returns ``[(result, hypothesis, context), ...]`` (every stage unioned). The context is ``ctx``
+    for ordinary candidates and the variant's derived context for a variant — carry it, do not
+    re-derive it. Split out of :func:`fit_structures_two_stage` so the structure-hint shortcut
+    (:func:`fit_structures_two_stage_hinted`) can fall back to it verbatim.
+
+    ``route_out``: an optional dict filled with ``{"multimode_route": ...}`` — the gate-derived
+    provenance a caller persists (``"declaration_relaxed"`` / ``"residual_triggered"`` /
+    ``"not_offered"``)."""
     one_hyps = enumerate_phonon_structures(ctx)
     one_tasks = [(h, ctx, backend, minos, None) for h in one_hyps]
     one_results = _fit_hypothesis_batch(one_tasks, executor, phase="one-mode candidate")
     one_pairs = list(zip(one_results, one_hyps))
     triples = [(r, h, ctx) for r, h in one_pairs]
 
-    expected_two = peaks is not None and len(peaks) >= 2
-    if _offer_multimode(one_results, ctx) or expected_two:
+    declared_count = int(len(peaks)) if peaks is not None else None
+    multimode_offered, multimode_route = _multimode_offer_route(
+        one_results, ctx, declared_count=declared_count)
+    if route_out is not None:
+        route_out["multimode_route"] = multimode_route
+    if multimode_offered:
         best_one = _best_converged(one_results)
         n_used = int(ctx.x_used.size)
         multi_hyps = []
@@ -1076,10 +1118,11 @@ def _enumerate_and_fit(ctx, *, backend="iminuit", minos=False, peaks=None, execu
 
 def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors=False,
                              M=200, seed=12345, peaks=None, executor=None,
-                             hypotheses_out=None) -> list[StructureFitResult]:
+                             hypotheses_out=None, route_out=None) -> list[StructureFitResult]:
     """Two-stage, data-gated structure enumeration (§ multiplicity). Fit the 1-mode set; if the
-    gate (:func:`_offer_multimode`) fires OR ``peaks`` declares ≥2 expected peaks, also fit the
-    2-mode set (:func:`~isar.analyze.phonon.enumerate_phonon_multimode`) seeded by
+    gate (:func:`_offer_multimode`, relaxed by a ``peaks``-declared count per
+    :func:`_multimode_offer_route`) fires, also fit the 2-mode set
+    (:func:`~isar.analyze.phonon.enumerate_phonon_multimode`) seeded by
     :func:`~isar.analyze.phonon.greedy_multimode_ic`, and return the UNION for a single
     :func:`~isar.analyze.select.select_models` pass — the evidence posterior assigns weights
     to the one-mode and two-mode structures (AIC/BIC persist as diagnostics, H4). 2-mode hypotheses with no positive dof (``n_used − k ≤ 0``) are
@@ -1093,9 +1136,11 @@ def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors
     actually offered. A caller that re-enumerates the hypothesis set by hand cannot see the
     catalogue variants (they exist only because a fit came out a certain way), and a variant
     carries the derived context its evidence must be resolved under — so any caller that needs
-    label → hypothesis must take it from here rather than rebuild it."""
+    label → hypothesis must take it from here rather than rebuild it.
+
+    ``route_out``: see :func:`_enumerate_and_fit`."""
     triples = _enumerate_and_fit(
-        ctx, backend=backend, minos=minos, peaks=peaks, executor=executor)
+        ctx, backend=backend, minos=minos, peaks=peaks, executor=executor, route_out=route_out)
     if hypotheses_out is not None:
         hypotheses_out.update({h.label: h for _, h, _ in triples})
     results = [r for r, _, _ in triples]
@@ -1108,14 +1153,17 @@ def fit_structures_two_stage(ctx, *, backend="iminuit", minos=False, with_errors
     return results
 
 
-def _try_structure_hint(ctx, structure_hint, *, backend="iminuit", minos=False):
+def _try_structure_hint(ctx, structure_hint, *, backend="iminuit", minos=False,
+                        declared_count: int | None = None):
     """Fit ONLY the hinted structure (cold grid-IC) plus the no-phonon null, and accept the
     shortcut iff every gate the full enumeration relies on still passes. Returns the one-element
     result list on acceptance, or ``None`` to signal "fall through to the full enumeration".
 
     Rejected (→ ``None``) when: the hint label is no longer admissible for this context; the hinted
     fit does not converge; the two-stage gate (:func:`_offer_multimode`: cost/dof > ``GATE_COST`` or
-    a structured residual) fires, i.e. one structure is not enough; or the no-phonon null is
+    a structured residual, evaluated at the SAME ``declared_count``-relaxed thresholds the full
+    enumeration would use — a declared scan's offer must not depend on whether a structure hint
+    happened to be in scope) fires, i.e. one structure is not enough; or the no-phonon null is
     AIC-preferred, i.e. the phonon does not earn its parameters here. On any of these the full
     enumeration must run — the hint is a computational shortcut, never a correctness override."""
     by_label = {h.label: h for h in enumerate_phonon_structures(ctx)}
@@ -1126,7 +1174,7 @@ def _try_structure_hint(ctx, structure_hint, *, backend="iminuit", minos=False):
     r = fit_hypothesis(hyp, ctx, backend=backend, minos=minos)   # cold grid-IC, same as full path
     if not r.optimizer_converged:
         return None
-    if _offer_multimode([r], ctx):                     # cost/dof or structured-residual gate
+    if _offer_multimode([r], ctx, declared_count=declared_count):  # cost/dof or structured-residual
         return None
     # The no-phonon null is a first-class enumerated structure (elastic+bg when the elastic gate
     # fires — it is then in by_label — else bg), and fit_hypothesis handles phonon-less composites,
@@ -1141,16 +1189,22 @@ def _try_structure_hint(ctx, structure_hint, *, backend="iminuit", minos=False):
 
 def fit_structures_two_stage_hinted(ctx, *, backend="iminuit", minos=False, peaks=None,
                                     structure_hint=None, executor=None,
-                                    hypotheses_out=None) -> tuple[list[StructureFitResult], bool]:
+                                    hypotheses_out=None,
+                                    route_out=None) -> tuple[list[StructureFitResult], bool]:
     """:func:`fit_structures_two_stage` with an optional ``structure_hint``. Returns
     ``(results, structure_skipped)``.
 
     When ``structure_hint`` is ``None`` (the default, every non-master path) this is bit-for-bit
     the full enumeration and ``structure_skipped`` is always ``False``. When a label is given
     (a master refit reusing its previous winner, card policy ``[fitting].reuse_master_structure``)
-    the shortcut in :func:`_try_structure_hint` is attempted first: on acceptance only the hinted
-    structure + the no-phonon null are fit and ``structure_skipped`` is ``True``; on any gate
-    failure the hint is discarded and the full enumeration runs (``structure_skipped`` ``False``).
+    the shortcut in :func:`_try_structure_hint` is attempted first — with the SAME ``peaks``-
+    declared count the full enumeration would use, so a declared hinted scan with between-
+    threshold structure rejects the shortcut exactly as it would reject natural abstention in the
+    full path: on acceptance only the hinted structure + the no-phonon null are fit,
+    ``structure_skipped`` is ``True``, and (when ``route_out`` is given) the route is recorded as
+    ``"not_evaluated_structure_hint"`` (the multimode gate never ran a second offer here); on any
+    gate failure the hint is discarded and the full enumeration runs (``structure_skipped``
+    ``False``).
 
     **Statistically-equivalent, not bit-identical:** the accepted shortcut hands the selection
     layer a smaller candidate set (one structure, not the full admissible enumeration), so the
@@ -1161,13 +1215,18 @@ def fit_structures_two_stage_hinted(ctx, *, backend="iminuit", minos=False, peak
     ``hypotheses_out`` behaves as in :func:`fit_structures_two_stage` on the full-enumeration
     path; on the ACCEPTED-hint path it is left untouched (the early return precedes it), which
     is safe because a hint label is always drawn from the standard enumerations the caller can
-    rebuild — only variant labels require the channel, and the shortcut offers no variants."""
+    rebuild — only variant labels require the channel, and the shortcut offers no variants.
+    ``route_out`` behaves as in :func:`_enumerate_and_fit`."""
     if structure_hint is not None:
-        hinted = _try_structure_hint(ctx, structure_hint, backend=backend, minos=minos)
+        declared_count = int(len(peaks)) if peaks is not None else None
+        hinted = _try_structure_hint(
+            ctx, structure_hint, backend=backend, minos=minos, declared_count=declared_count)
         if hinted is not None:
+            if route_out is not None:
+                route_out["multimode_route"] = "not_evaluated_structure_hint"
             return hinted, True
     triples = _enumerate_and_fit(
-        ctx, backend=backend, minos=minos, peaks=peaks, executor=executor)
+        ctx, backend=backend, minos=minos, peaks=peaks, executor=executor, route_out=route_out)
     if hypotheses_out is not None:
         hypotheses_out.update({h.label: h for _, h, _ in triples})
     return [r for r, _, _ in triples], False

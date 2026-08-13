@@ -270,17 +270,19 @@ def test_two_stage_select_accepts_second_mode_on_true_double_peak():
     assert hi < 7.0                                        # …cleanly separated from the 10 meV mode
 
 
-def test_two_stage_select_rejects_second_mode_on_true_single_peak():
-    """When ≥2 peaks are declared the 2-mode set is fit even on a true single peak, but the
-    evidence posterior rejects the extra mode: the 1-mode stokes+bg wins (the Occam factor
-    does what ΔAIC=2k did, from priors instead of a count)."""
+def test_two_stage_select_abstains_from_second_mode_on_true_single_peak():
+    """SCENE-4 PR 4.0 re-baseline (H15): a declared peak count RELAXES the offering diagnostic,
+    it never forces the offer. On a TRUE single peak — clean under even the relaxed thresholds —
+    the 2-mode set is not offered at all (natural abstention), and selection still lands on the
+    1-mode stokes+bg. The declared-with-real-structure case (offered, then judged on evidence)
+    is pinned in tests/analyze/test_loop.py."""
     ctx = _one_peak_ctx()
     peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
     results = loop.fit_structures_two_stage(ctx, with_errors=False, M=40, seed=1, peaks=peaks)
-    assert "stokes2+bg" in {r.label for r in results}     # it WAS offered
+    assert "stokes2+bg" not in {r.label for r in results}  # relaxed ≠ bypassed: no offer
     sel = select.select_models(results, _hyps(ctx), ctx)
     assert sel.selection_fallback is None
-    assert sel.best == "stokes+bg"                        # …and rejected on evidence
+    assert sel.best == "stokes+bg"
 
 
 def test_select_end_to_end_real_spectrum_folds():

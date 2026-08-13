@@ -710,7 +710,7 @@ def test_selection_fingerprints_are_order_invariant_and_route_sensitive():
         SimpleNamespace(
             scores=scores, pooled=object(), selection_fallback=None, best="one", evidence=evidence
         ),
-        {**route, "multimode_route": "guideline_forced"},
+        {**route, "multimode_route": "declaration_relaxed"},
         error_attachment_labels=["one", "two"],
     )
     assert changed_route["model_selection_fingerprint"] != baseline[

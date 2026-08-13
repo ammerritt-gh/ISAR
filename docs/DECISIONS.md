@@ -2011,7 +2011,81 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   unbounded flags spell out) and H1 (loud refusal and no compatibility reader for a workspace whose
   rows predate the delivery contract); ports O44's origin rule as a scene specification.
 
-## Session status update
+- **H15.** (2026-08-13, In force; SCENE-4 PR 4.0) **A declared peak count RELAXES the
+  ``_offer_multimode`` diagnostic, it never bypasses it — H8(a) implemented.** `loop.py`'s
+  `_offer_multimode` (`isar/analyze/loop.py`) gains a `declared_count` input; with a declaration
+  ≥ 2 it evaluates the SAME two triggers (cost/dof, Wald–Wolfowitz runs-test residual) at named
+  relaxed thresholds — `GATE_COST_DECLARED` (1.3, < the global `GATE_COST` 2.0) and
+  `RUNS_ALPHA_DECLARED` (1.5, < the global `RUNS_Z` 2.0 — a smaller runs-test z-critical is a
+  more permissive alpha), both provisional v1, SCENE-7-calibrated. Natural abstention holds: a
+  declared scan clean under BOTH relaxed diagnostics is still not offered. The `or expected_two`
+  disjunct that unconditionally forced the 2-mode offer is removed at every call site —
+  `fit_shadow_candidates`, the production two-stage `_enumerate_and_fit`, and the structure-hint
+  shortcut gate `_try_structure_hint` (reached from `fit_structures_two_stage_hinted`) — because
+  the diagnostic is one function and a declared scan's offer must not depend on whether a
+  structure hint happened to be in scope; a declared hinted scan with between-threshold structure
+  rejects the shortcut and receives the full two-mode offer. **Route vocabulary:**
+  `multimode_route="guideline_forced"` is retired for `"declaration_relaxed"`, recorded ONLY when
+  the relaxed thresholds (not the global ones) made the offer — re-derived from the gate outcome
+  via a new `route_out` provenance channel threaded through `_enumerate_and_fit` /
+  `fit_structures_two_stage` / `fit_structures_two_stage_hinted`, never guessed from `peaks`
+  presence. The production writer (`isar/session/scan_delivery.py::fit_one`) and the aliased
+  shadow-selection bundle (`loop.shadow_bundle_from_complete_results`) both read this same
+  provenance rather than recomputing it from `peaks`. The eligibility science flag
+  `selection_guideline_forced` is renamed `selection_declaration_relaxed`
+  (`isar/eig/eligibility.py`) with no vocabulary-index shift (straight rename, not a split — no
+  `RETIRED, never emitted` placeholder was needed, since nothing depended on the old string's
+  continued presence at its rank). `isar/synth/stat2b/campaign.py`'s legacy/standard route
+  builders were checked and left unchanged: neither passes a declared count into the fit, so
+  their `residual_triggered`/`not_offered` derivation is already correct as the identity case of
+  the same rule.
+
+- **H16.** (2026-08-13, In force; SCENE-4 PR 4.0) **Scene authority readiness — the posterior is
+  made steering-trustworthy before SCENE-4 lets it influence acquisition.** Five rulings, one per
+  external-review finding held to gate the authority flip (issues #21/#22/#25/#26/#28):
+  **(a) Counts are authoritative; fits are disposable (#26).** A new pre-fit artifact,
+  `isar.measurement-arena/1` (one JSON line per measured arena, `report/measurements.jsonl`,
+  written by `isar/session/scan_delivery.py` at QC-complete and appended by the driver's
+  `checkpoint_entry` seam), records identity, sample/conditions provenance, q, lattice epoch,
+  kept energy cells, exposure, and `count_trust` BEFORE any fit attempt — so a fit crash can no
+  longer erase the fact that a measurement happened. Three honest lanes: trusted+fitted scores;
+  trusted+fitless is experiment-map-only (`no_interpretation`, footprint kept); count-untrusted
+  is recorded-as-attempted with NO coverage credit. A DELIVERED per-scan fit whose candidate
+  cell is absent or malformed is a corrupt interpretation artifact and REFUSES the build with a
+  re-deliver instruction — never demoted to the fitless lane (a candidateless pooled master
+  keeps the tolerated SCENE-3 supersedes-nothing contract; master records are a named future
+  work package). A workspace with delivered candidates and no measurements log is refused (H1,
+  the energy_bands precedent).
+  **(b) Transported conditioning cannot double-count (#21, interim Variant A).** Scene scoring
+  eligibility keys on the arena AGGREGATE constraint origin over every usable candidate:
+  `none` / `user_declared` / `prespecified_scientific` / `catalogue_variant` score;
+  `prior_predictive` / `data_dependent_rescue` / `post_selection` / `mixed` are non-scoring
+  `transported_conditioning` (experiment-map-only); the tri-state `None` (pre-H9 workspace, no
+  semantics record) and any unrecognized origin string refuse the build. Distinct
+  individually-safe origins across candidates do NOT reduce to `mixed` — that reduction is a
+  single-fit concept. The full transport-DAG contract stays deferred; this lane is the honest
+  fail-closed interim.
+  **(c) The scene partitions by physical scope (#25/#28).** Topology and clusters partition by
+  `(sample identity, ConditionSet, path identity)`: `ConditionSet` is typed (named dimensions,
+  canonical units; temperature binned for partition comparison by the card's declared collation
+  `t_round`, binning provenance recorded, raw values in fingerprints; a declared temperature
+  with no binning policy fails closed per-arena); the lattice-epoch token joins the identity and
+  incompatible epochs never couple; `topology_role` (`canonical_path`/`context_probe`/None)
+  enters the vocabulary now with None reproducing SCENE-3 collinearity exactly — a
+  `context_probe` arena is withheld from path derivation entirely, so one off-path diagnostic
+  scan can no longer collapse the whole topology (the role PRODUCER lands with the PR 4.3 driver
+  wiring, when steered campaigns first take context scans). Cross-partition: no edges, no
+  linkage, no presence charges, no endpoint readings.
+  **(d) A refiner that moves belief declares how much (#22).** `refine_visibility`-bearing
+  factors declare `rescue_bound_per_report`; `_score_span` widens by that bound × a conservative
+  pre-pruning cardinality (`_max_refinable_reports` — richest usable candidate × path-adjacent
+  same-partition neighbours, whole build), so margin pruning stays "bounded, never optimistic"
+  (H12(c)) under multi-report endpoint rescues; a refiner with no declared bound disables margin
+  pruning outright (the existing unbounded lane). A new `transformation_ablation` ledger —
+  distinct from H12(f) score-term ablation — rescores the fixed alternatives with each refiner
+  off (visibility recomputed, consuming score factors rerun, renormalized), so the endpoint
+  factor's influence is no longer absorbed into presence's ablation entry.
+  **(e)** The expected_two relaxation landed in the same slice is **H15**.
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:
 user-facing campaign report (deferred until post-testing); renegotiation protocol (O3, future);

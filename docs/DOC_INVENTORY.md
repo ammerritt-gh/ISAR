@@ -94,6 +94,7 @@ and verified by `git grep` at deletion time rather than by bookkeeping.
 | `docs/WORKED_EXAMPLE.md` | Current | single-scan walkthrough | — |
 | `docs/GLOSSARY.md` | Current | term definitions | — |
 | `docs/HYPOTHESES.md` | Current | hypothesis declaration contract | — |
+| `docs/DESIGN_GOAL_INBOX.md` | Current | — | **Append-only** staging inbox for `DESIGN_GOALS.md` candidates: agents may only append (after checking the item is not already present); only the owner drains entries into `DESIGN_GOALS.md` or deletes them |
 | `docs/ADJUDICATION.md` | Current | adjudication trust + config contract; **also the LLM endpoint setup reference** | §11 is dated historical evaluation, not present verification status |
 | `docs/STATS_PRIMER.md` | Current | statistical methods; **§7 is the sole record of the 2026-07-19 audit** | — |
 | `docs/SCHEMA_LANDSCAPE.md` | Current | the schema survey (sole) | — |
@@ -109,7 +110,7 @@ and verified by `git grep` at deletion time rather than by bookkeeping.
 
 ## `docs/` — active plans
 
-All six are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
+All are **owned by @ammerritt-gh**, and each declares its exit criteria in its own banner or
 status block — `tests/docs/` fails the build if either is missing. Their shared statistical
 motivation and current sequence are recorded in the 2026-07-19 statistics-contract audit; its
 accepted findings were promoted once into `STATS_PRIMER.md` §7, so the plans do not carry drifting
@@ -121,6 +122,7 @@ copies.
 | `docs/STEERING_DESIGN.md` | Active plan | Phase 0 shipped as O27/O28/O29/O31; A→B→C Planned | Phase 0 is summarized only; the contract is `MEASUREMENT_STEERING.md` + DECISIONS O27–O31 |
 | `docs/BACKGROUND_DESIGN.md` | Active plan | approved 2026-07-19; implementation not started | — |
 | `docs/EIG_STEERING_DESIGN.md` | Active plan | predictive `/2`, arbitrary-grid evaluation, candidate generation, executed-grid identity, target projection, Slice 2 `o36.2.1` eligibility/QoI adaptation, Slice 3 `o36.3` homogeneous predictive-scenario design measure, Slice 4 `o36.4` pure full-vector Poisson scoring, Slice 5.1 `o36.5.1` controlled offline `off`→`shadow` comparison, Slice 6 `o36.6` scored shadow inventories, Slice 7 exact realized-request rescoring/provenance, the retained Slice 8 tools-only gate, and the O41-restricted Slice 9 opt-in authority path implemented; EIG-4 complete (O43/O44). Authoritative selection remains Partial — opt-in today, default-on at SCENE-4 (the O42 release review is retired by H1) | Documents same-action scan-window EIG, authenticated QoI evidence, bounded hand-authored distinction-policy provenance, objective `/2` omission compatibility, diagnostic-only score sets, exact-source live shadow integration, and the invariant that Slice 6 always executes legacy |
+| `docs/SCENE4_EXECUTION_PLAN.md` | Active plan | PR 4.0 implemented (PR #30); PRs 4.1–4.4 pending | The SCENE-4 rulings ledger + five-PR execution plan of record — the contract each SCENE-4 PR is reviewed against; leaves the tree when SCENE-4 lands (rule 4) |
 | `docs/SCENE_DESIGN.md` | Active plan | H1 constitution, SCENE-0 world-suite foundation, SCENE-2 program contract, and SCENE-1 PR-a/PR-b (H3/H4) Implemented; SCENE-1 PR-c and SCENE-3–7 Planned | Canonical scene-layer contract (catalogue, scene posterior, question layer, scene-EIG); slices land as H-series rulings |
 | `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md` | Active plan | STAT-0/1/1.5 and STAT-2a/2b.1 complete; S8 recorded; STAT-2 closed by H4/S13; STAT-3 through STAT-6 remain active, with the restricted O36 EIG-4 sequencing exception | Temporary producer/consumer audit; findings remain authoritative for the broader statistics program and STAT-6 closeout |
 

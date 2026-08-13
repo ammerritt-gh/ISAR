@@ -361,7 +361,45 @@ class SceneObservation:
     # scientific evidence channels of their own (identity, connectivity, transition), so the
     # candidates are PRESERVED here and the routing decision is the builder's.
     evidence_sink: str | None
+    # SCENE-4 PR 4.0 (#26): the sample/conditions/trust identity this arena's measurement-arena
+    # record (isar.schema.measurement.MeasurementArena) carried. ALL four enter the fingerprint —
+    # a scene scored under a different sample, a different condition set, a different lattice
+    # frame, or a different trust status is not the same observation, even when its q and
+    # candidates are byte-identical. Digest moves are intended here (the #25/#28 footprint-fields
+    # precedent).
+    sample: str | None
+    conditions: tuple                            # sorted (name, value) pairs; v1: temperature_K
+    count_trust: str                              # one of COUNT_TRUST_STATES (below) — only
+                                                   # "trusted" may score
+    lattice_epoch: int | None
     fingerprint: str                             # sha256 of this observation's canonical payload
+    # SCENE-4 PR 4.0 (#25/#28): this arena's role in the campaign's PATH topology, as persisted
+    # campaign provenance — never derived. ``"canonical_path"`` / ``"context_probe"`` /
+    # ``None`` (unassigned: no provenance producer exists yet, or the provenance genuinely does
+    # not classify this arena). Only a ``"context_probe"`` arena is withheld from
+    # :func:`path_topology`'s input set (:func:`isar.scene.build.build_scene`) — it keeps its
+    # footprint but gets no path ordinal, so it can neither collapse an established path (the #25
+    # bug: today ONE off-path q fails the WHOLE set closed) nor accidentally pair with another
+    # off-path arena into a "path" by collinearity alone. ``None`` arenas are ALWAYS treated as
+    # path candidates, which is what makes a provenance-less workspace reproduce SCENE-3's
+    # whole-set collinearity check exactly: no production writer stamps this field yet (PR 4.1-4.3
+    # wire the campaign-provenance producer), so every workspace today is the ``None`` case.
+    topology_role: str | None = None
+
+    def __post_init__(self):
+        # PR #30 review response (disposition 14): canonicalize + validate on EVERY construction
+        # path, not only ``from_dict`` — a caller building a ``SceneObservation`` directly (every
+        # test fixture, the workspace adapter) must fingerprint the same canonical form a
+        # round-trip through JSON would, or two byte-identical observations built two different
+        # ways would digest differently. ``object.__setattr__`` because the dataclass is frozen
+        # (``SampleKnowledge.__post_init__`` is the same precedent).
+        object.__setattr__(self, "conditions", _conditions(self.conditions))
+        if self.count_trust not in COUNT_TRUST_STATES:
+            raise ValueError(f"SceneObservation {self.scan_ref!r} declares count_trust "
+                             f"{self.count_trust!r}; allowed: {COUNT_TRUST_STATES}")
+        if self.topology_role is not None and self.topology_role not in TOPOLOGY_ROLES:
+            raise ValueError(f"SceneObservation {self.scan_ref!r} declares topology_role "
+                             f"{self.topology_role!r}; allowed: {(*TOPOLOGY_ROLES, None)}")
 
     def to_dict(self) -> dict:
         return {
@@ -381,7 +419,12 @@ class SceneObservation:
             "selection_fallback": self.selection_fallback,
             "arena_fingerprint": self.arena_fingerprint,
             "evidence_sink": self.evidence_sink,
+            "sample": self.sample,
+            "conditions": [[k, v] for k, v in self.conditions],
+            "count_trust": self.count_trust,
+            "lattice_epoch": self.lattice_epoch,
             "fingerprint": self.fingerprint,
+            "topology_role": self.topology_role,
         }
 
     @classmethod
@@ -408,7 +451,14 @@ class SceneObservation:
             selection_fallback=_opt_str(d.get("selection_fallback")),
             arena_fingerprint=_opt_str(d.get("arena_fingerprint")),
             evidence_sink=_opt_str(d.get("evidence_sink")),
+            sample=_opt_str(d.get("sample")),
+            conditions=_conditions(d.get("conditions")),
+            # Required, like evidence_comparison_status: a payload that cannot say whether this
+            # arena was ever trusted is not readable as an observation — rebuild the scene.
+            count_trust=str(d["count_trust"]),
+            lattice_epoch=_opt_int(d.get("lattice_epoch")),
             fingerprint=str(d["fingerprint"]),
+            topology_role=_opt_str(d.get("topology_role")),
         )
 
 
@@ -482,6 +532,12 @@ class Footprint:
     effective_exposure: float | None = None
     path_index: int | None = None
     axis_coordinate: float | None = None
+    # SCENE-4 PR 4.0 (#25/#28): which partition — (sample, ConditionSet key, lattice_epoch) — this
+    # arena's topology/clustering was computed within. Stamped by the builder for the same reason
+    # ``path_index`` is: a fact about the arena SET, not about one observation. Two arenas with
+    # different ``partition_id`` never share a cluster, a path ordinal, or a coupling edge however
+    # close their q — this is what a reader checks to see the #28 boundary directly in the payload.
+    partition_id: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -495,6 +551,7 @@ class Footprint:
             "effective_exposure": self.effective_exposure,
             "path_index": self.path_index,
             "axis_coordinate": self.axis_coordinate,
+            "partition_id": self.partition_id,
         }
 
     @classmethod
@@ -510,10 +567,12 @@ class Footprint:
             effective_exposure=_opt_float(d.get("effective_exposure")),
             path_index=None if d.get("path_index") is None else int(d["path_index"]),
             axis_coordinate=_opt_float(d.get("axis_coordinate")),
+            partition_id=_opt_str(d.get("partition_id")),
         )
 
 
-def footprint_of(obs: SceneObservation, topology: "PathTopology | None" = None) -> Footprint:
+def footprint_of(obs: SceneObservation, topology: "PathTopology | None" = None,
+                 partition_id: str | None = None) -> Footprint:
     """Fold an observation's KEPT energy runs onto intrinsic ``|ω|``. Pure, deterministic.
 
     Each signed run ``(lo, hi)`` covers the Stokes side over ``[max(0, lo), hi]`` (when ``hi > 0``)
@@ -528,7 +587,7 @@ def footprint_of(obs: SceneObservation, topology: "PathTopology | None" = None) 
     scan with no usable calibration zero has no placeable footprint at all.
     """
     if obs.energy_bands is None:
-        return _footprint(obs, (), topology)
+        return _footprint(obs, (), topology, partition_id)
     intervals = []
     for band in obs.energy_bands:
         lo, hi = float(band[0]), float(band[1])
@@ -546,18 +605,19 @@ def footprint_of(obs: SceneObservation, topology: "PathTopology | None" = None) 
         if not sides:                            # a hole between two kept runs: no coverage at all
             continue
         bands.append(FootprintBand(left, right, "both" if len(sides) == 2 else sides[0]))
-    return _footprint(obs, tuple(bands), topology)
+    return _footprint(obs, tuple(bands), topology, partition_id)
 
 
 def _footprint(obs: SceneObservation, bands: tuple[FootprintBand, ...],
-               topology: "PathTopology | None") -> Footprint:
+               topology: "PathTopology | None", partition_id: str | None = None) -> Footprint:
     return Footprint(scan_ref=obs.scan_ref, q=obs.q, bands=bands,
                      temperature_K=obs.temperature_K, background=obs.background,
                      gauss_fwhm=obs.gauss_fwhm, lorentz_fwhm=obs.lorentz_fwhm,
                      effective_exposure=obs.effective_exposure,
                      path_index=None if topology is None else topology.index.get(obs.scan_ref),
                      axis_coordinate=(None if topology is None
-                                      else topology.axis_coordinate.get(obs.scan_ref)))
+                                      else topology.axis_coordinate.get(obs.scan_ref)),
+                     partition_id=partition_id)
 
 
 # ----------------------------------------------------------------------------
@@ -604,6 +664,109 @@ def is_mode(component: ComponentObservation) -> bool:
 def blocks_elastic_line(component: ComponentObservation) -> bool:
     """True for a component that hides a band at ``|ω| ≈ 0`` (elastic or quasielastic)."""
     return component.kind in BLOCKING_KINDS
+
+
+# PR #30 review response (disposition 14): the count-trust vocabulary, duplicated from
+# ``isar.schema.measurement.MeasurementArena.count_trust`` (the single source of truth) — this
+# module stays stdlib-only (tests/scene/test_import_ban.py) and cannot import the schema package
+# to read it there. Keep byte-identical to the schema's own tuple, including ``"attempted"`` (the
+# pre-dispatch stub state a measurement record starts in before a fit ever runs — a non-trusted
+# lane like the other three gate outcomes, so it takes no part in scoring or the footprint set
+# either).
+COUNT_TRUST_STATES = ("trusted", "excluded", "held_for_calibration", "undersampled", "attempted")
+
+
+# SCENE-4 PR 4.0 (#25/#28): the campaign-provenance path-topology role vocabulary a
+# ``SceneObservation`` may declare. ``"context_probe"`` is the ONLY value the builder acts on
+# (withheld from ``path_topology``'s input); ``"canonical_path"`` is spelled here so a future
+# provenance producer's affirmative declaration is a legal value rather than an invented string,
+# even though today's builder treats it identically to ``None`` (both are path candidates).
+TOPOLOGY_ROLES = ("canonical_path", "context_probe")
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionSet:
+    """Typed condition-dimension key for scene PARTITION comparison (#28) — never the raw,
+    exact-valued ``SceneObservation.conditions`` fingerprint field, which stays untouched.
+
+    An OPEN dimension set (temperature, field, pressure, ...), per the PR #30 review response
+    (disposition 2): every dimension ``SceneObservation.conditions`` carries enters the partition
+    key, never only temperature. Temperature is BINNED by the card's declared policy
+    (``temperature_K_binned``, below) because it is the one dimension Stage II already pools with
+    tolerance; every OTHER declared dimension compares EXACT-VALUE, carried verbatim in ``other``
+    — a same-temperature arena at a different declared field or pressure never shares a partition
+    by default (#28's "same T, different field" failure). A later dimension that also wants
+    tolerant binning is a new named field plus a new ``of``/``key`` clause, not a redesign; nothing
+    here hardcodes "temperature is the only condition worth comparing".
+
+    Binning is a PARTITION-COMPARISON policy only (the card's declared ``collation.t_round``,
+    :func:`isar.reduce.collate._t_key`'s own rounding rule, repeated here rather than imported —
+    this module is stdlib-only and collate.py is not). The raw temperature stays exactly as
+    measured on ``SceneObservation.conditions``/``temperature_K``; only the PARTITION KEY is
+    binned, so two arenas 0.02 K apart under a 0.1 K bin partition together while their fingerprints
+    keep recording the real numbers.
+
+    Two different kinds of "missing" behave differently, per the #28 ruling:
+
+    * NO temperature declared at all — ``resolved=True``, ``temperature_K_binned=None``. A
+      coherent shared state: every such arena legitimately couples with every other one, the same
+      symmetric rule H13 gives the undeclared lattice epoch (``None`` couples only with ``None``,
+      which an ordinary tuple key already gives for free).
+    * A temperature IS declared but no binning policy exists to compare it by — ``resolved=False``.
+      This is the ruling's fail-closed-TO-NO-COUPLING arm: such an arena may not even couple with
+      another arena in exactly the same position, because "the same policy would have binned them
+      together" is precisely the invention the ruling forbids. :func:`isar.scene.build.
+      _partition_key` salts an unresolved key with the observation's own ``scan_ref`` so it is
+      unique to that one arena. The caller also records WHY, once, in the degradation ledger.
+
+    Deliberately NOT a generalization of ``isar.drive.acquisition.inventory.CampaignSliceKey``
+    (temperature-only belief-model slicing for acquisition), and deliberately not importing it
+    either: the scene layer is stdlib-only with no dependency on ``isar.drive`` (nor may
+    ``isar.drive`` depend on the scene layer's build internals), and CampaignSliceKey's job —
+    which POSTERIOR a proposed action's belief update lands in — is a different identity than
+    scene PARTITION membership, which decides which observation ARENAS may share one lnZ
+    normalization. A future shared ownership is possible but is not this package's call to make;
+    the scene layer stays the sole authority on ITS partition key.
+
+    ``t_round < 1e-6`` (disposition 15) is treated exactly like an absent or non-positive
+    ``t_round``: the fixed 6-decimal rounding :meth:`of` applies to the binned value cannot
+    represent a bin narrower than that without collapsing distinct bins into the same rounded
+    float, which would silently COLLAPSE bins the caller declared as separate rather than fail
+    closed to no-coupling — precisely the invention the #28 ruling forbids. A caller that
+    genuinely wants finer-than-microkelvin binning needs a different representation, not a
+    ``t_round`` this classmethod will treat as legal.
+    """
+
+    temperature_K_binned: float | None
+    resolved: bool = True
+    # Every OTHER declared condition dimension, sorted ``(name, value)`` pairs, EXACT-VALUE
+    # (disposition 2) — never binned, never dropped. ``()`` when ``conditions`` carries nothing
+    # beyond (or instead of) temperature.
+    other: tuple[tuple[str, float], ...] = ()
+
+    @classmethod
+    def of(cls, conditions: tuple, t_round: float | None) -> "ConditionSet":
+        by_name = dict(conditions)
+        temperature_K = by_name.get("temperature_K")
+        other = tuple(sorted((str(k), float(v)) for k, v in conditions if k != "temperature_K"))
+        if temperature_K is None:
+            return cls(temperature_K_binned=None, resolved=True, other=other)
+        if t_round is None or not (float(t_round) >= 1e-6):
+            return cls(temperature_K_binned=None, resolved=False, other=other)
+        tr = float(t_round)
+        return cls(temperature_K_binned=round(round(float(temperature_K) / tr) * tr, 6),
+                  resolved=True, other=other)
+
+    @property
+    def key(self) -> tuple:
+        """The canonical, hashable partition-comparison key.
+
+        ``("temperature_K", binned value)`` first (Stage II precedent: temperature is the
+        dimension every existing card already pools with tolerance), then every other declared
+        dimension exact-value, already sorted by name in ``other`` — so two arenas differing in
+        ANY declared condition, binned or exact, never collide on this key.
+        """
+        return (("temperature_K", self.temperature_K_binned), *self.other)
 
 
 @dataclass(frozen=True, slots=True)
@@ -881,3 +1044,12 @@ def _opt_bands(v) -> tuple[tuple[float, float], ...] | None:
 
 def _opt_triple(v) -> tuple[float, float, float] | None:
     return None if v is None else (float(v[0]), float(v[1]), float(v[2]))
+
+
+def _opt_int(v) -> int | None:
+    return None if v is None else int(v)
+
+
+def _conditions(v) -> tuple:
+    """Name -> value pairs, sorted by name — the canonical form the fingerprint relies on."""
+    return tuple(sorted(((str(k), float(val)) for k, val in (v or ())), key=lambda kv: kv[0]))

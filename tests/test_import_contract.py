@@ -40,6 +40,10 @@ WORKSPACE_API_ALLOWED = {
     # Pure statistical-semantics read gate.  FitView delegates tolerant legacy handling to the
     # canonical schema rather than duplicating validation inside the read-only facade.
     "isar.schema.statistics",
+    # The measurement-arena record DTO (SCENE-4 PR 4.0 #26): the counts-authoritative artifact the
+    # scene adapter joins candidate rows onto. A pure schema DTO, Qt-free, same posture as
+    # schema.statistics above.
+    "isar.schema.measurement",
     "isar.session.state",
     "isar.session.workspace",
     "isar.session.unit_data",

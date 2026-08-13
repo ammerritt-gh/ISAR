@@ -106,11 +106,37 @@ widened by it, and one unbounded scoring factor disables margin pruning outright
 truncated cluster record `truncation_unbounded` with no bound at all. An unbounded truncation
 is an unresolved cluster, not a narrowed one. Exact enumeration is the default posture.
 
+A `refine_visibility` factor (a REFINER — `zone_centre_approach` in the live registry) is not a
+coupling-only factor even though it declares no `score`: it rewrites what a scoring factor
+reads (`searched_no_signal` → `structural_endpoint` moves `presence` by `-PRESENCE_MISS_NATS`
+per rewritten report), so it owes the span the same honesty (#22). A refiner declares
+`rescue_bound_per_report` — the most nats ONE refined report can move — and the builder widens
+the span by `rescue_bound_per_report × N`, where `N` is a CONSERVATIVE upper bound on refinable
+`(mode, adjacent neighbour)` reports counted over every USABLE candidate of the WHOLE build,
+BEFORE any pruning (`build._max_refinable_reports`): a global, pre-partition count is a superset
+of any one cluster's true count, so it only widens the margin, never narrows it. One rescued
+report per alternative is not the bound — an alternative with several endpoint-refinable reports
+can move `N × rescue_bound_per_report` nats, and the widened span accounts for all of them, not
+one. A refiner that will not declare `rescue_bound_per_report` is treated exactly like an
+unbounded scoring factor: the whole span collapses to `None`, joining the same
+`truncation_unbounded` semantics — the fail-safe posture for a refiner whose worst case cannot be
+bounded.
+
 **Score-term ablation (H12(f)).** The per-cluster `score_ablation` lists give each factor's
 influence by removing its SCORE terms over the FIXED alternative set — index-aligned with
 `alternatives`, as the payload's `score_ablation_alignment` declares. A factor's `couples`
 edges (and so the cluster partition and the hypothesis space itself) are deliberately not
 removed; that is why the operation is not called leave-one-factor-out.
+
+**Transformation ablation (#22), a distinct ledger.** A refiner declares no score term to zero
+out, so `score_ablation` cannot answer what its visibility rewrite did — the per-cluster
+`transformation_ablation` ledger does: for each `refine_visibility`-bearing factor, visibility is
+recomputed WITHOUT that refiner's hook, every scoring factor that consumes visibility
+(`presence`) is rerun against the unrewritten reports, and the result is renormalized over the
+SAME fixed alternative set (no re-enumeration) — index-aligned with `alternatives`, per the
+payload's `transformation_ablation_alignment`. This is how the revision exposes how much an
+endpoint reading moved posterior odds independently of `presence`'s own ledger entry (issue #22's
+acceptance).
 
 **What a scene alternative is after PR 3b.** An alternative is a per-cluster CANDIDATE
 ASSIGNMENT — one surviving candidate per participating arena — *together with* a LINKAGE: which
@@ -303,6 +329,22 @@ Per scan: the persisted candidate rows on `FitOutcome`/results.csv are the scene
 contract (H11(a), H12(e) — no separate interpretation artifact; scene revisions embed the
 exact rows they consumed, with completeness status and conditioning provenance).
 
+**Counts are authoritative, fits are disposable** (PR 4.0, #26). Alongside results.csv,
+`isar.session.scan_delivery` appends one line of `isar.measurement-arena/1`
+(`isar.schema.measurement.MeasurementArena`) per measured arena to
+`<workspace>/report/measurements.jsonl`, at the point a `ScanContext` is built — BEFORE `fit_one`
+is ever called, so the record survives a fit crash untouched. Same fsync-append idiom as the
+scene store's `history.jsonl`; last record per `scan_ref` wins on read. `count_trust` names three
+honest states: `"trusted"` (a usable QC-masked measurement; a fitted candidate table, if any, is a
+separate, disposable interpretation of it — a trusted arena with none yet is `no_interpretation`,
+not a failure), `"excluded"` / `"held_for_calibration"` / `"undersampled"` (a terminal gate
+outcome — attempted, never coverage). `isar.workspace_api.scene.scene_observations` joins
+candidate rows onto these records; a delivered candidate table with no matching record, or none
+at all, is refused (H1, re-deliver) rather than guessed at. `isar.scene.build.build_scene` prices
+this at intake: a `"trusted"` arena (fitless or not) is footprinted like any other measured arena;
+a count-untrusted one takes no part in the footprint set or the path topology at all — it was
+attempted, never measured — and is recorded `non_scoring` with reason `count_untrusted`.
+
 Per scene update (H14(b)), under `<workspace>/report/scene/`:
 
 ```
@@ -314,11 +356,16 @@ last_attempt.json  what the last build-and-store attempt did, including that it 
 
 The revision payload (`isar.scene-revision/1`) carries the factor manifest and its
 `registry_fingerprint`, the margin/cap/score-span actually used, the `sample_knowledge` block with
-its `degradations`, the embedded observations and their candidate rows, the footprints, the
-`non_scoring` arenas with reasons, and per cluster: the alternatives with their itemized ln-terms,
-the marginals, the visibility reports of the leading alternative, the `classification` map
-(`{factor: {component: state}}`), and the score-term ablation ledger (`score_ablation`, positional
-per `score_ablation_alignment`, H12(f)).
+its `degradations`, the fully-embedded observations (PR 4.0 review response, W5: each
+observation's whole `to_dict()` — sample, conditions, count_trust, lattice_epoch, topology_role
+included, not only its fingerprint and candidate rows — so the stored revision is
+reconstructable/auditable on its own, with no need to rejoin it against the workspace it was
+built from) and their candidate rows, the footprints, the `non_scoring` arenas with reasons, and
+per cluster: the alternatives with their itemized ln-terms, the marginals, the visibility reports
+of the leading alternative, the `classification` map (`{factor: {component: state}}`), the
+score-term ablation ledger (`score_ablation`, positional per `score_ablation_alignment`, H12(f)),
+and the transformation ablation ledger (`transformation_ablation`, positional per
+`transformation_ablation_alignment`, #22 — see below).
 
 **Lineage and time live outside the blob.** A revision records what it succeeded, and an unchanged
 workspace must rebuild to the same digest; both are only possible if `parent` and `written_at` sit

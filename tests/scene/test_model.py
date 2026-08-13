@@ -14,8 +14,9 @@ import json
 import pytest
 
 from isar.scene.model import (
-    CandidateRow, ComponentDescriptor, Footprint, FootprintBand, SceneObservation, Visibility,
-    canonical_bytes, covers, fingerprint, footprint_of, observation_fingerprint, visibility_of,
+    COUNT_TRUST_STATES, TOPOLOGY_ROLES, CandidateRow, ComponentDescriptor, ConditionSet, Footprint,
+    FootprintBand, SceneObservation, Visibility, canonical_bytes, covers, fingerprint, footprint_of,
+    observation_fingerprint, visibility_of,
 )
 
 
@@ -33,7 +34,9 @@ def _obs(**over) -> SceneObservation:
                 effective_exposure=120.0, background=1.5, best_label="phonon",
                 candidates=(_row(), _row(label="bg", n_modes=0, omegas=(), components=())),
                 evidence_comparison_status="complete", selection_fallback=None,
-                arena_fingerprint="a" * 64, evidence_sink=None, fingerprint="")
+                arena_fingerprint="a" * 64, evidence_sink=None,
+                sample="LiHoF4", conditions=(("temperature_K", 300.0),),
+                count_trust="trusted", lattice_epoch=None, fingerprint="")
     fields = {**base, **over}
     # A hole-free axis unless a test says otherwise: the bands ARE the coverage, and the window
     # is only their envelope.
@@ -216,3 +219,84 @@ def test_from_dict_refuses_a_payload_with_no_fingerprint():
     payload.pop("fingerprint")
     with pytest.raises(KeyError):
         SceneObservation.from_dict(payload)
+
+
+# ----------------------------------------------------------------------------
+# PR #30 review response (disposition 14): validation and canonicalization on EVERY
+# construction path, not only ``from_dict``.
+# ----------------------------------------------------------------------------
+def test_direct_construction_canonicalizes_conditions():
+    """A caller building a ``SceneObservation`` directly (every test fixture, the workspace
+    adapter) must fingerprint the same canonical form a JSON round-trip would — sorted by name,
+    float-valued — or two byte-identical observations built two different ways would digest
+    differently. Deliberately passed already-unsorted, mixed-type: ``__post_init__`` canonicalizes
+    on construction, not only inside ``from_dict``."""
+    obs = _obs(conditions=(("field_T", "3"), ("temperature_K", 300)))
+    assert obs.conditions == (("field_T", 3.0), ("temperature_K", 300.0))
+
+
+@pytest.mark.parametrize("count_trust", COUNT_TRUST_STATES)
+def test_every_vocabulary_count_trust_state_is_legal(count_trust):
+    _obs(count_trust=count_trust)  # must not raise
+
+
+def test_an_unknown_count_trust_is_refused_loudly():
+    with pytest.raises(ValueError, match="count_trust"):
+        _obs(count_trust="quarantined")
+
+
+@pytest.mark.parametrize("topology_role", (*TOPOLOGY_ROLES, None))
+def test_every_vocabulary_topology_role_is_legal(topology_role):
+    _obs(topology_role=topology_role)  # must not raise
+
+
+def test_an_unknown_topology_role_is_refused_loudly():
+    with pytest.raises(ValueError, match="topology_role"):
+        _obs(topology_role="off_map")
+
+
+# ----------------------------------------------------------------------------
+# ConditionSet (#28, generalized per PR #30 review response disposition 2)
+# ----------------------------------------------------------------------------
+def test_every_other_declared_dimension_enters_the_key_exact_value():
+    """Same binned temperature, different declared field: the partition key must differ, or a
+    same-T-different-field arena pair would silently share a partition (#28's open failure)."""
+    a = ConditionSet.of((("temperature_K", 300.0), ("field_T", 1.0)), t_round=5.0)
+    b = ConditionSet.of((("temperature_K", 300.0), ("field_T", 2.0)), t_round=5.0)
+    assert a.key != b.key
+    assert a.key == (("temperature_K", 300.0), ("field_T", 1.0))
+
+
+def test_extra_dimensions_are_exact_not_binned():
+    """The extra dimension gets no tolerance of its own: 1.0 and 1.0000001 are different keys,
+    unlike temperature which the card's t_round pools."""
+    a = ConditionSet.of((("temperature_K", 300.0), ("field_T", 1.0)), t_round=5.0)
+    b = ConditionSet.of((("temperature_K", 300.0), ("field_T", 1.0000001)), t_round=5.0)
+    assert a.key != b.key
+
+
+def test_no_extra_dimensions_reproduces_the_temperature_only_key():
+    cs = ConditionSet.of((("temperature_K", 300.0),), t_round=5.0)
+    assert cs.key == (("temperature_K", 300.0),)
+
+
+def test_a_t_round_below_the_microkelvin_floor_fails_closed_like_none():
+    """Disposition 15: the fixed 6-decimal rounding ``of`` applies cannot represent a bin narrower
+    than 1e-6 without silently COLLAPSING bins the caller declared distinct — the same
+    fail-closed-to-no-coupling arm a missing binning policy already takes, not a finer bin."""
+    resolved = ConditionSet.of((("temperature_K", 300.0),), t_round=1e-6)
+    assert resolved.resolved is True
+    for tiny in (1e-7, 0.0, -1.0):
+        unresolved = ConditionSet.of((("temperature_K", 300.0),), t_round=tiny)
+        assert unresolved.resolved is False and unresolved.temperature_K_binned is None
+    unresolved_none = ConditionSet.of((("temperature_K", 300.0),), t_round=None)
+    assert unresolved_none.resolved is False
+
+
+def test_an_unresolved_set_still_carries_its_other_dimensions():
+    """The #28 fail-closed arm is about the TEMPERATURE leg only — a declared extra dimension is
+    exact-match regardless, so it must survive an unresolved binning exactly as it would a
+    resolved one."""
+    cs = ConditionSet.of((("temperature_K", 300.0), ("field_T", 1.0)), t_round=None)
+    assert cs.resolved is False
+    assert cs.other == (("field_T", 1.0),)

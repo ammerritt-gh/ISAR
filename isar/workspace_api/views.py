@@ -138,6 +138,15 @@ class FitView:
         return self._row.get("status") or None
 
     @property
+    def content_hash(self) -> str | None:
+        """The delivery-generation identity this row was fitted against (SCENE-4 PR 4.0 review
+        response, W3): the same value a measurement-arena record stamps, so the scene adapter can
+        join a fit row to its record on ``scan_ref`` AND this field rather than ``scan_ref``
+        alone. ``None`` on a row predating this column."""
+        v = self._pick("content_hash", "content_hash")
+        return None if v in (None, "") else str(v)
+
+    @property
     def T(self) -> float | None:
         return _f(self._pick("T", "T"))
 

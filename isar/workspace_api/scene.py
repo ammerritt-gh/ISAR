@@ -12,11 +12,13 @@ scene is allowed to see at all*, and it is enforced here, at the door — see
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import replace
 
 from isar.scene.model import (CandidateRow, SampleKnowledge, SceneObservation,
                               observation_fingerprint)
+from isar.schema.measurement import MeasurementArena
 from isar.schema.steering import CANONICAL_MASTER
 
 log = logging.getLogger(__name__)
@@ -26,8 +28,57 @@ log = logging.getLogger(__name__)
 # heuristic between the stored evidence and ln W(S), which is exactly what may not happen.
 REDELIVER = "re-deliver or rebuild this workspace before SCENE analysis"
 
+# SCENE-4 PR 4.0 (#26): the counts-authoritative measurement-arena log,
+# isar.session.measurement_store.FILENAME — duplicated as a literal rather than imported, since
+# isar.workspace_api may not import isar.session (hard rule 6).
+MEASUREMENTS_FILENAME = "measurements.jsonl"
+
 # The lattice-epoch cell fields, in the order ``SampleKnowledge.lattice`` records them.
 _CELL = ("a", "b", "c", "alpha", "beta", "gamma")
+
+
+def _read_measurements(ws) -> dict | None:
+    """``{scan_ref: MeasurementArena}`` off ``report/measurements.jsonl``, last line per ref
+    wins — or ``None`` when the file does not exist at all (an absent log, distinct from an empty
+    one, which is what a fresh workspace with no delivered scan yet legitimately has).
+
+    An unreadable line — bad JSON, or a record whose ``schema`` this reader does not recognize —
+    refuses the whole workspace (H1): a partially-readable counts ledger is not a safe partial
+    answer, the same posture as every other refusal in this module.
+    """
+    path = ws._report_dir / MEASUREMENTS_FILENAME
+    if not path.is_file():
+        return None
+    out: dict[str, MeasurementArena] = {}
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = MeasurementArena.from_dict(json.loads(line))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ValueError(f"scene: {path} line {lineno} is unreadable ({exc}) — "
+                             f"{REDELIVER}") from exc
+        out[record.scan_ref] = record          # last record per scan_ref wins
+    return out
+
+
+def _synthetic_observation(record: "MeasurementArena") -> SceneObservation:
+    """A :class:`SceneObservation` for an arena that ``results.csv`` has no delivered-fit row
+    for: a TRUSTED measurement with no usable interpretation yet (candidates empty — the scene
+    still records "no_interpretation" and fills the experiment map), or a count-untrusted gate
+    outcome (excluded / held_for_calibration / undersampled — recorded as attempted, scored as
+    ``non_scoring`` with NO footprint, per :func:`isar.scene.build.build_scene`)."""
+    obs = SceneObservation(
+        scan_ref=record.scan_ref, q=record.q,
+        temperature_K=dict(record.conditions).get("temperature_K"),
+        energy_window=record.energy_window, energy_bands=record.energy_bands,
+        gauss_fwhm=None, lorentz_fwhm=None, effective_exposure=record.effective_exposure,
+        background=None, best_label=None, candidates=(),
+        evidence_comparison_status="unavailable", selection_fallback=None, arena_fingerprint=None,
+        evidence_sink=None, sample=record.sample, conditions=record.conditions,
+        count_trust=record.count_trust, lattice_epoch=record.lattice_epoch, fingerprint="")
+    return replace(obs, fingerprint=observation_fingerprint(obs))
 
 
 def scene_observations(ws) -> list[SceneObservation]:
@@ -35,12 +86,20 @@ def scene_observations(ws) -> list[SceneObservation]:
 
     ``ws`` is an :class:`isar.workspace_api.Workspace`. One observation per delivered
     ``(ledger entry, detector)`` row that carries a candidate table, minus the rows a pooled
-    master supersedes. A row with no parseable candidate table yields no observation (it has
-    nothing to score) and is logged.
+    master supersedes, PLUS one synthetic observation (:func:`_synthetic_observation`) for every
+    measurement-arena record (``report/measurements.jsonl``, SCENE-4 PR 4.0 #26) that never
+    produced such a row — a trusted-but-fitless arena (its fit crashed, or converged to nothing),
+    or a count-untrusted gate outcome, both of which the ledger writes with an EMPTY
+    ``detectors`` dict and so never reach ``results.csv`` as a detector-qualified row at all.
 
     Raises ``ValueError`` on a workspace this adapter cannot read faithfully — a results.csv with
-    no candidates column, a master with unqualified member labels, or a row predating the current
-    delivery contract (:func:`_refuse_stale_delivery`). All of them mean re-deliver.
+    no candidates column, a delivered fit whose candidate cell is absent or malformed (a corrupt
+    interpretation artifact must not be demoted to the fitless lane — re-deliver instead),
+    a master with unqualified member labels, a row predating the current
+    delivery contract (:func:`_refuse_stale_delivery`), a delivered scan row with no matching
+    measurement-arena record, or delivered candidates with no ``measurements.jsonl`` at all
+    (the same H1 precedent as the missing-``energy_bands`` refusal: re-deliver). All of them mean
+    re-deliver.
 
     Revisions need no handling here: ``results.csv`` is rewritten in full from the current
     ledger on every delivery (``isar/session/outcome.py:_write_results_csv``), so it holds
@@ -52,8 +111,22 @@ def scene_observations(ws) -> list[SceneObservation]:
     # it as "no observations" would silently present a whole campaign as unmeasured.
     if fits and not any("candidates" in fit.columns for fit in fits):
         raise ValueError(f"scene: results.csv has no candidates column — {REDELIVER}")
-    qualified = _superseded_by_masters(fits)
+
+    measurements = _read_measurements(ws)
+    # Only a NON-POOLED candidate-bearing fit demands a measurements.jsonl: a pooled master
+    # legitimately carries no measurement-arena record of its own (see below), so a workspace
+    # whose only candidate-bearing rows are masters is not stale — it simply never had one.
+    has_delivered_candidates = any(not fit.pooled and getattr(fit, "candidates", None) is not None
+                                   for fit in fits)
+    if measurements is None:
+        if has_delivered_candidates:
+            raise ValueError(f"scene: {ws._report_dir / MEASUREMENTS_FILENAME} does not exist "
+                             f"but results.csv carries delivered candidates — {REDELIVER}")
+        measurements = {}
+
+    qualified, master_provenance = _superseded_by_masters(fits, measurements)
     out: list[SceneObservation] = []
+    covered: set = set()
     for fit in fits:
         ref = _scan_ref(fit)
         if ref is None:
@@ -67,16 +140,66 @@ def scene_observations(ws) -> list[SceneObservation]:
         candidates = _candidates(fit, ref)
         if candidates is None:
             continue
+        covered.add(ref)
+        record = measurements.get(ref)
+        if record is None and not fit.pooled:
+            # A pooled master never goes through isar.session.scan_delivery (it has its own
+            # certification path, out of this work package's scope) so it legitimately carries no
+            # measurement-arena record; a plain scan row does, always, once it is delivered — an
+            # absent one means a pre-4.0 delivery or a partially-rebuilt log, not silence.
+            raise ValueError(f"scene: {ref} carries no measurement-arena record — {REDELIVER}")
+        if (record is not None and fit.content_hash is not None
+                and record.content_hash != fit.content_hash):
+            # A record from a LATER delivery generation must never be read against an earlier
+            # fit row (or vice versa) — the join key is scan_ref AND content_hash, not scan_ref
+            # alone. ``fit.content_hash is None`` (a row predating the column) skips the check:
+            # there is nothing to compare against, not license to guess a mismatch.
+            raise ValueError(f"scene: {ref} carries a measurement record from a different "
+                             f"delivery generation (fit content_hash={fit.content_hash!r}, "
+                             f"record content_hash={record.content_hash!r}) — {REDELIVER}")
         status, fallback, arena = _evidence_comparison(fit, ref)
+        # Always parsed, whether or not a record ends up supplying the observation: this is what
+        # catches a malformed window/bands CELL (raises) — a check that must not vanish just
+        # because the record wins the value below.
+        fit_window, fit_bands = _window(fit), _bands(fit)
+        if record is not None:
+            # Counts own the facts (SCENE-4 PR 4.0 review response, W3): a delivered fit row is a
+            # disposable INTERPRETATION of a measurement the record already describes — the fit
+            # row must not be allowed to silently override what was actually measured.
+            obs_q, obs_T = record.q, dict(record.conditions).get("temperature_K")
+            obs_window, obs_bands = record.energy_window, record.energy_bands
+            obs_exposure = record.effective_exposure
+            obs_sample, obs_conditions = record.sample, record.conditions
+            obs_count_trust, obs_epoch = record.count_trust, record.lattice_epoch
+        else:
+            # A pooled master (the only case with no record — see above). Its raw axis is its
+            # members' combined counts, which this adapter does not reconstruct, so q/window/
+            # bands/exposure stay fit-row-derived; only sample/conditions/lattice_epoch are
+            # provenance the members' OWN records can answer.
+            obs_q, obs_T = _q(fit), fit.T
+            obs_window, obs_bands = fit_window, fit_bands
+            obs_exposure = fit.effective_exposure
+            prov = master_provenance.get(ref)
+            if prov is not None:
+                obs_sample, obs_conditions, obs_epoch = prov
+                obs_count_trust = "trusted"
+            else:
+                # Incompatible or unreconstructable member provenance (already logged by
+                # _superseded_by_masters with its reason): the pooled evidence cannot be
+                # presented under one frame, so this arena is non-scoring rather than guessed —
+                # isar.scene.build folds any non-"trusted" count_trust into non_scoring with no
+                # footprint (_split_by_evidence's caller in build_scene).
+                obs_sample, obs_conditions, obs_epoch = None, (), None
+                obs_count_trust = "excluded"
         obs = SceneObservation(
             scan_ref=ref,
-            q=_q(fit),
-            temperature_K=fit.T,
-            energy_window=_window(fit),
-            energy_bands=_bands(fit),
+            q=obs_q,
+            temperature_K=obs_T,
+            energy_window=obs_window,
+            energy_bands=obs_bands,
             gauss_fwhm=fit.gauss_fwhm,
             lorentz_fwhm=fit.lorentz_fwhm,
-            effective_exposure=fit.effective_exposure,
+            effective_exposure=obs_exposure,
             background=_background(fit),
             best_label=fit.best_label,
             candidates=candidates,
@@ -86,9 +209,23 @@ def scene_observations(ws) -> list[SceneObservation]:
             # Verbatim, including a sink this adapter does not recognize: classifying routing is
             # the builder's job, and a value rewritten here could not be quarantined there.
             evidence_sink=fit.evidence_sink,
+            sample=obs_sample,
+            conditions=obs_conditions,
+            count_trust=obs_count_trust,
+            lattice_epoch=obs_epoch,
             fingerprint="",
         )
         out.append(replace(obs, fingerprint=observation_fingerprint(obs)))
+
+    for ref, record in measurements.items():
+        if ref in covered or ref in qualified:
+            # ``qualified``: a member a canonical master superseded. Its measurement was real and
+            # trusted, but its ARENA is intentionally suppressed (combine-before-divide) — surfacing
+            # it here as a synthetic "trusted, no interpretation" observation would double-count
+            # exactly the neutrons the master already scored.
+            continue
+        out.append(_synthetic_observation(record))
+
     out.sort(key=lambda o: o.scan_ref)
     return out
 
@@ -160,11 +297,43 @@ def sample_knowledge(ws) -> SampleKnowledge:
 # ---------------------------------------------------------------------------
 # ownership / active arena
 # ---------------------------------------------------------------------------
-def _superseded_by_masters(fits) -> set:
-    """The member labels that CANONICAL pooled masters carrying candidates claim.
+def _member_provenance(members: list, measurements: dict) -> tuple:
+    """``((sample, conditions, lattice_epoch), None)`` when every member's measurement-arena
+    record agrees, else ``(None, reason)``.
+
+    A pooled master's own counts are its members' — so its provenance IS its members', never the
+    current frame (SCENE-4 PR 4.0 review response, W3, disposition 5). Compatible means every
+    member carries a record and all records agree on sample, conditions, AND lattice_epoch; any
+    disagreement (mixed epochs, mixed conditions) or a missing record means the pooled evidence
+    cannot be honestly presented under one frame.
+    """
+    if not members:
+        return None, "no member labels to derive provenance from"
+    missing = [m for m in members if measurements.get(m) is None]
+    if missing:
+        return None, f"member(s) {sorted(missing)} carry no measurement-arena record"
+    records = [measurements[m] for m in members]
+    if (len({r.sample for r in records}) > 1 or len({r.conditions for r in records}) > 1
+            or len({r.lattice_epoch for r in records}) > 1):
+        return None, "members disagree on sample/conditions/lattice_epoch"
+    r0 = records[0]
+    return (r0.sample, r0.conditions, r0.lattice_epoch), None
+
+
+def _superseded_by_masters(fits, measurements: dict) -> tuple:
+    """``(qualified, provenance)``: the member labels CANONICAL pooled masters claim, and the
+    derived ``(sample, conditions, lattice_epoch)`` for each COMPATIBLE one, keyed by the
+    master's own ref.
 
     A master's row IS the interpretation of its members' pooled counts, so its members' own rows
-    are not a second, independent arena. Three conditions, each naming what it prevents:
+    are not a second, independent arena — UNLESS the members' own measurement records disagree
+    with each other (or are missing), in which case the pooled interpretation is not honestly
+    presentable under one frame: the master is left OUT of ``provenance`` (its arena degrades to
+    non-scoring, see :func:`scene_observations`) and its members are left OUT of ``qualified`` —
+    an incompatible master must not both fail AND erase the only evidence its members have.
+
+    Three conditions gate whether a master is even a candidate to supersede anyone, each naming
+    what it prevents:
 
     * carries a candidate table — a master with none delivered no interpretation and has
       superseded nothing, so its members stay;
@@ -182,6 +351,7 @@ def _superseded_by_masters(fits) -> set:
     twice) or over-suppresses (an arena silently vanishes). Such a workspace is refused.
     """
     qualified: set[str] = set()
+    provenance: dict[str, tuple] = {}
     for fit in fits:
         if not fit.pooled or not isinstance(fit.candidates, list):
             continue
@@ -193,8 +363,15 @@ def _superseded_by_masters(fits) -> set:
             raise ValueError(
                 f"scene: master {_scan_ref(fit)} carries unqualified member label(s) {bare} "
                 f"(expected experiment:scan:detector) — {REDELIVER}")
+        derived, reason = _member_provenance(members, measurements)
+        if derived is None:
+            log.warning("scene: master %s members are provenance-incompatible (%s) — it does "
+                        "not supersede them and will not score under the current frame",
+                        _scan_ref(fit), reason)
+            continue
         qualified.update(members)
-    return qualified
+        provenance[_scan_ref(fit)] = derived
+    return qualified, provenance
 
 
 def _evidence_comparison(fit, ref: str):
@@ -262,20 +439,39 @@ def _candidates(fit, ref: str):
         # A ledger row that never produced a fit (held_for_calibration, excluded, context_applied,
         # ingested — written detectorless, or delivered with nothing converged) legitimately has no
         # candidate table: a real campaign has many, and warning on each would bury the signal that
-        # matters. Only a DELIVERED fit (detector + winning label) whose table is absent or
-        # unparseable is anomalous, and that is what warns.
+        # matters. A DELIVERED per-scan fit (detector + winning label) whose table is absent is a
+        # corrupt interpretation artifact — a different case that must not share the fitless lane:
+        # demoting it to "no interpretation" would silently drop local evidence a clean re-delivery
+        # restores (#26; the same H1 refuse-don't-degrade posture as _refuse_stale_delivery). A
+        # candidateless POOLED MASTER stays the tolerated SCENE-3 contract (supersedes nothing,
+        # members keep scoring) — master candidate persistence is a separate pipeline and a named
+        # future work package.
         if fit.detector_id and fit.best_label:
-            log.warning("scene: %s has no usable candidate table (absent or malformed cell) — "
-                        "no observation", ref)
-        else:
-            log.debug("scene: %s carries no delivered fit — no observation", ref)
+            if not fit.pooled:
+                raise ValueError(f"scene: {ref} is a delivered fit with no candidate table — the "
+                                 f"interpretation artifact is corrupt; re-deliver this scan "
+                                 f"before building a scene")
+            log.warning("scene: master %s carries no candidate table — it supersedes nothing "
+                        "and contributes no observation", ref)
+            return None
+        log.debug("scene: %s carries no delivered fit — no observation", ref)
         return None
+    if not raw and not fit.pooled and fit.detector_id and fit.best_label:
+        # A DELIVERED non-pooled winner (detector + best_label) whose candidates cell parses to
+        # an EMPTY list is contradictory, not fitless: something won, so a candidate table must
+        # exist. Demoting it to "no interpretation" would silently drop local evidence a clean
+        # re-delivery restores — the same refuse-don't-degrade posture as the absent/malformed
+        # cases just above.
+        raise ValueError(f"scene: {ref} is a delivered fit with an empty candidate table — the "
+                         f"interpretation artifact is contradictory; re-deliver this scan "
+                         f"before building a scene")
     _refuse_stale_delivery(fit, ref, raw)
     try:
         return tuple(CandidateRow.from_dict(c) for c in sorted(raw, key=lambda c: str(c["label"])))
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
-        log.warning("scene: %s has a malformed candidate table (%s) — no observation", ref, exc)
-        return None
+        raise ValueError(f"scene: {ref} has a malformed candidate table ({exc}) — the "
+                         f"interpretation artifact is corrupt; re-deliver this scan before "
+                         f"building a scene") from exc
 
 
 def _refuse_stale_delivery(fit, ref: str, raw) -> None:

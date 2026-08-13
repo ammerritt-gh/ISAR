@@ -4,6 +4,7 @@ import logging
 
 import pytest
 
+from isar.schema.measurement import MeasurementArena
 from isar.schema.statistics import FIT_SELECTION_SCHEMA, authority_scopes
 from isar.workspace_api import Workspace
 from isar.scene.model import ComponentDescriptor, SampleKnowledge, covers, footprint_of
@@ -12,7 +13,7 @@ from synthetic_ws import _POLICY_TOML, FULL_COLUMNS, stamp_ws
 
 # The adapter reads persisted columns the shared stamper's base header predates.
 COLUMNS = FULL_COLUMNS + ["energy_lo", "energy_hi", "energy_bands", "evidence_sink",
-                          "effective_exposure", "fit_selection_semantics"]
+                          "effective_exposure", "fit_selection_semantics", "content_hash"]
 
 
 def _selection(method="laplace_evidence_selection", fallback=None,
@@ -38,12 +39,16 @@ def _candidate(label, **kw):
     row = {"label": label, "k": 5, "n_modes": 1, "log_evidence": -12.5,
            "evidence_method": "nested", "posterior_probability": 0.7, "usable": True,
            "identity": None, "variant": None, "omegas": [4.0],
-           "components": [{"kind": "mode", "slot": 0}]}
+           "components": [{"kind": "mode", "slot": 0}],
+           # SCENE-4 PR 4.0 (#21): "recorded, unconstrained" — an ordinary current-contract row,
+           # never the tri-state ``None`` production reserves for a pre-H9 delivery. A test that
+           # wants the #21 refusal lane passes ``constraint_origin=None`` explicitly.
+           "constraint_origin": "none"}
     row.update(kw)
     return row
 
 
-def _row(scan, *, candidates, scan_id=None, **kw):
+def _row(scan, *, candidates, scan_id=None, content_hash="ch-1", **kw):
     row = {
         "scan": scan, "detector": "det", "scan_id": scan_id or f"tavi:{scan}:det",
         "sample": "tavi", "T": 200.0, "h": 2.0, "k": 0.0, "l": 0.0, "status": "fitted",
@@ -54,14 +59,62 @@ def _row(scan, *, candidates, scan_id=None, **kw):
         "fit_selection_semantics": _selection(),
         "amplitudes": json.dumps({"bg.BG": 3.0, "phonon.A": 20.0}),
         "candidates": candidates if isinstance(candidates, str) else json.dumps(candidates),
+        "content_hash": content_hash,
     }
     row.update(kw)
     return row
 
 
+def _write_measurements(root, rows) -> None:
+    """The counts-authoritative record (SCENE-4 PR 4.0, #26) a real ``isar run`` would have
+    written BEFORE every delivered-fit row in ``rows`` — every test in this file predates that
+    contract, so this fixture backfills it to keep them exercising the SAME adapter path a real
+    campaign does, rather than one this file happens not to need. A pooled master carries no
+    record of its own (masters never go through ``isar.session.scan_delivery`` — out of this work
+    package's scope), so pooled rows are skipped, matching production."""
+    lines = []
+    for r in rows:
+        if r.get("candidates") is None or r.get("pooled"):
+            continue
+        scan = r.get("scan")
+        det = r.get("detector") or "det"
+        scan_id = r.get("scan_id") or f"tavi:{scan}:{det}"
+        h, k, l = r.get("h"), r.get("k"), r.get("l")
+        elo, ehi = r.get("energy_lo"), r.get("energy_hi")
+        # Parsed loosely: a MALFORMED cell here exercises the FIT ROW's own parse-failure path
+        # (isar.workspace_api.scene._bands), not this fixture's — a real record's bands are
+        # derived independently of the delivered CSV cell (isar.session.scan_delivery), so a
+        # synthetic fixture that cannot parse the row's cell just leaves the record's bands None
+        # rather than raising here, one test-setup step before the assertion under test.
+        bands = None
+        bands_cell = r.get("energy_bands")
+        if bands_cell is not None:
+            try:
+                parsed = json.loads(bands_cell) if isinstance(bands_cell, str) else bands_cell
+                bands = tuple((float(b[0]), float(b[1])) for b in parsed)
+            except (TypeError, ValueError, IndexError, json.JSONDecodeError):
+                bands = None
+        record = MeasurementArena(
+            scan_ref=scan_id, scan_id=scan_id, scan_number=scan, detector=det,
+            sample=r.get("sample"),
+            conditions=(("temperature_K", float(r["T"])),) if r.get("T") is not None else (),
+            q=(None if h is None or k is None or l is None else (float(h), float(k), float(l))),
+            lattice_epoch=None,
+            energy_window=(None if elo is None or ehi is None else (float(elo), float(ehi))),
+            energy_bands=bands, effective_exposure=r.get("effective_exposure"),
+            exposure_provenance=None, count_trust="trusted", reasons=(),
+            written_at="2026-01-01T00:00:00+00:00", content_hash=r.get("content_hash") or "ch-1")
+        lines.append(json.dumps(record.to_dict(), sort_keys=True))
+    if lines:
+        rd = root / "report"
+        rd.mkdir(parents=True, exist_ok=True)
+        (rd / "measurements.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _ws(root, rows, columns=COLUMNS):
     root.mkdir(parents=True, exist_ok=True)
     stamp_ws(root, rows=rows, columns=columns)
+    _write_measurements(root, rows)
     return Workspace.open(root)
 
 
@@ -256,10 +309,14 @@ def test_conditioning_provenance_survives_the_adapter(tmp_path):
 
 
 @pytest.mark.parametrize("cell", ["{not json", json.dumps([{"k": 5}])])
-def test_malformed_candidates_yield_no_observation_and_log(tmp_path, caplog, cell):
-    with caplog.at_level(logging.WARNING, logger="isar.workspace_api.scene"):
-        assert scene_observations(_ws(tmp_path, [_row(1, candidates=cell)])) == []
-    assert any("tavi:1:det" in r.getMessage() for r in caplog.records)
+def test_malformed_candidates_refuse_the_build_with_a_redeliver_instruction(tmp_path, cell):
+    """SCENE-4 PR 4.0 (#26): a DELIVERED fit whose candidate cell is corrupt is a damaged
+    interpretation artifact, not a fitless arena — demoting it to the "no interpretation" lane
+    would silently drop local evidence that a clean re-delivery restores. Refuse loudly (H1),
+    same posture as the stale-delivery and missing-measurements refusals. The legit fitless lane
+    (no delivered fit at all) is covered separately and stays quiet."""
+    with pytest.raises(ValueError, match="re-deliver"):
+        scene_observations(_ws(tmp_path, [_row(1, candidates=cell)]))
 
 
 def test_candidate_rows_carry_their_component_descriptors(tmp_path):
@@ -332,6 +389,188 @@ def test_rows_that_never_had_a_fit_are_silent(tmp_path, caplog):
     with caplog.at_level(logging.DEBUG, logger="isar.workspace_api.scene"):
         assert scene_observations(_ws(tmp_path, [held])) == []
     assert [r.levelname for r in caplog.records] == ["DEBUG"]
+
+
+# ---------------------------------------------------------------------------
+# Measurement-arena records (SCENE-4 PR 4.0, #26): counts-authoritative intake
+# ---------------------------------------------------------------------------
+def _write_measurement(root, record: MeasurementArena) -> None:
+    rd = root / "report"
+    rd.mkdir(parents=True, exist_ok=True)
+    with open(rd / "measurements.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(record.to_dict(), sort_keys=True) + "\n")
+
+
+def _measurement(**over) -> MeasurementArena:
+    base = dict(scan_ref="tavi:4:det", scan_id="tavi:4:det", scan_number=4, detector="det",
+                sample="tavi", conditions=(("temperature_K", 200.0),), q=(2.0, 0.0, 0.0),
+                lattice_epoch=None, energy_window=(-5.0, 10.0), energy_bands=((-5.0, 10.0),),
+                effective_exposure=1000.0, exposure_provenance=None, count_trust="trusted",
+                reasons=(), written_at="2026-01-01T00:00:00+00:00", content_hash="ch-1")
+    return MeasurementArena(**{**base, **over})
+
+
+def test_a_trusted_fitless_arena_becomes_a_synthetic_observation(tmp_path):
+    """A scan whose fit crashed (or converged to nothing) never produces a detector-qualified
+    results.csv row (the ledger writes it with an EMPTY ``detectors`` cell) — but its
+    measurement-arena record still says the counts were trusted, and the adapter must surface it
+    so the scene layer can fill the experiment map with it."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[], columns=COLUMNS)
+    _write_measurement(tmp_path, _measurement())
+    obs, = scene_observations(Workspace.open(tmp_path))
+    assert (obs.scan_ref, obs.candidates, obs.count_trust) == ("tavi:4:det", (), "trusted")
+    assert obs.q == (2.0, 0.0, 0.0)
+    assert obs.energy_bands == ((-5.0, 10.0),)
+    assert obs.sample == "tavi"
+    assert obs.conditions == (("temperature_K", 200.0),)
+
+
+def test_a_count_untrusted_arena_becomes_a_synthetic_observation(tmp_path):
+    """A gate refusal (excluded / held_for_calibration / undersampled) never reaches a fit either,
+    but it is a DIFFERENT claim than a trusted-but-fitless arena — the adapter carries the
+    distinction through verbatim; deciding what it means for scoring is the builder's job."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[], columns=COLUMNS)
+    _write_measurement(tmp_path, _measurement(
+        scan_ref="tavi:5:det", scan_id="tavi:5:det", scan_number=5,
+        count_trust="held_for_calibration", energy_window=None, energy_bands=None,
+        effective_exposure=None, reasons=("no energy zero",)))
+    obs, = scene_observations(Workspace.open(tmp_path))
+    assert (obs.scan_ref, obs.candidates, obs.count_trust) == (
+        "tavi:5:det", (), "held_for_calibration")
+
+
+def test_missing_measurements_log_with_delivered_candidates_is_refused(tmp_path):
+    """H1, the same posture as the missing-candidates-column and missing-energy_bands refusals: a
+    results.csv that already carries delivered candidates but no measurements.jsonl at all is a
+    stale delivery, not a silently empty counts ledger."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[_row(1, candidates=[_candidate("phonon+bg")])], columns=COLUMNS)
+    with pytest.raises(ValueError, match=r"measurements\.jsonl.*re-deliver"):
+        scene_observations(Workspace.open(tmp_path))
+
+
+def test_a_delivered_row_with_no_matching_measurement_record_is_refused(tmp_path):
+    """A partially-rebuilt or pre-4.0 log: measurements.jsonl exists but does not name this
+    scan_ref. Guessing "trusted" would let a broken arena's evidence silently score."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[_row(1, candidates=[_candidate("phonon+bg")]),
+                             _row(2, candidates=[_candidate("phonon+bg")])], columns=COLUMNS)
+    _write_measurement(tmp_path, _measurement(scan_ref="tavi:1:det", scan_id="tavi:1:det",
+                                              scan_number=1))
+    with pytest.raises(ValueError, match=r"tavi:2:det.*measurement-arena record.*re-deliver"):
+        scene_observations(Workspace.open(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# Provenance join hardening (SCENE-4 PR 4.0 review response, W3)
+# ---------------------------------------------------------------------------
+def test_a_content_hash_mismatch_between_fit_row_and_record_is_refused(tmp_path):
+    """A record from a LATER delivery generation must never join a fit row from an earlier one
+    (or vice versa) — the join key is scan_ref AND content_hash, not scan_ref alone."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[_row(1, candidates=[_candidate("phonon+bg")],
+                                  content_hash="ch-generation-2")], columns=COLUMNS)
+    _write_measurement(tmp_path, _measurement(scan_ref="tavi:1:det", scan_id="tavi:1:det",
+                                              scan_number=1, content_hash="ch-generation-1"))
+    with pytest.raises(ValueError, match=r"tavi:1:det.*different delivery generation"):
+        scene_observations(Workspace.open(tmp_path))
+
+
+def test_a_legacy_row_with_no_content_hash_skips_the_join_check(tmp_path):
+    """A row predating the column carries ``content_hash=None`` — nothing to compare, not a
+    license to guess a mismatch. The record still supplies the observation's facts."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    columns_no_hash = [c for c in COLUMNS if c != "content_hash"]
+    stamp_ws(tmp_path, rows=[_row(1, candidates=[_candidate("phonon+bg")])],
+             columns=columns_no_hash)
+    _write_measurement(tmp_path, _measurement(scan_ref="tavi:1:det", scan_id="tavi:1:det",
+                                              scan_number=1, content_hash="ch-record-only"))
+    obs, = scene_observations(Workspace.open(tmp_path))
+    assert obs.scan_ref == "tavi:1:det"
+
+
+def test_counts_own_the_facts_the_record_wins_over_the_fit_row(tmp_path):
+    """W3, disposition 4: for a row WITH a record, q/temperature/conditions/sample/window/bands/
+    exposure come FROM THE RECORD — the fit row may not silently disagree with what was measured.
+    The fixture stamps the record with values that deliberately differ from the row's."""
+    record = _measurement(
+        scan_ref="tavi:1:det", scan_id="tavi:1:det", scan_number=1, sample="record-sample",
+        conditions=(("temperature_K", 77.0),), q=(1.0, 1.0, 1.0),
+        energy_window=(-2.0, 2.0), energy_bands=((-2.0, 2.0),), effective_exposure=42.0)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[_row(1, candidates=[_candidate("phonon+bg")], sample="row-sample",
+                                  T=200.0, h=2.0, k=0.0, l=0.0, energy_lo=-5.0, energy_hi=10.0,
+                                  energy_bands=json.dumps([[-5.0, 10.0]]),
+                                  effective_exposure=1000.0)], columns=COLUMNS)
+    _write_measurement(tmp_path, record)
+    obs, = scene_observations(Workspace.open(tmp_path))
+    assert obs.sample == "record-sample"
+    assert obs.conditions == (("temperature_K", 77.0),)
+    assert obs.temperature_K == 77.0
+    assert obs.q == (1.0, 1.0, 1.0)
+    assert obs.energy_window == (-2.0, 2.0)
+    assert obs.energy_bands == ((-2.0, 2.0),)
+    assert obs.effective_exposure == 42.0
+    # The fit row still contributes candidates/resolution/best_label/evidence_sink — unaffected.
+    assert obs.best_label == "phonon+bg"
+
+
+def test_an_empty_but_parseable_candidates_list_on_a_delivered_winner_is_refused(tmp_path):
+    """A DELIVERED non-pooled winner (detector + best_label set) whose candidates cell parses to
+    an EMPTY list is a contradictory interpretation artifact — something won, so a table must
+    exist — and gets the same refuse-don't-degrade posture as the absent/malformed cases."""
+    ws = _ws(tmp_path, [_row(1, candidates=[])])
+    with pytest.raises(ValueError, match=r"tavi:1:det.*empty candidate table.*re-deliver"):
+        scene_observations(ws)
+
+
+def test_a_master_only_workspace_needs_no_measurements_log(tmp_path):
+    """The missing-measurements refusal requires >=1 NON-POOLED candidate-bearing fit; a
+    workspace whose only candidate-bearing rows are pooled masters (which legitimately carry no
+    measurement-arena record) must proceed with an empty measurements dict, not refuse."""
+    cands = [_candidate("phonon+bg")]
+    master = _row(9_000_001, candidates=cands, scan_id="master:tavi_2.0,0,0_300",
+                  pooled=True, n_members=0, members="")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[master], columns=COLUMNS)
+    assert not (tmp_path / "report" / "measurements.jsonl").exists()
+    obs, = scene_observations(Workspace.open(tmp_path))
+    assert obs.scan_ref == "master:tavi_2.0,0,0_300:det"
+
+
+def test_compatible_master_members_derive_provenance_and_stay_suppressed(tmp_path):
+    """W3, disposition 5: sample/conditions/lattice_epoch come from the QUALIFIED MEMBERS'
+    records, not the current frame, when every member's record agrees."""
+    cands = [_candidate("phonon+bg")]
+    master = _row(9_000_001, candidates=cands, scan_id="master:tavi_2.0,0,0_300",
+                  pooled=True, n_members=2, members="tavi:1:det;tavi:2:det")
+    ws = _ws(tmp_path, [_row(1, candidates=cands, sample="tavi", T=200.0),
+                        _row(2, candidates=cands, sample="tavi", T=200.0), master])
+    by_ref = {o.scan_ref: o for o in scene_observations(ws)}
+    assert sorted(by_ref) == ["master:tavi_2.0,0,0_300:det"]   # members suppressed
+    m = by_ref["master:tavi_2.0,0,0_300:det"]
+    assert m.count_trust == "trusted"
+    assert m.sample == "tavi"
+    assert m.conditions == (("temperature_K", 200.0),)
+
+
+def test_incompatible_master_members_degrade_and_their_arenas_survive(tmp_path):
+    """W3, disposition 5: members whose records DISAGREE (mixed conditions here) mean the pooled
+    interpretation cannot be presented under one frame — the master degrades to non-scoring
+    (count_trust off "trusted") rather than guessing, and its members are NOT erased: an
+    incompatible master must not both fail AND suppress the only evidence its members have."""
+    cands = [_candidate("phonon+bg")]
+    master = _row(9_000_001, candidates=cands, scan_id="master:tavi_2.0,0,0_300",
+                  pooled=True, n_members=2, members="tavi:1:det;tavi:2:det")
+    ws = _ws(tmp_path, [_row(1, candidates=cands, sample="tavi", T=200.0),
+                        _row(2, candidates=cands, sample="tavi", T=250.0), master])
+    by_ref = {o.scan_ref: o for o in scene_observations(ws)}
+    assert sorted(by_ref) == ["master:tavi_2.0,0,0_300:det", "tavi:1:det", "tavi:2:det"]
+    assert by_ref["master:tavi_2.0,0,0_300:det"].count_trust != "trusted"
+    assert by_ref["tavi:1:det"].count_trust == "trusted"
+    assert by_ref["tavi:2:det"].count_trust == "trusted"
 
 
 # ---------------------------------------------------------------------------

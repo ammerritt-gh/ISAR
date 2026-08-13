@@ -8,6 +8,8 @@ workspace, no filesystem — so a failure here is a failure of the math.
 """
 import itertools
 import math
+import subprocess
+import sys
 from dataclasses import replace
 
 import pytest
@@ -23,15 +25,21 @@ from isar.scene.model import (CandidateRow, ComponentDescriptor, SceneObservatio
 # ----------------------------------------------------------------------------
 # Hand-built observations
 # ----------------------------------------------------------------------------
-def cand(label, lnz, *, n_modes=1, omegas=None, usable=True, identity=None, extra=()):
+def cand(label, lnz, *, n_modes=1, omegas=None, usable=True, identity=None, extra=(),
+        constraint_origin="none"):
     """One candidate for ``mk_obs``. ``extra`` declares the NON-MODE component kinds explicitly.
 
     Mode descriptors follow the caller's ``n_modes``, which is already an explicit declaration of
     how many modes the candidate has; ``elastic``/``quasielastic`` must be spelled, because the
     label is an identifier and nothing derives structure from it any more.
+
+    ``constraint_origin`` defaults to ``"none"`` (recorded, unconstrained) — a normal delivered
+    row under the current contract, never the tri-state ``None`` production reserves for a
+    pre-H9 workspace (SCENE-4 PR 4.0 #21): a test that wants the refusal lane passes
+    ``constraint_origin=None`` explicitly.
     """
     return (label, lnz, n_modes, (10.0,) * n_modes if omegas is None else tuple(omegas),
-            usable, identity, tuple(extra))
+            usable, identity, tuple(extra), constraint_origin)
 
 
 def components(n_modes, extra=()):
@@ -40,13 +48,22 @@ def components(n_modes, extra=()):
 
 
 def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), bands=None, q=(1.0, 0.0, 0.0),
-           status="complete", fallback=None, sink=None, temperature=300.0, exposure=1.0):
+           status="complete", fallback=None, sink=None, temperature=300.0, exposure=1.0,
+           count_trust="trusted", sample=None, conditions=None, lattice_epoch=None,
+           topology_role=None):
     rows = tuple(
         CandidateRow(label=label, k=None, n_modes=n_modes, log_evidence=lnz,
                      evidence_method="laplace", posterior_probability=None, usable=usable,
                      identity=identity, variant=None, omegas=omegas,
-                     components=components(len(omegas), extra))
-        for label, lnz, n_modes, omegas, usable, identity, extra in candidates)
+                     components=components(len(omegas), extra), constraint_origin=origin)
+        for label, lnz, n_modes, omegas, usable, identity, extra, origin in candidates)
+    if conditions is None:
+        # Deliberately NOT derived from ``temperature`` (the per-observation PHYSICS field,
+        # e.g. the Bose-detectability tests that vary it per arena on purpose): ``conditions``
+        # is the #28 PARTITION identity, a separate declaration in production too
+        # (``isar.schema.measurement.MeasurementArena.conditions`` vs. ``fit.T``), and a fixture
+        # that wants a different PARTITION passes ``conditions=`` explicitly.
+        conditions = (("temperature_K", 300.0),)
     obs = SceneObservation(scan_ref=scan_ref, q=q, temperature_K=temperature, energy_window=window,
                            energy_bands=(None if window is None
                                          else (tuple(window),) if bands is None
@@ -55,7 +72,9 @@ def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), bands=None, q=(1.0, 0.
                            background=0.5, best_label=rows[0].label if rows else None,
                            candidates=rows, evidence_comparison_status=status,
                            selection_fallback=fallback, arena_fingerprint=None,
-                           evidence_sink=sink, fingerprint="x")
+                           evidence_sink=sink, sample=sample, conditions=conditions,
+                           count_trust=count_trust, lattice_epoch=lattice_epoch,
+                           topology_role=topology_role, fingerprint="x")
     # Stamped from a label-sorted copy: the builder sorts candidates, so permuting the input
     # tuple in a test must be a real permutation of the same observation, not a different one.
     canon = replace(obs, candidates=tuple(sorted(rows, key=lambda c: c.label)))
@@ -105,6 +124,45 @@ def cluster_of(rev, cluster_id):
 
 
 # ----------------------------------------------------------------------------
+# PR #30 review response (disposition 16): the #21 lane-split invariant survives ``python -O``
+# ----------------------------------------------------------------------------
+def test_the_constraint_origin_lane_split_invariant_fires_even_under_python_dash_o():
+    """An ``assert`` disappears under ``python -O`` — this check MUST NOT, because a silently
+    unaccounted-for ``CONSTRAINT_ORIGINS`` member would fall through to whichever scoring lane's
+    ``in`` check happened to run first, the exact silent-fallthrough failure the #21 split exists
+    to prevent. A subprocess is the only honest way to prove ``-O`` behaviour: monkeypatching the
+    schema module in-process and only checking for ``ValueError`` would pass equally well against
+    the OLD ``assert`` when pytest itself is not run with ``-O`` (its default)."""
+    script = (
+        "import isar.schema.statistics as st\n"
+        "st.CONSTRAINT_ORIGINS = frozenset({'none', 'a_third_unaccounted_member'})\n"
+        "import isar.scene.build\n")
+    result = subprocess.run([sys.executable, "-O", "-c", script],
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode != 0, result.stdout
+    assert "neither scoring lane accounts for" in result.stderr
+
+
+def test_the_constraint_origin_lane_split_raises_valueerror_not_assertionerror():
+    """The invariant is a ``ValueError`` a caller could catch and act on, not an ``AssertionError``
+    (the ``assert`` statement's spelling) — a caller that already catches ``ValueError`` from every
+    other builder refusal should not need a second exception class for this one."""
+    script = (
+        "import isar.schema.statistics as st\n"
+        "st.CONSTRAINT_ORIGINS = frozenset({'none', 'a_third_unaccounted_member'})\n"
+        "try:\n"
+        "    import isar.scene.build\n"
+        "except ValueError:\n"
+        "    print('VALUEERROR_RAISED')\n"
+        "    raise SystemExit(0)\n"
+        "raise SystemExit(1)\n")
+    result = subprocess.run([sys.executable, "-c", script],
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "VALUEERROR_RAISED" in result.stdout
+
+
+# ----------------------------------------------------------------------------
 # Intake
 # ----------------------------------------------------------------------------
 def test_duplicate_scan_ref_raises():
@@ -127,6 +185,26 @@ def test_blank_fingerprint_raises(bad):
     obs = replace(mk_obs("e:1:d", [cand("A", -10.0)]), fingerprint=bad)
     with pytest.raises(ValueError, match="no fingerprint"):
         build_scene([obs])
+
+
+def test_the_embedded_observation_is_the_full_to_dict_not_a_three_key_subset():
+    """PR #30 review response (disposition 11, W5): sample, conditions, count_trust,
+    lattice_epoch and topology_role were already hashed INTO the fingerprint but were not
+    reconstructable from the stored payload — an auditor reading a revision back could not recover
+    what partitioned it without rejoining against the workspace that built it. Now they are."""
+    obs = mk_obs("e:1:d", [cand("A", -10.0)], sample="LiHoF4",
+                 conditions=(("temperature_K", 12.5), ("field_T", 3.0)),
+                 count_trust="trusted", lattice_epoch=7, topology_role="canonical_path")
+    rev = build_scene([obs], factors=[ZERO])
+    payload_obs, = rev.payload["observations"]
+    assert payload_obs == obs.to_dict()
+    assert payload_obs["sample"] == "LiHoF4"
+    assert payload_obs["conditions"] == [["field_T", 3.0], ["temperature_K", 12.5]]
+    assert payload_obs["count_trust"] == "trusted"
+    assert payload_obs["lattice_epoch"] == 7
+    assert payload_obs["topology_role"] == "canonical_path"
+    # Round-trips through the stored form exactly like a standalone observation would.
+    assert SceneObservation.from_dict(payload_obs) == obs
 
 
 # ----------------------------------------------------------------------------
@@ -259,10 +337,36 @@ def test_arena_without_usable_evidence_is_experiment_map_only():
            mk_obs("e:9:d", [], q=(6.0, 0.0, 0.0))]
     rev = build_scene(obs, factors=[COUPLER, ZERO])
     assert rev.payload["non_scoring"] == [{"scan_ref": "e:8:d", "reason": "no_evidence"},
-                                          {"scan_ref": "e:9:d", "reason": "no_candidates"}]
+                                          {"scan_ref": "e:9:d", "reason": "no_interpretation"}]
     assert [c["scan_refs"] for c in rev.payload["clusters"]] == [["e:1:d"]]
     # Still on the experiment map: we looked there, and the footprint says so.
     assert {f["scan_ref"] for f in rev.payload["footprints"]} == {"e:1:d", "e:8:d", "e:9:d"}
+
+
+def test_a_trusted_fitless_arena_fills_the_experiment_map():
+    """SCENE-4 PR 4.0 (#26): a TRUSTED measurement with no usable interpretation (candidates
+    empty — a fit crashed, or converged to nothing) is a different claim from a broken arena. It
+    still fills the experiment map: non-scoring, but footprinted, exactly like any other
+    non-scoring-but-measured arena above."""
+    obs = [mk_obs("e:1:d", [cand("A", -10.0)]),
+           mk_obs("e:9:d", [], q=(6.0, 0.0, 0.0), count_trust="trusted")]
+    rev = build_scene(obs, factors=[ZERO])
+    assert {"scan_ref": "e:9:d", "reason": "no_interpretation"} in rev.payload["non_scoring"]
+    assert {f["scan_ref"] for f in rev.payload["footprints"]} == {"e:1:d", "e:9:d"}
+
+
+def test_a_count_untrusted_arena_earns_no_footprint_but_is_recorded():
+    """A gate outcome (excluded / held_for_calibration / undersampled) was ATTEMPTED but never
+    actually measured, unlike every other non-scoring arena above — so it takes NO part in the
+    footprint set or the path topology, while still appearing in ``non_scoring`` (nothing here is
+    ever silently dropped)."""
+    obs = [mk_obs("e:1:d", [cand("A", -10.0)]),
+           mk_obs("e:5:d", [], q=(3.0, 0.0, 0.0), count_trust="excluded")]
+    rev = build_scene(obs, factors=[ZERO])
+    assert {"scan_ref": "e:5:d", "reason": "count_untrusted"} in rev.payload["non_scoring"]
+    assert {f["scan_ref"] for f in rev.payload["footprints"]} == {"e:1:d"}
+    # Nothing is deleted: the arena still travels with the revision, just with no coverage.
+    assert {o["scan_ref"] for o in rev.payload["observations"]} == {"e:1:d", "e:5:d"}
 
 
 def test_an_incomplete_comparison_never_becomes_a_confident_singleton():
@@ -306,13 +410,17 @@ def test_conditioning_provenance_rides_into_the_revision():
     into the embedded rows — while staying off ComponentObservation, which factors see."""
     constraints = ({"constraint_kind": "hard", "parameter": "phonon.Gamma",
                     "origin": "transported_prior", "value": 0.5},)
+    # A real ``CONSTRAINT_ORIGINS`` member (SCENE-4 PR 4.0 #21 gives the field a closed
+    # vocabulary): ``prior_predictive`` is data-derived transported conditioning, so this
+    # arena is non-scoring under #21 — irrelevant here, since ``payload["observations"]`` carries
+    # every validated row regardless of scoring status, which is the one thing this test checks.
     obs = mk_obs("e:1:d", [cand("A", -10.0)])
     obs = replace(obs, candidates=(replace(obs.candidates[0],
-                                           constraint_origin="transported_prior",
+                                           constraint_origin="prior_predictive",
                                            effective_constraints=constraints),))
     obs = replace(obs, fingerprint=observation_fingerprint(replace(obs, fingerprint="")))
     row, = build_scene([obs], factors=[ZERO]).payload["observations"][0]["candidates"]
-    assert row["constraint_origin"] == "transported_prior"
+    assert row["constraint_origin"] == "prior_predictive"
     assert row["effective_constraints"] == [dict(constraints[0])]
 
 
@@ -494,6 +602,29 @@ def test_an_unbounded_factor_over_the_cap_states_no_bound_at_all():
     assert cl["marginals"]["truncation_unbounded"] is True
 
 
+# SCENE-4 PR 4.0 (#22): a refiner that declines to bound even one report — the "cardinality is
+# unobtainable" case this codebase actually models (see ``build._score_span``'s docstring). It
+# never has to fire (the test below never triggers an actual refinement) because the disabling
+# effect is on the DECLARATION alone, not on anything the hook returns.
+UNOBTAINABLE_REFINER = SceneFactor(
+    name="unobtainable_refiner", kind="structural_likelihood", version="1",
+    refine_visibility=lambda report, alt, view: None)
+
+
+def test_a_refiner_with_no_declared_rescue_bound_disables_margin_pruning_outright():
+    """#22's fail-safe posture. A ``refine_visibility`` factor that will not declare
+    ``rescue_bound_per_report`` could rewrite an arbitrary number of reports by an unstated
+    amount, so it is treated exactly like an unbounded ``score_bound``: the whole span collapses
+    to ``None``, margin pruning is disabled outright, and a truncated cluster joins
+    ``truncation_unbounded`` — an unresolved cluster, never a narrowed one."""
+    obs = [mk_obs("e:1:d", [cand("A", 0.0), cand("B", -1.0), cand("C", -2.0)])]
+    rev = build_scene(obs, factors=[UNOBTAINABLE_REFINER], alt_cap=2)
+    assert rev.payload["score_span_nats"] is None
+    cl = cluster_of(rev, "e:1:d")
+    assert cl["truncated"] is True and cl["truncation_unbounded"] is True
+    assert cl["log_discarded_mass_bound"] is None
+
+
 def test_a_bounded_truncation_widens_its_stated_bound_by_the_factor_span():
     obs = [mk_obs("e:1:d", [cand("A", 0.0), cand("B", -5.0), cand("C", -9.0)])]
     rev = build_scene(obs, factors=[biased(label="B", term=10.0)], alt_cap=2)
@@ -649,15 +780,16 @@ def test_the_payload_carries_the_full_factor_declaration():
     assert rev.payload["factor_manifest"] == [
         {"name": "declared", "kind": "structural_likelihood", "version": "1",
          "consumes": ["q"], "roles": ["score"], "config": [["threshold", 0.25]],
-         "score_bound": [0.0, 1.0]},
+         "score_bound": [0.0, 1.0], "rescue_bound_per_report": None},
         # v2, unbounded: the prior divides by the ENUMERATED linkage count rather than the kept
         # one (review finding 10), and nothing bounds how many readings the proposers offer.
         {"name": "linkage_prior", "kind": "scene_prior", "version": "2",
          "consumes": ["links"], "roles": [],
          "config": [["max_linkage_variants", float(build_mod.MAX_LINKAGE_VARIANTS)]],
-         "score_bound": None},
+         "score_bound": None, "rescue_bound_per_report": None},
         {"name": "q_adjacency", "kind": "structural_likelihood", "version": "1",
-         "consumes": ["q"], "roles": ["couples"], "config": [], "score_bound": None},
+         "consumes": ["q"], "roles": ["couples"], "config": [], "score_bound": None,
+         "rescue_bound_per_report": None},
     ]
 
 

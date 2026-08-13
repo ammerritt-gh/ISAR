@@ -18,6 +18,7 @@ import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -26,7 +27,9 @@ from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
 from isar.predictive import json_fingerprint as _json_fingerprint
 from isar.schema.card import Card
+from isar.schema.measurement import MeasurementArena, current_lattice_epoch
 from isar.session import calibrations, guidelines as guide_mod, ingest, router, session_prior
+from isar.session import measurement_store
 from isar.session.outcome import (
     _coerce_fit_outcome, _outcome_from_entry, _write_results_csv,
 )
@@ -416,7 +419,37 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                 remaining = list(tasks)
                 remaining_indices = list(range(len(tasks)))
 
+            # Pre-dispatch stub records (SCENE-4 PR 4.0 review response, W4): the parent is the
+            # single writer of report/measurements.jsonl (workers never touch the file), so one
+            # stub per fresh task is appended here, BEFORE any worker starts. A hard worker kill
+            # (or an ``on_complete`` that never runs) then still leaves proof a scan was attempted
+            # — the enriched record ``checkpoint_entry`` appends below is a later line for the
+            # same ``scan_ref`` and wins on read (last-line-wins, measurement_store's contract).
+            for task in remaining:
+                _rec, _det, _q, _T, _sample, _scan_id, _chash, _ghash, _seed = task
+                stub = MeasurementArena(
+                    scan_ref=_scan_id, scan_id=_scan_id, scan_number=_rec.scan_number,
+                    detector=_det, sample=_sample,
+                    conditions=(("temperature_K", float(_T)),) if _T is not None else (),
+                    q=(tuple(float(v) for v in _q) if _q is not None else None),
+                    lattice_epoch=current_lattice_epoch(
+                        getattr(card.state, "lattice_epochs", None) or []),
+                    energy_window=None, energy_bands=None, effective_exposure=None,
+                    exposure_provenance=None, count_trust="attempted", reasons=(),
+                    written_at=datetime.now(timezone.utc).isoformat(), content_hash=_chash)
+                measurement_store.append_measurement(workspace.report_dir, stub.to_dict())
+
             def checkpoint_entry(entry):
+                # Measurement-arena records first, and unconditionally (SCENE-4 PR 4.0, #26): a
+                # TRUSTED record is built before fit_one is even attempted, so it must reach
+                # report/measurements.jsonl regardless of what the entry's fit did — including a
+                # caught fit_one exception (non_result) — and independent of, and before,
+                # results.csv (written later in _apply_and_finish). ``on_complete`` is the single
+                # seam that sees every fresh entry, serial or pooled, so appending here can never
+                # be skipped by a later stage failing.
+                if entry.measurement_record is not None:
+                    measurement_store.append_measurement(
+                        workspace.report_dir, entry.measurement_record)
                 if checkpoint_store is not None:
                     checkpoint_store.save(f"scan:{entry.scan_id}", entry)
 

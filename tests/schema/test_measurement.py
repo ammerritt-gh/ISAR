@@ -1,0 +1,115 @@
+"""MeasurementArena validation (SCENE-4 PR 4.0 review response, W2): the record must not be able
+to encode nonsense — an unknown count_trust, a duplicate condition name, a non-finite geometry
+value, or an inverted band — since nothing downstream re-checks it once it is on disk."""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from isar.schema.measurement import COUNT_TRUST_STATES, MeasurementArena
+from isar.session import measurement_store
+
+
+def _record(**over) -> dict:
+    base = dict(scan_ref="e:1:d", scan_id="e:1:d", scan_number=1, detector="d", sample="s",
+                conditions=(("temperature_K", 200.0),), q=(1.0, 0.0, 0.0), lattice_epoch=None,
+                energy_window=(-5.0, 5.0), energy_bands=((-5.0, 5.0),), effective_exposure=1000.0,
+                exposure_provenance=None, count_trust="trusted", reasons=(),
+                written_at="2026-01-01T00:00:00+00:00", content_hash="ch")
+    base.update(over)
+    return base
+
+
+def test_attempted_joins_the_shared_vocabulary():
+    assert COUNT_TRUST_STATES == (
+        "trusted", "excluded", "held_for_calibration", "undersampled", "attempted")
+    MeasurementArena(**_record(count_trust="attempted"))  # does not raise
+
+
+@pytest.mark.parametrize("factory", [
+    lambda: MeasurementArena(**_record(count_trust="bogus")),
+    lambda: MeasurementArena.from_dict({**_record(count_trust="bogus"),
+                                        "schema": "isar.measurement-arena/1"}),
+])
+def test_an_unknown_count_trust_is_rejected(factory):
+    with pytest.raises(ValueError, match="count_trust"):
+        factory()
+
+
+@pytest.mark.parametrize("factory", [
+    lambda: MeasurementArena(**_record(conditions=(("temperature_K", 200.0),
+                                                    ("temperature_K", 210.0)))),
+    lambda: MeasurementArena.from_dict({**_record(), "schema": "isar.measurement-arena/1",
+                                        "conditions": [["temperature_K", 200.0],
+                                                       ["temperature_K", 210.0]]}),
+])
+def test_duplicate_condition_names_are_rejected(factory):
+    with pytest.raises(ValueError, match="duplicate condition"):
+        factory()
+
+
+def test_non_finite_q_is_rejected():
+    with pytest.raises(ValueError, match="non-finite"):
+        MeasurementArena(**_record(q=(float("nan"), 0.0, 0.0)))
+
+
+def test_non_finite_exposure_is_rejected():
+    with pytest.raises(ValueError, match="not finite"):
+        MeasurementArena(**_record(effective_exposure=float("inf")))
+
+
+def test_non_finite_condition_value_is_rejected():
+    with pytest.raises(ValueError, match="non-finite"):
+        MeasurementArena(**_record(conditions=(("temperature_K", float("nan")),)))
+
+
+def test_non_finite_energy_window_is_rejected():
+    with pytest.raises(ValueError, match="non-finite"):
+        MeasurementArena(**_record(energy_window=(float("nan"), 5.0)))
+
+
+def test_an_inverted_energy_window_is_rejected():
+    with pytest.raises(ValueError, match="energy_window"):
+        MeasurementArena(**_record(energy_window=(5.0, 1.0)))
+
+
+@pytest.mark.parametrize("bands", [
+    ((float("nan"), 5.0),),
+    ((5.0, 1.0),),          # lo > hi
+])
+def test_malformed_energy_bands_are_rejected(bands):
+    with pytest.raises(ValueError, match="energy_bands"):
+        MeasurementArena(**_record(energy_bands=bands))
+
+
+def test_content_hash_is_required_on_construction_and_from_dict():
+    with pytest.raises(TypeError):
+        MeasurementArena(**{k: v for k, v in _record().items() if k != "content_hash"})
+    with pytest.raises(KeyError):
+        MeasurementArena.from_dict(
+            {k: v for k, v in {**_record(), "schema": "isar.measurement-arena/1"}.items()
+             if k != "content_hash"})
+
+
+def test_program_fields_default_none_and_round_trip():
+    rec = MeasurementArena(**_record(program_fingerprint="pf", program_step="s1"))
+    assert (rec.program_fingerprint, rec.program_step) == ("pf", "s1")
+    back = MeasurementArena.from_dict(rec.to_dict())
+    assert (back.program_fingerprint, back.program_step) == ("pf", "s1")
+    assert MeasurementArena(**_record()).program_fingerprint is None
+
+
+def test_the_writer_rejects_a_non_finite_payload_outright(tmp_path):
+    """W2: append_measurement encodes strict JSON (allow_nan=False), mirroring
+    isar.scene.model.canonical_bytes — a non-finite value must not silently persist as the
+    non-standard NaN/Infinity token a strict reader later refuses."""
+    with pytest.raises(ValueError):
+        measurement_store.append_measurement(tmp_path, {"x": float("nan")})
+
+
+def test_the_writer_round_trips_a_real_record(tmp_path):
+    rec = MeasurementArena(**_record())
+    measurement_store.append_measurement(tmp_path, rec.to_dict())
+    line = (tmp_path / measurement_store.FILENAME).read_text(encoding="utf-8").strip()
+    assert MeasurementArena.from_dict(json.loads(line)) == rec
