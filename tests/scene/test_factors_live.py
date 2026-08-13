@@ -727,19 +727,99 @@ def test_undeclared_knowledge_is_inert_and_says_so():
     assert declared.digest != rev.digest
 
 
-def test_the_classify_only_factors_cost_the_builder_no_pruning():
-    """H12(c) in the other direction. ``_score_span`` looks at SCORING factors, so a factor with
-    no score legally declares no bound — and adding it must leave margin pruning exactly as it
-    was, or a knowledge factor would silently disable the pruner."""
+def test_the_classify_only_factor_costs_the_builder_no_pruning():
+    """H12(c) in the other direction, RE-PINNED for #22 (was
+    ``test_the_classify_only_factors_cost_the_builder_no_pruning``, which pinned the unsafe
+    assumption below).
+
+    A ``classify``-only factor (``reciprocal_lattice_localization``: no score, no
+    ``refine_visibility``) still costs nothing — ``_score_span`` correctly ignores it, and adding
+    it alone must leave margin pruning exactly as it was. A ``refine_visibility`` factor
+    (``zone_centre_approach``) is different: it has no score of its own either, but its hook can
+    turn a report ``presence`` would have charged into a free one, so its addition WIDENS the
+    span by ``rescue_bound_per_report`` (== ``-PRESENCE_MISS_NATS``) per refinable report — the
+    bug #22 named: the old span left that rescue capacity off the books entirely."""
     obs = [mk_obs("e:1:d", [cand("A", -10.0, omegas=(5.0,)),
-                            cand("B", -400.0, omegas=(5.0,))], q=q(1.0))]
+                            cand("B", -400.0, omegas=(5.0,))], q=q(1.0)),
+           mk_obs("e:2:d", [cand("C", -10.0, omegas=(5.0,))], q=q(1.1))]
     bounded = replace(FACTORS["presence"], score_bound=(-5.0, 5.0))
     without = build_scene(obs, factors=[bounded])
-    with_knowledge = build_scene(obs, factors=[bounded, FACTORS["zone_centre_approach"],
-                                               FACTORS["reciprocal_lattice_localization"]])
-    assert without.payload["score_span_nats"] == with_knowledge.payload["score_span_nats"] == 10.0
-    assert [e["label"] for e in cluster_of(with_knowledge, "e:1:d")["pruning"]["e:1:d"]] == ["B"]
-    assert cluster_of(without, "e:1:d")["pruning"] == cluster_of(with_knowledge, "e:1:d")["pruning"]
+    classify_only = build_scene(obs, factors=[bounded, FACTORS["reciprocal_lattice_localization"]])
+    with_refiner = build_scene(obs, factors=[bounded, FACTORS["zone_centre_approach"],
+                                             FACTORS["reciprocal_lattice_localization"]])
+    assert without.payload["score_span_nats"] == classify_only.payload["score_span_nats"] == 10.0
+    # 1 mode component per arena's usable candidates x 1 adjacent neighbour each = 2 refinable
+    # reports, at 1.0 nat apiece (-PRESENCE_MISS_NATS).
+    assert with_refiner.payload["score_span_nats"] == 12.0
+    assert cluster_of(without, "e:1:d")["pruning"] == cluster_of(classify_only, "e:1:d")["pruning"]
+    # The widened margin is real slack, not cosmetic: B sits 390 nats down, comfortably excluded
+    # under either effective margin here, so all three scenes still prune it identically — a
+    # fixture where the widened span actually SURVIVES a candidate the bare one would have
+    # dropped lives in test_a_multi_report_endpoint_rescue_survives_the_widened_span below.
+    assert [e["label"] for e in cluster_of(with_refiner, "e:1:d")["pruning"]["e:1:d"]] == ["B"]
+
+
+def test_a_multi_report_endpoint_rescue_survives_the_widened_span():
+    """#22 acceptance: "one rescued report per alternative is not the bound". Two mirrored
+    descending tracks converge on the SAME declared zone centre, offering the refiner SIX
+    refinable reports total (one mode component per non-centre arena, most with two path
+    neighbours), counted globally over every usable candidate before any pruning
+    (``_max_refinable_reports``) — not the one report a per-alternative accounting would see. The
+    widened span is therefore ``6 x -PRESENCE_MISS_NATS == 6.0`` nats, and a candidate 3.5 nats
+    down in an unrelated partition — safely inside six reports' worth of rescue, past what even
+    two would cover — survives margin pruning on that strength alone.
+
+    ``coupler`` keeps presence's ``couples``/``couples_arena`` (what makes the five endpoint
+    arenas one cluster at all) while dropping its ``score``, so this scene's ONLY scoring
+    contributor to the span is the refiner under test.
+    """
+    centre = mk_obs("e:1:d", [cand("elastic+bg", -10.0, n_modes=0, omegas=(), extra=("elastic",))],
+                    q=q(1.0))
+    right_near = mk_obs("e:2:d", [cand("stokes+bg", -10.0, omegas=(1.5,))], q=q(1.1))
+    right_far = mk_obs("e:3:d", [cand("stokes+bg", -10.0, omegas=(2.4,))], q=q(1.2))
+    left_near = mk_obs("e:0:d", [cand("stokes+bg", -10.0, omegas=(1.5,))], q=q(0.9))
+    left_far = mk_obs("e:-1:d", [cand("stokes+bg", -10.0, omegas=(2.4,))], q=q(0.8))
+    # A wholly separate PARTITION (#28), so the pruning target below can never couple, cluster,
+    # or path-adjoin the endpoint fixture — its only connection to it is the GLOBAL span.
+    target = mk_obs("p:1:d", [cand("lead", 0.0, omegas=(5.0,)),
+                              cand("rescued", -3.5, omegas=(5.0,))],
+                    q=q(9.0), conditions=(("temperature_K", 400.0),))
+    coupler = replace(FACTORS["presence"], score=None)
+    rev = build_scene([centre, right_near, right_far, left_near, left_far, target],
+                      factors=[coupler, FACTORS["zone_centre_approach"]],
+                      sample=SampleKnowledge(zone_period=1.0), margin_nats=0.0)
+    assert rev.payload["score_span_nats"] == 6.0
+    cl = cluster_of(rev, "p:1:d")
+    assert cl["pruning"]["p:1:d"] == []
+    assert {a["assignment"][0][1] for a in cl["alternatives"]} == {"lead", "rescued"}
+
+
+def test_transformation_ablation_is_distinct_from_score_ablation():
+    """#22 acceptance: the revision exposes how much the endpoint reading moved posterior odds
+    INDEPENDENTLY of presence. The reading adds no score term of its own — it rewrites what
+    presence reads — so ``score_ablation`` (which only ever zeroes an EXISTING term) has nothing
+    named ``zone_centre_approach`` to remove; ``transformation_ablation`` answers the question
+    score_ablation cannot: what would the posterior have been had the rewrite never fired."""
+    obs = [mk_obs("e:1:d", [cand("elastic+bg", -10.0, n_modes=0, omegas=(), extra=("elastic",))],
+                 q=q(1.0)),
+           mk_obs("e:2:d", [cand("stokes+bg", -10.0, omegas=(1.5,)),
+                            cand("bg", -10.5, n_modes=0, omegas=())], q=q(1.1)),
+           mk_obs("e:3:d", [cand("stokes+bg", -10.0, omegas=(2.4,))], q=q(1.2))]
+    rev = build_scene(obs, factors=[FACTORS["presence"], FACTORS["zone_centre_approach"]],
+                      sample=SampleKnowledge(zone_period=1.0))
+    cl = cluster_of(rev, "e:1:d")
+    assert "zone_centre_approach" in cl["transformation_ablation"]
+    assert "zone_centre_approach" not in cl["score_ablation"]     # declares no score term at all
+    at_e2 = {label: (a["posterior"], p) for a, p in
+            zip(cl["alternatives"], cl["transformation_ablation"]["zone_centre_approach"])
+            for ref, label in a["assignment"] if ref == "e:2:d"}
+    with_reading, without_reading = at_e2["stokes+bg"]
+    # With the reading: presence charges only the two observed continuations (2 x MATCH). Without
+    # it: the same track's absence at the centre is still charged a MISS, exactly as blind.
+    assert with_reading == pytest.approx(1.0 / (1.0 + math.exp(-2.5)), rel=1e-9)
+    assert without_reading == pytest.approx(1.0 / (1.0 + math.exp(-1.5)), rel=1e-9)
+    assert with_reading > without_reading
+    assert rev.payload["transformation_ablation_alignment"] == "by_alternative_index"
 
 
 @pytest.mark.parametrize("bad,match", [

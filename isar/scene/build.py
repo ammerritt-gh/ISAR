@@ -240,7 +240,12 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
     index-aligned with that cluster's ``alternatives`` — ``score_ablation[name][i]`` is the
     posterior of ``alternatives[i]`` with factor ``name``'s score terms removed. The payload
     states this as ``score_ablation_alignment`` so an external consumer cannot silently read it
-    as a mapping.
+    as a mapping. ``transformation_ablation[name]`` (SCENE-4 PR 4.0, #22) is the same shape for a
+    REFINER named ``name``: the posterior of ``alternatives[i]`` with that refiner's visibility
+    rewrite removed and every scoring factor rerun against the unrewritten visibility — a
+    distinct ledger from ``score_ablation`` because a refiner has no score term to zero out; see
+    ``_transformation_ablation``'s docstring. ``transformation_ablation_alignment`` states the
+    same positional contract.
     """
     # Constants resolve AT CALL TIME, never as default-argument captures: a default evaluated
     # at import binds the module constant's value forever, so monkeypatching or an
@@ -298,7 +303,7 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
     # enumerated must not shape the partition either: an excluded candidate's component could
     # otherwise couple two arenas and merge two clusters, and since truncation and normalization
     # are joint over a cluster, a candidate nobody scores would still move everyone's posterior.
-    span = _score_span(factor_list)
+    span = _score_span(factor_list, scoring, footprints)
     pruning = {o.scan_ref: _prune(o, margin, span) for o in scoring}
     components = {o.scan_ref: _components_of(o, footprints[o.scan_ref],
                                              _survivor_labels(pruning[o.scan_ref]))
@@ -351,6 +356,9 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
         # Declares how to read every cluster's score_ablation lists: positionally, against that
         # cluster's ``alternatives``.
         "score_ablation_alignment": "by_alternative_index",
+        # Same alignment contract for #22's transformation_ablation lists — declared separately
+        # so a consumer that reads one payload key never has to assume the other's convention.
+        "transformation_ablation_alignment": "by_alternative_index",
         # Constraint-transport provenance: declared and dormant (the transport channel lives
         # in local evidence, per the PR-a design), so the field exists before it is filled.
         "transport": None,
@@ -501,7 +509,7 @@ def _degradations(factor_list, declared: SampleKnowledge, topologies: list[PathT
     return sorted(reasons)
 
 
-def _score_span(factor_list) -> float | None:
+def _score_span(factor_list, scoring_obs, footprints) -> float | None:
     """``Σ_f (hi_f − lo_f)`` over the ACTIVE SCORING factors, or ``None`` if any is unbounded.
 
     This is the total nats by which factor terms can reorder two alternatives that the base
@@ -510,10 +518,28 @@ def _score_span(factor_list) -> float | None:
     exactly the slack those decisions must carry, and its absence is exactly the reason to stop
     discarding. A coupling-only factor is irrelevant here: it changes the partition, not the
     score, and cannot rescue anything.
+
+    SCENE-4 PR 4.0 (#22): a REFINER (``refine_visibility``) is not a coupling-only factor even
+    when it declares no ``score`` — it rewrites what a scoring factor reads, so a rescued cluster
+    of reports can move the total by up to ``rescue_bound_per_report × N`` nats, where ``N`` is a
+    CONSERVATIVE upper bound on how many reports any alternative could have had refined, counted
+    over every USABLE candidate of the whole build BEFORE any pruning (:func:`_max_refinable_reports`)
+    — a global, pre-partition count is a superset of any one cluster's true count, so it can only
+    WIDEN the pruning margin, never narrow it (H12(c): bounded, never optimistic). A refiner that
+    will not declare ``rescue_bound_per_report`` is treated exactly like an unbounded scoring
+    factor: the whole span collapses to ``None`` and margin pruning is disabled outright,
+    joining the ``truncation_unbounded`` lane semantics — an unresolved cluster, not a narrowed
+    one, is the only honest posture when a refiner's worst case cannot be bounded.
     """
     scorers = [f for f in factor_list if f.score is not None]
     if any(f.score_bound is None for f in scorers):
         return None
+    refiners = [f for f in factor_list if f.refine_visibility is not None]
+    if any(f.rescue_bound_per_report is None for f in refiners):
+        return None
+    refiner_span = (math.fsum(f.rescue_bound_per_report
+                              for f in refiners) * _max_refinable_reports(scoring_obs, footprints)
+                    if refiners else 0.0)
     # LINKAGE_PRIOR has no ``score`` callable (the builder applies it) but it is a term of the
     # total all the same, so its declared span belongs in the slack the pruner must allow for —
     # and only then. With no proposing factor every assignment has exactly one linkage, the term
@@ -528,7 +554,45 @@ def _score_span(factor_list) -> float | None:
     else:
         lo, hi = LINKAGE_PRIOR.score_bound
         linkage = hi - lo
-    return math.fsum([linkage, *(h - l for l, h in (f.score_bound for f in scorers))])
+    return math.fsum([linkage, refiner_span, *(h - l for l, h in (f.score_bound for f in scorers))])
+
+
+def _max_refinable_reports(scoring_obs, footprints) -> int:
+    """Conservative upper bound on refinable ``(mode, adjacent neighbour)`` reports, GLOBAL to the
+    whole build and computed BEFORE any pruning (#22) — "every usable candidate" the plan text
+    means literally, not one cluster's share of it.
+
+    One report per mode component of the arena's most-mode-heavy USABLE candidate (only one
+    candidate is ever CHOSEN per arena by any one alternative, so the max over its candidates
+    already bounds what one alternative could contribute) times the number of OTHER scoring
+    arenas it is path-adjacent to. Both factors overcount relative to any single alternative —
+    an alternative chooses one candidate, not the richest one, and links at most one mode per
+    neighbour, not every mode to every neighbour — and the sum runs over the whole build rather
+    than one cluster. All three are overcounts in the SAFE direction: a larger ``N`` only widens
+    the margin the pruner must allow, never narrows it.
+
+    Structurally always obtainable here (component descriptors and footprint adjacency are both
+    persisted, pre-pruning facts) — see ``_score_span``'s docstring for the case this codebase
+    actually models as "unobtainable": a refiner that declines to bound even one report.
+    """
+    total = 0
+    for o in scoring_obs:
+        max_modes = max((sum(1 for d in c.components if d.kind == "mode")
+                         for c in o.candidates if _usable_lnz(c) is not None), default=0)
+        if max_modes == 0:
+            continue
+        fp_o = footprints[o.scan_ref]
+        # ``path_adjacent`` alone compares raw ``path_index`` ordinals, which are assigned
+        # PER PARTITION (#28) — two different partitions can each start numbering at 0, so an
+        # unguarded adjacency check could call arenas of unrelated partitions "neighbours" purely
+        # by ordinal coincidence. The partition_id equality is the same fail-closed boundary the
+        # rest of the builder holds arenas to (H13): nothing crosses it, including this count.
+        neighbours = sum(1 for other in scoring_obs
+                         if other.scan_ref != o.scan_ref
+                         and footprints[other.scan_ref].partition_id == fp_o.partition_id
+                         and path_adjacent(fp_o, footprints[other.scan_ref]))
+        total += max_modes * neighbours
+    return total
 
 
 # ----------------------------------------------------------------------------
@@ -1071,6 +1135,11 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
         norm = _logsumexp(totals)
         score_ablation[f.name] = [math.exp(t - norm) for t in totals]
 
+    # SCENE-4 PR 4.0 (#22): distinct from score_ablation above — see
+    # ``_transformation_ablation``'s docstring for why a refiner needs a rerun, not a term zeroed.
+    transformation_ablation = _transformation_ablation(entries, view, refs, components,
+                                                        factor_list, cluster_id)
+
     return {
         "cluster_id": cluster_id,
         "scan_refs": list(refs),
@@ -1116,34 +1185,46 @@ def _score_cluster(refs, by_ref, pruning, components, footprints, factor_list, c
         "classification": {f.name: f.classify(view)
                            for f in factor_list if f.classify is not None},
         "score_ablation": score_ablation,
+        # #22: per-refiner posterior with that refiner's visibility rewrite removed, index-aligned
+        # with ``alternatives`` like ``score_ablation`` (payload
+        # ``transformation_ablation_alignment``). Empty when no factor in the registry refines.
+        "transformation_ablation": transformation_ablation,
         "marginals": _marginals(refs, entries, rows_of, truncated, unbounded),
     }
 
 
-def _leader(entries, refs, components, cluster_id) -> SceneAlternative:
-    """The highest-posterior alternative, rebuilt as a ``SceneAlternative``. Ties by position."""
-    best = max(entries, key=lambda e: e["posterior"])
-    assignment = tuple(tuple(pair) for pair in best["assignment"])
+def _alt_of(entry: dict, cluster_id: str, refs, components) -> SceneAlternative:
+    """Rebuild the ``SceneAlternative`` a ledger ``entry`` was scored from.
+
+    Shared by ``_leader`` and the #22 transformation ablation, both of which need to re-derive a
+    typed alternative from an already-scored ledger row rather than a second enumeration.
+    """
+    assignment = tuple(tuple(pair) for pair in entry["assignment"])
     chosen = {ref: label for ref, label in assignment}
     return SceneAlternative(
         cluster_id=cluster_id, assignment=assignment,
         components=tuple(c for ref in refs for c in components[ref]
                          if c.candidate_label == chosen[ref]),
-        links=tuple(tuple(pair) for pair in best["links"]))
+        links=tuple(tuple(pair) for pair in entry["links"]))
 
 
-def _score_alternative(alt: SceneAlternative, view: ClusterView, base: float, factor_list,
-                       cluster_id: str, n_linkages: int) -> dict:
-    """One ledger entry: the terms of ``alt`` and the total they add up to.
+def _leader(entries, refs, components, cluster_id) -> SceneAlternative:
+    """The highest-posterior alternative, rebuilt as a ``SceneAlternative``. Ties by position."""
+    best = max(entries, key=lambda e: e["posterior"])
+    return _alt_of(best, cluster_id, refs, components)
 
-    ``n_linkages`` is how many linkage readings this ALTERNATIVE'S ASSIGNMENT was enumerated
-    with, BEFORE any cap; ``LINKAGE_PRIOR`` spreads one assignment's prior mass uniformly over
-    them (see its declaration) so that refining an assignment never boosts it, and so that a
-    capped assignment keeps only the share of its prior it still carries readings for.
+
+def _score_terms(alt: SceneAlternative, view: ClusterView, factor_list, cluster_id: str,
+                 assignment) -> tuple[dict, dict, dict]:
+    """``(factor_terms, prior_terms, reasons)`` from every SCORING factor's ``score(alt, view)``.
+
+    Split out of ``_score_alternative`` (SCENE-4 PR 4.0, #22) because the transformation ablation
+    reruns exactly this loop under a view with one refiner's ``refine_visibility`` removed —
+    ``presence`` reads the view's REFINED visibility, so its term cannot be zeroed out after the
+    fact the way ``score_ablation`` zeroes a factor's own term; it has to be recomputed against a
+    scene that never made the rewrite.
     """
-    assignment = alt.assignment
-    factor_terms, reasons = {}, {}
-    prior_terms = {LINKAGE_PRIOR.name: -math.log(n_linkages)}
+    factor_terms, prior_terms, reasons = {}, {}, {}
     for f in factor_list:
         if f.score is None:
             continue
@@ -1173,6 +1254,22 @@ def _score_alternative(alt: SceneAlternative, view: ClusterView, base: float, fa
         (prior_terms if f.kind == "scene_prior" else factor_terms)[f.name] = term
         if why:
             reasons[f.name] = list(why)
+    return factor_terms, prior_terms, reasons
+
+
+def _score_alternative(alt: SceneAlternative, view: ClusterView, base: float, factor_list,
+                       cluster_id: str, n_linkages: int) -> dict:
+    """One ledger entry: the terms of ``alt`` and the total they add up to.
+
+    ``n_linkages`` is how many linkage readings this ALTERNATIVE'S ASSIGNMENT was enumerated
+    with, BEFORE any cap; ``LINKAGE_PRIOR`` spreads one assignment's prior mass uniformly over
+    them (see its declaration) so that refining an assignment never boosts it, and so that a
+    capped assignment keeps only the share of its prior it still carries readings for.
+    """
+    assignment = alt.assignment
+    factor_terms, prior_terms, reasons = _score_terms(alt, view, factor_list, cluster_id,
+                                                       assignment)
+    prior_terms[LINKAGE_PRIOR.name] = -math.log(n_linkages)
     return {
         "assignment": [list(pair) for pair in assignment],
         # The linkage this alternative reads the assignment under. Two entries with the same
@@ -1187,6 +1284,45 @@ def _score_alternative(alt: SceneAlternative, view: ClusterView, base: float, fa
         # total = fsum([base, *terms-by-sorted-name]) reproduces this float exactly.
         "total": _total(base, factor_terms, prior_terms),
     }
+
+
+def _transformation_ablation(entries, view: ClusterView, refs, components, factor_list,
+                             cluster_id: str) -> dict:
+    """SCENE-4 PR 4.0 (#22): per REFINER, the posterior over the FIXED alternative set with that
+    refiner's ``refine_visibility`` hook removed.
+
+    A distinct ledger from ``score_ablation`` (H12(f) untouched in meaning): score_ablation asks
+    what a factor's SCORE TERM did, holding the alternative set and every OTHER term fixed
+    including the refined visibility. A refiner declares no score term to remove — it rewrites
+    what ``presence`` reads — so the only honest question is what the scene would have said had
+    the rewrite never happened, which needs the visibility RECOMPUTED, not a term zeroed out.
+    Everything else stays fixed exactly like ``score_ablation`` fixes it: the enumerated
+    alternatives (no re-enumeration), each alternative's ``base`` Σ lnZ, and its linkage-prior
+    share (the linkage variable does not depend on refined visibility).
+
+    Index-aligned with ``entries``, like ``score_ablation`` — the payload's
+    ``transformation_ablation_alignment`` says so for a reader who has not seen this docstring.
+    Empty when the registry carries no refiner, so a scene scored under ``presence`` alone (no
+    zone/lattice factors) publishes no misleading entries.
+    """
+    refiners = [f for f in factor_list if f.refine_visibility is not None]
+    out: dict[str, list[float]] = {}
+    for rf in refiners:
+        ablated = replace(view,
+                          refiners=tuple((n, r) for n, r in view.refiners if n != rf.name),
+                          reports_cache={})
+        totals = []
+        for e in entries:
+            alt = _alt_of(e, cluster_id, refs, components)
+            factor_terms, prior_terms, _ = _score_terms(alt, ablated, factor_list, cluster_id,
+                                                         alt.assignment)
+            # The linkage share is a fact about the ASSIGNMENT's enumerated readings, never about
+            # refined visibility — held at its original value rather than recomputed.
+            prior_terms[LINKAGE_PRIOR.name] = e["prior_terms"][LINKAGE_PRIOR.name]
+            totals.append(_total(e["base"], factor_terms, prior_terms))
+        norm = _logsumexp(totals)
+        out[rf.name] = [math.exp(t - norm) for t in totals]
+    return out
 
 
 def _without(terms: dict, name: str) -> dict:

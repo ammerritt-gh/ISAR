@@ -541,6 +541,29 @@ def test_an_unbounded_factor_over_the_cap_states_no_bound_at_all():
     assert cl["marginals"]["truncation_unbounded"] is True
 
 
+# SCENE-4 PR 4.0 (#22): a refiner that declines to bound even one report — the "cardinality is
+# unobtainable" case this codebase actually models (see ``build._score_span``'s docstring). It
+# never has to fire (the test below never triggers an actual refinement) because the disabling
+# effect is on the DECLARATION alone, not on anything the hook returns.
+UNOBTAINABLE_REFINER = SceneFactor(
+    name="unobtainable_refiner", kind="structural_likelihood", version="1",
+    refine_visibility=lambda report, alt, view: None)
+
+
+def test_a_refiner_with_no_declared_rescue_bound_disables_margin_pruning_outright():
+    """#22's fail-safe posture. A ``refine_visibility`` factor that will not declare
+    ``rescue_bound_per_report`` could rewrite an arbitrary number of reports by an unstated
+    amount, so it is treated exactly like an unbounded ``score_bound``: the whole span collapses
+    to ``None``, margin pruning is disabled outright, and a truncated cluster joins
+    ``truncation_unbounded`` — an unresolved cluster, never a narrowed one."""
+    obs = [mk_obs("e:1:d", [cand("A", 0.0), cand("B", -1.0), cand("C", -2.0)])]
+    rev = build_scene(obs, factors=[UNOBTAINABLE_REFINER], alt_cap=2)
+    assert rev.payload["score_span_nats"] is None
+    cl = cluster_of(rev, "e:1:d")
+    assert cl["truncated"] is True and cl["truncation_unbounded"] is True
+    assert cl["log_discarded_mass_bound"] is None
+
+
 def test_a_bounded_truncation_widens_its_stated_bound_by_the_factor_span():
     obs = [mk_obs("e:1:d", [cand("A", 0.0), cand("B", -5.0), cand("C", -9.0)])]
     rev = build_scene(obs, factors=[biased(label="B", term=10.0)], alt_cap=2)
@@ -696,15 +719,16 @@ def test_the_payload_carries_the_full_factor_declaration():
     assert rev.payload["factor_manifest"] == [
         {"name": "declared", "kind": "structural_likelihood", "version": "1",
          "consumes": ["q"], "roles": ["score"], "config": [["threshold", 0.25]],
-         "score_bound": [0.0, 1.0]},
+         "score_bound": [0.0, 1.0], "rescue_bound_per_report": None},
         # v2, unbounded: the prior divides by the ENUMERATED linkage count rather than the kept
         # one (review finding 10), and nothing bounds how many readings the proposers offer.
         {"name": "linkage_prior", "kind": "scene_prior", "version": "2",
          "consumes": ["links"], "roles": [],
          "config": [["max_linkage_variants", float(build_mod.MAX_LINKAGE_VARIANTS)]],
-         "score_bound": None},
+         "score_bound": None, "rescue_bound_per_report": None},
         {"name": "q_adjacency", "kind": "structural_likelihood", "version": "1",
-         "consumes": ["q"], "roles": ["couples"], "config": [], "score_bound": None},
+         "consumes": ["q"], "roles": ["couples"], "config": [], "score_bound": None,
+         "rescue_bound_per_report": None},
     ]
 
 
