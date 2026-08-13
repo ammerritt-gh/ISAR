@@ -90,12 +90,12 @@ def scene_observations(ws) -> list[SceneObservation]:
     measurement-arena record (``report/measurements.jsonl``, SCENE-4 PR 4.0 #26) that never
     produced such a row — a trusted-but-fitless arena (its fit crashed, or converged to nothing),
     or a count-untrusted gate outcome, both of which the ledger writes with an EMPTY
-    ``detectors`` dict and so never reach ``results.csv`` as a detector-qualified row at all. A
-    row with no parseable candidate table (a different case — a delivered fit whose cell is
-    absent or malformed) yields no observation and is logged.
+    ``detectors`` dict and so never reach ``results.csv`` as a detector-qualified row at all.
 
     Raises ``ValueError`` on a workspace this adapter cannot read faithfully — a results.csv with
-    no candidates column, a master with unqualified member labels, a row predating the current
+    no candidates column, a delivered fit whose candidate cell is absent or malformed (a corrupt
+    interpretation artifact must not be demoted to the fitless lane — re-deliver instead),
+    a master with unqualified member labels, a row predating the current
     delivery contract (:func:`_refuse_stale_delivery`), a delivered scan row with no matching
     measurement-arena record, or delivered candidates with no ``measurements.jsonl`` at all
     (the same H1 precedent as the missing-``energy_bands`` refusal: re-deliver). All of them mean
@@ -359,20 +359,30 @@ def _candidates(fit, ref: str):
         # A ledger row that never produced a fit (held_for_calibration, excluded, context_applied,
         # ingested — written detectorless, or delivered with nothing converged) legitimately has no
         # candidate table: a real campaign has many, and warning on each would bury the signal that
-        # matters. Only a DELIVERED fit (detector + winning label) whose table is absent or
-        # unparseable is anomalous, and that is what warns.
+        # matters. A DELIVERED per-scan fit (detector + winning label) whose table is absent is a
+        # corrupt interpretation artifact — a different case that must not share the fitless lane:
+        # demoting it to "no interpretation" would silently drop local evidence a clean re-delivery
+        # restores (#26; the same H1 refuse-don't-degrade posture as _refuse_stale_delivery). A
+        # candidateless POOLED MASTER stays the tolerated SCENE-3 contract (supersedes nothing,
+        # members keep scoring) — master candidate persistence is a separate pipeline and a named
+        # future work package.
         if fit.detector_id and fit.best_label:
-            log.warning("scene: %s has no usable candidate table (absent or malformed cell) — "
-                        "no observation", ref)
-        else:
-            log.debug("scene: %s carries no delivered fit — no observation", ref)
+            if not fit.pooled:
+                raise ValueError(f"scene: {ref} is a delivered fit with no candidate table — the "
+                                 f"interpretation artifact is corrupt; re-deliver this scan "
+                                 f"before building a scene")
+            log.warning("scene: master %s carries no candidate table — it supersedes nothing "
+                        "and contributes no observation", ref)
+            return None
+        log.debug("scene: %s carries no delivered fit — no observation", ref)
         return None
     _refuse_stale_delivery(fit, ref, raw)
     try:
         return tuple(CandidateRow.from_dict(c) for c in sorted(raw, key=lambda c: str(c["label"])))
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
-        log.warning("scene: %s has a malformed candidate table (%s) — no observation", ref, exc)
-        return None
+        raise ValueError(f"scene: {ref} has a malformed candidate table ({exc}) — the "
+                         f"interpretation artifact is corrupt; re-deliver this scan before "
+                         f"building a scene") from exc
 
 
 def _refuse_stale_delivery(fit, ref: str, raw) -> None:

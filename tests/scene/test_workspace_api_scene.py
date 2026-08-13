@@ -291,16 +291,14 @@ def test_conditioning_provenance_survives_the_adapter(tmp_path):
 
 
 @pytest.mark.parametrize("cell", ["{not json", json.dumps([{"k": 5}])])
-def test_malformed_candidates_yield_a_trusted_fitless_observation_and_log(tmp_path, caplog, cell):
-    """SCENE-4 PR 4.0 (#26) re-baseline: a malformed candidates cell used to make the arena
-    vanish entirely. The measurement-arena record is written BEFORE the candidates ever exist, so
-    it is unaffected by a later corrupt cell — the arena is still trusted, still logged as having
-    no usable candidate table, and now correctly still fills the experiment map (candidates
-    empty) rather than disappearing (hard rule 5: nothing is ever deleted)."""
-    with caplog.at_level(logging.WARNING, logger="isar.workspace_api.scene"):
-        obs, = scene_observations(_ws(tmp_path, [_row(1, candidates=cell)]))
-    assert (obs.scan_ref, obs.candidates, obs.count_trust) == ("tavi:1:det", (), "trusted")
-    assert any("tavi:1:det" in r.getMessage() for r in caplog.records)
+def test_malformed_candidates_refuse_the_build_with_a_redeliver_instruction(tmp_path, cell):
+    """SCENE-4 PR 4.0 (#26): a DELIVERED fit whose candidate cell is corrupt is a damaged
+    interpretation artifact, not a fitless arena — demoting it to the "no interpretation" lane
+    would silently drop local evidence that a clean re-delivery restores. Refuse loudly (H1),
+    same posture as the stale-delivery and missing-measurements refusals. The legit fitless lane
+    (no delivered fit at all) is covered separately and stays quiet."""
+    with pytest.raises(ValueError, match="re-deliver"):
+        scene_observations(_ws(tmp_path, [_row(1, candidates=cell)]))
 
 
 def test_candidate_rows_carry_their_component_descriptors(tmp_path):
