@@ -20,3 +20,9 @@ examples/
 .isar-local/
 .codex-validation/
 test_workspaces/
+
+# superpowers:brainstorming writes design specs here and its checklist says to commit them.
+# Committing one trips tests/docs/test_doc_drift.py (the register must map 1:1 to tracked
+# markdown). Keep specs untracked — _tracked_markdown() shells to `git ls-files`, so untracked
+# is invisible to every doc-drift check. Do not "fix" this by adding the path to EXEMPT_PREFIXES.
+docs/superpowers/
