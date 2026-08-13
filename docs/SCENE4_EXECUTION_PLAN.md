@@ -80,7 +80,7 @@ Which SCENE-3 review findings gate "the scene may steer":
   consequences: partition/fingerprint keys must anticipate lattice-epoch/UB-stamp axes (H13
   lattice epoch already exists); nothing may assume lattice/orientation immutable.
 
-## Topic 3 — Question lifecycle & authority: RULED (families pending explicit confirm)
+## Topic 3 — Question lifecycle & authority: RULED
 
 - **Regime spectrum** (user-declared intent, on the user to state clearly):
   1. Open discovery — find/pin/identify phenomena, fit to ISAR standard defaults; emergent
@@ -96,7 +96,7 @@ Which SCENE-3 review findings gate "the scene may steer":
 - Regime-1 wording enumerates families: pin down = ConfirmPresence, identify = ClassifyIdentity,
   fit-to-defaults = EstimateParameter (auto-opened per confirmed phenomenon, default tolerances).
   → **All seven families in SCENE-4 scope** (schema + predicate + generator bindings, wired for
-  regime 1). Pending Adrian's explicit confirm.
+  regime 1) — ratified below.
 - **Human-in-the-loop ruling:** users can be prompted mid-campaign for permissions/updates; never
   set-and-completely-forget; consequences of user choices/absence are on the user. Design
   consequence: a consultation channel in the drive loop (prompt = question + options + default +
@@ -112,7 +112,7 @@ Which SCENE-3 review findings gate "the scene may steer":
   deferred (DESIGN_GOALS objective — never build against it).
 - All-seven families: ratified (no objection raised).
 
-## Topic 4 — Completion predicates (in progress)
+## Topic 4 — Completion predicates: RULED
 
 - **Thresholds' home: RULED.** One named versioned defaults profile (no magic numbers in
   predicate code); goal compiler resolves + freezes effective values into the campaign program at
@@ -295,7 +295,10 @@ reads it to steer.
   fails the scene build loudly — a legit fitless arena and a corrupt table never share a lane.
   Scene intake (`build.py:305–471` `_validated`/`_non_scoring_reason`/`_split_by_evidence`)
   consumes the record; silent omission becomes impossible by construction.
-- **#25 + #28 partition** — partition key `(sample identity, ConditionSet, path identity)`:
+- **#25 + #28 partition** — partition key `(sample identity, ConditionSet, lattice-epoch frame
+  token, path identity)` — path identity via `topology_role` campaign provenance with geometric
+  collinearity as the fallback; the PR 4.3 provenance producer completes the path component
+  (program fingerprint / step id join the key there):
   - *Path identity from campaign provenance* (program fingerprint, step id, topology role:
     canonical-path / context-probe / unassigned); geometric collinearity (`path_topology()`,
     `build.py:243`) remains the FALLBACK inside a provenance group and for provenance-less
@@ -506,7 +509,7 @@ Selection is fully testable from stored revisions before any driver goes live.
 
 ## Acceptance additions from review triage (fold into the topic-8 matrix)
 
-Transported-arena safety (form pending the #21 ruling) · multi-report refiner rescue survives a
+Transported-arena safety (per the ruled #21 Variant A origin lanes) · multi-report refiner rescue survives a
 correct bound · measured-but-fitless fills the map · malformed candidate table fails loudly ·
 stable question identity across an added scan · question reopening on lost confidence ·
 bounded-truncation predicates do bound arithmetic and refuse vacuous bounds · question-scoped
