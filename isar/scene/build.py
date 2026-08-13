@@ -64,9 +64,14 @@ SCORING_CONSTRAINT_ORIGINS = frozenset(
     {"none", "user_declared", "prespecified_scientific", "catalogue_variant"})
 TRANSPORTED_CONSTRAINT_ORIGINS = frozenset(
     {"prior_predictive", "data_dependent_rescue", "post_selection", "mixed"})
-assert SCORING_CONSTRAINT_ORIGINS | TRANSPORTED_CONSTRAINT_ORIGINS == CONSTRAINT_ORIGINS, (
-    "isar.schema.statistics.CONSTRAINT_ORIGINS has a member neither scoring lane accounts for — "
-    "the scene intake lane split (#21) must be updated before this schema change is safe")
+# PR #30 review response (disposition 16): an unconditional ``raise`` rather than ``assert`` — an
+# ``assert`` disappears under ``python -O``, which would silently let a third, unaccounted-for
+# CONSTRAINT_ORIGINS member fall through to whichever lane's ``in`` check happened to run first,
+# exactly the silent-fallthrough failure this check exists to prevent.
+if SCORING_CONSTRAINT_ORIGINS | TRANSPORTED_CONSTRAINT_ORIGINS != CONSTRAINT_ORIGINS:
+    raise ValueError(
+        "isar.schema.statistics.CONSTRAINT_ORIGINS has a member neither scoring lane accounts for — "
+        "the scene intake lane split (#21) must be updated before this schema change is safe")
 
 # Same currency and idiom as isar/analyze/evidence.py PRUNE_MARGIN: nats below the cluster's
 # per-arena leader, beyond which a candidate's posterior mass is bounded by e^−margin and it
@@ -341,8 +346,12 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
     # unresolved (``ConditionSet.temperature_K_binned=None``) — legal, and recorded once here
     # rather than per-partition, since it is a fact about the DECLARATION, not about any one
     # partition's geometry.
+    # PR #30 review response (disposition 15): the SAME threshold ``ConditionSet.of`` fails closed
+    # at (``>= 1e-6``, not merely ``> 0.0``) — a ``condition_t_round`` between 0 and 1e-6 already
+    # makes every temperature-bearing arena's key unresolved there, so this ledger check must agree
+    # or it would silently omit the reason exactly in that band.
     condition_binning_unavailable = (
-        not (condition_t_round is not None and float(condition_t_round) > 0.0)
+        not (condition_t_round is not None and float(condition_t_round) >= 1e-6)
         and any(dict(o.conditions).get("temperature_K") is not None for o in trusted_obs))
 
     payload = {

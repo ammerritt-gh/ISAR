@@ -8,6 +8,8 @@ workspace, no filesystem — so a failure here is a failure of the math.
 """
 import itertools
 import math
+import subprocess
+import sys
 from dataclasses import replace
 
 import pytest
@@ -119,6 +121,45 @@ def chain_and_distant():
 
 def cluster_of(rev, cluster_id):
     return next(c for c in rev.payload["clusters"] if c["cluster_id"] == cluster_id)
+
+
+# ----------------------------------------------------------------------------
+# PR #30 review response (disposition 16): the #21 lane-split invariant survives ``python -O``
+# ----------------------------------------------------------------------------
+def test_the_constraint_origin_lane_split_invariant_fires_even_under_python_dash_o():
+    """An ``assert`` disappears under ``python -O`` — this check MUST NOT, because a silently
+    unaccounted-for ``CONSTRAINT_ORIGINS`` member would fall through to whichever scoring lane's
+    ``in`` check happened to run first, the exact silent-fallthrough failure the #21 split exists
+    to prevent. A subprocess is the only honest way to prove ``-O`` behaviour: monkeypatching the
+    schema module in-process and only checking for ``ValueError`` would pass equally well against
+    the OLD ``assert`` when pytest itself is not run with ``-O`` (its default)."""
+    script = (
+        "import isar.schema.statistics as st\n"
+        "st.CONSTRAINT_ORIGINS = frozenset({'none', 'a_third_unaccounted_member'})\n"
+        "import isar.scene.build\n")
+    result = subprocess.run([sys.executable, "-O", "-c", script],
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode != 0, result.stdout
+    assert "neither scoring lane accounts for" in result.stderr
+
+
+def test_the_constraint_origin_lane_split_raises_valueerror_not_assertionerror():
+    """The invariant is a ``ValueError`` a caller could catch and act on, not an ``AssertionError``
+    (the ``assert`` statement's spelling) — a caller that already catches ``ValueError`` from every
+    other builder refusal should not need a second exception class for this one."""
+    script = (
+        "import isar.schema.statistics as st\n"
+        "st.CONSTRAINT_ORIGINS = frozenset({'none', 'a_third_unaccounted_member'})\n"
+        "try:\n"
+        "    import isar.scene.build\n"
+        "except ValueError:\n"
+        "    print('VALUEERROR_RAISED')\n"
+        "    raise SystemExit(0)\n"
+        "raise SystemExit(1)\n")
+    result = subprocess.run([sys.executable, "-c", script],
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "VALUEERROR_RAISED" in result.stdout
 
 
 # ----------------------------------------------------------------------------

@@ -73,12 +73,39 @@ def test_a_full_path_measured_at_two_conditions_stays_two_intact_paths():
     assert sorted(clusters.values()) == [["c:0:d", "c:1:d", "c:2:d"], ["w:0:d", "w:1:d", "w:2:d"]]
 
 
+def test_same_binned_temperature_different_declared_field_never_couples():
+    """PR #30 review response (disposition 2), the #28 open failure this closes: ``ConditionSet``
+    used to discard every dimension but temperature, so two arenas at the identical binned T but a
+    different declared field shared a partition. Now every declared dimension enters the key
+    exact-value, so they do not — same q, same binned T, only the field differs."""
+    a = mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(5.0,))], q=q(1.0),
+              conditions=(("temperature_K", 300.0), ("field_T", 1.0)))
+    b = mk_obs("e:2:d", [cand("bg", -10.0, n_modes=0, omegas=())], q=q(1.0),
+              conditions=(("temperature_K", 300.0), ("field_T", 2.0)))
+    rev = build_scene([a, b])
+    clusters = {c["cluster_id"]: c["scan_refs"] for c in rev.payload["clusters"]}
+    assert clusters == {"e:1:d": ["e:1:d"], "e:2:d": ["e:2:d"]}
+
+
 def test_condition_binning_unavailable_fails_closed_and_records_a_reason():
     """A declared temperature with no declared binning policy (``condition_t_round`` non-positive
     or absent) cannot resolve a partition key — fails closed to no-coupling, with a reason."""
     a = mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(5.0,))], q=q(1.0))
     b = mk_obs("e:2:d", [cand("bg", -10.0, n_modes=0, omegas=())], q=q(1.0))
     rev = build_scene([a, b], condition_t_round=None)
+    assert "condition_binning_unavailable" in rev.payload["sample_knowledge"]["degradations"]
+    clusters = {c["cluster_id"]: c["scan_refs"] for c in rev.payload["clusters"]}
+    assert clusters == {"e:1:d": ["e:1:d"], "e:2:d": ["e:2:d"]}
+
+
+def test_condition_binning_unavailable_agrees_with_conditionsets_microkelvin_floor():
+    """PR #30 review response (review finding, disposition 15): a ``condition_t_round`` between 0
+    and the 1e-6 floor already makes ``ConditionSet.of`` fail closed (salted, no-coupling) — the
+    degradation ledger must record the SAME reason for the SAME band, not a narrower one that
+    silently under-reports it."""
+    a = mk_obs("e:1:d", [cand("stokes+bg", -10.0, omegas=(5.0,))], q=q(1.0))
+    b = mk_obs("e:2:d", [cand("bg", -10.0, n_modes=0, omegas=())], q=q(1.0))
+    rev = build_scene([a, b], condition_t_round=1e-7)
     assert "condition_binning_unavailable" in rev.payload["sample_knowledge"]["degradations"]
     clusters = {c["cluster_id"]: c["scan_refs"] for c in rev.payload["clusters"]}
     assert clusters == {"e:1:d": ["e:1:d"], "e:2:d": ["e:2:d"]}

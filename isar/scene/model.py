@@ -369,8 +369,8 @@ class SceneObservation:
     # precedent).
     sample: str | None
     conditions: tuple                            # sorted (name, value) pairs; v1: temperature_K
-    count_trust: str                              # "trusted" / "excluded" / "held_for_calibration"
-                                                   # / "undersampled" — only "trusted" may score
+    count_trust: str                              # one of COUNT_TRUST_STATES (below) — only
+                                                   # "trusted" may score
     lattice_epoch: int | None
     fingerprint: str                             # sha256 of this observation's canonical payload
     # SCENE-4 PR 4.0 (#25/#28): this arena's role in the campaign's PATH topology, as persisted
@@ -385,6 +385,21 @@ class SceneObservation:
     # whole-set collinearity check exactly: no production writer stamps this field yet (PR 4.1-4.3
     # wire the campaign-provenance producer), so every workspace today is the ``None`` case.
     topology_role: str | None = None
+
+    def __post_init__(self):
+        # PR #30 review response (disposition 14): canonicalize + validate on EVERY construction
+        # path, not only ``from_dict`` — a caller building a ``SceneObservation`` directly (every
+        # test fixture, the workspace adapter) must fingerprint the same canonical form a
+        # round-trip through JSON would, or two byte-identical observations built two different
+        # ways would digest differently. ``object.__setattr__`` because the dataclass is frozen
+        # (``SampleKnowledge.__post_init__`` is the same precedent).
+        object.__setattr__(self, "conditions", _conditions(self.conditions))
+        if self.count_trust not in COUNT_TRUST_STATES:
+            raise ValueError(f"SceneObservation {self.scan_ref!r} declares count_trust "
+                             f"{self.count_trust!r}; allowed: {COUNT_TRUST_STATES}")
+        if self.topology_role is not None and self.topology_role not in TOPOLOGY_ROLES:
+            raise ValueError(f"SceneObservation {self.scan_ref!r} declares topology_role "
+                             f"{self.topology_role!r}; allowed: {(*TOPOLOGY_ROLES, None)}")
 
     def to_dict(self) -> dict:
         return {
@@ -651,6 +666,16 @@ def blocks_elastic_line(component: ComponentObservation) -> bool:
     return component.kind in BLOCKING_KINDS
 
 
+# PR #30 review response (disposition 14): the count-trust vocabulary, duplicated from
+# ``isar.schema.measurement.MeasurementArena.count_trust`` (the single source of truth) — this
+# module stays stdlib-only (tests/scene/test_import_ban.py) and cannot import the schema package
+# to read it there. Keep byte-identical to the schema's own tuple, including ``"attempted"`` (the
+# pre-dispatch stub state a measurement record starts in before a fit ever runs — a non-trusted
+# lane like the other three gate outcomes, so it takes no part in scoring or the footprint set
+# either).
+COUNT_TRUST_STATES = ("trusted", "excluded", "held_for_calibration", "undersampled", "attempted")
+
+
 # SCENE-4 PR 4.0 (#25/#28): the campaign-provenance path-topology role vocabulary a
 # ``SceneObservation`` may declare. ``"context_probe"`` is the ONLY value the builder acts on
 # (withheld from ``path_topology``'s input); ``"canonical_path"`` is spelled here so a future
@@ -664,9 +689,15 @@ class ConditionSet:
     """Typed condition-dimension key for scene PARTITION comparison (#28) — never the raw,
     exact-valued ``SceneObservation.conditions`` fingerprint field, which stays untouched.
 
-    An open dimension set (temperature, field, pressure, ...): v1 carries one,
-    ``temperature_K_binned``, so nothing here hardcodes "temperature is THE condition" — a later
-    dimension is another named field plus another entry in :meth:`key`, not a redesign.
+    An OPEN dimension set (temperature, field, pressure, ...), per the PR #30 review response
+    (disposition 2): every dimension ``SceneObservation.conditions`` carries enters the partition
+    key, never only temperature. Temperature is BINNED by the card's declared policy
+    (``temperature_K_binned``, below) because it is the one dimension Stage II already pools with
+    tolerance; every OTHER declared dimension compares EXACT-VALUE, carried verbatim in ``other``
+    — a same-temperature arena at a different declared field or pressure never shares a partition
+    by default (#28's "same T, different field" failure). A later dimension that also wants
+    tolerant binning is a new named field plus a new ``of``/``key`` clause, not a redesign; nothing
+    here hardcodes "temperature is the only condition worth comparing".
 
     Binning is a PARTITION-COMPARISON policy only (the card's declared ``collation.t_round``,
     :func:`isar.reduce.collate._t_key`'s own rounding rule, repeated here rather than imported —
@@ -696,26 +727,46 @@ class ConditionSet:
     scene PARTITION membership, which decides which observation ARENAS may share one lnZ
     normalization. A future shared ownership is possible but is not this package's call to make;
     the scene layer stays the sole authority on ITS partition key.
+
+    ``t_round < 1e-6`` (disposition 15) is treated exactly like an absent or non-positive
+    ``t_round``: the fixed 6-decimal rounding :meth:`of` applies to the binned value cannot
+    represent a bin narrower than that without collapsing distinct bins into the same rounded
+    float, which would silently COLLAPSE bins the caller declared as separate rather than fail
+    closed to no-coupling — precisely the invention the #28 ruling forbids. A caller that
+    genuinely wants finer-than-microkelvin binning needs a different representation, not a
+    ``t_round`` this classmethod will treat as legal.
     """
 
     temperature_K_binned: float | None
     resolved: bool = True
+    # Every OTHER declared condition dimension, sorted ``(name, value)`` pairs, EXACT-VALUE
+    # (disposition 2) — never binned, never dropped. ``()`` when ``conditions`` carries nothing
+    # beyond (or instead of) temperature.
+    other: tuple[tuple[str, float], ...] = ()
 
     @classmethod
     def of(cls, conditions: tuple, t_round: float | None) -> "ConditionSet":
-        temperature_K = dict(conditions).get("temperature_K")
+        by_name = dict(conditions)
+        temperature_K = by_name.get("temperature_K")
+        other = tuple(sorted((str(k), float(v)) for k, v in conditions if k != "temperature_K"))
         if temperature_K is None:
-            return cls(temperature_K_binned=None, resolved=True)
-        if t_round is None or not (float(t_round) > 0.0):
-            return cls(temperature_K_binned=None, resolved=False)
+            return cls(temperature_K_binned=None, resolved=True, other=other)
+        if t_round is None or not (float(t_round) >= 1e-6):
+            return cls(temperature_K_binned=None, resolved=False, other=other)
         tr = float(t_round)
         return cls(temperature_K_binned=round(round(float(temperature_K) / tr) * tr, 6),
-                  resolved=True)
+                  resolved=True, other=other)
 
     @property
     def key(self) -> tuple:
-        """The canonical, hashable partition-comparison key: ``(dimension name, binned value)``."""
-        return (("temperature_K", self.temperature_K_binned),)
+        """The canonical, hashable partition-comparison key.
+
+        ``("temperature_K", binned value)`` first (Stage II precedent: temperature is the
+        dimension every existing card already pools with tolerance), then every other declared
+        dimension exact-value, already sorted by name in ``other`` — so two arenas differing in
+        ANY declared condition, binned or exact, never collide on this key.
+        """
+        return (("temperature_K", self.temperature_K_binned), *self.other)
 
 
 @dataclass(frozen=True, slots=True)
