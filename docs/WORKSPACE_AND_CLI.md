@@ -19,7 +19,8 @@ One directory per experiment (`isar/session/workspace.py`):
   card.policy.toml    # human-owned; the machine NEVER writes it
   card.state.json     # machine-owned accumulated state — experiment-critical, not deletable
   session.json        # machine bookkeeping (manifest + ledger) — deletable, rebuildable
-  report/             # report.md/.html/.json, reduction.*, results.csv, figures/
+  report/             # report.md/.html/.json, reduction.*, results.csv, figures/,
+                      # measurements.jsonl (counts-authoritative arena log), scene/ (revisions)
     scene/            # scene revisions: <digest>.json blobs + current.json pointer
 ```
 
@@ -97,7 +98,9 @@ workspace) → read the report → correct the card if needed → next batch. Re
 ## The Stage II ↔ III boundary is a frozen file contract
 
 Stage III (`isar drive`) consumes Stage II (`isar run`) through files only —
-`report/results.csv`, `<workspace>/report/report.json`, and `card.state.json`. The driver never imports fit
+`report/results.csv`, `report/measurements.jsonl` (the counts-authoritative
+`isar.measurement-arena/1` log: one line per measured arena, written independently of fit
+success, SCENE-4 PR 4.0 #26), `<workspace>/report/report.json`, and `card.state.json`. The driver never imports fit
 internals. The one pre-release v1→v2 clean break was authorized on 2026-07-17 (DECISIONS O12);
 from v2 onward, contract changes are additive only (`DESIGN.md` §4) — except for the contracts the
 SCENE program rebuilds, where DECISIONS H1 supersedes that rule. The campaign contract is one of

@@ -153,7 +153,9 @@ deliberate, production reads them) ·
 facade) ·
 `isar_gui` (reads science through `workspace_api`; controls campaigns by subprocess + control
 files). The Stage II ↔ III boundary is a **frozen file contract**
-(`report/results.csv`, `<workspace>/report/report.json`, `card.state.json`) — the driver never imports fit internals.
+(`report/results.csv`, `report/measurements.jsonl` — the counts-authoritative
+`isar.measurement-arena/1` log, one line per measured arena written before any fit is trusted to
+exist, `<workspace>/report/report.json`, `card.state.json`) — the driver never imports fit internals.
 The one pre-release v1→v2 clean break was authorized on 2026-07-17 (DECISIONS O12). During the
 SCENE transition, H1 supersedes the additive-only rule for contracts SCENE rebuilds:
 `isar.campaign-program/1` replaces the objective envelope outright with no compatibility reader,

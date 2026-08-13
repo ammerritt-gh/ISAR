@@ -243,6 +243,28 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   beside a zone centre gets no such explanation, and neither does a flat track. Distinct from
   **blocked_unresolved** in what you should do: blocked means count longer,
   structural endpoint means no amount of counting will produce a peak. Never penalized.
+- **measurement-arena record** — one line per measured arena in `report/measurements.jsonl`
+  (`isar.measurement-arena/1`), written independently of whether any fit succeeded: counts are
+  authoritative, fits are disposable interpretations on top. A pre-dispatch stub survives even a
+  killed worker, so "we measured there" can never be erased by an analysis failure. What the
+  scene may credit as coverage is decided by its **count_trust**.
+- **count_trust** — the measurement record's terminal state: **trusted** (usable counts — the
+  only state that earns a footprint and coverage credit), **excluded** / **held_for_calibration**
+  / **undersampled** (gate outcomes: attempted, recorded, no coverage), and **attempted** (the
+  pre-dispatch stub — the delivery never reported back). Everything non-trusted is recorded as
+  attempted but claims nothing.
+- **transported conditioning** — the non-scoring reason an arena gets when its winning candidate
+  comparison ran under priors *derived from other arenas' data* (branch rescue and its kin).
+  Summing its evidence as independent would count the source arena's neutrons twice, so the
+  arena is experiment-map-only until a real transport contract exists (#21, interim Variant A).
+  Priors the scientist *declared* are not transport — declared information is counted exactly
+  once in the local evidence and scores normally.
+- **scene partition** — the boundary no scene coupling may cross: `(sample identity, condition
+  set, lattice-epoch frame token)`, with the campaign-path component joining when path
+  provenance lands. Different samples, different binned conditions (temperature now; any
+  declared dimension exactly), or different lattice interpretations are different physical
+  scenes — no cluster edges, no linkage, no presence charges, no endpoint readings across the
+  boundary, and knowledge factors go inert on partitions whose frame is not the declared one.
 - **sample knowledge** — what the scientist DECLARED about the sample, read off the experiment card:
   the reduced-zone period, the Bragg reflections along the scan path, the steepest dispersion slope
   any branch may have (meV per rlu — the only thing that says how far a track could have moved
