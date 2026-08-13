@@ -94,6 +94,7 @@ and verified by `git grep` at deletion time rather than by bookkeeping.
 | `docs/WORKED_EXAMPLE.md` | Current | single-scan walkthrough | — |
 | `docs/GLOSSARY.md` | Current | term definitions | — |
 | `docs/HYPOTHESES.md` | Current | hypothesis declaration contract | — |
+| `docs/DESIGN_GOAL_INBOX.md` | Current | — | **Append-only** staging inbox for `DESIGN_GOALS.md` candidates: agents may only append (after checking the item is not already present); only the owner drains entries into `DESIGN_GOALS.md` or deletes them |
 | `docs/ADJUDICATION.md` | Current | adjudication trust + config contract; **also the LLM endpoint setup reference** | §11 is dated historical evaluation, not present verification status |
 | `docs/STATS_PRIMER.md` | Current | statistical methods; **§7 is the sole record of the 2026-07-19 audit** | — |
 | `docs/SCHEMA_LANDSCAPE.md` | Current | the schema survey (sole) | — |
