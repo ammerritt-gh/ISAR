@@ -163,13 +163,105 @@ def test_two_stage_single_peak_stays_one_mode():
     assert all(r.n_modes <= 1 for r in results)      # phonon-bearing: 1 mode; nulls: 0
 
 
-def test_two_stage_offers_multimode_when_two_peaks_declared():
-    """Even a clean single-peak scan gets the 2-mode set offered when ≥2 peaks are declared
-    (the driver-supplied ``peaks`` hint); AIC is then left to reject the extra mode."""
+def _between_threshold_ctx(a2=2.0, seed=2):
+    """A weak second peak whose residual structure sits strictly BETWEEN the relaxed
+    (``GATE_COST_DECLARED``/``RUNS_ALPHA_DECLARED``) and global (``GATE_COST``/``RUNS_Z``)
+    thresholds: cost/dof ≈ 1.37 clears the relaxed 1.3 but not the global 2.0. Picked by search
+    against the fixed seed; not physically special."""
+    x = np.linspace(-6.0, 20.0, 121)
+    p1 = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
+                             peak="stokes+astokes")
+    p2 = convolute_voigt_dho(x, 11.0, 0.0, 1.0, 0.0, 0.4, a2, 0.0, 0.0, 50.0,
+                             peak="stokes+astokes")
+    counts = np.random.default_rng(seed).poisson(np.clip(p1 + p2 + 8.0, 0.0, None)).astype(float)
+    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                       energy_status="needs_zero")
+
+
+def test_declared_scan_between_thresholds_is_offered_identical_undeclared_is_not():
+    """2026-08-09 ruling (DECISIONS H8(a)): a declaration RELAXES the offering diagnostic, it
+    never bypasses it. A scan whose one-mode residual structure clears the relaxed thresholds but
+    not the global ones is offered the 2-mode set only when a ≥2-peak count is declared."""
+    ctx = _between_threshold_ctx()
+    peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
+
+    undeclared = loop.fit_structures_two_stage(ctx, minos=False)
+    assert "stokes2+bg" not in {r.label for r in undeclared}
+
+    route_out = {}
+    declared = loop.fit_structures_two_stage(
+        ctx, minos=False, peaks=peaks, route_out=route_out)
+    assert "stokes2+bg" in {r.label for r in declared}
+    assert route_out["multimode_route"] == "declaration_relaxed"
+
+
+def test_declared_scan_offered_by_relaxation_still_loses_to_one_mode_on_evidence():
+    """The relaxed offer is not a forced win: a single-peak scan whose noise happens to clear the
+    relaxed cost/dof threshold (but not the global one) still has its offered 2-mode candidate
+    lose to the 1-mode structure on AIC — evidence, not the declaration, decides."""
+    x = np.linspace(-8.0, 16.0, 81)
+    counts = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
+                                 peak="stokes+astokes") + 8.0
+    counts = np.random.default_rng(51).poisson(np.clip(counts, 0.0, None)).astype(float)
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                      center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
+
+    undeclared = loop.fit_structures_two_stage(ctx, minos=False)
+    assert "stokes2+bg" not in {r.label for r in undeclared}   # global gate does not fire
+
+    route_out = {}
+    results = loop.fit_structures_two_stage(
+        ctx, minos=False, peaks=peaks, route_out=route_out)
+    assert route_out["multimode_route"] == "declaration_relaxed"
+    by_label = {r.label: r for r in results}
+    one = by_label["stokes+bg"]
+    two = by_label["stokes2+bg"]
+    assert one.optimizer_converged and two.optimizer_converged
+    assert (one.cost + 2.0 * one.k) < (two.cost + 2.0 * two.k)   # one-mode AIC-preferred
+
+
+def test_declared_clean_one_mode_scan_is_not_offered():
+    """Natural abstention: a declared scan whose one-mode fit is clean under BOTH relaxed
+    diagnostics is still not offered — the declaration permits, it does not force."""
     ctx = _one_peak_ctx()
     peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
-    results = loop.fit_structures_two_stage(ctx, minos=False, peaks=peaks)
+    route_out = {}
+    results = loop.fit_structures_two_stage(
+        ctx, minos=False, peaks=peaks, route_out=route_out)
+    assert "stokes2+bg" not in {r.label for r in results}
+    assert route_out["multimode_route"] == "not_offered"
+
+
+def test_declared_scan_offered_by_global_triggers_keeps_ordinary_route():
+    """A declared scan the GLOBAL thresholds would already have offered persists the ordinary
+    ``residual_triggered`` route, not ``declaration_relaxed`` — the route is re-derived from the
+    gate outcome, never from ``peaks`` presence."""
+    ctx = _two_peak_ctx()
+    peaks = [{"omega0": 4.0}, {"omega0": 10.0}]
+    route_out = {}
+    results = loop.fit_structures_two_stage(
+        ctx, minos=False, peaks=peaks, route_out=route_out)
     assert "stokes2+bg" in {r.label for r in results}
+    assert route_out["multimode_route"] == "residual_triggered"
+
+
+def test_fit_shadow_candidates_reports_same_route_vocabulary():
+    """`fit_shadow_candidates` (the STAT-2a shadow route) applies the identical declared-count
+    relaxation and route provenance as the production two-stage path — the diagnostic is one
+    function regardless of which caller runs it."""
+    ctx = _between_threshold_ctx()
+    peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
+
+    undeclared_bundle = loop.fit_shadow_candidates(ctx)
+    assert undeclared_bundle.multimode_route == "not_offered"
+    assert "stokes2+bg" not in set(undeclared_bundle.offered_labels)
+
+    declared_bundle = loop.fit_shadow_candidates(ctx, peaks=peaks)
+    assert declared_bundle.multimode_route == "declaration_relaxed"
+    assert "stokes2+bg" in set(declared_bundle.offered_labels)
 
 
 def _scientific_signature(results):
