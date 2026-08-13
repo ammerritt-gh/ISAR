@@ -123,7 +123,7 @@ area.
 | Card / schema across facilities | `docs/SCHEMA_LANDSCAPE.md` |
 | Flag adjudication (opt-in LLM) | `docs/ADJUDICATION.md` |
 | The autonomous driver (`isar drive`) | `docs/MEASUREMENT_STEERING.md` |
-| Same-action scan-window EIG (candidate generation and exact realized scoring Partial; authoritative selection Partial — symmetric per-neutron comparison, O43; O42 release review retired by H1; default-on lands at SCENE-4, when the SCENE world suite exercises the selection path) | `docs/EIG_STEERING_DESIGN.md`, then `docs/MEASUREMENT_STEERING.md` |
+| Same-action scan-window EIG (candidate generation and exact realized scoring Partial; authoritative selection Partial — symmetric per-neutron comparison, O43; O42 release review retired by H1; default-on is a SCENE-4 deliverable, world-suite coverage of the selection path its acceptance evidence) | `docs/EIG_STEERING_DESIGN.md`, then `docs/MEASUREMENT_STEERING.md` |
 | Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
 | The SCENE program (scene layer, catalogue, target-free discovery; SCENE-0..3 Implemented — H1 constitution + world suite, catalogue/evidence-selection/constrained variants, program contract, scene scoring + factors + revision store + `workspace_api` read surface (DECISIONS H1–H14); SCENE-4+ Planned) | `docs/SCENE_DESIGN.md` |
 | Campaign diagnostic report | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |
