@@ -1341,7 +1341,7 @@ def _safe_shadow_unavailable(reason_code: str, stage: str, *, point, legacy_fing
 
 def _build_shadow_point_bundle(ctx, all_results, *, structure_labels, peaks,
                                structure_hint, structure_skipped, boot_executor,
-                               shadow_enabled) -> dict:
+                               shadow_enabled, delivery_multimode_route=None) -> dict:
     """Produce point-fit-only standard evidence without touching legacy selection authority."""
     started = time.perf_counter()
     point = {
@@ -1389,7 +1389,7 @@ def _build_shadow_point_bundle(ctx, all_results, *, structure_labels, peaks,
         if _shadow_can_alias_delivery(
                 all_results, structure_skipped=structure_skipped):
             candidate_bundle = loop.shadow_bundle_from_complete_results(
-                all_results, peaks=peaks
+                all_results, multimode_route=delivery_multimode_route
             )
         else:
             reusable = (
@@ -1600,9 +1600,10 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # Candidate enumeration is point-estimation only. Full-tier MINOS is authoritative only after
     # the preliminary AIC pass and runs once per survivor in errors.attach_batch below.
     offered_hypotheses = {}
+    route_out = {}
     results, structure_skipped = loop.fit_structures_two_stage_hinted(
         ctx, minos=False, peaks=peaks, structure_hint=structure_hint,
-        executor=boot_executor, hypotheses_out=offered_hypotheses)
+        executor=boot_executor, hypotheses_out=offered_hypotheses, route_out=route_out)
     two_stage_seconds = round(time.perf_counter() - _t_two_stage, 4)
     all_results = results
     labels_before_guideline = [str(r.label) for r in results]
@@ -1625,13 +1626,10 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
             warn = (f"guideline structures {list(structure_labels)} match no admissible "
                     f"{[r.label for r in results]}; kept all")
 
-    if structure_skipped:
-        multimode_route = "not_evaluated_structure_hint"
-    elif any(int(getattr(r, "n_modes", 1)) > 1 for r in results):
-        multimode_route = "guideline_forced" if peaks is not None and len(peaks) >= 2 \
-            else "residual_triggered"
-    else:
-        multimode_route = "not_offered"
+    # Re-derived from the gate outcome loop.fit_structures_two_stage_hinted actually ran, never
+    # guessed from ``peaks`` presence (2026-08-09 ruling: a declaration relaxes the diagnostic,
+    # it does not force the route).
+    multimode_route = route_out.get("multimode_route", "not_offered")
     candidate_generation_route = {
         "route": "structure_hint_shortcut" if structure_skipped else "full_two_stage",
         "supplied_hint": None if structure_hint is None else str(structure_hint),
@@ -1655,6 +1653,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         structure_skipped=structure_skipped,
         boot_executor=boot_executor,
         shadow_enabled=shadow_enabled,
+        delivery_multimode_route=multimode_route,
     )
 
     fits = {r.label: r for r in results}

@@ -150,6 +150,36 @@ def _two_peak_ctx(o1=4.0, a1=500.0, o2=10.0, a2=350.0, g=0.35, bg=8.0, n=121):
                        energy_status="needs_zero")
 
 
+def test_fit_one_multimode_route_is_declaration_relaxed_not_peaks_presence():
+    """`fit_one`'s persisted ``multimode_route`` is re-derived from the actual gate outcome
+    (2026-08-09 ruling), never guessed from ``peaks`` presence: a declared scan whose residual
+    structure clears the relaxed thresholds but not the global ones persists
+    ``"declaration_relaxed"``, and the identical undeclared scan offers no 2-mode candidate at
+    all. The aliased shadow-selection route agrees."""
+    x = np.linspace(-6.0, 20.0, 121)
+    p1 = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
+                             peak="stokes+astokes")
+    p2 = convolute_voigt_dho(x, 11.0, 0.0, 1.0, 0.0, 0.4, 2.0, 0.0, 0.0, 50.0,
+                             peak="stokes+astokes")
+    counts = np.random.default_rng(2).poisson(np.clip(p1 + p2 + 8.0, 0.0, None)).astype(float)
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                      center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    card = _card_with_fitting({})
+    peaks = ({"omega0": 5.0}, {"omega0": 11.0})
+
+    undeclared = scan_delivery.fit_one(ctx, card, prior=None, M=1, seed=1, errors_tier="cheap")
+    assert undeclared["n_modes"] != 2
+
+    fit = scan_delivery.fit_one(
+        ctx, card, prior=None, M=1, seed=1, peaks=peaks, errors_tier="cheap")
+    route = fit["fit_selection_semantics"]["candidate_generation_route"]
+    assert route["multimode_route"] == "declaration_relaxed"
+    shadow_route = fit["shadow_model_selection"].get("candidate_generation_route")
+    if shadow_route is not None:
+        assert shadow_route.get("multimode_route") == "declaration_relaxed"
+
+
 @pytest.mark.slow
 def test_fit_one_two_peak_returns_two_modes_and_secondary_csv(tmp_path):
     ctx = _two_peak_ctx()

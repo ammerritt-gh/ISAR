@@ -468,14 +468,24 @@ def test_selection_and_predictive_source_model_identities_must_match():
 
 
 @pytest.mark.parametrize("route_updates", [
-    {"multimode_route": "guideline_forced"},
+    {"multimode_route": "declaration_relaxed"},
     {"supplied_hint": "two modes", "hint_accepted": True},
     {"guideline_changed_model_set": True},
 ])
-def test_guideline_forced_and_accepted_hints_are_incomplete_comparisons(route_updates):
+def test_declaration_relaxed_and_accepted_hints_are_incomplete_comparisons(route_updates):
     result = evaluate_eig_eligibility(_input(
         selection_record=_clean_selection(**route_updates), shadow_record=_neutral_shadow()))
-    assert "selection_guideline_forced" in result.scientific_codes
+    assert "selection_declaration_relaxed" in result.scientific_codes
+
+
+@pytest.mark.parametrize("multimode_route", ["residual_triggered", "not_offered"])
+def test_ordinary_multimode_routes_raise_no_relaxation_flag(multimode_route):
+    """A route the global gate triggered on its own (or never offered) is NOT relaxation-driven —
+    ``selection_declaration_relaxed`` is keyed on the gate outcome, not on multimode presence."""
+    result = evaluate_eig_eligibility(_input(
+        selection_record=_clean_selection(multimode_route=multimode_route),
+        shadow_record=_neutral_shadow()))
+    assert "selection_declaration_relaxed" not in result.scientific_codes
 
 
 def test_a_scored_label_the_route_never_offered_is_an_unaccountable_denominator():
@@ -520,7 +530,7 @@ def test_structure_filter_content_alone_does_not_block_a_complete_comparison():
     result = evaluate_eig_eligibility(_input(
         selection_record=_clean_selection(guideline_structure_filter=["dho_single"]),
         shadow_record=_neutral_shadow()))
-    assert "selection_guideline_forced" not in result.scientific_codes
+    assert "selection_declaration_relaxed" not in result.scientific_codes
 
 
 def test_pre_guideline_model_set_must_survive_into_the_offered_set():

@@ -39,7 +39,7 @@ SCIENTIFIC_REASON_ORDER = (
     "selection_no_candidates", "selection_candidate_semantics_missing",
     "selection_route_missing", "selection_route_kind_unsupported",
     "selection_scored_not_offered", "selection_labels_shifted_before_guideline",
-    "selection_guideline_forced", "predictive_insufficient_bootstrap_mass",
+    "selection_declaration_relaxed", "predictive_insufficient_bootstrap_mass",
     "projection_incomplete", "projection_stale", "projection_join_mismatch",
     "qoi_materially_unavailable", "shadow_disagrees", "shadow_comparison_invalid",
     "recovery_or_missed_window_state",
@@ -429,19 +429,19 @@ def _selection_checks(record: Mapping[str, Any] | None, science: list[str], gaps
     # vocabularies and were never comparable — comparing them rejected every real
     # fit.  Completeness is instead grounded in producer-owned facts: the offered
     # set was the scored set, the pre-guideline model set survived into it, the
-    # producer declares the guideline changed no model set, and no hint or
-    # guideline forced the route.  The label comparison is unconditional so the
-    # verdict never depends on whether the flag was written at all.
+    # producer declares the guideline changed no model set, and no hint was accepted or
+    # declared-count relaxation drove the multimode route.  The label comparison is
+    # unconditional so the verdict never depends on whether the flag was written at all.
     before = route.get("labels_before_guideline")
     if isinstance(before, list) and isinstance(offered, list) and set(before) != set(offered):
         science.append("selection_labels_shifted_before_guideline")
     if (route.get("guideline_changed") is True
             or route.get("guideline_changed_model_set") is True
-            or route.get("multimode_route") == "guideline_forced"
+            or route.get("multimode_route") == "declaration_relaxed"
             or (route.get("supplied_hint") is not None
                 and (route.get("hint_accepted") is True
                      or route.get("delivery_hint_accepted") is True))):
-        science.append("selection_guideline_forced")
+        science.append("selection_declaration_relaxed")
     return validated
 
 

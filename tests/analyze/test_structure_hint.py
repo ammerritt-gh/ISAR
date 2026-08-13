@@ -78,6 +78,38 @@ def test_accepted_hint_fits_only_hinted_structure_plus_null(monkeypatch):
     assert results[0].optimizer_converged
 
 
+def test_declared_hint_between_thresholds_rejects_shortcut_for_full_two_mode_offer():
+    """The declared-count relaxation applies uniformly at the structure-hint shortcut gate too
+    (2026-08-09 ruling): a declared scan whose hinted one-mode fit clears the RELAXED thresholds
+    (but not the global ones) rejects the shortcut and receives the full two-mode offer with
+    ``multimode_route="declaration_relaxed"`` — the offer must not depend on whether a structure
+    hint happened to be in scope. The identical undeclared hint accepts the shortcut."""
+    x = np.linspace(-6.0, 20.0, 121)
+    p1 = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
+                             peak="stokes+astokes")
+    p2 = convolute_voigt_dho(x, 11.0, 0.0, 1.0, 0.0, 0.4, 2.0, 0.0, 0.0, 50.0,
+                             peak="stokes+astokes")
+    counts = np.random.default_rng(2).poisson(np.clip(p1 + p2 + 8.0, 0.0, None)).astype(float)
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                      center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
+
+    route_out = {}
+    declared_results, declared_skipped = loop.fit_structures_two_stage_hinted(
+        ctx, minos=False, peaks=peaks, structure_hint="stokes+bg", route_out=route_out)
+    assert declared_skipped is False                          # shortcut rejected
+    assert "stokes2+bg" in {r.label for r in declared_results}  # full two-mode offer
+    assert route_out["multimode_route"] == "declaration_relaxed"
+
+    route_out_undeclared = {}
+    undeclared_results, undeclared_skipped = loop.fit_structures_two_stage_hinted(
+        ctx, minos=False, structure_hint="stokes+bg", route_out=route_out_undeclared)
+    assert undeclared_skipped is True                         # shortcut accepted, no declaration
+    assert [r.label for r in undeclared_results] == ["stokes+bg"]
+    assert route_out_undeclared["multimode_route"] == "not_evaluated_structure_hint"
+
+
 def test_gate_failure_falls_through_to_full(monkeypatch):
     # A two-peak spectrum hinted with the 1-mode "stokes+bg": one DHO leaves a structured residual
     # → _offer_multimode fires → the hint is discarded and the full two-stage enumeration runs.
