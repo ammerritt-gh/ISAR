@@ -96,8 +96,8 @@ emitted request unchanged by a single neutron.
 O41 authorizes the implemented restricted selector after owner acceptance of the coherent Slice 8
 V3 evidence. Declaring `authoritative` requires the exact O41 profile; invalid profiles refuse with a
 user-visible reason, while authenticated eligible evidence may select `target_core/1`. The
-implementation stays opt-in until the SCENE world suite exercises it; H1 retired the separate O42
-release review. The derived `/3` inventory is content-addressed under
+implementation stays opt-in until the SCENE world suite exercises the selection path (SCENE-4); H1
+retired the separate O42 release review. The derived `/3` inventory is content-addressed under
 `report/scan-design/<sha256>.json` and referenced from proposal provenance. Its candidate id names the
 pre-finalization design; the existing proposal fingerprint separately names the exact request after
 live point/count clamps. A changed realization appends an `isar.scan_design_realization/1` record
@@ -153,8 +153,8 @@ existing non-EIG path. Stale, malformed, unauthenticated, unavailable, or grid-m
 has no EIG authority. One shared refresh permits at most one rebuild and reselection; a second
 mutation submits authenticated legacy without a third pass. The durable authority decision precedes
 submission and its hash is bound into the submission record. Returned-grid mismatch invalidates only
-that acquisition lineage. H1 retired the separate O42 release review: the path becomes default-on
-once the SCENE world suite exercises it, at SCENE-4.
+that acquisition lineage. H1 retired the separate O42 release review: the selection path becomes
+default-on at SCENE-4, when the SCENE world suite exercises it directly.
 
 The allowance is cooperative, not preemptive: the adapter checks before each synchronous variant
 score and again after it returns. If the second check crosses the deadline, that raw score set is
