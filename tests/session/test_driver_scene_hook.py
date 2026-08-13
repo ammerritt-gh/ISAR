@@ -96,10 +96,15 @@ def test_a_real_delivery_publishes_the_scans_it_delivered(tmp_path):
     verifies against its own digest and holds the arena the delivery actually produced — the hook
     reads the ledger the delivery just wrote, not a stale one.
 
-    That arena is the POOLED MASTER, not the member scan: the master fitted the same neutrons
-    (combine-before-divide), so the adapter's exactly-once rule supersedes the member row. Pinned
-    here because it is the delivery-shaped half of that rule — the adapter tests build the two
-    rows by hand."""
+    The SCORING arena is the POOLED MASTER, not the member scan: the master fitted the same
+    neutrons (combine-before-divide), so the adapter's exactly-once rule supersedes the member
+    row (numor 55182 — no synthetic observation for it either). Pinned here because it is the
+    delivery-shaped half of that rule — the adapter tests build the two rows by hand.
+
+    SCENE-4 PR 4.0 (#26) re-baseline: numor 55183 is UNDERSAMPLED, and used to vanish from the
+    scene entirely — the exact silent-omission failure #26 removes. Its measurement-arena record
+    now survives the gate, so the delivery honestly publishes it as a count-untrusted,
+    candidate-less observation that is non-scoring and earns no coverage credit."""
     data = tmp_path / "in8"
     data.mkdir()
     for numor in ("055182", "055183"):
@@ -110,9 +115,15 @@ def test_a_real_delivery_publishes_the_scans_it_delivered(tmp_path):
 
     # read_current re-digests the parsed payload, so this asserts the blob and the pointer agree.
     pointer, payload = store.read_current(ws.report_dir)
-    observation, = payload["observations"]
-    assert observation["scan_ref"].startswith("master:"), observation["scan_ref"]
-    assert observation["candidates"], "the delivered arena carries no candidate table"
+    by_ref = {o["scan_ref"]: o for o in payload["observations"]}
+    assert len(by_ref) == 2, sorted(by_ref)
+    master_ref, = [r for r in by_ref if r.startswith("master:")]
+    assert by_ref[master_ref]["candidates"], "the delivered arena carries no candidate table"
+    attempted_ref, = [r for r in by_ref if not r.startswith("master:")]
+    assert attempted_ref.endswith(":55183:det0") or ":55183:" in attempted_ref, attempted_ref
+    assert not by_ref[attempted_ref]["candidates"]
+    assert [(a["scan_ref"], a["reason"]) for a in payload["non_scoring"]] == [
+        (attempted_ref, "count_untrusted")]
     assert (ws.report_dir / "scene" / f"{pointer['digest']}.json").is_file()
 
     # Re-running the same batch fits nothing new, so the scene rebuilds to the SAME digest and the
