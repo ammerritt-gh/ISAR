@@ -42,6 +42,10 @@ import numpy as np
 from isar.analyze import phonon
 from isar.analyze.components import ConstantBackground, Elastic, PhononDHO, QuasiElastic
 from isar.analyze.structures import Hypothesis
+from isar.schema import placement as _placement
+from isar.schema.placement import (  # noqa: F401 — re-exported for existing callers/tests
+    FALLBACK_RULE_KEY, PLACEMENT_RULES, PLACEMENT_RULES_SCHEMA, PlacementRule, ResolvedPlacement,
+    _DEFAULT_PLACEMENT_RULES)
 
 CATALOGUE_SCHEMA = "isar.phenomenon-catalogue/1"
 DEFAULT_PROFILE = "isar.catalogue.default/1"
@@ -574,3 +578,44 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=()) -> PriorBu
                          f"parameter suffix(es) {sorted(unmatched)} that match no free "
                          f"parameter of this composite")
     return PriorBundle(tuple(resolved))
+
+
+# --------------------------------------------------------------------------- placement rules (SCENE-4 PR 4.2a, commit A4)
+# Findability knowledge re-enters as DECLARED DATA: where a catalogue class is worth looking for
+# it, for the opening book to order its survey (A5). These are ORDERING declarations only — they
+# never label a measured feature, gate coverage, or touch a posterior. SCENE-5 replaces the encoded
+# conclusions with the real EIG computation; until then a rule is a named provisional v1 guess,
+# SCENE-7-calibrated.
+#
+# The registry itself (``PlacementRule``, ``PLACEMENT_RULES``, the manifest/fingerprint
+# functions) moved to :mod:`isar.schema.placement` in the A5 boundary repair, so ``isar.drive``
+# can read placement data without crossing the Stage II<->III wall
+# (``tests/drive/test_boundary.py``). What stays here is the class-list-aware wrapper: this
+# module is the one that knows which classes a profile actually declares (``PROFILES``), so the
+# completeness/orphan validation belongs here, not in the class-list-blind schema module.
+def _placement_class_names(profile: str) -> list[str]:
+    if profile not in PROFILES:
+        raise KeyError(f"no catalogue profile {profile!r}")
+    return [d.name for d in PROFILES[profile]]
+
+
+def placement_rules(profile: str = DEFAULT_PROFILE) -> dict[str, ResolvedPlacement]:
+    """The resolved placement rule for every catalogue class in ``profile``.
+
+    A class with an explicit row uses it; a class with none falls through to the profile's
+    ``FALLBACK_RULE_KEY`` row (``used_fallback=True`` on the result) when the profile declares
+    one. An unknown catalogue profile, an unregistered placement-rule profile, or a class with
+    neither an explicit row nor a declared fallback all raise loudly — never silent synthesis.
+    """
+    return _placement.resolve_placement_rules(profile, _placement_class_names(profile))
+
+
+def placement_rules_manifest(profile: str = DEFAULT_PROFILE) -> dict:
+    """Canonical, JSON-able, deterministic manifest of every class's resolved placement rule —
+    the replayable artifact (:func:`placement_rules_fingerprint` is change-detection over it)."""
+    return _placement.placement_rules_manifest(profile, _placement_class_names(profile))
+
+
+def placement_rules_fingerprint(profile: str = DEFAULT_PROFILE) -> str:
+    """Content address over :func:`placement_rules_manifest` — changes iff a rule field changes."""
+    return _placement.placement_rules_fingerprint(profile, _placement_class_names(profile))

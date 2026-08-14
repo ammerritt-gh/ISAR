@@ -477,6 +477,124 @@ def _component_descriptors(label, hyp) -> list:
     return sorted(out, key=lambda d: (d["slot"] is None, d["slot"] or 0, d["kind"]))
 
 
+_BOOTSTRAP_CONVERGENCE_FLOOR_V1 = 0.8
+"""Minimum ``n_converged / M`` for a bootstrap interval to count as producer-sound (P0-C).
+
+Provisional v1 threshold, to be calibrated against real coverage data in SCENE-7 — this is a
+placeholder floor, not a derived number. The floor exists at all because a percentile interval
+built mostly from replicates whose optimizer never converged is not a sampling distribution any
+more: past some fraction of fabricated/divergent draws, the "interval" is describing the
+optimizer's failure mode rather than ω₀'s uncertainty, and projecting it as trustworthy
+within-candidate uncertainty would mint precision the run never earned.
+"""
+
+
+def _producer_soundness(item: dict, within: dict) -> dict:
+    """The writer-stamped verdict on whether ``item`` (a persisted ``isar.interval_semantics/1``
+    quantity) is fit-conditionally sound (P0-C / P1-H): a converged, unimodal, genuinely
+    frequentist-sampling-distribution bootstrap interval. This is the ONLY authority a candidate
+    slot ever carries — delivery selection plays no role, so a winner and a non-winner survivor
+    with the same record get the identical verdict, and the cell cannot go stale when delivery
+    later changes its mind.
+
+    ``{"authority_basis": "producer_sound"}`` iff EVERY signal below holds; otherwise
+    ``{"authority_basis": "producer_unsound", "reasons": (...)}`` with one reason code per failing
+    signal, sorted for a stable, diffable persisted shape.
+    """
+    reasons = []
+    if item.get("availability") is not True:
+        reasons.append("unavailable")
+    if item.get("interval_kind") != "parametric_bootstrap_percentile":
+        reasons.append("not_bootstrap_percentile")
+    if item.get("inference_paradigm") != "frequentist_sampling_distribution":
+        reasons.append("not_frequentist_sampling_distribution")
+    if within.get("bimodal"):
+        reasons.append("bimodal")
+    n_converged, M = within.get("n_converged"), within.get("M")
+    if n_converged is None or not M:
+        reasons.append("convergence_unrecorded")
+    elif n_converged / M < _BOOTSTRAP_CONVERGENCE_FLOOR_V1:
+        reasons.append("bootstrap_underconverged")
+    if reasons:
+        return {"authority_basis": "producer_unsound", "reasons": tuple(sorted(reasons))}
+    return {"authority_basis": "producer_sound"}
+
+
+def _mode_interval_item(item: dict | None, values, source_quantity: str, within: dict) -> dict | None:
+    """Project one persisted ``isar.interval_semantics/1`` quantity item into the JSON-safe
+    ``mode_intervals`` cell (SCENE-4 PR 4.2a; authority re-baselined to fit-conditional producer
+    soundness, P0-C), or ``None`` when no real interval survives the writer's own availability
+    flag. Every field but ``authority`` is copied straight off ``item``/``values`` — nothing here
+    is derived or invented; ``authority`` is the :func:`_producer_soundness` verdict.
+
+    Post-slice-boundary fix: ``values`` is NOT always a ``(lo, center, hi)`` triple — confirmed by
+    reading every producer. The bootstrap freq_interval (``errors.bootstrap._percentile_interval``)
+    and the Bayesian credible interval (``errors.bayes``, ``BayesResult.omega0_interval``) ARE
+    triples; the profile interval (``errors.profile.omega0_profile_interval``) and the fast-tier
+    HESSE interval (``scan_delivery._hesse_interval_and_trust``) are ``(lo, hi)`` PAIRS with no
+    third, "center", entry at all. Minting one (e.g. from the row's ``omega0``) would be exactly
+    the invented semantics this commit refuses — so a pair projects ``center=None`` honestly.
+    """
+    if item is None or values is None or not item.get("availability"):
+        return None
+    if len(values) not in (2, 3):
+        raise ValueError(f"interval quantity {source_quantity!r} has {len(values)} value(s) "
+                         f"({values!r}) — a persisted interval must be a (lo, hi) pair or a "
+                         "(lo, center, hi) triple, never anything else")
+    center = float(values[1]) if len(values) == 3 else None
+    return {
+        "low": float(values[0]), "center": center, "high": float(values[-1]),
+        # Strict access (PR 4.2a review, Minor finding 3): every writer that ever builds this
+        # item (``errors._interval_semantics_for``'s ``common`` dict, ``_outcome_interval_
+        # semantics``'s ``unavailable()`` helper) sets ``nominal_level`` unconditionally — an
+        # item reaching here without one is a corrupt record, not a legitimately-optional field,
+        # and minting 0.68 for it would be exactly the invented semantics this commit refuses.
+        "nominal_level": float(item["nominal_level"]),
+        "interval_kind": item.get("interval_kind"),
+        "inference_paradigm": item.get("inference_paradigm"),
+        "source_quantity": source_quantity,
+        "authority": _producer_soundness(item, within),
+        "conditioning_fingerprint": item.get("conditioning_fingerprint"),
+    }
+
+
+def _mode_intervals_of(label, r, n_omegas) -> list:
+    """The slot-aligned ``mode_intervals`` cell for one candidate row (SCENE-4 PR 4.2a: the
+    per-mode interval persistence re-baseline; P0-C: interval authority made immutably
+    fit-conditional).
+
+    Sized by ``n_omegas`` — the length of the row's OWN ``omegas`` list, the same value
+    ``_mode_omegas(r)`` produced for this row — never by ``n_modes``. The two legitimately
+    disagree for a result-less candidate (``_mode_omegas`` docstring): ``n_modes`` defaults to 1
+    with no result to read a position off, so ``omegas == ()``. Sizing off ``n_modes`` there
+    would emit ``[None]`` against an empty ``omegas``, which ``CandidateRow.__post_init__``
+    (mode_intervals/omegas must be equal length) then refuses.
+
+    POPULATION RULE: only ``n_omegas == 1`` ever populates slot 0 — a multimode candidate's
+    persisted record never names which slot the bootstrap tracked as its primary mode (it tracks
+    one internally, ``analyze.components.CompositeModel.primary_phonon_index``, but does not
+    persist which slot that was on this row), so a multimode candidate stays honestly all-``None``
+    rather than guessing slot 0. Phonon-less (or result-less) candidates carry ``[]``.
+
+    AUTHORITY (P0-C, owner ruling 2026-08-14): EVERY row — winner included — projects only its
+    OWN candidate-tier ``within_model["freq_interval"]`` record, verbatim, exactly like every
+    other survivor. Delivery selection (``FitOutcome.best_label``, ``selected_for_delivery``,
+    ``passed_reliability_gate``) is not interval authority and never reaches this cell: those are
+    outcome-level facts about which candidate the driver chose, not about whether ITS bootstrap
+    interval is a trustworthy sampling distribution. Staleness dies by construction — a candidate
+    row is write-once, and only outcome-level semantics ever refresh
+    (``evidence_update.py``'s ``_refresh_interval_semantics``), which this cell does not depend
+    on.
+    """
+    if n_omegas != 1:
+        return [None] * n_omegas
+    within = getattr(r, "within_model", None) if r is not None else None
+    within = within or {}
+    item = (within.get("interval_semantics") or {}).get("quantities", {}).get("freq_interval")
+    values = within.get("freq_interval")
+    return [_mode_interval_item(item, values, "freq_interval", within)]
+
+
 def _candidate_rows(scores, fits, by_hyp) -> list | None:
     """The model-selection candidate table (P0-4): one compact row per SCORED structure. ``scores``
     is the ``ModelScore`` list the driver selects on — posterior ``P(s) = π_s·Z_s / Σ π·Z`` in the
@@ -507,7 +625,11 @@ def _candidate_rows(scores, fits, by_hyp) -> list | None:
             # never carries a nonstandard NaN token that a strict-JSON reader would reject.
             "cost_per_dof": (cpd if np.isfinite(cpd) else None),
             "n_modes": int(r.n_modes) if r is not None else 1,
-            "omegas": _mode_omegas(r),
+            "omegas": (omegas := _mode_omegas(r)),
+            # SCENE-4 PR 4.2a: the within-candidate ω₀ uncertainty, slot-aligned to ``omegas`` —
+            # sized off ``len(omegas)``, NOT ``n_modes`` (they legitimately disagree for a
+            # result-less candidate; see ``_mode_intervals_of``).
+            "mode_intervals": _mode_intervals_of(s.label, r, len(omegas)),
             # SCENE-3: what this candidate is MADE OF, so the scene layer never has to recover
             # component semantics from the label text (review finding 9).
             "components": _component_descriptors(s.label, by_hyp.get(s.label)),
@@ -1880,7 +2002,6 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # and the delivered ``best`` — so an escalated re-fit (its own fit_one call) carries its own.
     amplitudes = _amplitudes_of(best, by_hyp)
     model_manifest = _model_manifest_of(best, by_hyp)
-    candidates = _candidate_rows(sel.scores, fits, by_hyp)
     # ADR-019 producer isolation: the predictive artifact is NOT built here. Its inputs are handed
     # to the caller, which constructs it after branch triage inside its own try/except — so a
     # predictive-construction failure can never convert this fit into a non_result, and the artifact
@@ -1934,6 +2055,10 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         bayes_interval=bayes_interval,
         interval_reliable=interval_reliable,
     )
+    # P0-C: candidate-row interval authority is immutably fit-conditional — every row, winner
+    # included, projects only its own candidate-tier record (see ``_mode_intervals_of``). Nothing
+    # about the outcome-level ``interval_semantics``/selected quantity above feeds the rows.
+    candidates = _candidate_rows(sel.scores, fits, by_hyp)
 
     # The QC-masked energy window this fit actually saw — the scene layer's observation footprint:
     # what a scan looked at, whether or not it found anything. Shifted onto the ω scale by the

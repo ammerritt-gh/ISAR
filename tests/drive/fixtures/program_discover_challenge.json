@@ -27,7 +27,7 @@
             10.0
           ]
         },
-        "catalogue_profile": "isar.catalogue.inelastic-default/1",
+        "catalogue_profile": "isar.catalogue.default/1",
         "deliverables": [
           {
             "kind": "phenomenon_map"
@@ -35,7 +35,7 @@
         ],
         "include_unknown": true,
         "resolved_policy": {
-          "schema": "isar.question-policy/1",
+          "schema": "isar.question-policy/2",
           "profile": {
             "id": "isar.question-defaults",
             "version": 1
@@ -48,6 +48,7 @@
             "emergent_open_min_mass": 0.5,
             "parameter_default_tolerance_meV": 0.5,
             "requested_zc_confidence": 0.9,
+            "parameter_precision_min_mass": 0.9,
             "emergent_omega_tile_meV": 1.0,
             "parameter_statistical_floor_meV": 0.2,
             "maximum_justifiable_zc_confidence": 0.0,
@@ -63,6 +64,7 @@
             "VerifyCompleteness": 5
           },
           "emergent_question_policy": "open_in_domain",
+          "survey_order": "placement_informed",
           "staleness_policy": {
             "mode": "synchronous",
             "lag": 0
@@ -100,6 +102,10 @@
               "source": "default",
               "authority": "target"
             },
+            "parameter_precision_min_mass": {
+              "source": "default",
+              "authority": "target"
+            },
             "emergent_omega_tile_meV": {
               "source": "default",
               "authority": "identity_constant"
@@ -115,6 +121,10 @@
             "min_effective_exposure": {
               "source": "default",
               "authority": "capability"
+            },
+            "survey_order": {
+              "source": "default",
+              "authority": "target"
             }
           }
         }

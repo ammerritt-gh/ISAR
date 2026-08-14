@@ -138,10 +138,6 @@ def _in_band(omega, band) -> bool:
     return band[0] <= abs(omega) <= band[1]
 
 
-def _has_mode(candidate: Mapping) -> bool:
-    return any(c.get("kind") == "mode" for c in candidate.get("components") or ())
-
-
 def _matched_mode_omegas(alternative: Mapping, matched_refs: set,
                          candidates: Mapping, band) -> list[float]:
     """Every placeable in-band mode omega this alternative asserts on the matched arenas."""
@@ -284,6 +280,60 @@ def _structural_presence(spec, scene_payload, prior) -> QuestionAssessment:
                               answer=(("present", verdict == "yes"),), blockers=blockers)
 
 
+def _alternative_matched_identities(alternative: Mapping, refs: set, candidates: Mapping,
+                                    band) -> set:
+    """Identities this ONE retained alternative asserts on the matched arenas — the single walk
+    both :func:`identity_hypothesis_classes` and :func:`_identity_resolved` share (SCENE-4.2a
+    P1-G/A6). A row counts only when it carries a placeable, in-band mode component (mirrors
+    :func:`_matched_mode_omegas`); its ``identity`` (possibly ``None``, meaning "no identity
+    semantics assigned") is then contributed. Rows the alternative never assigns, or whose only
+    modes sit outside the subject's band, contribute nothing — pruned/non-retained candidates
+    never reach here because the caller walks retained ``alternatives``, not raw candidate rows.
+    """
+    out = set()
+    for scan_ref, label in alternative.get("assignment") or ():
+        if scan_ref not in refs:
+            continue
+        row = candidates.get(scan_ref, {}).get(label)
+        if row is None:
+            continue
+        omegas = row.get("omegas") or []
+        for component in row.get("components") or ():
+            if component.get("kind") != "mode":
+                continue
+            slot = component["slot"]
+            omega = omegas[slot] if 0 <= slot < len(omegas) else None
+            if _in_band(omega, band):
+                out.add(row.get("identity"))
+                break
+    return out
+
+
+def identity_hypothesis_classes(subject, scene_payload: Mapping) -> frozenset:
+    """The identity classes ClassifyIdentity could answer from for ``subject``, derived from
+    identities actually present in RETAINED alternatives — the evidence the evaluator can use
+    (SCENE-4.2a P1-G). Walks the same matched clusters' retained ``alternatives`` (never raw
+    candidate rows: a pruned or non-retained candidate carries an explicit identity that no
+    assignment ever selects, and must not open the gate), via the SAME per-alternative walk
+    :func:`_identity_resolved` uses for ``matched_identities`` (one definition of
+    "representable", shared, not two answers that could disagree — SCENE-4.2a A6). A class
+    counts only with an explicit, non-``None`` ``identity`` on a placeable, in-band mode. An
+    empty result means ClassifyIdentity would open and never close.
+    """
+    match = match_subject(subject, scene_payload)
+    if not match.cluster_indices:
+        return frozenset()
+    candidates = _candidates_by_ref(scene_payload)
+    refs, band = set(match.scan_refs), subject.omega_band_meV
+    clusters = scene_payload.get("clusters") or ()
+    classes = set()
+    for index in match.cluster_indices:
+        for alternative in clusters[index].get("alternatives") or ():
+            classes.update(_alternative_matched_identities(alternative, refs, candidates, band))
+    classes.discard(None)
+    return frozenset(classes)
+
+
 def _identity_resolved(spec, scene_payload, prior) -> QuestionAssessment:
     """ClassifyIdentity: answers ONLY from explicit identity alternatives. ``identity=None``
     means "no identity semantics were assigned", never the physical unknown — it accrues to
@@ -295,22 +345,12 @@ def _identity_resolved(spec, scene_payload, prior) -> QuestionAssessment:
         return QuestionAssessment(question_id=spec.question_id, status="open",
                                   notes=(("reason", "no_matched_evidence"),))
     candidates = _candidates_by_ref(scene_payload)
-    refs = set(match.scan_refs)
+    refs, band = set(match.scan_refs), spec.subject.omega_band_meV
 
     def matched_identities(alternative):
-        out = set()
-        for scan_ref, label in alternative.get("assignment") or ():
-            if scan_ref in refs:
-                row = candidates.get(scan_ref, {}).get(label)
-                if row is not None and _has_mode(row):
-                    out.add(row.get("identity"))
-        return out
+        return _alternative_matched_identities(alternative, refs, candidates, band)
 
-    classes = set()
-    for ref in refs:
-        for row in candidates.get(ref, {}).values():
-            if row.get("identity") is not None and _has_mode(row):
-                classes.add(row["identity"])
+    classes = identity_hypothesis_classes(spec.subject, scene_payload)
     if not classes:
         return QuestionAssessment(
             question_id=spec.question_id, status="open",
@@ -420,35 +460,194 @@ def _track_connected(spec, scene_payload, prior) -> QuestionAssessment:
                               answer=(("connected", verdict == "yes"),), blockers=blockers)
 
 
+def _trusted_matched_interval(alternative, refs, candidates, band):
+    """The alternative's ONE trusted, matched per-mode interval, or ``None`` when the match is
+    absent, ambiguous, or the writer's own record is not producer-sound (P0-C / SCENE-4.2a A2) —
+    no trust minted in the scene layer.
+
+    Trusted means the ``authority`` dict read VERBATIM off the persisted :class:`ModeInterval`
+    carries ``authority_basis == "producer_sound"`` — the writer's own fit-conditional verdict
+    on whether this candidate's bootstrap record is a converged, unimodal, genuinely frequentist
+    sampling distribution. This is deliberately NOT about which candidate delivery selected: a
+    non-winner survivor with a sound record is trusted exactly like a winner with one, and a
+    winner with an unsound record is not trusted just because it won. Two indistinguishable
+    in-band matches are as unqualifying as zero — nothing in the subject names which slot is
+    meant, so guessing would mint identity the writer never asserted.
+    """
+    matches = []
+    for scan_ref, label in alternative.get("assignment") or ():
+        if scan_ref not in refs:
+            continue
+        row = candidates.get(scan_ref, {}).get(label)
+        if row is None:
+            continue
+        for component in row.get("components") or ():
+            if component.get("kind") != "mode":
+                continue
+            omegas = row.get("omegas") or []
+            slot = component["slot"]
+            omega = omegas[slot] if 0 <= slot < len(omegas) else None
+            if _in_band(omega, band):
+                matches.append((row, slot, scan_ref, label))
+    if len(matches) != 1:
+        return None
+    row, slot, scan_ref, label = matches[0]
+    mode_intervals = row.get("mode_intervals") or []
+    interval = mode_intervals[slot] if 0 <= slot < len(mode_intervals) else None
+    if interval is None:
+        return None
+    authority = interval.get("authority") or {}
+    if authority.get("authority_basis") != "producer_sound":
+        return None
+    return {"low": float(interval["low"]), "high": float(interval["high"]),
+            "nominal_level": interval.get("nominal_level"),
+            "interval_kind": interval.get("interval_kind"),
+            "inference_paradigm": interval.get("inference_paradigm"),
+            "conditioning_fingerprint": interval.get("conditioning_fingerprint"),
+            "scan_ref": scan_ref, "label": label, "slot": slot}
+
+
+def _acceptance_window(interval, tolerance):
+    """``(hi - tol, lo + tol)`` when the interval's full width fits inside ``2*tolerance``
+    (half-width semantics: an interval of full width exactly ``2*tolerance`` still supports its
+    one point); ``None`` when it is too wide to ever support any center."""
+    if interval["high"] - interval["low"] > 2.0 * tolerance:
+        return None
+    return (interval["high"] - tolerance, interval["low"] + tolerance)
+
+
 def _parameter_within_tolerance(spec, scene_payload, prior) -> QuestionAssessment:
-    """EstimateParameter: NEVER closes in v1 (owner ruling 2026-08-14). The scene persists no
-    within-candidate parameter uncertainty, and agreement among point estimates is not measured
-    precision — the between-alternative mixture spread is emitted as a DIAGNOSTIC only, with
-    the missing within-candidate term named as the blocker. Interval persistence is a scheduled
-    4.2/4.3 re-baseline; this evaluator gains its closure path then."""
+    """EstimateParameter: closes on BOTH within-candidate uncertainty (the A1 per-mode
+    ``ModeInterval``) and between-candidate disagreement (retained posterior support, priced
+    through the shared omitted-mass bound machinery) — SCENE-4.2a A2, retiring the v1
+    never-closes ruling (docs/SCENE_DESIGN.md §5).
+
+    The search set for the estimated center is the finite, order-independent list of
+    acceptance-window endpoints over every TRUSTED, support-capable interval; ties break to the
+    smallest candidate center, so replay is byte-identical regardless of iteration order. Every
+    non-qualifying mass — untrusted, unpopulated, ambiguously matched, or simply outside the
+    band — counts ADVERSARIALLY: it can never be retained. Closure additionally requires every
+    CONTRIBUTING interval (the ones supporting the chosen center, drawn from the SAME
+    positive-posterior support the mass calculation used — a zero-mass alternative can neither
+    block nor join closure) to agree on the exact ``(interval_kind, inference_paradigm,
+    nominal_level)`` triple; a mismatch on any of the three refuses closure rather than average
+    across incompatible statements of confidence.
+
+    ``envelope_meV`` is the supported-center interval itself — the intersection of every
+    contributing acceptance window at the chosen center — and ``center_meV`` is honestly its
+    midpoint representative, not a re-derived tolerance witness of its own.
+    """
     params = dict(spec.predicate.parameters)
     tolerance = float(params["tolerance_meV"])
     floor = float(params["statistical_floor_meV"])
+    min_mass = float(params["parameter_precision_min_mass"])
     match = match_subject(spec.subject, scene_payload)
     candidates = _candidates_by_ref(scene_payload)
     refs, band = set(match.scan_refs), spec.subject.omega_band_meV
-    omegas = []
     clusters = scene_payload.get("clusters") or ()
+
+    trusted_any = False
+    capable = []
     for index in match.cluster_indices:
         for alternative in clusters[index].get("alternatives") or ():
-            if (alternative.get("posterior") or 0.0) > 0.0:
-                omegas.extend(_matched_mode_omegas(alternative, refs, candidates, band))
-    notes = [("within_candidate_uncertainty", "not persisted by isar.scene-revision/1"),
-             ("tolerance_meV", tolerance)]
-    if omegas:
-        notes.append(("mixture_spread_meV", round(max(omegas) - min(omegas), 9)))
-    blockers = [Blocker("within_candidate_uncertainty_unavailable",
-                        "closure requires the scheduled interval re-baseline (4.2/4.3)")]
+            interval = _trusted_matched_interval(alternative, refs, candidates, band)
+            if interval is None:
+                continue
+            trusted_any = True
+            window = _acceptance_window(interval, tolerance)
+            if window is not None:
+                capable.append(window)
+
+    notes = [("tolerance_meV", tolerance)]
+    blockers = []
+    if not trusted_any:
+        blockers.append(Blocker("within_candidate_uncertainty_unavailable",
+                                "no trusted per-mode interval in the matched partition"))
     if tolerance < floor:
         blockers.append(Blocker("tolerance_below_representable_precision",
                                 f"tolerance {tolerance} < floor {floor}"))
-    return QuestionAssessment(question_id=spec.question_id, status="open",
-                              blockers=tuple(blockers), notes=tuple(notes))
+    if blockers:
+        return QuestionAssessment(question_id=spec.question_id, status="open",
+                                  blockers=tuple(blockers), notes=tuple(notes))
+    if not capable:
+        return QuestionAssessment(question_id=spec.question_id, status="open",
+                                  notes=tuple(notes + [("reason",
+                                                        "no_support_capable_interval")]))
+
+    # Unrounded: the search set must be the EXACT float endpoints ``qualifies`` recomputes
+    # per-candidate (same deterministic arithmetic on the same inputs), or a boundary case could
+    # round to a center just outside the very window that produced it (a real float trap, not a
+    # hypothetical one — ``5.07 - 0.1`` and ``4.97`` differ in the last bit).
+    centers = sorted({lo for lo, hi in capable} | {hi for lo, hi in capable})
+
+    best = None      # (combined_mass_interval, c, lanes, cluster_blockers)
+    for c in centers:
+        def qualifies(alternative, _c=c):
+            interval = _trusted_matched_interval(alternative, refs, candidates, band)
+            if interval is None:
+                return False
+            window = _acceptance_window(interval, tolerance)
+            return window is not None and window[0] <= _c <= window[1]
+
+        intervals, lanes, cluster_blockers = _proposition_intervals(
+            match, scene_payload, qualifies, spec.predicate.authority_requirement)
+        combined = combine_universal(intervals)
+        if best is None or combined[0] > best[0][0]:
+            best = (combined, c, lanes, cluster_blockers)
+
+    combined, c, lanes, cluster_blockers = best
+    contributing = set()
+    triples = set()   # (interval_kind, inference_paradigm, nominal_level)
+    # Conditioning fingerprints are PROVENANCE, never compatibility: every candidate's
+    # conditioning differs by construction (that is what a per-candidate record is), so
+    # gating the triple on them would refuse every multi-candidate closure. They ride the
+    # answer as an audit trail instead.
+    conditioning = set()
+    envelope_lo, envelope_hi = None, None
+    for index in match.cluster_indices:
+        for alternative in clusters[index].get("alternatives") or ():
+            # P1-I: metadata is derived from the SAME positive-posterior support the mass
+            # calculation used — a zero-mass alternative must neither block closure (mixed
+            # semantics) nor appear in contributors/envelope.
+            if (alternative.get("posterior") or 0.0) <= 0.0:
+                continue
+            interval = _trusted_matched_interval(alternative, refs, candidates, band)
+            if interval is None:
+                continue
+            window = _acceptance_window(interval, tolerance)
+            if window is None or not (window[0] <= c <= window[1]):
+                continue
+            contributing.add((interval["scan_ref"], interval["label"], interval["slot"]))
+            triples.add((interval["interval_kind"], interval["inference_paradigm"],
+                        interval["nominal_level"]))
+            if interval.get("conditioning_fingerprint"):
+                conditioning.add(interval["conditioning_fingerprint"])
+            envelope_lo = window[0] if envelope_lo is None else max(envelope_lo, window[0])
+            envelope_hi = window[1] if envelope_hi is None else min(envelope_hi, window[1])
+
+    notes += list(_vacuous_note(lanes, min_mass, combined))
+    if len(triples) > 1:
+        notes.append(("mixed_interval_semantics",
+                      tuple(sorted(triples, key=lambda t: (t[0] or "", t[1] or "",
+                                                            repr(t[2]))))))
+        return QuestionAssessment(question_id=spec.question_id, status="open",
+                                  authority=_weakest(lanes), mass_interval=combined,
+                                  blockers=cluster_blockers, notes=tuple(notes))
+    if not triples or combined[0] < min_mass:
+        return QuestionAssessment(question_id=spec.question_id, status="open",
+                                  authority=_weakest(lanes), mass_interval=combined,
+                                  blockers=cluster_blockers, notes=tuple(notes))
+    interval_kind, inference_paradigm, nominal_level = triples.pop()
+    answer = (("center_meV", round((envelope_lo + envelope_hi) / 2.0, 9)),
+             ("contributing", tuple(sorted(contributing))),
+             ("envelope_meV", (round(envelope_lo, 9), round(envelope_hi, 9))),
+             ("nominal_level", nominal_level),
+             ("interval_kind", interval_kind),
+             ("inference_paradigm", inference_paradigm),
+             ("conditioning_fingerprints", tuple(sorted(conditioning))))
+    return QuestionAssessment(question_id=spec.question_id, status="answered",
+                              authority=_weakest(lanes), mass_interval=combined,
+                              answer=answer, blockers=cluster_blockers, notes=tuple(notes))
 
 
 def _zc_linear_compatibility(spec, scene_payload, prior) -> QuestionAssessment:
@@ -670,7 +869,7 @@ EVALUATORS = {
     "structural_presence": (1, _structural_presence),
     "identity_resolved": (1, _identity_resolved),
     "track_connected": (1, _track_connected),
-    "parameter_within_tolerance": (1, _parameter_within_tolerance),
+    "parameter_within_tolerance": (2, _parameter_within_tolerance),
     "zc_linear_compatibility": (1, _zc_linear_compatibility),
     "mismatch_assessed": (1, _mismatch_assessed),
     "completeness_relative": (1, _completeness_relative),

@@ -42,10 +42,11 @@ from dataclasses import dataclass
 
 from .model import canonical_bytes, digest_bytes, fingerprint
 from .predicates import (
-    EVALUATORS, cluster_authority, combine_existential, evaluate_predicate, mass_interval)
+    EVALUATORS, cluster_authority, combine_existential, evaluate_predicate,
+    identity_hypothesis_classes, mass_interval)
 from .questions import (
     Blocker, PredicateDeclaration, QuestionAssessment, QuestionSpec, QuestionSubject,
-    scene_partitions, snap_tile, validate_dependency_dag)
+    match_subject, scene_partitions, snap_tile, validate_dependency_dag)
 from .store import RevisionStore, StoreResult, UNSET
 
 AGENDA_SCHEMA = "isar.agenda-revision/1"
@@ -53,7 +54,7 @@ AGENDA_STORE = RevisionStore("agenda", "isar.agenda-pointer/1", "agenda")
 TRANSITIONS_NAME = "transitions.jsonl"
 
 #: Bumping either re-derives every agenda (new digests) without minting new question IDs.
-OPENER_VERSION = 1
+OPENER_VERSION = 3
 MATCHER_VERSION = 1
 
 #: Declared generator references (4.2 binds them to the real registry; here they are strings).
@@ -372,20 +373,43 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
                 or dict(assessment.answer).get("present") is not True:
             continue
         subject = spec.subject
-        chained.append(_spec(
-            "ClassifyIdentity", "identity_resolved", subject.__class__(
-                kind="phenomenon", partition_id=subject.partition_id,
-                region_rlu=subject.region_rlu, omega_band_meV=subject.omega_band_meV,
-                frame=subject.frame),
-            {"min_mass": thresholds["classify_identity_min_mass"]},
-            priority=priorities["ClassifyIdentity"], deps=(spec.question_id,)))
+        # Representability gate (owner ruling, SCENE-4.2a A6): the production catalogue
+        # declares no identity-conditioned priors, so every candidate carries identity=None
+        # and ClassifyIdentity would open and never close. Open it only where the scene can
+        # actually answer — SAME scoping and SAME identity-set rule the evaluator itself uses
+        # (isar.scene.predicates.identity_hypothesis_classes), so a tile whose OWN matched
+        # rows carry no identity never opens even when a sibling tile in the same partition
+        # does (a partition-wide check would pass here and then open forever). Otherwise the
+        # phenomenon still maps as real-but-unclassified: no question opens, and a note
+        # records why, naming the same blocker word the evaluator uses for the symmetric
+        # in-question case.
+        classify_subject = subject.__class__(
+            kind="phenomenon", partition_id=subject.partition_id,
+            region_rlu=subject.region_rlu, omega_band_meV=subject.omega_band_meV,
+            frame=subject.frame)
+        if identity_hypothesis_classes(classify_subject, scene_payload):
+            chained.append(_spec(
+                "ClassifyIdentity", "identity_resolved", classify_subject,
+                {"min_mass": thresholds["classify_identity_min_mass"]},
+                priority=priorities["ClassifyIdentity"], deps=(spec.question_id,)))
+        else:
+            examined_refs = match_subject(classify_subject, scene_payload).scan_refs
+            examined_candidates = sum(len(candidates_of.get(ref, {}))
+                                      for ref in examined_refs)
+            notes.append(("classify_identity_inert",
+                          f"partition {subject.partition_id} tile {subject.region_rlu} "
+                          f"(confirmed by {spec.question_id}): identity_hypotheses_unavailable "
+                          f"— examined {len(examined_refs)} scan ref(s) / "
+                          f"{examined_candidates} candidate(s), none declares an explicit "
+                          "identity"))
         chained.append(_spec(
             "EstimateParameter", "parameter_within_tolerance", subject.__class__(
                 kind="parameter", partition_id=subject.partition_id,
                 region_rlu=subject.region_rlu, omega_band_meV=subject.omega_band_meV,
                 parameter="omega0", frame=subject.frame),
             {"tolerance_meV": thresholds["parameter_default_tolerance_meV"],
-             "statistical_floor_meV": thresholds["parameter_statistical_floor_meV"]},
+             "statistical_floor_meV": thresholds["parameter_statistical_floor_meV"],
+             "parameter_precision_min_mass": thresholds["parameter_precision_min_mass"]},
             priority=priorities["EstimateParameter"], deps=(spec.question_id,)))
         if subject.anchor is not None:
             chained.append(_spec(
@@ -428,6 +452,41 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
             {"min_mass": thresholds["connect_track_min_mass"]},
             priority=priorities["ConnectTrack"],
             deps=tuple(qid for _, qid in tiles)))
+
+    # Class-agnostic connectivity (P0-B): a partition whose confirmed tiles never answered
+    # ClassifyIdentity (representability gate closed, or simply not yet answered) still needs
+    # a track question — identity abstention must not suppress structural connectivity.
+    # Reuses the same confirmed-presence collection the chaining pass above walks.
+    confirmed: dict = {}
+    for spec in [s for s in specs if s.family == "ConfirmPresence"]:
+        assessment = assessments.get(spec.question_id)
+        if assessment is None or assessment.status != "answered" \
+                or dict(assessment.answer).get("present") is not True:
+            continue
+        confirmed.setdefault(spec.subject.partition_id, []).append(
+            (spec.subject.region_rlu, spec.question_id))
+    # Suppress the class-agnostic pass only where a per-class track ACTUALLY DERIVED (pre-
+    # commit Major): `classified` gains a key the moment ONE tile answers classify, even when
+    # that alone can never produce a per-class track (len(tiles) < 2) — checking key presence
+    # re-created the exact suppression P0-B forbids for a 1-classified + 2-unclassified
+    # partition. Residual (named for the owner, not fixed here): a partition where a per-class
+    # track DID derive may still hold unclassified confirmed tiles outside that class's span;
+    # v1 accepts per-class coverage as suppression — one track question per partition maximum
+    # in the unclassified lane — rather than silently over-deriving a second track.
+    derived_class_track_pids = {pid for (pid, _ident), tiles in classified.items()
+                                if len(tiles) >= 2}
+    for pid, tiles in sorted(confirmed.items(), key=lambda kv: str(kv[0])):
+        if pid in derived_class_track_pids or len(tiles) < 2:
+            continue
+        tiles.sort()
+        tracks.append(_spec(
+            "ConnectTrack", "track_connected", QuestionSubject(
+                kind="track", partition_id=pid, catalogue_class=None,
+                endpoint_a_rlu=tiles[0][0], endpoint_b_rlu=tiles[-1][0], frame=frame),
+            {"min_mass": thresholds["connect_track_min_mass"]},
+            priority=priorities["ConnectTrack"],
+            deps=tuple(qid for _, qid in tiles),
+            provenance=(("opened_by", "presence_without_classification"),)))
     if tracks:
         specs.extend(tracks)
         _assert_unique(specs)

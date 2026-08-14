@@ -15,12 +15,18 @@ vectors, no covariances, no raw counts and no likelihood callables, so no scene 
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import itertools
 import json
 import math
 from dataclasses import asdict, dataclass
 from enum import StrEnum
+
+# The one production→schema dependency the scene layer is allowed (SCENE-4 wave-1 W1): pure
+# stdlib vocabulary/validation (``isar/schema/statistics.py``'s own docstring), never the fitting
+# or session machinery ``tests/scene/test_import_ban.py`` actually forbids.
+from isar.schema.statistics import INFERENCE_PARADIGMS, INTERVAL_KINDS
 
 
 class Visibility(StrEnum):
@@ -168,6 +174,10 @@ def fingerprint(payload) -> str:
 # elastic line specifically — while BOTH obscure a low-energy band (``blocking_present``).
 COMPONENT_KINDS = ("mode", "elastic", "quasielastic")
 
+# The two verdicts a candidate-row interval's producer-soundness authority may hold (P0-C). No
+# other value, and no legacy delivery-flag shape, is a valid ``ModeInterval.authority``.
+_AUTHORITY_BASES = frozenset({"producer_sound", "producer_unsound"})
+
 
 @dataclass(frozen=True, slots=True)
 class ComponentDescriptor:
@@ -205,6 +215,117 @@ class ComponentDescriptor:
 
 
 @dataclass(frozen=True, slots=True)
+class ModeInterval:
+    """One phonon mode's persisted ω₀ uncertainty, projected VERBATIM off the writer's own
+    candidate-tier ``isar.interval_semantics/1`` record (SCENE-4 PR 4.2a; authority re-baselined
+    to fit-conditional producer soundness by P0-C). Nothing here is derived, re-scaled, or
+    invented — every field but ``authority`` is copied straight off the persisted quantity item
+    and its values.
+
+    ``low``/``high`` are the same interval bound values the writer persisted for this quantity, on
+    the ``CandidateRow.omegas`` ω₀ scale. ``center`` is the writer's own median/point estimate
+    ONLY when its record actually carries a third value — the bootstrap interval does; the
+    profile-likelihood and fast-tier HESSE intervals are bare ``(lo, hi)`` pairs with no such
+    value, and ``center`` is honestly ``None`` there rather than a value substituted from
+    elsewhere (e.g. the row's ``omega0``). ``source_quantity`` is always ``"freq_interval"`` — the
+    one candidate-tier bootstrap offer every row (winner or not) carries; there is no second,
+    outcome-level source any candidate slot ever projects.
+
+    ``authority`` is EXACTLY the writer-stamped producer-soundness verdict
+    (``isar.session.scan_delivery._producer_soundness``): ``{"authority_basis": "producer_sound"}``
+    when the candidate's own bootstrap record is a converged, unimodal, genuinely frequentist
+    sampling-distribution interval, else ``{"authority_basis": "producer_unsound", "reasons":
+    (...)}``. Delivery selection (``FitOutcome.best_label`` and the realized-delivery flags it used
+    to carry) is NOT interval authority and never appears here (P0-C, owner ruling 2026-08-14) — a
+    winner and a non-winner survivor with the same underlying record carry the identical verdict,
+    so this cell cannot go stale when a later delivery decision changes its mind. A dict carrying
+    the retired pre-P0-C authority shape is refused at construction, not read as a degraded
+    record — see ``__post_init__``.
+    """
+
+    low: float
+    center: float | None
+    high: float
+    nominal_level: float
+    interval_kind: str | None
+    inference_paradigm: str | None
+    source_quantity: str
+    authority: dict
+    conditioning_fingerprint: str | None
+
+    def __post_init__(self):
+        # P1-F (SCENE-4 wave-1 W1): strict at construction, not at whatever predicate first reads
+        # a malformed field. A row this refuses is a stale/corrupt workspace, not a legitimately
+        # degraded one — the same posture as ``CandidateRow.from_dict``'s ``d["mode_intervals"]``/
+        # ``d["components"]`` below, which already fails loud rather than silently reading a
+        # pre-contract payload as "nothing here".
+        if not (math.isfinite(self.low) and math.isfinite(self.high) and self.low <= self.high):
+            raise ValueError(f"ModeInterval bounds must be finite with low <= high, got "
+                             f"low={self.low!r}, high={self.high!r}")
+        if self.center is not None and not (
+                math.isfinite(self.center) and self.low <= self.center <= self.high):
+            raise ValueError(f"ModeInterval center {self.center!r} must be None or lie within "
+                             f"[{self.low!r}, {self.high!r}]")
+        if not (math.isfinite(self.nominal_level) and 0.0 < self.nominal_level <= 1.0):
+            raise ValueError(f"ModeInterval nominal_level must be in (0, 1], got "
+                             f"{self.nominal_level!r}")
+        if self.interval_kind not in INTERVAL_KINDS:
+            raise ValueError(f"ModeInterval interval_kind {self.interval_kind!r} is not a "
+                             "recognized isar.schema.statistics interval kind")
+        if self.inference_paradigm not in INFERENCE_PARADIGMS:
+            raise ValueError(f"ModeInterval inference_paradigm {self.inference_paradigm!r} is "
+                             "not a recognized isar.schema.statistics inference paradigm")
+        if not isinstance(self.source_quantity, str) or not self.source_quantity:
+            raise ValueError(f"ModeInterval source_quantity must be a non-empty str, got "
+                             f"{self.source_quantity!r}")
+        if self.conditioning_fingerprint is not None and (
+                not isinstance(self.conditioning_fingerprint, str)
+                or not self.conditioning_fingerprint):
+            raise ValueError("ModeInterval conditioning_fingerprint must be None or a non-empty "
+                             f"str, got {self.conditioning_fingerprint!r}")
+        # P0-C: authority is EXACTLY the writer-stamped producer-soundness verdict — no other
+        # shape. This is what refuses a stale workspace row still carrying the retired
+        # realized-delivery-flag authority (the pre-P0-C shape).
+        if not isinstance(self.authority, dict):
+            raise ValueError(f"ModeInterval authority must be a dict, got {self.authority!r}")
+        extra = set(self.authority) - {"authority_basis", "reasons"}
+        if extra or self.authority.get("authority_basis") not in _AUTHORITY_BASES:
+            raise ValueError(
+                "ModeInterval authority must be exactly the producer-soundness verdict shape "
+                "{'authority_basis': 'producer_sound'|'producer_unsound', "
+                f"'reasons': <optional tuple of str>}}, got {self.authority!r}")
+        reasons = self.authority.get("reasons")
+        if reasons is not None and not (
+                isinstance(reasons, (tuple, list)) and all(isinstance(r, str) for r in reasons)):
+            raise ValueError(f"ModeInterval authority 'reasons' must be a tuple/list of str, "
+                             f"got {reasons!r}")
+        # Deep-copy (not a reference): caller mutation of the dict it passed in must never reach
+        # this frozen row. ``reasons`` is normalized to a tuple for an immutable persisted shape.
+        authority = copy.deepcopy(self.authority)
+        if "reasons" in authority:
+            authority["reasons"] = tuple(authority["reasons"])
+        object.__setattr__(self, "authority", authority)
+
+    def to_dict(self) -> dict:
+        return {"low": self.low, "center": self.center, "high": self.high,
+                "nominal_level": self.nominal_level, "interval_kind": self.interval_kind,
+                "inference_paradigm": self.inference_paradigm,
+                "source_quantity": self.source_quantity, "authority": dict(self.authority),
+                "conditioning_fingerprint": self.conditioning_fingerprint}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ModeInterval":
+        return cls(
+            low=float(d["low"]), center=_opt_float(d["center"]), high=float(d["high"]),
+            nominal_level=float(d["nominal_level"]),
+            interval_kind=_opt_str(d.get("interval_kind")),
+            inference_paradigm=_opt_str(d.get("inference_paradigm")),
+            source_quantity=str(d["source_quantity"]),
+            authority=dict(d.get("authority") or {}),
+            conditioning_fingerprint=_opt_str(d.get("conditioning_fingerprint")))
+
+
+@dataclass(frozen=True, slots=True)
 class CandidateRow:
     """One locally-fitted structure×identity alternative, as the scene reads it.
 
@@ -230,6 +351,16 @@ class CandidateRow:
     # is unplaceable; ``()`` is a phonon-less or result-less candidate, so the length agrees
     # with ``n_modes`` except in the no-result case.
     omegas: tuple[float | None, ...]
+    # SCENE-4 PR 4.2a: the within-candidate ω₀ uncertainty, slot-aligned to ``omegas`` (same
+    # length) — projecting ONLY what the fit side already persisted (:class:`ModeInterval`), never
+    # minted here. POPULATION RULE: a slot is populated only where the writer's own record names a
+    # real, available, per-candidate interval for that mode. A single-mode candidate's one slot is
+    # unambiguous; a MULTIMODE candidate's slots stay ALL ``None`` — the persisted record has no
+    # field naming which slot is the bootstrap's tracked primary mode, and guessing slot 0 would be
+    # minted semantics the writer never asserted. Required, with no default, like ``components``: a
+    # row that predates this contract is a stale delivery, not a row with no uncertainty.
+    # ``()`` for a phonon-less candidate, matching ``omegas``.
+    mode_intervals: tuple["ModeInterval | None", ...]
     # What this candidate is MADE OF, in the writer's canonical order (modes by slot, then the
     # non-mode kinds by name). Required, with no default: a row that declares no components is a
     # row written before the descriptors existed, and defaulting it to ``()`` would present a
@@ -245,6 +376,20 @@ class CandidateRow:
     constraint_origin: str | None = None
     effective_constraints: tuple | None = None
 
+    def __post_init__(self):
+        # SCENE-4 PR 4.2a review (Major finding 1, corrected): ``mode_intervals`` and ``omegas``
+        # are the pair a reader ever zips, so ONLY they must agree in length. ``n_modes`` is
+        # deliberately excluded — the ``omegas`` field comment above already documents a
+        # legitimate case where it disagrees: a result-less candidate persists ``n_modes=1``
+        # (``_candidate_rows`` defaults it when ``r is None``) with ``omegas=()``, since there is
+        # no result to read a position off. Requiring ``n_modes == len(omegas)`` here would
+        # refuse that real, documented row. Fail here, loudly, like every other malformed-payload
+        # refusal in this file — never truncate or pad to fit.
+        if len(self.mode_intervals) != len(self.omegas):
+            raise ValueError(
+                f"candidate {self.label!r} is slot-misaligned: len(omegas)={len(self.omegas)}, "
+                f"len(mode_intervals)={len(self.mode_intervals)} must agree")
+
     def to_dict(self) -> dict:
         d = asdict(self)
         # A non-finite lnZ (±inf, and the NaN an evidence lane actually tends to produce)
@@ -257,6 +402,7 @@ class CandidateRow:
         if d["log_evidence"] is not None and not math.isfinite(d["log_evidence"]):
             d["log_evidence"] = None
         d["omegas"] = list(self.omegas)
+        d["mode_intervals"] = [None if m is None else m.to_dict() for m in self.mode_intervals]
         d["components"] = [c.to_dict() for c in self.components]
         d["effective_constraints"] = (None if self.effective_constraints is None
                                       else [dict(c) for c in self.effective_constraints])
@@ -275,6 +421,11 @@ class CandidateRow:
             identity=_opt_str(d.get("identity")),
             variant=_opt_str(d.get("variant")),
             omegas=tuple(_opt_float(w) for w in d.get("omegas") or ()),
+            # ``d["mode_intervals"]``, not ``d.get(...)``: a payload without this cell predates the
+            # SCENE-4 PR 4.2a contract, same posture as ``components`` below — fail rather than
+            # read a stale row as "no uncertainty".
+            mode_intervals=tuple(None if m is None else ModeInterval.from_dict(m)
+                                 for m in d["mode_intervals"]),
             # ``d["components"]``, not ``d.get(...)``: a payload without descriptors predates the
             # delivery contract and must fail rather than read as a componentless candidate.
             components=tuple(ComponentDescriptor.from_dict(c) for c in d["components"]),

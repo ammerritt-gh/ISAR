@@ -15,15 +15,25 @@ import pytest
 
 from isar.scene.model import (
     COUNT_TRUST_STATES, TOPOLOGY_ROLES, CandidateRow, ComponentDescriptor, ConditionSet, Footprint,
-    FootprintBand, SceneObservation, Visibility, canonical_bytes, covers, fingerprint, footprint_of,
-    observation_fingerprint, visibility_of,
+    FootprintBand, ModeInterval, SceneObservation, Visibility, canonical_bytes, covers, fingerprint,
+    footprint_of, observation_fingerprint, visibility_of,
 )
+
+
+def _mode_interval(**over) -> ModeInterval:
+    base = dict(low=4.1, center=4.25, high=4.4, nominal_level=0.68,
+                interval_kind="parametric_bootstrap_percentile",
+                inference_paradigm="frequentist_sampling_distribution",
+                source_quantity="freq_interval",
+                authority={"authority_basis": "producer_sound"},
+                conditioning_fingerprint="c" * 64)
+    return ModeInterval(**{**base, **over})
 
 
 def _row(**over) -> CandidateRow:
     base = dict(label="phonon", k=5, n_modes=1, log_evidence=-12.5,
                 evidence_method="laplace", posterior_probability=0.7, usable=True,
-                identity=None, variant=None, omegas=(4.25,),
+                identity=None, variant=None, omegas=(4.25,), mode_intervals=(None,),
                 components=(ComponentDescriptor("mode", 0),))
     return CandidateRow(**{**base, **over})
 
@@ -32,7 +42,8 @@ def _obs(**over) -> SceneObservation:
     base = dict(scan_ref="exp:scan:det", q=(1.0, 0.0, 0.5), temperature_K=300.0,
                 energy_window=(-3.0, 10.0), gauss_fwhm=0.9, lorentz_fwhm=0.2,
                 effective_exposure=120.0, background=1.5, best_label="phonon",
-                candidates=(_row(), _row(label="bg", n_modes=0, omegas=(), components=())),
+                candidates=(_row(), _row(label="bg", n_modes=0, omegas=(), mode_intervals=(),
+                                        components=())),
                 evidence_comparison_status="complete", selection_fallback=None,
                 arena_fingerprint="a" * 64, evidence_sink=None,
                 sample="LiHoF4", conditions=(("temperature_K", 300.0),),
@@ -64,7 +75,7 @@ def test_dtos_are_frozen(dto, field, value):
     (_row(), CandidateRow),
     (_row(k=None, log_evidence=None, evidence_method=None, posterior_probability=None,
           usable=False, identity="acoustic", variant="near_degenerate", n_modes=2,
-          omegas=(3.0, None)), CandidateRow),
+          omegas=(3.0, None), mode_intervals=(_mode_interval(), None)), CandidateRow),
     # Conditioning provenance (H9) survives the boundary verbatim: the constraint list is
     # persisted mappings, not a re-encoding, and "recorded but unconstrained" (``()``) must stay
     # distinguishable from "no semantics record" (``None``).
@@ -138,6 +149,72 @@ def test_bands_from_both_sides_of_zero_still_fold_onto_one_intrinsic_axis():
     assert not covers(fp, 0.5)
 
 
+@pytest.mark.parametrize("mode_intervals", [(), (None, None), (_mode_interval(), None)])
+def test_a_mis_sized_mode_intervals_is_refused(mode_intervals):
+    """PR 4.2a review, Major finding 1 (corrected): ``omegas=(4.25,)`` pinned by ``_row`` — any
+    ``mode_intervals`` length but 1 disagrees with ``omegas`` and is refused. ``n_modes`` plays
+    no part in the check (see the follow-up correction below)."""
+    with pytest.raises(ValueError, match="len\\(omegas\\)=1.*len\\(mode_intervals\\)"):
+        _row(mode_intervals=mode_intervals)
+
+
+# ----------------------------------------------------------------------------
+# ModeInterval strict validation (P1-F, SCENE-4 wave-1 W1)
+# ----------------------------------------------------------------------------
+@pytest.mark.parametrize("over,match", [
+    (dict(low=5.0, high=4.0), "low <= high"),
+    (dict(low=float("nan")), "finite"),
+    (dict(high=float("inf")), "finite"),
+    (dict(center=10.0), "center"),                      # outside [low, high]
+    (dict(center=float("nan")), "center"),
+    (dict(nominal_level=0.0), "nominal_level"),
+    (dict(nominal_level=1.5), "nominal_level"),
+    (dict(interval_kind="not_a_real_kind"), "interval_kind"),
+    (dict(inference_paradigm="not_a_real_paradigm"), "inference_paradigm"),
+    (dict(source_quantity=""), "source_quantity"),
+    (dict(conditioning_fingerprint=""), "conditioning_fingerprint"),
+    # The retired delivery-flag authority shape (pre-P0-C) must be refused, not silently read.
+    (dict(authority={"authority_scopes": {"user_diagnostic": "active"},
+                     "selected_for_delivery": True, "passed_reliability_gate": True}),
+     "authority"),
+    (dict(authority={"authority_basis": "producer_sound", "extra_key": 1}), "authority"),
+    (dict(authority={"authority_basis": "not_a_real_basis"}), "authority"),
+    (dict(authority={}), "authority"),
+])
+def test_mode_interval_refuses_malformed_construction(over, match):
+    with pytest.raises(ValueError, match=match):
+        _mode_interval(**over)
+
+
+def test_mode_interval_accepts_a_bare_pair_with_no_center():
+    mi = _mode_interval(center=None)
+    assert mi.center is None
+
+
+def test_mode_interval_accepts_a_producer_unsound_verdict_with_reasons():
+    mi = _mode_interval(authority={"authority_basis": "producer_unsound",
+                                   "reasons": ("bimodal", "unavailable")})
+    assert mi.authority == {"authority_basis": "producer_unsound",
+                            "reasons": ("bimodal", "unavailable")}
+
+
+def test_mode_interval_deep_copies_authority_so_caller_mutation_cannot_reach_it():
+    authority = {"authority_basis": "producer_unsound", "reasons": ["bimodal"]}
+    mi = _mode_interval(authority=authority)
+    authority["reasons"].append("mutated")
+    authority["authority_basis"] = "producer_sound"
+    assert mi.authority == {"authority_basis": "producer_unsound", "reasons": ("bimodal",)}
+
+
+def test_a_result_less_candidate_disagrees_with_n_modes_but_still_constructs():
+    """Follow-up correction to Major finding 1: a result-less candidate legitimately persists
+    ``n_modes=1`` with ``omegas=()`` (``_mode_omegas`` docstring / ``_candidate_rows``'s
+    default when ``r is None``) — ``n_modes`` disagreeing with ``len(omegas)`` is NOT a
+    slot-misalignment, only ``omegas``/``mode_intervals`` disagreeing is."""
+    row = _row(n_modes=1, omegas=(), mode_intervals=(), components=())
+    assert row.n_modes == 1 and row.omegas == () and row.mode_intervals == ()
+
+
 def test_a_row_without_component_descriptors_is_refused_like_a_legacy_row():
     """Review finding 9: the descriptors are the only statement of what a candidate is made of,
     so a payload lacking them must fail rather than read as a structureless candidate."""
@@ -204,7 +281,8 @@ def test_observation_fingerprint_tracks_content_not_field_order():
                             "candidates": obs.candidates,
                             "fingerprint": "not-a-digest"})) == obs.fingerprint
     # A changed candidate row changes it; a reordered payload does not.
-    changed = _obs(candidates=(_row(log_evidence=-11.0), _row(label="bg", n_modes=0, omegas=())))
+    changed = _obs(candidates=(_row(log_evidence=-11.0),
+                               _row(label="bg", n_modes=0, omegas=(), mode_intervals=())))
     assert changed.fingerprint != obs.fingerprint
     reordered = dict(reversed(list(obs.to_dict().items())))
     reordered.pop("fingerprint")

@@ -18,7 +18,7 @@ from isar.scene.agenda import (
 from isar.scene.questions import Blocker, QuestionAssessment, QuestionExhaustion
 from isar.schema.question_policy import resolve_policy
 
-from .test_predicates import P1, alt, cand, cluster, fp, obs, payload
+from .test_predicates import P1, alt, cand, cluster, fp, obs, payload, trusted_interval
 
 
 
@@ -34,10 +34,13 @@ def step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=0.5,
             "resolved_policy": resolve_policy()}
 
 
-def confirmed_scene(posterior=0.95, omega=5.0):
-    """One trusted arena at the declared ZC 2.0 with a confidently present mode."""
+def confirmed_scene(posterior=0.95, omega=5.0, mode_intervals=None):
+    """One trusted arena at the declared ZC 2.0 with a confidently present mode. No trusted
+    per-mode interval by default (``mode_intervals=None`` -> ``cand``'s all-``None`` default) —
+    pass a trusted interval (SCENE-4.2a A1/A2) to exercise EstimateParameter closure."""
     return payload(
-        observations=[obs("e:1:d", [cand("A", omegas=(omega,)), cand("B")])],
+        observations=[obs("e:1:d", [cand("A", omegas=(omega,), mode_intervals=mode_intervals),
+                                    cand("B")])],
         footprints=[fp("e:1:d", 2.0)],
         clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], posterior),
                                       alt([("e:1:d", "B")], 1.0 - posterior)])],
@@ -63,7 +66,13 @@ def assessment_of(revision, question_id):
 # Derivation shape
 # ----------------------------------------------------------------------------
 def test_the_agenda_opens_declared_anchor_questions_and_chains_on_confirmation():
-    revision = derive(confirmed_scene())
+    # SCENE-4.2a A6: ClassifyIdentity only opens where the scene can represent an answer, so
+    # this chaining test needs an explicit identity — see
+    # test_classify_identity_gate_suppresses_with_no_representable_identity below for the
+    # production-profile (identity=None everywhere) case this test used to conflate with.
+    scene = confirmed_scene()
+    scene["observations"][0]["candidates"][0]["identity"] = "acoustic"
+    revision = derive(scene)
     p = revision.payload
     families = {s["family"] for s in p["specs"]}
     assert {"DiscoverRegion", "ConfirmPresence", "ClassifyIdentity", "EstimateParameter",
@@ -79,6 +88,13 @@ def test_the_agenda_opens_declared_anchor_questions_and_chains_on_confirmation()
                 if s["subject"]["anchor"] is not None]
     assert sorted(s["subject"]["anchor"] for s in anchored) == [2.0, 3.0]
     assert all(s["subject"]["catalogue_class"] is None for s in anchored)
+    # Representability holds (the explicit "acoustic" identity) — the SCENE-4.2a A6 gate opens
+    # ClassifyIdentity, the evaluator can actually answer it, and no inert note is recorded.
+    classify = by_family(revision, "ClassifyIdentity")
+    assert len(classify) == 1
+    a = assessment_of(revision, classify[0]["question_id"])
+    assert a["status"] == "answered" and dict(a["answer"]) == {"identity": "acoustic"}
+    assert not any(n == "classify_identity_inert" for n, _ in map(tuple, p["derivation_notes"]))
     # The confirmed anchor chains: the omega0 estimate (open by ruling 1) and the ZC endpoint
     # question — which here honestly answers INCOMPATIBLE: the arena sits AT the fold and the
     # mode is at 5 meV, so under any declared slope the branch does not reach zero.
@@ -192,6 +208,10 @@ def test_presence_is_class_agnostic_and_identity_comes_from_classification():
     assert a["status"] == "answered" and dict(a["answer"]) == {"identity": "acoustic"}
     ids = [s["question_id"] for s in revision.payload["specs"]]
     assert len(ids) == len(set(ids))
+    # Representability holds here (an explicit identity is in the scene) — the SCENE-4.2a A6
+    # gate never fires, so no inert note is recorded.
+    assert not any(n == "classify_identity_inert"
+                   for n, _ in map(tuple, revision.payload["derivation_notes"]))
 
 
 def test_connect_track_chains_from_classified_answers():
@@ -215,6 +235,172 @@ def test_connect_track_chains_from_classified_answers():
     assert tracks[0]["subject"]["catalogue_class"] == "acoustic"
     classify_ids = {s["question_id"] for s in by_family(revision, "ClassifyIdentity")}
     assert set(tracks[0]["dependencies"]) <= classify_ids
+
+
+def unclassified_pair_scene(*, linked=False):
+    """Two confirmed tiles, identity=None throughout (no representable identity anywhere:
+    the P0-B counterexample fixture)."""
+    rows_obs = [obs("e:1:d", [cand("A", omegas=(5.0,)), cand("B")]),
+                obs("e:2:d", [cand("A", omegas=(5.5,)), cand("B")])]
+    footprints = [fp("e:1:d", 2.0), fp("e:2:d", 3.0)]
+    clusters = [cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.95),
+                                    alt([("e:1:d", "B")], 0.05)], cluster_id="c0"),
+                cluster(["e:2:d"], [alt([("e:2:d", "A")], 0.95),
+                                    alt([("e:2:d", "B")], 0.05)], cluster_id="c1")]
+    if linked:
+        link = (("e:1:d#A#0", "e:2:d#A#0"),)
+        clusters.append(cluster(["e:1:d", "e:2:d"],
+                                [alt([("e:1:d", "A"), ("e:2:d", "A")], 1.0, links=link)],
+                                cluster_id="link"))
+    return payload(observations=rows_obs, footprints=footprints, clusters=clusters,
+                  sample_knowledge={"zone_period": 1.0, "dispersion_slope_max": 10.0,
+                                    "lattice_epoch": 1})
+
+
+def test_connect_track_derives_class_agnostic_from_confirmed_presence_alone():
+    """P0-B owner counterexample: two real, unclassified confirmed tiles with ambiguous
+    (disjoint-cluster) linkage still get a connectivity question — identity abstention must
+    not suppress structural connectivity. VerifyCompleteness depends on it, and completeness
+    cannot pass while it stays open."""
+    revision = derive(unclassified_pair_scene(linked=False))
+    assert not by_family(revision, "ClassifyIdentity")
+    tracks = by_family(revision, "ConnectTrack")
+    assert len(tracks) == 1
+    assert tracks[0]["subject"]["catalogue_class"] is None
+    assert dict(tracks[0]["policy_provenance"]).get("opened_by") \
+        == "presence_without_classification"
+    verify = by_family(revision, "VerifyCompleteness")[0]
+    assert tracks[0]["question_id"] in verify["dependencies"]
+    track_assessment = assessment_of(revision, tracks[0]["question_id"])
+    assert track_assessment["status"] == "open"
+    verdict = evaluate_agenda(revision.payload)
+    assert verdict.state != "complete"
+
+
+def test_connect_track_class_agnostic_track_closes_on_linkage_alone():
+    """Same fixture, but with linkage evidence: the class-agnostic track answers YES exactly
+    as the per-class track would, with no identity involved at any point."""
+    revision = derive(unclassified_pair_scene(linked=True))
+    tracks = by_family(revision, "ConnectTrack")
+    assert len(tracks) == 1
+    a = assessment_of(revision, tracks[0]["question_id"])
+    assert a["status"] == "answered" and dict(a["answer"]) == {"connected": True}
+
+
+def test_class_agnostic_and_per_class_track_subjects_never_collide():
+    """A ``catalogue_class=None`` track subject and an otherwise-identical classed one must
+    mint distinct question IDs — the class-agnostic pass and the per-class pass can never
+    silently overwrite each other's spec."""
+    from isar.scene.questions import PredicateDeclaration, QuestionSpec, QuestionSubject
+    base = dict(kind="track", partition_id=P1, endpoint_a_rlu=(2.0, 2.5),
+               endpoint_b_rlu=(3.0, 3.5))
+    none_spec = QuestionSpec(
+        family="ConnectTrack", claim_kind="track_connected",
+        subject=QuestionSubject(catalogue_class=None, **base),
+        predicate=PredicateDeclaration(kind="track_connected", version=1,
+                                       parameters={"min_mass": 0.9}),
+        generator_ids=("track_bridge_scan",))
+    classed_spec = QuestionSpec(
+        family="ConnectTrack", claim_kind="track_connected",
+        subject=QuestionSubject(catalogue_class="acoustic", **base),
+        predicate=PredicateDeclaration(kind="track_connected", version=1,
+                                       parameters={"min_mass": 0.9}),
+        generator_ids=("track_bridge_scan",))
+    assert none_spec.question_id != classed_spec.question_id
+
+
+def test_a_single_confirmed_tile_opens_no_class_agnostic_track():
+    """Threshold unchanged: one confirmed unclassified tile alone never opens a track."""
+    revision = derive(confirmed_scene())    # one arena, identity=None throughout
+    assert not by_family(revision, "ClassifyIdentity")
+    assert not by_family(revision, "ConnectTrack")
+
+
+def test_a_fully_classified_partition_derives_per_class_only_no_duplicate():
+    """When every confirmed tile in a partition DOES answer classify, only the per-class track
+    derives — no shadow class-agnostic track alongside it (no duplicate connectivity
+    question for the same partition)."""
+    revision = derive(payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.0,), identity="acoustic"),
+                                    cand("B")]),
+                      obs("e:2:d", [cand("A", omegas=(5.5,), identity="acoustic"),
+                                    cand("B")])],
+        footprints=[fp("e:1:d", 2.0), fp("e:2:d", 3.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.95),
+                                      alt([("e:1:d", "B")], 0.05)], cluster_id="c0"),
+                  cluster(["e:2:d"], [alt([("e:2:d", "A")], 0.95),
+                                      alt([("e:2:d", "B")], 0.05)], cluster_id="c1")],
+        sample_knowledge={"zone_period": 1.0, "dispersion_slope_max": 10.0,
+                          "lattice_epoch": 1}))
+    tracks = by_family(revision, "ConnectTrack")
+    assert len(tracks) == 1
+    assert tracks[0]["subject"]["catalogue_class"] == "acoustic"
+
+
+def test_one_classified_tile_does_not_suppress_the_class_agnostic_track():
+    """Pre-commit Major repair: a partition with 1 classified + 2 unclassified confirmed
+    tiles gets a per-class track that can NEVER derive (needs >=2 same-class tiles) — key
+    presence in ``classified`` alone must not suppress the class-agnostic pass here, or this
+    re-creates the exact suppression P0-B forbids. The track spans ALL confirmed tiles in the
+    partition (structural connectivity of confirmed phenomena; class labels irrelevant), so
+    the classified tile's own ConfirmPresence question is among its dependencies too."""
+    def arena(ref, coord, cid, identity=None):
+        return (obs(ref, [cand("A", omegas=(5.0,), identity=identity), cand("B")]),
+                fp(ref, coord),
+                cluster([ref], [alt([(ref, "A")], 0.95), alt([(ref, "B")], 0.05)],
+                        cluster_id=cid))
+    classified_tile = arena("e:1:d", 2.0, "c0", identity="acoustic")
+    unclassified_1 = arena("e:2:d", 3.0, "c1")
+    unclassified_2 = arena("e:3:d", 4.0, "c2")
+    rows = [classified_tile, unclassified_1, unclassified_2]
+    scene = payload(observations=[r[0] for r in rows], footprints=[r[1] for r in rows],
+                    clusters=[r[2] for r in rows],
+                    sample_knowledge={"zone_period": 1.0, "dispersion_slope_max": 10.0,
+                                      "lattice_epoch": 1})
+    revision = derive(scene)
+    classify = by_family(revision, "ClassifyIdentity")
+    assert len(classify) == 1        # one tile classified, but only one — no per-class track
+    per_class_tracks = [t for t in by_family(revision, "ConnectTrack")
+                        if t["subject"]["catalogue_class"] is not None]
+    assert not per_class_tracks
+    tracks = [t for t in by_family(revision, "ConnectTrack")
+             if t["subject"]["catalogue_class"] is None]
+    assert len(tracks) == 1
+    presence = by_family(revision, "ConfirmPresence")
+    assert len(presence) == 3
+    assert set(tracks[0]["dependencies"]) == {s["question_id"] for s in presence}
+    assert classify[0]["dependencies"][0] in tracks[0]["dependencies"]
+
+
+def test_classification_handover_dissolves_the_class_agnostic_track(tmp_path):
+    """The transition through the store: an unclassified pair opens a class-None track; once
+    the scene later answers classification for both tiles, the class-agnostic track dissolves
+    (equivalence unproven — a different subject, not a rename) and the per-class track opens
+    in its place."""
+    unclassified = unclassified_pair_scene(linked=True)
+    build_and_store_agenda(tmp_path, unclassified, step(), step_id="discover-1",
+                           program_fingerprint="prog-1")
+    before = derive(unclassified)
+    before_track = by_family(before, "ConnectTrack")
+    assert len(before_track) == 1 and before_track[0]["subject"]["catalogue_class"] is None
+
+    classified = unclassified_pair_scene(linked=True)
+    classified["observations"][0]["candidates"][0]["identity"] = "acoustic"
+    classified["observations"][1]["candidates"][0]["identity"] = "acoustic"
+    build_and_store_agenda(tmp_path, classified, step(), step_id="discover-1",
+                           program_fingerprint="prog-1")
+    after = derive(classified)
+    after_track = by_family(after, "ConnectTrack")
+    assert len(after_track) == 1 and after_track[0]["subject"]["catalogue_class"] == "acoustic"
+    assert after_track[0]["question_id"] != before_track[0]["question_id"]
+
+    dissolved = [t for record in read_transitions(tmp_path)
+                 for t in record["transitions"] if t["relation"] == "dissolved"]
+    assert any(t["question_id"] == before_track[0]["question_id"]
+              and t["equivalence"] == "unproven" for t in dissolved)
+    opened = [t for record in read_transitions(tmp_path)
+             for t in record["transitions"] if t["relation"] == "opened"]
+    assert any(t["question_id"] == after_track[0]["question_id"] for t in opened)
 
 
 def test_mismatch_opens_only_where_the_scene_can_answer_it():
@@ -570,9 +756,14 @@ def test_complete_beats_budget_and_budget_exhaustion_is_honest():
                            budget_state=under).state == "in_progress"
 
 
-def test_a_confirmed_phenomenon_yields_in_progress_with_the_open_estimate_surfaced():
-    """The stated ruling-1 consequence: EstimateParameter never closes in v1, so a
-    phenomenon-bearing campaign cannot reach complete until the interval re-baseline."""
+def test_a_confirmed_phenomenon_with_no_trusted_interval_yields_in_progress():
+    """The ruling-1 consequence stands for a scene with NO within-candidate uncertainty (the A1
+    ``mode_intervals`` all ``None``, as ``confirmed_scene()`` builds by default): EstimateParameter
+    stays open on ``within_candidate_uncertainty_unavailable``, blocking completion. SCENE-4.2a A2
+    retires the BLANKET "never closes in v1" claim — see
+    ``test_a_confirmed_phenomenon_closes_estimate_parameter_given_a_trusted_interval`` below for
+    the now-reachable closure path — but this particular fixture still has no interval to close
+    on, so the consequence for IT is unchanged."""
     revision = derive(confirmed_scene())
     verdict = evaluate_agenda(revision.payload)
     assert verdict.state == "in_progress"
@@ -580,6 +771,31 @@ def test_a_confirmed_phenomenon_yields_in_progress_with_the_open_estimate_surfac
     assert open_families.get("EstimateParameter", 0) >= 1
     estimate_ids = {s["question_id"] for s in by_family(revision, "EstimateParameter")}
     assert estimate_ids & set(verdict.blocking)
+    estimate = by_family(revision, "EstimateParameter")
+    tolerance_spec = next(s for s in estimate
+                          if s["claim_kind"] == "parameter_within_tolerance")
+    a = assessment_of(revision, tolerance_spec["question_id"])
+    assert [b["name"] for b in a["blockers"]] == ["within_candidate_uncertainty_unavailable"]
+
+
+def test_a_confirmed_phenomenon_closes_estimate_parameter_given_a_trusted_interval():
+    """SCENE-4.2a A2: with a trusted per-mode interval narrow enough for the frozen tolerance
+    (0.5 meV) and confidently enough retained (0.9 min mass), EstimateParameter's
+    ``parameter_within_tolerance`` question now closes — the never-closes ruling is retired for
+    scenes that actually carry the A1 interval."""
+    revision = derive(confirmed_scene(posterior=1.0,
+                                      mode_intervals=[trusted_interval(4.9, 5.1)]))
+    estimate = by_family(revision, "EstimateParameter")
+    tolerance_spec = next(s for s in estimate
+                          if s["claim_kind"] == "parameter_within_tolerance")
+    a = assessment_of(revision, tolerance_spec["question_id"])
+    assert a["status"] == "answered"
+    # window = (high - tol, low + tol) = (5.1 - 0.5, 4.9 + 0.5) = (4.6, 5.4); the search ties on
+    # both endpoints, but the published center_meV is the envelope's midpoint (P1-J), not the
+    # search endpoint -- 5.0 regardless of which tied endpoint the search settled on.
+    assert dict(a["answer"])["center_meV"] == pytest.approx(5.0)
+    lo, hi = dict(a["answer"])["envelope_meV"]
+    assert lo == pytest.approx(4.6) and hi == pytest.approx(5.4)
 
 
 def test_a_fully_surveyed_blank_campaign_reaches_complete():
@@ -604,6 +820,125 @@ def test_a_fully_surveyed_blank_campaign_reaches_complete():
     verdict = evaluate_agenda(revision.payload)
     assert verdict.state == "complete"
     assert verdict.blocking == ()
+
+
+def test_classify_identity_gate_suppresses_with_no_representable_identity():
+    """SCENE-4.2a A6 owner ruling: the production catalogue declares no identity-conditioned
+    priors (``_identity_candidates()`` returns ``()``), so every candidate carries
+    ``identity=None``. ClassifyIdentity must not open there — it would open and never close.
+    The confirmed phenomenon still maps: EstimateParameter still chains, and the derivation
+    records why no classify question exists."""
+    revision = derive(confirmed_scene())    # identity=None throughout, by default
+    assert not by_family(revision, "ClassifyIdentity")
+    notes = [(n, detail) for n, detail in map(tuple, revision.payload["derivation_notes"])
+             if n == "classify_identity_inert"]
+    assert notes and "identity_hypotheses_unavailable" in notes[0][1]
+    # Cheap debuggability (pre-commit Minor 4): the note names what was actually examined —
+    # confirmed_scene() has one arena with two candidates (A, B), both identity=None.
+    assert "1 scan ref" in notes[0][1] and "2 candidate" in notes[0][1]
+    # EstimateParameter chains from the confirmed ConfirmPresence directly, unaffected by the
+    # ClassifyIdentity gate.
+    assert by_family(revision, "EstimateParameter")
+
+
+def test_classify_identity_gate_is_tile_scoped_not_partition_wide():
+    """The Major pre-commit fix: representability must be judged over the SAME subject-matched
+    rows the evaluator scores (``isar.scene.predicates.identity_hypothesis_classes``), never
+    the whole partition. Two confirmed tiles share one partition; only Y carries an explicit
+    identity in ITS OWN matched rows. A partition-wide check would pass X too (Y's identity is
+    in the same partition) and open a ClassifyIdentity that could never close — exactly the
+    failure the gate exists to prevent."""
+    def arena(ref, coord, cid, identity):
+        return (obs(ref, [cand("A", omegas=(5.0,), identity=identity), cand("B")]),
+                fp(ref, coord),
+                cluster([ref], [alt([(ref, "A")], 1.0), alt([(ref, "B")], 0.0)], cluster_id=cid))
+    x = arena("e:x:d", 2.0, "cx", identity=None)          # tile [2.0, 2.5): no representable
+    y = arena("e:y:d", 3.0, "cy", identity="acoustic")    # tile [3.0, 3.5): representable
+    scene = payload(observations=[x[0], y[0]], footprints=[x[1], y[1]],
+                    clusters=[x[2], y[2]], sample_knowledge={"lattice_epoch": 1})
+    revision = derive(scene)
+    classify = by_family(revision, "ClassifyIdentity")
+    assert len(classify) == 1
+    assert tuple(classify[0]["subject"]["region_rlu"]) == (3.0, 3.5)
+    a = assessment_of(revision, classify[0]["question_id"])
+    assert a["status"] == "answered" and dict(a["answer"]) == {"identity": "acoustic"}
+    notes = [(n, detail) for n, detail in map(tuple, revision.payload["derivation_notes"])
+             if n == "classify_identity_inert"]
+    assert len(notes) == 1
+    assert "(2.0, 2.5)" in notes[0][1] and "identity_hypotheses_unavailable" in notes[0][1]
+
+
+def test_classify_identity_gate_suppresses_on_a_pruned_identity_row():
+    """SCENE-4.2a P1-G falsified counterexample: an explicit-identity candidate ("acoustic")
+    that NO retained alternative ever assigns must not open ClassifyIdentity — the gate and the
+    evaluator must agree it is unrepresentable, exactly as with no identity at all."""
+    # A carries the explicit identity but is PRUNED (no alternative ever assigns it); the sole
+    # retained alternative assigns C, an identity-less mode — so ConfirmPresence still answers
+    # YES (a real mode is present) while representability must stay empty.
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.0,), identity="acoustic"),
+                                    cand("C", omegas=(5.2,))])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "C")], 1.0)])],
+        sample_knowledge={"lattice_epoch": 1})
+    revision = derive(scene)
+    assert not by_family(revision, "ClassifyIdentity")
+    notes = [(n, detail) for n, detail in map(tuple, revision.payload["derivation_notes"])
+             if n == "classify_identity_inert"]
+    assert notes and "identity_hypotheses_unavailable" in notes[0][1]
+
+
+def test_classify_identity_gate_maps_a_confirmed_phenomenon_and_still_completes():
+    """The reachability property for the gated case: a fully-surveyed campaign whose one
+    confirmed phenomenon carries no representable identity (and closes EstimateParameter via
+    a trusted A1 interval) still reaches a COMPLETE verdict — the missing classify family
+    never blocks completion."""
+    # Every arena confidently supports the SAME mode with the SAME trusted A1 interval: a
+    # continuous phenomenon spanning the surveyed region, densely enough surveyed to close
+    # DiscoverRegion, with no diluting cluster (a q-tile's EstimateParameter mass combines
+    # across every cluster overlapping that tile, so a low-confidence neighbour would tank it —
+    # an unrelated effect this fixture must not exercise).
+    def arena(ref, coord, cid):
+        return (obs(ref, [cand("A", omegas=(5.0,),
+                              mode_intervals=[trusted_interval(4.9, 5.1)]), cand("B")]),
+                fp(ref, coord),
+                cluster([ref], [alt([(ref, "A")], 1.0), alt([(ref, "B")], 0.0)], cluster_id=cid))
+    rows = [arena("e:1:d", 2.0, "c0"), arena("e:2:d", 2.4, "c1"),
+            arena("e:3:d", 2.8, "c2"), arena("e:4:d", 3.0, "c3")]
+    # P0-B repair: three emergent tiles derive from these four arenas (2.0/2.4 share a tile),
+    # and with no ClassifyIdentity answered the class-agnostic ConnectTrack pass (finding
+    # P0-B) now opens ONE track spanning the extreme tiles — identity abstention must not
+    # suppress structural connectivity. Give it real linkage evidence (an extra cluster
+    # joining the two endpoint refs) so it closes cleanly, instead of shrinking the fixture:
+    # this keeps exercising the reachability property this test names, now through the
+    # class-agnostic track rather than around it.
+    link = (("e:1:d#A#0", "e:4:d#A#0"),)
+    link_cluster = cluster(["e:1:d", "e:4:d"],
+                           [alt([("e:1:d", "A"), ("e:4:d", "A")], 1.0, links=link)],
+                           cluster_id="link")
+    scene = payload(observations=[r[0] for r in rows], footprints=[r[1] for r in rows],
+                    clusters=[r[2] for r in rows] + [link_cluster],
+                    sample_knowledge={"lattice_epoch": 1})  # no zone_period: no anchors,
+                                                             # keeping the fixture to the gate
+    revision = derive(scene)
+    assert not by_family(revision, "ClassifyIdentity")
+    # A class-agnostic track now opens and closes on linkage evidence alone (P0-B): identity
+    # abstention suppresses only the CLASS LABEL, never the connectivity question itself.
+    tracks = by_family(revision, "ConnectTrack")
+    assert len(tracks) == 1
+    assert tracks[0]["subject"]["catalogue_class"] is None
+    track_assessment = assessment_of(revision, tracks[0]["question_id"])
+    assert track_assessment["status"] == "answered"
+    assert dict(track_assessment["answer"]) == {"connected": True}
+    assert any(n == "classify_identity_inert"
+               for n, _ in map(tuple, revision.payload["derivation_notes"]))
+    presence = by_family(revision, "ConfirmPresence")
+    assert presence
+    assert all(assessment_of(revision, s["question_id"])["status"] == "answered"
+              and dict(assessment_of(revision, s["question_id"])["answer"]) == {"present": True}
+              for s in presence)
+    verdict = evaluate_agenda(revision.payload)
+    assert verdict.state == "complete"
 
 
 def test_footprint_quantified_nulls_feed_completeness_through_closed_questions():

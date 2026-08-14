@@ -2178,6 +2178,65 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   EXACT partition; the discover compiler defaults `include_unknown` only when absent/null so
   invalid explicit values reach the schema's refusal.
 
+- **H18.** (2026-08-14, In force; SCENE-4 PR 4.2a scheduling + PR #32 review wave) **The
+  EstimateParameter re-baseline is scheduled and lands; the question-policy schema grows a
+  version; the identity gate stays representability-only; the milestone splits; and the PR #32
+  review wave repairs interval authority, connectivity, and parameter-precision closure.**
+  Seven parts, the owner rulings of 2026-08-14.
+  **(a) The per-candidate interval re-baseline is scheduled into 4.2a as its FIRST commit.**
+  H17(c)'s same-day "EstimateParameter never closes in v1" ruling named per-candidate interval
+  persistence as a scheduled 4.2/4.3 re-baseline with no date; the owner pulls it forward to
+  open 4.2a rather than trail it, so the family's completion gap closes before any other
+  4.2a work lands on top of it.
+  **(b) `isar.question-policy/2` retires `/1` by name.** Two new TARGET fields —
+  `survey_order` (`"placement_informed"` default, `"uniform"` the ruled alternative) and
+  `parameter_precision_min_mass` (a posterior-support threshold in `(0, 1]`) — join the
+  resolved-policy block; a persisted `/1` block is refused with a message naming `/2` and
+  instructing recompile, never silently read. The same commit repairs
+  `DEFAULT_CATALOGUE_PROFILE` to the real profile ID
+  (`isar.analyze.catalogue.DEFAULT_PROFILE`) — the string it carried before,
+  `isar.catalogue.inelastic-default/1`, named no profile that ever existed.
+  **(c) The identity gate stays gated on representability only.** SCENE-4.2a A6 stands: a
+  challenge run with no identity-conditioned priors completes classification-free, mapping
+  every phenomenon as real-but-unclassified rather than opening a question the scene can never
+  answer. Whether and how a future profile's identity-conditioned PRIOR payloads should shape
+  the gate is an explicit open owner item, not decided here.
+  **(d) The milestone splits: 4.2a and 4.2b.** 4.2a is the interval re-baseline plus the
+  question-policy and catalogue repairs above and their immediate consequences; scope that
+  depends on a completed re-baseline (further predicate refinement, additional families) waits
+  for 4.2b. The split is scheduling, not a capability-status claim.
+  **(e) [PR #32 review wave] Interval authority is fit-conditional; delivery selection is not
+  interval authority.** Every candidate row — winner or not — projects only its own
+  candidate-tier `freq_interval` record as a producer-soundness verdict:
+  `authority_basis == "producer_sound"` iff the record is available, single-model bootstrap
+  (`parametric_bootstrap_percentile` under `frequentist_sampling_distribution`), not bimodal,
+  and converged at or above the named provisional v1 floor. The Akaike-pooled model-mixture kind
+  can never satisfy the single-model requirement, so mixture intervals are structurally excluded
+  from candidate slots. A non-winner survivor with a sound record is trusted exactly like a
+  winner with one; a winner with an unsound record is not trusted for having won.
+  **(f) [PR #32 review wave] Identity abstention must not suppress connectivity.** Beside the
+  per-class ConnectTrack, the agenda now derives one CLASS-AGNOSTIC track per partition with
+  ≥2 confirmed presence tiles wherever no per-class track has actually derived there —
+  suppression keys on derivation, not on the partition merely containing an answered
+  classification elsewhere. The class-agnostic track dissolves with `equivalence_unproven` once
+  a per-class track derives; the label is ClassifyIdentity's answer, never a precondition for
+  the connectivity claim to exist.
+  **(g) [PR #32 review wave] Parameter-precision closure clears on retained mass, and the
+  published center is honest.** `parameter_within_tolerance/2` closes when the qualifying
+  posterior support reaches ≥ `parameter_precision_min_mass`, consistent with `decide()` and
+  the rest of the predicate vocabulary. The answer's `center_meV` is the midpoint of
+  `envelope_meV` — the supported-center interval, the intersection of every contributing
+  acceptance window at the chosen center — never a re-derived tolerance witness that moves when
+  only the requested tolerance changes; every contributing interval must additionally agree on
+  the exact `(interval_kind, inference_paradigm, nominal_level)` triple, and conditioning
+  fingerprints ride the answer as provenance only, never as a compatibility gate.
+  **Supersedes/relates:** (e) and (g) together supersede H17(c)'s "EstimateParameter
+  never closes in v1" ruling — the per-candidate interval persistence H17(c) named as a future
+  re-baseline has landed (scheduled by (a)), delivery-realized authority is replaced by
+  fit-conditional producer-soundness, and closure now clears on retained mass exactly as the
+  rest of the family does; refines H17(f)(1)'s class-agnostic presence framing by extending
+  CLASS-AGNOSTIC treatment from ConfirmPresence to ConnectTrack.
+
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:
 user-facing campaign report (deferred until post-testing); renegotiation protocol (O3, future);
 tas4d engine choice (open question, decide when scheduled).

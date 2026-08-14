@@ -55,6 +55,7 @@ def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), bands=None, q=(1.0, 0.
         CandidateRow(label=label, k=None, n_modes=n_modes, log_evidence=lnz,
                      evidence_method="laplace", posterior_probability=None, usable=usable,
                      identity=identity, variant=None, omegas=omegas,
+                     mode_intervals=(None,) * len(omegas),
                      components=components(len(omegas), extra), constraint_origin=origin)
         for label, lnz, n_modes, omegas, usable, identity, extra, origin in candidates)
     if conditions is None:

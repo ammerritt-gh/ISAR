@@ -11,7 +11,7 @@ import pytest
 
 from isar.scene.predicates import (
     cluster_authority, combine_existential, combine_universal, decide, evaluate_predicate,
-    mass_interval)
+    identity_hypothesis_classes, mass_interval)
 from isar.scene.questions import PredicateDeclaration, QuestionSpec, QuestionSubject
 
 P1 = "a" * 64
@@ -20,16 +20,46 @@ P1 = "a" * 64
 # ----------------------------------------------------------------------------
 # Payload builders (persisted shapes)
 # ----------------------------------------------------------------------------
-def cand(label, omegas=(), identity=None, usable=True):
+def cand(label, omegas=(), identity=None, usable=True, mode_intervals=None):
     components = [{"kind": "mode", "slot": i} for i in range(len(omegas))]
+    if mode_intervals is None:
+        mode_intervals = [None] * len(omegas)
     return {"label": label, "omegas": list(omegas), "identity": identity,
-            "usable": usable, "components": components, "n_modes": len(omegas)}
+            "usable": usable, "components": components, "n_modes": len(omegas),
+            "mode_intervals": list(mode_intervals)}
 
 
-def obs(scan_ref, cands, count_trust="trusted", sample="s1", epoch=1, conditions=()):
+def trusted_interval(low, high, *, nominal_level=0.68):
+    """A writer-byte-shaped ``ModeInterval`` carrying a producer-SOUND verdict (P0-C:
+    ``scan_delivery._producer_soundness``) — trusted regardless of which label delivery
+    eventually picks."""
+    return {"low": low, "center": (low + high) / 2.0, "high": high,
+            "nominal_level": nominal_level,
+            "interval_kind": "parametric_bootstrap_percentile",
+            "inference_paradigm": "frequentist_sampling_distribution",
+            "source_quantity": "freq_interval",
+            "authority": {"authority_basis": "producer_sound"},
+            "conditioning_fingerprint": "c" * 64}
+
+
+def offer_interval(low, high, *, nominal_level=0.68):
+    """A writer-byte-shaped ``ModeInterval`` carrying a producer-UNSOUND verdict (P0-C) — never
+    trusted by the scene layer, regardless of which label delivery eventually picks."""
+    return {"low": low, "center": (low + high) / 2.0, "high": high,
+            "nominal_level": nominal_level,
+            "interval_kind": "parametric_bootstrap_percentile",
+            "inference_paradigm": "frequentist_sampling_distribution",
+            "source_quantity": "freq_interval",
+            "authority": {"authority_basis": "producer_unsound",
+                         "reasons": ("convergence_unrecorded",)},
+            "conditioning_fingerprint": "c" * 64}
+
+
+def obs(scan_ref, cands, count_trust="trusted", sample="s1", epoch=1, conditions=(),
+        best_label=None):
     return {"scan_ref": scan_ref, "candidates": list(cands), "count_trust": count_trust,
             "sample": sample, "lattice_epoch": epoch,
-            "conditions": [list(pair) for pair in conditions]}
+            "conditions": [list(pair) for pair in conditions], "best_label": best_label}
 
 
 def fp(scan_ref, coord, bands=((0.0, 10.0),), exposure=5.0, partition=P1):
@@ -205,6 +235,45 @@ def test_identity_answers_from_explicit_alternatives_and_tracks_unclassified_mas
     assert dict(a.notes)["unclassified_mass"] == pytest.approx(0.05)
 
 
+def test_representability_ignores_an_identity_row_no_retained_alternative_assigns():
+    """SCENE-4.2a P1-G falsified counterexample: candidate A carries an explicit identity, but
+    every retained alternative assigns B — A is pruned/never-retained. Representability must be
+    derived from RETAINED alternatives, not raw candidate rows, or a dead identity row opens
+    ClassifyIdentity forever."""
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.0,), identity="acoustic"), cand("B")])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "B")], 1.0)])])
+    subject = spec("identity_resolved", {"min_mass": 0.9}, family="ClassifyIdentity").subject
+    assert identity_hypothesis_classes(subject, scene) == frozenset()
+    a = evaluate_predicate(spec("identity_resolved", {"min_mass": 0.9},
+                                family="ClassifyIdentity"), scene)
+    assert a.status == "open"
+    assert [b.name for b in a.blockers] == ["identity_hypotheses_unavailable"]
+
+
+def test_representability_ignores_an_out_of_band_identity():
+    """A retained alternative assigns the identity-bearing row, but its mode sits outside the
+    subject's omega band — not placeable IN the claimed support, so it cannot represent it."""
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(50.0,), identity="acoustic")])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 1.0)])])
+    subject = spec("identity_resolved", {"min_mass": 0.9}, family="ClassifyIdentity").subject
+    assert identity_hypothesis_classes(subject, scene) == frozenset()
+
+
+def test_representability_holds_for_an_in_band_retained_identity():
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.0,), identity="acoustic"),
+                                    cand("C", omegas=(5.2,))])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.95),
+                                      alt([("e:1:d", "C")], 0.05)])])
+    subject = spec("identity_resolved", {"min_mass": 0.9}, family="ClassifyIdentity").subject
+    assert identity_hypothesis_classes(subject, scene) == frozenset({"acoustic"})
+
+
 def test_a_fitless_arena_is_not_mismatch_evidence():
     scene = payload(observations=[obs("e:1:d", [])], footprints=[fp("e:1:d", 2.0)],
                     clusters=[])
@@ -234,14 +303,17 @@ def test_mismatch_needs_an_explicit_unknown_competitor():
 # ----------------------------------------------------------------------------
 # EstimateParameter (never closes) + ZC compatibility
 # ----------------------------------------------------------------------------
-def test_identical_candidate_means_do_not_close_estimate_parameter():
+def test_no_trusted_interval_anywhere_stays_open_not_closed():
+    """No ``mode_intervals`` on this fixture's candidates at all (SCENE-4.2a A2): with no
+    within-candidate uncertainty in the matched partition, closure is unavailable regardless of
+    how confident the between-candidate posterior is."""
     scene = one_arena([alt([("e:1:d", "A")], 1.0)])
     a = evaluate_predicate(
         spec("parameter_within_tolerance", {"tolerance_meV": 0.5,
-                                            "statistical_floor_meV": 0.1},
+                                            "statistical_floor_meV": 0.1,
+                                            "parameter_precision_min_mass": 0.9},
              family="EstimateParameter", subject_kind="parameter", parameter="omega0"), scene)
-    assert a.status == "open"                        # zero spread still cannot close
-    assert dict(a.notes)["mixture_spread_meV"] == 0.0
+    assert a.status == "open"
     assert [b.name for b in a.blockers] == ["within_candidate_uncertainty_unavailable"]
 
 
@@ -249,7 +321,8 @@ def test_a_tolerance_below_the_floor_records_the_second_blocker():
     scene = one_arena([alt([("e:1:d", "A")], 1.0)])
     a = evaluate_predicate(
         spec("parameter_within_tolerance", {"tolerance_meV": 0.05,
-                                            "statistical_floor_meV": 0.1},
+                                            "statistical_floor_meV": 0.1,
+                                            "parameter_precision_min_mass": 0.9},
              family="EstimateParameter", subject_kind="parameter", parameter="omega0"), scene)
     assert {b.name for b in a.blockers} == {"within_candidate_uncertainty_unavailable",
                                             "tolerance_below_representable_precision"}
@@ -296,6 +369,235 @@ def test_zc_without_declared_dispersion_support_stays_open():
 
 
 # ----------------------------------------------------------------------------
+# EstimateParameter closure (SCENE-4.2a A2): the A1 mode_intervals close the never-closes ruling
+# ----------------------------------------------------------------------------
+def estimate_spec(tolerance=0.1, floor=0.01, min_mass=0.9):
+    return spec("parameter_within_tolerance",
+               {"tolerance_meV": tolerance, "statistical_floor_meV": floor,
+                "parameter_precision_min_mass": min_mass},
+               family="EstimateParameter", subject_kind="parameter", parameter="omega0")
+
+
+def one_arena_with_interval(mode_interval, omega=5.0, posterior=1.0):
+    return payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(omega,), mode_intervals=[mode_interval]),
+                                    cand("B")])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], posterior),
+                                      alt([("e:1:d", "B")], 1.0 - posterior)])])
+
+
+def test_positive_closure_from_one_trusted_interval():
+    scene = one_arena_with_interval(trusted_interval(4.9, 5.1))
+    a = evaluate_predicate(estimate_spec(tolerance=0.15), scene)
+    assert a.status == "answered"
+    ans = dict(a.answer)
+    # center_meV is the envelope's midpoint, not the endpoint the search picked (P1-J): a single
+    # symmetric interval's window midpoint equals the interval midpoint regardless of tolerance.
+    assert ans["center_meV"] == pytest.approx(5.0)
+    lo, hi = ans["envelope_meV"]
+    assert lo == pytest.approx(4.95) and hi == pytest.approx(5.05)
+    assert ans["nominal_level"] == 0.68
+    assert ans["contributing"] == (("e:1:d", "A", 0),)
+    assert a.mass_interval == (1.0, 1.0)
+
+
+def test_center_is_the_envelope_midpoint_regardless_of_tolerance():
+    """P1-J: for a single symmetric interval the window midpoint equals the interval midpoint no
+    matter how tolerance widens or narrows the envelope around it."""
+    scene = one_arena_with_interval(trusted_interval(4.9, 5.1))
+    wide = evaluate_predicate(estimate_spec(tolerance=0.5), scene)
+    wans = dict(wide.answer)
+    assert wans["center_meV"] == pytest.approx(5.0)
+    lo, hi = wans["envelope_meV"]
+    assert lo == pytest.approx(4.6) and hi == pytest.approx(5.4)
+
+    tight = evaluate_predicate(estimate_spec(tolerance=0.3), scene)
+    tans = dict(tight.answer)
+    assert tans["center_meV"] == pytest.approx(5.0)
+    lo, hi = tans["envelope_meV"]
+    assert lo == pytest.approx(4.8) and hi == pytest.approx(5.2)
+
+
+def _two_mode_scene(c_interval):
+    return payload(
+        observations=[obs("e:1:d", [
+            cand("A", omegas=(5.0,), mode_intervals=[trusted_interval(4.95, 5.05)]),
+            cand("C", omegas=(5.02,), mode_intervals=[c_interval])])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.6),
+                                      alt([("e:1:d", "C")], 0.4)])])
+
+
+def test_widening_one_contributing_interval_reopens_below_threshold():
+    tight = evaluate_predicate(estimate_spec(tolerance=0.1),
+                               _two_mode_scene(trusted_interval(4.97, 5.07)))
+    assert tight.status == "answered"
+    # The search picks c=4.97 (smallest full-mass center), but the published center is the
+    # midpoint of the supported-center envelope [4.97, 5.05], not the search endpoint itself.
+    assert dict(tight.answer)["center_meV"] == pytest.approx(5.01)
+
+    # C's interval widened past what tolerance 0.1 can support (full width 1.0 > 2*tol) — it
+    # drops out of the capable set entirely, and A's mass alone (0.6) can no longer clear 0.9.
+    widened = evaluate_predicate(estimate_spec(tolerance=0.1),
+                                 _two_mode_scene(trusted_interval(4.5, 5.5)))
+    assert widened.status == "open"
+    assert widened.mass_interval == (pytest.approx(0.6), pytest.approx(0.6))
+
+
+def test_a_non_winner_survivor_with_a_sound_record_closes_where_delivery_picked_another_model():
+    """P0-C inverted counterexample (owner ruling 2026-08-14): delivery selection is not interval
+    authority. Candidate "A" carries the sound record and closes the estimate even though the
+    observation's ``best_label`` names "B" — a DIFFERENT candidate that has no interval at all.
+    Trust follows the writer's per-candidate producer-soundness verdict alone."""
+    scene = payload(
+        observations=[obs("e:1:d", [
+            cand("A", omegas=(5.0,), mode_intervals=[trusted_interval(4.9, 5.1)]),
+            cand("B", omegas=(5.0,), mode_intervals=[None])],
+            best_label="B")],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.6),
+                                      alt([("e:1:d", "B")], 0.4)])])
+    a = evaluate_predicate(estimate_spec(tolerance=0.15, min_mass=0.5), scene)
+    assert a.status == "answered"
+    assert dict(a.answer)["contributing"] == (("e:1:d", "A", 0),)
+
+
+def test_offer_only_survivor_fails_trust_gate_and_counts_adversarially():
+    scene = payload(
+        observations=[obs("e:1:d", [
+            cand("A", omegas=(5.0,), mode_intervals=[trusted_interval(4.95, 5.05)]),
+            cand("R", omegas=(5.0,), mode_intervals=[offer_interval(4.95, 5.05)])])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.7),
+                                      alt([("e:1:d", "R")], 0.3)])])
+    a = evaluate_predicate(estimate_spec(tolerance=0.1, min_mass=0.5), scene)
+    assert a.status == "answered"
+    assert a.mass_interval == (pytest.approx(0.7), pytest.approx(0.7))  # R's mass excluded
+
+
+def test_two_narrow_separated_candidates_do_not_close():
+    """The owner ruling's counterexample: A 5.0+/-0.1, B 7.0+/-0.1, 0.5/0.5 — narrow individually,
+    but disagreeing, so no single center can retain more than half the mass."""
+    scene = payload(
+        observations=[obs("e:1:d", [
+            cand("A", omegas=(5.0,), mode_intervals=[trusted_interval(4.9, 5.1)]),
+            cand("B", omegas=(7.0,), mode_intervals=[trusted_interval(6.9, 7.1)])])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.5),
+                                      alt([("e:1:d", "B")], 0.5)])])
+    a = evaluate_predicate(estimate_spec(tolerance=0.1), scene)
+    assert a.status == "open"
+    assert a.mass_interval[0] == pytest.approx(0.5)
+
+
+def test_mixed_nominal_level_refuses_closure_with_a_note():
+    scene = _two_mode_scene(trusted_interval(4.97, 5.07, nominal_level=0.9))
+    a = evaluate_predicate(estimate_spec(tolerance=0.1), scene)
+    assert a.status == "open"
+    kind, paradigm = "parametric_bootstrap_percentile", "frequentist_sampling_distribution"
+    assert dict(a.notes)["mixed_interval_semantics"] == (
+        (kind, paradigm, 0.68), (kind, paradigm, 0.9))
+
+
+def test_mixed_interval_kind_refuses_closure_even_at_matching_level():
+    """P1-H: the closure gate is the exact (interval_kind, inference_paradigm, nominal_level)
+    triple, not just nominal_level -- two intervals agreeing on level but disagreeing on kind
+    still refuse to combine."""
+    scene = _two_mode_scene({**trusted_interval(4.97, 5.07), "interval_kind": "likelihood_profile"})
+    a = evaluate_predicate(estimate_spec(tolerance=0.1), scene)
+    assert a.status == "open"
+    assert "mixed_interval_semantics" in dict(a.notes)
+
+
+def test_identical_interval_semantics_close_and_persist_the_triple():
+    scene = _two_mode_scene(trusted_interval(4.97, 5.07))
+    a = evaluate_predicate(estimate_spec(tolerance=0.1), scene)
+    assert a.status == "answered"
+    ans = dict(a.answer)
+    assert ans["interval_kind"] == "parametric_bootstrap_percentile"
+    assert ans["inference_paradigm"] == "frequentist_sampling_distribution"
+    assert ans["nominal_level"] == 0.68
+
+
+def test_zero_posterior_alternative_neither_blocks_nor_joins_closure():
+    """P1-I: a discordant-level alternative carrying ZERO retained posterior must not appear in
+    contributors/envelope and must not trigger mixed_interval_semantics -- metadata is derived
+    from the same positive-posterior support the mass calculation used."""
+    scene = payload(
+        observations=[obs("e:1:d", [
+            cand("A", omegas=(5.0,), mode_intervals=[trusted_interval(4.9, 5.1)]),
+            cand("Z", omegas=(5.0,),
+                mode_intervals=[trusted_interval(4.9, 5.1, nominal_level=0.9)])])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 1.0),
+                                      alt([("e:1:d", "Z")], 0.0)])])
+    a = evaluate_predicate(estimate_spec(tolerance=0.15), scene)
+    assert a.status == "answered"
+    ans = dict(a.answer)
+    assert ans["contributing"] == (("e:1:d", "A", 0),)
+    assert ans["nominal_level"] == 0.68
+    assert "mixed_interval_semantics" not in dict(a.notes)
+
+
+def test_mass_exactly_at_min_mass_closes():
+    """P2-K: closure clears on >= min_mass, matching decide()'s own threshold semantics -- a
+    parameter_precision_min_mass of 1.0 must be satisfiable at certainty."""
+    scene = one_arena_with_interval(trusted_interval(4.9, 5.1), posterior=1.0)
+    a = evaluate_predicate(estimate_spec(tolerance=0.15, min_mass=1.0), scene)
+    assert a.status == "answered"
+    assert a.mass_interval == (1.0, 1.0)
+
+
+def test_tie_break_is_replay_identical_under_reversed_alternative_order():
+    def scene(alternatives):
+        return payload(
+            observations=[obs("e:1:d", [
+                cand("A", omegas=(5.0,), mode_intervals=[trusted_interval(4.95, 5.05)]),
+                cand("B", omegas=(5.0,), mode_intervals=[trusted_interval(4.95, 5.05)])])],
+            footprints=[fp("e:1:d", 2.0)],
+            clusters=[cluster(["e:1:d"], list(alternatives))])
+
+    forward = [alt([("e:1:d", "A")], 0.5), alt([("e:1:d", "B")], 0.5)]
+    a1 = evaluate_predicate(estimate_spec(tolerance=0.1, min_mass=0.5), scene(forward))
+    a2 = evaluate_predicate(estimate_spec(tolerance=0.1, min_mass=0.5),
+                            scene(list(reversed(forward))))
+    assert a1.to_dict() == a2.to_dict()
+
+
+def test_half_width_semantics_pinned_at_the_boundary():
+    at_boundary = one_arena_with_interval(trusted_interval(4.9, 5.1))   # width 0.2 == 2*tol
+    a = evaluate_predicate(estimate_spec(tolerance=0.1, min_mass=0.5), at_boundary)
+    assert a.status == "answered"
+
+    just_wider = one_arena_with_interval(trusted_interval(4.89, 5.11))  # width 0.22 > 2*tol
+    b = evaluate_predicate(estimate_spec(tolerance=0.1, min_mass=0.5), just_wider)
+    assert b.status == "open"
+    assert dict(b.notes).get("reason") == "no_support_capable_interval"
+
+
+def test_untrusted_unpopulated_and_ambiguous_mass_all_count_adversarially():
+    ambiguous_row = {
+        "label": "M", "omegas": [5.0, 5.02], "identity": None, "usable": True,
+        "components": [{"kind": "mode", "slot": 0}, {"kind": "mode", "slot": 1}], "n_modes": 2,
+        "mode_intervals": [trusted_interval(4.95, 5.05), trusted_interval(4.97, 5.07)]}
+    scene = payload(
+        observations=[obs("e:1:d", [
+            cand("A", omegas=(5.0,), mode_intervals=[trusted_interval(4.95, 5.05)]),
+            cand("U", omegas=(5.0,), mode_intervals=[None]),
+            cand("R", omegas=(5.0,), mode_intervals=[offer_interval(4.95, 5.05)]),
+            ambiguous_row])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.4),
+                                      alt([("e:1:d", "U")], 0.2),
+                                      alt([("e:1:d", "R")], 0.2),
+                                      alt([("e:1:d", "M")], 0.2)])])
+    a = evaluate_predicate(estimate_spec(tolerance=0.1, min_mass=0.3), scene)
+    assert a.status == "answered"
+    assert a.mass_interval == (pytest.approx(0.4), pytest.approx(0.4))
+
+
+# ----------------------------------------------------------------------------
 # ConnectTrack
 # ----------------------------------------------------------------------------
 def track_spec():
@@ -309,6 +611,24 @@ def test_track_connects_through_linked_components_not_component_ids():
     scene = payload(
         observations=[obs("e:1:d", [cand("A", omegas=(5.0,))]),
                       obs("e:2:d", [cand("A", omegas=(5.5,))])],
+        footprints=[fp("e:1:d", 1.92), fp("e:2:d", 2.12)],
+        clusters=[cluster(["e:1:d", "e:2:d"],
+                          [alt([("e:1:d", "A"), ("e:2:d", "A")], 0.95, links=link),
+                           alt([("e:1:d", "A"), ("e:2:d", "A")], 0.05)])])
+    a = evaluate_predicate(track_spec(), scene)
+    assert a.status == "answered" and dict(a.answer) == {"connected": True}
+
+
+def test_class_agnostic_track_connects_via_linkage_even_with_identified_candidates():
+    """P0-B: ``catalogue_class=None`` on the subject is a scope choice by the derivation
+    layer, not something the evaluator conditions on — connectivity is walked from
+    ``alternative["links"]`` alone, so a class-None track still answers YES even when every
+    candidate in the scene carries an explicit identity."""
+    assert track_spec().subject.catalogue_class is None
+    link = (("e:1:d#A#0", "e:2:d#A#0"),)
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.0,), identity="acoustic")]),
+                      obs("e:2:d", [cand("A", omegas=(5.5,), identity="acoustic")])],
         footprints=[fp("e:1:d", 1.92), fp("e:2:d", 2.12)],
         clusters=[cluster(["e:1:d", "e:2:d"],
                           [alt([("e:1:d", "A"), ("e:2:d", "A")], 0.95, links=link),

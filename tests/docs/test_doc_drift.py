@@ -161,6 +161,34 @@ STALE_PHRASES = (
         "SCENE-3 PR 3c landed as H14: the store, the workspace_api read surface, the observe-only "
         "driver hook and `isar report --scene` are Implemented",
     ),
+    # SCENE-4.2a A2: the EstimateParameter closure predicate retires the owner ruling. Narrow
+    # claim form only — DECISIONS.md is Current (an append-only ledger) but its entry narrating
+    # the retired ruling in the ledger's OWN words ("EstimateParameter never closes in v1")
+    # stays legal; only SCENE_DESIGN's family-matrix phrasing is forbidden from coming back.
+    (
+        "parameter_within_tolerance/1 — **never closes in v1**",
+        "SCENE-4.2a A2 gave parameter_within_tolerance/2 a real closure path off the A1 "
+        "mode_intervals; the blanket v1 claim no longer describes the evaluator",
+    ),
+    # PR 32 wave (H18), docs W7. Three family-matrix claims the wave's source changes falsified.
+    (
+        "unreachable for phenomenon-bearing campaigns until the EstimateParameter interval "
+        "re-baseline",
+        "EstimateParameter's interval re-baseline landed (A2 + PR 32 wave W1/W2); phenomenon-"
+        "bearing campaigns reach `complete` like any other (docs/SCENE_DESIGN.md §5). Narrow "
+        "claim form only — the phrasing was SCENE_DESIGN §5's (now updated); H17(c)'s own "
+        "words ('EstimateParameter never closes in v1') stay legal as ledger history",
+    ),
+    (
+        "the confirmed tile's partition has a candidate declaring an explicit identity",
+        "P1-G rescoped ClassifyIdentity's representability gate to the confirmed tile's own "
+        "matched clusters over RETAINED alternatives, not a partition-wide raw-candidate read",
+    ),
+    (
+        "authority carries the REALIZED `selected_for_delivery`",
+        "P0-C made interval authority fit-conditional (`authority_basis == \"producer_sound\"`); "
+        "delivery selection is not interval authority",
+    ),
 )
 
 
