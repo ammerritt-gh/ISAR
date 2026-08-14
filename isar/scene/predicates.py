@@ -420,35 +420,165 @@ def _track_connected(spec, scene_payload, prior) -> QuestionAssessment:
                               answer=(("connected", verdict == "yes"),), blockers=blockers)
 
 
+def _trusted_matched_interval(alternative, refs, candidates, band):
+    """The alternative's ONE trusted, matched per-mode interval, or ``None`` when the match is
+    absent, ambiguous, or the writer's own record does not carry an affirmative REALIZED
+    delivery decision (SCENE-4.2a A2) — no trust minted in the scene layer.
+
+    Trusted means the authority dict read VERBATIM off the persisted :class:`ModeInterval`
+    carries ``selected_for_delivery`` and ``passed_reliability_gate`` both ``True``; an
+    unrealized producer offer (only ``authority_scopes``/``producer_authority_scopes``) is not
+    trusted. Two indistinguishable in-band matches are as unqualifying as zero — nothing in the
+    subject names which slot is meant, so guessing would mint identity the writer never
+    asserted.
+    """
+    matches = []
+    for scan_ref, label in alternative.get("assignment") or ():
+        if scan_ref not in refs:
+            continue
+        row = candidates.get(scan_ref, {}).get(label)
+        if row is None:
+            continue
+        for component in row.get("components") or ():
+            if component.get("kind") != "mode":
+                continue
+            omegas = row.get("omegas") or []
+            slot = component["slot"]
+            omega = omegas[slot] if 0 <= slot < len(omegas) else None
+            if _in_band(omega, band):
+                matches.append((row, slot, scan_ref, label))
+    if len(matches) != 1:
+        return None
+    row, slot, scan_ref, label = matches[0]
+    mode_intervals = row.get("mode_intervals") or []
+    interval = mode_intervals[slot] if 0 <= slot < len(mode_intervals) else None
+    if interval is None:
+        return None
+    authority = interval.get("authority") or {}
+    if authority.get("selected_for_delivery") is not True \
+            or authority.get("passed_reliability_gate") is not True:
+        return None
+    return {"low": float(interval["low"]), "high": float(interval["high"]),
+            "nominal_level": interval.get("nominal_level"),
+            "scan_ref": scan_ref, "label": label, "slot": slot}
+
+
+def _acceptance_window(interval, tolerance):
+    """``(hi - tol, lo + tol)`` when the interval's full width fits inside ``2*tolerance``
+    (half-width semantics: an interval of full width exactly ``2*tolerance`` still supports its
+    one point); ``None`` when it is too wide to ever support any center."""
+    if interval["high"] - interval["low"] > 2.0 * tolerance:
+        return None
+    return (interval["high"] - tolerance, interval["low"] + tolerance)
+
+
 def _parameter_within_tolerance(spec, scene_payload, prior) -> QuestionAssessment:
-    """EstimateParameter: NEVER closes in v1 (owner ruling 2026-08-14). The scene persists no
-    within-candidate parameter uncertainty, and agreement among point estimates is not measured
-    precision — the between-alternative mixture spread is emitted as a DIAGNOSTIC only, with
-    the missing within-candidate term named as the blocker. Interval persistence is a scheduled
-    4.2/4.3 re-baseline; this evaluator gains its closure path then."""
+    """EstimateParameter: closes on BOTH within-candidate uncertainty (the A1 per-mode
+    ``ModeInterval``) and between-candidate disagreement (retained posterior support, priced
+    through the shared omitted-mass bound machinery) — SCENE-4.2a A2, retiring the v1
+    never-closes ruling (docs/SCENE_DESIGN.md §5).
+
+    The search set for the estimated center is the finite, order-independent list of
+    acceptance-window endpoints over every TRUSTED, support-capable interval; ties break to the
+    smallest candidate center, so replay is byte-identical regardless of iteration order. Every
+    non-qualifying mass — untrusted, unpopulated, ambiguously matched, or simply outside the
+    band — counts ADVERSARIALLY: it can never be retained. Closure additionally requires every
+    CONTRIBUTING interval (the ones supporting the chosen center) to agree on their persisted
+    ``nominal_level``; mixed levels refuse closure rather than average across incompatible
+    statements of confidence.
+    """
     params = dict(spec.predicate.parameters)
     tolerance = float(params["tolerance_meV"])
     floor = float(params["statistical_floor_meV"])
+    min_mass = float(params["parameter_precision_min_mass"])
     match = match_subject(spec.subject, scene_payload)
     candidates = _candidates_by_ref(scene_payload)
     refs, band = set(match.scan_refs), spec.subject.omega_band_meV
-    omegas = []
     clusters = scene_payload.get("clusters") or ()
+
+    trusted_any = False
+    capable = []
     for index in match.cluster_indices:
         for alternative in clusters[index].get("alternatives") or ():
-            if (alternative.get("posterior") or 0.0) > 0.0:
-                omegas.extend(_matched_mode_omegas(alternative, refs, candidates, band))
-    notes = [("within_candidate_uncertainty", "not persisted by isar.scene-revision/1"),
-             ("tolerance_meV", tolerance)]
-    if omegas:
-        notes.append(("mixture_spread_meV", round(max(omegas) - min(omegas), 9)))
-    blockers = [Blocker("within_candidate_uncertainty_unavailable",
-                        "closure requires the scheduled interval re-baseline (4.2/4.3)")]
+            interval = _trusted_matched_interval(alternative, refs, candidates, band)
+            if interval is None:
+                continue
+            trusted_any = True
+            window = _acceptance_window(interval, tolerance)
+            if window is not None:
+                capable.append(window)
+
+    notes = [("tolerance_meV", tolerance)]
+    blockers = []
+    if not trusted_any:
+        blockers.append(Blocker("within_candidate_uncertainty_unavailable",
+                                "no trusted per-mode interval in the matched partition"))
     if tolerance < floor:
         blockers.append(Blocker("tolerance_below_representable_precision",
                                 f"tolerance {tolerance} < floor {floor}"))
-    return QuestionAssessment(question_id=spec.question_id, status="open",
-                              blockers=tuple(blockers), notes=tuple(notes))
+    if blockers:
+        return QuestionAssessment(question_id=spec.question_id, status="open",
+                                  blockers=tuple(blockers), notes=tuple(notes))
+    if not capable:
+        return QuestionAssessment(question_id=spec.question_id, status="open",
+                                  notes=tuple(notes + [("reason",
+                                                        "no_support_capable_interval")]))
+
+    # Unrounded: the search set must be the EXACT float endpoints ``qualifies`` recomputes
+    # per-candidate (same deterministic arithmetic on the same inputs), or a boundary case could
+    # round to a center just outside the very window that produced it (a real float trap, not a
+    # hypothetical one — ``5.07 - 0.1`` and ``4.97`` differ in the last bit).
+    centers = sorted({lo for lo, hi in capable} | {hi for lo, hi in capable})
+
+    best = None      # (combined_mass_interval, c, lanes, cluster_blockers)
+    for c in centers:
+        def qualifies(alternative, _c=c):
+            interval = _trusted_matched_interval(alternative, refs, candidates, band)
+            if interval is None:
+                return False
+            window = _acceptance_window(interval, tolerance)
+            return window is not None and window[0] <= _c <= window[1]
+
+        intervals, lanes, cluster_blockers = _proposition_intervals(
+            match, scene_payload, qualifies, spec.predicate.authority_requirement)
+        combined = combine_universal(intervals)
+        if best is None or combined[0] > best[0][0]:
+            best = (combined, c, lanes, cluster_blockers)
+
+    combined, c, lanes, cluster_blockers = best
+    contributing = set()
+    levels = set()
+    envelope_lo, envelope_hi = None, None
+    for index in match.cluster_indices:
+        for alternative in clusters[index].get("alternatives") or ():
+            interval = _trusted_matched_interval(alternative, refs, candidates, band)
+            if interval is None:
+                continue
+            window = _acceptance_window(interval, tolerance)
+            if window is None or not (window[0] <= c <= window[1]):
+                continue
+            contributing.add((interval["scan_ref"], interval["label"], interval["slot"]))
+            levels.add(interval["nominal_level"])
+            envelope_lo = window[0] if envelope_lo is None else max(envelope_lo, window[0])
+            envelope_hi = window[1] if envelope_hi is None else min(envelope_hi, window[1])
+
+    notes += list(_vacuous_note(lanes, min_mass, combined))
+    if len(levels) > 1:
+        notes.append(("mixed_nominal_level", tuple(sorted(levels))))
+        return QuestionAssessment(question_id=spec.question_id, status="open",
+                                  authority=_weakest(lanes), mass_interval=combined,
+                                  blockers=cluster_blockers, notes=tuple(notes))
+    if combined[0] <= min_mass:
+        return QuestionAssessment(question_id=spec.question_id, status="open",
+                                  authority=_weakest(lanes), mass_interval=combined,
+                                  blockers=cluster_blockers, notes=tuple(notes))
+    answer = (("center_meV", round(c, 9)),
+             ("contributing", tuple(sorted(contributing))),
+             ("envelope_meV", (round(envelope_lo, 9), round(envelope_hi, 9))),
+             ("nominal_level", levels.pop()))
+    return QuestionAssessment(question_id=spec.question_id, status="answered",
+                              authority=_weakest(lanes), mass_interval=combined,
+                              answer=answer, blockers=cluster_blockers, notes=tuple(notes))
 
 
 def _zc_linear_compatibility(spec, scene_payload, prior) -> QuestionAssessment:
@@ -670,7 +800,7 @@ EVALUATORS = {
     "structural_presence": (1, _structural_presence),
     "identity_resolved": (1, _identity_resolved),
     "track_connected": (1, _track_connected),
-    "parameter_within_tolerance": (1, _parameter_within_tolerance),
+    "parameter_within_tolerance": (2, _parameter_within_tolerance),
     "zc_linear_compatibility": (1, _zc_linear_compatibility),
     "mismatch_assessed": (1, _mismatch_assessed),
     "completeness_relative": (1, _completeness_relative),

@@ -161,6 +161,15 @@ STALE_PHRASES = (
         "SCENE-3 PR 3c landed as H14: the store, the workspace_api read surface, the observe-only "
         "driver hook and `isar report --scene` are Implemented",
     ),
+    # SCENE-4.2a A2: the EstimateParameter closure predicate retires the owner ruling. Narrow
+    # claim form only — DECISIONS.md is Current (an append-only ledger) but its entry narrating
+    # the retired ruling in the ledger's OWN words ("EstimateParameter never closes in v1")
+    # stays legal; only SCENE_DESIGN's family-matrix phrasing is forbidden from coming back.
+    (
+        "parameter_within_tolerance/1 — **never closes in v1**",
+        "SCENE-4.2a A2 gave parameter_within_tolerance/2 a real closure path off the A1 "
+        "mode_intervals; the blanket v1 claim no longer describes the evaluator",
+    ),
 )
 
 

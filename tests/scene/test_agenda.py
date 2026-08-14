@@ -18,7 +18,7 @@ from isar.scene.agenda import (
 from isar.scene.questions import Blocker, QuestionAssessment, QuestionExhaustion
 from isar.schema.question_policy import resolve_policy
 
-from .test_predicates import P1, alt, cand, cluster, fp, obs, payload
+from .test_predicates import P1, alt, cand, cluster, fp, obs, payload, trusted_interval
 
 
 
@@ -34,10 +34,13 @@ def step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=0.5,
             "resolved_policy": resolve_policy()}
 
 
-def confirmed_scene(posterior=0.95, omega=5.0):
-    """One trusted arena at the declared ZC 2.0 with a confidently present mode."""
+def confirmed_scene(posterior=0.95, omega=5.0, mode_intervals=None):
+    """One trusted arena at the declared ZC 2.0 with a confidently present mode. No trusted
+    per-mode interval by default (``mode_intervals=None`` -> ``cand``'s all-``None`` default) —
+    pass a trusted interval (SCENE-4.2a A1/A2) to exercise EstimateParameter closure."""
     return payload(
-        observations=[obs("e:1:d", [cand("A", omegas=(omega,)), cand("B")])],
+        observations=[obs("e:1:d", [cand("A", omegas=(omega,), mode_intervals=mode_intervals),
+                                    cand("B")])],
         footprints=[fp("e:1:d", 2.0)],
         clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], posterior),
                                       alt([("e:1:d", "B")], 1.0 - posterior)])],
@@ -570,9 +573,14 @@ def test_complete_beats_budget_and_budget_exhaustion_is_honest():
                            budget_state=under).state == "in_progress"
 
 
-def test_a_confirmed_phenomenon_yields_in_progress_with_the_open_estimate_surfaced():
-    """The stated ruling-1 consequence: EstimateParameter never closes in v1, so a
-    phenomenon-bearing campaign cannot reach complete until the interval re-baseline."""
+def test_a_confirmed_phenomenon_with_no_trusted_interval_yields_in_progress():
+    """The ruling-1 consequence stands for a scene with NO within-candidate uncertainty (the A1
+    ``mode_intervals`` all ``None``, as ``confirmed_scene()`` builds by default): EstimateParameter
+    stays open on ``within_candidate_uncertainty_unavailable``, blocking completion. SCENE-4.2a A2
+    retires the BLANKET "never closes in v1" claim — see
+    ``test_a_confirmed_phenomenon_closes_estimate_parameter_given_a_trusted_interval`` below for
+    the now-reachable closure path — but this particular fixture still has no interval to close
+    on, so the consequence for IT is unchanged."""
     revision = derive(confirmed_scene())
     verdict = evaluate_agenda(revision.payload)
     assert verdict.state == "in_progress"
@@ -580,6 +588,28 @@ def test_a_confirmed_phenomenon_yields_in_progress_with_the_open_estimate_surfac
     assert open_families.get("EstimateParameter", 0) >= 1
     estimate_ids = {s["question_id"] for s in by_family(revision, "EstimateParameter")}
     assert estimate_ids & set(verdict.blocking)
+    estimate = by_family(revision, "EstimateParameter")
+    tolerance_spec = next(s for s in estimate
+                          if s["claim_kind"] == "parameter_within_tolerance")
+    a = assessment_of(revision, tolerance_spec["question_id"])
+    assert [b["name"] for b in a["blockers"]] == ["within_candidate_uncertainty_unavailable"]
+
+
+def test_a_confirmed_phenomenon_closes_estimate_parameter_given_a_trusted_interval():
+    """SCENE-4.2a A2: with a trusted per-mode interval narrow enough for the frozen tolerance
+    (0.5 meV) and confidently enough retained (0.9 min mass), EstimateParameter's
+    ``parameter_within_tolerance`` question now closes — the never-closes ruling is retired for
+    scenes that actually carry the A1 interval."""
+    revision = derive(confirmed_scene(posterior=1.0,
+                                      mode_intervals=[trusted_interval(4.9, 5.1)]))
+    estimate = by_family(revision, "EstimateParameter")
+    tolerance_spec = next(s for s in estimate
+                          if s["claim_kind"] == "parameter_within_tolerance")
+    a = assessment_of(revision, tolerance_spec["question_id"])
+    assert a["status"] == "answered"
+    # window = (high - tol, low + tol) = (5.1 - 0.5, 4.9 + 0.5) = (4.6, 5.4); the single trusted
+    # alternative supports both endpoints equally, so the tie breaks to the smaller.
+    assert dict(a["answer"])["center_meV"] == pytest.approx(4.6)
 
 
 def test_a_fully_surveyed_blank_campaign_reaches_complete():

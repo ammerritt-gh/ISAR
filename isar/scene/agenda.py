@@ -385,7 +385,8 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
                 region_rlu=subject.region_rlu, omega_band_meV=subject.omega_band_meV,
                 parameter="omega0", frame=subject.frame),
             {"tolerance_meV": thresholds["parameter_default_tolerance_meV"],
-             "statistical_floor_meV": thresholds["parameter_statistical_floor_meV"]},
+             "statistical_floor_meV": thresholds["parameter_statistical_floor_meV"],
+             "parameter_precision_min_mass": thresholds["parameter_precision_min_mass"]},
             priority=priorities["EstimateParameter"], deps=(spec.question_id,)))
         if subject.anchor is not None:
             chained.append(_spec(
