@@ -439,23 +439,26 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
     # freshness comparand a proof must name — computable in the same pass, self-consistent.
     basis_digest = AgendaRevision.of(payload_of(assessments)).digest
     assessments, applied = apply_exhaustion(
-        assessments, exhaustion_evidence, basis_digest=basis_digest,
-        scene_digest=scene_digest,
+        assessments, exhaustion_evidence, specs_by_id={s.question_id: s for s in specs},
+        basis_digest=basis_digest, scene_digest=scene_digest,
         generator_registry_fingerprint=generator_registry_fingerprint)
     return AgendaRevision.of(payload_of(assessments, basis_digest=basis_digest,
                                         evidence=applied))
 
 
-def apply_exhaustion(assessments: dict, exhaustion_evidence, *, basis_digest: str,
-                     scene_digest: str, generator_registry_fingerprint: str | None
-                     ) -> tuple[dict, tuple]:
+def apply_exhaustion(assessments: dict, exhaustion_evidence, *, specs_by_id: dict,
+                     basis_digest: str, scene_digest: str,
+                     generator_registry_fingerprint: str | None) -> tuple[dict, tuple]:
     """The pure closure transition: ``(assessments, applied proofs)`` after evidence.
 
     Public because it IS the contract 4.2's producer closes against: a question becomes
     ``unresolvable`` only when its open assessment carries a typed DURABLE blocker and the
-    proof is fresh on every comparand. In 4.1 no evaluator emits a durable blocker yet, so no
-    live derivation can close unresolvable — this function is exercised with synthetic
-    assessments until the 4.2/4.3 producers exist.
+    proof is fresh on every comparand — INCLUDING the question's own frozen generator set
+    (PR #31 finding E: a proof may not choose its own requirements; its
+    ``required_generator_ids`` must equal ``spec.generator_ids`` exactly, or exhausting one
+    invented generator would close a question that requires several real ones). In 4.1 no
+    evaluator emits a durable blocker yet, so no live derivation can close unresolvable —
+    this function is exercised with synthetic assessments until the 4.2/4.3 producers exist.
     """
     out = dict(assessments)
     applied = []
@@ -463,6 +466,7 @@ def apply_exhaustion(assessments: dict, exhaustion_evidence, *, basis_digest: st
         assessment = out.get(proof.question_id)
         if assessment is None or assessment.status != "open":
             continue
+        spec = specs_by_id.get(proof.question_id)
         stale = None
         if proof.basis_agenda_digest != basis_digest:
             stale = ("basis_agenda_digest", proof.basis_agenda_digest, basis_digest)
@@ -471,6 +475,11 @@ def apply_exhaustion(assessments: dict, exhaustion_evidence, *, basis_digest: st
         elif proof.generator_registry_fingerprint != generator_registry_fingerprint:
             stale = ("generator_registry_fingerprint", proof.generator_registry_fingerprint,
                      generator_registry_fingerprint)
+        elif spec is None:
+            stale = ("question_id", proof.question_id, "no spec in this agenda")
+        elif proof.required_generator_ids != spec.generator_ids:
+            stale = ("required_generator_ids", proof.required_generator_ids,
+                     spec.generator_ids)
         if stale is not None:
             out[proof.question_id] = QuestionAssessment.from_dict({
                 **assessment.to_dict(),
@@ -610,12 +619,32 @@ class AgendaVerdict:
 
 def evaluate_agenda(agenda_payload: dict, *, budget_state: dict | None = None
                     ) -> AgendaVerdict:
-    specs = {s["question_id"]: s for s in agenda_payload.get("specs") or ()}
-    assessments = {a["question_id"]: a for a in agenda_payload.get("assessments") or ()}
+    # Validate BEFORE reducing to dictionaries (PR #31 finding F): dict comprehensions
+    # silently collapse duplicates, and a spec with no assessment would simply vanish from
+    # completion accounting — a partial agenda must fail closed, never read complete.
+    spec_rows = list(agenda_payload.get("specs") or ())
+    assessment_rows = list(agenda_payload.get("assessments") or ())
+    spec_ids = [s["question_id"] for s in spec_rows]
+    assessment_ids = [a["question_id"] for a in assessment_rows]
+    for label, ids in (("spec", spec_ids), ("assessment", assessment_ids)):
+        duplicated = sorted(i for i, count in Counter(ids).items() if count > 1)
+        if duplicated:
+            raise ValueError(f"agenda payload carries duplicate {label} ids {duplicated} — "
+                             "refusing to compute a verdict over an ambiguous agenda")
+    orphans = sorted(set(assessment_ids) - set(spec_ids))
+    if orphans:
+        raise ValueError(f"agenda payload carries assessments for absent specs {orphans} — "
+                         "refusing to compute a verdict over an inconsistent agenda")
+    specs = {s["question_id"]: s for s in spec_rows}
+    assessments = {a["question_id"]: a for a in assessment_rows}
 
     reasons: list[str] = []
     consultations: list[dict] = []
-    open_ids = sorted(q for q, a in assessments.items() if a["status"] == "open")
+    unassessed = sorted(set(spec_ids) - set(assessment_ids))
+    if unassessed:
+        reasons.append("derivation_defect_unassessed_specs")
+    open_ids = sorted(set(unassessed)
+                      | {q for q, a in assessments.items() if a["status"] == "open"})
     verify_specs = [s for s in specs.values() if s["family"] == "VerifyCompleteness"]
     if not verify_specs:
         # A derivation that opened no completeness question is defective; its absence must

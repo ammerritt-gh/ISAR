@@ -331,27 +331,42 @@ def open_with_durable(question_id="q1"):
         blockers=(Blocker("bose_dead", "T=4K, anti-Stokes dead"),))}
 
 
+def presence_spec():
+    from isar.scene.questions import PredicateDeclaration, QuestionSpec, QuestionSubject
+    return QuestionSpec(family="ConfirmPresence", claim_kind="structural_presence",
+                        subject=QuestionSubject(kind="phenomenon", partition_id=P1),
+                        predicate=PredicateDeclaration(kind="structural_presence", version=1,
+                                                       parameters={"min_mass": 0.9}),
+                        generator_ids=("presence_probe",))
+
+
+SPECS = {"q1": presence_spec()}
+
+
+def close(assessments, proofs, **overrides):
+    kw = dict(specs_by_id=SPECS, basis_digest="b" * 64, scene_digest="s" * 64,
+              generator_registry_fingerprint="r1")
+    kw.update(overrides)
+    return apply_exhaustion(assessments, proofs, **kw)
+
+
 def proof(question_id="q1", basis="b" * 64, scene="s" * 64, registry="r1",
-          status="exhausted"):
+          status="exhausted", required=("presence_probe",)):
     return QuestionExhaustion(
         question_id=question_id, basis_agenda_digest=basis, scene_digest=scene,
         generator_registry_fingerprint=registry,
-        required_generator_ids=("presence_probe",),
-        generator_status={"presence_probe": status})
+        required_generator_ids=required,
+        generator_status={g: status for g in required})
 
 
 def test_unresolvable_needs_a_durable_blocker_and_a_fresh_proof():
-    closed, applied = apply_exhaustion(open_with_durable(), [proof()],
-                                       basis_digest="b" * 64, scene_digest="s" * 64,
-                                       generator_registry_fingerprint="r1")
+    closed, applied = close(open_with_durable(), [proof()])
     assert closed["q1"].status == "unresolvable" and len(applied) == 1
 
     # The same evidence against a transient or authority blocker cannot close.
     transient = {"q1": QuestionAssessment(question_id="q1", status="open",
                                           blockers=(Blocker("quarantined_scan"),))}
-    still_open, applied = apply_exhaustion(transient, [proof()],
-                                           basis_digest="b" * 64, scene_digest="s" * 64,
-                                           generator_registry_fingerprint="r1")
+    still_open, applied = close(transient, [proof()])
     assert still_open["q1"].status == "open" and applied == ()
     assert dict(still_open["q1"].notes)["generator_defect"]
 
@@ -362,19 +377,31 @@ def test_unresolvable_needs_a_durable_blocker_and_a_fresh_proof():
     (proof(registry="r2"), "generator_registry_fingerprint"),
 ])
 def test_a_stale_proof_is_rejected_naming_its_failing_comparand(stale_proof, comparand):
-    result, applied = apply_exhaustion(open_with_durable(), [stale_proof],
-                                       basis_digest="b" * 64, scene_digest="s" * 64,
-                                       generator_registry_fingerprint="r1")
+    result, applied = close(open_with_durable(), [stale_proof])
     assert result["q1"].status == "open" and applied == ()
     note = dict(result["q1"].notes)["exhaustion_proof_rejected_stale"]
     assert comparand in note
 
 
+def test_a_proof_cannot_choose_its_own_generator_requirements():
+    """PR #31 finding E: exhausting one invented generator must not close a question whose
+    spec requires the real one — the proof's requirement set must equal the spec's frozen
+    generator set exactly."""
+    result, applied = close(open_with_durable(),
+                            [proof(required=("not_the_specs_generator",))])
+    assert result["q1"].status == "open" and applied == ()
+    assert "required_generator_ids" in dict(result["q1"].notes)[
+        "exhaustion_proof_rejected_stale"]
+    # A proof for a question this agenda does not carry is stale too, never applied.
+    unknown, applied = close(open_with_durable("q9"), [proof("q9")],
+                             specs_by_id={})
+    assert unknown["q9"].status == "open" and applied == ()
+    assert "no spec in this agenda" in dict(unknown["q9"].notes)[
+        "exhaustion_proof_rejected_stale"]
+
+
 def test_incomplete_exhaustion_closes_nothing():
-    result, applied = apply_exhaustion(open_with_durable(),
-                                       [proof(status="still_proposing")],
-                                       basis_digest="b" * 64, scene_digest="s" * 64,
-                                       generator_registry_fingerprint="r1")
+    result, applied = close(open_with_durable(), [proof(status="still_proposing")])
     assert result["q1"].status == "open" and applied == ()
 
 
@@ -409,6 +436,32 @@ def synthetic_agenda(*, verify_answer=True, extra_status="answered"):
              "answer": [["present", True]] if extra_status == "answered" else [],
              "notes": []}
     return agenda_doc([verify, other], [verify_spec, other_spec])
+
+
+def test_an_unassessed_spec_fails_closed_never_complete():
+    """PR #31 finding F: a spec with no assessment used to vanish from completion
+    accounting, so a partial agenda could read complete."""
+    doc = synthetic_agenda()
+    doc["assessments"] = [a for a in doc["assessments"] if a["question_id"] != "q1"]
+    verdict = evaluate_agenda(doc)
+    assert verdict.state == "in_progress"
+    assert "derivation_defect_unassessed_specs" in verdict.reasons
+    assert "q1" in verdict.blocking
+
+
+@pytest.mark.parametrize("mutate, message", [
+    (lambda d: d["specs"].append(dict(d["specs"][0])), "duplicate spec ids"),
+    (lambda d: d["assessments"].append(dict(d["assessments"][0])),
+     "duplicate assessment ids"),
+    (lambda d: d["assessments"].append({"question_id": "ghost", "status": "answered",
+                                        "answer": [["x", 1]], "notes": []}),
+     "assessments for absent specs"),
+])
+def test_an_ambiguous_or_inconsistent_agenda_refuses_a_verdict(mutate, message):
+    doc = synthetic_agenda()
+    mutate(doc)
+    with pytest.raises(ValueError, match=message):
+        evaluate_agenda(doc)
 
 
 def test_the_verdict_has_no_beam_directive():
