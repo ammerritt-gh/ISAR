@@ -28,8 +28,21 @@ from __future__ import annotations
 import math
 from typing import Mapping
 
+from .model import partition_id, partition_key
 from .questions import (
     Blocker, QuestionAssessment, QuestionSpec, SubjectMatch, match_subject)
+
+
+def tile_contains(tile, coordinate) -> bool:
+    """Half-open tile membership ``[lo, hi)`` — a grid CELL, not a declared interval.
+
+    ``snap_tile`` defines cells half-open, so a scan exactly at a shared boundary belongs to
+    exactly ONE cell; evaluating cells as closed intervals put such a scan in both adjacent
+    endpoint sets, and a component present at the boundary could satisfy ``track_connected``
+    without traversing anything (PR #31 finding J). Declared ``region_rlu`` intervals stay
+    closed — they are declarations, not grid cells.
+    """
+    return tile[0] <= coordinate < tile[1]
 
 # Above this, exp(log_q) has no float meaning worth forming; the interval is honestly vacuous.
 _LOG_Q_CAP = 700.0
@@ -354,9 +367,9 @@ def _track_connected(spec, scene_payload, prior) -> QuestionAssessment:
                   if fp.get("partition_id") == subject.partition_id
                   and fp.get("axis_coordinate") is not None]
     ends = []
-    for lo, hi in tiles:
+    for tile in tiles:
         ends.append({fp["scan_ref"] for fp in footprints
-                     if lo <= fp["axis_coordinate"] <= hi})
+                     if tile_contains(tile, fp["axis_coordinate"])})
     if not ends[0] or not ends[1]:
         return QuestionAssessment(question_id=spec.question_id, status="open",
                                   notes=(("reason", "endpoint_unmeasured"),))
@@ -594,22 +607,31 @@ def _completeness_relative(spec, scene_payload, prior) -> QuestionAssessment:
         notes.append(("open_dependencies", tuple(open_dependencies)))
 
     partition_members = set(match.scan_refs)
-    samples = set()
-    epochs = set()
     trusted_fitless = []
     for obs in scene_payload.get("observations") or ():
         if obs["scan_ref"] in partition_members:
-            samples.add(obs.get("sample"))
-            epochs.add(obs.get("lattice_epoch"))
             usable = any(c.get("usable") for c in obs.get("candidates") or ())
             if obs.get("count_trust") == "trusted" and not usable:
                 trusted_fitless.append(obs["scan_ref"])
+    # Non-scoring arenas block only THIS partition (PR #31 finding K): the arena's exact
+    # partition identity is recomputed from its embedded observation with the same
+    # implementation the builder stamps (isar.scene.model.partition_key), so a quarantined
+    # scan at one temperature never blocks another condition's completeness. An arena with no
+    # embedded observation cannot be attributed and stays blocking, conservatively, with the
+    # reason visible in the notes.
+    t_round = scene_payload.get("condition_t_round")
     non_scoring_here = []
     for entry in scene_payload.get("non_scoring") or ():
         ref = entry.get("scan_ref")
         obs = next((o for o in scene_payload.get("observations") or ()
                     if o["scan_ref"] == ref), None)
-        if obs is None or (obs.get("sample") in samples and obs.get("lattice_epoch") in epochs):
+        if obs is None:
+            non_scoring_here.append(f"{ref} (unattributable: no embedded observation)")
+            continue
+        pid = partition_id(partition_key(
+            obs.get("sample"), tuple((k, v) for k, v in obs.get("conditions") or ()),
+            obs.get("lattice_epoch"), str(ref), t_round))
+        if pid == spec.subject.partition_id:
             non_scoring_here.append(ref)
     if trusted_fitless:
         notes.append(("uninterpreted_measurements", tuple(sorted(trusted_fitless))))

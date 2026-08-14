@@ -26,9 +26,10 @@ def cand(label, omegas=(), identity=None, usable=True):
             "usable": usable, "components": components, "n_modes": len(omegas)}
 
 
-def obs(scan_ref, cands, count_trust="trusted", sample="s1", epoch=1):
+def obs(scan_ref, cands, count_trust="trusted", sample="s1", epoch=1, conditions=()):
     return {"scan_ref": scan_ref, "candidates": list(cands), "count_trust": count_trust,
-            "sample": sample, "lattice_epoch": epoch}
+            "sample": sample, "lattice_epoch": epoch,
+            "conditions": [list(pair) for pair in conditions]}
 
 
 def fp(scan_ref, coord, bands=((0.0, 10.0),), exposure=5.0, partition=P1):
@@ -51,10 +52,10 @@ def cluster(scan_refs, alternatives, *, truncated=False, unbounded=False, bound=
 
 
 def payload(observations=(), footprints=(), clusters=(), non_scoring=(),
-            sample_knowledge=None):
+            sample_knowledge=None, t_round=None):
     return {"observations": list(observations), "footprints": list(footprints),
             "clusters": list(clusters), "non_scoring": list(non_scoring),
-            "sample_knowledge": sample_knowledge or {}}
+            "sample_knowledge": sample_knowledge or {}, "condition_t_round": t_round}
 
 
 def spec(kind, params, family="ConfirmPresence", requirement="exact_or_bounded",
@@ -354,10 +355,10 @@ def test_coverage_stays_open_on_a_gap_and_blocks_on_quarantine():
     assert [b.name for b in a.blockers] == ["quarantined_scan"]
 
 
-def completeness_spec(dependencies=()):
+def completeness_spec(dependencies=(), partition=P1):
     return QuestionSpec(
         family="VerifyCompleteness", claim_kind="completeness_relative",
-        subject=QuestionSubject(kind="campaign", partition_id=P1,
+        subject=QuestionSubject(kind="campaign", partition_id=partition,
                                 frame=(("catalogue_version", "v1"),)),
         predicate=PredicateDeclaration(kind="completeness_relative", version=1,
                                        parameters={"min_effective_exposure": 1.0}),
@@ -404,6 +405,53 @@ def test_completeness_stays_open_on_uninterpreted_or_untrusted_or_underexposed_e
     a = evaluate_predicate(completeness_spec(), dim)
     assert a.status == "open"
     assert [b.name for b in a.blockers] == ["detection_authority_unavailable"]
+
+
+def test_a_boundary_scan_belongs_to_exactly_one_tile():
+    """PR #31 finding J: closed-interval tile evaluation put a boundary scan in both
+    adjacent endpoint tiles, so a component there could satisfy track_connected without
+    traversing anything. Tiles are half-open cells; a boundary scan is in ONE of them."""
+    from isar.scene.predicates import tile_contains
+    assert tile_contains((2.0, 2.05), 2.0)
+    assert not tile_contains((2.0, 2.05), 2.05)
+
+    scene = payload(observations=[obs("e:1:d", [cand("A", omegas=(5.0,))])],
+                    footprints=[fp("e:1:d", 2.05)],
+                    clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 1.0)])])
+    boundary = spec("track_connected", {"min_mass": 0.9}, family="ConnectTrack",
+                    subject_kind="track", region_rlu=None, omega_band_meV=None,
+                    endpoint_a_rlu=(2.0, 2.05), endpoint_b_rlu=(2.05, 2.10))
+    a = evaluate_predicate(boundary, scene)
+    assert a.status == "open" and dict(a.notes)["reason"] == "endpoint_unmeasured"
+
+
+def test_completeness_blocks_only_its_own_condition_partition():
+    """PR #31 finding K: a quarantined arena at one temperature must not block another
+    condition's completeness — attribution uses the builder's own partition identity."""
+    from isar.scene.model import partition_id, partition_key
+    t_round = 1.0
+    cond300 = (("temperature_K", 300.0),)
+    cond100 = (("temperature_K", 100.0),)
+    pid300 = partition_id(partition_key("s1", cond300, 1, "any", t_round))
+
+    def scene(quarantined_conditions):
+        return payload(
+            observations=[obs("e:1:d", [cand("A", omegas=(5.0,)), cand("B")],
+                              conditions=cond300),
+                          obs("e:9:d", [], count_trust="excluded",
+                              conditions=quarantined_conditions)],
+            footprints=[fp("e:1:d", 2.0, partition=pid300)],
+            clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 1.0)])],
+            non_scoring=[{"scan_ref": "e:9:d", "reason": "count_untrusted"}],
+            t_round=t_round)
+
+    other_condition = evaluate_predicate(completeness_spec(partition=pid300),
+                                         scene(cond100))
+    assert other_condition.status == "answered"
+    same_condition = evaluate_predicate(completeness_spec(partition=pid300),
+                                        scene(cond300))
+    assert same_condition.status == "open"
+    assert "e:9:d" in dict(same_condition.notes)["non_scoring_arenas"]
 
 
 def test_completeness_ignores_leader_only_visibility_annotations():

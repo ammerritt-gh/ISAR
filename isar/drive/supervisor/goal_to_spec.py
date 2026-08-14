@@ -355,7 +355,10 @@ def _discover_spec(data: dict, *,
         intrinsic_omega_domain_meV=data["intrinsic_omega_domain_meV"],
         catalogue_profile=declared("catalogue_profile", DEFAULT_CATALOGUE_PROFILE),
         deliverables=declared("deliverables", DEFAULT_DELIVERABLES),
-        include_unknown=bool(data.get("include_unknown", True)),
+        # Default only when absent/null (the declared() rule): bool() laundered "false" into
+        # True and 0 into False, so an invalid explicit declaration never reached the
+        # schema's boolean check (PR #31 finding L).
+        include_unknown=declared("include_unknown", True),
         resolved_policy=_qpolicy.resolve_policy(user_policy_ask, card_question_guidelines))
 
 

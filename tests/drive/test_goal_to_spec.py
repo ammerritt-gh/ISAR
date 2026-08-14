@@ -568,3 +568,18 @@ def test_a_discovery_reply_with_a_signed_energy_window_is_refused():
     with pytest.raises(ProgramError, match="not a signed measurement window"):
         g2s.goal_to_program(_DISCOVER_COMMAND,
                             dispatcher=_FakeDispatcher(DispatchResult(structured=reply)))
+
+
+def test_an_invalid_include_unknown_is_refused_not_coerced():
+    """PR #31 finding L: bool() laundered "false" into True and 0 into False, so an invalid
+    explicit declaration never reached the schema's boolean check. Defaults apply only when
+    the field is absent or null."""
+    import pytest as _pytest
+    from isar.drive.supervisor.goal_to_spec import _discover_spec
+    from isar.schema.campaign_program import ProgramError
+    data = {"q_start": [2, 0, 0], "q_end": [3, 0, 0],
+            "intrinsic_omega_domain_meV": [0, 10]}
+    with _pytest.raises(ProgramError, match="must be a boolean"):
+        _discover_spec({**data, "include_unknown": "false"})
+    assert _discover_spec({**data, "include_unknown": None}).include_unknown is True
+    assert _discover_spec({**data, "include_unknown": False}).include_unknown is False

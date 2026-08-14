@@ -53,6 +53,8 @@ from .model import (NON_MODE_ID_TAGS, SCENE_SCHEMA, CandidateRow, ComponentObser
                     ConditionSet, Footprint, PathTopology, SampleKnowledge, SceneObservation,
                     Visibility, canonical_bytes, digest_bytes, fingerprint, footprint_of, is_mode,
                     link_reach, path_adjacent, path_topology)
+from .model import partition_id as model_partition_id
+from .model import partition_key as model_partition_key
 
 # SCENE-4 PR 4.0 (#21): the lane split over isar.schema.statistics.CONSTRAINT_ORIGINS. A
 # candidate's provenance is DECLARED (prespecified relative to this scan, exactly-once by
@@ -404,35 +406,19 @@ def build_scene(observations, *, factors=None, catalogue_version: str = "",
 
 
 def _partition_key(o: SceneObservation, t_round: float | None) -> tuple:
-    """The #25/#28 partition identity: ``(sample, ConditionSet key, lattice_epoch)``.
+    """The #25/#28 partition identity — ONE implementation, in the model layer.
 
-    Two arenas whose keys differ are, by construction, never adjacent, never clustered, never
-    normalized together — the geometry above never even sees both in one ``path_topology`` call.
-    ``None`` is an ordinary tuple-key value here, which is what makes "undeclared couples only
-    with undeclared" (H13) fall out of dict grouping alone rather than needing a special case: a
-    ``None`` sample only equals ``None``, a ``None`` lattice epoch only equals ``None``, and a
-    condition key with no temperature declared at all only equals another one exactly like it.
-
-    An UNRESOLVED condition (:class:`isar.scene.model.ConditionSet`: a temperature is declared but
-    there is no binning policy to compare it by) is different — the #28 ruling's fail-closed-to-
-    NO-COUPLING arm, which the H13 symmetric rule does not extend to. Salting the key with the
-    observation's own ``scan_ref`` makes it unique to this one arena, so it never couples with
-    ANYTHING — not even another arena an as-yet-undeclared policy would have binned identically.
+    Moved to :func:`isar.scene.model.partition_key` (PR #31 finding K) so a reader attributing
+    an arena to its exact partition — ``completeness_relative`` scoping non-scoring arenas —
+    computes the same identity the builder stamps, byte for byte. Two arenas whose keys differ
+    are, by construction, never adjacent, never clustered, never normalized together.
     """
-    condition = ConditionSet.of(o.conditions, t_round)
-    condition_key = condition.key if condition.resolved else (*condition.key, o.scan_ref)
-    return (o.sample, condition_key, o.lattice_epoch)
+    return model_partition_key(o.sample, o.conditions, o.lattice_epoch, o.scan_ref, t_round)
 
 
 def _partition_id(key: tuple) -> str:
-    """A short, stable, JSON-safe id for a partition key — what ``Footprint.partition_id`` stores.
-
-    Not the raw tuple: a partition key's condition leg is itself a nested tuple, and stamping the
-    raw structure onto every footprint would duplicate it once per arena. The digest is the same
-    canonical encoding every other scene fingerprint uses (:func:`isar.scene.model.fingerprint`),
-    so two builds of the same partition set always agree byte-for-byte.
-    """
-    return fingerprint(list(key))
+    """See :func:`isar.scene.model.partition_id` — the one digest of a partition key."""
+    return model_partition_id(key)
 
 
 # ----------------------------------------------------------------------------
