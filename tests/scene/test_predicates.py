@@ -30,36 +30,36 @@ def cand(label, omegas=(), identity=None, usable=True, mode_intervals=None):
 
 
 def trusted_interval(low, high, *, nominal_level=0.68):
-    """A writer-byte-shaped ``ModeInterval`` carrying the REALIZED delivery decision (SCENE-4.2a
-    A1/A2: ``scan_delivery._mode_interval_item`` + ``_realize_interval_authority``) — trusted."""
-    return {"low": low, "center": (low + high) / 2.0, "high": high,
-            "nominal_level": nominal_level,
-            "interval_kind": "parametric_bootstrap_percentile",
-            "inference_paradigm": "frequentist_sampling_distribution",
-            "source_quantity": "interval",
-            "authority": {"authority_scopes": {"user_diagnostic": "active"},
-                         "producer_authority_scopes": {"single_fit_delivery": "candidate"},
-                         "selected_for_delivery": True, "passed_reliability_gate": True},
-            "conditioning_fingerprint": "c" * 64}
-
-
-def offer_interval(low, high, *, nominal_level=0.68):
-    """A writer-byte-shaped ``ModeInterval`` carrying only the unrealized producer OFFER (a
-    non-winner survivor's own candidate-level record) — never trusted by the scene layer."""
+    """A writer-byte-shaped ``ModeInterval`` carrying a producer-SOUND verdict (P0-C:
+    ``scan_delivery._producer_soundness``) — trusted regardless of which label delivery
+    eventually picks."""
     return {"low": low, "center": (low + high) / 2.0, "high": high,
             "nominal_level": nominal_level,
             "interval_kind": "parametric_bootstrap_percentile",
             "inference_paradigm": "frequentist_sampling_distribution",
             "source_quantity": "freq_interval",
-            "authority": {"authority_scopes": {"user_diagnostic": "active"},
-                         "producer_authority_scopes": {"single_fit_delivery": "candidate"}},
+            "authority": {"authority_basis": "producer_sound"},
             "conditioning_fingerprint": "c" * 64}
 
 
-def obs(scan_ref, cands, count_trust="trusted", sample="s1", epoch=1, conditions=()):
+def offer_interval(low, high, *, nominal_level=0.68):
+    """A writer-byte-shaped ``ModeInterval`` carrying a producer-UNSOUND verdict (P0-C) — never
+    trusted by the scene layer, regardless of which label delivery eventually picks."""
+    return {"low": low, "center": (low + high) / 2.0, "high": high,
+            "nominal_level": nominal_level,
+            "interval_kind": "parametric_bootstrap_percentile",
+            "inference_paradigm": "frequentist_sampling_distribution",
+            "source_quantity": "freq_interval",
+            "authority": {"authority_basis": "producer_unsound",
+                         "reasons": ("convergence_unrecorded",)},
+            "conditioning_fingerprint": "c" * 64}
+
+
+def obs(scan_ref, cands, count_trust="trusted", sample="s1", epoch=1, conditions=(),
+        best_label=None):
     return {"scan_ref": scan_ref, "candidates": list(cands), "count_trust": count_trust,
             "sample": sample, "lattice_epoch": epoch,
-            "conditions": [list(pair) for pair in conditions]}
+            "conditions": [list(pair) for pair in conditions], "best_label": best_label}
 
 
 def fp(scan_ref, coord, bands=((0.0, 10.0),), exposure=5.0, partition=P1):
@@ -383,6 +383,24 @@ def test_widening_one_contributing_interval_reopens_below_threshold():
                                  _two_mode_scene(trusted_interval(4.5, 5.5)))
     assert widened.status == "open"
     assert widened.mass_interval == (pytest.approx(0.6), pytest.approx(0.6))
+
+
+def test_a_non_winner_survivor_with_a_sound_record_closes_where_delivery_picked_another_model():
+    """P0-C inverted counterexample (owner ruling 2026-08-14): delivery selection is not interval
+    authority. Candidate "A" carries the sound record and closes the estimate even though the
+    observation's ``best_label`` names "B" — a DIFFERENT candidate that has no interval at all.
+    Trust follows the writer's per-candidate producer-soundness verdict alone."""
+    scene = payload(
+        observations=[obs("e:1:d", [
+            cand("A", omegas=(5.0,), mode_intervals=[trusted_interval(4.9, 5.1)]),
+            cand("B", omegas=(5.0,), mode_intervals=[None])],
+            best_label="B")],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.6),
+                                      alt([("e:1:d", "B")], 0.4)])])
+    a = evaluate_predicate(estimate_spec(tolerance=0.15, min_mass=0.5), scene)
+    assert a.status == "answered"
+    assert dict(a.answer)["contributing"] == (("e:1:d", "A", 0),)
 
 
 def test_offer_only_survivor_fails_trust_gate_and_counts_adversarially():

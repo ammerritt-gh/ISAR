@@ -25,8 +25,7 @@ def _mode_interval(**over) -> ModeInterval:
                 interval_kind="parametric_bootstrap_percentile",
                 inference_paradigm="frequentist_sampling_distribution",
                 source_quantity="freq_interval",
-                authority={"authority_scopes": {"user_diagnostic": "active"},
-                          "producer_authority_scopes": {"single_fit_delivery": "candidate"}},
+                authority={"authority_basis": "producer_sound"},
                 conditioning_fingerprint="c" * 64)
     return ModeInterval(**{**base, **over})
 
@@ -157,6 +156,54 @@ def test_a_mis_sized_mode_intervals_is_refused(mode_intervals):
     no part in the check (see the follow-up correction below)."""
     with pytest.raises(ValueError, match="len\\(omegas\\)=1.*len\\(mode_intervals\\)"):
         _row(mode_intervals=mode_intervals)
+
+
+# ----------------------------------------------------------------------------
+# ModeInterval strict validation (P1-F, SCENE-4 wave-1 W1)
+# ----------------------------------------------------------------------------
+@pytest.mark.parametrize("over,match", [
+    (dict(low=5.0, high=4.0), "low <= high"),
+    (dict(low=float("nan")), "finite"),
+    (dict(high=float("inf")), "finite"),
+    (dict(center=10.0), "center"),                      # outside [low, high]
+    (dict(center=float("nan")), "center"),
+    (dict(nominal_level=0.0), "nominal_level"),
+    (dict(nominal_level=1.5), "nominal_level"),
+    (dict(interval_kind="not_a_real_kind"), "interval_kind"),
+    (dict(inference_paradigm="not_a_real_paradigm"), "inference_paradigm"),
+    (dict(source_quantity=""), "source_quantity"),
+    (dict(conditioning_fingerprint=""), "conditioning_fingerprint"),
+    # The retired delivery-flag authority shape (pre-P0-C) must be refused, not silently read.
+    (dict(authority={"authority_scopes": {"user_diagnostic": "active"},
+                     "selected_for_delivery": True, "passed_reliability_gate": True}),
+     "authority"),
+    (dict(authority={"authority_basis": "producer_sound", "extra_key": 1}), "authority"),
+    (dict(authority={"authority_basis": "not_a_real_basis"}), "authority"),
+    (dict(authority={}), "authority"),
+])
+def test_mode_interval_refuses_malformed_construction(over, match):
+    with pytest.raises(ValueError, match=match):
+        _mode_interval(**over)
+
+
+def test_mode_interval_accepts_a_bare_pair_with_no_center():
+    mi = _mode_interval(center=None)
+    assert mi.center is None
+
+
+def test_mode_interval_accepts_a_producer_unsound_verdict_with_reasons():
+    mi = _mode_interval(authority={"authority_basis": "producer_unsound",
+                                   "reasons": ("bimodal", "unavailable")})
+    assert mi.authority == {"authority_basis": "producer_unsound",
+                            "reasons": ("bimodal", "unavailable")}
+
+
+def test_mode_interval_deep_copies_authority_so_caller_mutation_cannot_reach_it():
+    authority = {"authority_basis": "producer_unsound", "reasons": ["bimodal"]}
+    mi = _mode_interval(authority=authority)
+    authority["reasons"].append("mutated")
+    authority["authority_basis"] = "producer_sound"
+    assert mi.authority == {"authority_basis": "producer_unsound", "reasons": ("bimodal",)}
 
 
 def test_a_result_less_candidate_disagrees_with_n_modes_but_still_constructs():

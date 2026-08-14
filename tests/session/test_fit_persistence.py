@@ -731,30 +731,31 @@ def test_a_multimode_candidate_never_assumes_a_primary_slot():
 
 
 def test_a_single_mode_survivor_projects_its_own_candidate_level_record():
-    """A non-winner survivor's slot carries low/center/high plus the writer's own semantics,
-    read off ``within_model`` exactly as the real error-attach writer shapes it — never the
-    winner's realized authority."""
+    """A survivor's slot carries low/center/high plus the writer's own semantics, read off
+    ``within_model`` exactly as the real error-attach writer shapes it (P0-C: this is now the
+    ONLY path — there is no separate winner-realized authority to distinguish it from)."""
     record = _real_candidate_interval_semantics()
     item = record["quantities"]["freq_interval"]
     within = {"freq_interval": (4.1, 4.25, 4.4), "interval_semantics": record}
     scores = [_score("stokes+bg", log_evidence=-39.0, posterior=1.0)]
     fits = {"stokes+bg": _fit_result(n_modes=1, modes=[{"omega0": 4.25}], within_model=within)}
     hyps = {"stokes+bg": _hyp("stokes+bg", n_modes=1)}
-    # best_label deliberately names a DIFFERENT (absent) label: this row is a non-winner survivor.
-    row = scan_delivery._candidate_rows(scores, fits, hyps, best_label="some-other-label")[0]
+    row = scan_delivery._candidate_rows(scores, fits, hyps)[0]
     cell = row["mode_intervals"][0]
     assert cell == {
         "low": 4.1, "center": 4.25, "high": 4.4,
         "nominal_level": item["nominal_level"], "interval_kind": item["interval_kind"],
         "inference_paradigm": item["inference_paradigm"], "source_quantity": "freq_interval",
-        "authority": {"authority_scopes": item["authority_scopes"],
-                     "producer_authority_scopes": item["producer_authority_scopes"]},
+        # No convergence stats recorded on this bare ``within`` fixture, so the verdict is
+        # honestly unsound rather than a minted "trust it anyway" default (P0-C).
+        "authority": {"authority_basis": "producer_unsound", "reasons": ("convergence_unrecorded",)},
         "conditioning_fingerprint": item["conditioning_fingerprint"],
     }
-    # Offer-only: never a realized ``selected_for_delivery``/``passed_reliability_gate`` key.
+    # P0-C: never a delivery-flag key — the cell knows nothing about who won selection.
     assert "selected_for_delivery" not in cell["authority"]
     assert "passed_reliability_gate" not in cell["authority"]
-    assert json.loads(json.dumps(row))["mode_intervals"][0] == cell
+    # JSON has no tuple type, so a round-tripped "reasons" comes back a list, not a tuple.
+    assert json.loads(json.dumps(row))["mode_intervals"][0] == json.loads(json.dumps(cell))
 
 
 def test_a_non_survivor_row_with_no_error_record_carries_all_none_honestly():
@@ -792,7 +793,7 @@ def test_phonon_less_candidate_carries_no_mode_interval_slots():
 def test_mode_interval_item_projects_each_quantitys_real_shape(source_quantity, values,
                                                                 expect_center):
     item = {"availability": True, "nominal_level": 0.68}
-    cell = scan_delivery._mode_interval_item(item, values, source_quantity)
+    cell = scan_delivery._mode_interval_item(item, values, source_quantity, {})
     assert cell["low"] == values[0] and cell["high"] == values[-1]
     assert cell["center"] == expect_center
 
@@ -801,45 +802,85 @@ def test_mode_interval_item_projects_each_quantitys_real_shape(source_quantity, 
 def test_mode_interval_item_refuses_a_malformed_value_shape(values):
     item = {"availability": True, "nominal_level": 0.68}
     with pytest.raises(ValueError, match="pair|triple"):
-        scan_delivery._mode_interval_item(item, values, "freq_interval")
+        scan_delivery._mode_interval_item(item, values, "freq_interval", {})
 
 
-def test_a_hesse_selected_winner_row_round_trips_with_no_center():
-    """The exact shape that crashed ``tests/session/test_driver_multimode.py``: a fast-tier
-    winner whose SELECTED interval quantity is ``hesse_interval`` — a bare ``(lo, hi)`` pair, no
-    median. Must project honestly (``center=None``) and round-trip through the real DTO."""
-    within = {"freq_interval": (float("nan"), float("nan"), float("nan")),
-             "interval_semantics": _real_candidate_interval_semantics(
-                 (float("nan"), float("nan"), float("nan")))}
-    best = _fit_result(n_modes=1, modes=[{"omega0": 5.0}], within_model=within)
-    best.label = "stokes+bg"
-    best.fit_semantics = {"estimator_kind": "data_likelihood_mle", "effective_constraints": [],
-                          "conditioning_fingerprint": "c" * 64}
-    hesse_interval = (4.992, 5.005)
-    outcome_semantics = scan_delivery._outcome_interval_semantics(
-        best=best, selection=SimpleNamespace(pooled=None, fit_selection_semantics=None),
-        interval=None, omega0_profile=None, hesse_interval=hesse_interval, hesse_trusted=True,
-        bayes_interval=None, interval_reliable=False)
-    assert outcome_semantics["selected_interval_quantity"] == "hesse_interval"
+def _sound_within(interval=(4.1, 4.25, 4.4), *, n_converged=90, M=100, bimodal=False):
+    """A ``within_model`` whose bootstrap record clears every P0-C soundness signal — the
+    fixture the identical-shape and staleness tests below build a winner/survivor pair from."""
+    return {"freq_interval": interval,
+           "interval_semantics": _real_candidate_interval_semantics(interval),
+           "n_converged": n_converged, "M": M, "bimodal": bimodal}
 
+
+def test_winner_and_non_winner_rows_project_identically_shaped_candidate_tier_cells():
+    """P0-C: interval authority is immutably fit-conditional. A winner and a non-winner survivor
+    with the SAME underlying bootstrap record must project byte-identical ``mode_intervals``
+    cells — delivery selection (which label ``FitOutcome.best_label`` names) plays no role at
+    all in what a candidate slot shows."""
+    within = _sound_within()
+    scores = [_score("stokes+bg", log_evidence=-39.0, posterior=0.9),
+              _score("stokes+bg_alt", log_evidence=-42.0, posterior=0.1)]
+    fits = {"stokes+bg": _fit_result(n_modes=1, modes=[{"omega0": 4.25}], within_model=within),
+            "stokes+bg_alt": _fit_result(n_modes=1, modes=[{"omega0": 4.25}], within_model=within)}
+    hyps = {"stokes+bg": _hyp("stokes+bg"), "stokes+bg_alt": _hyp("stokes+bg_alt")}
+    # best_label names one of the two, exactly as the real driver call site would after
+    # selection — but _candidate_rows takes no best_label argument any more (P0-C): nothing here
+    # can tell it which label won, which is the point.
+    rows = {r["label"]: r for r in scan_delivery._candidate_rows(scores, fits, hyps)}
+
+    winner_cell = rows["stokes+bg"]["mode_intervals"][0]
+    survivor_cell = rows["stokes+bg_alt"]["mode_intervals"][0]
+    assert winner_cell == survivor_cell
+    assert winner_cell["source_quantity"] == "freq_interval"
+    assert winner_cell["authority"] == {"authority_basis": "producer_sound"}
+
+
+@pytest.mark.parametrize("within,expected_reason", [
+    (_sound_within(bimodal=True), "bimodal"),
+    (_sound_within(n_converged=50, M=100), "bootstrap_underconverged"),
+])
+def test_an_unsound_bootstrap_record_is_flagged_producer_unsound(within, expected_reason):
     scores = [_score("stokes+bg", log_evidence=-39.0, posterior=1.0)]
+    fits = {"stokes+bg": _fit_result(n_modes=1, modes=[{"omega0": 4.25}], within_model=within)}
     hyps = {"stokes+bg": _hyp("stokes+bg")}
-    row = scan_delivery._candidate_rows(
-        scores, {"stokes+bg": best}, hyps, best_label="stokes+bg",
-        interval_semantics=outcome_semantics,
-        outcome_values={"interval": None, "omega0_profile": None,
-                        "hesse_interval": hesse_interval, "bayes_interval": None})[0]
+    cell = scan_delivery._candidate_rows(scores, fits, hyps)[0]["mode_intervals"][0]
+    assert cell["authority"]["authority_basis"] == "producer_unsound"
+    assert expected_reason in cell["authority"]["reasons"]
 
-    cell = row["mode_intervals"][0]
-    assert cell["source_quantity"] == "hesse_interval"
-    assert cell["low"] == 4.992 and cell["high"] == 5.005 and cell["center"] is None
-    assert cell["authority"]["selected_for_delivery"] is True
 
-    from isar.scene.model import CandidateRow
-    parsed = CandidateRow.from_dict(json.loads(json.dumps(row)))
-    assert parsed.mode_intervals[0].center is None
-    assert parsed.mode_intervals[0].low == pytest.approx(4.992)
-    assert parsed.mode_intervals[0].high == pytest.approx(5.005)
+def test_a_model_mixture_interval_kind_can_never_occupy_a_candidate_slot_as_sound():
+    """P1-H (slot half): a pool/mixture-kind interval item is never producer-sound, however
+    convergent its bootstrap statistics — the generic ``interval_kind``/``inference_paradigm``
+    check in :func:`scan_delivery._producer_soundness` refuses it regardless."""
+    item = dict(_real_candidate_interval_semantics()["quantities"]["freq_interval"])
+    item["interval_kind"] = "akaike_weighted_parametric_bootstrap_pool"
+    item["inference_paradigm"] = "frequentist_empirical_model_mixture"
+    verdict = scan_delivery._producer_soundness(
+        item, {"n_converged": 100, "M": 100, "bimodal": False})
+    assert verdict == {"authority_basis": "producer_unsound",
+                       "reasons": ("not_bootstrap_percentile",
+                                   "not_frequentist_sampling_distribution")}
+
+
+def test_evidence_update_outcome_refresh_leaves_candidate_cells_byte_identical():
+    """The reviewer's staleness probe (P0-C): running the evidence_update outcome-mutation
+    refresh path — the ONLY path that ever rewrites ``interval_semantics`` on a delivered
+    workspace row — against an outcome whose ``candidates`` are already persisted must leave
+    those candidate cells untouched. Staleness dies by construction: only outcome-level fields
+    refresh; ``evidence_update._clear_tracked_selection`` is the narrowest real caller of
+    ``_refresh_interval_semantics``."""
+    within = _sound_within()
+    scores = [_score("stokes+bg", log_evidence=-39.0, posterior=1.0)]
+    fits = {"stokes+bg": _fit_result(n_modes=1, modes=[{"omega0": 4.25}], within_model=within)}
+    hyps = {"stokes+bg": _hyp("stokes+bg")}
+    candidates = scan_delivery._candidate_rows(scores, fits, hyps)
+    outcome = _outcome_with(None, candidates).to_dict()
+    before = json.loads(json.dumps(outcome["candidates"]))
+
+    evidence_update._clear_tracked_selection(outcome, {}, revision=3)
+
+    assert outcome["candidates"] == before
 
 
 def test_a_result_less_candidate_row_stays_aligned_despite_n_modes_defaulting_to_one():
@@ -857,77 +898,6 @@ def test_a_result_less_candidate_row_stays_aligned_despite_n_modes_defaulting_to
     from isar.scene.model import CandidateRow
     parsed = CandidateRow.from_dict(json.loads(json.dumps(row)))
     assert parsed.omegas == () and parsed.mode_intervals == ()
-
-
-def test_the_winner_row_projects_the_realized_authority_not_the_candidate_offer():
-    """The winner's slot must show the REALIZED delivery decision (selected_for_delivery,
-    passed_reliability_gate, realized authority_scopes, selected_interval_quantity) — built by
-    the real ``_outcome_interval_semantics`` + ``_realize_interval_authority`` producers, never
-    the candidate's own unrealized offer."""
-    winner_within = {"freq_interval": (4.1, 4.25, 4.4),
-                     "interval_semantics": _real_candidate_interval_semantics()}
-    best = _fit_result(n_modes=1, modes=[{"omega0": 4.25}], within_model=winner_within)
-    best.label = "stokes+bg"
-    best.fit_semantics = {"estimator_kind": "data_likelihood_mle", "effective_constraints": [],
-                          "conditioning_fingerprint": "c" * 64}
-    outcome_semantics = scan_delivery._outcome_interval_semantics(
-        best=best, selection=SimpleNamespace(pooled=None, fit_selection_semantics=None),
-        interval=(4.1, 4.25, 4.4), omega0_profile=None, hesse_interval=None, hesse_trusted=False,
-        bayes_interval=None, interval_reliable=True)
-    assert outcome_semantics["selected_interval_quantity"] == "interval"
-
-    survivor_within = {"freq_interval": (5.0, 5.1, 5.2),
-                       "interval_semantics": _real_candidate_interval_semantics((5.0, 5.1, 5.2))}
-    scores = [_score("stokes+bg", log_evidence=-39.0, posterior=0.9),
-              _score("stokes+bg_alt", log_evidence=-42.0, posterior=0.1)]
-    fits = {"stokes+bg": best,
-            "stokes+bg_alt": _fit_result(n_modes=1, modes=[{"omega0": 5.1}],
-                                         within_model=survivor_within)}
-    hyps = {"stokes+bg": _hyp("stokes+bg"), "stokes+bg_alt": _hyp("stokes+bg_alt")}
-    rows = {r["label"]: r for r in scan_delivery._candidate_rows(
-        scores, fits, hyps, best_label="stokes+bg", interval_semantics=outcome_semantics,
-        outcome_values={"interval": (4.1, 4.25, 4.4), "omega0_profile": None,
-                        "hesse_interval": None, "bayes_interval": None})}
-
-    winner_cell = rows["stokes+bg"]["mode_intervals"][0]
-    assert winner_cell["source_quantity"] == "interval"
-    assert winner_cell["authority"]["selected_for_delivery"] is True
-    assert "passed_reliability_gate" in winner_cell["authority"]
-    assert winner_cell["authority"]["authority_scopes"]["single_fit_delivery"] == "active"
-
-    survivor_cell = rows["stokes+bg_alt"]["mode_intervals"][0]
-    assert survivor_cell["source_quantity"] == "freq_interval"
-    assert "selected_for_delivery" not in survivor_cell["authority"]
-    assert survivor_cell["authority"]["authority_scopes"]["single_fit_delivery"] == "inactive"
-
-
-def test_a_winner_with_an_unresolvable_selected_quantity_raises_not_silently_degrades():
-    """PR 4.2a review, Major finding 2: a ``selected_interval_quantity`` naming something absent
-    from the outcome record's own ``quantities``/``outcome_values`` is a writer wiring bug, not a
-    genuinely-unavailable interval — it must raise, never quietly fall back to the candidate's
-    own unrealized ``freq_interval`` offer (that would mask the defect)."""
-    within = {"freq_interval": (4.1, 4.25, 4.4),
-             "interval_semantics": _real_candidate_interval_semantics()}
-    best = _fit_result(n_modes=1, modes=[{"omega0": 4.25}], within_model=within)
-    scores = [_score("stokes+bg", log_evidence=-39.0, posterior=1.0)]
-    fits = {"stokes+bg": best}
-    hyps = {"stokes+bg": _hyp("stokes+bg")}
-    doctored = {"schema": "isar.interval_semantics/1", "quantities": {},
-               "selected_interval_quantity": "interval"}
-    with pytest.raises(ValueError, match="writer wiring bug"):
-        scan_delivery._candidate_rows(
-            scores, fits, hyps, best_label="stokes+bg", interval_semantics=doctored,
-            outcome_values={"interval": (4.1, 4.25, 4.4)})
-    # Missing from outcome_values instead of quantities is the same defect.
-    doctored_with_quantity = {
-        "schema": "isar.interval_semantics/1",
-        "quantities": {"interval": _real_candidate_interval_semantics()["quantities"][
-            "freq_interval"]},
-        "selected_interval_quantity": "interval"}
-    with pytest.raises(ValueError, match="writer wiring bug"):
-        scan_delivery._candidate_rows(
-            scores, fits, hyps, best_label="stokes+bg",
-            interval_semantics=doctored_with_quantity, outcome_values={})
 
 
 def test_a_record_lacking_nominal_level_fails_loudly_not_a_minted_default():

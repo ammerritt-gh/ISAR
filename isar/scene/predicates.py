@@ -437,15 +437,17 @@ def _track_connected(spec, scene_payload, prior) -> QuestionAssessment:
 
 def _trusted_matched_interval(alternative, refs, candidates, band):
     """The alternative's ONE trusted, matched per-mode interval, or ``None`` when the match is
-    absent, ambiguous, or the writer's own record does not carry an affirmative REALIZED
-    delivery decision (SCENE-4.2a A2) — no trust minted in the scene layer.
+    absent, ambiguous, or the writer's own record is not producer-sound (P0-C / SCENE-4.2a A2) —
+    no trust minted in the scene layer.
 
-    Trusted means the authority dict read VERBATIM off the persisted :class:`ModeInterval`
-    carries ``selected_for_delivery`` and ``passed_reliability_gate`` both ``True``; an
-    unrealized producer offer (only ``authority_scopes``/``producer_authority_scopes``) is not
-    trusted. Two indistinguishable in-band matches are as unqualifying as zero — nothing in the
-    subject names which slot is meant, so guessing would mint identity the writer never
-    asserted.
+    Trusted means the ``authority`` dict read VERBATIM off the persisted :class:`ModeInterval`
+    carries ``authority_basis == "producer_sound"`` — the writer's own fit-conditional verdict
+    on whether this candidate's bootstrap record is a converged, unimodal, genuinely frequentist
+    sampling distribution. This is deliberately NOT about which candidate delivery selected: a
+    non-winner survivor with a sound record is trusted exactly like a winner with one, and a
+    winner with an unsound record is not trusted just because it won. Two indistinguishable
+    in-band matches are as unqualifying as zero — nothing in the subject names which slot is
+    meant, so guessing would mint identity the writer never asserted.
     """
     matches = []
     for scan_ref, label in alternative.get("assignment") or ():
@@ -470,8 +472,7 @@ def _trusted_matched_interval(alternative, refs, candidates, band):
     if interval is None:
         return None
     authority = interval.get("authority") or {}
-    if authority.get("selected_for_delivery") is not True \
-            or authority.get("passed_reliability_gate") is not True:
+    if authority.get("authority_basis") != "producer_sound":
         return None
     return {"low": float(interval["low"]), "high": float(interval["high"]),
             "nominal_level": interval.get("nominal_level"),
