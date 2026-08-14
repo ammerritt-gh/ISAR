@@ -15,6 +15,7 @@ from isar.schema.campaign_program import (
     ProgramError,
     targeted_program,
 )
+from isar.schema.question_policy import resolve_policy
 
 FIXTURES = Path(__file__).parents[1] / "drive" / "fixtures"
 
@@ -26,6 +27,7 @@ _DISCOVER = {
     "catalogue_profile": "isar.catalogue.inelastic-default/1",
     "deliverables": [{"kind": "phenomenon_map"}],
     "include_unknown": True,
+    "resolved_policy": resolve_policy(),
 }
 
 
@@ -176,10 +178,42 @@ def test_the_energy_domain_is_intrinsic_and_refuses_a_signed_measurement_window(
     assert _program(payload).steps[0].payload.intrinsic_omega_domain_meV == (0.0, 10.0)
 
 
-def test_include_unknown_defaults_to_true():
+# --------------------------------------------------------------------------- /2 full freeze
+@pytest.mark.parametrize("missing", ["include_unknown", "deliverables", "catalogue_profile",
+                                     "resolved_policy"])
+def test_a_frozen_step_missing_any_effective_field_refuses_not_defaults(missing):
+    """Frozen in FULL (SCENE-4 PR 4.1): a stored /2 document that acquired a future software
+    default at read time would be frozen in name only, so the reader defaults nothing."""
     payload = json.loads(json.dumps(_DISCOVER))
-    del payload["include_unknown"]
-    assert _program(payload).steps[0].payload.include_unknown is True
+    del payload[missing]
+    with pytest.raises(ProgramError, match="never acquires read-time defaults"):
+        _program(payload)
+
+
+def test_the_retired_discover_v1_step_is_refused_naming_its_replacement():
+    payload = json.loads(json.dumps(_DISCOVER))
+    payload["schema"] = "isar.campaign-step.discover_and_map/1"
+    with pytest.raises(ProgramError,
+                       match="was retired by 'isar.campaign-step.discover_and_map/2'"):
+        _program(payload)
+
+
+def test_an_untagged_compact_discover_payload_is_authoring_input_not_a_frozen_step():
+    payload = json.loads(json.dumps(_DISCOVER))
+    del payload["schema"]
+    with pytest.raises(ProgramError, match="compiled, never read"):
+        _program(payload)
+
+
+def test_a_tampered_policy_block_is_refused_by_the_step():
+    payload = json.loads(json.dumps(_DISCOVER))
+    del payload["resolved_policy"]["thresholds"]["confirm_presence_min_mass"]
+    with pytest.raises(ProgramError, match="missing frozen values"):
+        _program(payload)
+    unsupported = json.loads(json.dumps(_DISCOVER))
+    unsupported["resolved_policy"]["staleness_policy"] = {"mode": "fixed_lag", "lag": 1}
+    with pytest.raises(ProgramError, match="is not supported"):
+        _program(unsupported)
 
 
 def test_deliverables_are_frozen_verbatim_including_fields_nothing_reads_yet():
@@ -202,9 +236,9 @@ def test_a_present_but_invalid_deliverables_field_is_refused_not_coerced(deliver
         _program(payload)
 
 
-def test_an_absent_deliverables_field_is_an_empty_tuple():
+def test_an_explicit_empty_deliverables_list_is_a_valid_declaration():
     payload = json.loads(json.dumps(_DISCOVER))
-    del payload["deliverables"]
+    payload["deliverables"] = []
     assert _program(payload).steps[0].payload.deliverables == ()
 
 

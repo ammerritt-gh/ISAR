@@ -296,7 +296,7 @@ emits otherwise fails the build rather than publishing an impossible reading.
 | SCENE-1 | Catalogue, identity-conditional Laplace evidence, global grammar (bg-only + elastic+bg first-class, `elastic_only` verdict), observation footprints, persisted candidate rows — three sequential PRs | Implemented — PR-a (H3, 2026-08-08; merged `fd1aa76`), PR-b (H4, 2026-08-08; merged `e02350a`), PR-c (H9/H10, 2026-08-09; merged `c5adf15`); deferrals recorded in H9(e) |
 | SCENE-2 | `isar.campaign-program/1` sole contract; old envelope unreadable by design | Implemented (H2, 2026-08-08; PR #12 merged at `058fb40`) |
 | SCENE-3 | Scene layer core: clusters, structural factors, revisioned scene store, workspace_api read surface; tracker contracts ported as specifications | Implemented — PR 3a (H11/H12), 3b (H13), 3c (H14), all 2026-08-10, incl. the PR #19 response waves; final merge `a1c6e41` |
-| SCENE-4 | Question layer, deterministic opening book, generalized stop; first challenge run; scan-window authoritative default-on; shadow machinery deleted | In progress — PR 4.0 "scene authority readiness" Implemented (H15/H16, 2026-08-13; PR #30 merged): measurement-arena record + trust lanes, #21 Variant A origin lanes, (sample, ConditionSet, lattice-epoch) partitioning, refiner bounds + transformation ablation, expected_two relaxation. PRs 4.1–4.4 per `docs/SCENE4_EXECUTION_PLAN.md` |
+| SCENE-4 | Question layer, deterministic opening book, generalized stop; first challenge run; scan-window authoritative default-on; shadow machinery deleted | In progress — PR 4.0 "scene authority readiness" Implemented (H15/H16, 2026-08-13; PR #30 merged): measurement-arena record + trust lanes, #21 Variant A origin lanes, (sample, ConditionSet, lattice-epoch) partitioning, refiner bounds + transformation ablation, expected_two relaxation. PR 4.1 "question + agenda core" Implemented (H17, 2026-08-14): three-object question layer, authority-aware predicates, `isar.question-policy/1` + fully frozen `discover_and_map/2`, content-addressed agenda snapshots with external transition history, `AgendaVerdict` beside `evaluate_stop` — offline (driver wiring 4.3, generator bindings 4.2). PRs 4.2–4.4 per `docs/SCENE4_EXECUTION_PLAN.md` |
 | SCENE-5 | Scene-EIG authoritative from birth | Planned |
 | SCENE-6 | Single-engine swap: targeted campaigns as pinned question sets over scenes; tracker deleted; `campaign-program/2` question-native targeted payload | Planned |
 | SCENE-7 | Calibration batteries + efficiency benchmark; program closeout | Planned |
@@ -315,13 +315,78 @@ Slow lane: calibration ensembles and the efficiency benchmark.
 
 ## 5. Question layer
 
-DiscoverRegion, ConfirmPresence, ClassifyIdentity, ConnectTrack, EstimateParameter,
-TestModelMismatch, VerifyCompleteness. Each question = completion predicate + concerned scene
-variables + campaign priority + generator families (registered in the existing
-GENERATOR_REGISTRY pattern). `evaluate_stop` generalizes to open-questions accounting; a targeted
-campaign is a pre-pinned question set. Scene-EIG computes mutual information on the
+**Three objects, not one** (PR 4.1, H17), because identity, assessment, and agenda change at
+different rates: `QuestionSpec` (`isar/scene/questions.py`) is immutable — stable ID, family,
+subject, declarative versioned predicate, priority, dependencies, generator-ID references,
+policy provenance; `QuestionAssessment` is one scene revision's answer state; `AgendaRevision`
+(`isar/scene/agenda.py`) is the content-addressed snapshot carrying both. A targeted campaign
+is a pre-pinned question set (SCENE-6). Scene-EIG (SCENE-5) computes mutual information on the
 question-relevant scene variables only — the guard against an uncertain nuisance variable
 dominating acquisition.
+
+**Identity is semantic, never structural.** `question_id = fingerprint({family, claim kind,
+subject})` and nothing else — thresholds, policy provenance, program fingerprint, and all
+scene content stay out, so a consultation re-freeze and an added scan keep every ID. Subjects
+are built only from frozen program declarations, the frozen catalogue vocabulary, declared
+sample knowledge, and partition identity — never cluster indices, alternative pointers,
+component IDs, or scan refs. Region intervals canonicalize (reversed endpoints are one
+question); emergent subjects snap to frozen tiles (q quantum = the `/2` region's
+`maximum_initial_spacing_rlu`; ω quantum = the policy profile's `emergent_omega_tile_meV`, an
+identity-bearing constant frozen for the program's life). A bare `question_id` is unique only
+within its agenda/program-step scope; external references persist `(agenda_digest,
+question_id)`. A program-scoped subject fans out into one child per compatible scene
+partition; no predicate ever pools probability across physical partitions.
+
+**Predicates are declarative, versioned, and authority-aware** (`isar/scene/predicates.py`).
+Cluster authority is `exact` / `bounded` / `unresolved` from the persisted truncation flags
+(lost bounds and capped linkage enumeration fail closed to `unresolved`). Bounded claims use
+the log-space adversarial omitted-mass interval — with retained proposition mass `m`, retained
+leader `p*`, and `log_q = log_discarded_mass_bound + log(p*)`, the true mass lies in
+`[m/(1+q), (m+q)/(1+q)]`; a huge finite bound goes honestly vacuous `[0, 1]`, and a vacuous
+interval answers nothing (`bound_vacuous_for_threshold`, question stays open). Cross-cluster
+claims multiply as independent factors (existential `1 − ∏(1−mᵢ)`, universal `∏mᵢ`) within one
+partition. Blockers are typed — `durable` (resolution floor, bose_dead, instrument geometry,
+program boundary) / `transient` (quarantine, transient failures) / `model_authority` (missing
+hypotheses or persisted uncertainties) — and only a durable blocker can feed unresolvable
+closure.
+
+The family contract matrix (v1; openers are declared and deterministic, generator IDs are
+references the 4.2 inventory binds):
+
+| Family | Subject | Opener | Predicate | Answer | Generator refs |
+|---|---|---|---|---|---|
+| DiscoverRegion | region × ω domain × partition | one per partition, from the program — a path varying in more than one reciprocal component is REFUSED (the scalar projection cannot represent it until the 4.2+ path-projection representation), and the full endpoints join the subject frame so parallel paths are distinct subjects | `coverage_complete/1` (spacing invariant + ω band coverage; quarantine = transient blocker) | complete: yes | `opening_book_survey` |
+| ConfirmPresence | anchor tile / emergent (q tile, ω tile) × partition — CLASS-AGNOSTIC: `structural_presence` ignores identity, so per-class copies were one question wearing N labels; the class is ClassifyIdentity's ANSWER | per `zone_period` fold anchor in region (declared geometry, inert without a period, EPOCH-SCOPED: a partition measured under a different lattice epoch than the declared frame gets no anchors); emergent per (q tile, ω tile) on BOTH frozen quanta when the JOINT cross-cluster UPPER bound ≥ `emergent_open_min_mass` (fail-open; two 0.4 uppers jointly open at 0.64) | `structural_presence/1` — mass on alternatives with a placeable in-band mode; NO identity semantics needed | present: yes/no | `presence_probe` |
+| ClassifyIdentity | phenomenon tile × partition | chained per confirmed phenomenon; its ANSWER carries the class | `identity_resolved/1` — answers ONLY from explicit identity alternatives; `identity=None` accrues to `unclassified_mass` (authority limitation), never a physical unknown | identity: class | `identity_discriminator` |
+| ConnectTrack | (class, endpoint tiles) × partition | chained per classify-ANSWERED class with ≥2 classified tiles (dependencies = the classify questions) | `track_connected/1` — linkage mass across matched endpoint sets, half-open tile membership (a boundary scan belongs to ONE tile); disjoint clusters stay OPEN (an unsurveyed middle is never charged as absence) | connected: yes/no | `track_bridge_scan` |
+| EstimateParameter | (parameter, phenomenon fields) | auto-opened per confirmed phenomenon (regime 1) | `parameter_within_tolerance/1` — **never closes in v1** (owner ruling 2026-08-14): mixture spread is a diagnostic, `within_candidate_uncertainty_unavailable` the blocker; closure arrives with the scheduled interval-persistence re-baseline (4.2/4.3) | — (open) | `parameter_refine` |
+| EstimateParameter (endpoint) | parameter `zc_endpoint_omega`, declared fold anchor | chained for anchored confirmed phenomena | `zc_linear_compatibility/1` — bounded compatibility under declared slope support, `maximum_justifiable_zc_confidence = 0.0` in v1 (no probabilistic model, no persisted uncertainties); the schema supports confidence for the future model | compatible / incompatible (else open) | `parameter_refine` |
+| TestModelMismatch | region × partition | CONDITIONAL: only where an explicit unknown-identity competitor exists in the partition AND the frozen `include_unknown` is true, otherwise inert with a recorded note — its absence-blocker is model-authority and unclosable, so an unconditional question made ordinary campaigns impossible to complete | `mismatch_assessed/1` — needs an explicit unknown-model competitor; a fitless arena is never mismatch evidence | mismatch_present: yes/no | `mismatch_probe` |
+| VerifyCompleteness | campaign × partition, frame-relative | one per partition, depending on every peer | `completeness_relative/1` — relative to the frozen coverage grid, exposure floor (`min_effective_exposure`), represented hypotheses, and closed questions; open on any open dependency, uninterpreted or non-scoring arena IN ITS OWN PARTITION (attributed via the builder's own `partition_key`, one implementation in `isar.scene.model`), unresolved cluster, or under-floor exposure; leader-only visibility rows are deliberately not read | complete: yes | — (closes on accounting) |
+
+**Closure and the verdict.** A question closes three ways: answered; overtaken/dissolved
+(history transitions — a lattice-epoch change dissolves with `equivalence_unproven`, never an
+automatic re-anchor); unresolvable — requiring a typed durable blocker AND a fresh
+`QuestionExhaustion` proof whose `basis_agenda_digest` matches the same-pass exhaustion-free
+derivation digest, whose scene digest matches the input, whose registry fingerprint matches
+the manifest, and whose `required_generator_ids` equal the question's own frozen
+`generator_ids` exactly — a proof may not choose its own requirements (stale proofs are
+rejected naming the failing comparand; exhaustion without a durable blocker is a
+`generator_defect`, never a closure). Dependency graphs are validated acyclic and question
+IDs unique; a cycle or a duplicate refuses derivation. `evaluate_agenda` VALIDATES its
+payload first — duplicate spec or assessment ids and orphan assessments refuse the verdict,
+and a spec with no assessment is a derivation defect that joins the blocking set, so a
+partial agenda fails closed — then returns `complete` / `in_progress` /
+`incomplete_over_budget` with NO beam directive (completion ≠ beam-idle): completion requires
+every spec closed and VerifyCompleteness answering yes; a missing completeness question is a
+derivation defect; unresolvable closures never block completion and surface as consultation
+requests (the channel lands in 4.3). **Completion is reachable**: a fully surveyed blank
+campaign closes every question it opens (presence answers honest NOs, nothing chains, no
+mismatch question is derived without a competitor) and reaches `complete` — asserted by test.
+The one deliberate exception stands: `complete` is unreachable for phenomenon-bearing
+campaigns until the EstimateParameter interval re-baseline — honest and time-bounded, no live
+campaign runs before 4.3. The tracker's targeted `evaluate_stop` is untouched beside all of
+this until SCENE-6.
 
 ## 6. Persistence
 
@@ -423,6 +488,23 @@ calls it observe-only after `workspace.save`, timed as the `scene_observe` stage
 fail a delivery, and `isar report --scene` calls it offline, where a refusal is visible and exits
 3. `catalogue_version` is stamped from the catalogue's `DEFAULT_PROFILE` until a per-fit profile is
 persisted.
+
+**The agenda store mirrors the scene store** (PR 4.1): `<workspace>/report/agenda/` holds
+`<digest>.json` / `current.json` (`isar.agenda-pointer/1`) / `history.jsonl` /
+`last_attempt.json` through the same generic `RevisionStore` core (blob-first, byte-verified,
+optimistic `expected_parent`), plus `transitions.jsonl` — one appended line per flip carrying
+the typed question transitions (opened / reopened / dissolved with `equivalence_unproven` /
+status_changed). The digested `isar.agenda-revision/1` payload is a PURE SNAPSHOT: program
+fingerprint, step id, scene digest, the COMPLETE embedded `resolved_policy` block (so a
+stored agenda explains who chose every effective value without rejoining the program
+document) beside its fingerprint, derivation manifest,
+`basis_digest` (the exhaustion-free derivation digest that exhaustion proofs must name), the
+applied exhaustion evidence, specs, and assessments whose statuses are only
+`open`/`answered`/`unresolvable` — `overtaken`/`dissolved`/`reopened` are relations between
+two agendas and live in the transition history, never the blob. Identical program + scene +
+policy + manifest + evidence ⇒ identical digest, regardless of any historical parent;
+`derive_agenda` never reads `current.json` and has no metadata short-circuit — the store's
+byte comparison is what reports `unchanged`.
 
 ## 7. Status discipline
 

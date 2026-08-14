@@ -420,14 +420,17 @@ def test_compiled_goal_program_carries_the_command_verbatim(tmp_path, monkeypatc
 
 
 # ------------------------------------------------------------- steps this build cannot execute
+from isar.schema.question_policy import resolve_policy as _resolve_policy
+
 _DISCOVER_PAYLOAD = {
-    "schema": "isar.campaign-step.discover_and_map/1",
+    "schema": "isar.campaign-step.discover_and_map/2",
     "region": {"kind": "path", "q_start": [2.0, 0.0, 0.0], "q_end": [3.0, 0.0, 0.0],
                "maximum_initial_spacing_rlu": 0.1},
     "energy": {"intrinsic_omega_domain_meV": [0.0, 10.0]},
     "catalogue_profile": "isar.catalogue.inelastic-default/1",
     "deliverables": [{"kind": "phenomenon_map"}],
     "include_unknown": True,
+    "resolved_policy": _resolve_policy(),
 }
 
 

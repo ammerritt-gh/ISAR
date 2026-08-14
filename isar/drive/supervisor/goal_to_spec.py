@@ -49,6 +49,7 @@ from isar.schema.campaign_program import (
 )
 from isar.schema.eig_policy import ScanWindowEIGConfig
 from isar.schema.hypotheses import content_fingerprint
+import isar.schema.question_policy as _qpolicy
 
 Dispatcher = _llm.Dispatcher
 LLMMClient = _llm.LLMMClient
@@ -177,10 +178,12 @@ LLM_PROGRAM_SCHEMA = {
     },
 }
 
-#: Compiler defaults for a discovery step the command left unstated.
-DEFAULT_DISCOVER_SPACING_RLU = 0.05
-DEFAULT_CATALOGUE_PROFILE = "isar.catalogue.inelastic-default/1"
-DEFAULT_DELIVERABLES: tuple[dict[str, Any], ...] = ({"kind": "phenomenon_map"},)
+#: Compiler defaults for a discovery step the command left unstated. Owned by the question
+#: policy profile since SCENE-4 PR 4.1 (one home per question-layer number); re-exported here
+#: so no call site churns.
+DEFAULT_DISCOVER_SPACING_RLU = _qpolicy.DEFAULT_DISCOVER_SPACING_RLU
+DEFAULT_CATALOGUE_PROFILE = _qpolicy.DEFAULT_CATALOGUE_PROFILE
+DEFAULT_DELIVERABLES = _qpolicy.DEFAULT_DELIVERABLES
 
 _EXAMPLE = {
     "path": {"h_start": 1.0, "h_end": 2.0, "k": 0.0, "l": 0.0},
@@ -269,6 +272,8 @@ def goal_to_program(goal: str, *, dispatcher: Dispatcher | None = None,
                     defaults: dict | None = None,
                     card_hypotheses: dict[str, Any] | None = None,
                     card_eig_policy_set: dict[str, Any] | None = None,
+                    card_question_guidelines: dict[str, Any] | None = None,
+                    user_policy_ask: dict[str, Any] | None = None,
                     endpoint: str | None = None, model_pin: str | None = None,
                     temperature: float = 0.1, max_tokens: int = 800) -> CampaignProgram:
     """Compile ``goal`` into a one-step :class:`CampaignProgram` via the LLM supervisor.
@@ -310,14 +315,19 @@ def goal_to_program(goal: str, *, dispatcher: Dispatcher | None = None,
     if data["kind"] == "discover_and_map":
         return CampaignProgram(
             steps=(CampaignStep(id="discover-1", kind="discover_and_map",
-                                payload=_discover_spec(data["discover_and_map"])),),
+                                payload=_discover_spec(
+                                    data["discover_and_map"],
+                                    card_question_guidelines=card_question_guidelines,
+                                    user_policy_ask=user_policy_ask)),),
             source_text=goal)
     spec = _build_spec(data["targeted"], merged, card_hypotheses=card_hypotheses,
                        card_eig_policy_set=card_eig_policy_set)
     return targeted_program(spec.to_dict(), source_text=goal)
 
 
-def _discover_spec(data: dict) -> DiscoverAndMapSpec:
+def _discover_spec(data: dict, *,
+                   card_question_guidelines: dict[str, Any] | None = None,
+                   user_policy_ask: dict[str, Any] | None = None) -> DiscoverAndMapSpec:
     """Freeze a supervisor discovery reply, filling only the compiler's shipped defaults.
 
     A default applies when the field is absent or JSON-null, never when it is merely falsy: an
@@ -325,6 +335,14 @@ def _discover_spec(data: dict) -> DiscoverAndMapSpec:
     deliverables list are *wrong* declarations, not omissions, and rewriting them to the shipped
     defaults would silently run a campaign the supervisor did not ask for. Every present value is
     passed through so :class:`DiscoverAndMapSpec` validates it and refuses the invalid ones by name.
+
+    The frozen question-policy block is resolved HERE (user ask > card guidelines > named
+    defaults, :func:`isar.schema.question_policy.resolve_policy`) — compile time is the only
+    moment policy may be decided, because the ``/2`` reader refuses to default anything. The
+    card lane is wired but EMPTY in 4.1 (no ``[questions]`` table exists in
+    ``card.policy.toml`` yet; owner names its keys later), and no NL-goal field maps onto a
+    policy override yet, so production resolves pure named defaults; both override lanes are
+    real and tested through this signature.
     """
     def declared(key, default):
         value = data.get(key)
@@ -337,7 +355,11 @@ def _discover_spec(data: dict) -> DiscoverAndMapSpec:
         intrinsic_omega_domain_meV=data["intrinsic_omega_domain_meV"],
         catalogue_profile=declared("catalogue_profile", DEFAULT_CATALOGUE_PROFILE),
         deliverables=declared("deliverables", DEFAULT_DELIVERABLES),
-        include_unknown=bool(data.get("include_unknown", True)))
+        # Default only when absent/null (the declared() rule): bool() laundered "false" into
+        # True and 0 into False, so an invalid explicit declaration never reached the
+        # schema's boolean check (PR #31 finding L).
+        include_unknown=declared("include_unknown", True),
+        resolved_policy=_qpolicy.resolve_policy(user_policy_ask, card_question_guidelines))
 
 
 # --------------------------------------------------------------------------- LLM-free path

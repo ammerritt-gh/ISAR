@@ -769,6 +769,30 @@ class ConditionSet:
         return (("temperature_K", self.temperature_K_binned), *self.other)
 
 
+def partition_key(sample, conditions, lattice_epoch, scan_ref: str,
+                  t_round: float | None) -> tuple:
+    """The #25/#28 partition identity: ``(sample, ConditionSet key, lattice_epoch)``.
+
+    ONE implementation (moved here from ``build._partition_key``, PR #31 finding K), shared by
+    the builder and by any reader that must attribute an arena to its exact partition —
+    ``completeness_relative`` scopes non-scoring arenas with it, so a quarantined scan at one
+    temperature can no longer block another condition's completeness. ``None`` is an ordinary
+    tuple-key value (H13: undeclared couples only with undeclared); an UNRESOLVED condition (a
+    declared temperature with no binning policy) is salted with the arena's own ``scan_ref``
+    so it couples with nothing — the #28 fail-closed-to-no-coupling arm.
+    """
+    condition = ConditionSet.of(tuple((k, v) for k, v in conditions or ()), t_round)
+    condition_key = condition.key if condition.resolved else (*condition.key, scan_ref)
+    return (sample, condition_key, lattice_epoch)
+
+
+def partition_id(key: tuple) -> str:
+    """A short, stable, JSON-safe id for a partition key — what ``Footprint.partition_id``
+    stores. The digest is the same canonical encoding every other scene fingerprint uses, so
+    two computations of the same partition always agree byte-for-byte."""
+    return fingerprint(list(key))
+
+
 @dataclass(frozen=True, slots=True)
 class PathTopology:
     """The ORDERED path the arenas were measured along, derived from the q set alone.

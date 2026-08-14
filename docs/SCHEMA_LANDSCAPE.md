@@ -206,11 +206,13 @@ the parser version and source format for provenance.
 are data ISAR does not control and must therefore keep reading. ISAR's internal contracts are
 pre-release and it does control them, so a superseded id is *refused*, not migrated. The campaign
 contract is `isar.campaign-program/1` (owner: `isar/schema/campaign_program.py`), whose steps carry
-`isar.campaign-step.targeted/1` and `isar.campaign-step.discover_and_map/1` payloads. It replaced
-`isar.objective/1`, `isar.objective/2`, `isar.objective-envelope/1`, and
-`isar.objective-envelope/2`, and reading any of those four raises an error naming the replacement.
-There is no compatibility reader by design: under DECISIONS H1 a shim for a retired pre-release
-contract is a defect, and H2 records the drop.
+`isar.campaign-step.targeted/1` and `isar.campaign-step.discover_and_map/2` payloads — the `/2`
+discover step (SCENE-4 PR 4.1, H17) requires every effective field explicitly, including the
+frozen `isar.question-policy/1` block, so a stored program can never acquire a read-time default.
+The refusal table now covers `isar.objective/1`, `isar.objective/2`, `isar.objective-envelope/1`,
+`isar.objective-envelope/2`, and `isar.campaign-step.discover_and_map/1`; reading any of them
+raises an error naming its replacement. There is no compatibility reader by design: under
+DECISIONS H1 a shim for a retired pre-release contract is a defect, and H2 records the drop.
 
 ---
 
