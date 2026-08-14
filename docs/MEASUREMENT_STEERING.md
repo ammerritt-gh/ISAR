@@ -760,8 +760,10 @@ declares an ordered list of steps; each carries its own step schema, `isar.campa
 for the per-point-tolerance objective above and `isar.campaign-step.discover_and_map/2` for
 target-free discovery (SCENE-4 PR 4.1: the `/2` reader requires every effective field explicitly —
 region kind, endpoints, spacing, ω domain, catalogue profile, deliverables, `include_unknown`, and
-the frozen `isar.question-policy/1` `resolved_policy` block the compiler resolves as user ask >
-card guidelines > named defaults; `/1` is retired by name and an untagged compact discover payload
+the frozen `isar.question-policy/2` `resolved_policy` block the compiler resolves as user ask >
+card guidelines > named defaults; PR 4.2a's `/2` question-policy contract added the `survey_order`
+and `parameter_precision_min_mass` TARGET fields and retired `isar.question-policy/1` by name.
+`discover_and_map/1` is likewise retired by name, and an untagged compact discover payload
 is authoring input the reader refuses toward the compiler). This build parses, validates and
 freezes both kinds, but **executes only a single `targeted` step**: a discovery step, or a program
 with more than one step, is a well-formed program this build declines to run and exits **7** —

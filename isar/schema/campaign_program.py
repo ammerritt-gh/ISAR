@@ -107,9 +107,10 @@ class DiscoverAndMapSpec:
             than discarded. Defaults true — a target-free campaign that silently drops what it
             cannot name is not doing discovery.
         resolved_policy: the REQUIRED frozen question-policy block
-            (``isar.question-policy/1``, SCENE-4 PR 4.1): effective thresholds, family
-            priorities, emergent-question policy, staleness policy, prompt defaults, per-field
-            provenance. The compiler resolves it (user ask > card guidelines > named defaults)
+            (``isar.question-policy/2``, SCENE-4 PR 4.1/4.2a): effective thresholds, family
+            priorities, emergent-question policy, survey order, staleness policy, prompt
+            defaults, per-field provenance. The compiler resolves it (user ask > card guidelines
+            > named defaults)
             and freezes it here; a program without one is refused with a recompile message,
             because a frozen program must never acquire read-time defaults (H1).
     """

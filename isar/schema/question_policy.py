@@ -1,9 +1,17 @@
-"""The question-policy defaults profile and its compile-time resolution (SCENE-4 PR 4.1).
+"""The question-policy defaults profile and its compile-time resolution (SCENE-4 PR 4.1, 4.2a).
 
 One named, versioned defaults profile — no magic numbers in predicate code (Topic 4). The goal
 compiler resolves effective values here and freezes them into the ``discover_and_map/2`` step's
 REQUIRED ``resolved_policy`` block; predicates read only the frozen program, never these module
 constants, so a mid-campaign change is a new compiled program revision, not drift.
+
+``isar.question-policy/2`` (PR 4.2a, commit A3) retired ``/1`` by name — a ``/1`` block is refused
+with a message naming ``/2`` and instructing recompile, never silently read. ``/2`` adds two TARGET
+fields: ``survey_order`` (``"placement_informed"`` default, the ruled uniform-survey user option)
+and ``parameter_precision_min_mass`` (a posterior-support threshold in ``(0, 1]``, read by a later
+commit). It also repairs ``DEFAULT_CATALOGUE_PROFILE`` to the real profile ID
+(``isar.analyze.catalogue.DEFAULT_PROFILE``) — the old ``isar.catalogue.inelastic-default/1`` string
+named no profile that ever existed.
 
 **Three authority postures**, recorded per field in the block's provenance (the epoch-4 ruling):
 
@@ -22,7 +30,10 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping
 
-QUESTION_POLICY_SCHEMA = "isar.question-policy/1"
+QUESTION_POLICY_SCHEMA = "isar.question-policy/2"
+#: Read as a refusal table, never a migration table (matches campaign_program's convention):
+#: a retired question-policy schema is refused by name, naming its replacement.
+RETIRED_QUESTION_POLICY_SCHEMAS = ("isar.question-policy/1",)
 DEFAULTS_PROFILE_ID = "isar.question-defaults"
 DEFAULTS_PROFILE_VERSION = 1
 
@@ -41,7 +52,16 @@ TARGET_DEFAULTS: dict[str, float] = {
     "emergent_open_min_mass": 0.5,
     "parameter_default_tolerance_meV": 0.5,
     "requested_zc_confidence": 0.9,
+    # 4.2a: matches the *_min_mass family default of 0.9. Read by A2 (later commit); A3 only
+    # ships it in the /2 contract.
+    "parameter_precision_min_mass": 0.9,
 }
+
+#: 4.2a: the ruled uniform-survey user option. TARGET authority, same precedence lane as the
+#: numeric thresholds above, but not a threshold (a string enum, not a number), so it is resolved
+#: and provenance-tracked alongside ``thresholds`` rather than inside it.
+SURVEY_ORDER_DEFAULT = "placement_informed"
+SUPPORTED_SURVEY_ORDERS = ("placement_informed", "uniform")
 
 #: Identity-bearing derivation constants — frozen for the program's life. The ω tile quantum
 #: for emergent subject identity and the completeness coverage grid; the q quantum is the /2
@@ -94,7 +114,11 @@ PROMPT_DEFAULTS: dict[str, str] = {
 # Discover compile defaults (moved here from goal_to_spec so every question-layer number has
 # one home; goal_to_spec re-exports them, so no call site churns).
 DEFAULT_DISCOVER_SPACING_RLU = 0.05
-DEFAULT_CATALOGUE_PROFILE = "isar.catalogue.inelastic-default/1"
+#: 4.2a profile-ID repair: the real profile ID (``isar.analyze.catalogue.DEFAULT_PROFILE``),
+#: copied rather than imported so the schema layer stays stdlib-only (a drift guard test in
+#: tests/schema/ pins the two constants equal). The old "isar.catalogue.inelastic-default/1"
+#: named no profile that ever existed; no alias is kept for it (H1).
+DEFAULT_CATALOGUE_PROFILE = "isar.catalogue.default/1"
 DEFAULT_DELIVERABLES: tuple[dict[str, Any], ...] = ({"kind": "phenomenon_map"},)
 
 _ALL_THRESHOLDS = {**TARGET_DEFAULTS, **IDENTITY_DEFAULTS, **CAPABILITY_DEFAULTS}
@@ -103,10 +127,17 @@ _UNIT_INTERVAL_FIELDS = {"confirm_presence_min_mass", "classify_identity_min_mas
                          "connect_track_min_mass", "mismatch_min_mass",
                          "emergent_open_min_mass", "requested_zc_confidence",
                          "maximum_justifiable_zc_confidence"}
+#: parameter_precision_min_mass is a posterior-support threshold in (0, 1] — 0 would mean "no
+#: support required at all", not a meaningful precision floor, so unlike the other min-mass
+#: fields it excludes the zero endpoint.
+_EXCLUSIVE_ZERO_UNIT_FIELDS = {"parameter_precision_min_mass"}
+#: Field names a caller may pass in ``user_ask``/``card_guidelines`` beyond the numeric
+#: thresholds — currently just the one non-numeric target field.
+_NON_THRESHOLD_TARGET_FIELDS = {"survey_order"}
 
 
 def _authority_of(name: str) -> str:
-    if name in TARGET_DEFAULTS:
+    if name in TARGET_DEFAULTS or name in _NON_THRESHOLD_TARGET_FIELDS:
         return AUTHORITY_TARGET
     if name in IDENTITY_DEFAULTS:
         return AUTHORITY_IDENTITY
@@ -119,12 +150,22 @@ def _check_value(name: str, value: Any, where: str) -> float:
     v = float(value)
     if not math.isfinite(v):
         raise ValueError(f"{where}: {name} must be finite")
-    if name in _UNIT_INTERVAL_FIELDS:
+    if name in _EXCLUSIVE_ZERO_UNIT_FIELDS:
+        if not 0.0 < v <= 1.0:
+            raise ValueError(f"{where}: {name} must be within (0, 1], got {v}")
+    elif name in _UNIT_INTERVAL_FIELDS:
         if not 0.0 <= v <= 1.0:
             raise ValueError(f"{where}: {name} must be within [0, 1], got {v}")
     elif v <= 0.0:
         raise ValueError(f"{where}: {name} must be positive, got {v}")
     return v
+
+
+def _check_survey_order(value: Any, where: str) -> str:
+    if value not in SUPPORTED_SURVEY_ORDERS:
+        raise ValueError(f"{where}: survey_order must be one of {SUPPORTED_SURVEY_ORDERS}, "
+                         f"got {value!r}")
+    return value
 
 
 def resolve_policy(user_ask: Mapping[str, Any] | None = None,
@@ -144,8 +185,9 @@ def resolve_policy(user_ask: Mapping[str, Any] | None = None,
     """
     user = dict(user_ask or {})
     card = dict(card_guidelines or {})
+    allowed_fields = set(_ALL_THRESHOLDS) | _NON_THRESHOLD_TARGET_FIELDS
     for source_name, mapping in (("user ask", user), ("card guidelines", card)):
-        unknown = sorted(set(mapping) - set(_ALL_THRESHOLDS))
+        unknown = sorted(set(mapping) - allowed_fields)
         if unknown:
             raise ValueError(f"{source_name} names unknown question-policy fields: {unknown}")
 
@@ -170,12 +212,21 @@ def resolve_policy(user_ask: Mapping[str, Any] | None = None,
         thresholds[name] = value
         provenance[name] = {"source": source, "authority": authority}
 
+    survey_order, survey_source = SURVEY_ORDER_DEFAULT, "default"
+    if "survey_order" in card:
+        survey_order, survey_source = _check_survey_order(card["survey_order"],
+                                                           "card guidelines"), "card"
+    if "survey_order" in user:
+        survey_order, survey_source = _check_survey_order(user["survey_order"], "user ask"), "user"
+    provenance["survey_order"] = {"source": survey_source, "authority": AUTHORITY_TARGET}
+
     block = {
         "schema": QUESTION_POLICY_SCHEMA,
         "profile": {"id": DEFAULTS_PROFILE_ID, "version": DEFAULTS_PROFILE_VERSION},
         "thresholds": thresholds,
         "priorities": dict(FAMILY_PRIORITIES),
         "emergent_question_policy": "open_in_domain",
+        "survey_order": survey_order,
         "staleness_policy": {"mode": "synchronous", "lag": 0},
         "prompt_defaults": dict(PROMPT_DEFAULTS),
         "provenance": provenance,
@@ -193,16 +244,21 @@ def validate_resolved_block(block: Any, where: str = "resolved_policy") -> None:
     """
     if not isinstance(block, Mapping):
         raise ValueError(f"{where} must be an object")
-    if block.get("schema") != QUESTION_POLICY_SCHEMA:
+    schema = block.get("schema")
+    if schema in RETIRED_QUESTION_POLICY_SCHEMAS:
+        raise ValueError(
+            f"{where}: {schema!r} was retired by {QUESTION_POLICY_SCHEMA!r} and is not "
+            f"readable; recompile the campaign with `isar drive --goal ... --compile-only`")
+    if schema != QUESTION_POLICY_SCHEMA:
         raise ValueError(f"{where} must declare schema {QUESTION_POLICY_SCHEMA!r}, got "
-                         f"{block.get('schema')!r}")
+                         f"{schema!r}")
     profile = block.get("profile")
     if not isinstance(profile, Mapping) or not isinstance(profile.get("id"), str) \
             or not isinstance(profile.get("version"), int):
         raise ValueError(f"{where} needs a profile {{id: str, version: int}}")
 
     allowed = {"schema", "profile", "thresholds", "priorities", "emergent_question_policy",
-               "staleness_policy", "prompt_defaults", "provenance"}
+               "survey_order", "staleness_policy", "prompt_defaults", "provenance"}
     unknown = sorted(set(block) - allowed)
     if unknown:
         raise ValueError(f"{where} has unknown fields: {unknown}")
@@ -234,6 +290,11 @@ def validate_resolved_block(block: Any, where: str = "resolved_policy") -> None:
         raise ValueError(f"{where}: emergent_question_policy {emergent!r} is not supported by "
                          f"this build (supported: {SUPPORTED_EMERGENT_POLICIES}); refusing "
                          "rather than accepting and ignoring it")
+    survey_order = block.get("survey_order")
+    if survey_order not in SUPPORTED_SURVEY_ORDERS:
+        raise ValueError(f"{where}: survey_order {survey_order!r} is not supported by this "
+                         f"build (supported: {SUPPORTED_SURVEY_ORDERS}); refusing rather than "
+                         "accepting and ignoring it")
     staleness = block.get("staleness_policy")
     if not isinstance(staleness, Mapping) or set(staleness) != {"mode", "lag"}:
         raise ValueError(f"{where}.staleness_policy must be {{mode, lag}}")
@@ -256,8 +317,10 @@ def validate_resolved_block(block: Any, where: str = "resolved_policy") -> None:
                          f"supported (supported: {SUPPORTED_TIMEOUT_BEHAVIOUR})")
 
     provenance = block.get("provenance")
-    if not isinstance(provenance, Mapping) or set(provenance) != set(_ALL_THRESHOLDS):
-        raise ValueError(f"{where}.provenance must record every threshold field")
+    if not isinstance(provenance, Mapping) or \
+            set(provenance) != set(_ALL_THRESHOLDS) | _NON_THRESHOLD_TARGET_FIELDS:
+        raise ValueError(f"{where}.provenance must record every threshold, identity, and "
+                         f"capability field plus {sorted(_NON_THRESHOLD_TARGET_FIELDS)}")
     for name, record in provenance.items():
         if not isinstance(record, Mapping) or set(record) != {"source", "authority"}:
             raise ValueError(f"{where}.provenance[{name!r}] must be {{source, authority}}")
