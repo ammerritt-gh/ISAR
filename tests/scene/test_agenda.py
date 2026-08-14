@@ -41,7 +41,8 @@ def confirmed_scene(posterior=0.95, omega=5.0):
         footprints=[fp("e:1:d", 2.0)],
         clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], posterior),
                                       alt([("e:1:d", "B")], 1.0 - posterior)])],
-        sample_knowledge={"zone_period": 1.0, "dispersion_slope_max": 10.0})
+        sample_knowledge={"zone_period": 1.0, "dispersion_slope_max": 10.0,
+                          "lattice_epoch": 1})
 
 
 def derive(scene, step_payload=None, **kw):
@@ -206,7 +207,8 @@ def test_connect_track_chains_from_classified_answers():
                                       alt([("e:1:d", "B")], 0.05)], cluster_id="c0"),
                   cluster(["e:2:d"], [alt([("e:2:d", "A")], 0.95),
                                       alt([("e:2:d", "B")], 0.05)], cluster_id="c1")],
-        sample_knowledge={"zone_period": 1.0, "dispersion_slope_max": 10.0})
+        sample_knowledge={"zone_period": 1.0, "dispersion_slope_max": 10.0,
+                          "lattice_epoch": 1})
     revision = derive(scene)
     tracks = by_family(revision, "ConnectTrack")
     assert len(tracks) == 1
@@ -244,6 +246,68 @@ def test_duplicate_question_ids_refuse_derivation_artifacts():
         _assert_unique([spec, spec])
 
 
+def test_a_diagonal_discovery_path_refuses_loudly():
+    """Finding G: the scalar path projection cannot represent a path varying in two
+    components; scalarizing it would leave DiscoverRegion forever unable to complete."""
+    with pytest.raises(ValueError, match="varies in more than one reciprocal component"):
+        derive(confirmed_scene(), step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 1.0, 0.0)))
+
+
+def test_parallel_paths_with_one_axis_interval_are_different_subjects():
+    scene = confirmed_scene()
+    on_k0 = derive(scene, step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0)))
+    on_k1 = derive(scene, step(q_start=(2.0, 1.0, 0.0), q_end=(3.0, 1.0, 0.0)))
+    ids = lambda revision: {s["question_id"] for s in revision.payload["specs"]}
+    assert ids(on_k0).isdisjoint(ids(on_k1))
+
+
+def test_declared_zone_anchors_stay_inert_in_an_incompatible_lattice_frame():
+    """Finding H: current-frame folds must not open questions in a partition measured under
+    a different lattice epoch — same numeric HKL, unproven physics."""
+    p2 = "b" * 64
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.0,)), cand("B")], epoch=1),
+                      obs("e:2:d", [cand("A", omegas=(5.0,)), cand("B")], epoch=2)],
+        footprints=[fp("e:1:d", 2.0), fp("e:2:d", 2.0, partition=p2)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.95),
+                                      alt([("e:1:d", "B")], 0.05)], cluster_id="c0"),
+                  cluster(["e:2:d"], [alt([("e:2:d", "A")], 0.95),
+                                      alt([("e:2:d", "B")], 0.05)], cluster_id="c1")],
+        sample_knowledge={"zone_period": 1.0, "lattice_epoch": 1})
+    revision = derive(scene)
+    anchored_partitions = {s["subject"]["partition_id"]
+                           for s in by_family(revision, "ConfirmPresence")
+                           if s["subject"]["anchor"] is not None}
+    assert anchored_partitions == {P1}
+    inert = [detail for n, detail in map(tuple, revision.payload["derivation_notes"])
+             if n == "anchored_openers_inert"]
+    assert len(inert) == 1 and p2 in inert[0]
+
+
+def test_undeclared_epochs_couple_symmetrically_for_anchors():
+    """H13's symmetric rule: knowledge with NO declared epoch applies to members with NO
+    declared epoch (None == None), while a corrupt partition with no embedded members stays
+    inert — fail closed, never silently compatible."""
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.0,)), cand("B")], epoch=None)],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.95),
+                                      alt([("e:1:d", "B")], 0.05)])],
+        sample_knowledge={"zone_period": 1.0})       # no lattice_epoch declared
+    revision = derive(scene)
+    assert [s["subject"]["anchor"] for s in by_family(revision, "ConfirmPresence")
+            if s["subject"]["anchor"] is not None] == [2.0, 3.0]
+
+
+def test_the_agenda_embeds_its_complete_policy_block():
+    """Finding I: a stored agenda explains who chose every effective value without
+    rejoining the program document."""
+    step_payload = step()
+    revision = derive(confirmed_scene(), step_payload)
+    assert revision.payload["resolved_policy"] == step_payload["resolved_policy"]
+    assert "provenance" in revision.payload["resolved_policy"]
+
+
 def test_two_partitions_fan_out_and_never_pool():
     p2 = "b" * 64
     scene = payload(
@@ -254,7 +318,7 @@ def test_two_partitions_fan_out_and_never_pool():
                                       alt([("e:1:d", "B")], 0.05)], cluster_id="c0"),
                   cluster(["e:2:d"], [alt([("e:2:d", "A")], 0.95),
                                       alt([("e:2:d", "B")], 0.05)], cluster_id="c1")],
-        sample_knowledge={"zone_period": 1.0})
+        sample_knowledge={"zone_period": 1.0, "lattice_epoch": 1})
     revision = derive(scene)
     partitions = {s["subject"]["partition_id"] for s in revision.payload["specs"]}
     assert partitions == {P1, p2}
@@ -533,7 +597,7 @@ def test_a_fully_surveyed_blank_campaign_reaches_complete():
             empty_arena("e:3:d", 2.8, "c2"), empty_arena("e:4:d", 3.0, "c3")]
     scene = payload(observations=[r[0] for r in rows], footprints=[r[1] for r in rows],
                     clusters=[r[2] for r in rows],
-                    sample_knowledge={"zone_period": 1.0})
+                    sample_knowledge={"zone_period": 1.0, "lattice_epoch": 1})
     revision = derive(scene)
     statuses = {a["status"] for a in revision.payload["assessments"]}
     assert statuses == {"answered"}
@@ -550,7 +614,7 @@ def test_footprint_quantified_nulls_feed_completeness_through_closed_questions()
         footprints=[fp("e:1:d", 2.0)],
         clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.02),
                                       alt([("e:1:d", "B")], 0.98)])],
-        sample_knowledge={"zone_period": 1.0})
+        sample_knowledge={"zone_period": 1.0, "lattice_epoch": 1})
     revision = derive(empty)
     anchored = [s for s in by_family(revision, "ConfirmPresence")
                 if s["subject"]["anchor"] == 2.0]

@@ -89,11 +89,26 @@ class AgendaRevision:
 # Derivation
 # ----------------------------------------------------------------------------
 def _region_axis_interval(step_payload: dict) -> tuple[float, float]:
-    """The path region as a scalar interval along its dominant reciprocal axis."""
+    """The path region as a scalar interval along its one varying reciprocal axis.
+
+    A path varying in MORE than one component is REFUSED loudly (PR #31 finding G): the
+    scene's footprints carry only a single-axis ``axis_coordinate``, so a diagonal path would
+    match no footprint and its DiscoverRegion question could never complete — a campaign
+    silently impossible to finish. The general path-projection representation is 4.2+ work,
+    named here rather than faked.
+    """
     region = step_payload["region"]
     start, end = region["q_start"], region["q_end"]
     deltas = [abs(b - a) for a, b in zip(start, end)]
     axis = deltas.index(max(deltas))
+    off_axis = [component for i, component in enumerate(deltas)
+                if i != axis and component > 1e-9]
+    if off_axis:
+        raise ValueError(
+            f"discovery path {tuple(start)} -> {tuple(end)} varies in more than one "
+            "reciprocal component; the question layer's scalar path projection cannot "
+            "represent it (general path projection is a SCENE-4.2+ representation) — "
+            "refusing rather than scalarizing to the dominant axis")
     lo, hi = start[axis], end[axis]
     return (lo, hi) if lo <= hi else (hi, lo)
 
@@ -218,7 +233,13 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
     domain = tuple(step_payload["energy"]["intrinsic_omega_domain_meV"])
     include_unknown = step_payload["include_unknown"] is True
     scene_digest = fingerprint(scene_payload)
+    endpoints = "({})->({})".format(
+        ",".join(f"{c:.9g}" for c in step_payload["region"]["q_start"]),
+        ",".join(f"{c:.9g}" for c in step_payload["region"]["q_end"]))
+    # The FULL endpoints join the frame (finding G): two parallel paths share a dominant-axis
+    # interval but are different physics, so they must be different subjects.
     frame = (("catalogue_profile", step_payload["catalogue_profile"]),
+             ("path_endpoints", endpoints),
              ("program_region", f"{region[0]}..{region[1]}"),
              ("defaults_profile",
               f"{policy['profile']['id']}/{policy['profile']['version']}"))
@@ -229,8 +250,25 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
     footprints = scene_payload.get("footprints") or ()
     clusters = scene_payload.get("clusters") or ()
 
+    # Declared zone geometry belongs to ONE lattice frame (finding H, mirroring the 4.0
+    # epoch-scoped knowledge factors): anchors open only in partitions whose members'
+    # lattice epoch matches the declared knowledge's — an incompatible or unverifiable frame
+    # stays inert rather than inheriting current-frame folds.
+    declared_anchors = _zc_anchors(scene_payload, region)
+    declared_epoch = (scene_payload.get("sample_knowledge") or {}).get("lattice_epoch")
+    partition_of_ref = {fp["scan_ref"]: fp.get("partition_id") for fp in footprints}
+    epoch_of_pid: dict = {}
+    for observation in scene_payload.get("observations") or ():
+        pid_of = partition_of_ref.get(observation["scan_ref"])
+        if pid_of is not None:
+            epoch_of_pid.setdefault(pid_of, observation.get("lattice_epoch"))
+
     specs: list[QuestionSpec] = []
     notes: list[tuple] = []
+    if not declared_anchors:
+        notes.append(("predetermined_openers_inert",
+                      "no zone_period declared; anchored ConfirmPresence openers cannot "
+                      "be placed from declared knowledge"))
     for pid in partitions:
         # A scene with no partitions yet is an unmeasured workspace: the program-scoped
         # questions exist from scan one (Topic 5 — the question layer is authoritative from
@@ -244,11 +282,13 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
             priority=priorities["DiscoverRegion"])
         specs.append(discover)
 
-        anchors = _zc_anchors(scene_payload, region)
-        if not anchors:
-            notes.append(("predetermined_openers_inert",
-                          "no zone_period declared; anchored ConfirmPresence openers cannot "
-                          "be placed from declared knowledge"))
+        frame_compatible = pid is None or epoch_of_pid.get(pid, "missing") == declared_epoch
+        anchors = declared_anchors if frame_compatible else ()
+        if declared_anchors and not frame_compatible:
+            notes.append(("anchored_openers_inert",
+                          f"partition {pid}: lattice epoch "
+                          f"{epoch_of_pid.get(pid, 'unknown')!r} does not match the declared "
+                          f"knowledge frame {declared_epoch!r}"))
         for anchor in anchors:
             specs.append(_spec(
                 "ConfirmPresence", "structural_presence",
@@ -425,6 +465,10 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
             "program_fingerprint": program_fingerprint,
             "step_id": step_id,
             "scene_digest": scene_digest,
+            # The COMPLETE frozen policy block, not only its fingerprint (finding I): a
+            # stored agenda must explain who chose every effective value in its predicates'
+            # parameters without rejoining the program document.
+            "resolved_policy": json.loads(json.dumps(policy)),
             "resolved_policy_fingerprint": fingerprint(policy),
             "derivation_manifest": manifest,
             "derivation_notes": [list(n) for n in notes],
