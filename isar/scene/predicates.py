@@ -284,6 +284,25 @@ def _structural_presence(spec, scene_payload, prior) -> QuestionAssessment:
                               answer=(("present", verdict == "yes"),), blockers=blockers)
 
 
+def identity_hypothesis_classes(subject, scene_payload: Mapping) -> frozenset:
+    """The identity classes ClassifyIdentity could answer from for ``subject``, over the SAME
+    subject-matched rows :func:`_identity_resolved` evaluates (same :func:`match_subject`
+    scoping, same identity-set rule: a candidate counts only with an explicit, non-``None``
+    ``identity`` AND a placeable mode). One shared definition of "the scene can represent this
+    answer" — a partition-wide gate and a tile-scoped evaluator must never disagree on it
+    (SCENE-4.2a A6). An empty result means ClassifyIdentity would open and never close.
+    """
+    match = match_subject(subject, scene_payload)
+    if not match.cluster_indices:
+        return frozenset()
+    candidates = _candidates_by_ref(scene_payload)
+    return frozenset(
+        row["identity"]
+        for ref in match.scan_refs
+        for row in candidates.get(ref, {}).values()
+        if row.get("identity") is not None and _has_mode(row))
+
+
 def _identity_resolved(spec, scene_payload, prior) -> QuestionAssessment:
     """ClassifyIdentity: answers ONLY from explicit identity alternatives. ``identity=None``
     means "no identity semantics were assigned", never the physical unknown — it accrues to
@@ -306,11 +325,7 @@ def _identity_resolved(spec, scene_payload, prior) -> QuestionAssessment:
                     out.add(row.get("identity"))
         return out
 
-    classes = set()
-    for ref in refs:
-        for row in candidates.get(ref, {}).values():
-            if row.get("identity") is not None and _has_mode(row):
-                classes.add(row["identity"])
+    classes = identity_hypothesis_classes(spec.subject, scene_payload)
     if not classes:
         return QuestionAssessment(
             question_id=spec.question_id, status="open",

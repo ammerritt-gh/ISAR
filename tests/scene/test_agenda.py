@@ -66,7 +66,13 @@ def assessment_of(revision, question_id):
 # Derivation shape
 # ----------------------------------------------------------------------------
 def test_the_agenda_opens_declared_anchor_questions_and_chains_on_confirmation():
-    revision = derive(confirmed_scene())
+    # SCENE-4.2a A6: ClassifyIdentity only opens where the scene can represent an answer, so
+    # this chaining test needs an explicit identity — see
+    # test_classify_identity_gate_suppresses_with_no_representable_identity below for the
+    # production-profile (identity=None everywhere) case this test used to conflate with.
+    scene = confirmed_scene()
+    scene["observations"][0]["candidates"][0]["identity"] = "acoustic"
+    revision = derive(scene)
     p = revision.payload
     families = {s["family"] for s in p["specs"]}
     assert {"DiscoverRegion", "ConfirmPresence", "ClassifyIdentity", "EstimateParameter",
@@ -82,6 +88,13 @@ def test_the_agenda_opens_declared_anchor_questions_and_chains_on_confirmation()
                 if s["subject"]["anchor"] is not None]
     assert sorted(s["subject"]["anchor"] for s in anchored) == [2.0, 3.0]
     assert all(s["subject"]["catalogue_class"] is None for s in anchored)
+    # Representability holds (the explicit "acoustic" identity) — the SCENE-4.2a A6 gate opens
+    # ClassifyIdentity, the evaluator can actually answer it, and no inert note is recorded.
+    classify = by_family(revision, "ClassifyIdentity")
+    assert len(classify) == 1
+    a = assessment_of(revision, classify[0]["question_id"])
+    assert a["status"] == "answered" and dict(a["answer"]) == {"identity": "acoustic"}
+    assert not any(n == "classify_identity_inert" for n, _ in map(tuple, p["derivation_notes"]))
     # The confirmed anchor chains: the omega0 estimate (open by ruling 1) and the ZC endpoint
     # question — which here honestly answers INCOMPATIBLE: the arena sits AT the fold and the
     # mode is at 5 meV, so under any declared slope the branch does not reach zero.
@@ -195,6 +208,10 @@ def test_presence_is_class_agnostic_and_identity_comes_from_classification():
     assert a["status"] == "answered" and dict(a["answer"]) == {"identity": "acoustic"}
     ids = [s["question_id"] for s in revision.payload["specs"]]
     assert len(ids) == len(set(ids))
+    # Representability holds here (an explicit identity is in the scene) — the SCENE-4.2a A6
+    # gate never fires, so no inert note is recorded.
+    assert not any(n == "classify_identity_inert"
+                   for n, _ in map(tuple, revision.payload["derivation_notes"]))
 
 
 def test_connect_track_chains_from_classified_answers():
@@ -634,6 +651,89 @@ def test_a_fully_surveyed_blank_campaign_reaches_complete():
     verdict = evaluate_agenda(revision.payload)
     assert verdict.state == "complete"
     assert verdict.blocking == ()
+
+
+def test_classify_identity_gate_suppresses_with_no_representable_identity():
+    """SCENE-4.2a A6 owner ruling: the production catalogue declares no identity-conditioned
+    priors (``_identity_candidates()`` returns ``()``), so every candidate carries
+    ``identity=None``. ClassifyIdentity must not open there — it would open and never close.
+    The confirmed phenomenon still maps: EstimateParameter still chains, and the derivation
+    records why no classify question exists."""
+    revision = derive(confirmed_scene())    # identity=None throughout, by default
+    assert not by_family(revision, "ClassifyIdentity")
+    notes = [(n, detail) for n, detail in map(tuple, revision.payload["derivation_notes"])
+             if n == "classify_identity_inert"]
+    assert notes and "identity_hypotheses_unavailable" in notes[0][1]
+    # Cheap debuggability (pre-commit Minor 4): the note names what was actually examined —
+    # confirmed_scene() has one arena with two candidates (A, B), both identity=None.
+    assert "1 scan ref" in notes[0][1] and "2 candidate" in notes[0][1]
+    # EstimateParameter chains from the confirmed ConfirmPresence directly, unaffected by the
+    # ClassifyIdentity gate.
+    assert by_family(revision, "EstimateParameter")
+
+
+def test_classify_identity_gate_is_tile_scoped_not_partition_wide():
+    """The Major pre-commit fix: representability must be judged over the SAME subject-matched
+    rows the evaluator scores (``isar.scene.predicates.identity_hypothesis_classes``), never
+    the whole partition. Two confirmed tiles share one partition; only Y carries an explicit
+    identity in ITS OWN matched rows. A partition-wide check would pass X too (Y's identity is
+    in the same partition) and open a ClassifyIdentity that could never close — exactly the
+    failure the gate exists to prevent."""
+    def arena(ref, coord, cid, identity):
+        return (obs(ref, [cand("A", omegas=(5.0,), identity=identity), cand("B")]),
+                fp(ref, coord),
+                cluster([ref], [alt([(ref, "A")], 1.0), alt([(ref, "B")], 0.0)], cluster_id=cid))
+    x = arena("e:x:d", 2.0, "cx", identity=None)          # tile [2.0, 2.5): no representable
+    y = arena("e:y:d", 3.0, "cy", identity="acoustic")    # tile [3.0, 3.5): representable
+    scene = payload(observations=[x[0], y[0]], footprints=[x[1], y[1]],
+                    clusters=[x[2], y[2]], sample_knowledge={"lattice_epoch": 1})
+    revision = derive(scene)
+    classify = by_family(revision, "ClassifyIdentity")
+    assert len(classify) == 1
+    assert tuple(classify[0]["subject"]["region_rlu"]) == (3.0, 3.5)
+    a = assessment_of(revision, classify[0]["question_id"])
+    assert a["status"] == "answered" and dict(a["answer"]) == {"identity": "acoustic"}
+    notes = [(n, detail) for n, detail in map(tuple, revision.payload["derivation_notes"])
+             if n == "classify_identity_inert"]
+    assert len(notes) == 1
+    assert "(2.0, 2.5)" in notes[0][1] and "identity_hypotheses_unavailable" in notes[0][1]
+
+
+def test_classify_identity_gate_maps_a_confirmed_phenomenon_and_still_completes():
+    """The reachability property for the gated case: a fully-surveyed campaign whose one
+    confirmed phenomenon carries no representable identity (and closes EstimateParameter via
+    a trusted A1 interval) still reaches a COMPLETE verdict — the missing classify family
+    never blocks completion."""
+    # Every arena confidently supports the SAME mode with the SAME trusted A1 interval: a
+    # continuous phenomenon spanning the surveyed region, densely enough surveyed to close
+    # DiscoverRegion, with no diluting cluster (a q-tile's EstimateParameter mass combines
+    # across every cluster overlapping that tile, so a low-confidence neighbour would tank it —
+    # an unrelated effect this fixture must not exercise).
+    def arena(ref, coord, cid):
+        return (obs(ref, [cand("A", omegas=(5.0,),
+                              mode_intervals=[trusted_interval(4.9, 5.1)]), cand("B")]),
+                fp(ref, coord),
+                cluster([ref], [alt([(ref, "A")], 1.0), alt([(ref, "B")], 0.0)], cluster_id=cid))
+    rows = [arena("e:1:d", 2.0, "c0"), arena("e:2:d", 2.4, "c1"),
+            arena("e:3:d", 2.8, "c2"), arena("e:4:d", 3.0, "c3")]
+    scene = payload(observations=[r[0] for r in rows], footprints=[r[1] for r in rows],
+                    clusters=[r[2] for r in rows],
+                    sample_knowledge={"lattice_epoch": 1})  # no zone_period: no anchors,
+                                                             # keeping the fixture to the gate
+    revision = derive(scene)
+    assert not by_family(revision, "ClassifyIdentity")
+    # ConnectTrack derives only from classify-ANSWERED classes (transitive gating,
+    # docs/SCENE_DESIGN.md §5): no ClassifyIdentity opened, so no track can either.
+    assert not by_family(revision, "ConnectTrack")
+    assert any(n == "classify_identity_inert"
+               for n, _ in map(tuple, revision.payload["derivation_notes"]))
+    presence = by_family(revision, "ConfirmPresence")
+    assert presence
+    assert all(assessment_of(revision, s["question_id"])["status"] == "answered"
+              and dict(assessment_of(revision, s["question_id"])["answer"]) == {"present": True}
+              for s in presence)
+    verdict = evaluate_agenda(revision.payload)
+    assert verdict.state == "complete"
 
 
 def test_footprint_quantified_nulls_feed_completeness_through_closed_questions():

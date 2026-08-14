@@ -42,10 +42,11 @@ from dataclasses import dataclass
 
 from .model import canonical_bytes, digest_bytes, fingerprint
 from .predicates import (
-    EVALUATORS, cluster_authority, combine_existential, evaluate_predicate, mass_interval)
+    EVALUATORS, cluster_authority, combine_existential, evaluate_predicate,
+    identity_hypothesis_classes, mass_interval)
 from .questions import (
     Blocker, PredicateDeclaration, QuestionAssessment, QuestionSpec, QuestionSubject,
-    scene_partitions, snap_tile, validate_dependency_dag)
+    match_subject, scene_partitions, snap_tile, validate_dependency_dag)
 from .store import RevisionStore, StoreResult, UNSET
 
 AGENDA_SCHEMA = "isar.agenda-revision/1"
@@ -53,7 +54,7 @@ AGENDA_STORE = RevisionStore("agenda", "isar.agenda-pointer/1", "agenda")
 TRANSITIONS_NAME = "transitions.jsonl"
 
 #: Bumping either re-derives every agenda (new digests) without minting new question IDs.
-OPENER_VERSION = 1
+OPENER_VERSION = 2
 MATCHER_VERSION = 1
 
 #: Declared generator references (4.2 binds them to the real registry; here they are strings).
@@ -372,13 +373,35 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
                 or dict(assessment.answer).get("present") is not True:
             continue
         subject = spec.subject
-        chained.append(_spec(
-            "ClassifyIdentity", "identity_resolved", subject.__class__(
-                kind="phenomenon", partition_id=subject.partition_id,
-                region_rlu=subject.region_rlu, omega_band_meV=subject.omega_band_meV,
-                frame=subject.frame),
-            {"min_mass": thresholds["classify_identity_min_mass"]},
-            priority=priorities["ClassifyIdentity"], deps=(spec.question_id,)))
+        # Representability gate (owner ruling, SCENE-4.2a A6): the production catalogue
+        # declares no identity-conditioned priors, so every candidate carries identity=None
+        # and ClassifyIdentity would open and never close. Open it only where the scene can
+        # actually answer — SAME scoping and SAME identity-set rule the evaluator itself uses
+        # (isar.scene.predicates.identity_hypothesis_classes), so a tile whose OWN matched
+        # rows carry no identity never opens even when a sibling tile in the same partition
+        # does (a partition-wide check would pass here and then open forever). Otherwise the
+        # phenomenon still maps as real-but-unclassified: no question opens, and a note
+        # records why, naming the same blocker word the evaluator uses for the symmetric
+        # in-question case.
+        classify_subject = subject.__class__(
+            kind="phenomenon", partition_id=subject.partition_id,
+            region_rlu=subject.region_rlu, omega_band_meV=subject.omega_band_meV,
+            frame=subject.frame)
+        if identity_hypothesis_classes(classify_subject, scene_payload):
+            chained.append(_spec(
+                "ClassifyIdentity", "identity_resolved", classify_subject,
+                {"min_mass": thresholds["classify_identity_min_mass"]},
+                priority=priorities["ClassifyIdentity"], deps=(spec.question_id,)))
+        else:
+            examined_refs = match_subject(classify_subject, scene_payload).scan_refs
+            examined_candidates = sum(len(candidates_of.get(ref, {}))
+                                      for ref in examined_refs)
+            notes.append(("classify_identity_inert",
+                          f"partition {subject.partition_id} tile {subject.region_rlu} "
+                          f"(confirmed by {spec.question_id}): identity_hypotheses_unavailable "
+                          f"— examined {len(examined_refs)} scan ref(s) / "
+                          f"{examined_candidates} candidate(s), none declares an explicit "
+                          "identity"))
         chained.append(_spec(
             "EstimateParameter", "parameter_within_tolerance", subject.__class__(
                 kind="parameter", partition_id=subject.partition_id,
