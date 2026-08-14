@@ -30,18 +30,26 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+from . import question_policy as _policy
+
 PROGRAM_SCHEMA = "isar.campaign-program/1"
 TARGETED_STEP_SCHEMA = "isar.campaign-step.targeted/1"
-DISCOVER_STEP_SCHEMA = "isar.campaign-step.discover_and_map/1"
+DISCOVER_STEP_SCHEMA = "isar.campaign-step.discover_and_map/2"
 STEP_KINDS = ("targeted", "discover_and_map")
 
-#: Every schema string this contract replaced. Read as a *refusal* table, never a migration table.
-RETIRED_SCHEMAS = (
-    "isar.objective/1",
-    "isar.objective/2",
-    "isar.objective-envelope/1",
-    "isar.objective-envelope/2",
-)
+#: Every schema string a current contract replaced, mapped to its replacement. Read as a
+#: *refusal* table, never a migration table — the mapping exists so the refusal names the
+#: correct successor (a retired step schema was not retired "by" the program schema).
+RETIRED_SCHEMA_REPLACEMENTS = {
+    "isar.objective/1": PROGRAM_SCHEMA,
+    "isar.objective/2": PROGRAM_SCHEMA,
+    "isar.objective-envelope/1": PROGRAM_SCHEMA,
+    "isar.objective-envelope/2": PROGRAM_SCHEMA,
+    # SCENE-4 PR 4.1: the /1 discover step froze no question policy, so reading one today
+    # would acquire read-time defaults — exactly what H1 forbids.
+    "isar.campaign-step.discover_and_map/1": DISCOVER_STEP_SCHEMA,
+}
+RETIRED_SCHEMAS = tuple(RETIRED_SCHEMA_REPLACEMENTS)
 
 
 class ProgramError(ValueError):
@@ -50,8 +58,9 @@ class ProgramError(ValueError):
 
 def retired_schema_error(schema: str, where: str) -> ProgramError:
     """The refusal for a document naming a contract this program replaced (H1)."""
+    replacement = RETIRED_SCHEMA_REPLACEMENTS.get(schema, PROGRAM_SCHEMA)
     return ProgramError(
-        f"{where}: {schema!r} was retired by {PROGRAM_SCHEMA!r} (DECISIONS H1) and is not readable; "
+        f"{where}: {schema!r} was retired by {replacement!r} (DECISIONS H1) and is not readable; "
         f"recompile the campaign with `isar drive --goal ...  --compile-only <program.json>`")
 
 
@@ -97,6 +106,12 @@ class DiscoverAndMapSpec:
         include_unknown: whether phenomena matching nothing in the catalogue are reported rather
             than discarded. Defaults true — a target-free campaign that silently drops what it
             cannot name is not doing discovery.
+        resolved_policy: the REQUIRED frozen question-policy block
+            (``isar.question-policy/1``, SCENE-4 PR 4.1): effective thresholds, family
+            priorities, emergent-question policy, staleness policy, prompt defaults, per-field
+            provenance. The compiler resolves it (user ask > card guidelines > named defaults)
+            and freezes it here; a program without one is refused with a recompile message,
+            because a frozen program must never acquire read-time defaults (H1).
     """
 
     q_start: tuple[float, float, float]
@@ -104,6 +119,7 @@ class DiscoverAndMapSpec:
     maximum_initial_spacing_rlu: float
     intrinsic_omega_domain_meV: tuple[float, float]
     catalogue_profile: str
+    resolved_policy: Mapping[str, Any]
     deliverables: tuple[Mapping[str, Any], ...] = ()
     include_unknown: bool = True
     region_kind: str = "path"
@@ -166,6 +182,16 @@ class DiscoverAndMapSpec:
         if not isinstance(self.include_unknown, bool):
             raise ProgramError("include_unknown must be a boolean")
 
+        try:
+            _policy.validate_resolved_block(self.resolved_policy, "resolved_policy")
+        except ValueError as error:
+            # Includes the missing-block case (None is not an object). ProgramError IS a
+            # ValueError, so existing callers' handling is unchanged.
+            raise ProgramError(
+                f"{DISCOVER_STEP_SCHEMA} requires a frozen question-policy block: {error}. "
+                "Recompile the campaign with `isar drive --goal ... --compile-only`") from error
+        s(self, "resolved_policy", copy.deepcopy(dict(self.resolved_policy)))
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": DISCOVER_STEP_SCHEMA,
@@ -177,26 +203,37 @@ class DiscoverAndMapSpec:
             "catalogue_profile": self.catalogue_profile,
             "deliverables": [copy.deepcopy(dict(d)) for d in self.deliverables],
             "include_unknown": self.include_unknown,
+            "resolved_policy": copy.deepcopy(dict(self.resolved_policy)),
         }
 
     @classmethod
     def from_dict(cls, d: Any, *, where: str = "discover_and_map") -> "DiscoverAndMapSpec":
+        """Read a FROZEN ``/2`` payload. Every effective field is required explicitly.
+
+        The compiler fills omitted authoring values BEFORE writing a ``/2`` document
+        (:func:`isar.drive.supervisor.goal_to_spec.goal_to_program`); the reader defaults
+        nothing, because a stored program that acquires a future software default at read
+        time is frozen in name only (H1). An untagged compact payload is authoring input,
+        not a frozen step — it is refused toward the compiler rather than interpreted.
+        """
         if not isinstance(d, Mapping):
             raise ProgramError(f"{where} payload must be an object")
         schema = d.get("schema")
         if schema in RETIRED_SCHEMAS:
             raise retired_schema_error(str(schema), where)
-        if schema is not None and schema != DISCOVER_STEP_SCHEMA:
+        if schema != DISCOVER_STEP_SCHEMA:
             raise ProgramError(
-                f"{where} payload schema must be {DISCOVER_STEP_SCHEMA!r}, got {schema!r}")
+                f"{where} payload schema must be {DISCOVER_STEP_SCHEMA!r}, got {schema!r}; "
+                "compact discover authoring is compiled, never read — recompile with "
+                "`isar drive --goal ... --compile-only`")
         _only(d, {"schema", "region", "energy", "catalogue_profile", "deliverables",
-                  "include_unknown"}, where)
+                  "include_unknown", "resolved_policy"}, where)
         region = d.get("region")
         if not isinstance(region, Mapping):
             raise ProgramError(f"{where} needs a 'region' object")
         _only(region, {"kind", "q_start", "q_end", "maximum_initial_spacing_rlu"},
               f"{where}.region")
-        for required in ("q_start", "q_end", "maximum_initial_spacing_rlu"):
+        for required in ("kind", "q_start", "q_end", "maximum_initial_spacing_rlu"):
             if required not in region:
                 raise ProgramError(f"{where}.region needs {required!r}")
         energy = d.get("energy")
@@ -206,20 +243,28 @@ class DiscoverAndMapSpec:
         _only(energy, {"intrinsic_omega_domain_meV"}, f"{where}.energy")
         if "intrinsic_omega_domain_meV" not in energy:
             raise ProgramError(f"{where}.energy needs 'intrinsic_omega_domain_meV'")
-        if "catalogue_profile" not in d:
-            raise ProgramError(f"{where} needs a 'catalogue_profile' reference")
+        # The full effective field set, no read-time defaulting: a /2 document missing any of
+        # these is refused, not completed.
+        for required in ("catalogue_profile", "deliverables", "include_unknown",
+                         "resolved_policy"):
+            if required not in d:
+                raise ProgramError(
+                    f"{where} ({DISCOVER_STEP_SCHEMA}) requires {required!r} explicitly; a "
+                    "frozen program never acquires read-time defaults — recompile with "
+                    "`isar drive --goal ... --compile-only`")
         return cls(
             q_start=region["q_start"],
             q_end=region["q_end"],
             maximum_initial_spacing_rlu=region["maximum_initial_spacing_rlu"],
             intrinsic_omega_domain_meV=energy["intrinsic_omega_domain_meV"],
             catalogue_profile=d["catalogue_profile"],
+            resolved_policy=d["resolved_policy"],
             # Present-but-invalid must reach __post_init__: ``or ()`` turned a null or an object
             # into a valid empty tuple, so a malformed program round-tripped as a *different*
             # valid program instead of being refused.
-            deliverables=d["deliverables"] if "deliverables" in d else (),
-            include_unknown=d.get("include_unknown", True),
-            region_kind=region.get("kind", "path"),
+            deliverables=d["deliverables"],
+            include_unknown=d["include_unknown"],
+            region_kind=region["kind"],
         )
 
 

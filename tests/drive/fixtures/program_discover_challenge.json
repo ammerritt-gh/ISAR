@@ -6,7 +6,7 @@
       "id": "discover-1",
       "kind": "discover_and_map",
       "payload": {
-        "schema": "isar.campaign-step.discover_and_map/1",
+        "schema": "isar.campaign-step.discover_and_map/2",
         "region": {
           "kind": "path",
           "q_start": [
@@ -33,7 +33,91 @@
             "kind": "phenomenon_map"
           }
         ],
-        "include_unknown": true
+        "include_unknown": true,
+        "resolved_policy": {
+          "schema": "isar.question-policy/1",
+          "profile": {
+            "id": "isar.question-defaults",
+            "version": 1
+          },
+          "thresholds": {
+            "confirm_presence_min_mass": 0.9,
+            "classify_identity_min_mass": 0.9,
+            "connect_track_min_mass": 0.9,
+            "mismatch_min_mass": 0.9,
+            "emergent_open_min_mass": 0.5,
+            "parameter_default_tolerance_meV": 0.5,
+            "requested_zc_confidence": 0.9,
+            "emergent_omega_tile_meV": 1.0,
+            "parameter_statistical_floor_meV": 0.2,
+            "maximum_justifiable_zc_confidence": 0.0,
+            "min_effective_exposure": 1.0
+          },
+          "priorities": {
+            "DiscoverRegion": 0,
+            "ConfirmPresence": 1,
+            "ClassifyIdentity": 2,
+            "ConnectTrack": 3,
+            "TestModelMismatch": 3,
+            "EstimateParameter": 4,
+            "VerifyCompleteness": 5
+          },
+          "emergent_question_policy": "open_in_domain",
+          "staleness_policy": {
+            "mode": "synchronous",
+            "lag": 0
+          },
+          "prompt_defaults": {
+            "unresolvable_closure": "accept_close",
+            "timeout_behaviour": "apply_default"
+          },
+          "provenance": {
+            "confirm_presence_min_mass": {
+              "source": "default",
+              "authority": "target"
+            },
+            "classify_identity_min_mass": {
+              "source": "default",
+              "authority": "target"
+            },
+            "connect_track_min_mass": {
+              "source": "default",
+              "authority": "target"
+            },
+            "mismatch_min_mass": {
+              "source": "default",
+              "authority": "target"
+            },
+            "emergent_open_min_mass": {
+              "source": "default",
+              "authority": "target"
+            },
+            "parameter_default_tolerance_meV": {
+              "source": "default",
+              "authority": "target"
+            },
+            "requested_zc_confidence": {
+              "source": "default",
+              "authority": "target"
+            },
+            "emergent_omega_tile_meV": {
+              "source": "default",
+              "authority": "identity_constant"
+            },
+            "parameter_statistical_floor_meV": {
+              "source": "default",
+              "authority": "capability"
+            },
+            "maximum_justifiable_zc_confidence": {
+              "source": "default",
+              "authority": "capability"
+            },
+            "min_effective_exposure": {
+              "source": "default",
+              "authority": "capability"
+            }
+          }
+        }
       }
     }
   ]
