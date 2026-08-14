@@ -477,7 +477,89 @@ def _component_descriptors(label, hyp) -> list:
     return sorted(out, key=lambda d: (d["slot"] is None, d["slot"] or 0, d["kind"]))
 
 
-def _candidate_rows(scores, fits, by_hyp) -> list | None:
+def _mode_interval_item(item: dict | None, values, source_quantity: str) -> dict | None:
+    """Project one persisted ``isar.interval_semantics/1`` quantity item into the JSON-safe
+    ``mode_intervals`` cell (SCENE-4 PR 4.2a), or ``None`` when no real interval survives the
+    writer's own availability flag. Every field is copied straight off ``item``/``values`` —
+    nothing here is derived or invented."""
+    if item is None or values is None or not item.get("availability"):
+        return None
+    return {
+        "low": float(values[0]), "center": float(values[1]), "high": float(values[2]),
+        # Strict access (PR 4.2a review, Minor finding 3): every writer that ever builds this
+        # item (``errors._interval_semantics_for``'s ``common`` dict, ``_outcome_interval_
+        # semantics``'s ``unavailable()`` helper) sets ``nominal_level`` unconditionally — an
+        # item reaching here without one is a corrupt record, not a legitimately-optional field,
+        # and minting 0.68 for it would be exactly the invented semantics this commit refuses.
+        "nominal_level": float(item["nominal_level"]),
+        "interval_kind": item.get("interval_kind"),
+        "inference_paradigm": item.get("inference_paradigm"),
+        "source_quantity": source_quantity,
+        "authority": {k: item[k] for k in
+                     ("authority_scopes", "producer_authority_scopes",
+                      "selected_for_delivery", "passed_reliability_gate") if k in item},
+        "conditioning_fingerprint": item.get("conditioning_fingerprint"),
+    }
+
+
+def _mode_intervals_of(label, r, n_omegas, *, best_label, outcome_interval_semantics,
+                       outcome_values) -> list:
+    """The slot-aligned ``mode_intervals`` cell for one candidate row (SCENE-4 PR 4.2a: the
+    per-mode interval persistence re-baseline).
+
+    Sized by ``n_omegas`` — the length of the row's OWN ``omegas`` list, the same value
+    ``_mode_omegas(r)`` produced for this row — never by ``n_modes``. The two legitimately
+    disagree for a result-less candidate (``_mode_omegas`` docstring): ``n_modes`` defaults to 1
+    with no result to read a position off, so ``omegas == ()``. Sizing off ``n_modes`` there
+    would emit ``[None]`` against an empty ``omegas``, which ``CandidateRow.__post_init__``
+    (mode_intervals/omegas must be equal length) then refuses.
+
+    POPULATION RULE: only ``n_omegas == 1`` ever populates slot 0 — a multimode candidate's
+    persisted record never names which slot the bootstrap tracked as its primary mode (it tracks
+    one internally, ``analyze.components.CompositeModel.primary_phonon_index``, but does not
+    persist which slot that was on this row), so a multimode candidate stays honestly all-``None``
+    rather than guessing slot 0. Phonon-less (or result-less) candidates carry ``[]``.
+
+    AUTHORITY: the WINNER's slot (``label == best_label``) projects the outcome-level REALIZED
+    decision — ``outcome_interval_semantics``, built by ``_outcome_interval_semantics`` +
+    ``_realize_interval_authority`` after selection — carrying ``selected_for_delivery``,
+    ``passed_reliability_gate``, the realized ``authority_scopes``, and which quantity was
+    selected. Every OTHER survivor's slot projects its OWN candidate-level record verbatim off
+    ``r.within_model["interval_semantics"]``: the producer-offer scopes ``errors.attach_batch``
+    stamps on every survivor independently of who won, never realized authority.
+    """
+    if n_omegas != 1:
+        return [None] * n_omegas
+    if label == best_label and outcome_interval_semantics is not None:
+        selected = outcome_interval_semantics.get("selected_interval_quantity")
+        if not selected:
+            # Genuinely unavailable — no quantity cleared the delivery ladder. Honest None,
+            # not a defect.
+            return [None]
+        quantities = outcome_interval_semantics.get("quantities") or {}
+        # PR 4.2a review (Major finding 2): ``selected`` names a quantity the SAME producer call
+        # (``_outcome_interval_semantics``) built both ``quantities`` and ``outcome_values`` from
+        # — one call site, one set of local variables, so the two are supposed to agree by
+        # construction. Either missing is a writer wiring bug, not a genuinely-unavailable
+        # interval (that stays honestly None above, gated on the item's own availability flag) —
+        # so this raises loudly instead of quietly degrading the winner to its unrealized
+        # candidate-tier record, which would mask the defect.
+        if selected not in quantities or outcome_values is None or selected not in outcome_values:
+            raise ValueError(
+                f"candidate {label!r} won selection on interval quantity {selected!r}, but "
+                f"the outcome interval semantics/values do not carry it (quantities="
+                f"{sorted(quantities)}, outcome_values={sorted(outcome_values or {})}) — "
+                "writer wiring bug")
+        return [_mode_interval_item(quantities[selected], outcome_values[selected], selected)]
+    within = getattr(r, "within_model", None) if r is not None else None
+    item = ((within or {}).get("interval_semantics") or {}).get("quantities", {}).get(
+        "freq_interval")
+    values = (within or {}).get("freq_interval")
+    return [_mode_interval_item(item, values, "freq_interval")]
+
+
+def _candidate_rows(scores, fits, by_hyp, *, best_label=None, interval_semantics=None,
+                    outcome_values=None) -> list | None:
     """The model-selection candidate table (P0-4): one compact row per SCORED structure. ``scores``
     is the ``ModelScore`` list the driver selects on — posterior ``P(s) = π_s·Z_s / Σ π·Z`` in the
     evidence lane, Akaike weights on the recorded AIC fallback; this only reshapes it, never
@@ -507,7 +589,13 @@ def _candidate_rows(scores, fits, by_hyp) -> list | None:
             # never carries a nonstandard NaN token that a strict-JSON reader would reject.
             "cost_per_dof": (cpd if np.isfinite(cpd) else None),
             "n_modes": int(r.n_modes) if r is not None else 1,
-            "omegas": _mode_omegas(r),
+            "omegas": (omegas := _mode_omegas(r)),
+            # SCENE-4 PR 4.2a: the within-candidate ω₀ uncertainty, slot-aligned to ``omegas`` —
+            # sized off ``len(omegas)``, NOT ``n_modes`` (they legitimately disagree for a
+            # result-less candidate; see ``_mode_intervals_of``).
+            "mode_intervals": _mode_intervals_of(
+                s.label, r, len(omegas), best_label=best_label,
+                outcome_interval_semantics=interval_semantics, outcome_values=outcome_values),
             # SCENE-3: what this candidate is MADE OF, so the scene layer never has to recover
             # component semantics from the label text (review finding 9).
             "components": _component_descriptors(s.label, by_hyp.get(s.label)),
@@ -1880,7 +1968,6 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # and the delivered ``best`` — so an escalated re-fit (its own fit_one call) carries its own.
     amplitudes = _amplitudes_of(best, by_hyp)
     model_manifest = _model_manifest_of(best, by_hyp)
-    candidates = _candidate_rows(sel.scores, fits, by_hyp)
     # ADR-019 producer isolation: the predictive artifact is NOT built here. Its inputs are handed
     # to the caller, which constructs it after branch triage inside its own try/except — so a
     # predictive-construction failure can never convert this fit into a non_result, and the artifact
@@ -1934,6 +2021,13 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         bayes_interval=bayes_interval,
         interval_reliable=interval_reliable,
     )
+    # SCENE-4 PR 4.2a: built AFTER the outcome-level interval_semantics above, so the winner's
+    # row can project the REALIZED delivery decision rather than its own unrealized candidate
+    # offer (see ``_mode_intervals_of``).
+    candidates = _candidate_rows(
+        sel.scores, fits, by_hyp, best_label=sel.best, interval_semantics=interval_semantics,
+        outcome_values={"interval": interval, "omega0_profile": omega0_profile,
+                        "hesse_interval": hesse_interval, "bayes_interval": bayes_interval})
 
     # The QC-masked energy window this fit actually saw — the scene layer's observation footprint:
     # what a scan looked at, whether or not it found anything. Shifted onto the ω scale by the

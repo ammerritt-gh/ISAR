@@ -45,6 +45,9 @@ def _candidate(label, **kw):
            # wants the #21 refusal lane passes ``constraint_origin=None`` explicitly.
            "constraint_origin": "none"}
     row.update(kw)
+    # SCENE-4 PR 4.2a: honestly-empty by default (no writer-side interval declared) — a test
+    # that wants a populated slot passes ``mode_intervals=`` explicitly.
+    row.setdefault("mode_intervals", [None] * len(row["omegas"]))
     return row
 
 
@@ -350,6 +353,9 @@ def test_energy_bands_survive_the_csv_and_are_the_footprints_coverage(tmp_path):
 @pytest.mark.parametrize("kw,message", [
     ({"candidates": [{k: v for k, v in _candidate("phonon+bg").items() if k != "components"}]},
      "component descriptors"),
+    ({"candidates": [{k: v for k, v in _candidate("phonon+bg").items()
+                     if k != "mode_intervals"}]},
+     "mode interval projections"),
     ({"candidates": [_candidate("phonon+bg")], "energy_bands": None}, "energy_bands"),
 ])
 def test_a_row_predating_the_delivery_contract_is_refused_not_guessed_at(tmp_path, kw, message):

@@ -205,6 +205,53 @@ class ComponentDescriptor:
 
 
 @dataclass(frozen=True, slots=True)
+class ModeInterval:
+    """One phonon mode's persisted ω₀ uncertainty, projected VERBATIM off the writer's own
+    ``isar.interval_semantics/1`` record (SCENE-4 PR 4.2a). Nothing here is derived, re-scaled,
+    or invented — every field is copied straight off the persisted quantity item and its values.
+
+    ``low``/``center``/``high`` are the same ``(lo, median, hi)`` triple the writer persisted for
+    this quantity, on the ``CandidateRow.omegas`` ω₀ scale. ``source_quantity`` names WHICH
+    persisted quantity this came from (``"freq_interval"`` for an ordinary candidate-level
+    bootstrap offer; ``"interval"``/``"omega0_profile"``/``"hesse_interval"``/``"bayes_interval"``
+    for a winner's realized outcome-level selection) — a literal key off the record, not an
+    invented label. ``authority`` carries whatever of ``authority_scopes``,
+    ``producer_authority_scopes``, ``selected_for_delivery``, ``passed_reliability_gate`` the
+    source item actually has: a non-winner survivor's record has only the first two (an unrealized
+    producer OFFER — user_diagnostic active, everything else inactive/candidate-tier); a winner's
+    record has all four (the REALIZED delivery decision). No new authority lane is minted here.
+    """
+
+    low: float
+    center: float
+    high: float
+    nominal_level: float
+    interval_kind: str | None
+    inference_paradigm: str | None
+    source_quantity: str
+    authority: dict
+    conditioning_fingerprint: str | None
+
+    def to_dict(self) -> dict:
+        return {"low": self.low, "center": self.center, "high": self.high,
+                "nominal_level": self.nominal_level, "interval_kind": self.interval_kind,
+                "inference_paradigm": self.inference_paradigm,
+                "source_quantity": self.source_quantity, "authority": dict(self.authority),
+                "conditioning_fingerprint": self.conditioning_fingerprint}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ModeInterval":
+        return cls(
+            low=float(d["low"]), center=float(d["center"]), high=float(d["high"]),
+            nominal_level=float(d["nominal_level"]),
+            interval_kind=_opt_str(d.get("interval_kind")),
+            inference_paradigm=_opt_str(d.get("inference_paradigm")),
+            source_quantity=str(d["source_quantity"]),
+            authority=dict(d.get("authority") or {}),
+            conditioning_fingerprint=_opt_str(d.get("conditioning_fingerprint")))
+
+
+@dataclass(frozen=True, slots=True)
 class CandidateRow:
     """One locally-fitted structure×identity alternative, as the scene reads it.
 
@@ -230,6 +277,16 @@ class CandidateRow:
     # is unplaceable; ``()`` is a phonon-less or result-less candidate, so the length agrees
     # with ``n_modes`` except in the no-result case.
     omegas: tuple[float | None, ...]
+    # SCENE-4 PR 4.2a: the within-candidate ω₀ uncertainty, slot-aligned to ``omegas`` (same
+    # length) — projecting ONLY what the fit side already persisted (:class:`ModeInterval`), never
+    # minted here. POPULATION RULE: a slot is populated only where the writer's own record names a
+    # real, available, per-candidate interval for that mode. A single-mode candidate's one slot is
+    # unambiguous; a MULTIMODE candidate's slots stay ALL ``None`` — the persisted record has no
+    # field naming which slot is the bootstrap's tracked primary mode, and guessing slot 0 would be
+    # minted semantics the writer never asserted. Required, with no default, like ``components``: a
+    # row that predates this contract is a stale delivery, not a row with no uncertainty.
+    # ``()`` for a phonon-less candidate, matching ``omegas``.
+    mode_intervals: tuple["ModeInterval | None", ...]
     # What this candidate is MADE OF, in the writer's canonical order (modes by slot, then the
     # non-mode kinds by name). Required, with no default: a row that declares no components is a
     # row written before the descriptors existed, and defaulting it to ``()`` would present a
@@ -245,6 +302,20 @@ class CandidateRow:
     constraint_origin: str | None = None
     effective_constraints: tuple | None = None
 
+    def __post_init__(self):
+        # SCENE-4 PR 4.2a review (Major finding 1, corrected): ``mode_intervals`` and ``omegas``
+        # are the pair a reader ever zips, so ONLY they must agree in length. ``n_modes`` is
+        # deliberately excluded — the ``omegas`` field comment above already documents a
+        # legitimate case where it disagrees: a result-less candidate persists ``n_modes=1``
+        # (``_candidate_rows`` defaults it when ``r is None``) with ``omegas=()``, since there is
+        # no result to read a position off. Requiring ``n_modes == len(omegas)`` here would
+        # refuse that real, documented row. Fail here, loudly, like every other malformed-payload
+        # refusal in this file — never truncate or pad to fit.
+        if len(self.mode_intervals) != len(self.omegas):
+            raise ValueError(
+                f"candidate {self.label!r} is slot-misaligned: len(omegas)={len(self.omegas)}, "
+                f"len(mode_intervals)={len(self.mode_intervals)} must agree")
+
     def to_dict(self) -> dict:
         d = asdict(self)
         # A non-finite lnZ (±inf, and the NaN an evidence lane actually tends to produce)
@@ -257,6 +328,7 @@ class CandidateRow:
         if d["log_evidence"] is not None and not math.isfinite(d["log_evidence"]):
             d["log_evidence"] = None
         d["omegas"] = list(self.omegas)
+        d["mode_intervals"] = [None if m is None else m.to_dict() for m in self.mode_intervals]
         d["components"] = [c.to_dict() for c in self.components]
         d["effective_constraints"] = (None if self.effective_constraints is None
                                       else [dict(c) for c in self.effective_constraints])
@@ -275,6 +347,11 @@ class CandidateRow:
             identity=_opt_str(d.get("identity")),
             variant=_opt_str(d.get("variant")),
             omegas=tuple(_opt_float(w) for w in d.get("omegas") or ()),
+            # ``d["mode_intervals"]``, not ``d.get(...)``: a payload without this cell predates the
+            # SCENE-4 PR 4.2a contract, same posture as ``components`` below — fail rather than
+            # read a stale row as "no uncertainty".
+            mode_intervals=tuple(None if m is None else ModeInterval.from_dict(m)
+                                 for m in d["mode_intervals"]),
             # ``d["components"]``, not ``d.get(...)``: a payload without descriptors predates the
             # delivery contract and must fail rather than read as a componentless candidate.
             components=tuple(ComponentDescriptor.from_dict(c) for c in d["components"]),

@@ -477,12 +477,16 @@ def _candidates(fit, ref: str):
 def _refuse_stale_delivery(fit, ref: str, raw) -> None:
     """Raise unless ``fit`` carries the current delivery contract's scene inputs.
 
-    Two fields, one refusal, because a row missing either was written by a delivery that predates
-    this contract and there is no honest way to fill in what it did not record:
+    Three fields, one refusal, because a row missing any of them was written by a delivery that
+    predates this contract and there is no honest way to fill in what it did not record:
 
     * ``candidates[].components`` — what each candidate is MADE OF. Recovering it from the label
       text is what this contract exists to stop: a display string is an identifier, and a scene
       that parses it decides physics on a grammar nobody promised to keep.
+    * ``candidates[].mode_intervals`` (SCENE-4 PR 4.2a) — the within-candidate ω₀ uncertainty,
+      slot-aligned to ``omegas``. A row that predates this contract has no way to say "no
+      uncertainty was recorded" from "this field never existed", so it is refused rather than
+      silently read as the former.
     * ``energy_bands`` — the contiguous kept runs behind ``energy_window``. Reading the envelope
       alone would present the QC-masked holes inside it as searched coverage, so an absence in a
       hole would be priced as evidence.
@@ -496,6 +500,9 @@ def _refuse_stale_delivery(fit, ref: str, raw) -> None:
     if isinstance(raw, list) and any(isinstance(c, dict) and "label" in c and "components" not in c
                                      for c in raw):
         stale.append("candidate rows without component descriptors")
+    if isinstance(raw, list) and any(isinstance(c, dict) and "label" in c
+                                     and "mode_intervals" not in c for c in raw):
+        stale.append("candidate rows without mode interval projections")
     if fit.energy_window is not None and fit.energy_bands is None:
         stale.append("an energy window with no energy_bands")
     if stale:
