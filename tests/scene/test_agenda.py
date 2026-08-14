@@ -702,6 +702,26 @@ def test_classify_identity_gate_is_tile_scoped_not_partition_wide():
     assert "(2.0, 2.5)" in notes[0][1] and "identity_hypotheses_unavailable" in notes[0][1]
 
 
+def test_classify_identity_gate_suppresses_on_a_pruned_identity_row():
+    """SCENE-4.2a P1-G falsified counterexample: an explicit-identity candidate ("acoustic")
+    that NO retained alternative ever assigns must not open ClassifyIdentity — the gate and the
+    evaluator must agree it is unrepresentable, exactly as with no identity at all."""
+    # A carries the explicit identity but is PRUNED (no alternative ever assigns it); the sole
+    # retained alternative assigns C, an identity-less mode — so ConfirmPresence still answers
+    # YES (a real mode is present) while representability must stay empty.
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.0,), identity="acoustic"),
+                                    cand("C", omegas=(5.2,))])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "C")], 1.0)])],
+        sample_knowledge={"lattice_epoch": 1})
+    revision = derive(scene)
+    assert not by_family(revision, "ClassifyIdentity")
+    notes = [(n, detail) for n, detail in map(tuple, revision.payload["derivation_notes"])
+             if n == "classify_identity_inert"]
+    assert notes and "identity_hypotheses_unavailable" in notes[0][1]
+
+
 def test_classify_identity_gate_maps_a_confirmed_phenomenon_and_still_completes():
     """The reachability property for the gated case: a fully-surveyed campaign whose one
     confirmed phenomenon carries no representable identity (and closes EstimateParameter via

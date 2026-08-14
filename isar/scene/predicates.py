@@ -138,10 +138,6 @@ def _in_band(omega, band) -> bool:
     return band[0] <= abs(omega) <= band[1]
 
 
-def _has_mode(candidate: Mapping) -> bool:
-    return any(c.get("kind") == "mode" for c in candidate.get("components") or ())
-
-
 def _matched_mode_omegas(alternative: Mapping, matched_refs: set,
                          candidates: Mapping, band) -> list[float]:
     """Every placeable in-band mode omega this alternative asserts on the matched arenas."""
@@ -284,23 +280,58 @@ def _structural_presence(spec, scene_payload, prior) -> QuestionAssessment:
                               answer=(("present", verdict == "yes"),), blockers=blockers)
 
 
+def _alternative_matched_identities(alternative: Mapping, refs: set, candidates: Mapping,
+                                    band) -> set:
+    """Identities this ONE retained alternative asserts on the matched arenas — the single walk
+    both :func:`identity_hypothesis_classes` and :func:`_identity_resolved` share (SCENE-4.2a
+    P1-G/A6). A row counts only when it carries a placeable, in-band mode component (mirrors
+    :func:`_matched_mode_omegas`); its ``identity`` (possibly ``None``, meaning "no identity
+    semantics assigned") is then contributed. Rows the alternative never assigns, or whose only
+    modes sit outside the subject's band, contribute nothing — pruned/non-retained candidates
+    never reach here because the caller walks retained ``alternatives``, not raw candidate rows.
+    """
+    out = set()
+    for scan_ref, label in alternative.get("assignment") or ():
+        if scan_ref not in refs:
+            continue
+        row = candidates.get(scan_ref, {}).get(label)
+        if row is None:
+            continue
+        omegas = row.get("omegas") or []
+        for component in row.get("components") or ():
+            if component.get("kind") != "mode":
+                continue
+            slot = component["slot"]
+            omega = omegas[slot] if 0 <= slot < len(omegas) else None
+            if _in_band(omega, band):
+                out.add(row.get("identity"))
+                break
+    return out
+
+
 def identity_hypothesis_classes(subject, scene_payload: Mapping) -> frozenset:
-    """The identity classes ClassifyIdentity could answer from for ``subject``, over the SAME
-    subject-matched rows :func:`_identity_resolved` evaluates (same :func:`match_subject`
-    scoping, same identity-set rule: a candidate counts only with an explicit, non-``None``
-    ``identity`` AND a placeable mode). One shared definition of "the scene can represent this
-    answer" — a partition-wide gate and a tile-scoped evaluator must never disagree on it
-    (SCENE-4.2a A6). An empty result means ClassifyIdentity would open and never close.
+    """The identity classes ClassifyIdentity could answer from for ``subject``, derived from
+    identities actually present in RETAINED alternatives — the evidence the evaluator can use
+    (SCENE-4.2a P1-G). Walks the same matched clusters' retained ``alternatives`` (never raw
+    candidate rows: a pruned or non-retained candidate carries an explicit identity that no
+    assignment ever selects, and must not open the gate), via the SAME per-alternative walk
+    :func:`_identity_resolved` uses for ``matched_identities`` (one definition of
+    "representable", shared, not two answers that could disagree — SCENE-4.2a A6). A class
+    counts only with an explicit, non-``None`` ``identity`` on a placeable, in-band mode. An
+    empty result means ClassifyIdentity would open and never close.
     """
     match = match_subject(subject, scene_payload)
     if not match.cluster_indices:
         return frozenset()
     candidates = _candidates_by_ref(scene_payload)
-    return frozenset(
-        row["identity"]
-        for ref in match.scan_refs
-        for row in candidates.get(ref, {}).values()
-        if row.get("identity") is not None and _has_mode(row))
+    refs, band = set(match.scan_refs), subject.omega_band_meV
+    clusters = scene_payload.get("clusters") or ()
+    classes = set()
+    for index in match.cluster_indices:
+        for alternative in clusters[index].get("alternatives") or ():
+            classes.update(_alternative_matched_identities(alternative, refs, candidates, band))
+    classes.discard(None)
+    return frozenset(classes)
 
 
 def _identity_resolved(spec, scene_payload, prior) -> QuestionAssessment:
@@ -314,16 +345,10 @@ def _identity_resolved(spec, scene_payload, prior) -> QuestionAssessment:
         return QuestionAssessment(question_id=spec.question_id, status="open",
                                   notes=(("reason", "no_matched_evidence"),))
     candidates = _candidates_by_ref(scene_payload)
-    refs = set(match.scan_refs)
+    refs, band = set(match.scan_refs), spec.subject.omega_band_meV
 
     def matched_identities(alternative):
-        out = set()
-        for scan_ref, label in alternative.get("assignment") or ():
-            if scan_ref in refs:
-                row = candidates.get(scan_ref, {}).get(label)
-                if row is not None and _has_mode(row):
-                    out.add(row.get("identity"))
-        return out
+        return _alternative_matched_identities(alternative, refs, candidates, band)
 
     classes = identity_hypothesis_classes(spec.subject, scene_payload)
     if not classes:

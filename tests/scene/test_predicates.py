@@ -11,7 +11,7 @@ import pytest
 
 from isar.scene.predicates import (
     cluster_authority, combine_existential, combine_universal, decide, evaluate_predicate,
-    mass_interval)
+    identity_hypothesis_classes, mass_interval)
 from isar.scene.questions import PredicateDeclaration, QuestionSpec, QuestionSubject
 
 P1 = "a" * 64
@@ -233,6 +233,45 @@ def test_identity_answers_from_explicit_alternatives_and_tracks_unclassified_mas
                                 family="ClassifyIdentity"), scene)
     assert a.status == "answered" and dict(a.answer) == {"identity": "acoustic"}
     assert dict(a.notes)["unclassified_mass"] == pytest.approx(0.05)
+
+
+def test_representability_ignores_an_identity_row_no_retained_alternative_assigns():
+    """SCENE-4.2a P1-G falsified counterexample: candidate A carries an explicit identity, but
+    every retained alternative assigns B — A is pruned/never-retained. Representability must be
+    derived from RETAINED alternatives, not raw candidate rows, or a dead identity row opens
+    ClassifyIdentity forever."""
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.0,), identity="acoustic"), cand("B")])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "B")], 1.0)])])
+    subject = spec("identity_resolved", {"min_mass": 0.9}, family="ClassifyIdentity").subject
+    assert identity_hypothesis_classes(subject, scene) == frozenset()
+    a = evaluate_predicate(spec("identity_resolved", {"min_mass": 0.9},
+                                family="ClassifyIdentity"), scene)
+    assert a.status == "open"
+    assert [b.name for b in a.blockers] == ["identity_hypotheses_unavailable"]
+
+
+def test_representability_ignores_an_out_of_band_identity():
+    """A retained alternative assigns the identity-bearing row, but its mode sits outside the
+    subject's omega band — not placeable IN the claimed support, so it cannot represent it."""
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(50.0,), identity="acoustic")])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 1.0)])])
+    subject = spec("identity_resolved", {"min_mass": 0.9}, family="ClassifyIdentity").subject
+    assert identity_hypothesis_classes(subject, scene) == frozenset()
+
+
+def test_representability_holds_for_an_in_band_retained_identity():
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.0,), identity="acoustic"),
+                                    cand("C", omegas=(5.2,))])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.95),
+                                      alt([("e:1:d", "C")], 0.05)])])
+    subject = spec("identity_resolved", {"min_mass": 0.9}, family="ClassifyIdentity").subject
+    assert identity_hypothesis_classes(subject, scene) == frozenset({"acoustic"})
 
 
 def test_a_fitless_arena_is_not_mismatch_evidence():
