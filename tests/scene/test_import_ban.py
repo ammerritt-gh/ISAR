@@ -111,7 +111,7 @@ def test_the_checker_bites_on_relative_imports(source, expected):
 
 # The scene modules that claim to be stdlib-only. SCENE-4 PR 4.1 adds the question vocabulary
 # (and, when it lands, the predicate evaluators) — the claim is only real while it is probed.
-STDLIB_ONLY_MODULES = ("isar.scene.model", "isar.scene.questions")
+STDLIB_ONLY_MODULES = ("isar.scene.model", "isar.scene.questions", "isar.scene.predicates")
 
 
 @pytest.mark.parametrize("module", STDLIB_ONLY_MODULES)

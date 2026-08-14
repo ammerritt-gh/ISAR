@@ -77,6 +77,7 @@ BLOCKER_CLASS_BY_NAME = {
     "analysis_unavailable": BLOCKER_TRANSIENT,
     # model/authority: the scene cannot currently represent the answer
     "identity_hypotheses_unavailable": BLOCKER_AUTHORITY,
+    "dispersion_support_undeclared": BLOCKER_AUTHORITY,
     "posterior_truncation_unresolved": BLOCKER_AUTHORITY,
     "within_candidate_uncertainty_unavailable": BLOCKER_AUTHORITY,
     "tolerance_below_representable_precision": BLOCKER_AUTHORITY,
