@@ -54,7 +54,7 @@ AGENDA_STORE = RevisionStore("agenda", "isar.agenda-pointer/1", "agenda")
 TRANSITIONS_NAME = "transitions.jsonl"
 
 #: Bumping either re-derives every agenda (new digests) without minting new question IDs.
-OPENER_VERSION = 2
+OPENER_VERSION = 3
 MATCHER_VERSION = 1
 
 #: Declared generator references (4.2 binds them to the real registry; here they are strings).
@@ -452,6 +452,41 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
             {"min_mass": thresholds["connect_track_min_mass"]},
             priority=priorities["ConnectTrack"],
             deps=tuple(qid for _, qid in tiles)))
+
+    # Class-agnostic connectivity (P0-B): a partition whose confirmed tiles never answered
+    # ClassifyIdentity (representability gate closed, or simply not yet answered) still needs
+    # a track question — identity abstention must not suppress structural connectivity.
+    # Reuses the same confirmed-presence collection the chaining pass above walks.
+    confirmed: dict = {}
+    for spec in [s for s in specs if s.family == "ConfirmPresence"]:
+        assessment = assessments.get(spec.question_id)
+        if assessment is None or assessment.status != "answered" \
+                or dict(assessment.answer).get("present") is not True:
+            continue
+        confirmed.setdefault(spec.subject.partition_id, []).append(
+            (spec.subject.region_rlu, spec.question_id))
+    # Suppress the class-agnostic pass only where a per-class track ACTUALLY DERIVED (pre-
+    # commit Major): `classified` gains a key the moment ONE tile answers classify, even when
+    # that alone can never produce a per-class track (len(tiles) < 2) — checking key presence
+    # re-created the exact suppression P0-B forbids for a 1-classified + 2-unclassified
+    # partition. Residual (named for the owner, not fixed here): a partition where a per-class
+    # track DID derive may still hold unclassified confirmed tiles outside that class's span;
+    # v1 accepts per-class coverage as suppression — one track question per partition maximum
+    # in the unclassified lane — rather than silently over-deriving a second track.
+    derived_class_track_pids = {pid for (pid, _ident), tiles in classified.items()
+                                if len(tiles) >= 2}
+    for pid, tiles in sorted(confirmed.items(), key=lambda kv: str(kv[0])):
+        if pid in derived_class_track_pids or len(tiles) < 2:
+            continue
+        tiles.sort()
+        tracks.append(_spec(
+            "ConnectTrack", "track_connected", QuestionSubject(
+                kind="track", partition_id=pid, catalogue_class=None,
+                endpoint_a_rlu=tiles[0][0], endpoint_b_rlu=tiles[-1][0], frame=frame),
+            {"min_mass": thresholds["connect_track_min_mass"]},
+            priority=priorities["ConnectTrack"],
+            deps=tuple(qid for _, qid in tiles),
+            provenance=(("opened_by", "presence_without_classification"),)))
     if tracks:
         specs.extend(tracks)
         _assert_unique(specs)

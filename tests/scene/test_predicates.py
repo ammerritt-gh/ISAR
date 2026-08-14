@@ -619,6 +619,24 @@ def test_track_connects_through_linked_components_not_component_ids():
     assert a.status == "answered" and dict(a.answer) == {"connected": True}
 
 
+def test_class_agnostic_track_connects_via_linkage_even_with_identified_candidates():
+    """P0-B: ``catalogue_class=None`` on the subject is a scope choice by the derivation
+    layer, not something the evaluator conditions on — connectivity is walked from
+    ``alternative["links"]`` alone, so a class-None track still answers YES even when every
+    candidate in the scene carries an explicit identity."""
+    assert track_spec().subject.catalogue_class is None
+    link = (("e:1:d#A#0", "e:2:d#A#0"),)
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.0,), identity="acoustic")]),
+                      obs("e:2:d", [cand("A", omegas=(5.5,), identity="acoustic")])],
+        footprints=[fp("e:1:d", 1.92), fp("e:2:d", 2.12)],
+        clusters=[cluster(["e:1:d", "e:2:d"],
+                          [alt([("e:1:d", "A"), ("e:2:d", "A")], 0.95, links=link),
+                           alt([("e:1:d", "A"), ("e:2:d", "A")], 0.05)])])
+    a = evaluate_predicate(track_spec(), scene)
+    assert a.status == "answered" and dict(a.answer) == {"connected": True}
+
+
 def test_endpoints_in_disjoint_clusters_stay_open_not_disconnected():
     """Absent adjacency may be an unsurveyed middle — never charged as absence."""
     scene = payload(
