@@ -2149,6 +2149,34 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   is untouched beside it until SCENE-6. Offline by design: no driver wiring (4.3), no
   generator bindings or exhaustion producers (4.2) — no live derivation can close unresolvable
   in this slice, asserted by test.
+  **(f) The PR #31 review response (2026-08-14, request-changes; sixteen findings, all fixed,
+  none refuted).** The defect class was unintended completion-unreachability and misidentified
+  questions, distinct from the deliberate (c) openness. (1) Presence went CLASS-AGNOSTIC
+  (owner's door 2): `structural_presence` ignores identity, so per-class copies at one anchor
+  were one question wearing N labels — one presence per anchor; ClassifyIdentity's ANSWER
+  carries the class; ConnectTrack chains per classify-answered class; the unused
+  `catalogue_classes` parameter deleted (4.2's opening book reintroduces class vocabulary
+  with genuinely distinct declared findability). (2) Emergent subjects derive per (q tile,
+  ω tile) on BOTH frozen quanta — `emergent_omega_tile_meV` is finally identity-bearing —
+  with per-tile evidence combined ACROSS clusters before thresholding (two 0.4 uppers jointly
+  open at 0.64). (3) TestModelMismatch is a CONDITIONAL opener (explicit unknown competitor
+  present AND frozen `include_unknown` true, else inert with a note): its absence-blocker is
+  model-authority and unclosable, so the unconditional question made ordinary campaigns
+  impossible to complete — a fully surveyed blank campaign now reaches `complete`, asserted
+  by test. (4) Exhaustion proofs must declare `required_generator_ids` EXACTLY equal to the
+  question's frozen generator set — a proof may not choose its own requirements. (5)
+  `evaluate_agenda` validates its payload: duplicate/orphan rows refuse, unassessed specs
+  fail closed as a derivation defect; duplicate question IDs refuse derivation itself. (6)
+  Non-axis discovery paths REFUSE loudly (scalar projection cannot represent them; 4.2+
+  representation named) and the full endpoints join the subject frame, so parallel paths are
+  distinct subjects. (7) Zone anchors are epoch-scoped per partition (mirroring H16's
+  epoch-scoped knowledge factors; H13 symmetric for undeclared). (8) The agenda snapshot
+  embeds the complete `resolved_policy` block, preserving per-field provenance in storage.
+  (9) Tile membership is half-open where a tile is a grid cell, so a boundary scan belongs to
+  exactly one endpoint tile; `partition_key`/`partition_id` moved to `isar.scene.model` as
+  the one implementation, and `completeness_relative` scopes non-scoring arenas to their
+  EXACT partition; the discover compiler defaults `include_unknown` only when absent/null so
+  invalid explicit values reach the schema's refusal.
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:
 user-facing campaign report (deferred until post-testing); renegotiation protocol (O3, future);

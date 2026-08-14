@@ -355,30 +355,38 @@ references the 4.2 inventory binds):
 
 | Family | Subject | Opener | Predicate | Answer | Generator refs |
 |---|---|---|---|---|---|
-| DiscoverRegion | region × ω domain × partition | one per partition, from the program | `coverage_complete/1` (spacing invariant + ω band coverage; quarantine = transient blocker) | complete: yes | `opening_book_survey` |
-| ConfirmPresence | (class, declared ZC-anchor tile) and emergent tiles × partition | per (catalogue class, `zone_period` fold anchor in region — declared geometry, inert without a period); emergent per tile when the UPPER mass bound ≥ `emergent_open_min_mass` (fail-open) | `structural_presence/1` — mass on alternatives with a placeable in-band mode; NO identity semantics needed | present: yes/no | `presence_probe` |
-| ClassifyIdentity | phenomenon tile × partition | chained per confirmed phenomenon | `identity_resolved/1` — answers ONLY from explicit identity alternatives; `identity=None` accrues to `unclassified_mass` (authority limitation), never a physical unknown | identity: class | `identity_discriminator` |
-| ConnectTrack | (class, endpoint tiles) × partition | chained per class with ≥2 confirmed anchors | `track_connected/1` — linkage mass across matched endpoint sets; disjoint clusters stay OPEN (an unsurveyed middle is never charged as absence) | connected: yes/no | `track_bridge_scan` |
+| DiscoverRegion | region × ω domain × partition | one per partition, from the program — a path varying in more than one reciprocal component is REFUSED (the scalar projection cannot represent it until the 4.2+ path-projection representation), and the full endpoints join the subject frame so parallel paths are distinct subjects | `coverage_complete/1` (spacing invariant + ω band coverage; quarantine = transient blocker) | complete: yes | `opening_book_survey` |
+| ConfirmPresence | anchor tile / emergent (q tile, ω tile) × partition — CLASS-AGNOSTIC: `structural_presence` ignores identity, so per-class copies were one question wearing N labels; the class is ClassifyIdentity's ANSWER | per `zone_period` fold anchor in region (declared geometry, inert without a period, EPOCH-SCOPED: a partition measured under a different lattice epoch than the declared frame gets no anchors); emergent per (q tile, ω tile) on BOTH frozen quanta when the JOINT cross-cluster UPPER bound ≥ `emergent_open_min_mass` (fail-open; two 0.4 uppers jointly open at 0.64) | `structural_presence/1` — mass on alternatives with a placeable in-band mode; NO identity semantics needed | present: yes/no | `presence_probe` |
+| ClassifyIdentity | phenomenon tile × partition | chained per confirmed phenomenon; its ANSWER carries the class | `identity_resolved/1` — answers ONLY from explicit identity alternatives; `identity=None` accrues to `unclassified_mass` (authority limitation), never a physical unknown | identity: class | `identity_discriminator` |
+| ConnectTrack | (class, endpoint tiles) × partition | chained per classify-ANSWERED class with ≥2 classified tiles (dependencies = the classify questions) | `track_connected/1` — linkage mass across matched endpoint sets, half-open tile membership (a boundary scan belongs to ONE tile); disjoint clusters stay OPEN (an unsurveyed middle is never charged as absence) | connected: yes/no | `track_bridge_scan` |
 | EstimateParameter | (parameter, phenomenon fields) | auto-opened per confirmed phenomenon (regime 1) | `parameter_within_tolerance/1` — **never closes in v1** (owner ruling 2026-08-14): mixture spread is a diagnostic, `within_candidate_uncertainty_unavailable` the blocker; closure arrives with the scheduled interval-persistence re-baseline (4.2/4.3) | — (open) | `parameter_refine` |
 | EstimateParameter (endpoint) | parameter `zc_endpoint_omega`, declared fold anchor | chained for anchored confirmed phenomena | `zc_linear_compatibility/1` — bounded compatibility under declared slope support, `maximum_justifiable_zc_confidence = 0.0` in v1 (no probabilistic model, no persisted uncertainties); the schema supports confidence for the future model | compatible / incompatible (else open) | `parameter_refine` |
-| TestModelMismatch | region × partition | one per partition | `mismatch_assessed/1` — needs an explicit unknown-model competitor; a fitless arena is never mismatch evidence | mismatch_present: yes/no | `mismatch_probe` |
-| VerifyCompleteness | campaign × partition, frame-relative | one per partition, depending on every peer | `completeness_relative/1` — relative to the frozen coverage grid, exposure floor (`min_effective_exposure`), represented hypotheses, and closed questions; open on any open dependency, uninterpreted or non-scoring arena, unresolved cluster, or under-floor exposure; leader-only visibility rows are deliberately not read | complete: yes | — (closes on accounting) |
+| TestModelMismatch | region × partition | CONDITIONAL: only where an explicit unknown-identity competitor exists in the partition AND the frozen `include_unknown` is true, otherwise inert with a recorded note — its absence-blocker is model-authority and unclosable, so an unconditional question made ordinary campaigns impossible to complete | `mismatch_assessed/1` — needs an explicit unknown-model competitor; a fitless arena is never mismatch evidence | mismatch_present: yes/no | `mismatch_probe` |
+| VerifyCompleteness | campaign × partition, frame-relative | one per partition, depending on every peer | `completeness_relative/1` — relative to the frozen coverage grid, exposure floor (`min_effective_exposure`), represented hypotheses, and closed questions; open on any open dependency, uninterpreted or non-scoring arena IN ITS OWN PARTITION (attributed via the builder's own `partition_key`, one implementation in `isar.scene.model`), unresolved cluster, or under-floor exposure; leader-only visibility rows are deliberately not read | complete: yes | — (closes on accounting) |
 
 **Closure and the verdict.** A question closes three ways: answered; overtaken/dissolved
 (history transitions — a lattice-epoch change dissolves with `equivalence_unproven`, never an
 automatic re-anchor); unresolvable — requiring a typed durable blocker AND a fresh
 `QuestionExhaustion` proof whose `basis_agenda_digest` matches the same-pass exhaustion-free
-derivation digest, whose scene digest matches the input, and whose registry fingerprint
-matches the manifest (stale proofs are rejected naming the failing comparand; exhaustion
-without a durable blocker is a `generator_defect`, never a closure). Dependency graphs are
-validated acyclic; a cycle refuses derivation. `evaluate_agenda` returns `complete` /
-`in_progress` / `incomplete_over_budget` with NO beam directive (completion ≠ beam-idle):
-completion requires every spec closed and VerifyCompleteness answering yes; a missing
-completeness question is a derivation defect; unresolvable closures never block completion and
-surface as consultation requests (the channel lands in 4.3). Known consequence of the
-EstimateParameter ruling: `complete` is unreachable for phenomenon-bearing campaigns until the
-interval re-baseline — honest and time-bounded, no live campaign runs before 4.3. The
-tracker's targeted `evaluate_stop` is untouched beside all of this until SCENE-6.
+derivation digest, whose scene digest matches the input, whose registry fingerprint matches
+the manifest, and whose `required_generator_ids` equal the question's own frozen
+`generator_ids` exactly — a proof may not choose its own requirements (stale proofs are
+rejected naming the failing comparand; exhaustion without a durable blocker is a
+`generator_defect`, never a closure). Dependency graphs are validated acyclic and question
+IDs unique; a cycle or a duplicate refuses derivation. `evaluate_agenda` VALIDATES its
+payload first — duplicate spec or assessment ids and orphan assessments refuse the verdict,
+and a spec with no assessment is a derivation defect that joins the blocking set, so a
+partial agenda fails closed — then returns `complete` / `in_progress` /
+`incomplete_over_budget` with NO beam directive (completion ≠ beam-idle): completion requires
+every spec closed and VerifyCompleteness answering yes; a missing completeness question is a
+derivation defect; unresolvable closures never block completion and surface as consultation
+requests (the channel lands in 4.3). **Completion is reachable**: a fully surveyed blank
+campaign closes every question it opens (presence answers honest NOs, nothing chains, no
+mismatch question is derived without a competitor) and reaches `complete` — asserted by test.
+The one deliberate exception stands: `complete` is unreachable for phenomenon-bearing
+campaigns until the EstimateParameter interval re-baseline — honest and time-bounded, no live
+campaign runs before 4.3. The tracker's targeted `evaluate_stop` is untouched beside all of
+this until SCENE-6.
 
 ## 6. Persistence
 
@@ -487,7 +495,9 @@ persisted.
 optimistic `expected_parent`), plus `transitions.jsonl` — one appended line per flip carrying
 the typed question transitions (opened / reopened / dissolved with `equivalence_unproven` /
 status_changed). The digested `isar.agenda-revision/1` payload is a PURE SNAPSHOT: program
-fingerprint, step id, scene digest, resolved-policy fingerprint, derivation manifest,
+fingerprint, step id, scene digest, the COMPLETE embedded `resolved_policy` block (so a
+stored agenda explains who chose every effective value without rejoining the program
+document) beside its fingerprint, derivation manifest,
 `basis_digest` (the exhaustion-free derivation digest that exhaustion proofs must name), the
 applied exhaustion evidence, specs, and assessments whose statuses are only
 `open`/`answered`/`unresolvable` — `overtaken`/`dissolved`/`reopened` are relations between
