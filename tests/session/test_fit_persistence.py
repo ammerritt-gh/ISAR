@@ -776,6 +776,72 @@ def test_phonon_less_candidate_carries_no_mode_interval_slots():
     assert len(row["mode_intervals"]) == row["n_modes"] == len(row["omegas"])
 
 
+# --------------------------------------------------------------- post-slice-boundary fix:
+# not every persisted interval quantity is a (lo, center, hi) triple. Confirmed by reading
+# every producer directly (never trust a claimed shape):
+#   errors.bootstrap._percentile_interval  -> (lo, median, hi)   TRIPLE  (freq_interval / "interval")
+#   errors.bayes.BayesResult.omega0_interval -> (lo, median, hi) TRIPLE  (bayes_interval)
+#   errors.profile.omega0_profile_interval -> (lo, hi)           PAIR    (omega0_profile)
+#   scan_delivery._hesse_interval_and_trust -> (lo, hi)          PAIR    (hesse_interval)
+@pytest.mark.parametrize("source_quantity,values,expect_center", [
+    ("freq_interval", (4.1, 4.25, 4.4), 4.25),
+    ("bayes_interval", (4.2, 4.3, 4.4), 4.3),
+    ("omega0_profile", (4.9, 5.1), None),
+    ("hesse_interval", (4.95, 5.05), None),
+])
+def test_mode_interval_item_projects_each_quantitys_real_shape(source_quantity, values,
+                                                                expect_center):
+    item = {"availability": True, "nominal_level": 0.68}
+    cell = scan_delivery._mode_interval_item(item, values, source_quantity)
+    assert cell["low"] == values[0] and cell["high"] == values[-1]
+    assert cell["center"] == expect_center
+
+
+@pytest.mark.parametrize("values", [(4.1,), (4.1, 4.2, 4.3, 4.4)])
+def test_mode_interval_item_refuses_a_malformed_value_shape(values):
+    item = {"availability": True, "nominal_level": 0.68}
+    with pytest.raises(ValueError, match="pair|triple"):
+        scan_delivery._mode_interval_item(item, values, "freq_interval")
+
+
+def test_a_hesse_selected_winner_row_round_trips_with_no_center():
+    """The exact shape that crashed ``tests/session/test_driver_multimode.py``: a fast-tier
+    winner whose SELECTED interval quantity is ``hesse_interval`` — a bare ``(lo, hi)`` pair, no
+    median. Must project honestly (``center=None``) and round-trip through the real DTO."""
+    within = {"freq_interval": (float("nan"), float("nan"), float("nan")),
+             "interval_semantics": _real_candidate_interval_semantics(
+                 (float("nan"), float("nan"), float("nan")))}
+    best = _fit_result(n_modes=1, modes=[{"omega0": 5.0}], within_model=within)
+    best.label = "stokes+bg"
+    best.fit_semantics = {"estimator_kind": "data_likelihood_mle", "effective_constraints": [],
+                          "conditioning_fingerprint": "c" * 64}
+    hesse_interval = (4.992, 5.005)
+    outcome_semantics = scan_delivery._outcome_interval_semantics(
+        best=best, selection=SimpleNamespace(pooled=None, fit_selection_semantics=None),
+        interval=None, omega0_profile=None, hesse_interval=hesse_interval, hesse_trusted=True,
+        bayes_interval=None, interval_reliable=False)
+    assert outcome_semantics["selected_interval_quantity"] == "hesse_interval"
+
+    scores = [_score("stokes+bg", log_evidence=-39.0, posterior=1.0)]
+    hyps = {"stokes+bg": _hyp("stokes+bg")}
+    row = scan_delivery._candidate_rows(
+        scores, {"stokes+bg": best}, hyps, best_label="stokes+bg",
+        interval_semantics=outcome_semantics,
+        outcome_values={"interval": None, "omega0_profile": None,
+                        "hesse_interval": hesse_interval, "bayes_interval": None})[0]
+
+    cell = row["mode_intervals"][0]
+    assert cell["source_quantity"] == "hesse_interval"
+    assert cell["low"] == 4.992 and cell["high"] == 5.005 and cell["center"] is None
+    assert cell["authority"]["selected_for_delivery"] is True
+
+    from isar.scene.model import CandidateRow
+    parsed = CandidateRow.from_dict(json.loads(json.dumps(row)))
+    assert parsed.mode_intervals[0].center is None
+    assert parsed.mode_intervals[0].low == pytest.approx(4.992)
+    assert parsed.mode_intervals[0].high == pytest.approx(5.005)
+
+
 def test_a_result_less_candidate_row_stays_aligned_despite_n_modes_defaulting_to_one():
     """Follow-up correction to Major finding 1: the real writer path for a candidate with no fit
     result at all (``r is None`` — an unscored/failed label, the existing 'ghost' shape)

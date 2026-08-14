@@ -481,11 +481,25 @@ def _mode_interval_item(item: dict | None, values, source_quantity: str) -> dict
     """Project one persisted ``isar.interval_semantics/1`` quantity item into the JSON-safe
     ``mode_intervals`` cell (SCENE-4 PR 4.2a), or ``None`` when no real interval survives the
     writer's own availability flag. Every field is copied straight off ``item``/``values`` —
-    nothing here is derived or invented."""
+    nothing here is derived or invented.
+
+    Post-slice-boundary fix: ``values`` is NOT always a ``(lo, center, hi)`` triple — confirmed by
+    reading every producer. The bootstrap freq_interval (``errors.bootstrap._percentile_interval``)
+    and the Bayesian credible interval (``errors.bayes``, ``BayesResult.omega0_interval``) ARE
+    triples; the profile interval (``errors.profile.omega0_profile_interval``) and the fast-tier
+    HESSE interval (``scan_delivery._hesse_interval_and_trust``) are ``(lo, hi)`` PAIRS with no
+    third, "center", entry at all. Minting one (e.g. from the row's ``omega0``) would be exactly
+    the invented semantics this commit refuses — so a pair projects ``center=None`` honestly.
+    """
     if item is None or values is None or not item.get("availability"):
         return None
+    if len(values) not in (2, 3):
+        raise ValueError(f"interval quantity {source_quantity!r} has {len(values)} value(s) "
+                         f"({values!r}) — a persisted interval must be a (lo, hi) pair or a "
+                         "(lo, center, hi) triple, never anything else")
+    center = float(values[1]) if len(values) == 3 else None
     return {
-        "low": float(values[0]), "center": float(values[1]), "high": float(values[2]),
+        "low": float(values[0]), "center": center, "high": float(values[-1]),
         # Strict access (PR 4.2a review, Minor finding 3): every writer that ever builds this
         # item (``errors._interval_semantics_for``'s ``common`` dict, ``_outcome_interval_
         # semantics``'s ``unavailable()`` helper) sets ``nominal_level`` unconditionally — an

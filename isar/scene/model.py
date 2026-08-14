@@ -210,8 +210,12 @@ class ModeInterval:
     ``isar.interval_semantics/1`` record (SCENE-4 PR 4.2a). Nothing here is derived, re-scaled,
     or invented — every field is copied straight off the persisted quantity item and its values.
 
-    ``low``/``center``/``high`` are the same ``(lo, median, hi)`` triple the writer persisted for
-    this quantity, on the ``CandidateRow.omegas`` ω₀ scale. ``source_quantity`` names WHICH
+    ``low``/``high`` are the same interval bound values the writer persisted for this quantity, on
+    the ``CandidateRow.omegas`` ω₀ scale. ``center`` is the writer's own median/point estimate
+    ONLY when its record actually carries a third value — the bootstrap and Bayesian posterior
+    intervals do; the profile-likelihood and fast-tier HESSE intervals are bare ``(lo, hi)`` pairs
+    with no such value, and ``center`` is honestly ``None`` there rather than a value substituted
+    from elsewhere (e.g. the row's ``omega0``). ``source_quantity`` names WHICH
     persisted quantity this came from (``"freq_interval"`` for an ordinary candidate-level
     bootstrap offer; ``"interval"``/``"omega0_profile"``/``"hesse_interval"``/``"bayes_interval"``
     for a winner's realized outcome-level selection) — a literal key off the record, not an
@@ -223,7 +227,7 @@ class ModeInterval:
     """
 
     low: float
-    center: float
+    center: float | None
     high: float
     nominal_level: float
     interval_kind: str | None
@@ -242,7 +246,7 @@ class ModeInterval:
     @classmethod
     def from_dict(cls, d: dict) -> "ModeInterval":
         return cls(
-            low=float(d["low"]), center=float(d["center"]), high=float(d["high"]),
+            low=float(d["low"]), center=_opt_float(d["center"]), high=float(d["high"]),
             nominal_level=float(d["nominal_level"]),
             interval_kind=_opt_str(d.get("interval_kind")),
             inference_paradigm=_opt_str(d.get("inference_paradigm")),
