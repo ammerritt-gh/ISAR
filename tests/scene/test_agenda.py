@@ -20,7 +20,6 @@ from isar.schema.question_policy import resolve_policy
 
 from .test_predicates import P1, alt, cand, cluster, fp, obs, payload
 
-CLASSES = ("acoustic",)
 
 
 def step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=0.5,
@@ -46,7 +45,6 @@ def confirmed_scene(posterior=0.95, omega=5.0):
 
 
 def derive(scene, step_payload=None, **kw):
-    kw.setdefault("catalogue_classes", CLASSES)
     return derive_agenda(scene, step_payload or step(), step_id="discover-1",
                          program_fingerprint="prog-1", **kw)
 
@@ -68,11 +66,18 @@ def test_the_agenda_opens_declared_anchor_questions_and_chains_on_confirmation()
     p = revision.payload
     families = {s["family"] for s in p["specs"]}
     assert {"DiscoverRegion", "ConfirmPresence", "ClassifyIdentity", "EstimateParameter",
-            "TestModelMismatch", "VerifyCompleteness"} <= families
-    # Anchored presence at the declared folds 2.0 and 3.0 (zone_period 1.0 in [2, 3]).
-    anchors = {s["subject"]["anchor"] for s in by_family(revision, "ConfirmPresence")
-               if s["subject"]["anchor"] is not None}
-    assert anchors == {2.0, 3.0}
+            "VerifyCompleteness"} <= families
+    # No unknown-model competitor in this scene: mismatch surveillance is INERT, not an
+    # eternally open question (PR #31 finding C).
+    assert "TestModelMismatch" not in families
+    assert any(n == "mismatch_surveillance_inert"
+               for n, _ in map(tuple, p["derivation_notes"]))
+    # Anchored presence at the declared folds 2.0 and 3.0 (zone_period 1.0 in [2, 3]) —
+    # ONE class-agnostic question per anchor (finding A), never one per catalogue class.
+    anchored = [s for s in by_family(revision, "ConfirmPresence")
+                if s["subject"]["anchor"] is not None]
+    assert sorted(s["subject"]["anchor"] for s in anchored) == [2.0, 3.0]
+    assert all(s["subject"]["catalogue_class"] is None for s in anchored)
     # The confirmed anchor chains: the omega0 estimate (open by ruling 1) and the ZC endpoint
     # question — which here honestly answers INCOMPATIBLE: the arena sits AT the fold and the
     # mode is at 5 meV, so under any declared slope the branch does not reach zero.
@@ -91,8 +96,8 @@ def test_without_declared_zone_geometry_predetermined_openers_are_inert_not_gues
     scene = confirmed_scene()
     scene["sample_knowledge"] = {}
     revision = derive(scene)
-    assert [n for n, _ in map(tuple, revision.payload["derivation_notes"])] \
-        == ["predetermined_openers_inert"]
+    assert "predetermined_openers_inert" in [
+        n for n, _ in map(tuple, revision.payload["derivation_notes"])]
     anchored = [s for s in by_family(revision, "ConfirmPresence")
                 if s["subject"]["anchor"] is not None]
     assert anchored == []
@@ -112,6 +117,131 @@ def test_an_emergent_question_opens_on_the_upper_bound_not_the_retained_mass():
                 if dict(s["policy_provenance"]).get("opened_by") == "emergent"]
     assert len(emergent) == 1
     assert dict(emergent[0]["policy_provenance"])["opener_authority"] == "unresolved"
+    # The subject's ω band is the FROZEN ω tile the mode snapped to, never the whole domain.
+    assert emergent[0]["subject"]["omega_band_meV"] == [5.0, 6.0]
+
+
+def test_two_modes_in_one_q_tile_are_two_emergent_questions():
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(2.2, 8.4)), cand("B")])],
+        footprints=[fp("e:1:d", 2.6)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.95),
+                                      alt([("e:1:d", "B")], 0.05)])])
+    revision = derive(scene)
+    emergent = [s for s in by_family(revision, "ConfirmPresence")
+                if dict(s["policy_provenance"]).get("opened_by") == "emergent"]
+    assert sorted(s["subject"]["omega_band_meV"] for s in emergent) == [[2.0, 3.0],
+                                                                       [8.0, 9.0]]
+
+
+def test_the_omega_tile_quantum_is_identity_bearing():
+    """Changing the frozen quantum re-derives different emergent subjects and IDs."""
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(2.2,)), cand("B")])],
+        footprints=[fp("e:1:d", 2.6)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.95),
+                                      alt([("e:1:d", "B")], 0.05)])])
+    coarse = step()
+    coarse["resolved_policy"] = json.loads(json.dumps(coarse["resolved_policy"]))
+    coarse["resolved_policy"]["thresholds"]["emergent_omega_tile_meV"] = 2.0
+
+    def emergent_ids(revision):
+        return {s["question_id"]: s["subject"]["omega_band_meV"]
+                for s in by_family(revision, "ConfirmPresence")
+                if dict(s["policy_provenance"]).get("opened_by") == "emergent"}
+
+    fine = emergent_ids(derive(scene))
+    wide = emergent_ids(derive(scene, coarse))
+    assert list(fine.values()) == [[2.0, 3.0]] and list(wide.values()) == [[2.0, 4.0]]
+    assert set(fine) != set(wide)
+
+
+def test_joint_cluster_evidence_opens_what_no_single_cluster_could():
+    """Two independent clusters at 0.4 upper each: jointly 0.64 ≥ 0.5 opens the tile's
+    question; per-cluster thresholding would have suppressed exactly this case."""
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.2,)), cand("B")]),
+                      obs("e:2:d", [cand("A", omegas=(5.4,)), cand("B")])],
+        footprints=[fp("e:1:d", 2.55), fp("e:2:d", 2.6)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.4),
+                                      alt([("e:1:d", "B")], 0.6)], cluster_id="c0"),
+                  cluster(["e:2:d"], [alt([("e:2:d", "A")], 0.4),
+                                      alt([("e:2:d", "B")], 0.6)], cluster_id="c1")])
+    revision = derive(scene)
+    emergent = [s for s in by_family(revision, "ConfirmPresence")
+                if dict(s["policy_provenance"]).get("opened_by") == "emergent"]
+    assert len(emergent) == 1
+    assert emergent[0]["subject"]["region_rlu"] == [2.5, 3.0]
+    assert emergent[0]["subject"]["omega_band_meV"] == [5.0, 6.0]
+
+
+def test_presence_is_class_agnostic_and_identity_comes_from_classification():
+    """The two-class-one-mode regression (finding A): one generic mode used to answer every
+    class-specific presence question YES at once. Now there is exactly ONE presence question
+    per anchor, and the class is the classification's ANSWER."""
+    scene = confirmed_scene()
+    scene["observations"][0]["candidates"][0]["identity"] = "acoustic"
+    revision = derive(scene)
+    at_anchor = [s for s in by_family(revision, "ConfirmPresence")
+                 if s["subject"]["anchor"] == 2.0]
+    assert len(at_anchor) == 1
+    classify = by_family(revision, "ClassifyIdentity")
+    assert len(classify) == 1
+    a = assessment_of(revision, classify[0]["question_id"])
+    assert a["status"] == "answered" and dict(a["answer"]) == {"identity": "acoustic"}
+    ids = [s["question_id"] for s in revision.payload["specs"]]
+    assert len(ids) == len(set(ids))
+
+
+def test_connect_track_chains_from_classified_answers():
+    """Two anchors classified as the same class open ONE track whose class came from the
+    scene's answers, with the classify questions as its dependencies."""
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.0,), identity="acoustic"),
+                                    cand("B")]),
+                      obs("e:2:d", [cand("A", omegas=(5.5,), identity="acoustic"),
+                                    cand("B")])],
+        footprints=[fp("e:1:d", 2.0), fp("e:2:d", 3.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.95),
+                                      alt([("e:1:d", "B")], 0.05)], cluster_id="c0"),
+                  cluster(["e:2:d"], [alt([("e:2:d", "A")], 0.95),
+                                      alt([("e:2:d", "B")], 0.05)], cluster_id="c1")],
+        sample_knowledge={"zone_period": 1.0, "dispersion_slope_max": 10.0})
+    revision = derive(scene)
+    tracks = by_family(revision, "ConnectTrack")
+    assert len(tracks) == 1
+    assert tracks[0]["subject"]["catalogue_class"] == "acoustic"
+    classify_ids = {s["question_id"] for s in by_family(revision, "ClassifyIdentity")}
+    assert set(tracks[0]["dependencies"]) <= classify_ids
+
+
+def test_mismatch_opens_only_where_the_scene_can_answer_it():
+    without = derive(confirmed_scene())
+    assert by_family(without, "TestModelMismatch") == []
+
+    with_unknown = confirmed_scene()
+    with_unknown["observations"][0]["candidates"].append(
+        cand("U", omegas=(5.1,), identity="unknown"))
+    with_unknown["clusters"][0]["alternatives"] = [
+        alt([("e:1:d", "A")], 0.9), alt([("e:1:d", "U")], 0.05),
+        alt([("e:1:d", "B")], 0.05)]
+    revision = derive(with_unknown)
+    assert len(by_family(revision, "TestModelMismatch")) == 1
+
+    opted_out = step()
+    opted_out["include_unknown"] = False
+    assert by_family(derive(with_unknown, opted_out), "TestModelMismatch") == []
+
+
+def test_duplicate_question_ids_refuse_derivation_artifacts():
+    from isar.scene.agenda import _assert_unique
+    from isar.scene.questions import PredicateDeclaration, QuestionSpec, QuestionSubject
+    spec = QuestionSpec(family="ConfirmPresence", claim_kind="structural_presence",
+                        subject=QuestionSubject(kind="phenomenon", partition_id=P1),
+                        predicate=PredicateDeclaration(kind="structural_presence", version=1,
+                                                       parameters={"min_mass": 0.9}))
+    with pytest.raises(ValueError, match="duplicate question_id"):
+        _assert_unique([spec, spec])
 
 
 def test_two_partitions_fan_out_and_never_pool():
@@ -138,12 +268,10 @@ def test_two_partitions_fan_out_and_never_pool():
 def test_derivation_is_replay_identical_and_parent_independent(tmp_path):
     scene = confirmed_scene()
     first = build_and_store_agenda(tmp_path, scene, step(), step_id="discover-1",
-                                   program_fingerprint="prog-1",
-                                   catalogue_classes=CLASSES)
+                                   program_fingerprint="prog-1")
     assert first.unchanged is False
     again = build_and_store_agenda(tmp_path, scene, step(), step_id="discover-1",
-                                   program_fingerprint="prog-1",
-                                   catalogue_classes=CLASSES)
+                                   program_fingerprint="prog-1")
     assert again.unchanged is True and again.digest == first.digest
     # The pure derivation never saw the stored parent: same digest with a populated store.
     assert derive(scene).digest == first.digest
@@ -154,7 +282,7 @@ def test_derivation_is_replay_identical_and_parent_independent(tmp_path):
 def test_the_digest_covers_no_parent_and_no_transitions(tmp_path):
     scene = confirmed_scene()
     build_and_store_agenda(tmp_path, scene, step(), step_id="discover-1",
-                           program_fingerprint="prog-1", catalogue_classes=CLASSES)
+                           program_fingerprint="prog-1")
     pointer, stored = AGENDA_STORE.read_current(tmp_path)
     assert {"parent", "written_at", "transitions"}.isdisjoint(stored)
     assert pointer["digest"] == derive(scene).digest
@@ -163,7 +291,7 @@ def test_the_digest_covers_no_parent_and_no_transitions(tmp_path):
 def test_reopening_is_a_transition_outside_the_digest(tmp_path):
     confident = confirmed_scene(posterior=0.95)
     build_and_store_agenda(tmp_path, confident, step(), step_id="discover-1",
-                           program_fingerprint="prog-1", catalogue_classes=CLASSES)
+                           program_fingerprint="prog-1")
     presence = [s for s in by_family(derive(confident), "ConfirmPresence")
                 if s["subject"]["anchor"] == 2.0][0]
     assert assessment_of(derive(confident), presence["question_id"])["status"] == "answered"
@@ -174,7 +302,7 @@ def test_reopening_is_a_transition_outside_the_digest(tmp_path):
     shaken["clusters"][0]["truncated"] = True
     shaken["clusters"][0]["truncation_unbounded"] = True
     build_and_store_agenda(tmp_path, shaken, step(), step_id="discover-1",
-                           program_fingerprint="prog-1", catalogue_classes=CLASSES)
+                           program_fingerprint="prog-1")
     revision = derive(shaken)
     assert assessment_of(revision, presence["question_id"])["status"] == "open"
     reopened = [t for record in read_transitions(tmp_path)
@@ -185,10 +313,10 @@ def test_reopening_is_a_transition_outside_the_digest(tmp_path):
 def test_a_program_revision_dissolves_subjects_as_transitions_never_silently(tmp_path):
     scene = confirmed_scene()
     build_and_store_agenda(tmp_path, scene, step(), step_id="discover-1",
-                           program_fingerprint="prog-1", catalogue_classes=CLASSES)
+                           program_fingerprint="prog-1")
     revised = step(q_start=(5.0, 0.0, 0.0), q_end=(6.0, 0.0, 0.0))
     build_and_store_agenda(tmp_path, scene, revised, step_id="discover-1",
-                           program_fingerprint="prog-2", catalogue_classes=CLASSES)
+                           program_fingerprint="prog-2")
     dissolved = [t for record in read_transitions(tmp_path)
                  for t in record["transitions"] if t["relation"] == "dissolved"]
     assert dissolved and all(t["equivalence"] == "unproven" for t in dissolved)
@@ -335,6 +463,30 @@ def test_a_confirmed_phenomenon_yields_in_progress_with_the_open_estimate_surfac
     assert open_families.get("EstimateParameter", 0) >= 1
     estimate_ids = {s["question_id"] for s in by_family(revision, "EstimateParameter")}
     assert estimate_ids & set(verdict.blocking)
+
+
+def test_a_fully_surveyed_blank_campaign_reaches_complete():
+    """The reachability property PR #31 centres on: with mismatch conditional and presence
+    class-agnostic, a searched-and-empty campaign closes every question it opens (presence
+    answers honest NOs, nothing chains, nothing is eternally open) and the verdict is
+    COMPLETE — completion is reachable whenever the deliberate EstimateParameter openness is
+    not in play."""
+    def empty_arena(ref, coord, cid):
+        return (obs(ref, [cand("A", omegas=(5.0,)), cand("B")]),
+                fp(ref, coord),
+                cluster([ref], [alt([(ref, "A")], 0.02), alt([(ref, "B")], 0.98)],
+                        cluster_id=cid))
+    rows = [empty_arena("e:1:d", 2.0, "c0"), empty_arena("e:2:d", 2.4, "c1"),
+            empty_arena("e:3:d", 2.8, "c2"), empty_arena("e:4:d", 3.0, "c3")]
+    scene = payload(observations=[r[0] for r in rows], footprints=[r[1] for r in rows],
+                    clusters=[r[2] for r in rows],
+                    sample_knowledge={"zone_period": 1.0})
+    revision = derive(scene)
+    statuses = {a["status"] for a in revision.payload["assessments"]}
+    assert statuses == {"answered"}
+    verdict = evaluate_agenda(revision.payload)
+    assert verdict.state == "complete"
+    assert verdict.blocking == ()
 
 
 def test_footprint_quantified_nulls_feed_completeness_through_closed_questions():

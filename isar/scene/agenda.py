@@ -41,7 +41,8 @@ from collections import Counter
 from dataclasses import dataclass
 
 from .model import canonical_bytes, digest_bytes, fingerprint
-from .predicates import EVALUATORS, cluster_authority, evaluate_predicate, mass_interval
+from .predicates import (
+    EVALUATORS, cluster_authority, combine_existential, evaluate_predicate, mass_interval)
 from .questions import (
     Blocker, PredicateDeclaration, QuestionAssessment, QuestionSpec, QuestionSubject,
     scene_partitions, snap_tile, validate_dependency_dag)
@@ -110,34 +111,81 @@ def _zc_anchors(scene_payload: dict, region: tuple[float, float]) -> tuple[float
     return tuple(round(n * period, 9) for n in range(first, last + 1))
 
 
-def _presence_upper_bound(cluster: dict, scan_ref: str, candidates_of, band) -> float:
-    """Upper posterior bound that ``scan_ref`` carries a placeable in-band mode — the opener's
-    fail-open side: an unresolved cluster has upper 1.0 and OPENS the question."""
-    lane, log_q = cluster_authority(cluster)
-    if lane == "unresolved":
-        return 1.0
-    mass = 0.0
-    for alternative in cluster.get("alternatives") or ():
-        for ref, label in alternative.get("assignment") or ():
-            if ref != scan_ref:
-                continue
-            row = candidates_of.get(ref, {}).get(label)
-            if row is None:
-                continue
-            omegas = row.get("omegas") or []
-            for component in row.get("components") or ():
-                if component.get("kind") != "mode":
+def _weakest_lane(lanes) -> str:
+    for lane in ("unresolved", "bounded", "exact"):
+        if lane in lanes:
+            return lane
+    return "exact"
+
+
+def _assert_unique(specs) -> None:
+    """Refuse duplicate question IDs — two specs claiming one semantic question would make
+    dependency, evaluation, and replay semantics depend on dict-overwrite order (PR #31
+    review, finding B). Checked before DAG validation, before evaluation, and again at
+    payload assembly."""
+    seen: dict[str, str] = {}
+    for spec in specs:
+        label = f"{spec.family}/{spec.claim_kind}"
+        if spec.question_id in seen:
+            raise ValueError(
+                f"duplicate question_id {spec.question_id} ({seen[spec.question_id]} vs "
+                f"{label}) — two specs claim one semantic question")
+        seen[spec.question_id] = label
+
+
+def _emergent_tiles(clusters, coord_of, candidates_of, *, spacing: float,
+                    omega_quantum: float, domain, covered_q, threshold: float) -> dict:
+    """``(q tile, ω tile) -> (combined interval, weakest lane)`` for tiles whose JOINT
+    cross-cluster upper bound reaches the opener threshold.
+
+    Both quanta are frozen program policy (the identity contract): a mode's evidence lands in
+    the ω tile its |ω| snaps to, so two modes at 2 and 8 meV in one q tile are two questions,
+    and changing ``emergent_omega_tile_meV`` re-derives different subjects. Evidence for one
+    tile COMBINES across independent clusters before thresholding (two 0.4 uppers jointly
+    open a 0.64 existential proposition) — per-cluster thresholding would suppress exactly
+    the joint case. An unresolved cluster contributes the vacuous ``(0, 1)`` on the tiles its
+    retained alternatives place modes in — fail-open where there is a concrete ω hypothesis;
+    the everywhere-else omitted mass is DiscoverRegion's coverage question, not an emergent
+    presence question.
+    """
+    evidence: dict[tuple, list] = {}
+    for cluster in clusters:
+        lane, log_q = cluster_authority(cluster)
+        masses: dict[tuple, float] = {}
+        for alternative in cluster.get("alternatives") or ():
+            posterior = alternative.get("posterior") or 0.0
+            tiles_hit = set()
+            for scan_ref, label in alternative.get("assignment") or ():
+                coord = coord_of.get(scan_ref)
+                if coord is None:
                     continue
-                slot = component.get("slot")
-                omega = omegas[slot] if isinstance(slot, int) and 0 <= slot < len(omegas) \
-                    else None
-                if omega is not None and (band is None or band[0] <= abs(omega) <= band[1]):
-                    mass += alternative.get("posterior") or 0.0
-                    break
-            else:
-                continue
-            break
-    return mass_interval(mass, log_q)[1]
+                q_tile = snap_tile(coord, spacing)
+                if q_tile in covered_q:
+                    continue
+                row = candidates_of.get(scan_ref, {}).get(label)
+                if row is None:
+                    continue
+                omegas = row.get("omegas") or []
+                for component in row.get("components") or ():
+                    if component.get("kind") != "mode":
+                        continue
+                    slot = component.get("slot")
+                    omega = (omegas[slot]
+                             if isinstance(slot, int) and 0 <= slot < len(omegas) else None)
+                    if omega is None or not domain[0] <= abs(omega) <= domain[1]:
+                        continue
+                    tiles_hit.add((q_tile, snap_tile(abs(omega), omega_quantum)))
+            for tile in tiles_hit:
+                masses[tile] = masses.get(tile, 0.0) + posterior
+        for tile, mass in masses.items():
+            interval = (0.0, 1.0) if lane == "unresolved" else mass_interval(mass, log_q)
+            evidence.setdefault(tile, []).append((interval, lane))
+    out = {}
+    for tile, contributions in evidence.items():
+        combined = combine_existential([interval for interval, _ in contributions])
+        if combined[1] >= threshold:
+            out[tile] = (combined, _weakest_lane([lane for _, lane in contributions]))
+    return out
 
 
 def _spec(family, kind, subject, params, *, priority, deps=(), provenance=()):
@@ -149,16 +197,18 @@ def _spec(family, kind, subject, params, *, priority, deps=(), provenance=()):
 
 
 def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
-                  program_fingerprint: str, catalogue_classes: tuple[str, ...] = (),
-                  exhaustion_evidence: tuple = (),
+                  program_fingerprint: str, exhaustion_evidence: tuple = (),
                   generator_registry_fingerprint: str | None = None) -> AgendaRevision:
     """Derive the agenda for one frozen discover step against one scene revision. Pure.
 
-    ``catalogue_classes`` is the class vocabulary of the step's frozen catalogue profile,
-    resolved by the CALLER (4.2 binds the real catalogue; tests pass literals) — the agenda
-    layer reads the profile by reference only. ``exhaustion_evidence`` are
-    :class:`QuestionExhaustion` proofs; anything stale against this derivation is rejected,
-    never applied.
+    Presence is CLASS-AGNOSTIC (PR #31 finding A, owner's door 2): `structural_presence`
+    deliberately ignores identity, so per-class copies at one anchor were one question
+    wearing N labels — one generic mode answered every class YES simultaneously. One
+    ConfirmPresence opens per anchor/tile; ClassifyIdentity chains per confirmed tile and its
+    ANSWER carries the class; ConnectTrack chains per classify-answered class. The catalogue
+    class vocabulary re-enters in 4.2, when the opening book gives classes genuinely distinct
+    declared findability. ``exhaustion_evidence`` are :class:`QuestionExhaustion` proofs;
+    anything stale against this derivation is rejected, never applied.
     """
     policy = step_payload["resolved_policy"]
     thresholds = policy["thresholds"]
@@ -166,6 +216,7 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
     region = _region_axis_interval(step_payload)
     spacing = float(step_payload["region"]["maximum_initial_spacing_rlu"])
     domain = tuple(step_payload["energy"]["intrinsic_omega_domain_meV"])
+    include_unknown = step_payload["include_unknown"] is True
     scene_digest = fingerprint(scene_payload)
     frame = (("catalogue_profile", step_payload["catalogue_profile"]),
              ("program_region", f"{region[0]}..{region[1]}"),
@@ -198,69 +249,83 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
             notes.append(("predetermined_openers_inert",
                           "no zone_period declared; anchored ConfirmPresence openers cannot "
                           "be placed from declared knowledge"))
-        for catalogue_class in sorted(catalogue_classes):
-            for anchor in anchors:
-                specs.append(_spec(
-                    "ConfirmPresence", "structural_presence",
-                    QuestionSubject(kind="phenomenon", region_rlu=snap_tile(anchor, spacing),
-                                    omega_band_meV=domain, catalogue_class=catalogue_class,
-                                    anchor=anchor, frame=frame, **base),
-                    {"min_mass": thresholds["confirm_presence_min_mass"]},
-                    priority=priorities["ConfirmPresence"],
-                    deps=(discover.question_id,),
-                    provenance=(("opened_by", "declared_zc_anchor"),)))
+        for anchor in anchors:
+            specs.append(_spec(
+                "ConfirmPresence", "structural_presence",
+                QuestionSubject(kind="phenomenon", region_rlu=snap_tile(anchor, spacing),
+                                omega_band_meV=domain, anchor=anchor, frame=frame, **base),
+                {"min_mass": thresholds["confirm_presence_min_mass"]},
+                priority=priorities["ConfirmPresence"],
+                deps=(discover.question_id,),
+                provenance=(("opened_by", "declared_zc_anchor"),)))
 
-        # Emergent per-tile openers: upper bound decides (fail open), tiles snapped to the
-        # frozen spacing grid, one question per tile however many scans land in it.
         if pid is not None:
-            covered = {spec.subject.region_rlu for spec in specs
-                       if spec.family == "ConfirmPresence"
-                       and spec.subject.partition_id == pid}
-            emergent: dict[tuple, tuple] = {}
+            # Emergent openers per (q tile, ω tile), joint evidence across clusters.
+            covered_q = {spec.subject.region_rlu for spec in specs
+                         if spec.family == "ConfirmPresence"
+                         and spec.subject.partition_id == pid}
             coord_of = {fp["scan_ref"]: fp["axis_coordinate"] for fp in footprints
                         if fp.get("partition_id") == pid
                         and fp.get("axis_coordinate") is not None}
-            for cluster in clusters:
-                for scan_ref in cluster.get("scan_refs") or ():
-                    coord = coord_of.get(scan_ref)
-                    if coord is None:
-                        continue
-                    tile = snap_tile(coord, spacing)
-                    if tile in covered or tile in emergent:
-                        continue
-                    upper = _presence_upper_bound(cluster, scan_ref, candidates_of, domain)
-                    if upper >= thresholds["emergent_open_min_mass"]:
-                        lane, _ = cluster_authority(cluster)
-                        emergent[tile] = (upper, lane)
-            for tile in sorted(emergent):
-                upper, lane = emergent[tile]
+            in_pid = [c for c in clusters
+                      if any(r in coord_of for r in c.get("scan_refs") or ())]
+            emergent = _emergent_tiles(
+                in_pid, coord_of, candidates_of, spacing=spacing,
+                omega_quantum=thresholds["emergent_omega_tile_meV"], domain=domain,
+                covered_q=covered_q, threshold=thresholds["emergent_open_min_mass"])
+            for q_tile, omega_tile in sorted(emergent):
+                combined, lane = emergent[(q_tile, omega_tile)]
                 specs.append(_spec(
                     "ConfirmPresence", "structural_presence",
-                    QuestionSubject(kind="phenomenon", partition_id=pid, region_rlu=tile,
-                                    omega_band_meV=domain, frame=frame),
+                    QuestionSubject(kind="phenomenon", partition_id=pid, region_rlu=q_tile,
+                                    omega_band_meV=omega_tile, frame=frame),
                     {"min_mass": thresholds["confirm_presence_min_mass"]},
                     priority=priorities["ConfirmPresence"],
                     deps=(discover.question_id,),
                     provenance=(("opened_by", "emergent"),
                                 ("opener_authority", lane),
-                                ("opener_upper_bound", round(upper, 9)))))
+                                ("opener_interval",
+                                 f"{combined[0]:.9g}..{combined[1]:.9g}"))))
 
-        specs.append(_spec(
-            "TestModelMismatch", "mismatch_assessed",
-            QuestionSubject(kind="model", region_rlu=region, omega_band_meV=domain,
-                            frame=frame, **base),
-            {"min_mass": thresholds["mismatch_min_mass"]},
-            priority=priorities["TestModelMismatch"], deps=(discover.question_id,)))
+            # TestModelMismatch is CONDITIONAL (PR #31 finding C): its evaluator can only
+            # answer from an explicit unknown-model competitor, and its absence-blocker is
+            # model-authority — non-durable, unclosable. Opening it unconditionally made
+            # ordinary campaigns impossible to complete. It opens only where the scene can
+            # actually represent the answer, gated by the frozen include_unknown.
+            # Judged over every arena IN THE PARTITION, coordinate or not — an unknown
+            # competitor on an unplaceable arena is still representable evidence.
+            pid_refs = {fp["scan_ref"] for fp in footprints
+                        if fp.get("partition_id") == pid}
+            has_unknown = any(
+                row.get("identity") == "unknown"
+                for ref in pid_refs for row in candidates_of.get(ref, {}).values())
+            if include_unknown and has_unknown:
+                specs.append(_spec(
+                    "TestModelMismatch", "mismatch_assessed",
+                    QuestionSubject(kind="model", partition_id=pid, region_rlu=region,
+                                    omega_band_meV=domain, frame=frame),
+                    {"min_mass": thresholds["mismatch_min_mass"]},
+                    priority=priorities["TestModelMismatch"],
+                    deps=(discover.question_id,)))
+            else:
+                notes.append(("mismatch_surveillance_inert",
+                              f"partition {pid}: "
+                              + ("include_unknown is false"
+                                 if not include_unknown
+                                 else "no explicit unknown-model competitor in the scene")))
+        else:
+            notes.append(("mismatch_surveillance_inert",
+                          "unmeasured workspace: no competitor evidence can exist yet"))
 
     # First evaluation pass: everything opened so far, in dependency order.
+    _assert_unique(specs)
     validate_dependency_dag(specs)
     assessments = _evaluate_in_order(specs, scene_payload)
 
     # Chained openers per confirmed phenomenon (regime 1): ClassifyIdentity and
-    # EstimateParameter auto-open, anchored subjects additionally ask the endpoint question,
-    # and a class with two or more confirmed anchors asks for its connecting track.
+    # EstimateParameter auto-open; anchored subjects additionally ask the endpoint question.
+    # One presence per tile ⇒ one child set per tile (finding B, structurally).
     chained: list[QuestionSpec] = []
-    confirmed_anchor_tiles: dict[tuple, list] = {}
     for spec in [s for s in specs if s.family == "ConfirmPresence"]:
         assessment = assessments.get(spec.question_id)
         if assessment is None or assessment.status != "answered" \
@@ -291,25 +356,43 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
                     frame=subject.frame),
                 {"requested_zc_confidence": thresholds["requested_zc_confidence"]},
                 priority=priorities["EstimateParameter"], deps=(spec.question_id,)))
-            key = (subject.partition_id, subject.catalogue_class)
-            confirmed_anchor_tiles.setdefault(key, []).append(
-                (subject.region_rlu, spec.question_id))
-    for (pid, catalogue_class), tiles in sorted(
-            confirmed_anchor_tiles.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):
-        if catalogue_class is None or len(tiles) < 2:
+    if chained:
+        specs.extend(chained)
+        _assert_unique(specs)
+        validate_dependency_dag(specs)
+        assessments.update(_evaluate_in_order(chained, scene_payload,
+                                              prior=dict(assessments)))
+
+    # Third pass: ConnectTrack per classify-ANSWERED class — the class comes from the
+    # identity ANSWER, never from an opener label (finding A: "per class" stays honest
+    # because the scene, not the vocabulary, said what is where).
+    classified: dict[tuple, list] = {}
+    for spec in [s for s in specs if s.family == "ClassifyIdentity"]:
+        assessment = assessments.get(spec.question_id)
+        if assessment is None or assessment.status != "answered":
+            continue
+        identity = dict(assessment.answer).get("identity")
+        if identity and identity != "unknown":
+            classified.setdefault((spec.subject.partition_id, identity), []).append(
+                (spec.subject.region_rlu, spec.question_id))
+    tracks: list[QuestionSpec] = []
+    for (pid, identity), tiles in sorted(classified.items(),
+                                         key=lambda kv: (str(kv[0][0]), kv[0][1])):
+        if len(tiles) < 2:
             continue
         tiles.sort()
-        chained.append(_spec(
+        tracks.append(_spec(
             "ConnectTrack", "track_connected", QuestionSubject(
-                kind="track", partition_id=pid, catalogue_class=catalogue_class,
+                kind="track", partition_id=pid, catalogue_class=identity,
                 endpoint_a_rlu=tiles[0][0], endpoint_b_rlu=tiles[-1][0], frame=frame),
             {"min_mass": thresholds["connect_track_min_mass"]},
             priority=priorities["ConnectTrack"],
             deps=tuple(qid for _, qid in tiles)))
-    if chained:
-        specs.extend(chained)
+    if tracks:
+        specs.extend(tracks)
+        _assert_unique(specs)
         validate_dependency_dag(specs)
-        assessments.update(_evaluate_in_order(chained, scene_payload,
+        assessments.update(_evaluate_in_order(tracks, scene_payload,
                                               prior=dict(assessments)))
 
     # VerifyCompleteness last, depending on every other question in its partition.
@@ -328,13 +411,13 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
         specs.append(verify)
         assessments[verify.question_id] = evaluate_predicate(
             verify, scene_payload, prior_assessments=assessments)
+    _assert_unique(specs)
     validate_dependency_dag(specs)
 
     manifest = {"opener_version": OPENER_VERSION, "matcher_version": MATCHER_VERSION,
                 "evaluator_versions": {kind: version
                                        for kind, (version, _) in sorted(EVALUATORS.items())},
-                "generator_registry_fingerprint": generator_registry_fingerprint,
-                "catalogue_classes": sorted(catalogue_classes)}
+                "generator_registry_fingerprint": generator_registry_fingerprint}
 
     def payload_of(assessment_map, *, basis_digest=None, evidence=()):
         return {
@@ -442,7 +525,6 @@ def _evaluate_in_order(specs, scene_payload, prior=None) -> dict[str, QuestionAs
 # ----------------------------------------------------------------------------
 def build_and_store_agenda(report_dir, scene_payload: dict, step_payload: dict, *,
                            step_id: str, program_fingerprint: str,
-                           catalogue_classes: tuple[str, ...] = (),
                            exhaustion_evidence: tuple = (),
                            generator_registry_fingerprint: str | None = None,
                            expected_parent=UNSET, source: str = "driver") -> StoreResult:
@@ -457,7 +539,7 @@ def build_and_store_agenda(report_dir, scene_payload: dict, step_payload: dict, 
     previous = AGENDA_STORE.read_current(report_dir)
     revision = derive_agenda(
         scene_payload, step_payload, step_id=step_id,
-        program_fingerprint=program_fingerprint, catalogue_classes=catalogue_classes,
+        program_fingerprint=program_fingerprint,
         exhaustion_evidence=exhaustion_evidence,
         generator_registry_fingerprint=generator_registry_fingerprint)
     result = AGENDA_STORE.write_revision(report_dir, revision,
