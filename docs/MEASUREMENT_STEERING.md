@@ -757,13 +757,18 @@ through the LLM.
 
 The campaign contract is `isar.campaign-program/1` (`isar/schema/campaign_program.py`). A program
 declares an ordered list of steps; each carries its own step schema, `isar.campaign-step.targeted/1`
-for the per-point-tolerance objective above and `isar.campaign-step.discover_and_map/1` for
-target-free discovery. This build parses, validates and freezes both kinds, but **executes only a
-single `targeted` step**: a discovery step, or a program with more than one step, is a well-formed
-program this build declines to run and exits **7** — deliberately distinct from the malformed-input
-exit **2**, so an operator script can tell "not built yet" from "written wrong". Sequencing and
-discovery execution land in SCENE-4. The same refusal applies before `--compile-only` writes its
-output, so compiling a discovery program currently exits 7 rather than freezing it.
+for the per-point-tolerance objective above and `isar.campaign-step.discover_and_map/2` for
+target-free discovery (SCENE-4 PR 4.1: the `/2` reader requires every effective field explicitly —
+region kind, endpoints, spacing, ω domain, catalogue profile, deliverables, `include_unknown`, and
+the frozen `isar.question-policy/1` `resolved_policy` block the compiler resolves as user ask >
+card guidelines > named defaults; `/1` is retired by name and an untagged compact discover payload
+is authoring input the reader refuses toward the compiler). This build parses, validates and
+freezes both kinds, but **executes only a single `targeted` step**: a discovery step, or a program
+with more than one step, is a well-formed program this build declines to run and exits **7** —
+deliberately distinct from the malformed-input exit **2**, so an operator script can tell "not
+built yet" from "written wrong". The same refusal applies before `--compile-only` writes its
+output, so compiling a discovery program still exits 7 rather than freezing it; discovery
+execution and its compile path land with the SCENE-4 driver wiring (4.3).
 
 The retired `isar.objective/1`, `isar.objective/2`, `isar.objective-envelope/1`, and
 `isar.objective-envelope/2` documents are refused with an error naming their replacement. There is no

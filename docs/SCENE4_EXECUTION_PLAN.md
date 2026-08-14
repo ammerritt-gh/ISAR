@@ -366,10 +366,12 @@ reads it to steer.
   agenda change at different rates and Bayesian answers can reopen:
   - `QuestionSpec` — immutable: stable ID, family, subject, predicate declaration,
     priority/dependencies, generator IDs, policy provenance.
-  - `QuestionAssessment` — per scene revision: status for THIS revision
-    (`open/answered/overtaken/unresolvable`), answer or posterior bounds, blockers, authority,
-    reasons. A question answered at scene N may legitimately reopen at N+1; `overtaken` carries
-    an explicit successor/dissolution record.
+  - `QuestionAssessment` — per scene revision: status for THIS revision. As delivered (H17):
+    the digested snapshot carries `open/answered/unresolvable` only — each a pure function of
+    the derivation inputs — while `overtaken`/`dissolved`/`reopened` are typed HISTORY
+    transitions (relations between two agendas, recorded outside the digest at flip time,
+    with successor/dissolution records and `equivalence_unproven` markers). A question
+    answered at scene N may legitimately reopen at N+1.
   - `AgendaRevision` — content-addressed (SCENE-3 store pattern): program revision, scene
     digest, derivation manifest, specs, current assessments, lineage.
 - **`QuestionSubject` contract before families:** canonical semantic identity + how a subject

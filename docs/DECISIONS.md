@@ -2087,6 +2087,69 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   factor's influence is no longer absorbed into presence's ablation entry.
   **(e)** The expected_two relaxation landed in the same slice is **H15**.
 
+- **H17.** (2026-08-14, In force; SCENE-4 PR 4.1) **The question + agenda core — three
+  objects, semantic identity, authority-aware predicates, a fully frozen step contract, and a
+  verdict with no beam directive.**
+  **(a) Three objects, not one.** `QuestionSpec` (immutable identity + declarative versioned
+  predicate + dependencies + generator-ID references), `QuestionAssessment` (one scene
+  revision's answer state), `AgendaRevision` (content-addressed snapshot, scene-store
+  pattern). `question_id = fingerprint({family, claim kind, subject})` and NOTHING else —
+  thresholds, policy provenance, program fingerprint and scene content stay out, so re-freezes
+  and new scans never re-key a question; subjects are built from frozen declarations and
+  partition identity, never cluster indices, component IDs, or scan refs; external references
+  are `(agenda_digest, question_id)`. Program-scoped subjects fan out per compatible
+  partition; nothing pools probability across physical partitions.
+  **(b) Snapshot and history are different objects.** The digested payload carries only
+  `open`/`answered`/`unresolvable` — each a pure function of the derivation inputs (scene
+  digest, frozen step, policy, manifest, exhaustion evidence). `overtaken`/`dissolved`/
+  `reopened` are relations BETWEEN agendas: typed transition records on
+  `report/agenda/transitions.jsonl`, outside the digest, written at flip time. A lattice-epoch
+  change dissolves with `equivalence_unproven` — no automatic re-anchoring without the
+  deferred transform contract (DESIGN_GOALS: carry the token, never build
+  transform-and-reuse). `derive_agenda` is pure and parent-independent; there is no metadata
+  short-circuit — the store's byte comparison reports `unchanged`.
+  **(c) Predicates answer only from variables the scene represents.** Authority lanes
+  `exact`/`bounded`/`unresolved` from persisted truncation flags (lost bounds and capped
+  linkage fail closed); log-space adversarial omitted-mass intervals (a huge finite bound is
+  honestly vacuous, and a vacuous bound answers nothing); cross-cluster claims multiply as
+  independent factors. Structural presence needs no identity semantics; ClassifyIdentity
+  answers only from explicit identity alternatives (`identity=None` is `unclassified_mass`,
+  never a physical unknown); TestModelMismatch needs an explicit unknown-model competitor;
+  **EstimateParameter never closes in v1** (owner ruling 2026-08-14, superseding the same-day
+  mixture-spread-plus-floor ruling after the between-vs-within variance counterexample: a
+  floor is a lower bound and cannot certify above itself; the spread is a diagnostic,
+  `within_candidate_uncertainty_unavailable` the blocker, per-candidate interval persistence a
+  scheduled 4.2/4.3 re-baseline — with the stated consequence that `complete` is unreachable
+  for phenomenon-bearing campaigns until it lands); the ZC endpoint is a bounded compatibility
+  assessment under declared slope support with `maximum_justifiable_zc_confidence = 0.0` in
+  v1; VerifyCompleteness is frame-relative and never reads the leader-only visibility rows.
+  Blockers are typed (durable / transient / model-authority); only durable can feed
+  unresolvable closure, which additionally requires a `QuestionExhaustion` proof fresh on
+  every comparand (`basis_agenda_digest` = the same-pass exhaustion-free derivation digest,
+  scene digest, registry fingerprint) — stale proofs are rejected naming the failing
+  comparand, and exhaustion without a durable blocker is a `generator_defect`, never a
+  closure.
+  **(d) Policy is frozen once, with three authority postures.** `isar.question-policy/1`
+  (`isar/schema/question_policy.py`): target thresholds (user ask > card guidelines > named
+  defaults; the card `[questions]` lane ships wired but empty by owner ruling),
+  identity-bearing derivation constants (`emergent_omega_tile_meV`, frozen for the program's
+  life — changing one is a program revision, so a threshold re-freeze can never silently
+  re-ID emergent questions), and capability floors/ceilings a user ask may strengthen but
+  never weaken (refused, not clamped). Every value is a named provisional v1 declaration,
+  SCENE-7-calibrated. The discover step is `isar.campaign-step.discover_and_map/2`: the
+  reader requires EVERY effective field explicitly (no read-time defaulting), `/1` is retired
+  by name through a retired→replacement mapping, and unsupported staleness modes or emergent
+  policies refuse rather than being accepted and ignored.
+  **(e) The verdict carries no beam directive.** `evaluate_agenda` returns `complete` /
+  `in_progress` / `incomplete_over_budget` only (four-reasons law; completion ≠ beam-idle):
+  completion requires every spec closed AND VerifyCompleteness answering yes; a missing
+  completeness question is a derivation defect, never implicit completion; unresolvable
+  closures never block completion and surface as consultation-request records (the channel is
+  4.3); `complete` beats budget on the same delivery. The tracker's targeted `evaluate_stop`
+  is untouched beside it until SCENE-6. Offline by design: no driver wiring (4.3), no
+  generator bindings or exhaustion producers (4.2) — no live derivation can close unresolvable
+  in this slice, asserted by test.
+
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:
 user-facing campaign report (deferred until post-testing); renegotiation protocol (O3, future);
 tas4d engine choice (open question, decide when scheduled).
