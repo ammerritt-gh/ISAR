@@ -33,7 +33,6 @@ function-local import.
 """
 from __future__ import annotations
 
-import hashlib
 import math
 from dataclasses import dataclass
 from typing import Callable
@@ -43,7 +42,10 @@ import numpy as np
 from isar.analyze import phonon
 from isar.analyze.components import ConstantBackground, Elastic, PhononDHO, QuasiElastic
 from isar.analyze.structures import Hypothesis
-from isar.schema.action_identity import canonical_json
+from isar.schema import placement as _placement
+from isar.schema.placement import (  # noqa: F401 — re-exported for existing callers/tests
+    FALLBACK_RULE_KEY, PLACEMENT_RULES, PLACEMENT_RULES_SCHEMA, PlacementRule, ResolvedPlacement,
+    _DEFAULT_PLACEMENT_RULES)
 
 CATALOGUE_SCHEMA = "isar.phenomenon-catalogue/1"
 DEFAULT_PROFILE = "isar.catalogue.default/1"
@@ -584,102 +586,17 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=()) -> PriorBu
 # never label a measured feature, gate coverage, or touch a posterior. SCENE-5 replaces the encoded
 # conclusions with the real EIG computation; until then a rule is a named provisional v1 guess,
 # SCENE-7-calibrated.
-PLACEMENT_RULES_SCHEMA = "isar.placement-rules/1"
-FALLBACK_RULE_KEY = "__fallback__"
-
-
-@dataclass(frozen=True)
-class PlacementRule:
-    """One declared ordering hint for a catalogue class — never a measurement label.
-
-    ``anchor_kind`` names WHERE in reduced-q the class is expected to be findable
-    (``"zone_centre"`` / ``"zone_boundary"`` / ``"uniform"`` / ``"not_applicable"`` — no anchor
-    preference, e.g. a null/background entry). ``omega_band_hint_meV`` is an optional
-    ``(lo, hi)`` energy-transfer band the class is expected to show up in, or ``None`` when no
-    generic band is honest (material-specific). ``order_weight`` ranks candidates against each
-    other within one survey step (higher = earns an earlier look); it is not a probability and
-    carries no posterior meaning. ``note`` records the physics reasoning, in prose, for the value.
-    """
-
-    anchor_kind: str
-    omega_band_hint_meV: tuple[float, float] | None
-    order_weight: float
-    note: str
-
-    _VALID_ANCHORS = ("zone_centre", "zone_boundary", "uniform", "not_applicable")
-
-    def __post_init__(self) -> None:
-        if self.anchor_kind not in self._VALID_ANCHORS:
-            raise ValueError(f"placement rule anchor_kind {self.anchor_kind!r} not in "
-                             f"{self._VALID_ANCHORS}")
-        if self.omega_band_hint_meV is not None:
-            lo, hi = self.omega_band_hint_meV
-            if not (math.isfinite(lo) and math.isfinite(hi) and lo <= hi):
-                raise ValueError(f"placement rule omega_band_hint_meV must be a finite (lo, hi) "
-                                 f"with lo <= hi, got {self.omega_band_hint_meV!r}")
-
-
-@dataclass(frozen=True)
-class ResolvedPlacement:
-    """One class's placement rule as resolved for a profile, plus whether it fell through to the
-    profile-level fallback (declared explicitly, never synthesized)."""
-
-    rule: PlacementRule
-    used_fallback: bool
-
-
-# The default profile's rules. Every class in DEFAULT_CATALOGUE gets an explicit row — no class
-# is left to fall through silently. Values are named provisional v1, SCENE-7-calibrated.
-_DEFAULT_PLACEMENT_RULES: dict[str, PlacementRule] = {
-    "acoustic": PlacementRule(
-        anchor_kind="zone_centre",
-        omega_band_hint_meV=(0.0, 5.0),
-        order_weight=1.0,
-        note="acoustic ω → 0 at the zone centre: strongest, best-predicted, extrapolatable from "
-             "one detection — but offset from the elastic/Bragg line, which is a modelled "
-             "phenomenon in its own right, not this anchor. Not zone boundary: weaker, poorly "
-             "predicted there.",
-    ),
-    "optic": PlacementRule(
-        anchor_kind="zone_centre",
-        omega_band_hint_meV=None,
-        order_weight=0.6,
-        note="optic branches are typically strong and flat near the zone centre (transportable "
-             "over a wide q range per the catalogue's transport declaration), but the ω location "
-             "is material-specific — no generic band hint is honest without a calibrated prior.",
-    ),
-    "elastic": PlacementRule(
-        anchor_kind="not_applicable",
-        omega_band_hint_meV=None,
-        order_weight=0.0,
-        note="static elastic scattering sits at E=0 in every scan by construction — there is no "
-             "placement DECISION to make, its presence is read off the same window every time.",
-    ),
-    "quasielastic": PlacementRule(
-        anchor_kind="uniform",
-        omega_band_hint_meV=None,
-        order_weight=0.4,
-        note="relaxational dynamics centred at E=0 with a card-declared width, not zone-anchored: "
-             "no generic q-preference is honest, so ordering treats it as uniform in q.",
-    ),
-    "unknown": PlacementRule(
-        anchor_kind="uniform",
-        omega_band_hint_meV=None,
-        order_weight=0.3,
-        note="an unassigned resolved excursion carries no branch identity yet — a generic "
-             "discovery rule: look everywhere, modest priority relative to the named classes.",
-    ),
-    "bg_only": PlacementRule(
-        anchor_kind="not_applicable",
-        omega_band_hint_meV=None,
-        order_weight=0.0,
-        note="background alone is not a discovery target — nothing to place.",
-    ),
-}
-
-PLACEMENT_RULES: dict[str, dict[str, PlacementRule]] = {
-    DEFAULT_PROFILE: _DEFAULT_PLACEMENT_RULES,
-}
+#
+# The registry itself (``PlacementRule``, ``PLACEMENT_RULES``, the manifest/fingerprint
+# functions) moved to :mod:`isar.schema.placement` in the A5 boundary repair, so ``isar.drive``
+# can read placement data without crossing the Stage II<->III wall
+# (``tests/drive/test_boundary.py``). What stays here is the class-list-aware wrapper: this
+# module is the one that knows which classes a profile actually declares (``PROFILES``), so the
+# completeness/orphan validation belongs here, not in the class-list-blind schema module.
+def _placement_class_names(profile: str) -> list[str]:
+    if profile not in PROFILES:
+        raise KeyError(f"no catalogue profile {profile!r}")
+    return [d.name for d in PROFILES[profile]]
 
 
 def placement_rules(profile: str = DEFAULT_PROFILE) -> dict[str, ResolvedPlacement]:
@@ -690,55 +607,15 @@ def placement_rules(profile: str = DEFAULT_PROFILE) -> dict[str, ResolvedPlaceme
     one. An unknown catalogue profile, an unregistered placement-rule profile, or a class with
     neither an explicit row nor a declared fallback all raise loudly — never silent synthesis.
     """
-    if profile not in PROFILES:
-        raise KeyError(f"no catalogue profile {profile!r}")
-    if profile not in PLACEMENT_RULES:
-        raise KeyError(f"no placement rules registered for catalogue profile {profile!r}")
-    rules_for_profile = PLACEMENT_RULES[profile]
-    # A rule row naming no class in the profile is a typo or a stale registration, not spare
-    # configuration: it would silently never resolve, so refuse it loudly instead.
-    orphans = set(rules_for_profile) - {FALLBACK_RULE_KEY} - {d.name for d in PROFILES[profile]}
-    if orphans:
-        raise KeyError(f"placement rules for profile {profile!r} name classes the profile does "
-                       f"not declare: {sorted(orphans)}")
-    fallback = rules_for_profile.get(FALLBACK_RULE_KEY)
-    resolved: dict[str, ResolvedPlacement] = {}
-    for definition in PROFILES[profile]:
-        name = definition.name
-        if name in rules_for_profile:
-            resolved[name] = ResolvedPlacement(rules_for_profile[name], used_fallback=False)
-        elif fallback is not None:
-            resolved[name] = ResolvedPlacement(fallback, used_fallback=True)
-        else:
-            raise KeyError(f"catalogue class {name!r} in profile {profile!r} has no placement "
-                           f"rule and the profile declares no {FALLBACK_RULE_KEY!r} fallback")
-    return resolved
-
-
-def _placement_rule_dict(rule: PlacementRule, used_fallback: bool) -> dict:
-    return {
-        "anchor_kind": rule.anchor_kind,
-        "omega_band_hint_meV": (list(rule.omega_band_hint_meV)
-                                if rule.omega_band_hint_meV is not None else None),
-        "order_weight": rule.order_weight,
-        "note": rule.note,
-        "used_fallback": used_fallback,
-    }
+    return _placement.resolve_placement_rules(profile, _placement_class_names(profile))
 
 
 def placement_rules_manifest(profile: str = DEFAULT_PROFILE) -> dict:
     """Canonical, JSON-able, deterministic manifest of every class's resolved placement rule —
     the replayable artifact (:func:`placement_rules_fingerprint` is change-detection over it)."""
-    resolved = placement_rules(profile)
-    return {
-        "schema": PLACEMENT_RULES_SCHEMA,
-        "profile": profile,
-        "rules": {name: _placement_rule_dict(r.rule, r.used_fallback)
-                 for name, r in sorted(resolved.items())},
-    }
+    return _placement.placement_rules_manifest(profile, _placement_class_names(profile))
 
 
 def placement_rules_fingerprint(profile: str = DEFAULT_PROFILE) -> str:
     """Content address over :func:`placement_rules_manifest` — changes iff a rule field changes."""
-    payload = canonical_json(placement_rules_manifest(profile))
-    return PLACEMENT_RULES_SCHEMA + ":" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+    return _placement.placement_rules_fingerprint(profile, _placement_class_names(profile))

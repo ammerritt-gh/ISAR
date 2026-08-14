@@ -41,7 +41,10 @@ default) AND the scene payload carries a declared ``sample_knowledge.zone_period
 When both hold, ``anchor_score = best_zone_centre_order_weight / (1 + distance to nearest
 zone-centre anchor in the region)``, where ``best_zone_centre_order_weight`` is the highest
 ``order_weight`` among the catalogue profile's ``anchor_kind="zone_centre"`` classes
-(:func:`isar.analyze.catalogue.placement_rules`) — the only placement-rule input this generic,
+(:func:`isar.schema.placement.zone_centre_order_weight` — the class-list-blind, raw-registry
+accessor; ``isar.drive`` may not import ``isar.analyze`` at all, so the book reads placement data
+through ``isar.schema.placement`` rather than the class-list-aware
+``isar.analyze.catalogue.placement_rules`` wrapper) — the only placement-rule input this generic,
 class-agnostic book can honestly use, since a bare coverage/exposure gap carries no catalogue
 class of its own. Under ``survey_order="uniform"`` every score is 0 and ordering falls straight
 through to geometric position, so the SET is identical by construction while the ORDER is not.
@@ -54,7 +57,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from isar.analyze.catalogue import placement_rules
+from isar.schema.placement import zone_centre_order_weight
 
 KIND_RANK = {"missing_q_node": 0, "missing_omega_band": 1, "underexposed_cell": 2}
 
@@ -139,12 +142,6 @@ def _zc_anchors(scene_payload: Mapping, region: tuple[float, float]) -> tuple[fl
                  if region[0] <= n * period <= region[1])
 
 
-def _best_zone_centre_weight(profile: str) -> float:
-    rules = placement_rules(profile)
-    weights = [r.rule.order_weight for r in rules.values() if r.rule.anchor_kind == "zone_centre"]
-    return max(weights) if weights else 0.0
-
-
 def propose_survey(scene_payload: Mapping,
                     step_payload: Mapping) -> tuple[SurveyProposal, ...]:
     """The ordered opening-book proposal set for the current scene against a frozen step.
@@ -191,7 +188,7 @@ def propose_survey(scene_payload: Mapping,
     if survey_order == "placement_informed":
         anchors = _zc_anchors(scene_payload, region)
         if anchors:
-            zc_weight = _best_zone_centre_weight(step_payload["catalogue_profile"])
+            zc_weight = zone_centre_order_weight(step_payload["catalogue_profile"])
 
     def anchor_score(coord: float) -> float:
         if not anchors or zc_weight == 0.0:
