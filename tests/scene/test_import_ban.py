@@ -109,15 +109,21 @@ def test_the_checker_bites_on_relative_imports(source, expected):
     assert found == ([(1, expected)] if banned else []), f"{source!r} resolved wrong: {found}"
 
 
-def test_importing_scene_model_pulls_in_nothing_heavy():
+# The scene modules that claim to be stdlib-only. SCENE-4 PR 4.1 adds the question vocabulary
+# (and, when it lands, the predicate evaluators) — the claim is only real while it is probed.
+STDLIB_ONLY_MODULES = ("isar.scene.model", "isar.scene.questions")
+
+
+@pytest.mark.parametrize("module", STDLIB_ONLY_MODULES)
+def test_importing_a_stdlib_only_scene_module_pulls_in_nothing_heavy(module):
     """Clean interpreter: the DTO vocabulary is stdlib-only, numpy included."""
     banned = ("isar.session", "isar.analyze", "PySide6", "PyQt5", "PyQt6", "numpy")
     checks = "\n".join(
         f"assert not [m for m in sys.modules if m == {root!r} or m.startswith({root!r} + '.')], "
-        f"{root!r} + ' leaked into isar.scene.model'"
+        f"{root!r} + ' leaked into {module}'"
         for root in banned)
-    script = "import sys\nimport isar.scene.model\n" + checks + "\nprint('SCENE_CLEAN_OK')\n"
+    script = f"import sys\nimport {module}\n" + checks + "\nprint('SCENE_CLEAN_OK')\n"
     out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
                          cwd=str(REPO_ROOT))
     assert out.returncode == 0 and "SCENE_CLEAN_OK" in out.stdout, (
-        f"isar.scene.model is not import-clean:\nstdout={out.stdout}\nstderr={out.stderr}")
+        f"{module} is not import-clean:\nstdout={out.stdout}\nstderr={out.stderr}")
