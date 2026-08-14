@@ -353,12 +353,31 @@ def test_positive_closure_from_one_trusted_interval():
     a = evaluate_predicate(estimate_spec(tolerance=0.15), scene)
     assert a.status == "answered"
     ans = dict(a.answer)
-    assert ans["center_meV"] == pytest.approx(4.95)
+    # center_meV is the envelope's midpoint, not the endpoint the search picked (P1-J): a single
+    # symmetric interval's window midpoint equals the interval midpoint regardless of tolerance.
+    assert ans["center_meV"] == pytest.approx(5.0)
     lo, hi = ans["envelope_meV"]
     assert lo == pytest.approx(4.95) and hi == pytest.approx(5.05)
     assert ans["nominal_level"] == 0.68
     assert ans["contributing"] == (("e:1:d", "A", 0),)
     assert a.mass_interval == (1.0, 1.0)
+
+
+def test_center_is_the_envelope_midpoint_regardless_of_tolerance():
+    """P1-J: for a single symmetric interval the window midpoint equals the interval midpoint no
+    matter how tolerance widens or narrows the envelope around it."""
+    scene = one_arena_with_interval(trusted_interval(4.9, 5.1))
+    wide = evaluate_predicate(estimate_spec(tolerance=0.5), scene)
+    wans = dict(wide.answer)
+    assert wans["center_meV"] == pytest.approx(5.0)
+    lo, hi = wans["envelope_meV"]
+    assert lo == pytest.approx(4.6) and hi == pytest.approx(5.4)
+
+    tight = evaluate_predicate(estimate_spec(tolerance=0.3), scene)
+    tans = dict(tight.answer)
+    assert tans["center_meV"] == pytest.approx(5.0)
+    lo, hi = tans["envelope_meV"]
+    assert lo == pytest.approx(4.8) and hi == pytest.approx(5.2)
 
 
 def _two_mode_scene(c_interval):
@@ -375,7 +394,9 @@ def test_widening_one_contributing_interval_reopens_below_threshold():
     tight = evaluate_predicate(estimate_spec(tolerance=0.1),
                                _two_mode_scene(trusted_interval(4.97, 5.07)))
     assert tight.status == "answered"
-    assert dict(tight.answer)["center_meV"] == pytest.approx(4.97)
+    # The search picks c=4.97 (smallest full-mass center), but the published center is the
+    # midpoint of the supported-center envelope [4.97, 5.05], not the search endpoint itself.
+    assert dict(tight.answer)["center_meV"] == pytest.approx(5.01)
 
     # C's interval widened past what tolerance 0.1 can support (full width 1.0 > 2*tol) — it
     # drops out of the capable set entirely, and A's mass alone (0.6) can no longer clear 0.9.
@@ -435,7 +456,58 @@ def test_mixed_nominal_level_refuses_closure_with_a_note():
     scene = _two_mode_scene(trusted_interval(4.97, 5.07, nominal_level=0.9))
     a = evaluate_predicate(estimate_spec(tolerance=0.1), scene)
     assert a.status == "open"
-    assert dict(a.notes)["mixed_nominal_level"] == (0.68, 0.9)
+    kind, paradigm = "parametric_bootstrap_percentile", "frequentist_sampling_distribution"
+    assert dict(a.notes)["mixed_interval_semantics"] == (
+        (kind, paradigm, 0.68), (kind, paradigm, 0.9))
+
+
+def test_mixed_interval_kind_refuses_closure_even_at_matching_level():
+    """P1-H: the closure gate is the exact (interval_kind, inference_paradigm, nominal_level)
+    triple, not just nominal_level -- two intervals agreeing on level but disagreeing on kind
+    still refuse to combine."""
+    scene = _two_mode_scene({**trusted_interval(4.97, 5.07), "interval_kind": "likelihood_profile"})
+    a = evaluate_predicate(estimate_spec(tolerance=0.1), scene)
+    assert a.status == "open"
+    assert "mixed_interval_semantics" in dict(a.notes)
+
+
+def test_identical_interval_semantics_close_and_persist_the_triple():
+    scene = _two_mode_scene(trusted_interval(4.97, 5.07))
+    a = evaluate_predicate(estimate_spec(tolerance=0.1), scene)
+    assert a.status == "answered"
+    ans = dict(a.answer)
+    assert ans["interval_kind"] == "parametric_bootstrap_percentile"
+    assert ans["inference_paradigm"] == "frequentist_sampling_distribution"
+    assert ans["nominal_level"] == 0.68
+
+
+def test_zero_posterior_alternative_neither_blocks_nor_joins_closure():
+    """P1-I: a discordant-level alternative carrying ZERO retained posterior must not appear in
+    contributors/envelope and must not trigger mixed_interval_semantics -- metadata is derived
+    from the same positive-posterior support the mass calculation used."""
+    scene = payload(
+        observations=[obs("e:1:d", [
+            cand("A", omegas=(5.0,), mode_intervals=[trusted_interval(4.9, 5.1)]),
+            cand("Z", omegas=(5.0,),
+                mode_intervals=[trusted_interval(4.9, 5.1, nominal_level=0.9)])])],
+        footprints=[fp("e:1:d", 2.0)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 1.0),
+                                      alt([("e:1:d", "Z")], 0.0)])])
+    a = evaluate_predicate(estimate_spec(tolerance=0.15), scene)
+    assert a.status == "answered"
+    ans = dict(a.answer)
+    assert ans["contributing"] == (("e:1:d", "A", 0),)
+    assert ans["nominal_level"] == 0.68
+    assert "mixed_interval_semantics" not in dict(a.notes)
+
+
+def test_mass_exactly_at_min_mass_closes():
+    """P2-K: closure clears on >= min_mass, matching decide()'s own threshold semantics -- a
+    parameter_precision_min_mass of 1.0 must be satisfiable at certainty."""
+    scene = one_arena_with_interval(trusted_interval(4.9, 5.1), posterior=1.0)
+    a = evaluate_predicate(estimate_spec(tolerance=0.15, min_mass=1.0), scene)
+    assert a.status == "answered"
+    assert a.mass_interval == (1.0, 1.0)
 
 
 def test_tie_break_is_replay_identical_under_reversed_alternative_order():

@@ -476,6 +476,9 @@ def _trusted_matched_interval(alternative, refs, candidates, band):
         return None
     return {"low": float(interval["low"]), "high": float(interval["high"]),
             "nominal_level": interval.get("nominal_level"),
+            "interval_kind": interval.get("interval_kind"),
+            "inference_paradigm": interval.get("inference_paradigm"),
+            "conditioning_fingerprint": interval.get("conditioning_fingerprint"),
             "scan_ref": scan_ref, "label": label, "slot": slot}
 
 
@@ -499,9 +502,15 @@ def _parameter_within_tolerance(spec, scene_payload, prior) -> QuestionAssessmen
     smallest candidate center, so replay is byte-identical regardless of iteration order. Every
     non-qualifying mass — untrusted, unpopulated, ambiguously matched, or simply outside the
     band — counts ADVERSARIALLY: it can never be retained. Closure additionally requires every
-    CONTRIBUTING interval (the ones supporting the chosen center) to agree on their persisted
-    ``nominal_level``; mixed levels refuse closure rather than average across incompatible
-    statements of confidence.
+    CONTRIBUTING interval (the ones supporting the chosen center, drawn from the SAME
+    positive-posterior support the mass calculation used — a zero-mass alternative can neither
+    block nor join closure) to agree on the exact ``(interval_kind, inference_paradigm,
+    nominal_level)`` triple; a mismatch on any of the three refuses closure rather than average
+    across incompatible statements of confidence.
+
+    ``envelope_meV`` is the supported-center interval itself — the intersection of every
+    contributing acceptance window at the chosen center — and ``center_meV`` is honestly its
+    midpoint representative, not a re-derived tolerance witness of its own.
     """
     params = dict(spec.predicate.parameters)
     tolerance = float(params["tolerance_meV"])
@@ -563,10 +572,20 @@ def _parameter_within_tolerance(spec, scene_payload, prior) -> QuestionAssessmen
 
     combined, c, lanes, cluster_blockers = best
     contributing = set()
-    levels = set()
+    triples = set()   # (interval_kind, inference_paradigm, nominal_level)
+    # Conditioning fingerprints are PROVENANCE, never compatibility: every candidate's
+    # conditioning differs by construction (that is what a per-candidate record is), so
+    # gating the triple on them would refuse every multi-candidate closure. They ride the
+    # answer as an audit trail instead.
+    conditioning = set()
     envelope_lo, envelope_hi = None, None
     for index in match.cluster_indices:
         for alternative in clusters[index].get("alternatives") or ():
+            # P1-I: metadata is derived from the SAME positive-posterior support the mass
+            # calculation used — a zero-mass alternative must neither block closure (mixed
+            # semantics) nor appear in contributors/envelope.
+            if (alternative.get("posterior") or 0.0) <= 0.0:
+                continue
             interval = _trusted_matched_interval(alternative, refs, candidates, band)
             if interval is None:
                 continue
@@ -574,24 +593,33 @@ def _parameter_within_tolerance(spec, scene_payload, prior) -> QuestionAssessmen
             if window is None or not (window[0] <= c <= window[1]):
                 continue
             contributing.add((interval["scan_ref"], interval["label"], interval["slot"]))
-            levels.add(interval["nominal_level"])
+            triples.add((interval["interval_kind"], interval["inference_paradigm"],
+                        interval["nominal_level"]))
+            if interval.get("conditioning_fingerprint"):
+                conditioning.add(interval["conditioning_fingerprint"])
             envelope_lo = window[0] if envelope_lo is None else max(envelope_lo, window[0])
             envelope_hi = window[1] if envelope_hi is None else min(envelope_hi, window[1])
 
     notes += list(_vacuous_note(lanes, min_mass, combined))
-    if len(levels) > 1:
-        notes.append(("mixed_nominal_level", tuple(sorted(levels))))
+    if len(triples) > 1:
+        notes.append(("mixed_interval_semantics",
+                      tuple(sorted(triples, key=lambda t: (t[0] or "", t[1] or "",
+                                                            repr(t[2]))))))
         return QuestionAssessment(question_id=spec.question_id, status="open",
                                   authority=_weakest(lanes), mass_interval=combined,
                                   blockers=cluster_blockers, notes=tuple(notes))
-    if combined[0] <= min_mass:
+    if not triples or combined[0] < min_mass:
         return QuestionAssessment(question_id=spec.question_id, status="open",
                                   authority=_weakest(lanes), mass_interval=combined,
                                   blockers=cluster_blockers, notes=tuple(notes))
-    answer = (("center_meV", round(c, 9)),
+    interval_kind, inference_paradigm, nominal_level = triples.pop()
+    answer = (("center_meV", round((envelope_lo + envelope_hi) / 2.0, 9)),
              ("contributing", tuple(sorted(contributing))),
              ("envelope_meV", (round(envelope_lo, 9), round(envelope_hi, 9))),
-             ("nominal_level", levels.pop()))
+             ("nominal_level", nominal_level),
+             ("interval_kind", interval_kind),
+             ("inference_paradigm", inference_paradigm),
+             ("conditioning_fingerprints", tuple(sorted(conditioning))))
     return QuestionAssessment(question_id=spec.question_id, status="answered",
                               authority=_weakest(lanes), mass_interval=combined,
                               answer=answer, blockers=cluster_blockers, notes=tuple(notes))

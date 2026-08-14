@@ -624,9 +624,12 @@ def test_a_confirmed_phenomenon_closes_estimate_parameter_given_a_trusted_interv
                           if s["claim_kind"] == "parameter_within_tolerance")
     a = assessment_of(revision, tolerance_spec["question_id"])
     assert a["status"] == "answered"
-    # window = (high - tol, low + tol) = (5.1 - 0.5, 4.9 + 0.5) = (4.6, 5.4); the single trusted
-    # alternative supports both endpoints equally, so the tie breaks to the smaller.
-    assert dict(a["answer"])["center_meV"] == pytest.approx(4.6)
+    # window = (high - tol, low + tol) = (5.1 - 0.5, 4.9 + 0.5) = (4.6, 5.4); the search ties on
+    # both endpoints, but the published center_meV is the envelope's midpoint (P1-J), not the
+    # search endpoint -- 5.0 regardless of which tied endpoint the search settled on.
+    assert dict(a["answer"])["center_meV"] == pytest.approx(5.0)
+    lo, hi = dict(a["answer"])["envelope_meV"]
+    assert lo == pytest.approx(4.6) and hi == pytest.approx(5.4)
 
 
 def test_a_fully_surveyed_blank_campaign_reaches_complete():
