@@ -144,6 +144,79 @@ def aggregate_rank(associations) -> tuple[tuple, QuestionActionAssociation]:
     return supplier.rank_key, supplier
 
 
+#: The DURABLE subset of ``isar.scene.questions.BLOCKER_CLASS_BY_NAME`` (PR 4.2b C6). Duplicated
+#: rather than imported: schema sits below scene (this module's own docstring), so
+#: ``isar.schema`` may never import ``isar.scene`` — the equality with the scene-side mapping is
+#: pinned by a cross-layer test instead (same posture as ``scene_digest`` vs the scene store
+#: digest, and ``program_fingerprint`` vs the program store digest, elsewhere in this PR: never
+#: assumed, always checked). A transient or model-authority blocker can never be closure fuel,
+#: so :class:`QuestionBlockerEvidence` refuses any name outside this set at construction.
+DURABLE_BLOCKER_NAMES = frozenset({
+    "resolution_floor", "bose_dead", "instrument_geometry_infeasible", "program_boundary",
+})
+
+
+@dataclass(frozen=True)
+class QuestionBlockerEvidence:
+    """Durable-blocker support for a structural/saturation rejection reaching exhaustion
+    (PR 4.2b C6). Production emission is 4.3 — in 4.2b only synthetic tests construct this.
+
+    The question reference is ``(basis_agenda_digest, question_id)`` — the same PASS-1 basis
+    digest :class:`QuestionActionAssociation` binds against. ``scene_digest`` and
+    ``generator_registry_fingerprint`` are the freshness comparands the exhaustion producer
+    checks before trusting this evidence for the CURRENT derivation, never assumed still valid.
+    ``supporting_generator_ids`` names which of the question's generators this blocker backs —
+    evidence naming no generator the question actually declared supports nothing.
+    """
+
+    basis_agenda_digest: str
+    question_id: str
+    scene_digest: str
+    generator_registry_fingerprint: str
+    blocker_name: str
+    supporting_generator_ids: tuple[str, ...] = ()
+    reason_codes: tuple[str, ...] = ()
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        for name in ("basis_agenda_digest", "question_id", "scene_digest",
+                    "generator_registry_fingerprint", "blocker_name"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"QuestionBlockerEvidence.{name} must be a non-empty string")
+        if self.blocker_name not in DURABLE_BLOCKER_NAMES:
+            raise ValueError(
+                f"QuestionBlockerEvidence.blocker_name {self.blocker_name!r} is not a durable "
+                f"blocker (known durable names: {sorted(DURABLE_BLOCKER_NAMES)}) — a transient "
+                "or model-authority blocker can never be closure fuel")
+        normalized = tuple(sorted(str(g) for g in self.supporting_generator_ids))
+        if any(not g.strip() for g in normalized):
+            raise ValueError(
+                "QuestionBlockerEvidence.supporting_generator_ids must contain non-empty "
+                "generator ids — an empty id could intersect a malformed required set and "
+                "back a proof nothing actually supports")
+        object.__setattr__(self, "supporting_generator_ids", normalized)
+        object.__setattr__(self, "reason_codes", tuple(str(r) for r in self.reason_codes))
+
+    def to_dict(self) -> dict:
+        return {"basis_agenda_digest": self.basis_agenda_digest, "question_id": self.question_id,
+                "scene_digest": self.scene_digest,
+                "generator_registry_fingerprint": self.generator_registry_fingerprint,
+                "blocker_name": self.blocker_name,
+                "supporting_generator_ids": list(self.supporting_generator_ids),
+                "reason_codes": list(self.reason_codes), "detail": self.detail}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "QuestionBlockerEvidence":
+        return cls(basis_agenda_digest=str(d["basis_agenda_digest"]),
+                   question_id=str(d["question_id"]), scene_digest=str(d["scene_digest"]),
+                   generator_registry_fingerprint=str(d["generator_registry_fingerprint"]),
+                   blocker_name=str(d["blocker_name"]),
+                   supporting_generator_ids=tuple(d.get("supporting_generator_ids") or ()),
+                   reason_codes=tuple(d.get("reason_codes") or ()),
+                   detail=str(d.get("detail", "")))
+
+
 def registry_fingerprint(registry: tuple[GeneratorSpec, ...]) -> str:
     """Derive a registry version from the ordered generator ids + versions.
 

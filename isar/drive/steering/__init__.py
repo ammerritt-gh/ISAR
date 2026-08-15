@@ -21,10 +21,26 @@ from isar.drive.steering.readiness import (
     classify_readiness,
     run_ready_questions,
 )
+from isar.drive.steering.exhaustion import (
+    BLOCKED_WITHOUT_EVIDENCE,
+    BUDGET_ONLY,
+    CONTROLLER_FAULT,
+    DEFERRED,
+    NO_GENERATORS_OUTCOME,
+    NOT_EXHAUSTED,
+    PROOF,
+    RETRYABLE,
+    ExhaustionProducerResult,
+    QuestionExhaustionOutcome,
+    produce_exhaustion,
+)
 
 __all__ = [
     "DiscoveryContext", "GENERATOR_FUNCTIONS", "GeneratorOutcome", "dependency_depth",
     "READY", "DEPENDENCY_BLOCKED", "RAN", "NO_GENERATORS",
     "GeneratorRunOutcome", "QuestionRunRecord", "RunResult",
     "classify_readiness", "run_ready_questions",
+    "PROOF", "NOT_EXHAUSTED", "DEFERRED", "RETRYABLE", "BUDGET_ONLY",
+    "BLOCKED_WITHOUT_EVIDENCE", "CONTROLLER_FAULT", "NO_GENERATORS_OUTCOME",
+    "QuestionExhaustionOutcome", "ExhaustionProducerResult", "produce_exhaustion",
 ]
