@@ -28,6 +28,7 @@ from .display import (AcquisitionSelection, DisplayInterval, FitDisplay, FitDisp
 from .scene import sample_knowledge, scene_observations
 from .scene_view import (Curve, GapEntry, HypothesisEntry, HypothesisMap, ModeMarker,
                          SceneRevisionView, hypothesis_map, scene_revision)
+from .agenda_view import (AgendaRevisionView, FreshnessReport, agenda_revision, read_transitions)
 
 __all__ = [
     "Workspace",
@@ -69,4 +70,10 @@ __all__ = [
     "ModeMarker",
     "GapEntry",
     "Curve",
+    # The agenda layer's read door (PR 4.2b C8): a stored revision back out, plus its
+    # tri-state freshness against the current scene/program/registry state.
+    "agenda_revision",
+    "AgendaRevisionView",
+    "FreshnessReport",
+    "read_transitions",
 ]
