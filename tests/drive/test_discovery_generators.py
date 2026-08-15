@@ -375,6 +375,111 @@ def test_track_bridge_scan_raises_on_the_unreachable_third_reason():
         track_bridge_scan(ctx, track.to_dict())
 
 
+def test_track_bridge_scan_raises_on_a_genuinely_unrecognized_reason_key():
+    """PR #33 A-P0-6: the branch table's catch-all is malformed input, never a scientific
+    state -- a reason key that is neither of the two geometric ones, None, nor
+    no_endpoint_tiles_declared is a caller/evaluator mismatch."""
+    track = _track_spec((1.9, 1.95), (2.9, 2.95))
+    assessment = QuestionAssessment(question_id=track.question_id, status="open",
+                                    notes=(("reason", "some_future_reason_this_module_never_saw"),))
+    ctx = manual_context(payload(), step(), [track], [assessment])
+    with pytest.raises(ValueError, match="some_future_reason_this_module_never_saw"):
+        track_bridge_scan(ctx, track.to_dict())
+
+
+# --- weakest-cut branch (PR #33 A-P0-6): endpoints measured, jointly clustered, open with no
+# reason key / bound-vacuous / blocker-carrying -- three joint-cluster shapes below, all
+# reaching the SAME construction (the weakest-cut computation only sums raw posterior mass, so
+# it is indifferent to WHY the assessment stayed open).
+def _weakest_cut_track_and_scene(*, cluster_kwargs):
+    """Three matched footprints (e:a@2.0 in tile A, e:mid@2.5 strictly between, e:b@3.0 in tile
+    B) and one joint cluster with two alternatives that split the a-mid-b path: alt1 (posterior
+    0.6) links only a<->mid, alt2 (posterior 0.4) links only mid<->b. Cut1 (between 2.0/2.5,
+    point 2.25) is crossed only by alt1 -> strength 0.6; cut2 (between 2.5/3.0, point 2.75) is
+    crossed only by alt2 -> strength 0.4 -- the deliberately WEAKER cut, so the minimum-strength
+    rule must pick 2.75, not the leftmost or the strongest."""
+    track = _track_spec((1.9, 2.1), (2.9, 3.1))
+    scene = payload(
+        observations=[obs("e:a", [cand("A", omegas=(5.0,))]),
+                     obs("e:mid", [cand("A", omegas=(5.0,))]),
+                     obs("e:b", [cand("A", omegas=(5.0,))])],
+        footprints=[fp("e:a", 2.0, partition=P1), fp("e:mid", 2.5, partition=P1),
+                   fp("e:b", 3.0, partition=P1)],
+        clusters=[cluster(
+            ["e:a", "e:mid", "e:b"],
+            [alt([("e:a", "A"), ("e:mid", "A")], 0.6, links=[("e:a#A#0", "e:mid#A#0")]),
+             alt([("e:mid", "A"), ("e:b", "A")], 0.4, links=[("e:mid#A#0", "e:b#A#0")])],
+            **cluster_kwargs)])
+    return track, scene
+
+
+def test_track_bridge_scan_weakest_cut_targets_the_minimum_strength_cut_not_the_leftmost():
+    """Reached via an UNRESOLVED cluster (linkage_truncated): the real evaluator answers open
+    with no reason key AND a durable-truncation blocker -- the blocker-carrying sub-state."""
+    track, scene = _weakest_cut_track_and_scene(cluster_kwargs={})
+    scene["clusters"][0]["linkage_truncated"] = True
+    assessment = evaluate_predicate(track, scene)
+    assert assessment.status == "open"
+    assert dict(assessment.notes).get("reason") is None
+    assert assessment.blockers                        # blocker-carrying: posterior_truncation_*
+    ctx = manual_context(scene, step(), [track], [assessment])
+    outcome = track_bridge_scan(ctx, track.to_dict())
+    intent, association = outcome.proposals[0]
+    assert intent.hkl[0] == pytest.approx(2.75)        # cut2's midpoint -- the weaker cut
+    assert "weakest-cut" in association.reason
+
+
+def test_track_bridge_scan_weakest_cut_reached_via_a_bound_vacuous_note():
+    """Same construction rule, reached via a BOUNDED (truncated) cluster instead: the real
+    evaluator answers open with the bound_vacuous_for_threshold note, no reason key -- the same
+    documented branch resolves to the identical midpoint since weakest-cut strength never
+    depends on authority lane, only raw retained posterior mass."""
+    track, scene = _weakest_cut_track_and_scene(
+        cluster_kwargs={"truncated": True, "bound": 5.0})
+    assessment = evaluate_predicate(track, scene)
+    assert assessment.status == "open"
+    assert dict(assessment.notes).get("reason") is None
+    assert dict(assessment.notes).get("bound_vacuous_for_threshold")
+    ctx = manual_context(scene, step(), [track], [assessment])
+    outcome = track_bridge_scan(ctx, track.to_dict())
+    intent, association = outcome.proposals[0]
+    assert intent.hkl[0] == pytest.approx(2.75)
+
+
+def test_track_bridge_scan_remeasuring_the_weakest_cut_strengthens_the_evaluator_verdict():
+    """The physical point of the rule: re-measuring at the weakest link is not cosmetic -- once
+    a single alternative's links span the WHOLE path a-mid-b and the cluster is no longer
+    truncated, the evaluator's own mass interval goes from vacuous [0, 1] to a decisive [1, 1]
+    (drive evaluate_predicate before/after, as required)."""
+    track = _track_spec((1.9, 2.1), (2.9, 3.1))
+    footprints = [fp("e:a", 2.0, partition=P1), fp("e:mid", 2.5, partition=P1),
+                 fp("e:b", 3.0, partition=P1)]
+    observations = [obs("e:a", [cand("A", omegas=(5.0,))]),
+                    obs("e:mid", [cand("A", omegas=(5.0,))]),
+                    obs("e:b", [cand("A", omegas=(5.0,))])]
+    full_path_alt = alt([("e:a", "A"), ("e:mid", "A"), ("e:b", "A")], 1.0,
+                        links=[("e:a#A#0", "e:mid#A#0"), ("e:mid#A#0", "e:b#A#0")])
+
+    before = payload(observations=observations, footprints=footprints,
+                     clusters=[cluster(["e:a", "e:mid", "e:b"], [full_path_alt],
+                                       truncated=True, unbounded=True)])
+    before_assessment = evaluate_predicate(track, before)
+    assert before_assessment.status == "open"
+    assert before_assessment.mass_interval == (0.0, 1.0)     # vacuous: unresolved lane
+
+    ctx = manual_context(before, step(), [track], [before_assessment])
+    outcome = track_bridge_scan(ctx, track.to_dict())
+    intent, _association = outcome.proposals[0]
+    assert intent.hkl[0] == pytest.approx(2.25)               # tie -> smaller coordinate
+
+    after = payload(observations=observations, footprints=footprints,
+                    clusters=[cluster(["e:a", "e:mid", "e:b"], [full_path_alt])])  # no truncation
+    after_assessment = evaluate_predicate(track, after)
+    assert after_assessment.status == "answered"
+    assert after_assessment.mass_interval == (1.0, 1.0)       # exact: fully connected
+    assert after_assessment.mass_interval[0] > before_assessment.mass_interval[0]  # strengthened
+
+
 # ----------------------------------------------------------------------------
 # 6. parameter_refine
 # ----------------------------------------------------------------------------
@@ -434,6 +539,24 @@ def test_parameter_refine_no_support_capable_interval_routes_to_case_ii_determin
     # Deterministic under a second call.
     outcome2 = parameter_refine(ctx, estimate.to_dict())
     assert outcome.proposals == outcome2.proposals
+
+
+def test_parameter_refine_tolerance_below_the_statistical_floor_is_inapplicable_not_clean():
+    """PR #33 A-P1-b: a tolerance tighter than the statistical floor can never be satisfied by
+    any measurement -- typed INAPPLICABLE, and deliberately NOT exhaustion-clean (model-
+    authority, same vocabulary posture as every other INAPPLICABLE in this matrix)."""
+    scene = _two_mode_scene(trusted_interval(4.5, 5.5))
+    estimate = make_spec(
+        "EstimateParameter", "parameter_within_tolerance",
+        QuestionSubject(kind="parameter", partition_id=P1, region_rlu=(1.8, 2.2),
+                        omega_band_meV=(0.0, 10.0), parameter="omega0"),
+        # tolerance (0.05) below the statistical floor (0.2) -- unclosable by construction.
+        {"tolerance_meV": 0.05, "statistical_floor_meV": 0.2, "parameter_precision_min_mass": 0.9})
+    ctx = manual_context(scene, step(), [estimate], [])
+    outcome = parameter_refine(ctx, estimate.to_dict())
+    assert outcome.inapplicable_reason == "tolerance_below_representable_precision"
+    assert outcome.exhaustion_clean is False
+    assert outcome.proposals == ()
 
 
 def _zc_fixture(anchor=2.0, nearest_tile=(2.9, 3.1)):

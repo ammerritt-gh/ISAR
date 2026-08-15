@@ -188,10 +188,19 @@ def _build_inventory(run_result: RunResult, survivors: list, deduped_by_generato
     for spec in DISCOVERY_GENERATOR_REGISTRY:
         generator_id = spec.generator_id
         outcomes = outcomes_by_generator.get(generator_id, [])
+        # PR #33 A-P1-c: `generated` is ALWAYS the generator's actual surviving-evaluation count,
+        # computed BEFORE the failed/inapplicable branches -- a FAILED status still forces
+        # incompleteness (GeneratorStatus.FAILED is never completed_cleanly), but a generator
+        # that failed on one question and succeeded on a sibling still has real survivors, and
+        # reporting generated=0 over them made the inventory contradict its own evaluations
+        # (structural_problems' `report.generated == evaluated` invariant).
+        generated = sum(1 for e in survivors if e.generator == generator_id)
+        deduped = deduped_by_generator.get(generator_id, 0)
         failed = [o for o in outcomes if o.kind == "failed"]
         if failed:
             reports.append(GeneratorReport(generator=generator_id, status=GeneratorStatus.FAILED,
-                                           generated=0, error_code=failed[0].error_code))
+                                           generated=generated, deduped=deduped,
+                                           error_code=failed[0].error_code))
             continue
         if not outcomes:
             # Never invoked this derivation (its family had no ready question this round) --
@@ -200,8 +209,6 @@ def _build_inventory(run_result: RunResult, survivors: list, deduped_by_generato
                 generator=generator_id, status=GeneratorStatus.INAPPLICABLE, generated=0,
                 reason_code="not_required_this_derivation"))
             continue
-        generated = sum(1 for e in survivors if e.generator == generator_id)
-        deduped = deduped_by_generator.get(generator_id, 0)
         reason = None
         if generated == 0:
             reason = next((o.clean_zero_reason or o.inapplicable_reason for o in outcomes

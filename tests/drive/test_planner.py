@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from isar.drive.acquisition.inventory import ActionEligibility
+from isar.drive.acquisition.inventory import ActionEligibility, ActionEvaluation, GeneratorStatus
 from isar.eig.eligibility import EligibilityInput, _scan_design_identity
 from isar.schema.action_identity import MeasurementIntent
 from isar.schema.campaign_program import (
@@ -23,7 +23,7 @@ from isar.scene.store import ConcurrentRevisionWrite, SCENE_STORE
 
 import isar.drive.steering.planner as planner_module
 import isar.drive.steering.readiness as readiness_module
-from isar.drive.steering.generators import GENERATOR_FUNCTIONS, GeneratorOutcome
+from isar.drive.steering.generators import GENERATOR_FUNCTIONS, GeneratorOutcome, dependency_depth
 from isar.drive.steering.planner import (
     AGENDA_COMPLETE,
     CONTROLLER_FAULT,
@@ -31,9 +31,11 @@ from isar.drive.steering.planner import (
     NO_ELIGIBLE_ACTION,
     PROGRAM_STORE,
     SELECTED,
+    _build_inventory,
     _ProgramRevision,
     plan_next_action,
 )
+from isar.drive.steering.readiness import GeneratorRunOutcome, QuestionRunRecord, RunResult
 from isar.scene.store import StaleSceneAtPublication
 
 P1 = "a" * 64
@@ -182,6 +184,73 @@ def test_controller_fault_from_a_raising_generator_persists_siblings(monkeypatch
 
 
 # ----------------------------------------------------------------------------
+# Association forgery (PR #33 A-P1-a): the runner refuses a mismatched association
+# ----------------------------------------------------------------------------
+def test_association_forgery_by_a_generator_is_a_controller_fault(monkeypatch, tmp_path):
+    """A generator returning an association whose fields disagree with the controller-owned
+    spec (a forged priority here) is refused by the runner (readiness.py), and the planner's
+    existing ValueError-to-controller_fault conversion catches it -- never a silent scheduling
+    corruption reaching persistence."""
+    step = discover_step()
+    program = program_with(step)
+
+    def forge(context, spec_dict):
+        intent = MeasurementIntent(action_class="discovery_scan", hkl=(2.5, 0.0, 0.0),
+                                   energy_lo=1.0, energy_hi=8.0, window_family="discovery",
+                                   evidence_basis_fingerprint=context.scene_digest)
+        association = QuestionActionAssociation(
+            basis_agenda_digest=context.basis_agenda_digest, question_id=spec_dict["question_id"],
+            generator=spec_dict["generator_ids"][0],
+            family_priority=int(spec_dict["priority"]) + 999,       # forged
+            dependency_depth=0, reason="forged")
+        return GeneratorOutcome.proposed(((intent, association),))
+
+    patched = dict(GENERATOR_FUNCTIONS)
+    patched["opening_book_survey"] = forge
+    monkeypatch.setattr(readiness_module, "GENERATOR_FUNCTIONS", patched)
+
+    write_scene(tmp_path, scene())
+    result = plan_next_action(tmp_path, program, "discover-1")
+
+    assert result.outcome == CONTROLLER_FAULT
+    assert "family_priority" in result.reason
+
+
+# ----------------------------------------------------------------------------
+# Inventory accounting (PR #33 A-P1-c): a FAILED generator's real survivors on a sibling
+# question must not desync `generated` from the actual evaluations
+# ----------------------------------------------------------------------------
+def test_generator_failed_on_one_question_succeeding_on_a_sibling_keeps_the_inventory_sound():
+    """The bug: `generated` was hard-zeroed for any generator with a failed outcome anywhere in
+    the run, even when that SAME generator id also produced real survivors on another question
+    in the same decision -- the inventory then contradicted its own evaluations
+    (`structural_problems()` flagged it). The fix reports the actual surviving count regardless
+    of status; FAILED still forces `is_complete=False` on its own."""
+    intent = MeasurementIntent(action_class="discovery_scan", hkl=(2.5, 0.0, 0.0),
+                               energy_lo=1.0, energy_hi=8.0, window_family="discovery")
+    association = QuestionActionAssociation(
+        basis_agenda_digest="b" * 64, question_id="q:B", generator="opening_book_survey",
+        family_priority=0, dependency_depth=0, reason="test")
+    survivor = ActionEvaluation(intent=intent, generator="opening_book_survey",
+                                eligibility=ActionEligibility.ELIGIBLE, associations=(association,))
+
+    run_result = RunResult(records=(
+        QuestionRunRecord("q:A", "DiscoverRegion", ("opening_book_survey",), "ran",
+                          (GeneratorRunOutcome("opening_book_survey", "failed",
+                                              error_code="RuntimeError: boom"),)),
+        QuestionRunRecord("q:B", "DiscoverRegion", ("opening_book_survey",), "ran",
+                          (GeneratorRunOutcome("opening_book_survey", "proposals", generated=1),)),
+    ), evaluations=(survivor,))
+
+    inventory = _build_inventory(run_result, [survivor], {})
+    assert inventory.structural_problems() == []
+    assert inventory.is_complete is False               # FAILED still forces incompleteness
+    report = {r.generator: r for r in inventory.reports}["opening_book_survey"]
+    assert report.status == GeneratorStatus.FAILED
+    assert report.generated == 1                         # the fix: real survivor count, not 0
+
+
+# ----------------------------------------------------------------------------
 # Shared action serving priorities 0 and 4 ranks by 0, order-invariant
 # ----------------------------------------------------------------------------
 def test_shared_action_serving_priorities_0_and_4_ranks_by_0(monkeypatch, tmp_path):
@@ -198,7 +267,8 @@ def test_shared_action_serving_priorities_0_and_4_ranks_by_0(monkeypatch, tmp_pa
         association = QuestionActionAssociation(
             basis_agenda_digest=context.basis_agenda_digest, question_id=spec_dict["question_id"],
             generator=spec_dict["generator_ids"][0], family_priority=int(spec_dict["priority"]),
-            dependency_depth=0, reason="collision test")
+            dependency_depth=dependency_depth(spec_dict, context.agenda_payload),
+            reason="collision test")
         return GeneratorOutcome.proposed(((intent, association),))
 
     patched = dict(GENERATOR_FUNCTIONS)

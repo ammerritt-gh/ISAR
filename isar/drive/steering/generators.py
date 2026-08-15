@@ -460,11 +460,112 @@ def _bridge_node(scene_payload: Mapping, partition_id, tile_a, tile_b) -> float:
     return (widest[0] + widest[1]) / 2.0
 
 
+def _matched_footprint_columns(scene_payload: Mapping, partition_id, tile_a, tile_b) -> list:
+    """Distinct ``axis_coordinate`` columns of in-partition footprints between and including the
+    two endpoint tiles, sorted -- ``(coordinate, {scan_ref, ...})`` pairs. Duplicate coordinates
+    collapse onto one column (this is what "zero-width cuts skipped" means: a cut only exists
+    between two DISTINCT coordinates)."""
+    lo, hi = min(tile_a[0], tile_b[0]), max(tile_a[1], tile_b[1])
+    by_coord: dict[float, set] = {}
+    for footprint in scene_payload.get("footprints") or ():
+        if footprint.get("partition_id") != partition_id:
+            continue
+        coord = footprint.get("axis_coordinate")
+        if coord is None or not (lo <= coord <= hi):
+            continue
+        by_coord.setdefault(coord, set()).add(footprint["scan_ref"])
+    return sorted(by_coord.items())
+
+
+def _joint_cluster_alternatives(scene_payload: Mapping, ends_a: set, ends_b: set) -> list:
+    """Every alternative from a cluster whose ``scan_refs`` intersect BOTH endpoint scan_ref
+    sets -- mirrors ``isar.scene.predicates._track_connected``'s own ``joint`` selection
+    (predicates.py:417-420), re-derived rather than imported (this module's own idiom)."""
+    out = []
+    for cluster in scene_payload.get("clusters") or ():
+        refs = set(cluster.get("scan_refs") or ())
+        if refs & ends_a and refs & ends_b:
+            out.extend(cluster.get("alternatives") or ())
+    return out
+
+
+def _crosses(alternative: Mapping, left: set, right: set) -> bool:
+    """Whether ``alternative``'s link graph connects a component on the ``left`` side to one on
+    the ``right`` side -- mirrors ``_track_connected``'s ``qualifies`` reachability walk
+    (predicates.py:428-445) exactly, generalized from the two fixed endpoint-tile sets to an
+    arbitrary left/right split of the matched footprint columns."""
+    adjacency: dict[str, set] = {}
+    for a, b in alternative.get("links") or ():
+        adjacency.setdefault(a, set()).add(b)
+        adjacency.setdefault(b, set()).add(a)
+
+    def scan_of(component_id: str) -> str:
+        return component_id.rsplit("#", 2)[0]
+
+    starts = [c for c in adjacency if scan_of(c) in left]
+    seen = set(starts)
+    frontier = list(starts)
+    while frontier:
+        node = frontier.pop()
+        if scan_of(node) in right:
+            return True
+        for neighbour in adjacency.get(node, ()):
+            if neighbour not in seen:
+                seen.add(neighbour)
+                frontier.append(neighbour)
+    return False
+
+
+def _weakest_cut_node(scene_payload: Mapping, partition_id, tile_a, tile_b) -> float:
+    """The midpoint of the MINIMUM-strength adjacent-pair cut among the matched footprint
+    columns between and including the two endpoint tiles -- ties to the smaller coordinate.
+
+    Cut strength is the summed retained posterior mass of every joint-cluster alternative whose
+    link graph connects a component on the cut's ``<=``-side to one on its ``>=``-side; this is
+    independent of any cluster's authority lane (exact/bounded/unresolved) -- the same raw
+    posterior sum applies whether the assessment reached ``open`` via a mass straddle, a
+    bound-vacuous note, or a blocker, because all three are evidence deficits a re-measure at the
+    weakest link addresses alike (the plan's branch-table unification)."""
+    columns = _matched_footprint_columns(scene_payload, partition_id, tile_a, tile_b)
+    if len(columns) < 2:
+        raise ValueError(
+            "track_bridge_scan: weakest-cut construction needs at least two distinct matched "
+            f"footprint coordinates between {tile_a} and {tile_b}, found {len(columns)} -- both "
+            "endpoint tiles are measured for this branch to be reached, so this is a generator "
+            "defect, not a scientific state")
+    ends_a = {fp["scan_ref"] for fp in scene_payload.get("footprints") or ()
+              if fp.get("partition_id") == partition_id and fp.get("axis_coordinate") is not None
+              and tile_contains(tile_a, fp["axis_coordinate"])}
+    ends_b = {fp["scan_ref"] for fp in scene_payload.get("footprints") or ()
+              if fp.get("partition_id") == partition_id and fp.get("axis_coordinate") is not None
+              and tile_contains(tile_b, fp["axis_coordinate"])}
+    alternatives = _joint_cluster_alternatives(scene_payload, ends_a, ends_b)
+
+    left: set = set()
+    best: tuple[float, float] | None = None      # (strength, cut_point) -- lexicographic min
+    for i in range(len(columns) - 1):
+        coord_i, refs_i = columns[i]
+        coord_next, _ = columns[i + 1]
+        left |= refs_i
+        right: set = set().union(*(refs for _, refs in columns[i + 1:]))
+        strength = sum((alt.get("posterior") or 0.0) for alt in alternatives
+                       if _crosses(alt, left, right))
+        cut_point = (coord_i + coord_next) / 2.0
+        candidate = (strength, cut_point)
+        if best is None or candidate < best:
+            best = candidate
+    return best[1]
+
+
 def track_bridge_scan(context: DiscoveryContext, spec_dict: Mapping) -> GeneratorOutcome:
-    """One of the evaluator's three open reasons always names a node — never a clean zero, never
-    INAPPLICABLE. The third reason (``no_endpoint_tiles_declared``) is unreachable here: a
-    ConnectTrack spec always declares both endpoint tiles (``isar.scene.agenda`` never mints one
-    without them), so hitting it would be a generator defect."""
+    """The complete branch table (PR #33 A-P0-6): ``endpoint_unmeasured`` and
+    ``endpoints_in_disjoint_clusters`` name a node directly; every OTHER open state with
+    endpoints measured and jointly clustered -- no reason key at all, a bound-vacuous note, or a
+    durable blocker -- is a mass-straddle the WEAKEST-CUT rule addresses the same way (all three
+    are evidence deficits a re-measure fixes, never a generator defect). Only two states raise:
+    ``no_endpoint_tiles_declared`` (the agenda never mints a ConnectTrack spec without both
+    endpoint tiles, so reaching it is a spec-shape defect) and any reason key this table does not
+    recognize (malformed)."""
     subject = QuestionSubject.from_dict(spec_dict["subject"])
     assessment = _assessment_of(context.agenda_payload, spec_dict["question_id"]) or {}
     reason = dict(assessment.get("notes") or ()).get("reason")
@@ -477,11 +578,21 @@ def track_bridge_scan(context: DiscoveryContext, spec_dict: Mapping) -> Generato
     elif reason == "endpoints_in_disjoint_clusters":
         t = _bridge_node(context.scene_payload, subject.partition_id, tile_a, tile_b)
         detail = f"bridge gap between disjoint clusters spanning {tile_a}..{tile_b}"
+    elif reason is None:
+        # Endpoints measured and jointly clustered (evaluator verdict "open" with no named
+        # reason -- mass straddle, bound-vacuous, or blocker-carrying alike): a midpoint
+        # coinciding with an existing matched coordinate can only arise from degenerate
+        # duplicate coordinates, and needs no special case -- ω is already the full domain
+        # below, the same as every other re-measure of an already-matched node.
+        t = _weakest_cut_node(context.scene_payload, subject.partition_id, tile_a, tile_b)
+        detail = f"weakest-cut re-measure between {tile_a}..{tile_b}"
     else:
         raise ValueError(
             f"track_bridge_scan: question {spec_dict['question_id']!r} is open for reason "
-            f"{reason!r}, not one of the two constructible reasons (endpoint_unmeasured, "
-            "endpoints_in_disjoint_clusters)")
+            f"{reason!r} -- not endpoint_unmeasured, endpoints_in_disjoint_clusters, or a "
+            "no-reason mass-straddle open state. no_endpoint_tiles_declared is a spec-shape "
+            "defect (the agenda never mints a ConnectTrack spec without both endpoint tiles); "
+            "any other key is malformed")
     energy_lo, energy_hi = _clip_omega(context.step_payload, None)
     hkl = _hkl_at(context.step_payload, t)
     intent = _make_intent(context, hkl, energy_lo, energy_hi, partition_id=subject.partition_id)
@@ -594,6 +705,12 @@ def _parameter_refine_tolerance(context: DiscoveryContext, spec_dict: Mapping,
                 and "mixed_interval_semantics" not in notes)
     tolerance = float(params["tolerance_meV"])
     floor = float(params["statistical_floor_meV"])
+    if tolerance < floor:
+        # PR #33 A-P1-b: an ask tighter than the statistical floor can never be satisfied by any
+        # measurement -- generating against it forever would drive an unclosable predicate.
+        # Model/program-authority, like every other INAPPLICABLE in this matrix, so NOT
+        # exhaustion-clean by construction (GeneratorOutcome.inapplicable's own invariant).
+        return GeneratorOutcome.inapplicable("tolerance_below_representable_precision")
     requirement = str(spec_dict["predicate"]["authority_requirement"])
 
     target = _case_i_target(subject, context.scene_payload, tolerance, requirement) \

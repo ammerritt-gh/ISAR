@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from isar.drive.acquisition.inventory import ActionEligibility, ActionEvaluation
-from isar.drive.steering.generators import GENERATOR_FUNCTIONS, DiscoveryContext
+from isar.drive.steering.generators import GENERATOR_FUNCTIONS, DiscoveryContext, dependency_depth
 
 __all__ = [
     "READY", "DEPENDENCY_BLOCKED", "RAN", "NO_GENERATORS",
@@ -112,6 +112,29 @@ def classify_readiness(agenda_payload: Mapping) -> dict[str, str]:
     return readiness
 
 
+def _validate_association(association, spec: Mapping, generator_id: str,
+                          context: DiscoveryContext, question_id: str) -> None:
+    """Every returned association must describe the SAME question the controller invoked the
+    generator for (PR #33 A-P1-a) -- these fields drive scheduling and exhaustion, so a generator
+    that fabricates one (or copies a sibling's) must never pass silently. Raised OUTSIDE the
+    per-generator fault-isolation try/except below: a bad generator is that generator's problem,
+    but a forged association is a controller-integrity problem for the whole decision."""
+    checks = (
+        ("question_id", association.question_id, question_id),
+        ("generator", association.generator, generator_id),
+        ("basis_agenda_digest", association.basis_agenda_digest, context.basis_agenda_digest),
+        ("family_priority", association.family_priority, int(spec["priority"])),
+        ("dependency_depth", association.dependency_depth,
+         dependency_depth(spec, context.agenda_payload)),
+    )
+    for field, actual, expected in checks:
+        if actual != expected:
+            raise ValueError(
+                f"generator {generator_id!r} on question {question_id!r} returned an "
+                f"association with {field}={actual!r}, expected {expected!r} -- association "
+                "fields must match the controller-owned spec, never the generator's own guess")
+
+
 def run_ready_questions(context: DiscoveryContext, readiness: Mapping[str, str]) -> RunResult:
     """Run every READY question's declared generators, in spec order, with per-generator fault
     isolation. ``dependency_blocked`` questions are recorded but never touch a generator
@@ -177,6 +200,7 @@ def run_ready_questions(context: DiscoveryContext, readiness: Mapping[str, str])
                 continue
             if outcome.proposals:
                 for intent, association in outcome.proposals:
+                    _validate_association(association, spec, generator_id, context, question_id)
                     evaluations.append(ActionEvaluation(
                         intent=intent, generator=generator_id,
                         eligibility=ActionEligibility.ELIGIBLE, associations=(association,)))

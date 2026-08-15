@@ -233,7 +233,7 @@ def test_proposals_flow_into_evaluations_ready_for_dedupe():
                                energy_hi=8.0, window_family="discovery")
     association = QuestionActionAssociation(
         basis_agenda_digest="d" * 64, question_id=spec.question_id, generator="presence_probe",
-        family_priority=1, dependency_depth=0, reason="test")
+        family_priority=0, dependency_depth=0, reason="test")  # spec.priority defaults to 0
 
     def gen(ctx, sp):
         return outcome_of(((intent, association),))
