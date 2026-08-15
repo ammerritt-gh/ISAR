@@ -40,12 +40,21 @@ the revision before anything relies on it, and rewritten when it differs — a c
 therefore heals on a rebuild of the same scene, and a corrupt orphan is repaired before the pointer
 can ever flip onto it.
 
-**Two writers, no lock.** ``isar report --scene`` can run against a live campaign, so single-writer
-is false. Concurrency is optimistic: a writer that captured the pointer digest when it snapshotted
-its inputs passes it as ``expected_parent`` and the flip refuses with
-:class:`ConcurrentRevisionWrite` if the pointer moved meanwhile. A lock file is deliberately not
-used — a stale lock left by a crash would block every subsequent campaign, which is worse than the
-race it prevents. The blob write itself is content-addressed and safe under any interleaving.
+**Two writers, ONE interprocess lock around the pointer flip** (PR #33 review B-2: the previous
+optimistic-only design let two processes both pass the ``expected_parent`` check off one stale
+read and both "win"). ``isar report --scene`` can run against a live campaign, so single-writer
+is false: every read-pointer → compare-``expected_parent`` → write-pointer/append-history step
+in :meth:`RevisionStore.write_revision` now runs inside a per-store ``current.lock`` critical
+section (:func:`_locked`) — ``os.open(..., O_CREAT | O_EXCL)``, the one cross-platform atomic
+"only one caller creates this file" primitive, bounded retry (~5s total) before raising
+:class:`StoreLockTimeout` naming the lock path. The blob write itself stays OUTSIDE the lock: it
+is content-addressed and idempotent — two writers publishing identical bytes at the same digest
+converge safely under any interleaving — so serializing it would only add contention with no
+correctness gain. A lock file is not "deliberately avoided" as it was before: a crash leaving one
+behind would wedge every later writer forever, which is exactly what the STALE-LOCK AGE TAKEOVER
+answers — a lock file older than the age threshold is presumed abandoned (a live writer holds it
+only for the duration of one pointer flip, which is short) and is removed, with a logged warning,
+before the next attempt.
 
 The atomic-write idiom (temp file in the target directory → flush → ``fsync`` → ``os.replace``)
 mirrors ``isar/session/master_delivery.py:_persist_content_addressed``; it is reimplemented
@@ -58,6 +67,8 @@ import logging
 import os
 import re
 import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,6 +97,139 @@ class ConcurrentRevisionWrite(ValueError):
     from this module (the driver hook logs and skips, ``isar report --scene`` exits 3), so a
     losing writer degrades to the same visible skip rather than an unhandled traceback.
     """
+
+
+class StoreLockTimeout(ValueError):
+    """Another writer held the store lock past the wait budget (PR #33 review B-2).
+
+    Also a ``ValueError`` subclass, same reasoning as :class:`ConcurrentRevisionWrite`: an
+    existing ``except ValueError`` at a call site degrades a lock timeout the same way it
+    already degrades a concurrent-write refusal, rather than needing a second except clause.
+    """
+
+
+# Lock tuning (PR #33 review B-2). No config surface yet — a fixed, generous budget for a
+# critical section that holds for the duration of one pointer flip (microseconds to low
+# milliseconds), never a whole build.
+_LOCK_NAME = "current.lock"
+_LOCK_STALE_AGE_S = 30.0
+_LOCK_WAIT_TOTAL_S = 5.0
+_LOCK_RETRY_INTERVAL_S = 0.05
+
+
+@contextmanager
+def _locked(root: Path, artifact_label: str):
+    """Interprocess mutual exclusion around one store's pointer flip.
+
+    ``os.open(path, O_CREAT | O_EXCL)`` is the one primitive both POSIX and Windows implement as
+    an atomic "create this file iff it does not already exist" — Python's ``os`` module maps it
+    onto ``CreateFileW(..., CREATE_NEW, ...)`` on Windows, so this needs no platform branch.
+
+    Bounded retry (~:data:`_LOCK_WAIT_TOTAL_S` total) before raising :class:`StoreLockTimeout`
+    naming the lock path — a caller that cannot get the lock in a few seconds is contending with
+    something stuck, not a normal flip. A lock file older than :data:`_LOCK_STALE_AGE_S` is
+    presumed abandoned by a crashed writer (a live holder's critical section is short) and is
+    removed with a logged warning, so a crash can never wedge a workspace forever the way the
+    module docstring's retired "no lock" reasoning worried about.
+    """
+    lock_path = root / _LOCK_NAME
+    deadline = time.monotonic() + _LOCK_WAIT_TOTAL_S
+    fd = None
+    while fd is None:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                age = time.time() - lock_path.stat().st_mtime
+            except OSError:
+                continue  # vanished between the failed open and the stat -- retry NOW
+            if age > _LOCK_STALE_AGE_S and not _lock_owner_alive(lock_path):
+                # Age alone is not proof of abandonment (a debugger pause or a slow
+                # filesystem can hold a LIVE writer past any threshold, and deleting a live
+                # writer's lock reintroduces the exact two-writer race this lock exists to
+                # prevent — review W2-1). Takeover requires BOTH: stale by age AND the
+                # recorded owner process is verifiably gone.
+                log.warning(
+                    "%s lock %s is %.1fs old (> %.0fs) and its owner %s is gone -- taking "
+                    "it over as abandoned",
+                    artifact_label, lock_path, age, _LOCK_STALE_AGE_S,
+                    _lock_owner_of(lock_path))
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass  # another writer already took it over; loop and retry the open
+                continue
+            if time.monotonic() >= deadline:
+                raise StoreLockTimeout(
+                    f"{artifact_label} store lock {lock_path} (held by "
+                    f"{_lock_owner_of(lock_path)}) was still held after "
+                    f"{_LOCK_WAIT_TOTAL_S:.0f}s -- another writer appears to be stuck; remove "
+                    "the lock file by hand if it is not")
+            time.sleep(_LOCK_RETRY_INTERVAL_S)
+    try:
+        os.write(fd, str(os.getpid()).encode("ascii"))
+        os.close(fd)
+        yield
+    finally:
+        removed = False
+        for _ in range(3):
+            try:
+                lock_path.unlink()
+                removed = True
+                break
+            except FileNotFoundError:
+                removed = True  # a stale-takeover raced us; nothing left to release
+                break
+            except OSError:
+                time.sleep(0.05)  # transient handle (antivirus etc.) -- brief retry
+        if not removed:
+            # A lock we cannot release stalls every later writer for the full stale window;
+            # that is operator-visible breakage, not a shrug (review W2-2).
+            log.error("could not remove %s lock %s after retries; later writers will stall "
+                      "until the stale-lock takeover clears it", artifact_label, lock_path)
+
+
+def _lock_owner_of(lock_path: Path) -> str:
+    """The owner PID recorded inside a lock file, for diagnostics -- 'unknown' if unreadable."""
+    try:
+        text = lock_path.read_text(encoding="ascii").strip()
+        return f"pid {int(text)}"
+    except (OSError, ValueError):
+        return "unknown owner"
+
+
+def _lock_owner_alive(lock_path: Path) -> bool:
+    """Whether the process that wrote the lock file still exists.
+
+    Unreadable or unparsable owner records count as ALIVE: takeover must be provably safe,
+    and "we could not tell" is not proof of death -- the timeout path (which only stalls,
+    never races) handles the truly unknowable case.
+    """
+    try:
+        pid = int(lock_path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return True
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False  # no such process
+        try:
+            code = ctypes.c_ulong()
+            ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+            STILL_ACTIVE = 259
+            return bool(ok) and code.value == STILL_ACTIVE
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
 
 
 # The scene binding's original exception name; existing callers catch it by this spelling.
@@ -283,9 +427,7 @@ class RevisionStore:
         ``expected_parent`` is optimistic concurrency. Supply the digest that ``pointer_digest``
         returned when the caller SNAPSHOTTED its inputs and the flip happens only if the pointer
         still names it; otherwise :class:`ConcurrentRevisionWrite` names both digests and nothing
-        moves. The unchanged path is deliberately not guarded by it: if the pointer already names
-        this exact revision then the state on disk is the state this writer wanted, whoever put
-        it there. Omit the argument (single-writer callers, tests) and no check is made.
+        moves. Omit the argument (single-writer callers, tests) and no check is made.
 
         ``source`` is recorded in the history line so lineage says WHICH writer flipped the
         pointer.
@@ -293,30 +435,44 @@ class RevisionStore:
         A lost *pointer* with surviving blobs restarts the pointer's own lineage (``parent`` is
         ``None`` again). The history log is unaffected and still holds every earlier link, and
         every superseded revision stays addressable by its digest.
+
+        **Locking (PR #33 review B-2).** The pointer read, the ``expected_parent`` comparison
+        (including the "already unchanged" case), the pointer write, and the history append all
+        run inside :func:`_locked` — a single interprocess critical section per store, so two
+        concurrent writers can no longer both read the same stale pointer and both pass their
+        own ``expected_parent`` check. The unchanged check is INSIDE the lock, not exempted from
+        it: it reads the pointer, and a read taken outside the lock could be the exact stale read
+        that let two writers both believe nothing needed to change. The blob write
+        (:meth:`_ensure_blob`, just above the lock) stays outside deliberately — it is
+        content-addressed and idempotent, so any interleaving of two writers publishing the
+        identical bytes converges on the same correct file, and serializing it would only add
+        contention with no correctness gain.
         """
         root = self._root(report_dir)
         root.mkdir(parents=True, exist_ok=True)
-        previous = self._read_pointer(root)
         target = root / f"{revision.digest}.json"
         self._ensure_blob(target, revision)
 
-        if previous is not None and previous["digest"] == revision.digest:
-            return StoreResult(digest=revision.digest, path=target, unchanged=True,
-                               parent=previous.get("parent"))
+        with _locked(root, self.artifact_label):
+            previous = self._read_pointer(root)
+            if previous is not None and previous["digest"] == revision.digest:
+                return StoreResult(digest=revision.digest, path=target, unchanged=True,
+                                   parent=previous.get("parent"))
 
-        parent = None if previous is None else previous["digest"]
-        if expected_parent is not UNSET and parent != expected_parent:
-            raise ConcurrentRevisionWrite(
-                f"{self.artifact_label} pointer moved to {parent} since this writer snapshotted "
-                f"at {expected_parent}; refusing to publish {revision.digest} over it. The blob "
-                f"is written and addressable at {target}.")
-        written_at = datetime.now(timezone.utc).isoformat()
-        pointer = {"schema": self.pointer_schema, "digest": revision.digest, "parent": parent,
-                   "written_at": written_at}
-        _write_atomic(root / "current.json", canonical_bytes(pointer), self.artifact_label)
-        self._append_history(root, {"digest": revision.digest, "parent": parent,
-                                    "written_at": written_at, "source": str(source)})
-        return StoreResult(digest=revision.digest, path=target, unchanged=False, parent=parent)
+            parent = None if previous is None else previous["digest"]
+            if expected_parent is not UNSET and parent != expected_parent:
+                raise ConcurrentRevisionWrite(
+                    f"{self.artifact_label} pointer moved to {parent} since this writer "
+                    f"snapshotted at {expected_parent}; refusing to publish {revision.digest} "
+                    f"over it. The blob is written and addressable at {target}.")
+            written_at = datetime.now(timezone.utc).isoformat()
+            pointer = {"schema": self.pointer_schema, "digest": revision.digest,
+                      "parent": parent, "written_at": written_at}
+            _write_atomic(root / "current.json", canonical_bytes(pointer), self.artifact_label)
+            self._append_history(root, {"digest": revision.digest, "parent": parent,
+                                        "written_at": written_at, "source": str(source)})
+            return StoreResult(digest=revision.digest, path=target, unchanged=False,
+                               parent=parent)
 
     def read_current(self, report_dir: Path) -> tuple[dict, dict] | None:
         """``(pointer, payload)`` for the current revision, or ``None`` if there is not one yet.
