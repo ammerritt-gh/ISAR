@@ -409,7 +409,11 @@ ONTO the survivor — marks `not_exhausted`; a durable structural/saturation rej
 MATCHING typed `QuestionBlockerEvidence` (production emission is 4.3; only synthetic tests
 construct one this PR); clean zero across every required generator, all exhaustion-clean,
 proves it; a required generator FAILED or missing from the run record is a `controller_fault`,
-never a silently-emitted proof.
+never a silently-emitted proof. "Proves it" means the PRODUCER emits a `QuestionExhaustion`
+proof — closing the question is a SEPARATE gate `apply_exhaustion` owns (PR #33 A-P0-2/A-P0-3):
+it requires a durable blocker on the assessment for ANY closure, including an all-clean-zero
+proof, so an emitted proof with nothing to attach a blocker to is honestly rejected
+(`generator_defect`) rather than closing the question — see §6's planner outcome paragraph.
 
 **Closure and the verdict.** A question closes three ways: answered; overtaken/dissolved
 (history transitions — a lattice-epoch change dissolves with `equivalence_unproven`, never an
@@ -598,14 +602,23 @@ The planner's outcome is one of five, decided from a second, exhaustion-informed
 over the same snapshot: `selected` (an eligible action survives dedup — ranked lexicographically
 by `isar/drive/steering/scheduler.py`'s declared policy: minimum family priority, then dependency
 depth, then a named v1 locality stand-in, then the scientific action fingerprint as the
-always-distinguishing tiebreak); `agenda_complete` (the second pass has no open questions);
-`controller_fault` (any per-question fault, a dedup metadata conflict, or a missing scene —
-selection stays `null`, siblings still persisted for diagnosis); `no_action_with_honest_exhaustion`
-(no eligible action, and every open question carries a proven — never necessarily durably closed
-— exhaustion proof); `no_eligible_action` (no eligible action and no exhaustion claim anywhere —
-the cold-start reading: an unmeasured workspace's program-scoped DiscoverRegion question is
-INAPPLICABLE `program_scoped_subject_unfanned` at the generator wrapper, before the book is ever
-called, and first-scan reality stays 4.3's partition-producer obligation).
+always-distinguishing tiebreak); `agenda_complete` (the SECOND PASS'S OWN `evaluate_agenda`
+VERDICT reports `complete` — PR #33 A-P0-3, never inferred from raw open/closed statuses: a
+question can leave `open` by closing `unresolvable` rather than answering yes, and the
+four-reasons law says that is not completion); `controller_fault` (any per-question fault, a
+dedup metadata conflict, or a missing scene — selection stays `null`, siblings still persisted
+for diagnosis); `no_action_with_honest_exhaustion` (no eligible action, the verdict is not
+complete, and nothing is left `open` — every remaining question closed via an APPLIED exhaustion
+proof, never a merely emitted one: `apply_exhaustion` requires a DURABLE BLOCKER on the
+assessment for any closure, including an all-clean-zero proof, so this outcome is reachable in
+4.2b only with synthetic/authenticated `blocker_evidence` — no live evaluator emits a durable
+blocker yet, so 4.3's producers are the load-bearing path); `no_eligible_action` (no eligible
+action and something is still `open` — either ordinary unresolved dependencies, or a clean-zero
+proof `apply_exhaustion` honestly could not turn into a closure for want of a durable blocker to
+attach it to: a real, expected, non-faulty state, not a lie to penalize; also the cold-start
+reading — an unmeasured workspace's program-scoped DiscoverRegion question is INAPPLICABLE
+`program_scoped_subject_unfanned` at the generator wrapper, before the book is ever called, and
+first-scan reality stays 4.3's partition-producer obligation).
 
 ## 7. Status discipline
 

@@ -12,10 +12,12 @@ import pytest
 from isar.drive.acquisition.inventory import ActionEligibility
 from isar.eig.eligibility import EligibilityInput, _scan_design_identity
 from isar.schema.action_identity import MeasurementIntent
-from isar.schema.campaign_program import CampaignProgram, CampaignStep, DiscoverAndMapSpec
-from isar.schema.generators import QuestionActionAssociation
+from isar.schema.campaign_program import (
+    CampaignProgram, CampaignStep, DiscoverAndMapSpec, program_fingerprint)
+from isar.schema.generators import (
+    DISCOVERY_GENERATOR_REGISTRY_VERSION, QuestionActionAssociation, QuestionBlockerEvidence)
 from isar.schema.question_policy import resolve_policy
-from isar.scene.agenda import AGENDA_STORE
+from isar.scene.agenda import AGENDA_STORE, derive_agenda
 from isar.scene.model import canonical_bytes, digest_bytes
 from isar.scene.store import ConcurrentRevisionWrite, SCENE_STORE
 
@@ -241,15 +243,20 @@ def test_unmeasured_workspace_is_no_eligible_action_never_a_fault(tmp_path):
 
 
 # ----------------------------------------------------------------------------
-# Honest exhaustion: VerifyCompleteness's exposure_fill clean-zeros while a NON-exposure reason
-# (a trusted, fitless arena) keeps the question open -- no blocker evidence needed at all, since
-# this is the "all required generators exhausted, no durable blocker" path, not the
-# structural/saturation + evidence path. No 4.1/4.2 evaluator ever emits a durable blocker
-# (isar.scene.agenda's own docstring), so a durably-CLOSED question is not reachable through the
-# live pipeline today -- this is the honestly-reachable variant, and it is exactly what
-# no_action_with_honest_exhaustion exists to name.
+# Honest exhaustion (PR #33 A-P0-3/W5, reconciled against apply_exhaustion's real semantics):
+# apply_exhaustion requires a DURABLE BLOCKER on the assessment for ANY closure, including an
+# all-clean-zero proof (agenda.py:596-606) -- "nothing left to measure" is not by itself a
+# physical reason a question can never be answered. A clean-zero proof with no durable blocker
+# to attach to is therefore REJECTED as generator_defect and the question stays open: the
+# honest planner reading of "no eligible action, zero actions, and the one exhaustion claim we
+# had never actually closed anything" is no_eligible_action, NOT no_action_with_honest_
+# exhaustion. Since no 4.1/4.2 evaluator emits a durable blocker yet (isar.scene.agenda's own
+# docstring), no_action_with_honest_exhaustion is reachable in THIS PR only with
+# synthetic/authenticated blocker_evidence (W4) -- 4.3's durable-blocker producers are the live
+# path. Both readings are pinned below.
 # ----------------------------------------------------------------------------
-def test_honest_exhaustion_when_the_only_open_question_cleanly_zero_generates(tmp_path):
+def test_clean_zero_without_a_durable_blocker_is_no_eligible_action_not_honest_exhaustion(
+        tmp_path):
     step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(2.5, 0.0, 0.0), spacing=1.0)
     program = program_with(step)
     write_scene(tmp_path, scene(
@@ -257,14 +264,59 @@ def test_honest_exhaustion_when_the_only_open_question_cleanly_zero_generates(tm
         observations=[obs("e:1:d", candidates=())]))                # trusted + fitless
 
     result = plan_next_action(tmp_path, program, "discover-1")
-    assert result.outcome == NO_ACTION_WITH_HONEST_EXHAUSTION
+    assert result.outcome == NO_ELIGIBLE_ACTION
 
     verify_records = [r for r in result.run_records if r.family == "VerifyCompleteness"]
     assert len(verify_records) == 1
     assert verify_records[0].disposition == "ran"
     outcome = verify_records[0].generator_outcomes[0]
+    # The clean-zero proof was honestly EMITTED by the generator/producer layer...
     assert outcome.generator == "exposure_fill" and outcome.kind == "clean_zero"
     assert outcome.exhaustion_clean is True
+    # ...but never APPLIED: the persisted agenda still shows the question open, with a
+    # generator_defect note recording exactly why apply_exhaustion refused to close it.
+    _pointer, payload = AGENDA_STORE.read_current(tmp_path)
+    verify_assessment = next(a for a in payload["assessments"] if a["question_id"] ==
+                             next(s for s in payload["specs"]
+                                 if s["family"] == "VerifyCompleteness")["question_id"])
+    assert verify_assessment["status"] == "open"
+    assert dict(verify_assessment["notes"]).get("generator_defect")
+
+
+def test_synthetic_blocker_evidence_reaches_honest_exhaustion_via_an_applied_closure(tmp_path):
+    """The reachable variant: authenticated blocker_evidence lets the SAME clean-zero proof
+    actually CLOSE the question (unresolvable), and the planner reads that as
+    no_action_with_honest_exhaustion -- an applied closure, never a merely-emitted one."""
+    step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(2.5, 0.0, 0.0), spacing=1.0)
+    program = program_with(step)
+    scene_payload = scene(
+        footprints=[fp("e:1:d", 2.25, bands=((0.0, 10.0),))],
+        observations=[obs("e:1:d", candidates=())])
+    write_scene(tmp_path, scene_payload)
+
+    # Learn pass-1's own digests exactly as the planner will compute them (blocker_evidence
+    # never changes basis_digest -- attachment runs strictly AFTER it is captured), so the
+    # evidence constructed here authenticates against the SAME derivation the planner runs.
+    step_payload = step.payload.to_dict()
+    pass1 = derive_agenda(scene_payload, step_payload, step_id="discover-1",
+                          program_fingerprint=program_fingerprint(program),
+                          generator_registry_fingerprint=DISCOVERY_GENERATOR_REGISTRY_VERSION)
+    verify_qid = next(s for s in pass1.payload["specs"]
+                      if s["family"] == "VerifyCompleteness")["question_id"]
+
+    evidence = QuestionBlockerEvidence(
+        basis_agenda_digest=pass1.payload["basis_digest"], question_id=verify_qid,
+        scene_digest=pass1.payload["scene_digest"],
+        generator_registry_fingerprint=DISCOVERY_GENERATOR_REGISTRY_VERSION,
+        blocker_name="resolution_floor", supporting_generator_ids=("exposure_fill",))
+
+    result = plan_next_action(tmp_path, program, "discover-1", blocker_evidence=(evidence,))
+    assert result.outcome == NO_ACTION_WITH_HONEST_EXHAUSTION
+
+    _pointer, payload = AGENDA_STORE.read_current(tmp_path)
+    verify_assessment = next(a for a in payload["assessments"] if a["question_id"] == verify_qid)
+    assert verify_assessment["status"] == "unresolvable"
+    assert any(b["name"] == "resolution_floor" for b in verify_assessment["blockers"])
 
 
 def test_agenda_complete_when_nothing_is_open(tmp_path):

@@ -12,8 +12,11 @@ scene stored yet is a controller fault with nothing persisted except the decisio
 (the basis every :class:`~isar.schema.generators.QuestionActionAssociation` and
 :class:`~isar.scene.questions.QuestionExhaustion` in this decision binds against). Pass-2
 re-derives — the SAME ``isar.scene.agenda.derive_agenda`` call, this time with whatever proofs
-this decision produced — and its open-question set is what decides the outcome. Both passes are
-pure; nothing is written to the agenda store until persistence, and that write reuses
+this decision produced and whatever ``blocker_evidence`` the caller supplied (PR #33 A-P0-2) —
+and its own :func:`~isar.scene.agenda.evaluate_agenda` VERDICT decides completion (PR #33
+A-P0-3: never inferred from raw open/closed statuses — a question can leave "open" by closing
+unresolvable rather than answering yes, and that is not completion). Both passes are pure;
+nothing is written to the agenda store until persistence, and that write reuses
 ``build_and_store_agenda`` (the "build path" the C7 contract names) so pass-2 and the persisted
 revision can never diverge — the double-run byte-identity test is what catches it if they ever do.
 
@@ -38,12 +41,12 @@ from isar.schema.action_identity import canonical_json
 from isar.schema.campaign_program import CampaignProgram, ProgramError, program_fingerprint
 from isar.schema.generators import DISCOVERY_GENERATOR_REGISTRY, DISCOVERY_GENERATOR_REGISTRY_VERSION, registry_manifest
 from isar.schema.placement import PLACEMENT_RULES, PLACEMENT_RULES_SCHEMA
-from isar.scene.agenda import build_and_store_agenda, derive_agenda, AGENDA_STORE
+from isar.scene.agenda import (
+    build_and_store_agenda, derive_agenda, evaluate_agenda, AGENDA_STORE)
 from isar.scene.model import canonical_bytes, fingerprint
 from isar.scene.store import RevisionStore, SCENE_STORE
 
 from isar.drive.steering.exhaustion import CONTROLLER_FAULT as _PRODUCER_FAULT
-from isar.drive.steering.exhaustion import PROOF as _PROOF
 from isar.drive.steering.exhaustion import produce_exhaustion
 from isar.drive.steering.generators import DiscoveryContext
 from isar.drive.steering.readiness import RunResult, classify_readiness, run_ready_questions
@@ -287,9 +290,12 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     scene_digest = fingerprint(scene_payload)
     agenda_snapshot = AGENDA_STORE.pointer_digest(report_dir)
 
-    # ---- pass 1: pure, no exhaustion evidence --------------------------------------------
+    # ---- pass 1: pure, no exhaustion evidence (blocker_evidence threaded through anyway --
+    # PR #33 A-P0-2/W4: both passes receive IDENTICAL blocker_evidence, so pass-1's own
+    # assessments -- what the exhaustion producer and every generator construction reads --
+    # never disagree with pass-2's about which blockers are attached) ----------------------
     pass1 = derive_agenda(scene_payload, step_payload, step_id=step_id,
-                          program_fingerprint=program_fp,
+                          program_fingerprint=program_fp, blocker_evidence=blocker_evidence,
                           generator_registry_fingerprint=registry_fp)
     basis_digest = pass1.payload["basis_digest"]
     context = DiscoveryContext(scene_payload=scene_payload, agenda_payload=pass1.payload,
@@ -325,22 +331,39 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     # ---- pass 2: re-derive with whatever proofs this decision produced ------------------
     pass2 = derive_agenda(scene_payload, step_payload, step_id=step_id,
                           program_fingerprint=program_fp, exhaustion_evidence=proofs,
+                          blocker_evidence=blocker_evidence,
                           generator_registry_fingerprint=registry_fp)
     pass2_open = {a["question_id"] for a in pass2.payload["assessments"] if a["status"] == "open"}
+    # PR #33 A-P0-3/W5: completion is THE AGENDA VERDICT'S call, never inferred from raw
+    # statuses -- a question can leave "open" by closing UNRESOLVABLE rather than answering
+    # YES, and the four-reasons law says that is not completion (evaluate_agenda's own
+    # verify_yes / generator_defect-reasons checks already know the difference; re-deriving
+    # it here from pass2_open alone was exactly the bug).
+    verdict = evaluate_agenda(pass2.payload)
 
     reason = fault_reason or per_question_fault
     if reason is not None:
         outcome = CONTROLLER_FAULT
-    elif not pass2_open:
+    elif verdict.state == "complete":
         outcome = AGENDA_COMPLETE
     elif survivors:
         outcome = SELECTED
+    elif not pass2_open:
+        # Nothing left OPEN, no eligible action, yet the verdict is not complete -- the only
+        # way both hold is that every remaining question closed via an APPLIED exhaustion
+        # proof (status -> unresolvable), never merely an emitted one: a proof apply_
+        # exhaustion REJECTED (generator_defect: exhausted, but no durable blocker) leaves its
+        # question sitting in pass2_open, so it can never reach this branch. Reachable in
+        # 4.2b only with synthetic/authenticated blocker_evidence (see W4) -- no live
+        # evaluator emits a durable blocker yet, so this is 4.3+ territory otherwise.
+        outcome = NO_ACTION_WITH_HONEST_EXHAUSTION
     else:
-        outcomes_by_qid = ({o.question_id: o.outcome for o in producer_result.outcomes}
-                          if producer_result is not None else {})
-        outcome = (NO_ACTION_WITH_HONEST_EXHAUSTION
-                  if all(outcomes_by_qid.get(qid) == _PROOF for qid in pass2_open)
-                  else NO_ELIGIBLE_ACTION)
+        # Something is still open: either ordinary unresolved dependencies, or an exhaustion
+        # proof that WAS emitted but that apply_exhaustion honestly could not turn into a
+        # closure (clean-zero with no durable blocker to attach it to) -- a real, expected,
+        # non-faulty state in a world with no durable-blocker producer yet, not a lie to
+        # penalize as controller_fault.
+        outcome = NO_ELIGIBLE_ACTION
 
     # ---- persistence, in order: inventory -> agenda -> program -> decision --------------
     inventory = _build_inventory(run_result, survivors, deduped_by_generator)
@@ -348,6 +371,7 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
 
     build_and_store_agenda(report_dir, scene_payload, step_payload, step_id=step_id,
                            program_fingerprint=program_fp, exhaustion_evidence=proofs,
+                           blocker_evidence=blocker_evidence,
                            generator_registry_fingerprint=registry_fp,
                            expected_parent=agenda_snapshot, source="planner")
 
