@@ -97,3 +97,24 @@ phase-transition hypothesis), not through ordinary spatial adjacency.
 Real spectrometers pay real time to move (motor speeds, configuration changes). Scan selection
 should eventually weigh information value against instrument-motion cost; until then, nearness
 to the current configuration is a stand-in tiebreak.
+
+## Entries 2026-08-15 — from the PR #33 cold-start ruling discussion
+
+## The energy ceiling is soft when time remains (→ "Automated Scans" or "Pause/Failure States")
+
+"Map the phonons" has a physical energy floor (E = 0, by detailed balance) but no natural
+ceiling — the frozen program requires one anyway. When the campaign's declared goals are met
+and beam time remains, ISAR should PROMPT (non-blocking, declared default) to extend the
+energy ceiling toward the instrument limit and continue the optic hunt at the zone centre —
+"more time? keep measuring up in energy at the ZC to find more optic phonons, up to some
+limit of the machine." A widened ceiling is a consultation-channel re-freeze (new program
+revision), never in-place mutation.
+
+## A failed in-zone hunt recommends the next zone (→ "Automated Scans")
+
+When the optic hunt at a zone centre finds nothing, the correct scientific move is often a
+DIFFERENT Brillouin zone (structure-factor weighting) — "if we don't find them, we know we
+need to look in a different BZ, and tell the user." The deferred symmetry-equivalent-coupling
+feature (SCENE-5-adjacent) should be built toward exactly this sentence: the failed hunt
+produces a concrete other-zone recommendation through the consultation channel, not a silent
+exhaustion.

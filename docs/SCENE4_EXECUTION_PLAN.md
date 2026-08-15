@@ -234,6 +234,41 @@ stronger goal compiler; motor-cost models; incremental scene builds; full sample
 (DESIGN_GOALS: mutable lattice/UB/space-group provenance, alignment-as-hypothesis,
 mosaic/twinning, sublattices); model hierarchy above phenomena (dispersion-vs-T).
 
+## Cold-start ruling (2026-08-15, owner — PR #33 review discussion): RULED
+
+How a fresh (or freshly re-conditioned) workspace gets its first scan. Decision of record
+until 4.3's H-entry lands:
+
+1. **Option A — the driver constructs the initial partition from declarations.** Every
+   partition component is derivable before any measurement: sample identity from the card,
+   ConditionSet from the declared setpoint through the SAME t_round binning rule measured
+   provenance uses, lattice epoch from declared knowledge, path from the program step. 4.3's
+   driver mints this declared partition with the same `partition_key()` code path, the agenda
+   fans out to it, and the ordinary machinery plans scan one — no bootstrap special case
+   anywhere. A declaration/reality mismatch on first measurement is an ordinary one-time
+   dissolve/reopen, not a failure mode. (The rejected alternative — a canonical context-less
+   bootstrap scan — cannot express the physics below and would orphan its own attribution.)
+2. **Initialization is catalogue-declared, never controller-coded.** The default phonon
+   profile's placement knowledge yields the owner's walkthrough: first scan just off the
+   nearest in-region zone centre at low ω hunting the acoustic branch (highest prior,
+   strongest, best-estimated there); persistent absence updates the posterior and the hunt
+   pivots to optic phonons at the ZC from finite E upward; initialized points extrapolate
+   outward (phonons disperse continuously). A different catalogue initializes differently by
+   its own declarations; flat or absent knowledge degrades HONESTLY to the uniform sparse
+   survey (anchor scoring fails closed; `survey_order: uniform` remains user-selectable), and
+   emergent signal drives everything thereafter.
+3. **The owner's walkthrough is the 4.4 cold-start acceptance script** for the default
+   profile (first proposal just-off-ZC low-ω; failed acoustic hunt pivots to the ZC optic
+   hunt; outward mapping from initialized points), plus a cheap degradation test: blank
+   knowledge ⇒ the first proposal is uniform sparse, never an error.
+4. **4.4 script check, not assumed:** whether on-ZC survey nodes need a nonzero-E window
+   floor against the Bragg/elastic tail (proposal-level exclusion), or fitter-side elastic
+   handling suffices.
+
+Related inbox candidates (same discussion): the soft energy ceiling with spare beam time;
+the failed-in-zone hunt recommending another Brillouin zone. Both in
+`docs/DESIGN_GOAL_INBOX.md`, 2026-08-15 entries.
+
 # SCENE-4 execution plan (rev 2 after external-review triage — 2026-08-13)
 
 Five PRs, sequenced; one branch per PR, owner reviews and merges (SCENE-3 cadence). Code
