@@ -73,12 +73,17 @@ TERMINAL_ACTION_INVENTORY_EXHAUSTED = "action_inventory_exhausted"
 TERMINAL_CONTROLLER_FAULT = "controller_fault"
 
 
-@dataclass(frozen=True)
-class GeneratorSpec:
-    """One registered action generator: the declarative unit an inventory is validated against."""
-
-    generator_id: str
-    version: int = 1
+# The generator vocabulary lives in the schema now (PR 4.2b B1): agenda derivation and this
+# controller both need the same words, and scene may not import drive. Re-exported here so
+# drive-internal callers keep importing them from the inventory that publishes them.
+from isar.schema.generators import (  # noqa: F401  (re-exported for drive-internal callers)
+    DISCOVERY_GENERATOR_REGISTRY,
+    DISCOVERY_GENERATOR_REGISTRY_VERSION,
+    FAMILY_GENERATORS,
+    GeneratorSpec,
+    registry_manifest,
+)
+from isar.schema.generators import registry_fingerprint as _schema_registry_fingerprint
 
 
 # The registered generator set that produced an inventory. An ``action_inventory_exhausted`` terminal
@@ -138,16 +143,18 @@ def json_number(value):
 
 
 def registry_fingerprint(registry: tuple[GeneratorSpec, ...] = GENERATOR_REGISTRY) -> str:
-    """Derive the registry version from the ordered generator ids + versions.
-
-    Deriving rather than hand-maintaining a string means a generator added, removed, renamed, or
-    revised cannot silently keep an old terminal's proof looking current.
+    """Drive-side wrapper over :func:`isar.schema.generators.registry_fingerprint`, keeping
+    the historical legacy-registry default for drive-internal callers. The schema
+    implementation takes the registry explicitly (it cannot import this module's registry,
+    and an implicit fingerprint subject is how two registries end up sharing one version);
+    same payload, same hash — pinned by test.
     """
-    payload = canonical_json([[spec.generator_id, spec.version] for spec in registry])
-    return "isar.generator-registry/1:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+    return _schema_registry_fingerprint(registry)
 
 
 GENERATOR_REGISTRY_VERSION = registry_fingerprint()
+GENERATOR_REGISTRY_MANIFEST: tuple[tuple[str, int], ...] = tuple(
+    (spec.generator_id, spec.version) for spec in GENERATOR_REGISTRY)
 
 
 @dataclass(frozen=True)
@@ -273,7 +280,13 @@ class ActionInventory:
 
     evaluations: list[ActionEvaluation] = field(default_factory=list)
     reports: list[GeneratorReport] = field(default_factory=list)
-    inventory_version: str = "isar.action-inventory/1"
+    # /2 (PR 4.2b B1): the registry an inventory was generated under became INSTANCE data —
+    # serialization stamps these fields, never the module-global, so a discovery inventory
+    # names the discovery registry and a legacy one the legacy registry. The defaults keep
+    # every legacy constructor exactly as it was.
+    inventory_version: str = "isar.action-inventory/2"
+    generator_registry_fingerprint: str = GENERATOR_REGISTRY_VERSION
+    generator_registry_manifest: tuple[tuple[str, int], ...] = GENERATOR_REGISTRY_MANIFEST
 
     def structural_problems(self) -> list[str]:
         """Registry-independent ways an inventory can fail to back its own completeness claim.
@@ -394,7 +407,9 @@ class ActionInventory:
         """
         return {
             "inventory_version": self.inventory_version,
-            "generator_registry_version": GENERATOR_REGISTRY_VERSION,
+            "generator_registry_version": self.generator_registry_fingerprint,
+            "generator_registry_manifest": [list(pair)
+                                            for pair in self.generator_registry_manifest],
             "n_evaluations": len(self.evaluations),
             "n_eligible": len(self.eligible_actions()),
             "is_complete": self.is_complete,
@@ -416,7 +431,9 @@ class ActionInventory:
         """
         return {
             "inventory_version": self.inventory_version,
-            "generator_registry_version": GENERATOR_REGISTRY_VERSION,
+            "generator_registry_version": self.generator_registry_fingerprint,
+            "generator_registry_manifest": [list(pair)
+                                            for pair in self.generator_registry_manifest],
             "canonicalization_version": CANONICALIZATION_VERSION,
             "reports": [
                 {"generator": r.generator, "status": r.status.value, "generated": r.generated,

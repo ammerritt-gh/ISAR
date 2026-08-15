@@ -40,6 +40,8 @@ import os
 from collections import Counter
 from dataclasses import dataclass
 
+from isar.schema.generators import FAMILY_GENERATORS
+
 from .model import canonical_bytes, digest_bytes, fingerprint
 from .predicates import (
     EVALUATORS, cluster_authority, combine_existential, evaluate_predicate,
@@ -57,21 +59,13 @@ TRANSITIONS_NAME = "transitions.jsonl"
 OPENER_VERSION = 4
 MATCHER_VERSION = 1
 
-#: Declared generator references (4.2b binds them to the real discovery registry).
-GENERATOR_REFS = {
-    "DiscoverRegion": ("opening_book_survey",),
-    "ConfirmPresence": ("presence_probe",),
-    "ClassifyIdentity": ("identity_discriminator",),
-    "ConnectTrack": ("track_bridge_scan",),
-    "EstimateParameter": ("parameter_refine",),
-    "TestModelMismatch": ("mismatch_probe",),
-    # The book's underexposed_cell proposals serve VerifyCompleteness's exposure floor and
-    # ONLY that closure (PR 4.2b, H19): an exposure deficit is not a coverage gap, so the
-    # action serving it needs its own generator identity or exhaustion accounting would
-    # attribute exposure work to DiscoverRegion. The predicate still closes on accounting —
-    # exposure_fill is how an open exposure deficit becomes an actionable measurement.
-    "VerifyCompleteness": ("exposure_fill",),
-}
+#: Declared generator references. The vocabulary itself lives in
+#: :mod:`isar.schema.generators` (PR 4.2b B1) — agenda derivation and the drive controller
+#: need the exact same words and neither may import the other, so the declaration sits below
+#: both. Re-exported under the historical name; the values are identical to the ones this
+#: module declared through C1 (digest-neutral relocation — GENERATOR_REFS is serialized per
+#: spec, not manifest-hashed, so equal values mean equal bytes).
+GENERATOR_REFS = FAMILY_GENERATORS
 
 
 @dataclass(frozen=True, slots=True)
