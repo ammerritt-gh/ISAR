@@ -211,6 +211,12 @@ discover step (SCENE-4 PR 4.1, H17) requires every effective field explicitly, i
 frozen `isar.question-policy/2` block (PR 4.2a: `/2` added the `survey_order` and
 `parameter_precision_min_mass` TARGET fields and retired `/1` by name), so a stored program can
 never acquire a read-time default.
+**Reading rule for the defaults-profile label (owner ruling 2026-08-15):** the named defaults
+profile (`DEFAULTS_PROFILE_VERSION`) versions the default VALUE SET only — it does not bump
+when the policy SCHEMA grows new fields with defaults, so "defaults v1" under `/1` and under
+`/2` carry different field sets. A profile version is therefore meaningful only alongside its
+policy schema version; never cite it bare. Replay and audit never depend on the label — the
+effective values are frozen and fingerprinted into every compiled program.
 The refusal table now covers `isar.objective/1`, `isar.objective/2`, `isar.objective-envelope/1`,
 `isar.objective-envelope/2`, `isar.campaign-step.discover_and_map/1`, and `isar.question-policy/1`;
 reading any of them raises an error naming its replacement. There is no compatibility reader by

@@ -320,6 +320,17 @@ with a named tripwire:
 3. Unreachable in production until priors are declared (the representability gate); no code
    change.
 
+## Defaults-profile label ruling (2026-08-15, owner — PR #33 review discussion): RULED
+
+Option (c): `DEFAULTS_PROFILE_VERSION` keeps versioning the default VALUE SET only (H19(g)
+stands; no retroactive v2), and the one reader trap is signposted — the reading rule
+("a profile version is meaningful only alongside its policy schema version; never cite it
+bare") is recorded in `SCHEMA_LANDSCAPE.md` beside the `/2` block. Replay and audit are
+unaffected either way: effective values freeze into every compiled program.
+
+With this, all four owner questions the PR #33 reviews left open are RULED (cold start;
+zc prior posture / no hard rules; cross-class connectivity; this label rule).
+
 # SCENE-4 execution plan (rev 2 after external-review triage — 2026-08-13)
 
 Five PRs, sequenced; one branch per PR, owner reviews and merges (SCENE-3 cadence). Code
