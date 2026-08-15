@@ -13,6 +13,7 @@ from isar.schema.campaign_program import (
     CampaignStep,
     DiscoverAndMapSpec,
     ProgramError,
+    _store_canonical_bytes,
     program_fingerprint,
     targeted_program,
 )
@@ -272,18 +273,30 @@ def test_the_golden_compiled_programs_still_load_and_round_trip(name, kind):
 
 # --------------------------------------------------------------------------- program_fingerprint
 def test_program_fingerprint_is_pinned_equal_to_the_scene_store_digest_rule():
-    """PR 4.2b C7: schema's ``canonical_json`` and scene's ``canonical_bytes`` must never be
-    assumed equal — they are pinned here, on a representative program, so a future change to
-    either encoder is caught rather than silently forking what 'the same program' digests to
-    across the program store and the scene/agenda stores."""
+    """PR 4.2b C7, fixed PR #33 A-P0-5/B-1: schema's local canonical encoder and scene's
+    ``canonical_bytes`` must never be assumed equal — pinned here on a UNICODE payload, the one
+    shape that silently forked the two encoders (``ensure_ascii`` True vs False) while every
+    ASCII-only test kept passing. A future change to either encoder is caught immediately rather
+    than silently re-forking what 'the same program' digests to across the program store and the
+    scene/agenda stores."""
     from isar.scene.model import canonical_bytes, digest_bytes
 
-    program = _program(source_text="map everything from (2,0,0) to (3,0,0) up to 10 meV",
+    unicode_discover = {
+        **_DISCOVER,
+        "deliverables": [{"kind": "phenomenon_map", "note": "ω near Γ"}],
+    }
+    program = _program(payload=unicode_discover, source_text="map ω near Γ",
                        source={"kind": "goal"})
     payload = program.to_dict()
-    assert program_fingerprint(program) == digest_bytes(canonical_bytes(payload))
+
+    store_bytes = canonical_bytes(payload)
+    schema_bytes = _store_canonical_bytes(payload)
+    assert schema_bytes == store_bytes                 # the two encoders agree BYTE for byte
+    assert "\\u03c9" not in schema_bytes.decode("utf-8")  # ensure_ascii=False: ω survives literal
+    assert program_fingerprint(program) == digest_bytes(store_bytes)
+
     # Deterministic and stable under a second, independently-built equal program.
-    again = _program(source_text="map everything from (2,0,0) to (3,0,0) up to 10 meV",
+    again = _program(payload=unicode_discover, source_text="map ω near Γ",
                      source={"kind": "goal"})
     assert program_fingerprint(program) == program_fingerprint(again)
     # A changed program moves the fingerprint.

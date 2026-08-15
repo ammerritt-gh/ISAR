@@ -27,12 +27,12 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from . import question_policy as _policy
-from .action_identity import canonical_json
 
 PROGRAM_SCHEMA = "isar.campaign-program/1"
 TARGETED_STEP_SCHEMA = "isar.campaign-step.targeted/1"
@@ -396,21 +396,34 @@ class CampaignProgram:
         )
 
 
-def program_fingerprint(program: CampaignProgram) -> str:
-    """THE one implementation of a program's content address (PR 4.2b C7): sha256 hex over the
-    canonical JSON of ``program.to_dict()``.
+def _store_canonical_bytes(payload: Any) -> bytes:
+    """Byte-identical to ``isar.scene.model.canonical_bytes`` (model.py:138-151): sorted keys, no
+    whitespace, UTF-8, strict JSON, and — the field that matters here — ``ensure_ascii=False``.
 
-    Uses ``action_identity.canonical_json`` — the encoder ``isar.schema`` already owns — rather
-    than a second hand-rolled ``json.dumps`` call. That encoder differs from
-    ``isar.scene.model.canonical_bytes`` in one respect (``ensure_ascii``), which is invisible
-    for any payload built only from ASCII strings — every schema-declared string in a program
-    (step ids, schema tags, catalogue profile references) is one by convention. Equality with
-    the scene store's own digest function is therefore not assumed: it is PINNED BY TEST
-    (``tests/schema/test_campaign_program.py``) against a representative program, so a future
-    divergence in either encoder is caught immediately rather than silently forking what "the
-    same program" means between the two stores.
+    A local 3-line copy, not an import: ``isar.schema`` may not import ``isar.scene`` (schema
+    sits below scene). ``action_identity.canonical_json`` is NOT this function — it defaults
+    ``ensure_ascii=True``, which escapes any non-ASCII character to ``\\uXXXX``. That is not
+    "invisible for ASCII payloads" (the claim this docstring used to make); it is a SILENT BYTE
+    DIVERGENCE on the one payload shape — a Unicode ``source_text`` or deliverable value — where
+    it matters, and PR #33 review A-P0-5/B-1 demonstrated it concretely: the program store writes
+    ``ensure_ascii=False`` bytes, a fingerprint computed with ``ensure_ascii=True`` names a
+    DIFFERENT digest for the same content, and the next read reports the stored blob corrupt.
+    Equality with the store's own encoding is therefore not assumed here either — it is PINNED BY
+    TEST (``tests/schema/test_campaign_program.py``) on a Unicode payload, so a future divergence
+    is caught immediately rather than silently forking what "the same program" digests to.
     """
-    return hashlib.sha256(canonical_json(program.to_dict()).encode("utf-8")).hexdigest()
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False,
+                      separators=(",", ":")).encode("utf-8")
+
+
+def program_fingerprint(program: CampaignProgram) -> str:
+    """THE one implementation of a program's content address (PR 4.2b C7, fixed PR #33
+    A-P0-5/B-1): sha256 hex over the EXACT bytes ``report/program/`` writes for this program —
+    see :func:`_store_canonical_bytes`. Never ``action_identity.canonical_json``: every existing
+    fingerprint in the codebase depends on that encoder's ``ensure_ascii=True`` behaviour, and
+    changing it to fix this bug would move every one of them.
+    """
+    return hashlib.sha256(_store_canonical_bytes(program.to_dict())).hexdigest()
 
 
 def targeted_program(payload: Mapping[str, Any], *, step_id: str = "targeted-1",

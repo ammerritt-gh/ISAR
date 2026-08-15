@@ -363,6 +363,19 @@ def test_program_store_round_trip_re_fingerprints_to_its_own_name(tmp_path):
     assert program_fingerprint(reread) == pointer["digest"]
 
 
+def test_program_store_round_trips_unicode_source_text_without_corruption(tmp_path):
+    """PR #33 A-P0-5/B-1: ``program_fingerprint`` used to hash ``ensure_ascii=True`` bytes while
+    the program store writes ``ensure_ascii=False`` -- any non-ASCII program (a Unicode
+    ``source_text``, here) wrote a digest that did not match the store's own recomputation, and
+    the very next read raised "does not match its digest" on content this same process wrote."""
+    step = discover_step()
+    program = CampaignProgram(steps=(step,), source_text="map ω near Γ")
+    PROGRAM_STORE.write_revision(tmp_path, _ProgramRevision.of(program))
+
+    pointer, payload = PROGRAM_STORE.read_current(tmp_path)      # must not raise
+    assert payload["source_text"] == "map ω near Γ"
+
+
 def test_program_store_concurrent_write_is_refused(tmp_path):
     step_a = discover_step(spacing=0.5)
     step_b = discover_step(spacing=0.3)          # a genuinely different program
