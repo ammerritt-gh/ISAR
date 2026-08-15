@@ -369,13 +369,23 @@ IDs above is a bound generator function, `(DiscoveryContext, spec_dict) -> Gener
 one or more proposals, a typed CLEAN ZERO (the closure this generator serves is already
 satisfied, flagged exhaustion-clean or not), or a typed INAPPLICABLE (structurally never
 exhaustion-clean — a durable-program or model-authority reason, not a scientific outcome).
-Shared rules across all seven: `window_family="discovery"`; `action_class` = the generator id
-verbatim (self-attributing, collision-free); `evidence_sink=CANONICAL_MASTER`;
-`evidence_basis_fingerprint` = the scene digest; hypotheses/campaign-slice fingerprints `None`
-(offline — the 4.3 driver stamps slices); a scalar target coordinate reconstructs to `hkl` via
-the STEP's declared `q_start`/`q_end` (the varying component set to the target), never
-re-derived from scene data; ω windows clip to the step's frozen intrinsic domain; a tile-scoped
-subject targets the tile midpoint.
+Shared rules across all seven (fixed PR #33 A-P0-1): `window_family="discovery"`;
+`action_class = "discovery_scan"` — ONE physical action class for every discovery generator,
+never the generator id (a generator id in `action_class` forked one physical scan into as many
+scientific actions as generators that happened to want it, blocking dedup across generators and
+letting different partitions collide into one action; which generator asked stays fully
+recorded, on `ActionEvaluation.generator` and on every
+`QuestionActionAssociation`, never on the intent); `campaign_slice_fingerprint` = the subject's
+partition token (`isar.partition/<pid>`, so identical (q, ω) in two different partitions never
+dedup); `evidence_sink=CANONICAL_MASTER`; `evidence_basis_fingerprint` = the scene digest;
+`hypotheses_fingerprint` stays `None` (offline — the 4.3 driver stamps hypotheses); a scalar
+target coordinate reconstructs to `hkl` via the STEP's declared `q_start`/`q_end` (the varying
+component set to the target), never re-derived from scene data; ω windows clip to the step's
+frozen intrinsic domain; a tile-scoped subject targets the tile midpoint. When two generators
+now mint the identical scientific action (shared `action_class`, `hkl`, ω window, and
+`campaign_slice_fingerprint`), dedup unions their `window_center_meV` realization aims: `None`
+YIELDS to a declared value from either side, and two DIFFERENT declared values still refuse as a
+controller fault (`ActionInventory.dedupe_discovery_evaluations`).
 
 | # | Generator | Ready when | Construction | Clean-zero (†=exhaustion-clean) | INAPPLICABLE |
 |---|---|---|---|---|---|

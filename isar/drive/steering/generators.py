@@ -16,15 +16,25 @@ the agenda already refused any path varying in more than one component, so re-de
 here can never disagree with it), and ``hkl(t)`` is ``q_start`` with that one component replaced
 by ``t``. Every generator that names a scalar coordinate goes through this one function.
 
-**Vocabulary is uniform across all seven** (the matrix's shared rules): ``window_family =
-"discovery"``, ``action_class`` = the generator id verbatim, ``evidence_sink =
-CANONICAL_MASTER`` (nothing else is a discovery generator's business to propose),
-``evidence_basis_fingerprint`` = the scene digest carried on :class:`DiscoveryContext`,
-``hypotheses_fingerprint``/``campaign_slice_fingerprint`` = ``None`` (4.2b is offline; the 4.3
-driver stamps slices). ``window_center_meV`` is set only where the matrix names an explicit
-target mode (``identity_discriminator``, ``parameter_refine``, ``mismatch_probe``) — the matrix
-is silent on it for the other four, so this module leaves it unset there rather than inventing
-realization metadata the matrix never asked for.
+**Vocabulary is uniform across all seven** (the matrix's shared rules, fixed PR #33 A-P0-1):
+``window_family = "discovery"``; ``action_class = DISCOVERY_ACTION_CLASS`` — ONE physical
+action class for every discovery generator, never the generator id. A generator id in
+``action_class`` was a PHYSICAL-IDENTITY bug, not a labeling choice: two generators proposing
+the identical physical scan (same q, same ω window, same partition) minted two different
+scientific fingerprints and could never dedup onto one action — which generator ASKED is
+provenance, and it still rides on every :class:`~isar.schema.generators.QuestionActionAssociation`
+and on ``ActionEvaluation.generator``; it must never fork what counts as "the same measurement".
+``evidence_sink = CANONICAL_MASTER`` (nothing else is a discovery generator's business to
+propose); ``evidence_basis_fingerprint`` = the scene digest carried on :class:`DiscoveryContext`;
+``campaign_slice_fingerprint`` = the subject's partition token (``None`` only when the subject
+is itself program-scoped — unreachable for the shipped seven, since every generator that could
+receive a program-scoped subject either refuses it (cold-start INAPPLICABLE) or is structurally
+unreachable while one is open) — so two subjects with the IDENTICAL (q, ω) in two DIFFERENT
+partitions never dedup onto one action. ``hypotheses_fingerprint`` stays ``None`` (4.2b is
+offline; the 4.3 driver stamps hypotheses). ``window_center_meV`` is set only where the matrix
+names an explicit target mode (``identity_discriminator``, ``parameter_refine``,
+``mismatch_probe``) — the matrix is silent on it for the other four, so this module leaves it
+unset there rather than inventing realization metadata the matrix never asked for.
 
 Several helpers re-derive small walks from ``isar.scene.predicates`` rather than importing its
 private (underscore) functions — the same idiom ``opening_book.py`` already uses, so the two can
@@ -49,7 +59,14 @@ from isar.scene.questions import QuestionSubject, match_subject
 
 from isar.drive.acquisition.opening_book import propose_survey
 
-__all__ = ["DiscoveryContext", "GeneratorOutcome", "GENERATOR_FUNCTIONS", "dependency_depth"]
+__all__ = ["DiscoveryContext", "GeneratorOutcome", "GENERATOR_FUNCTIONS", "dependency_depth",
+          "DISCOVERY_ACTION_CLASS"]
+
+#: The ONE physical action class every discovery generator proposes under (PR #33 A-P0-1).
+#: "Which generator asked" is provenance (``ActionEvaluation.generator`` and every
+#: ``QuestionActionAssociation``), never physical identity — a generator id here would fork one
+#: physical scan into as many scientific actions as generators that happened to want it.
+DISCOVERY_ACTION_CLASS = "discovery_scan"
 
 
 # ----------------------------------------------------------------------------
@@ -153,12 +170,20 @@ def _clip_omega(step_payload: Mapping, band: tuple[float, float] | None) -> tupl
     return max(lo, domain_lo), min(hi, domain_hi)
 
 
-def _make_intent(context: DiscoveryContext, generator_id: str, hkl, energy_lo, energy_hi, *,
+def _slice_fingerprint(partition_id: str | None) -> str | None:
+    """The subject's partition token, prefixed for legibility (``isar.partition/<pid>``) so a
+    reader can tell it apart from a scene/agenda digest at a glance — the partition_id itself is
+    already a stable token, this only labels it. ``None`` only for a program-scoped subject,
+    which no shipped generator actually reaches (see the module docstring)."""
+    return None if partition_id is None else f"isar.partition/{partition_id}"
+
+
+def _make_intent(context: DiscoveryContext, hkl, energy_lo, energy_hi, *, partition_id: str | None,
                  window_center_meV: float | None = None) -> MeasurementIntent:
     return MeasurementIntent(
-        action_class=generator_id, hkl=hkl, energy_lo=energy_lo, energy_hi=energy_hi,
+        action_class=DISCOVERY_ACTION_CLASS, hkl=hkl, energy_lo=energy_lo, energy_hi=energy_hi,
         window_family="discovery", evidence_basis_fingerprint=context.scene_digest,
-        hypotheses_fingerprint=None, campaign_slice_fingerprint=None,
+        hypotheses_fingerprint=None, campaign_slice_fingerprint=_slice_fingerprint(partition_id),
         evidence_sink=CANONICAL_MASTER, window_center_meV=window_center_meV)
 
 
@@ -294,7 +319,8 @@ def opening_book_survey(context: DiscoveryContext, spec_dict: Mapping) -> Genera
             energy_lo, energy_hi = _clip_omega(
                 context.step_payload, (p.detail["omega_lo"], p.detail["omega_hi"]))
         hkl = _hkl_at(context.step_payload, p.axis_coordinate)
-        intent = _make_intent(context, "opening_book_survey", hkl, energy_lo, energy_hi)
+        intent = _make_intent(context, hkl, energy_lo, energy_hi,
+                              partition_id=subject.partition_id)
         association = _make_association(context, spec_dict, "opening_book_survey",
                                         reason=f"opening_book:{p.kind}")
         pairs.append((intent, association))
@@ -316,7 +342,8 @@ def exposure_fill(context: DiscoveryContext, spec_dict: Mapping) -> GeneratorOut
     pairs = []
     for p in proposals:
         hkl = _hkl_at(context.step_payload, p.axis_coordinate)
-        intent = _make_intent(context, "exposure_fill", hkl, energy_lo, energy_hi)
+        intent = _make_intent(context, hkl, energy_lo, energy_hi,
+                              partition_id=subject.partition_id)
         association = _make_association(
             context, spec_dict, "exposure_fill",
             reason=f"underexposed_cell deficit={p.detail['deficit']!r}")
@@ -334,7 +361,7 @@ def presence_probe(context: DiscoveryContext, spec_dict: Mapping) -> GeneratorOu
     t = subject.anchor if subject.anchor is not None else _tile_midpoint(subject.region_rlu)
     energy_lo, energy_hi = _clip_omega(context.step_payload, subject.omega_band_meV)
     hkl = _hkl_at(context.step_payload, t)
-    intent = _make_intent(context, "presence_probe", hkl, energy_lo, energy_hi)
+    intent = _make_intent(context, hkl, energy_lo, energy_hi, partition_id=subject.partition_id)
     reason = ("reopen presence at declared anchor" if subject.anchor is not None
              else "reopen presence in emergent tile")
     association = _make_association(context, spec_dict, "presence_probe", reason=reason)
@@ -401,7 +428,7 @@ def identity_discriminator(context: DiscoveryContext, spec_dict: Mapping) -> Gen
     t = _tile_midpoint(subject.region_rlu)
     energy_lo, energy_hi = _clip_omega(context.step_payload, subject.omega_band_meV)
     hkl = _hkl_at(context.step_payload, t)
-    intent = _make_intent(context, "identity_discriminator", hkl, energy_lo, energy_hi,
+    intent = _make_intent(context, hkl, energy_lo, energy_hi, partition_id=subject.partition_id,
                           window_center_meV=witness["omega"])
     association = _make_association(
         context, spec_dict, "identity_discriminator",
@@ -457,7 +484,7 @@ def track_bridge_scan(context: DiscoveryContext, spec_dict: Mapping) -> Generato
             "endpoints_in_disjoint_clusters)")
     energy_lo, energy_hi = _clip_omega(context.step_payload, None)
     hkl = _hkl_at(context.step_payload, t)
-    intent = _make_intent(context, "track_bridge_scan", hkl, energy_lo, energy_hi)
+    intent = _make_intent(context, hkl, energy_lo, energy_hi, partition_id=subject.partition_id)
     association = _make_association(context, spec_dict, "track_bridge_scan", reason=detail)
     return GeneratorOutcome.proposed(((intent, association),))
 
@@ -592,7 +619,7 @@ def _parameter_refine_tolerance(context: DiscoveryContext, spec_dict: Mapping,
     energy_lo, energy_hi = _clip_omega(
         context.step_payload, (target["omega"] - half_width, target["omega"] + half_width))
     hkl = _hkl_at(context.step_payload, t)
-    intent = _make_intent(context, "parameter_refine", hkl, energy_lo, energy_hi,
+    intent = _make_intent(context, hkl, energy_lo, energy_hi, partition_id=subject.partition_id,
                           window_center_meV=target["omega"])
     association = _make_association(
         context, spec_dict, "parameter_refine",
@@ -645,7 +672,7 @@ def _parameter_refine_zc(context: DiscoveryContext, spec_dict: Mapping,
         return GeneratorOutcome.clean_zero("zc_adjacent_coverage_complete", exhaustion_clean=True)
     energy_lo, energy_hi = _clip_omega(context.step_payload, subject.omega_band_meV)
     hkl = _hkl_at(context.step_payload, node)
-    intent = _make_intent(context, "parameter_refine", hkl, energy_lo, energy_hi)
+    intent = _make_intent(context, hkl, energy_lo, energy_hi, partition_id=subject.partition_id)
     association = _make_association(context, spec_dict, "parameter_refine",
                                     reason=f"zc bridge node toward confirmed tile {nearest}")
     return GeneratorOutcome.proposed(((intent, association),))
@@ -700,7 +727,7 @@ def mismatch_probe(context: DiscoveryContext, spec_dict: Mapping) -> GeneratorOu
 
     energy_lo, energy_hi = _clip_omega(context.step_payload, band)
     hkl = _hkl_at(context.step_payload, coord)
-    intent = _make_intent(context, "mismatch_probe", hkl, energy_lo, energy_hi,
+    intent = _make_intent(context, hkl, energy_lo, energy_hi, partition_id=subject.partition_id,
                           window_center_meV=omega)
     association = _make_association(context, spec_dict, "mismatch_probe",
                                     reason=f"remeasure unknown-identity arena {scan_ref}")

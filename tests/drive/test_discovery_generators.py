@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 
 from isar.analyze.catalogue import DEFAULT_PROFILE
+from isar.drive.acquisition.inventory import ActionEligibility, ActionEvaluation, ActionInventory
 from isar.schema.generators import FAMILY_GENERATORS
 from isar.schema.question_policy import resolve_policy
 from isar.scene.agenda import derive_agenda
@@ -28,6 +29,7 @@ from isar.scene.questions import (
 
 import isar.drive.steering.generators as gen
 from isar.drive.steering.generators import (
+    DISCOVERY_ACTION_CLASS,
     DiscoveryContext,
     GENERATOR_FUNCTIONS,
     GeneratorOutcome,
@@ -235,10 +237,14 @@ def test_hkl_round_trips_through_a_derived_survey_proposal():
     for intent, association in outcome.proposals:
         assert intent.hkl[1:] == (0.0, 0.0)
         assert 2.0 <= intent.hkl[0] <= 3.0
-        assert intent.action_class == association.generator == "opening_book_survey"
+        # PR #33 A-P0-1: action_class is the ONE physical discovery class, never the generator
+        # id -- "which generator asked" rides on the association instead.
+        assert intent.action_class == DISCOVERY_ACTION_CLASS
+        assert association.generator == "opening_book_survey"
         assert intent.window_family == "discovery"
         assert intent.evidence_sink == "canonical_master"
         assert intent.evidence_basis_fingerprint == ctx.scene_digest
+        assert intent.campaign_slice_fingerprint == f"isar.partition/{P1}"
         assert association.basis_agenda_digest == ctx.basis_agenda_digest
 
 
@@ -580,7 +586,84 @@ def test_opening_book_survey_and_exposure_fill_attribute_correctly_at_one_node()
     assert association2.generator == "exposure_fill"
     assert "deficit" in association2.reason
 
-    # opening_book_survey never emits an underexposed_cell action; exposure_fill never emits a
-    # q/omega gap action -- attribution stays disjoint even at a single node owing both.
-    assert all(a.generator == "opening_book_survey" for _, a in survey_outcome.proposals)
-    assert all(a.generator == "exposure_fill" for _, a in fill_outcome.proposals)
+    # PR #33 A-P0-1: both intents share the ONE physical discovery action_class now -- kind
+    # attribution rides ENTIRELY on the association's generator field, never on action_class
+    # (the two proposals still differ scientifically here on their ω window, so this fixture
+    # does not itself collide them; the dedicated dedup tests in
+    # tests/drive/test_question_associations.py cover the identical-window collision case).
+    assert intent.action_class == intent2.action_class == DISCOVERY_ACTION_CLASS
+
+
+# ----------------------------------------------------------------------------
+# PR #33 A-P0-1: physical action identity, real generators (not monkeypatched)
+# ----------------------------------------------------------------------------
+def _confirmed_anchor_scene(partition=P1):
+    """One partition, one confirmed anchor at q=2.0 with a mode at 5.0 meV, no trusted
+    per-mode interval (case-ii parameter_refine) -- chains ClassifyIdentity-inert,
+    EstimateParameter open."""
+    return payload(
+        footprints=[fp("e:1:d", 2.0, bands=((4.0, 6.0),), partition=partition)],
+        observations=[obs("e:1:d", cands=[cand("A", omegas=(5.0,))])],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.95)])],
+        sample_knowledge={"zone_period": 1.0, "lattice_epoch": 1})
+
+
+def _presence_and_parameter_evaluations(scene, st, revision, partition):
+    ctx = context_for_revision(scene, st, revision)
+    presence_spec = spec_of(revision, "ConfirmPresence", "structural_presence",
+                            partition_id=partition, anchor=2.0)
+    estimate_spec = spec_of(revision, "EstimateParameter", "parameter_within_tolerance",
+                            partition_id=partition)
+    presence_outcome = presence_probe(ctx, presence_spec)
+    estimate_outcome = parameter_refine(ctx, estimate_spec)
+    pairs = list(presence_outcome.proposals) + list(estimate_outcome.proposals)
+    return [ActionEvaluation(intent=intent, generator=association.generator,
+                             eligibility=ActionEligibility.ELIGIBLE, associations=(association,))
+            for intent, association in pairs]
+
+
+def test_presence_probe_and_parameter_refine_dedup_at_one_q_omega_partition():
+    """The real bug: two REAL generators proposing the identical physical scan (same q, same ω
+    window, same partition) must collapse into ONE action with unioned associations -- and the
+    None-yields-to-set window_center rule survives through the same call."""
+    st = step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=1.0, domain=(4.0, 6.0))
+    scene = _confirmed_anchor_scene(P1)
+    revision = derive(scene, st)
+    evaluations = _presence_and_parameter_evaluations(scene, st, revision, P1)
+    assert len(evaluations) == 2
+    assert {e.generator for e in evaluations} == {"presence_probe", "parameter_refine"}
+    assert len({e.intent.scientific_action_fingerprint for e in evaluations}) == 1, (
+        "presence_probe and parameter_refine did not construct the identical scientific action")
+
+    survivors, dropped = ActionInventory.dedupe_discovery_evaluations(evaluations)
+    assert len(survivors) == 1
+    survivor = survivors[0]
+    presence_qid = spec_of(revision, "ConfirmPresence", "structural_presence",
+                           partition_id=P1, anchor=2.0)["question_id"]
+    estimate_qid = spec_of(revision, "EstimateParameter", "parameter_within_tolerance",
+                           partition_id=P1)["question_id"]
+    assert {a.question_id for a in survivor.associations} == {presence_qid, estimate_qid}
+    # None (presence_probe never names a target mode) yields to parameter_refine's declared one.
+    assert survivor.intent.window_center_meV == pytest.approx(5.0)
+    assert dropped in ({"parameter_refine": 1}, {"presence_probe": 1})
+
+
+def test_identical_q_omega_in_two_partitions_never_dedup():
+    st = step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=1.0, domain=(4.0, 6.0))
+    scene_1 = _confirmed_anchor_scene(P1)
+    revision_1 = derive(scene_1, st)
+    evaluations_1 = _presence_and_parameter_evaluations(scene_1, st, revision_1, P1)
+
+    scene_2 = _confirmed_anchor_scene(P2)
+    revision_2 = derive(scene_2, st)
+    evaluations_2 = _presence_and_parameter_evaluations(scene_2, st, revision_2, P2)
+
+    survivors, _dropped = ActionInventory.dedupe_discovery_evaluations(
+        evaluations_1 + evaluations_2)
+    # Same q, same ω window, same action_class -- but two DIFFERENT partitions, so exactly two
+    # scientific actions survive (one per partition), never one.
+    assert len(survivors) == 2
+    fingerprints = {e.intent.scientific_action_fingerprint for e in survivors}
+    assert len(fingerprints) == 2
+    slices = {e.intent.campaign_slice_fingerprint for e in survivors}
+    assert slices == {f"isar.partition/{P1}", f"isar.partition/{P2}"}

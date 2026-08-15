@@ -395,11 +395,15 @@ class ActionInventory:
         survivors plus a per-generator count of collapsed evaluations (the ``deduped`` field
         of the dropped side's report; ``generated`` counts survivors only).
 
-        Conflicting NON-HASHED realization metadata between deduped intents is a REFUSAL,
-        never silent first-seen: ``window_center_meV`` is deliberately outside the scientific
-        fingerprint (see ``MeasurementIntent``), so two generators can mint one scientific
-        action while disagreeing about where realization should aim — a controller fault to
-        surface, not a coin to flip.
+        ``window_center_meV`` is deliberately outside the scientific fingerprint (see
+        ``MeasurementIntent``), so two generators can mint one scientific action while aiming
+        realization differently — but NOT ARBITRARILY differently (PR #33 A-P0-1, one physical
+        ``action_class`` widened exactly which pairs can now collide here). A declared aim
+        (non-``None``) YIELDS to no aim at all: one generator naming a target and its sibling
+        having no opinion is not a conflict, it is the only aim there is, so the survivor picks
+        it up even when it was the DUPLICATE side that carried it. Two DIFFERENT declared aims
+        is still a REFUSAL, never silent first-seen — a controller fault to surface, not a coin
+        to flip.
         """
         survivors: dict[str, ActionEvaluation] = {}
         order: list[str] = []
@@ -411,13 +415,16 @@ class ActionInventory:
                 survivors[key] = evaluation
                 order.append(key)
                 continue
-            if first.intent.window_center_meV != evaluation.intent.window_center_meV:
+            first_center = first.intent.window_center_meV
+            dup_center = evaluation.intent.window_center_meV
+            if first_center is not None and dup_center is not None and first_center != dup_center:
                 raise ValueError(
                     "dedup refuses conflicting realization metadata for scientific action "
-                    f"{key}: window_center_meV {first.intent.window_center_meV!r} (from "
-                    f"{first.generator!r}) vs {evaluation.intent.window_center_meV!r} (from "
-                    f"{evaluation.generator!r}) — same scientific question, contradictory "
-                    "acquisition aims; controller fault, never silent first-seen")
+                    f"{key}: window_center_meV {first_center!r} (from {first.generator!r}) vs "
+                    f"{dup_center!r} (from {evaluation.generator!r}) — same scientific question, "
+                    "contradictory acquisition aims; controller fault, never silent first-seen")
+            if first_center is None and dup_center is not None:
+                first = replace(first, intent=replace(first.intent, window_center_meV=dup_center))
             survivors[key] = replace(
                 first, associations=union_associations(first.associations,
                                                        evaluation.associations))

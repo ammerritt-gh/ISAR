@@ -18,7 +18,7 @@ from isar.scene.questions import (
     QuestionSpec, QuestionSubject)
 
 import isar.drive.steering.exhaustion as exh
-from isar.drive.steering.generators import DiscoveryContext
+from isar.drive.steering.generators import DISCOVERY_ACTION_CLASS, DiscoveryContext
 from isar.drive.steering.readiness import (
     DEPENDENCY_BLOCKED, NO_GENERATORS, RAN, GeneratorRunOutcome, QuestionRunRecord, RunResult)
 from isar.drive.steering.exhaustion import (
@@ -51,8 +51,12 @@ def association(question_id, generator, priority=1, basis=BASIS):
 
 def evaluation(question_id, generator, *, eligibility=ActionEligibility.ELIGIBLE,
               rejection_class=None, hkl=(2.0, 0.0, 0.0)):
-    intent = MeasurementIntent(action_class=generator, hkl=hkl, energy_lo=1.0, energy_hi=8.0,
-                               window_family="discovery")
+    # PR #33 A-P0-1: real discovery intents share ONE physical action_class; "which generator"
+    # rides on the association, not on the intent. Two evaluations built with the same hkl now
+    # genuinely collide in dedup, matching what test_an_evaluation_deduped_onto_an_eligible_
+    # survivor_still_counts_not_exhausted's docstring already claimed.
+    intent = MeasurementIntent(action_class=DISCOVERY_ACTION_CLASS, hkl=hkl, energy_lo=1.0,
+                               energy_hi=8.0, window_family="discovery")
     return ActionEvaluation(intent=intent, generator=generator, eligibility=eligibility,
                             rejection_class=rejection_class,
                             associations=(association(question_id, generator),))

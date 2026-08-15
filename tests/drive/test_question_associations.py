@@ -17,6 +17,7 @@ from isar.drive.acquisition.inventory import (
     aggregate_rank,
     union_associations,
 )
+from isar.drive.steering.generators import DISCOVERY_ACTION_CLASS
 
 BASIS = "d" * 64
 
@@ -28,7 +29,9 @@ def assoc(qid, generator, priority, depth=0, reason="serves the predicate"):
 
 
 def intent(center=None, **overrides):
-    fields = dict(action_class="presence_probe", hkl=(2.0, 0.0, 0.0), energy_lo=1.0,
+    # PR #33 A-P0-1: every discovery intent shares ONE physical action_class -- "which
+    # generator" rides on the association, never on the intent. Matches real generator output.
+    fields = dict(action_class=DISCOVERY_ACTION_CLASS, hkl=(2.0, 0.0, 0.0), energy_lo=1.0,
                   energy_hi=8.0, window_family="discovery", evidence_basis_fingerprint="s" * 12,
                   window_center_meV=center)
     fields.update(overrides)
@@ -98,7 +101,9 @@ def test_dedup_unions_associations_order_invariantly():
 
 def test_dedup_refuses_conflicting_realization_metadata():
     """window_center_meV is outside the scientific fingerprint by design, so two generators
-    can mint one action with contradictory acquisition aims — refuse, never first-seen."""
+    can mint one action with contradictory acquisition aims — refuse, never first-seen. Two
+    DIFFERENT declared (non-``None``) centers is the only case that still refuses (PR #33
+    A-P0-1's None-yields-to-set rule narrows what counts as a conflict)."""
     a = evaluation("identity_discriminator", [assoc("q:id", "identity_discriminator", 2)],
                    center=5.0)
     b = evaluation("parameter_refine", [assoc("q:est", "parameter_refine", 4)], center=5.5)
@@ -108,6 +113,26 @@ def test_dedup_refuses_conflicting_realization_metadata():
     survivors, _ = ActionInventory.dedupe_discovery_evaluations(
         [a, evaluation("parameter_refine", [assoc("q:est", "parameter_refine", 4)], center=5.0)])
     assert len(survivors) == 1 and len(survivors[0].associations) == 2
+
+
+def test_dedup_none_window_center_yields_to_a_declared_value_either_direction():
+    """PR #33 A-P0-1: one generator naming a target and its sibling having no opinion is not a
+    conflict — it is the only aim there is, so the survivor picks it up regardless of which
+    side (first-seen or duplicate) carried it."""
+    # Survivor has no opinion; the duplicate declares one -- the union takes it.
+    no_opinion = evaluation("presence_probe", [assoc("q:p", "presence_probe", 1)], center=None)
+    declared = evaluation("identity_discriminator",
+                          [assoc("q:id", "identity_discriminator", 2)], center=5.0)
+    survivors, _ = ActionInventory.dedupe_discovery_evaluations([no_opinion, declared])
+    assert len(survivors) == 1
+    assert survivors[0].intent.window_center_meV == pytest.approx(5.0)
+    assert {a.question_id for a in survivors[0].associations} == {"q:p", "q:id"}
+
+    # Survivor already declares one; the duplicate has no opinion -- the value survives unchanged.
+    survivors2, _ = ActionInventory.dedupe_discovery_evaluations([declared, no_opinion])
+    assert len(survivors2) == 1
+    assert survivors2[0].intent.window_center_meV == pytest.approx(5.0)
+    assert {a.question_id for a in survivors2[0].associations} == {"q:p", "q:id"}
 
 
 def test_distinct_scientific_actions_never_collapse():
