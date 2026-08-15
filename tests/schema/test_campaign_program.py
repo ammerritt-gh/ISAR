@@ -13,6 +13,7 @@ from isar.schema.campaign_program import (
     CampaignStep,
     DiscoverAndMapSpec,
     ProgramError,
+    program_fingerprint,
     targeted_program,
 )
 from isar.schema.question_policy import resolve_policy
@@ -267,3 +268,24 @@ def test_the_golden_compiled_programs_still_load_and_round_trip(name, kind):
     assert [step.kind for step in program.steps] == [kind]
     assert program.to_dict() == document
     assert program.source_text
+
+
+# --------------------------------------------------------------------------- program_fingerprint
+def test_program_fingerprint_is_pinned_equal_to_the_scene_store_digest_rule():
+    """PR 4.2b C7: schema's ``canonical_json`` and scene's ``canonical_bytes`` must never be
+    assumed equal — they are pinned here, on a representative program, so a future change to
+    either encoder is caught rather than silently forking what 'the same program' digests to
+    across the program store and the scene/agenda stores."""
+    from isar.scene.model import canonical_bytes, digest_bytes
+
+    program = _program(source_text="map everything from (2,0,0) to (3,0,0) up to 10 meV",
+                       source={"kind": "goal"})
+    payload = program.to_dict()
+    assert program_fingerprint(program) == digest_bytes(canonical_bytes(payload))
+    # Deterministic and stable under a second, independently-built equal program.
+    again = _program(source_text="map everything from (2,0,0) to (3,0,0) up to 10 meV",
+                     source={"kind": "goal"})
+    assert program_fingerprint(program) == program_fingerprint(again)
+    # A changed program moves the fingerprint.
+    changed = _program(source_text="a different command entirely")
+    assert program_fingerprint(changed) != program_fingerprint(program)

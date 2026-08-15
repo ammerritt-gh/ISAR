@@ -26,11 +26,13 @@ temperature, and conflating the two in the frozen program would silently decide 
 from __future__ import annotations
 
 import copy
+import hashlib
 import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from . import question_policy as _policy
+from .action_identity import canonical_json
 
 PROGRAM_SCHEMA = "isar.campaign-program/1"
 TARGETED_STEP_SCHEMA = "isar.campaign-step.targeted/1"
@@ -392,6 +394,23 @@ class CampaignProgram:
             # dock relies on without saying so.
             source=d["source"] if "source" in d else {},
         )
+
+
+def program_fingerprint(program: CampaignProgram) -> str:
+    """THE one implementation of a program's content address (PR 4.2b C7): sha256 hex over the
+    canonical JSON of ``program.to_dict()``.
+
+    Uses ``action_identity.canonical_json`` — the encoder ``isar.schema`` already owns — rather
+    than a second hand-rolled ``json.dumps`` call. That encoder differs from
+    ``isar.scene.model.canonical_bytes`` in one respect (``ensure_ascii``), which is invisible
+    for any payload built only from ASCII strings — every schema-declared string in a program
+    (step ids, schema tags, catalogue profile references) is one by convention. Equality with
+    the scene store's own digest function is therefore not assumed: it is PINNED BY TEST
+    (``tests/schema/test_campaign_program.py``) against a representative program, so a future
+    divergence in either encoder is caught immediately rather than silently forking what "the
+    same program" means between the two stores.
+    """
+    return hashlib.sha256(canonical_json(program.to_dict()).encode("utf-8")).hexdigest()
 
 
 def targeted_program(payload: Mapping[str, Any], *, step_id: str = "targeted-1",
