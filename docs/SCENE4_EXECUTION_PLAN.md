@@ -300,6 +300,26 @@ interpretation's status (the code survives; its STATUS changes):
    alignment-as-hypothesis objective (DESIGN_GOALS); recorded so the future work is built
    toward this signature.
 
+## Cross-class connectivity ruling (2026-08-15, owner — PR #33 review discussion): RULED
+
+The fully-classified multi-class partition's connectivity silence (one acoustic tile + one
+optic tile => no track question; the H19(b) seen consequence) is ACCEPTED as correct scope,
+with a named tripwire:
+
+1. "Does this acoustic connect to that optic" is not a linkage-bookkeeping question. Near an
+   (avoided) crossing the branches hybridize and character swaps; the real question is about
+   the CROSSING itself (gap or no gap) — model-hierarchy territory: a hypothesis about two
+   branches with its own priors and its own EIG, arriving with the deferred
+   symmetry/crossing feature. A cross-class track RULE today would legislate per-phenomenon
+   behaviour before the machinery exists to price it (forbidden by the no-hard-rules
+   principle, same day's ruling above).
+2. **Tripwire, named where the owner would incur it:** declaring identity-conditioned priors
+   BEFORE the crossing work lands silences connectivity in mixed-class regions — fine for
+   well-separated branches, blind exactly at crossings. The day priors are declared, either
+   accept that blindness knowingly or pull the crossing/hypothesis work forward.
+3. Unreachable in production until priors are declared (the representability gate); no code
+   change.
+
 # SCENE-4 execution plan (rev 2 after external-review triage — 2026-08-13)
 
 Five PRs, sequenced; one branch per PR, owner reviews and merges (SCENE-3 cadence). Code
