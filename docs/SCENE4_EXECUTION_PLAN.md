@@ -269,6 +269,37 @@ Related inbox candidates (same discussion): the soft energy ceiling with spare b
 the failed-in-zone hunt recommending another Brillouin zone. Both in
 `docs/DESIGN_GOAL_INBOX.md`, 2026-08-15 entries.
 
+## Zone-centre endpoint ruling (2026-08-15, owner — PR #33 review discussion): RULED
+
+The `zc_linear_compatibility` question's beam posture, superseding the flagged C4
+interpretation's status (the code survives; its STATUS changes):
+
+1. **Prior posture.** Acoustic phonons reach the zone centre, linearly nearby — at
+   overwhelming prior. Compatible-by-prior is the standing answer; the burden is on
+   FALSIFICATION. A scientific case for anything else arrives as a DECLARED hypothesis
+   ("prove it does not disperse to the ZC"), never as default-profile hedging.
+2. **No hard rules for phenomena — the protocol is EIG-emergent.** The near-ZC triplet scan
+   (Stokes + anti-Stokes + elastic fitted together) happens when EIG demands it: peaks close
+   together (cheap window), high intensity, three mutually-constraining peaks (easiest fit).
+   Far from the ZC: Stokes first, anti-Stokes only if the fit needs it; at low T the Bose
+   factor collapses anti-Stokes EIG (the discovery profile's declared
+   AS-detectability-at-declared-T gate is the pattern: knowledge as declared data, never
+   code). Priors exist so they can WEAKEN: linearity decays away from the fold, so
+   hypothesis strength (predicted energies) is high near the ZC and low far away, and
+   placement, window content, and stopping all fall out of that gradient priced against
+   cost. Recorded here as named SCENE-5 EIG design inputs.
+3. **The C4 zc stand-in is a declared deterministic PLACEHOLDER for an EIG conclusion**
+   (the Topic 5 pattern), accepted as such — not physics law, not worth refining, and it
+   dissolves when SCENE-5's real EIG lands. The reviewer's "could it scan closer?" is
+   answered there: EIG prices the shrinking lever arm against the elastic wing; the
+   deterministic v1 does not pretend to.
+4. **Misalignment signature, toward the deferred sample-knowledge work:** Bragg peaks ARE
+   the zone centres — the map itself. Acoustic branches converging on a non-ZC coordinate
+   will usually find the Bragg peak sitting there too; the coincidence is ALIGNMENT evidence
+   (lattice constants / UB update), never dispersion physics. Detection belongs to the
+   alignment-as-hypothesis objective (DESIGN_GOALS); recorded so the future work is built
+   toward this signature.
+
 # SCENE-4 execution plan (rev 2 after external-review triage — 2026-08-13)
 
 Five PRs, sequenced; one branch per PR, owner reviews and merges (SCENE-3 cadence). Code

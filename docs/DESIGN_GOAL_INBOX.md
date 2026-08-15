@@ -118,3 +118,15 @@ need to look in a different BZ, and tell the user." The deferred symmetry-equiva
 feature (SCENE-5-adjacent) should be built toward exactly this sentence: the failed hunt
 produces a concrete other-zone recommendation through the consultation channel, not a silent
 exhaustion.
+
+## Priors exist to be weakened (→ "Phenomena Hypotheses")
+
+There are no hard rules for phenomena in ISAR — ever. A phenomenon class carries PRIORS
+(the acoustic phonon: disperses to the zone centre, linearly nearby, at overwhelming
+strength), and the point of priors is that they weaken: linearity decays away from the
+fold, so hypothesis strength — predicted energies — is high near the zone centre and low
+far away. Scan placement, window content (Stokes / anti-Stokes / elastic together when
+they are cheap and mutually constraining; Stokes-first far out; anti-Stokes de-prioritized
+when the Bose factor kills it at low T), and when to stop measuring all PRICE OUT of that
+strength gradient against cost via EIG. Behaviour falls out of priors and prices; it is
+never legislated per phenomenon.
