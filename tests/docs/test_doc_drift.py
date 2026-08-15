@@ -189,6 +189,16 @@ STALE_PHRASES = (
         "P0-C made interval authority fit-conditional (`authority_basis == \"producer_sound\"`); "
         "delivery selection is not interval authority",
     ),
+    # PR #33 response wave (H19(b)). The ConnectTrack class-agnostic trigger's ORIGINAL PR 32
+    # wording keyed suppression on per-class DERIVATION; H19(b) replaced it with plain
+    # unclassified-tile EXISTENCE (any confirmed tile lacking an answered classification), full
+    # partition span, and suppression only once fully classified.
+    (
+        "where NO per-class track has actually DERIVED",
+        "H19(b) superseded H18(f)'s derivation-keyed trigger with any-confirmed-tile-"
+        "unclassified existence, full-partition span, and fully-classified suppression "
+        "(docs/SCENE_DESIGN.md §5)",
+    ),
 )
 
 

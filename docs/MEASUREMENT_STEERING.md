@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the steering research foundation and the current controller contract
 > **Provenance:** hand-written
-> **Verified against code revision:** `d483af1` (2026-08-08)
+> **Verified against code revision:** `5cf3408` (2026-08-15)
 
 > **Status: design locked; the core is built.** The model-free descriptor (L0), branch model +
 > normalized branch-assignment scoring, soft/hard Γ constraints, Stokes-only rescue, under-model
@@ -785,6 +785,32 @@ requested branch. Clean pooled folds may seed that branch; ambiguous forks still
 reporting uses master diagnostics such as model ambiguity, pool inconsistency, analysis failure,
 resolution-limited linewidth, and interval above tolerance. The active target is copied
 only into machine-owned `card.state.json`; `card.policy.toml` remains human-owned.
+
+### 7.2b Discovery controller — offline planner (Partial, SCENE-4 PR 4.2b)
+
+`isar/drive/steering/planner.py`'s `plan_next_action(report_dir, program, step_id)` runs the full
+discovery decision offline: given a stored scene and a frozen `discover_and_map` step, it derives
+the agenda, runs every ready question's generator(s) (`isar/drive/steering/generators.py`, the
+seven bound generators — see `SCENE_DESIGN.md` §5/§6 for the construction matrix and the
+persisted-artifact shapes), proves exhaustion where the evidence supports it
+(`isar/drive/steering/exhaustion.py`), and either selects one physical action or names why not.
+Selection ranks lexicographically (`isar/drive/steering/scheduler.py`'s declared policy: family
+priority, dependency depth, a named v1 locality stand-in, the scientific action fingerprint as
+tiebreak) over every eligible action surviving dedup. The outcome is one of five —
+`selected` / `agenda_complete` / `controller_fault` / `no_action_with_honest_exhaustion` /
+`no_eligible_action` — with `no_eligible_action` the honest cold-start reading (an unmeasured
+workspace's DiscoverRegion question is INAPPLICABLE at the generator wrapper, nothing claimed
+exhausted) rather than a fault. Every call appends one clock-free `isar.discovery-decision/1`
+line to `report/decisions.jsonl`, embedding the complete DecisionBasis (scene/agenda/program
+digests, the generator registry, the scheduler policy, the placement manifest) so a decision can
+be re-checked without rejoining live state.
+
+**Still offline** (this is the same "compiled but not executed" boundary §7.2 already draws for
+`discover_and_map`): `isar drive` never calls `plan_next_action` — there is no TAVI submission,
+no loop, no consultation channel, and no production emission of the durable blocker evidence
+`QuestionBlockerEvidence` types (only synthetic tests construct one). Driver wiring, the
+partition producer that gives an unmeasured workspace its first partitioned evidence, and closing
+the offline/online gap are SCENE-4.3 work, named and not started.
 
 ### 7.3 Instrument-limit-aware batching (implemented, 2026-07-18)
 

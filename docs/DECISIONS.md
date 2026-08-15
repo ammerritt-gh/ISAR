@@ -3,7 +3,7 @@
 > **Lifecycle:** Current
 > **Authority:** canonical for the append-only ruling ledger; IDs are stable citation anchors (D2, D4)
 > **Provenance:** hand-written
-> **Verified against code revision:** `24ff041` (2026-08-06)
+> **Verified against code revision:** `5cf3408` (2026-08-15)
 
 Append-only ledger of design rulings. IDs are stable citation anchors (D2). Started at the
 2026-07-09 design review; each ruling is final unless explicitly reopened; "future" means
@@ -2236,6 +2236,153 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   fit-conditional producer-soundness, and closure now clears on retained mass exactly as the
   rest of the family does; refines H17(f)(1)'s class-agnostic presence framing by extending
   CLASS-AGNOSTIC treatment from ConfirmPresence to ConnectTrack.
+
+- **H19.** (2026-08-15, In force; SCENE-4 PR 4.2b, branch SCENE-4c2) **The discovery generator
+  layer runs end to end, offline: seven generators, a five-outcome planner, and the stores a
+  decision needs to prove itself later.** Twelve parts — (i)-(l) added 2026-08-15 by the same
+  day's PR #33 response wave (two blocking external reviews on this PR, same-PR-wave amendment
+  per the H17(f) precedent: a review response on the SAME PR a decision already covers folds
+  into that decision's own lettered parts, never a new H-number).
+  **(a) Seven generators, one newly bound to VerifyCompleteness.** `exposure_fill` joins the six
+  question-bound generators (`opening_book_survey`, `presence_probe`, `identity_discriminator`,
+  `track_bridge_scan`, `parameter_refine`, `mismatch_probe`) because the opening book's
+  `underexposed_cell` proposals serve VerifyCompleteness's exposure floor and only that closure:
+  exhaustion is proved against `spec.generator_ids` exactly, so a family with no generator can
+  never honestly exhaust, and VerifyCompleteness's generator-less state (H17) ends here.
+  Unresolvable closure stays gated on a durable blocker regardless — the new generator opens no
+  shortcut around that requirement.
+  **(b) ConnectTrack's class-agnostic trigger changes, superseding H18(f).** Existence, not
+  span: the class-agnostic track exists wherever ANY confirmed tile in a partition lacks an
+  answered classification — not only where no per-class track has derived, H18(f)'s trigger —
+  and spans every confirmed tile in the partition, suppressed only when the partition is fully
+  classified. Both directions are ruled: new opens in previously-suppressed partitions, and
+  dissolution in a fully-classified MULTI-class partition (two confirmed tiles in two distinct
+  classes has no per-class track possible, and under the new rule carries no class-agnostic
+  track either) — cross-class connectivity stays deferred physics, never folded into the
+  unclassified lane.
+  **(c) Cold start reaches a fifth planner outcome, never a fault.** The planner's outcome enum
+  is `{selected, agenda_complete, controller_fault, no_action_with_honest_exhaustion,
+  no_eligible_action}` — `no_eligible_action` is added at the enum's birth because the
+  four-member enum approved earlier had no honest bucket for an unmeasured workspace: its
+  program-scoped DiscoverRegion question is INAPPLICABLE (`program_scoped_subject_unfanned`) at
+  the generator wrapper, before the book is ever called, and nothing is claimed exhausted.
+  First-scan reality — creating the first partitioned evidence — stays 4.3's partition-producer
+  obligation, not this milestone's.
+  **(d) Discovery inventories live under `report/inventory/discovery/`, never the legacy
+  top-level directory.** `tools/eig_replay/replay_o41_test4.py` globs `report/inventory/*.json`
+  non-recursively with no kind check, so a same-directory discovery artifact would be silently
+  ingested as legacy vocabulary; the subdirectory keeps it structurally invisible, and its
+  `inventory_ref` carries the new kind `discovery_action_inventory`, refused by name where the
+  legacy kind is expected (the eligibility census's kind check). `isar.action-inventory/1`
+  becomes `/2`: the generator registry an inventory was built under is now INSTANCE data
+  (`generator_registry_fingerprint`/`generator_registry_manifest` on the inventory itself),
+  never the module-global, so a legacy inventory keeps naming the legacy registry and a
+  discovery one the discovery registry.
+  **(e) `report/decisions.jsonl`, one line per planning call, clock-free.** Schema
+  `isar.discovery-decision/1`: `decision_basis` embeds the scene/agenda/basis digests, the
+  program fingerprint and step id, the resolved-policy fingerprint, the generator registry
+  {fingerprint, manifest}, the scheduler-policy declaration, and the placement {fingerprint,
+  manifest} — every manifest EMBEDDED, not referenced, the same precedent H17(f)(8) set for the
+  agenda snapshot's `resolved_policy` block. `scan_design_provenance` carries EXACTLY the five
+  keys `isar/eig/eligibility.py`'s `_scan_design_identity` reads (`inventory_fingerprint`,
+  `context_fingerprint`, `selected_candidate_id`, `status`, `recovery_state`);
+  `scan_design_events` rides BESIDE it as a sibling field, the consumer contract's own name
+  (`EligibilityInput.scan_design_events`), so the provenance object stays exactly those five
+  fingerprinted keys. No wall-clock anywhere in the record — the whole point is that replaying
+  the same scene and program twice appends a byte-identical second line.
+  **(f) `report/program/` is the workspace's first persisted program document.** A
+  content-addressed frozen-program store (pointer + blobs, planner-written, idempotent on the
+  same program) — the same store discipline the scene and agenda stores already keep. It exists
+  because DecisionBasis and `ws.agenda`'s freshness verdict both need a recoverable program
+  source, and there was no persisted one until now; the 4.3 driver and any consultation-channel
+  re-freeze write through the same store, never a second one. `program_fingerprint()` is the ONE
+  implementation of a program's content address (`isar/schema/campaign_program.py`), and its
+  equality with the store's own digest rule is pinned by test, never assumed.
+  **(g) `DEFAULTS_PROFILE_VERSION` stays 1.** It names the defaults VALUE SET; 4.2b adds no
+  question-policy field and changes no default — the scheduler's declaration lives in
+  DecisionBasis, not the policy block, and the ConnectTrack trigger change is versioned by
+  `OPENER_VERSION`, not this one. The flag PR #32 carried into this milestone dissolves here;
+  whether a retroactive profile `/2` is worth minting for its own sake stays the owner's open
+  call, not decided by this ruling.
+  **(h) The partition-None guard's first-commit interpretation.** `propose_survey` raises on a
+  program-scoped subject at its own front door (C0) — a contract violation trap, not a
+  lattice-agnostic survey. The discovery generator WRAPPERS (`opening_book_survey`,
+  `exposure_fill`) check `subject.partition_id` themselves before ever calling the book,
+  inheriting that guard by construction: the book's raise stays reachable only as a genuine
+  upstream contract violation, and the wrapper's own INAPPLICABLE reading is what (c)'s
+  cold-start outcome is built from.
+  **(i) [PR #33 response wave] Physical action identity is ONE class, not the generator's ID.**
+  `action_class = "discovery_scan"` for every discovery generator, never the generator id — a
+  generator id in `action_class` forked one physical scan into as many scientific actions as
+  generators that happened to want it, and blocked dedup across generators; which generator
+  asked stays fully recorded on `ActionEvaluation.generator` and every
+  `QuestionActionAssociation`, never on the intent. `campaign_slice_fingerprint` carries the
+  subject's PARTITION token on every discovery intent (`None` only for the program-scoped
+  subjects no shipped generator actually reaches), so identical (q, ω) in two DIFFERENT
+  partitions never dedup into one action. The `window_center_meV` union rule: `None` yields to
+  a declared value from either side; two DIFFERENT declared values still refuse as a controller
+  fault. Neither the generator-id `action_class` framing nor a `None`
+  `campaign_slice_fingerprint` on discovery intents appears anywhere in (a)-(h) above — this
+  closes a code defect the PR #33 review caught (A-P0-1), not a wording correction to an
+  earlier letter.
+  **(j) [PR #33 response wave] Completion is the agenda verdict evaluator's call; honest
+  exhaustion requires an APPLIED closure, never a merely emitted proof.** The planner's outcome
+  is decided from `isar.scene.agenda.evaluate_agenda`'s own verdict on the second
+  (exhaustion-informed) derivation pass — never re-inferred from raw open/closed statuses, since
+  a question can leave `open` by closing `unresolvable` rather than answering yes (the
+  four-reasons law). `no_action_with_honest_exhaustion` requires every remaining question to
+  have closed via an APPLIED exhaustion proof; a proof `apply_exhaustion` REJECTS for want of a
+  durable blocker (`generator_defect`, the question stays `open`) can never reach it — the
+  honest reading of that state is `no_eligible_action`. `apply_exhaustion` requires a durable
+  blocker on the assessment for ANY closure, including an all-clean-zero proof, and no
+  4.1/4.2 evaluator emits one yet, so `no_action_with_honest_exhaustion` is reachable in 4.2b
+  only through the authenticated `blocker_evidence` transition `derive_agenda` now accepts
+  (validated against fresh comparands and the target assessment's `generator_ids`, attached
+  AFTER the basis digest is computed and BEFORE `apply_exhaustion` runs, with both derivation
+  passes receiving IDENTICAL evidence so no proof self-rejects on `basis_agenda_digest`) —
+  reachability through a live durable-blocker producer stays 4.3+ territory. Neither (c) (the
+  cold-start fifth-outcome ruling) nor (e) (the decisions.jsonl schema) states or implies that
+  an EMITTED proof alone is sufficient for honest exhaustion — this closes a code and test
+  defect the PR #33 review caught (A-P0-2/A-P0-3), not a wording correction to either letter.
+  **(k) [PR #33 response wave] Publication guards: one race closed, one narrowed, one converted from
+  silent to loud. The interprocess store lock CLOSES the dual-writer pointer race; the
+  publication-time scene re-check NARROWS the stale-scene window; the program-store CAS
+  converts last-writer-wins into a loud refusal.** A per-store interprocess lock (`os.open(..., O_CREAT|O_EXCL)`, bounded
+  retry, DEAD-OWNER-ONLY stale-lock takeover — age alone is never sufficient; a live writer
+  paused past the threshold must never be evicted) wraps every store's
+  pointer-read/compare/flip/history-append as one critical section, so two racing writers can
+  no longer both pass their own `expected_parent` check off one stale read. The planner
+  separately re-reads the SCENE pointer immediately before the agenda write and refuses
+  (`StaleSceneAtPublication`, nothing published) if it moved since the decision's own snapshot —
+  this NARROWS the window rather than closing it (the re-read sits outside the agenda store's
+  own lock, against a different store than the one being written); the agenda store's
+  `expected_parent` CAS and lock are what actually refuse a lineage fork. The program store is
+  now written with `expected_parent` from a snapshot taken at the same planning-start moment as
+  the agenda snapshot, so a concurrent program writer surfaces `ConcurrentRevisionWrite` instead
+  of last-writer-wins.
+  **(l) [PR #33 response wave] DecisionBasis is complete: locality is visible AND fingerprinted,
+  and the rank table persists.** `locality_coordinate` can change which action `select()` picks
+  (the scheduler's rank vector), so `decision_basis` now carries a `locality` block (`{fn,
+  coordinate}`, present even on the scene-missing fault path) AND `context_fingerprint`'s own
+  digest input includes it — two decisions differing ONLY in locality now produce different
+  records AND different fingerprints, never identical ones on either count. `selection` gains
+  the FULL ordered rank table (one row per eligible surviving evaluation, winner first) that the
+  scheduler's `select()` was already building and the planner was discarding. `ws.agenda`'s
+  freshness verdict grows a fifth comparand, `derivation`: the persisted derivation manifest's
+  opener/matcher/predicate-evaluator versions against `workspace_api`'s own pinned literals (the
+  same duplication posture the `AGENDA_SCHEMA` pin already sets) — `registry` alone said
+  nothing about the OPENER/matcher/evaluator code that produced a stored agenda's specs and
+  assessments, so a stale-derivation agenda with a current scene/program/policy/registry
+  previously read as `fresh`.
+  **Supersedes/relates:** (b) supersedes H18(f)'s "no per-class track has actually derived"
+  ConnectTrack trigger with the any-confirmed-tile-unclassified trigger above; the
+  track-EXISTENCE rule moves, the class-agnostic-track-exists-when-needed PRINCIPLE H18(f)
+  established does not. (i) and (j) supersede no earlier H19 letter's wording — (a)-(h) never
+  state a generator-id `action_class`, a `None` discovery `campaign_slice_fingerprint`, or
+  emitted-proof sufficiency; those were code and test defects the PR #33 review caught, not
+  ledger claims being corrected. (k) and (l) are purely additive: no earlier H19 letter
+  addressed the interprocess store lock, the publication-time scene re-check, the program-store
+  CAS, or DecisionBasis's locality/rank-table completeness.
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:
 user-facing campaign report (deferred until post-testing); renegotiation protocol (O3, future);

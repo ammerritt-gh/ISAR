@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 # Scientific action identity lives in the schema, which owns the value type and the one
@@ -73,12 +73,20 @@ TERMINAL_ACTION_INVENTORY_EXHAUSTED = "action_inventory_exhausted"
 TERMINAL_CONTROLLER_FAULT = "controller_fault"
 
 
-@dataclass(frozen=True)
-class GeneratorSpec:
-    """One registered action generator: the declarative unit an inventory is validated against."""
-
-    generator_id: str
-    version: int = 1
+# The generator vocabulary lives in the schema now (PR 4.2b B1): agenda derivation and this
+# controller both need the same words, and scene may not import drive. Re-exported here so
+# drive-internal callers keep importing them from the inventory that publishes them.
+from isar.schema.generators import (  # noqa: F401  (re-exported for drive-internal callers)
+    DISCOVERY_GENERATOR_REGISTRY,
+    DISCOVERY_GENERATOR_REGISTRY_VERSION,
+    FAMILY_GENERATORS,
+    GeneratorSpec,
+    QuestionActionAssociation,
+    aggregate_rank,
+    registry_manifest,
+    union_associations,
+)
+from isar.schema.generators import registry_fingerprint as _schema_registry_fingerprint
 
 
 # The registered generator set that produced an inventory. An ``action_inventory_exhausted`` terminal
@@ -138,16 +146,18 @@ def json_number(value):
 
 
 def registry_fingerprint(registry: tuple[GeneratorSpec, ...] = GENERATOR_REGISTRY) -> str:
-    """Derive the registry version from the ordered generator ids + versions.
-
-    Deriving rather than hand-maintaining a string means a generator added, removed, renamed, or
-    revised cannot silently keep an old terminal's proof looking current.
+    """Drive-side wrapper over :func:`isar.schema.generators.registry_fingerprint`, keeping
+    the historical legacy-registry default for drive-internal callers. The schema
+    implementation takes the registry explicitly (it cannot import this module's registry,
+    and an implicit fingerprint subject is how two registries end up sharing one version);
+    same payload, same hash — pinned by test.
     """
-    payload = canonical_json([[spec.generator_id, spec.version] for spec in registry])
-    return "isar.generator-registry/1:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+    return _schema_registry_fingerprint(registry)
 
 
 GENERATOR_REGISTRY_VERSION = registry_fingerprint()
+GENERATOR_REGISTRY_MANIFEST: tuple[tuple[str, int], ...] = tuple(
+    (spec.generator_id, spec.version) for spec in GENERATOR_REGISTRY)
 
 
 @dataclass(frozen=True)
@@ -227,6 +237,11 @@ class ActionEvaluation:
     score_confidence: float | None = None
     # A deterministic ordering key; lower is preferred. The real staged ranking replaces this later.
     policy_rank: float = 0.0
+    # Question-action provenance (PR 4.2b B2), discovery inventories only: which agenda
+    # questions this action serves and why. Legacy generators record none — and the field is
+    # serialized only when non-empty, so every legacy inventory's canonical bytes (and content
+    # address) are exactly what they were before the field existed.
+    associations: tuple[QuestionActionAssociation, ...] = ()
 
     @property
     def is_eligible(self) -> bool:
@@ -273,7 +288,13 @@ class ActionInventory:
 
     evaluations: list[ActionEvaluation] = field(default_factory=list)
     reports: list[GeneratorReport] = field(default_factory=list)
-    inventory_version: str = "isar.action-inventory/1"
+    # /2 (PR 4.2b B1): the registry an inventory was generated under became INSTANCE data —
+    # serialization stamps these fields, never the module-global, so a discovery inventory
+    # names the discovery registry and a legacy one the legacy registry. The defaults keep
+    # every legacy constructor exactly as it was.
+    inventory_version: str = "isar.action-inventory/2"
+    generator_registry_fingerprint: str = GENERATOR_REGISTRY_VERSION
+    generator_registry_manifest: tuple[tuple[str, int], ...] = GENERATOR_REGISTRY_MANIFEST
 
     def structural_problems(self) -> list[str]:
         """Registry-independent ways an inventory can fail to back its own completeness claim.
@@ -366,6 +387,52 @@ class ActionInventory:
         return [r for r in self.reports if r.status is GeneratorStatus.FAILED]
 
     @staticmethod
+    def dedupe_discovery_evaluations(
+            evaluations: list["ActionEvaluation"],
+    ) -> tuple[list["ActionEvaluation"], dict[str, int]]:
+        """Collapse evaluations asking the same scientific question, UNIONING their question
+        provenance onto the surviving (first-seen) evaluation — B2's dedup rule. Returns the
+        survivors plus a per-generator count of collapsed evaluations (the ``deduped`` field
+        of the dropped side's report; ``generated`` counts survivors only).
+
+        ``window_center_meV`` is deliberately outside the scientific fingerprint (see
+        ``MeasurementIntent``), so two generators can mint one scientific action while aiming
+        realization differently — but NOT ARBITRARILY differently (PR #33 A-P0-1, one physical
+        ``action_class`` widened exactly which pairs can now collide here). A declared aim
+        (non-``None``) YIELDS to no aim at all: one generator naming a target and its sibling
+        having no opinion is not a conflict, it is the only aim there is, so the survivor picks
+        it up even when it was the DUPLICATE side that carried it. Two DIFFERENT declared aims
+        is still a REFUSAL, never silent first-seen — a controller fault to surface, not a coin
+        to flip.
+        """
+        survivors: dict[str, ActionEvaluation] = {}
+        order: list[str] = []
+        deduped_by_generator: dict[str, int] = {}
+        for evaluation in evaluations:
+            key = evaluation.intent.scientific_action_fingerprint
+            first = survivors.get(key)
+            if first is None:
+                survivors[key] = evaluation
+                order.append(key)
+                continue
+            first_center = first.intent.window_center_meV
+            dup_center = evaluation.intent.window_center_meV
+            if first_center is not None and dup_center is not None and first_center != dup_center:
+                raise ValueError(
+                    "dedup refuses conflicting realization metadata for scientific action "
+                    f"{key}: window_center_meV {first_center!r} (from {first.generator!r}) vs "
+                    f"{dup_center!r} (from {evaluation.generator!r}) — same scientific question, "
+                    "contradictory acquisition aims; controller fault, never silent first-seen")
+            if first_center is None and dup_center is not None:
+                first = replace(first, intent=replace(first.intent, window_center_meV=dup_center))
+            survivors[key] = replace(
+                first, associations=union_associations(first.associations,
+                                                       evaluation.associations))
+            deduped_by_generator[evaluation.generator] = \
+                deduped_by_generator.get(evaluation.generator, 0) + 1
+        return [survivors[key] for key in order], deduped_by_generator
+
+    @staticmethod
     def dedupe_intents(intents: list[MeasurementIntent]) -> list[MeasurementIntent]:
         """Collapse intents that ask the same scientific question, preserving first-seen order."""
         seen: set[str] = set()
@@ -394,7 +461,9 @@ class ActionInventory:
         """
         return {
             "inventory_version": self.inventory_version,
-            "generator_registry_version": GENERATOR_REGISTRY_VERSION,
+            "generator_registry_version": self.generator_registry_fingerprint,
+            "generator_registry_manifest": [list(pair)
+                                            for pair in self.generator_registry_manifest],
             "n_evaluations": len(self.evaluations),
             "n_eligible": len(self.eligible_actions()),
             "is_complete": self.is_complete,
@@ -416,7 +485,9 @@ class ActionInventory:
         """
         return {
             "inventory_version": self.inventory_version,
-            "generator_registry_version": GENERATOR_REGISTRY_VERSION,
+            "generator_registry_version": self.generator_registry_fingerprint,
+            "generator_registry_manifest": [list(pair)
+                                            for pair in self.generator_registry_manifest],
             "canonicalization_version": CANONICALIZATION_VERSION,
             "reports": [
                 {"generator": r.generator, "status": r.status.value, "generated": r.generated,
@@ -457,6 +528,12 @@ class ActionInventory:
                         "score_method": e.score_method,
                         "score_confidence": _finite(e.score_confidence),
                     },
+                    # Present exactly when the controller recorded question provenance (B2):
+                    # discovery evaluations always carry >= 1 association, legacy ones never
+                    # do, and omitting the empty case keeps every pre-B2 legacy inventory's
+                    # canonical bytes -- and content address -- unchanged.
+                    **({"associations": [a.to_dict() for a in e.associations]}
+                       if e.associations else {}),
                 }
                 for e in self.evaluations],
         }

@@ -410,3 +410,35 @@ def test_gap_of_k_spacing_plus_epsilon_leaves_every_subgap_within_spacing():
         edges = [0.0, *sorted(p.axis_coordinate for p in proposals), gap]
         for a, b in zip(edges, edges[1:]):
             assert b - a <= spacing + 1e-9
+
+# ----------------------------------------------------------------------------
+# PR 4.2b C0: program-scoped subjects are refused at the front door
+# ----------------------------------------------------------------------------
+def test_program_scoped_subject_refused_loudly():
+    """A partition_id=None subject can never match physical evidence (the agenda fans
+    program-scoped questions out to per-partition children before any generator runs), so one
+    reaching the book is an upstream contract violation — refused by name, never a blind seed
+    and never a workspace-wide gap fill."""
+    st = step()
+    sc = scene(footprints=[fp("e:1:d", 0.5)])
+    program_scoped = QuestionSubject(kind="region", partition_id=None, region_rlu=(0.0, 1.0),
+                                     omega_band_meV=None)
+    with pytest.raises(ValueError, match="program-scoped.*fan-out|fan-out.*program-scoped"):
+        propose_survey(sc, st, program_scoped)
+    # The dict form (driver convenience) is refused identically.
+    with pytest.raises(ValueError, match="program-scoped"):
+        propose_survey(sc, st, program_scoped.to_dict())
+
+
+def test_partitioned_subject_behaviour_unchanged_by_the_guard():
+    """Regression: the guard is a front-door refusal only — a partition-scoped subject's
+    proposal set is byte-identical to the pre-guard behaviour (the epoch rule still decides
+    anchor scoring, exactly as before)."""
+    st = step(spacing=0.3)
+    sc = scene(footprints=[fp("e:1:d", 0.05)],
+               sample_knowledge={"zone_period": 1.0, "lattice_epoch": EPOCH})
+    proposals = call(sc, st, (0.0, 2.0))
+    assert proposals and all(p.kind == "missing_q_node" for p in proposals)
+    after = apply_proposals(sc, proposals)
+    a = evaluate_predicate(coverage_spec(st, (0.0, 2.0)), after)
+    assert a.status == "answered" and dict(a.answer) == {"complete": True}

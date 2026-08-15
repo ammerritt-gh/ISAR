@@ -234,6 +234,103 @@ stronger goal compiler; motor-cost models; incremental scene builds; full sample
 (DESIGN_GOALS: mutable lattice/UB/space-group provenance, alignment-as-hypothesis,
 mosaic/twinning, sublattices); model hierarchy above phenomena (dispersion-vs-T).
 
+## Cold-start ruling (2026-08-15, owner — PR #33 review discussion): RULED
+
+How a fresh (or freshly re-conditioned) workspace gets its first scan. Decision of record
+until 4.3's H-entry lands:
+
+1. **Option A — the driver constructs the initial partition from declarations.** Every
+   partition component is derivable before any measurement: sample identity from the card,
+   ConditionSet from the declared setpoint through the SAME t_round binning rule measured
+   provenance uses, lattice epoch from declared knowledge, path from the program step. 4.3's
+   driver mints this declared partition with the same `partition_key()` code path, the agenda
+   fans out to it, and the ordinary machinery plans scan one — no bootstrap special case
+   anywhere. A declaration/reality mismatch on first measurement is an ordinary one-time
+   dissolve/reopen, not a failure mode. (The rejected alternative — a canonical context-less
+   bootstrap scan — cannot express the physics below and would orphan its own attribution.)
+2. **Initialization is catalogue-declared, never controller-coded.** The default phonon
+   profile's placement knowledge yields the owner's walkthrough: first scan just off the
+   nearest in-region zone centre at low ω hunting the acoustic branch (highest prior,
+   strongest, best-estimated there); persistent absence updates the posterior and the hunt
+   pivots to optic phonons at the ZC from finite E upward; initialized points extrapolate
+   outward (phonons disperse continuously). A different catalogue initializes differently by
+   its own declarations; flat or absent knowledge degrades HONESTLY to the uniform sparse
+   survey (anchor scoring fails closed; `survey_order: uniform` remains user-selectable), and
+   emergent signal drives everything thereafter.
+3. **The owner's walkthrough is the 4.4 cold-start acceptance script** for the default
+   profile (first proposal just-off-ZC low-ω; failed acoustic hunt pivots to the ZC optic
+   hunt; outward mapping from initialized points), plus a cheap degradation test: blank
+   knowledge ⇒ the first proposal is uniform sparse, never an error.
+4. **4.4 script check, not assumed:** whether on-ZC survey nodes need a nonzero-E window
+   floor against the Bragg/elastic tail (proposal-level exclusion), or fitter-side elastic
+   handling suffices.
+
+Related inbox candidates (same discussion): the soft energy ceiling with spare beam time;
+the failed-in-zone hunt recommending another Brillouin zone. Both in
+`docs/DESIGN_GOAL_INBOX.md`, 2026-08-15 entries.
+
+## Zone-centre endpoint ruling (2026-08-15, owner — PR #33 review discussion): RULED
+
+The `zc_linear_compatibility` question's beam posture, superseding the flagged C4
+interpretation's status (the code survives; its STATUS changes):
+
+1. **Prior posture.** Acoustic phonons reach the zone centre, linearly nearby — at
+   overwhelming prior. Compatible-by-prior is the standing answer; the burden is on
+   FALSIFICATION. A scientific case for anything else arrives as a DECLARED hypothesis
+   ("prove it does not disperse to the ZC"), never as default-profile hedging.
+2. **No hard rules for phenomena — the protocol is EIG-emergent.** The near-ZC triplet scan
+   (Stokes + anti-Stokes + elastic fitted together) happens when EIG demands it: peaks close
+   together (cheap window), high intensity, three mutually-constraining peaks (easiest fit).
+   Far from the ZC: Stokes first, anti-Stokes only if the fit needs it; at low T the Bose
+   factor collapses anti-Stokes EIG (the discovery profile's declared
+   AS-detectability-at-declared-T gate is the pattern: knowledge as declared data, never
+   code). Priors exist so they can WEAKEN: linearity decays away from the fold, so
+   hypothesis strength (predicted energies) is high near the ZC and low far away, and
+   placement, window content, and stopping all fall out of that gradient priced against
+   cost. Recorded here as named SCENE-5 EIG design inputs.
+3. **The C4 zc stand-in is a declared deterministic PLACEHOLDER for an EIG conclusion**
+   (the Topic 5 pattern), accepted as such — not physics law, not worth refining, and it
+   dissolves when SCENE-5's real EIG lands. The reviewer's "could it scan closer?" is
+   answered there: EIG prices the shrinking lever arm against the elastic wing; the
+   deterministic v1 does not pretend to.
+4. **Misalignment signature, toward the deferred sample-knowledge work:** Bragg peaks ARE
+   the zone centres — the map itself. Acoustic branches converging on a non-ZC coordinate
+   will usually find the Bragg peak sitting there too; the coincidence is ALIGNMENT evidence
+   (lattice constants / UB update), never dispersion physics. Detection belongs to the
+   alignment-as-hypothesis objective (DESIGN_GOALS); recorded so the future work is built
+   toward this signature.
+
+## Cross-class connectivity ruling (2026-08-15, owner — PR #33 review discussion): RULED
+
+The fully-classified multi-class partition's connectivity silence (one acoustic tile + one
+optic tile => no track question; the H19(b) seen consequence) is ACCEPTED as correct scope,
+with a named tripwire:
+
+1. "Does this acoustic connect to that optic" is not a linkage-bookkeeping question. Near an
+   (avoided) crossing the branches hybridize and character swaps; the real question is about
+   the CROSSING itself (gap or no gap) — model-hierarchy territory: a hypothesis about two
+   branches with its own priors and its own EIG, arriving with the deferred
+   symmetry/crossing feature. A cross-class track RULE today would legislate per-phenomenon
+   behaviour before the machinery exists to price it (forbidden by the no-hard-rules
+   principle, same day's ruling above).
+2. **Tripwire, named where the owner would incur it:** declaring identity-conditioned priors
+   BEFORE the crossing work lands silences connectivity in mixed-class regions — fine for
+   well-separated branches, blind exactly at crossings. The day priors are declared, either
+   accept that blindness knowingly or pull the crossing/hypothesis work forward.
+3. Unreachable in production until priors are declared (the representability gate); no code
+   change.
+
+## Defaults-profile label ruling (2026-08-15, owner — PR #33 review discussion): RULED
+
+Option (c): `DEFAULTS_PROFILE_VERSION` keeps versioning the default VALUE SET only (H19(g)
+stands; no retroactive v2), and the one reader trap is signposted — the reading rule
+("a profile version is meaningful only alongside its policy schema version; never cite it
+bare") is recorded in `SCHEMA_LANDSCAPE.md` beside the `/2` block. Replay and audit are
+unaffected either way: effective values freeze into every compiled program.
+
+With this, all four owner questions the PR #33 reviews left open are RULED (cold start;
+zc prior posture / no hard rules; cross-class connectivity; this label rule).
+
 # SCENE-4 execution plan (rev 2 after external-review triage — 2026-08-13)
 
 Five PRs, sequenced; one branch per PR, owner reviews and merges (SCENE-3 cadence). Code

@@ -543,6 +543,20 @@ class Workspace:
         return self._views["scene"]
 
     @property
+    def agenda(self):
+        """The stored agenda revision (``AgendaRevisionView``), or ``None`` if there is none.
+
+        Same posture as :attr:`scene`: absence is normal and reads as ``None``; a corrupt agenda
+        store raises ``ValueError`` instead of degrading into a warning. Freshness against the
+        scene/program/registry state is NOT computed here — call ``ws.agenda.freshness()``, which
+        reads those other stores lazily and only on demand.
+        """
+        if "agenda" not in self._views:
+            from .agenda_view import agenda_revision
+            self._views["agenda"] = agenda_revision(self)
+        return self._views["agenda"]
+
+    @property
     def master_assessments(self) -> list[MasterAssessmentView]:
         """Latest durable pooled-master assessment snapshot, in objective-path order."""
         if "master_assessments" in self._views:

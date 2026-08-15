@@ -13,9 +13,10 @@ import json
 import pytest
 
 from isar.scene.agenda import (
-    AGENDA_STORE, AgendaVerdict, apply_exhaustion, build_and_store_agenda, derive_agenda,
-    evaluate_agenda, read_transitions)
+    AGENDA_STORE, AgendaVerdict, apply_exhaustion, attach_blocker_evidence,
+    build_and_store_agenda, derive_agenda, evaluate_agenda, read_transitions)
 from isar.scene.questions import Blocker, QuestionAssessment, QuestionExhaustion
+from isar.schema.generators import QuestionBlockerEvidence
 from isar.schema.question_policy import resolve_policy
 
 from .test_predicates import P1, alt, cand, cluster, fp, obs, payload, trusted_interval
@@ -403,6 +404,87 @@ def test_classification_handover_dissolves_the_class_agnostic_track(tmp_path):
     assert any(t["question_id"] == after_track[0]["question_id"] for t in opened)
 
 
+def test_derived_per_class_track_no_longer_hides_unclassified_tiles():
+    """H19 retrigger (supersedes H18(f)): a partition with a DERIVED per-class track (two
+    acoustic tiles) plus a third confirmed-but-unclassified tile gets BOTH tracks — the
+    unclassified thing's connectivity to its classified neighbours is open physics, and the
+    old "per-class track derived" suppression hid exactly this. The class-None track spans
+    ALL confirmed tiles, the classified pair included."""
+    def arena(ref, coord, cid, identity=None):
+        return (obs(ref, [cand("A", omegas=(5.0,), identity=identity), cand("B")]),
+                fp(ref, coord),
+                cluster([ref], [alt([(ref, "A")], 0.95), alt([(ref, "B")], 0.05)],
+                        cluster_id=cid))
+    rows = [arena("e:1:d", 2.0, "c0", identity="acoustic"),
+            arena("e:2:d", 3.0, "c1", identity="acoustic"),
+            arena("e:3:d", 4.0, "c2")]
+    scene = payload(observations=[r[0] for r in rows], footprints=[r[1] for r in rows],
+                    clusters=[r[2] for r in rows],
+                    sample_knowledge={"zone_period": 1.0, "dispersion_slope_max": 10.0,
+                                      "lattice_epoch": 1})
+    revision = derive(scene)
+    tracks = by_family(revision, "ConnectTrack")
+    per_class = [t for t in tracks if t["subject"]["catalogue_class"] is not None]
+    class_none = [t for t in tracks if t["subject"]["catalogue_class"] is None]
+    assert len(per_class) == 1 and per_class[0]["subject"]["catalogue_class"] == "acoustic"
+    assert len(class_none) == 1
+    presence = by_family(revision, "ConfirmPresence")
+    assert len(presence) == 3
+    assert set(class_none[0]["dependencies"]) == {s["question_id"] for s in presence}
+    # Distinct subjects, distinct IDs -- the two passes can never collide (existing invariant).
+    assert per_class[0]["question_id"] != class_none[0]["question_id"]
+
+
+def test_fully_classified_multi_class_partition_carries_no_class_none_track():
+    """The seen consequence of the H19 trigger, recorded rather than silent: two confirmed
+    tiles classified into two DIFFERENT classes are fully classified, so no class-None track
+    derives -- even though no per-class track can (each class holds one tile). Cross-class
+    connectivity is deferred physics, not an unclassified lane. Under the superseded H18(f)
+    trigger this partition kept a class-None track; through the store the change lands as an
+    honest dissolution, never a silent vanish."""
+    def two_class_scene():
+        scene = unclassified_pair_scene(linked=True)
+        scene["observations"][0]["candidates"][0]["identity"] = "acoustic"
+        scene["observations"][1]["candidates"][0]["identity"] = "optic"
+        return scene
+    revision = derive(two_class_scene())
+    assert len(by_family(revision, "ClassifyIdentity")) == 2
+    assert by_family(revision, "ConnectTrack") == []
+
+
+def test_two_class_classification_dissolves_the_class_none_track(tmp_path):
+    """Store-path version of the corner above: the unclassified pair opens a class-None
+    track; classifying the tiles into two DIFFERENT classes dissolves it (equivalence
+    unproven) and -- unlike the same-class handover -- nothing replaces it."""
+    unclassified = unclassified_pair_scene(linked=True)
+    build_and_store_agenda(tmp_path, unclassified, step(), step_id="discover-1",
+                           program_fingerprint="prog-1")
+    before_track = by_family(derive(unclassified), "ConnectTrack")
+    assert len(before_track) == 1 and before_track[0]["subject"]["catalogue_class"] is None
+
+    two_class = unclassified_pair_scene(linked=True)
+    two_class["observations"][0]["candidates"][0]["identity"] = "acoustic"
+    two_class["observations"][1]["candidates"][0]["identity"] = "optic"
+    build_and_store_agenda(tmp_path, two_class, step(), step_id="discover-1",
+                           program_fingerprint="prog-1")
+    assert by_family(derive(two_class), "ConnectTrack") == []
+
+    dissolved = [t for record in read_transitions(tmp_path)
+                 for t in record["transitions"] if t["relation"] == "dissolved"]
+    assert any(t["question_id"] == before_track[0]["question_id"]
+               and t["equivalence"] == "unproven" for t in dissolved)
+
+
+def test_verify_completeness_binds_the_exposure_fill_generator():
+    """PR 4.2b C1: VerifyCompleteness stops being generator-less -- the book's
+    underexposed_cell proposals serve ITS closure, so exhaustion accounting needs the
+    binding on the spec (exhaustion is proved against spec.generator_ids exactly)."""
+    revision = derive(confirmed_scene())
+    completeness = by_family(revision, "VerifyCompleteness")
+    assert completeness
+    assert all(tuple(s["generator_ids"]) == ("exposure_fill",) for s in completeness)
+
+
 def test_mismatch_opens_only_where_the_scene_can_answer_it():
     without = derive(confirmed_scene())
     assert by_family(without, "TestModelMismatch") == []
@@ -668,6 +750,109 @@ def test_derive_agenda_rejects_a_stale_proof_end_to_end():
                       generator_registry_fingerprint="r1")
     # No assessment closed; the payload records no applied evidence.
     assert revision.payload["exhaustion_evidence"] == []
+
+
+# ----------------------------------------------------------------------------
+# Authenticated blocker-evidence attachment (PR #33 A-P0-2 / W4)
+# ----------------------------------------------------------------------------
+def open_assessment(question_id="q1"):
+    return {question_id: QuestionAssessment(question_id=question_id, status="open")}
+
+
+def evidence(question_id="q1", basis="b" * 64, scene="s" * 64, registry="r1",
+            blocker_name="bose_dead", supporting=("presence_probe",)):
+    return QuestionBlockerEvidence(
+        basis_agenda_digest=basis, question_id=question_id, scene_digest=scene,
+        generator_registry_fingerprint=registry, blocker_name=blocker_name,
+        supporting_generator_ids=supporting)
+
+
+def attach(assessments, evidence_list, **overrides):
+    kw = dict(specs_by_id=SPECS, basis_digest="b" * 64, scene_digest="s" * 64,
+              generator_registry_fingerprint="r1")
+    kw.update(overrides)
+    return attach_blocker_evidence(assessments, evidence_list, **kw)
+
+
+def test_authenticated_evidence_attaches_a_durable_blocker_without_closing_by_itself():
+    result = attach(open_assessment(), [evidence()])
+    assert result["q1"].status == "open"          # attachment alone never closes a question
+    assert [b.name for b in result["q1"].blockers] == ["bose_dead"]
+    assert dict(result["q1"].notes)["evidence_attached"]
+
+
+@pytest.mark.parametrize("stale_evidence, comparand", [
+    (evidence(basis="0" * 64), "basis_agenda_digest"),
+    (evidence(scene="0" * 64), "scene_digest"),
+    (evidence(registry="r2"), "generator_registry_fingerprint"),
+])
+def test_stale_blocker_evidence_is_rejected_naming_its_failing_comparand(stale_evidence,
+                                                                         comparand):
+    result = attach(open_assessment(), [stale_evidence])
+    assert result["q1"].status == "open" and result["q1"].blockers == ()
+    note = dict(result["q1"].notes)["blocker_evidence_rejected"]
+    assert comparand in note
+
+
+def test_blocker_evidence_targeting_a_closed_question_is_rejected():
+    closed = {"q1": QuestionAssessment(question_id="q1", status="answered",
+                                       answer=(("present", True),))}
+    result = attach(closed, [evidence()])
+    assert result["q1"].status == "answered" and result["q1"].blockers == ()
+    note = dict(result["q1"].notes)["blocker_evidence_rejected"]
+    assert "status" in note
+
+
+def test_blocker_evidence_for_an_absent_question_is_silently_skipped():
+    result = attach(open_assessment("q1"), [evidence(question_id="q9")])
+    assert result == open_assessment("q1")         # untouched: nothing to annotate, no raise
+
+
+def test_blocker_evidence_naming_no_supporting_generator_in_the_spec_is_rejected():
+    result = attach(open_assessment(), [evidence(supporting=("not_the_specs_generator",))])
+    assert result["q1"].status == "open" and result["q1"].blockers == ()
+    note = dict(result["q1"].notes)["blocker_evidence_rejected"]
+    assert "supporting_generator_ids" in note
+
+
+def test_attached_evidence_enables_apply_exhaustion_to_close():
+    """The previously-dead path: authenticated evidence attaches a durable blocker, and a
+    fresh exhaustion proof against the SAME comparands can then close the question."""
+    attached = attach(open_assessment(), [evidence()])
+    closed, applied = close(attached, [proof()])
+    assert closed["q1"].status == "unresolvable" and len(applied) == 1
+
+
+def test_derive_agenda_closes_unresolvable_end_to_end_with_synthetic_evidence():
+    """Contrasts with test_no_live_derivation_can_close_unresolvable_in_this_slice: the SAME
+    unmeasured-workspace DiscoverRegion question, still open through real evaluators alone,
+    now closes when the caller supplies authenticated blocker evidence alongside a matching
+    exhaustion proof — both against digests THIS derivation actually computed."""
+    scene = {"observations": [], "footprints": [], "clusters": [], "non_scoring": [],
+            "sample_knowledge": {}, "condition_t_round": None}
+    st = step()
+    pass1 = derive_agenda(scene, st, step_id="discover-1", program_fingerprint="prog-1",
+                          generator_registry_fingerprint="reg-fp-1")
+    discover = next(s for s in pass1.payload["specs"] if s["family"] == "DiscoverRegion")
+    basis, scene_digest = pass1.payload["basis_digest"], pass1.payload["scene_digest"]
+    generator_ids = tuple(discover["generator_ids"])
+
+    ev = QuestionBlockerEvidence(
+        basis_agenda_digest=basis, question_id=discover["question_id"], scene_digest=scene_digest,
+        generator_registry_fingerprint="reg-fp-1", blocker_name="program_boundary",
+        supporting_generator_ids=generator_ids)
+    pf = QuestionExhaustion(
+        question_id=discover["question_id"], basis_agenda_digest=basis, scene_digest=scene_digest,
+        generator_registry_fingerprint="reg-fp-1", required_generator_ids=generator_ids,
+        generator_status={g: "exhausted" for g in generator_ids})
+
+    pass2 = derive_agenda(scene, st, step_id="discover-1", program_fingerprint="prog-1",
+                          blocker_evidence=(ev,), exhaustion_evidence=(pf,),
+                          generator_registry_fingerprint="reg-fp-1")
+    closed = next(a for a in pass2.payload["assessments"]
+                 if a["question_id"] == discover["question_id"])
+    assert closed["status"] == "unresolvable"
+    assert any(b["name"] == "program_boundary" for b in closed["blockers"])
 
 
 # ----------------------------------------------------------------------------

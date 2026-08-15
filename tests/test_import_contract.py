@@ -81,6 +81,11 @@ WORKSPACE_API_ALLOWED = {
     # read by the adapter's sink check. A local copy of the string would silently diverge from the
     # schema the writer stamps.
     "isar.schema.steering",
+    # DISCOVERY_GENERATOR_REGISTRY_VERSION (PR 4.2b C8): the agenda read surface's registry
+    # freshness comparand. schema-level and stdlib-only, same posture as schema.steering above —
+    # isar.drive.steering (the module that actually RUNS the generators) stays off this list;
+    # workspace_api/agenda_view.py reads the current registry fingerprint, nothing else.
+    "isar.schema.generators",
 }
 
 

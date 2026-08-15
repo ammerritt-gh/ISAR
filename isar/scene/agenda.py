@@ -40,6 +40,8 @@ import os
 from collections import Counter
 from dataclasses import dataclass
 
+from isar.schema.generators import FAMILY_GENERATORS, QuestionBlockerEvidence
+
 from .model import canonical_bytes, digest_bytes, fingerprint
 from .predicates import (
     EVALUATORS, cluster_authority, combine_existential, evaluate_predicate,
@@ -54,19 +56,16 @@ AGENDA_STORE = RevisionStore("agenda", "isar.agenda-pointer/1", "agenda")
 TRANSITIONS_NAME = "transitions.jsonl"
 
 #: Bumping either re-derives every agenda (new digests) without minting new question IDs.
-OPENER_VERSION = 3
+OPENER_VERSION = 4
 MATCHER_VERSION = 1
 
-#: Declared generator references (4.2 binds them to the real registry; here they are strings).
-GENERATOR_REFS = {
-    "DiscoverRegion": ("opening_book_survey",),
-    "ConfirmPresence": ("presence_probe",),
-    "ClassifyIdentity": ("identity_discriminator",),
-    "ConnectTrack": ("track_bridge_scan",),
-    "EstimateParameter": ("parameter_refine",),
-    "TestModelMismatch": ("mismatch_probe",),
-    "VerifyCompleteness": (),                    # closes on accounting, proposes nothing
-}
+#: Declared generator references. The vocabulary itself lives in
+#: :mod:`isar.schema.generators` (PR 4.2b B1) — agenda derivation and the drive controller
+#: need the exact same words and neither may import the other, so the declaration sits below
+#: both. Re-exported under the historical name; the values are identical to the ones this
+#: module declared through C1 (digest-neutral relocation — GENERATOR_REFS is serialized per
+#: spec, not manifest-hashed, so equal values mean equal bytes).
+GENERATOR_REFS = FAMILY_GENERATORS
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +213,7 @@ def _spec(family, kind, subject, params, *, priority, deps=(), provenance=()):
 
 def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
                   program_fingerprint: str, exhaustion_evidence: tuple = (),
+                  blocker_evidence: tuple = (),
                   generator_registry_fingerprint: str | None = None) -> AgendaRevision:
     """Derive the agenda for one frozen discover step against one scene revision. Pure.
 
@@ -225,6 +225,13 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
     class vocabulary re-enters in 4.2, when the opening book gives classes genuinely distinct
     declared findability. ``exhaustion_evidence`` are :class:`QuestionExhaustion` proofs;
     anything stale against this derivation is rejected, never applied.
+
+    ``blocker_evidence`` are :class:`~isar.schema.generators.QuestionBlockerEvidence` items
+    (PR #33 A-P0-2): authenticated ones are ATTACHED to their target OPEN assessment's
+    blockers (with an ``evidence_attached`` note) before ``apply_exhaustion`` runs, so an
+    exhaustion proof this SAME call authorizes can find the durable blocker it needs to close
+    the question — see :func:`attach_blocker_evidence`. Anything stale/foreign/closed-target
+    is recorded as a rejected note, never attached, never raised.
     """
     policy = step_payload["resolved_policy"]
     thresholds = policy["thresholds"]
@@ -453,9 +460,17 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
             priority=priorities["ConnectTrack"],
             deps=tuple(qid for _, qid in tiles)))
 
-    # Class-agnostic connectivity (P0-B): a partition whose confirmed tiles never answered
-    # ClassifyIdentity (representability gate closed, or simply not yet answered) still needs
-    # a track question — identity abstention must not suppress structural connectivity.
+    # Class-agnostic connectivity (P0-B, retriggered — owner ruling 2026-08-14, H19): the
+    # track exists wherever ANY confirmed tile in the partition lacks an answered
+    # classification, because an unclassified thing's connectivity to its classified
+    # neighbours is exactly as open as to another unclassified one. It spans ALL confirmed
+    # tiles (classified ones included) and is suppressed only in a FULLY-classified
+    # partition, whose connectivity belongs to the per-class tracks above — never duplicated.
+    # This supersedes H18(f)'s "no per-class track derived" trigger and resolves its named
+    # residual (a derived per-class track no longer hides out-of-span unclassified tiles).
+    # Seen consequence, recorded in H19: a fully-classified MULTI-class partition (e.g. two
+    # tiles in two classes — no per-class track possible) carries no class-None track either;
+    # cross-class connectivity is deferred physics, not an unclassified lane.
     # Reuses the same confirmed-presence collection the chaining pass above walks.
     confirmed: dict = {}
     for spec in [s for s in specs if s.family == "ConfirmPresence"]:
@@ -465,18 +480,14 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
             continue
         confirmed.setdefault(spec.subject.partition_id, []).append(
             (spec.subject.region_rlu, spec.question_id))
-    # Suppress the class-agnostic pass only where a per-class track ACTUALLY DERIVED (pre-
-    # commit Major): `classified` gains a key the moment ONE tile answers classify, even when
-    # that alone can never produce a per-class track (len(tiles) < 2) — checking key presence
-    # re-created the exact suppression P0-B forbids for a 1-classified + 2-unclassified
-    # partition. Residual (named for the owner, not fixed here): a partition where a per-class
-    # track DID derive may still hold unclassified confirmed tiles outside that class's span;
-    # v1 accepts per-class coverage as suppression — one track question per partition maximum
-    # in the unclassified lane — rather than silently over-deriving a second track.
-    derived_class_track_pids = {pid for (pid, _ident), tiles in classified.items()
-                                if len(tiles) >= 2}
+    # A tile is classified iff a ClassifyIdentity question on the SAME (partition, tile)
+    # answered with a real identity — the join key is (partition_id, region_rlu), which the
+    # chaining pass copies verbatim from the presence subject onto the classify subject.
+    classified_tiles = {(pid, region) for (pid, _identity), tiles in classified.items()
+                        for (region, _qid) in tiles}
     for pid, tiles in sorted(confirmed.items(), key=lambda kv: str(kv[0])):
-        if pid in derived_class_track_pids or len(tiles) < 2:
+        if len(tiles) < 2 or all((pid, region) in classified_tiles
+                                 for region, _qid in tiles):
             continue
         tiles.sort()
         tracks.append(_spec(
@@ -541,12 +552,76 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
     # The assessment basis: this very derivation with no exhaustion applied. Its digest is the
     # freshness comparand a proof must name — computable in the same pass, self-consistent.
     basis_digest = AgendaRevision.of(payload_of(assessments)).digest
+    specs_by_id = {s.question_id: s for s in specs}
+    # Blocker evidence attaches BEFORE apply_exhaustion (PR #33 A-P0-2/W4): a proof authorized
+    # by THIS pass needs the durable blocker THIS pass just attached to satisfy apply_
+    # exhaustion's own gate — attaching after would make every synthetic blocker one pass late.
+    assessments = attach_blocker_evidence(
+        assessments, blocker_evidence, specs_by_id=specs_by_id, basis_digest=basis_digest,
+        scene_digest=scene_digest, generator_registry_fingerprint=generator_registry_fingerprint)
     assessments, applied = apply_exhaustion(
-        assessments, exhaustion_evidence, specs_by_id={s.question_id: s for s in specs},
+        assessments, exhaustion_evidence, specs_by_id=specs_by_id,
         basis_digest=basis_digest, scene_digest=scene_digest,
         generator_registry_fingerprint=generator_registry_fingerprint)
     return AgendaRevision.of(payload_of(assessments, basis_digest=basis_digest,
                                         evidence=applied))
+
+
+def attach_blocker_evidence(assessments: dict, blocker_evidence, *, specs_by_id: dict,
+                            basis_digest: str, scene_digest: str,
+                            generator_registry_fingerprint: str | None) -> dict:
+    """The pure evidence-attachment transition (PR #33 A-P0-2/W4): authenticated
+    :class:`~isar.schema.generators.QuestionBlockerEvidence` items get their blocker ATTACHED
+    to the target OPEN assessment (an ``evidence_attached`` note names which); anything
+    stale/foreign/closed-target is recorded as a ``blocker_evidence_rejected`` note naming the
+    failing comparand, never attached, never raised — mirrors :func:`apply_exhaustion`'s own
+    fail-honest posture, one step earlier in the pipeline.
+
+    Checked in order, first failure wins: the THREE freshness comparands (basis/scene/registry
+    — the evidence's own DTO already enforces its blocker name is durable, so that is not
+    re-checked here), the target question exists and is still OPEN, and at least one of the
+    evidence's declared ``supporting_generator_ids`` is in the target spec's own
+    ``generator_ids`` (an evidence item naming no generator the question actually declared
+    supports nothing).
+    """
+    out = dict(assessments)
+    for evidence in blocker_evidence:
+        assessment = out.get(evidence.question_id)
+        stale = None
+        if evidence.basis_agenda_digest != basis_digest:
+            stale = ("basis_agenda_digest", evidence.basis_agenda_digest, basis_digest)
+        elif evidence.scene_digest != scene_digest:
+            stale = ("scene_digest", evidence.scene_digest, scene_digest)
+        elif evidence.generator_registry_fingerprint != generator_registry_fingerprint:
+            stale = ("generator_registry_fingerprint", evidence.generator_registry_fingerprint,
+                     generator_registry_fingerprint)
+        elif assessment is None:
+            stale = ("question_id", evidence.question_id, "no assessment in this agenda")
+        elif assessment.status != "open":
+            stale = ("status", assessment.status, "open")
+        else:
+            spec = specs_by_id.get(evidence.question_id)
+            required = set(spec.generator_ids) if spec is not None else set()
+            if not set(evidence.supporting_generator_ids) & required:
+                stale = ("supporting_generator_ids", evidence.supporting_generator_ids,
+                         tuple(sorted(required)))
+        if stale is not None:
+            if assessment is not None:
+                out[evidence.question_id] = QuestionAssessment.from_dict({
+                    **assessment.to_dict(),
+                    "notes": [*assessment.to_dict()["notes"],
+                              ["blocker_evidence_rejected",
+                               f"{stale[0]}: evidence {stale[1]!r} != derivation {stale[2]!r}"]]})
+            continue
+        out[evidence.question_id] = QuestionAssessment.from_dict({
+            **assessment.to_dict(),
+            "blockers": [*[b.to_dict() for b in assessment.blockers],
+                        Blocker(name=evidence.blocker_name, detail=evidence.detail).to_dict()],
+            "notes": [*assessment.to_dict()["notes"],
+                      ["evidence_attached",
+                       f"{evidence.blocker_name} supported by "
+                       f"{list(evidence.supporting_generator_ids)}"]]})
+    return out
 
 
 def apply_exhaustion(assessments: dict, exhaustion_evidence, *, specs_by_id: dict,
@@ -637,7 +712,7 @@ def _evaluate_in_order(specs, scene_payload, prior=None) -> dict[str, QuestionAs
 # ----------------------------------------------------------------------------
 def build_and_store_agenda(report_dir, scene_payload: dict, step_payload: dict, *,
                            step_id: str, program_fingerprint: str,
-                           exhaustion_evidence: tuple = (),
+                           exhaustion_evidence: tuple = (), blocker_evidence: tuple = (),
                            generator_registry_fingerprint: str | None = None,
                            expected_parent=UNSET, source: str = "driver") -> StoreResult:
     """Derive, persist, and record typed transitions against the previous agenda.
@@ -652,7 +727,7 @@ def build_and_store_agenda(report_dir, scene_payload: dict, step_payload: dict, 
     revision = derive_agenda(
         scene_payload, step_payload, step_id=step_id,
         program_fingerprint=program_fingerprint,
-        exhaustion_evidence=exhaustion_evidence,
+        exhaustion_evidence=exhaustion_evidence, blocker_evidence=blocker_evidence,
         generator_registry_fingerprint=generator_registry_fingerprint)
     result = AGENDA_STORE.write_revision(report_dir, revision,
                                          expected_parent=expected_parent, source=source)

@@ -13,6 +13,8 @@ from isar.schema.campaign_program import (
     CampaignStep,
     DiscoverAndMapSpec,
     ProgramError,
+    _store_canonical_bytes,
+    program_fingerprint,
     targeted_program,
 )
 from isar.schema.question_policy import resolve_policy
@@ -267,3 +269,36 @@ def test_the_golden_compiled_programs_still_load_and_round_trip(name, kind):
     assert [step.kind for step in program.steps] == [kind]
     assert program.to_dict() == document
     assert program.source_text
+
+
+# --------------------------------------------------------------------------- program_fingerprint
+def test_program_fingerprint_is_pinned_equal_to_the_scene_store_digest_rule():
+    """PR 4.2b C7, fixed PR #33 A-P0-5/B-1: schema's local canonical encoder and scene's
+    ``canonical_bytes`` must never be assumed equal — pinned here on a UNICODE payload, the one
+    shape that silently forked the two encoders (``ensure_ascii`` True vs False) while every
+    ASCII-only test kept passing. A future change to either encoder is caught immediately rather
+    than silently re-forking what 'the same program' digests to across the program store and the
+    scene/agenda stores."""
+    from isar.scene.model import canonical_bytes, digest_bytes
+
+    unicode_discover = {
+        **_DISCOVER,
+        "deliverables": [{"kind": "phenomenon_map", "note": "ω near Γ"}],
+    }
+    program = _program(payload=unicode_discover, source_text="map ω near Γ",
+                       source={"kind": "goal"})
+    payload = program.to_dict()
+
+    store_bytes = canonical_bytes(payload)
+    schema_bytes = _store_canonical_bytes(payload)
+    assert schema_bytes == store_bytes                 # the two encoders agree BYTE for byte
+    assert "\\u03c9" not in schema_bytes.decode("utf-8")  # ensure_ascii=False: ω survives literal
+    assert program_fingerprint(program) == digest_bytes(store_bytes)
+
+    # Deterministic and stable under a second, independently-built equal program.
+    again = _program(payload=unicode_discover, source_text="map ω near Γ",
+                     source={"kind": "goal"})
+    assert program_fingerprint(program) == program_fingerprint(again)
+    # A changed program moves the fingerprint.
+    changed = _program(source_text="a different command entirely")
+    assert program_fingerprint(changed) != program_fingerprint(program)
