@@ -403,6 +403,87 @@ def test_classification_handover_dissolves_the_class_agnostic_track(tmp_path):
     assert any(t["question_id"] == after_track[0]["question_id"] for t in opened)
 
 
+def test_derived_per_class_track_no_longer_hides_unclassified_tiles():
+    """H19 retrigger (supersedes H18(f)): a partition with a DERIVED per-class track (two
+    acoustic tiles) plus a third confirmed-but-unclassified tile gets BOTH tracks — the
+    unclassified thing's connectivity to its classified neighbours is open physics, and the
+    old "per-class track derived" suppression hid exactly this. The class-None track spans
+    ALL confirmed tiles, the classified pair included."""
+    def arena(ref, coord, cid, identity=None):
+        return (obs(ref, [cand("A", omegas=(5.0,), identity=identity), cand("B")]),
+                fp(ref, coord),
+                cluster([ref], [alt([(ref, "A")], 0.95), alt([(ref, "B")], 0.05)],
+                        cluster_id=cid))
+    rows = [arena("e:1:d", 2.0, "c0", identity="acoustic"),
+            arena("e:2:d", 3.0, "c1", identity="acoustic"),
+            arena("e:3:d", 4.0, "c2")]
+    scene = payload(observations=[r[0] for r in rows], footprints=[r[1] for r in rows],
+                    clusters=[r[2] for r in rows],
+                    sample_knowledge={"zone_period": 1.0, "dispersion_slope_max": 10.0,
+                                      "lattice_epoch": 1})
+    revision = derive(scene)
+    tracks = by_family(revision, "ConnectTrack")
+    per_class = [t for t in tracks if t["subject"]["catalogue_class"] is not None]
+    class_none = [t for t in tracks if t["subject"]["catalogue_class"] is None]
+    assert len(per_class) == 1 and per_class[0]["subject"]["catalogue_class"] == "acoustic"
+    assert len(class_none) == 1
+    presence = by_family(revision, "ConfirmPresence")
+    assert len(presence) == 3
+    assert set(class_none[0]["dependencies"]) == {s["question_id"] for s in presence}
+    # Distinct subjects, distinct IDs -- the two passes can never collide (existing invariant).
+    assert per_class[0]["question_id"] != class_none[0]["question_id"]
+
+
+def test_fully_classified_multi_class_partition_carries_no_class_none_track():
+    """The seen consequence of the H19 trigger, recorded rather than silent: two confirmed
+    tiles classified into two DIFFERENT classes are fully classified, so no class-None track
+    derives -- even though no per-class track can (each class holds one tile). Cross-class
+    connectivity is deferred physics, not an unclassified lane. Under the superseded H18(f)
+    trigger this partition kept a class-None track; through the store the change lands as an
+    honest dissolution, never a silent vanish."""
+    def two_class_scene():
+        scene = unclassified_pair_scene(linked=True)
+        scene["observations"][0]["candidates"][0]["identity"] = "acoustic"
+        scene["observations"][1]["candidates"][0]["identity"] = "optic"
+        return scene
+    revision = derive(two_class_scene())
+    assert len(by_family(revision, "ClassifyIdentity")) == 2
+    assert by_family(revision, "ConnectTrack") == []
+
+
+def test_two_class_classification_dissolves_the_class_none_track(tmp_path):
+    """Store-path version of the corner above: the unclassified pair opens a class-None
+    track; classifying the tiles into two DIFFERENT classes dissolves it (equivalence
+    unproven) and -- unlike the same-class handover -- nothing replaces it."""
+    unclassified = unclassified_pair_scene(linked=True)
+    build_and_store_agenda(tmp_path, unclassified, step(), step_id="discover-1",
+                           program_fingerprint="prog-1")
+    before_track = by_family(derive(unclassified), "ConnectTrack")
+    assert len(before_track) == 1 and before_track[0]["subject"]["catalogue_class"] is None
+
+    two_class = unclassified_pair_scene(linked=True)
+    two_class["observations"][0]["candidates"][0]["identity"] = "acoustic"
+    two_class["observations"][1]["candidates"][0]["identity"] = "optic"
+    build_and_store_agenda(tmp_path, two_class, step(), step_id="discover-1",
+                           program_fingerprint="prog-1")
+    assert by_family(derive(two_class), "ConnectTrack") == []
+
+    dissolved = [t for record in read_transitions(tmp_path)
+                 for t in record["transitions"] if t["relation"] == "dissolved"]
+    assert any(t["question_id"] == before_track[0]["question_id"]
+               and t["equivalence"] == "unproven" for t in dissolved)
+
+
+def test_verify_completeness_binds_the_exposure_fill_generator():
+    """PR 4.2b C1: VerifyCompleteness stops being generator-less -- the book's
+    underexposed_cell proposals serve ITS closure, so exhaustion accounting needs the
+    binding on the spec (exhaustion is proved against spec.generator_ids exactly)."""
+    revision = derive(confirmed_scene())
+    completeness = by_family(revision, "VerifyCompleteness")
+    assert completeness
+    assert all(tuple(s["generator_ids"]) == ("exposure_fill",) for s in completeness)
+
+
 def test_mismatch_opens_only_where_the_scene_can_answer_it():
     without = derive(confirmed_scene())
     assert by_family(without, "TestModelMismatch") == []

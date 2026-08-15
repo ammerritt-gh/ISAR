@@ -54,10 +54,10 @@ AGENDA_STORE = RevisionStore("agenda", "isar.agenda-pointer/1", "agenda")
 TRANSITIONS_NAME = "transitions.jsonl"
 
 #: Bumping either re-derives every agenda (new digests) without minting new question IDs.
-OPENER_VERSION = 3
+OPENER_VERSION = 4
 MATCHER_VERSION = 1
 
-#: Declared generator references (4.2 binds them to the real registry; here they are strings).
+#: Declared generator references (4.2b binds them to the real discovery registry).
 GENERATOR_REFS = {
     "DiscoverRegion": ("opening_book_survey",),
     "ConfirmPresence": ("presence_probe",),
@@ -65,7 +65,12 @@ GENERATOR_REFS = {
     "ConnectTrack": ("track_bridge_scan",),
     "EstimateParameter": ("parameter_refine",),
     "TestModelMismatch": ("mismatch_probe",),
-    "VerifyCompleteness": (),                    # closes on accounting, proposes nothing
+    # The book's underexposed_cell proposals serve VerifyCompleteness's exposure floor and
+    # ONLY that closure (PR 4.2b, H19): an exposure deficit is not a coverage gap, so the
+    # action serving it needs its own generator identity or exhaustion accounting would
+    # attribute exposure work to DiscoverRegion. The predicate still closes on accounting —
+    # exposure_fill is how an open exposure deficit becomes an actionable measurement.
+    "VerifyCompleteness": ("exposure_fill",),
 }
 
 
@@ -453,9 +458,17 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
             priority=priorities["ConnectTrack"],
             deps=tuple(qid for _, qid in tiles)))
 
-    # Class-agnostic connectivity (P0-B): a partition whose confirmed tiles never answered
-    # ClassifyIdentity (representability gate closed, or simply not yet answered) still needs
-    # a track question — identity abstention must not suppress structural connectivity.
+    # Class-agnostic connectivity (P0-B, retriggered — owner ruling 2026-08-14, H19): the
+    # track exists wherever ANY confirmed tile in the partition lacks an answered
+    # classification, because an unclassified thing's connectivity to its classified
+    # neighbours is exactly as open as to another unclassified one. It spans ALL confirmed
+    # tiles (classified ones included) and is suppressed only in a FULLY-classified
+    # partition, whose connectivity belongs to the per-class tracks above — never duplicated.
+    # This supersedes H18(f)'s "no per-class track derived" trigger and resolves its named
+    # residual (a derived per-class track no longer hides out-of-span unclassified tiles).
+    # Seen consequence, recorded in H19: a fully-classified MULTI-class partition (e.g. two
+    # tiles in two classes — no per-class track possible) carries no class-None track either;
+    # cross-class connectivity is deferred physics, not an unclassified lane.
     # Reuses the same confirmed-presence collection the chaining pass above walks.
     confirmed: dict = {}
     for spec in [s for s in specs if s.family == "ConfirmPresence"]:
@@ -465,18 +478,14 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
             continue
         confirmed.setdefault(spec.subject.partition_id, []).append(
             (spec.subject.region_rlu, spec.question_id))
-    # Suppress the class-agnostic pass only where a per-class track ACTUALLY DERIVED (pre-
-    # commit Major): `classified` gains a key the moment ONE tile answers classify, even when
-    # that alone can never produce a per-class track (len(tiles) < 2) — checking key presence
-    # re-created the exact suppression P0-B forbids for a 1-classified + 2-unclassified
-    # partition. Residual (named for the owner, not fixed here): a partition where a per-class
-    # track DID derive may still hold unclassified confirmed tiles outside that class's span;
-    # v1 accepts per-class coverage as suppression — one track question per partition maximum
-    # in the unclassified lane — rather than silently over-deriving a second track.
-    derived_class_track_pids = {pid for (pid, _ident), tiles in classified.items()
-                                if len(tiles) >= 2}
+    # A tile is classified iff a ClassifyIdentity question on the SAME (partition, tile)
+    # answered with a real identity — the join key is (partition_id, region_rlu), which the
+    # chaining pass copies verbatim from the presence subject onto the classify subject.
+    classified_tiles = {(pid, region) for (pid, _identity), tiles in classified.items()
+                        for (region, _qid) in tiles}
     for pid, tiles in sorted(confirmed.items(), key=lambda kv: str(kv[0])):
-        if pid in derived_class_track_pids or len(tiles) < 2:
+        if len(tiles) < 2 or all((pid, region) in classified_tiles
+                                 for region, _qid in tiles):
             continue
         tiles.sort()
         tracks.append(_spec(
