@@ -13,7 +13,10 @@ partition-exact, region-bounded on ``axis_coordinate`` — never every coordinat
 in the workspace: a footprint in another partition, or outside this subject's region, must never
 close or perturb this gap check. The gap interval is ``subject.region_rlu``, not a value
 re-derived from the step's raw endpoints — the subject is authoritative for the question being
-served.
+served. A PROGRAM-scoped subject (``partition_id=None``) is refused outright (PR 4.2b C0):
+physical evidence can never match one, so it reaching the book means the agenda's fan-out
+contract was bypassed upstream — the cold-start path handles that case at the generator
+wrapper, never here.
 
 **Three proposal kinds, each bound to the closure predicate it serves** (mirrors
 ``isar.scene.predicates`` — never imports its private helpers, only re-derives the same walk
@@ -167,7 +170,11 @@ def _frame_compatible(subject: QuestionSubject, scene_payload: Mapping) -> bool:
     """Whether declared zone geometry is in the SAME lattice frame as the subject's partition
     (mirrors ``isar.scene.agenda._derive_impl``, agenda.py:259-265 + :286 exactly): an
     incompatible or unverifiable epoch must stay inert rather than inheriting a foreign frame's
-    anchors, so a mismatch fails CLOSED to zero anchor score, not an exception."""
+    anchors, so a mismatch fails CLOSED to zero anchor score, not an exception.
+
+    The subject is always partition-scoped here — ``propose_survey`` refused a program-scoped
+    one at the front door — so a permissive ``partition_id is None`` arm would be dead code
+    wearing a live look (H1: deleted, not kept)."""
     declared_epoch = (scene_payload.get("sample_knowledge") or {}).get("lattice_epoch")
     partition_of_ref = {fp["scan_ref"]: fp.get("partition_id")
                         for fp in scene_payload.get("footprints") or ()}
@@ -176,8 +183,7 @@ def _frame_compatible(subject: QuestionSubject, scene_payload: Mapping) -> bool:
         pid_of = partition_of_ref.get(observation["scan_ref"])
         if pid_of is not None:
             epoch_of_pid.setdefault(pid_of, observation.get("lattice_epoch"))
-    return subject.partition_id is None or \
-        epoch_of_pid.get(subject.partition_id, "missing") == declared_epoch
+    return epoch_of_pid.get(subject.partition_id, "missing") == declared_epoch
 
 
 def propose_survey(scene_payload: Mapping, step_payload: Mapping,
@@ -194,6 +200,18 @@ def propose_survey(scene_payload: Mapping, step_payload: Mapping,
     """
     if isinstance(subject, Mapping):
         subject = QuestionSubject.from_dict(subject)
+    if subject.partition_id is None:
+        # PR 4.2b C0 (owner ruling 2026-08-14): a program-scoped subject can NEVER match
+        # physical evidence — match_subject returns empty by the fan-out contract
+        # (isar.scene.questions: program-scoped questions are fanned out to per-partition
+        # children before any generator runs). One reaching the book is an upstream contract
+        # violation, not a lattice-agnostic survey: refuse loudly rather than seed blindly.
+        raise ValueError(
+            "propose_survey: subject is program-scoped (partition_id=None); the agenda's "
+            "fan-out contract (isar.scene.questions.resolve_scope) hands generators "
+            "per-partition subjects only, and match_subject returns no physical evidence for "
+            "a program-scoped subject by design — a partition-less subject reaching the "
+            "opening book is an upstream contract violation")
     region = subject.region_rlu
     spacing = float(step_payload["region"]["maximum_initial_spacing_rlu"])
     domain_lo, domain_hi = (float(x) for x in step_payload["energy"]["intrinsic_omega_domain_meV"])
