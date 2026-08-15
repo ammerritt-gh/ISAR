@@ -1,12 +1,16 @@
 """``plan_next_action`` (PR 4.2b C7 / B6): the integration slice — one discovery decision, start
 to finish, over a snapshotted scene and a frozen program.
 
-**Atomic snapshot.** The scene store pointer and the agenda store pointer are each read exactly
-ONCE, before anything else runs: the scene payload/digest becomes the input to both derivation
-passes, and the agenda pointer digest becomes ``expected_parent`` for the eventual write — the
+**Atomic snapshot.** The scene, agenda, and program store pointers are each read exactly ONCE, up
+front: the scene payload/digest becomes the input to both derivation passes, and the agenda and
+program pointer digests each become their own store's ``expected_parent`` at publication — the
 optimistic-concurrency token a losing writer's ``ConcurrentRevisionWrite`` refers back to. No
 scene stored yet is a controller fault with nothing persisted except the decision record itself
-(there is no basis to build anything else against).
+(there is no basis to build anything else against). Immediately before the agenda write, the
+scene pointer is re-read a second time (PR #33 A-P0-4) and a mismatch against the snapshot raises
+``StaleSceneAtPublication`` with nothing published — narrowing, not closing, the gap between
+reading the scene and publishing something built from it (see that exception's docstring in
+``isar.scene.store`` for what the agenda store's own lock still covers beneath this check).
 
 **Two agenda passes, one pure function.** Pass-1 derives the agenda with no exhaustion evidence
 (the basis every :class:`~isar.schema.generators.QuestionActionAssociation` and
@@ -44,7 +48,7 @@ from isar.schema.placement import PLACEMENT_RULES, PLACEMENT_RULES_SCHEMA
 from isar.scene.agenda import (
     build_and_store_agenda, derive_agenda, evaluate_agenda, AGENDA_STORE)
 from isar.scene.model import canonical_bytes, fingerprint
-from isar.scene.store import RevisionStore, SCENE_STORE
+from isar.scene.store import RevisionStore, SCENE_STORE, StaleSceneAtPublication
 
 from isar.drive.steering.exhaustion import CONTROLLER_FAULT as _PRODUCER_FAULT
 from isar.drive.steering.exhaustion import produce_exhaustion
@@ -242,6 +246,19 @@ def _append_decision(report_dir: Path, record: dict) -> None:
         os.fsync(stream.fileno())
 
 
+def _current_scene_pointer_digest(report_dir: Path) -> str | None:
+    """Hook point for the publication-time scene re-check (PR #33 A-P0-4) -- a thin wrapper so
+    tests can simulate a scene write racing between snapshot and publication without fighting
+    ``RevisionStore``'s frozen dataclass (it refuses attribute patching)."""
+    return SCENE_STORE.pointer_digest(report_dir)
+
+
+def _current_program_pointer_digest(report_dir: Path) -> str | None:
+    """Hook point for the program store's planning-start snapshot (PR #33 A-P0-4 program CAS),
+    same reasoning as :func:`_current_scene_pointer_digest`."""
+    return PROGRAM_STORE.pointer_digest(report_dir)
+
+
 @dataclass(frozen=True)
 class PlanResult:
     """What one ``plan_next_action`` call decided, and enough to find everything it wrote."""
@@ -286,9 +303,10 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
                           basis_digest=None, agenda_digest=None, program_fingerprint=program_fp,
                           selection_fingerprint=None, inventory_ref=None, run_records=(),
                           reason="no scene stored for this workspace")
-    _scene_pointer, scene_payload = scene_current
+    scene_pointer, scene_payload = scene_current
     scene_digest = fingerprint(scene_payload)
     agenda_snapshot = AGENDA_STORE.pointer_digest(report_dir)
+    program_snapshot = _current_program_pointer_digest(report_dir)
 
     # ---- pass 1: pure, no exhaustion evidence (blocker_evidence threaded through anyway --
     # PR #33 A-P0-2/W4: both passes receive IDENTICAL blocker_evidence, so pass-1's own
@@ -369,13 +387,28 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     inventory = _build_inventory(run_result, survivors, deduped_by_generator)
     inventory_ref = _write_inventory(report_dir, inventory)
 
+    # ---- publication guard: scene re-check (PR #33 A-P0-4) -------------------------------
+    # This narrows the window, it does not close it: the check runs OUTSIDE the agenda store's
+    # own lock, against a DIFFERENT store than the one about to be written. See
+    # StaleSceneAtPublication's docstring for exactly what the agenda store's expected_parent
+    # CAS + interprocess lock beneath this still covers.
+    republished_scene_digest = _current_scene_pointer_digest(report_dir)
+    if republished_scene_digest != scene_pointer["digest"]:
+        raise StaleSceneAtPublication(
+            f"scene pointer moved to {republished_scene_digest!r} since this decision "
+            f"snapshotted it at {scene_pointer['digest']!r}; refusing to publish an agenda "
+            "built against the stale scene. No agenda, program, or decision record has been "
+            "published; the content-addressed inventory blob may already exist and is harmless "
+            "(idempotent -- a retry over the fresh scene writes its own).")
+
     build_and_store_agenda(report_dir, scene_payload, step_payload, step_id=step_id,
                            program_fingerprint=program_fp, exhaustion_evidence=proofs,
                            blocker_evidence=blocker_evidence,
                            generator_registry_fingerprint=registry_fp,
                            expected_parent=agenda_snapshot, source="planner")
 
-    PROGRAM_STORE.write_revision(report_dir, _ProgramRevision.of(program), source="planner")
+    PROGRAM_STORE.write_revision(report_dir, _ProgramRevision.of(program), source="planner",
+                                 expected_parent=program_snapshot)
 
     selection_block = None
     selection_fingerprint = None

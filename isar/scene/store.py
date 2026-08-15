@@ -99,6 +99,31 @@ class ConcurrentRevisionWrite(ValueError):
     """
 
 
+class StaleSceneAtPublication(ValueError):
+    """A caller's own publication-time re-read found the SCENE pointer had moved since it
+    snapshotted the scene at the start of a derivation (PR #33 A-P0-4).
+
+    Not raised by this module -- ``RevisionStore`` has no notion of "the scene store in
+    particular" or of a caller's earlier snapshot taken from a DIFFERENT store than the one being
+    written. It lives here anyway, beside :class:`ConcurrentRevisionWrite`, for the same layering
+    reason: ``isar.scene`` sits below ``isar.drive`` on the import graph, and an exception type a
+    consumer above it needs to catch has to live at or below the boundary, never above it (the
+    one raiser today is ``isar.drive.steering.planner``). A ``ValueError`` subclass for the same
+    reason ``ConcurrentRevisionWrite`` is one: an existing ``except ValueError`` degrades this the
+    same way it already degrades a concurrent pointer write.
+
+    **This narrows the A-P0-4 window, it does not close it.** The re-read runs OUTSIDE any
+    store's :func:`_locked` critical section -- it is an application-level sanity check against
+    the SCENE store, a different store than the one about to be written (the AGENDA store), so it
+    cannot itself be atomic with that write. The agenda write immediately after it still goes
+    through the agenda store's own ``expected_parent`` CAS and interprocess lock, which is what
+    actually refuses a lineage fork; this check only shrinks the gap between "read the scene" and
+    "publish something built from it". The residual sliver -- a scene write landing in the
+    instant between this re-read and the agenda store's own lock acquisition -- is that lock's
+    territory, not this check's.
+    """
+
+
 class StoreLockTimeout(ValueError):
     """Another writer held the store lock past the wait budget (PR #33 review B-2).
 

@@ -21,6 +21,7 @@ from isar.scene.agenda import AGENDA_STORE, derive_agenda
 from isar.scene.model import canonical_bytes, digest_bytes
 from isar.scene.store import ConcurrentRevisionWrite, SCENE_STORE
 
+import isar.drive.steering.planner as planner_module
 import isar.drive.steering.readiness as readiness_module
 from isar.drive.steering.generators import GENERATOR_FUNCTIONS, GeneratorOutcome
 from isar.drive.steering.planner import (
@@ -33,6 +34,7 @@ from isar.drive.steering.planner import (
     _ProgramRevision,
     plan_next_action,
 )
+from isar.scene.store import StaleSceneAtPublication
 
 P1 = "a" * 64
 
@@ -442,6 +444,50 @@ def test_program_store_concurrent_write_is_refused(tmp_path):
         # program after the first writer already moved the pointer.
         PROGRAM_STORE.write_revision(tmp_path, _ProgramRevision.of(program_b),
                                      expected_parent=snapshot)
+
+
+# ----------------------------------------------------------------------------
+# Publication guards (PR #33 W6/A-P0-4): scene re-check + program store CAS
+# ----------------------------------------------------------------------------
+def test_a_scene_write_racing_between_snapshot_and_publication_is_refused(monkeypatch, tmp_path):
+    """The publication-time re-check (hook point ``_current_scene_pointer_digest``) catches a
+    scene pointer moved between the planner's snapshot and its agenda write: the decision raises
+    rather than publishing an agenda built against the stale scene."""
+    step = discover_step()
+    program = program_with(step)
+    write_scene(tmp_path, scene())
+
+    monkeypatch.setattr(planner_module, "_current_scene_pointer_digest",
+                        lambda report_dir: "f" * 64)  # never the real snapshot's digest
+
+    with pytest.raises(StaleSceneAtPublication):
+        plan_next_action(tmp_path, program, "discover-1")
+
+    assert decision_lines(tmp_path) == []                # zero decision lines
+    assert AGENDA_STORE.pointer_digest(tmp_path) is None  # agenda pointer unmoved
+
+
+def test_program_store_cas_refuses_a_concurrent_write_during_planning(monkeypatch, tmp_path):
+    """A second writer publishing a DIFFERENT program between the planner's own planning-start
+    snapshot and its write surfaces ConcurrentRevisionWrite -- the program store CAS wired
+    through ``plan_next_action``, not just ``PROGRAM_STORE.write_revision`` in isolation."""
+    step = discover_step()
+    program = program_with(step)
+    write_scene(tmp_path, scene())
+
+    real_snapshot = planner_module._current_program_pointer_digest
+
+    def racing_snapshot(report_dir):
+        digest = real_snapshot(report_dir)
+        other = program_with(discover_step(spacing=0.9))
+        PROGRAM_STORE.write_revision(report_dir, _ProgramRevision.of(other),
+                                     expected_parent=digest)
+        return digest                                     # the now-STALE snapshot
+
+    monkeypatch.setattr(planner_module, "_current_program_pointer_digest", racing_snapshot)
+
+    with pytest.raises(ConcurrentRevisionWrite):
+        plan_next_action(tmp_path, program, "discover-1")
 
 
 # ----------------------------------------------------------------------------

@@ -575,7 +575,15 @@ call, in write order:
   canonical bytes so "does this file match its own address" stays a plain byte comparison.
 - `<workspace>/report/agenda/` — the SAME agenda store above, written via `build_and_store_agenda`
   with `expected_parent` set from a snapshot taken before either derivation pass; a moved pointer
-  surfaces `ConcurrentRevisionWrite` to the caller rather than being silently retried.
+  surfaces `ConcurrentRevisionWrite` to the caller rather than being silently retried. Immediately
+  before this write, the planner re-reads the SCENE pointer a second time (PR #33 A-P0-4) and
+  compares it against the snapshot taken at planning start; a mismatch raises
+  `StaleSceneAtPublication` (`isar/scene/store.py`) with nothing published — the decision record
+  included. This re-read sits OUTSIDE the agenda store's own lock, against a different store than
+  the one being written, so it NARROWS the staleness window rather than closing it; the agenda
+  store's `expected_parent` CAS and interprocess lock are still what actually refuse a lineage
+  fork, and the residual sliver between this re-read and that lock's acquisition is that lock's
+  territory.
 - `<workspace>/report/program/` — a NEW content-addressed store, the workspace's first persisted
   program document: `<program_fingerprint>.json` / `current.json` (`isar.program-pointer/1`)
   through the same generic `RevisionStore` core, planner-written and idempotent on an unchanged
@@ -584,7 +592,9 @@ call, in write order:
   consultation-channel re-freeze write through the same store, never a second one.
   `program_fingerprint()` is the ONE implementation of a program's content address
   (`isar/schema/campaign_program.py`), cross-layer-pinned by test against the scene/agenda
-  stores' own digest rule rather than assumed equal.
+  stores' own digest rule rather than assumed equal. Written with `expected_parent` set from a
+  snapshot taken at the same planning-start moment as the agenda snapshot (PR #33 A-P0-4): a
+  concurrent program writer now surfaces `ConcurrentRevisionWrite` instead of last-writer-wins.
 - `<workspace>/report/decisions.jsonl` — one appended line per `plan_next_action` call, schema
   `isar.discovery-decision/1`, NO wall-clock anywhere in the record (a replay of the same scene
   and program appends a byte-identical second line). Carries `outcome` (one of the five below),
