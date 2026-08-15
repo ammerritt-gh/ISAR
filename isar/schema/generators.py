@@ -58,6 +58,92 @@ DISCOVERY_GENERATOR_REGISTRY: tuple[GeneratorSpec, ...] = tuple(
     for generator_id in FAMILY_GENERATORS[family])
 
 
+@dataclass(frozen=True)
+class QuestionActionAssociation:
+    """Why one physical action serves one agenda question (PR 4.2b B2).
+
+    Provenance is many-to-many and lives BESIDE the intent, never on it: an intent's
+    scientific identity is what it measures, and stapling a question ID onto it would make
+    the same physical measurement two different actions for two askers — exactly what dedup
+    exists to prevent. The question reference is the PASS-1 basis agenda digest plus the
+    question ID: pass-1 is the exhaustion-free derivation whose digest exists before
+    generators run (the final agenda digest does not exist yet while actions are being
+    generated), the same comparand ``QuestionExhaustion`` freshness binds.
+
+    ``family_priority`` and ``dependency_depth`` are the association's rank inputs; the
+    scheduler aggregates by MINIMUM over an evaluation's associations, order-invariantly.
+    """
+
+    basis_agenda_digest: str
+    question_id: str
+    generator: str
+    family_priority: int
+    dependency_depth: int
+    reason: str
+
+    def __post_init__(self) -> None:
+        for name in ("basis_agenda_digest", "question_id", "generator", "reason"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"QuestionActionAssociation.{name} must be a non-empty string")
+        for name in ("family_priority", "dependency_depth"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(
+                    f"QuestionActionAssociation.{name} must be a non-negative integer, "
+                    f"got {value!r}")
+
+    @property
+    def rank_key(self) -> tuple:
+        """The association's lexicographic rank contribution; ties break on identity fields
+        so aggregation is deterministic regardless of iteration order."""
+        return (self.family_priority, self.dependency_depth, self.question_id, self.generator)
+
+    def to_dict(self) -> dict:
+        return {"basis_agenda_digest": self.basis_agenda_digest,
+                "question_id": self.question_id,
+                "generator": self.generator,
+                "family_priority": self.family_priority,
+                "dependency_depth": self.dependency_depth,
+                "reason": self.reason}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "QuestionActionAssociation":
+        return cls(basis_agenda_digest=str(d["basis_agenda_digest"]),
+                   question_id=str(d["question_id"]),
+                   generator=str(d["generator"]),
+                   family_priority=int(d["family_priority"]),
+                   dependency_depth=int(d["dependency_depth"]),
+                   reason=str(d["reason"]))
+
+
+def union_associations(*groups) -> tuple[QuestionActionAssociation, ...]:
+    """The canonically ordered union of association groups — what dedup stamps onto a
+    surviving evaluation. Deduplicates exact duplicates and sorts by ``rank_key`` then the
+    remaining fields, so the result is identical under any grouping or iteration order."""
+    seen: dict[tuple, QuestionActionAssociation] = {}
+    for group in groups:
+        for association in group:
+            key = (association.basis_agenda_digest, association.question_id,
+                   association.generator, association.family_priority,
+                   association.dependency_depth, association.reason)
+            seen.setdefault(key, association)
+    return tuple(sorted(seen.values(),
+                        key=lambda a: (a.rank_key, a.basis_agenda_digest, a.reason)))
+
+
+def aggregate_rank(associations) -> tuple[tuple, QuestionActionAssociation]:
+    """The MINIMUM lexicographic rank over an evaluation's associations, plus the
+    association that supplied it (persisted with the decision so the winning attribution is
+    auditable). Order-invariant: ``rank_key`` embeds the identity tiebreaks."""
+    pool = list(associations)
+    if not pool:
+        raise ValueError("aggregate_rank needs at least one association; a discovery "
+                         "evaluation with none is unattributable by construction")
+    supplier = min(pool, key=lambda a: a.rank_key)
+    return supplier.rank_key, supplier
+
+
 def registry_fingerprint(registry: tuple[GeneratorSpec, ...]) -> str:
     """Derive a registry version from the ordered generator ids + versions.
 

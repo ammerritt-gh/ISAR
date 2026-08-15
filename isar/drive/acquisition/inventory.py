@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 # Scientific action identity lives in the schema, which owns the value type and the one
@@ -81,7 +81,10 @@ from isar.schema.generators import (  # noqa: F401  (re-exported for drive-inter
     DISCOVERY_GENERATOR_REGISTRY_VERSION,
     FAMILY_GENERATORS,
     GeneratorSpec,
+    QuestionActionAssociation,
+    aggregate_rank,
     registry_manifest,
+    union_associations,
 )
 from isar.schema.generators import registry_fingerprint as _schema_registry_fingerprint
 
@@ -234,6 +237,11 @@ class ActionEvaluation:
     score_confidence: float | None = None
     # A deterministic ordering key; lower is preferred. The real staged ranking replaces this later.
     policy_rank: float = 0.0
+    # Question-action provenance (PR 4.2b B2), discovery inventories only: which agenda
+    # questions this action serves and why. Legacy generators record none — and the field is
+    # serialized only when non-empty, so every legacy inventory's canonical bytes (and content
+    # address) are exactly what they were before the field existed.
+    associations: tuple[QuestionActionAssociation, ...] = ()
 
     @property
     def is_eligible(self) -> bool:
@@ -379,6 +387,45 @@ class ActionInventory:
         return [r for r in self.reports if r.status is GeneratorStatus.FAILED]
 
     @staticmethod
+    def dedupe_discovery_evaluations(
+            evaluations: list["ActionEvaluation"],
+    ) -> tuple[list["ActionEvaluation"], dict[str, int]]:
+        """Collapse evaluations asking the same scientific question, UNIONING their question
+        provenance onto the surviving (first-seen) evaluation — B2's dedup rule. Returns the
+        survivors plus a per-generator count of collapsed evaluations (the ``deduped`` field
+        of the dropped side's report; ``generated`` counts survivors only).
+
+        Conflicting NON-HASHED realization metadata between deduped intents is a REFUSAL,
+        never silent first-seen: ``window_center_meV`` is deliberately outside the scientific
+        fingerprint (see ``MeasurementIntent``), so two generators can mint one scientific
+        action while disagreeing about where realization should aim — a controller fault to
+        surface, not a coin to flip.
+        """
+        survivors: dict[str, ActionEvaluation] = {}
+        order: list[str] = []
+        deduped_by_generator: dict[str, int] = {}
+        for evaluation in evaluations:
+            key = evaluation.intent.scientific_action_fingerprint
+            first = survivors.get(key)
+            if first is None:
+                survivors[key] = evaluation
+                order.append(key)
+                continue
+            if first.intent.window_center_meV != evaluation.intent.window_center_meV:
+                raise ValueError(
+                    "dedup refuses conflicting realization metadata for scientific action "
+                    f"{key}: window_center_meV {first.intent.window_center_meV!r} (from "
+                    f"{first.generator!r}) vs {evaluation.intent.window_center_meV!r} (from "
+                    f"{evaluation.generator!r}) — same scientific question, contradictory "
+                    "acquisition aims; controller fault, never silent first-seen")
+            survivors[key] = replace(
+                first, associations=union_associations(first.associations,
+                                                       evaluation.associations))
+            deduped_by_generator[evaluation.generator] = \
+                deduped_by_generator.get(evaluation.generator, 0) + 1
+        return [survivors[key] for key in order], deduped_by_generator
+
+    @staticmethod
     def dedupe_intents(intents: list[MeasurementIntent]) -> list[MeasurementIntent]:
         """Collapse intents that ask the same scientific question, preserving first-seen order."""
         seen: set[str] = set()
@@ -474,6 +521,12 @@ class ActionInventory:
                         "score_method": e.score_method,
                         "score_confidence": _finite(e.score_confidence),
                     },
+                    # Present exactly when the controller recorded question provenance (B2):
+                    # discovery evaluations always carry >= 1 association, legacy ones never
+                    # do, and omitting the empty case keeps every pre-B2 legacy inventory's
+                    # canonical bytes -- and content address -- unchanged.
+                    **({"associations": [a.to_dict() for a in e.associations]}
+                       if e.associations else {}),
                 }
                 for e in self.evaluations],
         }
