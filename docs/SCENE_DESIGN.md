@@ -350,8 +350,8 @@ program boundary) / `transient` (quarantine, transient failures) / `model_author
 hypotheses or persisted uncertainties) — and only a durable blocker can feed unresolvable
 closure.
 
-The family contract matrix (v1; openers are declared and deterministic, generator IDs are
-references the 4.2 inventory binds):
+The family contract matrix (v1; openers are declared and deterministic, generator IDs are now
+BOUND — PR 4.2b, `isar/drive/steering/generators.py` — construction detail follows the table):
 
 | Family | Subject | Opener | Predicate | Answer | Generator refs |
 |---|---|---|---|---|---|
@@ -362,7 +362,44 @@ references the 4.2 inventory binds):
 | EstimateParameter | (parameter, phenomenon fields) | auto-opened per confirmed phenomenon (regime 1) | `parameter_within_tolerance/2` (SCENE-4.2a A2, retiring the v1 never-closes ruling; PR 32 wave P0-C/P1-H/P1-I/P1-J/P2-K) — closes on BOTH within-candidate uncertainty (the A1 per-mode `ModeInterval`, trusted only when its own persisted `authority_basis == "producer_sound"` — the writer's fit-conditional verdict on its own bootstrap record, never on delivery selection: a non-winner survivor with a sound record trusts exactly like a winner, and an unsound winner is not trusted for having won) and between-candidate disagreement (retained posterior support, drawn from the SAME positive-posterior support the mass calculation used, over a search set of trusted acceptance-window endpoints, priced through the shared omitted-mass bound machinery); ties break to the smallest center; every CONTRIBUTING interval must agree on the exact `(interval_kind, inference_paradigm, nominal_level)` triple, refused on any mismatch rather than averaged; conditioning fingerprints ride the answer as provenance only, never as a compatibility gate; `center_meV` is the midpoint of `envelope_meV` (the supported-center interval — the intersection of every contributing acceptance window at the chosen center), never a re-derived tolerance witness; closure clears on mass ≥ `parameter_precision_min_mass`; `within_candidate_uncertainty_unavailable` fires only when no trusted interval exists anywhere in the matched partition | center/envelope/semantics-triple/conditioning-provenance: yes (else open) | `parameter_refine` |
 | EstimateParameter (endpoint) | parameter `zc_endpoint_omega`, declared fold anchor | chained for anchored confirmed phenomena | `zc_linear_compatibility/1` — bounded compatibility under declared slope support, `maximum_justifiable_zc_confidence = 0.0` in v1 (no probabilistic model, no persisted uncertainties); the schema supports confidence for the future model | compatible / incompatible (else open) | `parameter_refine` |
 | TestModelMismatch | region × partition | CONDITIONAL: only where an explicit unknown-identity competitor exists in the partition AND the frozen `include_unknown` is true, otherwise inert with a recorded note — its absence-blocker is model-authority and unclosable, so an unconditional question made ordinary campaigns impossible to complete | `mismatch_assessed/1` — needs an explicit unknown-model competitor; a fitless arena is never mismatch evidence | mismatch_present: yes/no | `mismatch_probe` |
-| VerifyCompleteness | campaign × partition, frame-relative | one per partition, depending on every peer | `completeness_relative/1` — relative to the frozen coverage grid, exposure floor (`min_effective_exposure`), represented hypotheses, and closed questions; open on any open dependency, uninterpreted or non-scoring arena IN ITS OWN PARTITION (attributed via the builder's own `partition_key`, one implementation in `isar.scene.model`), unresolved cluster, or under-floor exposure; leader-only visibility rows are deliberately not read | complete: yes | — (closes on accounting) |
+| VerifyCompleteness | campaign × partition, frame-relative | one per partition, depending on every peer | `completeness_relative/1` — relative to the frozen coverage grid, exposure floor (`min_effective_exposure`), represented hypotheses, and closed questions; open on any open dependency, uninterpreted or non-scoring arena IN ITS OWN PARTITION (attributed via the builder's own `partition_key`, one implementation in `isar.scene.model`), unresolved cluster, or under-floor exposure; leader-only visibility rows are deliberately not read | complete: yes | `exposure_fill` (PR 4.2b, H19(a) — bound so the opening book's `underexposed_cell` proposals attribute to THIS closure, never DiscoverRegion's) |
+
+**Generator contract matrix (PR 4.2b, `isar/drive/steering/generators.py`).** Each of the seven
+IDs above is a bound generator function, `(DiscoveryContext, spec_dict) -> GeneratorOutcome` —
+one or more proposals, a typed CLEAN ZERO (the closure this generator serves is already
+satisfied, flagged exhaustion-clean or not), or a typed INAPPLICABLE (structurally never
+exhaustion-clean — a durable-program or model-authority reason, not a scientific outcome).
+Shared rules across all seven: `window_family="discovery"`; `action_class` = the generator id
+verbatim (self-attributing, collision-free); `evidence_sink=CANONICAL_MASTER`;
+`evidence_basis_fingerprint` = the scene digest; hypotheses/campaign-slice fingerprints `None`
+(offline — the 4.3 driver stamps slices); a scalar target coordinate reconstructs to `hkl` via
+the STEP's declared `q_start`/`q_end` (the varying component set to the target), never
+re-derived from scene data; ω windows clip to the step's frozen intrinsic domain; a tile-scoped
+subject targets the tile midpoint.
+
+| # | Generator | Ready when | Construction | Clean-zero (†=exhaustion-clean) | INAPPLICABLE |
+|---|---|---|---|---|---|
+| 1 | `opening_book_survey` | open, no deps, subject partition-scoped (checked BEFORE the book is ever called — the cold-start guard) | wraps `propose_survey`, filtered to `missing_q_node`/`missing_omega_band` only | `coverage_complete`† | `program_scoped_subject_unfanned` (cold start, NEVER a controller fault) |
+| 2 | `exposure_fill` | same cold-start check, on VerifyCompleteness's own subject | wraps `propose_survey`, filtered to `underexposed_cell` only | `exposure_floor_met`† | `program_scoped_subject_unfanned` |
+| 3 | `presence_probe` | ConfirmPresence dep answered | anchored → the subject's declared anchor; emergent → tile midpoint; ω = subject band clipped to domain | none — open presence always admits remeasurement (a zero here is a generator defect) | — |
+| 4 | `identity_discriminator` | ConfirmPresence dep answered | tile midpoint; ω = subject band; `window_center_meV` = the highest-posterior retained alternative asserting an explicit identity on a matched in-band mode, ties `(scan_ref, label, slot)` | none | `identity_hypotheses_unavailable` (model-authority — reuses `identity_hypothesis_classes`) |
+| 5 | `track_bridge_scan` | confirming/classifying deps answered | `endpoint_unmeasured` → that endpoint tile's midpoint; `endpoints_in_disjoint_clusters` → midpoint of the widest gap between matched in-partition footprints strictly between the two endpoint tiles (ties to the smaller coordinate); ω = full domain | none — one of the two constructible open reasons always names a node (the third, `no_endpoint_tiles_declared`, is unreachable: a ConnectTrack subject always declares both endpoints) | — |
+| 6a | `parameter_refine` (tolerance claim) | ConfirmPresence dep answered | case (i), trusted-capable support under `parameter_precision_min_mass`: the contributing interval whose acceptance window contains the assessment's current best center, key `(window width, scan_ref, label, slot)`; case (ii), no trusted interval / `no_support_capable_interval` / mixed semantics: the highest-posterior matched-mode witness — ω centered on the mode, half-width `2×max(tolerance_meV, parameter_statistical_floor_meV)` | none | — |
+| 6b | `parameter_refine` (zc claim) | ConfirmPresence dep answered | node midway between the declared anchor and the nearest OTHER confirmed presence tile in the partition — never at the anchor itself | `zc_adjacent_coverage_complete`† when no other confirmed tile exists to bridge toward, or the bridge node this rule names is already measured (this PR's interpretation of the matrix's construction note — flagged for owner confirmation, not a ruling) | — |
+| 7 | `mismatch_probe` | DiscoverRegion dep answered | the smallest-coordinate (then scan_ref) matched arena carrying an `identity=="unknown"` row; `window_center_meV` = that row's in-band mode ω when present | none | `no_explicit_mismatch_competitor` (model-authority) |
+
+Readiness (`isar/drive/steering/readiness.py`) is a separate concern from construction:
+`dependency_blocked` questions never touch a generator; an empty declared generator set
+(unreachable for the shipped seven, a general rule) reads `no_generators`, never a fault;
+per-generator fault isolation means one raising generator becomes a `failed` accounting entry
+while its peers and every sibling question keep running. The exhaustion producer
+(`isar/drive/steering/exhaustion.py`) proves a question exhausted only when every REQUIRED
+generator's outcome supports it: an eligible surviving evaluation anywhere — even one deduped
+ONTO the survivor — marks `not_exhausted`; a durable structural/saturation rejection needs a
+MATCHING typed `QuestionBlockerEvidence` (production emission is 4.3; only synthetic tests
+construct one this PR); clean zero across every required generator, all exhaustion-clean,
+proves it; a required generator FAILED or missing from the run record is a `controller_fault`,
+never a silently-emitted proof.
 
 **Closure and the verdict.** A question closes three ways: answered; overtaken/dissolved
 (history transitions — a lattice-epoch change dissolves with `equivalence_unproven`, never an
@@ -507,6 +544,58 @@ two agendas and live in the transition history, never the blob. Identical progra
 policy + manifest + evidence ⇒ identical digest, regardless of any historical parent;
 `derive_agenda` never reads `current.json` and has no metadata short-circuit — the store's
 byte comparison is what reports `unchanged`.
+
+**The discovery controller's stores (PR 4.2b, H19).** `isar/drive/steering/planner.py`'s
+`plan_next_action` is the first PRODUCTION agenda writer — everything above this paragraph was
+exercised only through `derive_agenda`/`build_and_store_agenda` directly until now. One planning
+call, in write order:
+
+- `<workspace>/report/inventory/discovery/<content-hash>.json` — the discovery `ActionInventory`
+  (`isar.action-inventory/2`; the generator registry an inventory was built under is INSTANCE
+  data, never the module-global, so a legacy inventory still names the legacy registry and a
+  discovery one the discovery registry). The subdirectory is deliberate: the legacy replay
+  tooling globs `report/inventory/*.json` non-recursively with no kind check, so a discovery
+  artifact one level deeper is structurally invisible to it, and its `inventory_ref` also carries
+  the new kind `discovery_action_inventory`, refused by name wherever the legacy kind is
+  expected. Content-addressed and atomic (temp + fsync + `os.replace`), stored as its own
+  canonical bytes so "does this file match its own address" stays a plain byte comparison.
+- `<workspace>/report/agenda/` — the SAME agenda store above, written via `build_and_store_agenda`
+  with `expected_parent` set from a snapshot taken before either derivation pass; a moved pointer
+  surfaces `ConcurrentRevisionWrite` to the caller rather than being silently retried.
+- `<workspace>/report/program/` — a NEW content-addressed store, the workspace's first persisted
+  program document: `<program_fingerprint>.json` / `current.json` (`isar.program-pointer/1`)
+  through the same generic `RevisionStore` core, planner-written and idempotent on an unchanged
+  program. It exists because DecisionBasis (below) and `ws.agenda`'s freshness verdict both need
+  a recoverable program source that nothing persisted before this PR; the 4.3 driver and any
+  consultation-channel re-freeze write through the same store, never a second one.
+  `program_fingerprint()` is the ONE implementation of a program's content address
+  (`isar/schema/campaign_program.py`), cross-layer-pinned by test against the scene/agenda
+  stores' own digest rule rather than assumed equal.
+- `<workspace>/report/decisions.jsonl` — one appended line per `plan_next_action` call, schema
+  `isar.discovery-decision/1`, NO wall-clock anywhere in the record (a replay of the same scene
+  and program appends a byte-identical second line). Carries `outcome` (one of the five below),
+  `decision_basis` (scene/agenda/basis digests, program fingerprint + step id, resolved-policy
+  fingerprint, the generator registry `{fingerprint, manifest}`, the scheduler-policy
+  declaration, and the placement `{fingerprint, manifest}` — every manifest EMBEDDED, the same
+  precedent the agenda snapshot already sets for `resolved_policy`), `selection` (`null` unless
+  `outcome="selected"`, else the winning fingerprint, rank vector, reason, and every association
+  the winner carries with which one supplied the rank), `scan_design_provenance` (EXACTLY the
+  five keys `isar/eig/eligibility.py`'s `_scan_design_identity` reads) with `scan_design_events`
+  riding BESIDE it as a sibling field (the consumer contract's own name), and `inventory_ref`
+  (`{kind: "discovery_action_inventory", sha256, path}`).
+
+The planner's outcome is one of five, decided from a second, exhaustion-informed derivation pass
+over the same snapshot: `selected` (an eligible action survives dedup — ranked lexicographically
+by `isar/drive/steering/scheduler.py`'s declared policy: minimum family priority, then dependency
+depth, then a named v1 locality stand-in, then the scientific action fingerprint as the
+always-distinguishing tiebreak); `agenda_complete` (the second pass has no open questions);
+`controller_fault` (any per-question fault, a dedup metadata conflict, or a missing scene —
+selection stays `null`, siblings still persisted for diagnosis); `no_action_with_honest_exhaustion`
+(no eligible action, and every open question carries a proven — never necessarily durably closed
+— exhaustion proof); `no_eligible_action` (no eligible action and no exhaustion claim anywhere —
+the cold-start reading: an unmeasured workspace's program-scoped DiscoverRegion question is
+INAPPLICABLE `program_scoped_subject_unfanned` at the generator wrapper, before the book is ever
+called, and first-scan reality stays 4.3's partition-producer obligation).
 
 ## 7. Status discipline
 
