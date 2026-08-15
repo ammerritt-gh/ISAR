@@ -54,7 +54,7 @@ from isar.drive.steering.exhaustion import CONTROLLER_FAULT as _PRODUCER_FAULT
 from isar.drive.steering.exhaustion import produce_exhaustion
 from isar.drive.steering.generators import DiscoveryContext
 from isar.drive.steering.readiness import RunResult, classify_readiness, run_ready_questions
-from isar.drive.steering.scheduler import SCHEDULER_POLICY, select
+from isar.drive.steering.scheduler import LOCALITY_VERSION, SCHEDULER_POLICY, select
 
 __all__ = [
     "SELECTED", "AGENDA_COMPLETE", "CONTROLLER_FAULT", "NO_ACTION_WITH_HONEST_EXHAUSTION",
@@ -157,9 +157,15 @@ def _placement_fingerprint(manifest: dict) -> str:
 
 
 def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
-                           registry_fp: str) -> dict:
+                           registry_fp: str, locality_coordinate: float | None) -> dict:
     """Every ``decision_basis`` field that does NOT depend on a stored scene existing — computed
-    even on the scene-missing fault path, so that record is as diagnostic as any other."""
+    even on the scene-missing fault path, so that record is as diagnostic as any other.
+
+    ``locality`` (PR #33 A-P1-e) makes the caller's ``locality_coordinate`` visible in the
+    record: it already perturbs which action ``select()`` picks (``scheduler.py``'s rank
+    vector), so leaving it out of the decision basis let two decisions differing ONLY in
+    locality look identical everywhere a reader would check provenance.
+    """
     placement_manifest = _raw_placement_manifest(step_payload["catalogue_profile"])
     return {
         "program_fingerprint": program_fp,
@@ -168,6 +174,7 @@ def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
         "generator_registry": {"fingerprint": registry_fp,
                               "manifest": registry_manifest(DISCOVERY_GENERATOR_REGISTRY)},
         "scheduler_policy": SCHEDULER_POLICY,
+        "locality": {"fn": LOCALITY_VERSION, "coordinate": locality_coordinate},
         "placement": {"fingerprint": _placement_fingerprint(placement_manifest),
                      "manifest": placement_manifest},
         "staleness_policy": {"mode": "synchronous", "lag": 0},
@@ -290,7 +297,8 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     step_payload = step.payload.to_dict()
     program_fp = program_fingerprint(program)
     registry_fp = DISCOVERY_GENERATOR_REGISTRY_VERSION
-    basis_common = _decision_basis_common(program_fp, step_id, step_payload, registry_fp)
+    basis_common = _decision_basis_common(program_fp, step_id, step_payload, registry_fp,
+                                          locality_coordinate)
 
     # ---- atomic snapshot -----------------------------------------------------------------
     scene_current = SCENE_STORE.read_current(report_dir)
@@ -420,7 +428,7 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     selection_block = None
     selection_fingerprint = None
     if outcome == SELECTED:
-        winner, rank_vector, supplying, _table = select(survivors, step_payload,
+        winner, rank_vector, supplying, table = select(survivors, step_payload,
                                                         locality_coordinate)
         selection_fingerprint = winner.intent.scientific_action_fingerprint
         selection_block = {
@@ -429,10 +437,28 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
             "reason": f"lexicographic minimum over {len(survivors)} eligible action(s)",
             "associations": [a.to_dict() for a in winner.associations],
             "supplying_association": supplying.to_dict(),
+            # PR #33 A-P1-e: the FULL ordered rank table, winner first (row 0) — select() was
+            # already building this (isar.drive.steering.scheduler.select's `table`) and the
+            # planner was discarding it; persisting it lets a reader audit who else was eligible
+            # and why they lost, not just who won.
+            "rank_table": [
+                {"scientific_action_fingerprint":
+                     ranked.evaluation.intent.scientific_action_fingerprint,
+                 "rank_vector": list(ranked.rank_vector),
+                 "supplying_association": {"question_id": ranked.supplying_association.question_id,
+                                          "generator": ranked.supplying_association.generator}}
+                for ranked in table
+            ],
         }
 
+    # PR #33 A-P1-e: locality_coordinate rides INSIDE the fingerprinted input here, not beside
+    # it — the reviewer's exact finding was that it "can change the selected action without
+    # appearing in the decision basis or context fingerprint". It is now visible in
+    # decision_basis (above) AND folds into this digest, so two decisions differing ONLY in
+    # locality_coordinate produce different context_fingerprints, never identical ones.
     context_fingerprint = fingerprint(
-        {"scene_digest": scene_digest, "basis_digest": basis_digest, "step_id": step_id})
+        {"scene_digest": scene_digest, "basis_digest": basis_digest, "step_id": step_id,
+         "locality": basis_common["locality"]})
     record = {
         "schema": DECISION_SCHEMA,
         "outcome": outcome,

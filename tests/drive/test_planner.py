@@ -119,6 +119,29 @@ def decision_lines(report_dir: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
+def _two_action_generator(coords):
+    """A synthetic generator (patched onto ``opening_book_survey``) proposing one action per
+    coordinate in ``coords`` -- same family_priority/dependency_depth (both from the ONE spec
+    invoked), differing only in ``hkl`` and therefore in scheduler `locality` and scientific
+    action fingerprint. Used to make ``locality_coordinate`` deterministically pick a winner."""
+    def generator(context, spec_dict):
+        pairs = []
+        for coord in coords:
+            intent = MeasurementIntent(
+                action_class="discovery_scan", hkl=(coord, 0.0, 0.0), energy_lo=0.0,
+                energy_hi=10.0, window_family="discovery",
+                evidence_basis_fingerprint=context.scene_digest)
+            association = QuestionActionAssociation(
+                basis_agenda_digest=context.basis_agenda_digest,
+                question_id=spec_dict["question_id"], generator="opening_book_survey",
+                family_priority=int(spec_dict["priority"]),
+                dependency_depth=dependency_depth(spec_dict, context.agenda_payload),
+                reason="two_action test")
+            pairs.append((intent, association))
+        return GeneratorOutcome.proposed(pairs)
+    return generator
+
+
 # ----------------------------------------------------------------------------
 # Double-run byte identity
 # ----------------------------------------------------------------------------
@@ -248,6 +271,64 @@ def test_generator_failed_on_one_question_succeeding_on_a_sibling_keeps_the_inve
     report = {r.generator: r for r in inventory.reports}["opening_book_survey"]
     assert report.status == GeneratorStatus.FAILED
     assert report.generated == 1                         # the fix: real survivor count, not 0
+
+
+# ----------------------------------------------------------------------------
+# Locality + rank table persistence (PR #33 A-P1-e)
+# ----------------------------------------------------------------------------
+def test_locality_coordinate_changes_the_winner_and_surfaces_in_the_fingerprinted_basis(
+        monkeypatch, tmp_path):
+    """The reviewer's exact finding: locality_coordinate can change the selected action; it must
+    not do so invisibly. Two decisions over the IDENTICAL scene/program, differing only in
+    locality_coordinate, pick DIFFERENT winners AND produce different decision_basis.locality
+    blocks AND different context_fingerprints -- locality rides INSIDE the fingerprinted input,
+    never merely beside it."""
+    step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=0.3)
+    program = program_with(step)
+    patched = dict(GENERATOR_FUNCTIONS)
+    patched["opening_book_survey"] = _two_action_generator((2.0, 2.9))
+    monkeypatch.setattr(readiness_module, "GENERATOR_FUNCTIONS", patched)
+    write_scene(tmp_path, scene(footprints=[fp("e:1:d", 2.0)]))
+
+    near_start = plan_next_action(tmp_path, program, "discover-1", locality_coordinate=2.0)
+    near_end = plan_next_action(tmp_path, program, "discover-1", locality_coordinate=2.9)
+
+    assert near_start.outcome == SELECTED and near_end.outcome == SELECTED
+    assert near_start.selection_fingerprint != near_end.selection_fingerprint
+
+    lines = decision_lines(tmp_path)
+    basis_a, basis_b = lines[0]["decision_basis"], lines[1]["decision_basis"]
+    assert basis_a["locality"] == {"fn": planner_module.LOCALITY_VERSION, "coordinate": 2.0}
+    assert basis_b["locality"] == {"fn": planner_module.LOCALITY_VERSION, "coordinate": 2.9}
+    assert basis_a != basis_b
+
+    fp_a = lines[0]["scan_design_provenance"]["context_fingerprint"]
+    fp_b = lines[1]["scan_design_provenance"]["context_fingerprint"]
+    assert fp_a != fp_b
+
+    # Every eligible evaluation appears exactly once, in scheduler order (winner row 0).
+    table = lines[1]["selection"]["rank_table"]
+    assert len(table) == 2
+    assert table[0]["scientific_action_fingerprint"] == near_end.selection_fingerprint
+    assert len({row["scientific_action_fingerprint"] for row in table}) == 2
+
+
+def test_rank_table_replays_byte_identically_on_a_double_run(monkeypatch, tmp_path):
+    step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=0.3)
+    program = program_with(step)
+    patched = dict(GENERATOR_FUNCTIONS)
+    patched["opening_book_survey"] = _two_action_generator((2.0, 2.9))
+    monkeypatch.setattr(readiness_module, "GENERATOR_FUNCTIONS", patched)
+    write_scene(tmp_path, scene(footprints=[fp("e:1:d", 2.0)]))
+
+    first = plan_next_action(tmp_path, program, "discover-1", locality_coordinate=2.0)
+    second = plan_next_action(tmp_path, program, "discover-1", locality_coordinate=2.0)
+    assert first.outcome == second.outcome == SELECTED
+
+    lines = decision_lines(tmp_path)
+    assert len(lines) == 2
+    assert lines[0]["selection"]["rank_table"] == lines[1]["selection"]["rank_table"]
+    assert lines[0] == lines[1]                                    # the whole record, byte-shape
 
 
 # ----------------------------------------------------------------------------

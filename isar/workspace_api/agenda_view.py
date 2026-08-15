@@ -19,12 +19,24 @@ it, the same relationship ``AGENDA_STORE``/``SCENE_STORE``/``PROGRAM_STORE`` alr
 other. Their schema strings are pinned equal to the drive/scene originals by test
 (``tests/scene/test_workspace_api_agenda.py``), never assumed.
 
-**Freshness is four comparands, tri-state** (resolution (g)): ``scene``, ``program``, ``policy``,
-``registry``. Any MISMATCH marks ``stale`` (every mismatched comparand named); with no mismatch,
-any comparand this reader cannot recover (no program store yet, a 4.1-era agenda with a null
-registry fingerprint, a step the current program no longer declares) marks ``unknown``; only when
-every comparand recovers and matches is the verdict ``fresh``. A scene match ALONE is never
-enough — matching scene digests do not imply the program, policy, or registry are current.
+**Freshness is five comparands, tri-state** (resolution (g); PR #33 A-P1-f added ``derivation``):
+``scene``, ``program``, ``policy``, ``registry``, ``derivation``. Any MISMATCH marks ``stale``
+(every mismatched comparand named); with no mismatch, any comparand this reader cannot recover
+(no program store yet, a 4.1-era agenda with a null registry fingerprint, a step the current
+program no longer declares, a manifest predating the opener/matcher/evaluator version fields)
+marks ``unknown``; only when every comparand recovers and matches is the verdict ``fresh``. A
+scene match ALONE is never enough — matching scene digests do not imply the program, policy,
+registry, or derivation code are current.
+
+**``derivation`` closes a gap the other four leave open.** ``registry`` only compares the
+generator registry's own fingerprint; it says nothing about the OPENER/matcher/predicate-
+evaluator code that ran to produce a stored agenda's specs and assessments in the first place. A
+stored agenda derived under an older ``OPENER_VERSION`` (or predicate evaluator version) can have
+a current scene, program, policy, and registry while still reflecting retired derivation logic —
+exactly the gap this comparand closes, comparing the persisted ``derivation_manifest``'s
+``opener_version``/``matcher_version``/``evaluator_versions`` against this module's own pinned
+current literals (never against ``isar.scene.agenda``/``isar.scene.predicates`` directly — see
+below).
 
 Policy identity check: read directly off ``isar.scene.agenda``'s own payload assembly (verified
 against source, not memory) — an agenda revision persists BOTH the complete ``resolved_policy``
@@ -52,6 +64,24 @@ _AGENDA_STORE = RevisionStore("agenda", "isar.agenda-pointer/1", "agenda")
 _PROGRAM_STORE = RevisionStore("program", "isar.program-pointer/1", "program")
 _TRANSITIONS_NAME = "transitions.jsonl"
 
+# PR #33 A-P1-f: pinned duplicates of isar.scene.agenda.OPENER_VERSION/MATCHER_VERSION and
+# isar.scene.predicates.EVALUATORS' per-kind versions — NOT imported, for the same reason
+# AGENDA_SCHEMA above is duplicated rather than imported (isar.scene.agenda/predicates are
+# heavier, more coupled modules than a read-only facade should need). Pinned equal by test
+# (tests/scene/test_workspace_api_agenda.py), never assumed.
+_OPENER_VERSION = 4
+_MATCHER_VERSION = 1
+_EVALUATOR_VERSIONS = {
+    "coverage_complete": 1,
+    "structural_presence": 1,
+    "identity_resolved": 1,
+    "track_connected": 1,
+    "parameter_within_tolerance": 2,
+    "zc_linear_compatibility": 1,
+    "mismatch_assessed": 1,
+    "completeness_relative": 1,
+}
+
 # The top-level keys this reader projects; presence and type only (see scene_view.py's rationale
 # for the same posture — a payload that cannot answer these cannot be read as an agenda at all).
 _INTERPRETED = ("specs", "assessments")
@@ -78,9 +108,10 @@ def _current_scene_digest(report_dir: Path) -> str | None:
 
 
 def compute_freshness(agenda_payload: dict, report_dir: Path) -> FreshnessReport:
-    """The four-comparand freshness verdict for one agenda payload against the CURRENT scene,
-    program, and registry state under ``report_dir``. Pure given its inputs; re-reads the other
-    stores each call (deliberately not cached — the whole point is "as of right now")."""
+    """The five-comparand freshness verdict for one agenda payload against the CURRENT scene,
+    program, registry, and derivation-code state under ``report_dir``. Pure given its inputs;
+    re-reads the other stores each call (deliberately not cached — the whole point is "as of
+    right now")."""
     stale: list[str] = []
     unknown: list[str] = []
 
@@ -118,6 +149,18 @@ def compute_freshness(agenda_payload: dict, report_dir: Path) -> FreshnessReport
         unknown.append("registry")
     elif registry_fp != DISCOVERY_GENERATOR_REGISTRY_VERSION:
         stale.append("registry")
+
+    # PR #33 A-P1-f: the fifth comparand -- opener/matcher/predicate-evaluator versions, distinct
+    # from `registry` above (which only speaks to the generator registry). A manifest predating
+    # these fields (a hand-built old fixture) is honestly unknown, never assumed fresh.
+    opener_version = manifest.get("opener_version")
+    matcher_version = manifest.get("matcher_version")
+    evaluator_versions = manifest.get("evaluator_versions")
+    if opener_version is None or matcher_version is None or evaluator_versions is None:
+        unknown.append("derivation")
+    elif (opener_version, matcher_version, evaluator_versions) != (
+            _OPENER_VERSION, _MATCHER_VERSION, _EVALUATOR_VERSIONS):
+        stale.append("derivation")
 
     if stale:
         verdict = "stale"

@@ -1,5 +1,6 @@
 """The agenda READ surface (``isar.workspace_api.agenda_view``) over a stored revision (PR 4.2b
-C8 / B7): absence graceful, corruption loud, and the four-comparand tri-state freshness verdict.
+C8 / B7): absence graceful, corruption loud, and the five-comparand tri-state freshness verdict
+(PR #33 A-P1-f added ``derivation``).
 
 Every workspace here is built through real stores in ``tmp_path`` — the scene/agenda stores via
 ``isar.scene.*``, the program store + full decision pipeline via the real
@@ -75,6 +76,21 @@ def write_agenda(report_dir: Path, scene_payload: dict, step, *, program_fp="pro
         report_dir, scene_payload, step_payload, step_id=step.id,
         program_fingerprint=program_fp, generator_registry_fingerprint=registry_fp,
         expected_parent=expected_parent, source="test")
+
+
+@dataclass(frozen=True, slots=True)
+class _AgendaRevision:
+    """Duck-typed for ``AGENDA_STORE`` -- lets a test publish a hand-edited payload (e.g. a
+    manifest stripped of its derivation-version fields) while staying real content-addressed
+    storage, not a bypassed one."""
+
+    canonical: bytes
+    digest: str
+
+    @classmethod
+    def of(cls, payload: dict) -> "_AgendaRevision":
+        blob = canonical_bytes(payload)
+        return cls(canonical=blob, digest=digest_bytes(blob))
 
 
 # ----------------------------------------------------------------------------
@@ -171,6 +187,61 @@ def test_program_recompile_names_program_and_a_policy_change_names_both(tmp_path
     report2 = ws.agenda.freshness()
     assert report2.verdict == "stale"
     assert set(report2.stale_reasons) == {"program", "policy"}
+
+
+def test_pinned_derivation_literals_match_the_real_opener_matcher_and_evaluators(tmp_path):
+    """PR #33 A-P1-f: the pinned-literal test the plan requires -- fails the moment
+    isar.scene.agenda's OPENER_VERSION/MATCHER_VERSION or isar.scene.predicates.EVALUATORS'
+    per-kind versions move without this module's duplicate being updated to match."""
+    from isar.scene.agenda import MATCHER_VERSION, OPENER_VERSION
+    from isar.scene.predicates import EVALUATORS
+    from isar.workspace_api.agenda_view import (
+        _EVALUATOR_VERSIONS, _MATCHER_VERSION, _OPENER_VERSION)
+    assert _OPENER_VERSION == OPENER_VERSION
+    assert _MATCHER_VERSION == MATCHER_VERSION
+    assert _EVALUATOR_VERSIONS == {kind: version for kind, (version, _) in EVALUATORS.items()}
+
+
+def test_a_bumped_opener_version_reads_stale_naming_derivation(monkeypatch, tmp_path):
+    report_dir = tmp_path / "report"
+    step = discover_step()
+    program = program_with(step)
+    write_scene(report_dir, scene())
+    write_program(report_dir, program)
+
+    import isar.scene.agenda as agenda_module
+    monkeypatch.setattr(agenda_module, "OPENER_VERSION", agenda_module.OPENER_VERSION + 1)
+    write_agenda(report_dir, scene(), step, program_fp=_program_fp(program))
+
+    ws = Workspace(tmp_path)
+    report = ws.agenda.freshness()
+    assert report.verdict == "stale"
+    assert report.stale_reasons == ("derivation",)
+
+
+def test_a_manifest_missing_derivation_versions_reads_unknown_naming_derivation(tmp_path):
+    """A pre-A-P1-f agenda (or any manifest predating the version fields) is honestly unknown,
+    never assumed fresh -- everything ELSE about this agenda is current (real scene/program/
+    policy/registry), isolating derivation as the one unrecoverable comparand."""
+    report_dir = tmp_path / "report"
+    step = discover_step()
+    program = program_with(step)
+    write_scene(report_dir, scene())
+    write_program(report_dir, program)
+    write_agenda(report_dir, scene(), step, program_fp=_program_fp(program))
+
+    pointer, payload = AGENDA_STORE.read_current(report_dir)
+    del payload["derivation_manifest"]["opener_version"]
+    del payload["derivation_manifest"]["matcher_version"]
+    del payload["derivation_manifest"]["evaluator_versions"]
+    AGENDA_STORE.write_revision(report_dir, _AgendaRevision.of(payload),
+                                expected_parent=pointer["digest"], source="test")
+
+    ws = Workspace(tmp_path)
+    report = ws.agenda.freshness()
+    assert report.verdict == "unknown"
+    assert report.stale_reasons == ()
+    assert report.unknown_reasons == ("derivation",)
 
 
 def test_foreign_registry_fingerprint_names_registry(tmp_path):

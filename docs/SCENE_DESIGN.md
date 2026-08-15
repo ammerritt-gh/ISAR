@@ -600,13 +600,23 @@ call, in write order:
   and program appends a byte-identical second line). Carries `outcome` (one of the five below),
   `decision_basis` (scene/agenda/basis digests, program fingerprint + step id, resolved-policy
   fingerprint, the generator registry `{fingerprint, manifest}`, the scheduler-policy
-  declaration, and the placement `{fingerprint, manifest}` — every manifest EMBEDDED, the same
-  precedent the agenda snapshot already sets for `resolved_policy`), `selection` (`null` unless
-  `outcome="selected"`, else the winning fingerprint, rank vector, reason, and every association
-  the winner carries with which one supplied the rank), `scan_design_provenance` (EXACTLY the
-  five keys `isar/eig/eligibility.py`'s `_scan_design_identity` reads) with `scan_design_events`
-  riding BESIDE it as a sibling field (the consumer contract's own name), and `inventory_ref`
-  (`{kind: "discovery_action_inventory", sha256, path}`).
+  declaration, `locality` (PR #33 A-P1-e — `{fn: the scheduler's locality function id/version,
+  coordinate: the caller's `locality_coordinate` or `null`}`, present on EVERY decision including
+  the scene-missing fault path), and the placement `{fingerprint, manifest}` — every manifest
+  EMBEDDED, the same precedent the agenda snapshot already sets for `resolved_policy`), `selection`
+  (`null` unless `outcome="selected"`, else the winning fingerprint, rank vector, reason, every
+  association the winner carries with which one supplied the rank, and `rank_table` (PR #33
+  A-P1-e) — the FULL ordered rank table `isar/drive/steering/scheduler.py`'s `select()` already
+  built and the planner used to discard: one row per ELIGIBLE surviving evaluation, winner first
+  (row 0), each `{scientific_action_fingerprint, rank_vector, supplying_association:
+  {question_id, generator}}`), `scan_design_provenance` (EXACTLY the five keys
+  `isar/eig/eligibility.py`'s `_scan_design_identity` reads — its `context_fingerprint` now folds
+  `locality` into its own digest INPUT, not merely alongside it in `decision_basis`, so two
+  decisions differing ONLY in `locality_coordinate` — PR #33 review finding: locality "can change
+  the selected action without appearing in the decision basis or context fingerprint" — now
+  produce different `context_fingerprint`s as well as different visible `decision_basis.locality`
+  blocks) with `scan_design_events` riding BESIDE it as a sibling field (the consumer contract's
+  own name), and `inventory_ref` (`{kind: "discovery_action_inventory", sha256, path}`).
 
 The planner's outcome is one of five, decided from a second, exhaustion-informed derivation pass
 over the same snapshot: `selected` (an eligible action survives dedup — ranked lexicographically
