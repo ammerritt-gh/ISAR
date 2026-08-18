@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Mapping
 
 from isar.drive.acquisition.inventory import ActionInventory, GeneratorReport, GeneratorStatus
-from isar.schema.action_identity import canonical_json
+from isar.schema.action_identity import canonical_json, physical_action_key
 from isar.schema.campaign_program import CampaignProgram, ProgramError, program_fingerprint
 from isar.schema.generators import DISCOVERY_GENERATOR_REGISTRY, DISCOVERY_GENERATOR_REGISTRY_VERSION, registry_manifest
 from isar.schema.placement import PLACEMENT_RULES, PLACEMENT_RULES_SCHEMA
@@ -159,7 +159,8 @@ def _placement_fingerprint(manifest: dict) -> str:
 
 def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
                            registry_fp: str, locality_coordinate: float | None,
-                           declared_partition=None) -> dict:
+                           declared_partition=None,
+                           retired_physical_actions: frozenset[str] = frozenset()) -> dict:
     """Every ``decision_basis`` field that does NOT depend on a stored scene existing — computed
     even on the scene-missing fault path, so that record is as diagnostic as any other.
 
@@ -173,12 +174,21 @@ def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
     card edited between runs is visible in the ledger by construction. The key is present only
     when a declaration was actually supplied: a decision that used none says so by carrying
     nothing, which also keeps every non-cold-start record byte-identical to its 4.2b shape.
+
+    ``retired_physical_actions`` (PR 4.3 C6) is the same shape of finding as ``locality`` above:
+    the caller's broken-scan offramp set NARROWS what ``select()`` may pick, so two decisions
+    differing only in it were made on different grounds and must not read identically. Embedded on
+    the SAME conditional rule as ``declared_partition`` — present only when non-empty — so every
+    decision taken with nothing retired stays byte-identical to its pre-C6 shape.
     """
     placement_manifest = _raw_placement_manifest(step_payload["catalogue_profile"])
     declared = ({"declared_partition": declared_partition.to_dict()}
                 if declared_partition is not None else {})
+    retired = ({"retired_physical_actions": sorted(retired_physical_actions)}
+               if retired_physical_actions else {})
     return {
         **declared,
+        **retired,
         "program_fingerprint": program_fp,
         "step_id": step_id,
         "resolved_policy_fingerprint": fingerprint(step_payload["resolved_policy"]),
@@ -253,6 +263,14 @@ def _write_inventory(report_dir: Path, inventory: ActionInventory) -> dict:
     separately re-hashes the canonical form to verify — two encodings of one file that can never
     agree on raw bytes). Storing the canonical bytes directly keeps "does this file match its own
     address" a plain byte comparison, the same idiom ``isar.scene.store`` already uses.
+
+    LOSING-WRITER ORPHAN POLICY (PR 4.3 C6, ratified): a blob written by a decision that then failed
+    to publish — a losing CAS, a ``StaleSceneAtPublication`` retry — is left where it is, and there
+    is no cleanup daemon. It is content-addressed litter: nothing references it (a decision cites its
+    inventory by address, and no reader enumerates this directory), and the retry writes its own
+    blob, so an orphan can neither be mistaken for a decision's inventory nor perturb the next one.
+    The idempotence is the policy — ``tests/drive/test_planner.py`` pins that an orphan leaves the
+    next decision byte-identical.
     """
     digest = inventory.content_hash()
     target = report_dir / "inventory" / "discovery" / f"{digest}.json"
@@ -328,7 +346,8 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
                      locality_coordinate: float | None = None,
                      blocker_evidence: tuple = (),
                      declared_partition: DeclaredPartition | None = None,
-                     scene_pin: str | None = None) -> PlanResult:
+                     scene_pin: str | None = None,
+                     retired_physical_actions: frozenset[str] = frozenset()) -> PlanResult:
     """``declared_partition`` (PR 4.3 D4) is the caller-minted cold-start declaration
     (:func:`isar.drive.steering.cold_start.declare_partition`). Passing none keeps the 4.2b
     behaviour exactly: an unmeasured workspace derives the program-scoped lane and every
@@ -340,6 +359,17 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     re-read is SKIPPED (see below). Omitted, the pointer-derived behaviour is byte-for-byte what
     it was — ``read_current`` at the snapshot, the guard in force at publication — which is what
     ``isar report``, the tests, and every non-pinned caller keep getting.
+
+    ``retired_physical_actions`` (PR 4.3 C6) is the caller's STEP-LOCAL broken-scan offramp set,
+    keyed by :func:`~isar.schema.action_identity.physical_action_key`: actions whose deliveries kept
+    coming back with untrusted counts until the frozen retry budget ran out. The key is the
+    SCENE-INVARIANT one on purpose — the scientific fingerprint carries the scene digest, which moves
+    on every delivery, so a filter keyed on it would never match the action it just retired.
+    It narrows THE SELECTION INPUT ONLY. The evaluations stay eligible in the run record, in the
+    exhaustion producer's survivor set, and in the persisted inventory, because a broken detector is
+    not a statement about the physics — turning "we could not get counts today" into structural
+    exhaustion would close a question the instrument never actually answered. (That is the exact
+    opposite of C7's declined-fingerprint path, which IS a durable structural rejection.)
     """
     report_dir = Path(report_dir)
     step = _resolve_discover_step(program, step_id)
@@ -347,7 +377,8 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     program_fp = program_fingerprint(program)
     registry_fp = DISCOVERY_GENERATOR_REGISTRY_VERSION
     basis_common = _decision_basis_common(program_fp, step_id, step_payload, registry_fp,
-                                          locality_coordinate, declared_partition)
+                                          locality_coordinate, declared_partition,
+                                          retired_physical_actions)
     # Below the planner the declaration travels as the primitive triple the scene layer and the
     # opening book both take — the DTO itself never crosses into isar.scene (import boundary).
     # The step id rides along because it is the RETIREMENT test (owner ruling 2026-08-18): the
@@ -434,12 +465,17 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     # it here from pass2_open alone was exactly the bug).
     verdict = evaluate_agenda(pass2.payload)
 
+    # Selection input, narrowed by the caller's step-local offramp set (C6). ``survivors`` itself is
+    # left alone: it is what the inventory records and what the producer already classified.
+    selectable = [e for e in survivors
+                  if physical_action_key(e.intent) not in retired_physical_actions]
+
     reason = fault_reason or per_question_fault
     if reason is not None:
         outcome = CONTROLLER_FAULT
     elif verdict.state == "complete":
         outcome = AGENDA_COMPLETE
-    elif survivors:
+    elif selectable:
         outcome = SELECTED
     elif not pass2_open:
         # Nothing left OPEN, no eligible action, yet the verdict is not complete -- the only
@@ -498,13 +534,13 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     selection_block = None
     selection_fingerprint = None
     if outcome == SELECTED:
-        winner, rank_vector, supplying, table = select(survivors, step_payload,
+        winner, rank_vector, supplying, table = select(selectable, step_payload,
                                                         locality_coordinate)
         selection_fingerprint = winner.intent.scientific_action_fingerprint
         selection_block = {
             "fingerprint": selection_fingerprint,
             "rank_vector": list(rank_vector),
-            "reason": f"lexicographic minimum over {len(survivors)} eligible action(s)",
+            "reason": f"lexicographic minimum over {len(selectable)} eligible action(s)",
             "associations": [a.to_dict() for a in winner.associations],
             "supplying_association": supplying.to_dict(),
             # PR #33 A-P1-e: the FULL ordered rank table, winner first (row 0) — select() was
@@ -526,9 +562,15 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     # appearing in the decision basis or context fingerprint". It is now visible in
     # decision_basis (above) AND folds into this digest, so two decisions differing ONLY in
     # locality_coordinate produce different context_fingerprints, never identical ones.
+    #
+    # The retirement set (C6) folds in on the same terms, and on the same conditional rule it uses
+    # in the basis: a narrowed selection input that did not reach this digest would let two
+    # decisions taken over different candidate sets carry one context fingerprint.
     context_fingerprint = fingerprint(
         {"scene_digest": scene_digest, "basis_digest": basis_digest, "step_id": step_id,
-         "locality": basis_common["locality"]})
+         "locality": basis_common["locality"],
+         **{key: basis_common[key] for key in ("retired_physical_actions",)
+            if key in basis_common}})
     record = {
         "schema": DECISION_SCHEMA,
         "outcome": outcome,

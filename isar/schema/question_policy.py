@@ -55,6 +55,12 @@ TARGET_DEFAULTS: dict[str, float] = {
     # 4.2a: matches the *_min_mass family default of 0.9. Read by A2 (later commit); A3 only
     # ships it in the /2 contract.
     "parameter_precision_min_mass": 0.9,
+    # 4.3 C6: how many times the discovery step-runner may RE-SUBMIT one physical action whose
+    # delivered counts came back untrusted, before it retires the action and asks a human
+    # (owner ruling 2026-08-18: default 2, expected to vary by instrument, so it resolves through
+    # this same precedence chain — user ask > card guidelines > named default — and freezes into
+    # the compiled program like every other threshold, never a bare code constant).
+    "broken_scan_retry_limit": 2.0,
 }
 
 #: 4.2a: the ruled uniform-survey user option. TARGET authority, same precedence lane as the
@@ -131,6 +137,9 @@ _UNIT_INTERVAL_FIELDS = {"confirm_presence_min_mass", "classify_identity_min_mas
 #: support required at all", not a meaningful precision floor, so unlike the other min-mass
 #: fields it excludes the zero endpoint.
 _EXCLUSIVE_ZERO_UNIT_FIELDS = {"parameter_precision_min_mass"}
+#: Counts, not quantities: a whole number of retries, and ZERO is a legitimate declaration ("offramp
+#: on the first broken scan"), which the positive-quantity rule below would refuse.
+_NON_NEGATIVE_INTEGER_FIELDS = {"broken_scan_retry_limit"}
 #: Field names a caller may pass in ``user_ask``/``card_guidelines`` beyond the numeric
 #: thresholds — currently just the one non-numeric target field.
 _NON_THRESHOLD_TARGET_FIELDS = {"survey_order"}
@@ -150,7 +159,10 @@ def _check_value(name: str, value: Any, where: str) -> float:
     v = float(value)
     if not math.isfinite(v):
         raise ValueError(f"{where}: {name} must be finite")
-    if name in _EXCLUSIVE_ZERO_UNIT_FIELDS:
+    if name in _NON_NEGATIVE_INTEGER_FIELDS:
+        if v < 0.0 or v != int(v):
+            raise ValueError(f"{where}: {name} must be a non-negative whole number, got {value!r}")
+    elif name in _EXCLUSIVE_ZERO_UNIT_FIELDS:
         if not 0.0 < v <= 1.0:
             raise ValueError(f"{where}: {name} must be within (0, 1], got {v}")
     elif name in _UNIT_INTERVAL_FIELDS:

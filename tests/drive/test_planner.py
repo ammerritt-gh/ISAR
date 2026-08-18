@@ -173,6 +173,28 @@ def test_double_run_is_byte_identical(tmp_path):
     assert lines[0] == lines[1]                              # decision line: byte-identical shape
 
 
+def test_an_orphan_inventory_blob_does_not_perturb_the_next_decision(tmp_path):
+    """The losing-writer orphan policy (PR 4.3 C6), ratified as documented-idempotent: a blob left
+    behind by a decision that failed to publish is content-addressed litter — nothing references it
+    and no reader enumerates the directory — so the next decision is byte-identical with it present.
+    That idempotence IS the policy; there is no cleanup daemon, and adding one would be work in
+    service of nothing."""
+    step = discover_step()
+    program = program_with(step)
+    write_scene(tmp_path, scene())
+
+    first = plan_next_action(tmp_path, program, "discover-1")
+    orphan = Path(tmp_path, "inventory", "discovery", f"{'0' * 64}.json")
+    orphan.write_text('{"evaluations": [], "reports": []}', encoding="utf-8")
+
+    second = plan_next_action(tmp_path, program, "discover-1")
+
+    lines = decision_lines(tmp_path)
+    assert lines[0] == lines[1]
+    assert first.inventory_ref == second.inventory_ref
+    assert orphan.is_file(), "the orphan was cleaned up: the policy is to leave it alone"
+
+
 # ----------------------------------------------------------------------------
 # controller_fault: a raising generator, siblings still persisted
 # ----------------------------------------------------------------------------
@@ -311,6 +333,46 @@ def test_locality_coordinate_changes_the_winner_and_surfaces_in_the_fingerprinte
     assert len(table) == 2
     assert table[0]["scientific_action_fingerprint"] == near_end.selection_fingerprint
     assert len({row["scientific_action_fingerprint"] for row in table}) == 2
+
+
+def test_a_retirement_is_visible_in_the_basis_and_in_the_context_fingerprint(monkeypatch, tmp_path):
+    """The A-P1-e shape again (PR 4.3 C6): the retirement set narrows what ``select()`` may pick, so
+    it may not do so invisibly. Two decisions over the IDENTICAL scene and program, differing ONLY
+    in ``retired_physical_actions``, pick different winners AND differ in both the decision basis and
+    the context fingerprint. The empty set embeds as nothing at all — the same conditional rule
+    ``declared_partition`` uses — which is what keeps every pre-C6 record byte-identical
+    (``test_double_run_is_byte_identical`` is that pin)."""
+    from isar.schema.action_identity import physical_action_key
+
+    step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=0.3)
+    program = program_with(step)
+    patched = dict(GENERATOR_FUNCTIONS)
+    patched["opening_book_survey"] = _two_action_generator((2.0, 2.9))
+    monkeypatch.setattr(readiness_module, "GENERATOR_FUNCTIONS", patched)
+    write_scene(tmp_path, scene(footprints=[fp("e:1:d", 2.0)]))
+
+    plain = plan_next_action(tmp_path, program, "discover-1")
+    assert plain.outcome == SELECTED
+    # Built with NO evidence basis at all and still the right key: the physical key is invariant to
+    # the scene digest the generator stamped, which is the whole reason the retirement bound binds.
+    retired = physical_action_key(MeasurementIntent(
+        action_class="discovery_scan", hkl=(2.0, 0.0, 0.0), energy_lo=0.0, energy_hi=10.0,
+        window_family="discovery"))
+    narrowed = plan_next_action(tmp_path, program, "discover-1",
+                                retired_physical_actions=frozenset({retired}))
+
+    assert narrowed.outcome == SELECTED
+    assert narrowed.selection_fingerprint != plain.selection_fingerprint
+
+    without, with_retirement = decision_lines(tmp_path)
+    assert "retired_physical_actions" not in without["decision_basis"]
+    assert with_retirement["decision_basis"]["retired_physical_actions"] == [retired]
+    assert (without["scan_design_provenance"]["context_fingerprint"]
+            != with_retirement["scan_design_provenance"]["context_fingerprint"])
+    # Narrowed for SELECTION only: the retired action is still in the persisted inventory.
+    blob = json.loads(Path(tmp_path, with_retirement["inventory_ref"]["path"].removeprefix("report/")
+                           ).read_text(encoding="utf-8"))
+    assert len(blob["evaluations"]) == 2
 
 
 def test_rank_table_replays_byte_identically_on_a_double_run(monkeypatch, tmp_path):

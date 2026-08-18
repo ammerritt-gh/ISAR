@@ -23,6 +23,46 @@ performance choice — it is how this module respects the architectural boundary
 canonical scene build lives there. The seam below is process-NEUTRAL: a future persistent worker
 slots in behind :func:`build_scene_revision` without any caller changing.
 
+The broken-scan lane, three failure classes (C6)
+------------------------------------------------
+Bad data is never a stop reason. Each class routes somewhere already built:
+
+1. **Local corruption** — a delivery lands but its counts are untrustworthy. The 4.0 count-trust
+   lanes already classify that at delivery time, and ``isar.scene.build`` already denies an
+   untrusted arena any footprint or coverage credit, so the next plan still sees the question
+   unanswered and re-selects the same action: the RETRY is the existing fail-closed behaviour, and
+   all this module adds is a BOUND on it (:func:`_broken_scan_retry_limit`, frozen into the
+   program). Quarantine is that same record state — nothing here deletes, masks, or rewrites a
+   scan. When the bound is spent the action is retired from THIS STEP's re-submission set and a
+   ``broken_scan_offramp`` consultation request is recorded for C8 to turn into a prompt. The step
+   keeps planning other actions.
+2. **Transient request failure** — transport, not geometry. :class:`TaviError` after the client's
+   own bounded ``Retry-After`` ladder is spent; it is recorded through the EXISTING refusal
+   vocabulary (``classify_rejection`` classes an unmapped verdict TRANSIENT/scope ``none``), which
+   suppresses nothing and produces no durable blocker evidence, and the step re-plans against the
+   same pin. Nothing is quarantined: no counts were delivered to distrust.
+3. **Global machine/beam failure** — controller-side faults already land as
+   :data:`VERDICT_MACHINE_FAILURE`; :data:`MAX_CONSECUTIVE_TRANSPORT_FAILURES` is where an
+   instrument that will not talk at all stops being called transient. The stop-law pause IS that
+   verdict; there is no second pause mechanism.
+
+**Mixed trust across a multi-arena delivery.** One delivery can write several arena records — one
+per detector/analyzer — and class 1 counts the delivery as broken only when NOT ONE of them landed
+``trusted``. A single dead analyzer beside healthy ones therefore never advances the retry counter
+and never offramps: the delivery bought real coverage, the question moves, and the campaign keeps
+measuring. That is deliberate and fail-safe in the direction that matters — the failure mode it
+refuses is retiring a physically answerable action because one channel of a multi-analyzer
+instrument was sick. Its cost is that a persistently dead channel is invisible to this bound; it
+shows up as the region it covers never closing, and a human reads the ``count_trust`` lanes in
+``measurements.jsonl`` to see why. Per-detector granularity — a bound that can retire the CHANNEL
+rather than the action — is future work, and it needs a per-detector action identity this layer
+does not have.
+
+Known deviations
+----------------
+* The broken-scan bound is per ACTION, not per detector: a delivery with any trusted arena is not
+  broken, so a single dead analyzer in a multi-arena delivery never counts (see above).
+
 Stopping
 --------
 Discovery stop accounting runs EXCLUSIVELY through :func:`~isar.scene.agenda.evaluate_agenda`'s
@@ -63,12 +103,14 @@ from isar.scene.agenda import AGENDA_STORE, evaluate_agenda
 from isar.schema.campaign_program import CampaignProgram, ProgramError
 from isar.schema.card import Card
 from isar.schema.hypotheses import content_fingerprint
-from isar.schema.measurement import current_lattice_epoch
+from isar.schema.action_identity import physical_action_key
+from isar.schema.measurement import MeasurementArena, current_lattice_epoch
 
 _LOG = logging.getLogger(__name__)
 
 __all__ = [
-    "BEAM_HOLD", "BEAM_RELEASE", "MAX_DISCOVERY_DELIVERIES_PER_STEP", "ProgramStepOutcome",
+    "BEAM_HOLD", "BEAM_RELEASE", "MAX_CONSECUTIVE_TRANSPORT_FAILURES",
+    "MAX_DISCOVERY_DELIVERIES_PER_STEP", "OFFRAMP_KIND", "ProgramStepOutcome",
     "SceneBuildFailed", "SceneBuildReport", "StepResult", "StalenessModeRefused",
     "VERDICT_COMPLETE", "VERDICT_IN_PROGRESS", "VERDICT_MACHINE_FAILURE",
     "VERDICT_OPERATOR_STOPPED", "VERDICT_OVER_BUDGET", "WorkspaceUndeclared",
@@ -94,6 +136,23 @@ BEAM_HOLD = "hold"            # a later step still does
 #: only stops a campaign with NO declared budget from measuring forever. Override per run with
 #: ``config["max_deliveries"]``.
 MAX_DISCOVERY_DELIVERIES_PER_STEP = 200
+
+#: How many CONSECUTIVE transport failures — no delivery in between — turn "the instrument is
+#: having a moment" into "the instrument is gone". Named provisional v1, SCENE-7-calibrated. Below
+#: it a :class:`TaviError` is transient and the step re-plans; at it the step ends as a machine
+#: failure, which is one of the four reasons and a resumable one. The client's own ``Retry-After``
+#: ladder (``isar.drive.instrument.tavi_client._RETRYABLE``) has already run inside each attempt —
+#: this counts whole failed attempts, and adds no second retry machinery.
+MAX_CONSECUTIVE_TRANSPORT_FAILURES = 3
+
+#: The consultation-request kind C8 turns into an operator prompt. One string, so the producer here
+#: and the prompt layer there cannot drift.
+OFFRAMP_KIND = "broken_scan_offramp"
+
+#: The 4.0 counts-authoritative log, by name. Duplicated as a literal rather than imported for the
+#: same reason ``isar.workspace_api.scene`` duplicates it: this layer may not import
+#: ``isar.session`` (tests/drive/test_boundary.py), and the file contract is the boundary.
+MEASUREMENTS_FILENAME = "measurements.jsonl"
 
 #: The subprocess build seam's own timeout, seconds. A scene build measured 7.4–22.7 s in 4.2;
 #: this is generous enough that a slow box never trips it and short enough that a hung child is
@@ -231,6 +290,59 @@ def _require_synchronous_staleness(step) -> str:
     return str(mode)
 
 
+def _broken_scan_retry_limit(step) -> int:
+    """How many times ONE action may be re-submitted after untrusted counts — read off the program.
+
+    Never a bare constant here (owner ruling 2026-08-18): the budget is instrument-varying, so it
+    resolves at compile time through the ordinary precedence chain (user ask > card guidelines >
+    the named ISAR default of 2, :mod:`isar.schema.question_policy`) and is FROZEN into the step's
+    ``resolved_policy`` block, exactly like the staleness mode above. A program that somehow lacks
+    it is refused rather than defaulted: a frozen program never acquires a read-time default.
+    """
+    policy = dict(getattr(step.payload, "resolved_policy", None) or {})
+    thresholds = dict(policy.get("thresholds") or {})
+    if "broken_scan_retry_limit" not in thresholds:
+        raise ProgramError(
+            f"step {step.id!r} froze no broken_scan_retry_limit; recompile the campaign with "
+            "`isar drive --goal ... --compile-only` rather than running it under a read-time "
+            "default nobody declared")
+    return int(thresholds["broken_scan_retry_limit"])
+
+
+def _count_trust_by_scan_ref(report_dir: Path) -> dict[str, str]:
+    """``{scan_ref: count_trust}`` off the 4.0 measurement-arena log, last line per ref wins.
+
+    Read as a FACT, not re-derived: the delivery pipeline owns the five-lane count-trust vocabulary
+    and this layer only asks which lane a delivered arena landed in. An absent log is an empty map
+    (a workspace whose analysis path writes no arena records has nothing to distrust); an unreadable
+    LINE refuses, because a partially-read counts ledger would silently look like a clean delivery.
+
+    Every line is validated through :class:`~isar.schema.measurement.MeasurementArena` — the schema
+    that owns the record — rather than by picking two keys out of raw JSON, so a record whose
+    ``count_trust`` is outside ``COUNT_TRUST_STATES`` (or whose provenance block is self-
+    contradictory) refuses here exactly as it does at the scene-layer door, instead of being read as
+    a novel trust lane this loop would silently treat as "not trusted". The LOOP is local rather
+    than a call into ``isar.workspace_api.scene._read_measurements``: that reader is private, keys
+    on a constructed ``Workspace`` facade instead of a report directory, and reaching it imports the
+    whole facade package (views, display, config_gates, scene_view, agenda_view) into every campaign
+    process for one twelve-line file read. The schema call above is the part that must not be
+    duplicated, and it is not.
+    """
+    path = Path(report_dir) / MEASUREMENTS_FILENAME
+    if not path.is_file():
+        return {}
+    out: dict[str, str] = {}
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            record = MeasurementArena.from_dict(json.loads(line))
+        except (ValueError, KeyError, TypeError) as error:
+            raise ValueError(f"{path} line {lineno} is unreadable ({error})") from error
+        out[record.scan_ref] = record.count_trust
+    return out
+
+
 def _declared_partition(cfg, step):
     """Mint the step's cold-start declared partition from the CARD's declarations (D4).
 
@@ -344,10 +456,12 @@ def _campaign_provenance_block(program: CampaignProgram, step, declared) -> dict
 def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: ObjectiveSpec,
                         budget_state: dict, max_deliveries: int) -> tuple[StepResult, str]:
     """One ``discover_and_map`` step, delivery by delivery. Returns ``(result, verdict)``."""
-    from isar.drive.loop import _execute_proposal, _operator_stop_requested
+    from isar.drive.loop import (
+        _execute_proposal, _operator_stop_requested, _record_action_rejection)
 
     report_dir = Path(cfg.workspace) / "report"
     _require_synchronous_staleness(step)
+    retry_limit = _broken_scan_retry_limit(step)
     declared = _declared_partition(cfg, step)
     hypotheses_fingerprint = _declared_hypotheses_fingerprint(cfg)
     provenance = _campaign_provenance_block(program, step, declared)
@@ -358,6 +472,16 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
     consumed: set = set()
     scan_kind: dict = {}
     scan_counter = 0
+    # Broken-scan lane state (C6). Both are DELIVERY-INDEXED — they advance only when a delivery
+    # lands, never on a clock — so a replay of the same deliveries reproduces the same sequence.
+    # Both are keyed by PHYSICAL action key, never by scientific action fingerprint: the scene moves
+    # on every delivery (an untrusted arena still enters as a synthetic observation), the scientific
+    # fingerprint hashes the scene digest, and so a counter keyed on it would mint a fresh key each
+    # retry and the bound below would never bind. See
+    # :func:`isar.schema.action_identity.physical_action_key`.
+    broken_deliveries: dict[str, int] = {}      # physical action key -> untrusted deliveries so far
+    retired: set[str] = set()                   # offramped: never re-proposed for THIS step
+    transport_failures = 0                      # consecutive, reset by any delivery
 
     def ended(verdict: str, *, reason: str | None = None, agenda=None) -> tuple[StepResult, str]:
         log_event(cfg.log_path, "decide", {
@@ -365,9 +489,18 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
             "verdict": verdict, "reason": reason, "deliveries": result.deliveries})
         finished = replace(result, reason=reason, observations=observations)
         if agenda is not None:
+            # The agenda's own consultation requests come FIRST and the step's offramps after: both
+            # are C8's input, and appending rather than replacing is what keeps an offramp recorded
+            # on a step that later ends for an unrelated reason.
             finished = replace(finished, blocking_questions=tuple(agenda.blocking),
-                               consultation_requests=tuple(agenda.consultation_requests))
+                               consultation_requests=(tuple(agenda.consultation_requests)
+                                                      + result.consultation_requests))
         return finished, verdict
+
+    try:
+        trust_seen = _count_trust_by_scan_ref(report_dir)
+    except ValueError as error:
+        return ended(VERDICT_MACHINE_FAILURE, reason=f"measurements_unreadable: {error}")
 
     # The step's own opening scene. Built through the same supervised seam as every delivery's, so
     # the first plan is pinned exactly like the rest and this path NEVER reads ``current.json``.
@@ -386,7 +519,8 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
             return ended(VERDICT_OPERATOR_STOPPED, reason=f"token {cfg.control_token}")
 
         plan = plan_next_action(report_dir, program, step.id,
-                                declared_partition=declared, scene_pin=pin)
+                                declared_partition=declared, scene_pin=pin,
+                                retired_physical_actions=frozenset(retired))
         result = replace(result, plan_outcome=plan.outcome)
         if plan.outcome == CONTROLLER_FAULT:
             return ended(VERDICT_MACHINE_FAILURE, reason=f"controller_fault: {plan.reason}")
@@ -456,10 +590,29 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
             # what will turn it into evidence and a re-plan.
             return ended(VERDICT_IN_PROGRESS, reason=f"instrument_refused: {error}", agenda=agenda)
         except TaviError as error:
-            # Transport. C6 owns the retry/quarantine ladder; until then a lost instrument is a
-            # machine failure, which is the honest answer and a resumable one.
-            return ended(VERDICT_MACHINE_FAILURE, reason=f"instrument_unreachable: {error}",
-                         agenda=agenda)
+            # Class 2 (C6): transport, not geometry and not physics. The client has already spent
+            # its own Retry-After ladder inside this attempt, so this counts whole failed attempts
+            # and adds no second retry machinery. Recorded through the EXISTING refusal vocabulary,
+            # where an unmapped verdict classes TRANSIENT/scope "none" — it suppresses nothing,
+            # narrows no action, and produces no durable blocker evidence (binding ruling: transient
+            # failures never become durable question blockers). Nothing is quarantined either: no
+            # counts arrived to distrust.
+            transport_failures += 1
+            # ``plan=None`` rests on an invariant of the recorder, not on luck: an UNMAPPED verdict
+            # classes scope ``"none"``, which returns before ``plan.next_proposal()`` is reached, so
+            # there is no plan object to hand it. Mapping ``instrument_transport_failed`` to a
+            # durable scope later must revisit THIS call site — it would dereference the None.
+            _record_action_rejection(cfg, None, proposal, "instrument_transport_failed",
+                                     {}, {}, {}, it=result.deliveries)
+            if transport_failures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES:
+                # Class 3: an instrument that will not talk at all, for a bounded number of whole
+                # attempts running, is a machine failure — which IS the stop-law pause.
+                return ended(VERDICT_MACHINE_FAILURE,
+                             reason=f"instrument_unreachable after {transport_failures} "
+                                    f"consecutive transport failures: {error}", agenda=agenda)
+            _LOG.warning("transient instrument transport failure %d/%d: %s", transport_failures,
+                         MAX_CONSECUTIVE_TRANSPORT_FAILURES, error)
+            continue
         submitted = (proposal.meta or {}).get("proposal_fingerprint")
         if declined is not None:
             # C7 owns turning a geometry decline into durable blocker evidence and re-planning
@@ -474,7 +627,51 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
             result, deliveries=result.deliveries + 1,
             submitted_fingerprints=result.submitted_fingerprints + ((submitted,) if submitted
                                                                      else ()))
+        transport_failures = 0
         _LOG.debug("discovery delivery %d folded %d row(s)", result.deliveries, len(rows))
+
+        # ---- class 1: did this delivery's counts survive the gates? ------------------------
+        try:
+            trust_now = _count_trust_by_scan_ref(report_dir)
+        except ValueError as error:
+            return ended(VERDICT_MACHINE_FAILURE, reason=f"measurements_unreadable: {error}",
+                         agenda=agenda)
+        delivered_trust = {ref: state for ref, state in trust_now.items() if ref not in trust_seen}
+        trust_seen = trust_now
+        # An arena the delivery pipeline recorded but could not trust. The RETRY is already
+        # happening by construction — an untrusted arena earns no footprint and no coverage credit
+        # (isar.scene.build), so the question stays open and the next plan re-selects this same
+        # action — and the record stays exactly where it is: quarantine here means the 4.0 record
+        # state, never a deletion, a mask, or a rewrite. All this adds is the bound.
+        if delivered_trust and "trusted" not in delivered_trust.values():
+            fingerprint = intent.scientific_action_fingerprint
+            key = physical_action_key(intent)
+            count = broken_deliveries[key] = broken_deliveries.get(key, 0) + 1
+            log_event(cfg.log_path, "decide", {
+                "event": "broken_scan", "action": "broken_scan", "step_id": step.id,
+                "scientific_action_fingerprint": fingerprint, "physical_action_key": key,
+                "broken_deliveries": count,
+                "retry_limit": retry_limit, "scan_refs": sorted(delivered_trust),
+                "count_trust": sorted(set(delivered_trust.values())), "iter": result.deliveries})
+            if count > retry_limit:
+                # The offramp. The action leaves this step's re-submission set (never the
+                # inventory, and never the record), a human is asked, and the step KEEPS GOING —
+                # bad data is not one of the four stop reasons, and the planner still has a region
+                # to survey.
+                retired.add(key)
+                request = {"kind": OFFRAMP_KIND, "step_id": step.id,
+                           "scientific_action_fingerprint": fingerprint,
+                           "physical_action_key": key,
+                           "retry_count": count - 1, "broken_deliveries": count,
+                           "retry_limit": retry_limit,
+                           "region": {"q_start": list(step.payload.q_start),
+                                      "q_end": list(step.payload.q_end),
+                                      "hkl": list(intent.hkl)},
+                           "scan_refs": sorted(delivered_trust)}
+                result = replace(result,
+                                 consultation_requests=result.consultation_requests + (request,))
+                log_event(cfg.log_path, "decide", {"event": OFFRAMP_KIND, "action": OFFRAMP_KIND,
+                                                   **request, "iter": result.deliveries})
 
         try:
             build = _build_scene(cfg, iteration=result.deliveries)
