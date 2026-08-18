@@ -217,6 +217,17 @@ when the policy SCHEMA grows new fields with defaults, so "defaults v1" under `/
 `/2` carry different field sets. A profile version is therefore meaningful only alongside its
 policy schema version; never cite it bare. Replay and audit never depend on the label — the
 effective values are frozen and fingerprinted into every compiled program.
+**Field additions inside a live pre-release contract are judged by the world suite, not by a
+version bump** (H1; SCENE-4.3 C1). `isar.measurement-arena/1` gained `topology_role` and
+`path_fingerprint` in place, both `None`-defaulted so an older record reads as
+provenance-less rather than refusing — but a `topology_role` present and unknown refuses at parse,
+and a `canonical_path` arena with no `path_fingerprint` refuses at submission and at the record.
+No compatibility reader exists for the pre-change shape and none may be written. The consultation
+channel added three control-surface ids in the same slice (`isar.consultation-prompt/1` on the
+campaign feed, `isar.consultation-answer/1` for the operator's answer file,
+`isar.consultation-settlement/1` for the append-only settlement log), plus
+`isar.scene-build-report/1`, the one JSON line `isar scene-build` prints for its supervising parent.
+
 The refusal table now covers `isar.objective/1`, `isar.objective/2`, `isar.objective-envelope/1`,
 `isar.objective-envelope/2`, `isar.campaign-step.discover_and_map/1`, and `isar.question-policy/1`;
 reading any of them raises an error naming its replacement. There is no compatibility reader by

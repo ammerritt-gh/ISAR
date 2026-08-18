@@ -157,6 +157,18 @@ def build_parser() -> argparse.ArgumentParser:
     psb.add_argument("--source", default="campaign",
                      help="writer name recorded in the store's lineage log (default campaign)")
 
+    pan = sub.add_parser("answer",
+                         help="answer a consultation prompt a running campaign issued (SCENE-4.3)")
+    pan.add_argument("prompt_id", nargs="?", default=None,
+                     help="the prompt id from the campaign feed (see --list)")
+    pan.add_argument("option", nargs="?", default=None,
+                     help="one of the options that prompt offers")
+    pan.add_argument("--workspace", required=True)
+    pan.add_argument("--note", default=None, help="free text recorded with the answer")
+    pan.add_argument("--list", action="store_true",
+                     help="list the prompts currently open in this workspace and exit "
+                          "(id, kind, subject, options, default, deliveries left)")
+
     pd = sub.add_parser("drive", help="run the measurement driver campaign (LLM_HARNESS_DESIGN §8)")
     src = pd.add_mutually_exclusive_group(required=True)
     src.add_argument("--goal", help="natural-language measurement goal (LLM supervisor; needs LLMM)")
@@ -336,6 +348,9 @@ def main(argv=None) -> int:
     if cmd == "scene-build":
         from isar.cli import scene_build_cmd
         return scene_build_cmd.run(args)
+    if cmd == "answer":
+        from isar.cli import answer_cmd
+        return answer_cmd.run(args)
     if cmd == "view":
         from isar.cli import view_cmd
         return view_cmd.run(args)

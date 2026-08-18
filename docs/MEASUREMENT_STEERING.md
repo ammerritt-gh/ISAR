@@ -792,7 +792,7 @@ reporting uses master diagnostics such as model ambiguity, pool inconsistency, a
 resolution-limited linewidth, and interval above tolerance. The active target is copied
 only into machine-owned `card.state.json`; `card.policy.toml` remains human-owned.
 
-### 7.2b Discovery controller — offline planner (Partial, SCENE-4 PR 4.2b)
+### 7.2b Discovery controller — live on `isar drive` (Implemented, SCENE-4 PR 4.3; multi-step sequencing Planned in SCENE-6)
 
 `isar/drive/steering/planner.py`'s `plan_next_action(report_dir, program, step_id)` runs the full
 discovery decision offline: given a stored scene and a frozen `discover_and_map` step, it derives
@@ -811,16 +811,54 @@ line to `report/decisions.jsonl`, embedding the complete DecisionBasis (scene/ag
 digests, the generator registry, the scheduler policy, the placement manifest) so a decision can
 be re-checked without rejoining live state.
 
-**Online since SCENE-4.3 C5**, with named gaps. `isar drive` on a single `discover_and_map` step
-runs `isar.drive.program_runner.run_program`, which builds a scene revision in a supervised
+**Online since SCENE-4.3.** `isar drive` on a single `discover_and_map` step runs
+`isar.drive.program_runner.run_program`, which builds a scene revision in a supervised
 `isar scene-build` child, calls `plan_next_action` PINNED to the digest that build returned,
 realizes the selected intent onto a nice-number energy grid
 (`isar/drive/steering/realization.py`) and submits it through the existing acquisition path. The
 declared partition an unmeasured workspace steers from is minted from the card's own declarations
-(`isar/drive/steering/cold_start.py`). Still absent: the consultation channel, and any production
-emission of the durable blocker evidence `QuestionBlockerEvidence` types (only synthetic tests
-construct one) — a declined request ends the step honestly with its decline recorded instead.
-Sequencing more than one step is SCENE-6.
+(`isar/drive/steering/cold_start.py`) and retires when the declaring step first observes.
+The seam returns `(StepResult, verdict, beam directive)`: the verdict is one of the four stop
+reasons (`complete` / `over_budget` / `operator_stopped` / `machine_failure`) plus `in_progress`,
+which is `AgendaVerdict.state` and NOT a stop reason, and the beam directive is a separate axis
+(completion ≠ beam-idle). The discovery path calls the targeted `evaluate_stop` zero times, pinned
+by test through a real submission and delivery. Staleness: `synchronous` proceeds, and any other
+mode refuses by name at step start rather than running synchronously under a contract that says it
+did not.
+
+**The broken-scan lane** (C6) routes three failure classes and stops the campaign for none of them.
+Local corruption: the quarantine IS the existing untrusted `isar.measurement-arena/1` record — no
+new trust state, nothing masked, nothing deleted, and coverage denial already fails closed — and
+the same PHYSICAL action (`physical_action_key`, the scientific fingerprint minus the
+scene-digest-bearing evidence basis, because the scene moves every delivery) is re-submitted at most
+`broken_scan_retry_limit` times, then retired from selection and surfaced as a
+`broken_scan_offramp` consultation request while the step keeps planning: bad data is not a stop
+reason. Transient transport failure takes the existing TRANSIENT rejection vocabulary — no
+quarantine, no durable evidence, re-plan on the same pin — and three consecutive whole attempts
+with no delivery at all escalate to the machine-failure verdict, any delivery resetting the counter.
+A geometry decline (C7) is the third class: it mints `QuestionBlockerEvidence` for
+`instrument_geometry_infeasible` per served question, re-plans on the SAME pinned scene with the
+declined fingerprints re-marked REJECTED/STRUCTURAL, and the exhaustion producer's durable-rejection
+arm closes the question `unresolvable` rather than re-proposing an unreachable q forever.
+
+**The consultation channel** (C8/C9, D6) is where a human overrules either of those two decisions,
+without ever holding the beam. Two prompt kinds — `unresolvable_closure` and `broken_scan_offramp` —
+go out as events on the session log under a DELIVERY-STABLE, epoch-bearing id; answers come back as
+`report/control/prompt-<id>.answer.json`, written atomically beside the stop token by
+`isar answer <prompt_id> <option> --workspace DIR` (`isar answer --list` shows what is open, with
+the deliveries remaining before the declared default is taken). Silence for
+`prompt_timeout_deliveries` applies that default; a late answer is recorded stale, not applied. An
+answer that CHANGES policy compiles a new frozen program revision through `report/program/` under
+CAS — `keep_spending` stops the driver supplying blocker evidence for that question without
+un-rejecting the geometry the instrument declined, and `retry_more` raises one action's retry
+ceiling — so the campaign's own record says which program each later decision was taken under.
+Timeouts and counters are delivery-indexed throughout: no wall clock reaches any persisted record,
+which is what makes a same-seed campaign replay byte-identical (`tests/drive/test_discovery_world.py`).
+
+Sequencing more than one step is SCENE-6. The counting currency is the named open item: the wire
+carries only `number_neutrons`, so the owner's 30 s/point intent is recorded verbatim in the
+proposal meta and the exposure is a named provisional until the time-to-counts conversion is
+decided.
 
 ### 7.3 Instrument-limit-aware batching (implemented, 2026-07-18)
 
