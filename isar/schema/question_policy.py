@@ -66,6 +66,12 @@ TARGET_DEFAULTS: dict[str, float] = {
     # 2026-08-18) so the same seed replays identically; named provisional v1 default 10, resolved
     # through this same precedence chain and frozen into the program like every other threshold.
     "prompt_timeout_deliveries": 10.0,
+    # 4.3 C10: the exposure ONE discovery survey point counts to, declared directly in the wire's
+    # own currency — neutrons on the monitor (owner ruling 2026-08-18: 10^8). Instrument-varying
+    # like its siblings, so it resolves through this same precedence chain — user ask > card
+    # guidelines > named default — and freezes into the compiled program, never a bare code
+    # constant. Named provisional v1, SCENE-7-calibrated.
+    "discovery_monitor_ncount": 1e8,
 }
 
 #: 4.2a: the ruled uniform-survey user option. TARGET authority, same precedence lane as the
@@ -151,6 +157,9 @@ _EXCLUSIVE_ZERO_UNIT_FIELDS = {"parameter_precision_min_mass"}
 #: Counts, not quantities: a whole number of retries, and ZERO is a legitimate declaration ("offramp
 #: on the first broken scan"), which the positive-quantity rule below would refuse.
 _NON_NEGATIVE_INTEGER_FIELDS = {"broken_scan_retry_limit", "prompt_timeout_deliveries"}
+#: Also a count, but zero is NOT a legitimate declaration: an exposure of no neutrons is not a
+#: measurement, so it refuses like any other positive quantity while still rejecting fractions.
+_POSITIVE_INTEGER_FIELDS = {"discovery_monitor_ncount"}
 #: Field names a caller may pass in ``user_ask``/``card_guidelines`` beyond the numeric
 #: thresholds — currently just the one non-numeric target field.
 _NON_THRESHOLD_TARGET_FIELDS = {"survey_order"}
@@ -173,6 +182,9 @@ def _check_value(name: str, value: Any, where: str) -> float:
     if name in _NON_NEGATIVE_INTEGER_FIELDS:
         if v < 0.0 or v != int(v):
             raise ValueError(f"{where}: {name} must be a non-negative whole number, got {value!r}")
+    elif name in _POSITIVE_INTEGER_FIELDS:
+        if v <= 0.0 or v != int(v):
+            raise ValueError(f"{where}: {name} must be a positive whole number, got {value!r}")
     elif name in _EXCLUSIVE_ZERO_UNIT_FIELDS:
         if not 0.0 < v <= 1.0:
             raise ValueError(f"{where}: {name} must be within (0, 1], got {v}")

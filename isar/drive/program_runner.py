@@ -372,6 +372,25 @@ def _prompt_timeout_deliveries(step) -> int:
     return int(thresholds["prompt_timeout_deliveries"])
 
 
+def _discovery_monitor_ncount(step) -> int:
+    """The exposure ONE discovery survey point counts to — neutrons on the monitor (C10).
+
+    The owner's ruling declares the exposure DIRECTLY in the currency the wire accepts
+    (``number_neutrons``), so there is no time-to-counts conversion to make and no module constant
+    to drift: it resolves at compile time through the ordinary precedence chain (user ask > card
+    guidelines > the named ISAR default of 1e8) and is frozen into the step, refused when absent
+    exactly like the two budgets above.
+    """
+    policy = dict(getattr(step.payload, "resolved_policy", None) or {})
+    thresholds = dict(policy.get("thresholds") or {})
+    if "discovery_monitor_ncount" not in thresholds:
+        raise ProgramError(
+            f"step {step.id!r} froze no discovery_monitor_ncount; recompile the campaign with "
+            "`isar drive --goal ... --compile-only` rather than running it under a read-time "
+            "default nobody declared")
+    return int(thresholds["discovery_monitor_ncount"])
+
+
 def _count_trust_by_scan_ref(report_dir: Path) -> dict[str, str]:
     """``{scan_ref: count_trust}`` off the 4.0 measurement-arena log, last line per ref wins.
 
@@ -848,7 +867,7 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
             proposal = proposal_from_intent(
                 intent, fwhm_meV=_resolve_fwhm(cfg.resolution_cb, *intent.hkl, centre),
                 provenance=provenance, hypotheses_fingerprint=hypotheses_fingerprint,
-                reason=f"discovery: {step.id}")
+                reason=f"discovery: {step.id}", ncount=_discovery_monitor_ncount(step))
         except DiscoveryWindowUnrealizable as error:
             return ended(VERDICT_MACHINE_FAILURE, reason=f"unrealizable_request: {error}",
                          agenda=agenda)

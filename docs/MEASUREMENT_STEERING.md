@@ -855,10 +855,12 @@ ceiling — so the campaign's own record says which program each later decision 
 Timeouts and counters are delivery-indexed throughout: no wall clock reaches any persisted record,
 which is what makes a same-seed campaign replay byte-identical (`tests/drive/test_discovery_world.py`).
 
-Sequencing more than one step is SCENE-6. The counting currency is the named open item: the wire
-carries only `number_neutrons`, so the owner's 30 s/point intent is recorded verbatim in the
-proposal meta and the exposure is a named provisional until the time-to-counts conversion is
-decided.
+Sequencing more than one step is SCENE-6. The counting currency is RULED (owner, 2026-08-18): the
+discovery exposure is declared directly in the currency the wire carries, `number_neutrons`, at
+10⁸ neutrons on the monitor per survey point — so there is no time-to-counts conversion to make.
+It is a named provisional v1 like every other threshold: instrument-varying, resolved through the
+same precedence chain (user ask > card policy > ISAR default) as `discovery_monitor_ncount`,
+frozen into the compiled program, and SCENE-7-calibrated.
 
 ### 7.3 Instrument-limit-aware batching (implemented, 2026-07-18)
 

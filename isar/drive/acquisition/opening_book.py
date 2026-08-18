@@ -183,7 +183,7 @@ def _frame_compatible(subject: QuestionSubject, scene_payload: Mapping,
     "missing" sentinel here, score every proposal at zero anchor weight, and silently degrade the
     campaign's very first scan to the region midpoint. ``setdefault`` keeps observations
     authoritative the moment any exist, and the seed itself stops once the DECLARING STEP has
-    produced any observation — the same retirement rule ``isar.scene.agenda`` applies to the
+    produced a TRUSTED observation (C10, verifier A1) — the same retirement rule ``isar.scene.agenda`` applies to the
     fan-out, so the two never disagree about whether the declaration is still live."""
     declared_epoch = (scene_payload.get("sample_knowledge") or {}).get("lattice_epoch")
     partition_of_ref = {fp["scan_ref"]: fp.get("partition_id")

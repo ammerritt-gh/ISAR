@@ -38,10 +38,9 @@ from __future__ import annotations
 import math
 
 from isar.drive.acquisition.acquire import ScanProposal
-from isar.drive.supervisor.stopping import QUICKLOOK_NCOUNT
 
 __all__ = [
-    "DISCOVERY_COUNTING_SECONDS_PER_POINT", "DISCOVERY_NCOUNT_PROVISIONAL", "NICE_STEP_MANTISSAS",
+    "NICE_STEP_MANTISSAS",
     "DiscoveryWindowUnrealizable", "aligned_window", "proposal_from_intent", "snap_energy_step",
 ]
 
@@ -54,21 +53,6 @@ NICE_STEP_MANTISSAS = (1.0, 0.5, 0.25, 0.2)
 #: still keeps all four mantissas: a smaller decade only manufactures candidates that round to 0.0
 #: and are filtered straight back out.
 _DECADES = range(-11, 13)
-
-#: The owner's declared v1 counting default (TAS): 30 seconds per point.
-#:
-#: **UNCONVERTIBLE ON TODAY'S WIRE, and therefore not applied.** The TAVI request carries exactly
-#: one exposure currency — ``number_neutrons`` (``isar.drive.instrument.request_realization.
-#: _validate_body``) — beside a ``deltaE lo hi step`` scan command. There is no time mode, no
-#: monitor/time selector, and no published neutrons-per-second, so "30 s per point" cannot be
-#: expressed in the currency the instrument accepts without inventing a conversion. The number is
-#: recorded here (and stamped on the request's meta) so the declared intent is in the ledger rather
-#: than lost, and the owner's STOP condition on it is reported with this slice.
-DISCOVERY_COUNTING_SECONDS_PER_POINT = 30.0
-
-#: What a discovery point actually counts to until the conversion above is ruled: the shipped
-#: quicklook batch, the ISAR named default for a survey-grade exposure. Named provisional v1.
-DISCOVERY_NCOUNT_PROVISIONAL = QUICKLOOK_NCOUNT
 
 #: The scan kind a discovery survey point is submitted under. ``quicklook`` is the existing
 #: survey-grade kind: it is excluded from ``PRODUCTION_KINDS`` (no full-tier escalation) and gets
@@ -136,7 +120,7 @@ def aligned_window(e_lo: float, e_hi: float, step: float) -> tuple[float, float,
 
 def proposal_from_intent(intent, *, fwhm_meV: float, provenance: dict,
                          hypotheses_fingerprint: str | None,
-                         reason: str, ncount: int = DISCOVERY_NCOUNT_PROVISIONAL) -> ScanProposal:
+                         reason: str, ncount: int) -> ScanProposal:
     """The executable request for one selected discovery action.
 
     Every field's source is named, because "where did this number come from" is the question a
@@ -149,7 +133,9 @@ def proposal_from_intent(intent, *, fwhm_meV: float, provenance: dict,
     ``e_step``
         :func:`snap_energy_step` of ``fwhm_meV`` — the instrument resolution at the window centre.
     ``ncount``
-        the named provisional discovery exposure (see :data:`DISCOVERY_NCOUNT_PROVISIONAL`).
+        the exposure the CALLER read off the step's frozen ``discovery_monitor_ncount`` threshold
+        — neutrons on the monitor, the wire's own currency. Required, with no module default: a
+        default here would be exactly the read-time constant the owner's ruling removed.
     ``e_pred``
         the intent's own centre when it declares one, else the aligned window's midpoint. This is
         the energy the request is *about*, and the feasibility trim reads it to decide which
@@ -177,9 +163,6 @@ def proposal_from_intent(intent, *, fwhm_meV: float, provenance: dict,
         "hypotheses_fingerprint": hypotheses_fingerprint,
         "acquisition_action_role": "discovery",
         "evidence_sink": intent.evidence_sink,
-        # The declared-but-unconvertible counting intent (see the constant): recorded so the ledger
-        # says what was asked for, never used to derive ``ncount``.
-        "discovery_counting_seconds_per_point": DISCOVERY_COUNTING_SECONDS_PER_POINT,
         "discovery_energy_step_source": "nice_number_grid_at_fwhm",
         "discovery_resolution_fwhm_meV": float(fwhm_meV),
         **dict(provenance),

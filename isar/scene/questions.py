@@ -528,19 +528,25 @@ def scene_partitions(scene_payload: dict) -> tuple[str, ...]:
 
 
 def step_observed(scene_payload: dict, step_id: str | None) -> bool:
-    """Whether any observation in the revision was measured under program step ``step_id``.
+    """Whether step ``step_id`` has landed a TRUSTED observation in this revision.
 
     The cold-start retirement test (SCENE-4 PR 4.3, D4; owner ruling 2026-08-18): a declared
-    partition is initialization only, and it retires the moment ITS OWN step has produced any
-    observation — whatever partition that measurement landed in. Keyed on the declaring step, not
-    on "any observation anywhere", because a warm workspace whose other steps have measured says
-    nothing about where this step's first scan will land. A ``None`` step id matches nothing: a
-    declaration that cannot name its step can never be retired by evidence, so it must not be
-    treated as retired.
+    partition is initialization only, and it retires the moment ITS OWN step has produced a
+    trusted observation — whatever partition that measurement landed in. Keyed on the declaring
+    step, not on "any observation anywhere", because a warm workspace whose other steps have
+    measured says nothing about where this step's first scan will land. A ``None`` step id matches
+    nothing: a declaration that cannot name its step can never be retired by evidence, so it must
+    not be treated as retired.
+
+    Only ``count_trust == "trusted"`` observations count. A broken scan is not "taking a
+    measurement" in the initialization sense the ruling names — it carries no footprint, tells the
+    question layer nothing about where the step's scans land, and retiring the declaration on one
+    would strand the campaign with neither declared nor observed knowledge at exactly the moment
+    it has none. The declaration stays live until a trusted own-step observation lands.
     """
     if step_id is None:
         return False
-    return any(obs.get("program_step") == step_id
+    return any(obs.get("program_step") == step_id and obs.get("count_trust") == "trusted"
                for obs in scene_payload.get("observations") or ())
 
 

@@ -46,7 +46,8 @@ def scene(sample_knowledge=None, t_round=T_ROUND, measurements=()):
     """A workspace with no measurement by default: declarations only. ``measurements`` are
     ``(observation, footprint)`` pairs from :func:`measured`, for the warm-workspace cases."""
     return {"observations": [o for o, _ in measurements],
-            "footprints": [f for _, f in measurements], "clusters": [], "non_scoring": [],
+            "footprints": [f for _, f in measurements if f is not None],
+            "clusters": [], "non_scoring": [],
             "sample_knowledge": sample_knowledge or {}, "condition_t_round": t_round}
 
 
@@ -66,13 +67,20 @@ def declared(step, *, sample="s1", temperature=300.0, epoch=1, t_round=T_ROUND):
                              condition_t_round=t_round)
 
 
-def measured(scan_ref, partition_id, *, program_step, epoch=1, coord=2.0):
+def measured(scan_ref, partition_id, *, program_step, epoch=1, coord=2.0, count_trust="trusted"):
     """One observation + its footprint, the two-record pair the agenda joins by ``scan_ref``.
-    ``program_step`` is the retirement key: an observation carrying the DECLARING step's id is
-    what retires the declaration (owner ruling 2026-08-18)."""
-    return ({"scan_ref": scan_ref, "candidates": [], "count_trust": "trusted", "sample": "s1",
-             "lattice_epoch": epoch, "conditions": [], "best_label": None,
-             "program_step": program_step},
+    ``program_step`` is the retirement key: a TRUSTED observation carrying the DECLARING step's id
+    is what retires the declaration (owner ruling 2026-08-18).
+
+    An untrusted observation gets NO footprint, exactly as ``isar.scene.build`` writes it — the
+    footprint set is built from the trusted observations alone.
+    """
+    observation = {"scan_ref": scan_ref, "candidates": [], "count_trust": count_trust,
+                   "sample": "s1", "lattice_epoch": epoch, "conditions": [], "best_label": None,
+                   "program_step": program_step}
+    if count_trust != "trusted":
+        return (observation, None)
+    return (observation,
             {"scan_ref": scan_ref, "axis_coordinate": coord, "partition_id": partition_id,
              "effective_exposure": 5.0,
              "bands": [{"lo": 0.0, "hi": 10.0, "sides": "stokes"}]})
@@ -319,3 +327,36 @@ def test_the_declaration_is_live_until_its_own_step_measures_then_retires():
     # the identical agenda.
     assert retired.payload == derive(step, None, sample_knowledge=knowledge,
                                      measurements=[foreign, own]).payload
+
+
+# ----------------------------------------------------------------------------
+# (i) A BROKEN first delivery does not retire the declaration (verifier A1)
+# ----------------------------------------------------------------------------
+def test_an_untrusted_own_step_observation_does_not_retire_the_declaration():
+    """A broken scan is not "taking a measurement" in the initialization sense of the ruling.
+
+    It carries no footprint and says nothing about where this step's scans land, so retiring on
+    it would leave the campaign with neither declared nor observed knowledge — the uniform survey,
+    at exactly the moment the declaration is the only knowledge there is. The declaration stays
+    live until a TRUSTED own-step observation lands.
+    """
+    step = discover_step()
+    partition = declared(step)
+    frame = (partition.partition_id, 1, step.id)
+    knowledge = {"zone_period": 1.0, "lattice_epoch": 1}
+    broken = measured("e:1:d", partition.partition_id, program_step=step.id,
+                      count_trust="excluded")
+
+    live = derive(step, frame, sample_knowledge=knowledge, measurements=[broken])
+    anchored = [s for s in live.payload["specs"]
+                if s["family"] == "ConfirmPresence" and s["subject"]["anchor"] is not None]
+    # The anchors fire on the DECLARED partition — not on the program-scoped ``None`` lane a
+    # retired declaration would have left behind.
+    assert {s["subject"]["partition_id"] for s in anchored} == {partition.partition_id}
+    assert sorted({s["subject"]["anchor"] for s in anchored}) == [2.0, 3.0]
+
+    # And the very next delivery, trusted, retires it.
+    good = measured("e:2:d", "P-real", program_step=step.id, coord=2.5)
+    retired = derive(step, frame, sample_knowledge=knowledge, measurements=[broken, good])
+    assert {s["subject"]["partition_id"] for s in retired.payload["specs"]
+            if s["subject"]["partition_id"] is not None} == {"P-real"}

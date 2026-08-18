@@ -2448,18 +2448,23 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   fire at cold start and an observation always wins; and the declaration's full key components ride
   in `DecisionBasis`, so replay cites the persisted record and never the mutable card. This
   discharges the H-entry obligation `823502e` recorded.
-  **(e) Discovery realization v1 is a nice-number zero-phase grid, and the counting currency is
-  OPEN.** The energy step snaps to the grid `{1, 0.5, 0.25, 0.2} × 10ⁿ` meV, the largest value not
-  exceeding the instrument FWHM at the predicted window centre ("step about the FWHM"), and points
-  sit on the ZERO-PHASE grid `k × step` clipped to the window — scans may start and stop on
-  non-integer energies, but points always line up with integers, and the scan is never anchored at
-  the window edge; fewer than two aligned points refuses rather than widening the window. Counting
-  is 30 s/point on TAS by owner intent — today a bare named module constant
-  (`DISCOVERY_COUNTING_SECONDS_PER_POINT`), stamped into proposal meta as recorded intent and
-  NOT yet a policy-resolved threshold; giving it the Topic-4 precedence pedigree is part of the
-  open ruling below. NAMED OPEN: the wire carries only `number_neutrons` and no time mode, so the
-  30 s intent is recorded verbatim in the proposal meta while the exposure is a named provisional;
-  the time-to-counts conversion (validate-calibration proposed) is undecided and is not ruled here.
+  **(e) Discovery realization v1 is a nice-number zero-phase grid, and the exposure is declared in
+  the wire's own currency.** The energy step snaps to the grid `{1, 0.5, 0.25, 0.2} × 10ⁿ` meV, the
+  largest value not exceeding the instrument FWHM at the predicted window centre ("step about the
+  FWHM"), and points sit on the ZERO-PHASE grid `k × step` clipped to the window — scans may start
+  and stop on non-integer energies, but points always line up with integers, and the scan is never
+  anchored at the window edge; fewer than two aligned points refuses rather than widening the
+  window. The counting currency is RULED (owner, 2026-08-18): discovery exposure is **10⁸ neutrons
+  on the monitor** per survey point, declared DIRECTLY in `number_neutrons` — the one currency the
+  wire carries — as the named ISAR default of the `discovery_monitor_ncount` threshold, resolved
+  through the ordinary precedence chain (user ask > card policy > ISAR default) and frozen into
+  the compiled program, refused when absent like every other threshold. It is a named provisional
+  v1, expected to vary by instrument and SCENE-7-calibrated. The earlier 30 s/point counting
+  intent and the proposed validate-calibration time-to-counts conversion are SUPERSEDED by this
+  direct declaration: with exposure stated in the instrument's own currency there is nothing left
+  to convert. `DISCOVERY_COUNTING_SECONDS_PER_POINT`, the provisional exposure constant
+  `DISCOVERY_NCOUNT_PROVISIONAL`, and the `discovery_counting_seconds_per_point` proposal-meta
+  stamp are all deleted rather than kept as vestiges (H1).
   **(f) Consultation v1: delivery-stable epoch-bearing prompt identity, and an answer that changes
   policy compiles a new frozen revision.** A prompt id is
   `fingerprint(kind, step, subject, options, epoch)` where `epoch` counts the persisted settlements

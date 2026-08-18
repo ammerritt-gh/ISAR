@@ -9,8 +9,7 @@ import pytest
 
 from isar.schema.action_identity import MeasurementIntent
 from isar.drive.steering.realization import (
-    DISCOVERY_NCOUNT_PROVISIONAL, DiscoveryWindowUnrealizable, aligned_window,
-    proposal_from_intent, snap_energy_step)
+    DiscoveryWindowUnrealizable, aligned_window, proposal_from_intent, snap_energy_step)
 
 
 # ---------------------------------------------------------------------------- the step
@@ -99,14 +98,16 @@ def _intent(lo=0.37, hi=2.9, hkl=(2.5, 0.0, 0.0)):
                              window_family="discovery")
 
 
-def test_the_proposal_carries_the_snapped_step_the_aligned_window_and_the_named_default():
+def test_the_proposal_carries_the_snapped_step_the_aligned_window_and_the_given_exposure():
     proposal = proposal_from_intent(
         _intent(), fwhm_meV=0.3, provenance={"topology_role": "canonical_path"},
-        hypotheses_fingerprint="hf", reason="discovery: step-1")
+        hypotheses_fingerprint="hf", reason="discovery: step-1", ncount=int(1e8))
 
     assert (proposal.e_lo, proposal.e_hi, proposal.e_step) == (0.5, 2.75, 0.25)
     assert proposal.n_points == 10
-    assert proposal.ncount == DISCOVERY_NCOUNT_PROVISIONAL
+    # C10: the exposure is the caller's — the step's frozen discovery_monitor_ncount — and this
+    # module holds no default of its own to fall back to.
+    assert proposal.ncount == 100_000_000
     assert proposal.kind == "quicklook"
     assert proposal.scan_command() == "deltaE 0.5 2.75 0.25"
     assert proposal.meta["topology_role"] == "canonical_path"
@@ -123,4 +124,4 @@ def test_an_intent_with_no_energy_window_is_refused():
                                energy_lo=None, energy_hi=None, window_family="discovery")
     with pytest.raises(DiscoveryWindowUnrealizable):
         proposal_from_intent(intent, fwhm_meV=0.5, provenance={}, hypotheses_fingerprint=None,
-                             reason="r")
+                             reason="r", ncount=int(1e8))

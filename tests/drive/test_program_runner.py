@@ -27,15 +27,18 @@ from isar.drive.program_runner import (
     BEAM_HOLD, BEAM_RELEASE, ProgramStepOutcome, SceneBuildFailed, SceneBuildReport, StepResult,
     StalenessModeRefused, VERDICT_COMPLETE, VERDICT_IN_PROGRESS, VERDICT_MACHINE_FAILURE,
     VERDICT_OPERATOR_STOPPED, VERDICT_OVER_BUDGET, run_program)
-from isar.drive.steering.realization import DISCOVERY_NCOUNT_PROVISIONAL
 from isar.schema.campaign_program import (
     CampaignProgram, CampaignStep, DiscoverAndMapSpec, ProgramError, program_fingerprint)
 from isar.schema.measurement import CAMPAIGN_PROVENANCE_FIELDS
-from isar.schema.question_policy import resolve_policy
+from isar.schema.question_policy import TARGET_DEFAULTS, resolve_policy
 from isar.scene.model import canonical_bytes, digest_bytes
 from isar.scene.store import SCENE_STORE
 
 from synthetic_ws import write_policy, write_session, write_state
+
+#: The C10 named ISAR default — 10^8 neutrons on the monitor, read through the profile rather
+#: than retyped, so the end-to-end assertion below cannot drift from the declaration.
+DISCOVERY_NCOUNT_DEFAULT = int(TARGET_DEFAULTS["discovery_monitor_ncount"])
 
 
 # ---------------------------------------------------------------------------- builders
@@ -293,7 +296,9 @@ def test_a_question_driven_delivery_submits_a_provenance_stamped_grid_snapped_re
     _, lo, hi, snapped = parameters["scan_command1"].split()
     assert float(snapped) == 0.25
     assert abs(float(lo) / 0.25 - round(float(lo) / 0.25)) < 1e-9
-    assert parameters["number_neutrons"] == DISCOVERY_NCOUNT_PROVISIONAL
+    # C10: the exposure on the wire is the step's FROZEN discovery_monitor_ncount, in the wire's
+    # own currency — neutrons on the monitor — not a module constant the runner reached for.
+    assert parameters["number_neutrons"] == DISCOVERY_NCOUNT_DEFAULT
 
     # The campaign-provenance block reached the durable submission record.
     run_events = log_payloads(root, "run")
@@ -656,3 +661,42 @@ def test_a_card_less_workspace_refuses_by_name(tmp_path):
     step = discover_step()
     with pytest.raises(WorkspaceUndeclared):
         run_program(CampaignProgram(steps=(step,)), step.id, config_for(root))
+
+
+# ------------------------------------------------------------------- (10) the discovery exposure
+def test_the_discovery_exposure_resolves_through_the_precedence_chain():
+    """User ask > card guidelines > the named ISAR default of 1e8 monitor neutrons (C10), and the
+    runner reads the value the PROGRAM froze — never the profile at run time."""
+    from isar.drive.program_runner import _discovery_monitor_ncount
+
+    assert resolve_policy()["thresholds"]["discovery_monitor_ncount"] == 1e8
+    assert resolve_policy()["provenance"]["discovery_monitor_ncount"] == {
+        "source": "default", "authority": "target"}
+    assert _discovery_monitor_ncount(discover_step()) == 100_000_000
+
+    carded = resolve_policy(card_guidelines={"discovery_monitor_ncount": 2e7})
+    assert _discovery_monitor_ncount(discover_step(policy=carded)) == 20_000_000
+    asked = resolve_policy(user_ask={"discovery_monitor_ncount": 5e6},
+                           card_guidelines={"discovery_monitor_ncount": 2e7})
+    assert _discovery_monitor_ncount(discover_step(policy=asked)) == 5_000_000
+    assert asked["provenance"]["discovery_monitor_ncount"]["source"] == "user"
+
+    # A count, and an exposure: fractions and non-positive values are refused, not rounded.
+    for bad in (1.5, 0, -1):
+        with pytest.raises(ValueError):
+            resolve_policy(user_ask={"discovery_monitor_ncount": bad})
+
+
+def test_a_pre_c10_program_refuses_the_exposure_by_name():
+    """A program compiled before C10 has no frozen exposure. A frozen program never acquires a
+    read-time default — it is refused by the field's name, naming the recompile."""
+    from isar.drive.program_runner import _discovery_monitor_ncount
+
+    step = discover_step()
+    policy = json.loads(json.dumps(step.payload.resolved_policy))
+    policy["thresholds"].pop("discovery_monitor_ncount")
+    object.__setattr__(step.payload, "resolved_policy", policy)
+    with pytest.raises(ProgramError) as excinfo:
+        _discovery_monitor_ncount(step)
+    assert "discovery_monitor_ncount" in str(excinfo.value)
+    assert "--compile-only" in str(excinfo.value)

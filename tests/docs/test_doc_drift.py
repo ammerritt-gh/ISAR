@@ -221,6 +221,19 @@ STALE_PHRASES = (
         "SCENE-4.3 (C7/C8, H20(c)/(f)); MEASUREMENT_STEERING.md §7.2b's gap list described the "
         "state at C5",
     ),
+    # SCENE-4.3 C10 (H20(e) amendment). Two claim forms the counting ruling falsified; narrow so
+    # H20(e)'s own supersession narration stays legal.
+    (
+        "counting currency is the named open item",
+        "RULED 2026-08-18 (H20(e) amended in place): discovery exposure is 10^8 monitor neutrons "
+        "via the frozen discovery_monitor_ncount threshold, declared directly in the wire's own "
+        "currency — nothing left to convert",
+    ),
+    (
+        "30 s intent is recorded verbatim in the proposal meta",
+        "the 30 s/point intent and its proposal-meta stamp were superseded and deleted by the "
+        "direct 10^8-neutron declaration (H20(e), C10) — no vestige remains",
+    ),
 )
 
 

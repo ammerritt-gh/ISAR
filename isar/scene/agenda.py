@@ -281,7 +281,8 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
 
     # Cold-start fan-out union (SCENE-4 PR 4.3, D4; owner ruling 2026-08-18). The declaration is
     # initialization and nothing more: it JOINS the observed fan-out (union, deduped) until the
-    # DECLARING STEP has produced any observation at all, and then retires permanently — whatever
+    # DECLARING STEP has produced a TRUSTED observation (a broken scan is not a measurement in
+    # the initialization sense -- C10, verifier A1), and then retires permanently — whatever
     # partition that first measurement actually landed in, reality owns the fan-out from there.
     # The retirement is keyed on the step, not on "any observation anywhere", because a warm
     # workspace whose other steps have measured still tells the question layer NOTHING about
