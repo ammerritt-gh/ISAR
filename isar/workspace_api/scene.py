@@ -77,7 +77,13 @@ def _synthetic_observation(record: "MeasurementArena") -> SceneObservation:
         background=None, best_label=None, candidates=(),
         evidence_comparison_status="unavailable", selection_fallback=None, arena_fingerprint=None,
         evidence_sink=None, sample=record.sample, conditions=record.conditions,
-        count_trust=record.count_trust, lattice_epoch=record.lattice_epoch, fingerprint="")
+        count_trust=record.count_trust, lattice_epoch=record.lattice_epoch, fingerprint="",
+        # SCENE-4 PR 4.3 (D2): the campaign-provenance block, verbatim off the record. The scene
+        # never derives these — a record with no provenance (manual or pre-4.3 scan) reads None
+        # all the way through, which is the lane the geometric path fallback governs (H1: no
+        # shim, no invented campaign identity).
+        topology_role=record.topology_role, program_fingerprint=record.program_fingerprint,
+        program_step=record.program_step, path_fingerprint=record.path_fingerprint)
     return replace(obs, fingerprint=observation_fingerprint(obs))
 
 
@@ -171,6 +177,10 @@ def scene_observations(ws) -> list[SceneObservation]:
             obs_exposure = record.effective_exposure
             obs_sample, obs_conditions = record.sample, record.conditions
             obs_count_trust, obs_epoch = record.count_trust, record.lattice_epoch
+            # SCENE-4 PR 4.3 (D2): the campaign-provenance block, verbatim — the record is the
+            # only writer of campaign identity and the scene never derives it.
+            obs_provenance = (record.topology_role, record.program_fingerprint,
+                              record.program_step, record.path_fingerprint)
         else:
             # A pooled master (the only case with no record — see above). Its raw axis is its
             # members' combined counts, which this adapter does not reconstruct, so q/window/
@@ -179,9 +189,18 @@ def scene_observations(ws) -> list[SceneObservation]:
             obs_q, obs_T = _q(fit), fit.T
             obs_window, obs_bands = fit_window, fit_bands
             obs_exposure = fit.effective_exposure
+            # A pooled master has no measurement-arena record of its own, so its declared-path
+            # identity is its members' — derived exactly like sample/conditions/epoch above
+            # (_member_provenance), and None when they disagree or carry none. Without it a
+            # master would fall into the provenance-less partition while every arena it pools
+            # sits in the declared-path one: the pooled reading severed from its own path.
+            # program_fingerprint/program_step stay None either way — a master is the reading of
+            # many neutrons, not the product of one program step.
+            obs_provenance = (None, None, None, None)
             prov = master_provenance.get(ref)
             if prov is not None:
-                obs_sample, obs_conditions, obs_epoch = prov
+                obs_sample, obs_conditions, obs_epoch = prov[:3]
+                obs_provenance = (prov[3], None, None, prov[4])
                 obs_count_trust = "trusted"
             else:
                 # Incompatible or unreconstructable member provenance (already logged by
@@ -214,6 +233,10 @@ def scene_observations(ws) -> list[SceneObservation]:
             count_trust=obs_count_trust,
             lattice_epoch=obs_epoch,
             fingerprint="",
+            topology_role=obs_provenance[0],
+            program_fingerprint=obs_provenance[1],
+            program_step=obs_provenance[2],
+            path_fingerprint=obs_provenance[3],
         )
         out.append(replace(obs, fingerprint=observation_fingerprint(obs)))
 
@@ -298,14 +321,21 @@ def sample_knowledge(ws) -> SampleKnowledge:
 # ownership / active arena
 # ---------------------------------------------------------------------------
 def _member_provenance(members: list, measurements: dict) -> tuple:
-    """``((sample, conditions, lattice_epoch), None)`` when every member's measurement-arena
-    record agrees, else ``(None, reason)``.
+    """``((sample, conditions, lattice_epoch, topology_role, path_fingerprint), None)`` when every
+    member's measurement-arena record agrees, else ``(None, reason)``.
 
     A pooled master's own counts are its members' — so its provenance IS its members', never the
     current frame (SCENE-4 PR 4.0 review response, W3, disposition 5). Compatible means every
     member carries a record and all records agree on sample, conditions, AND lattice_epoch; any
     disagreement (mixed epochs, mixed conditions) or a missing record means the pooled evidence
     cannot be honestly presented under one frame.
+
+    The declared-path pair ``(topology_role, path_fingerprint)`` is derived the same way but fails
+    SOFTLY (PR 4.3 review response): pooling across two declared paths at one q-point is
+    legitimate physics, so disagreement — or members that carry no campaign provenance at all —
+    drops the master into the provenance-less lane (both ``None``) instead of refusing it. What
+    the derivation prevents is the opposite error: a master whose members all sit on ONE declared
+    path landing in a DIFFERENT partition from the very arenas it pools.
     """
     if not members:
         return None, "no member labels to derive provenance from"
@@ -317,13 +347,15 @@ def _member_provenance(members: list, measurements: dict) -> tuple:
             or len({r.lattice_epoch for r in records}) > 1):
         return None, "members disagree on sample/conditions/lattice_epoch"
     r0 = records[0]
-    return (r0.sample, r0.conditions, r0.lattice_epoch), None
+    declared = {(r.topology_role, r.path_fingerprint) for r in records}
+    role, path = declared.pop() if len(declared) == 1 else (None, None)
+    return (r0.sample, r0.conditions, r0.lattice_epoch, role, path), None
 
 
 def _superseded_by_masters(fits, measurements: dict) -> tuple:
     """``(qualified, provenance)``: the member labels CANONICAL pooled masters claim, and the
-    derived ``(sample, conditions, lattice_epoch)`` for each COMPATIBLE one, keyed by the
-    master's own ref.
+    derived ``(sample, conditions, lattice_epoch, topology_role, path_fingerprint)`` for each
+    COMPATIBLE one, keyed by the master's own ref.
 
     A master's row IS the interpretation of its members' pooled counts, so its members' own rows
     are not a second, independent arena — UNLESS the members' own measurement records disagree

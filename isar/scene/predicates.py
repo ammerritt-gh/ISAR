@@ -829,7 +829,8 @@ def _completeness_relative(spec, scene_payload, prior) -> QuestionAssessment:
             continue
         pid = partition_id(partition_key(
             obs.get("sample"), tuple((k, v) for k, v in obs.get("conditions") or ()),
-            obs.get("lattice_epoch"), str(ref), t_round))
+            obs.get("lattice_epoch"), str(ref), t_round,
+            obs.get("topology_role"), obs.get("path_fingerprint")))
         if pid == spec.subject.partition_id:
             non_scoring_here.append(ref)
     if trusted_fitless:

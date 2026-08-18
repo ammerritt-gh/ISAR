@@ -2567,13 +2567,18 @@ def _persist_campaign_target(workspace: Path, objective) -> None:
 
 
 def _validated_campaign_provenance(payload: dict) -> dict:
-    """The campaign-provenance block, refused at submission when the role is not in vocabulary."""
+    """The campaign-provenance block, refused at submission when the role is not in vocabulary or
+    declares the canonical path without naming which path."""
     block = campaign_provenance(payload)
     role = block.get("topology_role")
     if role is not None and role not in TOPOLOGY_ROLES:
         raise ValueError(
             f"topology_role {role!r} is not in {TOPOLOGY_ROLES}; refusing to submit the request "
             "rather than poison the pre-dispatch stub at delivery")
+    if role == "canonical_path" and block.get("path_fingerprint") is None:
+        raise ValueError(
+            "topology_role 'canonical_path' carries no path_fingerprint; refusing to submit the "
+            "request rather than poison the pre-dispatch stub at delivery")
     return block
 
 

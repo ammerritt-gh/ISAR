@@ -546,6 +546,18 @@ class SceneObservation:
     # whole-set collinearity check exactly: no production writer stamps this field yet (PR 4.1-4.3
     # wire the campaign-provenance producer), so every workspace today is the ``None`` case.
     topology_role: str | None = None
+    # SCENE-4 PR 4.3 (D2/D3): the rest of the campaign-provenance block the measurement-arena
+    # record carries, verbatim off the record (``isar.workspace_api.scene``), never derived.
+    # ``program_fingerprint`` / ``program_step`` are PROVENANCE ONLY — deliberately NOT partition
+    # key components (D3): a consultation answer recompiles the program routinely, and an
+    # administrative key component would sever every continuity of a partition that measures the
+    # same physics. ``path_fingerprint`` is the PHYSICAL path identity
+    # (:func:`path_geometry_fingerprint`) and DOES join :func:`partition_key`, but only for a
+    # ``"canonical_path"`` arena. All three enter the fingerprint: an arena measured under a
+    # different program step or on a different declared path is not the same observation.
+    program_fingerprint: str | None = None
+    program_step: str | None = None
+    path_fingerprint: str | None = None
 
     def __post_init__(self):
         # PR #30 review response (disposition 14): canonicalize + validate on EVERY construction
@@ -586,6 +598,9 @@ class SceneObservation:
             "lattice_epoch": self.lattice_epoch,
             "fingerprint": self.fingerprint,
             "topology_role": self.topology_role,
+            "program_fingerprint": self.program_fingerprint,
+            "program_step": self.program_step,
+            "path_fingerprint": self.path_fingerprint,
         }
 
     @classmethod
@@ -620,6 +635,9 @@ class SceneObservation:
             lattice_epoch=_opt_int(d.get("lattice_epoch")),
             fingerprint=str(d["fingerprint"]),
             topology_role=_opt_str(d.get("topology_role")),
+            program_fingerprint=_opt_str(d.get("program_fingerprint")),
+            program_step=_opt_str(d.get("program_step")),
+            path_fingerprint=_opt_str(d.get("path_fingerprint")),
         )
 
 
@@ -923,8 +941,26 @@ class ConditionSet:
 
 
 def partition_key(sample, conditions, lattice_epoch, scan_ref: str,
-                  t_round: float | None) -> tuple:
-    """The #25/#28 partition identity: ``(sample, ConditionSet key, lattice_epoch)``.
+                  t_round: float | None, topology_role: str | None,
+                  path_fingerprint: str | None) -> tuple:
+    """The partition identity: ``(sample, ConditionSet key, lattice_epoch, path component)``.
+
+    SCENE-4 PR 4.3 (D3) added the fourth component — a partition means (sample, conditions,
+    lattice frame, PHYSICAL TRAJECTORY). The component is the arena's ``path_fingerprint``
+    (:func:`path_geometry_fingerprint`, geometry — never ``program_fingerprint`` or a step id)
+    when its ``topology_role`` DECLARES it on the canonical path, and ``None`` otherwise. Three
+    consequences, each the thing the rule prevents:
+
+    * a ``"context_probe"`` arena keeps the ``None`` component even when its record carries a
+      path fingerprint, so an off-path diagnostic never couples to the canonical path's
+      normalization, coverage, or completeness;
+    * an arena with NO campaign provenance (manual, pre-4.3, or a pooled master) also keeps the
+      ``None`` component, so every such arena of one (sample, conditions, epoch) stays in ONE
+      group and :func:`isar.scene.build.path_topology`'s geometric collinearity fallback governs
+      it exactly as before this change;
+    * two steps declaring DIFFERENT paths under the same sample/conditions/epoch separate, while
+      two declaring the SAME path — across a recompiled program, or reversed a→b vs b→a, which
+      :func:`path_geometry_fingerprint` canonicalizes to one value — stay together.
 
     ONE implementation (moved here from ``build._partition_key``, PR #31 finding K), shared by
     the builder and by any reader that must attribute an arena to its exact partition —
@@ -933,10 +969,16 @@ def partition_key(sample, conditions, lattice_epoch, scan_ref: str,
     tuple-key value (H13: undeclared couples only with undeclared); an UNRESOLVED condition (a
     declared temperature with no binning policy) is salted with the arena's own ``scan_ref``
     so it couples with nothing — the #28 fail-closed-to-no-coupling arm.
+
+    ``topology_role`` and ``path_fingerprint`` are REQUIRED, with no defaults: a caller that
+    cannot say must say ``None`` explicitly. A default here would let a caller that simply forgot
+    the pair silently compute the provenance-less key for a declared-path arena and attribute it
+    to the wrong partition — which is exactly the failure the component exists to prevent.
     """
     condition = ConditionSet.of(tuple((k, v) for k, v in conditions or ()), t_round)
     condition_key = condition.key if condition.resolved else (*condition.key, scan_ref)
-    return (sample, condition_key, lattice_epoch)
+    path = path_fingerprint if topology_role == "canonical_path" else None
+    return (sample, condition_key, lattice_epoch, path)
 
 
 def path_geometry_fingerprint(q_start, q_end) -> str:

@@ -174,6 +174,13 @@ class MeasurementArena:
         if self.topology_role is not None and self.topology_role not in TOPOLOGY_ROLES:
             raise ValueError(f"measurement-arena record {self.scan_ref!r}: topology_role "
                              f"{self.topology_role!r} is not one of {(*TOPOLOGY_ROLES, None)}")
+        # A canonical-path arena with no path identity is unplaceable: isar.scene.model's
+        # partition_key would silently drop it into the provenance-less lane, pooling it with
+        # arenas from any other path at the same sample/conditions/epoch. H1: refuse loudly, no
+        # invented fingerprint. A "context_probe" without one is legitimate — it declares no path.
+        if self.topology_role == "canonical_path" and self.path_fingerprint is None:
+            raise ValueError(f"measurement-arena record {self.scan_ref!r}: topology_role "
+                             f"'canonical_path' carries no path_fingerprint")
         names = [name for name, _ in self.conditions]
         dupes = sorted({n for n in names if names.count(n) > 1})
         if dupes:

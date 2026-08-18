@@ -4595,6 +4595,29 @@ def test_a_malformed_topology_role_refuses_at_submission_not_at_the_stub(tmp_pat
                    for item in (state.acquisition_provenance or []))
 
 
+def test_a_canonical_path_request_without_a_path_fingerprint_refuses_at_submission(tmp_path):
+    """Same blast radius as the malformed role: an arena declaring the canonical path but naming
+    no path is unplaceable downstream (isar.scene.model.partition_key), so it never ships. A
+    context_probe declaring no path is legitimate and still persists."""
+    from isar.drive.loop import _persist_acquisition_provenance
+    from isar.schema.card import Card
+
+    policy = (Path(loop_mod.__file__).resolve().parents[1] / "parsers" / "cards"
+              / "tavi.policy.toml")
+    shutil.copy(policy, tmp_path / "card.policy.toml")
+    base = {"acquisition_target_energy": 5.0, "submitted_ncount": 10_000, "kind": "production"}
+    with pytest.raises(ValueError, match="canonical_path.*path_fingerprint"):
+        _persist_acquisition_provenance(tmp_path, {
+            **base, "job_id": "j-nopath", "acquisition_id": "acq-nopath",
+            "topology_role": "canonical_path"})
+    _persist_acquisition_provenance(tmp_path, {
+        **base, "job_id": "j-probe", "acquisition_id": "acq-probe",
+        "topology_role": "context_probe"})
+    entries = Card.load(tmp_path / "card.policy.toml",
+                        tmp_path / "card.state.json").state.acquisition_provenance or []
+    assert [e.get("job_id") for e in entries] == ["j-probe"]
+
+
 # ------------------------------------------------------------- PR #9 R24: the pre-submission gate
 def test_analysis_overrun_during_planning_stops_before_any_measurement_is_submitted(
         tmp_path, monkeypatch):

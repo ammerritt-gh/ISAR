@@ -50,7 +50,7 @@ def components(n_modes, extra=()):
 def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), bands=None, q=(1.0, 0.0, 0.0),
            status="complete", fallback=None, sink=None, temperature=300.0, exposure=1.0,
            count_trust="trusted", sample=None, conditions=None, lattice_epoch=None,
-           topology_role=None):
+           topology_role=None, path_fingerprint=None):
     rows = tuple(
         CandidateRow(label=label, k=None, n_modes=n_modes, log_evidence=lnz,
                      evidence_method="laplace", posterior_probability=None, usable=usable,
@@ -75,7 +75,8 @@ def mk_obs(scan_ref, candidates, *, window=(-10.0, 10.0), bands=None, q=(1.0, 0.
                            selection_fallback=fallback, arena_fingerprint=None,
                            evidence_sink=sink, sample=sample, conditions=conditions,
                            count_trust=count_trust, lattice_epoch=lattice_epoch,
-                           topology_role=topology_role, fingerprint="x")
+                           topology_role=topology_role, path_fingerprint=path_fingerprint,
+                           fingerprint="x")
     # Stamped from a label-sorted copy: the builder sorts candidates, so permuting the input
     # tuple in a test must be a real permutation of the same observation, not a different one.
     canon = replace(obs, candidates=tuple(sorted(rows, key=lambda c: c.label)))

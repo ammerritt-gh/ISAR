@@ -133,7 +133,27 @@ def test_a_present_but_unknown_topology_role_refuses_loudly(factory):
 
 @pytest.mark.parametrize("role", TOPOLOGY_ROLES)
 def test_every_vocabulary_topology_role_is_legal(role):
-    assert MeasurementArena(**_record(topology_role=role)).topology_role == role
+    # "canonical_path" must name the path it is on (below); every other role need not.
+    assert MeasurementArena(**_record(topology_role=role,
+                                      path_fingerprint="pathfp")).topology_role == role
+
+
+@pytest.mark.parametrize("factory", [
+    lambda: MeasurementArena(**_record(topology_role="canonical_path")),
+    lambda: MeasurementArena.from_dict({**_record(topology_role="canonical_path"),
+                                        "schema": "isar.measurement-arena/1"}),
+])
+def test_a_canonical_path_arena_without_a_path_fingerprint_refuses_loudly(factory):
+    """H1: partition_key would silently drop such an arena into the provenance-less lane, pooling
+    it with arenas from every other path at the same sample/conditions/epoch."""
+    with pytest.raises(ValueError, match="canonical_path.*path_fingerprint"):
+        factory()
+
+
+def test_a_context_probe_without_a_path_fingerprint_stays_legal():
+    """An off-path diagnostic declares no path — nothing to name."""
+    rec = MeasurementArena(**_record(topology_role="context_probe"))
+    assert (rec.topology_role, rec.path_fingerprint) == ("context_probe", None)
 
 
 def test_the_scene_layer_reads_the_same_topology_vocabulary():
