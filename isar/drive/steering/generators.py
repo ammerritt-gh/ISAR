@@ -90,6 +90,11 @@ class DiscoveryContext:
     step_payload: Mapping
     basis_agenda_digest: str
     scene_digest: str
+    # SCENE-4 PR 4.3 (D4): the cold-start declaration as
+    # ``(partition_id, lattice_epoch, program_step)``, or
+    # None off the cold-start path. Carried only so the opening book can seed its frame
+    # attribution for a partition no observation has placed yet; nothing here derives from it.
+    declared_partition: tuple | None = None
 
 
 @dataclass(frozen=True)
@@ -307,7 +312,8 @@ def opening_book_survey(context: DiscoveryContext, spec_dict: Mapping) -> Genera
         # on a program-scoped subject, so the wrapper checks BEFORE calling it — never a
         # controller fault, never a blind seed.
         return GeneratorOutcome.inapplicable("program_scoped_subject_unfanned")
-    proposals = [p for p in propose_survey(context.scene_payload, context.step_payload, subject)
+    proposals = [p for p in propose_survey(context.scene_payload, context.step_payload, subject,
+                                          context.declared_partition)
                 if p.kind in ("missing_q_node", "missing_omega_band")]
     if not proposals:
         return GeneratorOutcome.clean_zero("coverage_complete", exhaustion_clean=True)
@@ -334,7 +340,8 @@ def exposure_fill(context: DiscoveryContext, spec_dict: Mapping) -> GeneratorOut
     subject = QuestionSubject.from_dict(spec_dict["subject"])
     if subject.partition_id is None:
         return GeneratorOutcome.inapplicable("program_scoped_subject_unfanned")
-    proposals = [p for p in propose_survey(context.scene_payload, context.step_payload, subject)
+    proposals = [p for p in propose_survey(context.scene_payload, context.step_payload, subject,
+                                          context.declared_partition)
                 if p.kind == "underexposed_cell"]
     if not proposals:
         return GeneratorOutcome.clean_zero("exposure_floor_met", exhaustion_clean=True)

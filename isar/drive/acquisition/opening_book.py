@@ -83,7 +83,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from isar.schema.placement import zone_centre_order_weight
-from isar.scene.questions import QuestionSubject
+from isar.scene.questions import QuestionSubject, step_observed
 from isar.scene.predicates import match_subject
 
 KIND_RANK = {"missing_q_node": 0, "missing_omega_band": 1, "underexposed_cell": 2}
@@ -166,7 +166,8 @@ def _zc_anchors(scene_payload: Mapping, region: tuple[float, float]) -> tuple[fl
                  if region[0] <= n * period <= region[1])
 
 
-def _frame_compatible(subject: QuestionSubject, scene_payload: Mapping) -> bool:
+def _frame_compatible(subject: QuestionSubject, scene_payload: Mapping,
+                      declared_partition: tuple | None = None) -> bool:
     """Whether declared zone geometry is in the SAME lattice frame as the subject's partition
     (mirrors ``isar.scene.agenda._derive_impl``, agenda.py:259-265 + :286 exactly): an
     incompatible or unverifiable epoch must stay inert rather than inheriting a foreign frame's
@@ -174,7 +175,16 @@ def _frame_compatible(subject: QuestionSubject, scene_payload: Mapping) -> bool:
 
     The subject is always partition-scoped here — ``propose_survey`` refused a program-scoped
     one at the front door — so a permissive ``partition_id is None`` arm would be dead code
-    wearing a live look (H1: deleted, not kept)."""
+    wearing a live look (H1: deleted, not kept).
+
+    ``declared_partition`` (SCENE-4 PR 4.3, D4) is the cold-start declaration as
+    ``(partition_id, lattice_epoch, program_step)``. It SEEDS the attribution map — it never
+    weakens the comparison: an observation-less declared partition would otherwise read the
+    "missing" sentinel here, score every proposal at zero anchor weight, and silently degrade the
+    campaign's very first scan to the region midpoint. ``setdefault`` keeps observations
+    authoritative the moment any exist, and the seed itself stops once the DECLARING STEP has
+    produced any observation — the same retirement rule ``isar.scene.agenda`` applies to the
+    fan-out, so the two never disagree about whether the declaration is still live."""
     declared_epoch = (scene_payload.get("sample_knowledge") or {}).get("lattice_epoch")
     partition_of_ref = {fp["scan_ref"]: fp.get("partition_id")
                         for fp in scene_payload.get("footprints") or ()}
@@ -183,11 +193,14 @@ def _frame_compatible(subject: QuestionSubject, scene_payload: Mapping) -> bool:
         pid_of = partition_of_ref.get(observation["scan_ref"])
         if pid_of is not None:
             epoch_of_pid.setdefault(pid_of, observation.get("lattice_epoch"))
+    if declared_partition is not None and not step_observed(scene_payload, declared_partition[2]):
+        epoch_of_pid.setdefault(declared_partition[0], declared_partition[1])
     return epoch_of_pid.get(subject.partition_id, "missing") == declared_epoch
 
 
 def propose_survey(scene_payload: Mapping, step_payload: Mapping,
-                    subject: QuestionSubject | Mapping) -> tuple[SurveyProposal, ...]:
+                    subject: QuestionSubject | Mapping,
+                    declared_partition: tuple | None = None) -> tuple[SurveyProposal, ...]:
     """The ordered opening-book proposal set for the current scene against a frozen step,
     scoped to ONE ``DiscoverRegion`` question subject (P0-A): footprint selection is
     ``match_subject(subject, scene_payload)`` — partition-exact, region-bounded — never every
@@ -241,8 +254,8 @@ def propose_survey(scene_payload: Mapping, step_payload: Mapping,
         # with zero footprints already gets a full multi-node gap fill from the walk above and
         # never reaches here.
         midpoint = (region[0] + region[1]) / 2.0
-        anchors = _zc_anchors(scene_payload, region) if _frame_compatible(subject, scene_payload) \
-            else ()
+        anchors = (_zc_anchors(scene_payload, region)
+                  if _frame_compatible(subject, scene_payload, declared_partition) else ())
         seed = min(anchors, key=lambda a: (abs(a - midpoint), a)) if anchors else midpoint
         return (SurveyProposal("missing_q_node", seed, {}),)
 
@@ -263,7 +276,8 @@ def propose_survey(scene_payload: Mapping, step_payload: Mapping,
 
     anchors = ()
     zc_weight = 0.0
-    if survey_order == "placement_informed" and _frame_compatible(subject, scene_payload):
+    if survey_order == "placement_informed" and _frame_compatible(subject, scene_payload,
+                                                                  declared_partition):
         anchors = _zc_anchors(scene_payload, region)
         if anchors:
             zc_weight = zone_centre_order_weight(step_payload["catalogue_profile"])

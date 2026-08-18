@@ -48,7 +48,7 @@ from .predicates import (
     identity_hypothesis_classes, mass_interval)
 from .questions import (
     Blocker, PredicateDeclaration, QuestionAssessment, QuestionSpec, QuestionSubject,
-    match_subject, scene_partitions, snap_tile, validate_dependency_dag)
+    match_subject, scene_partitions, snap_tile, step_observed, validate_dependency_dag)
 from .store import RevisionStore, StoreResult, UNSET
 
 AGENDA_SCHEMA = "isar.agenda-revision/1"
@@ -214,7 +214,8 @@ def _spec(family, kind, subject, params, *, priority, deps=(), provenance=()):
 def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
                   program_fingerprint: str, exhaustion_evidence: tuple = (),
                   blocker_evidence: tuple = (),
-                  generator_registry_fingerprint: str | None = None) -> AgendaRevision:
+                  generator_registry_fingerprint: str | None = None,
+                  declared_partition: tuple | None = None) -> AgendaRevision:
     """Derive the agenda for one frozen discover step against one scene revision. Pure.
 
     Presence is CLASS-AGNOSTIC (PR #31 finding A, owner's door 2): `structural_presence`
@@ -232,6 +233,13 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
     exhaustion proof this SAME call authorizes can find the durable blocker it needs to close
     the question — see :func:`attach_blocker_evidence`. Anything stale/foreign/closed-target
     is recorded as a rejected note, never attached, never raised.
+
+    ``declared_partition`` (SCENE-4 PR 4.3, D4) is the cold-start declaration as
+    ``(partition_id, lattice_epoch, program_step)`` — produced by
+    :func:`isar.drive.steering.cold_start.declare_partition` through this layer's own
+    ``partition_key``, and passed as a primitive triple because the scene layer may not import
+    ``isar.drive``. It JOINS the observed fan-out until its own declaring step has produced any
+    observation, then retires permanently; see the union rule at its use site.
     """
     policy = step_payload["resolved_policy"]
     thresholds = policy["thresholds"]
@@ -252,7 +260,7 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
              ("defaults_profile",
               f"{policy['profile']['id']}/{policy['profile']['version']}"))
 
-    partitions = scene_partitions(scene_payload) or (None,)
+    partitions = scene_partitions(scene_payload)
     candidates_of = {obs["scan_ref"]: {c["label"]: c for c in obs.get("candidates") or ()}
                     for obs in scene_payload.get("observations") or ()}
     footprints = scene_payload.get("footprints") or ()
@@ -270,6 +278,24 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
         pid_of = partition_of_ref.get(observation["scan_ref"])
         if pid_of is not None:
             epoch_of_pid.setdefault(pid_of, observation.get("lattice_epoch"))
+
+    # Cold-start fan-out union (SCENE-4 PR 4.3, D4; owner ruling 2026-08-18). The declaration is
+    # initialization and nothing more: it JOINS the observed fan-out (union, deduped) until the
+    # DECLARING STEP has produced any observation at all, and then retires permanently — whatever
+    # partition that first measurement actually landed in, reality owns the fan-out from there.
+    # The retirement is keyed on the step, not on "any observation anywhere", because a warm
+    # workspace whose other steps have measured still tells the question layer NOTHING about
+    # where this step's first scan will land. Its epoch SEEDS the frame attribution below
+    # (``setdefault``, so an observed epoch always wins): without that seed an observation-less
+    # partition reads the "missing" sentinel, every anchored opener goes inert, and declared
+    # knowledge silently degrades to the uniform survey at exactly the moment it is the only
+    # knowledge the campaign has.
+    if declared_partition is not None and not step_observed(scene_payload, declared_partition[2]):
+        if declared_partition[0] not in partitions:
+            partitions = (*partitions, declared_partition[0])
+        epoch_of_pid.setdefault(declared_partition[0], declared_partition[1])
+    # A scene with neither observed nor declared partitions is the program-scoped lane.
+    partitions = partitions or (None,)
 
     specs: list[QuestionSpec] = []
     notes: list[tuple] = []
@@ -714,6 +740,7 @@ def build_and_store_agenda(report_dir, scene_payload: dict, step_payload: dict, 
                            step_id: str, program_fingerprint: str,
                            exhaustion_evidence: tuple = (), blocker_evidence: tuple = (),
                            generator_registry_fingerprint: str | None = None,
+                           declared_partition: tuple | None = None,
                            expected_parent=UNSET, source: str = "driver") -> StoreResult:
     """Derive, persist, and record typed transitions against the previous agenda.
 
@@ -728,7 +755,8 @@ def build_and_store_agenda(report_dir, scene_payload: dict, step_payload: dict, 
         scene_payload, step_payload, step_id=step_id,
         program_fingerprint=program_fingerprint,
         exhaustion_evidence=exhaustion_evidence, blocker_evidence=blocker_evidence,
-        generator_registry_fingerprint=generator_registry_fingerprint)
+        generator_registry_fingerprint=generator_registry_fingerprint,
+        declared_partition=declared_partition)
     result = AGENDA_STORE.write_revision(report_dir, revision,
                                          expected_parent=expected_parent, source=source)
     if result.unchanged:

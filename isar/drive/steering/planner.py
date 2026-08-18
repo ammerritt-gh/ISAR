@@ -50,6 +50,7 @@ from isar.scene.agenda import (
 from isar.scene.model import canonical_bytes, fingerprint
 from isar.scene.store import RevisionStore, SCENE_STORE, StaleSceneAtPublication
 
+from isar.drive.steering.cold_start import DeclaredPartition
 from isar.drive.steering.exhaustion import CONTROLLER_FAULT as _PRODUCER_FAULT
 from isar.drive.steering.exhaustion import produce_exhaustion
 from isar.drive.steering.generators import DiscoveryContext
@@ -157,7 +158,8 @@ def _placement_fingerprint(manifest: dict) -> str:
 
 
 def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
-                           registry_fp: str, locality_coordinate: float | None) -> dict:
+                           registry_fp: str, locality_coordinate: float | None,
+                           declared_partition=None) -> dict:
     """Every ``decision_basis`` field that does NOT depend on a stored scene existing — computed
     even on the scene-missing fault path, so that record is as diagnostic as any other.
 
@@ -165,9 +167,18 @@ def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
     record: it already perturbs which action ``select()`` picks (``scheduler.py``'s rank
     vector), so leaving it out of the decision basis let two decisions differing ONLY in
     locality look identical everywhere a reader would check provenance.
+
+    ``declared_partition`` (PR 4.3 D4) embeds the cold-start declaration's FULL key components —
+    replay reproduces the declared partition from THIS record, never from the mutable card, so a
+    card edited between runs is visible in the ledger by construction. The key is present only
+    when a declaration was actually supplied: a decision that used none says so by carrying
+    nothing, which also keeps every non-cold-start record byte-identical to its 4.2b shape.
     """
     placement_manifest = _raw_placement_manifest(step_payload["catalogue_profile"])
+    declared = ({"declared_partition": declared_partition.to_dict()}
+                if declared_partition is not None else {})
     return {
+        **declared,
         "program_fingerprint": program_fp,
         "step_id": step_id,
         "resolved_policy_fingerprint": fingerprint(step_payload["resolved_policy"]),
@@ -291,14 +302,27 @@ class PlanResult:
 
 def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
                      locality_coordinate: float | None = None,
-                     blocker_evidence: tuple = ()) -> PlanResult:
+                     blocker_evidence: tuple = (),
+                     declared_partition: DeclaredPartition | None = None) -> PlanResult:
+    """``declared_partition`` (PR 4.3 D4) is the caller-minted cold-start declaration
+    (:func:`isar.drive.steering.cold_start.declare_partition`). Passing none keeps the 4.2b
+    behaviour exactly: an unmeasured workspace derives the program-scoped lane and every
+    generator answers ``program_scoped_subject_unfanned``."""
     report_dir = Path(report_dir)
     step = _resolve_discover_step(program, step_id)
     step_payload = step.payload.to_dict()
     program_fp = program_fingerprint(program)
     registry_fp = DISCOVERY_GENERATOR_REGISTRY_VERSION
     basis_common = _decision_basis_common(program_fp, step_id, step_payload, registry_fp,
-                                          locality_coordinate)
+                                          locality_coordinate, declared_partition)
+    # Below the planner the declaration travels as the primitive triple the scene layer and the
+    # opening book both take — the DTO itself never crosses into isar.scene (import boundary).
+    # The step id rides along because it is the RETIREMENT test (owner ruling 2026-08-18): the
+    # declaration is live until an observation carries this same step, then reality owns the
+    # fan-out. ``step_id`` is the planner's resolved step, and the DTO was minted against it.
+    declared_frame = (None if declared_partition is None
+                      else (declared_partition.partition_id, declared_partition.lattice_epoch,
+                            declared_partition.step_id))
 
     # ---- atomic snapshot -----------------------------------------------------------------
     scene_current = SCENE_STORE.read_current(report_dir)
@@ -329,11 +353,12 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     # never disagree with pass-2's about which blockers are attached) ----------------------
     pass1 = derive_agenda(scene_payload, step_payload, step_id=step_id,
                           program_fingerprint=program_fp, blocker_evidence=blocker_evidence,
-                          generator_registry_fingerprint=registry_fp)
+                          generator_registry_fingerprint=registry_fp,
+                          declared_partition=declared_frame)
     basis_digest = pass1.payload["basis_digest"]
     context = DiscoveryContext(scene_payload=scene_payload, agenda_payload=pass1.payload,
                                step_payload=step_payload, basis_agenda_digest=basis_digest,
-                               scene_digest=scene_digest)
+                               scene_digest=scene_digest, declared_partition=declared_frame)
 
     fault_reason = None
     run_result = RunResult(records=(), evaluations=())
@@ -365,7 +390,8 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     pass2 = derive_agenda(scene_payload, step_payload, step_id=step_id,
                           program_fingerprint=program_fp, exhaustion_evidence=proofs,
                           blocker_evidence=blocker_evidence,
-                          generator_registry_fingerprint=registry_fp)
+                          generator_registry_fingerprint=registry_fp,
+                          declared_partition=declared_frame)
     pass2_open = {a["question_id"] for a in pass2.payload["assessments"] if a["status"] == "open"}
     # PR #33 A-P0-3/W5: completion is THE AGENDA VERDICT'S call, never inferred from raw
     # statuses -- a question can leave "open" by closing UNRESOLVABLE rather than answering
@@ -420,6 +446,7 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
                            program_fingerprint=program_fp, exhaustion_evidence=proofs,
                            blocker_evidence=blocker_evidence,
                            generator_registry_fingerprint=registry_fp,
+                           declared_partition=declared_frame,
                            expected_parent=agenda_snapshot, source="planner")
 
     PROGRAM_STORE.write_revision(report_dir, _ProgramRevision.of(program), source="planner",

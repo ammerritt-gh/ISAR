@@ -523,6 +523,23 @@ def scene_partitions(scene_payload: dict) -> tuple[str, ...]:
     return tuple(sorted(i for i in ids if i is not None))
 
 
+def step_observed(scene_payload: dict, step_id: str | None) -> bool:
+    """Whether any observation in the revision was measured under program step ``step_id``.
+
+    The cold-start retirement test (SCENE-4 PR 4.3, D4; owner ruling 2026-08-18): a declared
+    partition is initialization only, and it retires the moment ITS OWN step has produced any
+    observation — whatever partition that measurement landed in. Keyed on the declaring step, not
+    on "any observation anywhere", because a warm workspace whose other steps have measured says
+    nothing about where this step's first scan will land. A ``None`` step id matches nothing: a
+    declaration that cannot name its step can never be retired by evidence, so it must not be
+    treated as retired.
+    """
+    if step_id is None:
+        return False
+    return any(obs.get("program_step") == step_id
+               for obs in scene_payload.get("observations") or ())
+
+
 def _band_overlaps(fp: dict, band: tuple[float, float]) -> bool:
     return any(b["hi"] > band[0] and b["lo"] < band[1] for b in fp.get("bands") or ())
 
