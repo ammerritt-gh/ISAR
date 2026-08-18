@@ -77,6 +77,10 @@ Known deviations
 ----------------
 * The broken-scan bound is per ACTION, not per detector: a delivery with any trusted arena is not
   broken, so a single dead analyzer in a multi-arena delivery never counts (see above).
+* **C9 obligation — the operator surface for the consultation channel.** Answering a prompt today
+  means hand-writing ``report/control/prompt-<id>.answer.json``. The Operator Contract half — an
+  ``isar answer`` subcommand, or the GUI control that writes the same file through
+  :func:`isar.drive.consultation.write_answer` — is owed and is NOT in this slice.
 
 Stopping
 --------
@@ -107,16 +111,21 @@ from isar.drive.acquisition.acquire import _resolve_fwhm
 from isar.drive.acquisition.scan_design import (
     BudgetInsufficientForMinimumBatch, InstrumentLimitBelowMinimumBatch,
     InstrumentPointLimitExceeded)
+from isar.drive.consultation import ConsultationChannel
 from isar.drive.instrument.tavi_client import TaviError
 from isar.drive.objective import ObjectiveSpec
 from isar.drive.session_log import AnalysisLimitExceeded, log_event, timed
 from isar.drive.steering.cold_start import CANONICAL_PATH, declare_partition
 from isar.drive.steering.planner import (
-    CONTROLLER_FAULT, SELECTED, PlanResult, plan_next_action)
+    CONTROLLER_FAULT, PROGRAM_STORE, SELECTED, PlanResult, plan_next_action, program_revision)
 from isar.drive.steering.realization import DiscoveryWindowUnrealizable, proposal_from_intent
 from isar.scene.agenda import AGENDA_STORE, evaluate_agenda
-from isar.schema.campaign_program import CampaignProgram, ProgramError
+from isar.schema.campaign_program import CampaignProgram, ProgramError, program_fingerprint
 from isar.schema.card import Card
+from isar.schema.consultation import (
+    KEEP_SPENDING, RETRY_MORE, apply_consultation_overrides, consultation_overrides,
+    strip_consultation_overrides)
+from isar.scene.store import ConcurrentRevisionWrite
 from isar.schema.generators import (
     DISCOVERY_GENERATOR_REGISTRY_VERSION, QuestionActionAssociation, QuestionBlockerEvidence)
 from isar.schema.hypotheses import content_fingerprint
@@ -245,6 +254,11 @@ class StepResult:
     declared_partition_id: str | None = None
     blocking_questions: tuple[str, ...] = ()
     consultation_requests: tuple[dict, ...] = ()
+    #: Every prompt this step MINTED from those requests, in issue order (C8).
+    prompts: tuple[dict, ...] = ()
+    #: Every program fingerprint this step planned under, in order. Longer than one exactly when a
+    #: policy-changing consultation answer compiled a new frozen revision.
+    program_fingerprints: tuple[str, ...] = ()
     observations: list = field(default_factory=list, repr=False)
 
 
@@ -338,6 +352,24 @@ def _broken_scan_retry_limit(step) -> int:
             "`isar drive --goal ... --compile-only` rather than running it under a read-time "
             "default nobody declared")
     return int(thresholds["broken_scan_retry_limit"])
+
+
+def _prompt_timeout_deliveries(step) -> int:
+    """How many DELIVERIES an operator prompt stays open before its declared default applies (C8).
+
+    Read off the frozen program for the same reason the retry budget is (and refused the same way
+    when absent): it resolves through the ordinary precedence chain at compile time. Counted in
+    deliveries rather than seconds so the same seed replays identically — a wall-clock timeout
+    would fork a replay the moment the box was slower.
+    """
+    policy = dict(getattr(step.payload, "resolved_policy", None) or {})
+    thresholds = dict(policy.get("thresholds") or {})
+    if "prompt_timeout_deliveries" not in thresholds:
+        raise ProgramError(
+            f"step {step.id!r} froze no prompt_timeout_deliveries; recompile the campaign with "
+            "`isar drive --goal ... --compile-only` rather than running it under a read-time "
+            "default nobody declared")
+    return int(thresholds["prompt_timeout_deliveries"])
 
 
 def _count_trust_by_scan_ref(report_dir: Path) -> dict[str, str]:
@@ -549,7 +581,6 @@ def _campaign_provenance_block(program: CampaignProgram, step, declared) -> dict
     endpoints through ``path_geometry_fingerprint`` — one derivation, so the partition a scan is
     declared into and the partition its record lands in cannot disagree.
     """
-    from isar.schema.campaign_program import program_fingerprint
     return {"topology_role": CANONICAL_PATH,
             "program_fingerprint": program_fingerprint(program),
             "program_step": step.id,
@@ -569,8 +600,24 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
     hypotheses_fingerprint = _declared_hypotheses_fingerprint(cfg)
     provenance = _campaign_provenance_block(program, step, declared)
 
+    # Consultation channel state (C8). The overrides are read off the FROZEN PROGRAM, so a step
+    # resumed after an answer starts with the policy that answer compiled — the program is the
+    # record, and there is no separate prompt state to reload.
+    overrides = consultation_overrides(step)
+    keep_open: set[str] = set(overrides["keep_open_questions"])
+    retry_budget: dict[str, int] = dict(overrides["retry_budget_by_action"])
+    # Settled answers whose recompile has not landed yet (a racing program writer took the pointer
+    # between this step's plan and its write). Re-attempted on the next delivery.
+    pending_questions: set[str] = set()
+    pending_budgets: dict[str, int] = {}
+    channel = ConsultationChannel(
+        cfg.workspace, cfg.log_path, step_id=step.id,
+        timeout_deliveries=_prompt_timeout_deliveries(step),
+        policy_defaults=dict(dict(step.payload.resolved_policy).get("prompt_defaults") or {}))
+
     result = StepResult(step_id=step.id, kind=step.kind,
-                        declared_partition_id=declared.partition_id)
+                        declared_partition_id=declared.partition_id,
+                        program_fingerprints=(program_fingerprint(program),))
     observations: list[dict] = []
     consumed: set = set()
     scan_kind: dict = {}
@@ -596,15 +643,18 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
     # fingerprint (which hashes the scene digest) is stable across the cycle and IS the identity the
     # evaluations carry. The two suppression channels are deliberately distinct and both visible in
     # the decision basis — retirement narrows selection only, a decline structurally rejects.
-    declined_fingerprints: set[str] = set()
-    decline_evidence: tuple[QuestionBlockerEvidence, ...] = ()
+    # ``{scientific_action_fingerprint: evidence emitted for it}`` rather than a set beside a tuple:
+    # a ``keep_spending`` answer suppresses the EVIDENCE for one question without un-rejecting the
+    # action, which needs the two to stay joined.
+    declined_actions: dict[str, tuple[QuestionBlockerEvidence, ...]] = {}
     decline_replans = 0                         # per delivery; reset by any delivery
 
     def ended(verdict: str, *, reason: str | None = None, agenda=None) -> tuple[StepResult, str]:
         log_event(cfg.log_path, "decide", {
             "event": "program_step_end", "action": "program_step_end", "step_id": step.id,
             "verdict": verdict, "reason": reason, "deliveries": result.deliveries})
-        finished = replace(result, reason=reason, observations=observations)
+        finished = replace(result, reason=reason, observations=observations,
+                           prompts=channel.issued)
         if agenda is not None:
             # The agenda's own consultation requests come FIRST and the step's offramps after: both
             # are C8's input, and appending rather than replacing is what keeps an offramp recorded
@@ -628,6 +678,98 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
     pin = build.digest
     result = replace(result, scene_digests=(pin,), build_seconds=(build.seconds,))
 
+    def apply_resolutions(resolutions) -> str | None:
+        """Act on every prompt that stopped being open. Returns a fault reason, or None.
+
+        Only the POLICY-CHANGING options do anything: ``keep_spending`` and ``retry_more`` compile
+        a NEW FROZEN PROGRAM REVISION through the ``report/program/`` store under CAS (D6 — no
+        in-place mutation anywhere), and every subsequent decision cites its fingerprint because
+        ``DecisionBasis`` already embeds the program. The two declared defaults confirm what the
+        driver already did, so they recompile nothing.
+
+        The CAS parent is the fingerprint THIS STEP HAS BEEN PLANNING UNDER, never a pointer read
+        taken at write time: a fresh read cannot fail, so it would have made the compare-and-swap
+        vacuous and hidden exactly the racing program writer it exists to catch. When it does fire,
+        the override is NOT applied on this pass — it stays pending and is re-attempted on the next
+        delivery under whatever the pointer then names. The delivery loop bounds that; there is no
+        retry machinery of its own.
+        """
+        nonlocal program, step, provenance
+        for resolution in resolutions:
+            if resolution.option == KEEP_SPENDING:
+                pending_questions.add(resolution.prompt.subject)
+            elif resolution.option == RETRY_MORE:
+                key = resolution.prompt.subject
+                # A FRESH budget from where this action already is, so "retry more" always buys at
+                # least one more delivery even when the step's frozen limit is 0. Merged upward
+                # (the override merge is monotone), so a re-attempt can only ever raise it.
+                pending_budgets[key] = max(pending_budgets.get(key, 0),
+                                           broken_deliveries.get(key, 0) + max(retry_limit, 1))
+                retired.discard(key)
+        if not pending_questions and not pending_budgets:
+            return None
+        questions, budgets = sorted(pending_questions), dict(pending_budgets)
+
+        try:
+            candidate = apply_consultation_overrides(
+                program, step.id, keep_open_questions=questions, retry_budget_by_action=budgets)
+            PROGRAM_STORE.write_revision(
+                report_dir, program_revision(candidate), source="consultation",
+                expected_parent=result.program_fingerprints[-1])
+        except ConcurrentRevisionWrite as error:
+            log_event(cfg.log_path, "decide", {
+                "event": "consultation_recompile_conflict",
+                "action": "consultation_recompile_conflict", "step_id": step.id,
+                "expected_parent": result.program_fingerprints[-1], "error": str(error),
+                "keep_open_questions": questions,
+                "retry_budget_by_action": {k: budgets[k] for k in sorted(budgets)},
+                "iter": result.deliveries})
+            return None
+        except ValueError as error:                          # includes ProgramError
+            return f"consultation_recompile_failed: {error}"
+        program = candidate
+        step = next(s for s in program.steps if s.id == step.id)
+        pending_questions.clear()
+        pending_budgets.clear()
+        keep_open.update(questions)
+        for key, value in budgets.items():          # monotone, exactly as the program merged them
+            retry_budget[key] = max(retry_budget.get(key, 0), value)
+        provenance = _campaign_provenance_block(program, step, declared)
+        # Retroactive: evidence already carried for a now-kept-open question stops being supplied,
+        # so the next derivation stops closing that question unresolvable. The DECLINED FINGERPRINT
+        # stays — the instrument's refusal is still true, and re-proposing it forever is a loop.
+        for fingerprint_, evidence in list(declined_actions.items()):
+            declined_actions[fingerprint_] = tuple(
+                e for e in evidence if e.question_id not in keep_open)
+        fingerprint_now = program_fingerprint(program)
+        log_event(cfg.log_path, "decide", {
+            "event": "consultation_program_recompiled",
+            "action": "consultation_program_recompiled", "step_id": step.id,
+            "program_fingerprint": fingerprint_now,
+            "parent_program_fingerprint": result.program_fingerprints[-1],
+            "keep_open_questions": sorted(keep_open),
+            "retry_budget_by_action": {k: retry_budget[k] for k in sorted(retry_budget)},
+            "iter": result.deliveries})
+        return None
+
+    def issue_prompts(requests, plan_result) -> None:
+        channel.issue(requests, delivery=result.deliveries,
+                      program_fingerprint=result.program_fingerprints[-1],
+                      agenda_revision=getattr(plan_result, "agenda_digest", None),
+                      scene_digest=getattr(plan_result, "scene_digest", None))
+
+    def hard_pause(agenda):
+        """The step end an unanswered HARD prompt forces, or None. Hard gate v1 IS the
+        operator-requested pause: no second pause mechanism, and the beam is released rather than
+        held idle waiting on a human. One reading of ``hard_open()`` per check — reading it twice
+        asked the channel a question whose answer could differ between the two calls."""
+        hard = channel.hard_open()
+        if not hard:
+            return None
+        return ended(VERDICT_OPERATOR_STOPPED, agenda=agenda,
+                     reason="hard_prompt awaiting answer: "
+                            + ", ".join(p.prompt_id for p in hard))
+
     while True:
         if _operator_stop_requested(cfg, result.deliveries):
             log_event(cfg.log_path, "decide",
@@ -635,11 +777,23 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
                        "iter": result.deliveries, "token": cfg.control_token})
             return ended(VERDICT_OPERATOR_STOPPED, reason=f"token {cfg.control_token}")
 
+        # The consultation channel, once per pass and BEFORE the plan: an answer that landed since
+        # the last pass must reach the program this decision is taken under, not the one after it.
+        fault = apply_resolutions(channel.poll(
+            result.deliveries, program_fingerprint=result.program_fingerprints[-1]))
+        if fault is not None:
+            return ended(VERDICT_MACHINE_FAILURE, reason=fault)
+        if program_fingerprint(program) != result.program_fingerprints[-1]:
+            result = replace(result,
+                             program_fingerprints=result.program_fingerprints
+                             + (program_fingerprint(program),))
+
         plan = plan_next_action(report_dir, program, step.id,
                                 declared_partition=declared, scene_pin=pin,
                                 retired_physical_actions=frozenset(retired),
-                                blocker_evidence=decline_evidence,
-                                declined_fingerprints=frozenset(declined_fingerprints))
+                                blocker_evidence=tuple(e for evidence in declined_actions.values()
+                                                       for e in evidence),
+                                declined_fingerprints=frozenset(declined_actions))
         result = replace(result, plan_outcome=plan.outcome)
         if plan.outcome == CONTROLLER_FAULT:
             return ended(VERDICT_MACHINE_FAILURE, reason=f"controller_fault: {plan.reason}")
@@ -652,8 +806,17 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
             # corruption, which is a machine failure with a recorded reason, not an unhandled
             # exception that reaches the CLI as a bare exit 2 with no verdict attached.
             return ended(VERDICT_MACHINE_FAILURE, reason=f"store_corrupt: {error}")
+        # The agenda's own consultation requests become prompts here — deduped by stable id, so a
+        # request the agenda repeats on every delivery costs exactly one prompt (D6).
+        issue_prompts(agenda.consultation_requests, plan)
+        # COMPLETION FIRST, then the hard gate: a complete step is complete, and a hard prompt gates
+        # CONTINUATION, not completion. Gating completion would have reported a step that answered
+        # every one of its questions as an operator pause.
         if agenda.state == "complete":
             return ended(VERDICT_COMPLETE, agenda=agenda)
+        paused = hard_pause(agenda)
+        if paused is not None:
+            return paused
         if agenda.state == "incomplete_over_budget":
             return ended(VERDICT_OVER_BUDGET, reason="budget_exhausted", agenda=agenda)
         if plan.outcome != SELECTED:
@@ -768,9 +931,11 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
             # reason as the transport arm — there is no planner-side plan object here.
             _record_action_rejection(cfg, None, proposal, verdict, {}, {}, {},
                                      it=result.deliveries)
-            declined_fingerprints.add(intent.scientific_action_fingerprint)
-            emitted = _decline_evidence(plan, selected_associations, verdict)
-            decline_evidence = decline_evidence + emitted
+            # ``keep_open`` is an operator's standing answer that this question may NOT close on a
+            # blocker, so no evidence is carried for it — the action stays rejected all the same.
+            emitted = tuple(e for e in _decline_evidence(plan, selected_associations, verdict)
+                            if e.question_id not in keep_open)
+            declined_actions[intent.scientific_action_fingerprint] = emitted
             result = replace(result, decline_replans=result.decline_replans + 1)
             log_event(cfg.log_path, "decide", {
                 "event": "durable_blocker_emitted", "action": "durable_blocker_emitted",
@@ -792,8 +957,7 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
         # to re-derive evidence that could only ever be rejected, and the agenda picked up a
         # ``blocker_evidence_rejected`` note per expired item that says nothing about this
         # revision. A fresh decline re-emits both against the new revision.
-        declined_fingerprints.clear()
-        decline_evidence = ()
+        declined_actions.clear()
         decline_replans = 0
         _LOG.debug("discovery delivery %d folded %d row(s)", result.deliveries, len(rows))
 
@@ -814,13 +978,16 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
             fingerprint = intent.scientific_action_fingerprint
             key = physical_action_key(intent)
             count = broken_deliveries[key] = broken_deliveries.get(key, 0) + 1
+            # A ``retry_more`` answer froze a per-action ceiling into the program; absent one, the
+            # step's own frozen budget governs. Never a read-time default either way.
+            limit = int(retry_budget.get(key, retry_limit))
             log_event(cfg.log_path, "decide", {
                 "event": "broken_scan", "action": "broken_scan", "step_id": step.id,
                 "scientific_action_fingerprint": fingerprint, "physical_action_key": key,
                 "broken_deliveries": count,
-                "retry_limit": retry_limit, "scan_refs": sorted(delivered_trust),
+                "retry_limit": limit, "scan_refs": sorted(delivered_trust),
                 "count_trust": sorted(set(delivered_trust.values())), "iter": result.deliveries})
-            if count > retry_limit:
+            if count > limit:
                 # The offramp. The action leaves this step's re-submission set (never the
                 # inventory, and never the record), a human is asked, and the step KEEPS GOING —
                 # bad data is not one of the four stop reasons, and the planner still has a region
@@ -830,7 +997,7 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
                            "scientific_action_fingerprint": fingerprint,
                            "physical_action_key": key,
                            "retry_count": count - 1, "broken_deliveries": count,
-                           "retry_limit": retry_limit,
+                           "retry_limit": limit,
                            "region": {"q_start": list(step.payload.q_start),
                                       "q_end": list(step.payload.q_end),
                                       "hkl": list(intent.hkl)},
@@ -839,6 +1006,10 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
                                  consultation_requests=result.consultation_requests + (request,))
                 log_event(cfg.log_path, "decide", {"event": OFFRAMP_KIND, "action": OFFRAMP_KIND,
                                                    **request, "iter": result.deliveries})
+                issue_prompts((request,), plan)
+                paused = hard_pause(agenda)
+                if paused is not None:
+                    return paused
 
         try:
             build = _build_scene(cfg, iteration=result.deliveries)
@@ -893,6 +1064,62 @@ def _resolve_step(program: CampaignProgram, step_id: str | None):
     return step
 
 
+def _adopt_stored_revision(report_dir: Path, program: CampaignProgram,
+                           log_path) -> CampaignProgram:
+    """The AUTHORED program, or the stored revision that IS it plus the operator's answers (C8).
+
+    The failure this closes: a consultation recompile publishes a new frozen revision, the run
+    ends, and the next run is started from the same authored program — which carries none of the
+    answers. The recompiled revision would then never be read back, "the program is the record"
+    would be false, and a settled answer would be silently discarded.
+
+    One deterministic comparison, no clock and no lineage walk: strip the stored revision's
+    ``consultation_overrides`` and fingerprint what is left. Equal to the authored program's
+    fingerprint means the stored revision descends from exactly this program and is ADOPTED.
+    Unequal means the operator changed the goal — the authored program wins, and its own write
+    starts a fresh lineage. No store, an unreadable one, or a stored revision carrying no overrides
+    all leave the authored program in force.
+    """
+    authored = program_fingerprint(program)
+    try:
+        current = PROGRAM_STORE.read_current(report_dir)
+    except ValueError as error:
+        log_event(log_path, "decide",
+                  {"event": "consultation_overrides_store_unreadable",
+                   "action": "consultation_overrides_store_unreadable",
+                   "program_fingerprint": authored, "error": str(error)})
+        return program
+    if current is None:
+        return program
+    try:
+        stored = CampaignProgram.from_dict(current[1])
+    except (ProgramError, ValueError) as error:
+        log_event(log_path, "decide",
+                  {"event": "consultation_overrides_store_unreadable",
+                   "action": "consultation_overrides_store_unreadable",
+                   "program_fingerprint": authored, "error": str(error)})
+        return program
+
+    stored_fingerprint = program_fingerprint(stored)
+    if stored_fingerprint == authored:
+        return program                                  # the same program; nothing to adopt
+    if program_fingerprint(strip_consultation_overrides(stored)) == authored:
+        log_event(log_path, "decide",
+                  {"event": "consultation_overrides_adopted",
+                   "action": "consultation_overrides_adopted",
+                   "program_fingerprint": stored_fingerprint,
+                   "authored_program_fingerprint": authored})
+        return stored
+    log_event(log_path, "decide",
+              {"event": "consultation_overrides_not_adopted",
+               "action": "consultation_overrides_not_adopted",
+               "program_fingerprint": stored_fingerprint,
+               "authored_program_fingerprint": authored,
+               "reason": "the stored revision does not strip to the authored program; the goal "
+                         "changed, so the authored program starts a fresh lineage"})
+    return program
+
+
 def run_program(program: CampaignProgram, step_id: str | None = None,
                 config: dict[str, Any] | None = None) -> ProgramStepOutcome:
     """Run ONE program step end to end (D7).
@@ -917,6 +1144,12 @@ def run_program(program: CampaignProgram, step_id: str | None = None,
 
     objective = _carrier_objective(step, config)
     cfg = _campaign_config(objective, config)
+    # The compiled revision is READ BACK before anything plans (C8): a stored revision that is this
+    # same program plus an operator's settled answers is adopted, so the answers survive the run
+    # they were given in. The objective above is unaffected — an override touches only the step's
+    # ``consultation_overrides`` policy section.
+    program = _adopt_stored_revision(Path(cfg.workspace) / "report", program, cfg.log_path)
+    step = _resolve_step(program, step.id)
     budget = dict(objective.budget or {})
     budget_state = {"kind": budget.get("kind"), "amount": budget.get("amount"),
                     "neutrons": 0.0, "seconds": 0.0, "spent": 0.0}

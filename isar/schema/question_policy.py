@@ -28,7 +28,7 @@ Every default VALUE below is a named provisional v1 declaration, SCENE-7-calibra
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 QUESTION_POLICY_SCHEMA = "isar.question-policy/2"
 #: Read as a refusal table, never a migration table (matches campaign_program's convention):
@@ -61,6 +61,11 @@ TARGET_DEFAULTS: dict[str, float] = {
     # this same precedence chain — user ask > card guidelines > named default — and freezes into
     # the compiled program like every other threshold, never a bare code constant).
     "broken_scan_retry_limit": 2.0,
+    # 4.3 C8: how many DELIVERIES an operator prompt stays open before its declared default is
+    # applied and the campaign moves on. Delivery-counted rather than wall-clock (owner ruling
+    # 2026-08-18) so the same seed replays identically; named provisional v1 default 10, resolved
+    # through this same precedence chain and frozen into the program like every other threshold.
+    "prompt_timeout_deliveries": 10.0,
 }
 
 #: 4.2a: the ruled uniform-survey user option. TARGET authority, same precedence lane as the
@@ -112,6 +117,12 @@ SUPPORTED_STALENESS_MODES = ("synchronous",)
 SUPPORTED_UNRESOLVABLE_CLOSURE = ("accept_close",)
 SUPPORTED_TIMEOUT_BEHAVIOUR = ("apply_default",)
 
+#: The block section a POLICY-CHANGING consultation answer writes (4.3 C8, D6). OPTIONAL by
+#: design: absent means no answer has ever changed this program's policy, which is not a read-time
+#: default — there is nothing to default TO. Present, it is validated completely, because it
+#: decides what the driver does with a question or an action.
+CONSULTATION_OVERRIDES_KEY = "consultation_overrides"
+
 PROMPT_DEFAULTS: dict[str, str] = {
     "unresolvable_closure": "accept_close",
     "timeout_behaviour": "apply_default",
@@ -139,7 +150,7 @@ _UNIT_INTERVAL_FIELDS = {"confirm_presence_min_mass", "classify_identity_min_mas
 _EXCLUSIVE_ZERO_UNIT_FIELDS = {"parameter_precision_min_mass"}
 #: Counts, not quantities: a whole number of retries, and ZERO is a legitimate declaration ("offramp
 #: on the first broken scan"), which the positive-quantity rule below would refuse.
-_NON_NEGATIVE_INTEGER_FIELDS = {"broken_scan_retry_limit"}
+_NON_NEGATIVE_INTEGER_FIELDS = {"broken_scan_retry_limit", "prompt_timeout_deliveries"}
 #: Field names a caller may pass in ``user_ask``/``card_guidelines`` beyond the numeric
 #: thresholds — currently just the one non-numeric target field.
 _NON_THRESHOLD_TARGET_FIELDS = {"survey_order"}
@@ -247,6 +258,40 @@ def resolve_policy(user_ask: Mapping[str, Any] | None = None,
     return block
 
 
+def _validate_consultation_overrides(section: Any, where: str) -> None:
+    """The 4.3 C8 override section: what a policy-changing consultation answer froze.
+
+    ``keep_open_questions`` are question ids the operator refused to let close unresolvable;
+    ``retry_budget_by_action`` maps a SCENE-INVARIANT physical action key to that one action's
+    broken-scan ceiling, replacing the step's ``broken_scan_retry_limit`` for it alone. Both are
+    whole declarations with no defaulting: a malformed section refuses rather than being read as
+    "no overrides", because silently dropping an override is silently ignoring an operator's answer.
+    """
+    if section is None:
+        return
+    place = f"{where}.{CONSULTATION_OVERRIDES_KEY}"
+    if not isinstance(section, Mapping):
+        raise ValueError(f"{place} must be an object")
+    unknown = sorted(set(section) - {"keep_open_questions", "retry_budget_by_action"})
+    if unknown:
+        raise ValueError(f"{place} has unknown fields: {unknown}")
+    questions = section.get("keep_open_questions", [])
+    if isinstance(questions, (str, bytes)) or not isinstance(questions, Sequence):
+        raise ValueError(f"{place}.keep_open_questions must be a list of question ids")
+    for question in questions:
+        if not isinstance(question, str) or not question.strip():
+            raise ValueError(f"{place}.keep_open_questions holds {question!r}, not a question id")
+    budgets = section.get("retry_budget_by_action", {})
+    if not isinstance(budgets, Mapping):
+        raise ValueError(f"{place}.retry_budget_by_action must map an action key to a budget")
+    for key, value in budgets.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(f"{place}.retry_budget_by_action is keyed by {key!r}, not an action")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{place}.retry_budget_by_action[{key!r}] must be a non-negative "
+                             f"whole number of deliveries, got {value!r}")
+
+
 def validate_resolved_block(block: Any, where: str = "resolved_policy") -> None:
     """Validate a frozen policy block completely — a /2 program is refused on any gap.
 
@@ -270,7 +315,8 @@ def validate_resolved_block(block: Any, where: str = "resolved_policy") -> None:
         raise ValueError(f"{where} needs a profile {{id: str, version: int}}")
 
     allowed = {"schema", "profile", "thresholds", "priorities", "emergent_question_policy",
-               "survey_order", "staleness_policy", "prompt_defaults", "provenance"}
+               "survey_order", "staleness_policy", "prompt_defaults", "provenance",
+               CONSULTATION_OVERRIDES_KEY}
     unknown = sorted(set(block) - allowed)
     if unknown:
         raise ValueError(f"{where} has unknown fields: {unknown}")
@@ -327,6 +373,8 @@ def validate_resolved_block(block: Any, where: str = "resolved_policy") -> None:
     if prompts["timeout_behaviour"] not in SUPPORTED_TIMEOUT_BEHAVIOUR:
         raise ValueError(f"{where}: timeout_behaviour {prompts['timeout_behaviour']!r} is not "
                          f"supported (supported: {SUPPORTED_TIMEOUT_BEHAVIOUR})")
+
+    _validate_consultation_overrides(block.get(CONSULTATION_OVERRIDES_KEY), where)
 
     provenance = block.get("provenance")
     if not isinstance(provenance, Mapping) or \

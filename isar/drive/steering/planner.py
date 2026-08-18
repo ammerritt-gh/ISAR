@@ -44,6 +44,7 @@ from isar.drive.acquisition.inventory import (
     ActionEligibility, ActionInventory, GeneratorReport, GeneratorStatus, RejectionClass)
 from isar.schema.action_identity import canonical_json, physical_action_key
 from isar.schema.campaign_program import CampaignProgram, ProgramError, program_fingerprint
+from isar.schema.consultation import strip_consultation_overrides
 from isar.schema.generators import DISCOVERY_GENERATOR_REGISTRY, DISCOVERY_GENERATOR_REGISTRY_VERSION, registry_manifest
 from isar.schema.placement import PLACEMENT_RULES, PLACEMENT_RULES_SCHEMA
 from isar.scene.agenda import (
@@ -61,6 +62,7 @@ from isar.drive.steering.scheduler import LOCALITY_VERSION, SCHEDULER_POLICY, se
 __all__ = [
     "SELECTED", "AGENDA_COMPLETE", "CONTROLLER_FAULT", "NO_ACTION_WITH_HONEST_EXHAUSTION",
     "NO_ELIGIBLE_ACTION", "PROGRAM_STORE", "PlanResult", "plan_next_action",
+    "program_revision",
 ]
 
 # Outcome vocabulary (plan resolution — the five-member enum).
@@ -114,6 +116,12 @@ class _ProgramRevision:
     @classmethod
     def of(cls, program: CampaignProgram) -> "_ProgramRevision":
         return cls(canonical=canonical_bytes(program.to_dict()), digest=program_fingerprint(program))
+
+
+def program_revision(program: CampaignProgram) -> _ProgramRevision:
+    """The store-shaped revision for ``program`` — the PUBLIC name for what ``report/program/``
+    writes, so a second writer (the consultation recompile) never reaches for the private class."""
+    return _ProgramRevision.of(program)
 
 
 def _resolve_discover_step(program: CampaignProgram, step_id: str):
@@ -333,6 +341,29 @@ def _current_scene_pointer_digest(report_dir: Path) -> str | None:
     tests can simulate a scene write racing between snapshot and publication without fighting
     ``RevisionStore``'s frozen dataclass (it refuses attribute patching)."""
     return SCENE_STORE.pointer_digest(report_dir)
+
+
+def _pointer_names_consultation_descendant(report_dir: Path, program: CampaignProgram) -> bool:
+    """Does ``report/program/current.json`` name ``program`` PLUS consultation overrides?
+
+    True only when the stored revision differs from ``program`` and strips down to exactly it — the
+    one case where publishing ``program`` would be a REGRESSION rather than a no-op. A missing,
+    unrelated, or unreadable stored revision all answer False, which leaves the ordinary write (and
+    its CAS) exactly as it was.
+    """
+    try:
+        current = PROGRAM_STORE.read_current(report_dir)
+    except ValueError:
+        return False           # corruption is the store's own loud problem, not a write guard's
+    if current is None:
+        return False
+    try:
+        stored = CampaignProgram.from_dict(current[1])
+    except (ProgramError, ValueError):
+        return False
+    authored = program_fingerprint(program)
+    return (program_fingerprint(stored) != authored
+            and program_fingerprint(strip_consultation_overrides(stored)) == authored)
 
 
 def _current_program_pointer_digest(report_dir: Path) -> str | None:
@@ -587,8 +618,14 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
                            declared_partition=declared_frame,
                            expected_parent=agenda_snapshot, source="planner")
 
-    PROGRAM_STORE.write_revision(report_dir, _ProgramRevision.of(program), source="planner",
-                                 expected_parent=program_snapshot)
+    # The planner publishes the program it planned under — UNLESS the pointer already names a
+    # CONSULTATION DESCENDANT of it (SCENE-4.3 C8). A recompiled revision is this same program plus
+    # the operator's answers; writing the override-free program over it would revert the pointer,
+    # and the next run would adopt nothing and silently discard a settled answer. Same
+    # strip-and-compare rule the adoption at ``run_program`` start uses, so the two cannot drift.
+    if not _pointer_names_consultation_descendant(report_dir, program):
+        PROGRAM_STORE.write_revision(report_dir, _ProgramRevision.of(program), source="planner",
+                                     expected_parent=program_snapshot)
 
     selection_block = None
     selection_fingerprint = None
