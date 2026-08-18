@@ -27,6 +27,16 @@ from enum import StrEnum
 # stdlib vocabulary/validation (``isar/schema/statistics.py``'s own docstring), never the fitting
 # or session machinery ``tests/scene/test_import_ban.py`` actually forbids.
 from isar.schema.statistics import INFERENCE_PARADIGMS, INTERVAL_KINDS
+# Same allowance, same reason (SCENE-4 PR 4.3): the path-topology vocabulary and the 9-decimal
+# endpoint rounding are pure stdlib validation owned by the record schema. Imported, not copied —
+# a second spelling of either is how a producer and a consumer start disagreeing.
+from isar.schema.campaign_program import _q_triple
+# SCENE-4 PR 4.0 (#25/#28): the campaign-provenance path-topology role vocabulary a
+# ``SceneObservation`` may declare, re-exported here for this module's importers.
+# ``"context_probe"`` is the ONLY value the builder acts on (withheld from ``path_topology``'s
+# input); ``"canonical_path"`` is an affirmative declaration today's builder treats identically to
+# ``None`` (both are path candidates).
+from isar.schema.measurement import TOPOLOGY_ROLES
 
 
 class Visibility(StrEnum):
@@ -827,14 +837,6 @@ def blocks_elastic_line(component: ComponentObservation) -> bool:
 COUNT_TRUST_STATES = ("trusted", "excluded", "held_for_calibration", "undersampled", "attempted")
 
 
-# SCENE-4 PR 4.0 (#25/#28): the campaign-provenance path-topology role vocabulary a
-# ``SceneObservation`` may declare. ``"context_probe"`` is the ONLY value the builder acts on
-# (withheld from ``path_topology``'s input); ``"canonical_path"`` is spelled here so a future
-# provenance producer's affirmative declaration is a legal value rather than an invented string,
-# even though today's builder treats it identically to ``None`` (both are path candidates).
-TOPOLOGY_ROLES = ("canonical_path", "context_probe")
-
-
 @dataclass(frozen=True, slots=True)
 class ConditionSet:
     """Typed condition-dimension key for scene PARTITION comparison (#28) — never the raw,
@@ -935,6 +937,31 @@ def partition_key(sample, conditions, lattice_epoch, scan_ref: str,
     condition = ConditionSet.of(tuple((k, v) for k, v in conditions or ()), t_round)
     condition_key = condition.key if condition.resolved else (*condition.key, scan_ref)
     return (sample, condition_key, lattice_epoch)
+
+
+def path_geometry_fingerprint(q_start, q_end) -> str:
+    """The PHYSICAL identity of a declared reciprocal-space path (SCENE-4 PR 4.3, D3).
+
+    Path identity is geometry, never administration: a program recompiled by a consultation answer
+    mints a fresh ``program_fingerprint`` while measuring the SAME path, so the partition key takes
+    this fingerprint and leaves program identity as record provenance. Two rules make that hold:
+
+    * both endpoints round through :func:`isar.schema.campaign_program._q_triple` — the same
+      9-decimal rule the frozen program already applied when it read them, so a declaration and a
+      re-read of it never fingerprint apart;
+    * the pair is UNORDERED (sorted), because direction is not identity — a step declaring a→b and
+      one declaring b→a are the same physical trajectory.
+
+    Pure and deterministic; the caller (the driver, PR 4.3 C1) puts the result in the request
+    provenance block, and it travels on the record as ``path_fingerprint``.
+    """
+    start = _q_triple(q_start, "path_geometry_fingerprint q_start")
+    end = _q_triple(q_end, "path_geometry_fingerprint q_end")
+    # -0.0 survives _q_triple's rounding and serializes as "-0.0" != "0.0"; Γ-anchored paths make
+    # a zero component the common case, so normalize here (+0.0 maps -0.0 to 0.0), never in
+    # _q_triple itself — that would move every program_fingerprint.
+    normalized = (tuple(c + 0.0 for c in start), tuple(c + 0.0 for c in end))
+    return fingerprint([list(point) for point in sorted(normalized)])
 
 
 def partition_id(key: tuple) -> str:

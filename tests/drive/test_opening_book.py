@@ -10,7 +10,8 @@ from __future__ import annotations
 import pytest
 
 from isar.analyze.catalogue import DEFAULT_PROFILE
-from isar.drive.acquisition.opening_book import SurveyProposal, _zc_anchors, propose_survey
+from isar.drive.acquisition.opening_book import (SurveyProposal, _frame_compatible,
+                                                 _zc_anchors, propose_survey)
 from isar.schema.question_policy import resolve_policy
 from isar.scene.predicates import evaluate_predicate
 from isar.scene.questions import PredicateDeclaration, QuestionSpec, QuestionSubject
@@ -442,3 +443,28 @@ def test_partitioned_subject_behaviour_unchanged_by_the_guard():
     after = apply_proposals(sc, proposals)
     a = evaluate_predicate(coverage_spec(st, (0.0, 2.0)), after)
     assert a.status == "answered" and dict(a.answer) == {"complete": True}
+
+
+# ----------------------------------------------------------------------------
+# PR 4.3 carried P4: _frame_compatible must never pass on a partition it cannot attribute
+# ----------------------------------------------------------------------------
+def test_frame_compatibility_fails_closed_when_the_partition_has_no_attributable_epoch():
+    """A partition with no observation-derived epoch — including the partition-less subject
+    ``propose_survey`` refuses at the front door — reads "missing", which is never equal to a
+    declared epoch. Inheriting a foreign frame's anchors is the failure this pins."""
+    knowledge = {"zone_period": 0.5, "lattice_epoch": EPOCH}
+    # Footprint present, but no observation carries its epoch: nothing attributes P1.
+    payload = scene([fp("s1", 0.5)], sample_knowledge=knowledge, observations=[])
+    assert _frame_compatible(subject((0.0, 1.0)), payload) is False
+    # A partition the scene knows nothing about at all.
+    assert _frame_compatible(subject((0.0, 1.0), partition=P2),
+                             scene([fp("s1", 0.5)], sample_knowledge=knowledge)) is False
+    # partition_id=None: no observation can ever key on None, so it fails closed here too —
+    # propose_survey refuses such a subject outright, and this is the second line of defence.
+    assert _frame_compatible(
+        QuestionSubject(kind="region", partition_id=None, region_rlu=(0.0, 1.0),
+                        omega_band_meV=None),
+        scene([fp("s1", 0.5)], sample_knowledge=knowledge)) is False
+    # Control: a correctly attributed partition in the declared frame still passes.
+    assert _frame_compatible(subject((0.0, 1.0)),
+                             scene([fp("s1", 0.5)], sample_knowledge=knowledge)) is True

@@ -40,6 +40,20 @@ MEASUREMENT_ARENA_SCHEMA = "isar.measurement-arena/1"
 # "attempted" (W4) is the pre-dispatch stub state, before a worker has reached any terminal outcome.
 COUNT_TRUST_STATES = ("trusted", "excluded", "held_for_calibration", "undersampled", "attempted")
 
+# The path-topology role a driven scan declares (SCENE-4 PR 4.3, D2). Owned here, beside the record
+# field that carries it, and re-exported by ``isar.scene.model`` for the DTO that reads it — one
+# vocabulary, so a producer and a consumer can never disagree about the legal strings.
+# ``"canonical_path"`` = a scan measuring the program step's declared path; ``"context_probe"`` = a
+# driver-initiated diagnostic, withheld from path derivation (isar.scene.build).
+TOPOLOGY_ROLES = ("canonical_path", "context_probe")
+
+# The campaign-provenance block a submitted request carries to the delivery pipeline (D2/D3): the
+# driver owns the facts, the record owns their persistence. One tuple of names so the request
+# artifact (``isar.drive.loop._persist_acquisition_provenance``) and the stamping site
+# (``isar.session.scan_delivery._measurement_record``) key on the same strings.
+CAMPAIGN_PROVENANCE_FIELDS = ("topology_role", "program_fingerprint", "program_step",
+                              "path_fingerprint")
+
 
 def _opt_float(v):
     return None if v is None else float(v)
@@ -71,6 +85,17 @@ def _opt_bands(v):
     if v is None:
         return None
     return tuple((float(b[0]), float(b[1])) for b in v)
+
+
+def campaign_provenance(source) -> dict:
+    """The four campaign-provenance fields off a request artifact, as ``MeasurementArena`` kwargs.
+
+    ``source`` is the submitted-request payload on the driver side and the persisted acquisition
+    record on the delivery side; a manual or legacy scan passes ``None`` and every field reads
+    ``None`` — the absent-provenance lane the scene layer's existing geometric fallback governs.
+    """
+    src = source or {}
+    return {name: _opt_str(src.get(name)) for name in CAMPAIGN_PROVENANCE_FIELDS}
 
 
 def _conditions(v) -> tuple:
@@ -107,9 +132,11 @@ class MeasurementArena:
     ``content_hash`` is the DELIVERY-GENERATION identity (the same value stamped into
     ``results.csv``/the ledger for this scan): the scene adapter joins a delivered fit row to this
     record on ``scan_ref`` AND ``content_hash``, so a record from delivery N+1 can never be read
-    against a fit row still on delivery N. ``program_fingerprint``/``program_step`` are campaign
-    provenance (PR 4.3 deliverable) — ``None`` until that producer stamps them; declared here now
-    so the schema does not need a second migration when it lands.
+    against a fit row still on delivery N. ``program_fingerprint`` / ``program_step`` /
+    ``topology_role`` / ``path_fingerprint`` are the campaign-provenance block (PR 4.3, D2/D3):
+    stamped verbatim from the submitted request, and ``None`` for every manual or pre-4.3 scan —
+    an absent field reads ``None`` (H1: no compat shim), and nothing invents campaign identity for
+    a scan that had none.
     """
 
     scan_ref: str                              # "exp:scan:det" — matches the scene adapter's key
@@ -134,12 +161,19 @@ class MeasurementArena:
     content_hash: str                           # the delivery-generation identity (required)
     program_fingerprint: str | None = None      # PR 4.3: campaign-program identity, None until then
     program_step: str | None = None             # PR 4.3: CampaignStep.id, None until then
+    topology_role: str | None = None            # PR 4.3: one of TOPOLOGY_ROLES, None off-campaign
+    path_fingerprint: str | None = None         # PR 4.3: isar.scene.model.path_geometry_fingerprint
     schema: str = MEASUREMENT_ARENA_SCHEMA
 
     def __post_init__(self) -> None:
         if self.count_trust not in COUNT_TRUST_STATES:
             raise ValueError(f"measurement-arena record {self.scan_ref!r}: count_trust "
                              f"{self.count_trust!r} is not one of {COUNT_TRUST_STATES}")
+        # A present-but-unknown role refuses loudly (H1: no compat shim) — an absent field is the
+        # legitimate off-campaign lane, an invented string is a producer defect.
+        if self.topology_role is not None and self.topology_role not in TOPOLOGY_ROLES:
+            raise ValueError(f"measurement-arena record {self.scan_ref!r}: topology_role "
+                             f"{self.topology_role!r} is not one of {(*TOPOLOGY_ROLES, None)}")
         names = [name for name, _ in self.conditions]
         dupes = sorted({n for n in names if names.count(n) > 1})
         if dupes:
@@ -196,6 +230,8 @@ class MeasurementArena:
             "content_hash": self.content_hash,
             "program_fingerprint": self.program_fingerprint,
             "program_step": self.program_step,
+            "topology_role": self.topology_role,
+            "path_fingerprint": self.path_fingerprint,
         }
 
     @classmethod
@@ -225,4 +261,6 @@ class MeasurementArena:
             content_hash=str(d["content_hash"]),
             program_fingerprint=_opt_str(d.get("program_fingerprint")),
             program_step=_opt_str(d.get("program_step")),
+            topology_role=_opt_str(d.get("topology_role")),
+            path_fingerprint=_opt_str(d.get("path_fingerprint")),
         )

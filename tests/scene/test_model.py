@@ -16,7 +16,7 @@ import pytest
 from isar.scene.model import (
     COUNT_TRUST_STATES, TOPOLOGY_ROLES, CandidateRow, ComponentDescriptor, ConditionSet, Footprint,
     FootprintBand, ModeInterval, SceneObservation, Visibility, canonical_bytes, covers, fingerprint,
-    footprint_of, observation_fingerprint, visibility_of,
+    footprint_of, observation_fingerprint, path_geometry_fingerprint, visibility_of,
 )
 
 
@@ -378,3 +378,43 @@ def test_an_unresolved_set_still_carries_its_other_dimensions():
     cs = ConditionSet.of((("temperature_K", 300.0), ("field_T", 1.0)), t_round=None)
     assert cs.resolved is False
     assert cs.other == (("field_T", 1.0),)
+
+
+# ----------------------------------------------------------------------------
+# path_geometry_fingerprint (SCENE-4 PR 4.3, D3): PHYSICAL path identity
+# ----------------------------------------------------------------------------
+def test_path_identity_is_unordered_because_direction_is_not_identity():
+    """a→b and b→a are the same physical trajectory, so a step declaring either must land its
+    arenas on the same partition (D3's reversed-declaration continuity rule)."""
+    assert (path_geometry_fingerprint((2.0, 2.0, 0.0), (2.0, 0.0, 0.0))
+            == path_geometry_fingerprint((2.0, 0.0, 0.0), (2.0, 2.0, 0.0)))
+
+
+def test_path_identity_rounds_at_the_frozen_programs_ninth_decimal():
+    """Same 9-decimal rule ``_q_triple`` already applied when the program was frozen: noise below
+    it must not mint a new path, and a difference above it must."""
+    base = path_geometry_fingerprint((2.0, 2.0, 0.0), (2.0, 0.0, 0.0))
+    assert path_geometry_fingerprint((2.0 + 1e-10, 2.0, 0.0), (2.0, 0.0, 0.0)) == base
+    assert path_geometry_fingerprint((2.0 + 1e-8, 2.0, 0.0), (2.0, 0.0, 0.0)) != base
+
+
+def test_path_identity_is_deterministic_and_distinguishes_different_paths():
+    a = path_geometry_fingerprint([2.0, 2.0, 0.0], [2.0, 0.0, 0.0])
+    assert a == path_geometry_fingerprint((2.0, 2.0, 0.0), (2.0, 0.0, 0.0))   # list vs tuple
+    assert a != path_geometry_fingerprint((2.0, 2.0, 0.0), (2.0, 1.0, 0.0))
+    assert len(a) == 64
+
+
+def test_a_malformed_endpoint_refuses_rather_than_fingerprinting_nonsense():
+    for bad in ((2.0, 2.0), (2.0, 2.0, float("nan")), "abc"):
+        with pytest.raises(ValueError):
+            path_geometry_fingerprint(bad, (2.0, 0.0, 0.0))
+
+
+def test_signed_zero_never_splits_a_gamma_anchored_path():
+    """round(-1e-10, 9) is -0.0 and json serializes it as "-0.0" != "0.0"; Γ = (0,0,0) anchors are
+    the COMMON case, so noise straddling zero (or a -0.0 from any negation) must not mint a second
+    identity for the same physical path (C1 review finding 1)."""
+    base = path_geometry_fingerprint((0.0, 0.0, 0.0), (2.0, 0.0, 0.0))
+    assert path_geometry_fingerprint((-1e-10, 0.0, 0.0), (2.0, 0.0, 0.0)) == base
+    assert path_geometry_fingerprint((-0.0, -0.0, -0.0), (2.0, -0.0, 0.0)) == base

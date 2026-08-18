@@ -7,7 +7,8 @@ import json
 
 import pytest
 
-from isar.schema.measurement import COUNT_TRUST_STATES, MeasurementArena
+from isar.schema.measurement import (CAMPAIGN_PROVENANCE_FIELDS, COUNT_TRUST_STATES,
+                                     TOPOLOGY_ROLES, MeasurementArena, campaign_provenance)
 from isar.session import measurement_store
 
 
@@ -98,6 +99,57 @@ def test_program_fields_default_none_and_round_trip():
     back = MeasurementArena.from_dict(rec.to_dict())
     assert (back.program_fingerprint, back.program_step) == ("pf", "s1")
     assert MeasurementArena(**_record()).program_fingerprint is None
+
+
+def test_the_campaign_provenance_block_round_trips_through_the_jsonl(tmp_path):
+    """SCENE-4 PR 4.3 (D2/D3): all four provenance fields survive writer -> reader verbatim."""
+    rec = MeasurementArena(**_record(program_fingerprint="pf", program_step="s1",
+                                     topology_role="canonical_path", path_fingerprint="pathfp"))
+    measurement_store.append_measurement(tmp_path, rec.to_dict())
+    line = (tmp_path / measurement_store.FILENAME).read_text(encoding="utf-8").strip()
+    back = MeasurementArena.from_dict(json.loads(line))
+    assert back == rec
+    assert (back.topology_role, back.path_fingerprint) == ("canonical_path", "pathfp")
+
+
+def test_an_old_record_without_the_provenance_fields_reads_none():
+    """H1: no compat shim — an absent field is simply absent, never a defaulted campaign identity."""
+    old = {**_record(), "schema": "isar.measurement-arena/1"}
+    assert "topology_role" not in old and "path_fingerprint" not in old
+    back = MeasurementArena.from_dict(old)
+    assert (back.topology_role, back.path_fingerprint,
+            back.program_fingerprint, back.program_step) == (None, None, None, None)
+
+
+@pytest.mark.parametrize("factory", [
+    lambda: MeasurementArena(**_record(topology_role="off_map")),
+    lambda: MeasurementArena.from_dict({**_record(topology_role="off_map"),
+                                        "schema": "isar.measurement-arena/1"}),
+])
+def test_a_present_but_unknown_topology_role_refuses_loudly(factory):
+    with pytest.raises(ValueError, match="topology_role"):
+        factory()
+
+
+@pytest.mark.parametrize("role", TOPOLOGY_ROLES)
+def test_every_vocabulary_topology_role_is_legal(role):
+    assert MeasurementArena(**_record(topology_role=role)).topology_role == role
+
+
+def test_the_scene_layer_reads_the_same_topology_vocabulary():
+    """One source of truth: the scene DTO re-exports the record schema's tuple, so a producer and
+    a consumer can never diverge on the legal strings."""
+    from isar.scene import model as scene_model
+    assert scene_model.TOPOLOGY_ROLES is TOPOLOGY_ROLES
+
+
+def test_campaign_provenance_reads_a_request_payload_and_tolerates_none():
+    payload = {"job_id": "j1", "topology_role": "context_probe", "program_fingerprint": "pf",
+               "program_step": "s1", "path_fingerprint": "pathfp"}
+    assert campaign_provenance(payload) == {
+        "topology_role": "context_probe", "program_fingerprint": "pf",
+        "program_step": "s1", "path_fingerprint": "pathfp"}
+    assert campaign_provenance(None) == dict.fromkeys(CAMPAIGN_PROVENANCE_FIELDS)
 
 
 def test_the_writer_rejects_a_non_finite_payload_outright(tmp_path):

@@ -27,7 +27,8 @@ from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
 from isar.predictive import json_fingerprint as _json_fingerprint
 from isar.schema.card import Card
-from isar.schema.measurement import MeasurementArena, current_lattice_epoch
+from isar.schema.measurement import (MeasurementArena, campaign_provenance,
+                                     current_lattice_epoch)
 from isar.session import calibrations, guidelines as guide_mod, ingest, router, session_prior
 from isar.session import measurement_store
 from isar.session.outcome import (
@@ -436,7 +437,12 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                         getattr(card.state, "lattice_epochs", None) or []),
                     energy_window=None, energy_bands=None, effective_exposure=None,
                     exposure_provenance=None, count_trust="attempted", reasons=(),
-                    written_at=datetime.now(timezone.utc).isoformat(), content_hash=_chash)
+                    written_at=datetime.now(timezone.utc).isoformat(), content_hash=_chash,
+                    # Same request provenance the enriched record carries (PR 4.3, D2): a hard
+                    # worker kill leaves ONLY this stub, and a stub that cannot say which program
+                    # step the neutrons were spent on is not proof of the attempt.
+                    **campaign_provenance(
+                        scan_delivery._acquisition_provenance_for(_rec, card, _scan_id)[1]))
                 measurement_store.append_measurement(workspace.report_dir, stub.to_dict())
 
             def checkpoint_entry(entry):

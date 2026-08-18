@@ -185,6 +185,72 @@ def test_a_non_finite_energy_axis_is_a_terminal_non_result_not_a_batch_abort(mon
     assert any("energy window error" in r for r in record["reasons"])
 
 
+def _driven_rec(job_id="j1"):
+    """A scan whose raw header names the TAVI job the driver submitted — the join
+    ``_acquisition_provenance_for`` uses to find the request's provenance record."""
+    return type("Rec", (), {"scan_number": 1, "scan_type": "measurement",
+                            "raw_header": {"tavi": {"job_id": job_id}},
+                            "normalization": None})()
+
+
+_PROVENANCE = {"job_id": "j1", "acquisition_id": "acq:1",
+               "topology_role": "canonical_path", "program_fingerprint": "pf",
+               "program_step": "step-1", "path_fingerprint": "pathfp"}
+
+
+def test_the_request_provenance_block_is_stamped_verbatim_on_the_record(monkeypatch):
+    """SCENE-4 PR 4.3 (D2): the driver owns the campaign facts, the delivery pipeline owns the
+    record — the four fields travel on the persisted request artifact and are copied, never
+    re-derived here."""
+    ctx = _elastic_ctx()
+    card = _card(acquisition_provenance=[dict(_PROVENANCE)])
+    monkeypatch.setattr(scan_delivery, "_gate_scan", lambda *a, **k: (None, _CalRes()))
+    _stub_context(monkeypatch, ctx)
+
+    entry = scan_delivery._process_one(
+        _driven_rec(), "ana7", [1.0, 0.0, 0.0], 50.0, "FeSe", "exp:1:ana7", card,
+        guide_mod.resolve(card), None, set(), "ch", "gh", M=10, seed=1)
+
+    record = entry.measurement_record
+    assert record["topology_role"] == "canonical_path"
+    assert record["program_fingerprint"] == "pf"
+    assert record["program_step"] == "step-1"
+    assert record["path_fingerprint"] == "pathfp"
+
+
+def test_a_scan_with_no_request_provenance_stays_all_none(monkeypatch):
+    """The manual/legacy lane: no acquisition record for this scan, so nothing invents a campaign
+    identity for it (the scene layer's geometric fallback governs those arenas)."""
+    ctx = _elastic_ctx()
+    card = _card()
+    monkeypatch.setattr(scan_delivery, "_gate_scan", lambda *a, **k: (None, _CalRes()))
+    _stub_context(monkeypatch, ctx)
+
+    entry = scan_delivery._process_one(
+        _rec(), "ana7", [1.0, 0.0, 0.0], 50.0, "FeSe", "exp:1:ana7", card,
+        guide_mod.resolve(card), None, set(), "ch", "gh", M=10, seed=1)
+
+    record = entry.measurement_record
+    assert [record[k] for k in ("topology_role", "program_fingerprint", "program_step",
+                                "path_fingerprint")] == [None, None, None, None]
+
+
+def test_a_gated_arena_still_carries_its_request_provenance(monkeypatch):
+    """A terminal gate outcome is still an attempt AGAINST a program step — the provenance is what
+    lets the campaign see which step it was spent on."""
+    from isar.session.state import ScanEntry
+    gated = ScanEntry(scan_id="exp:1:ana7", scan_number=1, scan_type="measurement",
+                      status="excluded", reasons=["excluded"])
+    monkeypatch.setattr(scan_delivery, "_gate_scan", lambda *a, **k: (gated, None))
+
+    entry = scan_delivery._process_one(
+        _driven_rec(), "ana7", [1.0, 0.0, 0.0], 50.0, "FeSe", "exp:1:ana7",
+        _card(acquisition_provenance=[dict(_PROVENANCE)]), None, None, set(),
+        "ch", "gh", M=10, seed=1)
+
+    assert entry.measurement_record["program_step"] == "step-1"
+
+
 def test_lattice_epoch_is_the_current_one_at_write_time(monkeypatch):
     ctx = _elastic_ctx()
     monkeypatch.setattr(scan_delivery, "_gate_scan", lambda *a, **k: (None, _CalRes()))
