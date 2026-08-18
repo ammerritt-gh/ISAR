@@ -151,8 +151,17 @@ def aggregate_rank(associations) -> tuple[tuple, QuestionActionAssociation]:
 #: digest, and ``program_fingerprint`` vs the program store digest, elsewhere in this PR: never
 #: assumed, always checked). A transient or model-authority blocker can never be closure fuel,
 #: so :class:`QuestionBlockerEvidence` refuses any name outside this set at construction.
+#:
+#: OWNER RULING (2026-08-18, SCENE-4.3 D5): exactly TWO names are legitimate durable blockers —
+#: the machine literally cannot perform the measurement, and the measurement lies outside the
+#: assigned search region. ``resolution_floor`` and ``bose_dead`` were DELETED (H1, no compat
+#: shim): there is no "Bose dead" — anti-Stokes only gets weaker, a matter of degree, never
+#: absolute — and both belong to EIG worthwhileness pricing (SCENE-5), where a threshold says
+#: "not worth measuring here", never "cannot". The ``bose_dead`` DETECTABILITY/visibility reason
+#: in the scene scorer (``isar.scene.model``/``isar.scene.factors``) is a DIFFERENT vocabulary
+#: and survives untouched.
 DURABLE_BLOCKER_NAMES = frozenset({
-    "resolution_floor", "bose_dead", "instrument_geometry_infeasible", "program_boundary",
+    "instrument_geometry_infeasible", "program_boundary",
 })
 
 

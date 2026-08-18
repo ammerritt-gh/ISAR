@@ -36,11 +36,12 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping
 
-from isar.drive.acquisition.inventory import ActionInventory, GeneratorReport, GeneratorStatus
+from isar.drive.acquisition.inventory import (
+    ActionEligibility, ActionInventory, GeneratorReport, GeneratorStatus, RejectionClass)
 from isar.schema.action_identity import canonical_json, physical_action_key
 from isar.schema.campaign_program import CampaignProgram, ProgramError, program_fingerprint
 from isar.schema.generators import DISCOVERY_GENERATOR_REGISTRY, DISCOVERY_GENERATOR_REGISTRY_VERSION, registry_manifest
@@ -160,7 +161,8 @@ def _placement_fingerprint(manifest: dict) -> str:
 def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
                            registry_fp: str, locality_coordinate: float | None,
                            declared_partition=None,
-                           retired_physical_actions: frozenset[str] = frozenset()) -> dict:
+                           retired_physical_actions: frozenset[str] = frozenset(),
+                           declined_fingerprints: frozenset[str] = frozenset()) -> dict:
     """Every ``decision_basis`` field that does NOT depend on a stored scene existing — computed
     even on the scene-missing fault path, so that record is as diagnostic as any other.
 
@@ -180,15 +182,28 @@ def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
     differing only in it were made on different grounds and must not read identically. Embedded on
     the SAME conditional rule as ``declared_partition`` — present only when non-empty — so every
     decision taken with nothing retired stays byte-identical to its pre-C6 shape.
+
+    ``declined_fingerprints`` (PR 4.3 C7) is the third member of that family and rides on the SAME
+    omitted-when-empty rule. It is a STRONGER narrowing than the two above — a declined scientific
+    action is re-marked REJECTED/STRUCTURAL in the run record itself, so it leaves the selection
+    input, the producer's eligible set, and the persisted inventory's eligibility together — which
+    is exactly why it must be visible here: a decision that structurally rejected an action the
+    previous decision selected was made on different grounds, and the two must not read identically.
+    Distinct from ``retired_physical_actions`` on purpose: that channel narrows selection ONLY and
+    keeps the evaluations eligible (a broken detector is not a statement about the physics), and
+    both channels stay separately visible in the basis rather than merged into one suppression set.
     """
     placement_manifest = _raw_placement_manifest(step_payload["catalogue_profile"])
     declared = ({"declared_partition": declared_partition.to_dict()}
                 if declared_partition is not None else {})
     retired = ({"retired_physical_actions": sorted(retired_physical_actions)}
                if retired_physical_actions else {})
+    declined = ({"declined_scientific_actions": sorted(declined_fingerprints)}
+                if declined_fingerprints else {})
     return {
         **declared,
         **retired,
+        **declined,
         "program_fingerprint": program_fp,
         "step_id": step_id,
         "resolved_policy_fingerprint": fingerprint(step_payload["resolved_policy"]),
@@ -200,6 +215,30 @@ def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
                      "manifest": placement_manifest},
         "staleness_policy": {"mode": "synchronous", "lag": 0},
     }
+
+
+#: The rejection reason stamped on an evaluation the instrument declined as infeasible. One string,
+#: so the producer-side classification and anything reading the persisted inventory cannot drift.
+DECLINED_REJECTION_REASON = "instrument_declined_as_infeasible"
+
+
+def _mark_declined(run_result: RunResult, declined_fingerprints: frozenset[str]) -> RunResult:
+    """Re-mark every evaluation whose scientific action the instrument declined (C7/D5).
+
+    Rejected with ``RejectionClass.STRUCTURAL`` — the existing vocabulary, not a new one: the
+    machine cannot close the scattering triangle for this action on this evidence basis, which is
+    precisely what STRUCTURAL names. Applied to the whole flat evaluation list rather than to
+    post-dedup survivors, because dedup keeps the FIRST-seen evaluation for a fingerprint and a
+    peer generator's copy of the same scientific action must not survive as eligible.
+    """
+    if not declined_fingerprints:
+        return run_result
+    return replace(run_result, evaluations=tuple(
+        evaluation if evaluation.intent.scientific_action_fingerprint not in declined_fingerprints
+        else replace(evaluation, eligibility=ActionEligibility.REJECTED,
+                     rejection_class=RejectionClass.STRUCTURAL,
+                     rejection_reason=DECLINED_REJECTION_REASON)
+        for evaluation in run_result.evaluations))
 
 
 def _build_inventory(run_result: RunResult, survivors: list, deduped_by_generator: dict
@@ -347,7 +386,8 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
                      blocker_evidence: tuple = (),
                      declared_partition: DeclaredPartition | None = None,
                      scene_pin: str | None = None,
-                     retired_physical_actions: frozenset[str] = frozenset()) -> PlanResult:
+                     retired_physical_actions: frozenset[str] = frozenset(),
+                     declined_fingerprints: frozenset[str] = frozenset()) -> PlanResult:
     """``declared_partition`` (PR 4.3 D4) is the caller-minted cold-start declaration
     (:func:`isar.drive.steering.cold_start.declare_partition`). Passing none keeps the 4.2b
     behaviour exactly: an unmeasured workspace derives the program-scoped lane and every
@@ -370,6 +410,16 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     not a statement about the physics — turning "we could not get counts today" into structural
     exhaustion would close a question the instrument never actually answered. (That is the exact
     opposite of C7's declined-fingerprint path, which IS a durable structural rejection.)
+
+    ``declined_fingerprints`` (PR 4.3 C7/D5) is the caller's set of ``scientific_action_fingerprint``
+    values the INSTRUMENT declined as geometrically infeasible on THIS pinned scene. Every matching
+    evaluation is re-marked ``REJECTED``/``RejectionClass.STRUCTURAL`` in the run record itself —
+    UPSTREAM of both ``dedupe_discovery_evaluations`` calls, so the exhaustion producer (which
+    re-derives its own survivors from ``RunResult.evaluations``), the persisted inventory, and the
+    selection input all read ONE re-marked set rather than three views that could disagree. That is
+    what lets producer rule 6 (rejected-only, all-STRUCTURAL, matching
+    :class:`~isar.schema.generators.QuestionBlockerEvidence`) emit the proof that closes the
+    question unresolvable instead of rule 2 blocking it as ``not_exhausted``.
     """
     report_dir = Path(report_dir)
     step = _resolve_discover_step(program, step_id)
@@ -378,7 +428,7 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     registry_fp = DISCOVERY_GENERATOR_REGISTRY_VERSION
     basis_common = _decision_basis_common(program_fp, step_id, step_payload, registry_fp,
                                           locality_coordinate, declared_partition,
-                                          retired_physical_actions)
+                                          retired_physical_actions, declined_fingerprints)
     # Below the planner the declaration travels as the primitive triple the scene layer and the
     # opening book both take — the DTO itself never crosses into isar.scene (import boundary).
     # The step id rides along because it is the RETIREMENT test (owner ruling 2026-08-18): the
@@ -432,6 +482,10 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     try:
         readiness = classify_readiness(pass1.payload)
         run_result = run_ready_questions(context, readiness)
+        # THE injection point (C7/D5, epoch-6 fix). Applied to the RUN RECORD, before any dedup:
+        # ``produce_exhaustion`` dedups ``run_result.evaluations`` itself and would ignore a list
+        # the planner re-marked privately, leaving the declined action ELIGIBLE for producer rule 2.
+        run_result = _mark_declined(run_result, declined_fingerprints)
         survivors, deduped_by_generator = ActionInventory.dedupe_discovery_evaluations(
             list(run_result.evaluations))
     except ValueError as error:
@@ -465,10 +519,15 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     # it here from pass2_open alone was exactly the bug).
     verdict = evaluate_agenda(pass2.payload)
 
-    # Selection input, narrowed by the caller's step-local offramp set (C6). ``survivors`` itself is
-    # left alone: it is what the inventory records and what the producer already classified.
+    # Selection input, narrowed twice. (a) ELIGIBILITY (C7/D5): only ``ActionEligibility.ELIGIBLE``
+    # survivors may be selected. Latent-safe until now — every live evaluation was constructed
+    # eligible (``readiness.py``) — but the declined-fingerprint path mints the first live REJECTED
+    # evaluations, and without this filter the planner would re-select the action the instrument
+    # just refused. (b) The caller's step-local offramp set (C6). ``survivors`` itself is left
+    # alone: it is what the inventory records and what the producer already classified.
     selectable = [e for e in survivors
-                  if physical_action_key(e.intent) not in retired_physical_actions]
+                  if e.is_eligible
+                  and physical_action_key(e.intent) not in retired_physical_actions]
 
     reason = fault_reason or per_question_fault
     if reason is not None:
@@ -569,7 +628,8 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     context_fingerprint = fingerprint(
         {"scene_digest": scene_digest, "basis_digest": basis_digest, "step_id": step_id,
          "locality": basis_common["locality"],
-         **{key: basis_common[key] for key in ("retired_physical_actions",)
+         **{key: basis_common[key]
+            for key in ("retired_physical_actions", "declined_scientific_actions")
             if key in basis_common}})
     record = {
         "schema": DECISION_SCHEMA,

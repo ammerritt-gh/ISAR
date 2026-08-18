@@ -523,7 +523,7 @@ def test_synthetic_blocker_evidence_reaches_honest_exhaustion_via_an_applied_clo
         basis_agenda_digest=pass1.payload["basis_digest"], question_id=verify_qid,
         scene_digest=pass1.payload["scene_digest"],
         generator_registry_fingerprint=DISCOVERY_GENERATOR_REGISTRY_VERSION,
-        blocker_name="resolution_floor", supporting_generator_ids=("exposure_fill",))
+        blocker_name="instrument_geometry_infeasible", supporting_generator_ids=("exposure_fill",))
 
     result = plan_next_action(tmp_path, program, "discover-1", blocker_evidence=(evidence,))
     assert result.outcome == NO_ACTION_WITH_HONEST_EXHAUSTION
@@ -531,7 +531,7 @@ def test_synthetic_blocker_evidence_reaches_honest_exhaustion_via_an_applied_clo
     _pointer, payload = AGENDA_STORE.read_current(tmp_path)
     verify_assessment = next(a for a in payload["assessments"] if a["question_id"] == verify_qid)
     assert verify_assessment["status"] == "unresolvable"
-    assert any(b["name"] == "resolution_floor" for b in verify_assessment["blockers"])
+    assert any(b["name"] == "instrument_geometry_infeasible" for b in verify_assessment["blockers"])
 
 
 def test_agenda_complete_when_nothing_is_open(tmp_path):

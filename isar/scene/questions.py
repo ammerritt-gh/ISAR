@@ -65,9 +65,13 @@ BLOCKER_CLASSES = (BLOCKER_DURABLE, BLOCKER_TRANSIENT, BLOCKER_AUTHORITY)
 # durable. The mapping is the contract; an unlisted name refuses (a blocker nobody classified
 # must not silently count toward — or be excluded from — unresolvable closure).
 BLOCKER_CLASS_BY_NAME = {
-    # durable: physics or hard declarations forbid the discriminating measurement
-    "resolution_floor": BLOCKER_DURABLE,
-    "bose_dead": BLOCKER_DURABLE,
+    # durable: the machine literally cannot perform the measurement, or it lies outside the
+    # assigned search region. Exactly two, by owner ruling (2026-08-18, SCENE-4.3 D5) —
+    # ``resolution_floor`` and ``bose_dead`` were deleted (H1, no compat): both are EIG
+    # worthwhileness pricing ("not worth measuring here"), never "cannot". Constructing
+    # ``Blocker("bose_dead")`` now refuses as unclassified, which is the intended outcome:
+    # nothing may construct one. The ``bose_dead`` DETECTABILITY reason in ``isar.scene.model``
+    # / ``isar.scene.factors`` is a different vocabulary and is unaffected.
     "instrument_geometry_infeasible": BLOCKER_DURABLE,
     "program_boundary": BLOCKER_DURABLE,
     # transient: retry or another action can clear it

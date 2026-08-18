@@ -58,6 +58,21 @@ shows up as the region it covers never closing, and a human reads the ``count_tr
 rather than the action — is future work, and it needs a per-detector action identity this layer
 does not have.
 
+The durable-blocker lane (C7, D5)
+---------------------------------
+A GEOMETRY decline — the instrument saying it literally cannot perform this measurement — is the
+one refusal that becomes durable :class:`~isar.schema.generators.QuestionBlockerEvidence`. The
+cycle is: emit evidence for every question the declined action served (stamped with the declining
+decision's own digest triple) → record the declined ``scientific_action_fingerprint`` → re-plan
+against the SAME pin. The planner re-marks matching evaluations REJECTED/STRUCTURAL in the run
+record, so producer rule 6 emits the proof and ``apply_exhaustion`` closes the question
+unresolvable. Each cycle rejects at least one previously-eligible action, so it terminates;
+:data:`MAX_DECLINE_REPLANS_PER_DELIVERY` is a controller-fault backstop, never the mechanism.
+"Geometry" here means scope ``geometry`` in ``classify_rejection``'s one map and nothing else, so a
+request-scoped refusal — a bad grid at a reachable q — never enters this lane, and neither does a
+transport failure (:func:`_is_geometry_decline` fails closed). Both carried state is per SCENE
+REVISION and is dropped the moment a delivery moves the scene.
+
 Known deviations
 ----------------
 * The broken-scan bound is per ACTION, not per detector: a delivery with any trusted arena is not
@@ -102,6 +117,8 @@ from isar.drive.steering.realization import DiscoveryWindowUnrealizable, proposa
 from isar.scene.agenda import AGENDA_STORE, evaluate_agenda
 from isar.schema.campaign_program import CampaignProgram, ProgramError
 from isar.schema.card import Card
+from isar.schema.generators import (
+    DISCOVERY_GENERATOR_REGISTRY_VERSION, QuestionActionAssociation, QuestionBlockerEvidence)
 from isar.schema.hypotheses import content_fingerprint
 from isar.schema.action_identity import physical_action_key
 from isar.schema.measurement import MeasurementArena, current_lattice_epoch
@@ -109,7 +126,8 @@ from isar.schema.measurement import MeasurementArena, current_lattice_epoch
 _LOG = logging.getLogger(__name__)
 
 __all__ = [
-    "BEAM_HOLD", "BEAM_RELEASE", "MAX_CONSECUTIVE_TRANSPORT_FAILURES",
+    "BEAM_HOLD", "BEAM_RELEASE", "GEOMETRY_BLOCKER_NAME", "MAX_CONSECUTIVE_TRANSPORT_FAILURES",
+    "MAX_DECLINE_REPLANS_PER_DELIVERY",
     "MAX_DISCOVERY_DELIVERIES_PER_STEP", "OFFRAMP_KIND", "ProgramStepOutcome",
     "SceneBuildFailed", "SceneBuildReport", "StepResult", "StalenessModeRefused",
     "VERDICT_COMPLETE", "VERDICT_IN_PROGRESS", "VERDICT_MACHINE_FAILURE",
@@ -144,6 +162,17 @@ MAX_DISCOVERY_DELIVERIES_PER_STEP = 200
 #: ladder (``isar.drive.instrument.tavi_client._RETRYABLE``) has already run inside each attempt —
 #: this counts whole failed attempts, and adds no second retry machinery.
 MAX_CONSECUTIVE_TRANSPORT_FAILURES = 3
+
+#: The ONE durable blocker this slice produces (D5, owner ruling 2026-08-18). The durable taxonomy
+#: has two members; the other one has NO producer in this build, and
+#: ``tests/drive/test_decline_feedback.py`` holds the pin that says so.
+GEOMETRY_BLOCKER_NAME = "instrument_geometry_infeasible"
+
+#: The decline → re-plan cycle's hard cap, per delivery. Named provisional v1. Each cycle
+#: structurally rejects at least one previously-eligible action, so the REAL bound is the
+#: inventory's eligible-action count and this only backstops a controller bug that fails to
+#: narrow: exceeding it is a machine failure, never the working mechanism.
+MAX_DECLINE_REPLANS_PER_DELIVERY = 8
 
 #: The consultation-request kind C8 turns into an operator prompt. One string, so the producer here
 #: and the prompt layer there cannot drift.
@@ -210,6 +239,8 @@ class StepResult:
     scene_digests: tuple[str, ...] = ()
     submitted_fingerprints: tuple[str, ...] = ()
     declines: tuple[str, ...] = ()
+    #: How many times a geometry decline forced a re-plan against the SAME pinned scene (C7).
+    decline_replans: int = 0
     build_seconds: tuple[float, ...] = ()
     declared_partition_id: str | None = None
     blocking_questions: tuple[str, ...] = ()
@@ -399,7 +430,16 @@ def _agenda_verdict(report_dir: Path, plan: PlanResult, budget_state: dict):
 
 
 def _selected_intent(report_dir: Path, plan: PlanResult):
-    """The winning evaluation's :class:`MeasurementIntent`, rebuilt FROM THE PERSISTED INVENTORY.
+    """The winning evaluation's intent AND its question associations, read FROM THE PERSISTED
+    INVENTORY. Returns ``(intent, associations)``.
+
+    The associations are what C7 attributes a geometry decline to: they name which agenda questions
+    the declined action served and which generator supplied each, which is exactly the
+    ``(question_id, supporting_generator_ids)`` a :class:`QuestionBlockerEvidence` needs. Read from
+    the same artifact and in the same pass as the intent — the decision's persisted
+    ``selection.associations`` carry the identical tuple (``select()`` returns the survivor the
+    inventory stored), so there is nothing to be gained by parsing ``decisions.jsonl`` for a second
+    copy of a fact this file already holds.
 
     Deliberately not carried out of ``plan_next_action`` in memory. The D1 invariant is that no
     state capable of changing a selected action lives outside a persisted record, and reading the
@@ -436,7 +476,70 @@ def _selected_intent(report_dir: Path, plan: PlanResult):
         raise RuntimeError(
             f"the persisted intent in {path} does not hash to the fingerprint the decision "
             f"selected ({plan.selection_fingerprint}); refusing to submit it")
-    return intent
+    associations = tuple(QuestionActionAssociation.from_dict(a)
+                         for a in (rows[0].get("associations") or ()))
+    return intent, associations
+
+
+def _is_geometry_decline(verdict: str) -> bool:
+    """Whether a decline verdict is about GEOMETRY — the only class that earns durable evidence.
+
+    Asked of :func:`~isar.drive.loop.classify_rejection`, the ONE canonical map from a refusal
+    verdict to its durable consequence, rather than by matching substrings of the TAVI *blocker*
+    vocabulary. That earlier match read ``infeasible_points_at_submit`` as geometry because the
+    word "infeasible" is in it, which is precisely the confusion ``_REJECTION_RULES`` exists to
+    settle — the blocker markers class a BLOCKER STRING for the window-trim path, and the rejection
+    rules class a VERDICT for its durable consequence. They are different questions.
+
+    ``_execute_proposal``'s whole decline vocabulary, and the lane each one takes here:
+
+    * ``geometry_unreachable`` — scope ``geometry``. The instrument cannot reach that q at all.
+      DURABLE lane: blocker evidence, declined fingerprint, re-plan against the same pin.
+    * ``all_points_infeasible`` — scope ``geometry``. Same, refused at submit rather than at
+      validation. DURABLE lane.
+    * ``infeasible_points_at_submit`` — scope ``request``. A bad GRID at a reachable q; loop.py's
+      own comment at the raise site says "the q is reachable — only this exact grid is not — so the
+      consequence is scoped to the request ... only this request is suppressed". Minting a durable
+      blocker from it would close a question on geometry the instrument never refused, so it takes
+      the non-durable lane: no evidence, no declined fingerprint, nothing re-marked STRUCTURAL.
+    * ``validation_rejected``, ``insufficient_target_support``,
+      ``instrument_point_limit_exceeded`` — scope ``request``. Non-durable lane, same reasoning.
+    * ``scan_not_done:<state>`` and anything else unmapped — TRANSIENT, scope ``none``. Non-durable
+      lane; ``classify_rejection`` fails open to transient by design.
+
+    Only scope ``geometry`` is durable, so everything else fails CLOSED to "not geometry" — the
+    safe direction (binding ruling: transient failures never become durable question blockers).
+    """
+    from isar.drive.loop import classify_rejection
+
+    return classify_rejection(verdict).scope == "geometry"
+
+
+def _decline_evidence(plan: PlanResult, associations, verdict: str
+                      ) -> tuple[QuestionBlockerEvidence, ...]:
+    """One :class:`QuestionBlockerEvidence` per question the declined action served (D5).
+
+    The digest triple is copied from the DECLINING decision's own ``PlanResult`` — the basis agenda
+    digest, the scene digest it planned against, and the discovery registry fingerprint. Because the
+    re-plan runs against the SAME pinned scene and derivation is deterministic, it reproduces that
+    exact triple and ``attach_blocker_evidence`` authenticates the evidence rather than rejecting it
+    as stale. Its lifetime is exactly one scene revision: the next DELIVERY moves the scene and the
+    caller drops it, because evidence stamped against a revision that no longer exists can only be
+    rejected by name. A fresh decline re-emits it against the new revision.
+    """
+    by_question: dict[str, set[str]] = {}
+    for association in associations:
+        by_question.setdefault(association.question_id, set()).add(association.generator)
+    return tuple(
+        QuestionBlockerEvidence(
+            basis_agenda_digest=plan.basis_digest, question_id=question_id,
+            scene_digest=plan.scene_digest,
+            generator_registry_fingerprint=DISCOVERY_GENERATOR_REGISTRY_VERSION,
+            blocker_name=GEOMETRY_BLOCKER_NAME,
+            supporting_generator_ids=tuple(sorted(generators)),
+            reason_codes=(verdict,),
+            detail=f"instrument declined {plan.selection_fingerprint} as infeasible: {verdict}")
+        for question_id, generators in sorted(by_question.items()))
 
 
 def _campaign_provenance_block(program: CampaignProgram, step, declared) -> dict:
@@ -472,6 +575,12 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
     consumed: set = set()
     scan_kind: dict = {}
     scan_counter = 0
+    # Monotonic across the whole step, exactly as ``run_campaign`` counts its proposals: a decline
+    # or a transport failure is not a delivery, so keying the acquisition id on ``deliveries`` gave
+    # the refused proposal and its successor the same id, and every consumer that joins on it
+    # (pooled-master evidence, the scan-design provenance join) would have read them as one
+    # acquisition. Never reset — the id has to be unique over the step, not per delivery.
+    proposal_counter = 0
     # Broken-scan lane state (C6). Both are DELIVERY-INDEXED — they advance only when a delivery
     # lands, never on a clock — so a replay of the same deliveries reproduces the same sequence.
     # Both are keyed by PHYSICAL action key, never by scientific action fingerprint: the scene moves
@@ -482,6 +591,14 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
     broken_deliveries: dict[str, int] = {}      # physical action key -> untrusted deliveries so far
     retired: set[str] = set()                   # offramped: never re-proposed for THIS step
     transport_failures = 0                      # consecutive, reset by any delivery
+    # Durable-blocker lane state (C7). Keyed by SCIENTIFIC action fingerprint, NOT the physical key
+    # C6's retirement uses: a decline re-plans against the SAME pinned scene, so the scientific
+    # fingerprint (which hashes the scene digest) is stable across the cycle and IS the identity the
+    # evaluations carry. The two suppression channels are deliberately distinct and both visible in
+    # the decision basis — retirement narrows selection only, a decline structurally rejects.
+    declined_fingerprints: set[str] = set()
+    decline_evidence: tuple[QuestionBlockerEvidence, ...] = ()
+    decline_replans = 0                         # per delivery; reset by any delivery
 
     def ended(verdict: str, *, reason: str | None = None, agenda=None) -> tuple[StepResult, str]:
         log_event(cfg.log_path, "decide", {
@@ -520,7 +637,9 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
 
         plan = plan_next_action(report_dir, program, step.id,
                                 declared_partition=declared, scene_pin=pin,
-                                retired_physical_actions=frozenset(retired))
+                                retired_physical_actions=frozenset(retired),
+                                blocker_evidence=decline_evidence,
+                                declined_fingerprints=frozenset(declined_fingerprints))
         result = replace(result, plan_outcome=plan.outcome)
         if plan.outcome == CONTROLLER_FAULT:
             return ended(VERDICT_MACHINE_FAILURE, reason=f"controller_fault: {plan.reason}")
@@ -549,7 +668,7 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
                          agenda=agenda)
 
         try:
-            intent = _selected_intent(report_dir, plan)
+            intent, selected_associations = _selected_intent(report_dir, plan)
         except RuntimeError as error:
             # An artifact that names no single winner, that does not hash to the fingerprint the
             # decision selected, or whose reference is not a report path. Same class as the store
@@ -570,7 +689,8 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
         except DiscoveryWindowUnrealizable as error:
             return ended(VERDICT_MACHINE_FAILURE, reason=f"unrealizable_request: {error}",
                          agenda=agenda)
-        proposal.acquisition_id = f"{cfg.run_nonce}:{result.deliveries:08d}"
+        proposal.acquisition_id = f"{cfg.run_nonce}:{proposal_counter:08d}"
+        proposal_counter += 1
         log_event(cfg.log_path, "propose", {**proposal.to_dict(), "iter": result.deliveries,
                                             "step_id": step.id})
 
@@ -586,8 +706,10 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
             return ended(VERDICT_OVER_BUDGET, reason=f"budget_exhausted: {error}", agenda=agenda)
         except (InstrumentLimitBelowMinimumBatch, InstrumentPointLimitExceeded) as error:
             # The instrument is working and REFUSED this request. Not a machine failure and not a
-            # budget: the same shape as a geometry decline, and C7's durable-blocker producer is
-            # what will turn it into evidence and a re-plan.
+            # budget — and NOT geometry either: a point-count limit is a property of the REQUEST
+            # (a differently-gridded window at the same q is submittable), so it earns no durable
+            # blocker. Ending the step in progress is the honest answer; the geometry lane below
+            # is the one that re-plans.
             return ended(VERDICT_IN_PROGRESS, reason=f"instrument_refused: {error}", agenda=agenda)
         except TaviError as error:
             # Class 2 (C6): transport, not geometry and not physics. The client has already spent
@@ -615,19 +737,64 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
             continue
         submitted = (proposal.meta or {}).get("proposal_fingerprint")
         if declined is not None:
-            # C7 owns turning a geometry decline into durable blocker evidence and re-planning
-            # against the SAME pinned scene. Until then the scene has not moved, so a re-plan
-            # would re-select the identical action forever: end the step and say why. The decline
-            # is recorded on the result BEFORE that return — ``StepResult.declines`` is C7's
-            # input, and a decline the step ends on is exactly the one it needs.
-            result = replace(result, declines=result.declines + (str(declined),))
-            return ended(VERDICT_IN_PROGRESS, reason=f"request_declined: {declined}",
-                         agenda=agenda)
+            verdict = str(declined)
+            result = replace(result, declines=result.declines + (verdict,))
+            if not _is_geometry_decline(verdict):
+                # Not geometry — no durable blocker may be minted from it (C6's lane, unchanged).
+                # The scene has not moved, so a re-plan would re-select the identical action
+                # forever: end the step and say why.
+                return ended(VERDICT_IN_PROGRESS, reason=f"request_declined: {verdict}",
+                             agenda=agenda)
+            # The geometry lane (C7/D5). The instrument says it LITERALLY cannot perform this
+            # measurement, which is a durable fact about the machine and this evidence basis — so
+            # the action is structurally rejected on the re-plan and every question it served gets
+            # authenticated evidence backing that rejection. The re-plan runs against the SAME pin:
+            # the derivation is deterministic, so it reproduces the digest triple the evidence was
+            # stamped with, the evidence attaches, producer rule 6 emits the proof, and
+            # apply_exhaustion closes the question unresolvable.
+            decline_replans += 1
+            if decline_replans > MAX_DECLINE_REPLANS_PER_DELIVERY:
+                # A defense, never the mechanism: every cycle rejects at least one previously
+                # eligible action, so reaching this means the narrowing is not happening.
+                return ended(VERDICT_MACHINE_FAILURE,
+                             reason=f"decline_replan_cap: {decline_replans - 1} geometry declines "
+                                    f"on one delivery exceeded MAX_DECLINE_REPLANS_PER_DELIVERY "
+                                    f"({MAX_DECLINE_REPLANS_PER_DELIVERY}) without the action set "
+                                    "narrowing; controller fault",
+                             agenda=agenda)
+            # Audit parity with the transport arm above: every refusal this step meets appears in
+            # the session log's ``action_suppressed`` stream, so a resume and a human reading the
+            # log see the same refusal history whatever lane it took. ``plan=None`` for the same
+            # reason as the transport arm — there is no planner-side plan object here.
+            _record_action_rejection(cfg, None, proposal, verdict, {}, {}, {},
+                                     it=result.deliveries)
+            declined_fingerprints.add(intent.scientific_action_fingerprint)
+            emitted = _decline_evidence(plan, selected_associations, verdict)
+            decline_evidence = decline_evidence + emitted
+            result = replace(result, decline_replans=result.decline_replans + 1)
+            log_event(cfg.log_path, "decide", {
+                "event": "durable_blocker_emitted", "action": "durable_blocker_emitted",
+                "step_id": step.id, "verdict": verdict,
+                "scientific_action_fingerprint": intent.scientific_action_fingerprint,
+                "blocker_name": GEOMETRY_BLOCKER_NAME,
+                "evidence": [e.to_dict() for e in emitted],
+                "decline_replans": result.decline_replans, "iter": result.deliveries})
+            continue
         result = replace(
             result, deliveries=result.deliveries + 1,
             submitted_fingerprints=result.submitted_fingerprints + ((submitted,) if submitted
                                                                      else ()))
         transport_failures = 0
+        # All three are PER SCENE REVISION, and a delivery moves the scene — so they are cleared
+        # here rather than carried. Carrying them was harmless to the OUTCOME (the scientific
+        # fingerprint hashes the scene digest, so it stops matching, and the evidence's digest
+        # triple goes stale and is refused by name) but not to the LOG: every later decision paid
+        # to re-derive evidence that could only ever be rejected, and the agenda picked up a
+        # ``blocker_evidence_rejected`` note per expired item that says nothing about this
+        # revision. A fresh decline re-emits both against the new revision.
+        declined_fingerprints.clear()
+        decline_evidence = ()
+        decline_replans = 0
         _LOG.debug("discovery delivery %d folded %d row(s)", result.deliveries, len(rows))
 
         # ---- class 1: did this delivery's counts survive the gates? ------------------------

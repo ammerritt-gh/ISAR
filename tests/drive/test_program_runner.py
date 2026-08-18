@@ -508,24 +508,33 @@ def test_a_budget_that_cannot_afford_the_minimum_batch_ends_the_step_over_budget
 
 
 # ---------------------------------------------------------------------------- (8) declines
-def test_a_declined_request_ends_the_step_honestly_rather_than_re_proposing_forever(
+class RejectingTavi(MockTavi):
+    """Refuses for a reason that is NOT about geometry — the request is reachable, the instrument
+    just will not take it. No durable blocker may be minted from this (D5)."""
+
+    def validate(self, body):
+        return {"would_queue": False, "blockers": ["scan_queue_full"], "requested_points": 10}
+
+
+def test_a_non_geometry_decline_ends_the_step_honestly_rather_than_re_proposing_forever(
         tmp_path, monkeypatch):
-    """C7 owns turning a geometry decline into durable blocker evidence and a re-plan against the
-    same pinned scene. Until then the scene has not moved, so a re-plan would re-select the
-    identical action — the step ends and says which request was refused."""
+    """The scene has not moved, so a re-plan would re-select the identical action — and unlike a
+    geometry decline there is nothing durable to learn from the refusal, so nothing narrows. The
+    step ends and says which request was refused. C7's geometry lane (which DOES re-plan) is pinned
+    in ``tests/drive/test_decline_feedback.py``."""
     root = workspace(tmp_path)
     step = discover_step()
     monkeypatch.setattr(runner_mod, "build_scene_revision", FakeBuild(root, [COLD_START_SCENE]))
 
     outcome = run_program(CampaignProgram(steps=(step,)), step.id,
-                          config_for(root, client=DecliningTavi(), max_deliveries=5))
+                          config_for(root, client=RejectingTavi(), max_deliveries=5))
 
     assert outcome.verdict == VERDICT_IN_PROGRESS
     assert outcome.result.reason.startswith("request_declined:")
-    # And the decline is ON the result, not only in the reason string: ``StepResult.declines`` is
-    # what C7's durable-blocker producer reads, and the decline a step ENDS on is the one it needs.
+    # And the decline is ON the result, not only in the reason string.
     assert len(outcome.result.declines) == 1
     assert outcome.result.declines[0] in outcome.result.reason
+    assert outcome.result.decline_replans == 0      # no durable evidence, no re-plan
 
 
 # ---------------------------------------------------------------------------- (8b) store corruption

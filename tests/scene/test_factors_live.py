@@ -1035,6 +1035,15 @@ def test_a_bose_dead_anti_stokes_band_cannot_exclude_anything():
     report, = [r for r in cold["visibility"] if r["component_id"].startswith("e:1:d")]
     assert report["visibility"] == Visibility.BLOCKED_UNRESOLVED
     assert report["reason"] == "bose_dead"
+    # SCENE-4.3 C7 guard (owner ruling 2026-08-18). ``bose_dead`` was deleted from the durable
+    # BLOCKER vocabularies — it is EIG worthwhileness pricing, never "cannot measure" — and this
+    # DETECTABILITY reason is a DIFFERENT vocabulary that survives. Both halves are pinned here
+    # together, because the failure this prevents is a future cleanup deleting the surviving half
+    # on the strength of the ruling that deleted the other one.
+    from isar.schema.generators import DURABLE_BLOCKER_NAMES
+    from isar.scene.questions import BLOCKER_CLASS_BY_NAME
+    assert "bose_dead" not in DURABLE_BLOCKER_NAMES
+    assert "bose_dead" not in BLOCKER_CLASS_BY_NAME
     assert list(terms(cold, "presence").values()) == [0.0]
     # An unknown temperature establishes nothing either, and says which of the two it is.
     unknown = cluster_of(build_scene([seen, _anti_stokes_only("e:2:d", 1.1, None)]), "e:1:d")
