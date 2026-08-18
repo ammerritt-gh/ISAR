@@ -170,7 +170,8 @@ def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
                            registry_fp: str, locality_coordinate: float | None,
                            declared_partition=None,
                            retired_physical_actions: frozenset[str] = frozenset(),
-                           declined_fingerprints: frozenset[str] = frozenset()) -> dict:
+                           declined_fingerprints: frozenset[str] = frozenset(),
+                           hypotheses_fingerprint: str | None = None) -> dict:
     """Every ``decision_basis`` field that does NOT depend on a stored scene existing — computed
     even on the scene-missing fault path, so that record is as diagnostic as any other.
 
@@ -208,7 +209,13 @@ def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
                if retired_physical_actions else {})
     declined = ({"declined_scientific_actions": sorted(declined_fingerprints)}
                 if declined_fingerprints else {})
+    # Omitted-when-absent on the same rule as the three above, so a decision taken with no declared
+    # hypotheses stays byte-identical to its 4.2b shape. Present, it is the DECLARED PHYSICS this
+    # decision was taken under — readable without rehashing the intent.
+    hypotheses = ({"hypotheses_fingerprint": hypotheses_fingerprint}
+                  if hypotheses_fingerprint else {})
     return {
+        **hypotheses,
         **declared,
         **retired,
         **declined,
@@ -416,6 +423,7 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
                      locality_coordinate: float | None = None,
                      blocker_evidence: tuple = (),
                      declared_partition: DeclaredPartition | None = None,
+                     hypotheses_fingerprint: str | None = None,
                      scene_pin: str | None = None,
                      retired_physical_actions: frozenset[str] = frozenset(),
                      declined_fingerprints: frozenset[str] = frozenset()) -> PlanResult:
@@ -459,7 +467,8 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     registry_fp = DISCOVERY_GENERATOR_REGISTRY_VERSION
     basis_common = _decision_basis_common(program_fp, step_id, step_payload, registry_fp,
                                           locality_coordinate, declared_partition,
-                                          retired_physical_actions, declined_fingerprints)
+                                          retired_physical_actions, declined_fingerprints,
+                                          hypotheses_fingerprint)
     # Below the planner the declaration travels as the primitive triple the scene layer and the
     # opening book both take — the DTO itself never crosses into isar.scene (import boundary).
     # The step id rides along because it is the RETIREMENT test (owner ruling 2026-08-18): the
@@ -467,7 +476,8 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     # fan-out. ``step_id`` is the planner's resolved step, and the DTO was minted against it.
     declared_frame = (None if declared_partition is None
                       else (declared_partition.partition_id, declared_partition.lattice_epoch,
-                            declared_partition.step_id))
+                            declared_partition.step_id,
+                            declared_partition.path_fingerprint))
 
     # ---- atomic snapshot -----------------------------------------------------------------
     if scene_pin is not None:
@@ -504,7 +514,8 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     basis_digest = pass1.payload["basis_digest"]
     context = DiscoveryContext(scene_payload=scene_payload, agenda_payload=pass1.payload,
                                step_payload=step_payload, basis_agenda_digest=basis_digest,
-                               scene_digest=scene_digest, declared_partition=declared_frame)
+                               scene_digest=scene_digest, declared_partition=declared_frame,
+                               hypotheses_fingerprint=hypotheses_fingerprint)
 
     fault_reason = None
     run_result = RunResult(records=(), evaluations=())
@@ -662,11 +673,19 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     # The retirement set (C6) folds in on the same terms, and on the same conditional rule it uses
     # in the basis: a narrowed selection input that did not reach this digest would let two
     # decisions taken over different candidate sets carry one context fingerprint.
+    #
+    # ``declared_partition`` rides the same rule (review finding 2026-08-18). It was left out while
+    # the two narrowing sets went in, even though it is a LARGER change to the candidate set — it
+    # decides the fan-out itself, not merely which survivors may be picked. It reaches
+    # ``basis_digest`` indirectly through the agenda, so the omission was not exploitable, but the
+    # rule is "everything that changes what could have been selected", and an exception nobody
+    # wrote down is how the next field gets forgotten too.
     context_fingerprint = fingerprint(
         {"scene_digest": scene_digest, "basis_digest": basis_digest, "step_id": step_id,
          "locality": basis_common["locality"],
          **{key: basis_common[key]
-            for key in ("retired_physical_actions", "declined_scientific_actions")
+            for key in ("declared_partition", "retired_physical_actions",
+                        "declined_scientific_actions", "hypotheses_fingerprint")
             if key in basis_common}})
     record = {
         "schema": DECISION_SCHEMA,

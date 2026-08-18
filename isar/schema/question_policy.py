@@ -275,16 +275,21 @@ def _validate_consultation_overrides(section: Any, where: str) -> None:
 
     ``keep_open_questions`` are question ids the operator refused to let close unresolvable;
     ``retry_budget_by_action`` maps a SCENE-INVARIANT physical action key to that one action's
-    broken-scan ceiling, replacing the step's ``broken_scan_retry_limit`` for it alone. Both are
-    whole declarations with no defaulting: a malformed section refuses rather than being read as
-    "no overrides", because silently dropping an override is silently ignoring an operator's answer.
+    broken-scan ceiling, replacing the step's ``broken_scan_retry_limit`` for it alone.
+    ``retired_actions`` (DECISIONS H21(b)) lists the physical action keys a settled
+    ``retire_action`` answer took out of THIS step's re-submission set; it exists because the two
+    answers to one prompt used to have opposite durability, so a restart reversed the operator's
+    cheaper answer and preserved the more expensive one. All three are whole declarations with no
+    defaulting: a malformed section refuses rather than being read as "no overrides", because
+    silently dropping an override is silently ignoring an operator's answer.
     """
     if section is None:
         return
     place = f"{where}.{CONSULTATION_OVERRIDES_KEY}"
     if not isinstance(section, Mapping):
         raise ValueError(f"{place} must be an object")
-    unknown = sorted(set(section) - {"keep_open_questions", "retry_budget_by_action"})
+    unknown = sorted(set(section)
+                     - {"keep_open_questions", "retry_budget_by_action", "retired_actions"})
     if unknown:
         raise ValueError(f"{place} has unknown fields: {unknown}")
     questions = section.get("keep_open_questions", [])
@@ -302,6 +307,12 @@ def _validate_consultation_overrides(section: Any, where: str) -> None:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError(f"{place}.retry_budget_by_action[{key!r}] must be a non-negative "
                              f"whole number of deliveries, got {value!r}")
+    retired = section.get("retired_actions", [])
+    if isinstance(retired, (str, bytes)) or not isinstance(retired, Sequence):
+        raise ValueError(f"{place}.retired_actions must be a list of physical action keys")
+    for key in retired:
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(f"{place}.retired_actions holds {key!r}, not an action key")
 
 
 def validate_resolved_block(block: Any, where: str = "resolved_policy") -> None:

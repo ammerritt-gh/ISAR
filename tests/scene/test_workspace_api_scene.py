@@ -751,3 +751,37 @@ def test_a_record_with_no_campaign_provenance_reads_none_everywhere(tmp_path):
     obs, = scene_observations(_ws(tmp_path, [_row(1, candidates=[_candidate("phonon+bg")])]))
     assert (obs.topology_role, obs.program_fingerprint, obs.program_step,
             obs.path_fingerprint) == (None, None, None, None)
+
+
+def test_a_pooled_master_inherits_its_members_unanimous_program_step():
+    """A canonical master SUPPRESSES the member rows it pools. Holding its ``program_step`` at
+    ``None`` therefore erased the declaring step's only proof that it had ever measured:
+    ``isar.scene.questions.step_observed`` went back to False and the cold-start declaration
+    UN-RETIRED itself mid-campaign, generating phantom work beside the real partition.
+
+    Unanimity is the whole rule, exactly as it already was for the declared-path pair — members
+    from one step hand the master that step, members from two hand it ``None``. ``program_fingerprint``
+    stays ``None`` either way: a master legitimately pools across recompiles.
+    """
+    from isar.workspace_api.scene import _member_provenance
+
+    def record(ref, step_id, path):
+        return MeasurementArena(
+            scan_ref=ref, scan_id=ref, scan_number=1, detector="d", sample="s1",
+            conditions=(("temperature_K", 300.0),), q=(2.0, 0.0, 0.0), lattice_epoch=1,
+            energy_window=(0.0, 10.0), energy_bands=((0.0, 10.0),), effective_exposure=5.0,
+            exposure_provenance=None, count_trust="trusted", reasons=(),
+            written_at="2026-08-18T00:00:00+00:00", content_hash="c0",
+            program_fingerprint="pf", program_step=step_id,
+            topology_role="canonical_path", path_fingerprint=path)
+
+    one = record("m1", "discover-1", "pathA")
+    two = record("m2", "discover-1", "pathA")
+    derived, reason = _member_provenance(["m1", "m2"], {"m1": one, "m2": two})
+    assert reason is None
+    assert derived[5] == "discover-1", "the master lost the step every member named"
+
+    other = record("m2", "discover-2", "pathA")
+    mixed, reason = _member_provenance(["m1", "m2"], {"m1": one, "m2": other})
+    assert reason is None
+    assert mixed[5] is None, "two steps must not hand the master one of them"

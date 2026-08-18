@@ -63,7 +63,7 @@ def outcome_of(intents_and_associations=(), clean_zero=None, inapplicable=None,
         return GeneratorOutcome.clean_zero(clean_zero, exhaustion_clean=exhaustion_clean)
     if inapplicable is not None:
         return GeneratorOutcome.inapplicable(inapplicable)
-    return GeneratorOutcome.proposed(intents_and_associations)
+    return GeneratorOutcome.proposed(intents_and_associations, proposals_exhaustive=True)
 
 
 # ----------------------------------------------------------------------------
@@ -270,6 +270,8 @@ def test_run_records_serialize_deterministically():
          "generator_outcomes": [
              {"generator": "gen_a", "kind": "inapplicable", "generated": 0,
               "clean_zero_reason": None, "exhaustion_clean": False,
+              # An INAPPLICABLE outcome proposed nothing, so it declares no exhaustive set.
+              "proposals_exhaustive": False,
               "inapplicable_reason": "no_witness", "error_code": None}]}]
 
 

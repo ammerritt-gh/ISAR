@@ -527,8 +527,9 @@ def scene_partitions(scene_payload: dict) -> tuple[str, ...]:
     return tuple(sorted(i for i in ids if i is not None))
 
 
-def step_observed(scene_payload: dict, step_id: str | None) -> bool:
-    """Whether step ``step_id`` has landed a TRUSTED observation in this revision.
+def step_observed(scene_payload: dict, step_id: str | None,
+                  path_fingerprint: str | None = None) -> bool:
+    """Whether step ``step_id`` landed a TRUSTED observation ON ITS OWN PATH here.
 
     The cold-start retirement test (SCENE-4 PR 4.3, D4; owner ruling 2026-08-18): a declared
     partition is initialization only, and it retires the moment ITS OWN step has produced a
@@ -543,10 +544,23 @@ def step_observed(scene_payload: dict, step_id: str | None) -> bool:
     question layer nothing about where the step's scans land, and retiring the declaration on one
     would strand the campaign with neither declared nor observed knowledge at exactly the moment
     it has none. The declaration stays live until a trusted own-step observation lands.
+
+    ``path_fingerprint`` is the LINEAGE half of the identity (review finding 2026-08-18; amends
+    H20(d)). A step id alone is not unique across programs — ``discover-1`` is the id nearly every
+    authored program uses — so a trusted observation belonging to an OLDER program that reused the
+    id retired a fresh declaration before its first measurement, blanking the declared knowledge
+    at exactly the moment it was the only knowledge there was. The physical path is the right
+    second component: it is already on the record, it distinguishes unrelated authored programs
+    measuring different trajectories, and it SURVIVES a consultation recompile (which mints a new
+    ``program_fingerprint`` while measuring the same path), so it can never retire a declaration
+    for an administrative reason. ``None`` matches on the step id alone — the pre-amendment
+    behaviour, kept only for a caller that genuinely has no path to compare.
     """
     if step_id is None:
         return False
     return any(obs.get("program_step") == step_id and obs.get("count_trust") == "trusted"
+               and (path_fingerprint is None
+                    or obs.get("path_fingerprint") == path_fingerprint)
                for obs in scene_payload.get("observations") or ())
 
 

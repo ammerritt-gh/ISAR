@@ -554,6 +554,19 @@ def main(argv=None) -> int:
                           "discover_and_map program is already frozen — run it, or copy the file",
                           file=sys.stderr)
                     return 2
+                if args.scan_window_eig_mode is not None:
+                    # REFUSED, never accepted-and-ignored (the same rule
+                    # `_require_synchronous_staleness` applies to an unimplemented staleness mode).
+                    # Every targeted branch above routes this flag through `apply_mode_override`;
+                    # the discovery branch has no ObjectiveSpec to override and passes nothing to
+                    # `run_program`, so accepting it would silently drop an operator's authoring
+                    # choice. Discovery selection carries no EIG authority in this build at all —
+                    # it ranks lexicographically and prices nothing (DECISIONS H21(a)).
+                    print("isar drive: --scan-window-eig-mode steers a TARGETED objective's scan "
+                          "window; a discover_and_map step has no scan-window EIG authority in "
+                          "this build (DECISIONS H21(a)), so the flag is refused rather than "
+                          "accepted and ignored.", file=sys.stderr)
+                    return 2
                 discovery_budget = _parse_budget(args.budget) if args.budget else None
                 discovery_limit = (_parse_analysis_limit(args.analysis_limit)
                                    if args.analysis_limit is not None else None)

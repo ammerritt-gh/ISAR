@@ -188,12 +188,14 @@ def consultation_overrides(step: CampaignStep) -> dict[str, Any]:
     policy = dict(getattr(step.payload, "resolved_policy", None) or {})
     overrides = dict(policy.get(CONSULTATION_OVERRIDES_KEY) or {})
     return {"keep_open_questions": list(overrides.get("keep_open_questions") or ()),
-            "retry_budget_by_action": dict(overrides.get("retry_budget_by_action") or {})}
+            "retry_budget_by_action": dict(overrides.get("retry_budget_by_action") or {}),
+            "retired_actions": list(overrides.get("retired_actions") or ())}
 
 
 def apply_consultation_overrides(program: CampaignProgram, step_id: str, *,
                                  keep_open_questions=(),
-                                 retry_budget_by_action: Mapping[str, int] | None = None
+                                 retry_budget_by_action: Mapping[str, int] | None = None,
+                                 retired_actions=()
                                  ) -> CampaignProgram:
     """Compile a NEW program whose ``step_id`` carries these overrides. Nothing is mutated.
 
@@ -205,6 +207,16 @@ def apply_consultation_overrides(program: CampaignProgram, step_id: str, *,
 
     ``retry_budget_by_action`` is the ``retry_more`` answer's effect: a per-physical-action ceiling
     that replaces the step's frozen ``broken_scan_retry_limit`` for that ONE action.
+
+    ``retired_actions`` is the ``retire_action`` answer's effect (DECISIONS H21(b)), and it exists
+    because the two answers to one prompt had OPPOSITE durability: ``retry_more`` compiled into the
+    program and survived a restart, while ``retire_action`` only added a key to an in-memory set.
+    A restart therefore reversed the operator's cheaper answer and preserved the more expensive one
+    — an action they retired resumed spending beamtime, an action they extended kept its extension.
+    Retirement now takes the same route as the budget, so "the program is the record" is true of
+    both. It narrows SELECTION only, exactly as the in-memory set did: the evaluations stay
+    eligible in the persisted inventory, because a broken detector is not a statement about the
+    physics.
 
     Both merge into whatever the program already carries (a second answer adds, never replaces),
     and both are emitted sorted so the same answers compile to the same fingerprint. The budget
@@ -226,8 +238,10 @@ def apply_consultation_overrides(program: CampaignProgram, step_id: str, *,
     budgets = {key: int(value) for key, value in current["retry_budget_by_action"].items()}
     for key, value in dict(retry_budget_by_action or {}).items():
         budgets[key] = max(budgets.get(key, 0), int(value))
+    retired = sorted(set(current["retired_actions"]) | set(retired_actions))
     section = {"keep_open_questions": questions,
-               "retry_budget_by_action": {key: budgets[key] for key in sorted(budgets)}}
+               "retry_budget_by_action": {key: budgets[key] for key in sorted(budgets)},
+               "retired_actions": retired}
 
     payload = step.payload.to_dict()
     payload["resolved_policy"] = {**payload["resolved_policy"],

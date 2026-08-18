@@ -308,9 +308,15 @@ def test_retry_more_answered_on_a_later_delivery_grants_budget_and_re_submits_th
     assert outcome.result.program_fingerprints == (original, new)
 
 
-def test_a_closed_question_becomes_an_unresolvable_closure_prompt(tmp_path, monkeypatch):
-    """The other v1 kind, from the real producer: a question the geometry lane closed unresolvable
-    is put to the operator under a stable id, with the frozen block's declared default.
+def test_a_blocked_question_becomes_an_unresolvable_closure_prompt(tmp_path, monkeypatch):
+    """The other v1 kind, from the real producer: a question the geometry lane BLOCKED is put to
+    the operator under a stable id, with the frozen block's declared default.
+
+    It used to require the question to have CLOSED unresolvable. Since H21(g) a sampled action
+    space cannot close one — ``opening_book_survey`` offers one point in a gap, and refusing it
+    proves nothing about the region — so the prompt rides the durable BLOCK instead. That keeps the
+    safety property (a measurable region is never written off) without the campaign quietly
+    ceasing to ask.
 
     STRUCTURAL NOTE (why this stops here): a question closes unresolvable only once NOTHING eligible
     serves it, and in the cold-start world that question is the only one with actions — so the step
@@ -337,7 +343,7 @@ def test_a_closed_question_becomes_an_unresolvable_closure_prompt(tmp_path, monk
         options=(ACCEPT_CLOSE, KEEP_SPENDING), epoch=0)
 
 
-def test_keep_spending_stops_the_question_closing_without_un_rejecting_the_refused_action(
+def test_keep_spending_stops_the_question_blocking_without_un_rejecting_the_refused_action(
         tmp_path, monkeypatch):
     """What the answer BUYS, through the real derivation: the driver stops supplying durable blocker
     evidence for that question, so it stays open and the campaign keeps looking for another way to
@@ -357,15 +363,20 @@ def test_keep_spending_stops_the_question_closing_without_un_rejecting_the_refus
         run_program(program, step.id, config_for(root, client=DecliningTavi(), max_deliveries=3))
         return root
 
-    baseline = run("closes")
+    # The baseline question is BLOCKED, not closed (H21(g): a sampled action space cannot close
+    # one) — and being blocked is exactly what puts it to the operator.
+    baseline = run("blocks")
     question = log_payloads(baseline, "durable_blocker_emitted")[0]["evidence"][0]["question_id"]
-    assert assessment_status(baseline, question) == "unresolvable"
+    assert assessment_status(baseline, question) == "open"
+    assert prompts_issued(baseline), "a durably blocked question did not ask the operator"
 
     kept = run("kept", keep_open=(question,))
     assert assessment_status(kept, question) == "open", \
         "the operator's keep_spending answer did not keep the question open"
+    # The answer's real effect: no evidence is supplied, so the question is not even BLOCKED any
+    # more — and an unblocked question has nothing to consult about.
     assert log_payloads(kept, "durable_blocker_emitted")[0]["evidence"] == []
-    assert prompts_issued(kept) == [], "a question that never closed still asked to be consulted"
+    assert prompts_issued(kept) == [], "a question with no blocker still asked to be consulted"
     # ...and the refused action is still out of the running.
     last = decision_lines(kept)[-1]
     assert last["outcome"] == "no_eligible_action"
@@ -444,9 +455,17 @@ def test_the_prompt_timeout_resolves_through_the_precedence_chain(tmp_path):
         resolve_policy(user_ask={"prompt_timeout_deliveries": -1})
 
 
-def test_the_offramp_default_retires_the_action_exactly_as_c6_already_did(tmp_path, monkeypatch):
-    """The declared default changes nothing: silence confirms the retirement C6 already performed,
-    so no program revision is compiled and the action stays out of the re-submission set."""
+def test_the_offramp_default_retires_the_action_durably(tmp_path, monkeypatch):
+    """Silence confirms the retirement C6 already performed in memory — and now COMPILES it
+    (DECISIONS H21(b)).
+
+    It used to recompile nothing, on the reasoning that the default "confirms what the driver
+    already did". What the driver had done was add a key to an in-memory set, so the two answers to
+    this one prompt had opposite durability: `retry_more` froze into the program and survived a
+    restart, `retire_action` did not. A restart therefore reversed the operator's CHEAPER answer and
+    kept the more expensive one — the retired action resumed spending beamtime. Retirement now
+    takes the same route as the budget, so "the program is the record" is true of both.
+    """
     root = workspace(tmp_path)
     step = discover_step(policy=policy_with(retry_limit=0,
                                             prompt_timeout_deliveries=1))
@@ -458,11 +477,25 @@ def test_the_offramp_default_retires_the_action_exactly_as_c6_already_did(tmp_pa
 
     defaults = log_payloads(root, "prompt_default_applied")
     assert defaults and defaults[0]["option"] == RETIRE_ACTION
-    assert log_payloads(root, "consultation_program_recompiled") == []
-    assert len(set(outcome.result.program_fingerprints)) == 1
     retired = defaults[0]["subject"]
+
+    # The retirement is now a compiled revision, not only an in-memory set.
+    recompiles = log_payloads(root, "consultation_program_recompiled")
+    assert recompiles, "the settled retirement compiled no revision, so a restart would undo it"
+    assert retired in recompiles[-1]["retired_actions"]
+    assert len(set(outcome.result.program_fingerprints)) == 2
+
     keys = selected_physical_keys(root)
     assert keys.count(retired) == 1, "the retired action was re-submitted after its default"
+
+    # And it is READ BACK: a second run of the same authored program adopts the compiled revision
+    # and starts with the action already retired, rather than buying it a fresh retry budget.
+    from isar.schema.consultation import consultation_overrides
+    from isar.drive.program_runner import _adopt_stored_revision
+    adopted = _adopt_stored_revision(root / "report", CampaignProgram(steps=(step,)),
+                                     root / "report" / "session_log.jsonl")
+    assert retired in consultation_overrides(
+        next(s for s in adopted.steps if s.id == step.id))["retired_actions"]
 
 
 # ---------------------------------------------------- (4) the compiled revision is read back

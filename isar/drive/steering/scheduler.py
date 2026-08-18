@@ -1,7 +1,7 @@
 """Lexicographic scheduling over eligible discovery evaluations (PR 4.2b C7 / B6).
 
-The rank vector per evaluation is ``(family_priority, dependency_depth, locality,
-scientific_action_fingerprint)`` — the first two components come straight from
+The rank vector per evaluation is ``(family_priority, dependency_depth, placement_rank,
+locality, scientific_action_fingerprint)`` — the first three components come straight from
 :func:`~isar.schema.generators.aggregate_rank`'s supplier (the MINIMUM lexicographic association
 over the evaluation's, already order-invariant by construction); ``locality`` is a named v1
 stand-in (:data:`LOCALITY_VERSION`) for a future motor-cost model — until then it is either 0.0
@@ -24,9 +24,23 @@ __all__ = ["SCHEDULER_POLICY", "RankedEvaluation", "rank_all", "select"]
 
 LOCALITY_VERSION = "isar.scheduler.locality.axis-distance/1"
 
+# ``placement_rank`` (review finding, 2026-08-18) is what keeps the generator's own physics
+# ordering ahead of the fingerprint tiebreak; see QuestionActionAssociation for the failure that
+# added it. It does NOT price anything — the gap below is unchanged.
+# WHAT THIS POLICY DOES NOT PRICE (DECISIONS H21(a), deferred to SCENE-5.5). ``rank_fields`` is
+# the WHOLE ranking, and it carries no cost term: the exposure a chosen action will spend is
+# ``discovery_monitor_ncount`` PER POINT times the point count its window and snapped step imply
+# (``isar.drive.steering.realization``, charged in ``isar.drive.loop``), so two candidates at the
+# same family priority and dependency depth can differ in cost by more than an order of magnitude
+# and be separated here by the fingerprint tiebreak alone. That is the known gap against O43's
+# symmetric per-neutron comparison; worthwhileness pricing is SCENE-5's, and no field is added
+# here in the meantime because this dict is embedded verbatim in every persisted decision and a
+# new key would move every decision's bytes for a value nothing yet computes. Until SCENE-5.5 the
+# cost bound is the declared budget (which trips after the spend) plus
+# ``MAX_DISCOVERY_DELIVERIES_PER_STEP``, never this ranking.
 SCHEDULER_POLICY = {
     "id": "isar.scheduler.lexicographic/1",
-    "rank_fields": ["family_priority", "dependency_depth", "locality",
+    "rank_fields": ["family_priority", "dependency_depth", "placement_rank", "locality",
                     "scientific_action_fingerprint"],
     "priority_source": "question-policy family_priorities via associations, min-aggregated",
     "depth_algorithm": "aggregate_rank's minimum-lexicographic association supplier "
@@ -68,9 +82,9 @@ def rank_all(evaluations, step_payload: Mapping,
     ranked = []
     for evaluation in evaluations:
         rank_key, supplier = aggregate_rank(evaluation.associations)
-        family_priority, dependency_depth = rank_key[0], rank_key[1]
+        family_priority, dependency_depth, placement_rank = rank_key[0], rank_key[1], rank_key[2]
         locality = _locality(step_payload, evaluation.intent.hkl, locality_coordinate)
-        vector = (family_priority, dependency_depth, locality,
+        vector = (family_priority, dependency_depth, placement_rank, locality,
                   evaluation.intent.scientific_action_fingerprint)
         ranked.append(RankedEvaluation(evaluation=evaluation, rank_vector=vector,
                                        supplying_association=supplier))

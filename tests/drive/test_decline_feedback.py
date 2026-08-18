@@ -110,7 +110,7 @@ def two_eligible_actions(monkeypatch, coords):
 
 
 # ---------------------------------------------------------------------------- the full chain
-def test_a_geometry_decline_closes_its_question_through_the_producers_durable_arm(
+def test_a_geometry_decline_blocks_its_question_and_asks_the_operator(
         tmp_path, monkeypatch):
     """The whole C7 chain on one decline, link by link.
 
@@ -164,16 +164,31 @@ def test_a_geometry_decline_closes_its_question_through_the_producers_durable_ar
         for line in decisions[1:] if line["selection"]
         for entry in line["selection"]["rank_table"]}
 
-    # --- the producer's proof was emitted AND applied: the question is closed unresolvable -----
+    # --- the evidence attached, and the question is BLOCKED — deliberately not CLOSED ---------
+    # It used to close ``unresolvable`` here. That was the arity hole (DECISIONS H21(g)):
+    # ``opening_book_survey`` offers ONE point inside an uncovered gap, so the instrument refusing
+    # that point proves nothing about the gap, let alone about the region — a point a few
+    # hundredths of an rlu away would have surveyed it just as well. The producer now requires the
+    # generator to declare its offers EXHAUSTIVE before one refusal may close a question, and the
+    # survey generator cannot, so the region stays on the books.
     payload = agenda_payload(root)
-    closed = assessment_for(payload, blocked_question)
-    assert closed["status"] == "unresolvable"
-    assert [b["name"] for b in closed["blockers"]] == [GEOMETRY_BLOCKER_NAME]
-    notes = dict(closed["notes"])
-    assert "evidence_attached" in notes and "unresolvable_closure" in notes
+    blocked = assessment_for(payload, blocked_question)
+    assert blocked["status"] == "open"
+    assert [b["name"] for b in blocked["blockers"]] == [GEOMETRY_BLOCKER_NAME]
+    notes = dict(blocked["notes"])
+    assert "evidence_attached" in notes
+    assert "unresolvable_closure" not in notes
     assert "blocker_evidence_rejected" not in notes, \
         "the evidence the driver stamped did not authenticate against the re-plan's derivation"
-    assert [p["question_id"] for p in payload["exhaustion_evidence"]] == [blocked_question]
+    assert payload["exhaustion_evidence"] == [], \
+        "a sampled action space must not produce an exhaustion proof"
+
+    # ...and the operator is still ASKED about it. Safety must not cost the operator surface: the
+    # prompt now rides the BLOCK rather than the closure (owner ruling 2026-08-18), so a campaign
+    # that hits a wall still puts the question to a human instead of only listing it as blocking.
+    requests = [r for r in outcome.result.consultation_requests
+                if r["kind"] == "unresolvable_closure"]
+    assert [r["question_id"] for r in requests] == [blocked_question]
 
 
 # ---------------------------------------------------------------------------- sibling question

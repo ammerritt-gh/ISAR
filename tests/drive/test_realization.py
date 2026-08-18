@@ -93,14 +93,18 @@ def test_a_window_with_fewer_than_two_aligned_points_is_refused_never_widened():
 
 
 # ---------------------------------------------------------------------------- the proposal
-def _intent(lo=0.37, hi=2.9, hkl=(2.5, 0.0, 0.0)):
+def _intent(lo=0.37, hi=2.9, hkl=(2.5, 0.0, 0.0), hypotheses_fingerprint=None):
+    """The declared physics rides on the INTENT (review finding 2026-08-18) — the generator puts it
+    there before dedup and scheduling, and ``proposal_from_intent`` only verifies it."""
     return MeasurementIntent(action_class="discovery_survey", hkl=hkl, energy_lo=lo, energy_hi=hi,
-                             window_family="discovery")
+                             window_family="discovery",
+                             hypotheses_fingerprint=hypotheses_fingerprint)
 
 
 def test_the_proposal_carries_the_snapped_step_the_aligned_window_and_the_given_exposure():
     proposal = proposal_from_intent(
-        _intent(), fwhm_meV=0.3, provenance={"topology_role": "canonical_path"},
+        _intent(hypotheses_fingerprint="hf"), fwhm_meV=0.3,
+        provenance={"topology_role": "canonical_path"},
         hypotheses_fingerprint="hf", reason="discovery: step-1", ncount=int(1e8))
 
     assert (proposal.e_lo, proposal.e_hi, proposal.e_step) == (0.5, 2.75, 0.25)
@@ -113,7 +117,10 @@ def test_the_proposal_carries_the_snapped_step_the_aligned_window_and_the_given_
     assert proposal.meta["topology_role"] == "canonical_path"
     assert proposal.meta["hypotheses_fingerprint"] == "hf"
     assert proposal.meta["scientific_action_fingerprint"] == \
-        _intent().scientific_action_fingerprint
+        _intent(hypotheses_fingerprint="hf").scientific_action_fingerprint
+    # The hypothesis set is an INPUT to scientific identity, so an intent built without it is a
+    # different action, not the same one missing a field.
+    assert proposal.intent.hypotheses_fingerprint == "hf"
     # The request fingerprint is stamped by ``_finalize_proposal`` AFTER the instrument clamps,
     # never here — so it can never describe a window that was not the one submitted.
     assert "proposal_fingerprint" not in proposal.meta
@@ -125,3 +132,20 @@ def test_an_intent_with_no_energy_window_is_refused():
     with pytest.raises(DiscoveryWindowUnrealizable):
         proposal_from_intent(intent, fwhm_meV=0.5, provenance={}, hypotheses_fingerprint=None,
                              reason="r", ncount=int(1e8))
+
+
+def test_a_request_built_under_different_physics_than_its_decision_refuses():
+    """The declared hypothesis set is an INPUT to ``scientific_fingerprint``, so it has to be on
+    the intent before dedup and scheduling — this module only VERIFIES it.
+
+    Introducing it here instead meant the inventory, the scientific identity, the physical retry
+    key, the decision basis and the scheduler all described an action WITHOUT the physics that
+    would interpret its measurement, and a card edit could leave a persisted decision
+    byte-identical while changing what the scan means. The check makes the disagreement loud
+    instead of submitting a scan whose declared physics is not the physics it was selected under.
+    """
+    with pytest.raises(DiscoveryWindowUnrealizable, match="not the physics its decision"):
+        proposal_from_intent(_intent(hypotheses_fingerprint="declared-at-selection"),
+                             fwhm_meV=0.3, provenance={},
+                             hypotheses_fingerprint="edited-since",
+                             reason="discovery: step-1", ncount=int(1e8))

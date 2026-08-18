@@ -150,6 +150,18 @@ def proposal_from_intent(intent, *, fwhm_meV: float, provenance: dict,
     An intent with no energy window is refused: a discovery action with nothing to scan is a
     generator defect, not a request to guess a window for.
     """
+    # VERIFIED, never introduced (review finding 2026-08-18). The declared physics is an input
+    # to the intent's own scientific identity, so it has to be on the intent before dedup and
+    # scheduling; stamping it here would mean the selected action and the request built from it
+    # disagreed about which hypothesis set interprets the measurement. This checks they match and
+    # then reads the intent's, so the request can never carry a set the decision did not select
+    # under.
+    if intent.hypotheses_fingerprint != hypotheses_fingerprint:
+        raise DiscoveryWindowUnrealizable(
+            f"intent {intent.scientific_action_fingerprint[:12]} was selected under hypotheses "
+            f"{intent.hypotheses_fingerprint!r} but the request is being built under "
+            f"{hypotheses_fingerprint!r}; refusing to submit a scan whose declared physics is not "
+            "the physics its decision was taken under")
     if intent.energy_lo is None or intent.energy_hi is None:
         raise DiscoveryWindowUnrealizable(
             f"intent {intent.scientific_action_fingerprint[:12]} ({intent.action_class}) declares "
@@ -160,7 +172,7 @@ def proposal_from_intent(intent, *, fwhm_meV: float, provenance: dict,
               else 0.5 * (e_lo + e_hi))
     meta = {
         "scientific_action_fingerprint": intent.scientific_action_fingerprint,
-        "hypotheses_fingerprint": hypotheses_fingerprint,
+        "hypotheses_fingerprint": intent.hypotheses_fingerprint,
         "acquisition_action_role": "discovery",
         "evidence_sink": intent.evidence_sink,
         "discovery_energy_step_source": "nice_number_grid_at_fwhm",

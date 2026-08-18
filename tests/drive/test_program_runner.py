@@ -32,9 +32,9 @@ from isar.schema.campaign_program import (
 from isar.schema.measurement import CAMPAIGN_PROVENANCE_FIELDS
 from isar.schema.question_policy import TARGET_DEFAULTS, resolve_policy
 from isar.scene.model import canonical_bytes, digest_bytes
-from isar.scene.store import SCENE_STORE
+from isar.scene.store import SCENE_STORE, ConcurrentRevisionWrite
 
-from synthetic_ws import write_policy, write_session, write_state
+from synthetic_ws import (DISCOVERY_POLICY_TOML, write_policy, write_session, write_state)
 
 #: The C10 named ISAR default — 10^8 neutrons on the monitor, read through the profile rather
 #: than retyped, so the end-to-end assertion below cannot drift from the declaration.
@@ -82,7 +82,7 @@ def workspace(tmp_path: Path) -> Path:
     root = tmp_path / "ws"
     (root / "report").mkdir(parents=True)
     (root / "data").mkdir(parents=True)
-    write_policy(root)
+    write_policy(root, DISCOVERY_POLICY_TOML)
     write_state(root, lattice_epochs=[{"version": 1}])
     write_session(root)
     return root
@@ -90,6 +90,20 @@ def workspace(tmp_path: Path) -> Path:
 
 def write_scene(root: Path, payload: dict) -> str:
     return SCENE_STORE.write_revision(root / "report", _SceneRevision.of(payload)).digest
+
+
+def hypotheses_fp(root: Path):
+    """The declared-hypotheses fingerprint the runner will stamp for this workspace.
+
+    Computed through the runner's OWN reader, so a hand-built test intent carries exactly what the
+    step will build its request under — which is what keeps `proposal_from_intent`'s verification
+    exercised rather than bypassed by a fixture that guessed.
+    """
+    from types import SimpleNamespace
+
+    from isar.drive.program_runner import _declared_hypotheses_fingerprint
+
+    return _declared_hypotheses_fingerprint(SimpleNamespace(workspace=root))
 
 
 def decision_lines(root: Path) -> list[dict]:
@@ -233,7 +247,10 @@ def _refuse_evaluate_stop(*args, **kwargs):
 
 def config_for(root: Path, client=None, **extra) -> dict:
     return {"workspace": str(root), "client": client or MockTavi(),
-            "run_isar": mock_runner(root), "sample": "tavi", "seed": 0, **extra}
+            "run_isar": mock_runner(root),
+            # Deliberately NOT the card's [sample] name: cfg.sample is what the driver tells
+            # the instrument to simulate, and the declared partition must not read it (B1).
+            "sample": "instrument-side-sample-name", "seed": 0, **extra}
 
 
 # ---------------------------------------------------------------------------- (1) the seam
@@ -316,6 +333,8 @@ def test_a_question_driven_delivery_submits_a_provenance_stamped_grid_snapped_re
     assert selected, "no selected decision was persisted"
     declared = selected[0]["decision_basis"]["declared_partition"]
     assert declared["step_id"] == step.id
+    # The CARD's [sample] name, never cfg.sample — the config above declares a different one
+    # on purpose, so this assertion fails if the declaration ever reads the campaign config.
     assert declared["sample"] == "tavi"
     assert declared["conditions"] == [["temperature_K", 300.0]]
     assert declared["condition_t_round"] == 5.0
@@ -595,7 +614,7 @@ def test_an_off_center_window_center_survives_persistence_and_aims_the_request(
         action_class="identity_discriminator", hkl=(2.5, 0.0, 0.0),
         energy_lo=0.0, energy_hi=10.0, window_family="two_branch",
         target_branch_role="acoustic", rival_branch_role="optic",
-        evidence_basis_fingerprint="rev1", hypotheses_fingerprint=None,
+        evidence_basis_fingerprint="rev1", hypotheses_fingerprint=hypotheses_fp(root),
         campaign_slice_fingerprint=None, window_center_meV=8.0)
     inventory = ActionInventory(
         evaluations=[ActionEvaluation(intent=intent, generator="g",
@@ -649,6 +668,91 @@ def test_a_targeted_step_is_refused_by_name_rather_than_adapted(tmp_path):
     with pytest.raises(ProgramError) as excinfo:
         run_program(program, "t1", {"workspace": str(tmp_path)})
     assert "run_campaign" in str(excinfo.value)
+
+
+def test_two_invocations_never_reuse_an_instrument_submission_identity(tmp_path, monkeypatch):
+    """A second `run_program` on the SAME workspace must not re-emit the first run's identities.
+
+    ``_run_nonce`` persists ``<workspace>/.run_nonce`` so a crash-resume can replay the same
+    ``Idempotency-Key`` per scan — a guarantee the targeted loop earns by ALSO resuming
+    ``scan_counter`` from the durable log. This step resumed nothing: both counters started at 0.
+    So with the persisted nonce, run 2 re-emitted run 1's keys verbatim and TAVI's idempotency
+    cache could serve an earlier run's scan as the result of a new physical request — a fabricated
+    measurement folded as trusted, the most severe defect the 4.3 review found.
+
+    The fix is BOTH halves (H21(e)): the nonce stays persisted, so a re-delivered scan replays its
+    own key, and the counters resume, so a NEW request continues past where the last run stopped
+    and can never collide with an old one's.
+    """
+    root = workspace(tmp_path)
+    step = discover_step()
+    program = CampaignProgram(steps=(step,))
+
+    def one_run():
+        monkeypatch.setattr(runner_mod, "build_scene_revision",
+                            FakeBuild(root, [COLD_START_SCENE]))
+        run_program(program, step.id, config_for(root, client=MockTavi(), max_deliveries=1))
+        return [p["acquisition_id"] for p in log_payloads(root, "propose")]
+
+    first = one_run()
+    assert first, "the first invocation proposed nothing"
+    both = one_run()
+    second = both[len(first):]
+    assert second, "the second invocation proposed nothing"
+    assert not (set(first) & set(second)), (
+        "a second invocation re-emitted the first's acquisition identities: "
+        f"{sorted(set(first) & set(second))}")
+
+
+def test_a_losing_planner_cas_is_a_recorded_machine_failure_not_a_bare_crash(tmp_path,
+                                                                            monkeypatch):
+    """``plan_next_action`` lets the agenda/program CAS escape on purpose, leaving the
+    losing-writer policy to the live caller. Uncaught it reached the CLI's blanket handler as a
+    bare exit 2 — no verdict, no beam directive, no ``program_step_end`` in the log."""
+    root = workspace(tmp_path)
+    step = discover_step()
+    monkeypatch.setattr(runner_mod, "build_scene_revision", FakeBuild(root, [COLD_START_SCENE]))
+
+    def raise_cas(*args, **kwargs):
+        raise ConcurrentRevisionWrite("another writer took the agenda pointer")
+
+    monkeypatch.setattr(runner_mod, "plan_next_action", raise_cas)
+    outcome = run_program(CampaignProgram(steps=(step,)), step.id, config_for(root))
+
+    assert outcome.verdict == VERDICT_MACHINE_FAILURE
+    assert "concurrent_revision_write" in outcome.result.reason
+    assert outcome.directive == BEAM_RELEASE
+    assert any(p.get("event") == "program_step_end" for p in log_payloads(root, "decide"))
+
+
+def test_a_second_invocation_resumes_the_spend_ledger_rather_than_restarting_it(tmp_path,
+                                                                               monkeypatch):
+    """Running the same program again CONTINUES it (owner ruling 2026-08-18, H21(e)).
+
+    There is no fresh-vs-resume flag on either step kind, and the targeted loop already treats a
+    re-run as a resume, so discovery does too. Without this the budget — one of the four stop
+    reasons — restarted at zero on every invocation, and a campaign stopped and restarted could
+    spend its declared budget over and over without ever tripping it.
+    """
+    root = workspace(tmp_path)
+    step = discover_step()
+    program = CampaignProgram(steps=(step,))
+
+    def one_run():
+        monkeypatch.setattr(runner_mod, "build_scene_revision",
+                            FakeBuild(root, [COLD_START_SCENE]))
+        run_program(program, step.id,
+                    config_for(root, client=MockTavi(), max_deliveries=1,
+                               budget={"kind": "neutrons", "amount": 1e18}))
+
+    one_run()
+    one_run()
+    starts = [p for p in log_payloads(root, "decide") if p.get("event") == "program_step_start"]
+    assert len(starts) == 2
+    assert starts[0]["resumed"]["spent"] == 0.0, "the first run should start cold"
+    assert starts[1]["resumed"]["spent"] > 0.0, (
+        "the second invocation restarted the spend ledger instead of resuming it")
+    assert starts[1]["resumed"]["scan_counter"] > 0
 
 
 def test_a_card_less_workspace_refuses_by_name(tmp_path):

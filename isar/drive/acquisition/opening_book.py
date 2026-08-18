@@ -178,7 +178,7 @@ def _frame_compatible(subject: QuestionSubject, scene_payload: Mapping,
     wearing a live look (H1: deleted, not kept).
 
     ``declared_partition`` (SCENE-4 PR 4.3, D4) is the cold-start declaration as
-    ``(partition_id, lattice_epoch, program_step)``. It SEEDS the attribution map — it never
+    ``(partition_id, lattice_epoch, program_step, path_fingerprint)``. It SEEDS the attribution map — it never
     weakens the comparison: an observation-less declared partition would otherwise read the
     "missing" sentinel here, score every proposal at zero anchor weight, and silently degrade the
     campaign's very first scan to the region midpoint. ``setdefault`` keeps observations
@@ -193,7 +193,9 @@ def _frame_compatible(subject: QuestionSubject, scene_payload: Mapping,
         pid_of = partition_of_ref.get(observation["scan_ref"])
         if pid_of is not None:
             epoch_of_pid.setdefault(pid_of, observation.get("lattice_epoch"))
-    if declared_partition is not None and not step_observed(scene_payload, declared_partition[2]):
+    if declared_partition is not None and not step_observed(
+            scene_payload, declared_partition[2],
+            declared_partition[3] if len(declared_partition) > 3 else None):
         epoch_of_pid.setdefault(declared_partition[0], declared_partition[1])
     return epoch_of_pid.get(subject.partition_id, "missing") == declared_epoch
 

@@ -48,7 +48,9 @@ Bad data is never a stop reason. Each class routes somewhere already built:
 
 **Mixed trust across a multi-arena delivery.** One delivery can write several arena records — one
 per detector/analyzer — and class 1 counts the delivery as broken only when NOT ONE of them landed
-``trusted``. A single dead analyzer beside healthy ones therefore never advances the retry counter
+``trusted``. A delivery that wrote NO arena record at all is broken by the same test: no counts
+came back, so nothing entered the scene, so the next plan re-selects the identical action, and the
+bound is the only thing that ends it. A single dead analyzer beside healthy ones therefore never advances the retry counter
 and never offramps: the delivery bought real coverage, the question moves, and the campaign keeps
 measuring. That is deliberate and fail-safe in the direction that matters — the failure mode it
 refuses is retiring a physically answerable action because one channel of a multi-analyzer
@@ -95,6 +97,16 @@ same ``budget_state`` the acquisition path charges — so "over budget" is one a
 step produced nothing more to do on this pass (no eligible action, honest exhaustion, or a request
 the instrument declined) while its questions remain open. Whether the CAMPAIGN stops on that is the
 caller's decision, not this function's.
+
+Read that precisely, because it is easy to over-read (review finding 2026-08-18). It does NOT mean
+the step keeps running: ``_run_discovery_step`` returns, ``run_program`` computes a beam directive,
+and for the single-step programs this build executes the beam is RELEASED and ``isar drive`` exits
+with the incomplete code. So a campaign does end here, and the four-reasons law is not violated by
+that — the law governs why a STEP stops, and "there is nothing further I can do while these
+questions stay open" is an honest end, not an invented reason. What the law forbids is dressing
+that up as completion, as a budget trip, or as a machine failure. The caller-decides sentence
+becomes load-bearing when SCENE-6 sequences steps; today the caller is the CLI and its decision is
+to stop.
 """
 from __future__ import annotations
 
@@ -123,8 +135,8 @@ from isar.scene.agenda import AGENDA_STORE, evaluate_agenda
 from isar.schema.campaign_program import CampaignProgram, ProgramError, program_fingerprint
 from isar.schema.card import Card
 from isar.schema.consultation import (
-    KEEP_SPENDING, RETRY_MORE, apply_consultation_overrides, consultation_overrides,
-    strip_consultation_overrides)
+    KEEP_SPENDING, RETIRE_ACTION, RETRY_MORE, apply_consultation_overrides,
+    consultation_overrides, strip_consultation_overrides)
 from isar.scene.store import ConcurrentRevisionWrite
 from isar.schema.generators import (
     DISCOVERY_GENERATOR_REGISTRY_VERSION, QuestionActionAssociation, QuestionBlockerEvidence)
@@ -425,15 +437,47 @@ def _count_trust_by_scan_ref(report_dir: Path) -> dict[str, str]:
     return out
 
 
+def _resumed_broken_deliveries(log_path, step_id: str) -> dict[str, int]:
+    """``{physical_action_key: untrusted deliveries so far}`` off the session log (H21(b)).
+
+    Derived state, never a second durable store — the same posture ``suppressed_actions`` takes on
+    the targeted path. The lane already writes a ``broken_scan`` event carrying the physical key
+    and the running count on every untrusted delivery, so the count survives a restart without
+    anything new being persisted; the MAX per key is the count, because the events are a running
+    tally rather than increments. Without this a restart handed every repeatedly-broken action a
+    fresh retry budget, and an action that had already spent it went back to costing full exposure
+    per pass.
+    """
+    from isar.drive.session_log import read_log
+
+    out: dict[str, int] = {}
+    for event in read_log(log_path):
+        payload = event.get("payload") or {}
+        if payload.get("event") != "broken_scan" or payload.get("step_id") != step_id:
+            continue
+        key = payload.get("physical_action_key")
+        if isinstance(key, str):
+            out[key] = max(out.get(key, 0), int(payload.get("broken_deliveries") or 0))
+    return out
+
+
 def _declared_partition(cfg, step):
     """Mint the step's cold-start declared partition from the CARD's declarations (D4).
 
     Every component is a declaration a human wrote, read through the one ``partition_key`` code
-    path: ``sample`` is the campaign's stamped sample identity, ``conditions`` the card's declared
-    setpoint, ``condition_t_round`` the card's own collation binning (the same value Stage II and
-    the scene builder use), ``lattice_epoch`` the highest declared epoch, and the path the step's
-    own declared endpoints. Always passed to the planner: retirement is the planner's job, and
-    since C3 the declaration goes inert by itself once the step has produced an observation.
+    path, and every one is read the way the DELIVERY PIPELINE will read it rather than the way
+    this process happens to hold it: ``sample`` and ``conditions`` come from the card through
+    :func:`_declared_sample` / :func:`_declared_conditions`, which mirror
+    ``isar.session.driver._sample_of`` and ``isar.session.scan_delivery._measurement_record``
+    and refuse when the card cannot say what the arena will carry; ``condition_t_round`` is the
+    card's own collation binning (the same value Stage II and the scene builder use);
+    ``lattice_epoch`` is the highest declared epoch; the path is the step's own declared
+    endpoints. That mirroring is what makes the module docstring's "lands on the identical key BY
+    CONSTRUCTION" true rather than aspirational — a component this process could invent from its
+    own configuration would agree with the record only by coincidence.
+
+    Always passed to the planner: retirement is the planner's job, and since C3 the declaration
+    goes inert by itself once the step has produced a trusted observation.
     """
     policy_path = Path(cfg.workspace) / "card.policy.toml"
     if not policy_path.exists():
@@ -443,12 +487,69 @@ def _declared_partition(cfg, step):
             "lattice epoch to mint the cold-start partition from. Run `isar init` on a probe "
             "scan first.")
     card = Card.load(policy_path, Path(cfg.workspace) / "card.state.json")
-    setpoint = dict(card.policy.temperature_rule or {}).get("setpoint")
-    conditions = () if setpoint is None else (("temperature_K", float(setpoint)),)
     return declare_partition(
-        step, sample=cfg.sample, conditions=conditions,
+        step, sample=_declared_sample(card, step), conditions=_declared_conditions(card, step),
         lattice_epoch=current_lattice_epoch(getattr(card.state, "lattice_epochs", None) or []),
         condition_t_round=float(dict(card.policy.collation or {}).get("t_round", 5.0)))
+
+
+def _declared_sample(card: Card, step) -> str:
+    """The sample identity the DELIVERED ARENA will carry, or a refusal (D4).
+
+    ``isar.session.driver._sample_of`` — the one producer of that field — stamps
+    ``card.policy.sample["name"]`` when the card names a sample and falls back to the scan
+    record's ``experiment_id`` when it does not. Only the first branch is knowable before any scan
+    exists, so a card that does not name its sample cannot mint a partition its own measurement
+    will join, and minting one anyway is exactly the orphan this module refuses for an unbinnable
+    condition. A workspace relying on the ``experiment_id`` fallback has unstable partition
+    identity in any case — two scans under different experiment ids already separate.
+
+    Deliberately NOT ``cfg.sample``. That value is what the driver tells the instrument to
+    simulate, it is never read by the delivery pipeline, and it carries a synthetic default
+    (``isar.drive.loop._campaign_config``) that no card is obliged to match — so a declaration
+    built from it agreed with the arena only by coincidence.
+    """
+    name = (card.policy.sample or {}).get("name")
+    if not name:
+        raise WorkspaceUndeclared(
+            f"discovery step {step.id!r} cannot mint its cold-start partition: the card declares "
+            "no [sample] name, so the sample identity the delivered arena will carry is the scan "
+            "record's experiment_id — a value no declaration can know before a scan exists. "
+            "Declare `name` under [sample] in card.policy.toml.")
+    return str(name)
+
+
+def _declared_conditions(card: Card, step) -> tuple:
+    """The condition setpoint the DELIVERED ARENA will carry, or a refusal (D4).
+
+    ``isar.session.scan_delivery._measurement_record`` writes
+    ``(("temperature_K", T),)`` when the scan has a temperature and ``()`` when it does not, so a
+    declaration has to land in the same one of those two lanes. Three card shapes, three answers,
+    and the middle one is the whole reason this function exists:
+
+    * NO ``[temperature_rule]`` — the card declares no temperature dimension, the arena will carry
+      none, and ``()`` matches it exactly;
+    * a rule declaring a literal ``setpoint`` — the value is known, and the card's own
+      ``collation.t_round`` binning is what absorbs the difference between a setpoint and the
+      regulation drift around it (that is what the bin is FOR);
+    * a rule that names only WHERE to read the setpoint (``setpoint_field`` / ``setpoint_param``,
+      as the s30 and in8 templates do) — there IS a temperature dimension and its value lives in a
+      scan that has not been taken. Declaring ``()`` here would put the declaration in the
+      undeclared-couples-only-with-undeclared lane (H13) while every arena lands in the binned
+      lane, so the declared partition could never join its own measurement. Refuse.
+    """
+    rule = dict(card.policy.temperature_rule or {})
+    if not rule:
+        return ()
+    setpoint = rule.get("setpoint")
+    if setpoint is None:
+        raise WorkspaceUndeclared(
+            f"discovery step {step.id!r} cannot mint its cold-start partition: the card declares "
+            f"a [temperature_rule] ({sorted(rule)}) but no literal `setpoint`, so it says a "
+            "temperature dimension exists without saying what value the first scan will land on. "
+            "Declare `setpoint` under [temperature_rule] in card.policy.toml, or remove the rule "
+            "if these measurements carry no temperature.")
+    return (("temperature_K", float(setpoint)),)
 
 
 def _declared_hypotheses_fingerprint(cfg) -> str | None:
@@ -607,7 +708,8 @@ def _campaign_provenance_block(program: CampaignProgram, step, declared) -> dict
 
 
 def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: ObjectiveSpec,
-                        budget_state: dict, max_deliveries: int) -> tuple[StepResult, str]:
+                        budget_state: dict, max_deliveries: int,
+                        resumed: dict | None = None) -> tuple[StepResult, str]:
     """One ``discover_and_map`` step, delivery by delivery. Returns ``(result, verdict)``."""
     from isar.drive.loop import (
         _execute_proposal, _operator_stop_requested, _record_action_rejection)
@@ -629,6 +731,7 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
     # between this step's plan and its write). Re-attempted on the next delivery.
     pending_questions: set[str] = set()
     pending_budgets: dict[str, int] = {}
+    pending_retired: set[str] = set()
     channel = ConsultationChannel(
         cfg.workspace, cfg.log_path, step_id=step.id,
         timeout_deliveries=_prompt_timeout_deliveries(step),
@@ -637,16 +740,18 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
     result = StepResult(step_id=step.id, kind=step.kind,
                         declared_partition_id=declared.partition_id,
                         program_fingerprints=(program_fingerprint(program),))
-    observations: list[dict] = []
-    consumed: set = set()
-    scan_kind: dict = {}
-    scan_counter = 0
+    resumed = resumed or {"scan_counter": 0, "proposal_counter": 0, "observations": [],
+                          "consumed": set(), "scan_kind": {}}
+    observations: list[dict] = resumed["observations"]
+    consumed: set = resumed["consumed"]
+    scan_kind: dict = resumed["scan_kind"]
+    scan_counter = resumed["scan_counter"]
     # Monotonic across the whole step, exactly as ``run_campaign`` counts its proposals: a decline
     # or a transport failure is not a delivery, so keying the acquisition id on ``deliveries`` gave
     # the refused proposal and its successor the same id, and every consumer that joins on it
     # (pooled-master evidence, the scan-design provenance join) would have read them as one
     # acquisition. Never reset — the id has to be unique over the step, not per delivery.
-    proposal_counter = 0
+    proposal_counter = resumed.get("proposal_counter", 0)
     # Broken-scan lane state (C6). Both are DELIVERY-INDEXED — they advance only when a delivery
     # lands, never on a clock — so a replay of the same deliveries reproduces the same sequence.
     # Both are keyed by PHYSICAL action key, never by scientific action fingerprint: the scene moves
@@ -654,8 +759,12 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
     # fingerprint hashes the scene digest, and so a counter keyed on it would mint a fresh key each
     # retry and the bound below would never bind. See
     # :func:`isar.schema.action_identity.physical_action_key`.
-    broken_deliveries: dict[str, int] = {}      # physical action key -> untrusted deliveries so far
-    retired: set[str] = set()                   # offramped: never re-proposed for THIS step
+    # Both REHYDRATED, so a restart neither re-buys a spent retry budget nor un-retires an action
+    # the operator retired (H21(b)). The counter comes off the ``broken_scan`` events the lane
+    # already writes — derived state, never a second store — and the retirement off the frozen
+    # program, the same route ``retry_budget_by_action`` already took.
+    broken_deliveries: dict[str, int] = _resumed_broken_deliveries(cfg.log_path, step.id)
+    retired: set[str] = set(overrides["retired_actions"])
     transport_failures = 0                      # consecutive, reset by any delivery
     # Durable-blocker lane state (C7). Keyed by SCIENTIFIC action fingerprint, NOT the physical key
     # C6's retirement uses: a decline re-plans against the SAME pinned scene, so the scientific
@@ -717,6 +826,10 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
         for resolution in resolutions:
             if resolution.option == KEEP_SPENDING:
                 pending_questions.add(resolution.prompt.subject)
+            elif resolution.option == RETIRE_ACTION:
+                # The driver already retired it in memory when the budget ran out; this is what
+                # makes that survive a restart (H21(b)).
+                pending_retired.add(resolution.prompt.subject)
             elif resolution.option == RETRY_MORE:
                 key = resolution.prompt.subject
                 # A FRESH budget from where this action already is, so "retry more" always buys at
@@ -725,13 +838,15 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
                 pending_budgets[key] = max(pending_budgets.get(key, 0),
                                            broken_deliveries.get(key, 0) + max(retry_limit, 1))
                 retired.discard(key)
-        if not pending_questions and not pending_budgets:
+        if not pending_questions and not pending_budgets and not pending_retired:
             return None
         questions, budgets = sorted(pending_questions), dict(pending_budgets)
+        retiring = sorted(pending_retired)
 
         try:
             candidate = apply_consultation_overrides(
-                program, step.id, keep_open_questions=questions, retry_budget_by_action=budgets)
+                program, step.id, keep_open_questions=questions, retry_budget_by_action=budgets,
+                retired_actions=retiring)
             PROGRAM_STORE.write_revision(
                 report_dir, program_revision(candidate), source="consultation",
                 expected_parent=result.program_fingerprints[-1])
@@ -742,6 +857,7 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
                 "expected_parent": result.program_fingerprints[-1], "error": str(error),
                 "keep_open_questions": questions,
                 "retry_budget_by_action": {k: budgets[k] for k in sorted(budgets)},
+                "retired_actions": retiring,
                 "iter": result.deliveries})
             return None
         except ValueError as error:                          # includes ProgramError
@@ -750,6 +866,8 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
         step = next(s for s in program.steps if s.id == step.id)
         pending_questions.clear()
         pending_budgets.clear()
+        pending_retired.clear()
+        retired.update(retiring)
         keep_open.update(questions)
         for key, value in budgets.items():          # monotone, exactly as the program merged them
             retry_budget[key] = max(retry_budget.get(key, 0), value)
@@ -768,6 +886,7 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
             "parent_program_fingerprint": result.program_fingerprints[-1],
             "keep_open_questions": sorted(keep_open),
             "retry_budget_by_action": {k: retry_budget[k] for k in sorted(retry_budget)},
+            "retired_actions": sorted(retired),
             "iter": result.deliveries})
         return None
 
@@ -781,7 +900,13 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
         """The step end an unanswered HARD prompt forces, or None. Hard gate v1 IS the
         operator-requested pause: no second pause mechanism, and the beam is released rather than
         held idle waiting on a human. One reading of ``hard_open()`` per check — reading it twice
-        asked the channel a question whose answer could differ between the two calls."""
+        asked the channel a question whose answer could differ between the two calls.
+
+        NO PROMPT KIND IN THIS BUILD SETS ``hard`` (``isar.schema.consultation.PROMPT_KINDS``), so
+        this branch is unreachable in production and is exercised only by a test-registered kind —
+        which is why ``prompt_kind`` looks the vocabulary up through the module global rather than
+        capturing it at import. It is a forward-compat seam WITH a test, not dead code; stating so
+        here keeps it from reading as live policy an operator could trigger."""
         hard = channel.hard_open()
         if not hard:
             return None
@@ -807,12 +932,23 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
                              program_fingerprints=result.program_fingerprints
                              + (program_fingerprint(program),))
 
-        plan = plan_next_action(report_dir, program, step.id,
-                                declared_partition=declared, scene_pin=pin,
-                                retired_physical_actions=frozenset(retired),
-                                blocker_evidence=tuple(e for evidence in declined_actions.values()
-                                                       for e in evidence),
-                                declined_fingerprints=frozenset(declined_actions))
+        try:
+            plan = plan_next_action(report_dir, program, step.id,
+                                    declared_partition=declared,
+                                    hypotheses_fingerprint=hypotheses_fingerprint,
+                                    scene_pin=pin,
+                                    retired_physical_actions=frozenset(retired),
+                                    blocker_evidence=tuple(e for evidence
+                                                           in declined_actions.values()
+                                                           for e in evidence),
+                                    declined_fingerprints=frozenset(declined_actions))
+        except ConcurrentRevisionWrite as error:
+            # ``plan_next_action`` lets the agenda/program CAS escape ON PURPOSE — the losing-writer
+            # policy belongs to the live caller, and this is the live caller. Uncaught it reached
+            # the CLI's blanket handler as a bare exit 2: no ProgramStepOutcome, no
+            # ``program_step_end`` record, no beam directive, and no named reason in the log. A
+            # recorded machine failure is one of the four stop reasons and a resumable one.
+            return ended(VERDICT_MACHINE_FAILURE, reason=f"concurrent_revision_write: {error}")
         result = replace(result, plan_outcome=plan.outcome)
         if plan.outcome == CONTROLLER_FAULT:
             return ended(VERDICT_MACHINE_FAILURE, reason=f"controller_fault: {plan.reason}")
@@ -993,7 +1129,15 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
         # (isar.scene.build), so the question stays open and the next plan re-selects this same
         # action — and the record stays exactly where it is: quarantine here means the 4.0 record
         # state, never a deletion, a mask, or a rewrite. All this adds is the bound.
-        if delivered_trust and "trusted" not in delivered_trust.values():
+        #
+        # A delivery that recorded NO arena at all counts as broken too, and the empty-set case is
+        # why this reads ``"trusted" not in ...`` rather than guarding on a non-empty map. Nothing
+        # measurable came back, so nothing entered the scene, so the scene digest does not move,
+        # so the next plan mints the identical scientific fingerprint and re-selects the identical
+        # action — with no counter advancing, that repeats until ``max_deliveries``, at full
+        # exposure every pass. Bad data and no data are the same lane here: the action is retried
+        # under the same bound and offramps the same way.
+        if "trusted" not in delivered_trust.values():
             fingerprint = intent.scientific_action_fingerprint
             key = physical_action_key(intent)
             count = broken_deliveries[key] = broken_deliveries.get(key, 0) + 1
@@ -1004,6 +1148,9 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
                 "event": "broken_scan", "action": "broken_scan", "step_id": step.id,
                 "scientific_action_fingerprint": fingerprint, "physical_action_key": key,
                 "broken_deliveries": count,
+                # Zero arenas and untrusted arenas both reach here; the count is what separates
+                # them in the log, where a reader otherwise sees an empty ``scan_refs`` twice.
+                "delivered_arenas": len(delivered_trust),
                 "retry_limit": limit, "scan_refs": sorted(delivered_trust),
                 "count_trust": sorted(set(delivered_trust.values())), "iter": result.deliveries})
             if count > limit:
@@ -1152,7 +1299,7 @@ def run_program(program: CampaignProgram, step_id: str | None = None,
     name rather than adapted: its path is ``run_campaign``, unchanged byte for byte, and the CLI
     keeps sending it there.
     """
-    from isar.drive.loop import _campaign_config
+    from isar.drive.loop import _campaign_config, _resume_state
 
     config = dict(config or {})
     step = _resolve_step(program, step_id)
@@ -1169,9 +1316,25 @@ def run_program(program: CampaignProgram, step_id: str | None = None,
     # ``consultation_overrides`` policy section.
     program = _adopt_stored_revision(Path(cfg.workspace) / "report", program, cfg.log_path)
     step = _resolve_step(program, step.id)
+    # Running the same program again on the same workspace RESUMES it, exactly as the targeted
+    # loop does (owner ruling 2026-08-18) — there is no fresh-vs-resume flag on either path, and
+    # two step kinds meaning opposite things by one command is what that ruling refuses.
+    # ``_resume_state`` is the same reader ``run_campaign`` uses, over the same
+    # ``physical_submission`` events this step's own submissions write (it shares
+    # ``_execute_proposal``), so the spend ledger, the scan counter and the folded-row set all come
+    # back. That is ALSO what makes reusing the persisted ``.run_nonce`` safe: the nonce is stable
+    # so a re-delivered scan replays its own ``Idempotency-Key``, while the counter continues past
+    # where the last run stopped, so a NEW request can never collide with an old one's key. The two
+    # halves only work together — restoring neither (as this step did) let a second invocation
+    # re-emit the first's keys and TAVI's idempotency cache serve an earlier scan as a new
+    # measurement.
+    resumed = _resume_state(Path(cfg.workspace), cfg.log_path, cfg.calibration)
     budget = dict(objective.budget or {})
     budget_state = {"kind": budget.get("kind"), "amount": budget.get("amount"),
-                    "neutrons": 0.0, "seconds": 0.0, "spent": 0.0}
+                    "neutrons": resumed["neutrons"], "seconds": resumed["seconds"], "spent": 0.0}
+    budget_state["spent"] = (budget_state["neutrons"] if budget_state["kind"] == "neutrons"
+                             else budget_state["seconds"]
+                             if budget_state["kind"] == "counting_seconds" else 0.0)
     declared_ceiling = config.get("max_deliveries")
     max_deliveries = int(MAX_DISCOVERY_DELIVERIES_PER_STEP if declared_ceiling is None
                          else declared_ceiling)
@@ -1179,11 +1342,15 @@ def run_program(program: CampaignProgram, step_id: str | None = None,
     log_event(cfg.log_path, "decide", {
         "event": "program_step_start", "action": "program_step_start", "step_id": step.id,
         "kind": step.kind, "program_steps": [s.id for s in program.steps],
-        "budget": objective.budget, "max_deliveries": max_deliveries})
+        "budget": objective.budget, "max_deliveries": max_deliveries,
+        "resumed": {"scan_counter": resumed["scan_counter"],
+                    "proposal_counter": resumed.get("proposal_counter", 0),
+                    "n_observations": len(resumed["observations"]),
+                    "spent": budget_state["spent"]}})
     try:
         result, verdict = _run_discovery_step(
             cfg, program, step, objective=objective, budget_state=budget_state,
-            max_deliveries=max_deliveries)
+            max_deliveries=max_deliveries, resumed=resumed)
     finally:
         cfg.runner.close()
 

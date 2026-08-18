@@ -42,12 +42,13 @@ from dataclasses import dataclass
 
 from isar.schema.generators import FAMILY_GENERATORS, QuestionBlockerEvidence
 
-from .model import canonical_bytes, digest_bytes, fingerprint
+from .model import (canonical_bytes, digest_bytes, fingerprint,
+                    path_geometry_fingerprint)
 from .predicates import (
     EVALUATORS, cluster_authority, combine_existential, evaluate_predicate,
     identity_hypothesis_classes, mass_interval)
 from .questions import (
-    Blocker, PredicateDeclaration, QuestionAssessment, QuestionSpec, QuestionSubject,
+    BLOCKER_DURABLE, Blocker, PredicateDeclaration, QuestionAssessment, QuestionSpec, QuestionSubject,
     match_subject, scene_partitions, snap_tile, step_observed, validate_dependency_dag)
 from .store import RevisionStore, StoreResult, UNSET
 
@@ -235,7 +236,7 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
     is recorded as a rejected note, never attached, never raised.
 
     ``declared_partition`` (SCENE-4 PR 4.3, D4) is the cold-start declaration as
-    ``(partition_id, lattice_epoch, program_step)`` — produced by
+    ``(partition_id, lattice_epoch, program_step, path_fingerprint)`` — produced by
     :func:`isar.drive.steering.cold_start.declare_partition` through this layer's own
     ``partition_key``, and passed as a primitive triple because the scene layer may not import
     ``isar.drive``. It JOINS the observed fan-out until its own declaring step has produced any
@@ -274,10 +275,34 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
     declared_epoch = (scene_payload.get("sample_knowledge") or {}).get("lattice_epoch")
     partition_of_ref = {fp["scan_ref"]: fp.get("partition_id") for fp in footprints}
     epoch_of_pid: dict = {}
+    path_of_pid: dict = {}
     for observation in scene_payload.get("observations") or ():
         pid_of = partition_of_ref.get(observation["scan_ref"])
         if pid_of is not None:
             epoch_of_pid.setdefault(pid_of, observation.get("lattice_epoch"))
+            path_of_pid.setdefault(
+                pid_of, observation.get("path_fingerprint")
+                if observation.get("topology_role") == "canonical_path" else None)
+
+    # A step may only open questions in partitions it can WRITE INTO (review finding 2026-08-18).
+    # Every action this step emits sits on its own declared trajectory (``_hkl_at``), and every
+    # arena it delivers is stamped ``canonical_path`` with THIS path fingerprint — so a partition
+    # declaring a DIFFERENT path can never be closed by anything this step measures. Fanning into
+    # one anyway selected an action, delivered it into the current partition, left the question
+    # exactly as open as before, and re-selected it next pass: an unsatisfiable loop that spends
+    # the budget without moving a question.
+    #
+    # Scoped to the PATH component deliberately. That is the half that is provably static — the
+    # step's endpoints are frozen — whereas sample, conditions and lattice epoch can legitimately
+    # move DURING a campaign (a temperature change, a recalibration bump), and a partition they
+    # separate is one this step may well write into later. A partition with NO declared path stays
+    # in for a different reason: it is the legacy / manual / pooled-master lane, and excluding it
+    # would silently blank the agenda of every workspace whose arenas predate this provenance
+    # block. That lane's own unwritability is a pooled-master provenance question, not a licence
+    # to delete questions here.
+    step_path = path_geometry_fingerprint(step_payload["region"]["q_start"],
+                                          step_payload["region"]["q_end"])
+    partitions = tuple(p for p in partitions if path_of_pid.get(p) in (None, step_path))
 
     # Cold-start fan-out union (SCENE-4 PR 4.3, D4; owner ruling 2026-08-18). The declaration is
     # initialization and nothing more: it JOINS the observed fan-out (union, deduped) until the
@@ -291,7 +316,8 @@ def derive_agenda(scene_payload: dict, step_payload: dict, *, step_id: str,
     # partition reads the "missing" sentinel, every anchored opener goes inert, and declared
     # knowledge silently degrades to the uniform survey at exactly the moment it is the only
     # knowledge the campaign has.
-    if declared_partition is not None and not step_observed(scene_payload, declared_partition[2]):
+    if declared_partition is not None and not step_observed(
+            scene_payload, declared_partition[2], step_path):
         if declared_partition[0] not in partitions:
             partitions = (*partitions, declared_partition[0])
         epoch_of_pid.setdefault(declared_partition[0], declared_partition[1])
@@ -872,6 +898,32 @@ def evaluate_agenda(agenda_payload: dict, *, budget_state: dict | None = None
                 "question_id": qid,
                 "description": "closed unresolvable (durable blocker + exhaustion); "
                                "answering can reopen it by overruling the closure",
+                "default": "accept_close"})
+        elif assessment["status"] == "open" and any(
+                b.get("class") == BLOCKER_DURABLE
+                for b in assessment.get("blockers") or ()):
+            # BLOCKED, not closed — and the operator is asked about it just the same (owner ruling
+            # 2026-08-18). A durable blocker says the instrument cannot perform the action that was
+            # offered; it does NOT say the question is unanswerable, because most generators offer
+            # one representative action rather than enumerating the admissible ones
+            # (``GeneratorOutcome.proposals_exhaustive``). The producer therefore leaves such a
+            # question OPEN, which is the safe direction — a region a nearby reachable point could
+            # have surveyed is not written off.
+            #
+            # Without this arm that safety came at the cost of the operator surface: the
+            # ``unresolvable_closure`` prompt fired only on a status nothing could reach any more,
+            # so a campaign that hit a wall stopped ASKING and merely listed the question as
+            # blocking. The prompt is if anything more apt here — "this looks unanswerable, accept
+            # or keep spending?" is a better question when we are uncertain than when we have
+            # proved it — and both answers already do the right thing: ``accept_close`` confirms
+            # the driver's own suppression, ``keep_spending`` stops the evidence being supplied so
+            # the derivation stops blocking on it.
+            consultations.append({
+                "kind": "unresolvable_closure",
+                "question_id": qid,
+                "description": "blocked by a durable blocker on every action offered, but the "
+                               "action space was sampled rather than enumerated, so it stays "
+                               "OPEN; answering can stop the campaign spending on it",
                 "default": "accept_close"})
 
     open_families = Counter(specs[q]["family"] for q in open_ids if q in specs)

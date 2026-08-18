@@ -87,7 +87,7 @@ def one(result):
 # ----------------------------------------------------------------------------
 def test_an_eligible_surviving_evaluation_is_not_exhausted():
     r = record("q1", ("presence_probe",), RAN,
-              [GeneratorRunOutcome("presence_probe", "proposals", generated=1)])
+              [GeneratorRunOutcome("presence_probe", "proposals", generated=1, proposals_exhaustive=True)])
     outcome = one(run([r], [evaluation("q1", "presence_probe")]))
     assert outcome.outcome == NOT_EXHAUSTED and outcome.proof is None
 
@@ -98,9 +98,9 @@ def test_an_evaluation_deduped_onto_an_eligible_survivor_still_counts_not_exhaus
     e1 = evaluation("q1", "opening_book_survey", hkl=(2.0, 0.0, 0.0))
     e2 = evaluation("q2", "exposure_fill", hkl=(2.0, 0.0, 0.0))
     r1 = record("q1", ("opening_book_survey",), RAN,
-               [GeneratorRunOutcome("opening_book_survey", "proposals", generated=1)])
+               [GeneratorRunOutcome("opening_book_survey", "proposals", generated=1, proposals_exhaustive=True)])
     r2 = record("q2", ("exposure_fill",), RAN,
-               [GeneratorRunOutcome("exposure_fill", "proposals", generated=1)])
+               [GeneratorRunOutcome("exposure_fill", "proposals", generated=1, proposals_exhaustive=True)])
     result = run([r1, r2], [e1, e2])
     by_id = {o.question_id: o for o in result.outcomes}
     assert by_id["q1"].outcome == NOT_EXHAUSTED
@@ -123,7 +123,7 @@ def test_a_missing_required_generator_outcome_is_also_a_controller_fault():
 def test_controller_fault_takes_priority_over_an_eligible_sibling_generator():
     r = record("q1", ("presence_probe", "identity_discriminator"), RAN,
               [GeneratorRunOutcome("presence_probe", "failed", error_code="boom"),
-               GeneratorRunOutcome("identity_discriminator", "proposals", generated=1)])
+               GeneratorRunOutcome("identity_discriminator", "proposals", generated=1, proposals_exhaustive=True)])
     outcome = one(run([r], [evaluation("q1", "identity_discriminator")]))
     assert outcome.outcome == CONTROLLER_FAULT
 
@@ -136,7 +136,7 @@ def test_dependency_blocked_disposition_is_deferred():
 
 def test_transient_rejection_only_is_retryable():
     r = record("q1", ("presence_probe",), RAN,
-              [GeneratorRunOutcome("presence_probe", "proposals", generated=1)])
+              [GeneratorRunOutcome("presence_probe", "proposals", generated=1, proposals_exhaustive=True)])
     rejected = evaluation("q1", "presence_probe", eligibility=ActionEligibility.REJECTED,
                           rejection_class=RejectionClass.TRANSIENT)
     outcome = one(run([r], [rejected]))
@@ -145,7 +145,7 @@ def test_transient_rejection_only_is_retryable():
 
 def test_budget_rejection_only_is_budget_only():
     r = record("q1", ("presence_probe",), RAN,
-              [GeneratorRunOutcome("presence_probe", "proposals", generated=1)])
+              [GeneratorRunOutcome("presence_probe", "proposals", generated=1, proposals_exhaustive=True)])
     rejected = evaluation("q1", "presence_probe", eligibility=ActionEligibility.REJECTED,
                           rejection_class=RejectionClass.BUDGET)
     outcome = one(run([r], [rejected]))
@@ -156,7 +156,7 @@ def test_budget_rejection_only_is_budget_only():
 def test_structural_or_saturation_rejection_with_matching_evidence_proves_exhaustion(
         rejection_class):
     r = record("q1", ("presence_probe",), RAN,
-              [GeneratorRunOutcome("presence_probe", "proposals", generated=1)])
+              [GeneratorRunOutcome("presence_probe", "proposals", generated=1, proposals_exhaustive=True)])
     rejected = evaluation("q1", "presence_probe", eligibility=ActionEligibility.REJECTED,
                           rejection_class=rejection_class)
     outcome = one(run([r], [rejected], evidence_list=[evidence("q1")]))
@@ -168,7 +168,7 @@ def test_structural_or_saturation_rejection_with_matching_evidence_proves_exhaus
 
 def test_structural_rejection_without_matching_evidence_is_blocked_without_evidence():
     r = record("q1", ("presence_probe",), RAN,
-              [GeneratorRunOutcome("presence_probe", "proposals", generated=1)])
+              [GeneratorRunOutcome("presence_probe", "proposals", generated=1, proposals_exhaustive=True)])
     rejected = evaluation("q1", "presence_probe", eligibility=ActionEligibility.REJECTED,
                           rejection_class=RejectionClass.STRUCTURAL)
     # No evidence at all.
@@ -295,7 +295,7 @@ def test_a_synthetic_durable_blocker_closes_through_real_apply_exhaustion_siblin
                                                clean_zero_reason="none_open_never",
                                                exhaustion_clean=True)])
     open_record = record(spec_b.question_id, ("presence_probe",), RAN,
-                        [GeneratorRunOutcome("presence_probe", "proposals", generated=1)])
+                        [GeneratorRunOutcome("presence_probe", "proposals", generated=1, proposals_exhaustive=True)])
     open_eval = evaluation(spec_b.question_id, "presence_probe")
 
     result = produce_exhaustion(

@@ -388,3 +388,29 @@ def test_the_broken_scan_lane_is_replay_deterministic(tmp_path, monkeypatch):
     assert first_retries and first_retries == second_retries
     assert [count for _, count in first_retries][:2] == [1, 2]
     assert first_decisions == second_decisions
+
+
+def test_a_restart_does_not_hand_a_broken_action_a_fresh_retry_budget(tmp_path, monkeypatch):
+    """``broken_deliveries`` is rebuilt from the ``broken_scan`` events the lane already writes
+    (H21(e)) — derived state, never a second store.
+
+    Held only in memory, a restart reset the counter, so an action that had already spent its
+    budget went back to costing full exposure for another `retry_limit` deliveries every time the
+    campaign was restarted. Nothing new is persisted for this: the count rides events the lane was
+    already emitting.
+    """
+    from isar.drive.program_runner import _resumed_broken_deliveries
+
+    root = workspace(tmp_path)
+    step = discover_step(policy=policy_with(retry_limit=1))
+    program = CampaignProgram(steps=(step,))
+    monkeypatch.setattr(runner_mod, "build_scene_revision", FakeBuild(root, moving_scenes()))
+
+    run_program(program, step.id, config_for(root, trust="excluded", max_deliveries=2))
+
+    broken = [p for p in log_payloads(root, "decide") if p.get("event") == "broken_scan"]
+    assert broken, "the world recorded no broken delivery to resume from"
+    resumed = _resumed_broken_deliveries(root / "report" / "session_log.jsonl", step.id)
+    assert resumed, "a restart would have handed every broken action a fresh budget"
+    for event in broken:
+        assert resumed[event["physical_action_key"]] >= event["broken_deliveries"]

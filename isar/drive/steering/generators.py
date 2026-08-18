@@ -95,6 +95,14 @@ class DiscoveryContext:
     # None off the cold-start path. Carried only so the opening book can seed its frame
     # attribution for a partition no observation has placed yet; nothing here derives from it.
     declared_partition: tuple | None = None
+    # The card's declared hypothesis set, fingerprinted (review finding 2026-08-18). It reaches the
+    # INTENT here rather than being stamped on the executable request later: the fingerprint is an
+    # input to ``scientific_fingerprint``, so introducing it after selection left the inventory,
+    # the scientific identity, the physical retry key, the decision basis and the scheduler all
+    # describing an action WITHOUT the physics that would interpret its measurement — and a card
+    # edit could leave a persisted decision byte-identical while changing what the scan means.
+    # Read once per step by the caller, so it cannot move mid-step.
+    hypotheses_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +120,14 @@ class GeneratorOutcome:
     clean_zero_reason: str | None = None
     inapplicable_reason: str | None = None
     exhaustion_clean: bool = False
+    #: Whether ``proposals`` SPANS the question's admissible action space, or samples it (review
+    #: finding 2026-08-18). The exact counterpart of ``exhaustion_clean`` on the other branch: that
+    #: field lets a generator say "my ZERO means the space is genuinely empty" rather than "I did
+    #: not find anything", and this one lets it say "if you refuse everything I offered, there is
+    #: nothing else that would answer this question". Without it, "every offered action was
+    #: refused" collapsed to "the one heuristic pick was refused" for every single-proposal
+    #: generator, and one unreachable point closed a whole region as unanswerable.
+    proposals_exhaustive: bool = False
 
     def __post_init__(self) -> None:
         set_flags = (bool(self.proposals), self.clean_zero_reason is not None,
@@ -129,8 +145,12 @@ class GeneratorOutcome:
                 "one is a construction bug, not a real generator state")
 
     @classmethod
-    def proposed(cls, pairs) -> "GeneratorOutcome":
-        return cls(proposals=tuple(pairs))
+    def proposed(cls, pairs, *, proposals_exhaustive: bool) -> "GeneratorOutcome":
+        """``proposals_exhaustive`` is REQUIRED, exactly as ``exhaustion_clean`` is on
+        :meth:`clean_zero`: a generator that cannot say whether its offers span the question's
+        admissible actions must say so explicitly, never by omission. ``False`` is the fail-safe
+        answer — it leaves the question OPEN and blocked instead of closing it unresolvable."""
+        return cls(proposals=tuple(pairs), proposals_exhaustive=bool(proposals_exhaustive))
 
     @classmethod
     def clean_zero(cls, reason: str, *, exhaustion_clean: bool) -> "GeneratorOutcome":
@@ -188,7 +208,8 @@ def _make_intent(context: DiscoveryContext, hkl, energy_lo, energy_hi, *, partit
     return MeasurementIntent(
         action_class=DISCOVERY_ACTION_CLASS, hkl=hkl, energy_lo=energy_lo, energy_hi=energy_hi,
         window_family="discovery", evidence_basis_fingerprint=context.scene_digest,
-        hypotheses_fingerprint=None, campaign_slice_fingerprint=_slice_fingerprint(partition_id),
+        hypotheses_fingerprint=context.hypotheses_fingerprint,
+        campaign_slice_fingerprint=_slice_fingerprint(partition_id),
         evidence_sink=CANONICAL_MASTER, window_center_meV=window_center_meV)
 
 
@@ -216,11 +237,14 @@ def dependency_depth(spec_dict: Mapping, agenda_payload: Mapping) -> int:
 
 
 def _make_association(context: DiscoveryContext, spec_dict: Mapping, generator_id: str, *,
-                      reason: str) -> QuestionActionAssociation:
+                      reason: str, placement_rank: int = 0) -> QuestionActionAssociation:
+    """``placement_rank`` is this generator's own preference order over the proposals it emitted
+    for THIS question — 0 first. Generators that emit one proposal per question leave it at 0."""
     return QuestionActionAssociation(
         basis_agenda_digest=context.basis_agenda_digest, question_id=spec_dict["question_id"],
         generator=generator_id, family_priority=int(spec_dict["priority"]),
-        dependency_depth=dependency_depth(spec_dict, context.agenda_payload), reason=reason)
+        dependency_depth=dependency_depth(spec_dict, context.agenda_payload), reason=reason,
+        placement_rank=int(placement_rank))
 
 
 def _assessment_of(agenda_payload: Mapping, question_id: str) -> dict | None:
@@ -318,7 +342,11 @@ def opening_book_survey(context: DiscoveryContext, spec_dict: Mapping) -> Genera
     if not proposals:
         return GeneratorOutcome.clean_zero("coverage_complete", exhaustion_clean=True)
     pairs = []
-    for p in proposals:
+    # ``propose_survey`` returns its proposals in PLACEMENT-INFORMED order (zone-centre anchoring,
+    # then axis coordinate). That order is the physics this generator knows and the scheduler
+    # cannot re-derive, so it travels as ``placement_rank`` rather than being dropped — see
+    # QuestionActionAssociation for what dropping it cost.
+    for rank, p in enumerate(proposals):
         if p.kind == "missing_q_node":
             energy_lo, energy_hi = _clip_omega(context.step_payload, None)
         else:
@@ -328,9 +356,14 @@ def opening_book_survey(context: DiscoveryContext, spec_dict: Mapping) -> Genera
         intent = _make_intent(context, hkl, energy_lo, energy_hi,
                               partition_id=subject.partition_id)
         association = _make_association(context, spec_dict, "opening_book_survey",
-                                        reason=f"opening_book:{p.kind}")
+                                        reason=f"opening_book:{p.kind}", placement_rank=rank)
         pairs.append((intent, association))
-    return GeneratorOutcome.proposed(pairs)
+    # NOT exhaustive: the coverage question asks whether the REGION is surveyed at the declared
+    # spacing, and each proposal is ONE point inside an uncovered gap. A different point in the
+    # same gap fills it just as well, so the instrument refusing this one proves nothing about the
+    # gap — let alone about the region. (The short-region arm is starker still: it seeds a single
+    # deterministic node near the midpoint.)
+    return GeneratorOutcome.proposed(pairs, proposals_exhaustive=False)
 
 
 # ----------------------------------------------------------------------------
@@ -355,7 +388,10 @@ def exposure_fill(context: DiscoveryContext, spec_dict: Mapping) -> GeneratorOut
             context, spec_dict, "exposure_fill",
             reason=f"underexposed_cell deficit={p.detail['deficit']!r}")
         pairs.append((intent, association))
-    return GeneratorOutcome.proposed(pairs)
+    # Exhaustive: the question is whether THIS already-surveyed node meets the exposure floor, and
+    # the only action that raises this node's exposure is re-measuring this node. There is no
+    # alternative q to offer, so a refusal here really does exhaust the question.
+    return GeneratorOutcome.proposed(pairs, proposals_exhaustive=True)
 
 
 # ----------------------------------------------------------------------------
@@ -372,7 +408,9 @@ def presence_probe(context: DiscoveryContext, spec_dict: Mapping) -> GeneratorOu
     reason = ("reopen presence at declared anchor" if subject.anchor is not None
              else "reopen presence in emergent tile")
     association = _make_association(context, spec_dict, "presence_probe", reason=reason)
-    return GeneratorOutcome.proposed(((intent, association),))
+    # One representative action, not an enumeration of the admissible ones — so a refusal of it
+    # does not prove the question unanswerable (review finding 2026-08-18).
+    return GeneratorOutcome.proposed(((intent, association),), proposals_exhaustive=False)
 
 
 # ----------------------------------------------------------------------------
@@ -440,7 +478,9 @@ def identity_discriminator(context: DiscoveryContext, spec_dict: Mapping) -> Gen
     association = _make_association(
         context, spec_dict, "identity_discriminator",
         reason=f"discriminate at {witness['scan_ref']}/{witness['label']}#{witness['slot']}")
-    return GeneratorOutcome.proposed(((intent, association),))
+    # One representative action, not an enumeration of the admissible ones — so a refusal of it
+    # does not prove the question unanswerable (review finding 2026-08-18).
+    return GeneratorOutcome.proposed(((intent, association),), proposals_exhaustive=False)
 
 
 # ----------------------------------------------------------------------------
@@ -604,7 +644,9 @@ def track_bridge_scan(context: DiscoveryContext, spec_dict: Mapping) -> Generato
     hkl = _hkl_at(context.step_payload, t)
     intent = _make_intent(context, hkl, energy_lo, energy_hi, partition_id=subject.partition_id)
     association = _make_association(context, spec_dict, "track_bridge_scan", reason=detail)
-    return GeneratorOutcome.proposed(((intent, association),))
+    # One representative action, not an enumeration of the admissible ones — so a refusal of it
+    # does not prove the question unanswerable (review finding 2026-08-18).
+    return GeneratorOutcome.proposed(((intent, association),), proposals_exhaustive=False)
 
 
 # ----------------------------------------------------------------------------
@@ -748,7 +790,9 @@ def _parameter_refine_tolerance(context: DiscoveryContext, spec_dict: Mapping,
     association = _make_association(
         context, spec_dict, "parameter_refine",
         reason=f"case_{target['case']}:{target['scan_ref']}/{target['label']}#{target['slot']}")
-    return GeneratorOutcome.proposed(((intent, association),))
+    # One representative action, not an enumeration of the admissible ones — so a refusal of it
+    # does not prove the question unanswerable (review finding 2026-08-18).
+    return GeneratorOutcome.proposed(((intent, association),), proposals_exhaustive=False)
 
 
 def _confirmed_tiles(agenda_payload: Mapping, partition_id, exclude: tuple) -> list[tuple]:
@@ -799,7 +843,9 @@ def _parameter_refine_zc(context: DiscoveryContext, spec_dict: Mapping,
     intent = _make_intent(context, hkl, energy_lo, energy_hi, partition_id=subject.partition_id)
     association = _make_association(context, spec_dict, "parameter_refine",
                                     reason=f"zc bridge node toward confirmed tile {nearest}")
-    return GeneratorOutcome.proposed(((intent, association),))
+    # One representative action, not an enumeration of the admissible ones — so a refusal of it
+    # does not prove the question unanswerable (review finding 2026-08-18).
+    return GeneratorOutcome.proposed(((intent, association),), proposals_exhaustive=False)
 
 
 def parameter_refine(context: DiscoveryContext, spec_dict: Mapping) -> GeneratorOutcome:
@@ -855,7 +901,9 @@ def mismatch_probe(context: DiscoveryContext, spec_dict: Mapping) -> GeneratorOu
                           window_center_meV=omega)
     association = _make_association(context, spec_dict, "mismatch_probe",
                                     reason=f"remeasure unknown-identity arena {scan_ref}")
-    return GeneratorOutcome.proposed(((intent, association),))
+    # One representative action, not an enumeration of the admissible ones — so a refusal of it
+    # does not prove the question unanswerable (review finding 2026-08-18).
+    return GeneratorOutcome.proposed(((intent, association),), proposals_exhaustive=False)
 
 
 # ----------------------------------------------------------------------------

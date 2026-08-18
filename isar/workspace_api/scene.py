@@ -194,13 +194,16 @@ def scene_observations(ws) -> list[SceneObservation]:
             # (_member_provenance), and None when they disagree or carry none. Without it a
             # master would fall into the provenance-less partition while every arena it pools
             # sits in the declared-path one: the pooled reading severed from its own path.
-            # program_fingerprint/program_step stay None either way — a master is the reading of
-            # many neutrons, not the product of one program step.
+            # program_fingerprint stays None either way — a master legitimately pools across
+            # recompiles, so no single program authored it. program_step is INHERITED when every
+            # member names the same one: without it, pooling a step's only trusted scan erased the
+            # proof that the step had measured, and the cold-start declaration un-retired itself
+            # (see _member_provenance).
             obs_provenance = (None, None, None, None)
             prov = master_provenance.get(ref)
             if prov is not None:
                 obs_sample, obs_conditions, obs_epoch = prov[:3]
-                obs_provenance = (prov[3], None, None, prov[4])
+                obs_provenance = (prov[3], None, prov[5], prov[4])
                 obs_count_trust = "trusted"
             else:
                 # Incompatible or unreconstructable member provenance (already logged by
@@ -321,8 +324,8 @@ def sample_knowledge(ws) -> SampleKnowledge:
 # ownership / active arena
 # ---------------------------------------------------------------------------
 def _member_provenance(members: list, measurements: dict) -> tuple:
-    """``((sample, conditions, lattice_epoch, topology_role, path_fingerprint), None)`` when every
-    member's measurement-arena record agrees, else ``(None, reason)``.
+    """``((sample, conditions, lattice_epoch, topology_role, path_fingerprint, program_step),
+    None)`` when every member's measurement-arena record agrees, else ``(None, reason)``.
 
     A pooled master's own counts are its members' — so its provenance IS its members', never the
     current frame (SCENE-4 PR 4.0 review response, W3, disposition 5). Compatible means every
@@ -336,6 +339,17 @@ def _member_provenance(members: list, measurements: dict) -> tuple:
     drops the master into the provenance-less lane (both ``None``) instead of refusing it. What
     the derivation prevents is the opposite error: a master whose members all sit on ONE declared
     path landing in a DIFFERENT partition from the very arenas it pools.
+
+    ``program_step`` joins that soft-derived set (review finding 2026-08-18). It was held at
+    ``None`` on the reasoning that "a master is the reading of many neutrons, not the product of
+    one program step" — true of ``program_fingerprint``, which legitimately pools across
+    recompiles, but false of the step when every member names the same one. Holding it at ``None``
+    UN-RETIRED cold-start declarations: ``isar.scene.questions.step_observed`` asks whether the
+    declaring step has landed a trusted observation, a canonical master SUPPRESSES the member rows
+    it pools, and so the step's only proof that it had ever measured disappeared the moment its
+    scan was pooled. The declaration came back to life and generated cold-start work beside the
+    real partition. Unanimity is the whole rule: members from two steps still pool, and still
+    leave the master's step ``None``.
     """
     if not members:
         return None, "no member labels to derive provenance from"
@@ -349,7 +363,9 @@ def _member_provenance(members: list, measurements: dict) -> tuple:
     r0 = records[0]
     declared = {(r.topology_role, r.path_fingerprint) for r in records}
     role, path = declared.pop() if len(declared) == 1 else (None, None)
-    return (r0.sample, r0.conditions, r0.lattice_epoch, role, path), None
+    steps = {r.program_step for r in records}
+    step = steps.pop() if len(steps) == 1 else None
+    return (r0.sample, r0.conditions, r0.lattice_epoch, role, path, step), None
 
 
 def _superseded_by_masters(fits, measurements: dict) -> tuple:

@@ -21,11 +21,18 @@ from isar.schema.campaign_program import CampaignProgram, CampaignStep, Discover
 from isar.schema.measurement import MeasurementArena
 from isar.schema.question_policy import resolve_policy
 from isar.scene.build import _partition_key
-from isar.scene.model import canonical_bytes, digest_bytes, partition_id
+from isar.scene.model import (canonical_bytes, digest_bytes, partition_id,
+                              path_geometry_fingerprint)
 from isar.scene.store import SCENE_STORE
 from isar.workspace_api.scene import _synthetic_observation
 
 T_ROUND = 5.0
+
+#: The path ``discover_step()`` declares. Every arena a 4.3 campaign delivers carries its
+#: step's path (``_campaign_provenance_block``, and ``MeasurementArena`` REFUSES a
+#: ``canonical_path`` arena without one), so a fixture observation that omits it is not a
+#: workspace this build can produce.
+STEP_PATH = path_geometry_fingerprint((2.0, 0.0, 0.0), (3.0, 0.0, 0.0))
 
 
 # ----------------------------------------------------------------------------
@@ -67,17 +74,23 @@ def declared(step, *, sample="s1", temperature=300.0, epoch=1, t_round=T_ROUND):
                              condition_t_round=t_round)
 
 
-def measured(scan_ref, partition_id, *, program_step, epoch=1, coord=2.0, count_trust="trusted"):
+def measured(scan_ref, partition_id, *, program_step, epoch=1, coord=2.0, count_trust="trusted",
+             path_fingerprint=STEP_PATH, topology_role="canonical_path"):
     """One observation + its footprint, the two-record pair the agenda joins by ``scan_ref``.
-    ``program_step`` is the retirement key: a TRUSTED observation carrying the DECLARING step's id
-    is what retires the declaration (owner ruling 2026-08-18).
+
+    The retirement key is ``(program_step, path_fingerprint)``: a TRUSTED observation carrying the
+    declaring step's id AND its path is what retires the declaration (H20(d), amended 2026-08-18).
+    Both default to the canonical step's, because that is what a delivered arena always carries —
+    an observation with a step id but no path is not a workspace this build can write, and a
+    fixture that omitted it made the step-id half look sufficient when it is not.
 
     An untrusted observation gets NO footprint, exactly as ``isar.scene.build`` writes it — the
     footprint set is built from the trusted observations alone.
     """
     observation = {"scan_ref": scan_ref, "candidates": [], "count_trust": count_trust,
                    "sample": "s1", "lattice_epoch": epoch, "conditions": [], "best_label": None,
-                   "program_step": program_step}
+                   "program_step": program_step, "path_fingerprint": path_fingerprint,
+                   "topology_role": topology_role}
     if count_trust != "trusted":
         return (observation, None)
     return (observation,
@@ -233,6 +246,98 @@ def test_first_measurement_lands_on_the_declared_key():
     assert other.partition_id != partition.partition_id
 
 
+def test_the_two_producers_of_a_partition_key_agree_from_one_card(tmp_path):
+    """The declaration and the delivered arena are built by DIFFERENT layers from DIFFERENT
+    inputs; this pins them against each other, from ONE card.
+
+    ``test_first_measurement_lands_on_the_declared_key`` above hands the same literals to both
+    sides, so it proves ``partition_key`` is deterministic and nothing more. It passed throughout
+    the window in which the runner minted ``sample`` from the CAMPAIGN CONFIG — whose default is a
+    synthetic name the CLI never overrides and no card is obliged to match — and ``conditions``
+    from a ``[temperature_rule] setpoint`` key two of the four card templates do not carry. The
+    declared partition could not join its own measurement on any real workspace, and no test could
+    tell, because every test wrote both sides by hand.
+    """
+    from isar.drive.program_runner import _declared_conditions, _declared_sample
+    from isar.schema.card import Card
+    from isar.session.driver import _sample_of
+    from synthetic_ws import DISCOVERY_POLICY_TOML, write_policy, write_state
+
+    root = tmp_path / "ws"
+    root.mkdir(parents=True)
+    write_policy(root, DISCOVERY_POLICY_TOML)
+    write_state(root, lattice_epochs=[{"version": 1}])
+    card = Card.load(root / "card.policy.toml", root / "card.state.json")
+    step = discover_step()
+
+    partition = declare_partition(
+        step, sample=_declared_sample(card, step), conditions=_declared_conditions(card, step),
+        lattice_epoch=1,
+        condition_t_round=float(dict(card.policy.collation or {}).get("t_round")))
+
+    # The DELIVERY side, through the real producer. The record's experiment_id is deliberately NOT
+    # the card's sample name: `_sample_of` prefers the card, and the declaration has to land on
+    # that same branch rather than on some third source of its own.
+    class _Rec:
+        experiment_id = "experiment-id-that-is-not-the-sample-name"
+
+    arena_sample = _sample_of(_Rec(), card)
+    assert arena_sample != _Rec.experiment_id, "the card must win, or this test proves nothing"
+
+    # `_measurement_record` writes the MEASURED temperature, and the card's binning is what
+    # absorbs the drift between a setpoint and the regulation around it — so a readback 2 K off
+    # the declared 300 K setpoint must still land in the declared bin.
+    for readback in (300.0, 302.0):
+        record = MeasurementArena(
+            scan_ref="e:1:d", scan_id="e:1:d", scan_number=1, detector="d", sample=arena_sample,
+            conditions=(("temperature_K", readback),), q=(2.0, 0.0, 0.0), lattice_epoch=1,
+            energy_window=(0.0, 10.0), energy_bands=((0.0, 10.0),), effective_exposure=5.0,
+            exposure_provenance=None, count_trust="trusted", reasons=(),
+            written_at="2026-08-18T00:00:00+00:00", content_hash="c0",
+            program_fingerprint="pf", program_step=step.id, topology_role="canonical_path",
+            path_fingerprint=partition.path_fingerprint)
+        assert _partition_key(_synthetic_observation(record), T_ROUND) == partition.key
+
+
+def test_a_card_that_cannot_name_its_sample_refuses_rather_than_guessing(tmp_path):
+    """Cold start cannot use ``_sample_of``'s ``record.experiment_id`` fallback — no record exists
+    yet — so a card without a ``[sample]`` name has no knowable sample identity to declare."""
+    from isar.drive.program_runner import WorkspaceUndeclared, _declared_sample
+    from isar.schema.card import Card
+    from synthetic_ws import write_policy, write_state
+
+    root = tmp_path / "ws"
+    root.mkdir(parents=True)
+    write_policy(root)                      # the base card: no [sample] table
+    write_state(root, lattice_epochs=[{"version": 1}])
+    card = Card.load(root / "card.policy.toml", root / "card.state.json")
+    with pytest.raises(WorkspaceUndeclared, match=r"no \[sample\] name"):
+        _declared_sample(card, discover_step())
+
+
+def test_a_setpoint_field_only_card_refuses_and_a_temperatureless_one_declares_nothing(tmp_path):
+    """The middle card shape is the one that mattered: s30 and in8 name only WHERE the setpoint
+    lives, which says a temperature dimension exists without saying what value the first scan will
+    land on. Declaring no condition there would put the declaration in the undeclared-couples-only-
+    with-undeclared lane while every arena lands in the binned one."""
+    from isar.drive.program_runner import WorkspaceUndeclared, _declared_conditions
+    from isar.schema.card import Card
+    from synthetic_ws import _POLICY_TOML, write_policy, write_state
+
+    def card_with(setpoint_line: str, name: str):
+        root = tmp_path / name
+        root.mkdir(parents=True)
+        write_policy(root, _POLICY_TOML.replace("setpoint = 300.0", setpoint_line))
+        write_state(root, lattice_epochs=[{"version": 1}])
+        return Card.load(root / "card.policy.toml", root / "card.state.json")
+
+    step = discover_step()
+    with pytest.raises(WorkspaceUndeclared, match="no literal `setpoint`"):
+        _declared_conditions(card_with('setpoint_field = "T_Control"', "field_only"), step)
+    # No temperature dimension declared at all: `()` is exactly what a T-less arena carries.
+    assert _declared_conditions(card_with("", "no_rule"), step) == ()
+
+
 # ----------------------------------------------------------------------------
 # (e) Replay reproduces the key from the persisted record, not from the card
 # ----------------------------------------------------------------------------
@@ -360,3 +465,63 @@ def test_an_untrusted_own_step_observation_does_not_retire_the_declaration():
     retired = derive(step, frame, sample_knowledge=knowledge, measurements=[broken, good])
     assert {s["subject"]["partition_id"] for s in retired.payload["specs"]
             if s["subject"]["partition_id"] is not None} == {"P-real"}
+
+
+# ----------------------------------------------------------------------------
+# (j) The retirement identity is (step, PATH) — review finding, amends H20(d)
+# ----------------------------------------------------------------------------
+def test_a_reused_step_id_on_another_path_does_not_retire_the_declaration():
+    """``discover-1`` is the id nearly every authored program uses.
+
+    An older program's trusted observation carrying that same id — but measuring a DIFFERENT
+    trajectory — used to retire this program's declaration before its first scan, blanking the
+    declared knowledge at exactly the moment it was the only knowledge there was. The path is what
+    tells the two apart, and it survives a consultation recompile, so it can never retire a
+    declaration for an administrative reason.
+    """
+    step = discover_step()
+    partition = declared(step)
+    frame = (partition.partition_id, 1, step.id, partition.path_fingerprint)
+    knowledge = {"zone_period": 1.0, "lattice_epoch": 1}
+    other_path = path_geometry_fingerprint((7.0, 0.0, 0.0), (8.0, 0.0, 0.0))
+    namesake = measured("e:1:d", "P-old", program_step=step.id, path_fingerprint=other_path)
+
+    live = derive(step, frame, sample_knowledge=knowledge, measurements=[namesake])
+    assert partition.partition_id in {s["subject"]["partition_id"]
+                                      for s in live.payload["specs"]}, (
+        "an unrelated program reusing the step id retired this declaration")
+
+    # The SAME id on THIS path is the real thing, and it does retire.
+    own = measured("e:2:d", "P-real", program_step=step.id, coord=2.5)
+    retired = derive(step, frame, sample_knowledge=knowledge, measurements=[namesake, own])
+    assert partition.partition_id not in {s["subject"]["partition_id"]
+                                          for s in retired.payload["specs"]}
+
+
+# ----------------------------------------------------------------------------
+# (k) A step only opens questions it can WRITE INTO — review finding
+# ----------------------------------------------------------------------------
+def test_a_partition_on_another_path_is_never_fanned_into():
+    """Every arena this step delivers is stamped with THIS step's path, so a question scoped to a
+    partition on a different path can never be closed by anything the step measures: it would be
+    selected, delivered into the current partition, left open, and re-selected — an unsatisfiable
+    loop that spends budget without moving a question.
+
+    A partition with NO declared path stays in: that is the legacy / manual / pooled-master lane,
+    and excluding it would blank the agenda of every workspace predating campaign provenance.
+    """
+    step = discover_step()
+    knowledge = {"zone_period": 1.0, "lattice_epoch": 1}
+    other_path = path_geometry_fingerprint((7.0, 0.0, 0.0), (8.0, 0.0, 0.0))
+    elsewhere = measured("e:1:d", "P-otherpath", program_step="discover-9",
+                         path_fingerprint=other_path)
+    legacy = measured("e:2:d", "P-legacy", program_step=None, coord=2.5,
+                      path_fingerprint=None, topology_role=None)
+    mine = measured("e:3:d", "P-mine", program_step=step.id, coord=2.2)
+
+    revision = derive(step, None, sample_knowledge=knowledge,
+                      measurements=[elsewhere, legacy, mine])
+    scoped = {s["subject"]["partition_id"] for s in revision.payload["specs"]
+              if s["subject"]["partition_id"] is not None}
+    assert "P-otherpath" not in scoped, "fanned into a partition this step cannot write into"
+    assert {"P-mine", "P-legacy"} <= scoped

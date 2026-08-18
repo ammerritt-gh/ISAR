@@ -70,8 +70,21 @@ class QuestionActionAssociation:
     generators run (the final agenda digest does not exist yet while actions are being
     generated), the same comparand ``QuestionExhaustion`` freshness binds.
 
-    ``family_priority`` and ``dependency_depth`` are the association's rank inputs; the
-    scheduler aggregates by MINIMUM over an evaluation's associations, order-invariantly.
+    ``family_priority``, ``dependency_depth`` and ``placement_rank`` are the association's rank
+    inputs; the scheduler aggregates by MINIMUM over an evaluation's associations,
+    order-invariantly.
+
+    ``placement_rank`` (review finding, 2026-08-18) is the generator's OWN ordering of the
+    proposals it emitted for one question — 0 is the one it would have measured first. Without it
+    every proposal a generator emits for a question ties on the two fields above, locality is 0.0
+    for every action (the live runner supplies no coordinate), and the winner falls through to the
+    ``scientific_action_fingerprint`` tiebreak — a SHA-256 over a payload containing the scene
+    digest. The physics the opening book computes (zone-centre anchoring, placement-informed
+    order) was therefore discarded, and worse: an untrusted delivery moves the scene without
+    adding coverage, so the hash order reshuffled and the retry landed on a different q. The
+    broken-scan bound counts one physical action, so it could not bind against a selector that
+    kept wandering. Defaults to 0, which is order-preserving for any generator that emits one
+    proposal per question or expresses no preference.
     """
 
     basis_agenda_digest: str
@@ -80,13 +93,14 @@ class QuestionActionAssociation:
     family_priority: int
     dependency_depth: int
     reason: str
+    placement_rank: int = 0
 
     def __post_init__(self) -> None:
         for name in ("basis_agenda_digest", "question_id", "generator", "reason"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"QuestionActionAssociation.{name} must be a non-empty string")
-        for name in ("family_priority", "dependency_depth"):
+        for name in ("family_priority", "dependency_depth", "placement_rank"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(
@@ -97,7 +111,8 @@ class QuestionActionAssociation:
     def rank_key(self) -> tuple:
         """The association's lexicographic rank contribution; ties break on identity fields
         so aggregation is deterministic regardless of iteration order."""
-        return (self.family_priority, self.dependency_depth, self.question_id, self.generator)
+        return (self.family_priority, self.dependency_depth, self.placement_rank,
+                self.question_id, self.generator)
 
     def to_dict(self) -> dict:
         return {"basis_agenda_digest": self.basis_agenda_digest,
@@ -105,6 +120,7 @@ class QuestionActionAssociation:
                 "generator": self.generator,
                 "family_priority": self.family_priority,
                 "dependency_depth": self.dependency_depth,
+                "placement_rank": self.placement_rank,
                 "reason": self.reason}
 
     @classmethod
@@ -114,6 +130,7 @@ class QuestionActionAssociation:
                    generator=str(d["generator"]),
                    family_priority=int(d["family_priority"]),
                    dependency_depth=int(d["dependency_depth"]),
+                   placement_rank=int(d.get("placement_rank", 0)),
                    reason=str(d["reason"]))
 
 
@@ -126,7 +143,8 @@ def union_associations(*groups) -> tuple[QuestionActionAssociation, ...]:
         for association in group:
             key = (association.basis_agenda_digest, association.question_id,
                    association.generator, association.family_priority,
-                   association.dependency_depth, association.reason)
+                   association.dependency_depth, association.placement_rank,
+                   association.reason)
             seen.setdefault(key, association)
     return tuple(sorted(seen.values(),
                         key=lambda a: (a.rank_key, a.basis_agenda_digest, a.reason)))

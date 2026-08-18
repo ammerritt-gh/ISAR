@@ -130,7 +130,12 @@ def _two_action_generator(coords):
             intent = MeasurementIntent(
                 action_class="discovery_scan", hkl=(coord, 0.0, 0.0), energy_lo=0.0,
                 energy_hi=10.0, window_family="discovery",
-                evidence_basis_fingerprint=context.scene_digest)
+                evidence_basis_fingerprint=context.scene_digest,
+                # The declared physics rides on the intent (review finding 2026-08-18), and a
+                # synthetic generator has to honour that contract too: `proposal_from_intent`
+                # VERIFIES the fingerprint, so an intent minted without the context's would refuse
+                # at realization and this stand-in would stop standing in for the real thing.
+                hypotheses_fingerprint=context.hypotheses_fingerprint)
             association = QuestionActionAssociation(
                 basis_agenda_digest=context.basis_agenda_digest,
                 question_id=spec_dict["question_id"], generator="opening_book_survey",
@@ -138,7 +143,7 @@ def _two_action_generator(coords):
                 dependency_depth=dependency_depth(spec_dict, context.agenda_payload),
                 reason="two_action test")
             pairs.append((intent, association))
-        return GeneratorOutcome.proposed(pairs)
+        return GeneratorOutcome.proposed(pairs, proposals_exhaustive=True)
     return generator
 
 
@@ -248,7 +253,7 @@ def test_association_forgery_by_a_generator_is_a_controller_fault(monkeypatch, t
             generator=spec_dict["generator_ids"][0],
             family_priority=int(spec_dict["priority"]) + 999,       # forged
             dependency_depth=0, reason="forged")
-        return GeneratorOutcome.proposed(((intent, association),))
+        return GeneratorOutcome.proposed(((intent, association),), proposals_exhaustive=True)
 
     patched = dict(GENERATOR_FUNCTIONS)
     patched["opening_book_survey"] = forge
@@ -412,7 +417,7 @@ def test_shared_action_serving_priorities_0_and_4_ranks_by_0(monkeypatch, tmp_pa
             generator=spec_dict["generator_ids"][0], family_priority=int(spec_dict["priority"]),
             dependency_depth=dependency_depth(spec_dict, context.agenda_payload),
             reason="collision test")
-        return GeneratorOutcome.proposed(((intent, association),))
+        return GeneratorOutcome.proposed(((intent, association),), proposals_exhaustive=True)
 
     patched = dict(GENERATOR_FUNCTIONS)
     patched["opening_book_survey"] = collide
@@ -811,3 +816,105 @@ def test_an_unloadable_pin_is_a_recorded_controller_fault(tmp_path):
     assert line["outcome"] == CONTROLLER_FAULT
     assert line["decision_basis"]["scene_digest"] is None
     assert AGENDA_STORE.pointer_digest(tmp_path) is None
+
+
+# ----------------------------------------------------------------------------
+# placement_rank: the generator's physics ordering outranks the hash tiebreak
+# ----------------------------------------------------------------------------
+def _ranked_pair(scene_digest: str, *, first_coord: float, second_coord: float):
+    """Two evaluations for one question, identical but for hkl and placement_rank (0 then 1)."""
+    from isar.drive.acquisition.inventory import ActionEligibility, ActionEvaluation
+
+    out = []
+    for rank, coord in enumerate((first_coord, second_coord)):
+        intent = MeasurementIntent(
+            action_class="discovery_scan", hkl=(coord, 0.0, 0.0), energy_lo=0.0, energy_hi=10.0,
+            window_family="discovery", evidence_basis_fingerprint=scene_digest)
+        association = QuestionActionAssociation(
+            basis_agenda_digest="a" * 64, question_id="q1", generator="opening_book_survey",
+            family_priority=1, dependency_depth=0, reason="placement test",
+            placement_rank=rank)
+        out.append(ActionEvaluation(intent=intent, generator="opening_book_survey",
+                                    eligibility=ActionEligibility.ELIGIBLE,
+                                    associations=(association,)))
+    return out
+
+
+def test_the_scene_moving_does_not_reshuffle_which_action_is_selected():
+    """The failure this pins: an untrusted delivery moves the scene without buying coverage, and
+    the scene digest is inside every ``scientific_action_fingerprint``. With every opening-book
+    proposal for one question tying on family priority and dependency depth, and locality 0.0 for
+    every action (the live runner supplies no coordinate), the winner fell through to that
+    fingerprint — a SHA-256 that reshuffles the moment the scene moves. The campaign wandered to
+    another q instead of re-measuring the broken one, so the broken-scan counter (which keys on
+    the PHYSICAL action) never saw the same key twice and its bound could not bind.
+    """
+    from isar.drive.steering.scheduler import select
+
+    step_payload = discover_step().payload.to_dict()
+    winners = set()
+    for nonce in range(12):
+        pair = _ranked_pair(f"{nonce:064d}", first_coord=2.0, second_coord=2.9)
+        winner, _, _, _ = select(pair, step_payload)
+        winners.add(winner.intent.hkl[0])
+    assert winners == {2.0}, (
+        f"the selected action moved with the scene digest: {sorted(winners)}")
+
+
+def test_placement_rank_decides_before_the_fingerprint_tiebreak():
+    """And it is placement_rank doing it, not the coordinate: swap which proposal the generator
+    ranked first and the winner swaps with it, on the identical scene."""
+    from isar.drive.steering.scheduler import select
+
+    step_payload = discover_step().payload.to_dict()
+    forward, _, _, _ = select(_ranked_pair("d" * 64, first_coord=2.0, second_coord=2.9),
+                              step_payload)
+    reversed_, _, _, _ = select(_ranked_pair("d" * 64, first_coord=2.9, second_coord=2.0),
+                                step_payload)
+    assert (forward.intent.hkl[0], reversed_.intent.hkl[0]) == (2.0, 2.9)
+
+
+def test_the_opening_book_order_reaches_the_association():
+    """``propose_survey`` returns placement-informed order; the generator must carry it, or the
+    ordering is computed and thrown away."""
+    from isar.drive.steering.generators import DiscoveryContext, opening_book_survey
+
+    context = DiscoveryContext(
+        scene_payload=scene(footprints=[fp("e:1:d", 2.0)]), agenda_payload={"assessments": []},
+        step_payload=discover_step().payload.to_dict(), basis_agenda_digest="a" * 64, scene_digest="b" * 64)
+    spec = {"question_id": "q1", "priority": 1,
+            "subject": {"kind": "region", "partition_id": P1, "region_rlu": [2.0, 3.0],
+                        "omega_band_meV": [0.0, 10.0]}}
+    outcome = opening_book_survey(context, spec)
+    ranks = [a.placement_rank for _, a in (outcome.proposals or ())]
+    assert ranks == sorted(ranks), f"proposal order was not preserved: {ranks}"
+    if len(ranks) > 1:
+        assert ranks == list(range(len(ranks)))
+
+
+def test_the_declared_physics_reaches_the_intent_not_just_the_request():
+    """``DiscoveryContext`` carries the card's hypothesis fingerprint and the generator stamps it
+    on every intent, so the action's own scientific identity accounts for the physics that will
+    interpret it. Left at ``None`` until realization, two campaigns testing different physics
+    minted the SAME scientific action fingerprint for the same q and window."""
+    from isar.drive.steering.generators import DiscoveryContext, opening_book_survey
+
+    spec = {"question_id": "q1", "priority": 1,
+            "subject": {"kind": "region", "partition_id": P1, "region_rlu": [2.0, 3.0],
+                        "omega_band_meV": [0.0, 10.0]}}
+
+    def fingerprints(hypotheses):
+        context = DiscoveryContext(
+            scene_payload=scene(footprints=[fp("e:1:d", 2.0)]),
+            agenda_payload={"assessments": []}, step_payload=discover_step().payload.to_dict(),
+            basis_agenda_digest="a" * 64, scene_digest="b" * 64,
+            hypotheses_fingerprint=hypotheses)
+        outcome = opening_book_survey(context, spec)
+        return [i.hypotheses_fingerprint for i, _ in outcome.proposals], \
+               [i.scientific_action_fingerprint for i, _ in outcome.proposals]
+
+    carried, first = fingerprints("physics-A")
+    assert carried and set(carried) == {"physics-A"}
+    _, second = fingerprints("physics-B")
+    assert first and not set(first) & set(second), (
+        "two different declared hypothesis sets minted the same scientific action identity")

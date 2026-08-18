@@ -2438,10 +2438,22 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   SAME `partition_key()` code path — sample from the card, `ConditionSet` through the same
   `t_round` binning measured provenance uses, lattice epoch from declared knowledge, path from the
   step's geometry fingerprint — and passes it into `plan_next_action` as an explicit input, which
-  UNIONS it with observed partitions until the declaring step has produced any observation
-  (keyed on `program_step` provenance), then retires it permanently: "cold start is just
-  initialization; as soon as you take one measurement, that determines the next." This supersedes
-  the earlier "no observations anywhere" wording, which broke warm multi-step campaigns. An
+  UNIONS it with observed partitions until the declaring step has produced any observation, then
+  retires it permanently: "cold start is just initialization; as soon as you take one measurement,
+  that determines the next." This supersedes the earlier "no observations anywhere" wording, which
+  broke warm multi-step campaigns. **AMENDED IN PLACE 2026-08-18 (review wave, before this slice
+  merged): the retirement identity is `(program_step, path_fingerprint)`, not `program_step`
+  alone.** A step id is not unique across programs — `discover-1` is the id nearly every authored
+  program uses — so a trusted observation belonging to an OLDER program that reused the id retired
+  a fresh declaration before its first measurement, blanking the declared knowledge at exactly the
+  moment it was the only knowledge there was. The physical path is the right second component: it
+  is already on the record, it distinguishes unrelated authored programs measuring different
+  trajectories, and it survives a consultation recompile (which mints a fresh `program_fingerprint`
+  while measuring the same path), so retirement can never fire for an administrative reason. The
+  same amendment closes the pooled-master hole: a canonical master SUPPRESSES the member rows it
+  pools, so a master that inherited no `program_step` erased the step's only proof that it had
+  measured and UN-RETIRED the declaration — the master now inherits `program_step` on member
+  unanimity, on the same soft-fail rule its declared-path pair already used. An
   unresolvable declared condition REFUSES at construction with `cold_start_condition_unresolved`
   rather than minting an orphan partition salted by a `scan_ref` a declaration has not got; the
   declared lattice epoch seeds both frame-compatibility maps by `setdefault`, so declared anchors
@@ -2510,6 +2522,150 @@ Migrated from `docs/GUI_DESIGN.md` §0 on 2026-07-11 (design review preceding br
   realization grid, the consultation channel and the broken-scan lane had no prior H-series text.
   (h) is additive to H19(k), which addressed the store lock and the program-store CAS but not the
   campaign parent's classification of a lost pointer flip.
+
+- **H21.** (2026-08-18, In force; SCENE-4 PR 4.3 review wave, branch `SCENE-4d`) **Two rulings
+  taken on the PR 4.3 review findings: discovery selection stays cost-blind until SCENE-5.5, and
+  broken-scan retirement becomes durable the same way the retry budget already is.** (a) is a
+  deferral and carries no code; (b)-(f) landed in the same wave that recorded them.
+  **(a) Discovery selection prices nothing, and that is DEFERRED TO SCENE-5.5 rather than
+  patched.** `isar.drive.steering.scheduler.select` ranks an eligible action on
+  `(family_priority, dependency_depth, locality, scientific_action_fingerprint)` — there is no
+  information term and no cost term. The exposure is charged PER POINT (`isar.drive.loop`:
+  `budget_state["neutrons"] += ncount * points`), with `ncount` the step's frozen
+  `discovery_monitor_ncount` (ISAR default 1e8, H20(e)) and `n_points` set by the intent's window
+  width divided by the snapped energy step, so two candidates at the same family priority and
+  dependency depth can differ in cost by more than an order of magnitude while the rank vector
+  cannot see the difference and the always-distinguishing fingerprint tiebreak decides between
+  them. This is the known gap against O43's symmetric per-neutron comparison, and it is the same
+  boundary that left H20(c)'s two deleted blockers (`resolution_floor`, `bose_dead`) with nowhere
+  to go: worthwhileness pricing is SCENE-5's, and the discovery lane sits outside the priced
+  envelope until then. The ruling is to MARK the gap, not to close it — no live instrument is
+  exposed to this build, so the operative bound stays `MAX_DISCOVERY_DELIVERIES_PER_STEP` (200,
+  named provisional v1) plus a declared budget, which trips AFTER the spend rather than before it.
+  A campaign run against real beamtime before SCENE-5.5 must therefore carry a declared budget;
+  the delivery ceiling alone is not a cost bound in any operational sense. `SCHEDULER_POLICY` —
+  the policy declaration embedded verbatim in every persisted decision — names the gap at its own
+  site, so an auditor reading a decision record is not left to infer that `rank_fields` is a
+  complete pricing.
+  **(b) Broken-scan retirement becomes DURABLE BY RECOMPILE, joining the retry budget it is the
+  other half of.** Today `retry_more` survives a restart and `retire_action` does not: the first
+  compiles into the frozen program as `consultation_overrides.retry_budget_by_action` and is read
+  back at step start by `consultation_overrides(step)`, while the second only adds a
+  `physical_action_key` to an in-memory set in `_run_discovery_step`. A restart therefore reverses
+  the operator's CHEAPER answer and preserves the more expensive one — an action they retired
+  resumes spending beamtime, an action they extended keeps its extension. The ruling is that
+  retirement takes the SAME route as the budget: a settled `retire_action` compiles a new frozen
+  revision through the `report/program/` store under CAS (D6, no in-place mutation anywhere), and
+  the retired set is read back off the frozen program at step start exactly as the retry budget
+  is. No second durable store, and no settlement-ledger reader: the program is the record. The
+  recompile moves the program fingerprint, which is routine by H20(f) and is precisely why path
+  identity is physical rather than administrative (H20(b)) — a retirement is a policy change that
+  alters no physics, so the partition the step measures in is unaffected.
+  **(c) A generator's own ordering outranks the fingerprint tiebreak.** `QuestionActionAssociation`
+  gains `placement_rank` and the scheduler's rank vector becomes `(family_priority,
+  dependency_depth, placement_rank, locality, scientific_action_fingerprint)`. Every proposal the
+  opening book emitted for one question tied on the first two fields, the live runner supplies no
+  `locality_coordinate` (so locality is 0.0 for every action), and the winner fell through to the
+  scientific action fingerprint — a SHA-256 over a payload containing the SCENE DIGEST. Two
+  consequences, both live: the placement-informed ordering the opening book computes (zone-centre
+  anchoring) was discarded and a hash chose the campaign's first scan; and because an untrusted
+  delivery moves the scene without buying coverage, the hash order RESHUFFLED between deliveries,
+  so the retry landed on a different q. The broken-scan bound counts one PHYSICAL action (H20(g)),
+  so a wandering selector meant it could never bind and the offramp could never fire — C6's "the
+  retry is already happening by construction" was false for any multi-candidate agenda. Rank 0 is
+  the proposal the generator would have measured first; the field defaults to 0, which is
+  order-preserving for any generator that emits one proposal per question.
+  **(d) A step may only open questions in partitions it can WRITE INTO.** `derive_agenda` fanned
+  questions across every observed partition, but every action a discovery step emits sits on its
+  own declared trajectory and every arena it delivers is stamped with THIS step's
+  `path_fingerprint` — so a question scoped to a partition declaring a DIFFERENT path was selected,
+  delivered into the current partition, left exactly as open as before, and re-selected: an
+  unsatisfiable loop that spends the budget without moving a question. The fan-out is now filtered
+  on the PATH component alone, deliberately: the step's endpoints are frozen so a differing path is
+  provably unwritable forever, whereas sample, conditions and lattice epoch can legitimately move
+  DURING a campaign and a partition they separate is one the step may well write into later. A
+  partition with NO declared path stays in — that is the legacy/manual/pooled-master lane, and
+  excluding it would blank the agenda of every workspace predating campaign provenance; that lane's
+  own unwritability is (b)'s pooled-master question, not a licence to delete questions here.
+  **(e) Running a discovery program again RESUMES it, exactly as the targeted path does.**
+  `_run_nonce` persists `<workspace>/.run_nonce` so a crash-resume replays the same
+  `Idempotency-Key` per scan — a guarantee the targeted loop earns by ALSO restoring `scan_counter`
+  from the durable log. `run_program` restored nothing, so with the persisted nonce a second
+  invocation re-emitted the first's keys verbatim and TAVI's idempotency cache could serve an
+  EARLIER run's scan as the result of a new physical request: a fabricated measurement folded as
+  trusted, which is the most severe defect this review wave found. The two halves only work
+  together, so both land: `run_program` now calls the SAME `_resume_state` reader `run_campaign`
+  uses — over the same `physical_submission` events this step already writes, since it shares
+  `_execute_proposal` — restoring the spend ledger, the scan and proposal counters and the
+  folded-row set, and it keeps the persisted nonce. A re-delivered scan therefore replays its own
+  key while a NEW request continues past where the last run stopped. The owner's ruling settles the
+  semantics the code could not infer: there is no fresh-vs-resume flag on either path, and
+  `isar drive --program X` twice means CONTINUE, because two step kinds giving one command opposite
+  meanings is an operator trap. The lane state resumes with it — `broken_deliveries` is rebuilt
+  from the `broken_scan` events the lane already writes (derived, never a second store), and
+  retirement rides (b)'s override section.
+  **(f) The declared physics reaches the INTENT, before dedup and scheduling.** The card's
+  hypothesis fingerprint was computed once per step and stamped on the executable request, leaving
+  `MeasurementIntent.hypotheses_fingerprint` at `None` — but that field is an INPUT to
+  `scientific_fingerprint`, so the action inventory, the scientific identity, the physical retry
+  key, the decision basis and the scheduler all described an action WITHOUT the physics that would
+  interpret its measurement. Two campaigns testing different declared hypotheses minted the same
+  scientific action fingerprint for the same q and window, and a card edit could leave a persisted
+  decision byte-identical while changing what the scan means. `DiscoveryContext` now carries the
+  fingerprint, the generators stamp it on every intent, `plan_next_action` takes it and embeds it
+  in `DecisionBasis` (omitted-when-absent, so a workspace declaring no hypotheses keeps its 4.2b
+  bytes) and in `context_fingerprint`, and `proposal_from_intent` VERIFIES rather than introduces:
+  a request whose declared physics differs from the physics its decision was taken under refuses
+  instead of submitting. It is read once per step, so it cannot move mid-step and cannot reset the
+  broken-scan counter between retries of one action.
+  **(g) One refusal may only exhaust a question when the actions offered were the question's
+  ADMISSIBLE SPACE, not a sample of it — and a blocked question still asks the operator.** A
+  question closed `unresolvable` when every action offered for it was rejected, all rejections were
+  STRUCTURAL, and authenticated blocker evidence existed. That reads as "we tried everything and all
+  of it was impossible", but "everything" was only everything the generator happened to propose, and
+  every discovery generator except `exposure_fill` offers ONE representative action. So a single
+  unreachable point closed a whole region: `opening_book_survey` proposes one point inside an
+  uncovered gap, the instrument declines it on scattering geometry (routine), and a region that a
+  point a few hundredths of an rlu away would have surveyed was written off permanently — nothing
+  reopens an unresolvable question. `GeneratorOutcome` gains `proposals_exhaustive`, the exact
+  counterpart of the `exhaustion_clean` declaration the clean-zero branch already carried (that one
+  says "my ZERO means the space is empty" rather than "I found nothing"; this one says "if you
+  refuse everything I offered, nothing else would answer this"). It is a REQUIRED keyword on
+  `proposed()`, so no call site acquires it by omission, and it is carried across the readiness
+  boundary on `GeneratorRunOutcome` because the run record is what the producer reads. Only
+  `exposure_fill` declares `True` — the sole action that raises a surveyed node's exposure is
+  re-measuring that node, so there is genuinely no alternative to offer; the other seven declare
+  `False`, each with its reason at the call site. A wrong `False` leaves a question open, a wrong
+  `True` writes off a measurable region, so the default is the fail-safe one.
+
+  The operator surface is preserved rather than sacrificed to that safety (owner ruling
+  2026-08-18). Because the gate means today's generators close nothing, the `unresolvable_closure`
+  prompt — which `evaluate_agenda` emitted only for `status == "unresolvable"` — would have lost
+  its live producer, and a campaign hitting a wall would have stopped ASKING and merely listed the
+  question as blocking. The prompt now rides the durable BLOCK instead: an OPEN question carrying a
+  durable blocker on every offered action puts itself to the operator with the same kind, the same
+  stable id and the same declared default. It is if anything the more apt question — "this looks
+  unanswerable, accept or keep spending?" is better asked when we are uncertain than when we have
+  proved it — and both answers already do the right thing, `accept_close` confirming the driver's
+  own suppression and `keep_spending` stopping the evidence being supplied so the derivation stops
+  blocking on it.
+
+  **Supersedes/relates:** (a) supersedes no earlier ruling; it names a boundary H20 left implicit
+  and sharpens the "authoritative selection Partial" status the `AGENTS.md` routing table already
+  carries. (b) extends H20(g), which established the physical-action retry key and the offramp but
+  left retirement's LIFETIME unstated; it disturbs neither H20(f)'s adoption rule, which already
+  governs how a recompiled revision is read back, nor the C6 rule that retirement narrows
+  selection only and leaves the evaluations eligible in the persisted inventory. (c) and (d)
+  supersede no letter's wording but correct behaviour H20(d)/(g) described as working; H20(d) is
+  additionally AMENDED IN PLACE (see it) so the retirement identity and the pooled-master
+  inheritance ship correct rather than shipping wrong and being corrected later. (e) supersedes no
+  ruling: the reuse was a gap, not a decision. (f) supersedes no ruling. (g) NARROWS H20(c)/D5
+  without reversing it: geometry infeasibility remains one of the two legitimate durable blockers
+  and still suppresses the action it refused — what changes is that a durable blocker no longer
+  implies the QUESTION is unanswerable unless the generator can say its offers were exhaustive. It
+  also moves the `unresolvable_closure` prompt's trigger from the closure to the block, which
+  supersedes H20(f)'s description of that prompt's origin while leaving its options, default and
+  identity untouched.
 
 Topics 1–7 of the 2026-07-09 review are closed. Remaining open from the original list:
 user-facing campaign report (deferred until post-testing); renegotiation protocol (O3, future);
