@@ -198,6 +198,27 @@ def test_resume_latest_keeps_frozen_tier_and_notes_an_explicit_override(tmp_path
     assert "frozen" not in capsys.readouterr().err               # no note without an explicit --tier
 
 
+def test_resume_latest_refuses_a_discovery_campaign_by_name(tmp_path, monkeypatch, capsys):
+    """A discovery campaign_start carries the program-step seam's CARRIER objective, not a
+    resumable target. Fed to the objective reader it fails as a schema complaint about something
+    the operator never authored; the refusal has to name the real reason."""
+    ws = tmp_path / "ws"
+    (ws / "report").mkdir(parents=True)
+    carrier = ObjectiveSpec(path=[(2.0, 0.0, 0.0), (3.0, 0.0, 0.0)], tolerance_meV=0.0,
+                            budget=None, name="discover:discover-1",
+                            meta={"discover_and_map": True, "step_id": "discover-1"})
+    log_event(ws / "report" / "session_log.jsonl", "decide",
+              {"event": "campaign_start", "action": "campaign_start",
+               "objective": carrier.to_dict(), "source": {"kind": "program", "sha256": "abc"}})
+    captured = _stub_run_campaign(monkeypatch)
+
+    assert main(["drive", "--resume-latest", "--workspace", str(ws)]) == 2
+    assert captured == []
+    error = capsys.readouterr().err
+    assert "--resume-latest cannot resume a discover_and_map campaign" in error
+    assert "--program" in error
+
+
 def test_resume_latest_errors_cleanly_when_no_log(tmp_path, monkeypatch, capsys):
     _stub_run_campaign(monkeypatch)                             # never reached, but keep it isolated
     rc = main(["drive", "--resume-latest", "--workspace", str(tmp_path / "empty")])
@@ -434,19 +455,82 @@ _DISCOVER_PAYLOAD = {
 }
 
 
-def test_a_discovery_step_parses_and_freezes_then_refuses_to_execute(tmp_path, monkeypatch, capsys):
-    """It is a *refusal*, not a crash and not a parse error: exit 7, with the slice named.
+def _stub_run_program(monkeypatch, *, verdict="complete", directive="release"):
+    """Replace the SCENE-4.3 program-step seam with a capture stub (SCENE-4.3 C5)."""
+    from isar.drive import program_runner
 
-    The program is fully validated first — a malformed discovery payload still fails as bad input
-    (exit 2), so an operator can tell "I wrote it wrong" from "this is not built yet".
-    """
-    captured = _stub_run_campaign(monkeypatch)
+    captured = []
+
+    def fake(program, step_id=None, config=None):
+        captured.append((program, step_id, config))
+        result = program_runner.StepResult(step_id=step_id, kind="discover_and_map", deliveries=2)
+        return program_runner.ProgramStepOutcome(result=result, verdict=verdict,
+                                                 directive=directive)
+
+    monkeypatch.setattr(program_runner, "run_program", fake)
+    return captured
+
+
+def test_a_discovery_step_now_routes_into_the_program_step_seam(tmp_path, monkeypatch, capsys):
+    """The exit-7 gate LIFTS for ``discover_and_map`` (SCENE-4.3 C5): the step froze cleanly and
+    this build has a runner for it, so it runs. The targeted path is untouched — ``run_campaign``
+    is never called, and the discovery config carries no ObjectiveSpec."""
+    targeted = _stub_run_campaign(monkeypatch)
+    captured = _stub_run_program(monkeypatch)
     path = _program_file(tmp_path, _DISCOVER_PAYLOAD, kind="discover_and_map",
                          step_id="discover-1")
+
     rc = main(["drive", "--program", str(path), "--workspace", str(tmp_path / "ws")])
-    assert rc == 7 and captured == []
-    err = capsys.readouterr().err
-    assert "discover_and_map" in err and "SCENE-4" in err
+
+    assert rc == 0 and targeted == []
+    assert len(captured) == 1
+    program, step_id, config = captured[0]
+    assert step_id == "discover-1"
+    assert config["workspace"] == str(tmp_path / "ws")
+    assert config["budget"] is None
+    assert "discover-1 complete" in capsys.readouterr().out
+
+
+def test_the_discovery_exit_code_vocabulary_matches_the_targeted_one(tmp_path, monkeypatch):
+    """One vocabulary, so an operator script branches once: 0 met, 3 incomplete, 4 operator stop."""
+    path = _program_file(tmp_path, _DISCOVER_PAYLOAD, kind="discover_and_map",
+                         step_id="discover-1")
+    for verdict, code in (("complete", 0), ("over_budget", 3), ("in_progress", 3),
+                          ("operator_stopped", 4), ("machine_failure", 2)):
+        _stub_run_program(monkeypatch, verdict=verdict)
+        assert main(["drive", "--program", str(path),
+                     "--workspace", str(tmp_path / "ws")]) == code, verdict
+
+
+def test_a_discovery_budget_override_travels_as_run_configuration(tmp_path, monkeypatch):
+    """``--budget`` still applies: a frozen discovery step has no ObjectiveSpec to mutate, so the
+    override travels in the run config rather than being folded into a compiled objective."""
+    captured = _stub_run_program(monkeypatch)
+    path = _program_file(tmp_path, _DISCOVER_PAYLOAD, kind="discover_and_map",
+                         step_id="discover-1")
+    assert main(["drive", "--program", str(path), "--workspace", str(tmp_path / "ws"),
+                 "--budget", "1e10n"]) == 0
+    assert captured[0][2]["budget"] == {"kind": "neutrons", "amount": 1e10}
+
+
+def test_an_unknown_step_kind_still_exits_7(tmp_path, monkeypatch, capsys):
+    """The gate did not open, it MOVED: a kind with no runner still froze cleanly and still
+    refuses with exit 7 rather than crashing — through ``main``, which is where an operator meets
+    the code."""
+    from isar.schema import campaign_program as cp
+
+    targeted = _stub_run_campaign(monkeypatch)
+    discovery = _stub_run_program(monkeypatch)
+    monkeypatch.setattr(cp, "STEP_KINDS", ("targeted", "discover_and_map", "align"))
+    document = _program(_GOAL_SPEC)
+    document["steps"] = [{"id": "a1", "kind": "align", "payload": {}}]
+    path = tmp_path / "align.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    rc = main(["drive", "--program", str(path), "--workspace", str(tmp_path / "ws")])
+
+    assert rc == 7 and targeted == [] and discovery == []
+    assert "align" in capsys.readouterr().err
 
 
 def test_a_malformed_discovery_payload_is_a_parse_error_not_a_refusal(tmp_path, monkeypatch,

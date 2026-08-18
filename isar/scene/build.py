@@ -413,7 +413,8 @@ def _partition_key(o: SceneObservation, t_round: float | None) -> tuple:
     computes the same identity the builder stamps, byte for byte. Two arenas whose keys differ
     are, by construction, never adjacent, never clustered, never normalized together.
     """
-    return model_partition_key(o.sample, o.conditions, o.lattice_epoch, o.scan_ref, t_round)
+    return model_partition_key(o.sample, o.conditions, o.lattice_epoch, o.scan_ref, t_round,
+                               o.topology_role, o.path_fingerprint)
 
 
 def _partition_id(key: tuple) -> str:

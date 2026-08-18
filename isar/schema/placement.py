@@ -78,6 +78,16 @@ class ResolvedPlacement:
 
 # The default profile's rules. Every class in DEFAULT_CATALOGUE gets an explicit row — no class
 # is left to fall through silently. Values are named provisional v1, SCENE-7-calibrated.
+#
+# ``omega_band_hint_meV`` IS PROVENANCE ONLY (review finding 2026-08-18). It is read in exactly one
+# other place — ``isar.drive.steering.planner._raw_placement_manifest``, which copies it into the
+# decision basis and fingerprints it — and nothing steers on it. That is deliberate, not a gap: a
+# discovery survey is asked to map the operator's whole declared energy domain, and truncating every
+# scan to the band where a class USUALLY sits would miss the phenomenon ``include_unknown`` exists
+# to catch (an optic branch at 8 meV, in a window narrowed to acoustic's 0-5). The hint says where a
+# class lives, for classification and for targeted follow-up; it is not a mandate to narrow a
+# map-everything scan. ``anchor_kind``/``order_weight`` are the fields that DO steer, through
+# ``zone_centre_order_weight`` and the opening book's proposal ordering.
 _DEFAULT_PLACEMENT_RULES: dict[str, PlacementRule] = {
     "acoustic": PlacementRule(
         anchor_kind="zone_centre",

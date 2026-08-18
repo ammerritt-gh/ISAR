@@ -25,7 +25,8 @@ from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 from isar.schema.card import Card
 from isar.schema.hypotheses import preset as hypothesis_preset
-from isar.schema.measurement import MeasurementArena, current_lattice_epoch
+from isar.schema.measurement import (MeasurementArena, campaign_provenance,
+                                     current_lattice_epoch)
 from isar.schema.statistics import (
     FIT_SELECTION_SCHEMA,
     INTERVAL_SCHEMA,
@@ -271,7 +272,12 @@ def _measurement_record(rec, det, q, T, sample, scan_id, card, chash, *, count_t
     ``"attempted"`` stub) are recorded as attempted but never as coverage. ``chash`` is the
     delivery-generation identity (the same ``content_hash`` stamped into ``results.csv``): the
     scene adapter joins a delivered fit row to this record on ``scan_ref`` AND ``content_hash``.
+
+    The campaign-provenance block (SCENE-4 PR 4.3, D2) is stamped VERBATIM off the acquisition
+    record the driver persisted at submission — this layer never derives campaign identity, and a
+    manual or pre-4.3 scan (no acquisition record) leaves all four fields ``None``.
     """
+    _, acquisition = _acquisition_provenance_for(rec, card, scan_id)
     return MeasurementArena(
         scan_ref=scan_id, scan_id=scan_id, scan_number=rec.scan_number, detector=det,
         sample=sample,
@@ -282,6 +288,7 @@ def _measurement_record(rec, det, q, T, sample, scan_id, card, chash, *, count_t
         effective_exposure=effective_exposure, exposure_provenance=exposure_provenance,
         count_trust=count_trust, reasons=tuple(reasons),
         written_at=datetime.now(timezone.utc).isoformat(), content_hash=chash,
+        **campaign_provenance(acquisition),
     ).to_dict()
 
 

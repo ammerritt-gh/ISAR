@@ -36,13 +36,15 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping
 
-from isar.drive.acquisition.inventory import ActionInventory, GeneratorReport, GeneratorStatus
-from isar.schema.action_identity import canonical_json
+from isar.drive.acquisition.inventory import (
+    ActionEligibility, ActionInventory, GeneratorReport, GeneratorStatus, RejectionClass)
+from isar.schema.action_identity import canonical_json, physical_action_key
 from isar.schema.campaign_program import CampaignProgram, ProgramError, program_fingerprint
+from isar.schema.consultation import strip_consultation_overrides
 from isar.schema.generators import DISCOVERY_GENERATOR_REGISTRY, DISCOVERY_GENERATOR_REGISTRY_VERSION, registry_manifest
 from isar.schema.placement import PLACEMENT_RULES, PLACEMENT_RULES_SCHEMA
 from isar.scene.agenda import (
@@ -50,6 +52,7 @@ from isar.scene.agenda import (
 from isar.scene.model import canonical_bytes, fingerprint
 from isar.scene.store import RevisionStore, SCENE_STORE, StaleSceneAtPublication
 
+from isar.drive.steering.cold_start import DeclaredPartition
 from isar.drive.steering.exhaustion import CONTROLLER_FAULT as _PRODUCER_FAULT
 from isar.drive.steering.exhaustion import produce_exhaustion
 from isar.drive.steering.generators import DiscoveryContext
@@ -59,6 +62,7 @@ from isar.drive.steering.scheduler import LOCALITY_VERSION, SCHEDULER_POLICY, se
 __all__ = [
     "SELECTED", "AGENDA_COMPLETE", "CONTROLLER_FAULT", "NO_ACTION_WITH_HONEST_EXHAUSTION",
     "NO_ELIGIBLE_ACTION", "PROGRAM_STORE", "PlanResult", "plan_next_action",
+    "program_revision",
 ]
 
 # Outcome vocabulary (plan resolution — the five-member enum).
@@ -114,6 +118,12 @@ class _ProgramRevision:
         return cls(canonical=canonical_bytes(program.to_dict()), digest=program_fingerprint(program))
 
 
+def program_revision(program: CampaignProgram) -> _ProgramRevision:
+    """The store-shaped revision for ``program`` — the PUBLIC name for what ``report/program/``
+    writes, so a second writer (the consultation recompile) never reaches for the private class."""
+    return _ProgramRevision.of(program)
+
+
 def _resolve_discover_step(program: CampaignProgram, step_id: str):
     step = next((s for s in program.steps if s.id == step_id), None)
     if step is None:
@@ -157,7 +167,11 @@ def _placement_fingerprint(manifest: dict) -> str:
 
 
 def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
-                           registry_fp: str, locality_coordinate: float | None) -> dict:
+                           registry_fp: str, locality_coordinate: float | None,
+                           declared_partition=None,
+                           retired_physical_actions: frozenset[str] = frozenset(),
+                           declined_fingerprints: frozenset[str] = frozenset(),
+                           hypotheses_fingerprint: str | None = None) -> dict:
     """Every ``decision_basis`` field that does NOT depend on a stored scene existing — computed
     even on the scene-missing fault path, so that record is as diagnostic as any other.
 
@@ -165,9 +179,46 @@ def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
     record: it already perturbs which action ``select()`` picks (``scheduler.py``'s rank
     vector), so leaving it out of the decision basis let two decisions differing ONLY in
     locality look identical everywhere a reader would check provenance.
+
+    ``declared_partition`` (PR 4.3 D4) embeds the cold-start declaration's FULL key components —
+    replay reproduces the declared partition from THIS record, never from the mutable card, so a
+    card edited between runs is visible in the ledger by construction. The key is present only
+    when a declaration was actually supplied: a decision that used none says so by carrying
+    nothing, which also keeps every non-cold-start record byte-identical to its 4.2b shape.
+
+    ``retired_physical_actions`` (PR 4.3 C6) is the same shape of finding as ``locality`` above:
+    the caller's broken-scan offramp set NARROWS what ``select()`` may pick, so two decisions
+    differing only in it were made on different grounds and must not read identically. Embedded on
+    the SAME conditional rule as ``declared_partition`` — present only when non-empty — so every
+    decision taken with nothing retired stays byte-identical to its pre-C6 shape.
+
+    ``declined_fingerprints`` (PR 4.3 C7) is the third member of that family and rides on the SAME
+    omitted-when-empty rule. It is a STRONGER narrowing than the two above — a declined scientific
+    action is re-marked REJECTED/STRUCTURAL in the run record itself, so it leaves the selection
+    input, the producer's eligible set, and the persisted inventory's eligibility together — which
+    is exactly why it must be visible here: a decision that structurally rejected an action the
+    previous decision selected was made on different grounds, and the two must not read identically.
+    Distinct from ``retired_physical_actions`` on purpose: that channel narrows selection ONLY and
+    keeps the evaluations eligible (a broken detector is not a statement about the physics), and
+    both channels stay separately visible in the basis rather than merged into one suppression set.
     """
     placement_manifest = _raw_placement_manifest(step_payload["catalogue_profile"])
+    declared = ({"declared_partition": declared_partition.to_dict()}
+                if declared_partition is not None else {})
+    retired = ({"retired_physical_actions": sorted(retired_physical_actions)}
+               if retired_physical_actions else {})
+    declined = ({"declined_scientific_actions": sorted(declined_fingerprints)}
+                if declined_fingerprints else {})
+    # Omitted-when-absent on the same rule as the three above, so a decision taken with no declared
+    # hypotheses stays byte-identical to its 4.2b shape. Present, it is the DECLARED PHYSICS this
+    # decision was taken under — readable without rehashing the intent.
+    hypotheses = ({"hypotheses_fingerprint": hypotheses_fingerprint}
+                  if hypotheses_fingerprint else {})
     return {
+        **hypotheses,
+        **declared,
+        **retired,
+        **declined,
         "program_fingerprint": program_fp,
         "step_id": step_id,
         "resolved_policy_fingerprint": fingerprint(step_payload["resolved_policy"]),
@@ -179,6 +230,30 @@ def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
                      "manifest": placement_manifest},
         "staleness_policy": {"mode": "synchronous", "lag": 0},
     }
+
+
+#: The rejection reason stamped on an evaluation the instrument declined as infeasible. One string,
+#: so the producer-side classification and anything reading the persisted inventory cannot drift.
+DECLINED_REJECTION_REASON = "instrument_declined_as_infeasible"
+
+
+def _mark_declined(run_result: RunResult, declined_fingerprints: frozenset[str]) -> RunResult:
+    """Re-mark every evaluation whose scientific action the instrument declined (C7/D5).
+
+    Rejected with ``RejectionClass.STRUCTURAL`` — the existing vocabulary, not a new one: the
+    machine cannot close the scattering triangle for this action on this evidence basis, which is
+    precisely what STRUCTURAL names. Applied to the whole flat evaluation list rather than to
+    post-dedup survivors, because dedup keeps the FIRST-seen evaluation for a fingerprint and a
+    peer generator's copy of the same scientific action must not survive as eligible.
+    """
+    if not declined_fingerprints:
+        return run_result
+    return replace(run_result, evaluations=tuple(
+        evaluation if evaluation.intent.scientific_action_fingerprint not in declined_fingerprints
+        else replace(evaluation, eligibility=ActionEligibility.REJECTED,
+                     rejection_class=RejectionClass.STRUCTURAL,
+                     rejection_reason=DECLINED_REJECTION_REASON)
+        for evaluation in run_result.evaluations))
 
 
 def _build_inventory(run_result: RunResult, survivors: list, deduped_by_generator: dict
@@ -242,6 +317,14 @@ def _write_inventory(report_dir: Path, inventory: ActionInventory) -> dict:
     separately re-hashes the canonical form to verify — two encodings of one file that can never
     agree on raw bytes). Storing the canonical bytes directly keeps "does this file match its own
     address" a plain byte comparison, the same idiom ``isar.scene.store`` already uses.
+
+    LOSING-WRITER ORPHAN POLICY (PR 4.3 C6, ratified): a blob written by a decision that then failed
+    to publish — a losing CAS, a ``StaleSceneAtPublication`` retry — is left where it is, and there
+    is no cleanup daemon. It is content-addressed litter: nothing references it (a decision cites its
+    inventory by address, and no reader enumerates this directory), and the retry writes its own
+    blob, so an orphan can neither be mistaken for a decision's inventory nor perturb the next one.
+    The idempotence is the policy — ``tests/drive/test_planner.py`` pins that an orphan leaves the
+    next decision byte-identical.
     """
     digest = inventory.content_hash()
     target = report_dir / "inventory" / "discovery" / f"{digest}.json"
@@ -267,6 +350,29 @@ def _current_scene_pointer_digest(report_dir: Path) -> str | None:
     return SCENE_STORE.pointer_digest(report_dir)
 
 
+def _pointer_names_consultation_descendant(report_dir: Path, program: CampaignProgram) -> bool:
+    """Does ``report/program/current.json`` name ``program`` PLUS consultation overrides?
+
+    True only when the stored revision differs from ``program`` and strips down to exactly it — the
+    one case where publishing ``program`` would be a REGRESSION rather than a no-op. A missing,
+    unrelated, or unreadable stored revision all answer False, which leaves the ordinary write (and
+    its CAS) exactly as it was.
+    """
+    try:
+        current = PROGRAM_STORE.read_current(report_dir)
+    except ValueError:
+        return False           # corruption is the store's own loud problem, not a write guard's
+    if current is None:
+        return False
+    try:
+        stored = CampaignProgram.from_dict(current[1])
+    except (ProgramError, ValueError):
+        return False
+    authored = program_fingerprint(program)
+    return (program_fingerprint(stored) != authored
+            and program_fingerprint(strip_consultation_overrides(stored)) == authored)
+
+
 def _current_program_pointer_digest(report_dir: Path) -> str | None:
     """Hook point for the program store's planning-start snapshot (PR #33 A-P0-4 program CAS),
     same reasoning as :func:`_current_scene_pointer_digest`."""
@@ -289,36 +395,110 @@ class PlanResult:
     reason: str | None = None
 
 
+def _scene_fault(report_dir: Path, basis_common: dict, step_id: str, program_fp: str,
+                 reason: str) -> PlanResult:
+    """Record and return the controller fault for "this decision has no scene to stand on".
+
+    Nothing but the decision record is persisted: with no scene there is no basis to build an
+    agenda, an inventory, or a program revision against.
+    """
+    record = {
+        "schema": DECISION_SCHEMA, "outcome": CONTROLLER_FAULT,
+        "decision_basis": {**basis_common, "scene_digest": None, "agenda_digest": None,
+                          "basis_digest": None},
+        "selection": None,
+        "scan_design_provenance": {"inventory_fingerprint": None, "context_fingerprint": None,
+                                  "selected_candidate_id": None, "status": CONTROLLER_FAULT,
+                                  "recovery_state": None},
+        "scan_design_events": [], "inventory_ref": None,
+    }
+    _append_decision(report_dir, record)
+    return PlanResult(outcome=CONTROLLER_FAULT, step_id=step_id, scene_digest=None,
+                      basis_digest=None, agenda_digest=None, program_fingerprint=program_fp,
+                      selection_fingerprint=None, inventory_ref=None, run_records=(),
+                      reason=reason)
+
+
 def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
                      locality_coordinate: float | None = None,
-                     blocker_evidence: tuple = ()) -> PlanResult:
+                     blocker_evidence: tuple = (),
+                     declared_partition: DeclaredPartition | None = None,
+                     hypotheses_fingerprint: str | None = None,
+                     scene_pin: str | None = None,
+                     retired_physical_actions: frozenset[str] = frozenset(),
+                     declined_fingerprints: frozenset[str] = frozenset()) -> PlanResult:
+    """``declared_partition`` (PR 4.3 D4) is the caller-minted cold-start declaration
+    (:func:`isar.drive.steering.cold_start.declare_partition`). Passing none keeps the 4.2b
+    behaviour exactly: an unmeasured workspace derives the program-scoped lane and every
+    generator answers ``program_scoped_subject_unfanned``.
+
+    ``scene_pin`` (PR 4.3 D1) is the CONTENT ADDRESS of the scene revision to plan against — the
+    digest the caller's own build just returned. Supplied, this call never touches
+    ``current.json``: the revision is loaded by content address, and the publication-time pointer
+    re-read is SKIPPED (see below). Omitted, the pointer-derived behaviour is byte-for-byte what
+    it was — ``read_current`` at the snapshot, the guard in force at publication — which is what
+    ``isar report``, the tests, and every non-pinned caller keep getting.
+
+    ``retired_physical_actions`` (PR 4.3 C6) is the caller's STEP-LOCAL broken-scan offramp set,
+    keyed by :func:`~isar.schema.action_identity.physical_action_key`: actions whose deliveries kept
+    coming back with untrusted counts until the frozen retry budget ran out. The key is the
+    SCENE-INVARIANT one on purpose — the scientific fingerprint carries the scene digest, which moves
+    on every delivery, so a filter keyed on it would never match the action it just retired.
+    It narrows THE SELECTION INPUT ONLY. The evaluations stay eligible in the run record, in the
+    exhaustion producer's survivor set, and in the persisted inventory, because a broken detector is
+    not a statement about the physics — turning "we could not get counts today" into structural
+    exhaustion would close a question the instrument never actually answered. (That is the exact
+    opposite of C7's declined-fingerprint path, which IS a durable structural rejection.)
+
+    ``declined_fingerprints`` (PR 4.3 C7/D5) is the caller's set of ``scientific_action_fingerprint``
+    values the INSTRUMENT declined as geometrically infeasible on THIS pinned scene. Every matching
+    evaluation is re-marked ``REJECTED``/``RejectionClass.STRUCTURAL`` in the run record itself —
+    UPSTREAM of both ``dedupe_discovery_evaluations`` calls, so the exhaustion producer (which
+    re-derives its own survivors from ``RunResult.evaluations``), the persisted inventory, and the
+    selection input all read ONE re-marked set rather than three views that could disagree. That is
+    what lets producer rule 6 (rejected-only, all-STRUCTURAL, matching
+    :class:`~isar.schema.generators.QuestionBlockerEvidence`) emit the proof that closes the
+    question unresolvable instead of rule 2 blocking it as ``not_exhausted``.
+    """
     report_dir = Path(report_dir)
     step = _resolve_discover_step(program, step_id)
     step_payload = step.payload.to_dict()
     program_fp = program_fingerprint(program)
     registry_fp = DISCOVERY_GENERATOR_REGISTRY_VERSION
     basis_common = _decision_basis_common(program_fp, step_id, step_payload, registry_fp,
-                                          locality_coordinate)
+                                          locality_coordinate, declared_partition,
+                                          retired_physical_actions, declined_fingerprints,
+                                          hypotheses_fingerprint)
+    # Below the planner the declaration travels as the primitive triple the scene layer and the
+    # opening book both take — the DTO itself never crosses into isar.scene (import boundary).
+    # The step id rides along because it is the RETIREMENT test (owner ruling 2026-08-18): the
+    # declaration is live until an observation carries this same step, then reality owns the
+    # fan-out. ``step_id`` is the planner's resolved step, and the DTO was minted against it.
+    declared_frame = (None if declared_partition is None
+                      else (declared_partition.partition_id, declared_partition.lattice_epoch,
+                            declared_partition.step_id,
+                            declared_partition.path_fingerprint))
 
     # ---- atomic snapshot -----------------------------------------------------------------
-    scene_current = SCENE_STORE.read_current(report_dir)
-    if scene_current is None:
-        record = {
-            "schema": DECISION_SCHEMA, "outcome": CONTROLLER_FAULT,
-            "decision_basis": {**basis_common, "scene_digest": None, "agenda_digest": None,
-                              "basis_digest": None},
-            "selection": None,
-            "scan_design_provenance": {"inventory_fingerprint": None, "context_fingerprint": None,
-                                      "selected_candidate_id": None, "status": CONTROLLER_FAULT,
-                                      "recovery_state": None},
-            "scan_design_events": [], "inventory_ref": None,
-        }
-        _append_decision(report_dir, record)
-        return PlanResult(outcome=CONTROLLER_FAULT, step_id=step_id, scene_digest=None,
-                          basis_digest=None, agenda_digest=None, program_fingerprint=program_fp,
-                          selection_fingerprint=None, inventory_ref=None, run_records=(),
-                          reason="no scene stored for this workspace")
-    scene_pointer, scene_payload = scene_current
+    if scene_pin is not None:
+        # By content address, never the pointer. An unloadable pin is store corruption — the one
+        # thing D1 classifies as a genuine machine failure on this path — and it becomes a
+        # recorded controller fault rather than a silent fall back onto whatever the pointer
+        # currently names, which would be steering from an older scene.
+        try:
+            scene_payload = SCENE_STORE.read_revision(report_dir, scene_pin)
+        except ValueError as error:
+            return _scene_fault(report_dir, basis_common, step_id, program_fp,
+                                f"pinned scene revision {scene_pin} is unloadable: {error}")
+        scene_pointer = None
+    else:
+        scene_current = SCENE_STORE.read_current(report_dir)
+        if scene_current is None:
+            return _scene_fault(report_dir, basis_common, step_id, program_fp,
+                                "no scene stored for this workspace")
+        scene_pointer, scene_payload = scene_current
+    # Equal to ``scene_pin`` by construction when pinned: ``read_revision`` authenticates the blob
+    # against exactly this recomputation before returning it.
     scene_digest = fingerprint(scene_payload)
     agenda_snapshot = AGENDA_STORE.pointer_digest(report_dir)
     program_snapshot = _current_program_pointer_digest(report_dir)
@@ -329,11 +509,13 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     # never disagree with pass-2's about which blockers are attached) ----------------------
     pass1 = derive_agenda(scene_payload, step_payload, step_id=step_id,
                           program_fingerprint=program_fp, blocker_evidence=blocker_evidence,
-                          generator_registry_fingerprint=registry_fp)
+                          generator_registry_fingerprint=registry_fp,
+                          declared_partition=declared_frame)
     basis_digest = pass1.payload["basis_digest"]
     context = DiscoveryContext(scene_payload=scene_payload, agenda_payload=pass1.payload,
                                step_payload=step_payload, basis_agenda_digest=basis_digest,
-                               scene_digest=scene_digest)
+                               scene_digest=scene_digest, declared_partition=declared_frame,
+                               hypotheses_fingerprint=hypotheses_fingerprint)
 
     fault_reason = None
     run_result = RunResult(records=(), evaluations=())
@@ -342,6 +524,10 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     try:
         readiness = classify_readiness(pass1.payload)
         run_result = run_ready_questions(context, readiness)
+        # THE injection point (C7/D5, epoch-6 fix). Applied to the RUN RECORD, before any dedup:
+        # ``produce_exhaustion`` dedups ``run_result.evaluations`` itself and would ignore a list
+        # the planner re-marked privately, leaving the declined action ELIGIBLE for producer rule 2.
+        run_result = _mark_declined(run_result, declined_fingerprints)
         survivors, deduped_by_generator = ActionInventory.dedupe_discovery_evaluations(
             list(run_result.evaluations))
     except ValueError as error:
@@ -365,7 +551,8 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     pass2 = derive_agenda(scene_payload, step_payload, step_id=step_id,
                           program_fingerprint=program_fp, exhaustion_evidence=proofs,
                           blocker_evidence=blocker_evidence,
-                          generator_registry_fingerprint=registry_fp)
+                          generator_registry_fingerprint=registry_fp,
+                          declared_partition=declared_frame)
     pass2_open = {a["question_id"] for a in pass2.payload["assessments"] if a["status"] == "open"}
     # PR #33 A-P0-3/W5: completion is THE AGENDA VERDICT'S call, never inferred from raw
     # statuses -- a question can leave "open" by closing UNRESOLVABLE rather than answering
@@ -374,12 +561,22 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     # it here from pass2_open alone was exactly the bug).
     verdict = evaluate_agenda(pass2.payload)
 
+    # Selection input, narrowed twice. (a) ELIGIBILITY (C7/D5): only ``ActionEligibility.ELIGIBLE``
+    # survivors may be selected. Latent-safe until now — every live evaluation was constructed
+    # eligible (``readiness.py``) — but the declined-fingerprint path mints the first live REJECTED
+    # evaluations, and without this filter the planner would re-select the action the instrument
+    # just refused. (b) The caller's step-local offramp set (C6). ``survivors`` itself is left
+    # alone: it is what the inventory records and what the producer already classified.
+    selectable = [e for e in survivors
+                  if e.is_eligible
+                  and physical_action_key(e.intent) not in retired_physical_actions]
+
     reason = fault_reason or per_question_fault
     if reason is not None:
         outcome = CONTROLLER_FAULT
     elif verdict.state == "complete":
         outcome = AGENDA_COMPLETE
-    elif survivors:
+    elif selectable:
         outcome = SELECTED
     elif not pass2_open:
         # Nothing left OPEN, no eligible action, yet the verdict is not complete -- the only
@@ -407,8 +604,17 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     # own lock, against a DIFFERENT store than the one about to be written. See
     # StaleSceneAtPublication's docstring for exactly what the agenda store's expected_parent
     # CAS + interprocess lock beneath this still covers.
-    republished_scene_digest = _current_scene_pointer_digest(report_dir)
-    if republished_scene_digest != scene_pointer["digest"]:
+    #
+    # SCOPED, not removed (PR 4.3 D1). A PINNED caller skips it: the guard exists to catch "the
+    # scene I read is no longer the current scene", and a pin says the current scene was never
+    # this decision's authority in the first place — the agenda snapshot is keyed to the pinned
+    # digest explicitly, and the campaign parent built that revision itself. Making a read-only
+    # `isar report --scene` publish able to fault a live campaign is exactly the false machine
+    # failure the four-reasons stop law forbids. Every POINTER-DERIVED caller keeps the guard
+    # unchanged, because for them the pointer IS the authority they snapshotted.
+    republished_scene_digest = (None if scene_pointer is None
+                                else _current_scene_pointer_digest(report_dir))
+    if scene_pointer is not None and republished_scene_digest != scene_pointer["digest"]:
         raise StaleSceneAtPublication(
             f"scene pointer moved to {republished_scene_digest!r} since this decision "
             f"snapshotted it at {scene_pointer['digest']!r}; refusing to publish an agenda "
@@ -420,21 +626,28 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
                            program_fingerprint=program_fp, exhaustion_evidence=proofs,
                            blocker_evidence=blocker_evidence,
                            generator_registry_fingerprint=registry_fp,
+                           declared_partition=declared_frame,
                            expected_parent=agenda_snapshot, source="planner")
 
-    PROGRAM_STORE.write_revision(report_dir, _ProgramRevision.of(program), source="planner",
-                                 expected_parent=program_snapshot)
+    # The planner publishes the program it planned under — UNLESS the pointer already names a
+    # CONSULTATION DESCENDANT of it (SCENE-4.3 C8). A recompiled revision is this same program plus
+    # the operator's answers; writing the override-free program over it would revert the pointer,
+    # and the next run would adopt nothing and silently discard a settled answer. Same
+    # strip-and-compare rule the adoption at ``run_program`` start uses, so the two cannot drift.
+    if not _pointer_names_consultation_descendant(report_dir, program):
+        PROGRAM_STORE.write_revision(report_dir, _ProgramRevision.of(program), source="planner",
+                                     expected_parent=program_snapshot)
 
     selection_block = None
     selection_fingerprint = None
     if outcome == SELECTED:
-        winner, rank_vector, supplying, table = select(survivors, step_payload,
+        winner, rank_vector, supplying, table = select(selectable, step_payload,
                                                         locality_coordinate)
         selection_fingerprint = winner.intent.scientific_action_fingerprint
         selection_block = {
             "fingerprint": selection_fingerprint,
             "rank_vector": list(rank_vector),
-            "reason": f"lexicographic minimum over {len(survivors)} eligible action(s)",
+            "reason": f"lexicographic minimum over {len(selectable)} eligible action(s)",
             "associations": [a.to_dict() for a in winner.associations],
             "supplying_association": supplying.to_dict(),
             # PR #33 A-P1-e: the FULL ordered rank table, winner first (row 0) — select() was
@@ -456,9 +669,24 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     # appearing in the decision basis or context fingerprint". It is now visible in
     # decision_basis (above) AND folds into this digest, so two decisions differing ONLY in
     # locality_coordinate produce different context_fingerprints, never identical ones.
+    #
+    # The retirement set (C6) folds in on the same terms, and on the same conditional rule it uses
+    # in the basis: a narrowed selection input that did not reach this digest would let two
+    # decisions taken over different candidate sets carry one context fingerprint.
+    #
+    # ``declared_partition`` rides the same rule (review finding 2026-08-18). It was left out while
+    # the two narrowing sets went in, even though it is a LARGER change to the candidate set — it
+    # decides the fan-out itself, not merely which survivors may be picked. It reaches
+    # ``basis_digest`` indirectly through the agenda, so the omission was not exploitable, but the
+    # rule is "everything that changes what could have been selected", and an exception nobody
+    # wrote down is how the next field gets forgotten too.
     context_fingerprint = fingerprint(
         {"scene_digest": scene_digest, "basis_digest": basis_digest, "step_id": step_id,
-         "locality": basis_common["locality"]})
+         "locality": basis_common["locality"],
+         **{key: basis_common[key]
+            for key in ("declared_partition", "retired_physical_actions",
+                        "declined_scientific_actions", "hypotheses_fingerprint")
+            if key in basis_common}})
     record = {
         "schema": DECISION_SCHEMA,
         "outcome": outcome,

@@ -518,6 +518,14 @@ class ActionInventory:
                         # posterior, so a reader must be able to tell a canonical action from an
                         # auxiliary-node one in the persisted artifact.
                         "evidence_sink": e.intent.evidence_sink,
+                        # The energy the action is ABOUT when that is not the midpoint of its
+                        # window (a clamped rival probe). Excluded from the fingerprint, but a
+                        # reader that drops it re-aims the request at the midpoint of what
+                        # survived the clamp. Present only when declared, so every inventory
+                        # written before this field existed keeps its canonical bytes -- and
+                        # its content address -- unchanged.
+                        **({"window_center_meV": e.intent.window_center_meV}
+                           if e.intent.window_center_meV is not None else {}),
                     },
                     "score": {
                         "expected_identity_gain": _finite(e.expected_identity_gain),

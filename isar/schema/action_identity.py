@@ -45,14 +45,13 @@ def canonical_hkl(hkl: Any) -> tuple[float, float, float]:
     return tuple(round(value, 9) + 0.0 for value in values)
 
 
-def scientific_fingerprint(intent: "MeasurementIntent") -> str:
-    """Stable hash of the *scientific question* an intent resolves — its dedup / anti-repeat id.
+def _identity_payload(intent: "MeasurementIntent", *, evidence_basis: bool) -> str:
+    """The ordered identity inputs, optionally minus the evidence-basis field.
 
-    Deliberately excludes anything about the exact emitted request (window step, ncount, feasibility):
-    two intents that ask the same scientific question with different executable realizations share one
-    fingerprint and must not both occupy the inventory.
+    One list, two readings — so a field added to the scientific identity cannot be forgotten by the
+    physical key (or the reverse), which is the drift that two hand-maintained lists would invite.
     """
-    payload = canonical_json([
+    return canonical_json([
         intent.action_class,
         list(canonical_hkl(intent.hkl)),
         # ``+ 0.0``: see :func:`canonical_hkl` — a negative-zero bound must not fork identity.
@@ -61,12 +60,43 @@ def scientific_fingerprint(intent: "MeasurementIntent") -> str:
         intent.window_family,
         intent.target_branch_role,
         intent.rival_branch_role,
-        intent.evidence_basis_fingerprint,
+        *([intent.evidence_basis_fingerprint] if evidence_basis else []),
         intent.hypotheses_fingerprint,
         intent.campaign_slice_fingerprint,
         intent.evidence_sink,
     ])
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def scientific_fingerprint(intent: "MeasurementIntent") -> str:
+    """Stable hash of the *scientific question* an intent resolves — its dedup / anti-repeat id.
+
+    Deliberately excludes anything about the exact emitted request (window step, ncount, feasibility):
+    two intents that ask the same scientific question with different executable realizations share one
+    fingerprint and must not both occupy the inventory.
+    """
+    return hashlib.sha256(
+        _identity_payload(intent, evidence_basis=True).encode("utf-8")).hexdigest()
+
+
+def physical_action_key(intent: "MeasurementIntent") -> str:
+    """Stable hash of the *physical measurement* an intent asks for, INVARIANT to the scene.
+
+    Exactly :func:`scientific_fingerprint`'s inputs minus ``evidence_basis_fingerprint`` — the one
+    field that carries the scene digest (``isar.drive.steering.generators`` stamps the revision the
+    action was derived against). Every other field is a property of the request itself: the action
+    class, the canonical Q, the energy window and its family, the branch roles, the declared
+    hypotheses, the campaign slice, and the evidence sink.
+
+    Why this exists (SCENE-4.3 C6): the scene moves on EVERY delivery — an untrusted arena still
+    enters as a synthetic observation — so re-measuring the same q with the same window mints a NEW
+    scientific fingerprint each pass. Anything counting repeats of one physical action (the
+    broken-scan retry bound, and the retirement filter that enforces it) must key on this instead,
+    or its counter never sees the same key twice and its bound never binds. Scientific identity is
+    still the right key for dedup and for the decision record, because "answered against a
+    different scene" genuinely is a different question; "the detector was dead again" is not.
+    """
+    return hashlib.sha256(
+        _identity_payload(intent, evidence_basis=False).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -108,12 +138,14 @@ class MeasurementIntent:
         return scientific_fingerprint(self)
 
 
-def scientific_fingerprint_from_mapping(payload: Mapping[str, object]) -> str:
-    """Reconstruct and authenticate a persisted :class:`MeasurementIntent`.
+def intent_from_mapping(payload: Mapping[str, object]) -> "MeasurementIntent":
+    """Reconstruct and validate a persisted :class:`MeasurementIntent`.
 
-    Inventory consumers must never hash a convenient subset of an intent map.
-    Rebuilding the value type keeps the persisted action identity subject to the
-    same Q, finite-number, and evidence-sink rules as a live proposal.
+    The one canonical constructor for a persisted intent map. Inventory consumers must never
+    hand-assemble the value type from a convenient subset of the mapping: rebuilding it here keeps
+    the persisted action identity subject to the same Q, finite-number, and evidence-sink rules as
+    a live proposal, and keeps every optional field (``window_center_meV`` among them) from being
+    silently dropped by a caller that forgot to copy it across.
     """
     if not isinstance(payload, Mapping):
         raise ValueError("measurement intent must be a mapping")
@@ -150,7 +182,7 @@ def scientific_fingerprint_from_mapping(payload: Mapping[str, object]) -> str:
             raise ValueError(f"measurement intent {name!r} must be a finite number or null")
         return number
 
-    intent = MeasurementIntent(
+    return MeasurementIntent(
         action_class=required_text("action_class"),
         hkl=canonical_hkl(payload.get("hkl")),
         energy_lo=optional_number("energy_lo"),
@@ -165,13 +197,19 @@ def scientific_fingerprint_from_mapping(payload: Mapping[str, object]) -> str:
         window_center_meV=(optional_number("window_center_meV")
                            if "window_center_meV" in payload else None),
     )
-    return scientific_fingerprint(intent)
+
+
+def scientific_fingerprint_from_mapping(payload: Mapping[str, object]) -> str:
+    """The scientific action fingerprint of a persisted intent map, via :func:`intent_from_mapping`."""
+    return scientific_fingerprint(intent_from_mapping(payload))
 
 
 __all__ = [
     "MeasurementIntent",
     "canonical_hkl",
     "canonical_json",
+    "intent_from_mapping",
+    "physical_action_key",
     "scientific_fingerprint",
     "scientific_fingerprint_from_mapping",
 ]

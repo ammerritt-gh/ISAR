@@ -59,6 +59,7 @@ NO_GENERATORS_OUTCOME = "no_generators"
 # Mirrors isar.drive.steering.readiness.GeneratorRunOutcome.kind's serialized vocabulary.
 _KIND_FAILED = "failed"
 _KIND_CLEAN_ZERO = "clean_zero"
+_KIND_PROPOSALS = "proposals"
 
 _STRUCTURAL_SATURATION = {RejectionClass.STRUCTURAL, RejectionClass.SATURATION}
 
@@ -141,6 +142,23 @@ def _decide_one(context: DiscoveryContext, record, survivors: list,
         if RejectionClass.BUDGET in classes:
             return QuestionExhaustionOutcome(question_id, BUDGET_ONLY)
         if classes and classes <= _STRUCTURAL_SATURATION:
+            # Every action being refused only exhausts the QUESTION when the actions were the
+            # question's admissible space rather than a sample of it (review finding 2026-08-18).
+            # Most generators offer one representative pick, so without this the rule read "the one
+            # heuristic action was refused" as "nothing can answer this" and closed a region that a
+            # point a few hundredths of an rlu away would have surveyed. Only generators that
+            # actually PROPOSED gate here; one that returned a clean zero is governed by
+            # ``exhaustion_clean`` on the branch below, which is the same declaration for the other
+            # outcome shape.
+            sampled = sorted(g for g in required
+                             if outcomes_by_generator[g].kind == _KIND_PROPOSALS
+                             and not outcomes_by_generator[g].proposals_exhaustive)
+            if sampled:
+                return QuestionExhaustionOutcome(
+                    question_id, NOT_EXHAUSTED,
+                    detail=f"generator(s) {sampled} sampled the admissible action space rather "
+                           "than enumerating it, so every action they offered being refused does "
+                           "not prove this question unanswerable; it stays open and blocked")
             match = _matching_evidence(evidence_for_question, context, required,
                                        registry_fingerprint)
             if match is None:

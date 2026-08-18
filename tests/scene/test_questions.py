@@ -181,9 +181,9 @@ def test_an_answered_assessment_carries_its_answer():
 def test_blockers_are_typed_and_unclassified_names_refuse():
     assessment = QuestionAssessment(
         question_id="q", status="open",
-        blockers=(Blocker("bose_dead", "T=4K"), Blocker("quarantined_scan"),
+        blockers=(Blocker("instrument_geometry_infeasible", "triangle cannot close"), Blocker("quarantined_scan"),
                   Blocker("within_candidate_uncertainty_unavailable")))
-    assert [b.name for b in assessment.durable_blockers()] == ["bose_dead"]
+    assert [b.name for b in assessment.durable_blockers()] == ["instrument_geometry_infeasible"]
     with pytest.raises(ValueError, match="unclassified blocker"):
         Blocker("something_new")
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -14,7 +15,43 @@ from isar.session.timing import StageTimer
 from isar.session.workspace import Workspace
 
 
+log = logging.getLogger(__name__)
+
 _REPORT_STATUS = "report.complete.json"
+
+
+def _build_scene(ws, summary) -> None:
+    """Build and publish this workspace's scene revision. NEVER raises (SCENE-4.3 D1).
+
+    Fail-soft is the composition's contract, inherited unchanged from the deleted driver hook:
+    `isar run` delivers ANALYSIS, and a scene that cannot be built is a missing explanation, not a
+    failed delivery — the fits, results.csv and session.json are already written and unaffected.
+    The operator-visible surface is unchanged too: the same `scene revision …` context line the
+    hook appended, printed by `run` below. The two callers that DO need a refusal ask for one by
+    name: `isar report --scene` exits nonzero, and the campaign parent classifies its own failure
+    as a controller fault rather than steering from an older scene.
+
+    Runs on every delivery, including one that fitted nothing: the store's content-addressed
+    unchanged path makes a rebuild of an unchanged workspace free and leaves the pointer where it
+    was.
+    """
+    try:
+        from isar.session import scene_hook
+        result = scene_hook.build_and_store(ws.root)
+    except ValueError as exc:
+        # The adapter's own refusals (no candidates column, an unqualified master, a row predating
+        # the delivery contract) and a corrupt scene pointer. Expected, and a workspace that
+        # refuses once refuses on EVERY delivery — a traceback per scan would bury the log for a
+        # condition whose message already says what to do.
+        log.warning("scene revision skipped for %s: %s", ws.root, exc)
+        summary.context_lines.append(f"scene revision skipped: {exc}")
+        return
+    except Exception as exc:  # noqa: BLE001 — see the docstring: a scene never fails a delivery
+        log.exception("scene revision skipped for %s", ws.root)
+        summary.context_lines.append(f"scene revision skipped: {exc}")
+        return
+    summary.context_lines.append(f"scene revision {result.digest[:12]}"
+                                 + (" (unchanged)" if result.unchanged else ""))
 
 
 def _atomic_write_text(path, text: str) -> None:
@@ -123,6 +160,21 @@ def run(args) -> int:
             **role_kwargs)
         analysis_incomplete = bool(getattr(summary, "analysis_incomplete", False))
         analysis_revision = _results_revision(ws.report_dir)
+
+        # SCENE-4.3 D1: `isar run` is an explicit COMPOSITION — the analysis above, then the ONE
+        # canonical scene build. It used to run inside `driver.run_batch`; owning it here keeps
+        # the analysis child analysis-only while preserving the behaviour every `isar run`
+        # frontend already had (the GUI shells this command and has no scene call site of its
+        # own). `--no-scene` is the campaign runners' opt-out, not a second build semantics: the
+        # campaign parent invokes the same `build_and_store` itself and pins the digest.
+        # Placed immediately after run_batch, where the hook used to sit — after results.csv and
+        # card.state are on disk, before the human report — so the scene sees the delivery that
+        # just landed. An INCOMPLETE analysis builds no scene, exactly like the old hook (it sat
+        # after the writes AnalysisWorkIncomplete aborts): a revision built here would describe
+        # the previous ledger while the run reports incomplete.
+        if getattr(args, "scene", True) and not analysis_incomplete:
+            with timer.stage("scene_observe"):
+                _build_scene(ws, summary)
 
         # Try the rich report (build step 6); the CSV that run_batch always writes is the fallback.
         report_note = f"results: {ws.report_dir / 'results.csv'}"

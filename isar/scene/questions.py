@@ -65,9 +65,13 @@ BLOCKER_CLASSES = (BLOCKER_DURABLE, BLOCKER_TRANSIENT, BLOCKER_AUTHORITY)
 # durable. The mapping is the contract; an unlisted name refuses (a blocker nobody classified
 # must not silently count toward — or be excluded from — unresolvable closure).
 BLOCKER_CLASS_BY_NAME = {
-    # durable: physics or hard declarations forbid the discriminating measurement
-    "resolution_floor": BLOCKER_DURABLE,
-    "bose_dead": BLOCKER_DURABLE,
+    # durable: the machine literally cannot perform the measurement, or it lies outside the
+    # assigned search region. Exactly two, by owner ruling (2026-08-18, SCENE-4.3 D5) —
+    # ``resolution_floor`` and ``bose_dead`` were deleted (H1, no compat): both are EIG
+    # worthwhileness pricing ("not worth measuring here"), never "cannot". Constructing
+    # ``Blocker("bose_dead")`` now refuses as unclassified, which is the intended outcome:
+    # nothing may construct one. The ``bose_dead`` DETECTABILITY reason in ``isar.scene.model``
+    # / ``isar.scene.factors`` is a different vocabulary and is unaffected.
     "instrument_geometry_infeasible": BLOCKER_DURABLE,
     "program_boundary": BLOCKER_DURABLE,
     # transient: retry or another action can clear it
@@ -521,6 +525,43 @@ def scene_partitions(scene_payload: dict) -> tuple[str, ...]:
     (topology underivable) are excluded — nothing can be scoped to them."""
     ids = {fp.get("partition_id") for fp in scene_payload.get("footprints") or ()}
     return tuple(sorted(i for i in ids if i is not None))
+
+
+def step_observed(scene_payload: dict, step_id: str | None,
+                  path_fingerprint: str | None = None) -> bool:
+    """Whether step ``step_id`` landed a TRUSTED observation ON ITS OWN PATH here.
+
+    The cold-start retirement test (SCENE-4 PR 4.3, D4; owner ruling 2026-08-18): a declared
+    partition is initialization only, and it retires the moment ITS OWN step has produced a
+    trusted observation — whatever partition that measurement landed in. Keyed on the declaring
+    step, not on "any observation anywhere", because a warm workspace whose other steps have
+    measured says nothing about where this step's first scan will land. A ``None`` step id matches
+    nothing: a declaration that cannot name its step can never be retired by evidence, so it must
+    not be treated as retired.
+
+    Only ``count_trust == "trusted"`` observations count. A broken scan is not "taking a
+    measurement" in the initialization sense the ruling names — it carries no footprint, tells the
+    question layer nothing about where the step's scans land, and retiring the declaration on one
+    would strand the campaign with neither declared nor observed knowledge at exactly the moment
+    it has none. The declaration stays live until a trusted own-step observation lands.
+
+    ``path_fingerprint`` is the LINEAGE half of the identity (review finding 2026-08-18; amends
+    H20(d)). A step id alone is not unique across programs — ``discover-1`` is the id nearly every
+    authored program uses — so a trusted observation belonging to an OLDER program that reused the
+    id retired a fresh declaration before its first measurement, blanking the declared knowledge
+    at exactly the moment it was the only knowledge there was. The physical path is the right
+    second component: it is already on the record, it distinguishes unrelated authored programs
+    measuring different trajectories, and it SURVIVES a consultation recompile (which mints a new
+    ``program_fingerprint`` while measuring the same path), so it can never retire a declaration
+    for an administrative reason. ``None`` matches on the step id alone — the pre-amendment
+    behaviour, kept only for a caller that genuinely has no path to compare.
+    """
+    if step_id is None:
+        return False
+    return any(obs.get("program_step") == step_id and obs.get("count_trust") == "trusted"
+               and (path_fingerprint is None
+                    or obs.get("path_fingerprint") == path_fingerprint)
+               for obs in scene_payload.get("observations") or ())
 
 
 def _band_overlaps(fp: dict, band: tuple[float, float]) -> bool:

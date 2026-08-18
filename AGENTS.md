@@ -125,7 +125,7 @@ area.
 | The autonomous driver (`isar drive`) | `docs/MEASUREMENT_STEERING.md` |
 | Same-action scan-window EIG (candidate generation and exact realized scoring Partial; authoritative selection Partial — symmetric per-neutron comparison, O43; O42 release review retired by H1; default-on is a SCENE-4 deliverable, world-suite coverage of the selection path its acceptance evidence) | `docs/EIG_STEERING_DESIGN.md`, then `docs/MEASUREMENT_STEERING.md` |
 | Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
-| The SCENE program (scene layer, catalogue, target-free discovery; SCENE-0..3 Implemented — H1 constitution + world suite, catalogue/evidence-selection/constrained variants, program contract, scene scoring + factors + revision store + `workspace_api` read surface (DECISIONS H1–H14); SCENE-4.0–4.2 Implemented offline — question layer, discovery generators, offline planner, `ws.agenda` (H15–H19); SCENE-4.3+ (driver wiring, production durable blockers) Planned) | `docs/SCENE_DESIGN.md` |
+| The SCENE program (scene layer, catalogue, target-free discovery; SCENE-0..3 Implemented — H1 constitution + world suite, catalogue/evidence-selection/constrained variants, program contract, scene scoring + factors + revision store + `workspace_api` read surface (DECISIONS H1–H14); SCENE-4.0–4.2 Implemented offline — question layer, discovery generators, offline planner, `ws.agenda` (H15–H19); SCENE-4.3 Implemented live (H20) — `isar drive` runs a `discover_and_map` step through the `run_program` seam: parent-owned scene build in a supervised `isar scene-build` subprocess with digest-pinned planning, cold-start partition from declarations, broken-scan lane, geometry durable blockers, consultation channel + `isar answer`; SCENE-4.4+ (authority flip, stop-point audit, shadow deletion) Planned) | `docs/SCENE_DESIGN.md` |
 | Campaign diagnostic report | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |
 | Why a decision was made | `docs/DECISIONS.md` (IDs P*/D*/V/R/S/O/T/W/H are stable, safe to cite) |
 | What happened in a run (historical, never load-bearing) | `docs/campaigns/` |
@@ -145,7 +145,10 @@ and `analyze/structures.py` holds only the generic `Hypothesis` recipe) · `sess
 orders the stages; `outcome.py` owns the FitOutcome persistence DTO and `results.csv`,
 `scan_delivery.py` the per-scan fits, `master_delivery.py` the pooled masters and certification,
 `evidence_update.py` the cross-q evidence and branch identity) · `cli` · `drive` (`loop.py`
-orchestrates the campaign; TAVI wire details live in `drive/instrument/request_realization.py` and
+orchestrates the targeted campaign and `program_runner.py` the discovery step — `run_program` is
+the one seam that runs a `discover_and_map` step end to end, and the consultation channel
+(`drive/consultation.py`) and cold-start producer (`drive/steering/cold_start.py`) hang off it;
+TAVI wire details live in `drive/instrument/request_realization.py` and
 EIG runtime adaptation in `drive/acquisition/eig_runtime.py`; `loop.<CONST>` re-imports are
 deliberate, production reads them) ·
 `report` · `synth` (Phase-1 synthetic core) / `synth_format` (synthetic-run tooling) ·
@@ -155,7 +158,9 @@ facade) ·
 files). The Stage II ↔ III boundary is a **frozen file contract**
 (`report/results.csv`, `report/measurements.jsonl` — the counts-authoritative
 `isar.measurement-arena/1` log, one line per measured arena written before any fit is trusted to
-exist, `<workspace>/report/report.json`, `card.state.json`) — the driver never imports fit internals.
+exist, `<workspace>/report/report.json`, `card.state.json`) — the driver never imports fit
+internals, and the campaign's per-delivery scene build goes through the supervised
+`isar scene-build` subprocess for that reason, not through an import.
 The one pre-release v1→v2 clean break was authorized on 2026-07-17 (DECISIONS O12). During the
 SCENE transition, H1 supersedes the additive-only rule for contracts SCENE rebuilds:
 `isar.campaign-program/1` replaces the objective envelope outright with no compatibility reader,

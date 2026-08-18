@@ -199,6 +199,41 @@ STALE_PHRASES = (
         "unclassified existence, full-partition span, and fully-classified suppression "
         "(docs/SCENE_DESIGN.md §5)",
     ),
+    # SCENE-4.3 (H20). Three claim forms this PR falsified. Narrow forms only, for the usual
+    # reason: H20's own words ("H14(d)'s observe-only driver hook", "`resolution_floor` and
+    # `bose_dead` are DELETED") narrate what was retired and must stay legal in the ledger.
+    (
+        "calls it observe-only after",
+        "H20(a) superseded H14(d)'s observe-only driver hook: the analysis child builds no scene "
+        "at all, and the campaign parent invokes the one canonical build per delivery through the "
+        "supervised `isar scene-build` subprocess (docs/SCENE_DESIGN.md §6)",
+    ),
+    (
+        "(resolution floor, bose_dead, instrument geometry",
+        "H20(c) shrank the durable-blocker vocabulary to {instrument_geometry_infeasible, "
+        "program_boundary}; resolution_floor and bose_dead were deleted from both pinned "
+        "vocabularies — they are EIG worthwhileness questions (SCENE-5), never blockers. The "
+        "bose_dead DETECTABILITY reason in the scene scorer is different vocabulary and survives",
+    ),
+    (
+        "Still absent: the consultation channel",
+        "the consultation channel and the production durable-blocker producer both landed in "
+        "SCENE-4.3 (C7/C8, H20(c)/(f)); MEASUREMENT_STEERING.md §7.2b's gap list described the "
+        "state at C5",
+    ),
+    # SCENE-4.3 C10 (H20(e) amendment). Two claim forms the counting ruling falsified; narrow so
+    # H20(e)'s own supersession narration stays legal.
+    (
+        "counting currency is the named open item",
+        "RULED 2026-08-18 (H20(e) amended in place): discovery exposure is 10^8 monitor neutrons "
+        "via the frozen discovery_monitor_ncount threshold, declared directly in the wire's own "
+        "currency — nothing left to convert",
+    ),
+    (
+        "30 s intent is recorded verbatim in the proposal meta",
+        "the 30 s/point intent and its proposal-meta stamp were superseded and deleted by the "
+        "direct 10^8-neutron declaration (H20(e), C10) — no vestige remains",
+    ),
 )
 
 

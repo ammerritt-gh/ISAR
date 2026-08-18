@@ -67,6 +67,17 @@ OLD_COLUMNS = [
 ]
 
 
+#: The synthetic card plus the ONE declaration a discovery step needs and a targeted campaign does
+#: not: the ``[sample]`` name. Cold start mints its partition before any scan exists, so it cannot
+#: use ``_sample_of``'s ``record.experiment_id`` fallback and refuses a card that omits the name
+#: (``isar.drive.program_runner._declared_sample``). ``[temperature_rule] setpoint`` is already in
+#: the base card; a card naming only ``setpoint_field`` refuses for the same reason.
+DISCOVERY_POLICY_TOML = _POLICY_TOML + """
+[sample]
+name = "tavi"
+"""
+
+
 def write_policy(root: Path, toml_text: str = _POLICY_TOML) -> None:
     (root / "card.policy.toml").write_text(toml_text, encoding="utf-8")
 

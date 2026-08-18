@@ -9,6 +9,7 @@ happened to be built in — while candidate order IS content, and is pinned as s
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import json
 
 import pytest
@@ -16,7 +17,7 @@ import pytest
 from isar.scene.model import (
     COUNT_TRUST_STATES, TOPOLOGY_ROLES, CandidateRow, ComponentDescriptor, ConditionSet, Footprint,
     FootprintBand, ModeInterval, SceneObservation, Visibility, canonical_bytes, covers, fingerprint,
-    footprint_of, observation_fingerprint, visibility_of,
+    footprint_of, observation_fingerprint, partition_key, path_geometry_fingerprint, visibility_of,
 )
 
 
@@ -378,3 +379,99 @@ def test_an_unresolved_set_still_carries_its_other_dimensions():
     cs = ConditionSet.of((("temperature_K", 300.0), ("field_T", 1.0)), t_round=None)
     assert cs.resolved is False
     assert cs.other == (("field_T", 1.0),)
+
+
+# ----------------------------------------------------------------------------
+# path_geometry_fingerprint (SCENE-4 PR 4.3, D3): PHYSICAL path identity
+# ----------------------------------------------------------------------------
+def test_path_identity_is_unordered_because_direction_is_not_identity():
+    """a→b and b→a are the same physical trajectory, so a step declaring either must land its
+    arenas on the same partition (D3's reversed-declaration continuity rule)."""
+    assert (path_geometry_fingerprint((2.0, 2.0, 0.0), (2.0, 0.0, 0.0))
+            == path_geometry_fingerprint((2.0, 0.0, 0.0), (2.0, 2.0, 0.0)))
+
+
+def test_path_identity_rounds_at_the_frozen_programs_ninth_decimal():
+    """Same 9-decimal rule ``_q_triple`` already applied when the program was frozen: noise below
+    it must not mint a new path, and a difference above it must."""
+    base = path_geometry_fingerprint((2.0, 2.0, 0.0), (2.0, 0.0, 0.0))
+    assert path_geometry_fingerprint((2.0 + 1e-10, 2.0, 0.0), (2.0, 0.0, 0.0)) == base
+    assert path_geometry_fingerprint((2.0 + 1e-8, 2.0, 0.0), (2.0, 0.0, 0.0)) != base
+
+
+def test_path_identity_is_deterministic_and_distinguishes_different_paths():
+    a = path_geometry_fingerprint([2.0, 2.0, 0.0], [2.0, 0.0, 0.0])
+    assert a == path_geometry_fingerprint((2.0, 2.0, 0.0), (2.0, 0.0, 0.0))   # list vs tuple
+    assert a != path_geometry_fingerprint((2.0, 2.0, 0.0), (2.0, 1.0, 0.0))
+    assert len(a) == 64
+
+
+def test_a_malformed_endpoint_refuses_rather_than_fingerprinting_nonsense():
+    for bad in ((2.0, 2.0), (2.0, 2.0, float("nan")), "abc"):
+        with pytest.raises(ValueError):
+            path_geometry_fingerprint(bad, (2.0, 0.0, 0.0))
+
+
+def test_signed_zero_never_splits_a_gamma_anchored_path():
+    """round(-1e-10, 9) is -0.0 and json serializes it as "-0.0" != "0.0"; Γ = (0,0,0) anchors are
+    the COMMON case, so noise straddling zero (or a -0.0 from any negation) must not mint a second
+    identity for the same physical path (C1 review finding 1)."""
+    base = path_geometry_fingerprint((0.0, 0.0, 0.0), (2.0, 0.0, 0.0))
+    assert path_geometry_fingerprint((-1e-10, 0.0, 0.0), (2.0, 0.0, 0.0)) == base
+    assert path_geometry_fingerprint((-0.0, -0.0, -0.0), (2.0, -0.0, 0.0)) == base
+
+
+# ----------------------------------------------------------------------------
+# partition_key's path component (SCENE-4 PR 4.3, D3): a partition is
+# (sample, conditions, lattice frame, PHYSICAL trajectory)
+# ----------------------------------------------------------------------------
+def _key(**over):
+    base = dict(sample="LiHoF4", conditions=(("temperature_K", 300.0),), lattice_epoch=1,
+                scan_ref="exp:1:d", t_round=1.0, topology_role="canonical_path",
+                path_fingerprint=path_geometry_fingerprint((2.0, 2.0, 0.0), (2.0, 0.0, 0.0)))
+    f = {**base, **over}
+    return partition_key(f["sample"], f["conditions"], f["lattice_epoch"], f["scan_ref"],
+                         f["t_round"], f["topology_role"], f["path_fingerprint"])
+
+
+def test_a_recompiled_program_leaves_arenas_on_the_same_partition():
+    """D6 makes recompilation ROUTINE — every policy-changing consultation answer mints a fresh
+    ``program_fingerprint``. If program identity were a key component, each answer would sever
+    lnZ normalization, coverage and completeness mid-campaign for a change that alters no
+    physics. The path is what identifies the partition, so the two keys must be equal."""
+    assert _key(scan_ref="exp:1:d") == _key(scan_ref="exp:2:d")
+    # And the fields that DID change are provenance on the observation, not key components:
+    obs = _obs(program_fingerprint="a" * 64, program_step="step-1")
+    later = _obs(program_fingerprint="b" * 64, program_step="step-2")
+    assert obs.program_fingerprint != later.program_fingerprint
+    assert obs.fingerprint != later.fingerprint          # provenance IS observation content
+    # Continuity is enforced by the SIGNATURE, not by a value comparison: comparing two keys
+    # computed from arguments that never mention program identity is tautological. What must hold
+    # is that partition_key cannot see program identity at all.
+    names = inspect.signature(partition_key).parameters
+    assert "program_fingerprint" not in names and "program_step" not in names
+
+
+def test_a_reversed_declaration_of_the_same_path_shares_the_partition():
+    """A step declaring a→b and one declaring b→a measure the same physical trajectory (D3)."""
+    forward = _key(path_fingerprint=path_geometry_fingerprint((2.0, 2.0, 0.0), (2.0, 0.0, 0.0)))
+    reverse = _key(path_fingerprint=path_geometry_fingerprint((2.0, 0.0, 0.0), (2.0, 2.0, 0.0)))
+    assert forward == reverse
+
+
+def test_two_different_declared_paths_never_share_a_partition():
+    """Same sample, conditions and lattice epoch — different physical trajectory. Without the
+    path component these two would pool, and one path's arenas would normalize against the
+    other's."""
+    other = path_geometry_fingerprint((3.0, 0.0, 0.0), (3.0, 3.0, 0.0))
+    assert _key() != _key(path_fingerprint=other)
+
+
+def test_a_context_probe_keeps_the_none_component_even_carrying_a_path_fingerprint():
+    """``topology_role`` decides membership, not the presence of a fingerprint: a driver-initiated
+    diagnostic must never join the canonical path's partition, or an off-path probe would enter
+    that path's normalization and coverage."""
+    probe = _key(topology_role="context_probe")
+    assert probe[3] is None
+    assert probe != _key()                                     # never the canonical partition
+    assert probe == _key(topology_role=None, path_fingerprint=None)   # the provenance-less lane

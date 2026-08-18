@@ -49,6 +49,9 @@
             "parameter_default_tolerance_meV": 0.5,
             "requested_zc_confidence": 0.9,
             "parameter_precision_min_mass": 0.9,
+            "broken_scan_retry_limit": 2.0,
+            "prompt_timeout_deliveries": 10.0,
+            "discovery_monitor_ncount": 100000000.0,
             "emergent_omega_tile_meV": 1.0,
             "parameter_statistical_floor_meV": 0.2,
             "maximum_justifiable_zc_confidence": 0.0,
@@ -103,6 +106,18 @@
               "authority": "target"
             },
             "parameter_precision_min_mass": {
+              "source": "default",
+              "authority": "target"
+            },
+            "broken_scan_retry_limit": {
+              "source": "default",
+              "authority": "target"
+            },
+            "prompt_timeout_deliveries": {
+              "source": "default",
+              "authority": "target"
+            },
+            "discovery_monitor_ncount": {
               "source": "default",
               "authority": "target"
             },

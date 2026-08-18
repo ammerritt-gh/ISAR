@@ -96,7 +96,19 @@ class ConcurrentRevisionWrite(ValueError):
     A ``ValueError`` subclass on purpose: every existing caller already handles ``ValueError``
     from this module (the driver hook logs and skips, ``isar report --scene`` exits 3), so a
     losing writer degrades to the same visible skip rather than an unhandled traceback.
+
+    ``digest`` is the revision this writer BUILT, and it is already durable on disk: the blob is
+    content-addressed and written before the CAS check (see :meth:`RevisionStore.write_revision`).
+    Carried as an attribute rather than only in the message so the campaign parent (SCENE-4.3 D1)
+    can pin what it computed and proceed — losing the pointer flip to a read-only publisher costs
+    it nothing, and scraping a digest back out of prose would be a second, fragile contract.
+    ``parent`` is the digest the pointer had actually moved to.
     """
+
+    def __init__(self, message: str, *, digest: str | None = None, parent: str | None = None):
+        super().__init__(message)
+        self.digest = digest
+        self.parent = parent
 
 
 class StaleSceneAtPublication(ValueError):
@@ -489,7 +501,8 @@ class RevisionStore:
                 raise ConcurrentRevisionWrite(
                     f"{self.artifact_label} pointer moved to {parent} since this writer "
                     f"snapshotted at {expected_parent}; refusing to publish {revision.digest} "
-                    f"over it. The blob is written and addressable at {target}.")
+                    f"over it. The blob is written and addressable at {target}.",
+                    digest=revision.digest, parent=parent)
             written_at = datetime.now(timezone.utc).isoformat()
             pointer = {"schema": self.pointer_schema, "digest": revision.digest,
                       "parent": parent, "written_at": written_at}
@@ -513,10 +526,33 @@ class RevisionStore:
         if pointer is None:
             return None
 
-        blob_path = root / f"{pointer['digest']}.json"
-        if not blob_path.is_file():
+        return pointer, self._read_blob(root, pointer["digest"], via="pointer names missing")
+
+    def read_revision(self, report_dir: Path, digest: str) -> dict:
+        """The payload stored at CONTENT ADDRESS ``digest``. The pointer is never consulted.
+
+        The by-digest read a pinned reader needs (SCENE-4.3 D1): the campaign parent builds one
+        scene per delivery, keeps the digest that build returned, and steers from THAT revision —
+        so a concurrent `isar report --scene` publish moving ``current.json`` is a non-event
+        instead of a race. It also makes live and replay one representation by construction: this
+        returns the same deserialized canonical payload every offline test already consumes.
+
+        LOUD on anything it cannot vouch for — a malformed digest, a missing blob, unparseable
+        JSON, or bytes that do not hash to the name they are stored under all raise ``ValueError``
+        naming the path. A pinned digest that will not load is store corruption; the caller
+        classifies that as a machine failure, and silently falling back to the pointer (an older
+        scene) is exactly the stale-steering this accessor exists to prevent.
+        """
+        if not _is_digest(digest):
             raise ValueError(
-                f"{self.artifact_label} pointer names missing revision {blob_path}")
+                f"{self.artifact_label} revision address {digest!r} is not a sha256 hexdigest")
+        return self._read_blob(self._root(report_dir), digest, via="store holds no pinned")
+
+    def _read_blob(self, root: Path, digest: str, *, via: str) -> dict:
+        """Load and authenticate one content-addressed blob. Shared by both read paths."""
+        blob_path = root / f"{digest}.json"
+        if not blob_path.is_file():
+            raise ValueError(f"{self.artifact_label} {via} revision {blob_path}")
         try:
             payload = json.loads(blob_path.read_bytes().decode("utf-8"))  # strict: no Inf/NaN
         except (ValueError, UnicodeDecodeError) as error:
@@ -528,10 +564,10 @@ class RevisionStore:
         # re-indented or differently-ordered file that still means the same thing is accepted.
         # What this therefore does NOT assert is that the bytes on disk are themselves canonical.
         actual = digest_bytes(canonical_bytes(payload))
-        if actual != pointer["digest"]:
+        if actual != digest:
             raise ValueError(f"{self.artifact_label} revision {blob_path} does not match its "
                              f"digest (recomputed {actual})")
-        return pointer, payload
+        return payload
 
 
 SCENE_STORE = RevisionStore("scene", POINTER_SCHEMA, "scene")
@@ -565,3 +601,8 @@ def write_revision(report_dir: Path, revision, *,
 def read_current(report_dir: Path) -> tuple[dict, dict] | None:
     """See :meth:`RevisionStore.read_current`."""
     return SCENE_STORE.read_current(report_dir)
+
+
+def read_revision(report_dir: Path, digest: str) -> dict:
+    """See :meth:`RevisionStore.read_revision`."""
+    return SCENE_STORE.read_revision(report_dir, digest)

@@ -62,6 +62,17 @@ Load-bearing rules, each naming the failure it prevents:
   Ω_d window-edge, Γ-ceiling, and unknown-pin fits all still escalate. Evidence comparisons
   require an identical data+mask arena (arena hash asserted) — the Baker–Cousins
   saturated-model constant only cancels on same-masked data.
+- **A partition is FOUR components, and the fourth is PHYSICAL** (SCENE-4.3, H20(b)):
+  `partition_key()` = (sample, `ConditionSet`, lattice-epoch frame token, path). The path
+  component is the arena's `path_fingerprint` — `path_geometry_fingerprint(q_start, q_end)`, the
+  UNORDERED endpoint pair on the program's own 9-decimal rounding, so a→b and b→a are one physical
+  path — and it is carried only for `canonical_path` arenas; a `context_probe` or a
+  provenance-less arena keeps a `None` component and falls to the geometric `path_topology`
+  fallback exactly as before. Program identity is deliberately NOT partition identity: a
+  consultation answer recompiles the program routinely (D6), and keying on
+  `program_fingerprint`/step id would strand every post-answer arena in a fresh partition,
+  severing lnZ normalization, coverage and completeness continuity for a policy change that alters
+  no physics. `program_fingerprint`/`program_step` stay PROVENANCE on the record.
 - **No shadow ceremony (H1).** Scene-EIG is authoritative from birth, validated by the world
   suite as ordinary pytest; the deterministic question scheduler is the permanent fallback when
   scoring is unavailable.
@@ -296,7 +307,7 @@ emits otherwise fails the build rather than publishing an impossible reading.
 | SCENE-1 | Catalogue, identity-conditional Laplace evidence, global grammar (bg-only + elastic+bg first-class, `elastic_only` verdict), observation footprints, persisted candidate rows — three sequential PRs | Implemented — PR-a (H3, 2026-08-08; merged `fd1aa76`), PR-b (H4, 2026-08-08; merged `e02350a`), PR-c (H9/H10, 2026-08-09; merged `c5adf15`); deferrals recorded in H9(e) |
 | SCENE-2 | `isar.campaign-program/1` sole contract; old envelope unreadable by design | Implemented (H2, 2026-08-08; PR #12 merged at `058fb40`) |
 | SCENE-3 | Scene layer core: clusters, structural factors, revisioned scene store, workspace_api read surface; tracker contracts ported as specifications | Implemented — PR 3a (H11/H12), 3b (H13), 3c (H14), all 2026-08-10, incl. the PR #19 response waves; final merge `a1c6e41` |
-| SCENE-4 | Question layer, deterministic opening book, generalized stop; first challenge run; scan-window authoritative default-on; shadow machinery deleted | In progress — PR 4.0 "scene authority readiness" Implemented (H15/H16, 2026-08-13; PR #30 merged): measurement-arena record + trust lanes, #21 Variant A origin lanes, (sample, ConditionSet, lattice-epoch) partitioning, refiner bounds + transformation ablation, expected_two relaxation. PR 4.1 "question + agenda core" Implemented (H17, 2026-08-14): three-object question layer, authority-aware predicates, `isar.question-policy/1` + fully frozen `discover_and_map/2`, content-addressed agenda snapshots with external transition history, `AgendaVerdict` beside `evaluate_stop` — offline (driver wiring 4.3, generator bindings 4.2). PRs 4.2–4.4 per `docs/SCENE4_EXECUTION_PLAN.md` |
+| SCENE-4 | Question layer, deterministic opening book, generalized stop; first challenge run; scan-window authoritative default-on; shadow machinery deleted | In progress — PR 4.0 "scene authority readiness" Implemented (H15/H16, 2026-08-13; PR #30 merged): measurement-arena record + trust lanes, #21 Variant A origin lanes, (sample, ConditionSet, lattice-epoch) partitioning, refiner bounds + transformation ablation, expected_two relaxation. PR 4.1 "question + agenda core" Implemented (H17, 2026-08-14): three-object question layer, authority-aware predicates, `isar.question-policy/1` + fully frozen `discover_and_map/2`, content-addressed agenda snapshots with external transition history, `AgendaVerdict` beside `evaluate_stop` — offline (driver wiring 4.3, generator bindings 4.2). PR 4.2a "interval re-baseline + question-policy/2" Implemented (H18, 2026-08-14): per-candidate interval closure, producer-soundness interval authority, class-agnostic ConnectTrack. PR 4.2b "discovery generator layer + offline planner" Implemented (H19, 2026-08-15): seven question-bound generators, readiness gating, the exhaustion producer, `plan_next_action`'s five outcomes, the `report/inventory/discovery/` + `report/program/` + `report/decisions.jsonl` stores — offline. PR 4.3 "live driver integration" Implemented (H20, 2026-08-18): parent-owned scene build in a supervised `isar scene-build` subprocess with digest-pinned planning, the `run_program` seam and AgendaVerdict stop routing, campaign provenance + physical path identity in the partition key, the cold-start partition producer, the broken-scan lane, production durable-blocker emission over the two-member taxonomy, and the consultation channel with `isar answer`. PR 4.4 (authority flip, stop-point audit, shadow deletion) Planned per `docs/SCENE4_EXECUTION_PLAN.md` |
 | SCENE-5 | Scene-EIG authoritative from birth | Planned |
 | SCENE-6 | Single-engine swap: targeted campaigns as pinned question sets over scenes; tracker deleted; `campaign-program/2` question-native targeted payload | Planned |
 | SCENE-7 | Calibration batteries + efficiency benchmark; program closeout | Planned |
@@ -345,10 +356,29 @@ leader `p*`, and `log_q = log_discarded_mass_bound + log(p*)`, the true mass lie
 `[m/(1+q), (m+q)/(1+q)]`; a huge finite bound goes honestly vacuous `[0, 1]`, and a vacuous
 interval answers nothing (`bound_vacuous_for_threshold`, question stays open). Cross-cluster
 claims multiply as independent factors (existential `1 − ∏(1−mᵢ)`, universal `∏mᵢ`) within one
-partition. Blockers are typed — `durable` (resolution floor, bose_dead, instrument geometry,
-program boundary) / `transient` (quarantine, transient failures) / `model_authority` (missing
-hypotheses or persisted uncertainties) — and only a durable blocker can feed unresolvable
-closure.
+partition. Blockers are typed — `durable` / `transient` (quarantine, transient failures) /
+`model_authority` (missing hypotheses or persisted uncertainties) — and only a durable blocker can
+feed unresolvable closure.
+
+**The durable vocabulary has exactly TWO members** (owner ruling 2026-08-18, SCENE-4.3 C7, H20(c);
+`DURABLE_BLOCKER_NAMES` in `isar/schema/generators.py` and `BLOCKER_CLASS_BY_NAME` in
+`isar/scene/questions.py`, pinned equal by test): `instrument_geometry_infeasible` — the machine
+literally cannot perform the measurement — and `program_boundary` — the measurement lies outside
+the assigned search region, by user or machine limits. `resolution_floor` and `bose_dead` were
+DELETED from both vocabularies (H1: no compat shim; constructing one now refuses as unclassified).
+Neither was ever a "cannot": there is no Bose dead — anti-Stokes just gets weaker, a matter of
+degree — and both belong to EIG worthwhileness pricing (SCENE-5), where a threshold says "not
+worth measuring here", never "impossible". A campaign that genuinely needs a weak anti-Stokes side
+simply counts until it has it. This extends the 2026-08-15 no-hard-rules-for-phenomena ruling into
+the blocker vocabulary. The `bose_dead` DETECTABILITY reason in the scene scorer (§2b, the
+`AS_DETECT_WEIGHT` gate) is a DIFFERENT vocabulary — declared-knowledge physics demoting an
+absence's informativeness — and survives untouched, guarded by its own test.
+
+Production emission is 4.3's (C7, D5): `instrument_geometry_infeasible` only, minted from
+instrument declines the canonical `classify_rejection` scope calls geometry (never substring
+matching — `infeasible_points_at_submit` is a bad grid at a REACHABLE q and takes the non-durable
+arm), attributed through the persisted selection associations and stamped with the declining
+decision's own digest triple. `program_boundary` remains valid with NO producer in this slice.
 
 The family contract matrix (v1; openers are declared and deterministic, generator IDs are now
 BOUND — PR 4.2b, `isar/drive/steering/generators.py` — construction detail follows the table):
@@ -406,8 +436,9 @@ while its peers and every sibling question keep running. The exhaustion producer
 (`isar/drive/steering/exhaustion.py`) proves a question exhausted only when every REQUIRED
 generator's outcome supports it: an eligible surviving evaluation anywhere — even one deduped
 ONTO the survivor — marks `not_exhausted`; a durable structural/saturation rejection needs a
-MATCHING typed `QuestionBlockerEvidence` (production emission is 4.3; only synthetic tests
-construct one this PR); clean zero across every required generator, all exhaustion-clean,
+MATCHING typed `QuestionBlockerEvidence` (production emission landed in SCENE-4.3 C7 — the
+driver mints one per served question from a geometry decline; before that only synthetic tests
+constructed one); clean zero across every required generator, all exhaustion-clean,
 proves it; a required generator FAILED or missing from the run record is a `controller_fault`,
 never a silently-emitted proof. "Proves it" means the PRODUCER emits a `QuestionExhaustion`
 proof — closing the question is a SEPARATE gate `apply_exhaustion` owns (PR #33 A-P0-2/A-P0-3):
@@ -431,7 +462,7 @@ partial agenda fails closed — then returns `complete` / `in_progress` /
 `incomplete_over_budget` with NO beam directive (completion ≠ beam-idle): completion requires
 every spec closed and VerifyCompleteness answering yes; a missing completeness question is a
 derivation defect; unresolvable closures never block completion and surface as consultation
-requests (the channel lands in 4.3). **Completion is reachable**: a fully surveyed blank
+requests (the channel landed in SCENE-4.3 C8 — see §6). **Completion is reachable**: a fully surveyed blank
 campaign closes every question it opens (presence answers honest NOs, nothing chains, no
 mismatch question is derived without a competitor) and reaches `complete` — asserted by test.
 Phenomenon-bearing completion is reachable too: EstimateParameter's interval re-baseline landed
@@ -536,11 +567,64 @@ amplitudes, which is fitting. Every entry carries `cluster_authority` (`exact` /
 marker weights are conditional masses over the retained set, flagged
 `conditional_on_retained_set`, never projected as ordinary posteriors.
 
-A scene is built by one function, `isar.session.scene_hook.build_and_store` (H14(d)): the driver
-calls it observe-only after `workspace.save`, timed as the `scene_observe` stage and never able to
-fail a delivery, and `isar report --scene` calls it offline, where a refusal is visible and exits
-3. `catalogue_version` is stamped from the catalogue's `DEFAULT_PROFILE` until a per-fit profile is
-persisted.
+A scene is built by one function, `isar.session.scene_hook.build_and_store` (H14(d)), reached
+through three frontends and no second semantics (SCENE-4.3 C4/C5, H20(a), superseding H14(d)'s
+observe-only driver hook): `isar report --scene` calls it offline, where a refusal is visible and
+exits 3; `isar run` is an explicit COMPOSITION of the analysis and that one build (`--no-scene`
+opts out, which is what the campaign runners pass); and `isar scene-build --workspace DIR` is the
+machine frontend the campaign parent supervises. The analysis child no longer builds scenes at
+all — the post-run hook is deleted, not flagged off (H1), so the child parses, QCs, fits, persists,
+and stops. `catalogue_version` is stamped from the catalogue's `DEFAULT_PROFILE` until a per-fit
+profile is persisted.
+
+**The scene-build subprocess contract** (`isar/cli/scene_build_cmd.py`). The parent invokes one
+build per delivery as a supervised child and reads exactly ONE structured line off its stdout:
+`{"schema": "isar.scene-build-report/1", "digest", "pointer_flipped", "unchanged"}`. Exit **0**
+means a durable revision exists at `digest`; exit **3** means there is none, and the parent
+classifies that as a controller fault — never a fall back onto an older scene. A subprocess rather
+than an in-process call because the drive layer may not import `isar.analyze`/`isar.session` at
+all (the Stage II↔III file-contract rule, pinned by `tests/drive/test_boundary.py`); the seam is
+process-neutral, so a persistent build worker can slot in behind it later. `ConcurrentSceneWrite`
+— a racing `isar report --scene` publish winning the pointer CAS inside the build's window — is a
+NON-FAULT: the blob is content-addressed and written before the pointer lock, so the child reports
+its computed digest with `pointer_flipped=false` and exits 0, and the parent steers from that
+digest. The pointer is not campaign authority; letting a read-only CLI stop a campaign would be a
+false "machine failure" the four-reasons law forbids.
+
+**The program store's adoption rule** (SCENE-4.3 C8). A consultation answer that changes policy
+compiles a NEW frozen program revision through `report/program/` under CAS, with the honest parent:
+the fingerprint the step actually planned under, never a pointer read at write time. A later run
+started from the AUTHORED program reads the store back and ADOPTS the stored revision when
+`strip_consultation_overrides` reduces it to exactly that authored program — so a granted budget
+survives the run it was granted in — and starts a fresh lineage when the authored program genuinely
+changed. The planner's own write is guarded against reverting a consultation descendant. A racing
+writer surfaces as `consultation_recompile_conflict` and the override re-applies next delivery.
+
+**The consultation surface** (SCENE-4.3 C8/C9, D6) lives beside the cooperative stop token, under
+the same atomicity discipline: `report/control/prompt-<prompt_id>.answer.json`
+(`isar.consultation-answer/1`, written by the ONE writer `isar.drive.consultation.write_answer`,
+which `isar answer` calls and a future GUI control will) and `report/control/consultation-settlements.jsonl`
+(`isar.consultation-settlement/1`, append-only, clock-free). The settlement log is where prompt
+EPOCHS come from: a prompt id is `fingerprint(kind, step, subject, options, epoch)`, delivery-stable
+within an epoch — the agenda revision and scene digest ride as PROVENANCE, never identity, or the
+id would re-mint every delivery and orphan the answer a human had already written — and a settled
+subject that re-closes is honestly re-asked under epoch+1, so a historical answer file can never
+re-apply to a later incarnation. Prompts themselves (`isar.consultation-prompt/1`) go out as
+`prompt_issued` / `prompt_answered` / `prompt_default_applied` / `prompt_answer_invalid` /
+`stale_answer` / `prompt_answer_unmatched` events on the session log's `decide` stream. Timeouts
+are DELIVERY-COUNTED, never wall-clock, for the same reason nothing here carries a clock: a
+prompt that elapsed on a clock would fork same-seed replay.
+
+`decisions.jsonl` gained three omitted-when-empty `decision_basis` fields in 4.3, each naming a way
+the caller narrowed or widened what `select()` could pick, so two decisions taken on different
+grounds can never read identically: `declared_partition` (C3/D4 — the cold-start declaration's full
+key components, so a replay reproduces it from THIS record and never from the mutable card),
+`retired_physical_actions` (C6 — the broken-scan offramp set, which narrows SELECTION only and
+leaves the evaluations eligible, because a broken detector is not a statement about the physics),
+and `declined_scientific_actions` (C7 — the geometry-declined set, which IS a durable structural
+rejection and leaves the eligible set everywhere at once). The last two also fold into
+`context_fingerprint`, on the locality precedent. Omitted-when-empty keeps every decision that used
+none of them byte-identical to its 4.2b shape.
 
 **The agenda store mirrors the scene store** (PR 4.1): `<workspace>/report/agenda/` holds
 `<digest>.json` / `current.json` (`isar.agenda-pointer/1`) / `history.jsonl` /
@@ -630,15 +714,23 @@ dedup metadata conflict, or a missing scene — selection stays `null`, siblings
 for diagnosis); `no_action_with_honest_exhaustion` (no eligible action, the verdict is not
 complete, and nothing is left `open` — every remaining question closed via an APPLIED exhaustion
 proof, never a merely emitted one: `apply_exhaustion` requires a DURABLE BLOCKER on the
-assessment for any closure, including an all-clean-zero proof, so this outcome is reachable in
-4.2b only with synthetic/authenticated `blocker_evidence` — no live evaluator emits a durable
-blocker yet, so 4.3's producers are the load-bearing path); `no_eligible_action` (no eligible
+assessment for any closure, including an all-clean-zero proof, so this outcome was reachable in
+4.2b only with synthetic/authenticated `blocker_evidence`; SCENE-4.3 C7's geometry-decline producer
+is the live path that reaches it); `no_eligible_action` (no eligible
 action and something is still `open` — either ordinary unresolved dependencies, or a clean-zero
 proof `apply_exhaustion` honestly could not turn into a closure for want of a durable blocker to
 attach it to: a real, expected, non-faulty state, not a lie to penalize; also the cold-start
-reading — an unmeasured workspace's program-scoped DiscoverRegion question is INAPPLICABLE
-`program_scoped_subject_unfanned` at the generator wrapper, before the book is ever called, and
-first-scan reality stays 4.3's partition-producer obligation).
+reading for a workspace that reaches the book unfanned — its program-scoped DiscoverRegion
+question is INAPPLICABLE `program_scoped_subject_unfanned` at the generator wrapper, before the
+book is ever called. First-scan reality is no longer that state: SCENE-4.3 C3's cold-start producer
+mints the declared partition from the card's declarations through `partition_key()` itself and
+passes it into `plan_next_action`, which unions it into the agenda fan-out until the DECLARING step
+produces any observation and then retires it permanently — "cold start is just initialization; as
+soon as you take one measurement, that determines the next" (owner ruling 2026-08-18, H20(d)). An
+unresolvable declared condition refuses at construction with `cold_start_condition_unresolved`
+rather than minting an orphan partition, and the declared lattice epoch seeds both
+frame-compatibility maps by `setdefault`, so declared anchors fire at cold start and an observation
+always wins.)
 
 ## 7. Status discipline
 

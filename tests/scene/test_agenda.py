@@ -660,7 +660,7 @@ def test_a_program_revision_dissolves_subjects_as_transitions_never_silently(tmp
 def open_with_durable(question_id="q1"):
     return {question_id: QuestionAssessment(
         question_id=question_id, status="open",
-        blockers=(Blocker("bose_dead", "T=4K, anti-Stokes dead"),))}
+        blockers=(Blocker("instrument_geometry_infeasible", "triangle cannot close"),))}
 
 
 def presence_spec():
@@ -760,7 +760,7 @@ def open_assessment(question_id="q1"):
 
 
 def evidence(question_id="q1", basis="b" * 64, scene="s" * 64, registry="r1",
-            blocker_name="bose_dead", supporting=("presence_probe",)):
+            blocker_name="instrument_geometry_infeasible", supporting=("presence_probe",)):
     return QuestionBlockerEvidence(
         basis_agenda_digest=basis, question_id=question_id, scene_digest=scene,
         generator_registry_fingerprint=registry, blocker_name=blocker_name,
@@ -777,7 +777,7 @@ def attach(assessments, evidence_list, **overrides):
 def test_authenticated_evidence_attaches_a_durable_blocker_without_closing_by_itself():
     result = attach(open_assessment(), [evidence()])
     assert result["q1"].status == "open"          # attachment alone never closes a question
-    assert [b.name for b in result["q1"].blockers] == ["bose_dead"]
+    assert [b.name for b in result["q1"].blockers] == ["instrument_geometry_infeasible"]
     assert dict(result["q1"].notes)["evidence_attached"]
 
 

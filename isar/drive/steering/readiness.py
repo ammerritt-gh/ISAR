@@ -54,6 +54,10 @@ class GeneratorRunOutcome:
     generated: int = 0
     clean_zero_reason: str | None = None
     exhaustion_clean: bool = False
+    #: Carried across this boundary from ``GeneratorOutcome`` (review finding 2026-08-18): the
+    #: producer's structural arm needs to know whether the refused actions were the question's
+    #: admissible space or a sample of it, and the run record is what it reads.
+    proposals_exhaustive: bool = False
     inapplicable_reason: str | None = None
     error_code: str | None = None
 
@@ -61,6 +65,7 @@ class GeneratorRunOutcome:
         return {"generator": self.generator, "kind": self.kind, "generated": self.generated,
                 "clean_zero_reason": self.clean_zero_reason,
                 "exhaustion_clean": self.exhaustion_clean,
+                "proposals_exhaustive": self.proposals_exhaustive,
                 "inapplicable_reason": self.inapplicable_reason, "error_code": self.error_code}
 
 
@@ -204,8 +209,9 @@ def run_ready_questions(context: DiscoveryContext, readiness: Mapping[str, str])
                     evaluations.append(ActionEvaluation(
                         intent=intent, generator=generator_id,
                         eligibility=ActionEligibility.ELIGIBLE, associations=(association,)))
-                outcomes.append(GeneratorRunOutcome(generator_id, _OUTCOME_PROPOSALS,
-                                                    generated=len(outcome.proposals)))
+                outcomes.append(GeneratorRunOutcome(
+                    generator_id, _OUTCOME_PROPOSALS, generated=len(outcome.proposals),
+                    proposals_exhaustive=outcome.proposals_exhaustive))
             elif outcome.clean_zero_reason is not None:
                 outcomes.append(GeneratorRunOutcome(
                     generator_id, _OUTCOME_CLEAN_ZERO,

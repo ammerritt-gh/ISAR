@@ -752,7 +752,7 @@ def test_completeness_blocks_only_its_own_condition_partition():
     t_round = 1.0
     cond300 = (("temperature_K", 300.0),)
     cond100 = (("temperature_K", 100.0),)
-    pid300 = partition_id(partition_key("s1", cond300, 1, "any", t_round))
+    pid300 = partition_id(partition_key("s1", cond300, 1, "any", t_round, None, None))
 
     def scene(quarantined_conditions):
         return payload(

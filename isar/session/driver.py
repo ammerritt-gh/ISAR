@@ -27,7 +27,8 @@ from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
 from isar.predictive import json_fingerprint as _json_fingerprint
 from isar.schema.card import Card
-from isar.schema.measurement import MeasurementArena, current_lattice_epoch
+from isar.schema.measurement import (MeasurementArena, campaign_provenance,
+                                     current_lattice_epoch)
 from isar.session import calibrations, guidelines as guide_mod, ingest, router, session_prior
 from isar.session import measurement_store
 from isar.session.outcome import (
@@ -436,7 +437,12 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                         getattr(card.state, "lattice_epochs", None) or []),
                     energy_window=None, energy_bands=None, effective_exposure=None,
                     exposure_provenance=None, count_trust="attempted", reasons=(),
-                    written_at=datetime.now(timezone.utc).isoformat(), content_hash=_chash)
+                    written_at=datetime.now(timezone.utc).isoformat(), content_hash=_chash,
+                    # Same request provenance the enriched record carries (PR 4.3, D2): a hard
+                    # worker kill leaves ONLY this stub, and a stub that cannot say which program
+                    # step the neutrons were spent on is not proof of the attempt.
+                    **campaign_provenance(
+                        scan_delivery._acquisition_provenance_for(_rec, card, _scan_id)[1]))
                 measurement_store.append_measurement(workspace.report_dir, stub.to_dict())
 
             def checkpoint_entry(entry):
@@ -637,44 +643,18 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
         _write_results_csv(workspace, session)
     with timer.stage("session_save"):
         workspace.save(card, session)
-    # LAST, after results.csv and card.state are on disk: the scene is built from the persisted
-    # ledger through the read-only facade, so it must see the delivery that just landed. Timed
-    # like every other stage — the scene walk is not free at campaign scale, and a cost that
-    # `isar profile` cannot see is a cost nobody can budget.
-    with timer.stage("scene_observe"):
-        _observe_scene(summary, workspace)
-
-
-def _observe_scene(summary, workspace) -> None:
-    """Score the delivered workspace into a scene revision and store it. NEVER raises.
-
-    Observe-only (SCENE-3): the scene explains the campaign and steers nothing, so a scene that
-    cannot be built is a missing explanation, never a failed delivery. The fits, results.csv and
-    session.json are already written and unaffected; the only trace of a failure is the context
-    line and the logged traceback. Revisiting that posture — a scene the campaign refuses to
-    proceed without — is a SCENE-4 decision, not a default to drift into.
-
-    Runs on every delivery, including one that fitted nothing: the store's content-addressed
-    unchanged path makes a rebuild of an unchanged workspace free and leaves the pointer where
-    it was.
-    """
-    try:
-        from isar.session import scene_hook
-        result = scene_hook.build_and_store(workspace.root)
-    except ValueError as exc:
-        # The adapter's own refusals (no candidates column, an unqualified master, a row
-        # predating the delivery contract) and a corrupt scene pointer. Expected, and a workspace
-        # that refuses once refuses on EVERY delivery — a traceback per scan would bury the log
-        # for a condition whose message already says what to do.
-        log.warning("scene revision skipped for %s: %s", workspace.root, exc)
-        summary.context_lines.append(f"scene revision skipped: {exc}")
-        return
-    except Exception as exc:  # noqa: BLE001 — see the docstring: a scene never fails a campaign
-        log.exception("scene revision skipped for %s", workspace.root)
-        summary.context_lines.append(f"scene revision skipped: {exc}")
-        return
-    summary.context_lines.append(f"scene revision {result.digest[:12]}"
-                                 + (" (unchanged)" if result.unchanged else ""))
+    # NO scene build here. SCENE-4.3 D1 (owner ruling 2026-08-18) moved scene-building OUT of the
+    # analysis child: `run_batch` parses, QCs, fits and persists, and nothing else. The canonical
+    # build operation is `isar.session.scene_hook.build_and_store`, invoked by whoever owns the
+    # delivery — the `isar run` CLI composes it after analysis (preserving the GUI's behaviour,
+    # since the GUI shells that command), and the campaign parent invokes it once per delivery and
+    # pins the digest it returns. This supersedes DECISIONS H14(d) ("the driver calls it,
+    # observe-only"); the docs record that in SCENE-4.3 C9.
+    #
+    # The invariant this deletion buys: exactly ONE scene build per delivery on the campaign path,
+    # parent-invoked. A hook here would build a second one inside the analysis child — from the
+    # same ledger, off the parent's critical path and outside its pin — which is the double-build
+    # and the split ownership D1 rejected.
 
 
 def _run_master_certification(workspace, card, session, records, runcal, g, checkpoint_store,

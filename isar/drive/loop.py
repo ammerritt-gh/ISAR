@@ -129,6 +129,8 @@ from isar.drive.supervisor.stopping import (
 )
 from isar.schema.card import Card
 from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
+from isar.schema.measurement import (CAMPAIGN_PROVENANCE_FIELDS, TOPOLOGY_ROLES,
+                                     campaign_provenance)
 from isar.schema.steering import (ANALYSIS_UNUSABLE, AUXILIARY_TRACK_NODE, CANDIDATE_NOT_DETECTED,
                                   CANONICAL_MASTER, realized_outcome_for)
 
@@ -2565,6 +2567,22 @@ def _persist_campaign_target(workspace: Path, objective) -> None:
         card.save_state(state_path)
 
 
+def _validated_campaign_provenance(payload: dict) -> dict:
+    """The campaign-provenance block, refused at submission when the role is not in vocabulary or
+    declares the canonical path without naming which path."""
+    block = campaign_provenance(payload)
+    role = block.get("topology_role")
+    if role is not None and role not in TOPOLOGY_ROLES:
+        raise ValueError(
+            f"topology_role {role!r} is not in {TOPOLOGY_ROLES}; refusing to submit the request "
+            "rather than poison the pre-dispatch stub at delivery")
+    if role == "canonical_path" and block.get("path_fingerprint") is None:
+        raise ValueError(
+            "topology_role 'canonical_path' carries no path_fingerprint; refusing to submit the "
+            "request rather than poison the pre-dispatch stub at delivery")
+    return block
+
+
 def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
     """Append the TAVI job→logical acquisition map before analysis consumes the raw scan."""
     policy_path = workspace / "card.policy.toml"
@@ -2637,6 +2655,13 @@ def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
         # before the raw scan is consumed, because reduction decides whether to pool it and the session
         # decides how the tracker may read it — both from this record, neither from the driver.
         "evidence_sink": payload.get("evidence_sink") or CANONICAL_MASTER,
+        # The campaign-provenance block (SCENE-4 PR 4.3, D2): carried verbatim off the submitted
+        # request so the delivery pipeline stamps it onto the measurement-arena record without ever
+        # re-deriving campaign identity. A request that declares none leaves all four None.
+        # Validated HERE, at submission, where refusing costs one request — a malformed role
+        # surviving to the pre-dispatch stub would abort the whole delivery batch and destroy the
+        # attempt-proof record that exists to survive failure.
+        **_validated_campaign_provenance(payload),
     })
     card.save_state(state_path)
 
@@ -3964,6 +3989,13 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             "authoritative_evidence_revision": (proposal.meta or {}).get(
                 "authoritative_evidence_revision"),
             "proposal_fingerprint": (proposal.meta or {}).get("proposal_fingerprint"),
+            # The campaign-provenance block (SCENE-4.3 D2/C1), carried off the proposal the
+            # program-step runner built. Emitted only for a request that actually declares one, so
+            # every targeted submission payload — and therefore every `run` event a resume replays
+            # — stays byte-identical to what it was; `campaign_provenance` reads an absent field as
+            # None either way, which is the manual/legacy lane.
+            **{name: (proposal.meta or {})[name] for name in CAMPAIGN_PROVENANCE_FIELDS
+               if (proposal.meta or {}).get(name) is not None},
             **eig_submission_metadata(proposal),
             # The other two lifecycle identities, so a submitted scan joins back to the scientific
             # question it answers and the geometry its request was accepted under.

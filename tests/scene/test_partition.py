@@ -7,6 +7,7 @@ the coupling this package guards (``_couples``/``_couples_arena``) is gated on r
 """
 from isar.scene.build import build_scene
 from isar.scene.factors import PRESENCE_MISS_NATS
+from isar.scene.model import path_geometry_fingerprint
 
 from .test_build import cand, cluster_of, mk_obs
 
@@ -218,3 +219,58 @@ def test_a_provenance_less_scattered_set_reproduces_scene_3_behaviour():
     assert [cl["scan_refs"] for cl in rev.payload["clusters"]] == [
         ["e:1:d"], ["e:2:d"], ["e:3:d"]]
     assert "path_topology_unavailable" in rev.payload["sample_knowledge"]["degradations"]
+
+
+# ----------------------------------------------------------------------------
+# Declared path identity in the partition key (SCENE-4 PR 4.3, D3)
+# ----------------------------------------------------------------------------
+PATH_A = path_geometry_fingerprint((1.0, 0.0, 0.0), (1.2, 0.0, 0.0))
+PATH_B = path_geometry_fingerprint((1.0, 0.0, 0.0), (1.2, 0.4, 0.0))
+
+
+def test_two_declared_paths_at_one_condition_never_couple():
+    """Same sample, same condition, same epoch, and q close enough that the geometric fallback
+    WOULD have chained them — but the program declared two different physical trajectories, so
+    they are two partitions and neither normalizes against the other."""
+    a = mk_obs("a:1:d", [cand("stokes+bg", -10.0, omegas=(5.0,))], q=q(1.0),
+               topology_role="canonical_path", path_fingerprint=PATH_A)
+    b = mk_obs("b:1:d", [cand("bg", -10.0, n_modes=0, omegas=())], q=q(1.0),
+               topology_role="canonical_path", path_fingerprint=PATH_B)
+    rev = build_scene([a, b])
+    clusters = {cl["cluster_id"]: cl["scan_refs"] for cl in rev.payload["clusters"]}
+    assert clusters == {"a:1:d": ["a:1:d"], "b:1:d": ["b:1:d"]}
+    footprints = {f["scan_ref"]: f for f in rev.payload["footprints"]}
+    assert footprints["a:1:d"]["partition_id"] != footprints["b:1:d"]["partition_id"]
+
+
+def test_a_context_probe_carrying_a_path_fingerprint_stays_off_the_canonical_partition():
+    """The probe's record names the path it was taken beside, but its ROLE is off-path: it must
+    neither join that path's partition nor perturb it. Contrast with the canonical arena at the
+    identical q, which does."""
+    on_path = [mk_obs(f"e:{i}:d", [cand("stokes+bg", -10.0, omegas=(5.0 + 0.1 * i,))],
+                      q=q(1.0 + 0.1 * i), topology_role="canonical_path",
+                      path_fingerprint=PATH_A) for i in range(3)]
+    probe = mk_obs("probe:d", [cand("stokes+bg", -10.0, omegas=(5.0,))], q=q(1.0),
+                   topology_role="context_probe", path_fingerprint=PATH_A)
+    rev = build_scene(on_path + [probe])
+    assert cluster_of(rev, "e:0:d")["scan_refs"] == ["e:0:d", "e:1:d", "e:2:d"]
+    assert cluster_of(rev, "probe:d")["scan_refs"] == ["probe:d"]
+    footprints = {f["scan_ref"]: f for f in rev.payload["footprints"]}
+    assert footprints["probe:d"]["partition_id"] != footprints["e:0:d"]["partition_id"]
+    assert footprints["e:0:d"]["path_index"] is not None
+
+
+def test_provenance_less_arenas_still_group_geometrically_beside_a_declared_path():
+    """The path component is None for every provenance-less arena, so they all stay in ONE group
+    where the collinearity fallback governs exactly as before this change — a declared path
+    running alongside them changes nothing about how they are grouped."""
+    declared = mk_obs("p:1:d", [cand("stokes+bg", -10.0, omegas=(5.0,))], q=q(2.0),
+                      topology_role="canonical_path", path_fingerprint=PATH_A)
+    legacy = [mk_obs(f"e:{i}:d", [cand("stokes+bg", -10.0, omegas=(5.0 + 0.1 * i,))],
+                     q=q(1.0 + 0.1 * i)) for i in range(3)]
+    rev = build_scene([declared, *legacy])
+    assert cluster_of(rev, "e:0:d")["scan_refs"] == ["e:0:d", "e:1:d", "e:2:d"]
+    assert cluster_of(rev, "p:1:d")["scan_refs"] == ["p:1:d"]
+    assert "path_topology_unavailable" not in rev.payload["sample_knowledge"]["degradations"]
+    footprints = {f["scan_ref"]: f for f in rev.payload["footprints"]}
+    assert [footprints[f"e:{i}:d"]["path_index"] for i in range(3)] == [0, 1, 2]

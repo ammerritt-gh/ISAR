@@ -27,6 +27,17 @@ retaining the survey. Neither is a default. The survey still wins the first pass
 before a q has been measured there is no prediction to centre a core on, so no core candidate
 exists — rather than by a rule that prefers it.
 
+**The DISCOVERY lane is outside this priced envelope, and stays outside it until SCENE-5.5
+(DECISIONS H21(a)).** Everything above concerns same-action scan-window selection on a targeted
+step. A `discover_and_map` step selects through `isar.drive.steering.scheduler.select`, whose rank
+vector is `(family_priority, dependency_depth, locality, scientific_action_fingerprint)` — no
+information term and no cost term — while the exposure it commits is
+`discovery_monitor_ncount` per point times the point count the intent's window implies. Candidate
+costs there therefore spread by orders of magnitude with nothing comparing them, which is the
+symmetric per-neutron comparison O43 settled for the targeted lane not yet reaching the
+target-free one. Marked, not closed: no live instrument is exposed to the discovery controller,
+and the bound until SCENE-5.5 is a declared budget plus the step's delivery ceiling.
+
 **Two limitations to read the grant rate against.** The QoI partition is `bin_width = 0.5 meV` while
 the design prediction sigma in a converging campaign has a median of 0.0182 meV, so once a fit
 exists both candidates answer "which bin?" identically and the comparison is very often a tie

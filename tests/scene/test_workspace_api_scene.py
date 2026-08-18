@@ -7,7 +7,9 @@ import pytest
 from isar.schema.measurement import MeasurementArena
 from isar.schema.statistics import FIT_SELECTION_SCHEMA, authority_scopes
 from isar.workspace_api import Workspace
-from isar.scene.model import ComponentDescriptor, SampleKnowledge, covers, footprint_of
+from isar.scene.model import (
+    ComponentDescriptor, SampleKnowledge, covers, footprint_of, partition_key,
+)
 from isar.workspace_api.scene import sample_knowledge, scene_observations
 from synthetic_ws import _POLICY_TOML, FULL_COLUMNS, stamp_ws
 
@@ -580,6 +582,63 @@ def test_incompatible_master_members_degrade_and_their_arenas_survive(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# A pooled master's declared-path identity (SCENE-4 PR 4.3 review response, D3)
+# ---------------------------------------------------------------------------
+_PATH_A, _PATH_B = "a" * 64, "b" * 64
+
+
+def _master_ws(root, member_provenance):
+    """A two-member canonical master whose members' records carry ``member_provenance`` (one dict
+    of campaign-provenance fields per member). The master itself carries no record, as production
+    writes it."""
+    cands = [_candidate("phonon+bg")]
+    master = _row(9_000_001, candidates=cands, scan_id="master:tavi_2.0,0,0_300",
+                  pooled=True, n_members=2, members="tavi:1:det;tavi:2:det")
+    root.mkdir(parents=True, exist_ok=True)
+    stamp_ws(root, rows=[_row(1, candidates=cands), _row(2, candidates=cands), master],
+             columns=COLUMNS)
+    for n, prov in zip((1, 2), member_provenance):
+        _write_measurement(root, _measurement(scan_ref=f"tavi:{n}:det", scan_id=f"tavi:{n}:det",
+                                              scan_number=n, **prov))
+    return Workspace.open(root)
+
+
+def _key(obs):
+    return partition_key(obs.sample, obs.conditions, obs.lattice_epoch, obs.scan_ref, 1.0,
+                         obs.topology_role, obs.path_fingerprint)
+
+
+def test_a_master_inherits_the_declared_path_its_members_agree_on(tmp_path):
+    """The pooled reading must land in the SAME partition as the arenas it pools — a master
+    severed from its members' declared path would normalize against a different one."""
+    prov = dict(topology_role="canonical_path", path_fingerprint=_PATH_A)
+    m, = scene_observations(_master_ws(tmp_path, [prov, prov]))
+    assert (m.topology_role, m.path_fingerprint) == ("canonical_path", _PATH_A)
+    # Not one program step's product, so no program identity is inherited.
+    assert (m.program_fingerprint, m.program_step) == (None, None)
+    member = _measurement(**prov)
+    assert _key(m) == partition_key(member.sample, member.conditions, member.lattice_epoch,
+                                    "tavi:1:det", 1.0, "canonical_path", _PATH_A)
+
+
+def test_members_declaring_different_paths_leave_the_master_provenance_less(tmp_path):
+    """Pooling across two declared paths at one q-point is legitimate, so this is the None lane
+    rather than a refusal — but the master may not claim either path as its own."""
+    m, = scene_observations(_master_ws(tmp_path, [
+        dict(topology_role="canonical_path", path_fingerprint=_PATH_A),
+        dict(topology_role="canonical_path", path_fingerprint=_PATH_B)]))
+    assert (m.topology_role, m.path_fingerprint) == (None, None)
+    assert _key(m)[3] is None
+
+
+def test_a_master_whose_members_carry_no_provenance_stays_in_the_none_lane(tmp_path):
+    """Manual or pre-4.3 members invent nothing (H1)."""
+    m, = scene_observations(_master_ws(tmp_path, [{}, {}]))
+    assert (m.topology_role, m.path_fingerprint) == (None, None)
+    assert _key(m)[3] is None
+
+
+# ---------------------------------------------------------------------------
 # Declared sample knowledge
 # ---------------------------------------------------------------------------
 _SAMPLE_POLICY = _POLICY_TOML + """
@@ -654,3 +713,75 @@ def test_the_latest_epoch_is_chosen_by_version_number_not_by_string_order(tmp_pa
     junk = [{"version": 1}, {"version": "epoch-two"}]
     with pytest.raises(ValueError, match="unreadable sample geometry"):
         sample_knowledge(_knowledge_ws(tmp_path / "junk", state={"lattice_epochs": junk}))
+
+
+# ----------------------------------------------------------------------------
+# Campaign provenance (SCENE-4 PR 4.3, D2): the record owns it, the adapter carries it
+# ----------------------------------------------------------------------------
+_PROVENANCE = dict(topology_role="canonical_path", program_fingerprint="p" * 64,
+                   program_step="step-1", path_fingerprint="f" * 64)
+
+
+def test_campaign_provenance_reaches_a_delivered_fits_observation(tmp_path):
+    """The delivered-fit construction site: all four fields verbatim off the record, which is the
+    only writer of campaign identity — the scene never derives one."""
+    ws = _ws(tmp_path, [_row(1, candidates=[_candidate("phonon+bg")])])
+    _write_measurement(tmp_path, _measurement(scan_ref="tavi:1:det", scan_id="tavi:1:det",
+                                              scan_number=1, **_PROVENANCE))
+    obs, = scene_observations(Workspace.open(tmp_path))
+    assert (obs.topology_role, obs.program_fingerprint, obs.program_step,
+            obs.path_fingerprint) == ("canonical_path", "p" * 64, "step-1", "f" * 64)
+
+
+def test_campaign_provenance_reaches_a_synthetic_observation(tmp_path):
+    """The fitless construction site — a driver-initiated probe whose fit produced nothing still
+    carries its role, or the builder could not withhold it from path derivation."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stamp_ws(tmp_path, rows=[], columns=COLUMNS)
+    _write_measurement(tmp_path, _measurement(**{**_PROVENANCE, "topology_role": "context_probe"}))
+    obs, = scene_observations(Workspace.open(tmp_path))
+    assert obs.topology_role == "context_probe"
+    assert (obs.program_fingerprint, obs.program_step, obs.path_fingerprint) == (
+        "p" * 64, "step-1", "f" * 64)
+
+
+def test_a_record_with_no_campaign_provenance_reads_none_everywhere(tmp_path):
+    """A manual or pre-4.3 scan (H1: absent field reads None, no shim) — the provenance-less lane
+    the geometric path fallback governs."""
+    obs, = scene_observations(_ws(tmp_path, [_row(1, candidates=[_candidate("phonon+bg")])]))
+    assert (obs.topology_role, obs.program_fingerprint, obs.program_step,
+            obs.path_fingerprint) == (None, None, None, None)
+
+
+def test_a_pooled_master_inherits_its_members_unanimous_program_step():
+    """A canonical master SUPPRESSES the member rows it pools. Holding its ``program_step`` at
+    ``None`` therefore erased the declaring step's only proof that it had ever measured:
+    ``isar.scene.questions.step_observed`` went back to False and the cold-start declaration
+    UN-RETIRED itself mid-campaign, generating phantom work beside the real partition.
+
+    Unanimity is the whole rule, exactly as it already was for the declared-path pair — members
+    from one step hand the master that step, members from two hand it ``None``. ``program_fingerprint``
+    stays ``None`` either way: a master legitimately pools across recompiles.
+    """
+    from isar.workspace_api.scene import _member_provenance
+
+    def record(ref, step_id, path):
+        return MeasurementArena(
+            scan_ref=ref, scan_id=ref, scan_number=1, detector="d", sample="s1",
+            conditions=(("temperature_K", 300.0),), q=(2.0, 0.0, 0.0), lattice_epoch=1,
+            energy_window=(0.0, 10.0), energy_bands=((0.0, 10.0),), effective_exposure=5.0,
+            exposure_provenance=None, count_trust="trusted", reasons=(),
+            written_at="2026-08-18T00:00:00+00:00", content_hash="c0",
+            program_fingerprint="pf", program_step=step_id,
+            topology_role="canonical_path", path_fingerprint=path)
+
+    one = record("m1", "discover-1", "pathA")
+    two = record("m2", "discover-1", "pathA")
+    derived, reason = _member_provenance(["m1", "m2"], {"m1": one, "m2": two})
+    assert reason is None
+    assert derived[5] == "discover-1", "the master lost the step every member named"
+
+    other = record("m2", "discover-2", "pathA")
+    mixed, reason = _member_provenance(["m1", "m2"], {"m1": one, "m2": other})
+    assert reason is None
+    assert mixed[5] is None, "two steps must not hand the master one of them"

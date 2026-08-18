@@ -110,7 +110,13 @@ class SubprocessRunner:
         paths = [str(p) for p in data_paths]
         if not paths:
             raise ValueError("SubprocessRunner.run needs at least one data path")
-        cmd = [sys.executable, "-m", "isar.cli.main", "run", *paths, "--workspace", str(workspace)]
+        # --no-scene: `isar run` composes analysis + the canonical scene build, and the CAMPAIGN
+        # parent owns that build (SCENE-4.3 D1) — it invokes `scene_hook.build_and_store` itself,
+        # once per delivery, and pins the digest it gets back. Letting the child build one too
+        # would be a second build per delivery, off the parent's critical path and outside its
+        # pin. Analysis-only here is the invariant, not an optimization.
+        cmd = [sys.executable, "-m", "isar.cli.main", "run", *paths, "--workspace", str(workspace),
+               "--no-scene"]
         if force:
             cmd.append("--force")
         cmd.extend(["--errors", str(errors_tier)])
@@ -280,7 +286,10 @@ def run_isar(workspace: str | Path, data_paths: Sequence[str | Path], *, force: 
     paths = [str(p) for p in data_paths]
     if not paths:
         raise ValueError("run_isar needs at least one data path")
-    cmd = [sys.executable, "-m", "isar.cli.main", "run", *paths, "--workspace", str(workspace)]
+    # --no-scene for the same reason as SubprocessRunner.run above: this is a CAMPAIGN-side
+    # invoker, and the campaign parent owns the one scene build per delivery (SCENE-4.3 D1).
+    cmd = [sys.executable, "-m", "isar.cli.main", "run", *paths, "--workspace", str(workspace),
+           "--no-scene"]
     if force:
         cmd.append("--force")
     if extra_args:
