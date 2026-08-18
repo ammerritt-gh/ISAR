@@ -130,3 +130,20 @@ they are cheap and mutually constraining; Stokes-first far out; anti-Stokes de-p
 when the Bose factor kills it at low T), and when to stop measuring all PRICE OUT of that
 strength gradient against cost via EIG. Behaviour falls out of priors and prices; it is
 never legislated per phenomenon.
+
+## Entries 2026-08-18 — from the SCENE-4.3 scene-ownership discussion
+
+## Three operating modes, GUI-canonical (→ its own top-level section, or the preamble)
+
+ISAR has three user-facing operating modes, each a superset of the last, and the GUI is the
+canonical way to access all of them (the console CLI is plumbing, not a user surface):
+1. **Reduce-only** — ISAR as parser/reducer: machine formats in (files or streamed from the
+   instrument), the user's preferred end-state format out; collation of scans at the same
+   temperature and q-point across different energy ranges into one master scan; monitor
+   correction. The user does all the analysis.
+2. **In-flight analysis** — ISAR analyzes as data arrives: fit a DHO across a phonon scan
+   automatically, and as new scans land at the same q-point, fit there too.
+3. **Full campaign** — ISAR runs the instrument itself, under top-level instructions from
+   the user.
+Consequence for architecture: features should compose explicitly per mode rather than ride
+as side effects of lower-level commands, because no user invokes those commands directly.
