@@ -14,7 +14,7 @@ import pytest
 from isar.scene.build import build_scene
 from isar.scene.model import canonical_bytes
 from isar.scene.store import (ConcurrentSceneWrite, POINTER_SCHEMA, pointer_digest, read_current,
-                              write_revision)
+                              read_revision, write_revision)
 
 from .test_build import COUPLER, ZERO, cand, chain_and_distant, mk_obs
 
@@ -379,3 +379,55 @@ def test_an_unchanged_rebuild_appends_no_history(tmp_path):
     write_revision(tmp_path, rev)
     write_revision(tmp_path, rev)
     assert len(history(tmp_path)) == 1
+
+
+# ----------------------------------------------------------------------------
+# By-digest reads (SCENE-4.3 D1): the pinned reader's accessor
+# ----------------------------------------------------------------------------
+def test_a_superseded_revision_is_still_readable_by_its_digest(tmp_path):
+    """The whole point of the accessor: the pointer is not the store's authority over what is
+    readable. A caller holding the digest its own build returned steers from THAT revision even
+    after a concurrent writer has moved ``current.json`` somewhere else entirely."""
+    a = scene(chain_and_distant())
+    write_revision(tmp_path, a)
+    moved = chain_and_distant()
+    moved[0] = mk_obs("e:1:d", [cand("A", -10.5), cand("B", -11.0)], q=(1.0, 0.0, 0.0))
+    b = scene(moved)
+    write_revision(tmp_path, b, source="report_cli")
+
+    assert pointer_digest(tmp_path) == b.digest          # the pointer has moved on
+    payload = read_revision(tmp_path, a.digest)          # ...and A is still exactly A
+    assert canonical_bytes(payload) == a.canonical
+    # And it is the SAME representation the pointer path yields — one deserialized form for the
+    # live pin and the offline replay, which is the property that keeps them from drifting.
+    assert read_revision(tmp_path, b.digest) == read_current(tmp_path)[1]
+
+
+def test_an_unloadable_pin_is_loud_and_never_falls_back_to_the_pointer(tmp_path):
+    """Every way a pin can fail to load raises, naming the path. Silently returning the CURRENT
+    revision instead would be the stale-steering this accessor exists to prevent, wearing the
+    disguise of a successful read."""
+    rev = scene(chain_and_distant())
+    write_revision(tmp_path, rev)
+
+    with pytest.raises(ValueError, match="not a sha256 hexdigest"):
+        read_revision(tmp_path, "../current")            # a path, not an address
+    with pytest.raises(ValueError, match="no pinned revision"):
+        read_revision(tmp_path, "b" * 64)                # well-formed, never stored
+    (tmp_path / "scene" / f"{rev.digest}.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(ValueError, match="unreadable scene revision"):
+        read_revision(tmp_path, rev.digest)
+
+
+def test_a_blob_that_does_not_hash_to_its_own_name_is_refused(tmp_path):
+    """Content addressing is only a guarantee if it is checked — a readable blob under the wrong
+    digest is corruption, and handing it back would let a caller believe it pinned something it
+    did not."""
+    rev = scene(chain_and_distant())
+    write_revision(tmp_path, rev)
+    payload = json.loads((tmp_path / "scene" / f"{rev.digest}.json").read_text(encoding="utf-8"))
+    payload["condition_t_round"] = 999.0
+    (tmp_path / "scene" / f"{rev.digest}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="does not match its digest"):
+        read_revision(tmp_path, rev.digest)

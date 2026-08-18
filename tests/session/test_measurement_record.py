@@ -294,7 +294,7 @@ def test_append_creates_report_dir(tmp_path):
 # End to end: the driver seam (isar.session.driver's on_complete callback)
 # ---------------------------------------------------------------------------
 def _s30_held_batch(tmp_path):
-    """The cheapest driver delivery in the suite (test_driver_scene_hook.py's fixture): three
+    """The cheapest driver delivery in the suite (test_scene_composition.py's fixture): three
     scans with no companion .spec, so every one holds for calibration — never fitted, always
     gated, and it runs in about a second."""
     from pathlib import Path

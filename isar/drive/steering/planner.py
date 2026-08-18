@@ -300,14 +300,47 @@ class PlanResult:
     reason: str | None = None
 
 
+def _scene_fault(report_dir: Path, basis_common: dict, step_id: str, program_fp: str,
+                 reason: str) -> PlanResult:
+    """Record and return the controller fault for "this decision has no scene to stand on".
+
+    Nothing but the decision record is persisted: with no scene there is no basis to build an
+    agenda, an inventory, or a program revision against.
+    """
+    record = {
+        "schema": DECISION_SCHEMA, "outcome": CONTROLLER_FAULT,
+        "decision_basis": {**basis_common, "scene_digest": None, "agenda_digest": None,
+                          "basis_digest": None},
+        "selection": None,
+        "scan_design_provenance": {"inventory_fingerprint": None, "context_fingerprint": None,
+                                  "selected_candidate_id": None, "status": CONTROLLER_FAULT,
+                                  "recovery_state": None},
+        "scan_design_events": [], "inventory_ref": None,
+    }
+    _append_decision(report_dir, record)
+    return PlanResult(outcome=CONTROLLER_FAULT, step_id=step_id, scene_digest=None,
+                      basis_digest=None, agenda_digest=None, program_fingerprint=program_fp,
+                      selection_fingerprint=None, inventory_ref=None, run_records=(),
+                      reason=reason)
+
+
 def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
                      locality_coordinate: float | None = None,
                      blocker_evidence: tuple = (),
-                     declared_partition: DeclaredPartition | None = None) -> PlanResult:
+                     declared_partition: DeclaredPartition | None = None,
+                     scene_pin: str | None = None) -> PlanResult:
     """``declared_partition`` (PR 4.3 D4) is the caller-minted cold-start declaration
     (:func:`isar.drive.steering.cold_start.declare_partition`). Passing none keeps the 4.2b
     behaviour exactly: an unmeasured workspace derives the program-scoped lane and every
-    generator answers ``program_scoped_subject_unfanned``."""
+    generator answers ``program_scoped_subject_unfanned``.
+
+    ``scene_pin`` (PR 4.3 D1) is the CONTENT ADDRESS of the scene revision to plan against — the
+    digest the caller's own build just returned. Supplied, this call never touches
+    ``current.json``: the revision is loaded by content address, and the publication-time pointer
+    re-read is SKIPPED (see below). Omitted, the pointer-derived behaviour is byte-for-byte what
+    it was — ``read_current`` at the snapshot, the guard in force at publication — which is what
+    ``isar report``, the tests, and every non-pinned caller keep getting.
+    """
     report_dir = Path(report_dir)
     step = _resolve_discover_step(program, step_id)
     step_payload = step.payload.to_dict()
@@ -325,24 +358,25 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
                             declared_partition.step_id))
 
     # ---- atomic snapshot -----------------------------------------------------------------
-    scene_current = SCENE_STORE.read_current(report_dir)
-    if scene_current is None:
-        record = {
-            "schema": DECISION_SCHEMA, "outcome": CONTROLLER_FAULT,
-            "decision_basis": {**basis_common, "scene_digest": None, "agenda_digest": None,
-                              "basis_digest": None},
-            "selection": None,
-            "scan_design_provenance": {"inventory_fingerprint": None, "context_fingerprint": None,
-                                      "selected_candidate_id": None, "status": CONTROLLER_FAULT,
-                                      "recovery_state": None},
-            "scan_design_events": [], "inventory_ref": None,
-        }
-        _append_decision(report_dir, record)
-        return PlanResult(outcome=CONTROLLER_FAULT, step_id=step_id, scene_digest=None,
-                          basis_digest=None, agenda_digest=None, program_fingerprint=program_fp,
-                          selection_fingerprint=None, inventory_ref=None, run_records=(),
-                          reason="no scene stored for this workspace")
-    scene_pointer, scene_payload = scene_current
+    if scene_pin is not None:
+        # By content address, never the pointer. An unloadable pin is store corruption — the one
+        # thing D1 classifies as a genuine machine failure on this path — and it becomes a
+        # recorded controller fault rather than a silent fall back onto whatever the pointer
+        # currently names, which would be steering from an older scene.
+        try:
+            scene_payload = SCENE_STORE.read_revision(report_dir, scene_pin)
+        except ValueError as error:
+            return _scene_fault(report_dir, basis_common, step_id, program_fp,
+                                f"pinned scene revision {scene_pin} is unloadable: {error}")
+        scene_pointer = None
+    else:
+        scene_current = SCENE_STORE.read_current(report_dir)
+        if scene_current is None:
+            return _scene_fault(report_dir, basis_common, step_id, program_fp,
+                                "no scene stored for this workspace")
+        scene_pointer, scene_payload = scene_current
+    # Equal to ``scene_pin`` by construction when pinned: ``read_revision`` authenticates the blob
+    # against exactly this recomputation before returning it.
     scene_digest = fingerprint(scene_payload)
     agenda_snapshot = AGENDA_STORE.pointer_digest(report_dir)
     program_snapshot = _current_program_pointer_digest(report_dir)
@@ -433,8 +467,17 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     # own lock, against a DIFFERENT store than the one about to be written. See
     # StaleSceneAtPublication's docstring for exactly what the agenda store's expected_parent
     # CAS + interprocess lock beneath this still covers.
-    republished_scene_digest = _current_scene_pointer_digest(report_dir)
-    if republished_scene_digest != scene_pointer["digest"]:
+    #
+    # SCOPED, not removed (PR 4.3 D1). A PINNED caller skips it: the guard exists to catch "the
+    # scene I read is no longer the current scene", and a pin says the current scene was never
+    # this decision's authority in the first place — the agenda snapshot is keyed to the pinned
+    # digest explicitly, and the campaign parent built that revision itself. Making a read-only
+    # `isar report --scene` publish able to fault a live campaign is exactly the false machine
+    # failure the four-reasons stop law forbids. Every POINTER-DERIVED caller keeps the guard
+    # unchanged, because for them the pointer IS the authority they snapshotted.
+    republished_scene_digest = (None if scene_pointer is None
+                                else _current_scene_pointer_digest(report_dir))
+    if scene_pointer is not None and republished_scene_digest != scene_pointer["digest"]:
         raise StaleSceneAtPublication(
             f"scene pointer moved to {republished_scene_digest!r} since this decision "
             f"snapshotted it at {scene_pointer['digest']!r}; refusing to publish an agenda "

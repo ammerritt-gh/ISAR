@@ -41,7 +41,10 @@ def _fake_summary(*, analysis_incomplete=False):
 def _run_args(ws, *, render):
     return types.SimpleNamespace(
         workspace=str(ws), data=["d"], force=False, llm=False, M=200, formats="html,markdown",
-        detectors=None, workers=None, errors="fast", render=render)
+        detectors=None, workers=None, errors="fast", render=render,
+        # scene=False: this file tests the RENDER gate only — a real build_and_store against the
+        # fake workspace would drag the whole scene layer into a "no fits, no matplotlib" test.
+        scene=False)
 
 
 def _install_fakes(monkeypatch, ws, rendered, *, summary=None):

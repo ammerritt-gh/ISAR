@@ -90,6 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "card.state.json are still written. Used by the driver, which re-renders once "
                          "at end of campaign — most run time savings come from not importing the report "
                          "layer / matplotlib per invocation")
+    pr.add_argument("--no-scene", dest="scene", action="store_false", default=True,
+                    help="skip the SCENE revision build that normally follows the analysis. "
+                         "`isar run` is a COMPOSITION of analysis + the one canonical scene build "
+                         "(SCENE-4.3 D1); campaign runners pass this because the campaign parent "
+                         "builds the scene itself, once per delivery, and pins the digest")
     pr.add_argument("--certification-manifest", default=None, help=argparse.SUPPRESS)
     pr.add_argument("--certification-request", default=None, help=argparse.SUPPRESS)
     pr.add_argument("--analysis-allowance-seconds", type=float, default=None,

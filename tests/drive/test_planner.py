@@ -661,3 +661,91 @@ def test_scene_store_missing_is_controller_fault_with_reason(tmp_path):
     assert len(lines) == 1
     assert lines[0]["outcome"] == CONTROLLER_FAULT
     assert lines[0]["decision_basis"]["scene_digest"] is None
+
+
+# ----------------------------------------------------------------------------
+# Pinned scene input (SCENE-4.3 D1): plan from a content address, not from the pointer
+# ----------------------------------------------------------------------------
+def test_a_pinned_decision_steers_from_its_pin_while_the_pointer_moves_under_it(tmp_path):
+    """The campaign's case. The parent built revision A and pinned it; a read-only
+    ``isar report --scene`` publishes B before the decision reaches publication. The pinned
+    decision plans against A start to finish and does not fault — the pointer was never its
+    authority, so a report CLI cannot stop a live campaign (which the four-reasons law forbids)."""
+    program = program_with(discover_step())
+    pinned = _SceneRevision.of(scene())
+    write_scene(tmp_path, scene())
+    assert SCENE_STORE.pointer_digest(tmp_path) == pinned.digest
+
+    write_scene(tmp_path, scene(observations=[obs("e:9:d")]))     # the racing publish
+    assert SCENE_STORE.pointer_digest(tmp_path) != pinned.digest
+
+    result = plan_next_action(tmp_path, program, "discover-1", scene_pin=pinned.digest)
+
+    assert result.outcome != CONTROLLER_FAULT
+    assert result.scene_digest == pinned.digest
+    line, = decision_lines(tmp_path)
+    assert line["decision_basis"]["scene_digest"] == pinned.digest
+
+
+def test_the_same_pointer_move_still_refuses_a_pointer_derived_decision(tmp_path):
+    """The guard is SCOPED, not removed. Byte for byte the same race, with no pin: the caller
+    snapshotted the pointer, so the pointer moving IS its staleness, and PR #33's A-P0-4 guard
+    fires exactly as it did before pinning existed."""
+    program = program_with(discover_step())
+    write_scene(tmp_path, scene())
+
+    # The move lands between the planner's snapshot and its publication re-read.
+    def moved(report_dir):
+        write_scene(report_dir, scene(observations=[obs("e:9:d")]))
+        return SCENE_STORE.pointer_digest(report_dir)
+
+    import isar.drive.steering.planner as pm
+    original = pm._current_scene_pointer_digest
+    pm._current_scene_pointer_digest = moved
+    try:
+        with pytest.raises(StaleSceneAtPublication):
+            plan_next_action(tmp_path, program, "discover-1")
+    finally:
+        pm._current_scene_pointer_digest = original
+
+    assert decision_lines(tmp_path) == []
+    assert AGENDA_STORE.pointer_digest(tmp_path) is None
+
+
+def test_the_pinned_planner_input_is_the_stored_canonical_payload(monkeypatch, tmp_path):
+    """Live-vs-replay representation probe. What the pinned path hands the derivation is the same
+    deserialized canonical payload an offline replay reads off disk — not an in-memory object that
+    happens to agree today. Two representations is how live and replay drift apart."""
+    program = program_with(discover_step())
+    payload = scene(observations=[obs("e:1:d", [cand("A", [-4.0])])])
+    pinned = _SceneRevision.of(payload)
+    write_scene(tmp_path, payload)
+
+    seen = []
+    real_derive = planner_module.derive_agenda
+    monkeypatch.setattr(planner_module, "derive_agenda",
+                        lambda scene_payload, *a, **kw: (seen.append(scene_payload)
+                                                         or real_derive(scene_payload, *a, **kw)))
+    plan_next_action(tmp_path, program, "discover-1", scene_pin=pinned.digest)
+
+    assert seen, "the derivation never ran"
+    on_disk = json.loads((tmp_path / "scene" / f"{pinned.digest}.json").read_text(encoding="utf-8"))
+    assert all(observed == on_disk for observed in seen)
+    assert all(canonical_bytes(observed) == pinned.canonical for observed in seen)
+
+
+def test_an_unloadable_pin_is_a_recorded_controller_fault(tmp_path):
+    """Store corruption is the ONE machine failure D1 admits on this path, and it is recorded as a
+    fault rather than degraded into a plan against whatever the pointer names — steering from a
+    silently older scene is the failure the pin exists to make impossible."""
+    program = program_with(discover_step())
+    write_scene(tmp_path, scene())
+
+    result = plan_next_action(tmp_path, program, "discover-1", scene_pin="b" * 64)
+
+    assert result.outcome == CONTROLLER_FAULT and result.scene_digest is None
+    assert "unloadable" in result.reason
+    line, = decision_lines(tmp_path)
+    assert line["outcome"] == CONTROLLER_FAULT
+    assert line["decision_basis"]["scene_digest"] is None
+    assert AGENDA_STORE.pointer_digest(tmp_path) is None
