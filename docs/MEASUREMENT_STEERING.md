@@ -765,12 +765,18 @@ card guidelines > named defaults; PR 4.2a's `/2` question-policy contract added 
 and `parameter_precision_min_mass` TARGET fields and retired `isar.question-policy/1` by name.
 `discover_and_map/1` is likewise retired by name, and an untagged compact discover payload
 is authoring input the reader refuses toward the compiler). This build parses, validates and
-freezes both kinds, but **executes only a single `targeted` step**: a discovery step, or a program
-with more than one step, is a well-formed program this build declines to run and exits **7** —
-deliberately distinct from the malformed-input exit **2**, so an operator script can tell "not
-built yet" from "written wrong". The same refusal applies before `--compile-only` writes its
-output, so compiling a discovery program still exits 7 rather than freezing it; discovery
-execution and its compile path land with the SCENE-4 driver wiring (4.3).
+freezes both kinds, and **executes a single step of either kind**: a `targeted` step runs through
+`run_campaign`, and a `discover_and_map` step runs through `isar.drive.program_runner.run_program`
+(SCENE-4.3 C5), which publishes the SAME exit vocabulary the targeted path does — **0** questions
+answered, **3** incomplete (over budget, or in progress with the questions still open), **4**
+operator stop, **2** anything else — so an operator script branches once. A program with more than
+one step is still a well-formed program this build declines to run: it exits **7**, deliberately
+distinct from the malformed-input exit **2**, so an operator script can tell "not built yet" from
+"written wrong", and a step kind with no runner at all exits 7 the same way. `--compile-only`
+compiles an objective, and a `discover_and_map` program is frozen already: asking to compile one
+exits **2** with a message saying to run the file or copy it. `--resume-latest` likewise refuses a
+discovery campaign by name; discovery resume lands with the durable-blocker and consultation
+machinery.
 
 The retired `isar.objective/1`, `isar.objective/2`, `isar.objective-envelope/1`, and
 `isar.objective-envelope/2` documents are refused with an error naming their replacement. There is no
@@ -805,12 +811,16 @@ line to `report/decisions.jsonl`, embedding the complete DecisionBasis (scene/ag
 digests, the generator registry, the scheduler policy, the placement manifest) so a decision can
 be re-checked without rejoining live state.
 
-**Still offline** (this is the same "compiled but not executed" boundary §7.2 already draws for
-`discover_and_map`): `isar drive` never calls `plan_next_action` — there is no TAVI submission,
-no loop, no consultation channel, and no production emission of the durable blocker evidence
-`QuestionBlockerEvidence` types (only synthetic tests construct one). Driver wiring, the
-partition producer that gives an unmeasured workspace its first partitioned evidence, and closing
-the offline/online gap are SCENE-4.3 work, named and not started.
+**Online since SCENE-4.3 C5**, with named gaps. `isar drive` on a single `discover_and_map` step
+runs `isar.drive.program_runner.run_program`, which builds a scene revision in a supervised
+`isar scene-build` child, calls `plan_next_action` PINNED to the digest that build returned,
+realizes the selected intent onto a nice-number energy grid
+(`isar/drive/steering/realization.py`) and submits it through the existing acquisition path. The
+declared partition an unmeasured workspace steers from is minted from the card's own declarations
+(`isar/drive/steering/cold_start.py`). Still absent: the consultation channel, and any production
+emission of the durable blocker evidence `QuestionBlockerEvidence` types (only synthetic tests
+construct one) — a declined request ends the step honestly with its decline recorded instead.
+Sequencing more than one step is SCENE-6.
 
 ### 7.3 Instrument-limit-aware batching (implemented, 2026-07-18)
 

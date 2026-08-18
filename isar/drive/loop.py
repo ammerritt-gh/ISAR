@@ -129,7 +129,8 @@ from isar.drive.supervisor.stopping import (
 )
 from isar.schema.card import Card
 from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
-from isar.schema.measurement import TOPOLOGY_ROLES, campaign_provenance
+from isar.schema.measurement import (CAMPAIGN_PROVENANCE_FIELDS, TOPOLOGY_ROLES,
+                                     campaign_provenance)
 from isar.schema.steering import (ANALYSIS_UNUSABLE, AUXILIARY_TRACK_NODE, CANDIDATE_NOT_DETECTED,
                                   CANONICAL_MASTER, realized_outcome_for)
 
@@ -3988,6 +3989,13 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             "authoritative_evidence_revision": (proposal.meta or {}).get(
                 "authoritative_evidence_revision"),
             "proposal_fingerprint": (proposal.meta or {}).get("proposal_fingerprint"),
+            # The campaign-provenance block (SCENE-4.3 D2/C1), carried off the proposal the
+            # program-step runner built. Emitted only for a request that actually declares one, so
+            # every targeted submission payload — and therefore every `run` event a resume replays
+            # — stays byte-identical to what it was; `campaign_provenance` reads an absent field as
+            # None either way, which is the manual/legacy lane.
+            **{name: (proposal.meta or {})[name] for name in CAMPAIGN_PROVENANCE_FIELDS
+               if (proposal.meta or {}).get(name) is not None},
             **eig_submission_metadata(proposal),
             # The other two lifecycle identities, so a submitted scan joins back to the scientific
             # question it answers and the geometry its request was accepted under.

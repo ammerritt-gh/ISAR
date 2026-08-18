@@ -151,6 +151,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "of unfinished temporary work, then open the most recent workspace, or "
                          "an empty window if neither is openable)")
 
+    psb = sub.add_parser("scene-build",
+                         help="build one scene revision from persisted state and report it as JSON")
+    psb.add_argument("--workspace", required=True)
+    psb.add_argument("--source", default="campaign",
+                     help="writer name recorded in the store's lineage log (default campaign)")
+
     pd = sub.add_parser("drive", help="run the measurement driver campaign (LLM_HARNESS_DESIGN §8)")
     src = pd.add_mutually_exclusive_group(required=True)
     src.add_argument("--goal", help="natural-language measurement goal (LLM supervisor; needs LLMM)")
@@ -199,19 +205,25 @@ class _StepNotExecutable(Exception):
     """
 
 
+#: The step kinds this build can execute, each through its own runner. ``targeted`` runs the
+#: classical campaign loop unchanged; ``discover_and_map`` runs the SCENE-4.3 program-step seam
+#: (``isar.drive.program_runner.run_program``). A kind outside this set froze cleanly but has no
+#: runner, which is what exit 7 means.
+_EXECUTABLE_STEP_KINDS = ("targeted", "discover_and_map")
+
+
 def _single_executable_step(program, *, where: str):
-    """The one targeted step this build runs, or a refusal naming the slice that adds the rest."""
+    """The one step this build runs, or a refusal naming the slice that adds the rest."""
     if len(program.steps) > 1:
         raise _StepNotExecutable(
             f"{where}: this campaign program declares {len(program.steps)} steps and froze "
-            "cleanly, but sequencing more than one step lands in SCENE-4. Run one step per "
+            "cleanly, but sequencing more than one step lands in SCENE-6. Run one step per "
             "program for now.")
     step = program.steps[0]
-    if step.kind != "targeted":
+    if step.kind not in _EXECUTABLE_STEP_KINDS:
         raise _StepNotExecutable(
             f"{where}: step {step.id!r} is a {step.kind!r} step. It parsed, validated and froze "
-            "cleanly; executing discovery steps lands in SCENE-4. Declare a targeted step to "
-            "measure now.")
+            f"cleanly, but this build executes {list(_EXECUTABLE_STEP_KINDS)} only.")
     return step
 
 
@@ -321,6 +333,9 @@ def main(argv=None) -> int:
     if cmd == "score":
         from isar.cli import score_cmd
         return score_cmd.run(args)
+    if cmd == "scene-build":
+        from isar.cli import scene_build_cmd
+        return scene_build_cmd.run(args)
     if cmd == "view":
         from isar.cli import view_cmd
         return view_cmd.run(args)
@@ -385,6 +400,12 @@ def main(argv=None) -> int:
                 # whole campaign.
                 return rebind_scan_window_eig_policy(overridden, card_eig_policy_set)
 
+            # Set to ``(program, step)`` when the one executable step is a discovery step: the
+            # SCENE-4.3 program-step seam runs it, and none of the objective compilation below
+            # applies (a discover_and_map payload is a frozen DiscoverAndMapSpec, not an
+            # ObjectiveSpec). The targeted path underneath is untouched.
+            discovery: tuple = ()
+
             if args.resume_latest:
                 # LLM-free resume: rebuild the FROZEN objective from the last campaign_start event; a
                 # goal is NEVER re-compiled through the LLM (spec_from_dict is a pure dict path).
@@ -397,6 +418,16 @@ def main(argv=None) -> int:
                           "(no campaign_start event in the session log)", file=sys.stderr)
                     return 2
                 payload = starts[-1]["payload"]
+                # A discovery campaign's start carries the CARRIER objective the program-step seam
+                # submits through, not a resumable target. Refuse it BY NAME here: fed to
+                # spec_from_dict it fails somewhere inside the objective reader, and the operator
+                # reads a schema complaint about a campaign they never authored an objective for.
+                if ((payload.get("objective") or {}).get("meta") or {}).get("discover_and_map"):
+                    print("isar drive: --resume-latest cannot resume a discover_and_map "
+                          "campaign — discovery resume lands with the durable-blocker and "
+                          "consultation machinery. Re-run the frozen program with --program.",
+                          file=sys.stderr)
+                    return 2
                 objective = spec_from_dict(payload["objective"],
                                            defaults={"tier": args.tier or "deterministic"},
                                            where="resume")
@@ -441,15 +472,6 @@ def main(argv=None) -> int:
                     for s in targeted_steps
                 }
                 step = _single_executable_step(program, where=str(args.program))
-                payload = step.payload
-                frozen_payload = frozen_payloads[step.id]
-                objective = compiled_objectives[step.id]
-                declared_mode = None
-                if isinstance(payload.get("steering"), dict):
-                    declared_mode = payload["steering"].get("scan_window_eig_mode")
-                objective = apply_mode_override(
-                    objective, frozen=frozen_payload, declared_mode=declared_mode,
-                    card_eig_policy_set=card_eig_policy_set)
                 # A program written by --compile-only carries the fingerprint of the authoring
                 # input it was compiled from; a hand-written one is identified by its own bytes.
                 source = dict(program.source) or {
@@ -459,6 +481,21 @@ def main(argv=None) -> int:
                 source["program_step_id"] = step.id
                 if program.source_text is not None:
                     source["source_text"] = program.source_text
+                if step.kind == "discover_and_map":
+                    # The SCENE-4.3 seam runs this one; there is no ObjectiveSpec to compile,
+                    # override, fingerprint or freeze, so every objective-shaped step below is
+                    # skipped rather than fed a payload that is not one.
+                    discovery = (program, step)
+                else:
+                    payload = step.payload
+                    frozen_payload = frozen_payloads[step.id]
+                    objective = compiled_objectives[step.id]
+                    declared_mode = None
+                    if isinstance(payload.get("steering"), dict):
+                        declared_mode = payload["steering"].get("scan_window_eig_mode")
+                    objective = apply_mode_override(
+                        objective, frozen=frozen_payload, declared_mode=declared_mode,
+                        card_eig_policy_set=card_eig_policy_set)
             else:
                 # ``--goal`` is natural language for the LLM supervisor; ``--program`` reads a file.
                 # Handing a path to the supervisor does not fail — it compiles *something*, and the
@@ -478,24 +515,40 @@ def main(argv=None) -> int:
                     card_hypotheses=card_hypotheses,
                     card_eig_policy_set=card_eig_policy_set)
                 step = _single_executable_step(program, where="--goal")
-                objective = spec_from_dict(step.payload, where=f"--goal:{step.id}")
-                raw = objective.meta.get("raw") if isinstance(objective.meta, dict) else None
-                declared_mode = ((raw.get("steering") or {}).get("scan_window_eig_mode")
-                                 if isinstance(raw, dict) else None)
-                objective = apply_mode_override(
-                    objective, frozen=False, declared_mode=declared_mode,
-                    card_eig_policy_set=card_eig_policy_set)
                 source = {"kind": "goal",
                           "sha256": hashlib.sha256(args.goal.encode("utf-8")).hexdigest(),
                           "program_schema": PROGRAM_SCHEMA, "program_step_id": step.id,
                           "source_text": args.goal}
-            if args.budget:
+                if step.kind == "discover_and_map":
+                    discovery = (program, step)
+                else:
+                    objective = spec_from_dict(step.payload, where=f"--goal:{step.id}")
+                    raw = (objective.meta.get("raw")
+                           if isinstance(objective.meta, dict) else None)
+                    declared_mode = ((raw.get("steering") or {}).get("scan_window_eig_mode")
+                                     if isinstance(raw, dict) else None)
+                    objective = apply_mode_override(
+                        objective, frozen=False, declared_mode=declared_mode,
+                        card_eig_policy_set=card_eig_policy_set)
+            if discovery:
+                # A discovery step is frozen already: there is no objective to override,
+                # fingerprint or recompile, and `--compile-only` on one would be a re-emission of
+                # the same program. The CLI overrides that DO apply travel as run configuration.
+                if args.compile_only:
+                    print("isar drive: --compile-only compiles an objective; a "
+                          "discover_and_map program is already frozen — run it, or copy the file",
+                          file=sys.stderr)
+                    return 2
+                discovery_budget = _parse_budget(args.budget) if args.budget else None
+                discovery_limit = (_parse_analysis_limit(args.analysis_limit)
+                                   if args.analysis_limit is not None else None)
+            if args.budget and not discovery:
                 objective.budget = _parse_budget(args.budget)
                 objective.__post_init__()
-            if args.analysis_limit is not None:
+            if args.analysis_limit is not None and not discovery:
                 objective.analysis_limit_seconds = _parse_analysis_limit(args.analysis_limit)
                 objective.__post_init__()
-            if not args.resume_latest:
+            if not args.resume_latest and not discovery:
                 objective_payload = objective.to_dict()
                 objective_fingerprint = hashlib.sha256(json.dumps(
                     objective_payload, sort_keys=True, separators=(",", ":"),
@@ -515,7 +568,7 @@ def main(argv=None) -> int:
                 source["campaign_authoring_fingerprint"] = hashlib.sha256(json.dumps(
                     authoring_payload, sort_keys=True, separators=(",", ":"),
                     ensure_ascii=True).encode("utf-8")).hexdigest()
-            if args.compile_only:
+            if args.compile_only and not discovery:
                 compiled = make_program(objective, source=source,
                                         source_text=source.get("source_text")).to_dict()
                 out = Path(args.compile_only)
@@ -532,6 +585,26 @@ def main(argv=None) -> int:
         config = {"workspace": args.workspace, "calibration": args.calibration,
                   "tavi_url": args.tavi, "seed": args.seed, "worker": args.worker,
                   "control_token": args.control_token, "source": source}
+        if discovery:
+            from isar.drive.program_runner import (
+                VERDICT_COMPLETE, VERDICT_MACHINE_FAILURE, VERDICT_OPERATOR_STOPPED,
+                VERDICT_OVER_BUDGET, run_program)
+            program, step = discovery
+            try:
+                result, verdict, directive = run_program(
+                    program, step.id,
+                    {**config, "budget": discovery_budget, "tier": args.tier or "deterministic",
+                     "analysis_limit_seconds": discovery_limit})
+            except Exception as exc:  # noqa: BLE001 — a campaign error is exit 2, not a traceback
+                print(f"isar drive: campaign failed: {exc}", file=sys.stderr)
+                return 2
+            print(f"isar drive: {step.id} {verdict} — {result.deliveries} delivery(ies), "
+                  f"beam {directive}"
+                  + (f" ({result.reason})" if result.reason else ""))
+            # Deliberately the SAME exit vocabulary the targeted path publishes, so an operator
+            # script branches once: 0 met, 3 incomplete, 4 operator stop, 2 anything else.
+            return {VERDICT_COMPLETE: 0, VERDICT_OVER_BUDGET: 3, VERDICT_OPERATOR_STOPPED: 4,
+                    VERDICT_MACHINE_FAILURE: 2}.get(verdict, 3)
         try:
             summary = run_campaign(objective, config)
         except Exception as exc:  # noqa: BLE001  (a campaign error is exit 2, not a stack trace)

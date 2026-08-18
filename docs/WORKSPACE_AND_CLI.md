@@ -69,7 +69,7 @@ Files are the truth, so a crash before the end-of-run save is a clean no-op.
 
 <!-- isar-commands: exhaustive -->
 ```
-init  detect  ingest  run  status  profile  report  diagnose  score  view  drive
+init  detect  ingest  run  status  profile  report  diagnose  score  view  scene-build  drive
 ```
 <!-- /isar-commands -->
 
@@ -84,6 +84,7 @@ init  detect  ingest  run  status  profile  report  diagnose  score  view  drive
 | `isar report --workspace DIR` | Re-render `report.md`/`.html`/`.json` and the dispersion figure. **Reads the ledger only — no reparse, no refit** (`isar/cli/report_cmd.py`). `--scene` additionally rebuilds the scene revision from the persisted ledger and publishes it under `report/scene/` — read-only in the same sense (no re-fit, no re-collation); a workspace the scene adapter cannot read faithfully exits **3** rather than writing an empty scene. |
 | `isar diagnose --workspace DIR` | Render the architect's `CAMPAIGN_DIAGNOSTIC.md` for a campaign — see `CAMPAIGN_DIAGNOSTIC_SPEC.md`. `--eig` prints the scan-window EIG decision table to stdout instead (latest decision per Q, its outcome, reason codes, legacy/target point counts and information margin, plus a reason-code histogram) and writes nothing at all. |
 | `isar score --workspace DIR` | Score a run against a human gold CSV (`--gold`) or known analytic truth (`--truth-fn`/`--truth-csv`). Gold CSVs appear **nowhere** in the `run` path. |
+| `isar scene-build --workspace DIR` | Build **one** scene revision from persisted state and print a single JSON line — `{schema, digest, pointer_flipped, unchanged}`. The same canonical build `isar report --scene` and `isar run` compose, with a machine-readable surface: the campaign parent runs it as a supervised subprocess once per delivery and pins the digest it returns (`SCENE_DESIGN`, SCENE-4.3). Exit **0** means a durable revision exists at `digest` — including when a concurrent publisher won the pointer flip; exit **3** means there is none. |
 | `isar view [workspace]` | Open the desktop GUI on a workspace (needs the `[gui]` extra) — see `GUI_DESIGN.md`. |
 | `isar drive` | Run the autonomous measurement campaign from a natural-language `--goal`, an `isar.campaign-program/1` file (`--program`), or `--resume-latest` — see `MEASUREMENT_STEERING.md`. |
 

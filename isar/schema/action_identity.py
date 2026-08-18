@@ -108,12 +108,14 @@ class MeasurementIntent:
         return scientific_fingerprint(self)
 
 
-def scientific_fingerprint_from_mapping(payload: Mapping[str, object]) -> str:
-    """Reconstruct and authenticate a persisted :class:`MeasurementIntent`.
+def intent_from_mapping(payload: Mapping[str, object]) -> "MeasurementIntent":
+    """Reconstruct and validate a persisted :class:`MeasurementIntent`.
 
-    Inventory consumers must never hash a convenient subset of an intent map.
-    Rebuilding the value type keeps the persisted action identity subject to the
-    same Q, finite-number, and evidence-sink rules as a live proposal.
+    The one canonical constructor for a persisted intent map. Inventory consumers must never
+    hand-assemble the value type from a convenient subset of the mapping: rebuilding it here keeps
+    the persisted action identity subject to the same Q, finite-number, and evidence-sink rules as
+    a live proposal, and keeps every optional field (``window_center_meV`` among them) from being
+    silently dropped by a caller that forgot to copy it across.
     """
     if not isinstance(payload, Mapping):
         raise ValueError("measurement intent must be a mapping")
@@ -150,7 +152,7 @@ def scientific_fingerprint_from_mapping(payload: Mapping[str, object]) -> str:
             raise ValueError(f"measurement intent {name!r} must be a finite number or null")
         return number
 
-    intent = MeasurementIntent(
+    return MeasurementIntent(
         action_class=required_text("action_class"),
         hkl=canonical_hkl(payload.get("hkl")),
         energy_lo=optional_number("energy_lo"),
@@ -165,13 +167,18 @@ def scientific_fingerprint_from_mapping(payload: Mapping[str, object]) -> str:
         window_center_meV=(optional_number("window_center_meV")
                            if "window_center_meV" in payload else None),
     )
-    return scientific_fingerprint(intent)
+
+
+def scientific_fingerprint_from_mapping(payload: Mapping[str, object]) -> str:
+    """The scientific action fingerprint of a persisted intent map, via :func:`intent_from_mapping`."""
+    return scientific_fingerprint(intent_from_mapping(payload))
 
 
 __all__ = [
     "MeasurementIntent",
     "canonical_hkl",
     "canonical_json",
+    "intent_from_mapping",
     "scientific_fingerprint",
     "scientific_fingerprint_from_mapping",
 ]

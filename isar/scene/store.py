@@ -96,7 +96,19 @@ class ConcurrentRevisionWrite(ValueError):
     A ``ValueError`` subclass on purpose: every existing caller already handles ``ValueError``
     from this module (the driver hook logs and skips, ``isar report --scene`` exits 3), so a
     losing writer degrades to the same visible skip rather than an unhandled traceback.
+
+    ``digest`` is the revision this writer BUILT, and it is already durable on disk: the blob is
+    content-addressed and written before the CAS check (see :meth:`RevisionStore.write_revision`).
+    Carried as an attribute rather than only in the message so the campaign parent (SCENE-4.3 D1)
+    can pin what it computed and proceed — losing the pointer flip to a read-only publisher costs
+    it nothing, and scraping a digest back out of prose would be a second, fragile contract.
+    ``parent`` is the digest the pointer had actually moved to.
     """
+
+    def __init__(self, message: str, *, digest: str | None = None, parent: str | None = None):
+        super().__init__(message)
+        self.digest = digest
+        self.parent = parent
 
 
 class StaleSceneAtPublication(ValueError):
@@ -489,7 +501,8 @@ class RevisionStore:
                 raise ConcurrentRevisionWrite(
                     f"{self.artifact_label} pointer moved to {parent} since this writer "
                     f"snapshotted at {expected_parent}; refusing to publish {revision.digest} "
-                    f"over it. The blob is written and addressable at {target}.")
+                    f"over it. The blob is written and addressable at {target}.",
+                    digest=revision.digest, parent=parent)
             written_at = datetime.now(timezone.utc).isoformat()
             pointer = {"schema": self.pointer_schema, "digest": revision.digest,
                       "parent": parent, "written_at": written_at}
