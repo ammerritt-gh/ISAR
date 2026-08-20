@@ -157,6 +157,22 @@ skips is recorded `unresolved` with its ceiling intact — kept out of the poste
 `dominated`, but *not* ruled out. If such a candidate's ceiling still reaches the best trusted
 evidence, the comparison is incomplete rather than close, and selection degrades rather than
 ranking on whichever candidates happened to be sampled.
+**In plain terms**, because this paragraph earns its keep at the podium: the likelihood at the
+best-fit point always improves when you add a knob, so it cannot judge between models. The
+*evidence* (marginal likelihood, Z) asks a different question — not "how well does this model fit
+at its best tuning?" but "how well does it fit *averaged over everything its parameters are
+allowed to do*?" A model with an extra peak spreads its bets over a much larger parameter
+volume; if the data does not need that peak, most of that volume fits badly and drags the
+average down. That is the Occam penalty — not AIC's flat fee of 2 per parameter, but the
+measured cost of the parameter volume the model wasted. The "validity ladder" is just three ways
+of computing that average, cheapest first: treat the likelihood peak as a Gaussian bump and
+integrate it analytically (Laplace — fine when the peak is clean); refit once with the prior in
+place first when the original fit never saw it (MAP, then Laplace); and when a Gaussian bump
+cannot be trusted at all — a parameter pinned at a bound, broken curvature — pay full price and
+explore the volume numerically (nested sampling). Each candidate's record names which rung
+produced its number. The selected structure is then simply the one holding the largest share of
+the total evidence.
+
 When evidence cannot be computed at all, or the set is incomplete in that sense, selection falls
 back to AIC and *says so* — the record names the lane (`aic_no_evidence_inputs` /
 `aic_all_evidence_invalid` / `evidence_budget_exhausted`), and a fallback-lane record is
@@ -364,6 +380,17 @@ provisional band is honest where a 0.001 meV bar would be a lie. (Reporting the 
 interval would be the statistical equivalent of quoting C₆₆ from a dispersion slope the data
 never resolves: formally computable, physically meaningless.)
 
+**Owner direction (2026-08-20, walkthrough ruling — work tracked as TODO CAL-4):** accepting the
+collapse and reporting `resolution_limited` has quietly become a mark of pride, and it should
+not be — scientists route around a method's failure rather than dwelling in it. The proposed
+route: make "resolution-limited" a *candidate structure* instead of a failure mode — fit a
+zero-width line (a delta function, so the fitted shape is the resolution function itself) as an
+admissible structure beside the finite-Γ DHO, and let §2's evidence selection decide. When the
+delta wins, the honest deliverable is a positive statement — "Γ is not resolvable at this
+resolution," with an upper limit — rather than a pinned-bound fit with a degenerate interval.
+(The operator's previous analysis program instead pushed Γ away from the bound with a repulsive
+term; recorded as the alternative considered.)
+
 Verify:
 
 ```
@@ -450,9 +477,14 @@ agreement check is live as a per-scan trust signal of the §3.2 kind (`bayes_fre
 These samples are a Bayesian posterior under an optimizer-bound, data-dependent prior kernel.
 That makes the individual posterior interval a coherent conditional result under that kernel, but
 its `log_evidence` is not comparable across models or campaigns, and the current system is not a
-Bayesian model average. What remains **[Planned]** is the *licence*: prior normalization and
-sensitivity, all-model coverage including null, evidence stability, SBC/PPC, and calibration before
-any formal Bayesian model-average or authority claim. A physical row's `bayes_interval` remains
+Bayesian model average. What remains **[Planned]** is the *licence*, and it splits into two different kinds of waiting:
+the single-fit interval's promotion to a certifying rung needs the **coverage campaign** (TODO
+CAL-2) — the scoring machinery for it exists, so that gate is owner go-ahead plus compute, with
+one technical settle inside it (the `nlive` 250-vs-400 discrepancy on very-high-count scans);
+whereas any formal Bayesian model-average or evidence-comparison authority needs **real design
+and implementation work** (plans/stats-audit.md STAT-5): a scientific prior registry replacing
+the data-dependent box kernel, prior normalization and sensitivity, all-model coverage including
+the null, evidence-uncertainty propagation, SBC/PPC, and calibration. A physical row's `bayes_interval` remains
 diagnostic; §4.1 separately describes the legacy mixed master interval.
 
 Verify:
