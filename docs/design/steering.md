@@ -24,6 +24,19 @@
 > give the citation; citation-confidence flags are collected at the end (the reference list is meant
 > to seed a reading library).
 
+**Scope and lineage — read before adopting this document's vocabulary.** The tracked-branch
+machinery described here (branches, the dispersion prior, "fit at a q", folds/forks) is
+**dispersive-sharp-mode shaped by construction** — it grew on phonons, and its dialect assumes a
+phenomenon whose intensity organizes into branches over q. That is one engine, not the system's
+worldview. The phenomenon-general doctrine is the owner's hypothesis-map hierarchy
+(DESIGN_GOALS, Inbox: the hypothesis map meets measured S(Q,ω)/QE space through **intensity**;
+ALL counts enter the map; **counts are authoritative, fits are disposable** derivations on top),
+and it is already constitutional in the scene layer: measurement-arena records stamp QE
+footprints from *measurement*, never from fit success, and identity is open-vocabulary and
+catalogue-driven in (Q,E) (`design/scene.md`). SCENE-6 replaces this tracker outright; until
+then, treat this document's per-q, per-branch vocabulary as the legacy targeted engine's
+dialect, with the scene layer as the general form.
+
 ### Tracked-branch frontier and evidence semantics (updated 2026-07-21)
 
 `target_selector="tracked_branch"` makes identity coverage precede final precision. The driver first
