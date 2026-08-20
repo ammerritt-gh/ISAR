@@ -1,66 +1,45 @@
-# Campaign records — index
+# Campaign evidence — index
 
 > **Status:** live (this index)
-> **Authority:** canonical for *which* campaign record covers what
+> **Authority:** canonical for *which* frozen evidence bundle covers what
 
-Every file in this directory is **historical evidence**. Each records what a particular campaign
-did on a particular date, including things that were later found to be wrong and repaired.
+This directory holds the **retained frozen evidence bundles**: machine-written artifacts
+(manifests, gate results, case data, fingerprints) from formal campaigns and gates, kept because
+measured data is auditable forever (DESIGN_GOALS, Auditing). They are records of a date, never
+statements of current behaviour — for what the controller does *today*, read
+[DESIGN.md §8](../../DESIGN.md) and [MEASUREMENT_STEERING.md](../MEASUREMENT_STEERING.md).
 
-**No record here states current behaviour.** `DECISIONS.md` D3 makes this a rule, not a
-convention: campaign notes are dated records, never load-bearing, and the reading guide must not
-route beginners through them. If you want to know what the controller does *today*, read
-[DESIGN.md §8](../../DESIGN.md), [MEASUREMENT_STEERING.md](../MEASUREMENT_STEERING.md), and the
-decision named in the last column below.
+The dated campaign *narratives* that used to live beside them were absorbed into the living
+design docs and deleted on 2026-08-20 (the doc rebuild,
+[HANDOFF-doc-rebuild.md](../HANDOFF-doc-rebuild.md)); git history retains every one
+(`git log --diff-filter=D --oneline -- docs/campaigns/`).
 
-The value of these records is diagnostic history: what broke, what the evidence looked like, and
-which ruling settled it. That is worth keeping and worth not mistaking for a contract.
+## Retained bundles
 
-## Autonomous driver campaigns
+| Bundle | What it froze | Ruling / evidence for |
+|---|---|---|
+| [2026-07-31_STAT2B1_HELDOUT/](2026-07-31_STAT2B1_HELDOUT/) | Sealed STAT-2b.1 held-out criterion comparison (decision_summary, cell summaries, owner gate) | S8 (authority withheld for the AICc switch) |
+| [2026-08-02_EIG4_SLICE1_CENSUS/](2026-08-02_EIG4_SLICE1_CENSUS/) | EIG-4 Slice 1 eligibility census (eligibility not measurable) | O36 context, diagnostic |
+| [2026-08-03_EIG4_SLICE5_OFFLINE/](2026-08-03_EIG4_SLICE5_OFFLINE/) | Slice 5.1 offline `off`→`shadow` comparison corpus + zero-policy report | O37 |
+| [2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP/](2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP/) | Schema-v1 source-closure candidate (rejected, never active) | S9 (cycle retired by S10) |
+| [2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR/](2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR/) | Schema-v2 source-closure repair candidate | S9 (cycle retired by S10) |
+| [2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE/](2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE/) | Slice 7 bootstrap source-closure candidate | O40 / S9 |
+| [2026-08-04_EIG4_SLICE7_REPAIR_SOURCE_CLOSURE/](2026-08-04_EIG4_SLICE7_REPAIR_SOURCE_CLOSURE/) | Slice 7 repair renewal candidate | O40 / S9 |
+| [2026-08-04_EIG4_SLICE8_SHADOW_GATE/](2026-08-04_EIG4_SLICE8_SHADOW_GATE/) | Slice 8 shadow-gate first attempt (invalidated: `eligible_same_action_join_mismatch`; disposition in `attempt-disposition.json`) | O41 context |
+| [2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR/](2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR/), […_ABORTED/](2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_ABORTED/), […_V2/](2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2/) | Repair attempts (V2 aborted pre-freeze: `fixture_regime_mismatch`; dispositions inside) | O41 context |
+| [2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3/](2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3/) | The **passed** coherent Slice 8 gate; owner-accepted result `f6fd65dd…` binding the O41 authority envelope (one clean case, `s8-c01-strong-confirmed`) | **O41** |
+| [2026-08-04_EIG4_SLICE9_SOURCE_CLOSURE/](2026-08-04_EIG4_SLICE9_SOURCE_CLOSURE/) | Slice 9 source-closure candidate | O41 / S9 |
+| [2026-08-05_EIG4_R3_SOURCE_CLOSURE/](2026-08-05_EIG4_R3_SOURCE_CLOSURE/) | R3 cold-start evidence behind the symmetric per-neutron comparison | **O43** |
+| [2026-08-05_O44_ZONE_CENTRE_SOURCE_CLOSURE/](2026-08-05_O44_ZONE_CENTRE_SOURCE_CLOSURE/) | A11 zone-centre waste evidence behind the acoustic-origin exemption | **O44** |
 
-| Date | Record | Purpose | Outcome | Governing decision |
-|---|---|---|---|---|
-| 2026-07-07 | [2026-06_MVP_FIRST_RUN.md](2026-06_MVP_FIRST_RUN.md) | First end-to-end autonomous run — one NL command, no human numbers | Completed; exposed the first live defects | Phase 4 / `isar drive` |
-| 2026-07-08 | [2026-07_MVP_ZONE_RETEST.md](2026-07_MVP_ZONE_RETEST.md) | Re-run on the two trouble zones (near-Γ, zone boundary) | Passed first certification scorecard; two zones stayed open | — |
-| 2026-07-09 | [2026-07-09_MVP16_DIAGNOSTIC.md](2026-07-09_MVP16_DIAGNOSTIC.md) | Architect diagnostic over `out/mvp_zone_test16` | The hand-assembled prototype that `isar diagnose` was built from | [CAMPAIGN_DIAGNOSTIC_SPEC.md](../CAMPAIGN_DIAGNOSTIC_SPEC.md) |
-| 2026-07-10 | [2026-07-10_SVP_RECERT.md](2026-07-10_SVP_RECERT.md) | TAVI-as-backend deterministic re-certification | Deterministic rung certified; McStas/clocks out of scope | S3, R4 |
-| 2026-07-20 | [2026-07_AP1_BRANCH_MAPPING_DEADLOCK.md](2026-07_AP1_BRANCH_MAPPING_DEADLOCK.md) | Acoustic branch-mapping deadlock | Diagnosed; repaired | O25 |
-| 2026-07-20 | [2026-07_AP3_GLOBAL_BRANCH_EVIDENCE.md](2026-07_AP3_GLOBAL_BRANCH_EVIDENCE.md) | Global branch-evidence failure after a zone jump | Phase 0 repair in focused tests; live replay pending | O25/O26 |
-| 2026-07-21 | [2026-07-21_OP9_OP10_TRACKED_FRONTIER.md](2026-07-21_OP9_OP10_TRACKED_FRONTIER.md) | Premature tracked-frontier stop on the 6 meV optic branch | Repaired for the tracked optic path; OP10 replay reaches `met` | O27 |
-| 2026-07-23 | [2026-07-23_AP6_ACTION_INVENTORY.md](2026-07-23_AP6_ACTION_INVENTORY.md) | `branch_ambiguity` stop from an incomplete action space | Action-inventory control plane shipped; full driver replay outstanding | O28, O29 (amended by O31) |
+Each bundle is self-describing — machine-written JSON (run manifests, gate results, candidate
+records, dispositions; exact filenames vary by campaign type) carrying commit anchors and
+fingerprints. The ruling cited in the last column states what the evidence decided.
 
-## Speedup sprint evidence
+## Narratives pending absorption (terminal)
 
-| Date | Record | Purpose | Outcome | Governing plan |
-|---|---|---|---|---|
-| 2026-07-20 | [2026-07-20_speedup_phases_1_2.md](2026-07-20_speedup_phases_1_2.md) | Phase 1–2 timing evidence | Recorded | [SPEEDUP_DESIGN.md](../SPEEDUP_DESIGN.md) |
-| 2026-07-20 | [2026-07-20_op7_speedup_checkpoint.md](2026-07-20_op7_speedup_checkpoint.md) | OP7 checkpoint | Recorded | [SPEEDUP_DESIGN.md](../SPEEDUP_DESIGN.md) |
-
-## Statistical evidence campaigns
-
-| Date | Record | Purpose | Outcome | Governing plan |
-|---|---|---|---|---|
-| 2026-07-30 | [2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md](2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md) | Repair STAT-2b delivery deduplication, measure 4/8/16/24/28-worker scaling, and rerun development | Corrected development complete; 24 workers selected; renewed held-out approval pending | [DECISIONS.md](../DECISIONS.md) S8/H4/S13 |
-| 2026-07-31 | [2026-07-31_STAT2B1_HELDOUT.md](2026-07-31_STAT2B1_HELDOUT.md) | Sealed STAT-2b.1 held-out criterion comparison | Complete; frozen gate withheld authority for an AICc switch | [DECISIONS.md](../DECISIONS.md) S8/H4/S13 |
-| 2026-07-29 | [2026-07-29_EIG_EXPOSURE_BASIS.md](2026-07-29_EIG_EXPOSURE_BASIS.md) | EIG-0 exposure-basis spike | Recorded | [EIG_STEERING_DESIGN.md](../EIG_STEERING_DESIGN.md) |
-| 2026-08-02 | [2026-08-02_EIG4_SLICE1_CENSUS.md](2026-08-02_EIG4_SLICE1_CENSUS.md) | EIG-4 Slice 1 eligibility census | Eligibility not measurable; current contract incomplete | [EIG_STEERING_DESIGN.md](../EIG_STEERING_DESIGN.md) |
-| 2026-08-03 | [2026-08-03_EIG4_SLICE5_OFFLINE.md](2026-08-03_EIG4_SLICE5_OFFLINE.md) | EIG-4 Slice 5.1 offline `off`→`shadow` comparison | Recorded | [EIG_STEERING_DESIGN.md](../EIG_STEERING_DESIGN.md) |
-| 2026-08-03 | [2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md](2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md) | Authenticate historical STAT-2b.1 evidence and construct a production source-closure candidate | Schema-v1 candidate rejected in owner review; never active | [DECISIONS.md](../DECISIONS.md) S9/S13 |
-| 2026-08-04 | [2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md](2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md) | Repair renewable upkeep, aggregate authentication, approval provenance, and conservative traversal | Replacement schema-v2 candidate constructed; owner approval pending | [DECISIONS.md](../DECISIONS.md) S9/S13 |
-| 2026-08-04 | [2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE.md](2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE.md) | Review Slice 7 protected-boundary drift and supersede the unapproved bootstrap candidate | New schema-v2 bootstrap candidate constructed; owner approval pending | [DECISIONS.md](../DECISIONS.md) S9/S13 |
-| 2026-08-04 | [2026-08-04_EIG4_SLICE7_REPAIR_SOURCE_CLOSURE.md](2026-08-04_EIG4_SLICE7_REPAIR_SOURCE_CLOSURE.md) | Authenticate the Slice 7 repair and renew its production source-closure candidate | Replacement schema-v2 bootstrap candidate constructed; owner approval pending | [DECISIONS.md](../DECISIONS.md) S9/S13 |
-| 2026-08-04 | [2026-08-04_EIG4_SLICE8_SHADOW_GATE.md](2026-08-04_EIG4_SLICE8_SHADOW_GATE.md) | Run the frozen bounded EIG-3 shadow gate | Passed; owner acceptance and any O41 ruling pending | [EIG_STEERING_DESIGN.md](../EIG_STEERING_DESIGN.md) |
-
-## Analysis-core checks and forward notes
-
-| Record | What it is |
+| Record | Absorbs into |
 |---|---|
-| [IN8_PHASE1_CHECK.md](IN8_PHASE1_CHECK.md) | First stress-test of the Phase-1 fitter on real triple-axis (ILL IN8) data. Kept for what it records *before* the run: what a numor gives versus what the fitter needs, why 055182 is the clean case, and the resolution caveat. The run's *results* are now committed at [`../assets/in8_phase1/FINDINGS.md`](../assets/in8_phase1/FINDINGS.md) |
-| [PHASE_4_NOTES.md](PHASE_4_NOTES.md) | Original forward notes for closing the measurement loop. **Built and shipped** — the realized driver is `isar/drive/`. Kept because `archive/PHASE_3_DESIGN.md` uses them as rationale for what Phase 3 was built toward |
-
-`PHASE_4_NOTES.md` is an aspiration document rather than campaign evidence and does not describe
-shipped behaviour — Phase 4's realized form is in `isar/drive/`. It lives here because it is dated
-and historical, and because Phase 3's design still points at it.
-
-`PHASE_5_NOTES.md` was deleted on 2026-07-25: forward notes for work that was never designed and is
-not scheduled, superseded by nothing because it described nothing that exists. Deleted records are
-recoverable from git history.
+| [2026-07_MVP_ZONE_RETEST.md](2026-07_MVP_ZONE_RETEST.md) | branch-disambiguation mechanics → the steering design doc (rebuild slice C) |
+| [2026-07-29_EIG_EXPOSURE_BASIS.md](2026-07-29_EIG_EXPOSURE_BASIS.md) | exposure-heterogeneity findings → the steering design doc (rebuild slice C) |
+| [PHASE_4_NOTES.md](PHASE_4_NOTES.md) | held while `archive/PHASE_3_DESIGN.md` cites it; dies with the archive slice |

@@ -2,12 +2,12 @@
 
 > **Status:** terminal
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
-> **Superseded by:** the current contract named in [`campaigns/README.md`](README.md). A dated record of what happened, never a statement of current behaviour (DECISIONS D3).
+> **Superseded by:** the realized driver (`isar/drive/`) and `docs/MEASUREMENT_STEERING.md`. Retained temporarily because `archive/PHASE_3_DESIGN.md` cites it; scheduled for deletion with the archive-absorption slice. A dated record, never a statement of current behaviour.
 
 **Status:** Built and running end-to-end (2026-07). These are the original forward notes, kept
 because they framed what Phase 3 was built *toward*; the realized driver lives in `isar/drive/`
 (`isar drive` CLI). For what actually shipped — the closed loop, the σ-calibrated stopping rule, and
-the defects the first live run exposed — see [2026-06_MVP_FIRST_RUN.md](2026-06_MVP_FIRST_RUN.md) and the
+the defects the first live run exposed — see the 2026-06 first-run log (deleted 2026-08-20; git history retains it) and the
 closed-loop capstone `..\TAVI\docs\CLOSED_LOOP_DESIGN.md`. The one departure from these notes: the
 loop's routine decisions are **deterministic and auto-fired** (numbers come only from ISAR's
 `results.csv`); the LLM supervisor is confined to goal-parsing and future proposals, never the

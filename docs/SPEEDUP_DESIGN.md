@@ -23,8 +23,10 @@ economy or final-number accuracy; certification honesty is explicitly preserved 
 2026-07-19 statistics-contract audit: `docs/STATS_PRIMER.md` §7.
 
 Companion documents: `docs/STATS_PRIMER.md` §3 (the coverage evidence that licenses Phase 2),
-`docs/MEASUREMENT_STEERING.md` §7.5 (master-authoritative semantics Phase 3 must preserve),
-`docs/campaigns/2026-07-20_speedup_phases_1_2.md` (Phase 1–2 timing evidence).
+`docs/MEASUREMENT_STEERING.md` §7.5 (master-authoritative semantics Phase 3 must preserve).
+The Phase 1–2 timing evidence log (2026-07-20) is in git history; its load-bearing numbers are
+in §1 below. Tier mix from the first full autonomous run (2026-06): analyze-tier counts over
+the run were cheap 59 / fast 22 / full 16.
 
 ---
 
@@ -121,8 +123,8 @@ promotion-record API, lossless scan/master tier splitting, pending-work recovery
 publication checks, and terminal/certification barriers are implemented. Crash-safe asynchronous
 scheduling and fresh-master `auto` drive enablement remain open and blocked by the shadow gate.
 The synchronous path is authoritative until reusable candidates have a durable work artifact; a
-crash never causes an older revision to publish. OP7 and role-split evidence is recorded in
-`docs/campaigns/2026-07-20_op7_speedup_checkpoint.md`.*
+crash never causes an older revision to publish. The OP7 checkpoint and role-split evidence log
+(2026-07-20) is in git history; the measured numbers above are the record.*
 
 ### 3.1 Policy
 

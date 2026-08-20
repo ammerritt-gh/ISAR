@@ -87,7 +87,8 @@ in-session with a full briefing, or documented in the owning design doc's roadma
     README describing it is a dated record. Proposal: fold what the code-consumer needs into the
     owning design doc, keep the JSON, delete the README — confirm or overrule.
 11. **`Science\AGENTS.md` retirement (cluster level, not ISAR).** Ruled 2026-08-20: no top-level
-    Science repo; the root AGENTS.md retires once its two load-bearing warnings are confirmed in
-    repo floors — the ISAR↔PUFFIN variance trap (already in ISAR's Hard Rule 3; **PUFFIN's floor
-    not yet checked**) and the TAVI-dependency sweep list (TAVI's floor not yet checked). Blocked
-    on those two checks, then a deletion you perform or approve.
+    Science repo. Both load-bearing warnings are now confirmed in repo floors: the ISAR↔PUFFIN
+    variance trap is in both floors (ISAR Hard Rule 3; PUFFIN rule 3), and the TAVI consumer
+    sweep list was promoted into TAVI's AGENTS.md Quick Reference (TAVI commit `c96b941c`,
+    2026-08-20). Remaining: delete `Science\AGENTS.md` and `Science\CLAUDE.md` — **your action**,
+    because the Science root is not a git repo, so this deletion has no history to recover from.

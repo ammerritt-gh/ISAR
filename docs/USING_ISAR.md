@@ -129,8 +129,7 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   and a running TAVI instrument. Use `--program program.json` for an LLM-free run — an
   `isar.campaign-program/1` file, which `--goal … --compile-only program.json` writes for you without
   contacting TAVI. **Currently drives the
-  TAVI simulator only** (development tier), not a live beamline. See
-  [campaigns/2026-06_MVP_FIRST_RUN.md](campaigns/2026-06_MVP_FIRST_RUN.md).
+  TAVI simulator only** (development tier), not a live beamline.
   The **budget is the only stop condition** — there is no iteration cap. A goal or program compiled by
   `isar drive` that declares no budget gets the canonical default for its tier: **1 hour** of counting time on the
   `deterministic` tier, **8 hours** on `mcstas` (`isar.drive.objective.DEFAULT_BUDGET_HOURS_BY_TIER`,

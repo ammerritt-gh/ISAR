@@ -9,7 +9,7 @@
 > falsification, cost-normalised EIG acquisition, and the anti-Stokes fold + rival-branch banking
 > are implemented (`isar/analyze/descriptor.py`, `isar/session/branch_model.py` /
 > `branch_assignment.py`, `isar/drive/acquisition/eig.py`); what ran and what failed is recorded in
-> `campaigns/2026-06_MVP_FIRST_RUN.md` and `campaigns/2026-07_MVP_ZONE_RETEST.md`.
+> `campaigns/2026-07_MVP_ZONE_RETEST.md` (the 2026-06 first-run log is in git history).
 > **Branch-identity-aware acquisition (§2 fourth consequence, §4.1 item 7, §4.5): first
 > implementation landed 2026-07-17** (DECISIONS O6–O12; user-facing reference
 > `docs/HYPOTHESES.md`); joint gap-aware tracking and the connected frontier landed 2026-07-18
@@ -206,8 +206,11 @@ scientific dead end.
 
 ISAR is a **triage tool** for inelastic neutron / X-ray spectroscopy: fit every scan, report a phonon
 energy with an honest verdict, and flag what needs a human (`docs/READING_GUIDE.md`). The autonomous
-driver (`isar drive`, `docs/campaigns/2026-06_MVP_FIRST_RUN.md`) closes the loop — from a goal it proposes scans, drives
-the instrument, fits, and decides where to remeasure and when to stop.
+driver (`isar drive`) closes the loop — from a goal it proposes scans, drives
+the instrument, fits, and decides where to remeasure and when to stop. Its first full end-to-end
+run (2026-06, one natural-language command, no human numbers in the loop) converged 11/21 q on
+the contiguous lower branch with a converged-q median |Δω₀| of 0.020 meV on the deterministic
+tier; the full log is in git history.
 
 The first autonomous campaigns exposed three failure zones, and thinking about them exposed a deeper risk.
 
@@ -999,6 +1002,10 @@ resume. Limits stop dispatching new work; acquired data finish or checkpoint the
   confidence, the per-q classification term zeroes at the differentiation tolerance, and the
   budget stop is the outer bound. The synthetic two-branch campaign must show rival spending
   peaking early and dying off, not tracking the target to the end.
+- **Inherited from the Phase-4 forward notes (2026-07):** how to project counts→achieved-error
+  reliably from a partial scan (the bootstrap on the growing set gives this, but its early-point
+  behaviour needs checking); how the planner trades off "finish this Q" vs "start the next Q";
+  and how human approval is presented fast enough to matter mid-beamtime.
 
 ---
 

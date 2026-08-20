@@ -600,8 +600,9 @@ evidence. The repaired `o36.5.1` runner classified those 230 comparison snapshot
 `comparison_unavailable`, and zero `ready`. Its corpus fingerprint is
 `b234c33ddfdc1389d367c348f247bcf974808e5192271bcc39ddfa40a013de95`; the corresponding
 no-policy score report completed with zero scored results and fingerprint
-`ebfd2056608bf3ae90a5a0339516489813c0ba5f82e4e0e6edfef1a698133888`. The dated Slice 5.1
-historical-evidence record under `docs/campaigns/` indexes the retained artifacts. These are observed
+`ebfd2056608bf3ae90a5a0339516489813c0ba5f82e4e0e6edfef1a698133888`. The retained Slice 5.1
+artifacts live in `docs/campaigns/2026-08-03_EIG4_SLICE5_OFFLINE/` (indexed in
+`docs/campaigns/README.md`). These are observed
 availability counts, not an observed successful comparison, and they do not authorize relaxing the
 contract.
 

@@ -150,7 +150,7 @@ read as current behaviour. (A documentation rebuild is in progress; the frontier
 | Does the same core work on another instrument (triple-axis)? | [assets/in8_phase1/FINDINGS.md](assets/in8_phase1/FINDINGS.md) | evidence bundle |
 | What the committed evidence bundle is and is not | [assets/README.md](assets/README.md) | live |
 | Why was a decision made this way? | [DECISIONS.md](DECISIONS.md) — being absorbed into the owning design docs | terminal |
-| What happened in a given campaign run? | [campaigns/](campaigns/) — indexed in [campaigns/README.md](campaigns/README.md) | terminal (being absorbed) |
+| The frozen campaign evidence bundles (data, retained forever) | [campaigns/README.md](campaigns/README.md) | live |
 | The 2026-07-06 IN8 calibration record | [../calibration/README.md](../calibration/README.md) | terminal (fate on the closeout list) |
 | The pre-EIG statistical roadmap | [ISAR_PRE_EIG3_STATISTICAL_CONSISTENCY_HANDOFF.md](ISAR_PRE_EIG3_STATISTICAL_CONSISTENCY_HANDOFF.md) | terminal |
 | The full design rationale | [archive/](archive/) — indexed in [archive/README.md](archive/README.md): [PHASE_1](archive/PHASE_1_DESIGN.md), [PHASE_2](archive/PHASE_2_DESIGN.md), [PHASE_3](archive/PHASE_3_DESIGN.md) | terminal (being absorbed) |

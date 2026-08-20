@@ -345,7 +345,7 @@ as the analytic certification, TAVI answering scans, and **realistic clocks**: c
 as the instrument would report it, so the wall-clock budget semantics (§8) are exercised before they
 meet a real night. TAVI will surprise in ways the analytic tier cannot (resolution tails,
 backgrounds, count-rate reality); better simulated than actual. *(Partial — the deterministic rung ran
-2026-07-10 as the S3 re-certification, `docs/campaigns/2026-07-10_SVP_RECERT.md`; realistic
+2026-07-10 as the S3 re-certification; the recert log is in git history. Realistic
 clocks and the McStas rung remain Planned.)* EIG-4, not TAVI/McStas, is the current SVP.
 
 **Backend-first integration.** Oracle use (simulate a proposed scan before spending beam) and

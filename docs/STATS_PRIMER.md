@@ -276,6 +276,14 @@ experimenter needs to know about their one scan. Including the at-bound fits, HE
 drops to 0.64 while the bootstrap holds 0.81: the failure concentrates in the scans the wall
 chapter is about.
 
+A concrete mis-certification, from the 2026-07-10 deterministic re-certification (log in git
+history): at q=0.45 a converged scan with `interval_reliable=False` but `hesse_trusted=True`
+certified the HESSE interval [3.8248, 3.8276] against a truth of 3.8967 — outside by
+0.070 meV, roughly **35 half-widths**. Its γ = 0.0134 passed the at-bound heuristic, so the
+trust gate (covariance_ok ∧ ¬gamma_at_bound ∧ counts) admitted it. The lesson is standing: a
+covariance-based trust gate needs the same calibration scrutiny as the bootstrap flag — a γ
+near but not *at* the bound can still fool it.
+
 ![FIG. 6](stats/figures/coverage_scatter.png)
 
 **FIG. 6.** Per-scan HESSE/bootstrap width ratio. One scan is not the ensemble: the skewed-Γ
