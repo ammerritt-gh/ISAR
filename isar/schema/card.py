@@ -139,7 +139,7 @@ def validate_policy_text(text: str) -> PolicyValidation:
 class CardState:
     exclusions: list = field(default_factory=list)
     corrections: list = field(default_factory=list)  # append-only audit (LLM vs human, §8)
-    # Unification (UNIFICATION_DESIGN §2.1) — the DESIGN.md §6 accumulated-state half. All optional
+    # Unification (UNIFICATION_DESIGN §2.1) — the docs/ARCHITECTURE.md §6 accumulated-state half. All optional
     # with list defaults, so a pre-unification `<exp>.state.json` (exclusions + corrections only)
     # loads unchanged.
     resolution_versions: list = field(default_factory=list)  # [{version, method, source, created, ...}]

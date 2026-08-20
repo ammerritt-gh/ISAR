@@ -7,7 +7,7 @@ This directory holds the **retained frozen evidence bundles**: machine-written a
 (manifests, gate results, case data, fingerprints) from formal campaigns and gates, kept because
 measured data is auditable forever (DESIGN_GOALS, Auditing). They are records of a date, never
 statements of current behaviour — for what the controller does *today*, read
-[DESIGN.md §8](../../DESIGN.md) and [design/steering.md](../design/steering.md).
+[ARCHITECTURE.md §8](../ARCHITECTURE.md) and [design/steering.md](../design/steering.md).
 
 The dated campaign *narratives* that used to live beside them were absorbed into the living
 design docs and deleted on 2026-08-20 (the doc rebuild,

@@ -1,6 +1,6 @@
 """adjudicate — the LLM QC decision layer (§7.3), off the critical path and non-destructive.
 
-The deterministic QC layer *flags* candidates; this stage *decides* each flag (DESIGN §0.5):
+The deterministic QC layer *flags* candidates; this stage *decides* each flag (ARCHITECTURE §0.5):
 mask a cosmic ray, keep a genuinely short scan, drop a dead detector, hold the ambiguous one for the
 human — plus a peak-shape judgment and a one-line reason, plus a per-scan narrative. Decisions are
 written to ``record.adjudication`` and appended to the append-only ``card.state.corrections`` audit;

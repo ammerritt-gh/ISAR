@@ -10,7 +10,7 @@ A work queue, not a project diary. Completed work leaves this file; git history 
 Every live item has a **stable ID** and a one-line **Acceptance** condition. Owner, governing
 decision, and dependencies are optional and present only where they carry information.
 
-Design references: [DESIGN.md](DESIGN.md) (architecture + per-capability status §15),
+Design references: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (architecture + per-capability status §15),
 [docs/READING_GUIDE.md](docs/READING_GUIDE.md) (the documentation map), and the closed-loop
 capstone in the sibling TAVI repo (`..\TAVI\docs\CLOSED_LOOP_DESIGN.md` — TAVI = instrument,
 ISAR = analysis authority). Forward workstreams live in their own plans:
@@ -95,7 +95,7 @@ Things that are wrong now, as opposed to things not yet built.
       gate**, which drives the analysis modules directly and is already passed and committed under
       `docs/assets/phase3_gold/` — passing that one does not close this.
       **Acceptance:** the run completes and the scorecard records 0 safety violations, with the
-      result promoted into `DESIGN.md` §15.
+      result promoted into `docs/ARCHITECTURE.md` §15.
 
 ---
 
@@ -168,7 +168,7 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       **Governing:** Phase 3 D5 / risk R8. **Acceptance:** Γ on TAS is reported as intrinsic with
       a validated resolution deconvolution.
 - [ ] **TAS-2 — Decide the `tas4d` engine.** Wrap an existing engine vs implement the
-      Cooper–Nathans projection against TAVI ellipsoids directly. Still open (`DESIGN.md` §13 Q3).
+      Cooper–Nathans projection against TAVI ellipsoids directly. Still open (`docs/ARCHITECTURE.md` §13 Q3).
       **Acceptance:** a D-series decision is recorded.
 - [ ] **FIT-1 — LLM guideline proposer.** Follows the `adjudicate.py` pattern: on
       flagged/model_incomplete/unconstrained fits, propose `{structures, peaks, exclude_regions,
@@ -200,9 +200,9 @@ the steering roadmap ([design/steering.md](docs/design/steering.md) §10). Only 
       (§8, O2); today `budget.spent` sums TAVI's *compute* eta, which is the root cause of the
       MVP16 "10.6 of 28 800" (a semantics gap, not units). (b) The McStas rung. The deterministic
       rung ran 2026-07-10.
-      **Governing:** T1/T2 as amended by O36, `DESIGN.md` §9. **Acceptance:** a campaign runs
+      **Governing:** T1/T2 as amended by O36, `docs/ARCHITECTURE.md` §9. **Acceptance:** a campaign runs
       against a virtual clock with honest budget accounting; the McStas fidelity rung completes;
-      the corresponding TAVI validation row in `DESIGN.md` §15 reflects completion.
+      the corresponding TAVI validation row in `docs/ARCHITECTURE.md` §15 reflects completion.
 - [ ] **DRV-4 — Confirm-churn intent confirmations** (SVP_RECERT, still open): `n_uncertifiable`
       never resets, so a chronically flaky q is never abandoned; and triage should show confidence
       beside `(unreliable)`. Related: a q with its half-width right at tolerance re-confirms
@@ -292,7 +292,7 @@ None of these change a reported number; all are cost or hygiene.
       is a small later task.
       **Acceptance:** both parse a real file end-to-end.
 - [ ] **PLAT-5 — Batch re-analysis driver.** Re-run everything post-beamtime from frozen config at
-      better resolution (`DESIGN.md` §14 item 8).
+      better resolution (`docs/ARCHITECTURE.md` §14 item 8).
       **Acceptance:** a frozen campaign re-runs and produces a comparable report.
 - [ ] **PLAT-6 — Migrate the check scripts onto the driver.** Only after step-5 equivalence is
       proven; until then they are the validation record.
@@ -308,7 +308,7 @@ None of these change a reported number; all are cost or hygiene.
 
 ## LLM layer
 
-`DESIGN.md` §9. Everything here stays off the critical numerical path (P1).
+`docs/ARCHITECTURE.md` §9. Everything here stays off the critical numerical path (P1).
 
 - [ ] **LLM-1 — Structured-output IC / peak-structure proposal** (T2/T3), seeded by the dispersion
       prior first, propose-and-freeze per P1.
@@ -317,7 +317,7 @@ None of these change a reported number; all are cost or hygiene.
       after deterministic attempts.
       **Acceptance:** a failed fit gets a recorded diagnosis that changes no number.
 - [ ] **LLM-3 — Richer review surface / correction channel** beyond card-edit + re-run
-      (`DESIGN.md` §10). The v1 channel works — exercised live 2026-07-03 with a temperature fix
+      (`docs/ARCHITECTURE.md` §10). The v1 channel works — exercised live 2026-07-03 with a temperature fix
       plus seeded expectation, re-fitting exactly the affected scans.
       **Acceptance:** a correction can be made without hand-editing the card.
 

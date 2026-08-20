@@ -1,4 +1,4 @@
-"""Event-stream routing (UNIFICATION_DESIGN §2.4, DESIGN.md §4).
+"""Event-stream routing (UNIFICATION_DESIGN §2.4, docs/ARCHITECTURE.md §4).
 
 Every scan is a measurement or a context-update. `route` partitions a batch on `record.scan_type`
 (set by the parser — classification never leaks downstream). `apply_context_updates` consumes the

@@ -2,7 +2,7 @@
 
 > **Status:** terminal
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
-> **Superseded by:** `DESIGN.md` §7. Kept for the design reasoning it records, which `DESIGN.md` summarizes but does not reproduce. Not maintained; never a normative source.
+> **Superseded by:** `../ARCHITECTURE.md` §7. Kept for the design reasoning it records, which `../ARCHITECTURE.md` summarizes but does not reproduce. Not maintained; never a normative source.
 
 **Status:** Draft for discussion. The major framing forks were worked through in a design session and
 are settled (the error *spine*, physics-gated structure enumeration, modality-branched reporting, the
@@ -11,7 +11,7 @@ such in §15 (the TAS 4-D convolution engine, the Bayesian sampler, bootstrap `M
 method). This is **not** yet at handoff readiness the way Phase 2 was — it is the design-session
 artifact to cut into before a `HANDOFF_PHASE_3.md` is written.
 
-**Relationship to the master design:** This is the concrete realization of `DESIGN.md` §7.5 (Analyze —
+**Relationship to the master design:** This is the concrete realization of `../ARCHITECTURE.md` §7.5 (Analyze —
 DHO ⊗ resolution), §8 (the physics encoding: peak form, raw-energy validity, resolution dimensionality),
 §12 (confidence & triage scoring), and the *solving* of the calibration problems §7.4 names but Phase 2
 deliberately left as fields-and-flags. It is the **Resolve** half of the floating R: normalized, QC'd
@@ -49,7 +49,7 @@ top of it. So the other three decisions are treated here as *upstream of* a trus
 design budget is spent accordingly: the error layer (§5) is the largest and most load-bearing section.
 
 **0.2 Peak structure is physics-gated enumeration, not a free peak count.** The naive implementation —
-"try 1, 2, 3 peaks, pick the lowest-cost / best-IC" — throws away the fact that `DESIGN.md` §8 already
+"try 1, 2, 3 peaks, pick the lowest-cost / best-IC" — throws away the fact that `../ARCHITECTURE.md` §8 already
 established the peak-form problem as **over-constrained**. Detailed balance decides whether an
 anti-Stokes peak is even *admissible* before one is fitted: at 10 K a 5 meV phonon puts the anti-Stokes
 at ~0.3 % of Stokes (I_AS/I_S = exp(−ℏω/k_BT) ≈ exp(−5.8)), so **a second peak on the gain side at low
@@ -160,7 +160,7 @@ residual-seeded second centre; an anti-Stokes hypothesis seeds the gain-side amp
 factor at the trial ω. This is why §0.3 collapses IC into the structure loop: the IC generator is
 parameterized by the hypothesis.
 
-**Prior-first, LLM-second**, per `DESIGN.md` §8: when the running dispersion prior has a confident ω(Q)
+**Prior-first, LLM-second**, per `../ARCHITECTURE.md` §8: when the running dispersion prior has a confident ω(Q)
 at this point, it seeds Ω_d directly (ω(Q) is smooth; neighbours are a strong prior) and the grid only
 refines locally. The LLM IC proposal is a *fallback* for the sparse-prior / hard-shape case, and the
 residual-diagnosis LLM pass runs **after** deterministic attempts, off the critical path. Early in a
@@ -283,7 +283,7 @@ cannot:
 confident, wrong interval with no exception. So **convergence diagnostics are load-bearing, not polish** —
 R̂ / ESS for MCMC, or nested sampling (e.g. dynesty, which returns the evidence as a bonus for §4's weights)
 with its own stopping criterion. A failed diagnostic must route the scan to "Bayesian interval
-untrustworthy → fall back to frequentist + flag," consistent with `DESIGN.md` §9's "make degradation
+untrustworthy → fall back to frequentist + flag," consistent with `../ARCHITECTURE.md` §9's "make degradation
 visible." With a 5-parameter cheap model, NUTS (numpyro) or nested sampling converges fast; the discipline
 is only that the failure is *caught*.
 
@@ -325,7 +325,7 @@ surfaced in the report; nothing is destroyed.
 
 | Bucket | Trigger | Nature |
 |---|---|---|
-| **held-for-calibration** | no resolution version for this analyzer yet; or HERIX scan with no fitted energy zero | a **sequencing** hold (`DESIGN.md` §4 bootstrap gates), not a quality judgment — revisited when calibration arrives |
+| **held-for-calibration** | no resolution version for this analyzer yet; or HERIX scan with no fitted energy zero | a **sequencing** hold (`../ARCHITECTURE.md` §4 bootstrap gates), not a quality judgment — revisited when calibration arrives |
 | **unconstrained** | no admissible structure converges; or both paradigms wide and disagreeing; or bootstrap multimodal with no prior to break the tie | held, not deleted |
 | **underpowered** | the prior expects a phonon here, but the scan lacked the counts to detect it at the achieved statistics | a *detection-power* statement, **not** "no phonon" — and the direct Phase 4 hook ("expected ω here, needs ~N more counts") |
 | **no-signal** | no excursion above background **and** the prior does not expect one here | genuine absence; still flagged, not deleted |
@@ -376,7 +376,7 @@ solves the cases the analysis actually needs:
 
 ## 8. Resolution convolution by instrument
 
-"One DHO + resolution convolution" is too flat (`DESIGN.md` §8): the DHO core is shared, the **convolution
+"One DHO + resolution convolution" is too flat (`../ARCHITECTURE.md` §8): the DHO core is shared, the **convolution
 operator is per-card**, and the two instrument classes differ in *dimensionality*, not just value.
 
 - **IXS (S30, ID28, BL43) — 1-D Voigt.** Resolution is tight in Q and near-1-D in energy, so the
@@ -416,7 +416,7 @@ for this section:
 
 ## 9. Confidence, triage scoring & collation
 
-**Computed confidence, not LLM self-report** (`DESIGN.md` §12). Replace any `high/medium/low` self-rating
+**Computed confidence, not LLM self-report** (`../ARCHITECTURE.md` §12). Replace any `high/medium/low` self-rating
 with a number built from the quantities §4–§6 already produce: agreement of ω across the admissible
 structures (§4), the parameter intervals themselves (§5), the cross-paradigm agreement (§5.5), distance
 from the running dispersion prior, and **provenance (P6)** — a fit on a sparse prior + provisional
@@ -434,13 +434,13 @@ as a tight constraint on its neighbours.
 ## 10. Validation
 
 **FeSeS_1 is necessary but not sufficient.** The gold standard (79/83 human-validated fits, curated
-`fit_results.csv`, `DESIGN.md` §11) is the primary per-scan scoring target — every Phase 3 verdict (which
+`fit_results.csv`, `../ARCHITECTURE.md` §11) is the primary per-scan scoring target — every Phase 3 verdict (which
 ω, which fork, which discard bucket) is scored against it, exactly as the harness scores synthetic recovery
 against truth. But FeSeS_1 is **one sample on one instrument (S30 IXS)**, and validating the analysis layer
 only there would bake in HERIX-flavoured messiness. The peak-count, discard, and error logic must also be
 exercised on **at least one TAS (IN8) dataset with trusted fits**, because TAS is messy in a structurally
 different way (4-D focusing makes apparent Γ vary, spurions are common, backgrounds are structured). Until
-that second-instrument scoring exists, the "generalizes across instruments" claim of `DESIGN.md` §1 is
+that second-instrument scoring exists, the "generalizes across instruments" claim of `../ARCHITECTURE.md` §1 is
 untested *for the analysis layer specifically* — Phase 2 proved it for parsing, Phase 3 must prove it for
 fitting. This is the analysis-layer analogue of Phase 2's "synthetic round-trip + real-file smoke test"
 pair: synthetic recovery (truth known) for coverage, two real instruments for fidelity.
@@ -489,7 +489,7 @@ error object carries what Phase 4 will need to correct it.
 
 ## 12. LLM role in Phase 3
 
-Unchanged from `DESIGN.md` §9, and strictly off the path of any fitted number (P1):
+Unchanged from `../ARCHITECTURE.md` §9, and strictly off the path of any fitted number (P1):
 
 - **IC / candidate-structure proposal** — only when the dispersion prior is sparse or the shape is hard;
   seeded by the prior first (§3). Batched, T2/T3 tier.
@@ -631,7 +631,7 @@ the focusing-dependent Γ (the full 4-D ellipsoid + local dispersion); ω₀ bef
 
 - **D5 — TAS 4-D convolution engine:** wrap an existing engine (ResLib / Tobyfit) or implement the
   Cooper–Nathans/Popovici projection ourselves? Decides how soon IN8 *Γ* (not just ω) is trustworthy.
-  Inherited from `DESIGN.md` §13-Q3. *Partial progress:* the **scalar CN energy resolution is already
+  Inherited from `../ARCHITECTURE.md` §13-Q3. *Partial progress:* the **scalar CN energy resolution is already
   implemented** (port of ResCal `rc_cnmat` in the IN8 Phase-1 check, §8) and gives the right elastic FWHM
   (~0.58 meV), so the "ourselves" path is demonstrably feasible; the open part is specifically the 4-D
   ellipsoid + local-dispersion focusing that makes Γ (not ω) trustworthy.
@@ -650,7 +650,7 @@ the focusing-dependent Γ (the full 4-D ellipsoid + local dispersion); ω₀ bef
 - **D10 — bootstrap `M` and interval type:** `M`≈100–200 expected affordable (§11), percentile vs BCa.
   Pin empirically against the coverage self-test (§10, step 3).
 - **D11 — prior representation for IC seeding across temperatures:** ω(Q) shifts with T near transitions, so
-  a naive cross-T prior can mislead. How much prior is shared across T? Inherited from `DESIGN.md` §13-Q6.
+  a naive cross-T prior can mislead. How much prior is shared across T? Inherited from `../ARCHITECTURE.md` §13-Q6.
 
 ---
 
@@ -667,5 +667,5 @@ the focusing-dependent Γ (the full 4-D ellipsoid + local dispersion); ω₀ bef
 - **No ID28 T→E conversion built** — the `needs_conversion_and_zero` status makes the loop refuse it
   cleanly; solving it waits on ID28 being a near-term instrument (§7).
 - **No final, paper-grade fits** — Phase 3 is triage; the system of record is a later deterministic re-run
-  from frozen config (`DESIGN.md` §1 non-goals).
+  from frozen config (`../ARCHITECTURE.md` §1 non-goals).
 - **No stopping-rule / peeking correction** — flagged for Phase 4 (§11), not built here.

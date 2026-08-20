@@ -14,7 +14,7 @@ audit: `docs/STATS_PRIMER.md` §7.
 
 **Exit criteria.** A background family beyond the single flat constant is selectable by the
 deterministic model-selection path; the S30 gold set shows no safety regression (0 gold-REJECT
-scans resolved) with the sloped/tailed backgrounds enabled; and `DESIGN.md` §15 carries a
+scans resolved) with the sloped/tailed backgrounds enabled; and `../ARCHITECTURE.md` §15 carries a
 background row that is no longer "single flat constant". Not started — the "TAVI prerequisite
 (landed)" section below is built; nothing in §§1–4 is.
 

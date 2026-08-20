@@ -1,4 +1,4 @@
-"""Ingestion (UNIFICATION_DESIGN §2.3, DESIGN.md §7.1) — discover, classify, parse, dedup, order.
+"""Ingestion (UNIFICATION_DESIGN §2.3, docs/ARCHITECTURE.md §7.1) — discover, classify, parse, dedup, order.
 
 Files are the source of truth (U4/§0.5). `discover` walks the data paths, classifies each file
 (measurement / calibration-companion / foreign / unrecognized), and `parse_all` parses the

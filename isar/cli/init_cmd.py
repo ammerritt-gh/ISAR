@@ -90,7 +90,7 @@ def run(args) -> int:
     if plugin_name is None:
         return _fail("no_card_template",
                      f"detected {facility}/{instrument} ({fmt}) has no shipped card template yet; "
-                     f"author a card + parser (see DESIGN.md §6).", as_json)
+                     f"author a card + parser (see docs/ARCHITECTURE.md §6).", as_json)
 
     plugin = registry.plugin_by_name(plugin_name)
     template_text = Path(plugin._CARD_PATH).read_text(encoding="utf-8")

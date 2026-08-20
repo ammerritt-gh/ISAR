@@ -3,7 +3,7 @@ here at the SPEC level (not the pixel level), across every read-side view built 
 workspace with deliberate out-of-plane scans, an unreliable ω̂, an entropy channel, and a pooled
 master.
 
-The invariants (DESIGN §12 / design/gui.md §7.3, G9):
+The invariants (ARCHITECTURE §12 / design/gui.md §7.3, G9):
 * heatmap + dispersion always carry a ``ProjectionLegend`` (the plane is declared, G9) — asserted
   both on the emitted specs and at construction level (``dispersion_spec(projection=None)`` raises);
 * the projection's exclusion-count annotation equals the constructed out-of-window count exactly;

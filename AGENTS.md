@@ -70,12 +70,12 @@ area.
    **hand-edited human intent** — detectors, column maps, collation/merge policy, fitting guidelines;
    **code must never write it.** `card.state.json` is **machine-written** — calibration versions,
    dispersion prior, exclusions. Writing policy from code silently overwrites the scientist's intent;
-   hand-editing state silently corrupts machine bookkeeping. (`isar/schema/`; DESIGN §5, GLOSSARY.)
+   hand-editing state silently corrupts machine bookkeeping. (`isar/schema/`; ARCHITECTURE §5, GLOSSARY.)
 
 2. **Anti-Stokes amplitude is always derived, never fit.** It is Stokes × Bose factor
    `exp(−ℏω/k_BT)` — a *functional* tie (`isar/analyze/components.py:11-12`, `structures.py`). Freeing
    it as a parameter fits fine and yields physically meaningless amplitudes. Detailed balance also
-   gates whether an anti-Stokes peak is *admissible* before it is fit (DESIGN §7).
+   gates whether an anti-Stokes peak is *admissible* before it is fit (ARCHITECTURE §7).
 
 3. **Poisson variance, no zero-count floor (convention D3).** σ=√N with `VARIANCE_CONVENTION="none"`
    (`isar/schema/scan.py:22`); σ=0 for 0 counts is intentional — **code must handle σ=0**, not clamp
@@ -86,12 +86,12 @@ area.
 4. **Energy calibration is 3-state, and scans are held until it exists.** `raw_abscissa_kind` status
    is `absolute` / `needs_zero` / `needs_conversion_and_zero` (`scan.py:28`). A no-elastic-line scan on
    a `needs_zero` instrument with no zero is a *held* non-result — **never default E0 = 0.0.**
-   Instrument-agnostic code that assumes a 2-state (absolute-or-not) world breaks TAS data. (DESIGN §5.)
+   Instrument-agnostic code that assumes a 2-state (absolute-or-not) world breaks TAS data. (ARCHITECTURE §5.)
 
 5. **QC masks, never deletes; the dispersion prior accepts only folds.** Rejection marks a per-point
    flag and keeps the data (`miniscan_reject`); deleting anything breaks the trust contract. Only clean
    single-answer **fold** fits enter the running dispersion prior — ambiguous **fork** (multi-branch)
-   results never do, or the prior learns a phantom dispersion. (DESIGN §6–7, GLOSSARY.)
+   results never do, or the prior learns a phantom dispersion. (ARCHITECTURE §6–7, GLOSSARY.)
 
 6. **Layer boundaries are Qt-free.** `isar/workspace_api` (the read-only workspace facade),
    `isar/geometry` (vendored from TAVI), and `isar/plotspec` must import no Qt. A Qt import leaking
@@ -113,7 +113,7 @@ area.
 
 | Task area | Read first |
 |---|---|
-| Orientation / why trust it | `docs/READING_GUIDE.md` → `DESIGN.md` |
+| Orientation / why trust it | `docs/READING_GUIDE.md` → `docs/ARCHITECTURE.md` |
 | Running it on data / the CLI contract | `docs/USING_ISAR.md`, `docs/WORKED_EXAMPLE.md` |
 | Workspace, session, and the CLI surface | `docs/WORKSPACE_AND_CLI.md` |
 | Fit/runtime performance and speedup gates | `docs/plans/speedup.md` |
@@ -164,7 +164,7 @@ The one pre-release v1→v2 clean break was authorized on 2026-07-17 (DECISIONS 
 SCENE transition, H1 supersedes the additive-only rule for contracts SCENE rebuilds:
 `isar.campaign-program/1` replaces the objective envelope outright with no compatibility reader,
 and contract changes are judged against the SCENE world suite, not serialization compatibility
-(DESIGN §4, DECISIONS H1). Do not build compatibility shims or dual-path readers for retired
+(ARCHITECTURE §4, DECISIONS H1). Do not build compatibility shims or dual-path readers for retired
 formats — H1 classifies them as defects.
 
 ## Verification (cheapest first)
@@ -199,7 +199,7 @@ formats — H1 classifies them as defects.
      duplicated evidence, optional diagnostics, and documentation elegance are deferred unless they
      make evidence materially ambiguous — a review must not turn "this could be cleaner" into
      "rerun the world."
-4. **Status discipline:** DESIGN §15 marks every capability Implemented / Partial / Planned. Do not
+4. **Status discipline:** ARCHITECTURE §15 marks every capability Implemented / Partial / Planned. Do not
    describe Planned work in the implemented voice, and match that table when you change status.
 5. **Evidence is frozen once, at milestones, and never renewed (S10).** A completed formal gate
    (the STAT-2b.1 held-out campaign) is authenticated at its frozen commit, inputs, and

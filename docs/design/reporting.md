@@ -23,7 +23,7 @@ design body below and this section disagree, this section wins.
 
 **Known gaps.** The optional LLM narrative layer described as a later addition (§0 principle) has
 not been built, and the separate *user-facing* campaign report — as opposed to this architect-facing
-diagnostic — remains Planned (`DESIGN.md` §15).
+diagnostic — remains Planned (`../ARCHITECTURE.md` §15).
 
 ---
 

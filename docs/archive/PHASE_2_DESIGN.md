@@ -2,12 +2,12 @@
 
 > **Status:** terminal
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
-> **Superseded by:** `DESIGN.md` §6. Kept for the design reasoning it records, which `DESIGN.md` summarizes but does not reproduce. Not maintained; never a normative source.
+> **Superseded by:** `../ARCHITECTURE.md` §6. Kept for the design reasoning it records, which `../ARCHITECTURE.md` summarizes but does not reproduce. Not maintained; never a normative source.
 
 **Status:** Settled and built. All open
 decisions D1–D8 are resolved (§11), and the design is grounded against real files from four of the five
 instruments in `test_data/`.
-**Relationship to the master design:** This is the concrete realization of `DESIGN.md`
+**Relationship to the master design:** This is the concrete realization of `../ARCHITECTURE.md`
 §5 (normalized scan schema), §6 (experiment card), §7.1–7.3 (ingest / parse / QC-clean),
 §7.6 (collate), and §10 (correction channel). It is the **Reduction** half of the floating R:
 raw facility bytes → normalized, QC'd, provenance-tagged scan files + human-readable reports.
@@ -48,7 +48,7 @@ ground truth. This is the strongest parser test available and it becomes the spi
 **0.2 The "de-dupe by experiment / scan / detector" is an *identity key*, not de-duplication.**
 Those three fields don't remove duplicates — they *name* a single 1-D spectrum uniquely. That is a
 composite primary key, and it's load-bearing (§3). True de-duplication — the same scan re-sent inside
-a growing SPEC file — is a separate concern that *uses* the key to be idempotent (`DESIGN.md` §7.1).
+a growing SPEC file — is a separate concern that *uses* the key to be idempotent (`../ARCHITECTURE.md` §7.1).
 Keep the two ideas apart or the schema gets muddled.
 
 **0.3 One IXS scan is *many* spectra — capture all detectors, but their usefulness is per-experiment.**
@@ -67,7 +67,7 @@ parser asserted one answer for every experiment, which is the actual bug.
 **0.4 "Initial subtraction" must be *masking*, not deletion.** The brief asks for spurious-point
 subtraction with later review. The old `clean.py` did this literally — it wrote new files with points
 physically removed and whole scans dropped, driven by an LLM's `recommendation` field. That violates
-`DESIGN.md` P5 (flag, don't delete) and makes the human-review loop (goal 4) **impossible**: you can't
+`../ARCHITECTURE.md` P5 (flag, don't delete) and makes the human-review loop (goal 4) **impossible**: you can't
 review or undo a deletion that already happened. Phase 2 never destroys a point. Reduction emits the
 raw arrays **plus a per-point QC mask and a proposed-exclusion list**; "subtraction" is the downstream
 fitter *honoring the mask*, fully reversible because the raw point is still there. This single change
@@ -95,7 +95,7 @@ monitor. So the division of labor is a **three-stage pipeline**, not rules-decid
    human is the final authority — the LLM decides so the pipeline keeps moving during beamtime, the
    human corrects at leisure.
 
-This still honors `DESIGN.md` P1 where it matters — **no LLM sits in the path of a fitted number** —
+This still honors `../ARCHITECTURE.md` P1 where it matters — **no LLM sits in the path of a fitted number** —
 but it corrects my over-reading of it: QC adjudication on messy data is precisely where contextual
 judgment beats rules, and the master's own §9 already files QC as flag-not-delete-with-human-review.
 The new wrinkle is that the LLM, not a rule, chooses between flag and keep. The old `clean.py` failed
@@ -135,7 +135,7 @@ map to concrete deliverables:
 **Two things named "catalogue" — keep them apart.** The brief's "catalogue so we don't rebuild parsers
 every time" is the **parser catalogue**: a registry of per-experiment parser plugins plus their cards
 (§6). The old LLM `catalogue.py` was a different object — a **scan catalogue**, the groupby of parsed
-scans by Q/T, which `DESIGN.md` §7.6 says is a deterministic groupby, not an LLM node. Phase 2 builds
+scans by Q/T, which `../ARCHITECTURE.md` §7.6 says is a deterministic groupby, not an LLM node. Phase 2 builds
 both; they are not the same thing.
 
 **Out of scope (deferred to Phase 3), stated so it doesn't creep in:**
@@ -162,7 +162,7 @@ both; they are not the same thing.
   Q geometry, the energy-calibration/geometry policy, and all the currently-hardcoded magic moved into
   it; the **parser registry keyed on `(facility, instrument, format_version)`**.
 - **Two parser plugins** reading policy from the card, capturing all detectors into one multi-spectrum
-  record, emitting with provenance tags and the event-type classification (`DESIGN.md` §4).
+  record, emitting with provenance tags and the event-type classification (`../ARCHITECTURE.md` §4).
 - **Deterministic QC** producing per-point masks and per-scan/per-spectrum flags with machine-readable
   reasons (§7).
 - A **deterministic scan catalogue** (collate/groupby by Q/T, combine-before-divide) (§7.5).
@@ -216,7 +216,7 @@ context once, and maps natively onto a future NeXus group. The key is the *addre
 
 **Idempotent de-dup (the real thing) uses the key.** Ingestion is keyed on `(experiment_id,
 scan_number)` for the record and `detector_id` within it; a re-sent growing SPEC file reparses and
-overwrites by key rather than appending. This is `DESIGN.md` §7.1, and it's why the key has to be stable
+overwrites by key rather than appending. This is `../ARCHITECTURE.md` §7.1, and it's why the key has to be stable
 and detector-resolved, not per-file.
 
 ---
@@ -300,7 +300,7 @@ Concrete real files in `test_data/` (dates from the file headers, since formats 
 
 ## 5. Normalized scan schema (concrete)
 
-Building on `DESIGN.md` §5 and the field survey in `docs/SCHEMA_LANDSCAPE.md`, fixed to a real on-disk
+Building on `../ARCHITECTURE.md` §5 and the field survey in `docs/SCHEMA_LANDSCAPE.md`, fixed to a real on-disk
 shape. **The schema is built on the generalized scan-axis model so it never has to be rewritten for a
 different scan type; Phase 2 only ever populates the constant-Q-energy case.** One `ScanRecord` = shared
 scan metadata + a signal block of N spectra + QC, addressed by the §3 key.
@@ -440,7 +440,7 @@ human-inspectable (open a record, read why a point was masked), one file per phy
 
 ## 6. Experiment card & the versioned parser catalogue (goal 3)
 
-The card is `DESIGN.md` §6; Phase 2 makes it real and proves it against two instruments without
+The card is `../ARCHITECTURE.md` §6; Phase 2 makes it real and proves it against two instruments without
 special-casing the core. The new content Phase 2 forces in:
 
 - **`detectors`** — the per-analyzer registry. Per analyzer: the value-line / column it lives in (S30:
@@ -454,7 +454,7 @@ special-casing the core. The new content Phase 2 forces in:
 - **Everything the real parsers hardcode** moves here, verbatim from the source files so nothing is
   lost: `ENERGY_COL/DATA_COL/MONITOR_COL`, `ZERO_COUNT_ERROR_FLOOR`, `MIN_POINTS`, `scan_exclusion_list`,
   the HKL rounding step (0.05), the temperature label rule — all S30; and the IN8 set already enumerated
-  in `DESIGN.md` §6 (`ALLOWED_TEMPERATURES` snap, `EXCLUDED_SCANS`, `160000` monitor ref, `bs qh`-only
+  in `../ARCHITECTURE.md` §6 (`ALLOWED_TEMPERATURES` snap, `EXCLUDED_SCANS`, `160000` monitor ref, `bs qh`-only
   filter, base paths).
 
 **Card on disk = TOML policy + JSON state (D8).** The card has two parts with opposite lifecycles, and
@@ -538,7 +538,7 @@ a card review, not a code rewrite. This step is cheap insurance against silently
 with last year's assumptions, and it is the natural place the human re-confirms `detectors` enable flags
 (0.3) for the current sample.
 
-**Worked side-by-side (the abstraction test).** The card already tabulates S30-vs-IN8 in `DESIGN.md` §6;
+**Worked side-by-side (the abstraction test).** The card already tabulates S30-vs-IN8 in `../ARCHITECTURE.md` §6;
 Phase 2 adds the `detectors`, `energy_calibration`/`geometry`, and on-disk-format rows. If both parse and
 both emit through the same core with only card differences, the abstraction holds; if either needs a code
 special-case, the card schema is wrong and better to learn it here than at a beamline.
@@ -547,13 +547,13 @@ special-case, the card schema is wrong and better to learn it here than at a bea
 
 ## 7. Deterministic QC & reduction (goal 2, the heart)
 
-Per `DESIGN.md` §7.3 and correction 0.5: **deterministic checks flag candidates and must survive messy
+Per `../ARCHITECTURE.md` §7.3 and correction 0.5: **deterministic checks flag candidates and must survive messy
 input; the LLM adjudicates; the human is final.** Every check below is code, reproducible, wrapped so it
 emits an `uncheckable` flag rather than throwing, and produces a machine-readable `{index|scan|spectrum,
 type, reason}` that the report renders. None of them delete; none of them are the final decision (0.5).
 
 ### 7.1 Point-level (produces per-spectrum `mask` + `point_flags`)
-- **Spike / cosmic ray.** A channel ≫ Poisson expectation given neighbors. Rule from `DESIGN.md` §7.3:
+- **Spike / cosmic ray.** A channel ≫ Poisson expectation given neighbors. Rule from `../ARCHITECTURE.md` §7.3:
   *a point between its neighbors is never a spike; sub-~10-count points are background not spikes; σ
   thresholds respect the Poisson floor.* Concretely: flag `i` if `y[i] - median(neighbors)` exceeds
   `k·sqrt(expected)` **and** `y[i]` is a local max **and** the neighbor level is non-trivial. Tunable `k`
@@ -606,13 +606,13 @@ batch / run, in Markdown (your default), with figures:
   decision + one-line narrative, the (scan, detector, Q, T) header. Masked points shown, **not hidden** —
   the reviewer must see what the pipeline decided to drop and why.
 - **Run-level:** the scan catalogue (deterministic groupby by Q/T, §7.5), a coverage map (which Qs
-  measured, **gap detection** per `DESIGN.md` §7.1), and the flag/decision rollup by type/severity.
+  measured, **gap detection** per `../ARCHITECTURE.md` §7.1), and the flag/decision rollup by type/severity.
 - **The review surface:** a compact list of every LLM decision (and every proposed exclusion) with its
   reason and a stable id, formatted so the human's accept/reject feeds straight back into the card (§8).
 
 ### 7.5 Scan catalogue & collation (deterministic, replacing the old LLM node)
 Groupby on `card.collation.key` with `card.collation.merge` policy (S30 keeps duplicates separate; IN8
-merges + energy-sorts), per `DESIGN.md` §7.6. `Scan_Combining.py` is the working reference. No LLM.
+merges + energy-sorts), per `../ARCHITECTURE.md` §7.6. `Scan_Combining.py` is the working reference. No LLM.
 **Merging obeys combine-before-divide** (from the research): when combining repeated measurements, add
 raw counts and add monitors, *then* divide — never average already-normalized intensities — and
 propagate Poisson errors through the division. The old `catalogue.py` LLM node — which also carried a
@@ -622,7 +622,7 @@ JSON-parse fallback for when the model returned junk — is deleted, not ported.
 
 ## 8. Closing the loop, minimally (goal 4)
 
-The full event-stream session with a checkpointer (`DESIGN.md` §3) is Phase 3. Phase 2 closes the loop
+The full event-stream session with a checkpointer (`../ARCHITECTURE.md` §3) is Phase 3. Phase 2 closes the loop
 with the **lightest mechanism that's still honest**: the card *is* the state.
 
 ```
@@ -644,7 +644,7 @@ with the **lightest mechanism that's still honest**: the card *is* the state.
 - **Idempotence is the requirement that makes this safe.** Because reduction never deletes (0.4) and is
   keyed (§3), re-running over the same raw data with an edited card reproduces everything except where
   the human intervened. No partial state, no re-surfacing the same flag batch after batch (the failure
-  `DESIGN.md` §10 calls out).
+  `../ARCHITECTURE.md` §10 calls out).
 - **Why not the full session now:** a single box, batch (not live) reduction, and finished-only scans
   mean there's no concurrency or mid-scan truncation to defend against yet. The card-as-file loop gets
   goal 4 working and validated; the checkpointer/event-stream earns its complexity in Phase 3 when live
@@ -780,5 +780,5 @@ match what the instrument emits *now*, and re-confirm the `detectors` enable fla
 - No LLM in the path of a fitted number — the LLM adjudicates QC flags and narrates (§7.3, 0.5), it does
   not fit, and its QC decisions are always human-reviewable and non-destructive.
 - No universal parser — per-experiment, per-format-version plugins reading from cards, exactly as
-  `DESIGN.md` §6 insists.
+  `../ARCHITECTURE.md` §6 insists.
 - No physical deletion of any data point, ever — masks only (0.4, P5).

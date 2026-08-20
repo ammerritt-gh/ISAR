@@ -4,7 +4,7 @@
 > **Authority:** SCENE-4 execution plan of record (the scene-layer contract itself stays
 > `docs/design/scene.md`)
 > **Owner:** Adrian Merritt
-> **Exit criteria:** PRs 4.0–4.4 merged with their H-entries and DESIGN §15 rows flipped; this
+> **Exit criteria:** PRs 4.0–4.4 merged with their H-entries and ARCHITECTURE §15 rows flipped; this
 > file then leaves the tree (doc rule 4 — git history keeps the task list).
 
 The grilled rulings of 2026-08-13 (topics 1–8, all RULED) and the five-PR execution plan built
@@ -604,7 +604,7 @@ Selection is fully testable from stored revisions before any driver goes live.
   AS warm+cold worlds green.
 - **Docs in-change:** SCENE_DESIGN §3/§5 (slice row → Implemented; question-layer contract +
   family matrix), design/steering.md, design/eig.md (scan-window = realization layer),
-  DESIGN §15 rows, H-entries; `tests/docs/` claims where machine-checkable.
+  ARCHITECTURE §15 rows, H-entries; `tests/docs/` claims where machine-checkable.
 
 ## Acceptance additions from review triage (fold into the topic-8 matrix)
 

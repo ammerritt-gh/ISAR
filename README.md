@@ -27,11 +27,11 @@ published numbers. Nothing is ever deleted; a human reviews everything afterward
 > [docs/design/steering.md](docs/design/steering.md) for why it steers the way it does.
 >
 > **Per-capability status — Implemented / Partial / Planned — lives in one place:
-> [DESIGN.md §15](DESIGN.md). That table is the authority; this paragraph is orientation.**
+> [docs/ARCHITECTURE.md §15](docs/ARCHITECTURE.md). That table is the authority; this paragraph is orientation.**
 
 ## The pipeline
 
-Three stages, the same three [DESIGN.md](DESIGN.md) uses throughout:
+Three stages, the same three [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) uses throughout:
 
 1. **Parse** — per-instrument parser plugins (auto-detected) emit one normalized `ScanRecord`, and
    every per-experiment decision lives in a human-editable **experiment card**, not in code. Then
@@ -76,7 +76,7 @@ document is indexed there, with its lifecycle, so there is one place to look rat
 | What is ISAR for / why trust it? | [docs/READING_GUIDE.md](docs/READING_GUIDE.md) |
 | How do I run it on my data? | [docs/USING_ISAR.md](docs/USING_ISAR.md) |
 | What does a verdict mean / what do I do with it? | [docs/INTERPRETING_A_VERDICT.md](docs/INTERPRETING_A_VERDICT.md) |
-| The architecture, principles, and per-capability status | [DESIGN.md](DESIGN.md) |
+| The architecture, principles, and per-capability status | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Everything else, indexed | [docs/READING_GUIDE.md](docs/READING_GUIDE.md) |
 
 ## Repository layout

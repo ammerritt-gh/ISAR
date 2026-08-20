@@ -7,7 +7,7 @@ Stdlib + numpy only — no matplotlib, no Qt, no isar.session/drive/analyze. A s
 ``to_dict()`` is JSON-serializable (numpy arrays serialize as lists, tokens as their string value)
 and is the contract golden-snapshot tests pin.
 
-Binding rendering semantics (inherited from DESIGN.md §12 via design/gui.md §7.3), enforced here so no
+Binding rendering semantics (inherited from docs/ARCHITECTURE.md §12 via design/gui.md §7.3), enforced here so no
 backend can violate them:
 
 - An **unreliable** interval (``interval_reliable=False``) is NEVER a numeric range: it may not be

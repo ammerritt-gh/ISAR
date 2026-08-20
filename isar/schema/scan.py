@@ -7,7 +7,7 @@ by the identity key `(experiment_id, scan_number, detector_id)` (§3). It is the
 Decisions baked in here: **no zero-count variance floor** (D3 — variance is stored honestly, 0 for
 0 counts, convention recorded as `VARIANCE_CONVENTION`); **both monitor and time always stored**
 regardless of counting mode (§5.3); the three-state energy-calibration `status` replacing the old
-`energy_absolute` bool (§5.3, DESIGN §8 refinement).
+`energy_absolute` bool (§5.3, ARCHITECTURE §8 refinement).
 """
 from __future__ import annotations
 

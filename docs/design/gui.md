@@ -5,9 +5,9 @@
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
 **Status:** Design draft, 2026-07-11, substantially built. This document follows the discipline of
-`DESIGN.md`: nothing is described in the implemented voice unless it is. Because roughly the first
+`../ARCHITECTURE.md`: nothing is described in the implemented voice unless it is. Because roughly the first
 half of the plan has shipped and the second half has not, the as-built matrix below records
-verified implementation detail and mirrors the capability status in `DESIGN.md` §15. It does not
+verified implementation detail and mirrors the capability status in `../ARCHITECTURE.md` §15. It does not
 override that canonical status table. The Planned voice of the body text predates the build and is
 preserved as the design record.
 
@@ -30,11 +30,11 @@ preserved as the design record.
 Corrections found during the Phase 0/A build are in §0bis; the Pass-3 rulings (G18–G20) are in
 §0ter; §16 lists what Pass 3 deliberately left designed-but-unbuilt.
 
-**Audience.** This document is a self-contained handoff. It assumes the reader knows `DESIGN.md`
+**Audience.** This document is a self-contained handoff. It assumes the reader knows `../ARCHITECTURE.md`
 (the master design) but has **no access to the design conversation** that produced this document.
 All rulings from that conversation are restated here in full; nothing load-bearing is implied.
 
-**Relationship to other documents.** Subordinate to `DESIGN.md` (its principles P1–P6 bind this
+**Relationship to other documents.** Subordinate to `../ARCHITECTURE.md` (its principles P1–P6 bind this
 document). Sibling to `docs/WORKSPACE_AND_CLI.md` (workspace/session internals the GUI reads)
 and `design/steering.md` (the drive loop the GUI observes and nudges). Decision IDs
 introduced here use the **G-series** and should be migrated into `docs/DECISIONS.md` when
@@ -222,7 +222,7 @@ acceptance narrative; §12 maps them to components.
 - The GUI is **not** a second fitter of record. Sandbox fits (§6) never become delivered
   numbers directly.
 - No paper-grade figure editor. Export what the report renders; final figures are made later
-  from frozen config, per `DESIGN.md`.
+  from frozen config, per `../ARCHITECTURE.md`.
 - No web frontend in v1. Desktop Qt, same as PUFFIN/ACIDD, same box as the workspace.
 
 ---
@@ -287,11 +287,11 @@ one of these, that is a design smell alarm: stop and re-derive.
 1. **Objective edit** (`objective_edit`) — changes what the campaign is trying to achieve.
    "Measure this line at this spacing." "Tolerance 0.1 meV on ω₀ at these q." "Over-count this
    (Q, E) region for a paper figure." Legality already established: the objective spec is data,
-   and mid-run re-specification is a session mutation (`DESIGN.md` §8, renegotiation door).
+   and mid-run re-specification is a session mutation (`../ARCHITECTURE.md` §8, renegotiation door).
 2. **Prior edit** (`prior_edit`) — re-seeds interpretation, never delivered numbers. Nudge
    `prior_omega`/`prior_sigma` at a q; assert branch separation where two branches are close;
    redraw the running dispersion guess (item 4). Affects the *next* fits via the branch model.
-3. **Fit-structure correction** (`fit_correction`) — the existing §11 (`DESIGN.md`) correction
+3. **Fit-structure correction** (`fit_correction`) — the existing §11 (`../ARCHITECTURE.md`) correction
    channel: "there is a second phonon here, refit," "scan 223 is bad," "that ω was wrong."
    Card edits + re-run with ledger invalidation, exactly as human review corrections do today.
 4. **Direct proposal** (`scan_proposal`) — "scan at this point now." Injected into the
@@ -464,7 +464,7 @@ ws.watch(callback)                           # file-watcher: change notification
 > `reconstruct_curve`. Both share `assemble_curve` (`isar/report/audit.py`).
 
 - `evaluate_model` and `reconstruct_curve` must be the same math; the existing
-  reconstruct-at-render-time decision (`DESIGN.md` §12) already established stored-params →
+  reconstruct-at-render-time decision (`../ARCHITECTURE.md` §12) already established stored-params →
   curve without refit. Expose it; do not duplicate it.
 - `watch` is how the live views work (items 2 and 4, and the drive dashboard): watchdog on
   the workspace directory, debounce, re-read only what changed. Because Stage III writes
@@ -486,7 +486,7 @@ and pyqtgraph (GUI). The **semantics** live in the shared layer so the two views
 disagree about what an unreliable interval or a pooled master looks like. This also fixes
 figure hygiene: the render path becomes first-class instead of stranded in `out/`.
 
-**Rendering rules (binding, inherited from `DESIGN.md` §12):**
+**Rendering rules (binding, inherited from `../ARCHITECTURE.md` §12):**
 - `interval_reliable=False` suppresses the bootstrap interval, whose ladder row renders as
   `(unreliable)` rather than numbers. A valid profile or trusted-HESSE fallback still certifies
   at its own rung; only a fit with no such fallback uses the explicitly unreliable individual
@@ -731,7 +731,7 @@ journey (§1.3) against TAVI-as-backend.
    growth) — decide against the current `session/` internals when Phase 0 starts.
 2. **Feasibility authority wiring:** consult TAS_MCP as a library dependency, port the
    functions into `isar/geometry/`, or route through TAVI? Decide with the `tas4d` wiring
-   (`DESIGN.md` §15 open item) since both touch the TAVI boundary.
+   (`../ARCHITECTURE.md` §15 open item) since both touch the TAVI boundary.
 3. **Directive payload finalization** must be done against the real objective-spec, prior, and
    correction structures in code — the sketches in §4.3 are shapes, not schemas. First task of
    Phase C (or late B for `objective_edit`).
@@ -741,7 +741,7 @@ journey (§1.3) against TAVI-as-backend.
    into the inbox when Phase C lands is the remaining work.*
 5. **Mid-run renegotiation UI** ("±0.15 meV at these four q — accept?") — lands naturally as a
    driver-authored question artifact + GUI dialog + `objective_edit` answer, once the
-   renegotiation protocol itself (Planned, `DESIGN.md` §8) exists.
+   renegotiation protocol itself (Planned, `../ARCHITECTURE.md` §8) exists.
 6. **Shared widget library** across ACIDD/PUFFIN/ISAR-GUI — explicitly deferred; copy first,
    factor when duplication hurts.
 7. **GUI naming** — user-facing name for `isar view` (working title: none; the river does not

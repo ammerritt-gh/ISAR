@@ -308,5 +308,5 @@ is genuinely data- or budget-limited, and resuming without changing something wi
 `isar init` recognizes the instruments with registered parsers (currently Sector-30 HERIX SPEC —
 supplementary and raw — and ILL IN8 numor ASCII; the shared SPEC/numor readers are built for ID28
 and BL43LXU to slot in as cards + thin plugins). If your format isn't recognized, a parser plugin
-plus a card template is what's needed — see `DESIGN.md` §6 and `isar/parsers/base.py`; the schema
+plus a card template is what's needed — see `ARCHITECTURE.md` §6 and `isar/parsers/base.py`; the schema
 (`ScanRecord`) is fixed, only the reader varies.

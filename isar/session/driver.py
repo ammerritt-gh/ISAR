@@ -931,7 +931,7 @@ def _maybe_adjudicate(measurements, card) -> list[str]:
         client = adjudicate.make_client(cfg)
         adjudicate.adjudicate_records(measurements, card, client)
         return ["LLM adjudication: applied"]
-    except Exception as exc:  # noqa: BLE001 — degrade, never stall the batch (DESIGN §9)
+    except Exception as exc:  # noqa: BLE001 — degrade, never stall the batch (ARCHITECTURE §9)
         return [f"LLM adjudication skipped (no consult): {exc}"]
 
 

@@ -25,7 +25,7 @@ never auto-fired.**
 **Why it's mostly already set up by Phase 3.** The planner's inputs are exactly the objects Phase 3 is
 told to produce: the running dispersion prior (with confidence), the computed confidence (§9), the
 non-result buckets (§6, especially *underpowered* with its detection-power estimate), and the correction
-channel (`DESIGN.md` §10). Phase 4 is largely a consumer of these, plus a counts→error projection.
+channel (`../ARCHITECTURE.md` §10). Phase 4 is largely a consumer of these, plus a counts→error projection.
 The **unification phase** (`UNIFICATION_DESIGN.md`) sits between: it is what actually *materializes*
 these inputs as persistent session state — the auto-built dispersion prior, per-fit provenance, the
 held/non-result ledger — and its v1 prior deliberately carries `amplitude=None` (detection power

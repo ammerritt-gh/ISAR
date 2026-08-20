@@ -19,10 +19,10 @@ per-scan inputs to machine precision (step-3 gate, `tests/session/test_calibrati
 driver is proven end-to-end on IN8 plus a synthetic S30 held/idempotency/corrections smoke.
 Decisions U1–U8 are in §9.
 
-**Relationship to the master design:** This is the realization of `DESIGN.md` §3 (the architecture
+**Relationship to the master design:** This is the realization of `ARCHITECTURE.md` §3 (the architecture
 diagram's spine), §4 (the event-stream model), §7.1 (ingestion & batching), the accumulated-state
 half of §6 (the card fields that were designed but never added), and §10's minimal correction
-channel. It is **build-order items 5–7 of `DESIGN.md` §14**, deferred while Phases 1–3 built the
+channel. It is **build-order items 5–7 of `ARCHITECTURE.md` §14**, deferred while Phases 1–3 built the
 analysis spine. It resolves master-design open questions §13 Q1 (live-first → re-runnable batch
 driver, U1), Q2 (S30 batch payload → growing-file resend: re-parse + dedup, U4), Q4 (card format →
 policy TOML + two JSON state files, §2, U3), and Q5 (checkpointer → plain JSON on disk, no
@@ -50,7 +50,7 @@ about how to call the analysis stack, the check script wins, because the check s
 scored. Anything genuinely new here (ingestion, ledger, prior building, report assembly) is
 orchestration around the validated core, never inside it.
 
-**0.2 The card finally completes.** `DESIGN.md` §6 specified the card as policy + *accumulated
+**0.2 The card finally completes.** `ARCHITECTURE.md` §6 specified the card as policy + *accumulated
 state*, but `CardState` today holds only `exclusions` + `corrections`. The missing state half —
 `resolution_versions`, `energy_zero_series`, `dispersion_prior`, `sample_map` — is exactly what a
 driver needs to survive between batches. Completing the card *is* building the session (§2).
@@ -73,7 +73,7 @@ manifest file (SPEC/numor parsing costs seconds) and re-*fits* only scans whose 
 new, previously held, whose content hash changed, **or whose applicable guidelines changed**
 (§2.2's guideline hash — this is what makes a card edit an effective correction, §6). This
 sidesteps stale record caches, handles
-the S30 growing-file resend (re-parse + dedup by scan number is `DESIGN.md` §7.1's chosen
+the S30 growing-file resend (re-parse + dedup by scan number is `ARCHITECTURE.md` §7.1's chosen
 convention), and makes a crash before the single end-of-run save a clean no-op. Bootstrap fits are
 the expensive thing (~tens of minutes for 83 scans at M=200); the ledger guarantees each scan pays
 that cost once.
@@ -184,7 +184,7 @@ The split (U3): `card.state.json` holds what the *experiment* owns (calibration,
 corrections — small, human-reviewable, must survive); `session.json` holds what the *machine* owns
 (manifest, ledger — deletable and rebuildable from files + a re-run).
 
-### 2.3 Ingestion (`ingest.py`) — `DESIGN.md` §7.1 realized
+### 2.3 Ingestion (`ingest.py`) — `ARCHITECTURE.md` §7.1 realized
 
 - `discover(data_paths, card) → IngestPlan`: walk files; `registry.detect` each; unrecognized files
   (e.g. the `.nxs` NeXus twins beside every IN8 numor) are **listed, not fatal**. Partition into:
@@ -203,11 +203,11 @@ corrections — small, human-reviewable, must survive); `session.json` holds wha
   report header; a hole in the sequence nobody notices for hours is the worst failure for a speed
   tool.
 
-### 2.4 Event routing (`router.py`) — `DESIGN.md` §4 realized
+### 2.4 Event routing (`router.py`) — `ARCHITECTURE.md` §4 realized
 
 `route(records) → RoutedBatch{measurements, calibrations, alignments, environments}` — pure
 dispatch on `record.scan_type`, which the parsers already set (classification never leaks
-downstream; `DESIGN.md` §7.2). Then `apply_context_updates(...)`, **before any measurement is
+downstream; `ARCHITECTURE.md` §7.2). Then `apply_context_updates(...)`, **before any measurement is
 fitted**:
 
 - **calibration events + companion files** → `calibrations.refresh` (§3): update
@@ -281,7 +281,7 @@ memory, is authoritative**, which is what makes a restart a non-event.
 zero_source, resolution_source, resolution_version, held_reason}`:
 
 - **S30**: `center = runcal.zero(scan_number)`; `None` ⇒ held (a missing zero is a flagged
-  non-result, never 0.0 — `DESIGN.md` §7.4). The per-scan slit comes from the measurement record's
+  non-result, never 0.0 — `ARCHITECTURE.md` §7.4). The per-scan slit comes from the measurement record's
   own header — `raw_header["P"][slit_p_group][slit_p_index]` (card knobs; defaults 17/4, the
   convention `bragg._slit` already uses). **This closes a real generalization gap: the gold check
   took the slit from the gold CSV row, which new data does not have.** Missing slit table entry ⇒
@@ -383,7 +383,7 @@ How guidelines flow into the existing machinery **without touching `isar/analyze
 - Exclusions get ledger status `excluded` with the reason echoed in the report, honored at the same
   point as `exclusions_seed` and `card.state.exclusions`.
 
-**The v1 correction channel** (`DESIGN.md` §10, minimal form): the human reads the report, edits
+**The v1 correction channel** (`ARCHITECTURE.md` §10, minimal form): the human reads the report, edits
 `card.policy.toml` (an exclusion, an expectation), re-runs. The per-scan `guidelines_hash` in the
 ledger (§2.2) makes the correction take effect on exactly the affected scans — the edit changes
 their hash, they re-enter the fit queue, nothing else refits; `card.state.corrections` keeps the
@@ -425,7 +425,7 @@ The pipeline is fully deterministic by default. `--llm` (or the card's `[adjudic
 turns on the existing Phase-2 adjudication layer (`adjudicate.adjudication_config(card)` →
 `make_client(cfg)` → `adjudicate_records(...)`) for **QC-flag adjudication only**, off the critical
 path: an LLMM failure degrades to a `"no LLM consult"` flag on the affected scans and the batch
-proceeds (degraded mode per `DESIGN.md` §9). No LLM call sits in the path of any fitted number.
+proceeds (degraded mode per `ARCHITECTURE.md` §9). No LLM call sits in the path of any fitted number.
 The Phase-3 residual-diagnosis LLM pass stays future work (§12).
 
 ---
@@ -433,11 +433,11 @@ The Phase-3 residual-diagnosis LLM pass stays future work (§12).
 ## 9. Decisions (settled — record of why)
 
 - **U1 — Re-runnable batch CLI, not a daemon.** The batch driver run per batch *is* the live driver
-  (`DESIGN.md` §13 Q1); a `--watch` mode is sugar that can wrap `run_batch` later without design
+  (`ARCHITECTURE.md` §13 Q1); a `--watch` mode is sugar that can wrap `run_batch` later without design
   changes. Confirmed with the creator.
 - **U2 — Plain JSON persistence, no LangGraph/DB.** Single box, one writer, restart-safe via
   files-as-truth (0.5) + atomic end-of-run save. A checkpointer adds a dependency without adding a
-  property we need (`DESIGN.md` §13 Q5).
+  property we need (`ARCHITECTURE.md` §13 Q5).
 - **U3 — Two state files.** `card.state.json` = experiment-owned accumulated state (survives,
   human-reviewable); `session.json` = machine bookkeeping (deletable, rebuildable). Resolves §13 Q4.
 - **U4 — Re-parse everything, re-fit selectively** (0.5). Content hash =

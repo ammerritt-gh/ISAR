@@ -20,7 +20,7 @@
 > as of 2026-07-18 (O13); sampled Stage-C information and Fisher dwell optimisation remain planned.
 > This document remains the durable record of *why*
 > the loop steers the way it does — what the literature actually says and the design options we
-> considered — behind the "R" in ISAR that acts to *resolve a measurement problem* (`DESIGN.md`). Where a claim rests on a paper we
+> considered — behind the "R" in ISAR that acts to *resolve a measurement problem* (`../ARCHITECTURE.md`). Where a claim rests on a paper we
 > give the citation; citation-confidence flags are collected at the end (the reference list is meant
 > to seed a reading library).
 
@@ -1208,10 +1208,10 @@ metadata seen). No references were fabricated.
 
 **Exit criteria.** Phase 0 shipped as O27 (the same-q budget / bridge-geometry separation), O28
 (the action-inventory control plane) and O29 as amended by O31 (the terminal taxonomy). What
-remained open from it were the campaign replays that keep O25/O26 at Partial in `DESIGN.md` §15 —
+remained open from it were the campaign replays that keep O25/O26 at Partial in `../ARCHITECTURE.md` §15 —
 Phase 0 closed when those replays passed. Sub-phases A → B → C each close when their own acceptance
 campaign runs against TAVI with the counting target expressed relative to background rather than
-in absolute meV, and `DESIGN.md` §15 records the status change.
+in absolute meV, and `../ARCHITECTURE.md` §15 records the status change.
 
 Guardrails and out-of-scope items carried forward from the roadmap plan, not already stated
 elsewhere in this document:

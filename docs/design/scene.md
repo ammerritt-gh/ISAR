@@ -6,7 +6,7 @@
 > **Exit criteria:** SCENE-7 acceptance — 12 fast adversarial worlds pass as ordinary pytest;
 > slow-lane calibration batteries (label calibration, log/Brier, FDR, interval coverage) pass at
 > agreed thresholds; efficiency benchmark vs dense survey + three targeted campaigns recorded;
-> DESIGN §15 rows flipped to match reality.
+> ARCHITECTURE §15 rows flipped to match reality.
 
 Constitution: DECISIONS **H1**. Program plan of record: the 22 grilled decisions of 2026-08-07/08
 (H-series entries land per slice). Challenge command the program must satisfy end-to-end on
@@ -733,5 +733,5 @@ always wins.)
 
 ## 7. Status discipline
 
-This document is the canonical scene-layer reference. Capability status lives in DESIGN §15 and
+This document is the canonical scene-layer reference. Capability status lives in ARCHITECTURE §15 and
 must match reality per slice; per-slice rulings land as H-series entries in `docs/DECISIONS.md`.

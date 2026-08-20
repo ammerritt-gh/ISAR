@@ -19,9 +19,11 @@ rationale for statistical-method choices is first-class; rationale for steering 
 
 ## End condition
 
-1. The approved target map exists: slimmed `ARCHITECTURE.md`, seven `docs/design/*.md` living
-   docs, user-reference tier intact, plans in `docs/plans/`, DECISIONS/registers/campaign
-   logs/archive absorbed and deleted.
+1. The approved target map exists: `docs/ARCHITECTURE.md` law file, the `docs/design/*.md`
+   living docs (final roster: scene, steering, eig, gui, reporting, plus STATS_PRIMER.md in
+   place — two deviations from the approved seven, both recorded in the Frontier), the
+   user-reference tier intact, plans in `docs/plans/`, DECISIONS/registers/campaign logs/archive
+   absorbed and deleted.
 2. Every retained document is `live` or `draft`, on the map, and verified against code.
 3. The operator closeout list below is empty or explicitly carried elsewhere by the operator.
 4. **Acceptance gate:** a full walkthrough session — the agent explains ISAR end to end (parse →
@@ -56,13 +58,22 @@ rationale for statistical-method choices is first-class; rationale for steering 
   docs/STATS_PRIMER.md** as the statistics design doc — the frozen `assets/` FINDINGS reports
   cite that path in prose and ruling S10 forbids renewing them; its banner declares the role.
   Code comments citing the two moved docs repaired (comments only; gui suite green).
-- **Next:** `DESIGN.md` → `docs/ARCHITECTURE.md` slim-down, creating `design/pipeline.md` and
-  `design/instrument.md` from its interiors. Then the DECISIONS absorption/self-containment
-  sweep (final-state rulings only — amendment chains mapped in the 2026-08-20 reader digest;
-  re-derive from the ledger if lost) + GLOSSARY vocabulary for escaped IDs (O41 authority, H1,
-  …), after which DECISIONS.md and the PRE_EIG3 handoff die. Then `docs/archive/` absorption
-  with the UNIFICATION docstring repair sweep (~40 `§N` citations, mech pass; also stale doc
-  paths in `isar/drive/steering/generators.py`, `isar/scene/predicates.py` code comments) and
+- **Slice F (architecture rename) — DONE 2026-08-20:** `DESIGN.md` → `docs/ARCHITECTURE.md` (git
+  mv, section numbering unchanged); title and the file's own now-relative links repaired; the
+  reference sweep repointed every other `.md` mention/link and every `.py` comment/docstring
+  mention, per-location relative paths, `DESIGN §N` → `ARCHITECTURE §N`. **Ruled during this
+  slice: `design/pipeline.md` and `design/instrument.md` are NOT created** — a full read showed
+  ARCHITECTURE's §5–§6/§9 already sit at law altitude with interiors deliberately owned by
+  module docstrings, WORKSPACE_AND_CLI.md, SCHEMA_LANDSCAPE.md, and design/steering.md; minting
+  two more docs would be one-document-per-noun. The design/ roster closes at five
+  (scene, steering, eig, gui, reporting) plus STATS_PRIMER in place. P/T/W-series ledger
+  rulings absorb into ARCHITECTURE's own sections during the DECISIONS sweep.
+- **Next:** the DECISIONS absorption/self-containment sweep (final-state rulings only —
+  amendment chains mapped in the 2026-08-20 reader digest; re-derive from the ledger if lost) +
+  GLOSSARY vocabulary for escaped IDs (O41 authority, H1, …), after which DECISIONS.md and the
+  PRE_EIG3 handoff die. Then `docs/archive/` absorption with the UNIFICATION docstring repair
+  sweep (~40 `§N` citations, mech pass; also stale doc paths in
+  `isar/drive/steering/generators.py`, `isar/scene/predicates.py` code comments) and
   PHASE_4_NOTES' death. Last, the front-door rewrite of `READING_GUIDE.md` (three doors:
   returning builder, user, contributor), `AGENTS.md` routing refresh, and a full reference
   sweep + full test suite.

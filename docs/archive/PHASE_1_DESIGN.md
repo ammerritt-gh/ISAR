@@ -2,10 +2,10 @@
 
 > **Status:** terminal
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
-> **Superseded by:** `DESIGN.md`. Kept for the design reasoning it records, which `DESIGN.md` summarizes but does not reproduce. Not maintained; never a normative source.
+> **Superseded by:** `../ARCHITECTURE.md`. Kept for the design reasoning it records, which `../ARCHITECTURE.md` summarizes but does not reproduce. Not maintained; never a normative source.
 
 **Status:** Design, ready to build.
-**Relationship to master design:** This is the concrete realization of `DESIGN.md` §11
+**Relationship to master design:** This is the concrete realization of `../ARCHITECTURE.md` §11
 (validation harness) and step 1 of §14, done with **synthetic ground truth** instead of the
 human-curated FeSeS_1 CSV. It also pre-tests two §7.5 core items (AIC/BIC peak-count selection,
 the overdamped-penalty behavior) before they touch real data. It deliberately ignores
@@ -82,7 +82,7 @@ The happy path is the comfortable regime where everything should work. Concretel
 - **`center = 0`, fixed.** This is the correct INS case: on a fixed-kf triple-axis the energy axis
   is absolute (`energy.absolute = true` in the card), so the elastic line sits at zero by
   construction and there is no zero-offset to fit. Fixing it removes the peak-assignment ↔
-  energy-zero coupling (a HERIX problem, `DESIGN.md` §8) so Phase 1 tests *only* ω/Γ recovery.
+  energy-zero coupling (a HERIX problem, `../ARCHITECTURE.md` §8) so Phase 1 tests *only* ω/Γ recovery.
 - **ω₀ comfortably above Γ** (well underdamped, far from the `Stokes_DHO` overdamped boundary at
   Γ = ω₀).
 - **Phonon well separated** from the elastic line (peak position √(ω₀²−Γ²) several resolution
@@ -212,7 +212,7 @@ of the cov-vs-empirical-error comparison already built in
 4. Recovered ω₀, Γ within a stated absolute tolerance of truth.
 
 If pull-width > 1, the fitter is **overconfident** (reported errors too small) — a result we need to
-know before any confidence score (`DESIGN.md` §12) is built on those errors.
+know before any confidence score (`../ARCHITECTURE.md` §12) is built on those errors.
 
 Then **sweep the ground-truth set** across a grid (ω₀, Γ, target counts) and report the
 pull/bias/success-rate surface.
@@ -313,7 +313,7 @@ characterizing that degradation is the real payoff:
 ### 10.1 Phase 1b — break the inverse crime
 Generate with a resolution slightly different from the one the fitter assumes (the real case:
 resolution is measured with error), and/or inject a faint second mode the fitter does not model. Watch
-the **Γ bias** — resolution error feeds directly into the reported linewidth (`DESIGN.md` §8). This is
+the **Γ bias** — resolution error feeds directly into the reported linewidth (`../ARCHITECTURE.md` §8). This is
 the test that estimates what the tool does on real data, as opposed to on its own model.
 
 ---
@@ -321,7 +321,7 @@ the test that estimates what the tool does on real data, as opposed to on its ow
 ## 11. Phase 1c — peak-count model selection
 
 Once single-phonon recovery passes, the high-value synthetic test targets the design's hardest
-deterministic decision (`DESIGN.md` §7.5): **how many peaks.** Generate two-peak data — *elastic +
+deterministic decision (`../ARCHITECTURE.md` §7.5): **how many peaks.** Generate two-peak data — *elastic +
 Stokes* versus *Stokes + anti-Stokes* at a T where both are visible — and check whether **AIC/BIC (or a
 nested F-test)** selects the true peak count, **never raw χ²** (which always favors more peaks). Because
 the true count is known by construction, this is the only clean way to validate that criterion before

@@ -15,14 +15,14 @@ how we know it works** — then points you at the right report or document for e
 > [WORKSPACE_AND_CLI.md](WORKSPACE_AND_CLI.md)), and the **autonomous driver** (`isar drive`)
 > closes the loop: from a natural-language goal it proposes scans, drives the TAVI virtual
 > instrument, fits each scan, and decides where to remeasure and when to stop — with no human
-> numbers in the loop ([DESIGN.md §8](../DESIGN.md)). This runs on TAVI's *deterministic*
+> numbers in the loop ([ARCHITECTURE.md §8](ARCHITECTURE.md)). This runs on TAVI's *deterministic*
 > simulation rung and on *old* data to exercise the workflow — realistic clocks and the McStas
 > rung are Planned, and it has never run on a live experiment. The goal right now is to make
 > ISAR's behaviour legible — to understand what it does and to show why the approach is worth
 > continuing.
 >
 > Per-capability status (Implemented / Partial / Planned) is maintained in one place:
-> [DESIGN.md §15](../DESIGN.md).
+> [ARCHITECTURE.md §15](ARCHITECTURE.md).
 
 ## The problem
 
@@ -126,7 +126,7 @@ read as current behaviour. (A documentation rebuild is in progress; the frontier
 | Contributor rules, hard rules, and area routing | [../AGENTS.md](../AGENTS.md) | live |
 | The backlog | [../TODO.md](../TODO.md) | live |
 | How will I run it on my own data (the CLI)? | [USING_ISAR.md](USING_ISAR.md) | live |
-| How does the autonomous loop work (goal → scans → stop)? | [DESIGN.md §8](../DESIGN.md) | live |
+| How does the autonomous loop work (goal → scans → stop)? | [ARCHITECTURE.md §8](ARCHITECTURE.md) | live |
 | What is legal at an ambiguous frontier / how does it stop? | [design/steering.md](design/steering.md) | live |
 | Where did a campaign spend its time? | `isar profile` ([USING_ISAR.md](USING_ISAR.md)) | live |
 | What does a term mean (pull, fold/fork, cost/dof, a verdict)? | [GLOSSARY.md](GLOSSARY.md) | live |
