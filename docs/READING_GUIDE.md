@@ -139,11 +139,11 @@ read as current behaviour. (A documentation rebuild is in progress; the frontier
 | What the campaign diagnostic owes you | [CAMPAIGN_DIAGNOSTIC_SPEC.md](CAMPAIGN_DIAGNOSTIC_SPEC.md) | live |
 | How the GUI is built and bounded | [GUI_DESIGN.md](GUI_DESIGN.md) | live |
 | What the data/card schema looks like across facilities | [SCHEMA_LANDSCAPE.md](SCHEMA_LANDSCAPE.md) | live |
-| The scene layer (catalogue, questions, discovery) | [SCENE_DESIGN.md](SCENE_DESIGN.md) | live |
-| The SCENE-4 execution ledger (PR 4.4 pending) | [SCENE4_EXECUTION_PLAN.md](SCENE4_EXECUTION_PLAN.md) | live |
-| The statistics audit still in flight (STAT-3–6) | [stats/STATISTICAL_SEMANTICS_AUDIT.md](stats/STATISTICAL_SEMANTICS_AUDIT.md) | live |
+| The scene layer (catalogue, questions, discovery) | [design/scene.md](design/scene.md) | live |
+| The SCENE-4 execution ledger (PR 4.4 pending) | [plans/SCENE4_EXECUTION_PLAN.md](plans/SCENE4_EXECUTION_PLAN.md) | live |
+| The statistics audit still in flight (STAT-3–6) | [plans/stats-audit.md](plans/stats-audit.md) | live |
 | Why steer measurements this way (Bayesian info-gain; prior art) — research foundation | [design/steering.md](design/steering.md) | live |
-| What is being built next (speedup, backgrounds, steering sub-phases A–C) | [SPEEDUP_DESIGN.md](SPEEDUP_DESIGN.md), [BACKGROUND_DESIGN.md](BACKGROUND_DESIGN.md), [design/steering.md §10](design/steering.md) | live |
+| What is being built next (speedup, backgrounds, steering sub-phases A–C) | [plans/speedup.md](plans/speedup.md), [plans/background.md](plans/background.md), [design/steering.md §10](design/steering.md) | live |
 | Same-action scan-window EIG — contract and status | [design/eig.md](design/eig.md) | live |
 | The documentation rebuild in progress (frontier + operator closeout list) | [HANDOFF-doc-rebuild.md](HANDOFF-doc-rebuild.md) | live |
 | Does it agree with a human on real data? | [assets/phase3_gold/FINDINGS.md](assets/phase3_gold/FINDINGS.md) (gold report) | evidence bundle |

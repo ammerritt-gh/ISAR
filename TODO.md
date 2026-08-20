@@ -14,8 +14,8 @@ Design references: [DESIGN.md](DESIGN.md) (architecture + per-capability status 
 [docs/READING_GUIDE.md](docs/READING_GUIDE.md) (the documentation map), and the closed-loop
 capstone in the sibling TAVI repo (`..\TAVI\docs\CLOSED_LOOP_DESIGN.md` — TAVI = instrument,
 ISAR = analysis authority). Forward workstreams live in their own plans:
-[SPEEDUP](docs/SPEEDUP_DESIGN.md), [STEERING roadmap §10](docs/design/steering.md),
-[BACKGROUND](docs/BACKGROUND_DESIGN.md), [EIG](docs/design/eig.md).
+[SPEEDUP](docs/plans/speedup.md), [STEERING roadmap §10](docs/design/steering.md),
+[BACKGROUND](docs/plans/background.md), [EIG](docs/design/eig.md).
 
 Last updated: 2026-08-07.
 
@@ -185,7 +185,7 @@ Specs in [GUI_DESIGN.md](docs/GUI_DESIGN.md) §16. Designed 2026-07-16, not buil
 
 ## Driver and steering
 
-Speedup work is governed by [SPEEDUP_DESIGN.md](docs/SPEEDUP_DESIGN.md); steering physics by
+Speedup work is governed by [SPEEDUP_DESIGN.md](docs/plans/speedup.md); steering physics by
 the steering roadmap ([design/steering.md](docs/design/steering.md) §10). Only items outside those plans live here.
 
 - [ ] **DRV-1 — Supervisor-model auto-fallback.** `gpt-oss-120b` throws transient 503s; today the
@@ -208,7 +208,7 @@ the steering roadmap ([design/steering.md](docs/design/steering.md) §10). Only 
       beside `(unreliable)`. Related: a q with its half-width right at tolerance re-confirms
       forever (first run: H=2.1 took 22 confirm fits, H=2.15 took 12, vs 1 each for well-inside
       q). Capping confirms per q is the cheap half of the fitting-bound problem — the per-fit
-      half is [SPEEDUP_DESIGN.md](docs/SPEEDUP_DESIGN.md).
+      half is [SPEEDUP_DESIGN.md](docs/plans/speedup.md).
       **Acceptance:** a chronically flaky q is abandoned by policy, and triage output shows both.
 
 - [ ] **DRV-5 — EIG-4 Slice 10 deterministic TAVI demonstration.** Slice 9 implements the

@@ -802,7 +802,7 @@ only into machine-owned `card.state.json`; `card.policy.toml` remains human-owne
 `isar/drive/steering/planner.py`'s `plan_next_action(report_dir, program, step_id)` runs the full
 discovery decision offline: given a stored scene and a frozen `discover_and_map` step, it derives
 the agenda, runs every ready question's generator(s) (`isar/drive/steering/generators.py`, the
-seven bound generators — see `SCENE_DESIGN.md` §5/§6 for the construction matrix and the
+seven bound generators — see `scene.md` §5/§6 for the construction matrix and the
 persisted-artifact shapes), proves exhaustion where the evidence supports it
 (`isar/drive/steering/exhaustion.py`), and either selects one physical action or names why not.
 Selection ranks lexicographically (`isar/drive/steering/scheduler.py`'s declared policy: family

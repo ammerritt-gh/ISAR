@@ -218,7 +218,7 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 
 - **scene** — ISAR's reading of a whole stretch of q at once, rather than one scan at a time. It takes
   each scan's finished candidate comparison as given and asks what set of readings hangs together
-  across neighbouring scans. See `docs/SCENE_DESIGN.md`.
+  across neighbouring scans. See `docs/design/scene.md`.
 - **scene factor** — one declared term of the scene's score, or one declared non-scoring job. A factor
   says up front what it reads, what it is tuned to, and how large its term can get; nothing may
   contribute an undeclared bonus. Its jobs are: **couples** (which scans belong in one cluster),

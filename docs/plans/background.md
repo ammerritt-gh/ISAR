@@ -7,7 +7,7 @@
 **Status: design approved 2026-07-19; the TAVI prerequisite has landed (decision T4 — generation,
 interface, truth firewall, pooling identity and campaign transport are Implemented); ISAR's own
 fitting / learning / steering work, Sub-phases A–C below, is not started, and is sequenced after the
-speedup sprint (`docs/SPEEDUP_DESIGN.md`),** whose fast test campaigns are what make this
+speedup sprint (`docs/plans/speedup.md`),** whose fast test campaigns are what make this
 workstream cheap to iterate. **Owner: @ammerritt-gh.** Motivating finding — "backgrounds are a
 single flat constant", named the largest real-data risk by the 2026-07-19 statistics-contract
 audit: `docs/STATS_PRIMER.md` §7.

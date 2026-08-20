@@ -3,7 +3,7 @@
 > **Status:** terminal
 > **Maintenance note:** Retained temporarily for the original through-STAT-5 rationale. Its stage
 > names and anchor revision are historical; current execution is governed by
-> `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md` and the applicable code-grounded plan under
+> `docs/plans/stats-audit.md` and the applicable code-grounded plan under
 > `docs/plans/`.
 
 **Working name:** STAT-CONSISTENCY  
@@ -272,7 +272,7 @@ Nested component tests involving amplitudes on a zero boundary, or parameters un
 
 **Behavior change:** none.
 
-Create `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md` with one row per load-bearing quantity:
+Create `docs/plans/stats-audit.md` with one row per load-bearing quantity:
 
 ```text
 field / artifact
@@ -670,7 +670,7 @@ The initial Codex session should:
 1. verify the repository is exactly at or descended from `e37b7b4fe0debbd0aa32402165b16c4e2aee3a93` and stop immediately if the expected code is not present;
 2. read this handoff plus the active EIG/statistics docs;
 3. trace producers and consumers from code;
-4. write `docs/stats/STATISTICAL_SEMANTICS_AUDIT.md`;
+4. write `docs/plans/stats-audit.md`;
 5. propose the exact PR breakdown for STAT-1 onward;
 6. make no behavior-changing code edits until the audit is reviewed.
 
