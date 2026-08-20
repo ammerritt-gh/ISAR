@@ -7,7 +7,7 @@ Stdlib + numpy only — no matplotlib, no Qt, no isar.session/drive/analyze. A s
 ``to_dict()`` is JSON-serializable (numpy arrays serialize as lists, tokens as their string value)
 and is the contract golden-snapshot tests pin.
 
-Binding rendering semantics (inherited from DESIGN.md §12 via GUI_DESIGN §7.3), enforced here so no
+Binding rendering semantics (inherited from DESIGN.md §12 via design/gui.md §7.3), enforced here so no
 backend can violate them:
 
 - An **unreliable** interval (``interval_reliable=False``) is NEVER a numeric range: it may not be
@@ -18,7 +18,7 @@ backend can violate them:
 - **Interval-ladder** comparison: tiers rendered side by side are labeled by their :class:`Tier`
   token, and **exactly one** may be ``certifying=True`` (0 or 1 allowed; more is rejected).
 - A :class:`Strip` is **measured** data — one column of intensity at a plane position (the growing
-  ``(q, E)`` plane, GUI_DESIGN item 2, G9 4D-honesty). Renderers MUST NOT interpolate *between*
+  ``(q, E)`` plane, design/gui.md item 2, G9 4D-honesty). Renderers MUST NOT interpolate *between*
   strips: each strip is drawn as its own rectangle over its own measured ``E`` extent, and the empty
   space between strips (a gap in the plane sampling) stays empty — a gap is shown as a gap, never
   filled. Interpolation *within* a strip's own measured points is a rendering choice (conservative:

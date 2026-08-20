@@ -1,6 +1,6 @@
 """DispersionViewModel — view-ready state for the C5 dispersion view (Task 12, A-7).
 
-GUI_DESIGN item 3/4 (view half): ω̂ vs q — the heatmap's 1-D sibling. Same projection discipline
+design/gui.md item 3/4 (view half): ω̂ vs q — the heatmap's 1-D sibling. Same projection discipline
 (the declared plane + integration window are always on screen, G9), the same honesty law on the ω̂
 overlay (a certifying-tier whisker only; a warning marker where no tier certifies; the assignment-
 entropy colour channel riding ONLY on the whiskered subset; verdict glyphs), plus the dispersion

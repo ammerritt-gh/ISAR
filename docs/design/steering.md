@@ -711,7 +711,7 @@ offline as ground truth).
 
 ### 7.1 Operator control of a running campaign (implemented, GUI Pass 3 / 2026-07-16)
 
-The loop gained a small, additive operator-control contract (GUI_DESIGN.md G19 has the ruling):
+The loop gained a small, additive operator-control contract (`design/gui.md` G19 has the ruling):
 
 - **Cooperative stop.** `isar drive --control-token <t>` (token alphabet `[A-Za-z0-9_-]`, max
   64 — it names the control file) makes the loop check `report/control/stop-<t>.json` at every

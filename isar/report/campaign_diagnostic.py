@@ -1,6 +1,6 @@
 """CAMPAIGN_DIAGNOSTIC — the architect's post-mortem of an `isar drive` campaign.
 
-Part 2 of ``docs/CAMPAIGN_DIAGNOSTIC_SPEC.md``. A **deterministic** renderer: it assembles the whole
+Part 2 of ``docs/design/reporting.md``. A **deterministic** renderer: it assembles the whole
 story of a campaign (objective → what the driver did → delivered dispersion vs truth → failure dossier
 → machinery defects → verdict) from the files the run already wrote. No refitting, no re-scoring, no
 LLM. If a question cannot be answered from the record, that is a logging defect surfaced in §6, never

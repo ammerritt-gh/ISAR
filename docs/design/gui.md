@@ -1,7 +1,7 @@
 # ISAR GUI — Design
 
 > **Status:** live
-> **Authority:** canonical for GUI architecture and ownership boundaries
+> **Authority:** canonical GUI + workspace_api presentation design
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
 **Status:** Design draft, 2026-07-11, substantially built. This document follows the discipline of

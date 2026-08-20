@@ -130,14 +130,14 @@ read as current behaviour. (A documentation rebuild is in progress; the frontier
 | What is legal at an ambiguous frontier / how does it stop? | [design/steering.md](design/steering.md) | live |
 | Where did a campaign spend its time? | `isar profile` ([USING_ISAR.md](USING_ISAR.md)) | live |
 | What does a term mean (pull, fold/fork, cost/dof, a verdict)? | [GLOSSARY.md](GLOSSARY.md) | live |
-| Why these statistics (vs χ² / HESSE / eyeballing models)? | [STATS_PRIMER.md](STATS_PRIMER.md) | live |
+| Why these statistics (vs χ² / HESSE / eyeballing models)? — the statistics design doc | [STATS_PRIMER.md](STATS_PRIMER.md) | live |
 | What should I *do* with a given verdict? | [INTERPRETING_A_VERDICT.md](INTERPRETING_A_VERDICT.md) | live |
 | One scan, start to finish | [WORKED_EXAMPLE.md](WORKED_EXAMPLE.md) | live |
 | How do I declare the excitations I expect? | [HYPOTHESES.md](HYPOTHESES.md) | live |
 | How does LLM flag adjudication work, and what does it never touch? | [ADJUDICATION.md](ADJUDICATION.md) | live |
 | How it all assembles into one tool (workspace, session, CLI) | [WORKSPACE_AND_CLI.md](WORKSPACE_AND_CLI.md) | live |
-| What the campaign diagnostic owes you | [CAMPAIGN_DIAGNOSTIC_SPEC.md](CAMPAIGN_DIAGNOSTIC_SPEC.md) | live |
-| How the GUI is built and bounded | [GUI_DESIGN.md](GUI_DESIGN.md) | live |
+| What the campaign diagnostic owes you | [design/reporting.md](design/reporting.md) | live |
+| How the GUI is built and bounded | [design/gui.md](design/gui.md) | live |
 | What the data/card schema looks like across facilities | [SCHEMA_LANDSCAPE.md](SCHEMA_LANDSCAPE.md) | live |
 | The scene layer (catalogue, questions, discovery) | [design/scene.md](design/scene.md) | live |
 | The SCENE-4 execution ledger (PR 4.4 pending) | [plans/SCENE4_EXECUTION_PLAN.md](plans/SCENE4_EXECUTION_PLAN.md) | live |

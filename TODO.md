@@ -101,7 +101,7 @@ Things that are wrong now, as opposed to things not yet built.
 
 ## GUI roadmap
 
-Specs in [GUI_DESIGN.md](docs/GUI_DESIGN.md) §16. Designed 2026-07-16, not built.
+Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not built.
 
 - [ ] **GUI-1 — PUFFIN masking port.** `CustomViewBox` → `isar_gui/views/mask_viewbox.py`; first
       consumer is the Sandbox pane. View-layer only; PUFFIN's σ≥1 floor never crosses (Hard Rule 3).

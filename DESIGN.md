@@ -390,7 +390,7 @@ never as a numeric range, pooled masters labeled as such (a rejected master is "
 uncertifiable," never junk). The **campaign diagnostic** serves the architect: objective, outcome
 at a glance, loop narrative, failure dossier with per-zone evidence and figures, defect list,
 provenance table — assembled deterministically from the workspace's own artifacts. Spec:
-`docs/CAMPAIGN_DIAGNOSTIC_SPEC.md`. A user-facing campaign report is a later, separate artifact.
+`docs/design/reporting.md`. A user-facing campaign report is a later, separate artifact.
 *(Triage Implemented with presentation fixes open; diagnostic Implemented 2026-07-10 —
 `isar diagnose`, rendered at every campaign end, characterization-pinned against the frozen
 MVP-16 workspace.)*

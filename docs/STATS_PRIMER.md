@@ -3,6 +3,7 @@
 > **Status:** live
 > **Authority:** canonical for statistical methods; §7 is the sole record of the 2026-07-19 audit
 > **Verified against code revision:** `1310969` (2026-07-30)
+> **Role:** the statistics design doc (design/-equivalent; kept at this path because frozen evidence reports cite it)
 
 *For physicists who fit by hand — and who will check.*
 

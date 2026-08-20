@@ -1,6 +1,6 @@
 """WaterfallViewModel — view-ready state for the C4 waterfall / comparison view (Task 13, A-6).
 
-GUI_DESIGN item 6: compare across temperature. Two display modes over the SAME fixed-q selection:
+design/gui.md item 6: compare across temperature. Two display modes over the SAME fixed-q selection:
 
 * **waterfall** — the measured 1D cut + delivered fit curve at one q, one trace per T bin, stacked
   with a vertical offset. The offset is a pure VIEW-STATE display device (G10): it is never written

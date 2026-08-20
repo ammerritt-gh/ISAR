@@ -42,19 +42,30 @@ rationale for statistical-method choices is first-class; rationale for steering 
   STATS_PRIMER §3.2; Phase-4 open questions → steering §8); campaigns/README.md rewritten as a
   live index of the retained frozen evidence bundles. Held for later slices: MVP_ZONE_RETEST +
   EIG_EXPOSURE_BASIS (absorb in slice C), PHASE_4_NOTES (archive slice).
-- **Slice C (steering cluster) — IN PROGRESS:** MEASUREMENT_STEERING.md → design/steering.md
-  (spine, + STEERING_DESIGN's A–C roadmap absorbed); EIG_STEERING_DESIGN.md → design/eig.md as
-  its own living doc (deliberate deviation from the approved seven-doc map: merging 650 lines of
-  EIG contract into steering would rebuild the monolith; the map's owner-count grows to eight).
-- **Then:** design clusters (scene → statistics → pipeline/gui/reporting/instrument),
-  each cluster created from its source docs *and* absorbing that domain's DECISIONS rulings in
-  the same commit (final-state rulings only — the amendment chains are mapped in the 2026-08-20
-  session's reader digest; re-derive from the ledger if lost). Then `DESIGN.md` →
-  `ARCHITECTURE.md` slim-down; then `docs/archive/` absorption with the UNIFICATION docstring
-  repair sweep (~40 `§N` citations, mech pass) before its deletion; last, the front-door rewrite
-  of `READING_GUIDE.md` (three doors: returning builder, user, contributor), `GLOSSARY.md`
-  vocabulary for escaped decision IDs (O41 authority, H1, …), `AGENTS.md` routing refresh, and a
-  full reference sweep.
+- **Slice C (steering cluster) — DONE 2026-08-20 (`1d690f1`):** MEASUREMENT_STEERING.md →
+  design/steering.md (spine; STEERING_DESIGN's A–C roadmap absorbed as §10; zone-retest's four
+  branch-disambiguation rules absorbed as §7.9); EIG_STEERING_DESIGN.md → design/eig.md as its
+  own living doc (deliberate deviation from the seven-doc map — merging 650 lines of EIG
+  contract into steering would rebuild the monolith; owner-count grows to eight), absorbing the
+  exposure-basis spike's evidence into its Predictive-artifact rationale.
+- **Slice D (scene + plans) — DONE 2026-08-20 (`9f33b80`):** SCENE_DESIGN.md → design/scene.md;
+  the four live plans → docs/plans/ (SCENE4_EXECUTION_PLAN.md, speedup.md, background.md,
+  stats-audit.md), owner/exit-criteria now test-enforced there.
+- **Slice E (gui/reporting/statistics) — DONE 2026-08-20:** GUI_DESIGN.md → design/gui.md;
+  CAMPAIGN_DIAGNOSTIC_SPEC.md → design/reporting.md; **STATS_PRIMER.md deliberately stays at
+  docs/STATS_PRIMER.md** as the statistics design doc — the frozen `assets/` FINDINGS reports
+  cite that path in prose and ruling S10 forbids renewing them; its banner declares the role.
+  Code comments citing the two moved docs repaired (comments only; gui suite green).
+- **Next:** `DESIGN.md` → `docs/ARCHITECTURE.md` slim-down, creating `design/pipeline.md` and
+  `design/instrument.md` from its interiors. Then the DECISIONS absorption/self-containment
+  sweep (final-state rulings only — amendment chains mapped in the 2026-08-20 reader digest;
+  re-derive from the ledger if lost) + GLOSSARY vocabulary for escaped IDs (O41 authority, H1,
+  …), after which DECISIONS.md and the PRE_EIG3 handoff die. Then `docs/archive/` absorption
+  with the UNIFICATION docstring repair sweep (~40 `§N` citations, mech pass; also stale doc
+  paths in `isar/drive/steering/generators.py`, `isar/scene/predicates.py` code comments) and
+  PHASE_4_NOTES' death. Last, the front-door rewrite of `READING_GUIDE.md` (three doors:
+  returning builder, user, contributor), `AGENTS.md` routing refresh, and a full reference
+  sweep + full test suite.
 
 ## Operator closeout list (bounded; shrinks only)
 
@@ -65,7 +76,7 @@ in-session with a full briefing, or documented in the owning design doc's roadma
 1. **User-facing campaign report design.** ISAR's campaign diagnostic is contributor-facing;
    a report a *scientist user* reads after a campaign was explicitly deferred by you until
    post-testing. Ruling needed only when testing ends: what does the user-facing report owe its
-   reader, and does the LLM narrative layer (planned in CAMPAIGN_DIAGNOSTIC_SPEC, unbuilt)
+   reader, and does the LLM narrative layer (planned in `docs/design/reporting.md`, unbuilt)
    participate?
 2. **Renegotiation protocol (was O3).** When a campaign's declared objective proves unreachable
    mid-run (budget, physics), the driver currently stops honestly. A protocol for *renegotiating*

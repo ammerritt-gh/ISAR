@@ -1,6 +1,6 @@
 """HeatmapViewModel — view-ready state for the C3 growing (q, E) plane (Task 11, A-5).
 
-GUI_DESIGN item 2: measured spectra render as STRIPS (one measured column per scan), gaps stay gaps,
+design/gui.md item 2: measured spectra render as STRIPS (one measured column per scan), gaps stay gaps,
 and the declared projection is always on screen (G9 4D-honesty). The honesty overlays ride on top:
 the certifying-tier ω̂ whisker (a warning marker where no tier certifies), the branch-model curve,
 per-point assignment-entropy colouring, verdict glyphs, and a visible count of the scans excluded by

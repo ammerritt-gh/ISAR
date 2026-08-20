@@ -1,7 +1,7 @@
-# CAMPAIGN_DIAGNOSTIC — contract and design spec
+# Reporting — campaign diagnostic (originally "Campaign diagnostic spec")
 
 > **Status:** live
-> **Authority:** canonical for the campaign diagnostic contract
+> **Authority:** canonical campaign-diagnostic / reporting design
 > **Verified against code revision:** `8fa1219` (2026-07-25)
 
 ## As built
