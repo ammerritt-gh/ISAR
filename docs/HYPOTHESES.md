@@ -1,8 +1,7 @@
 # Excitation hypotheses — declaring what you expect to measure
 
-> **Lifecycle:** Current
+> **Status:** live
 > **Authority:** canonical for declaring expected excitations
-> **Provenance:** hand-written
 > **Verified against code revision:** `d483af1` (2026-08-08)
 
 > **Status: Implemented (branch hypotheses).** The branch schema, shipped presets, frozen objective fingerprint, parameter

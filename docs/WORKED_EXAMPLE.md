@@ -1,8 +1,7 @@
 # One scan, start to finish
 
-> **Lifecycle:** Current
+> **Status:** live
 > **Authority:** canonical for one scan, start to finish
-> **Provenance:** hand-written
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
 To make the pipeline concrete, here is a single S30 (IXS) control scan followed all the way through —

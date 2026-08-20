@@ -1,8 +1,7 @@
 # SCENE — target-free multi-phenomenon discovery
 
-> **Lifecycle:** Active plan
+> **Status:** live
 > **Authority:** canonical for the scene layer (catalogue, scene posterior, question layer, scene-EIG)
-> **Provenance:** hand-written
 > **Owner:** Adrian Merritt
 > **Exit criteria:** SCENE-7 acceptance — 12 fast adversarial worlds pass as ordinary pytest;
 > slow-lane calibration batteries (label calibration, log/Brier, FDR, interval coverage) pass at

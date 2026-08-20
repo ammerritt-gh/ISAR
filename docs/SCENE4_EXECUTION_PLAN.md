@@ -1,9 +1,8 @@
 # SCENE-4 — rulings ledger + execution plan of record
 
-> **Lifecycle:** Active plan
+> **Status:** live
 > **Authority:** SCENE-4 execution plan of record (the scene-layer contract itself stays
 > `SCENE_DESIGN.md`)
-> **Provenance:** hand-written
 > **Owner:** Adrian Merritt
 > **Exit criteria:** PRs 4.0–4.4 merged with their H-entries and DESIGN §15 rows flipped; this
 > file then leaves the tree (doc rule 4 — git history keeps the task list).
@@ -267,7 +266,8 @@ until 4.3's H-entry lands:
 
 Related inbox candidates (same discussion): the soft energy ceiling with spare beam time;
 the failed-in-zone hunt recommending another Brillouin zone. Both in
-`docs/DESIGN_GOAL_INBOX.md`, 2026-08-15 entries.
+`docs/DESIGN_GOALS.md` `## Inbox`, 2026-08-15 entries (recorded in the former
+`DESIGN_GOAL_INBOX.md`, since merged into that section).
 
 ## Zone-centre endpoint ruling (2026-08-15, owner — PR #33 review discussion): RULED
 
@@ -604,7 +604,7 @@ Selection is fully testable from stored revisions before any driver goes live.
   AS warm+cold worlds green.
 - **Docs in-change:** SCENE_DESIGN §3/§5 (slice row → Implemented; question-layer contract +
   family matrix), MEASUREMENT_STEERING, EIG_STEERING_DESIGN (scan-window = realization layer),
-  DESIGN §15 rows, DOC_INVENTORY, H-entries; `tests/docs/` claims where machine-checkable.
+  DESIGN §15 rows, H-entries; `tests/docs/` claims where machine-checkable.
 
 ## Acceptance additions from review triage (fold into the topic-8 matrix)
 

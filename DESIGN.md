@@ -1,8 +1,7 @@
 # ISAR — Design
 
-> **Lifecycle:** Current
+> **Status:** live
 > **Authority:** canonical for the architecture and per-capability status table (§15)
-> **Provenance:** hand-written
 > **Verified against code revision:** `5cf3408` (2026-08-15)
 
 **Name.** ISAR = **I**nelastic **S**cattering **A**utomated **R**—, with the final R left
@@ -472,7 +471,7 @@ scheduled. Cross-T dispersion-prior pooling near transitions — revisit with da
 
 **The map lives in one place: [`docs/READING_GUIDE.md`](docs/READING_GUIDE.md)** — every document,
 with its lifecycle, so a reader can tell a current contract from a plan from a historical record.
-The per-file register behind it is [`docs/DOC_INVENTORY.md`](docs/DOC_INVENTORY.md).
+The map of every file is [`docs/READING_GUIDE.md`](docs/READING_GUIDE.md).
 
 This section used to carry a second, independently maintained table. It drifted from the reading
 guide's, which is exactly the failure the single-map rule prevents.

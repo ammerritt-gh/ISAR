@@ -1,7 +1,6 @@
 # EIG-4 Slice 8 bounded shadow gate
 
-> **Lifecycle:** Historical evidence
-> **Provenance:** hand-written
+> **Status:** terminal
 
 ## Outcome
 

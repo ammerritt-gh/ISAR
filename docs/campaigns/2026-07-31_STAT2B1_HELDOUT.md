@@ -1,7 +1,6 @@
 # STAT-2b.1 held-out selection-criterion evidence — 2026-07-31
 
-> **Lifecycle:** Historical evidence
-> **Provenance:** hand-written
+> **Status:** terminal
 > **Verified against code revision:** `abd2dd1` (2026-07-31)
 
 ## Disposition

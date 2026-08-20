@@ -1,12 +1,11 @@
 # Statistical semantics audit — STAT-0
 
-> **Lifecycle:** Active plan
-> **Provenance:** hand-written
+> **Status:** live
 > **Verified against production anchor:** `ce490fec5badbc76e8799b7fb3f84ef5c201b855` (2026-08-03)
 > **Owner:** @ammerritt-gh
 > **Exit criteria:** STAT-6 has transferred every accepted semantic contract into the canonical
 > statistical, steering, schema, and decision documents; every rejected hypothesis is recorded; the
-> audit is then deleted and entered in the `DOC_INVENTORY.md` tombstone table.
+> audit is then deleted; git history retains it.
 
 ## Purpose, boundary, and result
 
@@ -541,7 +540,7 @@ Separate the unconstrained data-only selection fit from penalized/conditional de
 the latter explicitly ineligible for ordinary AIC-family weights.
 
 The bounded execution sequence lived in `docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md`, now
-deleted and tombstoned in `DOC_INVENTORY.md`; the accepted behavior is DECISIONS H4/H5/H7 plus
+deleted (git history retains it); the accepted behavior is DECISIONS H4/H5/H7 plus
 `STATS_PRIMER.md` and `GLOSSARY.md`.
 
 STAT-2a now publishes a strict, authenticated `isar.model_selection/2-shadow` record beside the

@@ -64,6 +64,189 @@ Another good example is orthorhombic samples; the two possible orientations can 
 # Automated Scans
 
 ## Pause/Failure States
+
 When running an automated scan, the only reason to ever stop the campaign is from user choice, meeting a campaign goal, being overbudget or machine failure. If a user wants to intervene or sets a stopping point, this is fine. If we reach our goal (measure this branch to +/- 0.1 meV) we can stop this campaign and consider it complete. If a user sets a budget and we go over that budget (e.g. scan for 4 hours and alert me when finished), then we stick to that budget. If there is some machine failure, we don't keep scanning with garbage data (e.g. if the IXS beam is turned off, we don't keep scanning and getting nothing, we wait for the go-ahead when it's back up). This means that bad fits, low intensity, unknown phenomena, unexpected results, anything that isn't a real "stoppage" does NOT stop an automated campaign. ISAR should never have a stoppage that ends a campaign early outside of these scenarios. A bad fit is not a reason to stop, but it should inform new scans; this is the core of EIG. 
 
 We have had campaigns stopped in the past for e.g. bad fits in previous iterations, so we need a review and cleanup pass to *remove all these extra stopping points.* We must maintain explicit, clearly delineated stopping points that are only activated under controlled, documented circumstances.
+
+---
+
+# Inbox — agent-writable
+
+Candidate top-level objectives drafted by agents FOR the user, merged here from the former
+`docs/DESIGN_GOAL_INBOX.md` (2026-08-20). Protocol unchanged: **agents may only APPEND** new
+candidates to this section — after checking the item is not already in the body above or in this
+Inbox. Agents never rewrite, reorder, or remove entries; the USER drains entries into the body
+(in their own words) or deletes them, on their own. This section is an inbox, not a contract.
+
+## Entries 2026-08-13 — from the SCENE-4 planning grill
+
+### The hypothesis map and the QE map (→ its own top-level section, or "Data Analysis")
+
+ISAR's chain of authority: the hypothesis map (our scientific model) → the scientific question
+(what we care to challenge in that map) → the measured S(Q,ω)/QE space (what we actually
+measured — ALL counts go into the map) → fits derived on top. **Counts are authoritative; fits
+are not.** A fit can always be redone another way over the same region of QE space; a bad fit
+never erases, hides, or blocks anything. Distinct from that: a *broken scan* (the counts
+themselves untrustworthy — machine fault) is quarantined, the map emptied there, the failure
+recorded, rescan attempted when possible — with an offramp so a persistently failing region
+cannot trap a campaign.
+
+### Hypothesis-driven at the core (→ "Phenomena Hypotheses")
+
+The fundamental question is always: *what is our confidence in this model versus our data?*
+Fitted quantities (a phonon energy) are instrumental to higher-level models — the real object
+may be "the dispersion changes in this way at these temperatures," with individual energies only
+in service of that. Models form a hierarchy, and completion of any measurement goal is a
+statement about model confidence; a parameter tolerance (±0.1 meV) is the degenerate special
+case, not the template. Example of the right shape: "the acoustic branch reaches the zone
+centre" is answered by extrapolation under a declared prior (linear near ZC), with confidence
+that grows as fits tighten or scans approach the fold — and with an honest ceiling: behaviour
+*at* the ZC is untestable under the elastic line.
+
+### Campaign regimes (→ "Automated Scans")
+
+User intent spans a spectrum, and it is on the user to state it:
+1. **Open discovery** — "scan this area, find phenomena, pin them down, identify them, fit to
+   ISAR standard defaults." Unexpected in-domain findings are part of the goal.
+2. **Strict targeted** — "map *this*; anything else only in service of that goal (background,
+   calibration)." Possibly multiple targets with an order of importance.
+3. **Guided** — region + expectations + bounded freedom; everything between the extremes.
+Eventually ISAR needs a real campaign *writer* (a goal compiler with judgment), not just a
+parser.
+
+### Never set-and-forget (→ "Automated Scans")
+
+Users can be prompted mid-campaign for permissions and campaign updates (widen the domain?
+abandon a failing region? keep spending on an unresolvable question?). Prompts are non-blocking
+with a declared default — silence chooses the default, the beam never idles waiting on a human —
+and the consequences of answering or not answering are on the user. Hard blocking gates are
+opt-in ("ask before ever leaving the region, and wait").
+
+### ISAR is always measuring (→ "Automated Scans", extends Pause/Failure States)
+
+Completing a campaign is not a reason to stop measuring. The ideal: enough campaigns queued to
+run through without ending, or an open-ended finishing campaign that just collects useful data.
+Only user intervention idles the beam; "stop when this campaign is done" is itself a user
+choice.
+
+### Freedom to leave the beaten path (→ "Automated Scans")
+
+A campaign is a scientific objective, not a fence. By default ISAR may take confirmation scans
+off the nominal path — the −E side, −k against +k, an equivalent point in another Brillouin
+zone — when it needs corroboration; symmetry equivalence is what makes such scans usable as
+evidence about the same phenomenon. Users *may* lock a campaign down with hard limits, but a
+pre-computed safe zone is not required by default.
+
+### The stale-model contract (→ "Automated Scans")
+
+ISAR accepts that it usually does not have the perfect next scan ready. Model A chooses scan 2;
+scan 1 lands; scan 2 starts while the update to model B (which chooses scan 3) computes. How
+much staleness to accept — compute between every scan, run one behind, or batch scans on a very
+fast machine — is an **operator** trade-off exposed as configuration, never fixed inside ISAR.
+Every scan decision records which model state chose it.
+
+### Even blind measurement is hypothesis-driven (→ "Automated Scans" or "Phenomena Hypotheses")
+
+A first-look survey is not a uniform grid. ISAR knows what an acoustic phonon *is* (strong and
+linear near the zone centre, weaker and less predictable at the boundary, hidden too close to
+the Bragg peak — which is itself a modelled phenomenon to avoid), so it looks where the
+hypothesis says the phenomenon is findable, and each fix feeds extrapolation to the next
+placement. A truly prior-less sparse map is a legitimate *user choice*, not the default.
+
+### Sample environment is an open parameter set (→ "Sample Knowledge")
+
+Temperature, magnetic field, pressure — conditions are first-class, general, and never
+hardcoded to one variable. Observations at different conditions (or from different samples) are
+different thermodynamic scenes: they never blend by default, and inference across a condition
+boundary happens only through a model that declares and prices that dependence (e.g. a
+phase-transition hypothesis), not through ordinary spatial adjacency.
+
+### Instrument cost model (→ "Automated Scans", future)
+
+Real spectrometers pay real time to move (motor speeds, configuration changes). Scan selection
+should eventually weigh information value against instrument-motion cost; until then, nearness
+to the current configuration is a stand-in tiebreak.
+
+## Entries 2026-08-15 — from the PR #33 cold-start ruling discussion
+
+### The energy ceiling is soft when time remains (→ "Automated Scans" or "Pause/Failure States")
+
+"Map the phonons" has a physical energy floor (E = 0, by detailed balance) but no natural
+ceiling — the frozen program requires one anyway. When the campaign's declared goals are met
+and beam time remains, ISAR should PROMPT (non-blocking, declared default) to extend the
+energy ceiling toward the instrument limit and continue the optic hunt at the zone centre —
+"more time? keep measuring up in energy at the ZC to find more optic phonons, up to some
+limit of the machine." A widened ceiling is a consultation-channel re-freeze (new program
+revision), never in-place mutation.
+
+### A failed in-zone hunt recommends the next zone (→ "Automated Scans")
+
+When the optic hunt at a zone centre finds nothing, the correct scientific move is often a
+DIFFERENT Brillouin zone (structure-factor weighting) — "if we don't find them, we know we
+need to look in a different BZ, and tell the user." The deferred symmetry-equivalent-coupling
+feature (SCENE-5-adjacent) should be built toward exactly this sentence: the failed hunt
+produces a concrete other-zone recommendation through the consultation channel, not a silent
+exhaustion.
+
+### Priors exist to be weakened (→ "Phenomena Hypotheses")
+
+There are no hard rules for phenomena in ISAR — ever. A phenomenon class carries PRIORS
+(the acoustic phonon: disperses to the zone centre, linearly nearby, at overwhelming
+strength), and the point of priors is that they weaken: linearity decays away from the
+fold, so hypothesis strength — predicted energies — is high near the zone centre and low
+far away. Scan placement, window content (Stokes / anti-Stokes / elastic together when
+they are cheap and mutually constraining; Stokes-first far out; anti-Stokes de-prioritized
+when the Bose factor kills it at low T), and when to stop measuring all PRICE OUT of that
+strength gradient against cost via EIG. Behaviour falls out of priors and prices; it is
+never legislated per phenomenon.
+
+## Entries 2026-08-18 — from the SCENE-4.3 scene-ownership discussion
+
+### Three operating modes, GUI-canonical (→ its own top-level section, or the preamble)
+
+ISAR has three user-facing operating modes, each a superset of the last, and the GUI is the
+canonical way to access all of them (the console CLI is plumbing, not a user surface):
+1. **Reduce-only** — ISAR as parser/reducer: machine formats in (files or streamed from the
+   instrument), the user's preferred end-state format out; collation of scans at the same
+   temperature and q-point across different energy ranges into one master scan; monitor
+   correction. The user does all the analysis.
+2. **In-flight analysis** — ISAR analyzes as data arrives: fit a DHO across a phonon scan
+   automatically, and as new scans land at the same q-point, fit there too.
+3. **Full campaign** — ISAR runs the instrument itself, under top-level instructions from
+   the user.
+Consequence for architecture: features should compose explicitly per mode rather than ride
+as side effects of lower-level commands, because no user invokes those commands directly.
+
+## Entries 2026-08-20 — from the documentation-rebuild grill
+
+### The audience test (→ preamble, or "Auditing" as a sibling concern)
+
+Distinct from external auditability (already ruled in the body's Auditing section): the OPERATOR
+must be able to defend the methodology. "If I am placed before an audience after presenting on
+ISAR, and they ask me questions, what can I explain about it? Why did we make the choices we
+made?" It is acceptable that an AI built a detail and the exact history is forgotten — it can be
+checked and understood — but the top-level points must be knowable. Canonical example: "when we
+do a fit, we can do Poisson or Neyman or Baker–Cousins, and I have to understand why we chose
+Baker–Cousins and what that meant for us, and that it is implemented and what it is doing within
+ISAR." Documentation consequence: rationale for statistical-methodology choices is first-class
+and must live where the operator will find it; rationale for steering choices is not ("the scan
+is a scan").
+
+### What ISAR is (→ preamble)
+
+"It is a system for driving a campaign. It's a system for ensuring that you are obtaining
+maximum information from your beam time — and it heavily relies on knowing how it works in
+order to prove anything there."
+
+### Usable by others, not self-certifying (→ "Operator experience" or preamble)
+
+Other people should eventually use ISAR, and the how-to-use-it door is a standing check on the
+product: "we are making it something that people can use, not just something that can run on
+its own and prove to itself what it does in a circular logic."
+
+### Building now; release discipline later, deliberately (→ "Future direction")
+
+ISAR is unreleased and has no external users; justifying methodology changes to outsiders is
+not yet required. When people start using it, releases, changelogs, and change-justification
+become a deliberate, owned step — not something to backfill silently now.

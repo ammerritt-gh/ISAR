@@ -1,8 +1,7 @@
 # Using ISAR — the command-line workflow
 
-> **Lifecycle:** Current
+> **Status:** live
 > **Authority:** canonical for the operator workflow
-> **Provenance:** hand-written
 > **Verified against code revision:** `d483af1` (2026-08-08)
 
 How to run ISAR on your own data: set up an experiment once, then re-run one command as scans land.

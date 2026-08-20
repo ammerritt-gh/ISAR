@@ -1,8 +1,7 @@
 # CAMPAIGN_DIAGNOSTIC — contract and design spec
 
-> **Lifecycle:** Current
+> **Status:** live
 > **Authority:** canonical for the campaign diagnostic contract
-> **Provenance:** hand-written
 > **Verified against code revision:** `8fa1219` (2026-07-25)
 
 ## As built

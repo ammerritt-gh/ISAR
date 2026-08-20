@@ -1,7 +1,6 @@
 # ISAR Phase 1 — Synthetic Core Validation
 
-> **Lifecycle:** Archived
-> **Provenance:** hand-written
+> **Status:** terminal
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 > **Superseded by:** `DESIGN.md`. Kept for the design reasoning it records, which `DESIGN.md` summarizes but does not reproduce. Not maintained; never a normative source.
 

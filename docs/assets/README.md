@@ -1,6 +1,6 @@
 # Committed validation evidence
 
-> **Lifecycle:** Current (this index — the artifacts it lists are Historical evidence)
+> **Status:** live (this index — the artifacts it lists are Historical evidence)
 > **Authority:** none — the evidence speaks for itself; `DESIGN.md` §15 owns capability status
 > **Provenance:** hand-written; the artifacts beside it are generated, see `MANIFEST.json`
 

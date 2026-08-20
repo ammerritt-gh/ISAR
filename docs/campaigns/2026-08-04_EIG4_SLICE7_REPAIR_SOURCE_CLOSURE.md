@@ -1,7 +1,6 @@
 # EIG-4 Slice 7 repair source closure
 
-> **Lifecycle:** Historical evidence
-> **Provenance:** hand-written
+> **Status:** terminal
 
 ## Outcome
 

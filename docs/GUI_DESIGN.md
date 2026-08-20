@@ -1,8 +1,7 @@
 # ISAR GUI — Design
 
-> **Lifecycle:** Current
+> **Status:** live
 > **Authority:** canonical for GUI architecture and ownership boundaries
-> **Provenance:** hand-written
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
 **Status:** Design draft, 2026-07-11, substantially built. This document follows the discipline of

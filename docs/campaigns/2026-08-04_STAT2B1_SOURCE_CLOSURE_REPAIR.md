@@ -1,7 +1,6 @@
 # STAT-2b.1 source-closure lifecycle repair
 
-> **Lifecycle:** Historical evidence
-> **Provenance:** hand-written
+> **Status:** terminal
 
 ## Disposition
 

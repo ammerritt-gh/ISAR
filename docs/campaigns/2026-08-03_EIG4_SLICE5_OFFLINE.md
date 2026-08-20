@@ -1,7 +1,6 @@
 # EIG-4 Slice 5.1 offline comparison evidence — 2026-08-03
 
-> **Lifecycle:** Historical evidence
-> **Provenance:** hand-written
+> **Status:** terminal
 > **Verified against code revision:** `e13a6b9d9dc4a624a39f7ecf5bb52f9023b35ea3` (2026-08-03)
 
 ## Disposition

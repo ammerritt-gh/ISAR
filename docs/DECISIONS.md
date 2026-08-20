@@ -1,8 +1,7 @@
 # DECISIONS — ISAR design ruling ledger
 
-> **Lifecycle:** Current
+> **Status:** terminal
 > **Authority:** canonical for the append-only ruling ledger; IDs are stable citation anchors (D2, D4)
-> **Provenance:** hand-written
 > **Verified against code revision:** `5cf3408` (2026-08-15)
 
 Append-only ledger of design rulings. IDs are stable citation anchors (D2). Started at the

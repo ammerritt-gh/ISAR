@@ -1,7 +1,6 @@
 # STAT-2b.1 corrected development and scaling preflight
 
-> **Lifecycle:** Historical evidence
-> **Provenance:** hand-written
+> **Status:** terminal
 
 ## Disposition
 

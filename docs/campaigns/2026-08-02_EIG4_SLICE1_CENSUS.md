@@ -1,7 +1,6 @@
 # EIG-4 Slice 1 eligibility census evidence — 2026-08-02
 
-> **Lifecycle:** Historical evidence
-> **Provenance:** hand-written
+> **Status:** terminal
 > **Verified against code revision:** `a61a22709572945e2aa23da5ac86225242338c11` (2026-08-02)
 
 ## Disposition

@@ -1,8 +1,7 @@
 # ISAR
 
-> **Lifecycle:** Current
+> **Status:** live
 > **Authority:** canonical for product overview and quickstart
-> **Provenance:** hand-written
 > **Verified against code revision:** `9914eb7` (2026-07-26)
 
 **I**nelastic **S**cattering **A**utomated **R**— (the final R is deliberately floating: the tool

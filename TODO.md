@@ -1,8 +1,7 @@
 # ISAR — backlog
 
-> **Lifecycle:** Current
+> **Status:** live
 > **Authority:** canonical for the single backlog
-> **Provenance:** hand-written
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
 A work queue, not a project diary. Completed work leaves this file; git history and
@@ -25,6 +24,16 @@ Last updated: 2026-08-07.
 ## Defects
 
 Things that are wrong now, as opposed to things not yet built.
+
+- [ ] **DEFECT-4 — Float-exact assert fails in branch-persist test.**
+      `tests/session/test_branch_persist.py::test_branch_belief_preserves_complete_posterior_and_legacy_fallback`
+      asserts `label_probabilities == branch_posterior` with exact float equality and fails on
+      round-trip drift (`0.7000000000000001 != 0.7`; observed 2026-08-20 in the rebuilt `isar`
+      env, unrelated to any code change — the diff was markdown-only). Either the store now
+      renormalizes and the test should use `pytest.approx`, or a real renormalization slipped
+      into the persist path and needs a look.
+      **Acceptance:** test passes deterministically in the current env, with the tolerance choice
+      justified in the test.
 
 - [ ] **DEFECT-2 — Matched-descriptor rescue can deliver confident-wrong.**
       `verdict.classify()` lets a family-wise-significant descriptor peak that the winning model

@@ -1,7 +1,6 @@
 # σ-calibration (phonon_dft, TAVI deterministic engine)
 
-> **Lifecycle:** Historical evidence
-> **Provenance:** hand-written
+> **Status:** terminal
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
 First-pass closed-loop Phase-0 calibration. Reproduce with `python docs/sigma_calibration_campaign.py`.

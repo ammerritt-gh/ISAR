@@ -1,8 +1,7 @@
 # LLM QC Adjudication — as-built (Phase 2, build-order step 7)
 
-> **Lifecycle:** Current
+> **Status:** live
 > **Authority:** canonical for the adjudication trust contract and the LLM endpoint setup reference
-> **Provenance:** hand-written
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
 **Status:** built, TDD-tested, and live-verified 2026-06-28. This is the as-built record for the LLM

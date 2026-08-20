@@ -1,7 +1,6 @@
 # Fast Test Campaigns — speedup sprint design
 
-> **Lifecycle:** Active plan
-> **Provenance:** hand-written
+> **Status:** live
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 > **Owner:** @ammerritt-gh · **Exit criteria:** in the status block below
 

@@ -1,7 +1,6 @@
 # STAT-2b.1 production source-closure upkeep
 
-> **Lifecycle:** Historical evidence
-> **Provenance:** hand-written
+> **Status:** terminal
 
 > **Superseded candidate:** Owner review withheld approval on 2026-08-04. Candidate schema v1 at
 > commit `77529b6` is retained as historical evidence; it was never active. The lifecycle and

@@ -1,7 +1,6 @@
 # EIG-0 — exposure-basis validation spike
 
-> **Lifecycle:** Historical evidence
-> **Provenance:** hand-written
+> **Status:** terminal
 
 **Reviewed commit:** `f19e819d8ccaad9a2f23292ca161c536ee275319` (`f19e819`, worktree
 `.claude/worktrees/agent-a345d415f2db46ffc`, branch `main`, clean at start).

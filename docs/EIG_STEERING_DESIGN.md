@@ -1,7 +1,6 @@
 # Same-action scan-window EIG — design contract
 
-> **Lifecycle:** Active plan
-> **Provenance:** hand-written
+> **Status:** live
 > **Verified against code revision:** `9d77631` (2026-08-04)
 > **Owner:** @ammerritt-gh
 > **Exit criteria:** the restricted authoritative selector exists; Slice 10 completes the deterministic

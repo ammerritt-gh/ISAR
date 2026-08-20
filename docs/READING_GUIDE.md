@@ -1,8 +1,8 @@
 # ISAR — what it's for, and how to read everything
 
-> **Lifecycle:** Current
-> **Authority:** canonical for the general documentation map
-> **Provenance:** hand-written
+> **Status:** live
+> **Authority:** canonical for the general documentation map — the single map; every maintained
+> document is reachable from here (enforced by `tests/docs/test_doc_drift.py`)
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
 This is the front door. It explains, for a scientist who knows inelastic scattering and manual
@@ -111,41 +111,50 @@ side on representative scans so you can judge every call with your own eyes.
 
 ## Where to read what
 
-This is the sole general map of ISAR's documentation. The **Lifecycle** column says what kind of
-document you are about to open, because that determines how much authority it carries:
-*Current* is maintained with the code and may be relied on; *Active plan* describes approved but
-unfinished work; *Historical evidence* records what happened on a date and is **never** a
-statement of current behaviour; *Archived* is retained rationale, superseded by something newer.
-The per-file register is [DOC_INVENTORY.md](DOC_INVENTORY.md).
+This is the sole general map of ISAR's documentation. The **Status** column says whether you may
+rely on what you are about to open: *live* is current and authoritative, maintained with the
+code; *draft* is being designed and may change under you; *terminal* means the document's job has
+ended — it is awaiting absorption into a living document and then deletion, and must never be
+read as current behaviour. (A documentation rebuild is in progress; the frontier is in
+[HANDOFF-doc-rebuild.md](HANDOFF-doc-rebuild.md).)
 
-| Question | Where | Lifecycle |
+| Question | Where | Status |
 |---|---|---|
-| What is ISAR for / why trust it? | this guide | Current |
-| How will I run it on my own data (the CLI)? | [USING_ISAR.md](USING_ISAR.md) | Current |
-| How does the autonomous loop work (goal → scans → stop)? | [DESIGN.md §8](../DESIGN.md) | Current |
-| What is legal at an ambiguous frontier / how does it stop? | [MEASUREMENT_STEERING.md](MEASUREMENT_STEERING.md), [DECISIONS.md](DECISIONS.md) O27–O31 | Current |
-| Where did a campaign spend its time? | `isar profile` ([USING_ISAR.md](USING_ISAR.md)) | Current |
-| What does a term mean (pull, fold/fork, cost/dof, a verdict)? | [GLOSSARY.md](GLOSSARY.md) | Current |
-| Why these statistics (vs χ² / HESSE / eyeballing models)? | [STATS_PRIMER.md](STATS_PRIMER.md) | Current |
-| What should I *do* with a given verdict? | [INTERPRETING_A_VERDICT.md](INTERPRETING_A_VERDICT.md) | Current |
-| One scan, start to finish | [WORKED_EXAMPLE.md](WORKED_EXAMPLE.md) | Current |
-| How do I declare the excitations I expect? | [HYPOTHESES.md](HYPOTHESES.md) | Current |
-| How does LLM flag adjudication work, and what does it never touch? | [ADJUDICATION.md](ADJUDICATION.md) | Current |
-| How it all assembles into one tool (workspace, session, CLI) | [WORKSPACE_AND_CLI.md](WORKSPACE_AND_CLI.md) | Current |
-| What the campaign diagnostic owes you | [CAMPAIGN_DIAGNOSTIC_SPEC.md](CAMPAIGN_DIAGNOSTIC_SPEC.md) | Current |
-| How the GUI is built and bounded | [GUI_DESIGN.md](GUI_DESIGN.md) | Current |
-| What the data/card schema looks like across facilities | [SCHEMA_LANDSCAPE.md](SCHEMA_LANDSCAPE.md) | Current |
-| Why was a decision made this way? | [DECISIONS.md](DECISIONS.md) | Current |
-| Which rulings are still in force? | [DECISION_INDEX.md (generated)](DECISION_INDEX.md) | Current |
-| What is every document, and what happened to the deleted ones? | [DOC_INVENTORY.md](DOC_INVENTORY.md) | Current |
-| Why steer measurements this way (Bayesian info-gain; prior art) — research foundation | [MEASUREMENT_STEERING.md](MEASUREMENT_STEERING.md) | Current |
-| What is being built next (speedup, backgrounds, steering A/B/C, same-action scan-window EIG) | [SPEEDUP_DESIGN.md](SPEEDUP_DESIGN.md), [BACKGROUND_DESIGN.md](BACKGROUND_DESIGN.md), [STEERING_DESIGN.md](STEERING_DESIGN.md), [EIG_STEERING_DESIGN.md](EIG_STEERING_DESIGN.md) | Active plan |
-| Does it agree with a human on real data? | [assets/phase3_gold/FINDINGS.md](assets/phase3_gold/FINDINGS.md) (gold report) | Historical evidence |
-| Does the engine reproduce the trusted fitter + behave? | [assets/phase3_step1/FINDINGS.md](assets/phase3_step1/FINDINGS.md) | Historical evidence |
-| Does the same core work on another instrument (triple-axis)? | [assets/in8_phase1/FINDINGS.md](assets/in8_phase1/FINDINGS.md) | Historical evidence |
-| What happened in a given campaign run? | [campaigns/](campaigns/) — indexed in [campaigns/README.md](campaigns/README.md) | Historical evidence |
-| The full design rationale | [archive/PHASE_1_DESIGN.md](archive/PHASE_1_DESIGN.md), [archive/PHASE_2_DESIGN.md](archive/PHASE_2_DESIGN.md), [archive/PHASE_3_DESIGN.md](archive/PHASE_3_DESIGN.md) | Archived |
-| Why the workspace/session/CLI was designed this way | [UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md) | Archived |
+| What is ISAR for / why trust it? | this guide | live |
+| What should ISAR become (the owner's master objectives)? | [DESIGN_GOALS.md](DESIGN_GOALS.md) | live (owner-authored) |
+| The product overview and quickstart | [../README.md](../README.md) | live |
+| Contributor rules, hard rules, and area routing | [../AGENTS.md](../AGENTS.md) | live |
+| The backlog | [../TODO.md](../TODO.md) | live |
+| How will I run it on my own data (the CLI)? | [USING_ISAR.md](USING_ISAR.md) | live |
+| How does the autonomous loop work (goal → scans → stop)? | [DESIGN.md §8](../DESIGN.md) | live |
+| What is legal at an ambiguous frontier / how does it stop? | [MEASUREMENT_STEERING.md](MEASUREMENT_STEERING.md) | live |
+| Where did a campaign spend its time? | `isar profile` ([USING_ISAR.md](USING_ISAR.md)) | live |
+| What does a term mean (pull, fold/fork, cost/dof, a verdict)? | [GLOSSARY.md](GLOSSARY.md) | live |
+| Why these statistics (vs χ² / HESSE / eyeballing models)? | [STATS_PRIMER.md](STATS_PRIMER.md) | live |
+| What should I *do* with a given verdict? | [INTERPRETING_A_VERDICT.md](INTERPRETING_A_VERDICT.md) | live |
+| One scan, start to finish | [WORKED_EXAMPLE.md](WORKED_EXAMPLE.md) | live |
+| How do I declare the excitations I expect? | [HYPOTHESES.md](HYPOTHESES.md) | live |
+| How does LLM flag adjudication work, and what does it never touch? | [ADJUDICATION.md](ADJUDICATION.md) | live |
+| How it all assembles into one tool (workspace, session, CLI) | [WORKSPACE_AND_CLI.md](WORKSPACE_AND_CLI.md) | live |
+| What the campaign diagnostic owes you | [CAMPAIGN_DIAGNOSTIC_SPEC.md](CAMPAIGN_DIAGNOSTIC_SPEC.md) | live |
+| How the GUI is built and bounded | [GUI_DESIGN.md](GUI_DESIGN.md) | live |
+| What the data/card schema looks like across facilities | [SCHEMA_LANDSCAPE.md](SCHEMA_LANDSCAPE.md) | live |
+| The scene layer (catalogue, questions, discovery) | [SCENE_DESIGN.md](SCENE_DESIGN.md) | live |
+| The SCENE-4 execution ledger (PR 4.4 pending) | [SCENE4_EXECUTION_PLAN.md](SCENE4_EXECUTION_PLAN.md) | live |
+| The statistics audit still in flight (STAT-3–6) | [stats/STATISTICAL_SEMANTICS_AUDIT.md](stats/STATISTICAL_SEMANTICS_AUDIT.md) | live |
+| Why steer measurements this way (Bayesian info-gain; prior art) — research foundation | [MEASUREMENT_STEERING.md](MEASUREMENT_STEERING.md) | live |
+| What is being built next (speedup, backgrounds, steering A/B/C, same-action scan-window EIG) | [SPEEDUP_DESIGN.md](SPEEDUP_DESIGN.md), [BACKGROUND_DESIGN.md](BACKGROUND_DESIGN.md), [STEERING_DESIGN.md](STEERING_DESIGN.md), [EIG_STEERING_DESIGN.md](EIG_STEERING_DESIGN.md) | live |
+| The documentation rebuild in progress (frontier + operator closeout list) | [HANDOFF-doc-rebuild.md](HANDOFF-doc-rebuild.md) | live |
+| Does it agree with a human on real data? | [assets/phase3_gold/FINDINGS.md](assets/phase3_gold/FINDINGS.md) (gold report) | evidence bundle |
+| Does the engine reproduce the trusted fitter + behave? | [assets/phase3_step1/FINDINGS.md](assets/phase3_step1/FINDINGS.md) | evidence bundle |
+| Does the same core work on another instrument (triple-axis)? | [assets/in8_phase1/FINDINGS.md](assets/in8_phase1/FINDINGS.md) | evidence bundle |
+| What the committed evidence bundle is and is not | [assets/README.md](assets/README.md) | live |
+| Why was a decision made this way? | [DECISIONS.md](DECISIONS.md) — being absorbed into the owning design docs | terminal |
+| What happened in a given campaign run? | [campaigns/](campaigns/) — indexed in [campaigns/README.md](campaigns/README.md) | terminal (being absorbed) |
+| The 2026-07-06 IN8 calibration record | [../calibration/README.md](../calibration/README.md) | terminal (fate on the closeout list) |
+| The pre-EIG statistical roadmap | [ISAR_PRE_EIG3_STATISTICAL_CONSISTENCY_HANDOFF.md](ISAR_PRE_EIG3_STATISTICAL_CONSISTENCY_HANDOFF.md) | terminal |
+| The full design rationale | [archive/](archive/) — indexed in [archive/README.md](archive/README.md): [PHASE_1](archive/PHASE_1_DESIGN.md), [PHASE_2](archive/PHASE_2_DESIGN.md), [PHASE_3](archive/PHASE_3_DESIGN.md) | terminal (being absorbed) |
+| Why the workspace/session/CLI was designed this way | [UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md) — frozen: ~40 docstrings cite its §N | terminal (deleted after the docstring repair) |
 
 Those three reports are **committed** under [assets/](assets/) — a clean checkout can read them and
 look at their figures. What a clean checkout cannot do is *regenerate* them: the `docs/*_check.py`

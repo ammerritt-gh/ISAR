@@ -1,7 +1,6 @@
 # Archived design rationale
 
-> **Lifecycle:** Current (an index to archived material — everything it points to is Archived)
-> **Provenance:** hand-written
+> **Status:** live (an index to archived material — everything it points to is Archived)
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
 **Nothing in this directory is normative.** These documents are not maintained against the code,
@@ -25,6 +24,6 @@ it describes a past state of the world, not a design. The phase designs are diff
 for a position, and the argument stays useful after the code exists.
 
 The test applied was irreplaceability, not age. Everything deleted either had its content
-absorbed into a current document or described work that shipped. See the tombstone table in
-[`../DOC_INVENTORY.md`](../DOC_INVENTORY.md) for each deleted file, the reason, and the commit
-that still contains it.
+absorbed into a current document or described work that shipped. Deleted files are recoverable
+from git history: `git log --diff-filter=D --oneline -- <path>` finds the deleting commit, then
+`git show <commit>^:<path>` recovers the file as it last existed.

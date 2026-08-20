@@ -1,7 +1,6 @@
 # AP1 acoustic branch-mapping deadlock
 
-> **Lifecycle:** Historical evidence
-> **Provenance:** hand-written
+> **Status:** terminal
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 > **Superseded by:** the current contract named in [`campaigns/README.md`](README.md). A dated record of what happened, never a statement of current behaviour (DECISIONS D3).
 

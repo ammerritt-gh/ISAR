@@ -1,8 +1,7 @@
 # Autonomous measurement steering — the research foundation
 
-> **Lifecycle:** Current
+> **Status:** live
 > **Authority:** canonical for the steering research foundation and the current controller contract
-> **Provenance:** hand-written
 > **Verified against code revision:** `5cf3408` (2026-08-15)
 
 > **Status: design locked; the core is built.** The model-free descriptor (L0), branch model +

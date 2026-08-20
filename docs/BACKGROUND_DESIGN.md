@@ -1,7 +1,6 @@
 # Background Handling — workstream design
 
-> **Lifecycle:** Active plan
-> **Provenance:** hand-written
+> **Status:** live
 > **Verified against code revision:** `b2ce5d1` (2026-07-28)
 > **Owner:** @ammerritt-gh · **Exit criteria:** in the status block below
 

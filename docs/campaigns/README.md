@@ -1,8 +1,7 @@
 # Campaign records — index
 
-> **Lifecycle:** Current (this index)
+> **Status:** live (this index)
 > **Authority:** canonical for *which* campaign record covers what
-> **Provenance:** hand-written
 
 Every file in this directory is **historical evidence**. Each records what a particular campaign
 did on a particular date, including things that were later found to be wrong and repaired.
@@ -42,7 +41,9 @@ which ruling settled it. That is worth keeping and worth not mistaking for a con
 |---|---|---|---|---|
 | 2026-07-30 | [2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md](2026-07-30_STAT2B1_CORRECTED_DEVELOPMENT.md) | Repair STAT-2b delivery deduplication, measure 4/8/16/24/28-worker scaling, and rerun development | Corrected development complete; 24 workers selected; renewed held-out approval pending | [DECISIONS.md](../DECISIONS.md) S8/H4/S13 |
 | 2026-07-31 | [2026-07-31_STAT2B1_HELDOUT.md](2026-07-31_STAT2B1_HELDOUT.md) | Sealed STAT-2b.1 held-out criterion comparison | Complete; frozen gate withheld authority for an AICc switch | [DECISIONS.md](../DECISIONS.md) S8/H4/S13 |
+| 2026-07-29 | [2026-07-29_EIG_EXPOSURE_BASIS.md](2026-07-29_EIG_EXPOSURE_BASIS.md) | EIG-0 exposure-basis spike | Recorded | [EIG_STEERING_DESIGN.md](../EIG_STEERING_DESIGN.md) |
 | 2026-08-02 | [2026-08-02_EIG4_SLICE1_CENSUS.md](2026-08-02_EIG4_SLICE1_CENSUS.md) | EIG-4 Slice 1 eligibility census | Eligibility not measurable; current contract incomplete | [EIG_STEERING_DESIGN.md](../EIG_STEERING_DESIGN.md) |
+| 2026-08-03 | [2026-08-03_EIG4_SLICE5_OFFLINE.md](2026-08-03_EIG4_SLICE5_OFFLINE.md) | EIG-4 Slice 5.1 offline `off`→`shadow` comparison | Recorded | [EIG_STEERING_DESIGN.md](../EIG_STEERING_DESIGN.md) |
 | 2026-08-03 | [2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md](2026-08-03_STAT2B1_SOURCE_CLOSURE_UPKEEP.md) | Authenticate historical STAT-2b.1 evidence and construct a production source-closure candidate | Schema-v1 candidate rejected in owner review; never active | [DECISIONS.md](../DECISIONS.md) S9/S13 |
 | 2026-08-04 | [2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md](2026-08-04_STAT2B1_SOURCE_CLOSURE_REPAIR.md) | Repair renewable upkeep, aggregate authentication, approval provenance, and conservative traversal | Replacement schema-v2 candidate constructed; owner approval pending | [DECISIONS.md](../DECISIONS.md) S9/S13 |
 | 2026-08-04 | [2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE.md](2026-08-04_EIG4_SLICE7_SOURCE_CLOSURE.md) | Review Slice 7 protected-boundary drift and supersede the unapproved bootstrap candidate | New schema-v2 bootstrap candidate constructed; owner approval pending | [DECISIONS.md](../DECISIONS.md) S9/S13 |
@@ -61,5 +62,5 @@ shipped behaviour — Phase 4's realized form is in `isar/drive/`. It lives here
 and historical, and because Phase 3's design still points at it.
 
 `PHASE_5_NOTES.md` was deleted on 2026-07-25: forward notes for work that was never designed and is
-not scheduled, superseded by nothing because it described nothing that exists. See the tombstone
-table in [../DOC_INVENTORY.md](../DOC_INVENTORY.md).
+not scheduled, superseded by nothing because it described nothing that exists. Deleted records are
+recoverable from git history.

@@ -4,13 +4,16 @@ These test the *mechanically checkable* half of the documentation policy in `AGE
 not judge prose. Each check below names the specific failure it prevents, because a doc test that
 cannot say what it is for becomes a chore that people delete.
 
+The model (2026-08-20 rebuild): every maintained document declares a **status** — `draft` (being
+designed, do not rely on it), `live` (current and authoritative), or `terminal` (its terminal
+trigger has fired; it is awaiting absorption and deletion) — and `docs/READING_GUIDE.md` is the
+**single map**: every document is reachable from it, directly or through one linked index. There
+is no separate register; git history is the archive.
+
 Deliberately **not** tested:
 
-* The archive-authority rule ("a `Current` document may not take an `Archived` or
-  `Historical evidence` document as its *normative source*"). Whether a citation is normative or
-  merely provenance is a judgement about the sentence around it — no checker can make it, and a
-  crude "Current must not link to archive/" rule would forbid the legitimate rationale citations
-  `README.md` and `docs/READING_GUIDE.md` already carry. This stays a review item.
+* Whether a live document's *claims* still match the code — that is the absorption/review
+  discipline, and no checker can judge prose against behaviour.
 * A generated CLI reference. Check 1 compares against argparse rather than generating prose,
   because a generated command reference is a file nobody reads that still has to be regenerated.
 """
@@ -18,19 +21,16 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-INVENTORY = REPO / "docs" / "DOC_INVENTORY.md"
+GUIDE = "docs/READING_GUIDE.md"
 
-LIFECYCLE_VALUES = ("Current", "Active plan", "Historical evidence", "Archived")
+STATUS_VALUES = ("draft", "live", "terminal")
 
-# Paths exempt from the banner and registration rules. These mirror the "Generated — exempt from
-# lifecycle banners" table in docs/DOC_INVENTORY.md; test_exempt_paths_are_declared_in_the_register
-# below fails if the two drift apart.
+# Paths exempt from the status-banner and map-coverage rules: generator-owned outputs and fixtures.
 EXEMPT_PREFIXES = (
     "docs/stats/figures/",       # caption sidecars, written by docs/stats/make_figures.py
     "docs/assets/",              # promoted report output, written by the docs/*_check.py scripts
@@ -38,7 +38,12 @@ EXEMPT_PREFIXES = (
 )
 EXEMPT_FILES = (
     "CLAUDE.md",                 # a 12-byte `@AGENTS.md` stub
-    "docs/DESIGN_GOALS.md",      # owner-authored objectives list; declared off-limits to agents
+)
+# `docs/DESIGN_GOALS.md` is owner-authored and off-limits to agent tooling, so no status banner is
+# demanded of it — but it must still appear on the map; exempting it from coverage would let the
+# most important document in the tree fall off the front door.
+BANNER_ONLY_EXEMPT_FILES = (
+    "docs/DESIGN_GOALS.md",
 )
 # Carve-outs: hand-written index files that happen to sit under an exempt prefix. Without these,
 # adding one generated directory would silently stop checking its own README.
@@ -47,24 +52,15 @@ NEVER_EXEMPT = (
 )
 
 # Link checking is exempt separately and far more narrowly. A file being generator-owned is a
-# reason not to demand a lifecycle banner of it; it is *not* a reason to let its links rot — a
-# promoted FINDINGS.md whose figures were not promoted with it is precisely the failure this
-# bundle exists to prevent.
+# reason not to demand a banner of it; it is *not* a reason to let its links rot — a promoted
+# FINDINGS.md whose figures were not promoted with it is precisely the failure this bundle
+# exists to prevent.
 LINK_EXEMPT_PREFIXES = (
     "tests/data/golden/",        # points into a generated workspace that is not in the tree
 )
 
-# Documents allowed to name a deleted file (check 2). The register is where a reader learns where
-# a deleted file went, and the ledger is append-only (DECISIONS.md D4) so its historical mentions
-# may not be edited out. DECISION_INDEX.md is generated from the ledger and inherits them.
-DELETED_NAME_ALLOWLIST = (
-    "docs/DOC_INVENTORY.md",
-    "docs/DECISIONS.md",
-    "docs/DECISION_INDEX.md",
-)
-
 # Phrases that were wrong and were corrected. Each entry records what it prevents coming back.
-# Applied only to maintained documents (see _maintained_docs) — a historical record is allowed,
+# Applied only to maintained documents (see _maintained_docs) — a `terminal` record is allowed,
 # indeed required, to keep the wording that was accurate on its date.
 STALE_PHRASES = (
     (
@@ -122,8 +118,6 @@ STALE_PHRASES = (
         "read-only viewer against",
         "same correction, README's repository-layout wording",
     ),
-    # Narrow forms only: the bare phrase "pending O42 release review" appears in the ledger
-    # sentence that retires it (DECISIONS H1), so forbidding it would self-trip.
     (
         "awaits separate O42 release review",
         "H1 retired the O42 release review; the scan-window authoritative selector becomes "
@@ -131,7 +125,7 @@ STALE_PHRASES = (
     ),
     (
         "O42 release review pending",
-        "same correction, the heading form used in EIG_STEERING_DESIGN.md's slice list",
+        "same correction, the heading form used in the EIG slice list",
     ),
     # STAT-2 closeout (S13): H4 made the evidence posterior the production selection authority.
     # Narrow claim forms only — "retain-AIC disposition" as a historical fact about S8 stays legal.
@@ -149,8 +143,6 @@ STALE_PHRASES = (
         "STAT-2c remains the first possible authority switch",
         "the STAT-2c authority switch was executed as H4 (SCENE-1 PR-b); S13 closed STAT-2",
     ),
-    # SCENE-3 closeout (H14). Narrow claim forms only: H11(a)/H12(e) legitimately narrate the
-    # artifact's retirement, and H14 names the deleted constants, so neither may be forbidden.
     (
         "content-addressed interpretation artifact",
         "H11(a) retired the per-scan interpretation artifact before it existed; the scene reads "
@@ -161,23 +153,16 @@ STALE_PHRASES = (
         "SCENE-3 PR 3c landed as H14: the store, the workspace_api read surface, the observe-only "
         "driver hook and `isar report --scene` are Implemented",
     ),
-    # SCENE-4.2a A2: the EstimateParameter closure predicate retires the owner ruling. Narrow
-    # claim form only — DECISIONS.md is Current (an append-only ledger) but its entry narrating
-    # the retired ruling in the ledger's OWN words ("EstimateParameter never closes in v1")
-    # stays legal; only SCENE_DESIGN's family-matrix phrasing is forbidden from coming back.
     (
         "parameter_within_tolerance/1 — **never closes in v1**",
         "SCENE-4.2a A2 gave parameter_within_tolerance/2 a real closure path off the A1 "
         "mode_intervals; the blanket v1 claim no longer describes the evaluator",
     ),
-    # PR 32 wave (H18), docs W7. Three family-matrix claims the wave's source changes falsified.
     (
         "unreachable for phenomenon-bearing campaigns until the EstimateParameter interval "
         "re-baseline",
         "EstimateParameter's interval re-baseline landed (A2 + PR 32 wave W1/W2); phenomenon-"
-        "bearing campaigns reach `complete` like any other (docs/SCENE_DESIGN.md §5). Narrow "
-        "claim form only — the phrasing was SCENE_DESIGN §5's (now updated); H17(c)'s own "
-        "words ('EstimateParameter never closes in v1') stay legal as ledger history",
+        "bearing campaigns reach `complete` like any other (docs/SCENE_DESIGN.md §5)",
     ),
     (
         "the confirmed tile's partition has a candidate declaring an explicit identity",
@@ -189,19 +174,12 @@ STALE_PHRASES = (
         "P0-C made interval authority fit-conditional (`authority_basis == \"producer_sound\"`); "
         "delivery selection is not interval authority",
     ),
-    # PR #33 response wave (H19(b)). The ConnectTrack class-agnostic trigger's ORIGINAL PR 32
-    # wording keyed suppression on per-class DERIVATION; H19(b) replaced it with plain
-    # unclassified-tile EXISTENCE (any confirmed tile lacking an answered classification), full
-    # partition span, and suppression only once fully classified.
     (
         "where NO per-class track has actually DERIVED",
         "H19(b) superseded H18(f)'s derivation-keyed trigger with any-confirmed-tile-"
         "unclassified existence, full-partition span, and fully-classified suppression "
         "(docs/SCENE_DESIGN.md §5)",
     ),
-    # SCENE-4.3 (H20). Three claim forms this PR falsified. Narrow forms only, for the usual
-    # reason: H20's own words ("H14(d)'s observe-only driver hook", "`resolution_floor` and
-    # `bose_dead` are DELETED") narrate what was retired and must stay legal in the ledger.
     (
         "calls it observe-only after",
         "H20(a) superseded H14(d)'s observe-only driver hook: the analysis child builds no scene "
@@ -221,8 +199,6 @@ STALE_PHRASES = (
         "SCENE-4.3 (C7/C8, H20(c)/(f)); MEASUREMENT_STEERING.md §7.2b's gap list described the "
         "state at C5",
     ),
-    # SCENE-4.3 C10 (H20(e) amendment). Two claim forms the counting ruling falsified; narrow so
-    # H20(e)'s own supersession narration stays legal.
     (
         "counting currency is the named open item",
         "RULED 2026-08-18 (H20(e) amended in place): discovery exposure is 10^8 monitor neutrons "
@@ -246,11 +222,21 @@ def _tracked_markdown() -> list[str]:
     return sorted(line.strip() for line in out.splitlines() if line.strip())
 
 
-def _is_exempt(rel: str) -> bool:
-    """Exempt from the banner, provenance, and registration rules — not from link checking."""
+def _is_banner_exempt(rel: str) -> bool:
     if rel in NEVER_EXEMPT:
         return False
-    return rel in EXEMPT_FILES or rel.startswith(EXEMPT_PREFIXES)
+    return (
+        rel in EXEMPT_FILES
+        or rel in BANNER_ONLY_EXEMPT_FILES
+        or rel.startswith(EXEMPT_PREFIXES)
+    )
+
+
+def _is_map_exempt(rel: str) -> bool:
+    """Exempt from the READING_GUIDE coverage rule. The guide does not need to map itself."""
+    if rel in NEVER_EXEMPT:
+        return False
+    return rel == GUIDE or rel in EXEMPT_FILES or rel.startswith(EXEMPT_PREFIXES)
 
 
 def _is_link_exempt(rel: str) -> bool:
@@ -261,31 +247,30 @@ def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
 
 
-_BANNER_RE = re.compile(r"^> \*\*Lifecycle:\*\*\s*(.+?)\s*$", re.M)
+_BANNER_RE = re.compile(r"^> \*\*Status:\*\*\s*(.+?)\s*$", re.M)
 
 
-def _lifecycle(rel: str) -> str | None:
-    """The document's declared lifecycle, or None if it declares no banner.
+def _status(rel: str) -> str | None:
+    """The document's declared status, or None if it declares no banner.
 
-    A banner may carry a trailing parenthetical gloss (`Current (this index)`); the value itself
-    is the part before it, and must be exactly one of the four.
+    A banner may carry a trailing parenthetical gloss (`live (this index)`); the value itself is
+    the part before it, and must be exactly one of the three.
     """
     m = _BANNER_RE.search(_read(rel))
     if not m:
         return None
-    value = re.sub(r"\s*\(.*$", "", m.group(1)).strip()
-    return value
+    return re.sub(r"\s*\(.*$", "", m.group(1)).strip()
 
 
 def _maintained_docs() -> list[str]:
-    """Documents that describe the present or the intended future — `Current` + `Active plan`.
+    """Documents a reader may rely on or is being asked to review — `draft` + `live`.
 
-    `Historical evidence` and `Archived` files are excluded on purpose: they are records of a
-    date, and rewriting them to match today's vocabulary destroys the only thing they are for.
+    `terminal` files are excluded on purpose: they are awaiting absorption and deletion, and
+    rewriting them to match today's vocabulary destroys the record being absorbed.
     """
     return [
         rel for rel in _tracked_markdown()
-        if not _is_exempt(rel) and _lifecycle(rel) in ("Current", "Active plan")
+        if not _is_banner_exempt(rel) and _status(rel) in ("draft", "live")
     ]
 
 
@@ -317,7 +302,7 @@ def test_exhaustive_command_blocks_match_argparse():
     expected = _argparse_commands()
     found_any = False
     for rel in _tracked_markdown():
-        if _is_exempt(rel):
+        if _is_banner_exempt(rel):
             continue
         for block in _EXHAUSTIVE_RE.findall(_read(rel)):
             found_any = True
@@ -333,122 +318,7 @@ def test_exhaustive_command_blocks_match_argparse():
     )
 
 
-# ---- 2. deleted documents stay deleted -------------------------------------------------------
-
-def _tombstoned_paths(text: str | None = None) -> list[str]:
-    """Paths from the tombstone table, each with a last-containing commit.
-
-    Derived from the register rather than hard-coded here so that the next deletion pass extends
-    this check by writing its tombstone, with no test edit required.
-    """
-    rows = _register_rows(text)[1]
-    deleted_sections = [
-        body for heading, body in _inventory_sections(text)
-        if heading.startswith("Deleted")
-    ]
-    assert len(deleted_sections) == 1, (
-        "expected exactly one Deleted inventory section, "
-        f"found {len(deleted_sections)}"
-    )
-    body = deleted_sections[0]
-    # Checked separately from the path parse. Keying the path regex off the commit-hash column
-    # would silently *skip* any row whose hash was omitted or left as a placeholder — exactly the
-    # row most likely to be sloppy, and therefore the one that most needs checking.
-    unhashed = re.findall(r"^\|\s*`([^`|]+\.md)`\s*\|(?!\s*`[0-9a-f]{7,40}`\s*\|)", body, re.M)
-    assert not unhashed, (
-        f"tombstone rows without a last-containing commit hash: {unhashed}. The hash is the whole "
-        "point of the row — without it the file cannot be recovered without archaeology."
-    )
-    return rows
-
-
-def test_tombstoned_paths_are_repository_relative():
-    """`git show <commit>:<path>` from the table must work as written, with no prefix guessing.
-
-    The recovery instruction beside the table is the reason the table exists. It was previously
-    copy-paste broken: the rows carried `archive/HANDOFF_PHASE_1.md` while the file had lived at
-    `docs/archive/HANDOFF_PHASE_1.md`, so every command a reader assembled from the row failed.
-    """
-    wrong = [p for p in _tombstoned_paths() if "/" in p and not p.startswith(("docs/", "tests/"))]
-    assert not wrong, (
-        f"tombstone paths that are not repository-relative: {wrong}. They are pasted straight "
-        "into `git show <commit>:<path>`, so a heading-relative path silently fails."
-    )
-
-
-def test_tombstoned_files_are_absent_from_the_tree():
-    """Prevents a deleted document being restored while its tombstone still says it is gone."""
-    tracked = set(_tracked_markdown())
-    back = [path for path in _tombstoned_paths() if path in tracked]
-    assert not back, (
-        f"these files are tombstoned in docs/DOC_INVENTORY.md but present in the tree: {back}. "
-        "Either remove them again or remove the tombstone row and say why they came back."
-    )
-
-
-_GONE_RE = re.compile(r"\b(deleted|removed|tombstone|no longer)\b", re.I)
-
-
-def _paragraph_at(lines: list[str], index: int) -> str:
-    """The blank-line-delimited block containing ``lines[index]``.
-
-    A mention and the sentence disowning it are routinely on different physical lines in wrapped
-    prose, so the unit of judgement has to be the paragraph, not the line.
-    """
-    start = index
-    while start > 0 and lines[start - 1].strip():
-        start -= 1
-    end = index
-    while end + 1 < len(lines) and lines[end + 1].strip():
-        end += 1
-    return "\n".join(lines[start:end + 1])
-
-
-# How far from the mention the disowning word must sit. A paragraph can discuss two files, so a
-# bare "does this paragraph contain the word 'deleted'?" would let a live pointer to file A ride
-# along on a sentence retiring file B. A window ties the two together without pretending to parse
-# English; it is generous enough for the wrapped-prose case the paragraph scope exists to handle.
-_DISOWN_WINDOW = 240
-
-
-def _disowned(paragraph: str, name: str) -> bool:
-    """True when every mention of ``name`` has a deletion marker within the window around it."""
-    for m in re.finditer(re.escape(name), paragraph):
-        window = paragraph[max(0, m.start() - _DISOWN_WINDOW): m.end() + _DISOWN_WINDOW]
-        if not _GONE_RE.search(window):
-            return False
-    return True
-
-
-def test_maintained_documents_that_name_a_deleted_file_say_it_is_gone():
-    """Prevents a `Current` or `Active plan` document routing a reader to a file that is gone.
-
-    Naming a deleted file is allowed — `docs/campaigns/README.md` legitimately says where
-    `PHASE_5_NOTES.md` went — but the surrounding paragraph must say it was deleted. Otherwise the
-    mention reads as a live pointer. The register and the append-only ledger (DECISIONS.md D4,
-    which may not be edited) are exempt wholesale.
-    """
-    names = {Path(p).name for p in _tombstoned_paths()}
-    offenders: list[str] = []
-    for rel in _maintained_docs():
-        if rel in DELETED_NAME_ALLOWLIST:
-            continue
-        lines = _read(rel).splitlines()
-        for index, line in enumerate(lines):
-            for name in sorted(names):
-                if name not in line:
-                    continue
-                if not _disowned(_paragraph_at(lines, index), name):
-                    offenders.append(f"{rel}:{index + 1} names deleted {name} as if it were live")
-    assert not offenders, "\n".join(
-        [
-            "maintained documents name deleted documents without saying they were deleted:",
-            *offenders,
-        ]
-    )
-
-
-# ---- 3. stale phrases ------------------------------------------------------------------------
+# ---- 2. stale phrases ------------------------------------------------------------------------
 
 def test_maintained_documents_are_free_of_corrected_phrases():
     """Prevents wording that was corrected once being reintroduced somewhere else.
@@ -464,7 +334,6 @@ def test_maintained_documents_are_free_of_corrected_phrases():
         for phrase, why in STALE_PHRASES:
             if phrase not in flat:
                 continue
-            # Best-effort line number: the line holding the phrase's first word, else the file.
             head = phrase.split()[0]
             where = next(
                 (f"{rel}:{i}" for i, line in enumerate(lines, 1) if head in line), rel
@@ -473,7 +342,7 @@ def test_maintained_documents_are_free_of_corrected_phrases():
     assert not offenders, "\n".join(["corrected wording has come back:", *offenders])
 
 
-# ---- 4. link resolution ----------------------------------------------------------------------
+# ---- 3. link resolution ----------------------------------------------------------------------
 
 _INLINE_LINK_RE = re.compile(r"!?\[[^\]]*\]\(\s*([^)\s]+)(?:\s+\"[^\"]*\")?\s*\)")
 _REF_DEF_RE = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*(\S+)", re.M)
@@ -533,169 +402,92 @@ def test_relative_links_resolve():
     assert not broken, "\n".join(["broken relative links:", *broken])
 
 
-# ---- 5. every maintained document declares what it is ----------------------------------------
+# ---- 4. every document declares what it is ---------------------------------------------------
 
-def test_every_non_exempt_document_declares_a_valid_lifecycle():
+def test_every_non_exempt_document_declares_a_valid_status():
     """Prevents a new document entering the tree without saying whether it may be relied on.
 
-    That ambiguity — not the file count — is what made the tree unreadable before the cleanup.
+    That ambiguity — not the file count — is what made the tree unreadable before the 2026-07
+    cleanup, and the 2026-08 rebuild keeps the mechanical guarantee while shrinking the
+    vocabulary to three values.
     """
     problems: list[str] = []
     for rel in _tracked_markdown():
-        if _is_exempt(rel):
+        if _is_banner_exempt(rel):
             continue
-        value = _lifecycle(rel)
+        value = _status(rel)
         if value is None:
-            problems.append(f"{rel}: no `> **Lifecycle:**` banner")
-        elif value not in LIFECYCLE_VALUES:
+            problems.append(f"{rel}: no `> **Status:**` banner")
+        elif value not in STATUS_VALUES:
             problems.append(
-                f"{rel}: lifecycle {value!r} is not one of {list(LIFECYCLE_VALUES)} "
+                f"{rel}: status {value!r} is not one of {list(STATUS_VALUES)} "
                 "(a parenthetical gloss after the value is fine; a different value is not)"
             )
     assert not problems, "\n".join(problems)
 
 
-def test_every_non_exempt_document_declares_provenance():
-    """A generated file is owned by its generator; without the field nobody knows to edit it."""
-    missing = [
-        rel for rel in _tracked_markdown()
-        if not _is_exempt(rel) and "**Provenance:**" not in _read(rel)
-    ]
-    assert not missing, f"documents with no `> **Provenance:**` field: {missing}"
+def test_plans_declare_an_owner_and_exit_criteria():
+    """A plan without both is a wish, not a plan.
 
-
-# A register row: `| `path.md` | ...`. Anchored at the start of the row and requiring the
-# backticked path to be the *first* cell, so a path merely named in a Maintenance-note cell — or
-# in surrounding prose — is not mistaken for a registration. That looseness is what let the
-# previous token-scraping version pass a register with duplicate, missing, and phantom rows.
-_REGISTER_ROW_RE = re.compile(r"^\|\s*`([^`|]+\.md)`\s*\|", re.M)
-
-
-def _inventory_sections(text: str | None = None) -> list[tuple[str, str]]:
-    """Return second-level inventory headings and bodies using one shared parser."""
-    if text is None:
-        text = _read("docs/DOC_INVENTORY.md")
-    sections = []
-    for chunk in re.split(r"^## ", text, flags=re.M)[1:]:
-        heading, _, body = chunk.partition("\n")
-        sections.append((heading, body))
-    return sections
-
-
-def _register_rows(text: str | None = None) -> tuple[list[str], list[str]]:
-    """(registered paths, tombstoned paths) as written in docs/DOC_INVENTORY.md.
-
-    Both are returned as lists, not sets, so the caller can detect a path registered twice.
-    Every path in the register is repository-relative and complete — the register says so
-    explicitly, because a heading-relative path can silently resolve to a file that does not
-    exist, which is precisely what this check exists to catch.
-    """
-    registered: list[str] = []
-    tombstoned: list[str] = []
-    for heading, body in _inventory_sections(text):
-        rows = _REGISTER_ROW_RE.findall(body)
-        if heading.startswith("Deleted"):
-            tombstoned += rows
-        elif heading.startswith("Generated"):
-            continue    # glob patterns, not paths; covered by EXEMPT_PREFIXES instead
-        else:
-            registered += rows
-    assert registered, "the register parsed to zero rows — has its table format changed?"
-    assert tombstoned, "tombstone table parsed to zero rows — has its format changed?"
-    return registered, tombstoned
-
-
-def test_inventory_deleted_section_is_identified_by_heading_prefix():
-    inventory = """# Inventory
-
-## Current documents
-
-| Path | Lifecycle |
-|---|---|
-| `docs/LIVE.md` | Current |
-
-## Deleted documents
-
-| Former path | Last commit |
-|---|---|
-| `docs/GONE.md` | `abcdef0` |
-"""
-    registered, tombstoned = _register_rows(inventory)
-    assert registered == ["docs/LIVE.md"]
-    assert tombstoned == ["docs/GONE.md"]
-    assert _tombstoned_paths(inventory) == ["docs/GONE.md"]
-
-
-def test_the_register_is_a_bijection_with_the_tree():
-    """Every tracked `.md` has exactly one register row, and every row names a real file.
-
-    docs/DOC_INVENTORY.md claims each file appears "exactly once". This holds it to all three
-    halves of that claim, each of which failed silently under the old token-scraping check:
-
-    * **missing** — a document enters the tree with no entry saying what it is or who maintains
-      it, which is how the register stopped describing the tree the last time;
-    * **duplicated** — two rows for one file, so two sections can disagree about its lifecycle;
-    * **phantom** — a row for a file that does not exist, which reads as a live document and
-      sends a reader looking for something that was deleted or never written.
-    """
-    registered, tombstoned = _register_rows()
-    tracked = set(_tracked_markdown())
-    # Exempt files are not required to be registered. Exemption relaxes the missing check only; a
-    # registered path must still name a real file.
-    required = {rel for rel in tracked if not _is_exempt(rel)}
-
-    problems: list[str] = []
-    problems += [f"missing from the register: {rel}" for rel in sorted(required - set(registered))]
-    problems += [
-        f"registered {registered.count(p)} times: {p}"
-        for p in sorted(set(registered)) if registered.count(p) > 1
-    ]
-    problems += [
-        f"registered but not a tracked file: {p}" for p in sorted(set(registered) - tracked)
-    ]
-    problems += [
-        f"tombstoned {tombstoned.count(p)} times: {p}"
-        for p in sorted(set(tombstoned)) if tombstoned.count(p) > 1
-    ]
-    problems += [
-        f"both registered and tombstoned: {p}"
-        for p in sorted(set(registered) & set(tombstoned))
-    ]
-    assert not problems, "\n".join(
-        ["docs/DOC_INVENTORY.md does not match the tree one-to-one:", *problems]
-    )
-
-
-def test_active_plans_declare_an_owner_and_exit_criteria():
-    """Policy rule 5, enforced: an `Active plan` without both is a wish, not a plan.
-
-    Prevents the failure the lifecycle model exists to stop — a document that looks like approved,
-    tracked work but that nobody owns and nobody can declare finished, so it sits in the tree
-    forever reading as a live commitment.
+    Prevents the failure the plans/ directory exists to stop — a document that looks like
+    approved, tracked work but that nobody owns and nobody can declare finished, so it sits in
+    the tree forever reading as a live commitment.
     """
     problems: list[str] = []
     for rel in _tracked_markdown():
-        if _is_exempt(rel) or _lifecycle(rel) != "Active plan":
+        if not rel.startswith("docs/plans/") or _is_banner_exempt(rel):
             continue
         flat = re.sub(r"\s+", " ", _read(rel))
         for field in ("Owner", "Exit criteria"):
             if not re.search(rf"\*\*{field}[:.]?\*\*|{field}:", flat, re.I):
                 problems.append(f"{rel}: no {field!r} declared")
-    assert not problems, "\n".join(
-        ["active plans missing the metadata AGENTS.md rule 5 requires:", *problems]
+    assert not problems, "\n".join(["plans missing required metadata:", *problems])
+
+
+# ---- 5. the single map covers the tree -------------------------------------------------------
+
+def _canonical_targets(rel: str) -> set[str]:
+    """Repository-relative paths this document links to (files or directories)."""
+    base = (REPO / rel).parent
+    out: set[str] = set()
+    for target in _link_targets(_read(rel)):
+        if target.startswith("#") or _ABSOLUTE_RE.match(target):
+            continue
+        path = target.split("#", 1)[0]
+        if not path:
+            continue
+        try:
+            resolved = (base / path).resolve().relative_to(REPO.resolve())
+        except ValueError:
+            continue
+        out.add(resolved.as_posix())
+    return out
+
+
+def test_every_document_is_reachable_from_the_reading_guide():
+    """`docs/READING_GUIDE.md` is the single map: every document is on it, directly or through
+    one linked index (`campaigns/README.md` covers its directory, and so on).
+
+    Prevents the orphan-file failure the retired register used to catch: a document enters the
+    tree, nothing routes a reader to it, and it silently stops being documentation. One hop is
+    allowed so that a directory of records needs an index row, not a row per record.
+    """
+    direct = _canonical_targets(GUIDE)
+    covered = set(direct)
+    for rel in sorted(direct):
+        if rel.endswith(".md") and (REPO / rel).exists():
+            covered |= _canonical_targets(rel)
+
+    orphans = [
+        rel for rel in _tracked_markdown()
+        if not _is_map_exempt(rel) and rel not in covered
+    ]
+    assert not orphans, "\n".join(
+        [
+            "tracked documents not reachable from docs/READING_GUIDE.md (directly or one hop):",
+            *orphans,
+        ]
     )
-
-
-def test_exempt_paths_are_declared_in_the_register():
-    """Keeps this file's exemption list and the register's exemption table from drifting apart."""
-    register = _read("docs/DOC_INVENTORY.md")
-    for prefix in EXEMPT_PREFIXES:
-        assert prefix in register, (
-            f"{prefix!r} is exempt here but the register does not mention it — one of the two is "
-            "out of date"
-        )
-    for name in EXEMPT_FILES:
-        assert name in register, f"{name!r} is exempt here but absent from the register"
 
 
 # ---- 6. the committed evidence bundle matches its manifest -----------------------------------
@@ -800,14 +592,12 @@ def test_no_document_still_cites_the_disposable_out_tree_for_promoted_evidence()
     """Prevents a promoted report being cited at its old, gitignored `out/` path.
 
     Only the promoted groups are checked. `out/` is a legitimate thing to name — it is where a
-    run writes, and DECISIONS W1 is about it — so this fails on a citation of exactly the
-    evidence that now lives in `docs/assets/`.
+    run writes — so this fails on a citation of exactly the evidence that now lives in
+    `docs/assets/`.
     """
     promoted = [group["name"] for group in _manifest()["groups"]]
     offenders: list[str] = []
     for rel in _maintained_docs():
-        if rel in ("docs/DECISIONS.md", "docs/DECISION_INDEX.md", "docs/DOC_INVENTORY.md"):
-            continue  # the ledger is append-only; the register describes the move
         for line_no, line in enumerate(_read(rel).splitlines(), 1):
             for name in promoted:
                 # Any separator and any trailing context: `out/phase3_gold`, out\phase3_gold,
@@ -820,24 +610,7 @@ def test_no_document_still_cites_the_disposable_out_tree_for_promoted_evidence()
     )
 
 
-# ---- 7. generated files match their generators ------------------------------------------------
-
-def test_the_decision_index_is_not_stale():
-    """`docs/DECISION_INDEX.md` still matches what its generator produces from the ledger.
-
-    Prevents the failure mode every generated-and-committed file has: the next append to
-    `DECISIONS.md` leaves the index describing a ledger that no longer exists, and because the
-    file carries a banner and reads plausibly, nothing announces it. The generator is
-    deterministic and writes the whole file, so an exact comparison is the right check.
-    """
-    result = subprocess.run(
-        [sys.executable, "tools/docs/make_decision_index.py", "--check"],
-        cwd=str(REPO), capture_output=True, text=True,
-    )
-    assert result.returncode == 0, (result.stdout + result.stderr).strip()
-
-
-# ---- 8. the checks are actually load-bearing --------------------------------------------------
+# ---- 7. the checks are actually load-bearing --------------------------------------------------
 
 @pytest.mark.parametrize(
     "target, mutate",
@@ -865,14 +638,3 @@ def test_the_stale_phrase_check_would_catch_a_reintroduction():
     flat = re.sub(r"\s+", " ", " ".join(f"prose {wrapped} more prose".splitlines()))
     assert phrase in flat
     assert phrase in {p for p, _ in STALE_PHRASES}
-
-
-def test_the_register_check_would_catch_a_duplicate_row():
-    """A path registered twice is detected, not silently collapsed into a set.
-
-    The previous token-scraping implementation built a `set`, so a file registered under two
-    sections with two different lifecycles passed. This pins the counting behaviour that fixed it.
-    """
-    registered, _ = _register_rows()
-    doubled = registered + registered[:1]
-    assert [p for p in set(doubled) if doubled.count(p) > 1] == [registered[0]]

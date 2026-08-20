@@ -1,8 +1,7 @@
 # ISAR glossary
 
-> **Lifecycle:** Current
+> **Status:** live
 > **Authority:** canonical for term definitions
-> **Provenance:** hand-written
 > **Verified against code revision:** `1310969` (2026-07-30)
 
 Plain-language definitions for the terms in ISAR's reports and figures. Written for a scientist who

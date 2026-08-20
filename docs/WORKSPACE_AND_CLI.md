@@ -1,8 +1,7 @@
 # Workspace, session, and CLI — the as-built contract
 
-> **Lifecycle:** Current
+> **Status:** live
 > **Authority:** canonical for the workspace, session and CLI contract
-> **Provenance:** hand-written
 > **Verified against code revision:** `d483af1` (2026-08-08)
 
 What `isar` is from the outside: a directory per experiment, a ledger inside it, and a command

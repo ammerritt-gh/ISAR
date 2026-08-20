@@ -1,7 +1,6 @@
 # ISAR Unification — Assembly into a product (the tool grows a front door)
 
-> **Lifecycle:** Archived
-> **Provenance:** hand-written
+> **Status:** terminal
 > **Superseded by:** [`WORKSPACE_AND_CLI.md`](WORKSPACE_AND_CLI.md) — the as-built contract
 
 > **This path and its section numbers are frozen.** Roughly forty source files cite

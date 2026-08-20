@@ -1,7 +1,6 @@
 # EIG-4 Slice 7 source-closure upkeep
 
-> **Lifecycle:** Historical evidence
-> **Provenance:** hand-written
+> **Status:** terminal
 
 ## Outcome
 
