@@ -1001,6 +1001,17 @@ deadlocked a real campaign, so none may be relaxed casually:
    productions run against a multi-anchor optic and a zero-anchor acoustic, and occupancy lets
    the optic outvote the acoustic for its own features.
 
+These rules are implemented as named module constants in the tracker
+(`SECONDARY_P_ACOUSTIC_MAX = 0.3`, `SECONDARY_MIN_SIGNIFICANCE`, `MIN_ANCHORS = 3`,
+`LOCALITY_BW` — `isar/session/branch_assignment.py` / `branch_model.py`). Reconciliation with
+the no-hard-rules-for-phenomena doctrine (DESIGN_GOALS Inbox, "priors exist to be weakened"):
+none legislates what a phenomenon *does* — they are belief bookkeeping and prior-admission
+gates, each earned by a named live deadlock — but the thresholds are legislated numbers rather
+than priced quantities, and that is acknowledged: all four live in the tracked-branch machinery
+that SCENE-6 deletes (design/scene.md §3), where identity becomes catalogue-driven,
+evidence-priced scene posterior and gates of this kind should dissolve into priors and prices.
+They are the bridge, with a scheduled demolition.
+
 Standing repair from the same campaign: the TAVI idempotency key carries a per-workspace nonce
 (`.run_nonce`), so a fresh campaign can never replay a previous run's poisoned instrument-side
 cache; a crash-resume of the same workspace reuses its nonce and still dedupes.
