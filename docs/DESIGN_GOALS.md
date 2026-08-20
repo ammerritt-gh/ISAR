@@ -245,6 +245,16 @@ Other people should eventually use ISAR, and the how-to-use-it door is a standin
 product: "we are making it something that people can use, not just something that can run on
 its own and prove to itself what it does in a circular logic."
 
+### Fits are the human-readability layer, not the proof layer (→ "Data Analysis" or the hypothesis-map section)
+
+2026-08-20, from the walkthrough: "Being able to fit e.g. a phonon dispersion or linewidth *is*
+a very useful thing, but I would put this into a different, later step: making the data
+human-readable. Pure intensity charts are not that convincing or easy to parse; being able to
+have ISAR prove by intensity↔hypothesis and then later produce a detailed analysis for human
+consumption is still very helpful." Refines the hypothesis-map hierarchy above: the map is
+challenged by intensity; parametric fits are a downstream *presentation and analysis product*
+for humans, not what the proof rests on.
+
 ### Building now; release discipline later, deliberately (→ "Future direction")
 
 ISAR is unreleased and has no external users; justifying methodology changes to outsiders is
