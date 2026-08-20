@@ -1,1 +1,1 @@
-"""ISAR command-line interface (UNIFICATION_DESIGN §5). Entry point: `isar.cli.main:main`."""
+"""ISAR command-line interface (the retired unification plan §5, git history; current contract: docs/WORKSPACE_AND_CLI.md). Entry point: `isar.cli.main:main`."""

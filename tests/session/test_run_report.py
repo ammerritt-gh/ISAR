@@ -1,4 +1,4 @@
-"""Step-6 gate (UNIFICATION_DESIGN §10.6): the run report renders from the ledger with no gold CSV
+"""Step-6 gate (the retired unification build order §10.6, git history): the run report renders from the ledger with no gold CSV
 and no refitting, for any instrument (the code has zero instrument branches)."""
 from isar.report import run_report
 from isar.session.state import ScanEntry, SessionState

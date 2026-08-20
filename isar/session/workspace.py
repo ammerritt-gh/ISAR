@@ -1,4 +1,4 @@
-"""The experiment workspace (UNIFICATION_DESIGN §1, §2.2) — one directory per experiment.
+"""The experiment workspace (the retired unification plan §1, §2.2, git history; current contract: docs/WORKSPACE_AND_CLI.md) — one directory per experiment.
 
 Layout:
 

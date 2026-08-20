@@ -1,4 +1,4 @@
-"""Fit-level figures for the run report (UNIFICATION_DESIGN §7).
+"""Fit-level figures for the run report (the retired unification plan §7, git history; current contract: design/reporting.md).
 
 Factored here so the report layer — not a one-off check script — owns the dispersion-summary plot.
 The figure is built from ledger outcomes only (no refitting), so `isar report` is cheap.

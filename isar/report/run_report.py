@@ -1,4 +1,4 @@
-"""The run report (UNIFICATION_DESIGN §7) — the product of `isar run`.
+"""The run report (the retired unification plan §7, git history; current contract: design/reporting.md) — the product of `isar run`.
 
 Built from the session ledger (no refitting): a header of counts, a per-scan triage table, the
 dispersion summary, held/declined explanations, gaps, and a machine-readable JSON sidecar. The

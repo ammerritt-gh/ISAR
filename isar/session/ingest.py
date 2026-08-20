@@ -1,4 +1,4 @@
-"""Ingestion (UNIFICATION_DESIGN §2.3, docs/ARCHITECTURE.md §7.1) — discover, classify, parse, dedup, order.
+"""Ingestion (the retired unification plan §2.3, git history; current contract: docs/WORKSPACE_AND_CLI.md; also docs/ARCHITECTURE.md §7.1) — discover, classify, parse, dedup, order.
 
 Files are the source of truth (U4/§0.5). `discover` walks the data paths, classifies each file
 (measurement / calibration-companion / foreign / unrecognized), and `parse_all` parses the
@@ -127,7 +127,7 @@ class IngestReport:
 
 
 def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestReport:
-    """Parse ``data_paths`` into the session ledger WITHOUT fitting (UNIFICATION_DESIGN §2.3).
+    """Parse ``data_paths`` into the session ledger WITHOUT fitting (the retired unification plan §2.3, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 
     Discovers/classifies files (reusing :func:`discover`), parses the measurement files with the
     card-pinned plugin, dedups by ``(experiment_id, scan_number)`` last-wins, and upserts one ledger

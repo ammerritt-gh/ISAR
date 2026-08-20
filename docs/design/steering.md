@@ -242,8 +242,8 @@ three:
 1. **No good model, told to measure a region.** Must survey and report signal *model-free* — "there is
    something at E = X, width W, intensity I" — without asserting what it is.
 2. **Signal that does not match the model.** Must *demote* the model and flag the anomaly, never
-   fit-a-phonon-anyway (`archive/PHASE_3_DESIGN.md` already warns: a sharp non-phonon feature is *flagged, not
-   fitted as a phonon*).
+   fit-a-phonon-anyway (the Phase 3 design rationale already warned this, git history: a sharp
+   non-phonon feature is *flagged, not fitted as a phonon*).
 3. **Features stuck together.** Must report the blend honestly and know how to *separate* them (change
    T, change Q, higher resolution) rather than force a fit.
 
@@ -1035,6 +1035,11 @@ cache; a crash-resume of the same workspace reuses its nonce and still dedupes.
   confidence, the per-q classification term zeroes at the differentiation tolerance, and the
   budget stop is the outer bound. The synthetic two-branch campaign must show rival spending
   peaking early and dying off, not tracking the target to the end.
+- **Optional-stopping ("peeking") bias** — using the shrinking per-point error as a stopping
+  trigger preferentially stops on downward fluctuations, so a naive stop-when-small rule
+  under-covers. The stop criterion is deliberately conservative for this reason, and certified
+  intervals come from the frozen final fits, not from the peeked sequence; any future
+  error-triggered stopping needs a conservative margin or an alpha-spending-style correction.
 - **Inherited from the Phase-4 forward notes (2026-07):** how to project counts→achieved-error
   reliably from a partial scan (the bootstrap on the growing set gives this, but its early-point
   behaviour needs checking); how the planner trades off "finish this Q" vs "start the next Q";

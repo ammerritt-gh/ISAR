@@ -5,7 +5,7 @@ question spec of its family (readiness — dependency-open gating — is C5's jo
 is only ever called on a spec its caller has already decided is ready). It either proposes one
 or more ``(MeasurementIntent, QuestionActionAssociation)`` pairs, or returns a typed zero-action
 outcome: a clean zero (the closure the generator's own predicate serves is already satisfied —
-see the matrix in ``docs/SCENE_DESIGN.md`` §5, landing at C9) or an INAPPLICABLE (a durable or
+see the matrix in ``docs/design/scene.md`` §5, landing at C9) or an INAPPLICABLE (a durable or
 model-authority reason the generator cannot even attempt this question). A generator that hits a
 genuine defect raises — fault isolation across generators is the caller's frame (C5/C7), not
 this module's.

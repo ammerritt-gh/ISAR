@@ -1,4 +1,4 @@
-"""Session bookkeeping (UNIFICATION_DESIGN §2.2-2.3) — the ingest manifest + per-scan ledger.
+"""Session bookkeeping (the retired unification plan §2.2-2.3, git history; current contract: docs/WORKSPACE_AND_CLI.md) — the ingest manifest + per-scan ledger.
 
 `SessionState` lives in `session.json` in the workspace. It is the *machine-owned, deletable*
 half of persistence (U3): the ledger of what was seen and what happened to it. It can be deleted
@@ -27,7 +27,7 @@ from isar.schema import _json
 # ledgers, which load unchanged.
 SCHEMA_VERSION = "isar.session/3"
 
-# Ledger status vocabulary (UNIFICATION_DESIGN §2.3). "held_*" statuses always re-enter the fit
+# Ledger status vocabulary (the retired unification plan §2.3, git history; current contract: docs/WORKSPACE_AND_CLI.md). "held_*" statuses always re-enter the fit
 # queue on a later run (the bootstrap-gate re-examination).
 STATUSES = (
     "ingested",             # parsed into the ledger, not yet routed/fitted — always re-enters the fit queue

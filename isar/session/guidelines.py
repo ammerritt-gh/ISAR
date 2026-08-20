@@ -1,4 +1,4 @@
-"""User fitting guidelines (UNIFICATION_DESIGN §6) — the `[fitting]` policy section, parsed.
+"""User fitting guidelines (the retired unification plan §6, git history; current contract: docs/WORKSPACE_AND_CLI.md) — the `[fitting]` policy section, parsed.
 
 The human's control surface, scoped to three capabilities: expected-omega hints (per Q-range or
 per scan), per-scan overrides (exclude / seed), and exclusions. Guidelines **narrow, never widen**

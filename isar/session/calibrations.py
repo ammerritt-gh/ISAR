@@ -1,4 +1,4 @@
-"""Calibration wiring (UNIFICATION_DESIGN §3) — the session layer that finally calls the orphaned
+"""Calibration wiring (the retired unification plan §3, git history; current contract: docs/WORKSPACE_AND_CLI.md) — the session layer that finally calls the orphaned
 `isar/calibrate/`.
 
 Card-driven by the `[calibration]` policy section. Three methods cover the known cases:

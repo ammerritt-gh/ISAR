@@ -1,4 +1,4 @@
-"""Step-2 gates (UNIFICATION_DESIGN §10.2): ingest discovers/classifies files, parses via the
+"""Step-2 gates (the retired unification build order §10.2, git history): ingest discovers/classifies files, parses via the
 card-pinned plugin, dedups (last-wins) and orders by scan number, and detects sequence gaps.
 
 Built on the synthetic emitters so it needs no gitignored data (CI-safe)."""

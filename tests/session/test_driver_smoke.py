@@ -1,4 +1,4 @@
-"""Step-5 driver smoke gates (UNIFICATION_DESIGN §10.5), kept light for CI / a slow machine.
+"""Step-5 driver smoke gates (the retired unification build order §10.5, git history), kept light for CI / a slow machine.
 
 - IN8 (real data, skipped if absent): the full driver end-to-end on the anchor pair — 055182
   recovers omega0 within 0.5 meV of the vetted ~4.2 (verdict aside — the gold check gates on
@@ -7,7 +7,7 @@
   held_for_calibration (never E0 = 0), not fitted.
 
 The full 83-scan S30 statistical comparison at M=200 is the heavyweight gate; it is deferred to a
-fast machine (see docs/UNIFICATION_DESIGN §10.5 and the command in the module docstring below):
+fast machine (see the retired unification build order §10.5, git history, and the command in the module docstring below):
 
     isar init "test_data/APS S30/FeSe_1-xS_x_1.spec_supplementary.dat" --out ws_s30
     # set [fitting] detectors = ["ana7"]; [calibration] companion_glob = "FeSe_1-xS_x_1.spec"

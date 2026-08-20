@@ -1,4 +1,4 @@
-"""The running dispersion prior (UNIFICATION_DESIGN §5) — built from accumulated resolved fits.
+"""The running dispersion prior (the retired unification plan §5, git history; current contract: design/steering.md) — built from accumulated resolved fits.
 
 Generalizes the gold check's leave-one-out `predict_omega` from gold-CSV rows to ISAR's own
 accumulated fits. Lives here (not `isar/analyze/prior.py`, which only *consumes* a `PhononPrior`)

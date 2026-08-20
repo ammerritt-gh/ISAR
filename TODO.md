@@ -226,7 +226,7 @@ the steering roadmap ([design/steering.md](docs/design/steering.md) §10). Only 
       One citation remains unpromotable and is the residue of this item: `STATS_PRIMER.md` points
       at `out/mvp_zone_test16` ("ask the maintainer for its blessed location"), the frozen v1
       characterization baseline ruling W1 archives but which is not in this checkout.
-      (`UNIFICATION_DESIGN.md`'s step-0 baseline also needs the never-generated
+      (the retired unification plan's step-0 baseline — git history — also needs the never-generated
       `out/phase3_gold_in8/`, but that file is now `Archived` — a historical design record may
       name the paths it used, so it is no longer part of this item.)
       **Acceptance:** it is either promoted into `docs/assets/` with a manifest entry, or

@@ -14,7 +14,7 @@ from pathlib import Path
 REGISTRY: dict[tuple[str, str, str], object] = {}
 
 # name -> plugin (the card pins a parser by name: `plugin = "spec_s30"`). Populated by
-# `isar/parsers/__init__.py` at import time (UNIFICATION_DESIGN §2.3).
+# `isar/parsers/__init__.py` at import time (the retired unification plan §2.3, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 REGISTRY_BY_NAME: dict[str, object] = {}
 
 

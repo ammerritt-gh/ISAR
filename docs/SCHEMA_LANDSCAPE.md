@@ -4,10 +4,11 @@
 > **Authority:** canonical for the schema survey across facilities
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
-**Status:** Research reference. Informs the Phase 2 schema (`docs/archive/PHASE_2_DESIGN.md` §3, §5, §6).
+**Status:** Research reference. Informs the Phase 2 schema (design rationale absorbed into the
+living docs; original §3, §5, §6 in git history).
 **Note:** two claims here were later **corrected by real files in `test_data/`** — BL43LXU writes SPEC (not
 an undocumented custom format), and IN8 ships `.nxs` NeXus twins beside each numor. Corrections are marked
-inline with “**[test_data]**”. See `archive/PHASE_2_DESIGN.md` §6 for the consolidated, corrected instrument table.
+inline with “**[test_data]**”. See git history (former `archive/PHASE_2_DESIGN.md` §6) for the consolidated, corrected instrument table.
 **Purpose:** Survey scan types, per-scan metadata, sample environment, and file formats across IXS and
 TAS facilities so the ISAR normalized schema has its extension points in the right places — i.e. so the
 schema does **not** need a rewrite to support scan types and instruments beyond the current

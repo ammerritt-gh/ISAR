@@ -1,4 +1,4 @@
-"""`isar init <data>` — detect the instrument and scaffold an experiment workspace (UNIFICATION_DESIGN §5).
+"""`isar init <data>` — detect the instrument and scaffold an experiment workspace (the retired unification plan §5, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 
 Copies the matching card template **verbatim as text** (its comments are the documentation — no
 tomllib round-trip), appends commented `[calibration]`/`[fitting]` scaffolds if the template
@@ -27,7 +27,7 @@ def _fail(kind: str, message: str, as_json: bool) -> int:
 # user where guidelines and calibration policy live. Real cards carry uncommented versions.
 _FITTING_SCAFFOLD = """
 # ---------------------------------------------------------------------------
-# [fitting] — your fitting guidelines (UNIFICATION_DESIGN §6). All optional.
+# [fitting] — your fitting guidelines (the retired unification plan §6, git history; current contract: docs/WORKSPACE_AND_CLI.md). All optional.
 # [fitting]
 # detectors = "enabled"        # or ["ana7"] — which spectra to fit
 # omega_window = [0.0, 0.0]    # sanity window (meV); [0,0] = off
@@ -46,7 +46,7 @@ _FITTING_SCAFFOLD = """
 
 _CALIBRATION_SCAFFOLD = """
 # ---------------------------------------------------------------------------
-# [calibration] — how the energy zero / resolution is established (UNIFICATION_DESIGN §3).
+# [calibration] — how the energy zero / resolution is established (the retired unification plan §3, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 # method = "bragg_companion" | "elastic_records" | "cooper_nathans"
 # [calibration]
 # method = "cooper_nathans"

@@ -5,9 +5,10 @@
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
 **Status:** built, TDD-tested, and live-verified 2026-06-28. This is the as-built record for the LLM
-adjudication layer designed in `archive/PHASE_2_DESIGN.md` §7.3 (and ARCHITECTURE §0.5). It documents what exists,
+adjudication layer designed in the Phase 2 design rationale (§7.3, absorbed into the living docs;
+original in git history) and ARCHITECTURE §0.5. It documents what exists,
 the decision contract, where the reasoning is visible, the model-selection evidence (the §7.3-mandated
-probe), how to run it, and the known gaps. Read `archive/PHASE_2_DESIGN.md` §7.3 for the *why*; this for the *what*.
+probe), how to run it, and the known gaps. See git history for the Phase 2 design rationale's *why*; this for the *what*.
 
 ---
 

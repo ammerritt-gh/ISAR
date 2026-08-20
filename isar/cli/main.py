@@ -1,4 +1,4 @@
-"""`isar` CLI entry point (UNIFICATION_DESIGN §5).
+"""`isar` CLI entry point (the retired unification plan §5, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 
 Subcommands: init, detect, ingest, run, status, report, score, profile, diagnose, view, drive.
 Built incrementally; unimplemented commands raise a clear message rather than a stack trace.

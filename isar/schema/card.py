@@ -74,7 +74,7 @@ class CardPolicy:
     ascan_classification: dict = field(default_factory=dict)  # motor -> scan_type (default alignment)
     qc: dict = field(default_factory=dict)                   # deterministic QC thresholds (§7.1-7.2)
     adjudication: dict = field(default_factory=dict)         # LLM adjudication config (§7.3)
-    # Unification (UNIFICATION_DESIGN §2.1) — the CLI/session layer reads these. Absent in older
+    # Unification (the retired unification plan §2.1, git history; current contract: docs/WORKSPACE_AND_CLI.md) — the CLI/session layer reads these. Absent in older
     # cards; defaults preserve pre-unification behavior. Without these fields declared here,
     # `_json.from_dataclass` would silently DROP the [calibration]/[fitting]/[sample] TOML tables.
     calibration: dict = field(default_factory=dict)          # [calibration] — method + knobs (§3)
@@ -139,7 +139,7 @@ def validate_policy_text(text: str) -> PolicyValidation:
 class CardState:
     exclusions: list = field(default_factory=list)
     corrections: list = field(default_factory=list)  # append-only audit (LLM vs human, §8)
-    # Unification (UNIFICATION_DESIGN §2.1) — the docs/ARCHITECTURE.md §6 accumulated-state half. All optional
+    # Unification (the retired unification plan §2.1, git history; current contract: docs/WORKSPACE_AND_CLI.md) — the docs/ARCHITECTURE.md §6 accumulated-state half. All optional
     # with list defaults, so a pre-unification `<exp>.state.json` (exclusions + corrections only)
     # loads unchanged.
     resolution_versions: list = field(default_factory=list)  # [{version, method, source, created, ...}]
@@ -180,7 +180,7 @@ def load_policy(path) -> CardPolicy:
 
 
 def unknown_toml_tables(path) -> list[str]:
-    """Top-level TOML keys that match no `CardPolicy` field (UNIFICATION_DESIGN U7).
+    """Top-level TOML keys that match no `CardPolicy` field (the retired unification plan §7, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 
     `_json.from_dataclass` silently drops unknown keys, so a typo'd section (`[fittng]`) or a
     misspelled scalar vanishes without error. The CLI calls this and warns, turning a silent

@@ -136,8 +136,10 @@ be walkable from the artifacts alone.
 **Persistence.** All state lives in a per-experiment *workspace* as plain JSON, files-as-truth:
 the card's policy half is human-authored TOML (the machine never writes it); accumulated state is
 `card.state.json` (experiment-owned) plus `session.json` (machine ledger, deletable/rebuildable).
-Restart-safety comes from idempotency: every run re-parses everything and re-fits only
-new/held/changed scans. No database, no checkpointer dependency. Growing-file batch payloads
+The canonical store is a **lossless source, never a flat export target**: plain JSON chosen so
+every downstream representation can be regenerated from it, and nothing is baked in that cannot
+be reversed. Restart-safety comes from idempotency: every run re-parses everything and re-fits
+only new/held/changed scans. No database, no checkpointer dependency. Growing-file batch payloads
 (S30) are handled by full re-parse + dedup by `(experiment_id, scan_number)`, keeping the last
 occurrence. *(Implemented; see `WORKSPACE_AND_CLI.md` for the full treatment.)*
 
@@ -195,7 +197,9 @@ until a resolution version exists for the analyzer; recalibration is first-class
 destroying data," and it is enforced in code, not aspirational:
 - Rejection only ever **marks** (`miniscan_reject` masks); nothing is deleted. Zero-flux points
   are masked-but-kept. Every rejection leaves a per-point flag with the count and magnitude of
-  what was removed.
+  what was removed. This is what makes the human-review loop closable at all: a deletion that
+  already happened cannot be reviewed or undone, while "subtraction" as a downstream fitter
+  honoring a mask is fully reversible because the raw point is still there.
 - The default cosmic-ray rule is **Poisson-aware leave-one-out**: a pass is rejected only if it
   exceeds the *other* passes by k·√level AND those others are at a non-trivial level. At
   near-empty points it rejects nothing — it refuses to delete what it cannot distinguish from a
@@ -497,6 +501,7 @@ Code comments and older docs cite the pre-2026-07-09 numbering. Map:
 
 Decision/ruling IDs (P*, D*, U*, and the V/R/S/O/T/W/G/H series, plus the EIG workstream's
 ADR-NNN labels) are stable historical names, safe to cite from code — see GLOSSARY §Ruling IDs;
-the retired ledger that defined most of them is in git history. Docstrings citing old §-numbers (e.g. `§7.5`, `§0.4` from UNIFICATION_DESIGN's
-numbering) remain resolvable via this table and that document; a reference sweep is optional
-cleanup, not required.
+the retired ledger that defined most of them is in git history. Docstrings now name the retired
+plans explicitly with git history (e.g. `§7.5`, `§0.4` from the retired unification plan's
+numbering) instead of citing UNIFICATION_DESIGN by path; the concordance table here still resolves
+pre-2026-07-09 ARCHITECTURE numbering.

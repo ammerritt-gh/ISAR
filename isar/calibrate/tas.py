@@ -2,7 +2,7 @@
 
 The validated implementation lives in `isar.synth.resolution` (built and tested in Phase 1/3).
 This is a thin re-export so the session/calibration layer can import it from `isar.calibrate`
-without moving validated code (UNIFICATION_DESIGN §3).
+without moving validated code (the retired unification plan §3, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 """
 from isar.synth.resolution import (  # noqa: F401
     FALLBACK_FWHM,

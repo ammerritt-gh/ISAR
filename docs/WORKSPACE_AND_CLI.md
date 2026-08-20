@@ -6,8 +6,9 @@
 
 What `isar` is from the outside: a directory per experiment, a ledger inside it, and a command
 set that reads and extends both. This document is the current contract. The design that produced
-it is `UNIFICATION_DESIGN.md` — archived, kept at its path because ~40 source docstrings cite its
-section numbers; read it for *why*, never for *what is true now*.
+it is the retired unification plan — deleted 2026-08-20; source docstrings that used to cite its
+section numbers now name it explicitly and point here plus git history for *why*, never for
+*what is true now*.
 
 ## The workspace
 

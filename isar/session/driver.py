@@ -1,4 +1,4 @@
-"""The pipeline driver (UNIFICATION_DESIGN §2.5) — parse → reduce → route → calibrate → fit → collate.
+"""The pipeline driver (the retired unification plan §2.5, git history; current contract: docs/WORKSPACE_AND_CLI.md) — parse → reduce → route → calibrate → fit → collate.
 
 `run_batch` is the whole pipeline behind `isar run`: idempotent (re-parses everything, re-fits only
 new / content-drifted / guideline-drifted / previously-held scans), context-updates before

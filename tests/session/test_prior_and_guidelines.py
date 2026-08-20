@@ -1,4 +1,4 @@
-"""Step-4 gates (UNIFICATION_DESIGN §10.4): the prior builder and guidelines behave as designed."""
+"""Step-4 gates (the retired unification build order §10.4, git history): the prior builder and guidelines behave as designed."""
 import numpy as np
 import pytest
 

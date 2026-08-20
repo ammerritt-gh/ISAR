@@ -1,4 +1,4 @@
-"""`isar report --workspace DIR` — re-render the report from persisted state (UNIFICATION_DESIGN §5).
+"""`isar report --workspace DIR` — re-render the report from persisted state (the retired unification plan §5, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 
 Reads the ledger only (no reparse, no refitting) and rebuilds report.md/.html/.json + the
 dispersion figure. Add `--formats` to control outputs.

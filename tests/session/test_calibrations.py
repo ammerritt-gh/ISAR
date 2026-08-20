@@ -1,4 +1,4 @@
-"""Step-3 gates (UNIFICATION_DESIGN §10.3): the calibration layer reproduces the gold-check recipe.
+"""Step-3 gates (the retired unification build order §10.3, git history): the calibration layer reproduces the gold-check recipe.
 
 Fast unit tests cover the version-dedup logic and the state round-trip; the real-data gate
 (skipped when test_data/ is absent — it is gitignored) proves `resolve()` reproduces the gold

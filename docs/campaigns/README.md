@@ -36,13 +36,7 @@ Each bundle is self-describing — machine-written JSON (run manifests, gate res
 records, dispositions; exact filenames vary by campaign type) carrying commit anchors and
 fingerprints. The ruling cited in the last column states what the evidence decided.
 
-## Narratives pending absorption (terminal)
-
-| Record | Absorbs into |
-|---|---|
-| [PHASE_4_NOTES.md](PHASE_4_NOTES.md) | held while `archive/PHASE_3_DESIGN.md` cites it; dies with the archive slice |
-
-The zone-retest and exposure-basis narratives were absorbed 2026-08-20: the four
+The zone-retest, exposure-basis, and PHASE_4_NOTES narratives were absorbed 2026-08-20: the four
 branch-disambiguation rules into [`../design/steering.md`](../design/steering.md) §7.9, the
 per-energy exposure-basis evidence into [`../design/eig.md`](../design/eig.md) (Predictive
 artifact).

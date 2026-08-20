@@ -520,7 +520,7 @@ def _parameter_within_tolerance(spec, scene_payload, prior) -> QuestionAssessmen
     """EstimateParameter: closes on BOTH within-candidate uncertainty (the A1 per-mode
     ``ModeInterval``) and between-candidate disagreement (retained posterior support, priced
     through the shared omitted-mass bound machinery) — SCENE-4.2a A2, retiring the v1
-    never-closes ruling (docs/SCENE_DESIGN.md §5).
+    never-closes ruling (docs/design/scene.md §5).
 
     The search set for the estimated center is the finite, order-independent list of
     acceptance-window endpoints over every TRUSTED, support-capable interval; ties break to the

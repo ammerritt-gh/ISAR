@@ -2,7 +2,7 @@
 
 Populates the session ledger (status ``"ingested"``) so parsed scans are visible through
 ``workspace_api`` before any ``isar run``. Never fits, never deletes, never writes
-``card.policy.toml``. The GUI's parse-preview shells this with ``--json`` (UNIFICATION_DESIGN §5).
+``card.policy.toml``. The GUI's parse-preview shells this with ``--json`` (the retired unification plan §5, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 """
 from __future__ import annotations
 

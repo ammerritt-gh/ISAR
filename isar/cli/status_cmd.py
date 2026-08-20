@@ -1,4 +1,4 @@
-"""`isar status --workspace DIR` — summarize the ledger without reprocessing (UNIFICATION_DESIGN §5).
+"""`isar status --workspace DIR` — summarize the ledger without reprocessing (the retired unification plan §5, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 
 Reads card + session only (no reparse): counts by status, held scans with reasons, scan-number and
 coverage gaps from the last run, calibration versions, and prior population.

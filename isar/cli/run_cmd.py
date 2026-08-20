@@ -1,4 +1,4 @@
-"""`isar run <data>... --workspace DIR` — the full pipeline, idempotent (UNIFICATION_DESIGN §5)."""
+"""`isar run <data>... --workspace DIR` — the full pipeline, idempotent (the retired unification plan §5, git history; current contract: docs/WORKSPACE_AND_CLI.md)."""
 from __future__ import annotations
 
 import hashlib

@@ -1,4 +1,4 @@
-"""`isar score --workspace DIR --gold CSV` — score a run against a gold-fit CSV (UNIFICATION_DESIGN §5).
+"""`isar score --workspace DIR --gold CSV` — score a run against a gold-fit CSV (the retired unification plan §5, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 
 Optional, off the run path (U6): wraps the existing `isar.analyze.gold` harness. Builds an
 IsarResult per gold scan from the ledger and reports the confusion matrix, recovery accuracy, and

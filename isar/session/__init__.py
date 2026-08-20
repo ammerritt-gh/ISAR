@@ -1,4 +1,4 @@
-"""ISAR session layer (UNIFICATION_DESIGN §2) — the persistent experiment workspace.
+"""ISAR session layer (the retired unification plan §2, git history; current contract: docs/WORKSPACE_AND_CLI.md) — the persistent experiment workspace.
 
 The analysis pipeline (parse → reduce → calibrate → fit → report) exists as validated library
 code; this package assembles it into a re-runnable, idempotent driver over a per-experiment

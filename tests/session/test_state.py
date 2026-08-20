@@ -1,4 +1,4 @@
-"""Step-1 gates (UNIFICATION_DESIGN §10.1): the schema additions and the ledger are backward-
+"""Step-1 gates (the retired unification build order §10.1, git history): the schema additions and the ledger are backward-
 compatible, the new TOML sections survive the dataclass round-trip, and the U7 warning fires.
 """
 import json

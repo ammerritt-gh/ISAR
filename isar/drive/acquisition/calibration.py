@@ -12,7 +12,7 @@ The application is deliberately trivial and explicit::
 
 **Load-bearing guard.** This function takes ``interval_lo``/``interval_hi`` EXPLICITLY and refuses a
 ``prior_sigma`` (or ``sigma``) input. ISAR's ``prior_for(...)`` floors its returned sigma at 0.3 meV
-by design (it is an IC-seeding prior, ``UNIFICATION_DESIGN §5``); feeding that floor to the
+by design (it is an IC-seeding prior, the retired unification plan §5, git history; current contract: docs/WORKSPACE_AND_CLI.md); feeding that floor to the
 convergence test makes a sub-0.3 meV objective unreachable by construction. The prior is for
 *seeding*; the per-scan interval is for *deciding done* — so the calibrated half-width is built only
 from the interval, never from a prior sigma.

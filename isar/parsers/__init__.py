@@ -1,6 +1,6 @@
 """Parser plugins + versioned registry.
 
-Importing this package registers the shipped plugins by name (UNIFICATION_DESIGN §2.3), so
+Importing this package registers the shipped plugins by name (the retired unification plan §2.3, git history; current contract: docs/WORKSPACE_AND_CLI.md), so
 `registry.plugin_by_name(card.policy.plugin)` resolves the card-pinned parser. `registry.detect`
 works standalone (no registration needed); name-based resolution needs this wiring.
 """
