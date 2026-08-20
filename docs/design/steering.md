@@ -1059,6 +1059,21 @@ cache; a crash-resume of the same workspace reuses its nonce and still dedupes.
   confidence, the per-q classification term zeroes at the differentiation tolerance, and the
   budget stop is the outer bound. The synthetic two-branch campaign must show rival spending
   peaking early and dying off, not tracking the target to the end.
+- **Confidence tuning — the paranoia budget (owner-named gap, 2026-08-20 walkthrough).** The
+  wrong-peak guard stack is *reactive*: it refuses to narrow on known ambiguity and recovers
+  when wrongness surfaces, but nothing *proactively spends beam on verification because
+  confidence is merely high rather than certain*. Worse, the one verification-flavored term —
+  λ × identity-entropy — *decays* with confidence: exactly the overconfident-scientist
+  direction. The trade is efficiency-if-right vs robustness-if-wrong, it is a user temperament
+  ("not something we can choose for a user — but we can ship decent defaults"), and the
+  principled mechanism is already implied by the doctrine: paranoia is *honest probability mass
+  on "the map is wrong"* — an unknown-competitor / wrong-model tail that EIG then prices
+  automatically, making occasional survey/verification scans positive-value purchases instead
+  of a hardcoded ritual. The scene layer's unknown-competitor class and counts-authoritative
+  arenas are the natural carrier (SCENE-5 scene-EIG); the operator-facing knob is that tail's
+  floor plus a default verification budget. Related Inbox commitments: "freedom to leave the
+  beaten path" (confirmation scans off the nominal path) and "never set-and-forget"
+  (non-blocking mid-campaign prompts).
 - **Optional-stopping ("peeking") bias** — using the shrinking per-point error as a stopping
   trigger preferentially stops on downward fluctuations, so a naive stop-when-small rule
   under-covers. The stop criterion is deliberately conservative for this reason, and certified

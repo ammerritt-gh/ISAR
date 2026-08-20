@@ -255,6 +255,16 @@ consumption is still very helpful." Refines the hypothesis-map hierarchy above: 
 challenged by intensity; parametric fits are a downstream *presentation and analysis product*
 for humans, not what the proof rests on.
 
+### Confidence is a user temperament; ship decent defaults (→ "Automated Scans")
+
+2026-08-20, from the walkthrough: the wrong-peak question "is a trade-off, efficiency vs.
+paranoia: the overconfident one is very efficient *if they're right*, and the paranoid one is
+better *if they're wrong*. So it's about tuning confidence, and that's not something we can
+*choose* for a user necessarily, but it is something we can ship decent defaults for." The
+missing mechanism, in the owner's words: a way for ISAR to think "I need to do some survey
+scans here and there, just in case, because I *think* I've got a good answer but I don't
+*know*."
+
 ### Building now; release discipline later, deliberately (→ "Future direction")
 
 ISAR is unreleased and has no external users; justifying methodology changes to outsiders is
