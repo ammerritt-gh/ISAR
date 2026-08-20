@@ -165,7 +165,7 @@ def test_a_geometry_decline_blocks_its_question_and_asks_the_operator(
         for entry in line["selection"]["rank_table"]}
 
     # --- the evidence attached, and the question is BLOCKED — deliberately not CLOSED ---------
-    # It used to close ``unresolvable`` here. That was the arity hole (DECISIONS H21(g)):
+    # It used to close ``unresolvable`` here. That was the arity hole (ruling H21(g)):
     # ``opening_book_survey`` offers ONE point inside an uncovered gap, so the instrument refusing
     # that point proves nothing about the gap, let alone about the region — a point a few
     # hundredths of an rlu away would have surveyed it just as well. The producer now requires the

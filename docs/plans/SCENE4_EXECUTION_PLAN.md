@@ -9,7 +9,8 @@
 
 The grilled rulings of 2026-08-13 (topics 1–8, all RULED) and the five-PR execution plan built
 from them — the durable contract each SCENE-4 PR should be reviewed against. Owner rulings here
-are decisions of record until their slice's H-entry lands in `DECISIONS.md` (H15/H16 cover
+are decisions of record until their slice's H-ruling is recorded as a dated amendment in
+`../design/scene.md` (H15/H16 cover
 PR 4.0); the program-level plan of record remains the 22 grilled decisions cited in
 `docs/design/scene.md`. Review provenance: the PR 4.0 slice text below survived three plan-verifier
 epochs (ten blockers fixed) before implementation; external (ChatGPT) review dispositions are

@@ -1,4 +1,4 @@
-"""isar.campaign-program/1: round-trip, freeze semantics, and precise refusals (DECISIONS H1)."""
+"""isar.campaign-program/1: round-trip, freeze semantics, and precise refusals (ruling H1)."""
 import json
 from pathlib import Path
 

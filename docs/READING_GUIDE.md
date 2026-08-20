@@ -150,10 +150,9 @@ read as current behaviour. (A documentation rebuild is in progress; the frontier
 | Does the engine reproduce the trusted fitter + behave? | [assets/phase3_step1/FINDINGS.md](assets/phase3_step1/FINDINGS.md) | evidence bundle |
 | Does the same core work on another instrument (triple-axis)? | [assets/in8_phase1/FINDINGS.md](assets/in8_phase1/FINDINGS.md) | evidence bundle |
 | What the committed evidence bundle is and is not | [assets/README.md](assets/README.md) | live |
-| Why was a decision made this way? | [DECISIONS.md](DECISIONS.md) — being absorbed into the owning design docs | terminal |
+| Why was a decision made this way? | the owning design doc's dated rulings; ruling IDs defined in [GLOSSARY.md](GLOSSARY.md) §Ruling IDs (retired ledger in git history) | — |
 | The frozen campaign evidence bundles (data, retained forever) | [campaigns/README.md](campaigns/README.md) | live |
 | The 2026-07-06 IN8 calibration record | [../calibration/README.md](../calibration/README.md) | terminal (fate on the closeout list) |
-| The pre-EIG statistical roadmap | [ISAR_PRE_EIG3_STATISTICAL_CONSISTENCY_HANDOFF.md](ISAR_PRE_EIG3_STATISTICAL_CONSISTENCY_HANDOFF.md) | terminal |
 | The full design rationale | [archive/](archive/) — indexed in [archive/README.md](archive/README.md): [PHASE_1](archive/PHASE_1_DESIGN.md), [PHASE_2](archive/PHASE_2_DESIGN.md), [PHASE_3](archive/PHASE_3_DESIGN.md) | terminal (being absorbed) |
 | Why the workspace/session/CLI was designed this way | [UNIFICATION_DESIGN.md](UNIFICATION_DESIGN.md) — frozen: ~40 docstrings cite its §N | terminal (deleted after the docstring repair) |
 

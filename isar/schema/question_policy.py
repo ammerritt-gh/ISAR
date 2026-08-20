@@ -276,7 +276,7 @@ def _validate_consultation_overrides(section: Any, where: str) -> None:
     ``keep_open_questions`` are question ids the operator refused to let close unresolvable;
     ``retry_budget_by_action`` maps a SCENE-INVARIANT physical action key to that one action's
     broken-scan ceiling, replacing the step's ``broken_scan_retry_limit`` for it alone.
-    ``retired_actions`` (DECISIONS H21(b)) lists the physical action keys a settled
+    ``retired_actions`` (ruling H21(b)) lists the physical action keys a settled
     ``retire_action`` answer took out of THIS step's re-submission set; it exists because the two
     answers to one prompt used to have opposite durability, so a restart reversed the operator's
     cheaper answer and preserved the more expensive one. All three are whole declarations with no

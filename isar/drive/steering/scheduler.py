@@ -27,7 +27,7 @@ LOCALITY_VERSION = "isar.scheduler.locality.axis-distance/1"
 # ``placement_rank`` (review finding, 2026-08-18) is what keeps the generator's own physics
 # ordering ahead of the fingerprint tiebreak; see QuestionActionAssociation for the failure that
 # added it. It does NOT price anything — the gap below is unchanged.
-# WHAT THIS POLICY DOES NOT PRICE (DECISIONS H21(a), deferred to SCENE-5.5). ``rank_fields`` is
+# WHAT THIS POLICY DOES NOT PRICE (ruling H21(a), deferred to SCENE-5.5). ``rank_fields`` is
 # the WHOLE ranking, and it carries no cost term: the exposure a chosen action will spend is
 # ``discovery_monitor_ncount`` PER POINT times the point count its window and snapped step imply
 # (``isar.drive.steering.realization``, charged in ``isar.drive.loop``), so two candidates at the

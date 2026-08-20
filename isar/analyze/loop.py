@@ -34,7 +34,7 @@ from isar.analyze.phonon import GAMMA_FLOOR, GAMMA_MAX  # noqa: F401
 DATA_LIKELIHOOD_REVISION = "isar.baker_cousins_data_likelihood/1"
 MODEL_PARAMETERIZATION_REVISION = "isar.fit_model_parameterization/1"
 
-# Declared-count relaxation (2026-08-09 ruling, DECISIONS H8(a)): a declared peak count is a
+# Declared-count relaxation (ruling H8(a), 2026-08-09): a declared peak count is a
 # PRIOR that RELAXES the :func:`_offer_multimode` diagnostic, never a bypass of it — the same
 # two triggers fire at more permissive thresholds instead of being skipped outright. Provisional
 # v1 values, SCENE-7-calibrated.
@@ -945,7 +945,7 @@ def _offer_multimode(results, ctx, *, declared_count: int | None = None) -> bool
     converged (there is no fit to diagnose).
 
     ``declared_count``: a user/card-declared expected peak count. When ``>= 2`` it is a PRIOR
-    that RELAXES this SAME diagnostic (2026-08-09 ruling, DECISIONS H8(a)) — never a bypass: the
+    that RELAXES this SAME diagnostic (ruling H8(a), 2026-08-09) — never a bypass: the
     two thresholds move to :data:`GATE_COST_DECLARED` and :data:`RUNS_ALPHA_DECLARED`, both more
     permissive than the defaults, and a declared scan whose one-mode fit is clean under BOTH
     relaxed diagnostics is still not offered. ``None`` or ``< 2`` reproduces today's behaviour

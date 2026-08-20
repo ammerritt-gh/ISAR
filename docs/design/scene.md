@@ -8,7 +8,7 @@
 > agreed thresholds; efficiency benchmark vs dense survey + three targeted campaigns recorded;
 > ARCHITECTURE §15 rows flipped to match reality.
 
-Constitution: DECISIONS **H1**. Program plan of record: the 22 grilled decisions of 2026-08-07/08
+Constitution: ruling **H1** (2026-08-08; restated across §1–§2, original in the retired ledger, git history). Program plan of record: the 22 grilled decisions of 2026-08-07/08
 (H-series entries land per slice). Challenge command the program must satisfy end-to-end on
 synthetic worlds: *"Scan the region from (2,0,0) to (3,0,0) up to 10meV, map out all the
 phenomena of interest."*
@@ -734,4 +734,5 @@ always wins.)
 ## 7. Status discipline
 
 This document is the canonical scene-layer reference. Capability status lives in ARCHITECTURE §15 and
-must match reality per slice; per-slice rulings land as H-series entries in `docs/DECISIONS.md`.
+must match reality per slice; per-slice rulings are recorded in this document as dated amendments, keeping H-series IDs as
+their stable names (pre-rebuild entries: retired ledger, git history).

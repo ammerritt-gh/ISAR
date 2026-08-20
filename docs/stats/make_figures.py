@@ -187,7 +187,7 @@ def figure_three_questions() -> Path:
 
     # The four-rung ladder under CERTIFY.
     # `noncertifying` = drawn dashed. The Bayesian rung is Implemented (--errors bayes) but its
-    # interval is diagnostics-only; bootstrap remains the certifying rung (DECISIONS S5).
+    # interval is diagnostics-only; bootstrap remains the certifying rung (ruling S5).
     rungs = [("Hessian (HESSE)", "C2", False), ("profile (MINOS)", "C2", False),
              ("parametric bootstrap", "C2", False), ("Bayesian credible", "0.55", True)]
     y0, dy, xc = 5.2, 1.0, 8.4

@@ -10,8 +10,8 @@ evaluator's dependencies, and the vendored geometry.
 This walks the AST of every module under ``isar_gui/`` and ``isar/workspace_api/`` (static, so a
 lazily-imported violation inside a function body is caught too, exactly as ``tests/drive``'s boundary
 test does) and asserts each ``isar.*`` import targets an allowed root. This test and
-docs/DECISIONS.md G16 are joint sources for the allow-lists; the two are kept in sync — see G16
-for the ruling's rationale and phasing.
+ruling G16's canonical text in docs/design/gui.md are joint sources for the allow-lists; the two
+are kept in sync — see G16 there for the rationale and phasing.
 """
 from __future__ import annotations
 

@@ -648,7 +648,7 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
     # build operation is `isar.session.scene_hook.build_and_store`, invoked by whoever owns the
     # delivery — the `isar run` CLI composes it after analysis (preserving the GUI's behaviour,
     # since the GUI shells that command), and the campaign parent invokes it once per delivery and
-    # pins the digest it returns. This supersedes DECISIONS H14(d) ("the driver calls it,
+    # pins the digest it returns. This supersedes ruling H14(d) ("the driver calls it,
     # observe-only"); the docs record that in SCENE-4.3 C9.
     #
     # The invariant this deletion buys: exactly ONE scene build per delivery on the campaign path,

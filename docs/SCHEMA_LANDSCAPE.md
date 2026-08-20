@@ -230,7 +230,7 @@ campaign feed, `isar.consultation-answer/1` for the operator's answer file,
 The refusal table now covers `isar.objective/1`, `isar.objective/2`, `isar.objective-envelope/1`,
 `isar.objective-envelope/2`, `isar.campaign-step.discover_and_map/1`, and `isar.question-policy/1`;
 reading any of them raises an error naming its replacement. There is no compatibility reader by
-design: under DECISIONS H1 a shim for a retired pre-release contract is a defect, and H2 records
+design: under ruling H1 a shim for a retired pre-release contract is a defect, and H2 records
 the drop.
 
 ---

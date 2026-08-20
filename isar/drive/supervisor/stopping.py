@@ -966,7 +966,7 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
     # A branch-ambiguity terminal is NOT decided here.  ``evaluate_stop`` runs *before* acquisition
     # enumerates the action space, so a local approximation of "is any classification route left?"
     # (the former ``classification_route_remains`` grid scan) could terminalise a frontier the
-    # controller could in fact still act on — the early-terminal defect (DECISIONS, PR1).  Saturation
+    # controller could in fact still act on — the early-terminal defect (ruling PR1).  Saturation
     # is now a per-point diagnostic only (``GridQ.ambiguity_exhausted`` / ``stuck``); the honest
     # ``incomplete`` is produced *after* acquisition returns no proposal, by
     # ``_blocked_frontier_decision`` consuming the canonical ``ActionInventory`` and its

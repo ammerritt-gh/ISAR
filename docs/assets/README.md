@@ -6,7 +6,7 @@
 
 `README.md` and [`../READING_GUIDE.md`](../READING_GUIDE.md) cite validation reports as the reason
 to trust ISAR. Those reports are written to `out/`, which is gitignored and disposable under
-[`../DECISIONS.md`](../DECISIONS.md) W1 — so until this directory existed, a fresh clone could read
+ruling W1 (retired ledger, git history) — so until this directory existed, a fresh clone could read
 the claims and see none of the evidence behind them. This is that evidence, promoted and committed.
 
 ## What is here, and what is deliberately not

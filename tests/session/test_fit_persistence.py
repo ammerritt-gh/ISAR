@@ -629,7 +629,7 @@ def test_scene1_outcome_fields_default_absent():
 
 def test_the_reserved_interpretation_pointer_is_gone(caplog):
     """H1, no vestigial contracts: SCENE-3 embeds the candidate rows it consumed in the revision
-    rather than pointing at an artifact (DECISIONS H-series), so ``interpretation_ref`` was never
+    rather than pointing at an artifact (H-series rulings), so ``interpretation_ref`` was never
     written and is deleted. A ledger that carries the old key still loads — the tolerant reader
     drops it with a warning, which is what a retired additive field is supposed to do."""
     assert not hasattr(_outcome_with(None, None), "interpretation_ref")

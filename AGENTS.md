@@ -124,9 +124,9 @@ area.
 | The autonomous driver (`isar drive`) | `docs/design/steering.md` |
 | Same-action scan-window EIG (candidate generation and exact realized scoring Partial; authoritative selection Partial — symmetric per-neutron comparison, O43; O42 release review retired by H1; default-on is a SCENE-4 deliverable, world-suite coverage of the selection path its acceptance evidence) | `docs/design/eig.md`, then `docs/design/steering.md` |
 | Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
-| The SCENE program (scene layer, catalogue, target-free discovery; SCENE-0..3 Implemented — H1 constitution + world suite, catalogue/evidence-selection/constrained variants, program contract, scene scoring + factors + revision store + `workspace_api` read surface (DECISIONS H1–H14); SCENE-4.0–4.2 Implemented offline — question layer, discovery generators, offline planner, `ws.agenda` (H15–H19); SCENE-4.3 Implemented live (H20) — `isar drive` runs a `discover_and_map` step through the `run_program` seam: parent-owned scene build in a supervised `isar scene-build` subprocess with digest-pinned planning, cold-start partition from declarations, broken-scan lane, geometry durable blockers, consultation channel + `isar answer`; SCENE-4.4+ (authority flip, stop-point audit, shadow deletion) Planned) | `docs/design/scene.md` |
+| The SCENE program (scene layer, catalogue, target-free discovery; SCENE-0..3 Implemented — H1 constitution + world suite, catalogue/evidence-selection/constrained variants, program contract, scene scoring + factors + revision store + `workspace_api` read surface (rulings H1–H14); SCENE-4.0–4.2 Implemented offline — question layer, discovery generators, offline planner, `ws.agenda` (H15–H19); SCENE-4.3 Implemented live (H20) — `isar drive` runs a `discover_and_map` step through the `run_program` seam: parent-owned scene build in a supervised `isar scene-build` subprocess with digest-pinned planning, cold-start partition from declarations, broken-scan lane, geometry durable blockers, consultation channel + `isar answer`; SCENE-4.4+ (authority flip, stop-point audit, shadow deletion) Planned) | `docs/design/scene.md` |
 | Campaign diagnostic report | `docs/design/reporting.md` |
-| Why a decision was made | the owning design doc; `docs/DECISIONS.md` is **terminal** — being absorbed into per-system design docs, do not append to it or cite it in new work |
+| Why a decision was made | the owning design doc's dated rulings. Ruling IDs (O·, H·, S·, G·, ADR-NNN, …) are stable historical names — see GLOSSARY §Ruling IDs; the retired DECISIONS ledger is in git history |
 | What happened in a run (historical, never load-bearing) | `docs/campaigns/` (terminal — being absorbed) |
 
 ## Module map (ownership boundaries that matter)
@@ -160,11 +160,11 @@ files). The Stage II ↔ III boundary is a **frozen file contract**
 exist, `<workspace>/report/report.json`, `card.state.json`) — the driver never imports fit
 internals, and the campaign's per-delivery scene build goes through the supervised
 `isar scene-build` subprocess for that reason, not through an import.
-The one pre-release v1→v2 clean break was authorized on 2026-07-17 (DECISIONS O12). During the
+The one pre-release v1→v2 clean break was authorized on 2026-07-17 (ruling O12). During the
 SCENE transition, H1 supersedes the additive-only rule for contracts SCENE rebuilds:
 `isar.campaign-program/1` replaces the objective envelope outright with no compatibility reader,
 and contract changes are judged against the SCENE world suite, not serialization compatibility
-(ARCHITECTURE §4, DECISIONS H1). Do not build compatibility shims or dual-path readers for retired
+(ARCHITECTURE §4, ruling H1). Do not build compatibility shims or dual-path readers for retired
 formats — H1 classifies them as defects.
 
 ## Verification (cheapest first)

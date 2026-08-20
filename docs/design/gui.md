@@ -37,8 +37,8 @@ All rulings from that conversation are restated here in full; nothing load-beari
 **Relationship to other documents.** Subordinate to `../ARCHITECTURE.md` (its principles P1–P6 bind this
 document). Sibling to `docs/WORKSPACE_AND_CLI.md` (workspace/session internals the GUI reads)
 and `design/steering.md` (the drive loop the GUI observes and nudges). Decision IDs
-introduced here use the **G-series** and should be migrated into `docs/DECISIONS.md` when
-accepted.
+introduced here use the **G-series** as stable names; rulings are recorded in this document as
+dated amendments (the retired ledger's originals are in git history).
 
 ---
 
@@ -111,7 +111,8 @@ affected § carries a one-line pointer back here.
 GUI Pass 3 reshaped the window into the left-to-right operator workflow (data enters top-left →
 scans organized on the left → display surfaces in the center → the campaign workspace on the
 right → a compact Log ticker) and built the campaign launcher/dashboard. Its rulings, in the
-G-series (canonical text in `docs/DECISIONS.md`):
+G-series (this document is their canonical home; the retired ledger's originals are in git
+history):
 
 - **G18 — Center view host.** The five display surfaces (fit inspector, waterfall, plane,
   dispersion, sandbox) are switchable pages of one central host, not five competing docks; docks

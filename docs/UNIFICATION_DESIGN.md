@@ -145,7 +145,7 @@ class CardState:
     sample_map: list = field(default_factory=list)            # [{from_scan, sample, source}]
 ```
 
-*(Implemented additive fields, DECISIONS O7/O11: human-owned `CardPolicy.hypotheses`
+*(Implemented additive fields, rulings O7/O11: human-owned `CardPolicy.hypotheses`
 (`[hypotheses.<name>]` tables — `docs/HYPOTHESES.md`), machine-owned
 `CardState.hypothesis_snapshot` (resolved parameters + content hash), and machine-owned
 `CardState.hypothesis_mismatch` (prior-vs-data disagreement evidence).)*

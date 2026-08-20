@@ -36,7 +36,7 @@ TIERS = ("deterministic", "mcstas")
 TARGET_BRANCHES = ("acoustic", "optic")
 TARGET_SELECTORS = ("lowest_energy", "highest_energy", "nearest_energy", "tracked_branch")
 # The objective *content* below is unchanged science; only its contract identity moved. It is now
-# the payload of a ``targeted`` step inside an ``isar.campaign-program/1`` (DECISIONS H1), so it
+# the payload of a ``targeted`` step inside an ``isar.campaign-program/1`` (ruling H1), so it
 # carries that step's schema string. ``isar.objective/2`` and its ``isar.objective-envelope/2``
 # wrapper are retired and unreadable by design — see :mod:`isar.schema.campaign_program`.
 OBJECTIVE_SCHEMA = TARGETED_STEP_SCHEMA
@@ -263,7 +263,7 @@ class ObjectiveSpec:
         """Where the target mode is expected — the band that bounds delivery and precision work.
 
         The stored field keeps its original name ``energy_search_meV`` so the frozen contract stays
-        additive (DECISIONS O12); this is the vocabulary that distinguishes it from the identity
+        additive (ruling O12); this is the vocabulary that distinguishes it from the identity
         domain now that the two are no longer the same thing.
         """
         return self.energy_search_meV

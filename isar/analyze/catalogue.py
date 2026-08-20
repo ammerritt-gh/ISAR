@@ -10,7 +10,7 @@ consumed later — its parameter priors, its transportable parameters, and its c
 context-dependent phonon recipe stay in :mod:`isar.analyze.phonon` (module-map ownership rule);
 the catalogue holds *references* to them. It is also lattice-blind: the ``elastic`` entry is
 generic incoherent/coherent elastic scattering, not a Bragg model — Bragg is scene-level knowledge
-(DECISIONS decision 20), and an elastic-only outcome is a scan-local claim, never region exclusion.
+(scene-program decision 20), and an elastic-only outcome is a scan-local claim, never region exclusion.
 
 **Status.** ``local_models`` and their gates drive the one- and two-mode enumerations (both
 catalogue-backed since SCENE-1 PR-b, pinned bit-identical to the legacy hand lists by
@@ -197,7 +197,7 @@ _ACOUSTIC = PhenomenonDefinition(
             pins=_near_degenerate_pins,
             label_suffix="_neardeg",
             note="close to the zone centre, where ω sits below the resolution width; the exact "
-                 "reduced-q origin stays excluded (DECISIONS O44). The amplitude tie "
+                 "reduced-q origin stays excluded (ruling O44). The amplitude tie "
                  "I ∝ (n+1)/ω is NOT applied here — it needs cross-component parameter ties "
                  "(deferred, C2).",
         ),
@@ -221,7 +221,7 @@ _OPTIC = PhenomenonDefinition(
 # Three look-alikes sit near E=0 and are routinely conflated; they are distinct phenomena:
 #   elastic       — a resolution-limited *static* line at E=0 (incoherent scattering plus
 #                   can/sample background). No intrinsic width: its width is the resolution.
-#                   Bragg is not this entry — Bragg identity is scene-level (DECISIONS decision 20).
+#                   Bragg is not this entry — Bragg identity is scene-level (scene-program decision 20).
 #   quasielastic  — *relaxational/diffusive dynamics*: broad in ENERGY, centred at E=0. A
 #                   measurement target in its own right (linewidth ⇒ relaxation rate), not a
 #                   fallback shape for a poorly-fit elastic line.

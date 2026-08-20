@@ -540,7 +540,7 @@ Separate the unconstrained data-only selection fit from penalized/conditional de
 the latter explicitly ineligible for ordinary AIC-family weights.
 
 The bounded execution sequence lived in `docs/plans/STAT2_SELECTION_CONSISTENCY_PLAN.md`, now
-deleted (git history retains it); the accepted behavior is DECISIONS H4/H5/H7 plus
+deleted (git history retains it); the accepted behavior is rulings H4/H5/H7 plus
 `STATS_PRIMER.md` and `GLOSSARY.md`.
 
 STAT-2a now publishes a strict, authenticated `isar.model_selection/2-shadow` record beside the

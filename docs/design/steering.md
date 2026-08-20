@@ -14,7 +14,7 @@
 > git history (the 2026-06 first run and 2026-07 zone-retest logs; the retest's surviving
 > design rules are §7.9 below).
 > **Branch-identity-aware acquisition (§2 fourth consequence, §4.1 item 7, §4.5): first
-> implementation landed 2026-07-17** (DECISIONS O6–O12; user-facing reference
+> implementation landed 2026-07-17** (rulings O6–O12; user-facing reference
 > `docs/HYPOTHESES.md`); joint gap-aware tracking and the connected frontier landed 2026-07-18
 > (O15). Dynamic tolerance-driven exposure and Bayesian optic cold-start are Partial
 > as of 2026-07-18 (O13); sampled Stage-C information and Fisher dwell optimisation remain planned.
@@ -180,7 +180,7 @@ authorised scans.
 Once the acoustic rival's identity entropy is below the stopping threshold, it remains labeled context
 and receives no target-precision acquisition value.
 
-This generalizes into a standing terminal-taxonomy invariant (DECISIONS O29, amended by O31): **the
+This generalizes into a standing terminal-taxonomy invariant (rulings O29, amended by O31): **the
 campaign must not enter a terminal stop while measurement budget remains** unless one of six legitimate
 terminals holds — `met`, `infeasible` (tolerance below the systematic floor), `incomplete` on genuine
 budget/analysis-clock exhaustion, `operator_stopped`, a `controller_fault` surfaced for
@@ -397,7 +397,7 @@ So the chosen engine is:
    heavy rank (light for simulation/proof-of-concept, heavy where it matters). The **acquisition unit is a
    whole constant-Q scan**: rank scan proposals by EIG-per-cost first; per-energy-bin dwell optimisation
    is a later refinement.
-4. **Counting time is a design variable** *(Partial 2026-07-18 — DECISIONS O13)*. **Implemented
+4. **Counting time is a design variable** *(Partial 2026-07-18 — ruling O13)*. **Implemented
    subset:** newly compiled objectives treat quicklook/production `ncount` as floors. Pooled fits use
    summed per-point monitor exposure in the raw-count Poisson mean, and refinement requests scale from
    the authoritative pooled interval toward the requested tolerance, subject to deterministic
@@ -411,7 +411,7 @@ So the chosen engine is:
    same ladder.
 6. **Average the design score over competing hypotheses using an explicitly named weight measure**
    so the loop does not optimise for one possibly-wrong model (see §4.2 and §6).
-7. **Two-term scan value** *(Implemented 2026-07-17 — DECISIONS O6)*:
+7. **Two-term scan value** *(Implemented 2026-07-17 — ruling O6)*:
    The shipped master-authoritative path draws incremental Poisson counts from every retained
    plausible model in `isar.master_predictive/2` and computes a legacy sample-based information
    score about the joint target-ω/model/branch state. Its model-dependent mix of nested,
@@ -484,7 +484,7 @@ STAT-2 owns enforcement:
   self-reinforcement is exactly the confident-wrong feedback loop (§6).
 
 ### 4.5 Excitation hypotheses — physics vs tactics *(branch slice Implemented 2026-07-17;
-`level`/`continuum` Partial; DECISIONS O7–O11)*
+`level`/`continuum` Partial; rulings O7–O11)*
 
 The user's physics expectations ("we think the target is an optic phonon with a ~10 ± 2 meV
 zone-centre gap, roughly flat — but we may be wrong") must **weight** the Bayesian machinery —
@@ -542,7 +542,7 @@ disagreement check** (prior-prediction vs data-only prediction) whose verdict is
 machine-owned `card.state.json` and stated in the report — loudly, because silently fitting a
 wrong model to the end of a beamtime is the §6 failure this section exists to prevent.
 
-**Path is first-guess** *(DECISIONS O9)*: the compiled Q path remains the certification set —
+**Path is first-guess** *(ruling O9)*: the compiled Q path remains the certification set —
 "done" still means *the user's* q points converged on the target branch — but the driver may
 insert or extend q without restriction when classification value warrants (a zone-centre
 classification scan, a disambiguation point where two branches approach), each logged as
@@ -785,7 +785,7 @@ machinery.
 
 The retired `isar.objective/1`, `isar.objective/2`, `isar.objective-envelope/1`, and
 `isar.objective-envelope/2` documents are refused with an error naming their replacement. There is no
-compatibility reader and none will be written: under DECISIONS H1 a shim for a retired pre-release
+compatibility reader and none will be written: under ruling H1 a shim for a retired pre-release
 contract is a defect, not a courtesy (H2).
 
 The objective carries additive `target_branch`, `target_label`, and `energy_search_meV` fields. Older
@@ -963,7 +963,7 @@ Uncertain or low utility is diagnostic, not a reason to abandon q. `isar.master_
 the exposure basis and evaluation context, so `isar.predictive.evaluate_master_predictive` re-evaluates
 its draws on an arbitrary requested energy grid at an arbitrary uniform per-point exposure — the
 capability the superseded `/1` artifact could not support, because it stored counts on the fitted
-master grid alone. `/1` emission was removed rather than kept alongside `/2` (DECISIONS O33): every
+master grid alone. `/1` emission was removed rather than kept alongside `/2` (ruling O33): every
 reader requires `/2`, and a leftover `/1` artifact is refused as a non-result with
 `artifact_schema_unsupported`, never guessed into `/2`. How that evaluator is consumed by scan-window
 scoring is specified in [`eig.md`](eig.md).
@@ -1373,7 +1373,7 @@ Synthetic-first, on the fast campaigns the speedup sprint delivers:
 4. Full-suite regression: `pytest -m "not slow"` green at each sub-phase boundary.
 
 Phase 0 is gated separately and immediately by its AP1/AP2 replays (§2 of the former workstream
-plan, now superseded — see DECISIONS O27–O31). Passing that gate does not advance the status of
+plan, now superseded — see rulings O27–O31). Passing that gate does not advance the status of
 A, B, or C.
 
 ### Sequencing within the workstream
@@ -1384,8 +1384,8 @@ features need A's zone keying; C's neighbor-q economy needs A's curvature-capabl
 correctly, and benefits from B's identity features to know *which* neighbor is
 informative. A is independently shippable (better prior, no new physics declarations
 required). Each sub-phase ends with its validation evidence committed under
-`docs/campaigns/` and its DECISIONS entry recorded.
+`docs/campaigns/` and its ruling recorded.
 
 *Approved by Adrian 2026-07-19 (single-document workstream; internal split
 Prior → Physics → Economy). Motivated by checkup concerns 2 and 4; executes the
-corresponding Planned slices of this document's §4.1/§7 and DECISIONS O13.*
+corresponding Planned slices of this document's §4.1/§7 and ruling O13.*

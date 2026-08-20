@@ -2,7 +2,7 @@
 
 Authenticates the frozen held-out gate and replays its aggregate so the preserved S8
 decision cannot be silently substituted or tampered with. This is the surviving half of
-the retired source-closure engine (S10, DECISIONS.md): the candidate/active closure
+the retired source-closure engine (ruling S10): the candidate/active closure
 cycle, dependency-graph discovery, and promotion verification were deleted with the
 closure regime — git history keeps them. It never grants owner approval and does not
 import or execute any inspected ISAR source module.

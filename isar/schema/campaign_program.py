@@ -1,4 +1,4 @@
-"""The campaign program — the only input contract ``isar drive`` accepts (DECISIONS H1).
+"""The campaign program — the only input contract ``isar drive`` accepts (ruling H1).
 
 A program is an ordered list of **steps**, each a declared measurement intent:
 

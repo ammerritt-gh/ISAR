@@ -1,4 +1,4 @@
-"""Goal → campaign program (LLM_HARNESS_DESIGN §2.1, DECISIONS H1).
+"""Goal → campaign program (LLM_HARNESS_DESIGN §2.1, ruling H1).
 
 Both entry points produce an :class:`~isar.schema.campaign_program.CampaignProgram` — the only
 input contract the driver accepts:
@@ -400,7 +400,7 @@ def program_from_json(path: str | Path) -> CampaignProgram:
     Step payloads are validated for *identity* only (:mod:`isar.schema.campaign_program`); a
     targeted step is compiled with :func:`spec_from_dict` by the caller that knows which card
     policy, tier and overrides apply. A file naming a retired contract is refused by name, never
-    adapted (DECISIONS H1).
+    adapted (ruling H1).
     """
     p = Path(path)
     return CampaignProgram.from_dict(

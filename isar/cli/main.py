@@ -561,7 +561,7 @@ def main(argv=None) -> int:
                     # the discovery branch has no ObjectiveSpec to override and passes nothing to
                     # `run_program`, so accepting it would silently drop an operator's authoring
                     # choice. Discovery selection carries no EIG authority in this build at all —
-                    # it ranks lexicographically and prices nothing (DECISIONS H21(a)).
+                    # it ranks lexicographically and prices nothing (ruling H21(a)).
                     print("isar drive: --scan-window-eig-mode steers a TARGETED objective's scan "
                           "window; a discover_and_map step has no scan-window EIG authority in "
                           "this build (DECISIONS H21(a)), so the flag is refused rather than "

@@ -48,7 +48,7 @@ each of which gates on consistency independently. Where a q holds both a consist
 inconsistent master the consistent one is preferred, rather than the inconsistent one excluded. This
 split is load-bearing: dropping an inconsistent master's candidate outright empties that q's
 observation, breaks the tracked trajectory, and retroactively collapses every confirmed point
-downstream of it (AP8, DECISIONS O29). Such a point stays connected but unconverged, and is
+downstream of it (AP8, ruling O29). Such a point stays connected but unconverged, and is
 re-acquired to resolve the disagreement.
 
 New natural-language and compact-file goals that ask to map a named branch along a multi-point path
@@ -192,7 +192,7 @@ otherwise a matching `[hypotheses.<target>]` card declaration wins; otherwise th
 frozen. `hypothesis_source` records which source won. A frozen objective is the payload of an
 `isar.campaign-step.targeted/1` step inside an `isar.campaign-program/1` campaign program; the
 retired `isar.objective` and `isar.objective-envelope` documents are refused by design, with no
-compatibility reader (DECISIONS H1, H2).
+compatibility reader (rulings H1, H2).
 
 ## Viewer labels versus acquisition capability
 
@@ -215,4 +215,4 @@ be requested.
 
 ---
 
-*Why it is designed this way: `design/steering.md` §4.5 and DECISIONS O6–O11.*
+*Why it is designed this way: `design/steering.md` §4.5 and rulings O6–O11.*

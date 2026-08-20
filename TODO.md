@@ -5,7 +5,7 @@
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
 A work queue, not a project diary. Completed work leaves this file; git history and
-`docs/DECISIONS.md` are the record of what shipped.
+the owning design docs' dated rulings are the record of what shipped.
 
 Every live item has a **stable ID** and a one-line **Acceptance** condition. Owner, governing
 decision, and dependencies are optional and present only where they carry information.
@@ -137,7 +137,7 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       (halfwidth ~1e-3 meV) that dominate the inflation metric.
       **Acceptance:** a v2 calibration artifact exists with per-configuration inflation factors.
 - [ ] **CAL-2 — Bayes-interval coverage campaign.** The `--errors bayes` tier ships the posterior
-      as diagnostics-only (DECISIONS S5); before it can enter `_pick_interval` precedence it needs
+      as diagnostics-only (ruling S5); before it can enter `_pick_interval` precedence it needs
       its own truth-scored coverage artifact (`isar score --truth-* --interval bayes`). Includes
       settling `nlive`: `docs/stats/bench_error_methods.py` showed 250 ≈ 400 on 9/11 scans but 250
       markedly narrower on two very-high-count scans despite ESS > 1000.
@@ -225,7 +225,7 @@ the steering roadmap ([design/steering.md](docs/design/steering.md) §10). Only 
       `READING_GUIDE.md` and `WORKED_EXAMPLE.md` now cite them there.
       One citation remains unpromotable and is the residue of this item: `STATS_PRIMER.md` points
       at `out/mvp_zone_test16` ("ask the maintainer for its blessed location"), the frozen v1
-      characterization baseline `DECISIONS.md` W1 archives but which is not in this checkout.
+      characterization baseline ruling W1 archives but which is not in this checkout.
       (`UNIFICATION_DESIGN.md`'s step-0 baseline also needs the never-generated
       `out/phase3_gold_in8/`, but that file is now `Archived` — a historical design record may
       name the paths it used, so it is no longer part of this item.)

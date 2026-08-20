@@ -68,15 +68,27 @@ rationale for statistical-method choices is first-class; rationale for steering 
   two more docs would be one-document-per-noun. The design/ roster closes at five
   (scene, steering, eig, gui, reporting) plus STATS_PRIMER in place. P/T/W-series ledger
   rulings absorb into ARCHITECTURE's own sections during the DECISIONS sweep.
-- **Next:** the DECISIONS absorption/self-containment sweep (final-state rulings only —
-  amendment chains mapped in the 2026-08-20 reader digest; re-derive from the ledger if lost) +
-  GLOSSARY vocabulary for escaped IDs (O41 authority, H1, …), after which DECISIONS.md and the
-  PRE_EIG3 handoff die. Then `docs/archive/` absorption with the UNIFICATION docstring repair
-  sweep (~40 `§N` citations, mech pass; also stale doc paths in
-  `isar/drive/steering/generators.py`, `isar/scene/predicates.py` code comments) and
-  PHASE_4_NOTES' death. Last, the front-door rewrite of `READING_GUIDE.md` (three doors:
-  returning builder, user, contributor), `AGENTS.md` routing refresh, and a full reference
-  sweep + full test suite.
+- **Slice G (ledger retirement) — DONE 2026-08-20:** `DECISIONS.md` and the PRE_EIG3 handoff
+  deleted. Every live citation converted to the self-contained form: "ruling ID" as a stable
+  historical name, with GLOSSARY §Ruling IDs defining the system (content lives in the owning
+  design doc; originals in git history). Load-bearing pointers rewritten individually (gui.md's
+  G-series is now canonically homed there; scene.md records future H-rulings as dated
+  amendments; SCENE4/background plans likewise; ARCHITECTURE's appendix and vocabulary sections
+  self-contained). Py comment/docstring citations swept (29 sites, curated — `adjudicate.py`'s
+  functional `DECISIONS` enum untouched). Deliberate leftovers: two *emitted* CLI/error strings
+  (`isar/cli/main.py:567`, `isar/schema/campaign_program.py:65`) still say "(DECISIONS Hxx)" —
+  their text may be test-pinned; the GLOSSARY entry makes them legible. Absorption-gap check
+  rests on the living docs having been maintained as the contracts all along (verified for the
+  load-bearing spots; the reader-digest absorption map is in the session record).
+- **Next:** `docs/archive/` absorption — read the three PHASE design files + UNIFICATION for
+  still-load-bearing rationale (the register said: inverse-crime justification, the
+  five-corrections framing behind mask-not-delete, error-spine-as-architecture — absorb into
+  ARCHITECTURE/STATS_PRIMER where missing), then the UNIFICATION docstring repair sweep (~40
+  `§N` citations in code, mech pass; also stale doc paths in
+  `isar/drive/steering/generators.py`, `isar/scene/predicates.py` comments), then delete
+  archive/ + UNIFICATION + PHASE_4_NOTES. Last, the front-door rewrite of `READING_GUIDE.md`
+  (three doors: returning builder, user, contributor), `AGENTS.md` routing refresh, and a full
+  reference sweep + full test suite.
 
 ## Operator closeout list (bounded; shrinks only)
 

@@ -26,7 +26,7 @@ plus the efficiency that comes from *choosing where to count*: learned backgroun
 knowledge shared across scans, and a driver that can deliberately buy background
 information cheaply.
 
-A `DECISIONS.md` entry is part of this workstream: background becomes an owned design
+A dated ruling in the owning design doc is part of this workstream: background becomes an owned design
 area. The first such ruling is **T4** (the TAVI background interface contract, 2026-07-27);
 the fitting-side rulings of Sub-phases A–C are still to be written.
 

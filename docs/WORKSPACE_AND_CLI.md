@@ -102,9 +102,9 @@ Stage III (`isar drive`) consumes Stage II (`isar run`) through files only —
 `report/results.csv`, `report/measurements.jsonl` (the counts-authoritative
 `isar.measurement-arena/1` log: one line per measured arena, written independently of fit
 success, SCENE-4 PR 4.0 #26), `<workspace>/report/report.json`, and `card.state.json`. The driver never imports fit
-internals. The one pre-release v1→v2 clean break was authorized on 2026-07-17 (DECISIONS O12);
+internals. The one pre-release v1→v2 clean break was authorized on 2026-07-17 (ruling O12);
 from v2 onward, contract changes are additive only (`ARCHITECTURE.md` §4) — except for the contracts the
-SCENE program rebuilds, where DECISIONS H1 supersedes that rule. The campaign contract is one of
+SCENE program rebuilds, where ruling H1 supersedes that rule. The campaign contract is one of
 them: `isar.campaign-program/1` replaced the objective envelope outright, and the retired schema ids
 are refused rather than read (H2).
 

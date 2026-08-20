@@ -27,7 +27,7 @@ before a q has been measured there is no prediction to centre a core on, so no c
 exists — rather than by a rule that prefers it.
 
 **The DISCOVERY lane is outside this priced envelope, and stays outside it until SCENE-5.5
-(DECISIONS H21(a)).** Everything above concerns same-action scan-window selection on a targeted
+(ruling H21(a)).** Everything above concerns same-action scan-window selection on a targeted
 step. A `discover_and_map` step selects through `isar.drive.steering.scheduler.select`, whose rank
 vector is `(family_priority, dependency_depth, locality, scientific_action_fingerprint)` — no
 information term and no cost term — while the exposure it commits is
@@ -682,7 +682,7 @@ certification is not part of this workflow. Slice 0 ends after this documentatio
 ## Predictive artifact
 
 `isar.master_predictive/2` is the only published predictive artifact; `/1` emission is deleted and
-every reader requires `/2` (ADR-006/013, DECISIONS O33). **`/2` is physical only** (ADR-019): it
+every reader requires `/2` (ADR-006/013, ruling O33). **`/2` is physical only** (ADR-019): it
 carries what the fit knows, and no statement about which mode is the campaign's target. It retains
 the model weights, labels, draw basis, parameter names/draws, model manifests, ω draws, seed, and
 uncertainty diagnostics `/1` carried, adds per-draw `mode_energies` — the full physical menu of

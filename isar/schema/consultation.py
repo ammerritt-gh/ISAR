@@ -208,7 +208,7 @@ def apply_consultation_overrides(program: CampaignProgram, step_id: str, *,
     ``retry_budget_by_action`` is the ``retry_more`` answer's effect: a per-physical-action ceiling
     that replaces the step's frozen ``broken_scan_retry_limit`` for that ONE action.
 
-    ``retired_actions`` is the ``retire_action`` answer's effect (DECISIONS H21(b)), and it exists
+    ``retired_actions`` is the ``retire_action`` answer's effect (ruling H21(b)), and it exists
     because the two answers to one prompt had OPPOSITE durability: ``retry_more`` compiled into the
     program and survived a restart, while ``retire_action`` only added a key to an in-memory set.
     A restart therefore reversed the operator's cheaper answer and preserved the more expensive one

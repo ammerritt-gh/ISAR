@@ -74,7 +74,7 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   **diagnostics-only as a single-fit interval**. A pooled master's legacy certifying interval can
   include nested posterior particles inside a heterogeneous model-dependent mixture; that mixed
   interval is not itself called credible. Confidence intervals (bootstrap, profile) are never
-  called credible. See DECISIONS S5 and S6.
+  called credible. See `STATS_PRIMER.md` §5 (rulings S5/S6).
 - **AIC / Akaike weight** — a way to compare candidate models that penalizes extra parameters; the
   weight is relative information-criterion support within the exact scored model set (higher =
   better supported), not a posterior model probability or Bayes factor. Since H4 this is the
@@ -341,3 +341,17 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   rejected as a blown-up fit. ISAR must decline those; zero violations is the load-bearing property.
 - **rlu** — reciprocal lattice units; momentum Q in units of the crystal's own reciprocal lattice.
 - **TAS / IXS** — triple-axis spectrometer (neutron) / inelastic X-ray scattering; ISAR handles both.
+
+## Ruling IDs
+
+- **Ruling IDs** (`O27`, `H1`, `S10`, `G16`, `P1`, `W1`, `ADR-019`, "the 22 grilled decisions",
+  …) — stable historical names for design rulings, safe to cite from docs and code forever. Each
+  ruling's *content* lives in the design doc that owns its system (recorded there as dated rules
+  or amendments); the append-only `DECISIONS.md` ledger that originally defined the lettered
+  series was retired 2026-08-20 (doc rebuild) and every version of it is in git history
+  (`git log --all -- docs/DECISIONS.md`). A few IDs also survive as code vocabulary — e.g.
+  `o41_authority` (`isar/eig/o41_authority.py`), the O41-restricted opt-in authority path for
+  same-action scan-window EIG selection (`design/eig.md`); **H1**, the SCENE program's
+  constitution (`design/scene.md`); **S10**, evidence freezes only at owner-named milestones;
+  **O43**, the symmetric per-neutron scan-window comparison; **O44**, the acoustic zone-centre
+  exclusion (`ARCHITECTURE.md` §15).

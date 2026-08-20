@@ -137,7 +137,7 @@ from isar.schema.steering import (ANALYSIS_UNUSABLE, AUXILIARY_TRACK_NODE, CANDI
 DEFAULT_WAIT_TIMEOUT = 600.0
 # A runaway backstop, NOT a scientific limit. Campaign length is bounded by the declared budget, and
 # an operator-chosen iteration cap silently truncated campaigns that were still making progress
-# (DECISIONS: the --max-iters removal). But a budget of ``None`` is "unlimited", and an instrument
+# (ruling: the --max-iters removal). But a budget of ``None`` is "unlimited", and an instrument
 # whose every job comes back failed produces a rejection class that suppresses nothing, so the
 # identical action is re-selected and re-submitted forever with nothing spent. This ceiling is set far
 # above any real campaign (a real one converges in tens of iterations) so it can only ever be reached
@@ -578,7 +578,7 @@ def _pick_interval(row: dict) -> tuple:
 
 
 def _is_certifiable(row: dict, ok: bool) -> bool:
-    """Whether ``row``'s ω₀ interval may SEAT convergence (S3 / DECISIONS S3).
+    """Whether ``row``'s ω₀ interval may SEAT convergence (ruling S3).
 
     A calibrated interval exists (``ok`` from :func:`_pick_interval`) AND it is not a flagged one: an
     ``interval_reliable=False`` fit (γ-at-bound — the bootstrap/profile is degenerate, zero-width is
@@ -2727,7 +2727,7 @@ def _invariant_payload(point) -> dict:
 
 
 def _operator_authorization_hint(inventory) -> str | None:
-    """The operator-authorizable reason an exhausted inventory holds, if it holds one (DECISIONS O31).
+    """The operator-authorizable reason an exhausted inventory holds, if it holds one (ruling O31).
 
     An exhaustion terminal whose *only* remaining action is forbidden by declared policy is a
     legitimate terminal, but it is escaped by authorizing the action — not by more beam, not by a

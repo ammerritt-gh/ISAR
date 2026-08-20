@@ -15,7 +15,7 @@ the first is the load-bearing one:
 3. A scene build that blows up still costs the delivery nothing. Fail-soft moved with the code;
    it did not evaporate.
 
-This supersedes DECISIONS H14(d) ("the driver calls it, observe-only"); the docs record that in
+This supersedes ruling H14(d) ("the driver calls it, observe-only"); the docs record that in
 SCENE-4.3 C9.
 """
 import shutil

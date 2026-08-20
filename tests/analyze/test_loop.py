@@ -180,7 +180,7 @@ def _between_threshold_ctx(a2=2.0, seed=2):
 
 
 def test_declared_scan_between_thresholds_is_offered_identical_undeclared_is_not():
-    """2026-08-09 ruling (DECISIONS H8(a)): a declaration RELAXES the offering diagnostic, it
+    """Ruling H8(a), 2026-08-09: a declaration RELAXES the offering diagnostic, it
     never bypasses it. A scan whose one-mode residual structure clears the relaxed thresholds but
     not the global ones is offered the 2-mode set only when a ≥2-peak count is declared."""
     ctx = _between_threshold_ctx()

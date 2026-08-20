@@ -457,7 +457,7 @@ def test_the_prompt_timeout_resolves_through_the_precedence_chain(tmp_path):
 
 def test_the_offramp_default_retires_the_action_durably(tmp_path, monkeypatch):
     """Silence confirms the retirement C6 already performed in memory — and now COMPILES it
-    (DECISIONS H21(b)).
+    (ruling H21(b)).
 
     It used to recompile nothing, on the reasoning that the default "confirms what the driver
     already did". What the driver had done was add a key to an in-memory set, so the two answers to
