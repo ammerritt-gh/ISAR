@@ -214,6 +214,21 @@ separation this decisive agrees.)
 **FIG. 3.** Model selection on scan 507 of `mvp_zone_test16`; AIC table rendered at build time
 from `score_models`, never hand-typed.
 
+**Owner direction (2026-08-20, walkthrough ruling — work tracked as TODO CAL-5): the
+degenerate-limit rule.** When one candidate family contains another as a boundary case, the
+honest comparison is *free-versus-pinned within the family* — "did the parameter earn its
+freedom?" — never an evidence beauty contest between the free model and its own limit. Near the
+boundary the two coincide, the extra parameter direction is unconstrained, and the evidence
+difference measures the arbitrary prior volume of the unused parameter rather than anything in
+the data. A free fit that lands on the boundary resolves to the pinned candidate. First
+application: the **resolution lineshape**. Different machines have different resolution shapes
+(most Gaussian, some Lorentzian, some genuinely Voigt); the elastic-line fit currently always
+fits the full two-width Voigt. The candidate set becomes {Voigt(both widths free),
+Gaussian(`lorentz_fwhm`=0), Lorentzian(`gauss_fwhm`=0)}, evidence selects, and the record can
+honestly say "we checked the Voigt; the evidence supports the degenerate case" — without paying
+for parameters the instrument doesn't use. (Same pattern as §4's delta-function ruling: the
+degenerate case is a first-class candidate, not a failure mode or a silent pin.)
+
 When two genuinely different structures fit equally well, ISAR reports a **fork** — both
 answers — rather than averaging them into a single wrong number **[Implemented]**. Columns:
 `best_model`, `n_modes`, `secondary_omega0`, `secondary_omega0_err`.

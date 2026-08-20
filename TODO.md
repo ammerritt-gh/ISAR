@@ -160,6 +160,20 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       for γ-at-bound fits — 2-mode fits with γ at its bound report absurdly tight intervals
       (halfwidth ~1e-3 meV) that dominate the inflation metric.
       **Acceptance:** a v2 calibration artifact exists with per-configuration inflation factors.
+- [ ] **CAL-5 — Resolution lineshape by the degenerate-limit rule.**
+      Owner ruling (2026-08-20 walkthrough): the elastic-line resolution fit should offer
+      {Voigt(free), Gaussian(`lorentz_fwhm`=0), Lorentzian(`gauss_fwhm`=0)} as candidates and let
+      evidence selection collapse to the degenerate case — "we checked the Voigt, the evidence
+      supports the degenerate case" — instead of always carrying the full Voigt's parameters.
+      Never compare free-Voigt against Gaussian as independent rivals when the free fit sits at
+      the boundary: near the limit the evidence difference is prior-volume noise, and the honest
+      outcome is the pinned candidate (STATS_PRIMER §2, the degenerate-limit rule).
+      Touches `isar/calibrate/elastic.py` (always-Voigt today) and the `gauss_fwhm`/
+      `lorentz_fwhm` provenance in `isar/schema/steering.py`.
+      **Acceptance:** on a synthetic pure-Gaussian resolution, selection reports the Gaussian
+      candidate with the Voigt checked-and-collapsed on the record; on a genuine Voigt it keeps
+      both widths; no boundary-pinned free fit is ever reported as the winner.
+
 - [ ] **CAL-4 — Γ non-resolvability as a candidate structure, not a failure mode.**
       Owner ruling (2026-08-20 walkthrough): the accepted Γ-at-bound collapse "has become a
       target... reported like a mark of pride, but it's a failure — scientists don't get hung up
