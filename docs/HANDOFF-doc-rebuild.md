@@ -80,15 +80,26 @@ rationale for statistical-method choices is first-class; rationale for steering 
   their text may be test-pinned; the GLOSSARY entry makes them legible. Absorption-gap check
   rests on the living docs having been maintained as the contracts all along (verified for the
   load-bearing spots; the reader-digest absorption map is in the session record).
-- **Next:** `docs/archive/` absorption — read the three PHASE design files + UNIFICATION for
-  still-load-bearing rationale (the register said: inverse-crime justification, the
-  five-corrections framing behind mask-not-delete, error-spine-as-architecture — absorb into
-  ARCHITECTURE/STATS_PRIMER where missing), then the UNIFICATION docstring repair sweep (~40
-  `§N` citations in code, mech pass; also stale doc paths in
-  `isar/drive/steering/generators.py`, `isar/scene/predicates.py` comments), then delete
-  archive/ + UNIFICATION + PHASE_4_NOTES. Last, the front-door rewrite of `READING_GUIDE.md`
-  (three doors: returning builder, user, contributor), `AGENTS.md` routing refresh, and a full
-  reference sweep + full test suite.
+- **Slice H (archive) — DONE 2026-08-20 (`4506ee2`):** five rationale absorptions into the
+  living docs (inverse crime + error-spine → STATS_PRIMER; mask-not-delete loop closure +
+  lossless-store → ARCHITECTURE; peeking bias → design/steering.md §8); ~37 UNIFICATION
+  docstring citations repointed (retired-plan + git-history form, current contract per module
+  family); `docs/archive/` (4 files), `UNIFICATION_DESIGN.md`, `PHASE_4_NOTES.md` deleted.
+- **Slice I (front door) — DONE 2026-08-20:** READING_GUIDE's map rewritten as the three doors
+  (returning builder → user → contributor) plus a reference shelf; AGENTS routing rows trimmed
+  to pure routing (capability status lives only in ARCHITECTURE §15).
+
+## What remains before this handoff closes
+
+1. **The walkthrough** (End condition #4): a session where the agent explains ISAR end to end
+   using only these documents; the operator's confusion points become defects fixed on the
+   spot. This doubles as the currency pass on the user-tier docs (USING_ISAR, WORKED_EXAMPLE,
+   INTERPRETING_A_VERDICT, WORKSPACE_AND_CLI carry July/August verification dates and were
+   reference-repaired, not re-verified line-by-line, during the rebuild).
+2. **Operator homework:** the DESIGN_GOALS.md body rewrite (the Inbox is stocked, including the
+   2026-08-20 interview entries); the closeout list below.
+3. **DEFECT-4** (TODO.md): pre-existing float-exact assert in
+   tests/session/test_branch_persist.py — the one standing test failure, unrelated to docs.
 
 ## Operator closeout list (bounded; shrinks only)
 

@@ -109,51 +109,77 @@ side on representative scans so you can judge every call with your own eyes.
   the instrumental width from the intrinsic damping; trust ω₀, not Γ. On IXS (resolution measured from
   the elastic line) Γ is meaningful.
 
-## Where to read what
+## Where to read what — three doors
 
-This is the sole general map of ISAR's documentation. The **Status** column says whether you may
-rely on what you are about to open: *live* is current and authoritative, maintained with the
-code; *draft* is being designed and may change under you; *terminal* means the document's job has
-ended — it is awaiting absorption into a living document and then deletion, and must never be
-read as current behaviour. (A documentation rebuild is in progress; the frontier is in
-[HANDOFF-doc-rebuild.md](HANDOFF-doc-rebuild.md).)
+This is the sole map of ISAR's documentation (every maintained document is reachable from here;
+a drift test enforces it). A document's banner **status** says whether you may rely on it:
+*live* is current and authoritative; *draft* may change under you; *terminal* is awaiting
+absorption and deletion and must never be read as current behaviour.
 
-| Question | Where | Status |
-|---|---|---|
-| What is ISAR for / why trust it? | this guide | live |
-| What should ISAR become (the owner's master objectives)? | [DESIGN_GOALS.md](DESIGN_GOALS.md) | live (owner-authored) |
-| The product overview and quickstart | [../README.md](../README.md) | live |
-| Contributor rules, hard rules, and area routing | [../AGENTS.md](../AGENTS.md) | live |
-| The backlog | [../TODO.md](../TODO.md) | live |
-| How will I run it on my own data (the CLI)? | [USING_ISAR.md](USING_ISAR.md) | live |
-| How does the autonomous loop work (goal → scans → stop)? | [ARCHITECTURE.md §8](ARCHITECTURE.md) | live |
-| What is legal at an ambiguous frontier / how does it stop? | [design/steering.md](design/steering.md) | live |
-| Where did a campaign spend its time? | `isar profile` ([USING_ISAR.md](USING_ISAR.md)) | live |
-| What does a term mean (pull, fold/fork, cost/dof, a verdict)? | [GLOSSARY.md](GLOSSARY.md) | live |
-| Why these statistics (vs χ² / HESSE / eyeballing models)? — the statistics design doc | [STATS_PRIMER.md](STATS_PRIMER.md) | live |
-| What should I *do* with a given verdict? | [INTERPRETING_A_VERDICT.md](INTERPRETING_A_VERDICT.md) | live |
-| One scan, start to finish | [WORKED_EXAMPLE.md](WORKED_EXAMPLE.md) | live |
-| How do I declare the excitations I expect? | [HYPOTHESES.md](HYPOTHESES.md) | live |
-| How does LLM flag adjudication work, and what does it never touch? | [ADJUDICATION.md](ADJUDICATION.md) | live |
-| How it all assembles into one tool (workspace, session, CLI) | [WORKSPACE_AND_CLI.md](WORKSPACE_AND_CLI.md) | live |
-| What the campaign diagnostic owes you | [design/reporting.md](design/reporting.md) | live |
-| How the GUI is built and bounded | [design/gui.md](design/gui.md) | live |
-| What the data/card schema looks like across facilities | [SCHEMA_LANDSCAPE.md](SCHEMA_LANDSCAPE.md) | live |
-| The scene layer (catalogue, questions, discovery) | [design/scene.md](design/scene.md) | live |
-| The SCENE-4 execution ledger (PR 4.4 pending) | [plans/SCENE4_EXECUTION_PLAN.md](plans/SCENE4_EXECUTION_PLAN.md) | live |
-| The statistics audit still in flight (STAT-3–6) | [plans/stats-audit.md](plans/stats-audit.md) | live |
-| Why steer measurements this way (Bayesian info-gain; prior art) — research foundation | [design/steering.md](design/steering.md) | live |
-| What is being built next (speedup, backgrounds, steering sub-phases A–C) | [plans/speedup.md](plans/speedup.md), [plans/background.md](plans/background.md), [design/steering.md §10](design/steering.md) | live |
-| Same-action scan-window EIG — contract and status | [design/eig.md](design/eig.md) | live |
-| The documentation rebuild in progress (frontier + operator closeout list) | [HANDOFF-doc-rebuild.md](HANDOFF-doc-rebuild.md) | live |
-| Does it agree with a human on real data? | [assets/phase3_gold/FINDINGS.md](assets/phase3_gold/FINDINGS.md) (gold report) | evidence bundle |
-| Does the engine reproduce the trusted fitter + behave? | [assets/phase3_step1/FINDINGS.md](assets/phase3_step1/FINDINGS.md) | evidence bundle |
-| Does the same core work on another instrument (triple-axis)? | [assets/in8_phase1/FINDINGS.md](assets/in8_phase1/FINDINGS.md) | evidence bundle |
-| What the committed evidence bundle is and is not | [assets/README.md](assets/README.md) | live |
-| Why was a decision made this way? | the owning design doc's dated rulings; ruling IDs defined in [GLOSSARY.md](GLOSSARY.md) §Ruling IDs (retired ledger in git history) | — |
-| The frozen campaign evidence bundles (data, retained forever) | [campaigns/README.md](campaigns/README.md) | live |
-| The 2026-07-06 IN8 calibration record | [../calibration/README.md](../calibration/README.md) | terminal (fate on the closeout list) |
-| The pre-rebuild design rationale (phases 1–3, unification) | git history (`git log --all -- docs/archive/ docs/UNIFICATION_DESIGN.md`) — load-bearing rationale absorbed 2026-08-20 into ARCHITECTURE, STATS_PRIMER, design/steering | — |
+### Door 1 — coming back to the build ("what are we building, and where is it?")
+
+Read in this order when returning after time away:
+
+1. **This guide's top half** — what ISAR is, what it is not, why to trust it.
+2. **[DESIGN_GOALS.md](DESIGN_GOALS.md)** (owner-authored) — what ISAR is supposed to become;
+   agents propose into its Inbox, only the owner writes the body.
+3. **[ARCHITECTURE.md](ARCHITECTURE.md)** — the whole-project law: stages, principles, frozen
+   contracts — and **§15, the capability table**, the single authority for what is Implemented /
+   Partial / Planned right now.
+4. **The live frontier:** [design/scene.md](design/scene.md) §3 (the SCENE slice table) and
+   [plans/SCENE4_EXECUTION_PLAN.md](plans/SCENE4_EXECUTION_PLAN.md) (PR 4.4 pending — authority
+   flip, stop-point audit, shadow deletion).
+5. **The podium path:** [STATS_PRIMER.md](STATS_PRIMER.md) — why Baker–Cousins and not
+   Neyman/Pearson, why selection is the evidence posterior, how interval coverage was *measured*
+   — the document to rehearse from before defending the methodology to an audience. Deeper:
+   [design/steering.md](design/steering.md) (why steer this way; research foundation) and
+   [design/eig.md](design/eig.md) (same-action scan-window EIG).
+6. While it exists: [HANDOFF-doc-rebuild.md](HANDOFF-doc-rebuild.md) — the documentation
+   rebuild's frontier and the operator closeout list.
+
+### Door 2 — running ISAR on data (the user door)
+
+ISAR should be operable by a scientist who has never read a design doc — this door is also the
+standing check that we are building a usable instrument, not a self-certifying loop.
+
+1. [USING_ISAR.md](USING_ISAR.md) — set up once, re-run one command as scans land
+   (`isar profile` for where a campaign spent its time).
+2. [WORKED_EXAMPLE.md](WORKED_EXAMPLE.md) — one scan, start to finish.
+3. [INTERPRETING_A_VERDICT.md](INTERPRETING_A_VERDICT.md) — what to *do* with each verdict.
+4. [HYPOTHESES.md](HYPOTHESES.md) — declaring the excitations you expect.
+5. [ADJUDICATION.md](ADJUDICATION.md) — opt-in LLM flag adjudication, and what it never touches.
+6. [WORKSPACE_AND_CLI.md](WORKSPACE_AND_CLI.md) — the full workspace/session/CLI contract.
+
+### Door 3 — contributing (agents and developers)
+
+1. [../AGENTS.md](../AGENTS.md) — the hard rules, area routing, test discipline, and the
+   documentation policy. Then [ARCHITECTURE.md](ARCHITECTURE.md).
+2. The living design docs, each owning one system and its roadmap:
+   [design/scene.md](design/scene.md) · [design/steering.md](design/steering.md) ·
+   [design/eig.md](design/eig.md) · [design/gui.md](design/gui.md) ·
+   [design/reporting.md](design/reporting.md) · [STATS_PRIMER.md](STATS_PRIMER.md) (statistics;
+   kept at this path because frozen evidence cites it).
+3. The plans — work not yet landed, each with an owner and exit criteria:
+   [plans/SCENE4_EXECUTION_PLAN.md](plans/SCENE4_EXECUTION_PLAN.md) ·
+   [plans/speedup.md](plans/speedup.md) · [plans/background.md](plans/background.md) ·
+   [plans/stats-audit.md](plans/stats-audit.md). The backlog is [../TODO.md](../TODO.md).
+4. Why was a decision made? The owning design doc's dated rulings; ruling IDs (`O27`, `H1`, …)
+   are defined in [GLOSSARY.md](GLOSSARY.md) §Ruling IDs (the retired ledger is in git history).
+
+### Reference shelf
+
+| What | Where |
+|---|---|
+| Product overview + quickstart | [../README.md](../README.md) |
+| Term definitions (pull, fold/fork, cost/dof, verdicts, ruling IDs) | [GLOSSARY.md](GLOSSARY.md) |
+| The data/card schema across facilities | [SCHEMA_LANDSCAPE.md](SCHEMA_LANDSCAPE.md) |
+| Does it agree with a human on real data? | [assets/phase3_gold/FINDINGS.md](assets/phase3_gold/FINDINGS.md) (the gold report) |
+| Does the engine reproduce the trusted fitter? | [assets/phase3_step1/FINDINGS.md](assets/phase3_step1/FINDINGS.md) |
+| Does the same core work on triple-axis? | [assets/in8_phase1/FINDINGS.md](assets/in8_phase1/FINDINGS.md) |
+| What the committed evidence bundle is and is not | [assets/README.md](assets/README.md) |
+| The frozen campaign evidence bundles (data, never contract) | [campaigns/README.md](campaigns/README.md) |
+| The 2026-07-06 IN8 calibration record | [../calibration/README.md](../calibration/README.md) — terminal; fate on the closeout list |
+| Pre-rebuild design rationale (phases 1–3, unification) | git history (`git log --all -- docs/archive/ docs/UNIFICATION_DESIGN.md`); load-bearing rationale absorbed into ARCHITECTURE, STATS_PRIMER, design/steering |
 
 Those three reports are **committed** under [assets/](assets/) — a clean checkout can read them and
 look at their figures. What a clean checkout cannot do is *regenerate* them: the `docs/*_check.py`
