@@ -205,12 +205,12 @@ strongly correlated; at low counts the background level is *the* limiting nuisan
 - **The background prior** is a provenance-tagged record per (instrument, configuration,
   detector) — background rate normalized per unit monitor exposure per energy bin, with
   the same normalization-provenance discipline the steering design imposes on intensities
-  (MEASUREMENT_STEERING §4.4: a raw fitted amplitude is not portable; a normalized one
+  (design/steering.md §4.4: a raw fitted amplitude is not portable; a normalized one
   with provenance is). Slowly varying in q: nearest-neighbor pooling with a generous
   distance-decaying weight, not a global constant.
 - **Consumption:** a soft Gaussian prior on the background parameters of a new fit,
   entering the optimizer's objective only — **the data-cost / posterior-cost split holds**
-  exactly as MEASUREMENT_STEERING §4.4 prescribes: AIC, goodness-of-fit, and
+  exactly as design/steering.md §4.4 prescribes: AIC, goodness-of-fit, and
   falsification are recomputed from the pure Poisson data cost *at the fitted parameters*,
   never from the prior-augmented objective (the same mechanism the dispersion prior
   already uses), and the
@@ -239,7 +239,7 @@ is low:
   window reverts to signal-tight. This composes with the existing adaptive window logic
   (`isar/drive/acquisition/acquire.py:274-327`) as a small additive term, not a rewrite.
 - **EIG treats background as a nuisance to marginalize, not a target.** The
-  goal-oriented/marginal-EIG design (MEASUREMENT_STEERING §4.1 item 1) already prescribes
+  goal-oriented/marginal-EIG design (design/steering.md §4.1 item 1) already prescribes
   integrating nuisances out; this sub-phase widens the nuisance space to the background
   family, so scan value is information about ω₀ *after* background uncertainty, and a scan
   that mostly pins background is valued exactly as much as that pinning helps ω₀ — no

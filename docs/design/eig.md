@@ -1,12 +1,12 @@
 # Same-action scan-window EIG — design contract
 
 > **Status:** live
+> **Authority:** canonical same-action scan-window EIG design
 > **Verified against code revision:** `9d77631` (2026-08-04)
 > **Owner:** @ammerritt-gh
-> **Exit criteria:** the restricted authoritative selector exists; Slice 10 completes the deterministic
-> TAVI EIG-4 demonstration; exact eligible selection and ineligible non-EIG return behavior are
-> verified; accepted behavior is folded into `MEASUREMENT_STEERING.md`; this plan is then removed and
-> tombstoned according to policy.
+> **Roadmap:** Slice 10 (the deterministic TAVI EIG-4 SVP) is this document's open roadmap item,
+> owned by @ammerritt-gh; when Slice 10 lands the roadmap section below is updated in place — this
+> is a living design document and does not get removed or tombstoned when it lands.
 
 ## Status and boundary
 
@@ -221,7 +221,8 @@ synchronous scorer and again immediately after it returns, before score-set vali
 overrun discards that returned numerical result, records `shadow_scoring_deadline`, marks the remaining
 variants likewise, and still submits the unchanged legacy request.
 
-The future work described here is narrower than the physics-content work in `STEERING_DESIGN.md`.
+The future work described here is narrower than the physics-content work in
+the steering roadmap ([`steering.md` §10](steering.md)).
 It may compare different uniform windows/counts for the **same already-selected scientific action**.
 It may not invent branch hypotheses, change evidence routing, fit data, alter QC, or move scientific
 selection out of the existing action inventory.
@@ -716,6 +717,15 @@ checked through the published ratio against the producer's own stored matrices. 
 `reference_incremental_exposure = fit_reference_exposure / n_members` is the **parity point** of
 that vector: it reproduces the same grid **iff `exposure_homogeneous`** is true. It is a mean of
 per-member exposure, not any one member's request, and that diagnostic identity is its only role.
+
+**Why the basis is per-energy** (2026-07-29 exposure-basis spike, log in git history): per-bin
+exposure heterogeneity is the normal case, not the edge case — at the time of the spike, 75% of
+campaign masters were heterogeneous (`max(ΣM_kept)/min(ΣM_kept) − 1 > 1e-12`; observed spans
+2.1×–20×). The scalar `fit_reference_exposure` is sound for forward prediction but cannot
+reproduce self-consistency on a heterogeneous pool: the spike's T1 check failed by 50–900% on
+7/11 masters, and no scalar choice does better than 41–347%. Hence the contract above: publish
+the per-energy vector alongside the scalar, and gate only the scalar parity assertion — never
+candidate evaluation — on `exposure_homogeneous`.
 
 `scalar_exposure_eligible` (equivalently `exposure_homogeneous`, `max(ΣM_kept)/min(ΣM_kept) - 1 <=
 1e-12`) is published as a declaration and diagnostic. It gates only the scalar fitted-grid parity

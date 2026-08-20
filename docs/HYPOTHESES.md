@@ -215,4 +215,4 @@ be requested.
 
 ---
 
-*Why it is designed this way: `MEASUREMENT_STEERING.md` §4.5 and DECISIONS O6–O11.*
+*Why it is designed this way: `design/steering.md` §4.5 and DECISIONS O6–O11.*

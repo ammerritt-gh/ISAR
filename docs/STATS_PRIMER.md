@@ -500,7 +500,7 @@ Three genuine weak points, each now the subject of a plan:
 | Weak point | Status | Governing plan |
 |---|---|---|
 | **Backgrounds are a single flat constant** — the largest real-data risk. Long elastic tails and sloped baselines under the inelastic signal silently bias phonon amplitudes | Open | `BACKGROUND_DESIGN.md` |
-| **Counting targets are absolute-meV only** — no signal-to-background awareness, so a five-count peak is a real hazard once genuine noise arrives | Open | `STEERING_DESIGN.md` |
+| **Counting targets are absolute-meV only** — no signal-to-background awareness, so a five-count peak is a real hazard once genuine noise arrives | Open | the steering roadmap (`design/steering.md` §10) |
 | **The error-tier choice is static** — §3's coverage evidence already licenses a cheap-first, escalate-on-distrust policy | Partly addressed | `SPEEDUP_DESIGN.md` (Phase 2) |
 
 Two of the three are unstarted. They are recorded here, not in a plan, so that a reader of the

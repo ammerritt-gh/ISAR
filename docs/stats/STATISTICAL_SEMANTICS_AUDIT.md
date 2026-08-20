@@ -75,7 +75,7 @@ and stopping paths, principally:
   `isar/drive/supervisor/stopping.py`, and
   `isar/drive/acquisition/calibration.py`;
 - `docs/STATS_PRIMER.md`, `docs/GLOSSARY.md`, `docs/INTERPRETING_A_VERDICT.md`,
-  `docs/MEASUREMENT_STEERING.md`, and `docs/EIG_STEERING_DESIGN.md`.
+  `docs/design/steering.md`, and `docs/design/eig.md`.
 
 The focused EIG-2.5 baseline at this revision is 137 passing tests:
 `tests/session/test_master_predictive.py`,
@@ -317,7 +317,7 @@ well-tested controller inputs.
 Producer: `session/predictive_artifact.py:272-439`. Strict reader/evaluator:
 `predictive.py:403-618`. Current readers are the workspace facade, pure evaluator, and drive loop;
 the current outer action/Q scorer consumes the stored model matrices. Alternative-window EIG does
-not yet consume the artifact (`docs/EIG_STEERING_DESIGN.md:13-15`).
+not yet consume the artifact (`docs/design/eig.md:13-15`).
 
 | Field(s) | Mathematical/contract meaning and conditioning | Current consumers/authority | Name accuracy and calibration | Evidence status | Proposed repair |
 |---|---|---|---|---|---|
@@ -447,7 +447,7 @@ the active contracts honest; STAT-6 still owns final consolidation and audit ret
   diagnostics-only and every certifying interval is frequentist. The physical-row lane satisfies
   that statement, but the master lane can prefer nested parameter samples and certify their mixed
   omega quantiles.
-- `STATS_PRIMER.md:284-289` and `MEASUREMENT_STEERING.md:747-755` accurately describe the retained
+- `STATS_PRIMER.md:284-289` and `design/steering.md:747-755` accurately describe the retained
   model-weighted predictive interval as certifying, including the nested→bootstrap→Laplace particle
   fallback. They do not state that this is a heterogeneous measure or that null mass is conditioned
   away from omega quantiles.
@@ -456,7 +456,7 @@ the active contracts honest; STAT-6 still owns final consolidation and audit ret
   feeds `cost` at the constrained optimum into ordinary AIC.
 - `GLOSSARY.md` calls branch assignment a Bayesian posterior. The implementation is a useful
   normalized versioned scoring model, but calibrated-posterior language is not earned.
-- `EIG_STEERING_DESIGN.md:13-15` correctly says alternative-window EIG scoring/selection is not
+- `design/eig.md:13-15` correctly says alternative-window EIG scoring/selection is not
   implemented. No status correction is needed in STAT-0.
 
 The repairs now distinguish single-fit Bayesian intervals from the mixed master interval, ordinary
@@ -630,7 +630,7 @@ The PR must end in one explicit state:
 
 Make cross-paradigm agreement abstain unless model, estimator/constraints, priors, projection,
 dataset/mask, grid/window, and calibration target match. Update `STATS_PRIMER.md`, `GLOSSARY.md`,
-`INTERPRETING_A_VERDICT.md`, `MEASUREMENT_STEERING.md`, `EIG_STEERING_DESIGN.md`, schemas, decision
+`INTERPRETING_A_VERDICT.md`, `design/steering.md`, `design/eig.md`, schemas, decision
 ledger/index, and drift tests as appropriate. Then delete and tombstone this audit.
 
 ## 10. Owner decisions

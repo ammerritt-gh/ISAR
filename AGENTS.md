@@ -121,8 +121,8 @@ area.
 | Verdicts — meaning & what to do | `docs/INTERPRETING_A_VERDICT.md`, GLOSSARY |
 | Card / schema across facilities | `docs/SCHEMA_LANDSCAPE.md` |
 | Flag adjudication (opt-in LLM) | `docs/ADJUDICATION.md` |
-| The autonomous driver (`isar drive`) | `docs/MEASUREMENT_STEERING.md` |
-| Same-action scan-window EIG (candidate generation and exact realized scoring Partial; authoritative selection Partial — symmetric per-neutron comparison, O43; O42 release review retired by H1; default-on is a SCENE-4 deliverable, world-suite coverage of the selection path its acceptance evidence) | `docs/EIG_STEERING_DESIGN.md`, then `docs/MEASUREMENT_STEERING.md` |
+| The autonomous driver (`isar drive`) | `docs/design/steering.md` |
+| Same-action scan-window EIG (candidate generation and exact realized scoring Partial; authoritative selection Partial — symmetric per-neutron comparison, O43; O42 release review retired by H1; default-on is a SCENE-4 deliverable, world-suite coverage of the selection path its acceptance evidence) | `docs/design/eig.md`, then `docs/design/steering.md` |
 | Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
 | The SCENE program (scene layer, catalogue, target-free discovery; SCENE-0..3 Implemented — H1 constitution + world suite, catalogue/evidence-selection/constrained variants, program contract, scene scoring + factors + revision store + `workspace_api` read surface (DECISIONS H1–H14); SCENE-4.0–4.2 Implemented offline — question layer, discovery generators, offline planner, `ws.agenda` (H15–H19); SCENE-4.3 Implemented live (H20) — `isar drive` runs a `discover_and_map` step through the `run_program` seam: parent-owned scene build in a supervised `isar scene-build` subprocess with digest-pinned planning, cold-start partition from declarations, broken-scan lane, geometry durable blockers, consultation channel + `isar answer`; SCENE-4.4+ (authority flip, stop-point audit, shadow deletion) Planned) | `docs/SCENE_DESIGN.md` |
 | Campaign diagnostic report | `docs/CAMPAIGN_DIAGNOSTIC_SPEC.md` |

@@ -603,7 +603,7 @@ Selection is fully testable from stored revisions before any driver goes live.
   completion verdict on synth, deterministic scheduler selecting, budget-exhausted honesty and
   AS warm+cold worlds green.
 - **Docs in-change:** SCENE_DESIGN §3/§5 (slice row → Implemented; question-layer contract +
-  family matrix), MEASUREMENT_STEERING, EIG_STEERING_DESIGN (scan-window = realization layer),
+  family matrix), design/steering.md, design/eig.md (scan-window = realization layer),
   DESIGN §15 rows, H-entries; `tests/docs/` claims where machine-checkable.
 
 ## Acceptance additions from review triage (fold into the topic-8 matrix)

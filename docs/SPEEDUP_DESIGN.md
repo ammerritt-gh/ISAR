@@ -23,7 +23,7 @@ economy or final-number accuracy; certification honesty is explicitly preserved 
 2026-07-19 statistics-contract audit: `docs/STATS_PRIMER.md` §7.
 
 Companion documents: `docs/STATS_PRIMER.md` §3 (the coverage evidence that licenses Phase 2),
-`docs/MEASUREMENT_STEERING.md` §7.5 (master-authoritative semantics Phase 3 must preserve).
+`design/steering.md` §7.5 (master-authoritative semantics Phase 3 must preserve).
 The Phase 1–2 timing evidence log (2026-07-20) is in git history; its load-bearing numbers are
 in §1 below. Tier mix from the first full autonomous run (2026-06): analyze-tier counts over
 the run were cheap 59 / fast 22 / full 16.

@@ -541,8 +541,8 @@ Do not compute a reassuring width ratio between methods answering different ques
 
 Update:
 
-- `docs/MEASUREMENT_STEERING.md`;
-- `docs/EIG_STEERING_DESIGN.md`;
+- `docs/design/steering.md`;
+- `docs/design/eig.md`;
 - `docs/DECISIONS.md` and its index;
 - documentation inventory;
 - user-facing terminology.

@@ -7,7 +7,7 @@ This directory holds the **retained frozen evidence bundles**: machine-written a
 (manifests, gate results, case data, fingerprints) from formal campaigns and gates, kept because
 measured data is auditable forever (DESIGN_GOALS, Auditing). They are records of a date, never
 statements of current behaviour — for what the controller does *today*, read
-[DESIGN.md §8](../../DESIGN.md) and [MEASUREMENT_STEERING.md](../MEASUREMENT_STEERING.md).
+[DESIGN.md §8](../../DESIGN.md) and [design/steering.md](../design/steering.md).
 
 The dated campaign *narratives* that used to live beside them were absorbed into the living
 design docs and deleted on 2026-08-20 (the doc rebuild,
@@ -40,6 +40,9 @@ fingerprints. The ruling cited in the last column states what the evidence decid
 
 | Record | Absorbs into |
 |---|---|
-| [2026-07_MVP_ZONE_RETEST.md](2026-07_MVP_ZONE_RETEST.md) | branch-disambiguation mechanics → the steering design doc (rebuild slice C) |
-| [2026-07-29_EIG_EXPOSURE_BASIS.md](2026-07-29_EIG_EXPOSURE_BASIS.md) | exposure-heterogeneity findings → the steering design doc (rebuild slice C) |
 | [PHASE_4_NOTES.md](PHASE_4_NOTES.md) | held while `archive/PHASE_3_DESIGN.md` cites it; dies with the archive slice |
+
+The zone-retest and exposure-basis narratives were absorbed 2026-08-20: the four
+branch-disambiguation rules into [`../design/steering.md`](../design/steering.md) §7.9, the
+per-energy exposure-basis evidence into [`../design/eig.md`](../design/eig.md) (Predictive
+artifact).

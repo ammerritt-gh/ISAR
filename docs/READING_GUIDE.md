@@ -127,7 +127,7 @@ read as current behaviour. (A documentation rebuild is in progress; the frontier
 | The backlog | [../TODO.md](../TODO.md) | live |
 | How will I run it on my own data (the CLI)? | [USING_ISAR.md](USING_ISAR.md) | live |
 | How does the autonomous loop work (goal → scans → stop)? | [DESIGN.md §8](../DESIGN.md) | live |
-| What is legal at an ambiguous frontier / how does it stop? | [MEASUREMENT_STEERING.md](MEASUREMENT_STEERING.md) | live |
+| What is legal at an ambiguous frontier / how does it stop? | [design/steering.md](design/steering.md) | live |
 | Where did a campaign spend its time? | `isar profile` ([USING_ISAR.md](USING_ISAR.md)) | live |
 | What does a term mean (pull, fold/fork, cost/dof, a verdict)? | [GLOSSARY.md](GLOSSARY.md) | live |
 | Why these statistics (vs χ² / HESSE / eyeballing models)? | [STATS_PRIMER.md](STATS_PRIMER.md) | live |
@@ -142,8 +142,9 @@ read as current behaviour. (A documentation rebuild is in progress; the frontier
 | The scene layer (catalogue, questions, discovery) | [SCENE_DESIGN.md](SCENE_DESIGN.md) | live |
 | The SCENE-4 execution ledger (PR 4.4 pending) | [SCENE4_EXECUTION_PLAN.md](SCENE4_EXECUTION_PLAN.md) | live |
 | The statistics audit still in flight (STAT-3–6) | [stats/STATISTICAL_SEMANTICS_AUDIT.md](stats/STATISTICAL_SEMANTICS_AUDIT.md) | live |
-| Why steer measurements this way (Bayesian info-gain; prior art) — research foundation | [MEASUREMENT_STEERING.md](MEASUREMENT_STEERING.md) | live |
-| What is being built next (speedup, backgrounds, steering A/B/C, same-action scan-window EIG) | [SPEEDUP_DESIGN.md](SPEEDUP_DESIGN.md), [BACKGROUND_DESIGN.md](BACKGROUND_DESIGN.md), [STEERING_DESIGN.md](STEERING_DESIGN.md), [EIG_STEERING_DESIGN.md](EIG_STEERING_DESIGN.md) | live |
+| Why steer measurements this way (Bayesian info-gain; prior art) — research foundation | [design/steering.md](design/steering.md) | live |
+| What is being built next (speedup, backgrounds, steering sub-phases A–C) | [SPEEDUP_DESIGN.md](SPEEDUP_DESIGN.md), [BACKGROUND_DESIGN.md](BACKGROUND_DESIGN.md), [design/steering.md §10](design/steering.md) | live |
+| Same-action scan-window EIG — contract and status | [design/eig.md](design/eig.md) | live |
 | The documentation rebuild in progress (frontier + operator closeout list) | [HANDOFF-doc-rebuild.md](HANDOFF-doc-rebuild.md) | live |
 | Does it agree with a human on real data? | [assets/phase3_gold/FINDINGS.md](assets/phase3_gold/FINDINGS.md) (gold report) | evidence bundle |
 | Does the engine reproduce the trusted fitter + behave? | [assets/phase3_step1/FINDINGS.md](assets/phase3_step1/FINDINGS.md) | evidence bundle |

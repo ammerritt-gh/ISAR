@@ -36,9 +36,17 @@ rationale for statistical-method choices is first-class; rationale for steering 
   links, stale phrases, CLI block, assets hashes); `DOC_INVENTORY.md`, `DECISION_INDEX.md`, the
   index generator and its test deleted; `DESIGN_GOAL_INBOX.md` merged into `DESIGN_GOALS.md`
   `## Inbox`; this handoff created.
-- **Next — Slice B:** campaign logs (16 + README): irreplaceability read, rehome sole-source
-  evidence, delete.
-- **Then:** design clusters (steering → scene → statistics → pipeline/gui/reporting/instrument),
+- **Slice B (campaign logs) — DONE 2026-08-20 (`654b2ec`):** 19 narratives absorbed and
+  deleted after per-file irreplaceability reads (two scouts, cross-checked against the ledger);
+  sole-source facts rehomed (first-run accuracy → steering doc; HESSE mis-certification case →
+  STATS_PRIMER §3.2; Phase-4 open questions → steering §8); campaigns/README.md rewritten as a
+  live index of the retained frozen evidence bundles. Held for later slices: MVP_ZONE_RETEST +
+  EIG_EXPOSURE_BASIS (absorb in slice C), PHASE_4_NOTES (archive slice).
+- **Slice C (steering cluster) — IN PROGRESS:** MEASUREMENT_STEERING.md → design/steering.md
+  (spine, + STEERING_DESIGN's A–C roadmap absorbed); EIG_STEERING_DESIGN.md → design/eig.md as
+  its own living doc (deliberate deviation from the approved seven-doc map: merging 650 lines of
+  EIG contract into steering would rebuild the monolith; the map's owner-count grows to eight).
+- **Then:** design clusters (scene → statistics → pipeline/gui/reporting/instrument),
   each cluster created from its source docs *and* absorbing that domain's DECISIONS rulings in
   the same commit (final-state rulings only — the amendment chains are mapped in the 2026-08-20
   session's reader digest; re-derive from the ledger if lost). Then `DESIGN.md` →

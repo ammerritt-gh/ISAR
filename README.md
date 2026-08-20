@@ -24,7 +24,7 @@ published numbers. Nothing is ever deleted; a human reviews everything afterward
 > cost-normalised expected-information-gain acquisition. The analytic synthetic tier is certified,
 > and TAVI's **deterministic** rung has run; realistic clocks and the McStas rung remain
 > Planned, and no campaign has run on a real instrument. See
-> [docs/MEASUREMENT_STEERING.md](docs/MEASUREMENT_STEERING.md) for why it steers the way it does.
+> [docs/design/steering.md](docs/design/steering.md) for why it steers the way it does.
 >
 > **Per-capability status — Implemented / Partial / Planned — lives in one place:
 > [DESIGN.md §15](DESIGN.md). That table is the authority; this paragraph is orientation.**

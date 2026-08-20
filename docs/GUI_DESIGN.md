@@ -36,7 +36,7 @@ All rulings from that conversation are restated here in full; nothing load-beari
 
 **Relationship to other documents.** Subordinate to `DESIGN.md` (its principles P1–P6 bind this
 document). Sibling to `docs/WORKSPACE_AND_CLI.md` (workspace/session internals the GUI reads)
-and `docs/MEASUREMENT_STEERING.md` (the drive loop the GUI observes and nudges). Decision IDs
+and `design/steering.md` (the drive loop the GUI observes and nudges). Decision IDs
 introduced here use the **G-series** and should be migrated into `docs/DECISIONS.md` when
 accepted.
 

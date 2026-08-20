@@ -1,15 +1,18 @@
 # Autonomous measurement steering — the research foundation
 
 > **Status:** live
-> **Authority:** canonical for the steering research foundation and the current controller contract
+> **Authority:** canonical steering design — controller contract + research foundation
 > **Verified against code revision:** `5cf3408` (2026-08-15)
+> **Consolidated:** 2026-08-20 — absorbed STEERING_DESIGN.md's roadmap; MEASUREMENT_STEERING.md
+> renamed here (git history keeps both)
 
 > **Status: design locked; the core is built.** The model-free descriptor (L0), branch model +
 > normalized branch-assignment scoring, soft/hard Γ constraints, Stokes-only rescue, under-model
 > falsification, cost-normalised EIG acquisition, and the anti-Stokes fold + rival-branch banking
 > are implemented (`isar/analyze/descriptor.py`, `isar/session/branch_model.py` /
 > `branch_assignment.py`, `isar/drive/acquisition/eig.py`); what ran and what failed is recorded in
-> `campaigns/2026-07_MVP_ZONE_RETEST.md` (the 2026-06 first-run log is in git history).
+> git history (the 2026-06 first run and 2026-07 zone-retest logs; the retest's surviving
+> design rules are §7.9 below).
 > **Branch-identity-aware acquisition (§2 fourth consequence, §4.1 item 7, §4.5): first
 > implementation landed 2026-07-17** (DECISIONS O6–O12; user-facing reference
 > `docs/HYPOTHESES.md`); joint gap-aware tracking and the connected frontier landed 2026-07-18
@@ -424,7 +427,7 @@ So the chosen engine is:
    master's fitted grid. In `shadow` mode the controller may diagnostically score the exact
    `legacy_uniform/1` and `target_core/1` pair from one exact eligible source master, but still never
    selects among them: it executes the legacy control in every outcome. The restricted contract is
-   specified in `EIG_STEERING_DESIGN.md`.
+   specified in `eig.md`.
 
 **Honest limit:** at single-digit counts the information is simply not there; no method conjures it.
 Correct behaviour is to report low confidence honestly and let EIG decide *count more here / move*;
@@ -930,7 +933,7 @@ parameter draws and weights for every retained plausible model/branch, together 
 the frozen evaluation context and the per-energy exposure basis those draws were fitted against. That
 artifact is *physical only*: which mode is the campaign's target is resolved after branch triage and
 the connected tracker into a separate `isar.target_projection/2` bound to the authority basis that
-produced it (ADR-019; [`EIG_STEERING_DESIGN.md`](EIG_STEERING_DESIGN.md)).
+produced it (ADR-019; [`eig.md`](eig.md)).
 Nested draws win, then full-fit
 bootstrap draws, then a trusted multivariate HESSE/Laplace approximation. The model-weighted ω interval
 is conditional on target-present retained models and can therefore mix three different parameter
@@ -963,7 +966,7 @@ capability the superseded `/1` artifact could not support, because it stored cou
 master grid alone. `/1` emission was removed rather than kept alongside `/2` (DECISIONS O33): every
 reader requires `/2`, and a leftover `/1` artifact is refused as a non-result with
 `artifact_schema_unsupported`, never guessed into `/2`. How that evaluator is consumed by scan-window
-scoring is specified in [`EIG_STEERING_DESIGN.md`](EIG_STEERING_DESIGN.md).
+scoring is specified in [`eig.md`](eig.md).
 
 The outer limits are independent. `budget` is optional measurement spend. `analysis_limit_seconds`
 charges monotonic wall time around serialized fitting, pooling, consistency, predictive scoring and
@@ -971,6 +974,36 @@ certification operations, with one enclosing charge for parallel workers. Determ
 default to 3600 analysis seconds and no measurement budget; measurement-dominated campaigns default to
 eight measurement hours and no analysis limit. Durable checkpoints make both ceilings cumulative over
 resume. Limits stop dispatching new work; acquired data finish or checkpoint their active wave.
+
+### 7.9 Branch disambiguation — four rules, each earned by a live deadlock
+
+Absorbed from the 2026-07 zone-retest campaign (log in git history); the mechanisms live in
+`isar/session/branch_model.py` / `branch_assignment.py`. Each rule exists because its absence
+deadlocked a real campaign, so none may be relaxed casually:
+
+1. **Features live in phonon energy |ω|, and an anti-Stokes descriptor peak folds onto its
+   Stokes partner** (detailed balance), pooling intensity and significance. Otherwise the
+   anti-Stokes wing at −ω — often the *brighter* side — enters as a rival feature, and a cold
+   zone belief (μ=0) rates ±ω about equally: dominance pins at ~0.5 and every scan whose
+   anti-Stokes is in-window abstains forever.
+2. **Rival-branch banking.** A delivered scan's clearly-non-acoustic higher features
+   (P(acoustic)≤0.3, significance≥8, above the QoI) are stored as `optic` anchors
+   (`secondary_branch_points`), so the optic's belief claims its own kin. Otherwise, wherever the
+   acoustic belief extrapolates with inflated σ, the occupancy prior reads the optic feature as
+   acoustic → dominance ~0.5 → permanent abstention. Banking deliberately bypasses the
+   fold-modality gate (`require_fold=False`) because the scans that *see* the optic are the wide
+   unpooled surveys; `fork` outcomes stay hard-excluded.
+3. **A non-zone-anchored belief with fewer than 3 anchors extrapolates flat**
+   (precision-weighted level, group-velocity-scale σ). Two close noisy anchors otherwise assert
+   a plunging local-linear slope into a rival's band and claim its features.
+4. **A Phase-A-triaged acoustic delivery may seed the prior from unpooled quicklooks**, carrying
+   its own hygiene gates (P/dominance/entropy; `fork` never enters). Otherwise mid-band
+   productions run against a multi-anchor optic and a zero-anchor acoustic, and occupancy lets
+   the optic outvote the acoustic for its own features.
+
+Standing repair from the same campaign: the TAVI idempotency key carries a per-workspace nonce
+(`.run_nonce`), so a fresh campaign can never replay a previous run's poisoned instrument-side
+cache; a crash-resume of the same workspace reuses its nonce and still dedupes.
 
 ---
 
@@ -1166,3 +1199,193 @@ metadata seen). No references were fabricated.
 - Fedorov (1972). *Theory of Optimal Experiments.* Academic Press.
 - Atkinson, Donev, Tobias (2007). *Optimum Experimental Designs, with SAS.* Oxford.
 - Pukelsheim (1993/2006). *Optimal Design of Experiments.* SIAM.
+
+---
+
+## 10. Roadmap — steering sub-phases A–C (absorbed from STEERING_DESIGN.md, 2026-08-20)
+
+**Owner:** @ammerritt-gh
+
+**Exit criteria.** Phase 0 shipped as O27 (the same-q budget / bridge-geometry separation), O28
+(the action-inventory control plane) and O29 as amended by O31 (the terminal taxonomy). What
+remained open from it were the campaign replays that keep O25/O26 at Partial in `DESIGN.md` §15 —
+Phase 0 closed when those replays passed. Sub-phases A → B → C each close when their own acceptance
+campaign runs against TAVI with the counting target expressed relative to background rather than
+in absolute meV, and `DESIGN.md` §15 records the status change.
+
+Guardrails and out-of-scope items carried forward from the roadmap plan, not already stated
+elsewhere in this document:
+
+- Scan-by-scan re-decide discipline: no closed counting loops against a target.
+- All schema/report additions additive; `AGENTS.md` hard rules untouched; no LLM in the runtime
+  path of a number.
+- **Within-scan point-by-point adaptivity** and full motor path planning — a future phase once
+  movement-aware cost exists; sub-phase C deliberately stops at scan granularity.
+- The Bayesian credible-interval rung (`STATS_PRIMER.md` Planned item) — orthogonal.
+
+### Sub-phase A — Curvature-capable dispersion prior
+
+#### A.1 Functional form
+
+Replace the linear polyfit with a **low-order periodic basis in reduced q** that respects
+zone symmetry by construction: for a branch with period p, a small sine-like expansion
+(e.g. ω(u) = Σ c_k sin(kπu/p)-type terms for acoustic — ω=0 at Γ, zero slope at the zone
+boundary — and the cosine-side analogue for optic: free gap intercept at Γ, zero slope at
+both Γ and the zone boundary) fit by the same weighted least squares the branch beliefs
+already use. Which form applies comes from the branch's **declared hypothesis character**
+(`dispersion_type`/preset) — never inferred mid-fit. Order grows with fold count (start
+linear-equivalent, admit curvature terms only when enough clean folds exist to constrain
+them — the same "earn your parameters" discipline AIC applies to lineshapes, applied to
+the prior). A "clean fold" throughout this document means exactly what the existing
+admission gate admits: a `resolved`, fold-modality fit; n_folds is the count of admitted
+prior points for that branch.
+
+*Alternative considered:* a GP with periodic kernel — strictly more flexible, but brings
+hyperparameter choices, non-determinism risk, and O(N³) cost for no present need at
+tens-of-points scale. The sine basis is deterministic, cheap, and symmetric by
+construction. Revisit GP only if real dispersions defeat the low-order basis.
+
+#### A.2 Uncertainty
+
+σ remains residual-based but the **floor decays with clean-fold count** (e.g.
+floor = max(σ_min, 0.3 meV / √n_folds) — exact schedule fixed at implementation and
+validated in A's synthetic campaigns) so the prior can actually tighten with evidence.
+A prior-only belief (declared hypothesis, no data) keeps its honest declared width
+unchanged.
+
+#### A.3 Keying: general folds and zone labels
+
+Prior points gain a **general reduced-q key** (fold by the branch's declared period, not
+the acoustic-only special case) plus an explicit **zone label**, so a clean fold measured
+in zone (2,0,0) informs the prediction in zone (3,0,0). ω is zone-periodic and crosses
+freely; *intensity is not* — amplitudes never cross zones in sub-phase A (that is
+sub-phase B's structure-factor feature). Existing single-zone behavior is the degenerate
+case; existing campaigns replay unchanged.
+
+#### A.4 Unchanged invariants
+
+Fold-only admission; ambiguous forks never enter; priors enter fits as parameter
+precision (never pseudo-data); the data-cost / posterior-cost split; branch beliefs still
+never span a branch crossing.
+
+### Sub-phase B — Physics content as Bayesian nudges
+
+Everything in this sub-phase lands through the **HYPOTHESES Tier-2 registry seam** — a
+`dispersion_type`/feature plugin supplying prior contributions, likelihood features, and
+steering defaults — and everything is **confidence-scaled**: a feature with low declared
+confidence barely moves the posterior; nothing is an if/else rule.
+
+#### B.1 Structure-factor / intensity-vs-Q expectation
+
+A hypothesis may declare a coarse expected intensity profile over Q — as simple as
+"stronger in zone (2,0,0) than (1,0,0)", a |F(Q)|²-proportional table, or the default
+"unknown" (feature off, exactly today's behavior). It enters in two places:
+
+- as a **likelihood feature for branch assignment**: the assignment posterior weighs
+  whether an observed normalized intensity is consistent with each candidate branch's
+  expectation — using the provenance-tagged normalized intensity discipline
+  (§4.4) that already exists;
+- as an **expected-counts factor in acquisition**: predicted λ for a candidate scan in a
+  given zone scales by the declared profile, so the driver prefers measuring a branch
+  where it is bright — without forbidding anywhere. "Without forbidding" is structural,
+  not aspirational: the scaling ratio is clamped to a bounded range (fixed at
+  implementation, e.g. [1/R, R] with R ~ 10) so no candidate's expected counts — and
+  hence no candidate's EIG — is driven to zero by a declaration.
+
+With A.3's zone keys this *explains* cross-zone intensity differences instead of being
+confused by them: same ω fold, different amplitude, one consistent belief.
+
+#### B.2 Polarization (LA/TA) expectation
+
+For a branch hypothesis, a declared polarization character implies an intensity
+proportional to |Q·ê|² — longitudinal branches bright where Q ∥ propagation, transverse
+where Q ⊥. The declared *character* (ê relative to propagation) is a zone-invariant
+property of the branch; the intensity *prediction* varies zone-to-zone and
+direction-to-direction because Q does — |Q·ê|² is evaluated per candidate from the
+geometry already available through `isar/geometry`. Implemented as the same kind of
+likelihood feature as B.1 (it *is* a structure-factor statement, specialized). This is what lets ISAR check transverse vs longitudinal by *choosing
+where to look*, Bayesianly: two branch hypotheses differing in polarization make opposite
+intensity predictions in different zones/directions, and Stage-C discrimination
+(§2) buys the distinguishing scan on ordinary EIG grounds.
+
+#### B.3 Discipline (the non-negotiables)
+
+- Features are **data-side likelihood terms and prior precisions** — never injected as
+  pseudo-anchors, never consulted by AIC/goodness-of-fit/falsification (fit-vs-decide).
+- **Classification features come from real data only** where the §4.5 anti-circularity
+  rule requires it; each new feature ships with a regression test reproducing the
+  observed historical failure mode (a rival's zone-centre feature absorbed into the wrong
+  belief) and demonstrating the feature does not recreate it.
+- A wrong declared profile must lose to data: the posterior-predictive disagreement check
+  (§4.5 third guard) covers intensity expectations exactly as it covers energy priors,
+  and its outcome is defined, not discretionary — sustained disagreement **decays that
+  feature's confidence weight toward zero and raises the flag** (recorded in machine-owned
+  `card.state.json` and stated in the report); it never silently keeps steering on a
+  discredited profile, and it never deletes the declaration (the human closes the loop).
+  Wrong-hypothesis validation campaigns are acceptance criteria, not nice-to-haves.
+
+### Sub-phase C — Scan economy (the O13 remainder, made concrete)
+
+- **Per-second information.** Rank candidates by EIG **per second**, not per neutron:
+  Poisson information is linear in time (`I = t·(∂λ/∂θ)²/λ`), so per-second information
+  is analytic; the cost model gains an explicit **per-point overhead constant** (setup +
+  readout per point), making few-long-points vs many-short-points a real tradeoff instead
+  of an invisible one. Overhead constants live in instrument config / are measured from
+  TAVI timing when available.
+- **Stay-vs-move as value-of-information.** An OCBA-style rule at scan granularity —
+  **one-step myopic** (consistent with §6: build myopic first), over
+  the existing candidate set (objective-path grid plus purpose-tagged driver-inserted
+  classification q), with the marginal EIG **including cross-q prior tightening** (a
+  neighbor scan's value counts the sharpening it feeds back through the sub-phase-A
+  prior — that inclusion is precisely what makes breadth competitive with depth): after
+  each scan, compare the marginal EIG-per-second of another request here vs the best
+  alternative q — honoring the owner clarification structurally: per-request floors,
+  pooled accumulation, re-decide every scan, and **neighbor-q breadth as a first-class
+  move** (a blend at q gains more from a neighboring separated q, whose fold tightens the
+  prior, than from more dwell — the EIG landscape must be allowed to say so, which
+  sub-phase A's curvature-capable prior is what makes possible).
+- **Movement-aware cost** (Planned-dependency): once TAVI exposes a clock/travel model,
+  add axes-travel time to the cost denominator and order the per-iteration worklist by
+  travel; until then the seam is the cost function, already isolated at the ranking site.
+  The **second-best-point trick** for fast instruments (choose the second-ranked point to
+  overlap analysis with motor movement; §3 Tier-3 note) is recorded
+  as design intent behind the same seam.
+- **Cheap diagnostic first:** a window-width-vs-iteration plot (survey-mode decay curve)
+  and an EIG-rank trace in the campaign diagnostic, so economy claims are read off
+  reports, not re-audited.
+
+### Validation
+
+Synthetic-first, on the fast campaigns the speedup sprint delivers:
+
+1. **A:** curved-dispersion truth (quadratic-through-zone-boundary and anticrossing-free
+   sine truth): prior tracks curvature within its stated σ; floor decays with folds;
+   cross-zone folds inform prediction; linear-truth and single-zone regression campaigns
+   byte-identical decisions.
+2. **B:** two-branch LA/TA truth with planted structure factors: assignment entropy at
+   fixed scan count measurably lower with features on; a campaign with a deliberately
+   wrong intensity profile still converges to truth (nudge-not-force), with the
+   disagreement flag raised; per-feature anti-circularity regression tests pass.
+3. **C:** counts-to-tolerance and wall-time vs the O13 baseline on the reference
+   campaigns; the blend scenario (two phonons merged at one q) resolved via neighbor-q
+   moves without any count-until loop; overhead constant demonstrably shifts the
+   few-long vs many-short choice in the planted regime that favors each.
+4. Full-suite regression: `pytest -m "not slow"` green at each sub-phase boundary.
+
+Phase 0 is gated separately and immediately by its AP1/AP2 replays (§2 of the former workstream
+plan, now superseded — see DECISIONS O27–O31). Passing that gate does not advance the status of
+A, B, or C.
+
+### Sequencing within the workstream
+
+After the independent Phase 0 repair, A → B → C remains the approved sequence behind the
+speedup and background prerequisites, each validated before the next: B's cross-zone intensity
+features need A's zone keying; C's neighbor-q economy needs A's curvature-capable prior to value breadth
+correctly, and benefits from B's identity features to know *which* neighbor is
+informative. A is independently shippable (better prior, no new physics declarations
+required). Each sub-phase ends with its validation evidence committed under
+`docs/campaigns/` and its DECISIONS entry recorded.
+
+*Approved by Adrian 2026-07-19 (single-document workstream; internal split
+Prior → Physics → Economy). Motivated by checkup concerns 2 and 4; executes the
+corresponding Planned slices of this document's §4.1/§7 and DECISIONS O13.*
