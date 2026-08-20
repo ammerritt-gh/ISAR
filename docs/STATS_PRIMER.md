@@ -566,6 +566,85 @@ Three genuine weak points, each now the subject of a plan:
 Two of the three are unstarted. They are recorded here, not in a plan, so that a reader of the
 statistics contract learns the limitations without having to read three roadmaps.
 
+## 8. The equations, in one place
+
+The podium sheet (owner request, 2026-08-20 walkthrough): every statistical form the preceding
+chapters explain, stated once. Tags: **[code]** = transcribed from the implementation named
+beside it (authoritative for parameterization); **[def]** = the defining form the machinery
+realizes. `y` = counts, `f` = model expected counts.
+
+**Counting and cost (§1)**
+
+- Poisson: `P(n|mu) = mu^n e^(-mu) / n!`; stored variance `sigma = sqrt(N)`, with `sigma(0) = 0`
+  — no floor (convention D3). **[def]**
+- Baker–Cousins (the minimized cost) **[code — `analyze/estimators.py`]**:
+  `C = 2 * sum_i [ f_i - y_i + y_i ln(y_i/f_i) ]`, the `y=0` term exactly `f_i`.
+  Convention `errordef = 1`: the 1σ contour is `ΔC = 1`; `cost_per_dof = C / dof` reads like a
+  reduced χ².
+- The straddle (§1's identity) **[code]**: Neyman `sum (y-f)^2 / max(y,1)` minimizes (constant
+  rate) to the **harmonic mean**; modified Pearson `sum (y-f)^2 / f` to the **RMS**;
+  Baker–Cousins to the **arithmetic mean** — the two χ²'s provably bracket the likelihood
+  answer.
+
+**Lineshapes and physics gates (§2, ARCHITECTURE §7)**
+
+- DHO, Stokes side **[code — `analyze/lineshapes.py`]**:
+  `S(x) = A / [ (x - sqrt(w0^2 - G^2))^2 + G^2 ]` — a Lorentzian of HWHM `G` centred at the
+  damped frequency `sqrt(w0^2 - G^2)`; anti-Stokes is the mirror at `-sqrt(w0^2 - G^2)`.
+  Underdamping `w0^2 > G^2` is enforced (an overdamped proposal is penalized, not fit).
+- Detailed balance (Hard Rule 2) **[def]**: `I_AS / I_S = exp(-hbar w / k_B T)` — the
+  anti-Stokes amplitude is *derived*, never fit; admissibility of an anti-Stokes candidate is
+  gated on this before any fit. The fitted amplitude carries the thermal factor explicitly
+  (`n(w,T) + 1`, with `n = 1/(exp(hbar w / k_B T) - 1)`), so amplitude transport is physical
+  (ruling H4(a); `analyze/components.py`).
+- Resolution **[code — `analyze/lineshapes.py`]**: Gaussian and Lorentzian FWHM-parameterized;
+  Voigt via the Faddeeva function `V(x) = A * Re[w(z)] / (sigma sqrt(2 pi))` with
+  `z = ((x - c) + i gamma) / (sigma sqrt 2)`, `sigma = FWHM_G / (2 sqrt(2 ln 2))`,
+  `gamma = FWHM_L / 2`; pseudo-Voigt `eta*L + (1-eta)*G` for K=0 calibration. The fitted model
+  is `Voigt ⊗ DHO + elastic Voigt + flat BG` (`convolute_voigt_dho`). Degenerate-limit rule
+  (§2): Gaussian and Lorentzian are the pinned `FWHM_L = 0` / `FWHM_G = 0` members of the Voigt
+  family.
+
+**Selection (§2)**
+
+- Evidence: `Z_s = ∫ L(theta) pi(theta) d(theta)` **[def]**; selection posterior
+  `P(s) = pi_s Z_s / sum_s' pi_s' Z_s'`, uniform `pi` over admissible structures (ruling H4).
+- Laplace rung **[def]**: `ln Z ≈ ln L(th^) + ln pi(th^) + (k/2) ln 2pi - (1/2) ln det H`,
+  `H` the Hessian of `-ln(L pi)` at the optimum — the Gaussian-bump integral; refused on any
+  boundary-pinned fit (escalate to nested sampling). Dominance prune: a deferred candidate whose
+  evidence *ceiling* sits ≥ 100 nats below a trusted leader is recorded `dominated`, unsampled.
+- Diagnostics lane: `AIC = C + 2k`; Akaike weight `w_s = exp(-Delta_s/2) / sum exp(-Delta/2)`.
+- Soft dispersion prior (MAP, §5): the Gaussian belief `(prior_omega, prior_sigma)` enters the
+  minimized cost once as its `-2 ln` density (`(w0 - prior_omega)^2 / prior_sigma^2` up to the
+  convention constant); `cost` vs `posterior_cost` keeps the data-only value separate. **[def —
+  exact factor: `analyze/prior.py`]**
+
+**Certification (§§3–4)**
+
+- HESSE: `sigma^2` from the inverse Hessian of the cost at the minimum (the `ΔC = 1` parabola).
+  Never certifies. Profile: the `ΔC = 1` crossings of the profiled cost (asymmetric allowed).
+- Bootstrap (certifying): M refits of Poisson redraws of the best-fit model; the interval is the
+  central 68% of the refit distribution. Coverage is *measured*: with N = 200 truth-scored scans
+  per cell, binomial `SE = sqrt(p(1-p)/N) ≈ 0.033` at `p = 0.68`.
+- Pooled-master homogeneity gate (§4.1): seeded parametric-bootstrap Poisson **deviance** test,
+  `alpha = 0.01`, masks never removes.
+
+**Steering currency (§5 of `design/steering.md`, `design/eig.md`)**
+
+- Assignment honesty meter: Shannon entropy `H = - sum_b p_b ln p_b` over branch weights;
+  `H → ln 2` is a coin flip — report ambiguity, never bank the prior.
+- Forward model (exposure): `E[n_i] = I_i(theta) * (E_req * r) / f_ref` — requested per-point
+  exposure `E_req`, `r` = `request_to_exposure_factor` (request unit → exposure unit; 1.0 on
+  TAVI), `f_ref` = `fit_reference_exposure` (the amplitude basis, persisted from the fit). The
+  per-bin ledger `ratio_i = sum(M_i) / (n_members * f_ref)` carries heterogeneous illumination
+  exactly.
+- Expected information gain **[def]**: `EIG(a) = H[QoI] - E_(data ~ predictive)[ H[QoI | data] ]`
+  — the mutual information between the QoI (ω₀ bin + identity, targeted lane) and the data the
+  action would buy, computed over the model-weighted predictive ensemble; ranked per predicted
+  cost. Scan-window decision (ruling O43): the sign of the per-executed-point information delta
+  selects the candidate; within the two-sided band `|Delta| < 3 * SE_paired`, or on
+  partition-offset disagreement, no preference is expressed and the smaller purchase wins.
+
 ## Reproducing everything
 
 ```
