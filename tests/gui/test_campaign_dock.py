@@ -213,6 +213,29 @@ def test_resume_button_covers_a_moved_program_file(dock_env, tmp_path):
     assert ops.drive_requests and ops.drive_requests[0][0].resume_latest is True
 
 
+def test_eig_mode_combo_has_three_entries_with_inherit_selected(dock_env):
+    # Owner ruling TRI-STATE: compiler-default (inherit, userData None) must be first and
+    # initially selected, followed by explicit Off and explicit Authoritative.
+    dock, vm, ops, ws, root = dock_env
+    combo = dock._eig_mode
+    assert combo.count() == 3
+    assert combo.itemData(0) is None
+    assert combo.itemData(1) == "off"
+    assert combo.itemData(2) == "authoritative"
+    assert combo.currentIndex() == 0
+    assert combo.currentData() is None
+
+
+def test_start_maps_explicit_off_selection_through_to_drive_options(dock_env):
+    dock, vm, ops, ws, root = dock_env
+    dock.set_backend_status("tavi", "ok", "up")
+    dock._goal.setPlainText("map the branch")
+    dock._eig_mode.setCurrentIndex(1)               # explicit "Off"
+    dock._start_btn.click()
+    compile_opts, _env = ops.compile_requests[0]
+    assert compile_opts.scan_window_eig_mode == "off"
+
+
 def test_resume_button_hidden_when_primary_offers_verified_resume(dock_env):
     dock, vm, ops, ws, root = dock_env
     goal = "map the acoustic branch"

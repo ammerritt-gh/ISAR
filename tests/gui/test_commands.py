@@ -302,13 +302,42 @@ def test_build_drive_command_defaults_omit_optional_flags():
         assert flag not in cmd
 
 
+def test_scan_window_eig_mode_inherit_omits_the_flag_in_both_builders():
+    # None (compiler default / "inherit") never adds the flag — that's the whole point of the
+    # tri-state: only an explicit "off"/"authoritative" is a command the CLI must see.
+    drive_cmd = commands.build_drive_command(
+        "py", "ws", DriveOptions(goal="g", scan_window_eig_mode=None))
+    assert "--scan-window-eig-mode" not in drive_cmd
+    compile_cmd = commands.build_compile_command(
+        "py", DriveOptions(goal="g", scan_window_eig_mode=None), "frozen.json")
+    assert "--scan-window-eig-mode" not in compile_cmd
+
+
+def test_explicit_off_is_emitted_in_both_builders():
+    # Owner ruling TRI-STATE: an operator explicitly selecting Off must not silently become an
+    # authoritative campaign because the flag was omitted (the P1 both external reviewers found).
+    drive_cmd = commands.build_drive_command(
+        "py", "ws", DriveOptions(goal="g", scan_window_eig_mode="off"))
+    assert drive_cmd[drive_cmd.index("--scan-window-eig-mode") + 1] == "off"
+    compile_cmd = commands.build_compile_command(
+        "py", DriveOptions(goal="g", scan_window_eig_mode="off"), "frozen.json")
+    assert compile_cmd[compile_cmd.index("--scan-window-eig-mode") + 1] == "off"
+
+
 def test_authoritative_mode_is_emitted_only_for_authoring_sources():
     authored = commands.build_drive_command(
         "py", "ws", DriveOptions(goal="g", scan_window_eig_mode="authoritative"))
     assert authored[authored.index("--scan-window-eig-mode") + 1] == "authoritative"
+    # Resume/compiled-program suppression still holds for an explicit value: a frozen program's
+    # mode is already frozen with the objective, so re-asserting it on the command line is a no-op
+    # the GUI must not claim.
     resumed = commands.build_drive_command(
         "py", "ws", DriveOptions(resume_latest=True, scan_window_eig_mode="authoritative"))
     assert "--scan-window-eig-mode" not in resumed
+    compiled = commands.build_drive_command(
+        "py", "ws", DriveOptions(compiled_program_path="program.json",
+                                 scan_window_eig_mode="off"))
+    assert "--scan-window-eig-mode" not in compiled
 
 
 def test_authoritative_compile_binds_the_ready_workspace():
@@ -317,6 +346,16 @@ def test_authoritative_compile_binds_the_ready_workspace():
         workspace="ready-ws")
     assert cmd[cmd.index("--workspace") + 1] == "ready-ws"
     assert cmd[cmd.index("--scan-window-eig-mode") + 1] == "authoritative"
+
+
+def test_scan_window_eig_mode_validation_rejects_a_bogus_string():
+    import pytest
+    with pytest.raises(ValueError):
+        commands.build_drive_command(
+            "py", "ws", DriveOptions(goal="g", scan_window_eig_mode="bogus"))
+    with pytest.raises(ValueError):
+        commands.build_compile_command(
+            "py", DriveOptions(goal="g", scan_window_eig_mode="bogus"), "frozen.json")
 
 
 def test_build_drive_command_requires_exactly_one_source():
