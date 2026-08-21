@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import isar.drive.program_runner as runner_mod
@@ -78,6 +79,20 @@ def test_the_challenge_run_program_carries_no_scan_window_eig_mode_at_all():
     assert "scan_window_eig_mode" not in field_names
     step = discover_step()
     assert not hasattr(step.payload, "scan_window_eig_mode")
+
+    # D8: the field was removed from the question-policy contract entirely (not merely absent
+    # from the dataclass) — walk the FULLY SERIALIZED step, including resolved_policy and its
+    # provenance, so no nesting can hide a reintroduced key.
+    def _walk_no_key(node, key):
+        if isinstance(node, Mapping):
+            assert key not in node, f"found {key!r} in serialized step: {node}"
+            for value in node.values():
+                _walk_no_key(value, key)
+        elif isinstance(node, (list, tuple)):
+            for value in node:
+                _walk_no_key(value, key)
+
+    _walk_no_key(step.to_dict(), "scan_window_eig_mode")
 
 
 # ------------------------------------------------------------------ (a) the canonical world

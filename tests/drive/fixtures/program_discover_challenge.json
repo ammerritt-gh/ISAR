@@ -68,7 +68,6 @@
           },
           "emergent_question_policy": "open_in_domain",
           "survey_order": "placement_informed",
-          "scan_window_eig_mode": "authoritative",
           "staleness_policy": {
             "mode": "synchronous",
             "lag": 0
@@ -139,10 +138,6 @@
               "authority": "capability"
             },
             "survey_order": {
-              "source": "default",
-              "authority": "target"
-            },
-            "scan_window_eig_mode": {
               "source": "default",
               "authority": "target"
             }

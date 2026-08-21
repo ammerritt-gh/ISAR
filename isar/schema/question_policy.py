@@ -80,16 +80,6 @@ TARGET_DEFAULTS: dict[str, float] = {
 SURVEY_ORDER_DEFAULT = "placement_informed"
 SUPPORTED_SURVEY_ORDERS = ("placement_informed", "uniform")
 
-#: SCENE-4 PR 4.4, D1: every newly compiled program freezes an explicit scan-window EIG mode,
-#: same TARGET precedence lane as ``survey_order`` (user ask > card guidelines > named default).
-#: ``"authoritative"`` is the new named default (O42-retirement flip); an explicit ask still wins,
-#: including an explicit ``"off"``. ``"shadow"`` is deliberately absent from the *compiled* set —
-#: it is a targeted-path-only diagnostic mode (:mod:`isar.drive.acquisition.eig_shadow`) that
-#: discovery never wires to, and a new discovery compile that asked for it is refused here like
-#: any other unsupported value, never silently accepted and ignored.
-SCAN_WINDOW_EIG_MODE_DEFAULT = "authoritative"
-SUPPORTED_SCAN_WINDOW_EIG_MODES = ("off", "authoritative")
-
 #: Identity-bearing derivation constants — frozen for the program's life. The ω tile quantum
 #: for emergent subject identity and the completeness coverage grid; the q quantum is the /2
 #: region's ``maximum_initial_spacing_rlu``.
@@ -171,8 +161,8 @@ _NON_NEGATIVE_INTEGER_FIELDS = {"broken_scan_retry_limit", "prompt_timeout_deliv
 #: measurement, so it refuses like any other positive quantity while still rejecting fractions.
 _POSITIVE_INTEGER_FIELDS = {"discovery_monitor_ncount"}
 #: Field names a caller may pass in ``user_ask``/``card_guidelines`` beyond the numeric
-#: thresholds — the two non-numeric target fields.
-_NON_THRESHOLD_TARGET_FIELDS = {"survey_order", "scan_window_eig_mode"}
+#: thresholds — the one non-numeric target field.
+_NON_THRESHOLD_TARGET_FIELDS = {"survey_order"}
 
 
 def _authority_of(name: str) -> str:
@@ -210,14 +200,6 @@ def _check_survey_order(value: Any, where: str) -> str:
     if value not in SUPPORTED_SURVEY_ORDERS:
         raise ValueError(f"{where}: survey_order must be one of {SUPPORTED_SURVEY_ORDERS}, "
                          f"got {value!r}")
-    return value
-
-
-def _check_scan_window_eig_mode(value: Any, where: str) -> str:
-    if value not in SUPPORTED_SCAN_WINDOW_EIG_MODES:
-        raise ValueError(
-            f"{where}: scan_window_eig_mode must be one of {SUPPORTED_SCAN_WINDOW_EIG_MODES}, "
-            f"got {value!r}")
     return value
 
 
@@ -273,15 +255,6 @@ def resolve_policy(user_ask: Mapping[str, Any] | None = None,
         survey_order, survey_source = _check_survey_order(user["survey_order"], "user ask"), "user"
     provenance["survey_order"] = {"source": survey_source, "authority": AUTHORITY_TARGET}
 
-    scan_window_eig_mode, mode_source = SCAN_WINDOW_EIG_MODE_DEFAULT, "default"
-    if "scan_window_eig_mode" in card:
-        scan_window_eig_mode, mode_source = _check_scan_window_eig_mode(
-            card["scan_window_eig_mode"], "card guidelines"), "card"
-    if "scan_window_eig_mode" in user:
-        scan_window_eig_mode, mode_source = _check_scan_window_eig_mode(
-            user["scan_window_eig_mode"], "user ask"), "user"
-    provenance["scan_window_eig_mode"] = {"source": mode_source, "authority": AUTHORITY_TARGET}
-
     block = {
         "schema": QUESTION_POLICY_SCHEMA,
         "profile": {"id": DEFAULTS_PROFILE_ID, "version": DEFAULTS_PROFILE_VERSION},
@@ -289,7 +262,6 @@ def resolve_policy(user_ask: Mapping[str, Any] | None = None,
         "priorities": dict(FAMILY_PRIORITIES),
         "emergent_question_policy": "open_in_domain",
         "survey_order": survey_order,
-        "scan_window_eig_mode": scan_window_eig_mode,
         "staleness_policy": {"mode": "synchronous", "lag": 0},
         "prompt_defaults": dict(PROMPT_DEFAULTS),
         "provenance": provenance,
@@ -366,7 +338,7 @@ def validate_resolved_block(block: Any, where: str = "resolved_policy") -> None:
         raise ValueError(f"{where} needs a profile {{id: str, version: int}}")
 
     allowed = {"schema", "profile", "thresholds", "priorities", "emergent_question_policy",
-               "survey_order", "scan_window_eig_mode", "staleness_policy", "prompt_defaults",
+               "survey_order", "staleness_policy", "prompt_defaults",
                "provenance", CONSULTATION_OVERRIDES_KEY}
     unknown = sorted(set(block) - allowed)
     if unknown:
@@ -404,15 +376,6 @@ def validate_resolved_block(block: Any, where: str = "resolved_policy") -> None:
         raise ValueError(f"{where}: survey_order {survey_order!r} is not supported by this "
                          f"build (supported: {SUPPORTED_SURVEY_ORDERS}); refusing rather than "
                          "accepting and ignoring it")
-    # SCENE-4 PR 4.4, D1: a program frozen before this field existed has no key at all (``None``),
-    # and a program asking for the retired ``"shadow"`` diagnostic mode is exactly as unsupported
-    # as one asking for a mode nobody named — both refuse here rather than being read as "off".
-    scan_window_eig_mode = block.get("scan_window_eig_mode")
-    if scan_window_eig_mode not in SUPPORTED_SCAN_WINDOW_EIG_MODES:
-        raise ValueError(
-            f"{where}: scan_window_eig_mode {scan_window_eig_mode!r} is not supported by this "
-            f"build (supported: {SUPPORTED_SCAN_WINDOW_EIG_MODES}); refusing rather than "
-            "accepting and ignoring it")
     staleness = block.get("staleness_policy")
     if not isinstance(staleness, Mapping) or set(staleness) != {"mode", "lag"}:
         raise ValueError(f"{where}.staleness_policy must be {{mode, lag}}")
