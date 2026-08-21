@@ -26,6 +26,11 @@ def test_pure_defaults_resolve_to_a_valid_block_with_default_provenance():
     assert block["staleness_policy"] == {"mode": "synchronous", "lag": 0}
     assert block["survey_order"] == "placement_informed"
     assert block["provenance"]["survey_order"]["authority"] == AUTHORITY_TARGET
+    # SCENE-4 PR 4.4, D1: every newly compiled program freezes an explicit scan-window EIG mode;
+    # absent a user/card ask, it resolves to the new "authoritative" named default.
+    assert block["scan_window_eig_mode"] == "authoritative"
+    assert block["provenance"]["scan_window_eig_mode"] == {
+        "source": "default", "authority": AUTHORITY_TARGET}
     assert block["thresholds"]["parameter_precision_min_mass"] == 0.9
     assert block["provenance"]["parameter_precision_min_mass"]["authority"] == AUTHORITY_TARGET
 
@@ -60,6 +65,41 @@ def test_survey_order_uniform_freezes_at_compile_with_source_recorded():
 def test_survey_order_invalid_value_refused():
     with pytest.raises(ValueError, match="survey_order must be one of"):
         resolve_policy(user_ask={"survey_order": "random"})
+
+
+def test_scan_window_eig_mode_explicit_off_still_resolves_to_off():
+    block = resolve_policy(user_ask={"scan_window_eig_mode": "off"})
+    assert block["scan_window_eig_mode"] == "off"
+    assert block["provenance"]["scan_window_eig_mode"] == {
+        "source": "user", "authority": "target"}
+
+
+def test_scan_window_eig_mode_card_beats_default_user_beats_card():
+    block = resolve_policy(card_guidelines={"scan_window_eig_mode": "off"})
+    assert block["scan_window_eig_mode"] == "off"
+    assert block["provenance"]["scan_window_eig_mode"]["source"] == "card"
+
+    block = resolve_policy(user_ask={"scan_window_eig_mode": "authoritative"},
+                           card_guidelines={"scan_window_eig_mode": "off"})
+    assert block["scan_window_eig_mode"] == "authoritative"
+    assert block["provenance"]["scan_window_eig_mode"]["source"] == "user"
+
+
+def test_scan_window_eig_mode_refuses_shadow_for_a_new_compile():
+    """"shadow" is a targeted-path-only diagnostic mode discovery never wires to; a NEW compile
+    asking for it is refused like any other unsupported value (SCENE-4 PR 4.4, D1)."""
+    with pytest.raises(ValueError, match="scan_window_eig_mode must be one of"):
+        resolve_policy(user_ask={"scan_window_eig_mode": "shadow"})
+
+
+def test_a_block_with_no_scan_window_eig_mode_key_refuses_by_name():
+    """A program frozen before this field existed (or the compiled-shadow value) is refused, not
+    read as "off" — a frozen program never acquires a read-time default (H1)."""
+    block = json.loads(json.dumps(resolve_policy()))
+    del block["scan_window_eig_mode"]
+    del block["provenance"]["scan_window_eig_mode"]
+    with pytest.raises(ValueError, match="scan_window_eig_mode"):
+        validate_resolved_block(block)
 
 
 @pytest.mark.parametrize("ask", [0.0, -0.1, 1.5])
@@ -125,6 +165,7 @@ def test_an_unknown_field_refuses_instead_of_silently_resolving_defaults():
     (lambda b: b["thresholds"].update(mismatch_min_mass=1.5), "within"),
     (lambda b: b.update(emergent_question_policy="chase_everything"), "not supported"),
     (lambda b: b.update(survey_order="chase_everything"), "not supported"),
+    (lambda b: b.update(scan_window_eig_mode="shadow"), "not supported"),
     (lambda b: b.update(staleness_policy={"mode": "fixed_lag", "lag": 2}), "not supported"),
     (lambda b: b["staleness_policy"].update(lag=1), "lag 0"),
     (lambda b: b["prompt_defaults"].update(unresolvable_closure="hold"), "not supported"),

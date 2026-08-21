@@ -186,7 +186,7 @@
         ],
         "target_hypothesis": "acoustic",
         "hypothesis_source": "shipped_preset",
-        "hypothesis_fingerprint": "94b3813dd2fc6d50085815196c2804d317c9fa1ffd73bb6970edad37dddc18c4",
+        "hypothesis_fingerprint": "bc9bb3d6c5a489f8ca0380e20c3830f987318b98510bed7b0dadd86346403670",
         "steering": {
           "classification_weight": 1.0,
           "differentiation_tolerance_meV": null,
@@ -210,7 +210,7 @@
           "interval_floor_window": 3,
           "interval_floor_min_improvement": 0.05,
           "interval_floor_min_exposure_ratio": 2.0,
-          "scan_window_eig_mode": "off"
+          "scan_window_eig_mode": "authoritative"
         },
         "scan_window_eig": {
           "contract": "isar.scan_window_eig_objective_config/o36.6",
@@ -227,7 +227,7 @@
                 },
                 "scope": {
                   "kind": "campaign_configuration",
-                  "fingerprint": "9602c70be32e0ff12bf3d19b87be888fbac03104338e5acb808f1b1aae8d98d1",
+                  "fingerprint": "db463ac4a04dd3f5fcd1bb49d5b2f756939d57520bc9adfce185e4ec9580dd9e",
                   "annotation": {
                     "campaign_name": "default scan-window EIG policy",
                     "date": "2026-08-05",
@@ -253,10 +253,10 @@
                     "variant_fingerprint": "c2f991a69f30ebed05d953c67fbdbca8b9c59bf7eb20796d4aee56eba5eefd9f"
                   }
                 ],
-                "policy_fingerprint": "69d3778ff894be40746b51c5e95d9d0903c3e50581fe8fa538722a4e8d727631"
+                "policy_fingerprint": "c8a5c75c0d46bac384531e0804a4f3942b89f14716e6ef56b8938ec319acfb91"
               }
             ],
-            "policy_set_fingerprint": "46b178bc37f6e9c7ca466cdbc30eb7a07b83358bc64ad0c0d10dba3eff4eb258"
+            "policy_set_fingerprint": "f8bbaccff25b6ab870e7198f7514851d30663b5a866481b65dc5cab041c6b350"
           },
           "scoring_config": {
             "contract": "isar.scan_window_shadow_scoring_config/o36.6",
@@ -267,7 +267,7 @@
             "seed_derivation_revision": "isar.scan_window_shadow_seed/o36.6",
             "scoring_config_fingerprint": "c13778320ef113625e8a7784733d414d334d64908446db1334ef4a8f98ecc790"
           },
-          "scan_window_eig_fingerprint": "dbfe1088b626b19a479d7fb20dbba68185713c3f345ea5ee9335b88999dc9294"
+          "scan_window_eig_fingerprint": "67a850bedf0329663ea47944ae6e3f94de5e32d7796f310833a2ba72bffa8662"
         }
       }
     }

@@ -518,9 +518,15 @@ def _build_spec(data: dict, merged: dict, *,
             scoring_config=objective.scan_window_eig.scoring_config,
         ),
     )
-    if current_objective_comparison_scope(frozen) != scope:
-        raise ValueError("scan-window EIG policy binding changed objective comparison scope")
-    return frozen
+    # The policy above was compiled against ``scope`` — the CONSTRUCTION-time scope (taken while
+    # steering was still ``off``, before the freeze above recomputed ``hypothesis_fingerprint``,
+    # which is itself part of the scope payload). SCENE-4 PR 4.4, D1 finding: whenever the freeze
+    # actually changes steering — now the common case, off -> authoritative by default — the true
+    # scope has already moved by the time ``frozen`` exists, so a policy bound to ``scope`` can
+    # never match ``frozen``'s own live scope (exactly the qoi_policy_missing "Test9 failure
+    # shape" ``rebind_scan_window_eig_policy`` exists to close). Rebind here rather than freeze an
+    # objective whose own compiled policy cannot serve it.
+    return rebind_scan_window_eig_policy(frozen, card_eig_policy_set)
 
 
 def _eig_policy_authoring(card_eig_policy_set, steering=None):

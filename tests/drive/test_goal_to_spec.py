@@ -255,6 +255,39 @@ def test_file_schema_accepts_operator_steering_but_llm_schema_does_not():
     assert spec.steering["maximum_bridge_steps"] == 1
 
 
+def test_a_new_compile_freezes_authoritative_scan_window_eig_mode_by_default():
+    """SCENE-4 PR 4.4, D1: absent a steering ask, the compiler now resolves the O42-retirement
+    default "authoritative" rather than SteeringPolicy's own bare-field default of "off"."""
+    spec = g2s.spec_from_dict(_GOOD)
+    assert spec.steering["scan_window_eig_mode"] == "authoritative"
+    assert spec.scan_window_eig.policy_set is not None
+
+
+def test_an_explicit_off_steering_ask_still_compiles_to_off():
+    payload = {**_GOOD, "steering": {"scan_window_eig_mode": "off"}}
+    spec = g2s.spec_from_dict(payload)
+    assert spec.steering["scan_window_eig_mode"] == "off"
+
+
+def test_a_new_compile_refuses_shadow_scan_window_eig_mode():
+    """"shadow" is retired for a NEW compile; a historical frozen objective may still carry it
+    (refused BY NAME on read in a later commit) — this is only where a fresh one is minted."""
+    payload = {**_GOOD, "steering": {"scan_window_eig_mode": "shadow"}}
+    with pytest.raises(ValueError, match="not accepted for a new compile"):
+        g2s.spec_from_dict(payload)
+
+
+def test_an_absent_mode_frozen_steering_refuses_by_name_with_a_recompile_message():
+    """A frozen objective never acquires a read-time default for its scan-window EIG mode (H1):
+    a historical steering dict missing the key entirely refuses, rather than silently reading as
+    SteeringPolicy's bare-field "off"."""
+    spec = g2s.spec_from_dict(_GOOD)
+    historical = spec.to_dict()
+    del historical["steering"]["scan_window_eig_mode"]
+    with pytest.raises(ValueError, match="scan_window_eig_mode.*recompile"):
+        ObjectiveSpec.from_dict(historical)
+
+
 def test_file_schema_accepts_explicitly_disabled_analysis_limit():
     payload = {**_GOOD, "analysis_limit_seconds": None}
     spec = g2s.spec_from_dict(payload, defaults={"tier": "deterministic"})
@@ -388,8 +421,13 @@ def test_compiled_card_policy_matches_the_objective_it_was_compiled_from():
 
 def test_steering_override_without_rebinding_leaves_the_policy_unmatchable():
     # The Test9 failure shape: the policy is present but bound to the pre-override scope, so every
-    # scan-window score refuses with qoi_policy_missing.
-    drifted = _scope_drifted(_eig_objective())
+    # scan-window score refuses with qoi_policy_missing. Starts from an explicit "off" compile
+    # (rather than ``_eig_objective()``, which SCENE-4 PR 4.4 made compile — and correctly rebind
+    # — as authoritative by default) so ``_scope_drifted`` actually changes the mode.
+    off_objective = g2s.spec_from_dict(
+        {**_EIG_SPEC, "steering": {"scan_window_eig_mode": "off"}},
+        defaults={"tier": "deterministic"}, where="test", card_eig_policy_set=_CARD_EIG_AUTHORING)
+    drifted = _scope_drifted(off_objective)
     assert drifted.scan_window_eig.policy_set is not None
     assert _matches(drifted) == ()
 
@@ -403,13 +441,16 @@ def test_rebinding_after_a_steering_override_restores_an_exact_scope_match():
 
 def test_rebinding_keeps_an_off_objective_without_a_policy_set_unchanged():
     # A frozen objective from before the canonical default existed carries no policy set; with the
-    # mode off there is nothing to serve, so rebinding must leave it exactly as it is.
+    # mode off there is nothing to serve, so rebinding must leave it exactly as it is. SCENE-4 PR
+    # 4.4 flipped the compiler's own default to "authoritative", so this off-mode fixture asks for
+    # "off" explicitly (steering is a "user ask", the top of the precedence chain).
     from dataclasses import replace
 
     from isar.schema.eig_policy import ScanWindowEIGConfig
 
     objective = replace(
-        g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test"),
+        g2s.spec_from_dict({**_EIG_SPEC, "steering": {"scan_window_eig_mode": "off"}},
+                           defaults={"tier": "deterministic"}, where="test"),
         scan_window_eig=ScanWindowEIGConfig())
     assert objective.scan_window_eig.policy_set is None
     assert g2s.rebind_scan_window_eig_policy(objective, None) is objective
@@ -420,8 +461,11 @@ def test_rebinding_refuses_when_a_hand_authored_policy_cannot_be_reconstructed()
     # authoring is gone; substituting the default would silently measure a different partition.
     authoring = copy.deepcopy(_CARD_EIG_AUTHORING)
     authoring["policies"][0]["variants"][0]["parameters"]["bin_width"] = 1.0
-    objective = g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test",
-                                   card_eig_policy_set=authoring)
+    # This authoring is deliberately non-O41, which construction would refuse under the compiler's
+    # new "authoritative" default (SCENE-4 PR 4.4) — build in "off" and drift the mode below.
+    objective = g2s.spec_from_dict(
+        {**_EIG_SPEC, "steering": {"scan_window_eig_mode": "off"}},
+        defaults={"tier": "deterministic"}, where="test", card_eig_policy_set=authoring)
     # Drifted to shadow, not authoritative: this deliberately non-O41 policy could not survive the
     # authoritative profile check at construction, and the rebinding rule under test is mode-free.
     with pytest.raises(g2s.GoalParseError, match="card authoring source is unavailable"):
@@ -434,8 +478,11 @@ def test_a_policy_differing_only_in_attribution_is_not_the_canonical_default():
     # silently rebound to the default's, which would rewrite that account.
     authoring = copy.deepcopy(_CARD_EIG_AUTHORING)
     authoring["policies"][0]["provenance"]["rationale"] = "a specific reviewed decision"
-    objective = g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test",
-                                   card_eig_policy_set=authoring)
+    # Attribution-only drift is still not the canonical default; build off, drift on below (as
+    # above — the compiler's new "authoritative" default would otherwise refuse construction).
+    objective = g2s.spec_from_dict(
+        {**_EIG_SPEC, "steering": {"scan_window_eig_mode": "off"}},
+        defaults={"tier": "deterministic"}, where="test", card_eig_policy_set=authoring)
     with pytest.raises(g2s.GoalParseError, match="card authoring source is unavailable"):
         g2s.rebind_scan_window_eig_policy(_scope_drifted(objective), None)
 
@@ -453,9 +500,12 @@ def test_an_ordinary_campaign_can_switch_scan_window_eig_on():
     # The whole point: an ordinary campaign that never authored a policy table must be able to
     # turn authoritative EIG on, instead of refusing with
     # scan_window_eig_authoritative_profile_invalid and demanding a purpose-built O41 campaign.
+    # Exercises the *manual* rebind path from an off-mode start, so the mode is asked for
+    # explicitly — SCENE-4 PR 4.4 made "authoritative" the compiler's own default.
     from isar.eig.o41_authority import validate_o41_authoritative_profile
 
-    objective = g2s.spec_from_dict(_EIG_SPEC, defaults={"tier": "deterministic"}, where="test")
+    objective = g2s.spec_from_dict({**_EIG_SPEC, "steering": {"scan_window_eig_mode": "off"}},
+                                   defaults={"tier": "deterministic"}, where="test")
     assert objective.scan_window_eig.policy_set is not None      # carried, unused while off
     assert (objective.steering or {}).get("scan_window_eig_mode", "off") == "off"
 

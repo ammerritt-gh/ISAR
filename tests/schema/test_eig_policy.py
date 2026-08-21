@@ -62,12 +62,14 @@ def _authoring(*, kind: str = "isar.scalar_absolute_partitions/o36.5", variants=
 
 
 def _goal_data() -> dict:
+    # This file is about policy compiling/binding/scope, not mode-specific behaviour; "shadow" is
+    # retired for a new compile (SCENE-4 PR 4.4, D1), so this fixture pins "off" explicitly.
     return {
         "q_start": [1.0, 0.0, 0.0],
         "q_end": [1.1, 0.0, 0.0],
         "step_rlu": 0.05,
         "tolerance_meV": 0.2,
-        "steering": {"scan_window_eig_mode": "shadow"},
+        "steering": {"scan_window_eig_mode": "off"},
     }
 
 
@@ -142,7 +144,7 @@ def test_legacy_objective_two_omission_materializes_no_policy_defaults_without_c
     missing = objective.to_dict()
     del missing["scan_window_eig"]
     restored = ObjectiveSpec.from_dict(missing)
-    assert restored.steering["scan_window_eig_mode"] == "shadow"
+    assert restored.steering["scan_window_eig_mode"] == "off"
     assert restored.scan_window_eig.policy_set is None
     assert restored.scan_window_eig.scoring_config == ScanWindowShadowScoringConfig()
     assert restored.to_dict()["scan_window_eig"] == ScanWindowEIGConfig().to_dict()

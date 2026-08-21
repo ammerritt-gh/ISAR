@@ -203,6 +203,7 @@ def _context(**overrides) -> ScanDesignContext:
         "resolution_fwhm_meV": 0.8, "survey": False, "energy_search_meV": (-2.0, 7.0),
         "target_band": None, "rival_band": None, "widen_factor": 1.0, "positive_only": False,
         "policy_max_points": 100, "runtime_max_points": 200, "tolerance_meV": 0.5,
+        "scan_window_eig_mode": "off",
     }
     values.update(overrides)
     return ScanDesignContext(**values)

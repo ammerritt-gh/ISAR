@@ -172,6 +172,13 @@ def test_historical_objective_two_shadow_omission_fails_open_through_real_scorer
         objective_helpers["_goal_data"](), {"tier": "deterministic", "step_h": 0.05})
     historical = frozen.to_dict()
     del historical["scan_window_eig"]
+    # "shadow" is retired for a NEW compile (SCENE-4 PR 4.4, D1), so this historical fixture is
+    # minted by hand rather than through the compiler — reading it back is unaffected by D1, which
+    # only narrows what a fresh compile may freeze.
+    historical["steering"]["scan_window_eig_mode"] = "shadow"
+    from isar.schema.hypotheses import content_fingerprint
+    historical["hypothesis_fingerprint"] = content_fingerprint(
+        historical["hypotheses"], historical["steering"])
     objective = ObjectiveSpec.from_dict(historical)
     assert objective.steering["scan_window_eig_mode"] == "shadow"
     assert objective.scan_window_eig.policy_set is None

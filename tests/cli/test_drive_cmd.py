@@ -612,8 +612,12 @@ def test_compact_spec_compile_only_freezes_inline_card_eig_policy(tmp_path, monk
 
     monkeypatch.setattr(card_module, "load_policy", lambda _path: _Policy())
     out = tmp_path / "compact-envelope.json"
+    # This card mock declares an EMPTY scan-window EIG policy set on purpose (asserted below), so
+    # the objective must ask for "off" explicitly: the compiler's authoritative default requires
+    # exactly one O41 policy, which an empty set cannot satisfy.
+    payload = {**_GOAL_SPEC, "steering": {"scan_window_eig_mode": "off"}}
     assert main([
-        "drive", "--program", str(_program_file(tmp_path)), "--workspace", str(workspace),
+        "drive", "--program", str(_program_file(tmp_path, payload)), "--workspace", str(workspace),
         "--compile-only", str(out),
     ]) == 0
     objective = json.loads(out.read_text(encoding="utf-8"))["steps"][0]["payload"]

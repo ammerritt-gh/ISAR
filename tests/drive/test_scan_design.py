@@ -50,8 +50,8 @@ from isar.drive.loop import (
 )
 
 
-def _context(**overrides) -> ScanDesignContext:
-    values = {
+def _context_values() -> dict:
+    return {
         "scientific_action_fingerprint": "scientific-action",
         "hkl": (2.1, 0.0, 0.0),
         "q": 0.1,
@@ -74,6 +74,9 @@ def _context(**overrides) -> ScanDesignContext:
         "policy_max_points": 100,
         "runtime_max_points": 200,
         "tolerance_meV": 0.5,
+        # This file exercises the legacy uniform designer by default; a case that wants shadow or
+        # authoritative behaviour overrides it explicitly (see the many callers below).
+        "scan_window_eig_mode": "off",
         "quicklook_ncount": 1_000,
         "production_ncount": 10_000,
         "identity_detection_ncount": 2_000,
@@ -93,8 +96,21 @@ def _context(**overrides) -> ScanDesignContext:
         "budget_amount": 1e12,
         "budget_spent": 0.0,
     }
+
+
+def _context(**overrides) -> ScanDesignContext:
+    values = _context_values()
     values.update(overrides)
     return ScanDesignContext(**values)
+
+
+def test_a_context_with_no_scan_window_eig_mode_raises():
+    """SCENE-4 PR 4.4, D1: no module default — every caller freezes an explicit mode; a silent
+    "off" here is exactly the read-time default the compile-time flip is meant to remove."""
+    values = _context_values()
+    del values["scan_window_eig_mode"]
+    with pytest.raises(TypeError, match="scan_window_eig_mode"):
+        ScanDesignContext(**values)
 
 
 def test_context_is_frozen_and_strict_json_serializable():

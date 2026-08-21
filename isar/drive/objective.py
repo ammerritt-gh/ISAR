@@ -244,6 +244,15 @@ class ObjectiveSpec:
             if not self.target_hypothesis or self.target_hypothesis not in names:
                 raise ValueError("target_hypothesis must name one of the frozen hypotheses")
             supplied_steering = dict(self.steering)
+            # SCENE-4 PR 4.4, D1: a frozen objective never acquires a read-time default for its
+            # scan-window EIG mode (H1). SteeringPolicy's own field default would silently read a
+            # historical dict missing the key as "off" — check the key's PRESENCE here, before
+            # that default has a chance to apply, and name the recompile rather than adapt.
+            if "scan_window_eig_mode" not in supplied_steering:
+                raise ValueError(
+                    f"{OBJECTIVE_SCHEMA} steering requires an explicit scan_window_eig_mode; a "
+                    "frozen objective never acquires read-time defaults (H1) — recompile the "
+                    "campaign with `isar drive --goal ... --compile-only`")
             SteeringPolicy(**supplied_steering)
             # A frozen objective's hash covers the exact steering dictionary written at compile time.
             # Validate that historical dictionary with current typed defaults, but do not expand it:
@@ -522,7 +531,19 @@ def resolve_hypothesis_snapshot(target_branch: str, energy_search_meV, *,
     hypotheses = [resolve_hypothesis(
         name, declarations.get(name), energy_search_meV=energy).to_dict()
         for name in ordered_names]
-    steering_values = {"dynamic_ncount": True, **dict(steering_override or {})}
+    # SCENE-4 PR 4.4, D1: every newly compiled targeted objective freezes an explicit
+    # scan_window_eig_mode. An operator ask (steering_override) still wins, including an explicit
+    # "off"; absent, the compiler now resolves the O42-retirement default "authoritative" rather
+    # than SteeringPolicy's own bare-field default. "shadow" is retired for a NEW compile — a
+    # historical frozen objective may still carry it (refused by name in a later commit); this is
+    # only where a fresh one gets minted.
+    steering_values = {"dynamic_ncount": True, "scan_window_eig_mode": "authoritative",
+                       **dict(steering_override or {})}
+    if steering_values["scan_window_eig_mode"] == "shadow":
+        raise ValueError(
+            "scan_window_eig_mode='shadow' is not accepted for a new compile; the shadow-only "
+            "diagnostic mode is retired for newly compiled objectives (SCENE-4 PR 4.4) — declare "
+            "'off' or 'authoritative', or omit the field for the authoritative default")
     steering = SteeringPolicy(**steering_values).to_dict()
     return {"hypotheses": hypotheses, "target_hypothesis": target_branch,
             "hypothesis_source": source,

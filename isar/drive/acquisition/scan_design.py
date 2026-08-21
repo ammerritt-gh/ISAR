@@ -204,7 +204,10 @@ class ScanDesignContext:
     policy_max_points: int
     runtime_max_points: int
     tolerance_meV: float
-    scan_window_eig_mode: str = "off"
+    # SCENE-4 PR 4.4, D1: no module default — every caller freezes an explicit mode (the compiled
+    # objective's steering, or a test pinning the behaviour it exercises); a silent "off" here is
+    # exactly the read-time default the compile-time flip is meant to remove.
+    scan_window_eig_mode: str
     minimum_target_support_points: int = 6
     quicklook_ncount: int = QUICKLOOK_NCOUNT
     production_ncount: int = PRODUCTION_NCOUNT
