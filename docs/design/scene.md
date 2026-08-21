@@ -306,7 +306,7 @@ emits otherwise fails the build rather than publishing an impossible reading.
 | SCENE-1 | Catalogue, identity-conditional Laplace evidence, global grammar (bg-only + elastic+bg first-class, `elastic_only` verdict), observation footprints, persisted candidate rows — three sequential PRs | Implemented — PR-a (H3, 2026-08-08; merged `fd1aa76`), PR-b (H4, 2026-08-08; merged `e02350a`), PR-c (H9/H10, 2026-08-09; merged `c5adf15`); deferrals recorded in H9(e) |
 | SCENE-2 | `isar.campaign-program/1` sole contract; old envelope unreadable by design | Implemented (H2, 2026-08-08; PR #12 merged at `058fb40`) |
 | SCENE-3 | Scene layer core: clusters, structural factors, revisioned scene store, workspace_api read surface; tracker contracts ported as specifications | Implemented — PR 3a (H11/H12), 3b (H13), 3c (H14), all 2026-08-10, incl. the PR #19 response waves; final merge `a1c6e41` |
-| SCENE-4 | Question layer, deterministic opening book, generalized stop; first challenge run; scan-window authoritative default-on; shadow machinery deleted | In progress — PR 4.0 "scene authority readiness" Implemented (H15/H16, 2026-08-13; PR #30 merged): measurement-arena record + trust lanes, #21 Variant A origin lanes, (sample, ConditionSet, lattice-epoch) partitioning, refiner bounds + transformation ablation, expected_two relaxation. PR 4.1 "question + agenda core" Implemented (H17, 2026-08-14): three-object question layer, authority-aware predicates, `isar.question-policy/1` + fully frozen `discover_and_map/2`, content-addressed agenda snapshots with external transition history, `AgendaVerdict` beside `evaluate_stop` — offline (driver wiring 4.3, generator bindings 4.2). PR 4.2a "interval re-baseline + question-policy/2" Implemented (H18, 2026-08-14): per-candidate interval closure, producer-soundness interval authority, class-agnostic ConnectTrack. PR 4.2b "discovery generator layer + offline planner" Implemented (H19, 2026-08-15): seven question-bound generators, readiness gating, the exhaustion producer, `plan_next_action`'s five outcomes, the `report/inventory/discovery/` + `report/program/` + `report/decisions.jsonl` stores — offline. PR 4.3 "live driver integration" Implemented (H20, 2026-08-18): parent-owned scene build in a supervised `isar scene-build` subprocess with digest-pinned planning, the `run_program` seam and AgendaVerdict stop routing, campaign provenance + physical path identity in the partition key, the cold-start partition producer, the broken-scan lane, production durable-blocker emission over the two-member taxonomy, and the consultation channel with `isar answer`. PR 4.4 "authority flip, stop-law cleanup, acceptance closure" Implemented (H22, 2026-08-21): compile-time default-on flip scoped to targeted objectives with named shadow-mode refusal, shadow-only machinery deleted by call-site map, stop-law audit closed with zero removals, the off-path/context-scan world (seed 1013), the cold-start acceptance script, the ncount discovery exemption, and the challenge run green end to end — SCENE-4 is complete |
+| SCENE-4 | Question layer, deterministic opening book, generalized stop; first challenge run; scan-window authoritative default-on; shadow machinery deleted | Complete (H22, 2026-08-21) — PR 4.0 "scene authority readiness" Implemented (H15/H16, 2026-08-13; PR #30 merged): measurement-arena record + trust lanes, #21 Variant A origin lanes, (sample, ConditionSet, lattice-epoch) partitioning, refiner bounds + transformation ablation, expected_two relaxation. PR 4.1 "question + agenda core" Implemented (H17, 2026-08-14): three-object question layer, authority-aware predicates, `isar.question-policy/1` + fully frozen `discover_and_map/2`, content-addressed agenda snapshots with external transition history, `AgendaVerdict` beside `evaluate_stop` — offline (driver wiring 4.3, generator bindings 4.2). PR 4.2a "interval re-baseline + question-policy/2" Implemented (H18, 2026-08-14): per-candidate interval closure, producer-soundness interval authority, class-agnostic ConnectTrack. PR 4.2b "discovery generator layer + offline planner" Implemented (H19, 2026-08-15): seven question-bound generators, readiness gating, the exhaustion producer, `plan_next_action`'s five outcomes, the `report/inventory/discovery/` + `report/program/` + `report/decisions.jsonl` stores — offline. PR 4.3 "live driver integration" Implemented (H20, 2026-08-18): parent-owned scene build in a supervised `isar scene-build` subprocess with digest-pinned planning, the `run_program` seam and AgendaVerdict stop routing, campaign provenance + physical path identity in the partition key, the cold-start partition producer, the broken-scan lane, production durable-blocker emission over the two-member taxonomy, and the consultation channel with `isar answer`. PR 4.4 "authority flip, stop-law cleanup, acceptance closure" Implemented (H22, 2026-08-21): compile-time default-on flip scoped to targeted objectives with named shadow-mode refusal, shadow-only machinery deleted by call-site map, stop-law audit closed with zero removals, the off-path context-probe seam plus real-scene-build partition evidence (world `context_probe`, seed 1013), the causally connected cold-start acceptance sequence, the ncount discovery exemption, and the challenge run green end to end — SCENE-4 is complete |
 | SCENE-5 | Scene-EIG authoritative from birth | Planned |
 | SCENE-6 | Single-engine swap: targeted campaigns as pinned question sets over scenes; tracker deleted; `campaign-program/2` question-native targeted payload | Planned |
 | SCENE-7 | Calibration batteries + efficiency benchmark; program closeout | Planned |
@@ -777,12 +777,19 @@ observations rather than fixes, recorded in the PR body: `infeasible-below-floor
 `certification-basis-unchanged` and unresolved-promotions machine-failure labels, and the
 `max_deliveries` synthetic budget.
 (f) **Cold-start script outcome closes ruling items 3–4** (the 2026-08-15 cold-start ruling,
-absorbed above at §5 items 1–2; items 3–4 were 4.4's to answer). The owner's walkthrough beats —
-first proposal one node off the declared zone centre at low ω, persistent absence pivoting the
-next proposal upward from finite E, later proposals expanding outward, and a blank/unregistered
-catalogue degrading to the uniform survey without raising — are pinned as emergent from the
-mechanisms that already exist (declared anchor order weights plus the coverage band walk); there
-is no acoustic-vs-optic state machine to build. Item 4 is answered by evidence, not assumption: an
+absorbed above at §5 items 1–2; items 3–4 were 4.4's to answer; NARROWED in the PR #35 response
+wave to what the ruled broad-window policy actually produces). The acceptance script is one
+causally connected sequence: the first proposal sits at the hypothesis-favoured node just off the
+declared zone centre with the full-domain window (Topic 5's ruled window policy — broad over the
+intrinsic domain, never narrowed per class), each later planning round is fed exactly the coverage
+the previous round's realized proposal delivers, and the walk expands outward from initialized
+nodes; blank/unregistered knowledge degrades to the uniform survey without raising. Because a
+broad-window delivery closes its node's band leg outright, the walkthrough's acoustic-absence →
+optic-pivot CAUSAL sequence cannot arise under this policy — it is scene-EIG (SCENE-5) placement
+work, and the script says so rather than dressing generic coverage filling in its language. The
+one legitimate band reopening — a later program step declaring a wider energy domain than the
+step that made the earlier delivery — is pinned as exactly that scenario, by name. Item 4 is
+answered by evidence, not assumption: an
 on-ZC survey window straddles `dE=0` and the `Elastic` component is an ordinary linear basis
 member beside the phonon components (read at its definition), so no proposal-level window floor is
 built.
@@ -793,6 +800,23 @@ build is the 4.3 structural contract, `build_seconds` recorded, any change is th
 branch — the fixture's `target_delivery_unknown` scoring means every decision retains legacy
 control. A genuine `target_core` window-swap fixture needs differentiated-information machinery
 not built in this slice; no test yet proves a real window swap under `target_core`.
+
+**Response-wave amendments (2026-08-21, PR #35 external review; recorded in place, pre-merge):**
+(i) H22(a) as first written was true of the dataclass but not of the serialized program — the D1
+build had leaked `scan_window_eig_mode` into the discovery question-policy resolution chain, so
+newly compiled discovery programs froze a control the runtime cannot consume. The field is
+removed from `isar/schema/question_policy.py` entirely; the no-mode pin now walks the fully
+serialized step recursively, and the discovery challenge fixture regenerated (the targeted
+fixture verified byte-identical). (ii) Owner ruling: the GUI's scan-window control is TRI-STATE —
+inherit the compiler default (flag omitted) / explicit off / explicit authoritative, explicit
+selections always emitted. The previous omit-when-off convention silently inverted an operator's
+explicit Off into the post-flip authoritative default, violating the DESIGN_GOALS
+never-ignore-a-user-command principle; the CLI's H21(a) refusal remains the discovery backstop.
+(iii) (f) above narrowed as described. (iv) The off-path evidence is reclassified to what it
+proves: a seam-level campaign test (the per-delivery provenance seam, its injected probe now at a
+genuinely off-segment coordinate) plus a real-scene-build partition test
+(`tests/scene/test_context_probe_partition.py`); the organic context-probe producer and the
+world-level organic end-to-end remain SCENE-5's.
 
 ## 7. Status discipline
 
