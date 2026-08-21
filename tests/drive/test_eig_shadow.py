@@ -37,7 +37,7 @@ def _inventory():
         resolution_fwhm_meV=0.8, survey=False, energy_search_meV=(-2.0, 7.0),
         target_band=None, rival_band=None, widen_factor=1.0, positive_only=False,
         policy_max_points=100, runtime_max_points=200, tolerance_meV=0.5,
-        scan_window_eig_mode="shadow", minimum_target_support_points=6,
+        scan_window_eig_mode="authoritative", minimum_target_support_points=6,
         quicklook_ncount=1_000, production_ncount=10_000,
         identity_detection_ncount=2_000, dynamic_ncount=False, tolerance_margin=0.8,
         ncount_growth_cap=4.0, max_ncount_per_scan=1_000_000,
@@ -264,7 +264,7 @@ def test_exact_pooled_source_runs_producer_grounded_numeric_path(monkeypatch, tm
     inventory = design_scan_windows(scan_helpers["_context"](
         scientific_action_fingerprint=intent.scientific_action_fingerprint,
         hkl=tuple(raw_intent["hkl"]), q=0.0, kind="production",
-        scan_window_eig_mode="shadow"))
+        scan_window_eig_mode="authoritative"))
     candidate = inventory.selected_candidate
     proposal = ScanProposal(
         h=2.0, k=0.0, l=0.0, e_lo=candidate.e_lo, e_hi=candidate.e_hi,

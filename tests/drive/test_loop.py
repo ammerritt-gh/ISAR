@@ -62,6 +62,14 @@ from isar.schema.hypotheses import content_fingerprint
 _UNITY_CAL = Calibration.from_dict({"inflation": 1.0, "buckets": [], "center_pull_mean": 0.0})
 
 
+def _o41_config():
+    """A valid restricted O41 profile — required by ``ObjectiveSpec.__post_init__`` for any
+    objective that freezes ``scan_window_eig_mode="authoritative"`` (SCENE-4 PR 4.4, D1/D3)."""
+    import runpy
+    return runpy.run_path(str(
+        Path(__file__).parents[1] / "eig" / "test_o41_authority.py"))["_config"]()
+
+
 def test_certification_regression_is_terminal_and_resumable():
     per_q = [
         {"hkl": [2.7, 0.0, 0.0], "converged": False,
@@ -2090,7 +2098,7 @@ def test_minimum_target_support_adjustment_records_realized_request(tmp_path):
     frozen["steering"] = {
         **frozen["steering"],
         "minimum_target_support_points": 80,
-        "scan_window_eig_mode": "shadow",
+        "scan_window_eig_mode": "authoritative",
     }
     frozen["hypothesis_fingerprint"] = content_fingerprint(
         frozen["hypotheses"], frozen["steering"])
@@ -2100,6 +2108,7 @@ def test_minimum_target_support_adjustment_records_realized_request(tmp_path):
         budget={"kind": "neutrons", "amount": 1e12},
         target_branch="optic",
         energy_search_meV=(-2.0, 12.0),
+        scan_window_eig=_o41_config(),
         **frozen,
     )
     summary, _workspace = _run(
@@ -2316,8 +2325,16 @@ class _NotQueueablePartialTavi(MockTavi):
 
 
 def _shadow_objective():
+    """A single-q optic objective for the window-trimming/feasibility-repair tests below.
+
+    None of its three callers exercise scan-window EIG at all (they are about
+    feasibility-trim/decline mechanics) — "off" keeps the campaign to the one validate-per-attempt
+    shape those tests assert on; "authoritative" would additionally run the O41 target-core
+    validation on every attempt (SCENE-4 PR 4.4, D3 retired the middle "shadow" mode that used to
+    let scan-design/realized-comparison machinery run without also invoking O41 selection).
+    """
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
-    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "shadow"}
+    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "off"}
     frozen["hypothesis_fingerprint"] = content_fingerprint(
         frozen["hypotheses"], frozen["steering"])
     return ObjectiveSpec(
@@ -2592,13 +2609,13 @@ def test_largest_feasible_run_refuses_a_manifest_that_does_not_match_the_request
 
 def test_shadow_submission_carries_the_exact_selected_legacy_sidecar(tmp_path):
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
-    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "shadow"}
+    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "authoritative"}
     frozen["hypothesis_fingerprint"] = content_fingerprint(
         frozen["hypotheses"], frozen["steering"])
     objective = ObjectiveSpec(
         path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
         budget={"kind": "neutrons", "amount": 1e12}, target_branch="optic",
-        energy_search_meV=(-2.0, 12.0), **frozen)
+        energy_search_meV=(-2.0, 12.0), scan_window_eig=_o41_config(), **frozen)
 
     # An instrument that executes a grid other than the one it was handed. Previously this test got
     # its mismatch for free from a mock helper whose point count disagreed with the adapter; that

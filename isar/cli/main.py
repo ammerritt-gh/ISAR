@@ -193,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="override budget as '<amount><unit>' e.g. '8h', '1e10n' (else from the spec/goal)")
     pd.add_argument("--analysis-limit", default=None,
                     help="absolute cumulative analysis ceiling, e.g. '1h', '10m', '3600s', or 'none'")
-    pd.add_argument("--scan-window-eig-mode", choices=["off", "shadow", "authoritative"],
+    pd.add_argument("--scan-window-eig-mode", choices=["off", "authoritative"],
                     default=None,
                     help="operator authoring choice for scan-window EIG; authoritative is restricted "
                          "to the exact O41 profile frozen from a ready workspace")

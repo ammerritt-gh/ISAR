@@ -462,14 +462,22 @@ def test_rebinding_refuses_when_a_hand_authored_policy_cannot_be_reconstructed()
     authoring = copy.deepcopy(_CARD_EIG_AUTHORING)
     authoring["policies"][0]["variants"][0]["parameters"]["bin_width"] = 1.0
     # This authoring is deliberately non-O41, which construction would refuse under the compiler's
-    # new "authoritative" default (SCENE-4 PR 4.4) — build in "off" and drift the mode below.
+    # new "authoritative" default (SCENE-4 PR 4.4) — build and stay in "off".
     objective = g2s.spec_from_dict(
         {**_EIG_SPEC, "steering": {"scan_window_eig_mode": "off"}},
         defaults={"tier": "deterministic"}, where="test", card_eig_policy_set=authoring)
-    # Drifted to shadow, not authoritative: this deliberately non-O41 policy could not survive the
-    # authoritative profile check at construction, and the rebinding rule under test is mode-free.
+    # Drift a harmless steering field rather than the mode: only "off"/"authoritative" exist after
+    # SCENE-4 PR 4.4 D3 retired "shadow", and "authoritative" would trip the O41 profile check this
+    # deliberately non-O41 policy cannot pass — the rebinding rule under test is mode-free, and any
+    # steering change recomputes hypothesis_fingerprint (part of the comparison scope) just the same.
+    from dataclasses import replace
+
+    from isar.schema.hypotheses import content_fingerprint
+    steering = {**dict(objective.steering), "minimum_target_support_points": 99}
+    drifted = replace(objective, steering=steering,
+                      hypothesis_fingerprint=content_fingerprint(objective.hypotheses, steering))
     with pytest.raises(g2s.GoalParseError, match="card authoring source is unavailable"):
-        g2s.rebind_scan_window_eig_policy(_scope_drifted(objective, mode="shadow"), None)
+        g2s.rebind_scan_window_eig_policy(drifted, None)
 
 
 def test_a_policy_differing_only_in_attribution_is_not_the_canonical_default():

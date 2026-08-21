@@ -129,7 +129,6 @@ class CampaignDock(QDockWidget):
         self._tier.addItems(["deterministic", "mcstas"])
         self._eig_mode = QComboBox(body)
         self._eig_mode.addItem("Off", "off")
-        self._eig_mode.addItem("Shadow — observe only", "shadow")
         self._eig_mode.addItem("Authoritative — restricted O41", "authoritative")
         self._eig_mode.setToolTip(
             "Authoritative mode is restricted to the exact 128-simulation, 8-block O41 profile "

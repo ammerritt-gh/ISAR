@@ -1,4 +1,12 @@
-"""Pure deep validation and scoring for Slice 6 shadow scan-design inventories."""
+"""Pure deep validation and scoring for scan-design inventories.
+
+Module and field names here ("shadow") are historical: the diagnostic-only "shadow" mode this was
+written for was retired in SCENE-4 PR 4.4 (D3). ``score_shadow_inventory`` and
+``validate_scan_design_shadow_scoring`` now serve the sole remaining scoring regime,
+``scan_window_eig_mode == "authoritative"``; kept unrenamed given ~12 import sites across the
+module and its persisted field/event names (``shadow_scoring``, ``ScanDesignShadowScoring``) that
+must not change (H1 forbids renaming a persisted contract).
+"""
 from __future__ import annotations
 
 import json
@@ -443,8 +451,7 @@ def score_shadow_inventory(
 ) -> ScanDesignShadowScoring:
     """Score exactly legacy versus target-core without selecting either candidate."""
     check = deadline_check or (lambda: None)
-    if getattr(getattr(inventory, "context", None), "scan_window_eig_mode", None) not in {
-            "shadow", "authoritative"}:
+    if getattr(getattr(inventory, "context", None), "scan_window_eig_mode", None) != "authoritative":
         return ScanDesignShadowScoring.not_requested()
     try:
         inventory = type(inventory).from_dict(inventory.to_full_dict())

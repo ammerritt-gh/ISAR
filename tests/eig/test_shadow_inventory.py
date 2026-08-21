@@ -13,6 +13,7 @@ import pytest
 from isar.drive.acquisition.inventory import canonical_json
 from isar.drive.acquisition.scan_design import (
     SCAN_DESIGN_INVENTORY_SCHEMA_V2,
+    SELECTION_BASIS_LEGACY_CONTROL_OFF,
     SELECTION_BASIS_SHADOW_LEGACY_CONTROL_SCORED,
     ScanDesignInventory,
     design_scan_windows,
@@ -48,7 +49,7 @@ def _producer_bundle(monkeypatch):
     scan_helpers = runpy.run_path(str(
         Path(__file__).parents[1] / "drive" / "test_scan_design.py"))
     inventory = design_scan_windows(
-        scan_helpers["_context"](scan_window_eig_mode="shadow"))
+        scan_helpers["_context"](scan_window_eig_mode="authoritative"))
     return predictive, eligibility, inventory
 
 
@@ -172,15 +173,21 @@ def test_historical_objective_two_shadow_omission_fails_open_through_real_scorer
         objective_helpers["_goal_data"](), {"tier": "deterministic", "step_h": 0.05})
     historical = frozen.to_dict()
     del historical["scan_window_eig"]
-    # "shadow" is retired for a NEW compile (SCENE-4 PR 4.4, D1), so this historical fixture is
-    # minted by hand rather than through the compiler — reading it back is unaffected by D1, which
-    # only narrows what a fresh compile may freeze.
-    historical["steering"]["scan_window_eig_mode"] = "shadow"
+    # The steering mode here is deliberately orthogonal to what this test exercises (a historical
+    # objective/2 missing the later-added scan_window_eig block defaults to a no-policy config, and
+    # score_shadow_inventory must fail open rather than evaluate) — "off" keeps ObjectiveSpec
+    # construction simple; "authoritative" would additionally require a full O41 profile the
+    # deleted scan_window_eig block does not supply. ("shadow" itself is retired — SCENE-4 PR 4.4,
+    # D3 — and now refuses BY NAME at this exact construction site; see
+    # test_a_new_compile_refuses_shadow_scan_window_eig_mode and
+    # test_an_absent_mode_frozen_steering_refuses_by_name_with_a_recompile_message in
+    # tests/drive/test_goal_to_spec.py for that refusal.)
+    historical["steering"]["scan_window_eig_mode"] = "off"
     from isar.schema.hypotheses import content_fingerprint
     historical["hypothesis_fingerprint"] = content_fingerprint(
         historical["hypotheses"], historical["steering"])
     objective = ObjectiveSpec.from_dict(historical)
-    assert objective.steering["scan_window_eig_mode"] == "shadow"
+    assert objective.steering["scan_window_eig_mode"] == "off"
     assert objective.scan_window_eig.policy_set is None
     before = (inventory.selected_candidate_id, inventory.selection_basis)
     evaluations = 0
@@ -276,7 +283,7 @@ def test_exact_target_generator_refusal_is_preserved_with_zero_evaluations(monke
     scan_helpers = runpy.run_path(str(
         Path(__file__).parents[1] / "drive" / "test_scan_design.py"))
     inventory = design_scan_windows(scan_helpers["_context"](
-        scan_window_eig_mode="shadow", minimum_target_support_points=10_000))
+        scan_window_eig_mode="authoritative", minimum_target_support_points=10_000))
     scope = _fp("campaign")
     calls = 0
 
@@ -582,9 +589,12 @@ def test_shadow_evidence_recursively_rejects_authoritative_decision_fields(field
 
 def test_historical_v2_inventory_remains_loadable_from_canonical_bytes(monkeypatch, tmp_path):
     _predictive, _eligibility, current = _producer_bundle(monkeypatch)
+    # /2 predates Slice 6 scoring entirely and was only ever built under "off" — its expected basis
+    # collapsed to LEGACY_CONTROL_OFF unconditionally once the "shadow" branch this used to
+    # exercise was deleted (SCENE-4 PR 4.4, D3).
     historical = replace(
         current, inventory_version=SCAN_DESIGN_INVENTORY_SCHEMA_V2,
-        shadow_scoring=None)
+        shadow_scoring=None, selection_basis=SELECTION_BASIS_LEGACY_CONTROL_OFF)
     digest = historical.content_hash()
     path = tmp_path / "report" / "scan-design" / f"{digest}.json"
     path.parent.mkdir(parents=True)

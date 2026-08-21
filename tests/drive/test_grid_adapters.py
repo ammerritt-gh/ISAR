@@ -214,13 +214,13 @@ def test_every_designed_candidate_scores_the_grid_it_will_execute():
     # designer emits, legacy control included — a disagreement is exactly the class of bug the
     # adapter seam exists to make impossible.
     contexts = [
-        _context(scan_window_eig_mode="shadow"),
-        _context(scan_window_eig_mode="shadow", resolution_fwhm_meV=0.37),
-        _context(scan_window_eig_mode="shadow", resolution_fwhm_meV=0.05,
+        _context(scan_window_eig_mode="authoritative"),
+        _context(scan_window_eig_mode="authoritative", resolution_fwhm_meV=0.37),
+        _context(scan_window_eig_mode="authoritative", resolution_fwhm_meV=0.05,
                  policy_max_points=40, runtime_max_points=40),
-        _context(scan_window_eig_mode="shadow", design_prediction_mean_meV=1.3,
+        _context(scan_window_eig_mode="authoritative", design_prediction_mean_meV=1.3,
                  resolution_fwhm_meV=0.123, rival_band=(2.7, 0.31)),
-        _context(scan_window_eig_mode="shadow", survey=True, positive_only=True),
+        _context(scan_window_eig_mode="authoritative", survey=True, positive_only=True),
     ]
     for context in contexts:
         inventory = design_scan_windows(context)

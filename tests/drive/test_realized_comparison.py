@@ -30,7 +30,7 @@ from isar.drive.acquisition.realized_comparison import (
 )
 from isar.drive.acquisition.scan_design import (
     SCAN_DESIGN_INVENTORY_SCHEMA_V2,
-    SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED,
+    SELECTION_BASIS_LEGACY_CONTROL_OFF,
     ScanDesignRefusal,
     design_scan_windows,
 )
@@ -51,7 +51,7 @@ from isar.schema.eig_shadow import DIAGNOSTIC_AUTHORITY, thaw
 
 def _inventory():
     helpers = runpy.run_path(str(Path(__file__).with_name("test_scan_design.py")))
-    return design_scan_windows(helpers["_context"](scan_window_eig_mode="shadow"))
+    return design_scan_windows(helpers["_context"](scan_window_eig_mode="authoritative"))
 
 
 def _proposal(inventory) -> ScanProposal:
@@ -513,34 +513,23 @@ def test_legacy_status_is_family_strict_but_historical_spelling_still_loads(tmp_
         replace(legacy, validation_status="not_instrument_validated_counterfactual")
 
 
-def test_pre_submit_authentication_is_exact_and_strips_corrupt_claims_once(
-        monkeypatch, tmp_path):
+def test_authenticate_realized_submission_is_exact_over_a_corrupted_sidecar(tmp_path):
+    """``authenticate_realized_submission`` itself must still detect a tampered sidecar.
+
+    Was ``test_pre_submit_authentication_is_exact_and_strips_corrupt_claims_once``, exercising the
+    shadow-only ``loop._authenticate_realized_before_submission`` wrapper (its own reauthenticate/
+    force-refresh/strip-claims retry loop). That wrapper is deleted (SCENE-4 PR 4.4, D3): its guard
+    required ``scan_window_eig_mode == "shadow"``, which no longer exists, and the authoritative
+    path has its own equivalent submission-boundary recovery in
+    ``_prepare_authoritative_submission``. What remains worth pinning here is the authentication
+    function itself refusing a corrupted artifact.
+    """
     proposal, comparison, _payload = _persist_unavailable_comparison(tmp_path)
     assert authenticate_realized_submission(proposal, tmp_path) == comparison
-    body_before = wire._scan_body(
-        proposal, "mock", 7, sample="Al_phonon_DFT", background=None)
     sidecar = tmp_path / proposal.meta["scan_design_realized_comparison_ref"]["path"]
     sidecar.write_bytes(sidecar.read_bytes() + b" ")
-    refreshes = []
-    monkeypatch.setattr(
-        eig_runtime, "_refresh_realized_comparison",
-        lambda *_args, **_kwargs: refreshes.append(True))
-    cfg = SimpleNamespace(
-        workspace=tmp_path, log_path=tmp_path / "report" / "session.jsonl")
-
-    loop._authenticate_realized_before_submission(
-        cfg, SimpleNamespace(), proposal, {}, it=4)
-
-    assert refreshes == [True]
-    assert proposal.meta["scan_design_eig_applicability"] == "unavailable"
-    assert not any(proposal.meta.get(field) is not None
-                   for field in loop._REALIZED_SUBMISSION_FIELDS)
-    assert wire._scan_body(
-        proposal, "mock", 7, sample="Al_phonon_DFT", background=None) == body_before
-    failure = [event for event in read_log(cfg.log_path)
-               if event["kind"] == "exception"][-1]
-    assert failure["payload"]["action"] == "realized_submission_authentication_failed"
-    assert failure["payload"]["severity"] == "high"
+    with pytest.raises(ValueError):
+        authenticate_realized_submission(proposal, tmp_path)
 
 
 def test_refresh_persistence_failure_and_process_interrupt_have_distinct_boundaries(
@@ -605,10 +594,13 @@ def test_allowance_exhaustion_replaces_stale_claims_and_historical_v2_never_resc
     assert proposal.meta["scan_design_realized_selected_request_fingerprint"] == (
         proposal.meta["proposal_fingerprint"])
 
+    # /2 predates Slice 6 scoring entirely and was only ever built under "off" — its expected
+    # selection basis collapsed to LEGACY_CONTROL_OFF unconditionally when the "shadow" branch this
+    # used to exercise was deleted (SCENE-4 PR 4.4, D3).
     historical = replace(
         inventory, inventory_version=SCAN_DESIGN_INVENTORY_SCHEMA_V2,
         shadow_scoring=None,
-        selection_basis=SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED)
+        selection_basis=SELECTION_BASIS_LEGACY_CONTROL_OFF)
     historical_proposal = _proposal(historical)
     historical_proposal.meta["scan_design_inventory_ref"] = _inventory_reference(
         tmp_path, historical)
@@ -996,34 +988,11 @@ def test_the_shared_authority_refresh_records_the_failure_that_caused_it(monkeyp
     assert refreshes[0]["refresh_count"] == 1
 
 
-def test_a_repaired_pre_submit_authentication_still_records_the_drift(monkeypatch, tmp_path):
-    """Drift between a proposal and its realized comparison AT THE SUBMISSION BOUNDARY is the
-    stale-evidence signal. When the forced refresh repairs it, the first failure is the only record
-    that it ever happened — so it is logged where it is caught, not only when the retry also fails."""
-    proposal, comparison, _payload = _persist_unavailable_comparison(tmp_path)
-    attempts = {"n": 0}
-
-    def authenticate(*_args, **_kwargs):
-        attempts["n"] += 1
-        if attempts["n"] == 1:
-            raise ValueError("submission identity is inconsistent")
-        return comparison
-
-    monkeypatch.setattr(eig_runtime, "authenticate_realized_submission", authenticate)
-    monkeypatch.setattr(eig_runtime, "_refresh_realized_comparison", lambda *_a, **_k: None)
-    cfg = SimpleNamespace(workspace=tmp_path, log_path=tmp_path / "report" / "session_log.jsonl")
-
-    loop._authenticate_realized_before_submission(
-        cfg, SimpleNamespace(), proposal, {}, it=4)
-
-    assert attempts["n"] == 2
-    # The repair succeeded, so the EIG claims survive — and the drift is still on the record.
-    assert proposal.meta.get("scan_design_eig_applicability") != "unavailable"
-    events = [event["payload"] for event in read_log(cfg.log_path)
-              if event["kind"] == "exception"]
-    assert [item["action"] for item in events] == [
-        "realized_submission_authentication_refresh"]
-    assert "submission identity is inconsistent" in events[0]["error"]
+# test_a_repaired_pre_submit_authentication_still_records_the_drift was deleted here (SCENE-4 PR
+# 4.4, D3): it exercised the shadow-only ``loop._authenticate_realized_before_submission`` wrapper,
+# now deleted along with the "shadow" mode its guard required. The authoritative path's equivalent
+# submission-boundary recovery is covered by
+# test_the_shared_authority_refresh_records_the_failure_that_caused_it above.
 
 
 # ------------- PR #9 R27: a malformed grid RETURNED BY TAVI is a mismatch, not missing evidence

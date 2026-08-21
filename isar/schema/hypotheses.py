@@ -26,11 +26,35 @@ DISPERSION_TYPES = ("branch", "level", "continuum")
 IMPLEMENTED_DISPERSION_TYPES = ("branch",)
 PRESET_NAMES = ("acoustic", "optic", "null")
 
-#: Same-action scan-window EIG regime. ``off`` designs the legacy window; ``shadow`` also
-#: generates and scores alternatives diagnostically; ``authoritative`` may execute the scored
-#: winner only under the restricted O41 profile validated at campaign setup. Authoritative use
-#: remains opt-in pending the O42 release review.
-SCAN_WINDOW_EIG_MODES = ("off", "shadow", "authoritative")
+#: Same-action scan-window EIG regime. ``off`` designs the legacy window; ``authoritative`` scores
+#: alternatives and may execute the scored winner under the restricted O41 profile validated at
+#: campaign setup. Authoritative use remains opt-in pending the O42 release review.
+#: ``"shadow"`` (diagnostic-only scoring, never selecting) was retired in SCENE-4 PR 4.4, D3: the
+#: authoritative path already runs through the same scoring machinery, so the separate diagnostic
+#: mode had no remaining reason to exist. A frozen program or context still naming it refuses by
+#: name at :func:`_validate_scan_window_eig_mode` rather than being silently read as ``"off"``.
+SCAN_WINDOW_EIG_MODES = ("off", "authoritative")
+
+#: Retired in SCENE-4 PR 4.4, D3 — kept only so a literal ``"shadow"`` value can be recognized and
+#: refused BY NAME (distinct from the generic "must be one of" message), directing recompilation.
+_RETIRED_SCAN_WINDOW_EIG_MODE = "shadow"
+
+
+def _validate_scan_window_eig_mode(value: str) -> None:
+    """Raise on an invalid ``scan_window_eig_mode``, naming the retired ``"shadow"`` mode.
+
+    Shared by :class:`SteeringPolicy` here and ``ScanDesignContext`` in
+    ``isar.drive.acquisition.scan_design`` — one implementation, two validation sites.
+    """
+    if value == _RETIRED_SCAN_WINDOW_EIG_MODE:
+        raise ValueError(
+            "scan_window_eig_mode 'shadow' was retired in SCENE-4 PR 4.4 (D3): the shadow-only "
+            "diagnostic mode no longer exists. Recompile the objective selecting one of "
+            f"{SCAN_WINDOW_EIG_MODES}")
+    if value not in SCAN_WINDOW_EIG_MODES:
+        raise ValueError(
+            "scan_window_eig_mode must be one of "
+            f"{', '.join(SCAN_WINDOW_EIG_MODES)}")
 
 
 @dataclass(frozen=True)
@@ -189,10 +213,7 @@ class SteeringPolicy:
             raise ValueError("interval_floor_min_improvement must be in [0, 1)")
         if float(self.interval_floor_min_exposure_ratio) <= 1.0:
             raise ValueError("interval_floor_min_exposure_ratio must exceed one")
-        if self.scan_window_eig_mode not in SCAN_WINDOW_EIG_MODES:
-            raise ValueError(
-                "scan_window_eig_mode must be one of "
-                f"{', '.join(SCAN_WINDOW_EIG_MODES)}")
+        _validate_scan_window_eig_mode(self.scan_window_eig_mode)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

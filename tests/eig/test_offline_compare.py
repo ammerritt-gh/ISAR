@@ -94,7 +94,7 @@ def test_ready_case_and_report_read_gates_reject_nested_tampering():
         legacy, legacy, target, regenerated_persisted_legacy=legacy,
         generator_identity=_generator())
     persisted_context = {"scan_window_eig_mode": "off"}
-    context = {"scan_window_eig_mode": "shadow"}
+    context = {"scan_window_eig_mode": "authoritative"}
     transform = {"revision": "isar.offline_shadow_context_transform/o36.5.1",
                  "persisted_context": persisted_context, "offline_context": context,
                  "persisted_context_fingerprint": compare._fp("scan_design_context", persisted_context),
@@ -132,7 +132,7 @@ def test_scoring_refuses_prepared_inputs_not_joined_to_ready_case():
         legacy, legacy, target, regenerated_persisted_legacy=legacy,
         generator_identity=_generator())
     persisted_context = {"scan_window_eig_mode": "off"}
-    offline_context = {"scan_window_eig_mode": "shadow"}
+    offline_context = {"scan_window_eig_mode": "authoritative"}
     transform = {
         "revision": "isar.offline_shadow_context_transform/o36.5.1",
         "persisted_context": persisted_context,
@@ -276,7 +276,7 @@ def test_real_producer_chain_evaluates_two_grids_once_and_reuses_them(monkeypatc
     config = PhysicalWindowGeneratorConfig(core_fwhm_multiple=2.5)
     persisted = design_scan_windows(context, config)
     transform = compare.offline_shadow_context_transform(context, config.fingerprint)
-    shadow_context = compare.replace(context, scan_window_eig_mode="shadow")
+    shadow_context = compare.replace(context, scan_window_eig_mode="authoritative")
     shadow = design_scan_windows(shadow_context, config)
     default_shadow = design_scan_windows(
         shadow_context, DEFAULT_WINDOW_GENERATOR_CONFIG)

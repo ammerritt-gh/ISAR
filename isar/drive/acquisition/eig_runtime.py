@@ -37,7 +37,6 @@ from isar.drive.acquisition.realized_comparison import (
     REALIZED_COMPARISON_ALLOWANCE_SECONDS,
     RealizedPairConstructionError,
     attach_realized_metadata,
-    authenticate_realized_submission,
     build_realized_comparison,
     construct_realized_pair,
     load_scan_design_realized_comparison,
@@ -105,8 +104,7 @@ class ScanDesignInvariantViolation(RuntimeError):
 def _score_shadow_proposal(proposal, objective, cfg, *, it: int) -> None:
     """Run diagnostic scan-window scoring after selection and before realization clamps."""
     inventory = getattr(proposal, "scan_design_inventory", None)
-    if inventory is None or inventory.context.scan_window_eig_mode not in {
-            "shadow", "authoritative"}:
+    if inventory is None or inventory.context.scan_window_eig_mode != "authoritative":
         return
     selected_id = inventory.selected_candidate_id
     selected = inventory.selected_candidate
@@ -222,8 +220,7 @@ def _refresh_realized_comparison(
     if finalizer is None:
         from isar.drive.loop import _finalize_proposal as finalizer  # noqa: PLC0415 - cycle guard
     inventory = getattr(proposal, "scan_design_inventory", None)
-    if inventory is None or inventory.context.scan_window_eig_mode not in {
-            "shadow", "authoritative"}:
+    if inventory is None or inventory.context.scan_window_eig_mode != "authoritative":
         return None
     meta = proposal.meta if isinstance(proposal.meta, dict) else {}
     proposal.meta = meta
@@ -330,44 +327,6 @@ def _invalidate_realized_comparison_for_recovery(proposal) -> None:
     proposal.meta = meta
     _clear_realized_claims(proposal, applicability="invalidated", preserve_parent=True)
     meta["scan_design_eig_invalidation_reason"] = "eig_realization_invalidated_by_recovery"
-
-
-def _authenticate_realized_before_submission(
-        cfg: CampaignConfig, objective, proposal, budget_state: dict, *, it: int, finalizer=None,
-) -> None:
-    """Reauthenticate once after validation, then strip claims rather than block legacy control."""
-    inventory = getattr(proposal, "scan_design_inventory", None)
-    if inventory is None or inventory.context.scan_window_eig_mode != "shadow":
-        return
-    try:
-        authenticate_realized_submission(proposal, cfg.workspace)
-        return
-    except Exception as error:  # noqa: BLE001 - one forced refresh is the bounded recovery
-        first_error = error
-        # Logged unconditionally, not only when the refresh also fails: a proposal that has drifted
-        # from its realized comparison AT THE SUBMISSION BOUNDARY is the stale-evidence signal, and a
-        # successful repair below would otherwise erase every trace of it.
-        _LOG.warning("realized submission authentication failed; forcing one refresh: %s", error)
-        try:
-            log_event(cfg.log_path, "exception", {
-                "action": "realized_submission_authentication_refresh", "severity": "medium",
-                "error": str(error), "iter": it})
-        except Exception:  # noqa: BLE001 - logging failure cannot block the legacy request
-            _LOG.exception("failed to persist the realized-submission reauthentication event")
-    _refresh_realized_comparison(
-        cfg, objective, proposal, budget_state, it=it,
-        legacy_adjustments=("pre_submit_reauthentication",), force=True, finalizer=finalizer)
-    try:
-        authenticate_realized_submission(proposal, cfg.workspace)
-    except Exception as error:  # noqa: BLE001 - legacy submission remains safe without EIG claims
-        _clear_realized_claims(proposal)
-        _LOG.exception("realized submission authentication failed; submitting legacy without claims")
-        try:
-            log_event(cfg.log_path, "exception", {
-                "action": "realized_submission_authentication_failed", "severity": "high",
-                "initial_error": str(first_error), "error": str(error), "iter": it})
-        except Exception:  # noqa: BLE001 - logging failure cannot block the legacy request
-            _LOG.exception("failed to persist the realized-submission authentication event")
 
 
 def _prepare_authoritative_submission(
