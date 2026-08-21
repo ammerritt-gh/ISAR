@@ -306,7 +306,7 @@ emits otherwise fails the build rather than publishing an impossible reading.
 | SCENE-1 | Catalogue, identity-conditional Laplace evidence, global grammar (bg-only + elastic+bg first-class, `elastic_only` verdict), observation footprints, persisted candidate rows — three sequential PRs | Implemented — PR-a (H3, 2026-08-08; merged `fd1aa76`), PR-b (H4, 2026-08-08; merged `e02350a`), PR-c (H9/H10, 2026-08-09; merged `c5adf15`); deferrals recorded in H9(e) |
 | SCENE-2 | `isar.campaign-program/1` sole contract; old envelope unreadable by design | Implemented (H2, 2026-08-08; PR #12 merged at `058fb40`) |
 | SCENE-3 | Scene layer core: clusters, structural factors, revisioned scene store, workspace_api read surface; tracker contracts ported as specifications | Implemented — PR 3a (H11/H12), 3b (H13), 3c (H14), all 2026-08-10, incl. the PR #19 response waves; final merge `a1c6e41` |
-| SCENE-4 | Question layer, deterministic opening book, generalized stop; first challenge run; scan-window authoritative default-on; shadow machinery deleted | In progress — PR 4.0 "scene authority readiness" Implemented (H15/H16, 2026-08-13; PR #30 merged): measurement-arena record + trust lanes, #21 Variant A origin lanes, (sample, ConditionSet, lattice-epoch) partitioning, refiner bounds + transformation ablation, expected_two relaxation. PR 4.1 "question + agenda core" Implemented (H17, 2026-08-14): three-object question layer, authority-aware predicates, `isar.question-policy/1` + fully frozen `discover_and_map/2`, content-addressed agenda snapshots with external transition history, `AgendaVerdict` beside `evaluate_stop` — offline (driver wiring 4.3, generator bindings 4.2). PR 4.2a "interval re-baseline + question-policy/2" Implemented (H18, 2026-08-14): per-candidate interval closure, producer-soundness interval authority, class-agnostic ConnectTrack. PR 4.2b "discovery generator layer + offline planner" Implemented (H19, 2026-08-15): seven question-bound generators, readiness gating, the exhaustion producer, `plan_next_action`'s five outcomes, the `report/inventory/discovery/` + `report/program/` + `report/decisions.jsonl` stores — offline. PR 4.3 "live driver integration" Implemented (H20, 2026-08-18): parent-owned scene build in a supervised `isar scene-build` subprocess with digest-pinned planning, the `run_program` seam and AgendaVerdict stop routing, campaign provenance + physical path identity in the partition key, the cold-start partition producer, the broken-scan lane, production durable-blocker emission over the two-member taxonomy, and the consultation channel with `isar answer`. PR 4.4 (authority flip, stop-point audit, shadow deletion) Planned per `docs/plans/SCENE4_EXECUTION_PLAN.md` |
+| SCENE-4 | Question layer, deterministic opening book, generalized stop; first challenge run; scan-window authoritative default-on; shadow machinery deleted | In progress — PR 4.0 "scene authority readiness" Implemented (H15/H16, 2026-08-13; PR #30 merged): measurement-arena record + trust lanes, #21 Variant A origin lanes, (sample, ConditionSet, lattice-epoch) partitioning, refiner bounds + transformation ablation, expected_two relaxation. PR 4.1 "question + agenda core" Implemented (H17, 2026-08-14): three-object question layer, authority-aware predicates, `isar.question-policy/1` + fully frozen `discover_and_map/2`, content-addressed agenda snapshots with external transition history, `AgendaVerdict` beside `evaluate_stop` — offline (driver wiring 4.3, generator bindings 4.2). PR 4.2a "interval re-baseline + question-policy/2" Implemented (H18, 2026-08-14): per-candidate interval closure, producer-soundness interval authority, class-agnostic ConnectTrack. PR 4.2b "discovery generator layer + offline planner" Implemented (H19, 2026-08-15): seven question-bound generators, readiness gating, the exhaustion producer, `plan_next_action`'s five outcomes, the `report/inventory/discovery/` + `report/program/` + `report/decisions.jsonl` stores — offline. PR 4.3 "live driver integration" Implemented (H20, 2026-08-18): parent-owned scene build in a supervised `isar scene-build` subprocess with digest-pinned planning, the `run_program` seam and AgendaVerdict stop routing, campaign provenance + physical path identity in the partition key, the cold-start partition producer, the broken-scan lane, production durable-blocker emission over the two-member taxonomy, and the consultation channel with `isar answer`. PR 4.4 "authority flip, stop-law cleanup, acceptance closure" Implemented (H22, 2026-08-21): compile-time default-on flip scoped to targeted objectives with named shadow-mode refusal, shadow-only machinery deleted by call-site map, stop-law audit closed with zero removals, the off-path/context-scan world (seed 1013), the cold-start acceptance script, the ncount discovery exemption, and the challenge run green end to end — SCENE-4 is complete |
 | SCENE-5 | Scene-EIG authoritative from birth | Planned |
 | SCENE-6 | Single-engine swap: targeted campaigns as pinned question sets over scenes; tracker deleted; `campaign-program/2` question-native targeted payload | Planned |
 | SCENE-7 | Calibration batteries + efficiency benchmark; program closeout | Planned |
@@ -730,6 +730,69 @@ unresolvable declared condition refuses at construction with `cold_start_conditi
 rather than minting an orphan partition, and the declared lattice epoch seeds both
 frame-compatibility maps by `setdefault`, so declared anchors fire at cold start and an observation
 always wins.)
+
+### SCENE-4.4 rulings (H22, 2026-08-21)
+
+PR 4.4 closes SCENE-4: the authority flip, the shadow-machinery deletion, the stop-law audit, the
+cold-start acceptance script, and the challenge-run exit.
+
+(a) **Compile-time default-on is scoped to targeted objectives.** `goal_to_spec` freezes an
+explicit `scan_window_eig_mode` into every newly compiled TARGETED objective, defaulting
+`"authoritative"`; a frozen objective without one refuses by name with a recompile message (H1 —
+frozen contracts never acquire read-time defaults). This completes decision 19's default-on half;
+O42 was already retired by H1 (2026-08-08). The runtime `.get(..., "off")` fallback
+(`objective.py:232`) is deliberately untouched, so a historical frozen program can never silently
+change windows. Verified against source, not assumed: the DISCOVERY path consumes no
+`scan_window_eig_mode` at all — `DiscoverAndMapSpec` carries no such field, by design, and a
+dedicated test pins that absence. Discovery window selection runs through the scene and
+question-policy generators; the flip governs only the O41/realized-comparison machinery a
+targeted step compiles into. The challenge run (g) exercises the discovery path and does not run
+under authoritative selection, because there is no selection there to run under.
+(b) **Shadow mode retires.** `SCAN_WINDOW_EIG_MODES` narrows to `(off, authoritative)`; a frozen
+program or steering override naming the retired `"shadow"` mode refuses through one shared
+validator (`SteeringPolicy` and `ScanDesignContext` alike) with a message that NAMES the retired
+mode and directs recompilation — distinct from the generic enum-refusal message. Deletion followed
+a call-site map under one rule: a symbol is deletable only if every execution path reaching it
+requires `scan_window_eig_mode == "shadow"`; everything reachable from authoritative or `off`
+selection is retained by construction. Shadow-named modules that turned out to be the
+authoritative scoring engine under an old name (`eig_shadow.py`, `shadow_inventory.py`,
+`realized_comparison.py`, `eig_authority.py`, and ~26 further import sites) keep their names —
+rename churn was a poor trade — with docstrings stating the name is historical and the contents
+serve authoritative selection. Persisted-contract field names and event kinds are not renamed.
+(c) **H1-vs-S10 collision ruled: no compatibility, ever.** No backward-compat acceptance path was
+built anywhere for the retired mode. The two Slice-8 gate tests whose entire subject was loading
+the frozen 2026-08-04 `SLICE8_SHADOW_GATE` records retire with their subject — they served their
+purpose. The frozen evidence bundles themselves stay on disk, byte-untouched, per S10.
+(d) **The quicklook-floor discovery exemption** is the stated contract recorded in full in
+`docs/design/steering.md` §7.2 (joins this ruling): a declared `discovery_monitor_ncount` below
+the quicklook exposure floor is accepted, raised to the floor, and evented
+(`proposal_ncount_raised_to_floor`) — never refused. It instantiates the DESIGN_GOALS principle
+that ISAR never silently ignores a user command: log and proceed; only a true physical or
+statistical limit refuses outright.
+(e) **Stop-law audit closed: zero removals.** Every stop/terminal site in `drive/` was enumerated
+against the four-reasons law (user choice, campaign goal met, over budget, machine failure); the
+discovery path was confirmed born clean (isolated on `AgendaVerdict` since 4.3) and every terminal
+verdict on the targeted path maps to one of the four reasons. Four judgment calls stand as named
+observations rather than fixes, recorded in the PR body: `infeasible-below-floor` wording,
+`certification-basis-unchanged` and unresolved-promotions machine-failure labels, and the
+`max_deliveries` synthetic budget.
+(f) **Cold-start script outcome closes ruling items 3–4** (the 2026-08-15 cold-start ruling,
+absorbed above at §5 items 1–2; items 3–4 were 4.4's to answer). The owner's walkthrough beats —
+first proposal one node off the declared zone centre at low ω, persistent absence pivoting the
+next proposal upward from finite E, later proposals expanding outward, and a blank/unregistered
+catalogue degrading to the uniform survey without raising — are pinned as emergent from the
+mechanisms that already exist (declared anchor order weights plus the coverage band walk); there
+is no acoustic-vs-optic state machine to build. Item 4 is answered by evidence, not assumption: an
+on-ZC survey window straddles `dE=0` and the `Elastic` component is an ordinary linear basis
+member beside the phonon components (read at its definition), so no proposal-level window floor is
+built.
+(g) **Deferrals by name** (owner, 2026-08-21): the `program_boundary` durable-blocker producer;
+per-detector broken-scan granularity; `scene_observe` cadence (unchanged — per-delivery synchronous
+build is the 4.3 structural contract, `build_seconds` recorded, any change is the fixed-lag work).
+**Named gap, deliberate:** the targeted-flip regression (D2) exercises only the conservative O41
+branch — the fixture's `target_delivery_unknown` scoring means every decision retains legacy
+control. A genuine `target_core` window-swap fixture needs differentiated-information machinery
+not built in this slice; no test yet proves a real window swap under `target_core`.
 
 ## 7. Status discipline
 

@@ -210,6 +210,16 @@ STALE_PHRASES = (
         "the 30 s/point intent and its proposal-meta stamp were superseded and deleted by the "
         "direct 10^8-neutron declaration (H20(e), C10) — no vestige remains",
     ),
+    (
+        "stays opt-in until SCENE-4 delivers the default-on flip",
+        "SCENE-4.4 (H22, 2026-08-21) landed the flip: authoritative selection is default-on at "
+        "compile time for newly compiled targeted objectives, not opt-in",
+    ),
+    (
+        "the `\"shadow\"` mode",
+        "H22(b) retired shadow as a `scan_window_eig_mode` value; the name now survives only on "
+        "the (retained) scoring engine's modules",
+    ),
 )
 
 

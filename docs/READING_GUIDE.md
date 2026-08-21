@@ -126,9 +126,8 @@ Read in this order when returning after time away:
 3. **[ARCHITECTURE.md](ARCHITECTURE.md)** — the whole-project law: stages, principles, frozen
    contracts — and **§15, the capability table**, the single authority for what is Implemented /
    Partial / Planned right now.
-4. **The live frontier:** [design/scene.md](design/scene.md) §3 (the SCENE slice table) and
-   [plans/SCENE4_EXECUTION_PLAN.md](plans/SCENE4_EXECUTION_PLAN.md) (PR 4.4 pending — authority
-   flip, stop-point audit, shadow deletion).
+4. **The live frontier:** [design/scene.md](design/scene.md) §3 (the SCENE slice table — SCENE-4
+   is complete through PR 4.4 as of H22, 2026-08-21) and its §"SCENE-4.4 rulings (H22)".
 5. **The podium path:** [STATS_PRIMER.md](STATS_PRIMER.md) — why Baker–Cousins and not
    Neyman/Pearson, why selection is the evidence posterior, how interval coverage was *measured*
    — the document to rehearse from before defending the methodology to an audience. Deeper:
@@ -160,7 +159,6 @@ standing check that we are building a usable instrument, not a self-certifying l
    [design/reporting.md](design/reporting.md) · [STATS_PRIMER.md](STATS_PRIMER.md) (statistics;
    kept at this path because frozen evidence cites it).
 3. The plans — work not yet landed, each with an owner and exit criteria:
-   [plans/SCENE4_EXECUTION_PLAN.md](plans/SCENE4_EXECUTION_PLAN.md) ·
    [plans/speedup.md](plans/speedup.md) · [plans/background.md](plans/background.md) ·
    [plans/stats-audit.md](plans/stats-audit.md). The backlog is [../TODO.md](../TODO.md).
 4. Why was a decision made? The owning design doc's dated rulings; ruling IDs (`O27`, `H1`, …)

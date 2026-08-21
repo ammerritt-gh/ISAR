@@ -52,7 +52,9 @@ rationale for statistical-method choices is first-class; rationale for steering 
   exposure-basis spike's evidence into its Predictive-artifact rationale.
 - **Slice D (scene + plans) — DONE 2026-08-20 (`9f33b80`):** SCENE_DESIGN.md → design/scene.md;
   the four live plans → docs/plans/ (SCENE4_EXECUTION_PLAN.md, speedup.md, background.md,
-  stats-audit.md), owner/exit-criteria now test-enforced there.
+  stats-audit.md), owner/exit-criteria now test-enforced there. SCENE4_EXECUTION_PLAN.md itself
+  was deleted 2026-08-21 (SCENE-4.4, H22) per its own exit criteria, after an absorption check into
+  `design/scene.md`.
 - **Slice E (gui/reporting/statistics) — DONE 2026-08-20:** GUI_DESIGN.md → design/gui.md;
   CAMPAIGN_DIAGNOSTIC_SPEC.md → design/reporting.md; **STATS_PRIMER.md deliberately stays at
   docs/STATS_PRIMER.md** as the statistics design doc — the frozen `assets/` FINDINGS reports
