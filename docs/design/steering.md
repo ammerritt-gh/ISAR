@@ -880,6 +880,15 @@ It is a named provisional v1 like every other threshold: instrument-varying, res
 same precedence chain (user ask > card policy > ISAR default) as `discovery_monitor_ncount`,
 frozen into the compiled program, and SCENE-7-calibrated.
 
+**The quicklook-floor discovery exemption** (owner ruling 2026-08-21, joins H22): a
+`discovery_monitor_ncount` declared BELOW the quicklook exposure floor is accepted, never refused.
+`_finalize_proposal` (`isar/drive/loop.py`) sees the discovery proposal arrive on the `quicklook`
+scan kind; under `dynamic_ncount` with a neutron-denominated budget, an exposure under the floor is
+raised to it and the proposal proceeds, emitting `proposal_ncount_raised_to_floor` with the declared
+and effective values. This instantiates the general principle running through this whole document:
+ISAR never silently ignores a user command — it logs a warning and proceeds, and only a true
+physical or statistical limit (an instrument ceiling, an exhausted budget) ever refuses outright.
+
 ### 7.3 Instrument-limit-aware batching (implemented, 2026-07-18)
 
 At campaign start the driver snapshots TAVI's advertised `max_points`,

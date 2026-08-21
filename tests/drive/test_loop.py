@@ -3607,6 +3607,37 @@ def test_proposal_finalizer_uses_smaller_policy_cap_and_reclamps_neutron_count(t
             p, objective, cfg, {"kind": "neutrons", "amount": 99.0, "spent": 0.0}, it=4)
 
 
+def test_discovery_ncount_below_quicklook_floor_is_raised_not_refused(tmp_path):
+    """Owner ruling 2026-08-21: a user-declared ``discovery_monitor_ncount`` below the quicklook
+    floor is a DISCOVERY EXEMPTION, never a refusal. A ``quicklook``-kind proposal carrying a
+    declared ncount under the floor, under ``dynamic_ncount`` with a neutron budget, PROCEEDS with
+    exposure raised to the floor and emits ``proposal_ncount_raised_to_floor`` — it must never
+    raise ``BudgetInsufficientForMinimumBatch`` or any other refusal."""
+    declared = 100                                    # far below the quicklook floor
+    # e_hi picked so the emitted grid is exactly 100 points — under the 200-point cap, so the
+    # point-count guard never fires and n_points stays the declared 100 throughout.
+    p = ScanProposal(h=2.1, k=0.0, l=0.0, e_lo=0.0, e_hi=9.9, e_step=0.1,
+                     ncount=declared, kind="quicklook", reason="discovery: step-1", n_points=100)
+    objective = types.SimpleNamespace(steering={"max_scan_points": 200, "dynamic_ncount": True})
+    log = tmp_path / "log.jsonl"
+    cfg = types.SimpleNamespace(max_points=200, max_points_source="get_state", log_path=log)
+
+    _finalize_proposal(
+        p, objective, cfg, {"kind": "neutrons", "amount": 2_000_000_000.0, "spent": 0.0}, it=1)
+
+    assert p.ncount == QUICKLOOK_NCOUNT                # (a) proceeds, raised to the floor
+    raises = [e["payload"] for e in read_log(log)
+              if e["kind"] == "exception"
+              and (e["payload"] or {}).get("action") == "proposal_ncount_raised_to_floor"]
+    assert len(raises) == 1                            # (b) evented, with declared + effective
+    assert raises[0]["old_ncount"] == declared
+    assert raises[0]["new_ncount"] == QUICKLOOK_NCOUNT
+    refusals = [e["payload"] for e in read_log(log)
+                if e["kind"] == "exception"
+                and (e["payload"] or {}).get("action", "").startswith("budget_insufficient")]
+    assert not refusals                                 # (c) nothing refuses
+
+
 def test_proposal_fingerprint_persists_action_evidence_and_original_branch_roles(tmp_path):
     objective = types.SimpleNamespace(
         tolerance_meV=0.5,
