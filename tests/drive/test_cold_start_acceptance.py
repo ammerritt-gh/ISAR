@@ -1,27 +1,43 @@
 """The SCENE-4.4 cold-start acceptance script (plan's "Cold-start ruling" items 3-4, D6).
 
-The owner's walkthrough for the DEFAULT phonon catalogue profile, pinned as one acceptance
-script rather than re-derived from scratch: a fresh workspace's first proposal hunts the acoustic
-branch just off the nearest declared zone centre; persistent absence there pivots the hunt to
-higher energy at that same zone-centre-adjacent node (the zone-centre placement rule's OTHER
-class, optic, has no band restriction and the highest remaining order weight — SCENE-4
-`isar/schema/placement.py` `_DEFAULT_PLACEMENT_RULES`); once a node is measured, the walk expands
-OUTWARD from it rather than jumping. A fourth case pins the required degradation: blank knowledge
-must never raise, only fall back to the uniform survey.
+PR #35 review finding: the previous version of this file staged its beats independently, so beat
+2's hand-built partial footprint (0-3 meV at the anchored node) could never have been the footprint
+beat 1's own scan actually delivers -- beat 1 realizes the FULL intrinsic domain at that node
+(the RULED window policy, Topic 5: broad windows over the intrinsic domain; the survey never
+narrows per class), so a real delivery there always closes the band leg outright. This file is
+now ONE causally-connected script: each planning round is fed exactly the coverage the PREVIOUS
+round's realized proposal actually delivers (plan -> realize -> mark that realized coverage as
+delivered -> plan again), through the SAME production grid rule (``proposal_from_intent``) that
+turns an abstract ``SurveyProposal`` into a scan window (D6 item 4).
+
+Under broad windows, a full-domain delivery leaves no band gap behind, so the sequence this file
+pins is a pure Q-node walk: the first proposal sits at the hypothesis-favoured node just off the
+declared zone centre (zone-centre anchor-distance ordering favours the DEFAULT profile's highest
+``zone_centre``-anchored ``order_weight`` -- SCENE-4 ``isar/schema/placement.py``
+``_DEFAULT_PLACEMENT_RULES``), and once a node is measured the walk expands OUTWARD from it to the
+next-nearest still-uncovered node, never an unrelated jump. A separate case pins the ONE way
+``missing_omega_band`` legitimately reopens a node that already received a real delivery: a later
+program step declaring a WIDER energy domain than the step that made the earlier delivery (each
+``CampaignProgram`` step carries its own declared ``intrinsic_omega_domain_meV`` --
+``isar/drive/steering/generators.py``'s ``_domain``/``_clip_omega`` compare bands against the
+CALLING step's own domain, so a step revision that widens it is the only way a previously
+full-for-its-domain delivery becomes partial again). A final case pins the required degradation:
+blank knowledge must never raise, only fall back to the uniform survey.
+
+Any branch-labeled (e.g. acoustic-hunt-then-optic-pivot) CAUSAL placement sequence is out of
+scope here -- SCENE-4 has no such state machine (``omega_band_hint_meV`` is documented
+provenance-only, never read for steering -- review finding 2026-08-18); a real causal
+acoustic-absence -> optic-pivot walk is scene-EIG placement work (SCENE-5), not this file.
 
 This is deliberately built at the SAME layer ``tests/drive/test_opening_book.py`` and
 ``tests/drive/test_cold_start.py`` already pin (``propose_survey`` / ``plan_next_action`` /
-``DeclaredPartition``), not a new mechanism: SCENE-4 has no branch-labeled (acoustic-vs-optic)
-placement state machine (`isar/schema/placement.py`'s ``omega_band_hint_meV`` is documented
-provenance-only, never read for steering — review finding 2026-08-18). The walkthrough's beats
-are realized by the SAME two rules those files already pin: zone-centre anchor-distance ordering
-(favours the DEFAULT profile's acoustic row, whose ``order_weight=1.0`` is the highest
-``zone_centre``-anchored weight in the profile) and the coverage-complete band walk (fills the
-domain low-to-high at any one node once it has partial coverage). Beat (a) is genuinely new
-coverage (the realized window through ``proposal_from_intent``, not only the abstract
-``SurveyProposal``); beats (b)/(c) are new SEQUENCES over ``propose_survey``, cited against their
-un-sequenced siblings inline; the degradation case is NOT duplicated here — see the module
-docstring's final section for the citation.
+``DeclaredPartition``), not a new mechanism, and re-uses the SAME two production rules those files
+already pin: zone-centre anchor-distance ordering and the coverage-complete band walk. What is new
+here is the SEQUENCING over ``propose_survey`` (feeding each round the previous round's own
+realized delivery) and the realized-window evidence through ``proposal_from_intent``; the blank-
+knowledge degradation case is NOT duplicated here -- see ``test_cold_start.py``'s
+``test_blank_knowledge_still_proposes_a_uniform_survey`` for the end-to-end ``plan_next_action``
+version this one only adds the unregistered-catalogue half of.
 """
 from __future__ import annotations
 
@@ -87,100 +103,103 @@ def realize(coord: float, e_lo: float, e_hi: float, fwhm=0.5):
                                 reason="cold-start acceptance", ncount=int(1e8))
 
 
-# ----------------------------------------------------------------------------
-# BEAT 1 -- the first proposal hunts the acoustic branch just off the zone centre, at low ω
-# ----------------------------------------------------------------------------
-def test_beat1_first_proposal_is_just_off_the_zone_centre_at_low_energy():
-    st = step()
-    sc = scene(sample_knowledge=KNOWLEDGE)
-    proposals = propose_survey(sc, st, subject())
-    first = proposals[0]
-
-    assert first.kind == "missing_q_node"
-    # Just off the declared zone centre (2.0) -- never ON it, never at the region's OTHER
-    # (non-anchored) boundary (3.0), never the plain geometric midpoint (2.5) a uniform survey
-    # would open first (test_opening_book.test_uniform_vs_placement_informed_same_set_different_order
-    # already pins that placement-informed and uniform propose the identical SET in a different
-    # order; this pins which member of that set comes first under the DEFAULT catalogue profile).
-    assert first.axis_coordinate == pytest.approx(2.25)
-    assert first.axis_coordinate not in (2.0, 3.0, 2.5)
-
-    # Realized through the production grid rule: the window is the declared domain, so it
-    # reaches ω near zero -- the acoustic branch's home (ω → 0 at the zone centre, the highest
-    # zone_centre order_weight in the DEFAULT profile, `isar/schema/placement.py`
-    # `_DEFAULT_PLACEMENT_RULES["acoustic"]`). This is D6 item-4 EVIDENCE, not asserted away:
-    # see the module docstring / realization.py's re-pointed comment for what it means.
-    proposal = realize(first.axis_coordinate, DOMAIN[0], DOMAIN[1])
-    assert proposal.h == pytest.approx(2.25)
-    assert proposal.e_lo == pytest.approx(0.0)         # touches the elastic line -- see item 4
-    assert proposal.e_hi == pytest.approx(10.0)
+def _deliver(scan_ref: str, coord: float, proposal) -> dict:
+    """The footprint a REAL delivery of ``proposal`` leaves behind -- the realized window, never
+    a hand-built one, so the next planning round is fed exactly what production would have."""
+    return fp(scan_ref, coord, bands=((proposal.e_lo, proposal.e_hi),))
 
 
 # ----------------------------------------------------------------------------
-# BEAT 2 -- persistent absence at low ω pivots the hunt upward, at the SAME anchored node
+# THE SEQUENCE -- plan, realize, deliver, plan again; broad windows leave no band gap behind, so
+# the causally-connected walk is a pure outward Q-node expansion.
 # ----------------------------------------------------------------------------
-def test_beat2_absence_in_the_low_band_pivots_the_hunt_upward_at_the_anchored_node():
-    """The DEFAULT profile's other zone_centre-anchored class (optic) declares no band
-    restriction (``omega_band_hint_meV=None``) and the next-highest order_weight after acoustic
-    -- so once the acoustic-home low band is measured and yields nothing (no candidate is
-    recorded for it: the scene below has zero observations naming a phenomenon there, the same
-    "phonon-less" absence `isar.scene.predicates._structural_presence` reads as a ConfirmPresence
-    miss), the coverage-complete band walk is what carries the hunt to the remaining (higher-E)
-    part of the domain -- and it does so AT THAT SAME q, ahead of moving to a new zone-centre-
-    adjacent q node, because the anchor-distance term in propose_survey's ranking does not
-    distinguish an omega-gap proposal from a q-node proposal at the identical coordinate."""
-    st = step()
-    # The node beat 1 opened, now measured -- but only its low third of the domain (the
-    # "acoustic hunt", covered and empty: no candidate/cluster recorded for it below).
-    sc = scene(footprints=[fp("e:1:d", 2.25, bands=((0.0, 3.0),))],
-              sample_knowledge=KNOWLEDGE)
-    proposals = propose_survey(sc, st, subject())
-
-    first = proposals[0]
-    assert first.kind == "missing_omega_band"
-    assert first.axis_coordinate == pytest.approx(2.25)          # the SAME anchored node
-    assert first.detail["omega_lo"] == pytest.approx(3.0)        # finite E upward, not from zero
-    assert first.detail["omega_hi"] == pytest.approx(10.0)
-
-    # And it outranks BOTH still-unopened q nodes in the region (2.5, 2.75): the pivot happens
-    # before the walk spreads to new q, not after.
-    q_nodes = [p for p in proposals if p.kind == "missing_q_node"]
-    assert len(q_nodes) == 2
-    assert all(proposals.index(p) > proposals.index(first) for p in q_nodes)
-
-    proposal = realize(first.axis_coordinate, first.detail["omega_lo"], first.detail["omega_hi"])
-    assert proposal.e_lo == pytest.approx(3.0)
-    assert proposal.e_lo > 0.0, "the pivoted hunt starts above the elastic line, not from zero"
-
-
-# ----------------------------------------------------------------------------
-# BEAT 3 -- once a point is initialized, the walk extrapolates OUTWARD from it
-# ----------------------------------------------------------------------------
-def test_beat3_the_walk_expands_outward_from_the_initialized_node_not_to_an_unrelated_one():
-    """Each round measures exactly the node the PREVIOUS round proposed first, then re-derives.
-    With one zone-centre anchor in the region (see the module docstring), anchor-distance
-    ordering can only ever prefer the node closest to what has already been initialized -- so
-    the sequence is monotonically outbound, never a jump past an unmeasured neighbour to some
-    farther, unrelated point."""
+def test_the_cold_start_walk_is_one_causally_connected_sequence_of_broad_window_deliveries():
+    """Round 1's proposal is fed to ``proposal_from_intent`` (the real realization rule); the
+    REALIZED window -- not a hand-built one -- becomes round 2's delivered footprint, and so on.
+    Because every realized window spans the full declared domain, no round ever reopens a band gap
+    at an already-delivered node: the walk's only lever is outward Q-node expansion."""
     st = step()
     measured: list[dict] = []
     coords: list[float] = []
-    for _ in range(3):
+
+    for round_index in range(3):
         sc = scene(footprints=measured, sample_knowledge=KNOWLEDGE)
         proposals = propose_survey(sc, st, subject())
-        q_proposals = [p for p in proposals if p.kind == "missing_q_node"]
-        assert q_proposals, "the region must still have an unopened q node"
-        coord = q_proposals[0].axis_coordinate
-        coords.append(coord)
-        measured.append(fp(f"e:{len(measured)}:d", coord, bands=((0.0, 10.0),)))
+        first = proposals[0]
 
+        assert first.kind == "missing_q_node", (
+            "a full-domain delivery leaves no band gap, so every round's first proposal must "
+            "still be a new Q node -- a missing_omega_band here would mean a previous round's "
+            "realized window did NOT actually cover the declared domain")
+        coords.append(first.axis_coordinate)
+
+        proposal = realize(first.axis_coordinate, DOMAIN[0], DOMAIN[1])
+        if round_index == 0:
+            # Beat 1 evidence (D6 item 4): just off the zone centre, reaching ω -> 0 (the
+            # elastic line) because the realized window is the full declared domain.
+            assert first.axis_coordinate == pytest.approx(2.25)
+            assert first.axis_coordinate not in (2.0, 3.0, 2.5)
+            assert proposal.h == pytest.approx(2.25)
+            assert proposal.e_lo == pytest.approx(0.0)
+            assert proposal.e_hi == pytest.approx(10.0)
+
+        measured.append(_deliver(f"e:{round_index}:d", first.axis_coordinate, proposal))
+
+        # The delivery this round just made never reopens a band gap in a LATER round.
+        later_proposals = propose_survey(
+            scene(footprints=measured, sample_knowledge=KNOWLEDGE), st, subject())
+        assert all(p.kind != "missing_omega_band" for p in later_proposals), (
+            "a full-domain realized delivery must close the band leg outright")
+
+    # Outward expansion: each round's node is the NEXT interior grid point, never a skip and
+    # never a jump back toward the anchor.
     assert coords == pytest.approx([2.25, 2.5, 2.75])
-    # Strictly increasing distance from the one anchor: each new node is adjacent to the
-    # previous, never a jump over it to a farther point first.
     distances = [abs(c - ZONE_PERIOD) for c in coords]
     assert distances == sorted(distances)
     assert all(b - a == pytest.approx(0.25) for a, b in zip(coords, coords[1:])), \
         "outward means the NEXT node, not a skip"
+
+
+# ----------------------------------------------------------------------------
+# A GENUINE missing_omega_band -- not hand-built: a later program step widens the declared
+# domain, so an earlier delivery that was full-for-ITS-domain is partial for the new one.
+# ----------------------------------------------------------------------------
+def test_a_program_revision_that_widens_the_declared_domain_reopens_the_earlier_delivery_as_a_band_gap():
+    """``generators.py``'s ``_domain``/``_clip_omega`` compare a node's bands against the CALLING
+    step's own declared ``intrinsic_omega_domain_meV`` -- each ``CampaignProgram`` step carries its
+    own domain, so a later step that declares a WIDER one is a real program revision, not a test
+    fixture wearing a scenario's name. This is the only way this layer can honestly reopen a
+    node's band leg after a real (broad-window) delivery already closed it for its own step."""
+    narrow_step = step(domain=(0.0, 3.0))
+    sc = scene(sample_knowledge=KNOWLEDGE)
+    first = propose_survey(sc, narrow_step, subject())[0]
+    assert first.kind == "missing_q_node"
+    assert first.axis_coordinate == pytest.approx(2.25)
+
+    delivery = realize(first.axis_coordinate, 0.0, 3.0)
+    assert delivery.e_lo == pytest.approx(0.0) and delivery.e_hi == pytest.approx(3.0)
+    measured = [_deliver("e:0:d", first.axis_coordinate, delivery)]
+
+    # The program revision: the SAME node's coverage is now judged against a wider domain.
+    wide_step = step(domain=(0.0, 10.0))
+    proposals = propose_survey(scene(footprints=measured, sample_knowledge=KNOWLEDGE),
+                               wide_step, subject())
+    reopened = proposals[0]
+    assert reopened.kind == "missing_omega_band"
+    assert reopened.axis_coordinate == pytest.approx(2.25)         # the SAME node, not a new one
+    assert reopened.detail["omega_lo"] == pytest.approx(3.0)       # finite E upward, not from zero
+    assert reopened.detail["omega_hi"] == pytest.approx(10.0)
+
+    # The reopened band leg outranks BOTH still-unopened q nodes in the region (2.5, 2.75): the
+    # revision's own node is served before the walk spreads to new q.
+    q_nodes = [p for p in proposals if p.kind == "missing_q_node"]
+    assert len(q_nodes) == 2
+    assert all(proposals.index(p) > proposals.index(reopened) for p in q_nodes)
+
+    reproposal = realize(reopened.axis_coordinate, reopened.detail["omega_lo"],
+                         reopened.detail["omega_hi"])
+    assert reproposal.e_lo == pytest.approx(3.0)
+    assert reproposal.e_lo > 0.0, "the reopened band starts above the elastic line, not from zero"
 
 
 # ----------------------------------------------------------------------------
