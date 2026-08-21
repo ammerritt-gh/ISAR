@@ -39,17 +39,26 @@ class _WildModel:
         return 2.0, WILD_SIGMA
 
 
+def _o41_config():
+    """A valid restricted O41 profile — required by ``ObjectiveSpec.__post_init__`` for any
+    objective that freezes ``scan_window_eig_mode="authoritative"`` (SCENE-4 PR 4.4, D1/D3)."""
+    import runpy
+    from pathlib import Path
+    return runpy.run_path(str(
+        Path(__file__).parents[1] / "eig" / "test_o41_authority.py"))["_config"]()
+
+
 def _objective():
     frozen = shipped_hypothesis_snapshot("acoustic", DOMAIN)
-    # ``shadow`` is what generates (and refuses) the alternative families; the executed request is
-    # still the legacy control in both modes.
-    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "shadow"}
+    # "authoritative" is what generates (and refuses) the alternative families; the executed
+    # request is still the legacy control here (this file never exercises O41 selection itself).
+    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "authoritative"}
     frozen["hypothesis_fingerprint"] = content_fingerprint(
         frozen["hypotheses"], frozen["steering"])
     return ObjectiveSpec(
         path=PATH, tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 1e12},
         target_branch="acoustic", target_search_source="compiler",
-        energy_search_meV=DOMAIN, **frozen)
+        energy_search_meV=DOMAIN, scan_window_eig=_o41_config(), **frozen)
 
 
 def _master(hkl, **overrides):

@@ -1,8 +1,14 @@
-"""Live, exact-source adapter for diagnostic scan-window EIG scoring.
+"""Live, exact-source adapter for scan-window EIG scoring.
 
 This is the sole seam allowed to combine read-only workspace artifacts with the pure
 ``isar.eig`` scoring modules.  It resolves a completed master only through the atomic session key
 and detector frozen on the proposal; it never searches by Q and never substitutes a newer master.
+
+Module name is historical: the diagnostic-only "shadow" mode this was written for was retired in
+SCENE-4 PR 4.4 (D3) — everything below now serves the sole remaining scoring regime,
+``scan_window_eig_mode == "authoritative"``. Kept unrenamed (rather than split across a rename)
+because the import churn across the module's ~4 call sites did not clearly buy back clarity; a
+future touch that already has reason to move these functions may rename the module then.
 """
 from __future__ import annotations
 
@@ -255,7 +261,7 @@ def score_proposal_shadow_inventory(
     inventory = getattr(proposal, "scan_design_inventory", None)
     if inventory is None:
         return proposal
-    if inventory.context.scan_window_eig_mode not in {"shadow", "authoritative"}:
+    if inventory.context.scan_window_eig_mode != "authoritative":
         proposal.scan_design_inventory = inventory.with_shadow_scoring(
             ScanDesignShadowScoring.not_requested())
         return proposal
@@ -309,8 +315,7 @@ def score_proposal_realized_pair(
 def attach_unavailable_shadow(proposal: Any, reason_code: str, *, error: str | None = None) -> Any:
     """Fail open without minting source identities or changing the selected candidate."""
     inventory = getattr(proposal, "scan_design_inventory", None)
-    if inventory is None or inventory.context.scan_window_eig_mode not in {
-            "shadow", "authoritative"}:
+    if inventory is None or inventory.context.scan_window_eig_mode != "authoritative":
         return proposal
     diagnostics = {} if error is None else {"error": str(error)}
     proposal.scan_design_inventory = inventory.with_shadow_scoring(

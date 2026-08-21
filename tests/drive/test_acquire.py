@@ -710,15 +710,28 @@ def test_enumerate_actions_normalizes_the_driver_inserted_candidate_index():
 
 # --- scan-window EIG mode: shadow plumbing must not move a single neutron ------------------------
 
-def _eig_objective(mode: str):
+def _o41_config():
+    """A valid restricted O41 profile — required by ``ObjectiveSpec.__post_init__`` for any
+    objective that freezes ``scan_window_eig_mode="authoritative"`` (SCENE-4 PR 4.4, D1/D3), even
+    though nothing in this file's ``propose_scan``/``plan_actions`` path ever runs O41 selection."""
+    import runpy
+    from pathlib import Path
+    return runpy.run_path(str(
+        Path(__file__).parents[1] / "eig" / "test_o41_authority.py"))["_config"]()
+
+
+def _eig_objective(mode: str, *, with_profile: bool = False):
+    """``with_profile`` is opt-in: the profile-less "authoritative requires the exact O41 profile"
+    refusal test below needs the default (no profile) to still raise at construction."""
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
     frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": mode}
     frozen["hypothesis_fingerprint"] = content_fingerprint(
         frozen["hypotheses"], frozen["steering"])
+    kwargs = {"scan_window_eig": _o41_config()} if with_profile else {}
     return ObjectiveSpec.segment(
         q_start=(2, 0, 0), q_end=(2, 0.2, 0), step_rlu=0.1, tolerance_meV=0.5,
         budget={"kind": "neutrons", "amount": 1e12},
-        target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen)
+        target_branch="optic", energy_search_meV=(-2.0, 12.0), **frozen, **kwargs)
 
 
 def _request(proposal):
@@ -730,7 +743,7 @@ def _request(proposal):
 
 def _proposal_with_divergent_evidence_revisions(mode: str):
     """Build through the real proposal seam with distinct transition and master identities."""
-    objective = _eig_objective(mode)
+    objective = _eig_objective(mode, with_profile=(mode == "authoritative"))
     model = acq_model.fit([])
     plan = acq.plan_actions(
         objective, model, [], resolution_info={"fwhm_dE": 0.8}, budget_state={})
@@ -757,7 +770,7 @@ def test_shadow_mode_emits_the_identical_request_as_the_off_mode_legacy_path():
     # the frozen policy snapshot).  Neutrons, window, and ordering must not move at all.
     off = acq.propose_scan(_eig_objective("off"), acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
     shadow = acq.propose_scan(
-        _eig_objective("shadow"), acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
+        _eig_objective("authoritative", with_profile=True), acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
 
     assert _request(off) == _request(shadow)
     assert (off.meta["authoritative_evidence_revision"]
@@ -777,12 +790,12 @@ def test_shadow_mode_emits_the_identical_request_as_the_off_mode_legacy_path():
     assert shadow.scan_design_inventory.selection_basis == (
         "shadow_legacy_control_unscored")
     assert off.scan_design_inventory.selection_basis == "legacy_control_off"
-    assert shadow.scan_design_inventory.context.scan_window_eig_mode == "shadow"
+    assert shadow.scan_design_inventory.context.scan_window_eig_mode == "authoritative"
 
 
 def test_shadow_exact_source_uses_master_revision_without_reminting_proposal_identity():
     off = _proposal_with_divergent_evidence_revisions("off")
-    shadow = _proposal_with_divergent_evidence_revisions("shadow")
+    shadow = _proposal_with_divergent_evidence_revisions("authoritative")
 
     assert _request(off) == _request(shadow)
     assert off.meta["authoritative_evidence_revision"] == "transition-revision"
@@ -803,7 +816,7 @@ def test_shadow_exact_source_uses_master_revision_without_reminting_proposal_ide
 
 def test_shadow_candidates_share_the_selected_action_q_kind_and_reason():
     proposal = acq.propose_scan(
-        _eig_objective("shadow"), acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
+        _eig_objective("authoritative", with_profile=True), acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
     selected = proposal.scan_design_inventory.selected_candidate
 
     for candidate in proposal.scan_design_inventory.candidates:

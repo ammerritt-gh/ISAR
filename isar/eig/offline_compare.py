@@ -223,9 +223,16 @@ def offline_shadow_context_transform(
     context: ScanDesignContext,
     generator_config_fingerprint: str,
 ) -> Mapping[str, Any]:
+    """Return the scored counterfactual of ``context`` for offline corpus comparison.
+
+    Named "shadow" historically: the diagnostic-only "shadow" mode this targeted was retired in
+    SCENE-4 PR 4.4 (D3), and this now targets "authoritative" — the sole remaining mode whose
+    scan-design inventory generates and scores the alternative candidate family. The revision
+    string (``COUNTERFACTUAL_TRANSFORM_REVISION``) is a persisted contract and is unchanged.
+    """
     if not isinstance(context, ScanDesignContext) or not _valid_fp(generator_config_fingerprint):
         raise TypeError("context and generator configuration fingerprint are required")
-    shadow = replace(context, scan_window_eig_mode="shadow")
+    shadow = replace(context, scan_window_eig_mode="authoritative")
     before, after = context.to_dict(), shadow.to_dict()
     changed = sorted(key for key in before if before[key] != after[key])
     if changed not in ([], ["scan_window_eig_mode"]):
@@ -354,7 +361,7 @@ def _validate_ready_evidence(transform: Mapping[str, Any], pair: Mapping[str, An
         or not isinstance(after, Mapping)
         or _fp("scan_design_context", before) != transform["persisted_context_fingerprint"]
         or _fp("scan_design_context", after) != transform["offline_context_fingerprint"]
-        or after.get("scan_window_eig_mode") != "shadow"
+        or after.get("scan_window_eig_mode") != "authoritative"
         or tuple(transform["changed_fields"]) not in ((), ("scan_window_eig_mode",))
     ):
         raise ValueError("ready case context transform is invalid")

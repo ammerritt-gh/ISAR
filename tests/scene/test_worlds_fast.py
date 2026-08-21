@@ -28,7 +28,7 @@ def test_registry_covers_the_declared_suite():
     expected = {
         "canonical", "no_acoustic", "pure_elastic", "blank", "unknown_extra",
         "endpoint_under_bragg", "crossing", "as_warm", "as_cold",
-        "off_lattice_elastic", "mismatch", "faint",
+        "off_lattice_elastic", "mismatch", "faint", "context_probe",
     }
     assert set(worlds.WORLDS) == expected
 

@@ -128,8 +128,11 @@ class CampaignDock(QDockWidget):
         self._tier = QComboBox(body)
         self._tier.addItems(["deterministic", "mcstas"])
         self._eig_mode = QComboBox(body)
+        # userData None is the inherit case: OMITS --scan-window-eig-mode so the compiler default
+        # governs. "off"/"authoritative" are explicit operator commands and are always emitted —
+        # selecting Off must never silently become an authoritative campaign (owner ruling TRI-STATE).
+        self._eig_mode.addItem("Compiler default — authoritative for targeted campaigns", None)
         self._eig_mode.addItem("Off", "off")
-        self._eig_mode.addItem("Shadow — observe only", "shadow")
         self._eig_mode.addItem("Authoritative — restricted O41", "authoritative")
         self._eig_mode.setToolTip(
             "Authoritative mode is restricted to the exact 128-simulation, 8-block O41 profile "
@@ -315,8 +318,11 @@ class CampaignDock(QDockWidget):
         tier = str(form.get("tier", "deterministic"))
         if self._tier.findText(tier) >= 0:
             self._tier.setCurrentText(tier)
-        eig_mode = str(form.get("scan_window_eig_mode", "off"))
-        eig_index = self._eig_mode.findData(eig_mode)
+        raw_mode = form.get("scan_window_eig_mode")
+        # A missing/None-valued key means "never explicitly set" — the compiler-default entry
+        # (index 0, userData None), not the "off" entry; only an explicit string selects one of
+        # the operator-command entries.
+        eig_index = 0 if raw_mode is None else self._eig_mode.findData(str(raw_mode))
         self._eig_mode.setCurrentIndex(eig_index if eig_index >= 0 else 0)
         self._budget.setText(str(form.get("budget", "")))
         self._analysis_limit.setText(str(form.get("analysis_limit", "")))
@@ -395,7 +401,7 @@ class CampaignDock(QDockWidget):
                             budget=self._budget.text().strip() or None,
                             analysis_limit=self._analysis_limit.text().strip() or None,
                             seed=self._seed.value(),
-                            scan_window_eig_mode=str(self._eig_mode.currentData()))
+                            scan_window_eig_mode=self._eig_mode.currentData())
         if not self._operations.request_drive(opts, env=dict(self._llm_env())):
             self._status_line.setText("could not start — workspace not ready")
             return
@@ -415,12 +421,12 @@ class CampaignDock(QDockWidget):
             opts = DriveOptions(program_path=self._program_path.text().strip(),
                                 tier=self._tier.currentText(), budget=budget,
                                 analysis_limit=analysis_limit, seed=self._seed.value(),
-                                scan_window_eig_mode=str(self._eig_mode.currentData()))
+                                scan_window_eig_mode=self._eig_mode.currentData())
         else:
             opts = DriveOptions(goal=self._goal.toPlainText().strip(),
                                 tier=self._tier.currentText(), budget=budget,
                                 analysis_limit=analysis_limit, seed=self._seed.value(),
-                                scan_window_eig_mode=str(self._eig_mode.currentData()))
+                                scan_window_eig_mode=self._eig_mode.currentData())
         if not hasattr(self._operations, "request_drive_compile"):
             self._status_line.setText("could not compile objective — coordinator is unavailable")
             return

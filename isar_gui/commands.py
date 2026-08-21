@@ -136,7 +136,10 @@ class DriveOptions:
     calibration: str | None = None
     worker: bool = True               # False => --no-worker (fresh subprocess per iteration)
     control_token: str | None = None
-    scan_window_eig_mode: str = "off" # off | shadow | authoritative
+    # None => inherit the compiler default (the flag is OMITTED); "off" / "authoritative" are
+    # explicit operator commands and ALWAYS emit --scan-window-eig-mode, even when the value
+    # happens to equal what the compiler would have picked anyway (never ignore a user command).
+    scan_window_eig_mode: str | None = None
 
 
 def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list[str]:
@@ -153,8 +156,8 @@ def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list
         raise ValueError(
             "exactly one campaign source must be set (goal, program_path, compiled_program_path, "
             f"or resume_latest); got {n_sources}")
-    if opts.scan_window_eig_mode not in {"off", "shadow", "authoritative"}:
-        raise ValueError("scan_window_eig_mode must be off, shadow, or authoritative")
+    if opts.scan_window_eig_mode not in {None, "off", "authoritative"}:
+        raise ValueError("scan_window_eig_mode must be None, off, or authoritative")
 
     cmd = [python, "-m", "isar", "drive"]
     if opts.goal is not None:
@@ -182,7 +185,10 @@ def build_drive_command(python: str, workspace: str, opts: DriveOptions) -> list
         cmd += ["--seed", str(opts.seed)]
     if opts.control_token:
         cmd += ["--control-token", opts.control_token]
-    if (opts.scan_window_eig_mode != "off"
+    # None inherits the compiler default and omits the flag. "off"/"authoritative" are explicit
+    # operator commands and are always emitted — never silently dropped — except a resume or an
+    # already-confirmed compiled program, whose mode is frozen with the objective already.
+    if (opts.scan_window_eig_mode is not None
             and not (opts.resume_latest or opts.compiled_program_path)):
         cmd += ["--scan-window-eig-mode", opts.scan_window_eig_mode]
     if not opts.worker:
@@ -195,8 +201,8 @@ def build_compile_command(python: str, opts: DriveOptions, output_path: str, *,
     """Compile goal/program authoring input against a ready workspace without TAVI contact."""
     if (opts.goal is None) == (opts.program_path is None):
         raise ValueError("compile needs exactly one of goal or program_path")
-    if opts.scan_window_eig_mode not in {"off", "shadow", "authoritative"}:
-        raise ValueError("scan_window_eig_mode must be off, shadow, or authoritative")
+    if opts.scan_window_eig_mode not in {None, "off", "authoritative"}:
+        raise ValueError("scan_window_eig_mode must be None, off, or authoritative")
     cmd = [python, "-m", "isar", "drive"]
     cmd += (["--goal", opts.goal] if opts.goal is not None
             else ["--program", str(opts.program_path)])
@@ -209,7 +215,7 @@ def build_compile_command(python: str, opts: DriveOptions, output_path: str, *,
         cmd += ["--budget", opts.budget]
     if opts.analysis_limit:
         cmd += ["--analysis-limit", opts.analysis_limit]
-    if opts.scan_window_eig_mode != "off":
+    if opts.scan_window_eig_mode is not None:
         cmd += ["--scan-window-eig-mode", opts.scan_window_eig_mode]
     return cmd
 

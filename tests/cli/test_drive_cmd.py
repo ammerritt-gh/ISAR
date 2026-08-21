@@ -274,13 +274,19 @@ def test_goal_start_fingerprint_is_sha256_of_goal_text(tmp_path, monkeypatch):
     assert len(source["campaign_authoring_fingerprint"]) == 64
 
 
-def test_shadow_mode_override_is_frozen_into_new_compact_spec(tmp_path, monkeypatch):
-    captured = _stub_run_campaign(monkeypatch)
-    assert main([
-        "drive", "--program", str(_program_file(tmp_path)),
-        "--workspace", str(tmp_path / "ws"), "--scan-window-eig-mode", "shadow",
-    ]) == 0
-    assert captured[0][0].steering["scan_window_eig_mode"] == "shadow"
+def test_shadow_mode_cli_choice_is_retired(tmp_path, monkeypatch, capsys):
+    """SCENE-4 PR 4.4, D3: "shadow" is retired — the CLI narrows its own ``choices`` rather than
+    accepting it and refusing downstream, so argparse itself rejects it (exit code 2) before any
+    objective is built. Was test_shadow_mode_override_is_frozen_into_new_compact_spec, which pinned
+    the opposite (that "shadow" compiled cleanly)."""
+    _stub_run_campaign(monkeypatch)
+    with pytest.raises(SystemExit) as raised:
+        main([
+            "drive", "--program", str(_program_file(tmp_path)),
+            "--workspace", str(tmp_path / "ws"), "--scan-window-eig-mode", "shadow",
+        ])
+    assert raised.value.code == 2
+    assert "invalid choice: 'shadow'" in capsys.readouterr().err
 
 
 def test_mode_override_rebinds_the_card_eig_policy_to_the_new_objective_scope(
@@ -343,7 +349,7 @@ def test_resume_rejects_mode_that_conflicts_with_frozen_objective(
     _stub_run_campaign(monkeypatch)
     assert main([
         "drive", "--resume-latest", "--workspace", str(workspace),
-        "--scan-window-eig-mode", "shadow",
+        "--scan-window-eig-mode", "authoritative",
     ]) == 2
     assert "conflicts with the frozen objective (off)" in capsys.readouterr().err
 
@@ -612,8 +618,12 @@ def test_compact_spec_compile_only_freezes_inline_card_eig_policy(tmp_path, monk
 
     monkeypatch.setattr(card_module, "load_policy", lambda _path: _Policy())
     out = tmp_path / "compact-envelope.json"
+    # This card mock declares an EMPTY scan-window EIG policy set on purpose (asserted below), so
+    # the objective must ask for "off" explicitly: the compiler's authoritative default requires
+    # exactly one O41 policy, which an empty set cannot satisfy.
+    payload = {**_GOAL_SPEC, "steering": {"scan_window_eig_mode": "off"}}
     assert main([
-        "drive", "--program", str(_program_file(tmp_path)), "--workspace", str(workspace),
+        "drive", "--program", str(_program_file(tmp_path, payload)), "--workspace", str(workspace),
         "--compile-only", str(out),
     ]) == 0
     objective = json.loads(out.read_text(encoding="utf-8"))["steps"][0]["payload"]

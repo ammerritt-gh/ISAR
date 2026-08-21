@@ -352,7 +352,11 @@ def _context(*, q: tuple[float, float, float], target_energy: float,
         effective_exposure=None, submitted_exposure=None, production_scans=1,
         last_submitted_ncount=ncount, runtime_max_neutrons_per_point=None,
         runtime_queue_neutron_budget=None, budget_kind="neutrons", budget_amount=1e12,
-        budget_spent=0.0, scan_window_eig_mode="shadow")
+        # SCENE-4 PR 4.4, D3: "shadow" is retired; this fixture generator's whole purpose is
+        # exercising the scoring machinery (score_proposal_shadow_inventory / _score_shadow_proposal
+        # below), which now only runs under "authoritative" — the frozen slice-8 evidence these
+        # fixtures feed is unaffected (the enum is not the data).
+        budget_spent=0.0, scan_window_eig_mode="authoritative")
 
 
 def _policy(scope: str) -> QoIDistinctionPolicySet:

@@ -44,7 +44,7 @@ def test_shadow_mode_reports_the_planned_counts_and_the_first_blocker(tmp_path):
 
     assert loop._log_eig_decision(_cfg(tmp_path), proposal, it=3) is True
     payload, = _events(tmp_path)
-    assert payload["iter"] == 3 and payload["mode"] == "shadow"
+    assert payload["iter"] == 3 and payload["mode"] == "authoritative"
     assert payload["hkl"] == [proposal.h, proposal.k, proposal.l]
     assert payload["ready"] is False and payload["blocker"]
     assert payload["point_count_basis"] == "planned_inventory"
@@ -116,7 +116,7 @@ def test_an_iteration_without_scan_window_eig_says_nothing(tmp_path):
 def test_a_broken_payload_is_reported_and_never_raised(tmp_path):
     """The operator line is commentary: it may fail, but it may not take the campaign with it."""
     broken = SimpleNamespace(scan_design_inventory=SimpleNamespace(
-        context=SimpleNamespace(scan_window_eig_mode="shadow")))
+        context=SimpleNamespace(scan_window_eig_mode="authoritative")))
 
     assert loop._log_eig_decision(_cfg(tmp_path), broken, it=2) is True
     assert _events(tmp_path) == []

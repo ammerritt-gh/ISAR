@@ -194,6 +194,28 @@ def faint(seed: int = 1012):
     )
 
 
+def context_probe(seed: int = 1013):
+    """Canonical world plus a faint off-lattice elastic anomaly at H = 2.5.
+
+    SCENE-4 PR 4.4 (D5): the physics half of the off-path/context-scan campaign world. The
+    anomaly sits off both zone centres and off both canonical branches — exactly the kind of
+    stray finding that motivates an operator, or a future producer, to take a diagnostic scan off
+    the declared canonical path before trusting the region. Nothing downstream reads its
+    identity; this world exists for the campaign-level claim (topology survives an off-path
+    arena, the campaign continues), not for a new adversarial verdict question.
+    """
+    anomaly = config.ComponentTruth(
+        kind="elastic", identity="context_anomaly", peak_counts=FAINT,
+        q_centers=(2.5,), q_fwhm=BRAGG_FWHM,
+    )
+    return _world(
+        "context_probe", seed,
+        "canonical world (elastic zone-centre line + acoustic + optic) plus a faint off-lattice "
+        "elastic anomaly at H=2.5, motivating an off-path diagnostic scan",
+        [_bragg(), _mode(ACOUSTIC, "acoustic"), _mode(OPTIC, "optic"), anomaly],
+    )
+
+
 WORLDS: dict[str, Callable[..., tuple[config.WorldConfig, config.WorldTruth]]] = {
     "canonical": canonical,
     "no_acoustic": no_acoustic,
@@ -207,6 +229,7 @@ WORLDS: dict[str, Callable[..., tuple[config.WorldConfig, config.WorldTruth]]] =
     "off_lattice_elastic": off_lattice_elastic,
     "mismatch": mismatch,
     "faint": faint,
+    "context_probe": context_probe,
 }
 
 

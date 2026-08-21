@@ -122,7 +122,7 @@ area.
 | Card / schema across facilities | `docs/SCHEMA_LANDSCAPE.md` |
 | Flag adjudication (opt-in LLM) | `docs/ADJUDICATION.md` |
 | The autonomous driver (`isar drive`) | `docs/design/steering.md` |
-| Same-action scan-window EIG (status: ARCHITECTURE §15) | `docs/design/eig.md`, then `docs/design/steering.md` |
+| Same-action scan-window EIG (Implemented, authoritative default-on at compile time since SCENE-4.4 — status: ARCHITECTURE §15) | `docs/design/eig.md`, then `docs/design/steering.md` |
 | Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
 | The SCENE program — scene layer, catalogue, target-free discovery (status: ARCHITECTURE §15) | `docs/design/scene.md` |
 | Campaign diagnostic report | `docs/design/reporting.md` |

@@ -13,8 +13,8 @@ adds a sibling generator there and is packaged by exactly this code.
 This version generates the bounded family of conventional uniform windows for the selected action and
 persists all of them.  It does **not** calculate EIG, score, or rank: the legacy candidate is always
 generated with the exact historical arithmetic and is always the selected/executed one.  Which
-candidates are generated is governed by ``scan_window_eig_mode`` (``off`` → legacy only, ``shadow`` →
-the whole family, unscored).
+candidates are generated is governed by ``scan_window_eig_mode`` (``off`` → legacy only,
+``authoritative`` → the whole family, unscored here; scoring and selection happen downstream).
 """
 from __future__ import annotations
 
@@ -73,6 +73,7 @@ from isar.predictive import (
 from isar.schema.hypotheses import (
     MAX_NCOUNT_PER_SCAN,
     SCAN_WINDOW_EIG_MODES,
+    _validate_scan_window_eig_mode,
 )
 from isar.schema.eig_shadow import (
     STATUS_COMPLETE as SHADOW_STATUS_COMPLETE,
@@ -104,6 +105,9 @@ OBJECTIVE_PROJECTION_SCHEMA = TARGET_PROJECTION_SCHEMA
 STEERING_REGIME = "physical_inference"
 
 SELECTION_BASIS_LEGACY_CONTROL_OFF = "legacy_control_off"
+# Persisted contract values (written into inventory/event records) — the "shadow" name is
+# historical: since SCENE-4 PR 4.4 (D3) these two bases cover the (only) scoring regime,
+# authoritative, and are never renamed to avoid silently breaking records that already carry them.
 SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED = "shadow_legacy_control_unscored"
 SELECTION_BASIS_SHADOW_LEGACY_CONTROL_SCORED = "shadow_legacy_control_scored"
 
@@ -204,7 +208,10 @@ class ScanDesignContext:
     policy_max_points: int
     runtime_max_points: int
     tolerance_meV: float
-    scan_window_eig_mode: str = "off"
+    # SCENE-4 PR 4.4, D1: no module default — every caller freezes an explicit mode (the compiled
+    # objective's steering, or a test pinning the behaviour it exercises); a silent "off" here is
+    # exactly the read-time default the compile-time flip is meant to remove.
+    scan_window_eig_mode: str
     minimum_target_support_points: int = 6
     quicklook_ncount: int = QUICKLOOK_NCOUNT
     production_ncount: int = PRODUCTION_NCOUNT
@@ -234,10 +241,7 @@ class ScanDesignContext:
             raise ValueError("scan-design target_band must contain mean and sigma")
         if self.rival_band is not None and len(self.rival_band) != 2:
             raise ValueError("scan-design rival_band must contain mean and sigma")
-        if self.scan_window_eig_mode not in SCAN_WINDOW_EIG_MODES:
-            raise ValueError(
-                "scan_window_eig_mode must be one of "
-                f"{', '.join(SCAN_WINDOW_EIG_MODES)}")
+        _validate_scan_window_eig_mode(self.scan_window_eig_mode)
 
     def to_dict(self) -> dict:
         """Strict-JSON view used for audit and the context fingerprint."""
@@ -602,9 +606,10 @@ class ScanDesignInventory:
         if self.inventory_version == SCAN_DESIGN_INVENTORY_SCHEMA_V2:
             if scoring is not None:
                 raise ValueError("historical /2 inventories cannot carry Slice 6 evidence")
-            expected_basis = (SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED
-                              if self.context.scan_window_eig_mode == "shadow"
-                              else SELECTION_BASIS_LEGACY_CONTROL_OFF)
+            # /2 predates Slice 6 (shadow/authoritative scoring) entirely, so it was only ever
+            # built under "off" — the retired "shadow" arm this used to branch on is deleted
+            # (SCENE-4 PR 4.4, D3); scan_window_eig_mode can no longer be "shadow" at all.
+            expected_basis = SELECTION_BASIS_LEGACY_CONTROL_OFF
         else:
             if scoring is None:
                 scoring = (ScanDesignShadowScoring.not_requested()
@@ -619,7 +624,7 @@ class ScanDesignInventory:
                 expected_basis = SELECTION_BASIS_LEGACY_CONTROL_OFF
             else:
                 if scoring.status == "not_requested":
-                    raise ValueError("shadow-mode scan design must record a scoring outcome")
+                    raise ValueError("authoritative-mode scan design must record a scoring outcome")
                 expected_basis = (
                     SELECTION_BASIS_SHADOW_LEGACY_CONTROL_SCORED
                     if scoring.status in {SHADOW_STATUS_COMPLETE, SHADOW_STATUS_PARTIAL}
@@ -1000,15 +1005,16 @@ def design_scan_windows(
 ) -> ScanDesignInventory:
     """Return the scan-design inventory for ``context`` under its frozen EIG mode.
 
-    ``off`` designs the legacy window alone; ``shadow`` additionally generates and persists the
-    alternative uniform-window family.  In both modes the legacy candidate is the selected one and
-    the emitted request is identical — nothing here scores or ranks.
+    ``off`` designs the legacy window alone; ``authoritative`` additionally generates and persists
+    the alternative uniform-window family for scoring.  In both modes the legacy candidate is the
+    selected one here and the emitted request is identical — nothing in *this* function scores or
+    ranks (scoring is a later step, and may go on to select the alternative under authoritative).
     """
     legacy = _legacy_candidate(context)
     candidates = [legacy]
     refusals: list[ScanDesignRefusal] = []
 
-    if context.scan_window_eig_mode in {"shadow", "authoritative"}:
+    if context.scan_window_eig_mode == "authoritative":
         domain = authorized_domain(context, config)
         by_identity: dict[tuple[str, tuple[float, ...], int], int] = {
             _dedup_identity(legacy): 0}
@@ -1030,7 +1036,7 @@ def design_scan_windows(
             candidates.append(candidate)
 
     basis = (SELECTION_BASIS_SHADOW_LEGACY_CONTROL_UNSCORED
-             if context.scan_window_eig_mode in {"shadow", "authoritative"}
+             if context.scan_window_eig_mode == "authoritative"
              else SELECTION_BASIS_LEGACY_CONTROL_OFF)
     return ScanDesignInventory(
         context=context,

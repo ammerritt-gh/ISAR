@@ -3,6 +3,8 @@ This is a USER-owned document outlinining what ISAR should be able to *do*. Some
 # Auditing
 [TRANSCRIPT] ISAR exists to serve scientific interest. Thus, every scientific claim that it makes, whether that's about data or the parameters of a model, a fit, anything, must be completely auditable, never deleted, and made consumable for outside scientists. ISAR's workings, by which I mean things like how it chooses which points to scan, how it chooses which models are true or false, how it actually goes and conducts a campaign, are only diagnostic audits, in that we need to know how they work to tune it and understand the mechanisms. But there is no situation where somebody will claim that there is a scientific mistake from how ISAR conducted a campaign, because as long as the measurements are valid, then those are true things, and we can back out exactly what happened at the machine. Fits can be done by ISAR or other methods and be valid either way, and having the fits auditable from ISAR is good because then they can be shared and proven that ISAR did it correctly, and we don't have to redo the work. But how ISAR decided which point to scan is not as important because a wrong answer here changes how an experiment was conducted, and this may be something the user doesn't like, but it's not something that an external reviewer would ever think comprises scientific misconduct or anything like this. If ISAR completely lost its logs, and we had no record of why it chose anything, only the scans, it would still be a perfectly valid experiment, and valid for any paper. It is still helpful for us to know how it makes its decisions for us to diagnose issues and understand that it's doing statistically correct things, but it does not necessarily keep this for external review or be perfectly compatible, perfectly auditable with that, only enough for our purposes and what others may want to know.
 
+ISAR never ignores a user command, it at best logs an exception or a warning, and proceeds anyway, true physical limits (e.g. machine limits) notwithstanding.
+
 # Collecting Data
 [TRANSCRIPT] ISAR needs a few different ways to collect data. The first way is to point it at a set folder or file or other directory from which it can collect data files there and perform any work, and these are fixed, so it's one-shot inputs and then work with the files. Or ISAR can be pointed at a particular file or directory for output files that are part of an ongoing experiment and watch that location for new incoming data and then bring that data into its provenance as well. So it's acting now as a watchdog and automatically works while an experiment is ongoing. And of course, ISAR can talk directly to TAVI and get simulated data from TAVI quickly that way. And it may be possible in the future for ISAR to link directly with an experiment and get the outputs automatically there without having to go through the intermediate data files. And it should still check in that case that the data files and its output match when it can, but it may get additional information or a nicer format that way.
 
@@ -244,6 +246,26 @@ order to prove anything there."
 Other people should eventually use ISAR, and the how-to-use-it door is a standing check on the
 product: "we are making it something that people can use, not just something that can run on
 its own and prove to itself what it does in a circular logic."
+
+### Fits are the human-readability layer, not the proof layer (→ "Data Analysis" or the hypothesis-map section)
+
+2026-08-20, from the walkthrough: "Being able to fit e.g. a phonon dispersion or linewidth *is*
+a very useful thing, but I would put this into a different, later step: making the data
+human-readable. Pure intensity charts are not that convincing or easy to parse; being able to
+have ISAR prove by intensity↔hypothesis and then later produce a detailed analysis for human
+consumption is still very helpful." Refines the hypothesis-map hierarchy above: the map is
+challenged by intensity; parametric fits are a downstream *presentation and analysis product*
+for humans, not what the proof rests on.
+
+### Confidence is a user temperament; ship decent defaults (→ "Automated Scans")
+
+2026-08-20, from the walkthrough: the wrong-peak question "is a trade-off, efficiency vs.
+paranoia: the overconfident one is very efficient *if they're right*, and the paranoid one is
+better *if they're wrong*. So it's about tuning confidence, and that's not something we can
+*choose* for a user necessarily, but it is something we can ship decent defaults for." The
+missing mechanism, in the owner's words: a way for ISAR to think "I need to do some survey
+scans here and there, just in case, because I *think* I've got a good answer but I don't
+*know*."
 
 ### Building now; release discipline later, deliberately (→ "Future direction")
 

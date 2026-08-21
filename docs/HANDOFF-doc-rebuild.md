@@ -52,7 +52,9 @@ rationale for statistical-method choices is first-class; rationale for steering 
   exposure-basis spike's evidence into its Predictive-artifact rationale.
 - **Slice D (scene + plans) — DONE 2026-08-20 (`9f33b80`):** SCENE_DESIGN.md → design/scene.md;
   the four live plans → docs/plans/ (SCENE4_EXECUTION_PLAN.md, speedup.md, background.md,
-  stats-audit.md), owner/exit-criteria now test-enforced there.
+  stats-audit.md), owner/exit-criteria now test-enforced there. SCENE4_EXECUTION_PLAN.md itself
+  was deleted 2026-08-21 (SCENE-4.4, H22) per its own exit criteria, after an absorption check into
+  `design/scene.md`.
 - **Slice E (gui/reporting/statistics) — DONE 2026-08-20:** GUI_DESIGN.md → design/gui.md;
   CAMPAIGN_DIAGNOSTIC_SPEC.md → design/reporting.md; **STATS_PRIMER.md deliberately stays at
   docs/STATS_PRIMER.md** as the statistics design doc — the frozen `assets/` FINDINGS reports
@@ -91,13 +93,19 @@ rationale for statistical-method choices is first-class; rationale for steering 
 
 ## What remains before this handoff closes
 
-1. **The walkthrough** (End condition #4): a session where the agent explains ISAR end to end
-   using only these documents; the operator's confusion points become defects fixed on the
-   spot. This doubles as the currency pass on the user-tier docs (USING_ISAR, WORKED_EXAMPLE,
-   INTERPRETING_A_VERDICT, WORKSPACE_AND_CLI carry July/August verification dates and were
-   reference-repaired, not re-verified line-by-line, during the rebuild).
-2. **Operator homework:** the DESIGN_GOALS.md body rewrite (the Inbox is stocked, including the
-   2026-08-20 interview entries); the closeout list below.
+1. ~~The walkthrough~~ — **PASSED 2026-08-20.** Five acts delivered from the rebuilt documents
+   alone; operator sign-off: "It was honestly better than I thought... the doc cleanup was the
+   right move." Seven finding waves fixed on the spot (commits `b9aa549`..`9c28951` + the
+   equations sheet): STATS_PRIMER gained the plain-terms evidence explanation, the Bayes-gate
+   work/go-ahead split, the Γ delta-candidate ruling, the degenerate-limit rule, and §8 "The
+   equations, in one place"; steering.md gained its phonon-shape scope note, the §7.9 constants
+   reconciliation, and the paranoia-budget gap; two Inbox entries and five backlog items
+   (VAL-3/4, CAL-4/5, plus DEFECT-4 earlier) were filed. The user-tier docs behaved as script
+   without a single dead claim surfacing.
+2. **Operator-court items (all that remains):** the DESIGN_GOALS.md body rewrite (the Inbox now
+   carries the full 2026-08-20 harvest); the closeout list below; deleting the unversioned
+   `Science\AGENTS.md`/`CLAUDE.md` (item 11). When the closeout list is empty or carried
+   elsewhere by the operator, this handoff is deleted.
 3. **DEFECT-4** (TODO.md): pre-existing float-exact assert in
    tests/session/test_branch_persist.py — the one standing test failure, unrelated to docs.
 

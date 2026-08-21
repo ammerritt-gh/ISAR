@@ -10,13 +10,16 @@
 
 ## Status and boundary
 
-**EIG-4 is complete as of 2026-08-05; restricted Slice 9 runtime authority is implemented and opt-in.
-The O42 release review is retired by H1: the flip to default-on is a SCENE-4 deliverable, with SCENE
-world-suite coverage of the selection path as its acceptance evidence, not its trigger (as of SCENE-3
-the suite drives the scene layer, not steering). Authoritative selection is demonstrated, not merely implemented:
-the first real target-core grant executed in deterministic simulation on 2026-08-05 (O41 Test 10
-iter 28: Δ/pt 0.0069 nats at 3.31× the paired SE, a 17-point core against the 50-point legacy), and
-a cold-start campaign now selects the core on every scored decision.**
+**EIG-4 is complete as of 2026-08-05; Slice 9 runtime authority is implemented and default-on at
+compile time as of SCENE-4.4 (H22, 2026-08-21). The O42 release review is retired by H1: the flip
+to default-on landed as a SCENE-4 deliverable, with SCENE world-suite coverage of the selection
+path as its acceptance evidence, not its trigger (as of SCENE-3 the suite drives the scene layer,
+not steering). Authoritative selection is demonstrated, not merely implemented: the first real
+target-core grant executed in deterministic simulation on 2026-08-05 (O41 Test 10 iter 28: Δ/pt
+0.0069 nats at 3.31× the paired SE, a 17-point core against the 50-point legacy), and a cold-start
+campaign now selects the core on every scored decision. Same-action scan-window EIG is the
+**realization layer**: it decides the window/count for an already-selected scientific action and
+Q, never which action or Q to measure — that selection is the scene/question layer's.**
 
 **The polarity question is settled, and not by switching a default.** The intended end state was
 described as legacy the survey instrument for the first pass and EIG the follow-up, with a polarity
@@ -50,31 +53,42 @@ authenticated per label.
 The pure full-vector Poisson score kernel, the controlled offline Slice 5 counterfactual, Slice 6
 scored shadow inventories, and Slice 7 exact realized-request rescoring are implemented. The coherent
 Slice 8 V3 gate is owner-accepted under O41 and authorizes the implemented Slice 9 selector, which
-stays opt-in until SCENE-4 delivers the default-on flip, world-suite coverage of the selection path serving as its acceptance evidence (H1 retired the O42 release review). Candidate generation, predictive `/2`, arbitrary-grid evaluation, executed-grid identity, target
+is default-on at compile time as of SCENE-4.4 (H22, 2026-08-21), world-suite coverage of the selection path having served as its acceptance evidence (H1 retired the O42 release review). Candidate generation, predictive `/2`, arbitrary-grid evaluation, executed-grid identity, target
 projection, Slice 2 eligibility/QoI adaptation, the Slice 3 homogeneous design measure, the Slice 4
 caller-supplied score set, and Slice 5 completed-campaign comparison are implemented.
 Current acquisition ranks scientific actions and Q
 positions using expected counts already stored on each master's fitted grid. The
 `ScanDesignContext → ScanDesignInventory` seam now generates the bounded family of conventional
 uniform windows for the selected action and persists it under `report/scan-design/<sha256>.json`.
-In `shadow` mode it may attach diagnostic scores for exactly `legacy_uniform/1` and `target_core/1`;
-the `legacy_uniform/1` candidate is still generated with the exact historical arithmetic and is
-always the selected, finalized, and executed one.
+Historically, in the now-retired `shadow` mode it could attach diagnostic scores for exactly
+`legacy_uniform/1` and `target_core/1`; the `legacy_uniform/1` candidate was still generated with
+the exact historical arithmetic and was always the selected, finalized, and executed one. The
+scoring engine that mode wore did not go away — see the retirement note below.
 
 The `scan_window_eig_mode` steering knob (typed on `SteeringPolicy`, declared in the hand-edited
 policy card, frozen into `ScanDesignContext`) chooses the regime:
 
 - `off` — only the legacy candidate is designed; `selection_basis = legacy_control_off`.
-- `shadow` — the whole family is generated. Exact eligible source evidence scores only legacy versus
-  target-core and records `selection_basis = shadow_legacy_control_scored`; every unavailable or
-  scoreless comparison records `shadow_legacy_control_unscored`. The emitted request is identical to
-  `off` in either case.
 - `authoritative` — accepts only the exact O41 profile, authenticates the final legacy/target pair,
   durably records the decision, and may submit `target_core/1`. Invalid profiles fail loudly; absent,
   ineligible, stale, malformed, or unauthenticated evidence returns to the bounded legacy/non-EIG path.
-  This implementation is opt-in until SCENE-4 delivers the default-on flip (world-suite
-  coverage of the selection path is its acceptance evidence); H1 retired the O42 release
-  review that previously gated it.
+  This is **default-on at compile time as of SCENE-4.4** (H22, 2026-08-21): every newly compiled
+  targeted objective freezes an explicit mode, defaulting `authoritative`; an absent-mode historical
+  program refuses by name with a recompile message (H1 — no read-time defaulting); the runtime
+  `.get(..., "off")` fallback stays untouched so an old frozen program never silently changes
+  windows. H1 retired the O42 release review that previously gated the flip.
+
+**`shadow` is retired** (H22(b), 2026-08-21): it is no longer a member of
+`SCAN_WINDOW_EIG_MODES`. A frozen program or steering override naming it refuses through one
+shared validator with a message that names the retired mode and directs recompilation — a
+distinct branch from the generic enum-refusal message, pinned by test. The deletion followed an
+import/call-site map under one rule: a symbol is deletable only if every execution path reaching
+it required `scan_window_eig_mode == "shadow"`. Everything else — the scoring engine the
+`shadow`-named modules actually implement (`eig_shadow.py`, `isar/eig/shadow_inventory.py`,
+`realized_comparison.py`, `eig_authority.py`, and their schemas) — is retained by construction and
+now serves authoritative selection exclusively; those modules keep their historical names (~26
+import sites made renaming a poor trade) with docstrings stating so. Persisted-contract field
+names and event kinds (`shadow_legacy_control_scored`, `eig_shadow`, etc., below) are unchanged.
 
 `scan_window_eig` is optional in a targeted step payload: the reader treats an
 omitted block as the frozen no-policy/default-scoring configuration. This is a schema default, not
@@ -207,7 +221,7 @@ when absent, preserving historical variant payloads and fingerprints.
 Materializing `scan_window_eig_mode` in the resolved steering dict reminted every
 `hypothesis_fingerprint` once, and with it every derived scientific-action and content-addressed
 audit identity. The *physical* behavior — action class, Q sequence, window, step, count request, and
-emitted request — is unchanged in both `off` and `shadow`.
+emitted request — was unchanged in both `off` and the now-retired `shadow` mode.
 
 Two evidence revisions remain intentionally distinct. Proposal metadata and the finalized request
 fingerprint use the established transition-first `authoritative_evidence_revision` chain. The
@@ -248,7 +262,7 @@ The exact restricted profile is 128 simulations, 8 paired blocks, the two candid
 `legacy_uniform/1` and `target_core/1`, equal finalized per-point `ncount`, resolved score status,
 strictly fewer target points, and no candidate or score refusal. Independent adapter validation of
 both final clones adds one extra validation call per authoritative selection; this traffic is
-negligible compared with executing the scan and does not affect `off` or `shadow`.
+negligible compared with executing the scan and did not affect `off` or the now-retired `shadow` mode.
 
 ### Slice 9 bounded selection lifecycle
 

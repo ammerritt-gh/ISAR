@@ -454,7 +454,7 @@ def test_scan_design_events_use_typed_realization_and_acquisition_linked_recover
         design_prediction_mean_meV=5.0, design_prediction_sigma_meV=0.2, resolution_fwhm_meV=0.8,
         survey=False, energy_search_meV=(-2.0, 7.0), target_band=None, rival_band=None,
         widen_factor=1.0, positive_only=False, policy_max_points=100, runtime_max_points=200,
-        tolerance_meV=0.5, quicklook_ncount=1000, production_ncount=10000,
+        tolerance_meV=0.5, scan_window_eig_mode="off", quicklook_ncount=1000, production_ncount=10000,
         identity_detection_ncount=2000, dynamic_ncount=False, tolerance_margin=0.8,
         ncount_growth_cap=4.0, max_ncount_per_scan=1000000, diagnostic_halfwidth_meV=None,
         certification_halfwidth_meV=None, effective_exposure=None, submitted_exposure=None,

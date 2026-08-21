@@ -157,6 +157,22 @@ skips is recorded `unresolved` with its ceiling intact — kept out of the poste
 `dominated`, but *not* ruled out. If such a candidate's ceiling still reaches the best trusted
 evidence, the comparison is incomplete rather than close, and selection degrades rather than
 ranking on whichever candidates happened to be sampled.
+**In plain terms**, because this paragraph earns its keep at the podium: the likelihood at the
+best-fit point always improves when you add a knob, so it cannot judge between models. The
+*evidence* (marginal likelihood, Z) asks a different question — not "how well does this model fit
+at its best tuning?" but "how well does it fit *averaged over everything its parameters are
+allowed to do*?" A model with an extra peak spreads its bets over a much larger parameter
+volume; if the data does not need that peak, most of that volume fits badly and drags the
+average down. That is the Occam penalty — not AIC's flat fee of 2 per parameter, but the
+measured cost of the parameter volume the model wasted. The "validity ladder" is just three ways
+of computing that average, cheapest first: treat the likelihood peak as a Gaussian bump and
+integrate it analytically (Laplace — fine when the peak is clean); refit once with the prior in
+place first when the original fit never saw it (MAP, then Laplace); and when a Gaussian bump
+cannot be trusted at all — a parameter pinned at a bound, broken curvature — pay full price and
+explore the volume numerically (nested sampling). Each candidate's record names which rung
+produced its number. The selected structure is then simply the one holding the largest share of
+the total evidence.
+
 When evidence cannot be computed at all, or the set is incomplete in that sense, selection falls
 back to AIC and *says so* — the record names the lane (`aic_no_evidence_inputs` /
 `aic_all_evidence_invalid` / `evidence_budget_exhausted`), and a fallback-lane record is
@@ -197,6 +213,21 @@ separation this decisive agrees.)
 
 **FIG. 3.** Model selection on scan 507 of `mvp_zone_test16`; AIC table rendered at build time
 from `score_models`, never hand-typed.
+
+**Owner direction (2026-08-20, walkthrough ruling — work tracked as TODO CAL-5): the
+degenerate-limit rule.** When one candidate family contains another as a boundary case, the
+honest comparison is *free-versus-pinned within the family* — "did the parameter earn its
+freedom?" — never an evidence beauty contest between the free model and its own limit. Near the
+boundary the two coincide, the extra parameter direction is unconstrained, and the evidence
+difference measures the arbitrary prior volume of the unused parameter rather than anything in
+the data. A free fit that lands on the boundary resolves to the pinned candidate. First
+application: the **resolution lineshape**. Different machines have different resolution shapes
+(most Gaussian, some Lorentzian, some genuinely Voigt); the elastic-line fit currently always
+fits the full two-width Voigt. The candidate set becomes {Voigt(both widths free),
+Gaussian(`lorentz_fwhm`=0), Lorentzian(`gauss_fwhm`=0)}, evidence selects, and the record can
+honestly say "we checked the Voigt; the evidence supports the degenerate case" — without paying
+for parameters the instrument doesn't use. (Same pattern as §4's delta-function ruling: the
+degenerate case is a first-class candidate, not a failure mode or a silent pin.)
 
 When two genuinely different structures fit equally well, ISAR reports a **fork** — both
 answers — rather than averaging them into a single wrong number **[Implemented]**. Columns:
@@ -364,6 +395,17 @@ provisional band is honest where a 0.001 meV bar would be a lie. (Reporting the 
 interval would be the statistical equivalent of quoting C₆₆ from a dispersion slope the data
 never resolves: formally computable, physically meaningless.)
 
+**Owner direction (2026-08-20, walkthrough ruling — work tracked as TODO CAL-4):** accepting the
+collapse and reporting `resolution_limited` has quietly become a mark of pride, and it should
+not be — scientists route around a method's failure rather than dwelling in it. The proposed
+route: make "resolution-limited" a *candidate structure* instead of a failure mode — fit a
+zero-width line (a delta function, so the fitted shape is the resolution function itself) as an
+admissible structure beside the finite-Γ DHO, and let §2's evidence selection decide. When the
+delta wins, the honest deliverable is a positive statement — "Γ is not resolvable at this
+resolution," with an upper limit — rather than a pinned-bound fit with a degenerate interval.
+(The operator's previous analysis program instead pushed Γ away from the bound with a repulsive
+term; recorded as the alternative considered.)
+
 Verify:
 
 ```
@@ -450,9 +492,14 @@ agreement check is live as a per-scan trust signal of the §3.2 kind (`bayes_fre
 These samples are a Bayesian posterior under an optimizer-bound, data-dependent prior kernel.
 That makes the individual posterior interval a coherent conditional result under that kernel, but
 its `log_evidence` is not comparable across models or campaigns, and the current system is not a
-Bayesian model average. What remains **[Planned]** is the *licence*: prior normalization and
-sensitivity, all-model coverage including null, evidence stability, SBC/PPC, and calibration before
-any formal Bayesian model-average or authority claim. A physical row's `bayes_interval` remains
+Bayesian model average. What remains **[Planned]** is the *licence*, and it splits into two different kinds of waiting:
+the single-fit interval's promotion to a certifying rung needs the **coverage campaign** (TODO
+CAL-2) — the scoring machinery for it exists, so that gate is owner go-ahead plus compute, with
+one technical settle inside it (the `nlive` 250-vs-400 discrepancy on very-high-count scans);
+whereas any formal Bayesian model-average or evidence-comparison authority needs **real design
+and implementation work** (plans/stats-audit.md STAT-5): a scientific prior registry replacing
+the data-dependent box kernel, prior normalization and sensitivity, all-model coverage including
+the null, evidence-uncertainty propagation, SBC/PPC, and calibration. A physical row's `bayes_interval` remains
 diagnostic; §4.1 separately describes the legacy mixed master interval.
 
 Verify:
@@ -518,6 +565,85 @@ Three genuine weak points, each now the subject of a plan:
 
 Two of the three are unstarted. They are recorded here, not in a plan, so that a reader of the
 statistics contract learns the limitations without having to read three roadmaps.
+
+## 8. The equations, in one place
+
+The podium sheet (owner request, 2026-08-20 walkthrough): every statistical form the preceding
+chapters explain, stated once. Tags: **[code]** = transcribed from the implementation named
+beside it (authoritative for parameterization); **[def]** = the defining form the machinery
+realizes. `y` = counts, `f` = model expected counts.
+
+**Counting and cost (§1)**
+
+- Poisson: `P(n|mu) = mu^n e^(-mu) / n!`; stored variance `sigma = sqrt(N)`, with `sigma(0) = 0`
+  — no floor (convention D3). **[def]**
+- Baker–Cousins (the minimized cost) **[code — `analyze/estimators.py`]**:
+  `C = 2 * sum_i [ f_i - y_i + y_i ln(y_i/f_i) ]`, the `y=0` term exactly `f_i`.
+  Convention `errordef = 1`: the 1σ contour is `ΔC = 1`; `cost_per_dof = C / dof` reads like a
+  reduced χ².
+- The straddle (§1's identity) **[code]**: Neyman `sum (y-f)^2 / max(y,1)` minimizes (constant
+  rate) to the **harmonic mean**; modified Pearson `sum (y-f)^2 / f` to the **RMS**;
+  Baker–Cousins to the **arithmetic mean** — the two χ²'s provably bracket the likelihood
+  answer.
+
+**Lineshapes and physics gates (§2, ARCHITECTURE §7)**
+
+- DHO, Stokes side **[code — `analyze/lineshapes.py`]**:
+  `S(x) = A / [ (x - sqrt(w0^2 - G^2))^2 + G^2 ]` — a Lorentzian of HWHM `G` centred at the
+  damped frequency `sqrt(w0^2 - G^2)`; anti-Stokes is the mirror at `-sqrt(w0^2 - G^2)`.
+  Underdamping `w0^2 > G^2` is enforced (an overdamped proposal is penalized, not fit).
+- Detailed balance (Hard Rule 2) **[def]**: `I_AS / I_S = exp(-hbar w / k_B T)` — the
+  anti-Stokes amplitude is *derived*, never fit; admissibility of an anti-Stokes candidate is
+  gated on this before any fit. The fitted amplitude carries the thermal factor explicitly
+  (`n(w,T) + 1`, with `n = 1/(exp(hbar w / k_B T) - 1)`), so amplitude transport is physical
+  (ruling H4(a); `analyze/components.py`).
+- Resolution **[code — `analyze/lineshapes.py`]**: Gaussian and Lorentzian FWHM-parameterized;
+  Voigt via the Faddeeva function `V(x) = A * Re[w(z)] / (sigma sqrt(2 pi))` with
+  `z = ((x - c) + i gamma) / (sigma sqrt 2)`, `sigma = FWHM_G / (2 sqrt(2 ln 2))`,
+  `gamma = FWHM_L / 2`; pseudo-Voigt `eta*L + (1-eta)*G` for K=0 calibration. The fitted model
+  is `Voigt ⊗ DHO + elastic Voigt + flat BG` (`convolute_voigt_dho`). Degenerate-limit rule
+  (§2): Gaussian and Lorentzian are the pinned `FWHM_L = 0` / `FWHM_G = 0` members of the Voigt
+  family.
+
+**Selection (§2)**
+
+- Evidence: `Z_s = ∫ L(theta) pi(theta) d(theta)` **[def]**; selection posterior
+  `P(s) = pi_s Z_s / sum_s' pi_s' Z_s'`, uniform `pi` over admissible structures (ruling H4).
+- Laplace rung **[def]**: `ln Z ≈ ln L(th^) + ln pi(th^) + (k/2) ln 2pi - (1/2) ln det H`,
+  `H` the Hessian of `-ln(L pi)` at the optimum — the Gaussian-bump integral; refused on any
+  boundary-pinned fit (escalate to nested sampling). Dominance prune: a deferred candidate whose
+  evidence *ceiling* sits ≥ 100 nats below a trusted leader is recorded `dominated`, unsampled.
+- Diagnostics lane: `AIC = C + 2k`; Akaike weight `w_s = exp(-Delta_s/2) / sum exp(-Delta/2)`.
+- Soft dispersion prior (MAP, §5): the Gaussian belief `(prior_omega, prior_sigma)` enters the
+  minimized cost once as its `-2 ln` density (`(w0 - prior_omega)^2 / prior_sigma^2` up to the
+  convention constant); `cost` vs `posterior_cost` keeps the data-only value separate. **[def —
+  exact factor: `analyze/prior.py`]**
+
+**Certification (§§3–4)**
+
+- HESSE: `sigma^2` from the inverse Hessian of the cost at the minimum (the `ΔC = 1` parabola).
+  Never certifies. Profile: the `ΔC = 1` crossings of the profiled cost (asymmetric allowed).
+- Bootstrap (certifying): M refits of Poisson redraws of the best-fit model; the interval is the
+  central 68% of the refit distribution. Coverage is *measured*: with N = 200 truth-scored scans
+  per cell, binomial `SE = sqrt(p(1-p)/N) ≈ 0.033` at `p = 0.68`.
+- Pooled-master homogeneity gate (§4.1): seeded parametric-bootstrap Poisson **deviance** test,
+  `alpha = 0.01`, masks never removes.
+
+**Steering currency (§5 of `design/steering.md`, `design/eig.md`)**
+
+- Assignment honesty meter: Shannon entropy `H = - sum_b p_b ln p_b` over branch weights;
+  `H → ln 2` is a coin flip — report ambiguity, never bank the prior.
+- Forward model (exposure): `E[n_i] = I_i(theta) * (E_req * r) / f_ref` — requested per-point
+  exposure `E_req`, `r` = `request_to_exposure_factor` (request unit → exposure unit; 1.0 on
+  TAVI), `f_ref` = `fit_reference_exposure` (the amplitude basis, persisted from the fit). The
+  per-bin ledger `ratio_i = sum(M_i) / (n_members * f_ref)` carries heterogeneous illumination
+  exactly.
+- Expected information gain **[def]**: `EIG(a) = H[QoI] - E_(data ~ predictive)[ H[QoI | data] ]`
+  — the mutual information between the QoI (ω₀ bin + identity, targeted lane) and the data the
+  action would buy, computed over the model-weighted predictive ensemble; ranked per predicted
+  cost. Scan-window decision (ruling O43): the sign of the per-executed-point information delta
+  selects the candidate; within the two-sided band `|Delta| < 3 * SE_paired`, or on
+  partition-offset disagreement, no preference is expressed and the smaller purchase wins.
 
 ## Reproducing everything
 

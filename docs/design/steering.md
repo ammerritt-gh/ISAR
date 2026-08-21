@@ -24,6 +24,19 @@
 > give the citation; citation-confidence flags are collected at the end (the reference list is meant
 > to seed a reading library).
 
+**Scope and lineage — read before adopting this document's vocabulary.** The tracked-branch
+machinery described here (branches, the dispersion prior, "fit at a q", folds/forks) is
+**dispersive-sharp-mode shaped by construction** — it grew on phonons, and its dialect assumes a
+phenomenon whose intensity organizes into branches over q. That is one engine, not the system's
+worldview. The phenomenon-general doctrine is the owner's hypothesis-map hierarchy
+(DESIGN_GOALS, Inbox: the hypothesis map meets measured S(Q,ω)/QE space through **intensity**;
+ALL counts enter the map; **counts are authoritative, fits are disposable** derivations on top),
+and it is already constitutional in the scene layer: measurement-arena records stamp QE
+footprints from *measurement*, never from fit success, and identity is open-vocabulary and
+catalogue-driven in (Q,E) (`design/scene.md`). SCENE-6 replaces this tracker outright; until
+then, treat this document's per-q, per-branch vocabulary as the legacy targeted engine's
+dialect, with the scene layer as the general form.
+
 ### Tracked-branch frontier and evidence semantics (updated 2026-07-21)
 
 `target_selector="tracked_branch"` makes identity coverage precede final precision. The driver first
@@ -89,17 +102,20 @@ campaign may call itself blocked, and growing the registry cannot leave an old p
 Once an action is selected, `ScanDesignInventory` resolves it into window/count candidates. The
 `legacy_uniform/1` candidate — the exact historical window arithmetic — is always generated and is
 always the selected, executed one. The `scan_window_eig_mode` steering knob decides what else is
-recorded beside it: `off` designs that candidate alone (`legacy_control_off`), while `shadow`
-additionally generates the alternative uniform-window family and, when one exact completed source
-master passes the frozen eligibility and policy joins, scores only `legacy_uniform/1` against
-`target_core/1`. A valid score records `shadow_legacy_control_scored`; every scoreless or unavailable
-case records `shadow_legacy_control_unscored`. Both retain the unique legacy selection and leave the
-emitted request unchanged by a single neutron.
+recorded beside it: `off` designs that candidate alone (`legacy_control_off`). The now-retired
+`shadow` mode historically generated the alternative uniform-window family and, when one exact
+completed source master passed the frozen eligibility and policy joins, scored only
+`legacy_uniform/1` against `target_core/1` — a valid score recorded `shadow_legacy_control_scored`;
+every scoreless or unavailable case recorded `shadow_legacy_control_unscored`; both retained the
+unique legacy selection and left the emitted request unchanged by a single neutron. That scoring
+engine survives under `authoritative` (below); only the `shadow` mode selector value is gone
+(H22(b), 2026-08-21).
 O41 authorizes the implemented restricted selector after owner acceptance of the coherent Slice 8
 V3 evidence. Declaring `authoritative` requires the exact O41 profile; invalid profiles refuse with a
-user-visible reason, while authenticated eligible evidence may select `target_core/1`. The
-implementation stays opt-in until SCENE-4 delivers the default-on flip (world-suite coverage of the
-selection path is its acceptance evidence); H1 retired the separate O42 release review. The derived `/3` inventory is content-addressed under
+user-visible reason, while authenticated eligible evidence may select `target_core/1`. This is
+**default-on at compile time as of SCENE-4.4** (H22, 2026-08-21; world-suite coverage of the
+selection path served as its acceptance evidence); H1 retired the separate O42 release review. A
+frozen program naming the retired `shadow` mode refuses by name with a recompile message. The derived `/3` inventory is content-addressed under
 `report/scan-design/<sha256>.json` and referenced from proposal provenance. Its candidate id names the
 pre-finalization design; the existing proposal fingerprint separately names the exact request after
 live point/count clamps. A changed realization appends an `isar.scan_design_realization/1` record
@@ -115,8 +131,8 @@ continue with the same legacy request. The score envelope and variant fingerprin
 compact provenance; they do not enter the finalized request fingerprint. Historical inventory `/2`
 remains a strict read contract and is never reminted as `/3`.
 
-After finalization, shadow mode additionally persists
-`isar.scan_design_realized_comparison/o36.7` under
+After finalization, authoritative mode (formerly shadow mode too, before its retirement — H22(b))
+additionally persists `isar.scan_design_realized_comparison/o36.7` under
 `report/scan-design-realizations/<sha256>.json`. It records the exact rendered legacy request and an
 isolated target-core counterfactual at the same finalized per-point `ncount`. If identities, ordered
 adapter grids, and exposure still equal the Slice 6 pair, the sidecar references the existing score;
@@ -124,7 +140,7 @@ otherwise both realized candidates are evaluated and scored together under a sep
 five-second per-proposal allowance. Failure publishes numerical unavailability but still carries the
 exact selected legacy request and grid fingerprints. Initial and execution-time finalization refresh
 stale evidence; minimum-target-support step reduction forces a refresh before revalidation.
-Because Slice 6 and Slice 7 have separate five-second allowances, a shadow proposal can spend roughly
+Because Slice 6 and Slice 7 have separate five-second allowances, a scored proposal can spend roughly
 ten seconds in the worst case; a forced pre-submit refresh consumes only the Slice 7 allowance that
 remains.
 
@@ -134,7 +150,7 @@ fingerprint), applicability, and invalidation reason. A rescored `o36.7` variant
 `o36.5` score-set internals. Completed TAVI data compare `result.scan_values_1` with the selected grid
 using ordered adapter-canonical equality after representation normalization, not raw floating-point bit
 equality. A changed value/order/length logs `executed_grid_mismatch` and cannot support later authority,
-while ordinary shadow analysis continues. Missed-window recovery clears the realized
+while ordinary authoritative-mode analysis continues. Missed-window recovery clears the realized
 variant/request/grid claims, marks `eig_realization_invalidated_by_recovery`, and proceeds outside EIG.
 If recovery cannot authenticate the retained sidecar, it logs `realized_comparison_unavailable` and
 continues without recomputation or replacement evidence. Refresh/persistence failure or a failed
@@ -155,8 +171,8 @@ existing non-EIG path. Stale, malformed, unauthenticated, unavailable, or grid-m
 has no EIG authority. One shared refresh permits at most one rebuild and reselection; a second
 mutation submits authenticated legacy without a third pass. The durable authority decision precedes
 submission and its hash is bound into the submission record. Returned-grid mismatch invalidates only
-that acquisition lineage. H1 retired the separate O42 release review: the selection path goes
-default-on at SCENE-4, with world-suite coverage as its acceptance evidence.
+that acquisition lineage. H1 retired the separate O42 release review: the selection path went
+default-on at SCENE-4.4 (H22, 2026-08-21), with world-suite coverage as its acceptance evidence.
 
 The allowance is cooperative, not preemptive: the adapter checks before each synchronous variant
 score and again after it returns. If the second check crosses the deadline, that raw score set is
@@ -164,10 +180,10 @@ discarded before validation, the current and remaining variants record `shadow_s
 and the in-flight legacy proposal continues normally.
 
 The proposal-wide `authoritative_evidence_revision` remains transition-first and continues to name
-the evidence transition used by proposal/request identity. Shadow scoring has a narrower exact-source
-join: its in-memory action provenance names the selected completed master's `master_revision` (or
-null), independently of the proposal-wide revision. This preserves off/shadow request parity while
-refusing same-Q or later-master substitution. A targeted step payload that omits the `scan_window_eig`
+the evidence transition used by proposal/request identity. The scoring engine has a narrower
+exact-source join: its in-memory action provenance names the selected completed master's
+`master_revision` (or null), independently of the proposal-wide revision. This preserves
+off/authoritative request parity while refusing same-Q or later-master substitution. A targeted step payload that omits the `scan_window_eig`
 block loads as a no-policy/default-scoring objective; readers never consult the current card to
 supplement such a frozen payload, program, or resume record.
 Alongside the interval/no-progress brakes there is an identity-space one, `identity_saturated`, for
@@ -424,10 +440,11 @@ So the chosen engine is:
    branch-confusion proxy remains only in the explicit classification/opening-move fallback where a
    master predictive artifact does not yet exist; it is not the acquisition score for a usable master.
    Here a “candidate” is a scientific action/Q alternative whose counts are already evaluated on its
-   master's fitted grid. In `shadow` mode the controller may diagnostically score the exact
-   `legacy_uniform/1` and `target_core/1` pair from one exact eligible source master, but still never
-   selects among them: it executes the legacy control in every outcome. The restricted contract is
-   specified in `eig.md`.
+   master's fitted grid. In the now-retired `shadow` mode the controller could diagnostically score
+   the exact `legacy_uniform/1` and `target_core/1` pair from one exact eligible source master, but
+   never selected among them: it executed the legacy control in every outcome. That diagnostic
+   scoring engine survives (renamed nowhere) and now serves `authoritative` selection exclusively
+   (H22(b), 2026-08-21). The restricted contract is specified in `eig.md`.
 
 **Honest limit:** at single-digit counts the information is simply not there; no method conjures it.
 Correct behaviour is to report low confidence honestly and let EIG decide *count more here / move*;
@@ -867,6 +884,15 @@ It is a named provisional v1 like every other threshold: instrument-varying, res
 same precedence chain (user ask > card policy > ISAR default) as `discovery_monitor_ncount`,
 frozen into the compiled program, and SCENE-7-calibrated.
 
+**The quicklook-floor discovery exemption** (owner ruling 2026-08-21, joins H22): a
+`discovery_monitor_ncount` declared BELOW the quicklook exposure floor is accepted, never refused.
+`_finalize_proposal` (`isar/drive/loop.py`) sees the discovery proposal arrive on the `quicklook`
+scan kind; under `dynamic_ncount` with a neutron-denominated budget, an exposure under the floor is
+raised to it and the proposal proceeds, emitting `proposal_ncount_raised_to_floor` with the declared
+and effective values. This instantiates the general principle running through this whole document:
+ISAR never silently ignores a user command — it logs a warning and proceeds, and only a true
+physical or statistical limit (an instrument ceiling, an exhausted budget) ever refuses outright.
+
 ### 7.3 Instrument-limit-aware batching (implemented, 2026-07-18)
 
 At campaign start the driver snapshots TAVI's advertised `max_points`,
@@ -1001,6 +1027,17 @@ deadlocked a real campaign, so none may be relaxed casually:
    productions run against a multi-anchor optic and a zero-anchor acoustic, and occupancy lets
    the optic outvote the acoustic for its own features.
 
+These rules are implemented as named module constants in the tracker
+(`SECONDARY_P_ACOUSTIC_MAX = 0.3`, `SECONDARY_MIN_SIGNIFICANCE`, `MIN_ANCHORS = 3`,
+`LOCALITY_BW` — `isar/session/branch_assignment.py` / `branch_model.py`). Reconciliation with
+the no-hard-rules-for-phenomena doctrine (DESIGN_GOALS Inbox, "priors exist to be weakened"):
+none legislates what a phenomenon *does* — they are belief bookkeeping and prior-admission
+gates, each earned by a named live deadlock — but the thresholds are legislated numbers rather
+than priced quantities, and that is acknowledged: all four live in the tracked-branch machinery
+that SCENE-6 deletes (design/scene.md §3), where identity becomes catalogue-driven,
+evidence-priced scene posterior and gates of this kind should dissolve into priors and prices.
+They are the bridge, with a scheduled demolition.
+
 Standing repair from the same campaign: the TAVI idempotency key carries a per-workspace nonce
 (`.run_nonce`), so a fresh campaign can never replay a previous run's poisoned instrument-side
 cache; a crash-resume of the same workspace reuses its nonce and still dedupes.
@@ -1035,6 +1072,21 @@ cache; a crash-resume of the same workspace reuses its nonce and still dedupes.
   confidence, the per-q classification term zeroes at the differentiation tolerance, and the
   budget stop is the outer bound. The synthetic two-branch campaign must show rival spending
   peaking early and dying off, not tracking the target to the end.
+- **Confidence tuning — the paranoia budget (owner-named gap, 2026-08-20 walkthrough).** The
+  wrong-peak guard stack is *reactive*: it refuses to narrow on known ambiguity and recovers
+  when wrongness surfaces, but nothing *proactively spends beam on verification because
+  confidence is merely high rather than certain*. Worse, the one verification-flavored term —
+  λ × identity-entropy — *decays* with confidence: exactly the overconfident-scientist
+  direction. The trade is efficiency-if-right vs robustness-if-wrong, it is a user temperament
+  ("not something we can choose for a user — but we can ship decent defaults"), and the
+  principled mechanism is already implied by the doctrine: paranoia is *honest probability mass
+  on "the map is wrong"* — an unknown-competitor / wrong-model tail that EIG then prices
+  automatically, making occasional survey/verification scans positive-value purchases instead
+  of a hardcoded ritual. The scene layer's unknown-competitor class and counts-authoritative
+  arenas are the natural carrier (SCENE-5 scene-EIG); the operator-facing knob is that tail's
+  floor plus a default verification budget. Related Inbox commitments: "freedom to leave the
+  beaten path" (confirmation scans off the nominal path) and "never set-and-forget"
+  (non-blocking mid-campaign prompts).
 - **Optional-stopping ("peeking") bias** — using the shrinking per-point error as a stopping
   trigger preferentially stops on downward fluctuations, so a naive stop-when-small rule
   under-covers. The stop criterion is deliberately conservative for this reason, and certified

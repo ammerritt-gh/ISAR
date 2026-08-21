@@ -1,4 +1,5 @@
-"""The scan-design seam: candidate families, shadow plumbing, and the audit artifact."""
+"""The scan-design seam: candidate families, authoritative scoring plumbing, and the audit
+artifact."""
 from __future__ import annotations
 
 import json
@@ -50,8 +51,8 @@ from isar.drive.loop import (
 )
 
 
-def _context(**overrides) -> ScanDesignContext:
-    values = {
+def _context_values() -> dict:
+    return {
         "scientific_action_fingerprint": "scientific-action",
         "hkl": (2.1, 0.0, 0.0),
         "q": 0.1,
@@ -74,6 +75,9 @@ def _context(**overrides) -> ScanDesignContext:
         "policy_max_points": 100,
         "runtime_max_points": 200,
         "tolerance_meV": 0.5,
+        # This file exercises the legacy uniform designer by default; a case that wants
+        # authoritative-mode scoring behaviour overrides it explicitly (see the many callers below).
+        "scan_window_eig_mode": "off",
         "quicklook_ncount": 1_000,
         "production_ncount": 10_000,
         "identity_detection_ncount": 2_000,
@@ -93,8 +97,36 @@ def _context(**overrides) -> ScanDesignContext:
         "budget_amount": 1e12,
         "budget_spent": 0.0,
     }
+
+
+def _context(**overrides) -> ScanDesignContext:
+    values = _context_values()
     values.update(overrides)
     return ScanDesignContext(**values)
+
+
+def test_a_context_with_no_scan_window_eig_mode_raises():
+    """SCENE-4 PR 4.4, D1: no module default — every caller freezes an explicit mode; a silent
+    "off" here is exactly the read-time default the compile-time flip is meant to remove."""
+    values = _context_values()
+    del values["scan_window_eig_mode"]
+    with pytest.raises(TypeError, match="scan_window_eig_mode"):
+        ScanDesignContext(**values)
+
+
+def test_a_context_with_an_unknown_mode_raises():
+    with pytest.raises(ValueError, match="must be one of"):
+        _context(scan_window_eig_mode="bogus")
+
+
+def test_shadow_mode_context_refuses_by_name_with_a_recompile_message():
+    """Owner ruling 2026-08-21 (option a): no backward-compat carve-out for "shadow" here — it
+    goes through the same shared named refusal as SteeringPolicy (SCENE-4 PR 4.4, D3). The frozen
+    slice-8 shadow-gate evidence this used to keep loadable is retired along with its tests; the
+    evidence bundle itself stays on disk under docs/campaigns/ untouched (S10), it is simply no
+    longer read by anything."""
+    with pytest.raises(ValueError, match="retired in SCENE-4 PR 4.4"):
+        _context(scan_window_eig_mode="shadow")
 
 
 def test_context_is_frozen_and_strict_json_serializable():
@@ -357,7 +389,7 @@ def _refusals(inventory) -> dict[str, str]:
 
 def test_shadow_mode_generates_the_family_and_still_selects_the_legacy_control():
     off = design_scan_windows(_context())
-    shadow = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    shadow = design_scan_windows(_context(scan_window_eig_mode="authoritative"))
 
     assert _families(off) == [FAMILY_LEGACY_UNIFORM]
     assert off.selection_basis == SELECTION_BASIS_LEGACY_CONTROL_OFF
@@ -381,8 +413,8 @@ def test_shadow_mode_generates_the_family_and_still_selects_the_legacy_control()
 
 
 def test_shadow_inventory_is_deterministic_and_json_serializable():
-    first = design_scan_windows(_context(scan_window_eig_mode="shadow"))
-    second = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    first = design_scan_windows(_context(scan_window_eig_mode="authoritative"))
+    second = design_scan_windows(_context(scan_window_eig_mode="authoritative"))
 
     assert first.content_hash() == second.content_hash()
     assert [c.candidate_id for c in first.candidates] == [
@@ -391,7 +423,7 @@ def test_shadow_inventory_is_deterministic_and_json_serializable():
 
 
 def test_inventory_v3_rejects_nonlegacy_selection_and_inconsistent_basis():
-    inventory = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    inventory = design_scan_windows(_context(scan_window_eig_mode="authoritative"))
     target = next(candidate for candidate in inventory.candidates
                   if candidate.candidate_family == FAMILY_TARGET_CORE)
 
@@ -408,7 +440,7 @@ def test_inventory_v3_rejects_nonlegacy_selection_and_inconsistent_basis():
 
 def test_inventory_declares_generator_config_and_provider_identity():
     payload = design_scan_windows(
-        _context(scan_window_eig_mode="shadow")).to_full_dict()
+        _context(scan_window_eig_mode="authoritative")).to_full_dict()
 
     assert payload["generator"]["id"] == PHYSICAL_WINDOW_GENERATOR_ID
     assert payload["generator"]["version"] == PHYSICAL_WINDOW_GENERATOR_VERSION
@@ -432,7 +464,7 @@ def test_inventory_declares_generator_config_and_provider_identity():
         "objective_projection_schema": OBJECTIVE_PROJECTION_SCHEMA,
         "steering_regime": STEERING_REGIME,
     }
-    assert payload["selection"]["scan_window_eig_mode"] == "shadow"
+    assert payload["selection"]["scan_window_eig_mode"] == "authoritative"
 
 
 def test_generator_configuration_strictly_round_trips_nondefault_values():
@@ -448,7 +480,7 @@ def test_generator_configuration_strictly_round_trips_nondefault_values():
 
 
 def test_family_windows_follow_the_frozen_generator_constants():
-    inventory = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    inventory = design_scan_windows(_context(scan_window_eig_mode="authoritative"))
     by_family = {c.candidate_family: c for c in inventory.candidates}
     # e_pred 5.0, FWHM 0.8, sigma 0.2 -> half-core = max(2*0.8, 3*0.2) = 1.6
     core = by_family[FAMILY_TARGET_CORE]
@@ -466,7 +498,7 @@ def test_family_windows_follow_the_frozen_generator_constants():
 
 def test_every_generated_candidate_stays_inside_the_authorized_domain_and_limits():
     inventory = design_scan_windows(_context(
-        scan_window_eig_mode="shadow", kind="production", policy_max_points=20,
+        scan_window_eig_mode="authoritative", kind="production", policy_max_points=20,
         runtime_max_points=12, runtime_max_neutrons_per_point=20_000,
         dynamic_ncount=True, last_submitted_ncount=40_000, effective_exposure=40_000,
         diagnostic_halfwidth_meV=2.0))
@@ -490,7 +522,7 @@ def test_every_generated_candidate_stays_inside_the_authorized_domain_and_limits
 
 def test_a_family_that_cannot_hold_target_support_is_refused_not_omitted():
     inventory = design_scan_windows(_context(
-        scan_window_eig_mode="shadow", target_band=(5.0, 0.05),
+        scan_window_eig_mode="authoritative", target_band=(5.0, 0.05),
         minimum_target_support_points=50))
 
     refusals = _refusals(inventory)
@@ -503,20 +535,20 @@ def test_a_family_that_cannot_hold_target_support_is_refused_not_omitted():
 
 
 def test_anti_stokes_gate_decides_whether_a_paired_window_exists():
-    admissible = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    admissible = design_scan_windows(_context(scan_window_eig_mode="authoritative"))
     paired = next(c for c in admissible.candidates
                   if c.candidate_family == FAMILY_TARGET_PAIRED)
     assert paired.e_lo < 0.0 < paired.e_hi
 
     forbidden = design_scan_windows(_context(
-        scan_window_eig_mode="shadow", positive_only=True))
+        scan_window_eig_mode="authoritative", positive_only=True))
     assert FAMILY_TARGET_PAIRED not in _families(forbidden)
     assert _refusals(forbidden)[FAMILY_TARGET_PAIRED] == "anti_stokes_not_admissible"
 
 
 def test_rival_coverage_is_additive_and_never_produces_a_rival_only_window():
     inventory = design_scan_windows(_context(
-        scan_window_eig_mode="shadow", rival_band=(6.5, 0.1)))
+        scan_window_eig_mode="authoritative", rival_band=(6.5, 0.1)))
     combined = next(c for c in inventory.candidates
                     if c.candidate_family == FAMILY_TARGET_PLUS_RIVAL)
     # Contiguous union with the core: a canonical target action never gets a window that has
@@ -524,13 +556,13 @@ def test_rival_coverage_is_additive_and_never_produces_a_rival_only_window():
     assert combined.e_lo <= 3.4 + 1e-12
     assert combined.e_hi >= 6.7 - 1e-12
 
-    without = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    without = design_scan_windows(_context(scan_window_eig_mode="authoritative"))
     assert _refusals(without)[FAMILY_TARGET_PLUS_RIVAL] == "no_rival_band_declared"
 
 
 def test_a_declared_rival_probe_window_is_never_widened_by_the_generator():
     inventory = design_scan_windows(_context(
-        scan_window_eig_mode="shadow",
+        scan_window_eig_mode="authoritative",
         kind="identity_rival_probe",
         window_family="rival",
         declared_energy_lo=7.0,
@@ -550,9 +582,9 @@ def test_identical_grids_deduplicate_with_alias_provenance():
     # A search band exactly equal to the target core makes several construction rules land on the
     # same physical scan; one candidate must survive, carrying the others as provenance.
     inventory = design_scan_windows(_context(
-        scan_window_eig_mode="shadow", energy_search_meV=(3.4, 6.6)))
+        scan_window_eig_mode="authoritative", energy_search_meV=(3.4, 6.6)))
     repeat = design_scan_windows(_context(
-        scan_window_eig_mode="shadow", energy_search_meV=(3.4, 6.6)))
+        scan_window_eig_mode="authoritative", energy_search_meV=(3.4, 6.6)))
     core = next(c for c in inventory.candidates
                 if c.candidate_family == FAMILY_TARGET_CORE)
 
@@ -567,7 +599,7 @@ def test_identical_grids_deduplicate_with_alias_provenance():
 
 def test_authoritative_mode_builds_the_same_candidate_space_as_shadow():
     authoritative = design_scan_windows(_context(scan_window_eig_mode="authoritative"))
-    shadow = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    shadow = design_scan_windows(_context(scan_window_eig_mode="authoritative"))
     assert [candidate.candidate_id for candidate in authoritative.candidates] == [
         candidate.candidate_id for candidate in shadow.candidates]
     assert authoritative.selected_candidate.candidate_family == FAMILY_LEGACY_UNIFORM
@@ -606,7 +638,7 @@ def test_candidate_grid_is_explicit_ordered_and_inclusive_of_the_upper_bound():
 
 
 def test_shadow_inventory_persists_every_candidate_and_refusal(tmp_path: Path):
-    inventory = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    inventory = design_scan_windows(_context(scan_window_eig_mode="authoritative"))
     selected = inventory.selected_candidate
     proposal = ScanProposal(
         h=2.1, k=0.0, l=0.0, e_lo=selected.e_lo, e_hi=selected.e_hi,
@@ -631,7 +663,7 @@ def test_shadow_inventory_persists_every_candidate_and_refusal(tmp_path: Path):
 
 def test_candidate_id_covers_the_grid_and_exposure_but_not_alias_provenance():
     candidate = design_scan_windows(_context()).selected_candidate
-    aliased = design_scan_windows(_context(scan_window_eig_mode="shadow")).selected_candidate
+    aliased = design_scan_windows(_context(scan_window_eig_mode="authoritative")).selected_candidate
     assert candidate.candidate_id == aliased.candidate_id
     assert SCAN_DESIGN_CANDIDATE_SCHEMA.endswith("/2")
 
@@ -681,7 +713,7 @@ def test_a_single_point_window_is_refused_rather_than_proposed():
     degeneracies present as ``n_points == 1``. ``broad_recovery/1`` reaches it from ordinary state:
     on a narrow authorized domain the resolution-derived step is wider than the whole domain.
     """
-    context = _context(scan_window_eig_mode="shadow", energy_search_meV=(6.9, 7.0),
+    context = _context(scan_window_eig_mode="authoritative", energy_search_meV=(6.9, 7.0),
                        design_prediction_mean_meV=6.95, target_prediction_mean_meV=6.95,
                        design_prediction_sigma_meV=0.02, target_prediction_sigma_meV=0.02,
                        resolution_fwhm_meV=1.0)
@@ -702,7 +734,7 @@ def test_a_single_point_window_is_refused_rather_than_proposed():
 def test_the_degeneracy_refusal_never_masks_a_more_specific_one():
     # It is the least informative diagnosis, so it runs last: a target family that also lost its
     # core must still say THAT, not merely that the leftover window had one point.
-    context = _context(scan_window_eig_mode="shadow", energy_search_meV=(6.9, 7.0),
+    context = _context(scan_window_eig_mode="authoritative", energy_search_meV=(6.9, 7.0),
                        design_prediction_mean_meV=6.95, target_prediction_mean_meV=6.95,
                        design_prediction_sigma_meV=0.02, target_prediction_sigma_meV=0.02,
                        resolution_fwhm_meV=1.0)
@@ -740,7 +772,7 @@ def test_an_unbounded_search_band_refuses_the_affected_family_not_the_inventory(
     context = _context(energy_search_meV=(float("-inf"), float("inf")))
     off = design_scan_windows(context)
     shadow = design_scan_windows(_context(
-        energy_search_meV=(float("-inf"), float("inf")), scan_window_eig_mode="shadow"))
+        energy_search_meV=(float("-inf"), float("inf")), scan_window_eig_mode="authoritative"))
 
     # Off-mode parity: the legacy control is byte-identical in both modes and is still selected.
     assert _families(off) == [FAMILY_LEGACY_UNIFORM]
@@ -759,7 +791,7 @@ def test_a_target_family_clipped_off_its_own_core_is_refused_not_emitted():
     # authorized-domain clip, and the insufficient_target_support gate is skipped when no
     # target_band is declared — exactly the state a rival probe is evaluated in. The result was a
     # rival-only window with zero target support presented as a target candidate.
-    rival_only = _context(scan_window_eig_mode="shadow", design_prediction_mean_meV=6.0,
+    rival_only = _context(scan_window_eig_mode="authoritative", design_prediction_mean_meV=6.0,
                           target_prediction_mean_meV=6.0, resolution_fwhm_meV=0.5,
                           energy_search_meV=(-4.0, 2.0), rival_band=(0.5, 0.2),
                           target_band=None)
@@ -777,7 +809,7 @@ def test_a_target_family_clipped_off_its_own_core_is_refused_not_emitted():
     # the same with and without a declared band — before the sliver repair the declared-band case
     # reported the weaker `insufficient_target_support` because the support gate ran first.
     declared = design_scan_windows(_context(
-        scan_window_eig_mode="shadow", design_prediction_mean_meV=6.0,
+        scan_window_eig_mode="authoritative", design_prediction_mean_meV=6.0,
         target_prediction_mean_meV=6.0, resolution_fwhm_meV=0.5,
         energy_search_meV=(-4.0, 2.0), rival_band=(0.5, 0.2), target_band=(6.0, 0.2)))
     assert _families(declared) == [FAMILY_LEGACY_UNIFORM]
@@ -789,7 +821,7 @@ def test_dedup_merges_only_candidates_that_emit_the_same_request():
     # scan command, so two families whose windows differ by less than half a step merged into a
     # candidate whose emitted deltaE string was not the absorbed family's.
     inventory = design_scan_windows(_context(
-        scan_window_eig_mode="shadow", energy_search_meV=(3.4, 6.65)))
+        scan_window_eig_mode="authoritative", energy_search_meV=(3.4, 6.65)))
     core = next(c for c in inventory.candidates if c.candidate_family == FAMILY_TARGET_CORE)
     anchor = next(c for c in inventory.candidates
                   if c.candidate_family == FAMILY_TARGET_HIGH_ANCHOR)
@@ -803,7 +835,7 @@ def test_dedup_merges_only_candidates_that_emit_the_same_request():
 
     # Genuinely identical requests still merge into one identity with alias provenance.
     identical = design_scan_windows(_context(
-        scan_window_eig_mode="shadow", energy_search_meV=(3.4, 6.6)))
+        scan_window_eig_mode="authoritative", energy_search_meV=(3.4, 6.6)))
     merged = next(c for c in identical.candidates
                   if c.candidate_family == FAMILY_TARGET_CORE)
     assert FAMILY_TARGET_HIGH_ANCHOR in merged.alias_families
@@ -822,7 +854,7 @@ def test_a_window_clipped_to_a_sliver_of_its_core_is_refused_not_emitted():
     # [6.5, 7.0]. Every target family clips to a 0.1 meV sliver that does not contain the predicted
     # centre; the old bounds-overlap test passed all of them.
     inventory = design_scan_windows(_context(
-        scan_window_eig_mode="shadow", energy_search_meV=(6.5, 7.0)))
+        scan_window_eig_mode="authoritative", energy_search_meV=(6.5, 7.0)))
 
     # Only the legacy control and the deliberately target-agnostic broad sweep survive.
     assert _families(inventory) == [FAMILY_LEGACY_UNIFORM, FAMILY_BROAD_RECOVERY]
@@ -839,7 +871,7 @@ def test_a_window_clipped_to_a_sliver_of_its_core_is_refused_not_emitted():
 def test_target_core_needs_its_whole_core_while_anchors_may_lose_margin():
     # Domain [4.0, 7.0] keeps the predicted centre (5.0) but cuts the low side of the core [3.4, 6.6].
     inventory = design_scan_windows(_context(
-        scan_window_eig_mode="shadow", energy_search_meV=(4.0, 7.0)))
+        scan_window_eig_mode="authoritative", energy_search_meV=(4.0, 7.0)))
 
     assert _refusals(inventory)[FAMILY_TARGET_CORE] == (
         "target_core_truncated_after_domain_clip")
@@ -865,7 +897,7 @@ def test_target_core_containment_is_judged_on_the_executed_grid_to_within_a_step
     points and is covered by ``test_target_core_needs_its_whole_core_while_anchors_may_lose_margin``.
     """
     inventory = design_scan_windows(_context(
-        scan_window_eig_mode="shadow", design_prediction_sigma_meV=1.45,
+        scan_window_eig_mode="authoritative", design_prediction_sigma_meV=1.45,
         target_prediction_sigma_meV=1.45, energy_search_meV=(-2.0, 12.0)))
 
     assert FAMILY_TARGET_CORE in _families(inventory)
@@ -882,7 +914,7 @@ def test_target_core_containment_is_judged_on_the_executed_grid_to_within_a_step
 def test_minimum_target_support_is_enforced_against_a_fallback_band_without_a_target_band():
     # No declared target_band: before the repair the support gate silently did not run at all, so a
     # window with three points anywhere near the prediction counted as a target measurement.
-    context = _context(scan_window_eig_mode="shadow", target_band=None,
+    context = _context(scan_window_eig_mode="authoritative", target_band=None,
                        policy_max_points=8, runtime_max_points=8,
                        minimum_target_support_points=6)
     inventory = design_scan_windows(context)
@@ -902,7 +934,7 @@ def test_minimum_target_support_is_enforced_against_a_fallback_band_without_a_ta
 
 def test_a_declared_target_band_still_wins_over_the_fallback():
     inventory = design_scan_windows(_context(
-        scan_window_eig_mode="shadow", target_band=(5.0, 0.05),
+        scan_window_eig_mode="authoritative", target_band=(5.0, 0.05),
         minimum_target_support_points=50))
     detail = next(r for r in inventory.refusals
                   if r.candidate_family == FAMILY_TARGET_CORE).to_dict()["detail"]
@@ -923,7 +955,7 @@ def test_a_pre_canonical_encoding_still_loads_at_its_semantic_address(tmp_path, 
     from isar.drive.acquisition.inventory import canonical_json
     from isar.drive.acquisition.scan_design import load_scan_design_inventory
 
-    inventory = design_scan_windows(_context(scan_window_eig_mode="shadow"))
+    inventory = design_scan_windows(_context(scan_window_eig_mode="authoritative"))
     digest = inventory.content_hash()
     path = tmp_path / "report" / "scan-design" / f"{digest}.json"
     path.parent.mkdir(parents=True)

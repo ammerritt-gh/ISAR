@@ -241,6 +241,7 @@ def _count_request(gridq: GridQ, *, kind: str, n_points: int, tolerance: float,
         policy_max_points=max(int(n_points), 2),
         runtime_max_points=max(int(n_points), 2),
         tolerance_meV=float(tolerance),
+        scan_window_eig_mode=str(policy.get("scan_window_eig_mode", "off")),
         quicklook_ncount=int(policy.get("quicklook_ncount", QUICKLOOK_NCOUNT)),
         production_ncount=int(policy.get("production_batch_ncount", PRODUCTION_NCOUNT)),
         identity_detection_ncount=int(policy.get(

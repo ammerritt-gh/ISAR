@@ -46,6 +46,7 @@ from isar.drive.acquisition.acquire import ScanProposal, points_in_window
 from isar.drive.acquisition.grid_adapters import TAVI_GRID_ADAPTER
 from isar.drive.acquisition.eig import counts_eig
 from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
+from isar.drive.supervisor import goal_to_spec as g2s
 from isar.drive.instrument.tavi_client import TaviError
 from isar.drive.isar_io.scan_writer import save_scan_json
 from isar.drive.session_log import log_event, read_log
@@ -59,6 +60,14 @@ from isar.drive.supervisor.stopping import (
 from isar.schema.hypotheses import content_fingerprint
 
 _UNITY_CAL = Calibration.from_dict({"inflation": 1.0, "buckets": [], "center_pull_mean": 0.0})
+
+
+def _o41_config():
+    """A valid restricted O41 profile — required by ``ObjectiveSpec.__post_init__`` for any
+    objective that freezes ``scan_window_eig_mode="authoritative"`` (SCENE-4 PR 4.4, D1/D3)."""
+    import runpy
+    return runpy.run_path(str(
+        Path(__file__).parents[1] / "eig" / "test_o41_authority.py"))["_config"]()
 
 
 def test_certification_regression_is_terminal_and_resumable():
@@ -1537,6 +1546,246 @@ def test_campaign_reaches_met(tmp_path):
     assert summary["session_log_relative"] == "report/session_log.jsonl"
 
 
+# --------------------------------------------------------------------------------- SCENE-4 PR 4.4 D2
+# SCENE-4 PR 4.4 D1 flipped the compile-time scan_window_eig_mode default from "off" to
+# "authoritative". Default-on realization is SHARED behaviour between the discovery and legacy
+# targeted (tracker) paths (4.3 already isolated discovery on AgendaVerdict): flipping the compile
+# default must move ONLY the scan-window realization decisions on the targeted path -- zero change
+# to target selection, tracker authority, or the stop decision. This is the AP7/AP8-class replay the
+# PR 4.4 slice calls for, built on the smallest existing tracker fixture that reaches a real "met"
+# stop under the mock instrument (test_campaign_reaches_met, above) rather than a new world.
+_D2_FLIP_GOAL = {"path": {"h_start": 2.1, "h_end": 2.4, "k": 0.0, "l": 0.0},
+                 "step_h": 0.1, "tolerance_meV": 0.5, "budget_hours": 8.0,
+                 # goal_to_spec defaults an unset selector to "tracked_branch" (branch-tracking
+                 # evidence the plain mock runner below does not emit); pin the per-q selector this
+                 # fixture actually exercises so the flip is isolated to scan-window realization.
+                 "target_selector": "lowest_energy",
+                 "notes": "SCENE-4 PR 4.4 D2: targeted-path scan-window-eig-mode flip regression"}
+
+# Session-log event kinds that scan-window realization owns -- expected to diverge between "off"
+# and "authoritative" by construction (different window bounds/candidates, different provenance
+# fingerprints/refs), and therefore excluded from the "everything else is identical" comparison.
+_SCAN_WINDOW_EVENT_KINDS = {
+    "scan_design_realization", "scan_design_realized_comparison", "scan_design_authority_decision",
+    "eig_decision",
+    # The action-inventory generator registry adds alternative-window candidate generators (e.g.
+    # ``narrow_rival_probe``) once scan-window EIG is on ("shadow" or "authoritative") -- inventory
+    # BUILDING and its analysis-clock timing markers are part of the same scan-window apparatus,
+    # even though none of those candidates are ever selected (verified below: the propose/decide/stop
+    # sequence, which records what was actually chosen, is unaffected).
+    "analysis_clock", "inventory",
+}
+
+
+def _d2_branch_aware_runner(omega_true, target_hypothesis):
+    """``make_mock_runner``, plus the ``branch_id`` column a hypothesis-carrying objective needs to
+    resolve target identity. A compiled objective always freezes a rival hypothesis alongside the
+    target (:func:`shipped_hypothesis_snapshot`), but with no distractor peak in this fixture's
+    spectrum (a single ``omega_true`` line) every resolved row is unambiguously the target branch."""
+    assigned: dict[str, int] = {}
+
+    def runner(workspace, data_paths, **_kw):
+        data_dir = Path(data_paths[0])
+        rows = []
+        prod_per_h: dict[float, int] = {}
+        for f in sorted(data_dir.glob("*.json")):
+            d = json.loads(f.read_text(encoding="utf-8"))
+            params = d.get("launch", {}).get("parameters", {})
+            h, k, l = params.get("H"), params.get("K"), params.get("L")
+            n = params.get("number_neutrons")
+            if f.stem not in assigned:
+                assigned[f.stem] = len(assigned) + 1
+            scan_id = assigned[f.stem]
+            grid = _parse_grid(params["scan_command1"])
+            true = omega_true(h)
+            contained = grid[0] <= true <= grid[-1]
+            base = {"scan": scan_id, "detector": "det", "h": h, "k": k, "l": l, "status": "fitted",
+                    "interval_reliable": True, "branch_id": target_hypothesis}
+            if not contained:
+                base.update({"verdict": "no_signal", "disposition": "declined", "omega0": None,
+                             "interval_lo": None, "interval_hi": None, "reasons": "peak outside window"})
+            else:
+                raw_hw = 0.6 if n <= QUICKLOOK_NCOUNT else 0.3
+                base.update({"verdict": "resolved", "disposition": "resolved", "omega0": true,
+                             "interval_lo": true - raw_hw, "interval_hi": true + raw_hw,
+                             "confidence": 0.9, "reasons": "resolved"})
+                if n > QUICKLOOK_NCOUNT:
+                    prod_per_h[h] = prod_per_h.get(h, 0) + 1
+            rows.append(base)
+        master_scan = 9_000_000
+        for h, npool in sorted(prod_per_h.items()):
+            hw = 0.3 / _math.sqrt(npool)
+            true = omega_true(h)
+            rows.append({
+                "scan": master_scan, "detector": "det", "h": h, "k": 0.0, "l": 0.0,
+                "status": "fitted", "verdict": "resolved", "disposition": "resolved",
+                "omega0": true, "interval_reliable": True, "pooled": True, "n_members": npool,
+                "branch_id": target_hypothesis,
+                "interval_lo": true - hw, "interval_hi": true + hw,
+                "model_interval_lo": true - hw, "model_interval_med": true,
+                "model_interval_hi": true + hw, "model_robust": True,
+                "members": ";".join(str(i) for i in range(npool)),
+                "confidence": 0.9, "reasons": "pooled master"})
+            master_scan += 1
+        report = Path(workspace) / "report"
+        report.mkdir(parents=True, exist_ok=True)
+        cols = ["scan", "detector", "h", "k", "l", "status", "verdict", "disposition",
+                "confidence", "omega0", "omega0_err", "interval_lo", "interval_hi",
+                "interval_reliable", "branch_id",
+                "pooled", "n_members", "members", "model_interval_lo", "model_interval_med",
+                "model_interval_hi", "model_robust", "reasons"]
+        with open(report / "results.csv", "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=cols)
+            w.writeheader()
+            for r in rows:
+                w.writerow({c: r.get(c) for c in cols})
+    return runner
+
+
+def _d2_flip_campaign(tmp_path, mode):
+    payload = _D2_FLIP_GOAL if mode == "authoritative" else {
+        **_D2_FLIP_GOAL, "steering": {"scan_window_eig_mode": mode}}
+    objective = g2s.spec_from_dict(payload)
+    assert objective.steering["scan_window_eig_mode"] == mode
+    omega = lambda h: (h - 2.0) * 2.0
+    client = MockTavi(omega)
+    runner = _d2_branch_aware_runner(omega, objective.target_hypothesis)
+    root = tmp_path / mode
+    # The O41 shadow/realized-comparison machinery re-opens the workspace to read card policy; a
+    # bare report/ dir (the plain ``_run`` shape) fails that open and falls back to legacy control
+    # via a logged exception -- a real "off" vs "authoritative" fixture asymmetry, not a scan-window
+    # decision. Give it a real card so the authoritative arm exercises the actual O41 path cleanly.
+    ws = root / "ws"
+    ws.mkdir(parents=True, exist_ok=True)
+    shutil.copy(
+        Path(__file__).resolve().parents[2] / "isar" / "parsers" / "cards" / "tavi.policy.toml",
+        ws / "card.policy.toml")
+    summary, ws = _run(root, objective, client, runner)
+    return summary, ws
+
+
+_WINDOW_OWNED_KEYS = {
+    "e_lo", "e_hi", "request_fingerprint", "candidate_id", "candidate_role",
+    "authority_refresh", "scan_window_eig", "scan_window_eig_mode",
+    # ``meta.raw`` on the embedded objective is this test's own goal-dict echo -- the ONE place the
+    # steering override that sets up the "off" arm is deliberately asymmetric with the "authoritative"
+    # arm's absent override (both compile to the same effective mode). It carries no tracker
+    # decision, only provenance of how the test built the fixture.
+    "meta",
+    # A random uuid4 minted once per WORKSPACE (``_run_nonce``), not derived from the objective or
+    # its scan_window_eig_mode at all -- the two arms are two separate tmp_path workspaces, so their
+    # nonces (and every acquisition_id built from one) differ regardless of mode.
+    "acquisition_id", "run_nonce",
+    # Steering-derived identity: recomputed from the steering dict, so it moves whenever the mode
+    # does -- window-owned by construction, never a tracker decision.
+    "hypothesis_fingerprint",
+    # The O41 authority/comparison bookkeeping the authoritative arm mints and the "off" arm never
+    # touches -- the exact records assertion (b) checks EXIST separately, so stripping them here
+    # cannot make that check vacuous.
+    "decision_fingerprint", "comparison_fingerprint", "comparison_ref",
+    "scan_design_realized_comparison_ref", "scan_design_realized_comparison_fingerprint",
+}
+
+
+def _strip_window_owned(value):
+    """Recursively drop the ENUMERATED scan-window-owned fields -- nothing pattern-matched.
+
+    ``campaign_start`` embeds the WHOLE compiled objective (including its own
+    ``steering.scan_window_eig_mode`` and ``scan_window_eig`` policy) -- exactly the field under
+    test, so it must be stripped at any nesting depth, not only at the payload's top level.
+    Every stripped key is listed by name in ``_WINDOW_OWNED_KEYS``: a broad predicate (any
+    ``*fingerprint*`` / ``*_ref`` / ``scan_design_*`` key) could silently strip a genuine
+    target/tracker divergence and make the sequence comparison vacuous.
+    """
+    if isinstance(value, dict):
+        return {k: _strip_window_owned(v) for k, v in value.items()
+                if k not in _WINDOW_OWNED_KEYS}
+    if isinstance(value, list):
+        return [_strip_window_owned(v) for v in value]
+    return value
+
+
+# The decision-bearing event kinds the brief actually asks about: which target/point was chosen
+# (propose), promotion/certification/analysis decisions (decide, certification), and the final stop
+# decision (stop). Deliberately NOT "validate"/"run"/"physical_submission"/"timing"/"analyze": those
+# are TAVI-wire and instrumentation detail that legitimately doubles up under "authoritative" (an
+# extra target_core validate round-trip per iteration, wall-clock jitter) without moving any
+# target/tracker/stop decision -- the realized WINDOW those calls carry is already pinned via
+# ``summary["grid"]``/``summary["dispersion"]`` (fitted omega0/convergence) matching exactly above.
+# ``differentiation_probe`` is included because a probe decision is target selection (which rival
+# the tracker chose to discriminate); this fixture may emit none, and an empty-vs-nonempty
+# difference between the arms would itself be a caught divergence.
+_D2_DECISION_EVENT_KINDS = {"propose", "decide", "stop", "certification",
+                            "action_suppressed", "differentiation_probe"}
+
+
+def _d2_tracker_signature(events):
+    """The target/tracker/stop decision sequence, with scan-window-owned fields stripped out.
+
+    ``propose``/``decide`` carry the realized window's own bounds and fingerprints (``e_lo``/
+    ``e_hi``/``*_fingerprint``/``*_ref``) -- exactly what is allowed to move under the flip.
+    Everything else about *which* point, *which* branch, and *what* decision was reached must not.
+    """
+    return [(event["kind"], _strip_window_owned(event.get("payload") or {}))
+            for event in events if event["kind"] in _D2_DECISION_EVENT_KINDS]
+
+
+def test_targeted_flip_regression_moves_only_scan_window_decisions(tmp_path):
+    """The same compiled tracker goal, run once explicitly "off" and once at the D1 compile default
+    "authoritative": the stop decision, the converged grid/dispersion, and the full
+    propose/validate/analyze/decide/stop signature (window-owned fields aside) must be identical --
+    only the scan-window realization events may differ, and no new stop reason may appear.
+
+    On this fixture's ``lowest_energy`` selector the realized-comparison target band is undeclared,
+    so O41 scoring is genuinely unavailable (``target_delivery_unknown``) and every decision retains
+    ``legacy`` control -- the realized request is therefore byte-identical too. That still exercises
+    the real thing: the full comparison/decision lifecycle runs and persists a real record each
+    iteration (asserted below), it is simply the conservative branch of it. A future ``nearest_energy``
+    fixture that actually swaps to ``target_core`` would extend this, not replace it."""
+    off_summary, _off_ws = _d2_flip_campaign(tmp_path, "off")
+    auth_summary, _auth_ws = _d2_flip_campaign(tmp_path, "authoritative")
+
+    # (a) identical stop decision, and identical converged/dispersion outcome (target selection and
+    # tracker authority did not move).
+    assert off_summary["stop"]["state"] == "met", off_summary["stop"]["reasons"]
+    assert auth_summary["stop"]["state"] == "met", auth_summary["stop"]["reasons"]
+    assert off_summary["stop"]["reasons"] == auth_summary["stop"]["reasons"]
+    assert off_summary["grid"] == auth_summary["grid"]
+    assert off_summary["dispersion"] == auth_summary["dispersion"]
+
+    # (c) no new stop reason: the only stop reasons seen are the ones the "off" run already has.
+    assert set(auth_summary["stop"]["reasons"]) <= set(off_summary["stop"]["reasons"])
+
+    off_events = read_log(off_summary["session_log"])
+    auth_events = read_log(auth_summary["session_log"])
+
+    # (b) the scan-window event kinds are the ONLY session-log divergence. Everything else --
+    # target/tracker/stop -- is byte-identical once window-owned fields are stripped.
+    assert _d2_tracker_signature(off_events) == _d2_tracker_signature(auth_events)
+
+    # The authoritative run actually exercised the O41 authoritative decision path (else this test
+    # would be vacuously comparing "off" against "off"), and each decision carries the O41
+    # authoritative decision record.
+    decisions = [e["payload"] for e in auth_events if e["kind"] == "scan_design_authority_decision"]
+    assert decisions, "authoritative mode must record at least one O41 decision"
+    for decision in decisions:
+        assert decision["mode"] == "authoritative"
+        assert decision["decision_fingerprint"]
+        assert decision["comparison_fingerprint"]
+    comparisons = [e["payload"] for e in auth_events
+                   if e["kind"] == "scan_design_realized_comparison"]
+    assert comparisons, "authoritative mode must build a realized comparison per proposal"
+    for comparison in comparisons:
+        assert comparison["comparison_ref"]
+
+    # The "off" run never runs the O41 authoritative-decision/realized-comparison machinery at all
+    # ("analysis_clock"/"inventory" are excluded above but are shared instrumentation that also fires
+    # under "off" -- the strict O41-only kinds below are not).
+    _o41_only_kinds = {"scan_design_authority_decision", "scan_design_realized_comparison",
+                       "eig_decision"}
+    assert not [e for e in off_events if e["kind"] in _o41_only_kinds]
+
+
 def test_certification_regression_automatically_acquires_and_recertifies(
         tmp_path, monkeypatch):
     _no_subprocess(monkeypatch)
@@ -1849,7 +2098,7 @@ def test_minimum_target_support_adjustment_records_realized_request(tmp_path):
     frozen["steering"] = {
         **frozen["steering"],
         "minimum_target_support_points": 80,
-        "scan_window_eig_mode": "shadow",
+        "scan_window_eig_mode": "authoritative",
     }
     frozen["hypothesis_fingerprint"] = content_fingerprint(
         frozen["hypotheses"], frozen["steering"])
@@ -1859,6 +2108,7 @@ def test_minimum_target_support_adjustment_records_realized_request(tmp_path):
         budget={"kind": "neutrons", "amount": 1e12},
         target_branch="optic",
         energy_search_meV=(-2.0, 12.0),
+        scan_window_eig=_o41_config(),
         **frozen,
     )
     summary, _workspace = _run(
@@ -2075,8 +2325,16 @@ class _NotQueueablePartialTavi(MockTavi):
 
 
 def _shadow_objective():
+    """A single-q optic objective for the window-trimming/feasibility-repair tests below.
+
+    None of its three callers exercise scan-window EIG at all (they are about
+    feasibility-trim/decline mechanics) — "off" keeps the campaign to the one validate-per-attempt
+    shape those tests assert on; "authoritative" would additionally run the O41 target-core
+    validation on every attempt (SCENE-4 PR 4.4, D3 retired the middle "shadow" mode that used to
+    let scan-design/realized-comparison machinery run without also invoking O41 selection).
+    """
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
-    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "shadow"}
+    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "off"}
     frozen["hypothesis_fingerprint"] = content_fingerprint(
         frozen["hypotheses"], frozen["steering"])
     return ObjectiveSpec(
@@ -2351,13 +2609,13 @@ def test_largest_feasible_run_refuses_a_manifest_that_does_not_match_the_request
 
 def test_shadow_submission_carries_the_exact_selected_legacy_sidecar(tmp_path):
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
-    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "shadow"}
+    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "authoritative"}
     frozen["hypothesis_fingerprint"] = content_fingerprint(
         frozen["hypotheses"], frozen["steering"])
     objective = ObjectiveSpec(
         path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
         budget={"kind": "neutrons", "amount": 1e12}, target_branch="optic",
-        energy_search_meV=(-2.0, 12.0), **frozen)
+        energy_search_meV=(-2.0, 12.0), scan_window_eig=_o41_config(), **frozen)
 
     # An instrument that executes a grid other than the one it was handed. Previously this test got
     # its mismatch for free from a mock helper whose point count disagreed with the adapter; that
@@ -3347,6 +3605,37 @@ def test_proposal_finalizer_uses_smaller_policy_cap_and_reclamps_neutron_count(t
                        match="budget_insufficient_for_minimum_batch"):
         _finalize_proposal(
             p, objective, cfg, {"kind": "neutrons", "amount": 99.0, "spent": 0.0}, it=4)
+
+
+def test_discovery_ncount_below_quicklook_floor_is_raised_not_refused(tmp_path):
+    """Owner ruling 2026-08-21: a user-declared ``discovery_monitor_ncount`` below the quicklook
+    floor is a DISCOVERY EXEMPTION, never a refusal. A ``quicklook``-kind proposal carrying a
+    declared ncount under the floor, under ``dynamic_ncount`` with a neutron budget, PROCEEDS with
+    exposure raised to the floor and emits ``proposal_ncount_raised_to_floor`` — it must never
+    raise ``BudgetInsufficientForMinimumBatch`` or any other refusal."""
+    declared = 100                                    # far below the quicklook floor
+    # e_hi picked so the emitted grid is exactly 100 points — under the 200-point cap, so the
+    # point-count guard never fires and n_points stays the declared 100 throughout.
+    p = ScanProposal(h=2.1, k=0.0, l=0.0, e_lo=0.0, e_hi=9.9, e_step=0.1,
+                     ncount=declared, kind="quicklook", reason="discovery: step-1", n_points=100)
+    objective = types.SimpleNamespace(steering={"max_scan_points": 200, "dynamic_ncount": True})
+    log = tmp_path / "log.jsonl"
+    cfg = types.SimpleNamespace(max_points=200, max_points_source="get_state", log_path=log)
+
+    _finalize_proposal(
+        p, objective, cfg, {"kind": "neutrons", "amount": 2_000_000_000.0, "spent": 0.0}, it=1)
+
+    assert p.ncount == QUICKLOOK_NCOUNT                # (a) proceeds, raised to the floor
+    raises = [e["payload"] for e in read_log(log)
+              if e["kind"] == "exception"
+              and (e["payload"] or {}).get("action") == "proposal_ncount_raised_to_floor"]
+    assert len(raises) == 1                            # (b) evented, with declared + effective
+    assert raises[0]["old_ncount"] == declared
+    assert raises[0]["new_ncount"] == QUICKLOOK_NCOUNT
+    refusals = [e["payload"] for e in read_log(log)
+                if e["kind"] == "exception"
+                and (e["payload"] or {}).get("action", "").startswith("budget_insufficient")]
+    assert not refusals                                 # (c) nothing refuses
 
 
 def test_proposal_fingerprint_persists_action_evidence_and_original_branch_roles(tmp_path):

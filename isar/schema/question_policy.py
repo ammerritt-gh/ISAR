@@ -161,7 +161,7 @@ _NON_NEGATIVE_INTEGER_FIELDS = {"broken_scan_retry_limit", "prompt_timeout_deliv
 #: measurement, so it refuses like any other positive quantity while still rejecting fractions.
 _POSITIVE_INTEGER_FIELDS = {"discovery_monitor_ncount"}
 #: Field names a caller may pass in ``user_ask``/``card_guidelines`` beyond the numeric
-#: thresholds — currently just the one non-numeric target field.
+#: thresholds — the one non-numeric target field.
 _NON_THRESHOLD_TARGET_FIELDS = {"survey_order"}
 
 
@@ -338,8 +338,8 @@ def validate_resolved_block(block: Any, where: str = "resolved_policy") -> None:
         raise ValueError(f"{where} needs a profile {{id: str, version: int}}")
 
     allowed = {"schema", "profile", "thresholds", "priorities", "emergent_question_policy",
-               "survey_order", "staleness_policy", "prompt_defaults", "provenance",
-               CONSULTATION_OVERRIDES_KEY}
+               "survey_order", "staleness_policy", "prompt_defaults",
+               "provenance", CONSULTATION_OVERRIDES_KEY}
     unknown = sorted(set(block) - allowed)
     if unknown:
         raise ValueError(f"{where} has unknown fields: {unknown}")

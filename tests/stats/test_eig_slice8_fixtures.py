@@ -1,5 +1,4 @@
 import json
-import shutil
 from pathlib import Path
 
 import pytest
@@ -127,45 +126,6 @@ def test_grid_fault_provenance_selects_exact_mismatching_job_not_later_recovery(
     assert provenance["job_id"] == "fault-job"
     assert provenance["scan_design_executed_grid_status"] == "mismatch"
 
-
-def test_case1_retention_uses_strict_production_comparison_and_authentic_records(
-        tmp_path):
-    retained = Path(
-        "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V2/"
-        "artifacts/s8-c01-strong-confirmed")
-    source = tmp_path / "source"
-    production = tmp_path / "production"
-    shutil.copytree(retained, source)
-    shutil.copytree(retained, production)
-    comparison_ref = {
-        "kind": "scan_design_realized_comparison",
-        "path": (
-            "report/scan-design-realizations/"
-            "6052e0b1f6ab4ce512f79a6373d159eb765868a8c45f73667f7d1cc1679ec113.json"),
-        "sha256": "6052e0b1f6ab4ce512f79a6373d159eb765868a8c45f73667f7d1cc1679ec113",
-    }
-    comparison = load_scan_design_realized_comparison(comparison_ref, production)
-    physical = {
-        "job_id": "physical-job", "acquisition_id": "current-action",
-        "scan_design_realized_comparison_fingerprint": (
-            comparison.realized_comparison_fingerprint),
-    }
-    acquisition = {"job_id": "physical-job", "acquisition_id": "current-action"}
-    raw = {"realized_comparison_ref": None}
-
-    fixtures.retain_case1_production_comparison(
-        raw, source=source, production_workspace=production,
-        comparison_ref=comparison_ref, physical_submission=physical,
-        acquisition_provenance=acquisition)
-
-    assert raw["realized_comparison_ref"] == comparison_ref
-    assert load_scan_design_realized_comparison(
-        raw["realized_comparison_ref"], source).realized_comparison_fingerprint == (
-            comparison.realized_comparison_fingerprint)
-    assert json.loads((source / "report/current-submission.json").read_text(
-        encoding="utf-8")) == physical
-    assert json.loads((source / "report/current-acquisition-provenance.json").read_text(
-        encoding="utf-8")) == acquisition
 
 
 SUPERSEDED_STATUS = Path("tools/stats/eig-slice8-gate.superseded-status.json")

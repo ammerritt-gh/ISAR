@@ -94,9 +94,17 @@ def aligned_window(e_lo: float, e_hi: float, step: float) -> tuple[float, float,
     module docstring for why that refuses instead of widening.
 
     A window straddling zero therefore includes the point at ΔE = 0 itself, on the elastic line.
-    Whether a discovery scan may sit on the zone centre's elastic exclusion is the on-ZC question
-    the owner's cold-start ruling assigns to the 4.4 acceptance script (SCENE4_EXECUTION_PLAN,
-    "Cold-start ruling" item 4) — deliberately NOT decided here.
+    Whether a discovery scan may sit on the zone centre's elastic exclusion was the on-ZC question
+    the owner's cold-start ruling assigned to the SCENE-4.4 cold-start acceptance script
+    (``tests/drive/test_cold_start_acceptance.py``); see the cold-start section of
+    ``docs/design/steering.md`` for the ruling. The script's own evidence covers the window half:
+    an on-ZC survey window does straddle ΔE = 0. The fitter half rests on the component
+    definition, not on that script: ``Elastic`` (`isar/analyze/components.py`, a Voigt at
+    ``ctx.center`` with a linear area parameter) is an ordinary basis member beside the phonon
+    components in the same window — read it there, no test exercises the combination here. On
+    that combined reading no proposal-level window floor is built. Still deliberately NOT
+    decided at the grid-alignment level above: this function stays agnostic to what sits at
+    ΔE = 0.
     """
     lo, hi, size = float(e_lo), float(e_hi), float(step)
     if not (math.isfinite(lo) and math.isfinite(hi) and math.isfinite(size)) or size <= 0.0:

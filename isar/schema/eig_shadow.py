@@ -1,8 +1,15 @@
-"""Lightweight immutable contracts for Slice 6 scan-window shadow evidence.
+"""Lightweight immutable contracts for scan-window scoring evidence.
 
 This schema module owns serialization, structural invariants, and semantic fingerprints only.  It
 must remain importable without NumPy/SciPy or the campaign runtime.  Deep policy, eligibility,
 candidate-pair, and Slice 4 numerical authentication belongs to :mod:`isar.eig.shadow_inventory`.
+
+Module, class, and contract names here ("shadow") are historical: the diagnostic-only "shadow"
+mode was retired in SCENE-4 PR 4.4 (D3) and every contract below now serves the sole remaining
+scoring regime, ``scan_window_eig_mode == "authoritative"``. The contract strings (e.g.
+``SHADOW_SCORING_CONTRACT``) and the ``ScanDesignShadowScoring`` class name are persisted-record
+identifiers and are never renamed (H1 forbids a silent contract break); kept unrenamed as a module
+too given ~10 import sites elsewhere.
 """
 from __future__ import annotations
 

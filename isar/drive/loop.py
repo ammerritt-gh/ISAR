@@ -72,7 +72,6 @@ from isar.drive.acquisition.eig_runtime import (
     _AUTHORITY_SUBMISSION_FIELDS,
     _REALIZED_SUBMISSION_FIELDS,
     ScanDesignInvariantViolation,
-    _authenticate_realized_before_submission,
     _invalidate_realized_comparison_for_recovery,
     _prepare_authoritative_submission,
     _proposal_for_realized_request,
@@ -2632,7 +2631,7 @@ def _persist_acquisition_provenance(workspace: Path, payload: dict) -> None:
             "scan_design_realized_selected_request_fingerprint"),
         "scan_design_realized_selected_grid_fingerprint": payload.get(
             "scan_design_realized_selected_grid_fingerprint"),
-        # Authoritative mode only (``None`` in shadow/off mode). The realized_selected_* keys above
+        # Authoritative mode only (``None`` in off mode). The realized_selected_* keys above
         # carry whichever request was actually executed, which on an authority grant is the
         # target_core request rather than the legacy one
         # ``ScanDesignRealizedComparison.selected_request_fingerprint`` returns. Recording the
@@ -3123,7 +3122,7 @@ def _eig_planned_point_counts(inventory) -> tuple[int | None, int | None]:
 def _log_eig_decision(cfg: CampaignConfig, proposal, *, it: int) -> bool:
     """Emit the one operator-facing ``eig_decision`` summary for an iteration that considered EIG.
 
-    Presentation only: every value is copied from evidence the authority/shadow path already wrote
+    Presentation only: every value is copied from evidence the authority path already wrote
     (``proposal.meta`` and the in-memory inventory).  Nothing is loaded, recomputed or decided here,
     and the emitter never raises — a campaign must not die because a log line could not be formed.
 
@@ -3138,7 +3137,7 @@ def _log_eig_decision(cfg: CampaignConfig, proposal, *, it: int) -> bool:
     try:
         inventory = getattr(proposal, "scan_design_inventory", None)
         mode = None if inventory is None else inventory.context.scan_window_eig_mode
-        if mode not in {"shadow", "authoritative"}:
+        if mode != "authoritative":
             return False
         meta = proposal.meta if isinstance(proposal.meta, dict) else {}
         decision_ref = meta.get("scan_design_authority_decision_ref")
@@ -3150,12 +3149,7 @@ def _log_eig_decision(cfg: CampaignConfig, proposal, *, it: int) -> bool:
         else:
             legacy_points, target_points = _eig_planned_point_counts(inventory)
             basis = "planned_inventory"
-        if mode == "authoritative":
-            ready = meta.get("scan_design_authority_status") == "granted"
-        else:
-            ready = (getattr(getattr(inventory, "shadow_scoring", None), "status", None)
-                     == "complete"
-                     and meta.get("scan_design_eig_applicability") == "applicable")
+        ready = meta.get("scan_design_authority_status") == "granted"
         blocker = None if ready else _eig_primary_blocker(inventory, meta)
         blocker_detail = () if ready else _eig_blocker_detail(inventory, meta, blocker)
         eligibility = _eig_eligibility(inventory)
@@ -3878,8 +3872,6 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
         feasible_points = _feasible_point_count(val, proposal.n_points or 1)
 
         with timed(log_path, "submit", iteration=it, attempt=attempt) as _m:
-            _authenticate_realized_before_submission(
-                cfg, objective, proposal, budget_state, it=it, finalizer=_finalize_proposal)
             if (proposal.meta or {}).get("scan_design_authority_selected_role") in {
                     "legacy", "target_core"}:
                 try:

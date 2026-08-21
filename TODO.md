@@ -82,6 +82,30 @@ Things that are wrong now, as opposed to things not yet built.
 
 ## Validation gates
 
+- [ ] **VAL-3 — Deletion of user data must be *tested impossible*, not merely gated.**
+      Operator ruling (2026-08-20 walkthrough): "I should be able to stand up and say that ISAR
+      doesn't even have the capability to delete user data — it just doesn't exist in there."
+      Not a review item — a structural test in the spirit of `tests/test_import_contract.py`:
+      walk the AST of `isar/` and `isar_gui/` for every deletion-capable call
+      (`os.remove/unlink`, `Path.unlink`, `shutil.rmtree`, `os.rmdir`, rename-over, truncating
+      writes) and assert each call site is provably confined to ISAR-owned outputs (workspace
+      internals, `out/`, caches) — never a path derived from an input-data argument. Input-data
+      paths must flow only into reads.
+      **Acceptance:** the test enumerates every deletion call site in the tree, fails on any new
+      one that is not allow-listed to an ISAR-owned output root, and a deliberate seeded
+      violation (temporarily deleting from a data dir) is caught by it.
+
+- [ ] **VAL-4 — Raw-counts-only storage must be *tested impossible* to violate.**
+      Sibling of VAL-3, same operator ruling: monitor is recorded per point and rides along;
+      division by monitor happens only at consumption time; stored scans are raw counts, ever.
+      The law exists (ARCHITECTURE §6, combine-before-divide) — this makes it structural: a test
+      asserting every persisted `ScanRecord`/unit-data counts array is integer-valued Poisson
+      counts (a normalized rate is the thing that cannot survive that check), that per-point
+      monitor is present wherever counts are, and that no ingest/reduce/collate path writes a
+      counts-divided-by-monitor array into any persisted artifact.
+      **Acceptance:** the checks run on synthetic + real-data fixtures; a seeded violation
+      (persisting a normalized array) fails loudly.
+
 - [ ] **VAL-1 — Restore the IN8 gold CSV.** `test_data/ILL IN8/IN8_fit_results.csv` is missing
       from disk, gitignored, and cannot be restored from git; only `055182 ≈ 4.2 meV` and
       `055183-REJECT` are vetted rows. Blocks `docs/phase3_gold_in8_check.py`,
@@ -136,6 +160,32 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       for γ-at-bound fits — 2-mode fits with γ at its bound report absurdly tight intervals
       (halfwidth ~1e-3 meV) that dominate the inflation metric.
       **Acceptance:** a v2 calibration artifact exists with per-configuration inflation factors.
+- [ ] **CAL-5 — Resolution lineshape by the degenerate-limit rule.**
+      Owner ruling (2026-08-20 walkthrough): the elastic-line resolution fit should offer
+      {Voigt(free), Gaussian(`lorentz_fwhm`=0), Lorentzian(`gauss_fwhm`=0)} as candidates and let
+      evidence selection collapse to the degenerate case — "we checked the Voigt, the evidence
+      supports the degenerate case" — instead of always carrying the full Voigt's parameters.
+      Never compare free-Voigt against Gaussian as independent rivals when the free fit sits at
+      the boundary: near the limit the evidence difference is prior-volume noise, and the honest
+      outcome is the pinned candidate (STATS_PRIMER §2, the degenerate-limit rule).
+      Touches `isar/calibrate/elastic.py` (always-Voigt today) and the `gauss_fwhm`/
+      `lorentz_fwhm` provenance in `isar/schema/steering.py`.
+      **Acceptance:** on a synthetic pure-Gaussian resolution, selection reports the Gaussian
+      candidate with the Voigt checked-and-collapsed on the record; on a genuine Voigt it keeps
+      both widths; no boundary-pinned free fit is ever reported as the winner.
+
+- [ ] **CAL-4 — Γ non-resolvability as a candidate structure, not a failure mode.**
+      Owner ruling (2026-08-20 walkthrough): the accepted Γ-at-bound collapse "has become a
+      target... reported like a mark of pride, but it's a failure — scientists don't get hung up
+      on this, we route around." Add a zero-width (delta ⊗ resolution) candidate to the
+      admissible structure set and let evidence selection decide; when it wins, report "Γ not
+      resolvable at this resolution" with an upper limit as a positive result. Alternative
+      considered (operator's previous program): a repulsive term pushing Γ off the bound.
+      Interacts with CAL-3 (the trust gate) and STATS_PRIMER §4.
+      **Acceptance:** on the wall exemplars (scan 518 class), the delta candidate is fit,
+      selection picks it, and the row reports a Γ upper limit instead of a degenerate interval;
+      finite-Γ scans (scan 529 class) are unaffected.
+
 - [ ] **CAL-2 — Bayes-interval coverage campaign.** The `--errors bayes` tier ships the posterior
       as diagnostics-only (ruling S5); before it can enter `_pick_interval` precedence it needs
       its own truth-scored coverage artifact (`isar score --truth-* --interval bayes`). Includes
@@ -150,7 +200,7 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       must test certified-interval *coverage*, not only pull on unflagged rows.
       **Acceptance:** the scorecard tests certified-interval coverage and the q=0.45 case no
       longer certifies.
-- [ ] **CAL-4 — Worker path ignores the bayes CLI knobs.** `--bayes-nlive/--bayes-dlogz/
+- [ ] **CAL-6 — Worker path ignores the bayes CLI knobs.** `--bayes-nlive/--bayes-dlogz/
       --bayes-maxiter` thread through direct `isar run` only; the persistent worker resolves
       `_resolve_bayes_opts(None)` = env/defaults (`ISAR_BAYES_*` still work). Needs a
       worker-protocol field — do it alongside the next protocol change.

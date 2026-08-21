@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from isar.drive.acquisition.realized_comparison import load_scan_design_realized_comparison
 from isar.eig.eligibility import EligibilityInput
 from isar.eig.shadow_inventory import score_shadow_inventory
 from isar.schema.eig_policy import (
@@ -553,38 +552,6 @@ def test_replacement_bundle_with_forged_fixture_or_calibration_is_refused(
     assert gate.main(["evaluate", "--bundle", str(bundle),
                       "--output", str(tmp_path / "out.json")]) == 1
 
-
-def test_repaired_case1_classifies_the_exact_production_comparison():
-    bundle = Path(
-        "docs/campaigns/2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3")
-    results = json.loads((bundle / "case-results.json").read_text(encoding="utf-8"))
-    case = next(item for item in results["cases"]
-                if item["case_id"] == "s8-c01-strong-confirmed")
-    root = bundle / case["artifact_root"]
-    fork = json.loads((root / case["fork_evidence_ref"]).read_text(encoding="utf-8"))
-    analysis = json.loads(
-        (root / case["analysis_evidence_ref"]).read_text(encoding="utf-8"))
-    comparison = load_scan_design_realized_comparison(
-        case["realized_comparison_ref"], root)
-    target = comparison.realized_pair.target_core
-    parameters = analysis["exact_request"]["parameters"]
-    retained = {
-        item["path"] for item in json.loads(
-            (bundle / "run-manifest.json").read_text(encoding="utf-8"))[
-                "retained_files"]}
-
-    assert case["realized_comparison_ref"] == fork[
-        "classified_realized_comparison_ref"]
-    assert comparison.realized_comparison_fingerprint == fork[
-        "realized_comparison_fingerprint"] == fork[
-            "legacy_physical_submission"][
-                "scan_design_realized_comparison_fingerprint"]
-    assert parameters["scan_command1"] == target.scan_command
-    assert parameters["number_neutrons"] == target.ncount
-    assert analysis["returned_scan_values_1"] == list(target.executed_energies)
-    assert any(path.endswith(
-        "f0b33abf45f91167860dd57bf198a5046949e2d77f56111e1618db7f74211af7.json")
-        for path in retained)
 
 
 @pytest.mark.parametrize("bundle_name, contract, expected_status", [
