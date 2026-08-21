@@ -28,7 +28,8 @@ PRESET_NAMES = ("acoustic", "optic", "null")
 
 #: Same-action scan-window EIG regime. ``off`` designs the legacy window; ``authoritative`` scores
 #: alternatives and may execute the scored winner under the restricted O41 profile validated at
-#: campaign setup. Authoritative use remains opt-in pending the O42 release review.
+#: campaign setup. Authoritative is the COMPILE-TIME DEFAULT for newly compiled targeted
+#: objectives as of SCENE-4 PR 4.4 (H22; O42 itself was retired by H1, 2026-08-08).
 #: ``"shadow"`` (diagnostic-only scoring, never selecting) was retired in SCENE-4 PR 4.4, D3: the
 #: authoritative path already runs through the same scoring machinery, so the separate diagnostic
 #: mode had no remaining reason to exist. A frozen program or context still naming it refuses by

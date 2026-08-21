@@ -200,7 +200,7 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       must test certified-interval *coverage*, not only pull on unflagged rows.
       **Acceptance:** the scorecard tests certified-interval coverage and the q=0.45 case no
       longer certifies.
-- [ ] **CAL-4 — Worker path ignores the bayes CLI knobs.** `--bayes-nlive/--bayes-dlogz/
+- [ ] **CAL-6 — Worker path ignores the bayes CLI knobs.** `--bayes-nlive/--bayes-dlogz/
       --bayes-maxiter` thread through direct `isar run` only; the persistent worker resolves
       `_resolve_bayes_opts(None)` = env/defaults (`ISAR_BAYES_*` still work). Needs a
       worker-protocol field — do it alongside the next protocol change.
