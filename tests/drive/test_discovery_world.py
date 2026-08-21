@@ -21,6 +21,7 @@ in `test_consultation.py`, and the broken-scan quarantine/retry/offramp lane in
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -28,7 +29,7 @@ import isar.drive.program_runner as runner_mod
 from isar.drive.program_runner import (
     VERDICT_COMPLETE, VERDICT_IN_PROGRESS, VERDICT_MACHINE_FAILURE, VERDICT_OVER_BUDGET,
     run_program)
-from isar.schema.campaign_program import CampaignProgram, program_fingerprint
+from isar.schema.campaign_program import CampaignProgram, DiscoverAndMapSpec, program_fingerprint
 from isar.schema.measurement import CAMPAIGN_PROVENANCE_FIELDS
 
 from drive.test_broken_scan_lane import config_for, moving_scenes
@@ -59,6 +60,24 @@ def canonical_world(root: Path, monkeypatch, client=None, **extra):
         program, step.id,
         config_for(root, trust="trusted", client=client or MockTavi(),
                    max_deliveries=DELIVERIES, **extra))
+
+
+# ------------------------------------------------------------------ (a1) the D1 flip, pinned here
+def test_the_challenge_run_program_carries_no_scan_window_eig_mode_at_all():
+    """SCENE-4.4 D7 pin: the discovery path does not consume ``scan_window_eig_mode``.
+
+    D1 froze the compile-time authoritative-by-default flip onto the TARGETED objective's
+    ``steering`` block (`isar.drive.supervisor.goal_to_spec`); a discovery step's frozen payload
+    is a :class:`DiscoverAndMapSpec`, which has no such field and never did. The challenge run in
+    this file is therefore NOT exercising the flip — window selection during discovery runs
+    entirely off the scene/question-policy path (generators + `plan_next_action`), never through
+    `eig_runtime`/`authority.py`'s O41 authoritative selection. If a future change starts routing
+    discovery window choices through `scan_window_eig_mode`, this pin is the one that must move.
+    """
+    field_names = {f.name for f in dataclasses.fields(DiscoverAndMapSpec)}
+    assert "scan_window_eig_mode" not in field_names
+    step = discover_step()
+    assert not hasattr(step.payload, "scan_window_eig_mode")
 
 
 # ------------------------------------------------------------------ (a) the canonical world
