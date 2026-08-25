@@ -152,6 +152,16 @@ Plus fast worlds per D9 and the standing twelve unchanged.
   soft mode reads as surprisingly informative data, which is the honest failure direction
   (attracts measurement rather than repelling it). Calibration of family priors is SCENE-7's
   battery.
+- **Within-span width is flat** (5.0 verifier advisory A2): between two sparse anchors the
+  curve family's position uncertainty interpolates the endpoints and adds no
+  interpolation-uncertainty term, so a node midway between distant anchors reads as
+  well-predicted. Owner disposition due at 5.1, where the MI engine starts consuming the width.
+- **`reference_counts` is peak height, not integrated intensity** (5.0 delta-verifier advisory
+  B): a wider declared linewidth at fixed peak height delivers proportionally more total flux,
+  which 5.1's MI would read as broad-Γ designs being strictly more informative. The physical
+  convention (spectral weight conserved under broadening — normalize the peak by its width) is
+  the likely fix; decide and apply it when 5.1 first consumes predicted counts. Also then: one
+  extra pinned value in the mirror test (delta advisory A, test-strength only).
 
 ## 6. Non-goals
 
