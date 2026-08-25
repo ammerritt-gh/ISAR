@@ -126,6 +126,10 @@ def test_fold_reflects_without_gapless_anchor():
     # constant-ω stub would pass a bare equality check, so the value is pinned too).
     assert math.isclose(at_fold_minus, 9.0, abs_tol=1e-9)
     assert math.isclose(beyond_fold, at_fold_minus, abs_tol=1e-9)
+    # Delta-advisory-A test-strength fix (5.1): pin the OTHER anchor's value too, so a
+    # constant-9.0 stub of predicted_omega (which would pass the two assertions above unchanged)
+    # also fails here.
+    assert math.isclose(predicted_omega(belief, 2.2), 8.0, abs_tol=1e-9)
 
 
 def test_gapless_anchor_plants_only_at_declared_reflection_fold():
@@ -250,20 +254,57 @@ def test_count_scale_traces_to_declared_prior_only():
 
     retuned = dict(FAMILIES)
     retuned["curve"] = PhenomenonFamily(
-        name="curve", version="1",
+        name="curve", version="2",
         config=(("default_gamma_mev", 0.3), ("diffuse_sigma_growth_per_rlu", 5.0),
                 ("reference_counts", 200.0), ("reference_ncount", 1_000_000.0)))
     changed = predict(belief, design, families=retuned, seed=3)
     assert changed.expected_counts != baseline.expected_counts
     assert max(changed.expected_counts) > max(baseline.expected_counts)
+    # Scale-ratio: reference_counts is linear (doubling it exactly doubles every grid rate, same
+    # sigma so the density shape is unchanged).
+    assert np.allclose(changed.expected_counts, 2.0 * np.array(baseline.expected_counts))
 
     unrelated = dict(FAMILIES)
     unrelated["curve"] = PhenomenonFamily(
-        name="curve", version="1",
+        name="curve", version="2",
         config=(("default_gamma_mev", 0.3), ("diffuse_sigma_growth_per_rlu", 99.0),
                 ("reference_counts", 100.0), ("reference_ncount", 1_000_000.0)))
     same = predict(belief, design, families=unrelated, seed=3)
     assert same.expected_counts == baseline.expected_counts
+
+
+def test_count_scale_is_linear_in_ncount():
+    belief = _single_mode_belief(omega=0.0, sigma=0.5)
+    base_design = Design(axis_coordinate=0.0, window=(-3.0, 3.0), n_points=25, ncount=500_000.0)
+    tripled_design = Design(axis_coordinate=0.0, window=(-3.0, 3.0), n_points=25,
+                            ncount=1_500_000.0)
+
+    baseline = predict(belief, base_design, seed=3)
+    tripled = predict(belief, tripled_design, seed=3)
+    assert np.allclose(tripled.expected_counts, 3.0 * np.array(baseline.expected_counts))
+
+
+def test_spectral_weight_conserved_under_linewidth_retune():
+    """Delta advisory B, resolved: ``reference_counts`` is integrated spectral weight, so
+    Sum(expected_counts * grid_spacing) is invariant when ``default_gamma_mev`` is retuned at
+    fixed weight — a wider declared linewidth redistributes the same counts instead of minting
+    more of them. A wide window/fine grid keeps grid-truncation loss small on both sides."""
+    belief = _single_mode_belief(omega=0.0, sigma=0.5)
+    design = Design(axis_coordinate=0.0, window=(-20.0, 20.0), n_points=4001, ncount=500_000.0)
+    dx = (design.window[1] - design.window[0]) / (design.n_points - 1)
+
+    baseline = predict(belief, design, seed=3)
+    total_base = sum(baseline.expected_counts) * dx
+
+    broadened_families = dict(FAMILIES)
+    broadened_families["curve"] = PhenomenonFamily(
+        name="curve", version="2",
+        config=(("default_gamma_mev", 3.0), ("diffuse_sigma_growth_per_rlu", 5.0),
+                ("reference_counts", 100.0), ("reference_ncount", 1_000_000.0)))
+    broadened = predict(belief, design, families=broadened_families, seed=3)
+    total_broad = sum(broadened.expected_counts) * dx
+
+    assert math.isclose(total_base, total_broad, rel_tol=0.02)
 
 
 def test_linewidth_prior_is_consulted_not_dead_config():
@@ -277,12 +318,13 @@ def test_linewidth_prior_is_consulted_not_dead_config():
 
     wider = dict(FAMILIES)
     wider["curve"] = PhenomenonFamily(
-        name="curve", version="1",
+        name="curve", version="2",
         config=(("default_gamma_mev", 2.0), ("diffuse_sigma_growth_per_rlu", 5.0),
                 ("reference_counts", 100.0), ("reference_ncount", 1_000_000.0)))
     broadened = predict(belief, design, families=wider, seed=3)
     assert broadened.expected_counts != baseline.expected_counts
-    # A wider peak at the same amplitude spreads mass outward: off-center rate rises.
+    # A wider peak at the same INTEGRATED weight spreads mass outward: off-center rate rises
+    # even though total weight is conserved (see test_spectral_weight_conserved_under_...).
     assert broadened.expected_counts[0] > baseline.expected_counts[0]
 
     ela = PhenomenonBelief(cluster_id="c", alternative_index=0, family="elastic",
@@ -290,7 +332,7 @@ def test_linewidth_prior_is_consulted_not_dead_config():
     ela_base = predict(ela, design, seed=3)
     wider_e = dict(FAMILIES)
     wider_e["elastic"] = PhenomenonFamily(
-        name="elastic", version="1",
+        name="elastic", version="2",
         config=(("default_width_mev", 1.5), ("reference_counts", 500.0),
                 ("reference_ncount", 1_000_000.0)))
     ela_broadened = predict(ela, design, families=wider_e, seed=3)
@@ -317,6 +359,22 @@ def test_curve_predictive_width_is_strictly_wider_beyond_the_anchored_span():
     at_anchor = predicted_sigma(belief, 0.0)
     far_beyond = predicted_sigma(belief, 5.0)
     assert far_beyond > at_anchor
+
+
+def test_within_span_midpoint_between_distant_anchors_is_strictly_wider_than_at_either_anchor():
+    """5.1 disposition of the 5.0 delta-verifier's advisory A2: within-span width is no longer
+    flat. A node exactly midway between two SPARSE anchors reads as strictly less certain than a
+    node sitting at either anchor, once a slope is declared — the term that makes the MI engine
+    prefer densifying a sparse track over re-measuring an anchored point."""
+    sample = SampleKnowledge(zone_period=None, dispersion_slope_max=2.0)
+    belief = PhenomenonBelief(cluster_id="c", alternative_index=0, family="curve",
+                              anchors=(Anchor(0.0, 5.0, 0.3), Anchor(10.0, 6.0, 0.3)),
+                              sample=sample)
+    at_left = predicted_sigma(belief, 0.0)
+    at_right = predicted_sigma(belief, 10.0)
+    midpoint = predicted_sigma(belief, 5.0)
+    assert midpoint > at_left
+    assert midpoint > at_right
 
 
 # ----------------------------------------------------------------------------

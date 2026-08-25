@@ -28,17 +28,26 @@ def test_pure_defaults_resolve_to_a_valid_block_with_default_provenance():
     assert block["provenance"]["survey_order"]["authority"] == AUTHORITY_TARGET
     assert block["thresholds"]["parameter_precision_min_mass"] == 0.9
     assert block["provenance"]["parameter_precision_min_mass"]["authority"] == AUTHORITY_TARGET
+    assert block["thresholds"]["paranoia_unknown_prior"] == 0.1
+    assert block["provenance"]["paranoia_unknown_prior"]["authority"] == AUTHORITY_TARGET
+    assert block["thresholds"]["mi_n_draws"] == 32.0
+    assert block["provenance"]["mi_n_draws"]["authority"] == AUTHORITY_TARGET
+    assert block["priority_weights"] == {"0": 1.0, "1": 1.0, "2": 0.8, "3": 0.6, "4": 0.4,
+                                          "5": 0.2}
+    assert block["provenance"]["priority_weights"] == {"source": "default",
+                                                        "authority": AUTHORITY_TARGET}
 
 
-# --------------------------------------------------------------------------- /2 contract bump
-def test_a_v1_block_is_refused_by_name_naming_v2():
+# --------------------------------------------------------------------------- /3 contract bump
+@pytest.mark.parametrize("retired_schema", ["isar.question-policy/1", "isar.question-policy/2"])
+def test_a_retired_block_is_refused_by_name_naming_v3(retired_schema):
     block = json.loads(json.dumps(resolve_policy()))
-    block["schema"] = "isar.question-policy/1"
-    with pytest.raises(ValueError, match="isar.question-policy/2.*recompile"):
+    block["schema"] = retired_schema
+    with pytest.raises(ValueError, match="isar.question-policy/3.*recompile"):
         validate_resolved_block(block)
 
 
-def test_a_v2_block_missing_either_new_key_is_refused():
+def test_a_v3_block_missing_any_new_key_is_refused():
     block = json.loads(json.dumps(resolve_policy()))
     del block["thresholds"]["parameter_precision_min_mass"]
     del block["provenance"]["parameter_precision_min_mass"]
@@ -49,6 +58,80 @@ def test_a_v2_block_missing_either_new_key_is_refused():
     del block["survey_order"]
     with pytest.raises(ValueError, match="survey_order"):
         validate_resolved_block(block)
+
+    block = json.loads(json.dumps(resolve_policy()))
+    del block["thresholds"]["paranoia_unknown_prior"]
+    del block["provenance"]["paranoia_unknown_prior"]
+    with pytest.raises(ValueError, match="missing frozen values"):
+        validate_resolved_block(block)
+
+    block = json.loads(json.dumps(resolve_policy()))
+    del block["thresholds"]["mi_n_draws"]
+    del block["provenance"]["mi_n_draws"]
+    with pytest.raises(ValueError, match="missing frozen values"):
+        validate_resolved_block(block)
+
+    block = json.loads(json.dumps(resolve_policy()))
+    del block["priority_weights"]
+    with pytest.raises(ValueError, match="priority_weights"):
+        validate_resolved_block(block)
+
+
+def test_priority_weights_missing_key_is_refused():
+    block = json.loads(json.dumps(resolve_policy()))
+    del block["priority_weights"]["3"]
+    with pytest.raises(ValueError, match=r"priority_weights must name exactly.*missing \['3'\]"):
+        validate_resolved_block(block)
+
+
+def test_priority_weights_extra_key_is_refused():
+    block = json.loads(json.dumps(resolve_policy()))
+    block["priority_weights"]["6"] = 0.1
+    with pytest.raises(ValueError, match=r"priority_weights must name exactly.*extra \['6'\]"):
+        validate_resolved_block(block)
+
+
+@pytest.mark.parametrize("bad_weight", [0.0, -1.0, float("inf"), float("nan")])
+def test_priority_weights_non_positive_or_non_finite_is_refused(bad_weight):
+    block = json.loads(json.dumps(resolve_policy()))
+    block["priority_weights"]["0"] = bad_weight
+    with pytest.raises(ValueError, match="positive and finite"):
+        validate_resolved_block(block)
+
+
+def test_priority_weights_boolean_is_refused():
+    block = json.loads(json.dumps(resolve_policy()))
+    block["priority_weights"]["0"] = True
+    with pytest.raises(ValueError, match="must be a number"):
+        validate_resolved_block(block)
+
+
+def test_paranoia_unknown_prior_out_of_range_refused():
+    with pytest.raises(ValueError, match=r"within \[0, 1\]"):
+        resolve_policy(user_ask={"paranoia_unknown_prior": 1.5})
+
+
+def test_mi_n_draws_non_positive_or_non_integer_refused():
+    with pytest.raises(ValueError, match="positive whole number"):
+        resolve_policy(user_ask={"mi_n_draws": 0})
+    with pytest.raises(ValueError, match="positive whole number"):
+        resolve_policy(user_ask={"mi_n_draws": 3.5})
+
+
+def test_priority_weights_boolean_via_user_ask_refused():
+    with pytest.raises(ValueError, match="must be a number"):
+        resolve_policy(user_ask={"priority_weights": {"0": True, "1": 1.0, "2": 0.8, "3": 0.6,
+                                                       "4": 0.4, "5": 0.2}})
+
+
+def test_user_ask_can_override_priority_weights_and_new_scalars():
+    block = resolve_policy(user_ask={"paranoia_unknown_prior": 0.3, "mi_n_draws": 64,
+                                     "priority_weights": {"0": 2.0, "1": 1.0, "2": 0.8,
+                                                          "3": 0.6, "4": 0.4, "5": 0.2}})
+    assert block["thresholds"]["paranoia_unknown_prior"] == 0.3
+    assert block["thresholds"]["mi_n_draws"] == 64.0
+    assert block["priority_weights"]["0"] == 2.0
+    assert block["provenance"]["priority_weights"]["source"] == "user"
 
 
 def test_survey_order_uniform_freezes_at_compile_with_source_recorded():

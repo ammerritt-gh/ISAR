@@ -35,7 +35,7 @@
         ],
         "include_unknown": true,
         "resolved_policy": {
-          "schema": "isar.question-policy/2",
+          "schema": "isar.question-policy/3",
           "profile": {
             "id": "isar.question-defaults",
             "version": 1
@@ -52,6 +52,8 @@
             "broken_scan_retry_limit": 2.0,
             "prompt_timeout_deliveries": 10.0,
             "discovery_monitor_ncount": 100000000.0,
+            "paranoia_unknown_prior": 0.1,
+            "mi_n_draws": 32.0,
             "emergent_omega_tile_meV": 1.0,
             "parameter_statistical_floor_meV": 0.2,
             "maximum_justifiable_zc_confidence": 0.0,
@@ -65,6 +67,14 @@
             "TestModelMismatch": 3,
             "EstimateParameter": 4,
             "VerifyCompleteness": 5
+          },
+          "priority_weights": {
+            "0": 1.0,
+            "1": 1.0,
+            "2": 0.8,
+            "3": 0.6,
+            "4": 0.4,
+            "5": 0.2
           },
           "emergent_question_policy": "open_in_domain",
           "survey_order": "placement_informed",
@@ -121,6 +131,14 @@
               "source": "default",
               "authority": "target"
             },
+            "paranoia_unknown_prior": {
+              "source": "default",
+              "authority": "target"
+            },
+            "mi_n_draws": {
+              "source": "default",
+              "authority": "target"
+            },
             "emergent_omega_tile_meV": {
               "source": "default",
               "authority": "identity_constant"
@@ -138,6 +156,10 @@
               "authority": "capability"
             },
             "survey_order": {
+              "source": "default",
+              "authority": "target"
+            },
+            "priority_weights": {
               "source": "default",
               "authority": "target"
             }

@@ -129,19 +129,27 @@ class ContinuumRefusesPrediction(NotImplementedError):
 # moves ``registry_fingerprint`` and a belief scored under it cannot be replayed against a
 # different tuning. See the module docstring: these are the ONLY source of predicted count
 # scale and default linewidth, because the scene layer never sees a fitted amplitude or Gamma.
+#
+# ``reference_counts`` is INTEGRATED spectral weight (counts*meV at ``reference_ncount``
+# exposure), not peak height, for every family alike (5.1 disposition of the 5.0 delta-verifier's
+# advisory B): the predictive normalizes each peak term by its own width, so retuning a
+# linewidth (``default_gamma_mev``/``default_width_mev``) redistributes the declared weight
+# across a wider or narrower peak instead of minting extra counts. ``unknown`` already had this
+# semantics in v1 (its predictive was already weight-over-domain-width, never peak height) — the
+# other families are bumped to match it explicitly, version "2".
 CURVE = PhenomenonFamily(
-    name="curve", version="1",
+    name="curve", version="2",
     config=(("default_gamma_mev", 0.3),
             ("diffuse_sigma_growth_per_rlu", 5.0),
             ("reference_counts", 100.0),
             ("reference_ncount", 1_000_000.0)))
 ELASTIC = PhenomenonFamily(
-    name="elastic", version="1",
+    name="elastic", version="2",
     config=(("default_width_mev", 0.2),
             ("reference_counts", 500.0),
             ("reference_ncount", 1_000_000.0)))
 QUASIELASTIC = PhenomenonFamily(
-    name="quasielastic", version="1",
+    name="quasielastic", version="2",
     config=(("default_width_mev", 1.5),
             ("reference_counts", 150.0),
             ("reference_ncount", 1_000_000.0)))
@@ -149,6 +157,8 @@ UNKNOWN = PhenomenonFamily(
     name="unknown", version="1",
     # The universal floor: maximally diffuse over the whole declared intrinsic domain, with a
     # deliberately small count scale — "we have no idea" must never outbid a declared phenomenon.
+    # ``reference_counts`` here is already the integrated weight over [domain_lo, domain_hi]
+    # (weight / width below) — unchanged by the 5.1 disposition above, stated for consistency.
     config=(("domain_hi_mev", 50.0), ("domain_lo_mev", -50.0),
             ("reference_counts", 5.0), ("reference_ncount", 1_000_000.0)))
 CONTINUUM = PhenomenonFamily(name="continuum", version="1", config=())
@@ -506,15 +516,35 @@ def predicted_omega(belief: PhenomenonBelief, axis_coordinate: float, *,
     return max(0.0, _extrapolate_linear(anchors, q_eff))
 
 
+def _nearest_anchor_distances(anchors: tuple[Anchor, ...], q: float) -> tuple[float, float]:
+    """Distance from ``q`` to the nearest anchor at or before it, and to the nearest anchor at
+    or after it — ``inf`` on a side with no such anchor (only possible outside the span, where
+    the caller does not use this)."""
+    left = math.inf
+    right = math.inf
+    for a in anchors:
+        if a.axis_coordinate <= q:
+            left = q - a.axis_coordinate
+        if a.axis_coordinate >= q:
+            right = a.axis_coordinate - q
+            break
+    return left, right
+
+
 def predicted_sigma(belief: PhenomenonBelief, axis_coordinate: float,
                     families: Mapping[str, PhenomenonFamily] | None = None, *,
                     _degrade: list | None = None) -> float:
     """The curve family's predicted energy UNCERTAINTY at ``axis_coordinate``.
 
-    Inside the anchored span: interpolated anchor uncertainty alone. Beyond it: that PLUS a
-    slope-cone term growing with the distance past the span — ``dispersion_slope_max × distance``
+    Inside the anchored span: interpolated anchor uncertainty, plus a Lipschitz slope-cone term
+    in quadrature (5.1 disposition of the 5.0 delta-verifier's advisory A2) —
+    ``min(distance to nearest anchor on each side) x slope``: zero exactly at an anchor (the
+    nearer side has distance 0), growing toward the midpoint of a sparse gap between two distant
+    anchors, so a mid-gap node reads honestly less certain than one sitting on a persisted
+    candidate row. Beyond the span: the same slope term, added linearly with the distance past
+    the span edge (the pre-5.1 behaviour, unchanged). Both terms use ``dispersion_slope_max``
     where the sample declares a slope, else a declared diffuse-growth constant (the family's
-    ``diffuse_sigma_growth_per_rlu``) and a recorded ``no_declared_dispersion_slope_max``, so an
+    ``diffuse_sigma_growth_per_rlu``) and a recorded ``no_declared_dispersion_slope_max`` — an
     undeclared slope makes the predictive WIDER, never narrower, than a declared one would at the
     same distance — this is what makes width strictly greater at an unmeasured node than at an
     anchored one, in every case (SCENE-5 5.0 acceptance: predictive width is pinned).
@@ -529,15 +559,18 @@ def predicted_sigma(belief: PhenomenonBelief, axis_coordinate: float,
     q = float(axis_coordinate)
     clamped = min(max(q, lo), hi)
     base = _interp_sigma(anchors, clamped)
-    if lo <= q <= hi:
-        return base
-    beyond = (lo - q) if q < lo else (q - hi)
     slope = belief.sample.dispersion_slope_max
     if slope is not None:
-        return base + float(slope) * beyond
-    degrade.append("no_declared_dispersion_slope_max")
-    growth = families["curve"].cfg("diffuse_sigma_growth_per_rlu", 5.0)
-    return base + float(growth) * beyond
+        slope_value = float(slope)
+    else:
+        degrade.append("no_declared_dispersion_slope_max")
+        slope_value = float(families["curve"].cfg("diffuse_sigma_growth_per_rlu", 5.0))
+    if lo <= q <= hi:
+        d_left, d_right = _nearest_anchor_distances(anchors, q)
+        slope_cone_mid = min(d_left, d_right) * slope_value
+        return math.hypot(base, slope_cone_mid)
+    beyond = (lo - q) if q < lo else (q - hi)
+    return base + slope_value * beyond
 
 
 # ----------------------------------------------------------------------------
@@ -575,10 +608,13 @@ class Prediction:
     degradations: tuple[str, ...]
 
 
-def _reference_amplitude(fam: PhenomenonFamily, ncount: float) -> float:
-    """Expected peak counts at ``ncount`` exposure, scaled linearly off the family's declared
-    reference — the ONLY route to a count scale (see the module docstring: the scene is
-    amplitude-blind, so this is a prior, never a fitted value)."""
+def _reference_weight(fam: PhenomenonFamily, ncount: float) -> float:
+    """Expected INTEGRATED spectral weight (counts*meV) at ``ncount`` exposure, scaled linearly
+    off the family's declared reference — the ONLY route to a count scale (see the module
+    docstring: the scene is amplitude-blind, so this is a prior, never a fitted value). Never a
+    peak height (5.1 disposition, module-header comment on the registry): the predictive
+    normalizes each peak term by its own width, so a retuned linewidth redistributes this weight
+    rather than minting more of it."""
     ref_counts, ref_ncount = fam.cfg("reference_counts"), fam.cfg("reference_ncount")
     if ref_counts is None or ref_ncount is None or float(ref_ncount) <= 0.0:
         raise ValueError(f"family {fam.name!r} declares no usable reference_counts/"
@@ -586,9 +622,12 @@ def _reference_amplitude(fam: PhenomenonFamily, ncount: float) -> float:
     return float(ref_counts) * (float(ncount) / float(ref_ncount))
 
 
-def _gaussian(grid: np.ndarray, mu: float, sigma: float) -> np.ndarray:
+def _normal_density(grid: np.ndarray, mu: float, sigma: float) -> np.ndarray:
+    """The unit-weight Gaussian density (integrates to 1 over an infinite grid) — multiplying by
+    an integrated spectral weight, rather than by a peak-height amplitude, is what keeps
+    Sum(lam * grid_spacing) invariant when ``sigma`` is retuned at fixed weight."""
     sigma = max(float(sigma), 1e-6)
-    return np.exp(-0.5 * ((grid - mu) / sigma) ** 2)
+    return np.exp(-0.5 * ((grid - mu) / sigma) ** 2) / (sigma * math.sqrt(2.0 * math.pi))
 
 
 def predict(belief: PhenomenonBelief, design: Design,
@@ -623,11 +662,11 @@ def predict(belief: PhenomenonBelief, design: Design,
         # predictive smears over both, in quadrature — leaving the declared prior out made it
         # dead config whose retuning moved the registry fingerprint and changed nothing.
         sigma = math.hypot(sigma_pos, float(fam.cfg("default_gamma_mev", 0.0)))
-        amplitude = _reference_amplitude(fam, design.ncount)
-        lam = amplitude * _gaussian(grid, center, sigma)
+        weight = _reference_weight(fam, design.ncount)
+        lam = weight * _normal_density(grid, center, sigma)
         if design.temperature_K is not None:
-            weight = bose_weight(center, design.temperature_K)
-            lam = lam + amplitude * weight * _gaussian(grid, -center, sigma)
+            bose = bose_weight(center, design.temperature_K)
+            lam = lam + weight * bose * _normal_density(grid, -center, sigma)
         else:
             degrade.append("no_declared_temperature_for_bose")
     elif belief.family in ("elastic", "quasielastic"):
@@ -636,13 +675,13 @@ def predict(belief: PhenomenonBelief, design: Design,
         # width prior rides on top in quadrature, exactly as for the curve family.
         sigma = math.hypot(belief.anchors[0].omega_sigma,
                            float(fam.cfg("default_width_mev", 0.0)))
-        amplitude = _reference_amplitude(fam, design.ncount)
-        lam = amplitude * _gaussian(grid, 0.0, sigma)
+        weight = _reference_weight(fam, design.ncount)
+        lam = weight * _normal_density(grid, 0.0, sigma)
     elif belief.family == "unknown":
         lo_dom, hi_dom = fam.cfg("domain_lo_mev"), fam.cfg("domain_hi_mev")
-        amplitude = _reference_amplitude(fam, design.ncount)
+        weight = _reference_weight(fam, design.ncount)
         width = max(float(hi_dom) - float(lo_dom), 1e-9)
-        lam = np.where((grid >= lo_dom) & (grid <= hi_dom), amplitude / width, 0.0)
+        lam = np.where((grid >= lo_dom) & (grid <= hi_dom), weight / width, 0.0)
     else:
         raise ValueError(f"no predictive model for family {belief.family!r}")
 
