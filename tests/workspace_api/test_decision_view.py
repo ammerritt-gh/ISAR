@@ -79,3 +79,20 @@ def test_tail_read_on_a_large_file_returns_the_last_record(make_ws):
     ws = Workspace.open(root)
     decision = latest_decision(ws)
     assert decision["selection"]["n"] == "last"
+
+
+def test_valid_json_that_is_not_an_object_raises(make_ws):
+    """PR #36 review (Codex P2-2): every decision record is a JSON object, so a bare array,
+    string, or number on the ledger's last line is corruption wearing valid JSON. Returning it
+    would violate the ``dict | None`` contract and explode a consumer far from the cause (the
+    viewmodel's first ``.get()``); the reader refuses loudly instead, and the GUI's existing
+    ``ValueError`` handling then degrades the poll gracefully."""
+    import pytest
+
+    root = make_ws()
+    path = _decisions_path(root)
+    for bad in ("[1]", '"a string"', "3.5", "null", "true"):
+        path.write_text(json.dumps({"schema": "x"}) + "\n" + bad + "\n", encoding="utf-8")
+        ws = Workspace.open(root)
+        with pytest.raises(ValueError, match="not an object|not a decision record"):
+            latest_decision(ws)

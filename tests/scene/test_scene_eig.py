@@ -562,6 +562,50 @@ def test_thermal_consistency_term_is_exactly_zero_at_paranoia_zero():
     assert table.rows[0].terms[0].mi_nats == 0.0
 
 
+def test_thermal_consistency_doubt_prior_sits_on_the_not_as_believed_state(monkeypatch):
+    """PR #36 review (Codex P2-1). H23(a) declares ``paranoia_unknown_prior`` as the prior mass
+    on the DOUBT state, so the association must be ``as_believed`` ← ``1 − p`` and
+    ``not_as_believed`` ← ``p``. The prior entropy H(p) is symmetric, so every p=0.5 test above
+    is structurally blind to an inverted association; what is NOT symmetric is the expected
+    conditional entropy, which weights each state's DRAWS by its prior. Two pins, so the
+    regression cannot come back silently: (1) a spy on ``_mi_from_rates`` asserts the
+    association itself; (2) the term is genuinely asymmetric under p ↔ 1−p at partial
+    discrimination, proving the association is observable and the spy not vacuous."""
+    import numpy as np
+
+    from isar.scene import eig as eig_mod
+
+    scene, region = _single_alternative_confirm_presence_scene(omega=8.0)
+    spec = _confirm_presence_spec(region)
+    minus_e = Design(axis_coordinate=2.0, window=(-15.0, -2.0), n_points=61,
+                     ncount=40_000.0, temperature_K=300.0)  # partial, not saturated
+
+    captured: list = []
+    real = eig_mod._mi_from_rates
+
+    def spy(rates, posteriors, classes, mi_n_draws, seeds):
+        if list(classes) == ["as_believed", "not_as_believed"]:
+            captured.append(np.asarray(posteriors, dtype=float).copy())
+        return real(rates, posteriors, classes, mi_n_draws, seeds)
+
+    monkeypatch.setattr(eig_mod, "_mi_from_rates", spy)
+
+    def term_at(p: float) -> float:
+        agenda = _agenda([(spec, "open")], _policy(mi_n_draws=256, paranoia_unknown_prior=p))
+        return score(scene, agenda, None, [minus_e], base_seed=23).rows[0].terms[0].mi_nats
+
+    low = term_at(0.1)
+    assert captured, "the thermal_consistency term never reached the estimator"
+    assert np.allclose(captured[-1], [0.9, 0.1]), (
+        f"doubt prior must sit on not_as_believed: expected [0.9, 0.1], got {captured[-1]}")
+
+    high = term_at(0.9)
+    assert np.allclose(captured[-1], [0.1, 0.9])
+    assert low != high, ("the term must be asymmetric under p <-> 1-p at partial "
+                         "discrimination — a symmetric value means the association is "
+                         "unobservable and this pin is vacuous")
+
+
 def test_confirm_presence_relevance_fingerprint_moves_with_the_declared_component():
     """The relevance_fingerprint changes iff the declared thermal_consistency component (or any
     of its config) changes -- the same discipline as every other declared registry entry."""

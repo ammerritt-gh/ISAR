@@ -539,7 +539,13 @@ def _thermal_consistency_mi(scene_payload: Mapping, cluster_index: int,
     without_lobes = _composed_rate(beliefs, design, families, background,
                                    include_anti_stokes=False)
     rates = np.array([with_lobes, without_lobes])
-    posteriors = np.array([paranoia, 1.0 - paranoia])
+    # The DOUBT mass sits on ``not_as_believed`` (H23(a): paranoia is the declared prior that
+    # the detailed-balance relation is NOT as the map believes) — so ``as_believed`` carries
+    # ``1 - paranoia``. Ordering matters even though H(prior) is symmetric: the expected
+    # conditional entropy weights each state's DRAWS by its prior, so inverting the
+    # association mis-prices the term everywhere except p = 0.5 (PR #36 review, Codex P2-1;
+    # pinned by test_thermal_consistency_doubt_prior_sits_on_the_not_as_believed_state).
+    posteriors = np.array([1.0 - paranoia, paranoia])
     classes = ["as_believed", "not_as_believed"]
     seeds = [_derive_seed(design, cluster_id, question_id, i, base_seed,
                           component="thermal_consistency") for i in (0, 1)]

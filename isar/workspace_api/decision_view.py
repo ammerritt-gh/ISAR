@@ -49,7 +49,10 @@ def latest_decision(ws) -> dict | None:
 
     ``None`` covers both "no ``decisions.jsonl`` yet" and "the file exists but is empty" — both are
     the honest "no decision yet" state, never a corruption signal. Raises ``ValueError`` when the
-    last line exists but is not parseable JSON: a torn/corrupt append is loud, not silently absent.
+    last line exists but is not parseable JSON, OR parses to something other than a JSON object:
+    every decision record is an object, so a bare array/string/number on the ledger is corruption
+    wearing valid JSON — returning it would hand the ``dict | None`` contract's consumers a value
+    that explodes on first ``.get()`` far from the cause (PR #36 review, Codex P2-2).
     """
     path = ws._report_dir / _DECISIONS_NAME
     if not path.is_file():
@@ -58,6 +61,10 @@ def latest_decision(ws) -> dict | None:
     if line is None:
         return None
     try:
-        return json.loads(line)
+        record = json.loads(line)
     except json.JSONDecodeError as exc:
         raise ValueError(f"decisions.jsonl {path}: last line is not valid JSON: {exc}") from exc
+    if not isinstance(record, dict):
+        raise ValueError(f"decisions.jsonl {path}: last line is valid JSON but not an object "
+                         f"(got {type(record).__name__}) — not a decision record")
+    return record
