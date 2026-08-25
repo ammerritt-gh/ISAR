@@ -177,12 +177,122 @@ surfaces).
   replay of the full table on the same seed; spectral-weight conservation under linewidth
   retune; `/3` refusing BOTH `/2` and `/1` by name with recompile messages, and field
   validation of the three new declarations.
-- **5.2 Controller integration.** Generators emit admissible sets + canonical flag (D4);
-  `plan_next_action` scores when a scene revision exists, falls back per D7 with reason +
-  GUI alert wiring through the campaign monitor; `DecisionBasis` carries the score table,
-  belief-registry fingerprint, weight-map fingerprint; decisions replay byte-identical on the
-  same seed. Acceptance: seeded decide-loop replay world; the fallback drill; fallback ranking
-  proven byte-identical to the 4.2b scheduler over canonical picks.
+- **5.2 Controller integration.** Expanded slice spec, gated 2026-08-25:
+
+  *Fallback boundary (D7, reconciled with the 4.3 scene-build contract):* scene/agenda
+  machinery failures keep their existing classifications (missing scene, derivation faults,
+  dedup conflicts → the 4.3 outcomes, untouched — a build failure is never "fall back onto an
+  older scene"). Only the SCORING layer's own failures fall back, through a TYPED boundary:
+  `isar/scene/eig.py` gains `SceneScoringError` with a `reason` field, raised around belief
+  construction (`scene_belief_construction_failed`) and estimation (`scoring_exception`)
+  separately; the planner catches ONLY that type — `score()`'s input-validation `ValueError`s
+  (invalid policy block, duplicate design keys) are caller bugs and PROPAGATE, never recorded
+  as fallback. A PER-CANDIDATE design-construction refusal is not a fallback: the candidate is
+  dropped from the scored set with a recorded skip entry, the decision stays scored; only an
+  EMPTY scored set falls back with reason `scored_set_empty` (joining the closed vocabulary).
+  The `fallback` block on `decision_basis` is present only on fallback decisions; selection
+  then runs the UNCHANGED lexicographic `select()` over canonical associations (below).
+
+  *Canonical flag:* `QuestionActionAssociation` gains `canonical: bool = True`, serialized
+  ONLY when False (omitted-when-True), so every existing persisted association and every
+  canonical row keeps its exact byte shape and old records read back as canonical. The OR
+  lives in `union_associations`: two associations colliding on the existing seven-field key
+  but differing in `canonical` MERGE to `canonical=True` (arrival-order-independent, tested
+  both orders — `track_bridge_scan`'s canonical node IS one of the between-nodes, so this
+  collision is live, not hypothetical). The fallback path filters at the ASSOCIATION level:
+  `aggregate_rank` runs over each evaluation's canonical associations only, and an evaluation
+  with none is excluded — so fallback ranks are computed over exactly the 4.2b emission set
+  and the byte-identity acceptance is provable. **An empty canonical pool never crashes a
+  fallback decision** (the beam-idle guard outranks byte-identity in this corner): when every
+  canonical proposal has been declined, retired, or was never emitted while non-canonical
+  survivors remain selectable, the fallback ranks ALL selectable evaluations instead, and the
+  `fallback` block records `pool: "all_selectable"` (vs the normal `"canonical"`) so the
+  ledger says which regime ranked it; a decision line is persisted in every fallback, and the
+  outcome classification over the unfiltered selectable set stands. Admissible-set widening
+  in v1 is deliberately modest: `opening_book_survey` and
+  `exposure_fill` already emit their full admissible sets (all rows canonical);
+  tile-scoped generators' subjects already name one lattice node (their canonical midpoint);
+  `track_bridge_scan` — the one genuinely under-expressive heuristic — additionally emits
+  every unmeasured node of the frozen q-tile grid strictly between its endpoint tiles as
+  `canonical=False` proposals (window rule unchanged). The real authority transfer is
+  CROSS-question re-ranking of the whole surviving pool; the denser-lattice lever stays the
+  named watch item.
+
+  *Planner integration (`isar/drive/steering/planner.py`):* in the `selectable` branch,
+  build one `Design` per eligible surviving evaluation — scalar coordinate by projecting
+  `intent.hkl` onto the step axis (deterministic inverse of the generators' own
+  reconstruction), window from `energy_lo/hi`, `ncount` = the policy's
+  `discovery_monitor_ncount` (per-point monitor, matching `Design.ncount` semantics),
+  temperature from the subject partition's footprints (first declared `temperature_K`, else
+  None — Bose-blind, honest). **The scoring grid is a declared approximation, never the
+  executed grid**: `n_points = max(2, ceil(window_width / scoring_grid_step_meV) + 1)` with
+  `scoring_grid_step_meV` a declared, fingerprinted constant in the relevance-registry config
+  — no per-candidate resolution callback, no instrument query, replay-stable by construction.
+  The winner's REAL request still realizes through `aligned_window` and the resolution
+  callback at request time exactly as today (ADR-018's executed-grid identity untouched;
+  scoring compares placements on a common declared grid, which is the honest v1 posture and
+  is recorded as such). `base_seed` is content-derived (fingerprint of scene digest × basis
+  digest × step id — no clock, no knob). The declared-hypotheses mapping enters
+  `plan_next_action` from the SAME source the runner already reads
+  (`load_policy(...).hypotheses`, program_runner.py:555-568), threaded once by the runner;
+  5.2 fingerprints that mapping over its CONTENT (the existing stamped
+  `hypotheses_fingerprint` is name-only — a pre-existing 4.3 observation, flagged to the
+  owner, not repaired here), records the content fingerprint in `decision_basis`
+  (omitted-when-empty) AND folds it into `context_fingerprint` on the locality precedent —
+  two decisions differing only in a hypothesis field value must not read identically.
+  Scoring calls `isar.scene.eig.score` over the pass-2 agenda payload. **The evaluation →
+  design map is many-to-one by design**: two evaluations at one lattice node with one window
+  and temperature (same-temperature partitions split by path, epoch, or condition salt) ARE
+  one physical measurement, so the planner builds a design→evaluations multimap, scores each
+  UNIQUE design once (the design-level MI already sums every partition's questions), and
+  resolves the winning design back to ONE evaluation deterministically — the lexicographic
+  minimum by `aggregate_rank` over each backing evaluation's full association set, then the
+  scientific-action fingerprint — replay-identical, no duplicate-key refusal reachable from
+  the planner (`score()`'s duplicate-key `ValueError` still guards a planner that forgets to
+  dedup, which is a bug and propagates). The decision record stays
+  `isar.discovery-decision/1` with ADDITIVE fields only: `selection` gains `score_table`
+  (per-design totals + itemized per-question terms) on scored decisions, and `rank_table`'s
+  contract is REDEFINED with its blast radius named — on scored decisions it is the
+  fallback-order audit list (row 0 is NOT the winner; the winner is `score_table` row 0 and
+  the selection fingerprint), winner-first retained only on fallback/lexicographic decisions;
+  the planner docstring and `tests/drive/test_planner.py`'s winner-first assertion
+  (~:336-340) update in the same change. `decision_basis.scheduler_policy` becomes the
+  declared `isar.scheduler.scene-eig/1` block (embedding the relevance and family registry
+  fingerprints, the scoring-grid constant, the base-seed rule id, and the lexicographic
+  fallback id) on scored decisions and stays the untouched lexicographic declaration on
+  fallback ones. The five planner outcomes, exhaustion, dedup, and every store write keep
+  their shape.
+
+  *Operator alert (D7, Operator Contract):* nothing in the GUI reads `decisions.jsonl` today,
+  so the alert is three named pieces, all in this slice: (1) a Qt-free read-only facade
+  function in `isar/workspace_api` (`latest_decision(ws)` — tail-read of the last
+  `report/decisions.jsonl` line, `None` when absent, refusing on unparseable JSON), G16-gated
+  like every facade read; (2) a freshness hook in `CampaignViewModel`
+  (`isar_gui/viewmodels/campaign.py`), which already polls session state through the facade,
+  extended to surface the latest decision's `fallback` block; (3) a prominent persistent
+  banner in `isar_gui/views/campaign_monitor.py` — operator words ("Scene scoring failed —
+  campaign continuing on basic placement; needs attention"), red styling, non-blocking,
+  cleared by the next fallback-free decision. The durable record IS the alert source; no
+  second channel; Qt never touches the file directly.
+
+  *Acceptance:* byte-identical replay of a scored decision line (score_table included) on an
+  unchanged workspace; the fallback drill — scoring forced to raise each declared
+  `SceneScoringError` reason independently → the selection block (winner, rank_vector,
+  rank_table) proven equal to the pre-5.2 `select()` output over canonical associations on
+  the same inputs IN A WORLD WHERE `track_bridge_scan` emits its non-canonical extras,
+  `fallback.reason` matching, and a non-scoring exception (planner bug) PROPAGATING rather
+  than recording as fallback; a per-candidate design-construction refusal drops the candidate
+  from `score_table` with the decision still `selected`; an authority-transfer case where the
+  EIG winner differs from the lexicographic winner; canonical omitted-when-True serialization
+  with old association dicts reading as canonical; `union_associations` canonical-OR in both
+  arrival orders; two decisions differing only in a hypothesis FIELD VALUE produce different
+  `context_fingerprint`s and score tables; the facade `latest_decision` reader + the GUI
+  banner shown and cleared (offscreen); a fallback whose canonical pool is emptied (canonical
+  proposal declined/retired, non-canonical extras surviving) persists a decision with
+  `pool: "all_selectable"` and no exception escaping `plan_next_action`; two same-temperature
+  partitions proposing one node/window produce a scored decision with a deterministic,
+  replay-identical winner and no duplicate-key refusal; no wall-clock anywhere in the scoring
+  path.
 - **5.3 Organic −E producer** (D8). The `context_probe` producer minting detailed-balance
   confirmation probes priced by the same comparison; world-level off-path end-to-end (closes
   H22's named deferral).
@@ -227,6 +337,16 @@ Plus fast worlds per D9 and the standing twelve unchanged.
 - **`reference_counts` is peak height, not integrated intensity** — RESOLVED in 5.1: spectral
   weight now conserved under linewidth retune (family versions bumped to 2); the mirror test
   pins the extra anchor value. Verified by the 5.1 outcome verifier.
+- **5.2 verifier advisories, deferred by discipline** (fix at 5.3's first commit / 5.4's
+  battery): the persisted `selection.reason` string interpolates a numpy repr
+  (`np.float64(...)`, numpy-version-dependent text — planner.py `{...!r}` → format as plain
+  float); the planner-level hypothesis-sensitivity test is spy-based — the 5.4 FCC
+  acoustic-priority challenge run must demonstrate real-physics hypothesis sensitivity end to
+  end, and failure to do so is a finding, not a pass; P4s: fallback `selection.associations`
+  is the canonical-filtered view (deliberate, under-reports winner provenance),
+  `_design_for_evaluation` docstring overstates a refusal, GUI poll catches only ValueError
+  and piggybacks on events/card_state ticks, facade reads `ws._report_dir` privately, NaN MI
+  would refuse at persistence rather than fall back.
 - **5.1 verifier notes for SCENE-7 / 5.2** (all P4, correct-but-worth-knowing): the paranoia
   MI is concave in the prior (a Bernoulli's MI peaks at p≈0.5 — "higher prior, higher score"
   holds on (0, ~0.5], which covers every sane declaration); at shipped defaults a gap node

@@ -16,8 +16,10 @@ from isar.schema.generators import (
     DISCOVERY_GENERATOR_REGISTRY_VERSION,
     FAMILY_GENERATORS,
     GeneratorSpec,
+    QuestionActionAssociation,
     registry_fingerprint,
     registry_manifest,
+    union_associations,
 )
 
 SEVEN = ("opening_book_survey", "presence_probe", "identity_discriminator",
@@ -61,6 +63,67 @@ def test_fingerprint_is_deterministic_and_content_sensitive():
         (GeneratorSpec("a", 2),))
     assert registry_manifest(DISCOVERY_GENERATOR_REGISTRY) == \
         [[gid, 1] for gid in SEVEN]
+
+
+# ----------------------------------------------------------------------------
+# canonical (SCENE-5 5.2, D4): omitted-when-True, old dicts read canonical, union is an OR
+# ----------------------------------------------------------------------------
+def _assoc(*, reason="r", canonical=True, question_id="q1"):
+    return QuestionActionAssociation(
+        basis_agenda_digest="a" * 64, question_id=question_id, generator="g", family_priority=0,
+        dependency_depth=0, reason=reason, canonical=canonical)
+
+
+def test_canonical_defaults_true_and_is_omitted_from_to_dict_only_when_true():
+    canonical = _assoc(canonical=True)
+    assert canonical.canonical is True
+    assert "canonical" not in canonical.to_dict()
+
+    non_canonical = _assoc(canonical=False)
+    assert non_canonical.to_dict()["canonical"] is False
+
+
+def test_from_dict_reads_an_old_dict_with_no_canonical_key_as_canonical():
+    old_dict = _assoc().to_dict()
+    assert "canonical" not in old_dict          # the pre-5.2 byte shape
+    reread = QuestionActionAssociation.from_dict(old_dict)
+    assert reread.canonical is True
+
+
+def test_round_trip_preserves_a_non_canonical_association():
+    non_canonical = _assoc(canonical=False)
+    reread = QuestionActionAssociation.from_dict(non_canonical.to_dict())
+    assert reread.canonical is False
+
+
+def test_canonical_rejects_a_non_bool():
+    with pytest.raises(ValueError):
+        QuestionActionAssociation(
+            basis_agenda_digest="a" * 64, question_id="q1", generator="g", family_priority=0,
+            dependency_depth=0, reason="r", canonical=1)          # noqa: not a bool
+
+
+def test_union_associations_merges_a_canonical_collision_to_true_both_orders():
+    """Two associations colliding on the seven-field key but differing in ``canonical`` merge
+    to ``canonical=True`` — arrival-order-independent."""
+    canonical = _assoc(canonical=True)
+    non_canonical = _assoc(canonical=False)
+    assert canonical.rank_key == non_canonical.rank_key      # same seven-field key
+
+    forward = union_associations((non_canonical,), (canonical,))
+    backward = union_associations((canonical,), (non_canonical,))
+    assert len(forward) == len(backward) == 1
+    assert forward[0].canonical is True
+    assert backward[0].canonical is True
+    assert forward == backward
+
+
+def test_union_associations_two_non_canonical_copies_stay_non_canonical():
+    a = _assoc(canonical=False)
+    b = _assoc(canonical=False)
+    merged = union_associations((a,), (b,))
+    assert len(merged) == 1
+    assert merged[0].canonical is False
 
 
 def test_drive_wrapper_and_agenda_reexport_are_the_same_declaration():

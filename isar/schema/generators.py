@@ -23,7 +23,7 @@ sharing one "version" by accident.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .action_identity import canonical_json
 
@@ -94,6 +94,16 @@ class QuestionActionAssociation:
     dependency_depth: int
     reason: str
     placement_rank: int = 0
+    #: Whether this association names the generator's OWN heuristic pick for this question
+    #: (SCENE-5 slice 5.2, D4) — ``True`` for every association any generator emitted before
+    #: SCENE-5, and for every one of the seven's canonical rows since. ``False`` marks a
+    #: WIDENED admissible-set member (currently only ``track_bridge_scan``'s between-node
+    #: proposals) that scene-EIG may pick but the software-fault fallback never may: the
+    #: fallback ranks canonical picks only (D7), so a non-canonical row surviving into that
+    #: ranking would let a candidate no heuristic ever endorsed win with no EIG scoring to
+    #: justify it. Omitted from ``to_dict`` when ``True`` (below) so every association minted
+    #: before this field existed, and every canonical row since, keeps its exact byte shape.
+    canonical: bool = True
 
     def __post_init__(self) -> None:
         for name in ("basis_agenda_digest", "question_id", "generator", "reason"):
@@ -106,6 +116,9 @@ class QuestionActionAssociation:
                 raise ValueError(
                     f"QuestionActionAssociation.{name} must be a non-negative integer, "
                     f"got {value!r}")
+        if not isinstance(self.canonical, bool):
+            raise ValueError(
+                f"QuestionActionAssociation.canonical must be a bool, got {self.canonical!r}")
 
     @property
     def rank_key(self) -> tuple:
@@ -121,7 +134,10 @@ class QuestionActionAssociation:
                 "family_priority": self.family_priority,
                 "dependency_depth": self.dependency_depth,
                 "placement_rank": self.placement_rank,
-                "reason": self.reason}
+                "reason": self.reason,
+                # Omitted when True (SCENE-5 5.2): every association minted before this field
+                # existed, and every canonical row since, keeps its exact pre-5.2 byte shape.
+                **({} if self.canonical else {"canonical": False})}
 
     @classmethod
     def from_dict(cls, d: dict) -> "QuestionActionAssociation":
@@ -131,13 +147,24 @@ class QuestionActionAssociation:
                    family_priority=int(d["family_priority"]),
                    dependency_depth=int(d["dependency_depth"]),
                    placement_rank=int(d.get("placement_rank", 0)),
-                   reason=str(d["reason"]))
+                   reason=str(d["reason"]),
+                   # Absent means canonical (old dicts, and every canonical row since).
+                   canonical=bool(d.get("canonical", True)))
 
 
 def union_associations(*groups) -> tuple[QuestionActionAssociation, ...]:
     """The canonically ordered union of association groups — what dedup stamps onto a
     surviving evaluation. Deduplicates exact duplicates and sorts by ``rank_key`` then the
-    remaining fields, so the result is identical under any grouping or iteration order."""
+    remaining fields, so the result is identical under any grouping or iteration order.
+
+    ``canonical`` is deliberately NOT part of the dedup key (SCENE-5 5.2): two associations
+    colliding on the other seven fields but differing in ``canonical`` are the SAME
+    (question, action, reason) pair seen once as a generator's own heuristic pick and once as
+    a widened admissible-set member — ``track_bridge_scan``'s canonical node IS one of its own
+    between-nodes, so this collision is live, not hypothetical. They merge to ``canonical=True``
+    (a logical OR, arrival-order-independent): once any peer vouches for a candidate as its own
+    pick, the fallback scheduler must see it as canonical regardless of which copy arrived first.
+    """
     seen: dict[tuple, QuestionActionAssociation] = {}
     for group in groups:
         for association in group:
@@ -145,7 +172,11 @@ def union_associations(*groups) -> tuple[QuestionActionAssociation, ...]:
                    association.generator, association.family_priority,
                    association.dependency_depth, association.placement_rank,
                    association.reason)
-            seen.setdefault(key, association)
+            existing = seen.get(key)
+            if existing is None:
+                seen[key] = association
+            elif association.canonical and not existing.canonical:
+                seen[key] = replace(existing, canonical=True)
     return tuple(sorted(seen.values(),
                         key=lambda a: (a.rank_key, a.basis_agenda_digest, a.reason)))
 

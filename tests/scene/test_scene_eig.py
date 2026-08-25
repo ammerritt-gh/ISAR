@@ -10,7 +10,9 @@ import math
 
 import pytest
 
-from isar.scene.eig import Design, build_beliefs, design_key, score
+from isar.scene.eig import (
+    Design, SceneScoringError, build_beliefs, design_key, relevance_fingerprint,
+    scoring_grid_step_meV, score)
 from isar.scene.model import (CandidateRow, ComponentDescriptor, Footprint, FootprintBand,
                               ModeInterval, SampleKnowledge, SceneObservation, fingerprint)
 from isar.scene.phenomena import FAMILIES
@@ -425,6 +427,55 @@ def test_refuses_an_invalid_resolved_policy_block():
     design = Design(axis_coordinate=2.0, window=(-5.0, 5.0), n_points=11, ncount=1_000.0)
     with pytest.raises(ValueError, match="isar.question-policy/3"):
         score(scene, agenda, None, [design], base_seed=1)
+
+
+# ----------------------------------------------------------------------------
+# SceneScoringError typed boundary (SCENE-5 5.2, D7)
+# ----------------------------------------------------------------------------
+def test_scoring_grid_step_meV_is_declared_and_moves_the_relevance_fingerprint():
+    """The declared default (0.5) and that it lives in the fingerprinted relevance config —
+    changing it is intended to move ``relevance_fingerprint`` (the plan's own note)."""
+    assert scoring_grid_step_meV() == pytest.approx(0.5)
+    from isar.scene import eig as eig_module
+
+    original = eig_module.RELEVANCE_REGISTRY["DiscoverRegion"]
+    retuned = eig_module.RelevanceExtractor(
+        "DiscoverRegion", "1",
+        config=(("background_counts_per_point", 2.0), ("scoring_grid_step_meV", 1.0)))
+    baseline_fp = relevance_fingerprint()
+    eig_module.RELEVANCE_REGISTRY["DiscoverRegion"] = retuned
+    try:
+        assert scoring_grid_step_meV() == pytest.approx(1.0)
+        assert relevance_fingerprint() != baseline_fp
+    finally:
+        eig_module.RELEVANCE_REGISTRY["DiscoverRegion"] = original
+
+
+def test_belief_construction_failure_raises_scene_scoring_error_with_reason():
+    """A corrupt scene (an assignment naming an arena the payload does not embed) makes
+    ``build_beliefs`` raise; ``score`` wraps it as ``scene_belief_construction_failed``, never
+    the raw exception."""
+    scene, region = _confirm_presence_scene(omega=8.0)
+    scene["clusters"][0]["alternatives"][0]["assignment"] = [("ghost-arena", "m")]
+    spec = _confirm_presence_spec(region)
+    agenda = _agenda([(spec, "open")], _policy())
+    design = Design(axis_coordinate=2.0, window=(-5.0, 5.0), n_points=11, ncount=1_000.0)
+    with pytest.raises(SceneScoringError) as excinfo:
+        score(scene, agenda, None, [design], base_seed=1)
+    assert excinfo.value.reason == "scene_belief_construction_failed"
+
+
+def test_estimation_failure_raises_scene_scoring_error_with_reason():
+    """A question spec naming a family the relevance registry has no extractor for makes
+    ``_question_mi`` raise; ``score`` wraps it as ``scoring_exception``."""
+    scene, region = _confirm_presence_scene(omega=8.0)
+    spec = _confirm_presence_spec(region)
+    agenda = _agenda([(spec, "open")], _policy())
+    agenda["specs"][0]["family"] = "NoSuchFamily"
+    design = Design(axis_coordinate=2.0, window=(-5.0, 5.0), n_points=11, ncount=1_000.0)
+    with pytest.raises(SceneScoringError) as excinfo:
+        score(scene, agenda, None, [design], base_seed=1)
+    assert excinfo.value.reason == "scoring_exception"
 
 
 def test_refuses_duplicate_design_keys():

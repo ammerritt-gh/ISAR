@@ -237,14 +237,19 @@ def dependency_depth(spec_dict: Mapping, agenda_payload: Mapping) -> int:
 
 
 def _make_association(context: DiscoveryContext, spec_dict: Mapping, generator_id: str, *,
-                      reason: str, placement_rank: int = 0) -> QuestionActionAssociation:
+                      reason: str, placement_rank: int = 0,
+                      canonical: bool = True) -> QuestionActionAssociation:
     """``placement_rank`` is this generator's own preference order over the proposals it emitted
-    for THIS question — 0 first. Generators that emit one proposal per question leave it at 0."""
+    for THIS question — 0 first. Generators that emit one proposal per question leave it at 0.
+
+    ``canonical`` (SCENE-5 5.2, D4) defaults True — every generator's proposals are wholly
+    canonical unless it explicitly widens its admissible set beyond its own heuristic pick
+    (currently only ``track_bridge_scan``'s between-node proposals)."""
     return QuestionActionAssociation(
         basis_agenda_digest=context.basis_agenda_digest, question_id=spec_dict["question_id"],
         generator=generator_id, family_priority=int(spec_dict["priority"]),
         dependency_depth=dependency_depth(spec_dict, context.agenda_payload), reason=reason,
-        placement_rank=int(placement_rank))
+        placement_rank=int(placement_rank), canonical=bool(canonical))
 
 
 def _assessment_of(agenda_payload: Mapping, question_id: str) -> dict | None:
@@ -604,6 +609,34 @@ def _weakest_cut_node(scene_payload: Mapping, partition_id, tile_a, tile_b) -> f
     return best[1]
 
 
+def _between_node_widening(context: DiscoveryContext, subject: QuestionSubject, tile_a, tile_b
+                           ) -> list[float]:
+    """Every UNMEASURED node of the frozen q-tile grid strictly between ``tile_a`` and
+    ``tile_b`` (SCENE-5 5.2, D4's admissible-set widening for the one under-expressive
+    generator). The grid quantum is the step's declared ``maximum_initial_spacing_rlu`` — the
+    SAME identity-bearing q constant ``isar.schema.question_policy``'s ``IDENTITY_DEFAULTS``
+    docstring names, and the exact quantum ``isar.drive.acquisition.opening_book._gap_nodes``
+    walks for ``DiscoverRegion``'s own gap-fill proposals — so a "between-node" here is a node
+    the ordinary survey grid would already have proposed, not an arbitrary interpolation.
+    Node placement mirrors ``_gap_nodes`` (re-derived, not imported: that helper is private):
+    ``ceil(gap/spacing) - 1`` nodes, evenly spaced across the whole endpoint-to-endpoint gap —
+    degenerate (empty) when the tiles are adjacent or the gap is no wider than one quantum.
+    """
+    ordered_a, ordered_b = (tile_a, tile_b) if tile_a[0] <= tile_b[0] else (tile_b, tile_a)
+    spacing = float(context.step_payload["region"]["maximum_initial_spacing_rlu"])
+    if spacing <= 0.0:
+        return []
+    lo, hi = ordered_a[1], ordered_b[0]
+    gap = hi - lo
+    count = math.ceil(gap / spacing) - 1
+    if count <= 0:
+        return []
+    step = gap / (count + 1)
+    candidates = (lo + i * step for i in range(1, count + 1))
+    return [node for node in candidates
+           if not _already_measured(context.scene_payload, subject.partition_id, node)]
+
+
 def track_bridge_scan(context: DiscoveryContext, spec_dict: Mapping) -> GeneratorOutcome:
     """The complete branch table (PR #33 A-P0-6): ``endpoint_unmeasured`` and
     ``endpoints_in_disjoint_clusters`` name a node directly; every OTHER open state with
@@ -644,9 +677,23 @@ def track_bridge_scan(context: DiscoveryContext, spec_dict: Mapping) -> Generato
     hkl = _hkl_at(context.step_payload, t)
     intent = _make_intent(context, hkl, energy_lo, energy_hi, partition_id=subject.partition_id)
     association = _make_association(context, spec_dict, "track_bridge_scan", reason=detail)
-    # One representative action, not an enumeration of the admissible ones — so a refusal of it
-    # does not prove the question unanswerable (review finding 2026-08-18).
-    return GeneratorOutcome.proposed(((intent, association),), proposals_exhaustive=False)
+    pairs = [(intent, association)]
+    # SCENE-5 5.2 (D4): the one generator whose canonical pick under-expresses its admissible
+    # set. Every unmeasured between-node of the frozen q-tile grid joins the proposal list as
+    # canonical=False -- scene-EIG may pick one, but the software-fault fallback (which ranks
+    # canonical rows only) never will. Ranked AFTER the canonical row, in coordinate order.
+    for rank, node in enumerate(_between_node_widening(context, subject, tile_a, tile_b), start=1):
+        extra_hkl = _hkl_at(context.step_payload, node)
+        extra_intent = _make_intent(context, extra_hkl, energy_lo, energy_hi,
+                                    partition_id=subject.partition_id)
+        extra_association = _make_association(
+            context, spec_dict, "track_bridge_scan", reason=f"between-node widen at {node}",
+            placement_rank=rank, canonical=False)
+        pairs.append((extra_intent, extra_association))
+    # One representative canonical action, not an enumeration of the admissible ones — so a
+    # refusal of it does not prove the question unanswerable (review finding 2026-08-18); the
+    # widened non-canonical rows above are additional admissible members, not alternate reps.
+    return GeneratorOutcome.proposed(tuple(pairs), proposals_exhaustive=False)
 
 
 # ----------------------------------------------------------------------------

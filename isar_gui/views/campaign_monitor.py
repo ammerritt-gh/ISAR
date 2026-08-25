@@ -5,6 +5,10 @@ decision), how far along it is (iteration + budget bar), a miniature plane view 
 results land, a three-line log ticker, and cooperative Stop / Expand buttons. It is a read-only
 projection over the same CampaignViewModel + HeatmapViewModel the full window uses — no new state,
 no new physics, just less of everything (AD-14: same window, saveState swap, read-only).
+
+Also carries the scoring-fallback banner (SCENE-5 5.2, D7): a non-blocking red alert shown
+whenever the latest discovery decision fell back to lexicographic placement because scene scoring
+itself failed — the campaign keeps running, but the operator needs to know.
 """
 from __future__ import annotations
 
@@ -52,6 +56,16 @@ class CampaignMonitor(QWidget):
         self._status.setStyleSheet("font-weight: bold;")
         outer.addWidget(self._status)
 
+        # Scoring-fallback banner (SCENE-5 5.2, D7): the beam never idles on a scoring fault, but
+        # the operator must know the campaign fell back to basic placement. Hidden by default;
+        # shown/cleared from CampaignViewModel.scoring_fallback, never blocking.
+        self._fallback_banner = QLabel("", self)
+        self._fallback_banner.setWordWrap(True)
+        self._fallback_banner.setStyleSheet(
+            "background-color: #b71c1c; color: white; font-weight: bold; padding: 4px;")
+        self._fallback_banner.setVisible(False)
+        outer.addWidget(self._fallback_banner)
+
         self._current = QLabel("no scan yet", self)
         self._current.setWordWrap(True)
         outer.addWidget(self._current)
@@ -92,8 +106,10 @@ class CampaignMonitor(QWidget):
         outer.addLayout(buttons)
 
         campaign_vm.status_changed.connect(self._sync)
+        campaign_vm.scoring_fallback_changed.connect(self._sync_fallback_banner)
         heatmap_vm.spec_changed.connect(self._render_plane)
         self._sync()
+        self._sync_fallback_banner()
         self._render_plane()
 
     # ---- ticker ---------------------------------------------------------------
@@ -139,6 +155,18 @@ class CampaignMonitor(QWidget):
         self._analysis_bar.setValue(analysis_permille)
         self._analysis_bar.setFormat(analysis_fmt)
         self._stop_btn.setEnabled(running and not self._operations.is_stop_pending())
+
+    def _sync_fallback_banner(self, *_a) -> None:
+        fallback = self._vm.scoring_fallback
+        if not fallback:
+            self._fallback_banner.setVisible(False)
+            self._fallback_banner.setText("")
+            return
+        reason = fallback.get("reason", "unknown reason")
+        self._fallback_banner.setText(
+            "Scene scoring failed — campaign continuing on basic placement; needs attention"
+            f"<br><span style='font-size: 8pt; font-weight: normal;'>reason: {reason}</span>")
+        self._fallback_banner.setVisible(True)
 
     def _on_stop(self) -> None:
         self._operations.request_drive_stop()

@@ -19,6 +19,11 @@ Three deliberately separate concerns (the honesty rules of the campaign dashboar
 
 Scan-verdict counts are results.csv-derived (through the facade), labeled as SCAN verdicts —
 they are not per-q objective-grid state, which today's event contract cannot honestly supply.
+
+* **Scoring fallback** (SCENE-5 5.2, D7) is read the same way: the latest persisted
+  ``report/decisions.jsonl`` line's ``decision_basis.fallback`` block, or ``None`` on a scored
+  decision. ``decisions.jsonl`` IS the alert source — no second channel, and the durable ledger
+  stays authoritative even if the GUI is never watching.
 """
 from __future__ import annotations
 
@@ -28,6 +33,7 @@ from dataclasses import dataclass, field, replace
 
 from PySide6.QtCore import Signal
 
+from isar.workspace_api import latest_decision
 from isar_gui.log_render import RenderedEvent as FeedItem
 from isar_gui.log_render import render_event, scan_text
 from isar_gui.viewmodels.base import ViewModel
@@ -363,6 +369,9 @@ class CampaignViewModel(ViewModel):
     feed_appended = Signal(list)   # list[FeedItem], only records not yet delivered
     feed_reset = Signal()          # the log shrank (fresh file) — clear the view first
     status_changed = Signal()
+    #: Emitted only when the scoring-fallback block actually changes (set, cleared, or reason
+    #: differs) — a banner listens to this rather than status_changed's noisier every-poll firing.
+    scoring_fallback_changed = Signal()
 
     def __init__(self, ws, parent=None):
         super().__init__(ws, parent)
@@ -370,6 +379,7 @@ class CampaignViewModel(ViewModel):
         self._alive = False
         self.state = CampaignState()
         self.scan_verdicts: dict[str, int] = {}
+        self.scoring_fallback: dict | None = None
         self.on_workspace_changed({"events", "results"})   # initial read of whatever exists
 
     # ---- process liveness (coordinator-fed, never log-inferred) ------------
@@ -400,10 +410,29 @@ class CampaignViewModel(ViewModel):
         if not changed or "events" in changed or "card_state" in changed:
             self._consume_events()
             self._join_certification_status()
+            self._sync_scoring_fallback()
         if not changed or "results" in changed:
             self._recount_verdicts()
         self.status_changed.emit()
         self.refreshed.emit()
+
+    def _sync_scoring_fallback(self) -> None:
+        """Read the latest decision's ``fallback`` block; emit only on an actual change (D7).
+
+        ``latest_decision`` raises loudly on a corrupt last line (a torn write mid-append) — the
+        GUI poll must not crash on that, so it degrades to "unknown, keep the prior banner state"
+        and logs, matching how the watcher itself treats a misbehaving read (isar/workspace_api/
+        watch.py's callback guard).
+        """
+        try:
+            decision = latest_decision(self._ws)
+        except ValueError as exc:
+            log.warning("could not read the latest discovery decision: %s", exc)
+            return
+        fallback = (decision or {}).get("decision_basis", {}).get("fallback")
+        if fallback != self.scoring_fallback:
+            self.scoring_fallback = fallback
+            self.scoring_fallback_changed.emit()
 
     def _join_certification_status(self) -> None:
         status = getattr(self._ws, "certification_status", None)

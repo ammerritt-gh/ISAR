@@ -128,7 +128,15 @@ VERIFY_COMPLETENESS = RelevanceExtractor("VerifyCompleteness", "1")
 # The declared background prior (module docstring): read by every family's composed rate vector,
 # not only DiscoverRegion's own Bernoulli.
 DISCOVER_REGION = RelevanceExtractor("DiscoverRegion", "1",
-                                     config=(("background_counts_per_point", 2.0),))
+                                     config=(("background_counts_per_point", 2.0),
+                                             # SCENE-5 5.2: the declared, fingerprinted grid the
+                                             # planner scores candidates on — never the executed
+                                             # grid (ADR-018's identity is untouched; this is a
+                                             # scoring-time approximation only). Living here
+                                             # rather than a bare module constant means a retune
+                                             # moves ``relevance_fingerprint`` like every other
+                                             # declared number in this registry.
+                                             ("scoring_grid_step_meV", 0.5)))
 
 RELEVANCE_REGISTRY: dict[str, RelevanceExtractor] = {
     e.name: e for e in (CONFIRM_PRESENCE, CLASSIFY_IDENTITY, CONNECT_TRACK, ESTIMATE_PARAMETER,
@@ -153,6 +161,29 @@ def relevance_fingerprint() -> str:
 
 def _background_counts_per_point() -> float:
     return float(RELEVANCE_REGISTRY["DiscoverRegion"].cfg("background_counts_per_point"))
+
+
+def scoring_grid_step_meV() -> float:
+    """The declared scoring-grid quantum (SCENE-5 5.2) — the planner's caller-facing accessor,
+    so it never re-reads the registry's internal config layout directly."""
+    return float(RELEVANCE_REGISTRY["DiscoverRegion"].cfg("scoring_grid_step_meV"))
+
+
+# ----------------------------------------------------------------------------
+# Typed scoring-layer fault boundary (SCENE-5 5.2, D7)
+# ----------------------------------------------------------------------------
+class SceneScoringError(Exception):
+    """The ONLY fault the planner's software-fault fallback may catch (D7). Raised around belief
+    construction (``reason="scene_belief_construction_failed"``) and around estimation
+    (``reason="scoring_exception"``) in :func:`score`, wrapping whatever unexpected exception
+    those phases raised. Input-validation ``ValueError``s (an invalid ``resolved_policy`` block,
+    duplicate design keys) are caller bugs and stay plain ``ValueError`` — they propagate, never
+    recorded as a scoring fallback."""
+
+    def __init__(self, reason: str, detail: str = ""):
+        self.reason = reason
+        self.detail = detail
+        super().__init__(f"{reason}: {detail}" if detail else reason)
 
 
 # ----------------------------------------------------------------------------
@@ -592,6 +623,10 @@ def score(scene_payload: Mapping, agenda_payload: Mapping, hypotheses: Mapping[s
     :func:`isar.schema.question_policy.validate_resolved_block`, or on two designs sharing one
     :func:`design_key`. Does NOT check scene/agenda digest agreement — that is 5.2's concern, the
     caller's to enforce before handing payloads here (module docstring).
+
+    Every OTHER failure in belief construction or estimation raises :class:`SceneScoringError`
+    (D7) rather than the original exception — the planner's ONE typed fallback boundary, never
+    these two input-validation refusals above.
     """
     policy = agenda_payload.get("resolved_policy")
     validate_resolved_block(policy, "agenda_payload.resolved_policy")
@@ -603,21 +638,6 @@ def score(scene_payload: Mapping, agenda_payload: Mapping, hypotheses: Mapping[s
 
     families = dict(families) if families else dict(DEFAULT_PHENOMENON_FAMILIES)
 
-    sample = _sample_knowledge_from_payload(scene_payload)
-    beliefs = build_beliefs(scene_payload, sample, hypotheses)
-    beliefs_by_ca: dict[tuple, list[PhenomenonBelief]] = {}
-    for belief in beliefs:
-        beliefs_by_ca.setdefault((belief.cluster_id, belief.alternative_index), []).append(belief)
-
-    specs = {}
-    for row in agenda_payload.get("specs") or ():
-        spec = QuestionSpec.from_dict(row)
-        specs[spec.question_id] = spec
-    open_ids = {a["question_id"] for a in agenda_payload.get("assessments") or ()
-               if a.get("status") == "open"}
-    open_specs = sorted((s for qid, s in specs.items() if qid in open_ids),
-                        key=lambda s: s.question_id)
-
     designs = list(designs)
     keys = [design_key(d) for d in designs]
     seen: set[str] = set()
@@ -625,26 +645,50 @@ def score(scene_payload: Mapping, agenda_payload: Mapping, hypotheses: Mapping[s
     if dupes:
         raise ValueError(f"duplicate design keys in designs list: {sorted(dupes)}")
 
-    rows = []
-    for design, dkey in zip(designs, keys):
-        background = _background_rate(design, families)
-        terms = []
-        total = 0.0
-        for spec in open_specs:
-            mi, contributing = _question_mi(spec, scene_payload, beliefs_by_ca, design, families,
-                                            background, mi_n_draws, base_seed, quantum, paranoia)
-            weight = float(priority_weights[str(spec.priority)])
-            total += weight * mi
-            terms.append(QuestionTerm(question_id=spec.question_id, family=spec.family,
-                                      priority=spec.priority, weight=weight, mi_nats=mi,
-                                      contributing_clusters=contributing))
-        rows.append(ScoreRow(design=design, design_key=dkey, total=total, terms=tuple(terms)))
-    rows.sort(key=lambda r: (-r.total, r.design_key))
+    try:
+        sample = _sample_knowledge_from_payload(scene_payload)
+        beliefs = build_beliefs(scene_payload, sample, hypotheses)
+    except Exception as error:
+        raise SceneScoringError("scene_belief_construction_failed", str(error)) from error
 
-    return ScoreTable(
-        rows=tuple(rows),
-        relevance_manifest=relevance_manifest(),
-        relevance_fingerprint=relevance_fingerprint(),
-        family_registry_fingerprint=phenomenon_registry_fingerprint(families),
-        resolved_policy_fingerprint=fingerprint(policy),
-        base_seed=base_seed)
+    try:
+        beliefs_by_ca: dict[tuple, list[PhenomenonBelief]] = {}
+        for belief in beliefs:
+            beliefs_by_ca.setdefault((belief.cluster_id, belief.alternative_index),
+                                     []).append(belief)
+
+        specs = {}
+        for row in agenda_payload.get("specs") or ():
+            spec = QuestionSpec.from_dict(row)
+            specs[spec.question_id] = spec
+        open_ids = {a["question_id"] for a in agenda_payload.get("assessments") or ()
+                   if a.get("status") == "open"}
+        open_specs = sorted((s for qid, s in specs.items() if qid in open_ids),
+                            key=lambda s: s.question_id)
+
+        rows = []
+        for design, dkey in zip(designs, keys):
+            background = _background_rate(design, families)
+            terms = []
+            total = 0.0
+            for spec in open_specs:
+                mi, contributing = _question_mi(spec, scene_payload, beliefs_by_ca, design,
+                                                families, background, mi_n_draws, base_seed,
+                                                quantum, paranoia)
+                weight = float(priority_weights[str(spec.priority)])
+                total += weight * mi
+                terms.append(QuestionTerm(question_id=spec.question_id, family=spec.family,
+                                          priority=spec.priority, weight=weight, mi_nats=mi,
+                                          contributing_clusters=contributing))
+            rows.append(ScoreRow(design=design, design_key=dkey, total=total, terms=tuple(terms)))
+        rows.sort(key=lambda r: (-r.total, r.design_key))
+
+        return ScoreTable(
+            rows=tuple(rows),
+            relevance_manifest=relevance_manifest(),
+            relevance_fingerprint=relevance_fingerprint(),
+            family_registry_fingerprint=phenomenon_registry_fingerprint(families),
+            resolved_policy_fingerprint=fingerprint(policy),
+            base_seed=base_seed)
+    except Exception as error:
+        raise SceneScoringError("scoring_exception", str(error)) from error

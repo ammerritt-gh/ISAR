@@ -34,6 +34,7 @@ flip, and the caller (4.3) decides what a losing writer does next, not this func
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 from dataclasses import dataclass, replace
@@ -45,11 +46,15 @@ from isar.drive.acquisition.inventory import (
 from isar.schema.action_identity import canonical_json, physical_action_key
 from isar.schema.campaign_program import CampaignProgram, ProgramError, program_fingerprint
 from isar.schema.consultation import strip_consultation_overrides
-from isar.schema.generators import DISCOVERY_GENERATOR_REGISTRY, DISCOVERY_GENERATOR_REGISTRY_VERSION, registry_manifest
+from isar.schema.generators import (
+    DISCOVERY_GENERATOR_REGISTRY, DISCOVERY_GENERATOR_REGISTRY_VERSION, aggregate_rank,
+    registry_manifest)
 from isar.schema.placement import PLACEMENT_RULES, PLACEMENT_RULES_SCHEMA
+from isar.scene import eig as scene_eig
 from isar.scene.agenda import (
     build_and_store_agenda, derive_agenda, evaluate_agenda, AGENDA_STORE)
 from isar.scene.model import canonical_bytes, fingerprint
+from isar.scene.phenomena import Design
 from isar.scene.store import RevisionStore, SCENE_STORE, StaleSceneAtPublication
 
 from isar.drive.steering.cold_start import DeclaredPartition
@@ -57,7 +62,7 @@ from isar.drive.steering.exhaustion import CONTROLLER_FAULT as _PRODUCER_FAULT
 from isar.drive.steering.exhaustion import produce_exhaustion
 from isar.drive.steering.generators import DiscoveryContext
 from isar.drive.steering.readiness import RunResult, classify_readiness, run_ready_questions
-from isar.drive.steering.scheduler import LOCALITY_VERSION, SCHEDULER_POLICY, select
+from isar.drive.steering.scheduler import LOCALITY_VERSION, SCHEDULER_POLICY, rank_all, select
 
 __all__ = [
     "SELECTED", "AGENDA_COMPLETE", "CONTROLLER_FAULT", "NO_ACTION_WITH_HONEST_EXHAUSTION",
@@ -171,7 +176,8 @@ def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
                            declared_partition=None,
                            retired_physical_actions: frozenset[str] = frozenset(),
                            declined_fingerprints: frozenset[str] = frozenset(),
-                           hypotheses_fingerprint: str | None = None) -> dict:
+                           hypotheses_fingerprint: str | None = None,
+                           scoring_hypotheses_fingerprint: str | None = None) -> dict:
     """Every ``decision_basis`` field that does NOT depend on a stored scene existing — computed
     even on the scene-missing fault path, so that record is as diagnostic as any other.
 
@@ -214,8 +220,14 @@ def _decision_basis_common(program_fp: str, step_id: str, step_payload: Mapping,
     # decision was taken under — readable without rehashing the intent.
     hypotheses = ({"hypotheses_fingerprint": hypotheses_fingerprint}
                   if hypotheses_fingerprint else {})
+    # SCENE-5 5.2: the CONTENT fingerprint of the SAME declared ``[hypotheses.*]`` mapping,
+    # distinct from ``hypotheses_fingerprint`` above (a pre-existing, name-only fingerprint —
+    # flagged to the owner, not repaired here). Omitted-when-empty on the same rule.
+    scoring_hypotheses = ({"scoring_hypotheses_fingerprint": scoring_hypotheses_fingerprint}
+                          if scoring_hypotheses_fingerprint else {})
     return {
         **hypotheses,
+        **scoring_hypotheses,
         **declared,
         **retired,
         **declined,
@@ -379,6 +391,233 @@ def _current_program_pointer_digest(report_dir: Path) -> str | None:
     return PROGRAM_STORE.pointer_digest(report_dir)
 
 
+# ----------------------------------------------------------------------------
+# Scene-EIG scoring path (SCENE-5 5.2, docs/plans/scene5-eig.md §3 "5.2 Controller integration")
+# ----------------------------------------------------------------------------
+SCENE_EIG_SCHEDULER_POLICY_ID = "isar.scheduler.scene-eig/1"
+SCENE_EIG_BASE_SEED_RULE = "isar.scheduler.scene-eig.base-seed/1"
+#: The closed D7 fallback-reason vocabulary this module may itself add to the two
+#: ``SceneScoringError`` reasons ``isar.scene.eig`` raises.
+SCORED_SET_EMPTY = "scored_set_empty"
+
+_PARTITION_PREFIX = "isar.partition/"
+
+
+def _scoring_axis(step_payload: Mapping) -> int:
+    """Which hkl component varies along the step's declared region — the SAME selection
+    ``isar.drive.steering.generators._hkl_at`` (and ``isar.drive.steering.scheduler``'s own
+    ``_dominant_axis``) make. Re-derived here rather than imported (both are private, and the
+    idiom throughout this package is a small pinned-equal mirror, never reaching into another
+    module's underscore names) so a scored design's coordinate is the exact inverse of how the
+    generators built the winning intent's ``hkl`` in the first place."""
+    region = step_payload["region"]
+    start, end = region["q_start"], region["q_end"]
+    deltas = [abs(b - a) for a, b in zip(start, end)]
+    return deltas.index(max(deltas))
+
+
+def _partition_of(intent) -> str | None:
+    """The partition an intent's ``campaign_slice_fingerprint`` names, or ``None`` when the
+    intent carries none (a program-scoped intent — unreachable for a live selectable discovery
+    evaluation, per ``isar.drive.steering.generators``'s own module docstring)."""
+    csf = intent.campaign_slice_fingerprint
+    if csf is None or not csf.startswith(_PARTITION_PREFIX):
+        return None
+    return csf[len(_PARTITION_PREFIX):]
+
+
+def _first_partition_temperature(scene_payload: Mapping, partition_id: str | None) -> float | None:
+    """The first DECLARED ``temperature_K`` among the partition's footprints, in persisted
+    order. ``None`` (Bose-blind, honest) when the partition carries no temperature declaration
+    at all — never a fabricated default."""
+    if partition_id is None:
+        return None
+    for footprint in scene_payload.get("footprints") or ():
+        if footprint.get("partition_id") == partition_id:
+            temperature = footprint.get("temperature_K")
+            if temperature is not None:
+                return float(temperature)
+    return None
+
+
+def _design_for_evaluation(evaluation, step_payload: Mapping, scene_payload: Mapping) -> Design:
+    """One candidate :class:`~isar.scene.phenomena.Design` for one eligible evaluation (SCENE-5
+    5.2's declared scoring-grid construction: a coarser grid than the winner's real executed
+    request, ADR-018's identity untouched — see the plan's "declared approximation" note).
+
+    Raises on anything that makes THIS evaluation unscoreable (no energy window, a degenerate
+    step axis, ...); the caller drops such a candidate from the scored set with a recorded skip
+    entry rather than treating it as a scoring-layer fault (D7's per-candidate carve-out).
+    """
+    intent = evaluation.intent
+    axis = _scoring_axis(step_payload)
+    coordinate = float(intent.hkl[axis])
+    if intent.energy_lo is None or intent.energy_hi is None:
+        raise ValueError(
+            f"evaluation {intent.scientific_action_fingerprint} has no energy window "
+            "(energy_lo/energy_hi); cannot build a scoring design for it")
+    energy_lo, energy_hi = float(intent.energy_lo), float(intent.energy_hi)
+    step_meV = scene_eig.scoring_grid_step_meV()
+    n_points = max(2, math.ceil((energy_hi - energy_lo) / step_meV) + 1)
+    ncount = float(step_payload["resolved_policy"]["thresholds"]["discovery_monitor_ncount"])
+    partition_id = _partition_of(intent)
+    temperature_K = _first_partition_temperature(scene_payload, partition_id)
+    return Design(axis_coordinate=coordinate, window=(energy_lo, energy_hi), n_points=n_points,
+                 ncount=ncount, temperature_K=temperature_K)
+
+
+def _resolve_winning_evaluation(evaluations):
+    """The one evaluation a winning DESIGN resolves to (SCENE-5 5.2): the lexicographic minimum
+    by :func:`~isar.schema.generators.aggregate_rank` over each backing evaluation's FULL
+    association set, then the scientific-action fingerprint — deterministic and
+    replay-identical regardless of which same-temperature partition/path/epoch salt produced
+    each backing copy, and never the duplicate-key refusal ``score()`` itself guards."""
+    return min(evaluations, key=lambda e: (aggregate_rank(e.associations)[0],
+                                           e.intent.scientific_action_fingerprint))
+
+
+def _base_seed_for(scene_digest: str, basis_digest: str, step_id: str) -> int:
+    """Content-derived, never a clock or a running counter: the first 16 hex chars of a
+    fingerprint over exactly the three identifiers this plan is already keyed to."""
+    payload = {"scene_digest": scene_digest, "basis_digest": basis_digest, "step_id": step_id}
+    return int(fingerprint(payload)[:16], 16)
+
+
+def _rank_table_entries(table) -> list[dict]:
+    """The persisted shape of one ``rank_all``/``select`` table — shared by the fallback path
+    (where it IS winner-first) and the scored path's audit table (where it is not)."""
+    return [
+        {"scientific_action_fingerprint": ranked.evaluation.intent.scientific_action_fingerprint,
+         "rank_vector": list(ranked.rank_vector),
+         "supplying_association": {"question_id": ranked.supplying_association.question_id,
+                                  "generator": ranked.supplying_association.generator}}
+        for ranked in table]
+
+
+def _canonical_view(evaluation):
+    """A TRANSIENT copy of ``evaluation`` carrying only its canonical associations, for ranking
+    only (SCENE-5 5.2, D7's "construct filtered views, never mutate the persisted ones") —
+    ``None`` when the evaluation has no canonical association at all, so a caller filtering to
+    canonical survivors excludes it outright rather than ranking it on an empty association set
+    (``aggregate_rank`` refuses that itself, but excluding it earlier keeps the pool's meaning
+    honest: "no canonical association" is not "canonical association, unranked")."""
+    canonical_associations = tuple(a for a in evaluation.associations if a.canonical)
+    if not canonical_associations:
+        return None
+    return replace(evaluation, associations=canonical_associations)
+
+
+def _lexicographic_selection(pool, step_payload: Mapping, locality_coordinate: float | None, *,
+                             reason_suffix: str) -> dict:
+    """The UNCHANGED ``select()`` path, packaged into the persisted ``selection`` shape — shared
+    by every fallback decision (SCENE-5 5.2, D7) regardless of which pool ranked it."""
+    winner, rank_vector, supplying, table = select(pool, step_payload, locality_coordinate)
+    return {
+        "fingerprint": winner.intent.scientific_action_fingerprint,
+        "rank_vector": list(rank_vector),
+        "reason": f"lexicographic minimum over {len(pool)} eligible action(s) ({reason_suffix})",
+        "associations": [a.to_dict() for a in winner.associations],
+        "supplying_association": supplying.to_dict(),
+        "rank_table": _rank_table_entries(table),
+    }
+
+
+def _scene_eig_selection(scene_payload: Mapping, agenda_payload: Mapping,
+                         hypotheses: Mapping[str, dict] | None, selectable, step_payload: Mapping,
+                         locality_coordinate: float | None, scene_digest: str, basis_digest: str,
+                         step_id: str) -> tuple[dict, dict | None, dict | None]:
+    """``(selection_block, fallback_block, scheduler_policy_override)``. ``fallback_block`` is
+    ``None`` on a scored decision, present on a fallback one; ``scheduler_policy_override`` is
+    the reverse — present (the ``isar.scheduler.scene-eig/1`` block) only on a scored decision,
+    ``None`` on a fallback one (where ``decision_basis.scheduler_policy`` keeps its untouched
+    lexicographic default from :data:`SCHEDULER_POLICY`).
+
+    Tries scene-EIG scoring first (per-candidate design refusals are dropped with a recorded
+    skip, never a fallback by themselves); a :class:`~isar.scene.eig.SceneScoringError` or an
+    empty scored set falls back to the UNCHANGED lexicographic ``select()`` over CANONICAL
+    associations only — widening to every selectable evaluation when the canonical pool is
+    itself empty (the beam-idle guard, D7), so this function never raises.
+    """
+    designs_by_key: dict[str, Design] = {}
+    evaluations_by_key: dict[str, list] = {}
+    score_skips: list[dict] = []
+    for evaluation in selectable:
+        try:
+            design = _design_for_evaluation(evaluation, step_payload, scene_payload)
+        except Exception as error:
+            score_skips.append(
+                {"fingerprint": evaluation.intent.scientific_action_fingerprint,
+                 "reason": str(error)})
+            continue
+        key = scene_eig.design_key(design)
+        designs_by_key.setdefault(key, design)
+        evaluations_by_key.setdefault(key, []).append(evaluation)
+
+    fallback_reason = None
+    table = None
+    if not designs_by_key:
+        fallback_reason = SCORED_SET_EMPTY
+    else:
+        base_seed = _base_seed_for(scene_digest, basis_digest, step_id)
+        try:
+            table = scene_eig.score(scene_payload, agenda_payload, hypotheses,
+                                    list(designs_by_key.values()), base_seed)
+        except scene_eig.SceneScoringError as error:
+            fallback_reason = error.reason
+        # Any OTHER exception (a plain ValueError from bad policy/duplicate design keys, or a
+        # genuine planner bug) is deliberately NOT caught here — D7's non-scoring-fault
+        # propagation. It reaches the caller unchanged.
+
+    if fallback_reason is not None:
+        canonical_pool = [view for view in (_canonical_view(e) for e in selectable)
+                          if view is not None]
+        pool, pool_name = ((canonical_pool, "canonical") if canonical_pool
+                           else (list(selectable), "all_selectable"))
+        selection_block = _lexicographic_selection(
+            pool, step_payload, locality_coordinate, reason_suffix=f"fallback: {fallback_reason}")
+        return selection_block, {"reason": fallback_reason, "pool": pool_name}, None
+
+    winning_row = table.rows[0]
+    score_table = []
+    for row in table.rows:
+        resolved = _resolve_winning_evaluation(evaluations_by_key[row.design_key])
+        score_table.append({
+            "scientific_action_fingerprint": resolved.intent.scientific_action_fingerprint,
+            "design_key": row.design_key,
+            "total": row.total,
+            "terms": [{"question_id": t.question_id, "family": t.family, "priority": t.priority,
+                      "weight": t.weight, "mi_nats": t.mi_nats,
+                      "contributing_clusters": t.contributing_clusters} for t in row.terms],
+        })
+    winner = _resolve_winning_evaluation(evaluations_by_key[winning_row.design_key])
+    ranked_one = rank_all((winner,), step_payload, locality_coordinate)[0]
+    # The audit table: EVERY selectable evaluation's lexicographic rank, computed regardless of
+    # who scoring picked. On a SCORED decision row 0 here is NOT necessarily the winner
+    # (score_table row 0 is) — it lets a reader see where the EIG winner sat in the old ordering.
+    audit_table = rank_all(selectable, step_payload, locality_coordinate)
+    selection_block = {
+        "fingerprint": winner.intent.scientific_action_fingerprint,
+        "rank_vector": list(ranked_one.rank_vector),
+        "reason": f"scene-EIG scoring: total {winning_row.total!r} across "
+                 f"{len(table.rows)} design(s)",
+        "associations": [a.to_dict() for a in winner.associations],
+        "supplying_association": ranked_one.supplying_association.to_dict(),
+        "rank_table": _rank_table_entries(audit_table),
+        "score_table": score_table,
+    }
+    if score_skips:
+        selection_block["score_skips"] = score_skips
+    scheduler_policy = {
+        "id": SCENE_EIG_SCHEDULER_POLICY_ID,
+        "relevance_fingerprint": table.relevance_fingerprint,
+        "family_registry_fingerprint": table.family_registry_fingerprint,
+        "scoring_grid_step_meV": scene_eig.scoring_grid_step_meV(),
+        "base_seed_rule": SCENE_EIG_BASE_SEED_RULE,
+        "fallback_scheduler_policy_id": SCHEDULER_POLICY["id"],
+    }
+    return selection_block, None, scheduler_policy
+
+
 @dataclass(frozen=True)
 class PlanResult:
     """What one ``plan_next_action`` call decided, and enough to find everything it wrote."""
@@ -424,6 +663,7 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
                      blocker_evidence: tuple = (),
                      declared_partition: DeclaredPartition | None = None,
                      hypotheses_fingerprint: str | None = None,
+                     hypotheses: Mapping[str, dict] | None = None,
                      scene_pin: str | None = None,
                      retired_physical_actions: frozenset[str] = frozenset(),
                      declined_fingerprints: frozenset[str] = frozenset()) -> PlanResult:
@@ -459,16 +699,24 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
     what lets producer rule 6 (rejected-only, all-STRUCTURAL, matching
     :class:`~isar.schema.generators.QuestionBlockerEvidence`) emit the proof that closes the
     question unresolvable instead of rule 2 blocking it as ``not_exhausted``.
+
+    ``hypotheses`` (SCENE-5 5.2) is the caller-supplied declared ``[hypotheses.*]`` mapping
+    (name -> resolved declaration dict) — the SAME source ``hypotheses_fingerprint`` is derived
+    from, threaded once by the caller (``program_runner.py``) rather than re-read here. It feeds
+    ``isar.scene.eig.score`` directly; a content fingerprint of it rides in ``decision_basis`` and
+    folds into ``context_fingerprint`` (below), distinct from the pre-existing name-only
+    ``hypotheses_fingerprint``.
     """
     report_dir = Path(report_dir)
     step = _resolve_discover_step(program, step_id)
     step_payload = step.payload.to_dict()
     program_fp = program_fingerprint(program)
     registry_fp = DISCOVERY_GENERATOR_REGISTRY_VERSION
+    scoring_hypotheses_fingerprint = (fingerprint(dict(hypotheses)) if hypotheses else None)
     basis_common = _decision_basis_common(program_fp, step_id, step_payload, registry_fp,
                                           locality_coordinate, declared_partition,
                                           retired_physical_actions, declined_fingerprints,
-                                          hypotheses_fingerprint)
+                                          hypotheses_fingerprint, scoring_hypotheses_fingerprint)
     # Below the planner the declaration travels as the primitive triple the scene layer and the
     # opening book both take — the DTO itself never crosses into isar.scene (import boundary).
     # The step id rides along because it is the RETIREMENT test (owner ruling 2026-08-18): the
@@ -640,29 +888,17 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
 
     selection_block = None
     selection_fingerprint = None
+    fallback_block = None
+    scheduler_policy_override = None
     if outcome == SELECTED:
-        winner, rank_vector, supplying, table = select(selectable, step_payload,
-                                                        locality_coordinate)
-        selection_fingerprint = winner.intent.scientific_action_fingerprint
-        selection_block = {
-            "fingerprint": selection_fingerprint,
-            "rank_vector": list(rank_vector),
-            "reason": f"lexicographic minimum over {len(selectable)} eligible action(s)",
-            "associations": [a.to_dict() for a in winner.associations],
-            "supplying_association": supplying.to_dict(),
-            # PR #33 A-P1-e: the FULL ordered rank table, winner first (row 0) — select() was
-            # already building this (isar.drive.steering.scheduler.select's `table`) and the
-            # planner was discarding it; persisting it lets a reader audit who else was eligible
-            # and why they lost, not just who won.
-            "rank_table": [
-                {"scientific_action_fingerprint":
-                     ranked.evaluation.intent.scientific_action_fingerprint,
-                 "rank_vector": list(ranked.rank_vector),
-                 "supplying_association": {"question_id": ranked.supplying_association.question_id,
-                                          "generator": ranked.supplying_association.generator}}
-                for ranked in table
-            ],
-        }
+        # SCENE-5 5.2: every SELECTED decision is scored by scene-EIG first, over the pass-2
+        # agenda payload (the one this decision published) — the lexicographic scheduler
+        # survives only as the software-fault fallback (D7), and only over canonical
+        # associations. See ``_scene_eig_selection``'s own docstring for the full contract.
+        selection_block, fallback_block, scheduler_policy_override = _scene_eig_selection(
+            scene_payload, pass2.payload, hypotheses, selectable, step_payload,
+            locality_coordinate, scene_digest, basis_digest, step_id)
+        selection_fingerprint = selection_block["fingerprint"]
 
     # PR #33 A-P1-e: locality_coordinate rides INSIDE the fingerprinted input here, not beside
     # it — the reviewer's exact finding was that it "can change the selected action without
@@ -685,13 +921,22 @@ def plan_next_action(report_dir, program: CampaignProgram, step_id: str, *,
          "locality": basis_common["locality"],
          **{key: basis_common[key]
             for key in ("declared_partition", "retired_physical_actions",
-                        "declined_scientific_actions", "hypotheses_fingerprint")
+                        "declined_scientific_actions", "hypotheses_fingerprint",
+                        "scoring_hypotheses_fingerprint")
             if key in basis_common}})
+    decision_basis = {**basis_common, "scene_digest": scene_digest,
+                      "agenda_digest": pass2.digest, "basis_digest": basis_digest}
+    if scheduler_policy_override is not None:
+        # Scored decision: the declared scene-EIG block replaces the default lexicographic
+        # declaration ``_decision_basis_common`` set above. A fallback decision keeps that
+        # default untouched (D7) — it never reaches this branch.
+        decision_basis["scheduler_policy"] = scheduler_policy_override
+    if fallback_block is not None:
+        decision_basis["fallback"] = fallback_block
     record = {
         "schema": DECISION_SCHEMA,
         "outcome": outcome,
-        "decision_basis": {**basis_common, "scene_digest": scene_digest,
-                          "agenda_digest": pass2.digest, "basis_digest": basis_digest},
+        "decision_basis": decision_basis,
         "selection": selection_block,
         "scan_design_provenance": {
             "inventory_fingerprint": inventory.content_hash(),

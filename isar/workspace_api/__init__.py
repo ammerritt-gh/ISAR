@@ -29,6 +29,7 @@ from .scene import sample_knowledge, scene_observations
 from .scene_view import (Curve, GapEntry, HypothesisEntry, HypothesisMap, ModeMarker,
                          SceneRevisionView, hypothesis_map, scene_revision)
 from .agenda_view import (AgendaRevisionView, FreshnessReport, agenda_revision, read_transitions)
+from .decision_view import latest_decision
 
 __all__ = [
     "Workspace",
@@ -76,4 +77,7 @@ __all__ = [
     "AgendaRevisionView",
     "FreshnessReport",
     "read_transitions",
+    # The discovery decision ledger's read door (SCENE-5 5.2): the latest persisted decision, for
+    # the operator alert on a scoring fallback (D7) — never a second write path.
+    "latest_decision",
 ]

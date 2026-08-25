@@ -365,6 +365,50 @@ def test_track_bridge_scan_bridges_the_widest_gap_between_disjoint_clusters():
     assert intent.hkl[0] == pytest.approx(2.15)
 
 
+def test_track_bridge_scan_widens_with_non_canonical_between_nodes():
+    """SCENE-5 5.2 (D4): the canonical row (the endpoint pick) stays first and canonical=True;
+    every other unmeasured node of the frozen q-tile grid strictly between the endpoint tiles
+    follows as canonical=False, ranked after it by placement_rank, at the SAME (full-domain)
+    window every branch already uses."""
+    track = _track_spec((1.9, 1.95), (2.9, 2.95))
+    scene = payload(observations=[obs("e:1:d", [cand("A", omegas=(5.0,))])],
+                    footprints=[fp("e:1:d", 1.92, partition=P1)],
+                    clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 1.0)])])
+    assessment = evaluate_predicate(track, scene)
+    ctx = manual_context(scene, step(spacing=0.5), [track], [assessment])
+    outcome = track_bridge_scan(ctx, track.to_dict())
+
+    canonical_intent, canonical_assoc = outcome.proposals[0]
+    assert canonical_assoc.canonical is True
+    assert canonical_assoc.placement_rank == 0
+    extras = outcome.proposals[1:]
+    assert extras, "expected at least one between-node widening proposal"
+    for rank, (intent, association) in enumerate(extras, start=1):
+        assert association.canonical is False
+        assert association.placement_rank == rank
+        assert intent.energy_lo == pytest.approx(canonical_intent.energy_lo)
+        assert intent.energy_hi == pytest.approx(canonical_intent.energy_hi)
+        assert 1.95 < intent.hkl[0] < 2.9        # strictly between the endpoint tiles
+    # gap [1.95, 2.9] at spacing 0.5: ceil(0.95/0.5) - 1 == 1 node, at the midpoint.
+    assert len(extras) == 1
+    assert extras[0][0].hkl[0] == pytest.approx(1.95 + 0.95 / 2.0)
+
+
+def test_track_bridge_scan_widening_skips_already_measured_nodes():
+    """A between-node the grid would otherwise propose is dropped when a footprint already
+    sits there — 'unmeasured' is load-bearing, not decorative."""
+    track = _track_spec((1.9, 1.95), (2.9, 2.95))
+    already = 1.95 + 0.95 / 2.0
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.0,))]), obs("e:mid", [cand("A")])],
+        footprints=[fp("e:1:d", 1.92, partition=P1), fp("e:mid", already, partition=P1)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 1.0)])])
+    assessment = evaluate_predicate(track, scene)
+    ctx = manual_context(scene, step(spacing=0.5), [track], [assessment])
+    outcome = track_bridge_scan(ctx, track.to_dict())
+    assert len(outcome.proposals) == 1               # only the canonical endpoint pick survives
+
+
 def test_track_bridge_scan_raises_on_the_unreachable_third_reason():
     track = _track_spec((1.9, 1.95), (2.9, 2.95))
     scene = payload()

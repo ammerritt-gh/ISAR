@@ -568,6 +568,19 @@ def _declared_hypotheses_fingerprint(cfg) -> str | None:
     return content_fingerprint(list(load_policy(policy_path).hypotheses or []), {})
 
 
+def _declared_hypotheses(cfg) -> dict:
+    """The card's declared ``[hypotheses.*]`` mapping (name -> resolved declaration dict) — the
+    SAME source :func:`_declared_hypotheses_fingerprint` reads, threaded once (SCENE-5 5.2) so
+    the scorer and the name-only fingerprint above can never disagree about what "the declared
+    physics" means. Empty when the card declares no policy file, same posture as the fingerprint
+    function's ``None``."""
+    policy_path = Path(cfg.workspace) / "card.policy.toml"
+    if not policy_path.exists():
+        return {}
+    from isar.schema.card import load_policy
+    return dict(load_policy(policy_path).hypotheses or {})
+
+
 # ---------------------------------------------------------------------------- the discovery lane
 def _agenda_verdict(report_dir: Path, plan: PlanResult, budget_state: dict):
     """``evaluate_agenda`` over the agenda THIS decision published, priced against the budget.
@@ -719,6 +732,7 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
     retry_limit = _broken_scan_retry_limit(step)
     declared = _declared_partition(cfg, step)
     hypotheses_fingerprint = _declared_hypotheses_fingerprint(cfg)
+    hypotheses = _declared_hypotheses(cfg)
     provenance = _campaign_provenance_block(program, step, declared)
 
     # Consultation channel state (C8). The overrides are read off the FROZEN PROGRAM, so a step
@@ -936,6 +950,7 @@ def _run_discovery_step(cfg, program: CampaignProgram, step, *, objective: Objec
             plan = plan_next_action(report_dir, program, step.id,
                                     declared_partition=declared,
                                     hypotheses_fingerprint=hypotheses_fingerprint,
+                                    hypotheses=hypotheses,
                                     scene_pin=pin,
                                     retired_physical_actions=frozenset(retired),
                                     blocker_evidence=tuple(e for evidence
