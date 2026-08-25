@@ -841,9 +841,15 @@ composed rate WITH vs WITHOUT its anti-Stokes lobes. The WITHOUT-lobes rate is a
 lobe switch (`isar.scene.phenomena.predict(..., include_anti_stokes=False)`, default True) —
 reusing the one curve-family predictive rather than standing up a second physics path for the
 doubt it prices. Prior = `paranoia_unknown_prior` (D6): the same operator-declared paranoia that
-already prices DiscoverRegion's coverage doubt now also prices thermal-consistency doubt, and
-paranoia 0 short-circuits the term to exactly 0 (the DiscoverRegion degenerate-prior precedent —
-no Monte Carlo noise). On a +E window, or at cold temperature, or with no declared temperature at
+already prices DiscoverRegion's coverage doubt now also prices thermal-consistency doubt.
+**The association is part of the ruling** (amended 2026-08-25, PR #36 review — the wave that
+found it assigned the other way): the doubt mass sits on the DOUBT state — `not_as_believed`
+carries `paranoia`, `as_believed` carries `1 − paranoia` — exactly as DiscoverRegion puts its
+paranoia on `present`-at-an-unsurveyed-tile. The prior entropy H(p) is symmetric, so an
+inverted association is invisible at p = 0.5 (every early test's regime) while mis-pricing the
+term everywhere else; the association is therefore pinned by a dedicated estimator-spy
+regression, not only by these words. Paranoia 0 short-circuits the term to exactly 0 (the
+DiscoverRegion degenerate-prior precedent — no Monte Carlo noise). On a +E window, or at cold temperature, or with no declared temperature at
 all, the WITH/WITHOUT rates coincide (the lobe term never entered the composed rate to begin
 with, or its Bose weight is negligible) and the term reads ~0 through the same MI estimator —
 **no temperature or window branch anywhere in the scoring path**; the dominance and the
