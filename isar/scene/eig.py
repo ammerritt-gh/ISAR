@@ -1,6 +1,7 @@
 """The scene-EIG MI scoring engine (SCENE-5 slice 5.1) — how much each candidate design would
 teach the open questions, computed from the hypothesis-map / intensity-map comparison and
-nothing else (the SCENE-5 governing razor, ``docs/plans/scene5-eig.md`` §1).
+nothing else (the SCENE-5 governing razor, ``docs/design/scene.md``'s SCENE-5 closure amendment,
+H23).
 
 **Offline and pure (D2's decide-side-only invariant, extended).** No store reads, no I/O, no
 persisted-contract change. Everything this module needs arrives as plain dicts already read by
@@ -603,8 +604,8 @@ def _question_mi(spec: QuestionSpec, scene_payload: Mapping,
                  paranoia: float) -> tuple[float, int]:
     """``(mi_nats, contributing_cluster_count)`` for one open question against one design."""
     if spec.family == "VerifyCompleteness":
-        # Declared v1 posture (docs/plans/scene5-eig.md 5.1): exposure fill is deterministic
-        # progress, never scene-EIG's to price.
+        # Declared v1 posture (docs/design/scene.md SCENE-5 closure amendment, H23, 5.1):
+        # exposure fill is deterministic progress, never scene-EIG's to price.
         return 0.0, 0
     if spec.family == "DiscoverRegion":
         if paranoia <= 0.0:

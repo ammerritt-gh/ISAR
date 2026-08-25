@@ -254,7 +254,13 @@ def greedy_multimode_ic(composite, ctx, one_mode_result, peaks=None, *, gamma0=G
     mode1, mode2 = prefixes[0], prefixes[1]
 
     # -- mode-1 nonlinears: from the 1-mode fit, or seeded internally when absent -----------
-    if one_mode_result is not None and getattr(one_mode_result, "params", None):
+    # A background-only ``one_mode_result`` (the 0-phonon "bg" structure, e.g. the best 1-mode-
+    # or-fewer candidate at a node with no detectable signal) has ``params`` but no ``.Omega_d``
+    # key at all -- falling into the branch below on truthy ``params`` alone raised
+    # ``StopIteration`` from the ``next(...)`` call. Require the key to actually be present.
+    has_mode1_fit = (one_mode_result is not None and getattr(one_mode_result, "params", None)
+                     and any(k.endswith(".Omega_d") for k in one_mode_result.params))
+    if has_mode1_fit:
         params = one_mode_result.params
         od1 = float(next(v for k, v in params.items() if k.endswith(".Omega_d")))
         g1 = float(next(v for k, v in params.items() if k.endswith(".Gamma")))

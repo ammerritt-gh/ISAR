@@ -392,7 +392,7 @@ def _current_program_pointer_digest(report_dir: Path) -> str | None:
 
 
 # ----------------------------------------------------------------------------
-# Scene-EIG scoring path (SCENE-5 5.2, docs/plans/scene5-eig.md §3 "5.2 Controller integration")
+# Scene-EIG scoring path (SCENE-5 5.2, docs/design/scene.md's SCENE-5 closure amendment, H23)
 # ----------------------------------------------------------------------------
 SCENE_EIG_SCHEDULER_POLICY_ID = "isar.scheduler.scene-eig/1"
 SCENE_EIG_BASE_SEED_RULE = "isar.scheduler.scene-eig.base-seed/1"
