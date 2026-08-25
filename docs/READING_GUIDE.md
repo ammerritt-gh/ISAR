@@ -160,7 +160,8 @@ standing check that we are building a usable instrument, not a self-certifying l
    kept at this path because frozen evidence cites it).
 3. The plans — work not yet landed, each with an owner and exit criteria:
    [plans/speedup.md](plans/speedup.md) · [plans/background.md](plans/background.md) ·
-   [plans/stats-audit.md](plans/stats-audit.md). The backlog is [../TODO.md](../TODO.md).
+   [plans/stats-audit.md](plans/stats-audit.md).
+   The backlog is [../TODO.md](../TODO.md).
 4. Why was a decision made? The owning design doc's dated rulings; ruling IDs (`O27`, `H1`, …)
    are defined in [GLOSSARY.md](GLOSSARY.md) §Ruling IDs (the retired ledger is in git history).
 

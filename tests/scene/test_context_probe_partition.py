@@ -107,3 +107,48 @@ def test_a_context_probe_among_canonical_arenas_partitions_separately_and_nothin
 
     # (b), continued: the probe never joins the canonical partition, nor mints a second one.
     assert probe_footprint["partition_id"] != canonical_footprint["partition_id"]
+
+
+# ----------------------------------------------------------------------------
+# SCENE-5 5.3 (Ruling B, H23): the organic on-path −E corroboration scan is ``canonical_path`` —
+# NOT a context_probe, and NOT quarantined from path topology.
+# ----------------------------------------------------------------------------
+MINUS_E_REF = "tavi:4:det"
+
+
+def _minus_e_row_and_measurement(root):
+    """A −E scan at the SAME q as the first canonical-path arena -- the organic mirror
+    ``presence_probe`` mints beside its +E canonical proposal (SCENE-5 5.3), declared
+    ``canonical_path`` (Ruling B: an on-path q's −E window is an on-path scan, never a
+    ``context_probe`` — the quarantine would bar its own corroborating evidence from the very
+    track it corroborates)."""
+    row = _row(4, candidates=[_candidate("stokes+bg", omegas=[5.0])],
+              h=PATH_START[0], k=0.0, l=0.0, energy_lo=-10.0, energy_hi=-2.0)
+    _write_measurement(root, _measurement(
+        scan_ref=MINUS_E_REF, scan_id=MINUS_E_REF, scan_number=4, q=PATH_START,
+        topology_role="canonical_path", path_fingerprint=PATH_FP))
+    return row
+
+
+def test_a_minus_e_arena_at_an_on_path_q_joins_the_canonical_partition_and_path_topology(
+        tmp_path):
+    root = tmp_path / "with_minus_e"
+    canonical_rows = _canonical_rows_and_measurements(root)
+    minus_e_row = _minus_e_row_and_measurement(root)
+    payload = _build(root, canonical_rows + [minus_e_row])   # must not raise
+
+    footprints = {f["scan_ref"]: f for f in payload["footprints"]}
+    canonical_footprint = footprints[CANONICAL_REFS[0]]
+    minus_e_footprint = footprints[MINUS_E_REF]
+
+    # SAME partition as its +E sibling -- never a second, never the None (context_probe) lane.
+    assert minus_e_footprint["partition_id"] == canonical_footprint["partition_id"]
+
+    # participates in PATH TOPOLOGY -- a real path_index, not the None a context_probe carries.
+    assert minus_e_footprint["path_index"] is not None
+
+    # and it joins the SAME cluster component as the rest of the canonical path (never
+    # quarantined into a singleton of its own, unlike the off-path context_probe above).
+    clusters = {c["cluster_id"]: c["scan_refs"] for c in payload["clusters"]}
+    assert MINUS_E_REF in clusters[CANONICAL_REFS[0]]
+    assert set(clusters[CANONICAL_REFS[0]]) == set(CANONICAL_REFS) | {MINUS_E_REF}

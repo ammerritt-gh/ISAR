@@ -208,8 +208,9 @@ pre-release and it does control them, so a superseded id is *refused*, not migra
 contract is `isar.campaign-program/1` (owner: `isar/schema/campaign_program.py`), whose steps carry
 `isar.campaign-step.targeted/1` and `isar.campaign-step.discover_and_map/2` payloads — the `/2`
 discover step (SCENE-4 PR 4.1, H17) requires every effective field explicitly, including the
-frozen `isar.question-policy/2` block (PR 4.2a: `/2` added the `survey_order` and
-`parameter_precision_min_mass` TARGET fields and retired `/1` by name), so a stored program can
+frozen `isar.question-policy/3` block (SCENE-5 slice 5.1: `/3` added `priority_weights`,
+`paranoia_unknown_prior`, and `mi_n_draws` and retired `/2` by name; PR 4.2a's `/2` had added
+`survey_order` and `parameter_precision_min_mass` and retired `/1`), so a stored program can
 never acquire a read-time default.
 **Reading rule for the defaults-profile label (owner ruling 2026-08-15):** the named defaults
 profile (`DEFAULTS_PROFILE_VERSION`) versions the default VALUE SET only — it does not bump

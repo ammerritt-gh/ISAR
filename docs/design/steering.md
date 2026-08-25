@@ -782,9 +782,10 @@ declares an ordered list of steps; each carries its own step schema, `isar.campa
 for the per-point-tolerance objective above and `isar.campaign-step.discover_and_map/2` for
 target-free discovery (SCENE-4 PR 4.1: the `/2` reader requires every effective field explicitly —
 region kind, endpoints, spacing, ω domain, catalogue profile, deliverables, `include_unknown`, and
-the frozen `isar.question-policy/2` `resolved_policy` block the compiler resolves as user ask >
-card guidelines > named defaults; PR 4.2a's `/2` question-policy contract added the `survey_order`
-and `parameter_precision_min_mass` TARGET fields and retired `isar.question-policy/1` by name.
+the frozen `isar.question-policy/3` `resolved_policy` block the compiler resolves as user ask >
+card guidelines > named defaults; SCENE-5 slice 5.1's `/3` contract added the `priority_weights`,
+`paranoia_unknown_prior`, and `mi_n_draws` TARGET fields and retired `/2` by name, as PR 4.2a's
+`/2` had added `survey_order` and `parameter_precision_min_mass` and retired `/1`.
 `discover_and_map/1` is likewise retired by name, and an untagged compact discover payload
 is authoring input the reader refuses toward the compiler). This build parses, validates and
 freezes both kinds, and **executes a single step of either kind**: a `targeted` step runs through

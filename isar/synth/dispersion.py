@@ -45,23 +45,31 @@ def h_values():
 # ----------------------------------------------------------------------------
 @dataclass(frozen=True)
 class BranchSpec:
-    """One excitation branch: ω₀(H) = e_zc + (e_zb − e_zc)·|sin(π(H−H_start))|.
+    """One excitation branch: ω₀(H) = e_zc + (e_zb − e_zc)·|sin(π(H−H_start)/period)|.
 
     ``e_zc`` is the zone-centre energy (0 for an acoustic branch, finite for a gapped or
     optic one) and ``e_zb`` the zone-boundary energy. ``e_zb < e_zc`` gives a descending
     branch; ``e_zb == e_zc`` a dispersionless level. ``name`` is a ground-truth label
     only — nothing in the generator infers an identity from it.
+
+    ``period`` (default 1.0, every world before SCENE-5's FCC world) is the H-span over
+    which the sine sweeps zero-centre → zone-boundary → zero-centre; the default reproduces
+    every existing world byte-for-byte. A world whose declared reflections sit two H apart
+    (SCENE-5's FCC pair, extinct fold in between) needs ``period=2.0`` so the boundary
+    maximum lands on the fold, not on the domain's own midpoint.
     """
 
     name: str
     e_zc: float
     e_zb: float
     H_start: float = H_START
+    period: float = 1.0
 
     def omega0(self, H):
         """ω₀ at H (scalar or array), in meV."""
         H = np.asarray(H, dtype=float)
-        out = self.e_zc + (self.e_zb - self.e_zc) * np.abs(np.sin(np.pi * (H - self.H_start)))
+        out = self.e_zc + (self.e_zb - self.e_zc) * np.abs(
+            np.sin(np.pi * (H - self.H_start) / self.period))
         return out if out.ndim else float(out)
 
     def to_dict(self) -> dict:
@@ -71,11 +79,12 @@ class BranchSpec:
     def from_dict(cls, d: dict) -> "BranchSpec":
         # Same fail-loudly contract as config._reject_unknown_keys (inlined: config
         # imports dispersion, so dispersion must not import config).
-        unexpected = set(d) - {"name", "e_zc", "e_zb", "H_start"}
+        unexpected = set(d) - {"name", "e_zc", "e_zb", "H_start", "period"}
         if unexpected:
             raise ValueError(f"BranchSpec.from_dict: unexpected key(s) {sorted(unexpected)!r}")
         return cls(name=str(d["name"]), e_zc=float(d["e_zc"]), e_zb=float(d["e_zb"]),
-                   H_start=float(d.get("H_start", H_START)))
+                   H_start=float(d.get("H_start", H_START)),
+                   period=float(d.get("period", 1.0)))
 
 
 ACOUSTIC = BranchSpec("acoustic", 0.0, OMEGA0_MAX)

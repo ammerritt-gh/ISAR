@@ -7,7 +7,12 @@
 > **Status: Implemented (branch hypotheses).** The branch schema, shipped presets, frozen objective fingerprint, parameter
 > priors, branch-MI acquisition, opening moves, deterministic widening, incremental count batches,
 > persisted mismatch evidence, and goal > card > shipped resolution are implemented (2026-07-17).
-> `level` and `continuum` remain the explicitly declared future plugin surfaces (O10).
+> `level` and `continuum` remain the explicitly declared future plugin surfaces (O10). Targeted-lane
+> branch-MI acquisition is unchanged by SCENE-5. Scene-lane (`discover_and_map`) attachment of a
+> declared `[hypotheses.*]` block to real-fit beliefs is **open**: the SCENE-5 acceptance battery
+> found the mechanism live only against hand-set identities, never against a real fit, because the
+> production catalogue declares no identity-conditioned priors (H23, `design/scene.md`'s SCENE-5
+> closure amendment).
 
 ## What a hypothesis is (and is not)
 

@@ -33,7 +33,9 @@ scan data ──catalogue-driven grammar──> structure × identity candidates
 persisted candidate rows ──> cluster-factorized scene posterior (report/scene/ revisions)
       └─ structural/cross-scan factors ONLY + per-factor evidence ledger
 scene posterior ──> open scientific questions (completion predicates → generalized stop)
-      └─ scene-EIG (MI on question-relevant variables, additive across clusters) selects action
+      └─ scene-EIG (MI on question-relevant variables, additive across clusters) SELECTS the action
+         (SCENE-5, H23, 2026-08-25 — authoritative from birth; deterministic scheduler survives
+         only as the software-fault fallback, D7)
       └─ scan-window EIG realizes it (existing fence intact) ──> instrument / TAVI
 ```
 
@@ -307,7 +309,7 @@ emits otherwise fails the build rather than publishing an impossible reading.
 | SCENE-2 | `isar.campaign-program/1` sole contract; old envelope unreadable by design | Implemented (H2, 2026-08-08; PR #12 merged at `058fb40`) |
 | SCENE-3 | Scene layer core: clusters, structural factors, revisioned scene store, workspace_api read surface; tracker contracts ported as specifications | Implemented — PR 3a (H11/H12), 3b (H13), 3c (H14), all 2026-08-10, incl. the PR #19 response waves; final merge `a1c6e41` |
 | SCENE-4 | Question layer, deterministic opening book, generalized stop; first challenge run; scan-window authoritative default-on; shadow machinery deleted | Complete (H22, 2026-08-21) — PR 4.0 "scene authority readiness" Implemented (H15/H16, 2026-08-13; PR #30 merged): measurement-arena record + trust lanes, #21 Variant A origin lanes, (sample, ConditionSet, lattice-epoch) partitioning, refiner bounds + transformation ablation, expected_two relaxation. PR 4.1 "question + agenda core" Implemented (H17, 2026-08-14): three-object question layer, authority-aware predicates, `isar.question-policy/1` + fully frozen `discover_and_map/2`, content-addressed agenda snapshots with external transition history, `AgendaVerdict` beside `evaluate_stop` — offline (driver wiring 4.3, generator bindings 4.2). PR 4.2a "interval re-baseline + question-policy/2" Implemented (H18, 2026-08-14): per-candidate interval closure, producer-soundness interval authority, class-agnostic ConnectTrack. PR 4.2b "discovery generator layer + offline planner" Implemented (H19, 2026-08-15): seven question-bound generators, readiness gating, the exhaustion producer, `plan_next_action`'s five outcomes, the `report/inventory/discovery/` + `report/program/` + `report/decisions.jsonl` stores — offline. PR 4.3 "live driver integration" Implemented (H20, 2026-08-18): parent-owned scene build in a supervised `isar scene-build` subprocess with digest-pinned planning, the `run_program` seam and AgendaVerdict stop routing, campaign provenance + physical path identity in the partition key, the cold-start partition producer, the broken-scan lane, production durable-blocker emission over the two-member taxonomy, and the consultation channel with `isar answer`. PR 4.4 "authority flip, stop-law cleanup, acceptance closure" Implemented (H22, 2026-08-21): compile-time default-on flip scoped to targeted objectives with named shadow-mode refusal, shadow-only machinery deleted by call-site map, stop-law audit closed with zero removals, the off-path context-probe seam plus real-scene-build partition evidence (world `context_probe`, seed 1013), the causally connected cold-start acceptance sequence, the ncount discovery exemption, and the challenge run green end to end — SCENE-4 is complete |
-| SCENE-5 | Scene-EIG authoritative from birth | Planned |
+| SCENE-5 | Scene-EIG authoritative from birth | Complete (H23, 2026-08-25) — 5.0 phenomenon belief layer, 5.1 MI scoring engine, 5.2 controller integration, 5.3 the organic on-path −E corroboration producer, 5.4 acceptance closure (FCC challenge battery, closed-loop harness); hypothesis-attachment end-to-end named open work, see the SCENE-5 closure amendment below |
 | SCENE-6 | Single-engine swap: targeted campaigns as pinned question sets over scenes; tracker deleted; `campaign-program/2` question-native targeted payload | Planned |
 | SCENE-7 | Calibration batteries + efficiency benchmark; program closeout | Planned |
 
@@ -816,7 +818,174 @@ never-ignore-a-user-command principle; the CLI's H21(a) refusal remains the disc
 proves: a seam-level campaign test (the per-delivery provenance seam, its injected probe now at a
 genuinely off-segment coordinate) plus a real-scene-build partition test
 (`tests/scene/test_context_probe_partition.py`); the organic context-probe producer and the
-world-level organic end-to-end remain SCENE-5's.
+world-level organic end-to-end remain SCENE-5's. **Re-scoped by the SCENE-5 5.3 rulings below
+(H23, 2026-08-25, ruling (b)): the organic producer delivers on-path (`canonical_path`), not
+through the `context_probe` quarantine.**
+
+### SCENE-5 5.3 rulings (H23, 2026-08-25)
+
+Two owner rulings, grilled the evening of 2026-08-25, that re-gate the organic −E corroboration
+producer H22(iv) deferred to SCENE-5 and settle how it prices in.
+
+(a) **Corroboration is priced by declared doubt, not a gate.** Two measurements that should
+agree are worth exactly the prior mass on their disagreement: the fitter already ties the
+Stokes/anti-Stokes pair functionally (hard rule 2 — the anti-Stokes amplitude is derived via
+Bose, never fit), so under a fully-trusted hypothesis map a −E mirror is always dominated by its
++E twin (the epoch-1 dominance proof — a trusted map has nothing left for the mirror to teach
+that the +E measurement doesn't already resolve more directly). What makes a mirror worth
+measuring is the DECIDE-SIDE doubt variable: the scene-EIG relevance registry's ConfirmPresence
+entry (`isar/scene/eig.py`, version bumped to "2") gains a declared `thermal_consistency`
+component — per contributing cluster, one synthetic two-state partition
+{as_believed, not_as_believed}, rates = the cluster's leading (highest-posterior) alternative's
+composed rate WITH vs WITHOUT its anti-Stokes lobes. The WITHOUT-lobes rate is a predict-level
+lobe switch (`isar.scene.phenomena.predict(..., include_anti_stokes=False)`, default True) —
+reusing the one curve-family predictive rather than standing up a second physics path for the
+doubt it prices. Prior = `paranoia_unknown_prior` (D6): the same operator-declared paranoia that
+already prices DiscoverRegion's coverage doubt now also prices thermal-consistency doubt, and
+paranoia 0 short-circuits the term to exactly 0 (the DiscoverRegion degenerate-prior precedent —
+no Monte Carlo noise). On a +E window, or at cold temperature, or with no declared temperature at
+all, the WITH/WITHOUT rates coincide (the lobe term never entered the composed rate to begin
+with, or its Bose weight is negligible) and the term reads ~0 through the same MI estimator —
+**no temperature or window branch anywhere in the scoring path**; the dominance and the
+collapse are both properties of the rates the shared predictive already produces, never a
+special case in `isar.scene.eig`.
+
+(b) **The −E scan is an ordinary on-the-line measurement, `canonical_path` — not a
+`context_probe`.** The context-probe quarantine (H22(iv)) would bar a mirror's evidence from the
+very track it corroborates, and a −E window at an on-path q is an on-path scan: its anti-Stokes
+coverage feeds the partition through the existing `Footprint.sides` machinery like any other
+scan at that q. **H22(iv)'s "organic context-probe producer" is RE-SCOPED by this ruling**: the
+`context_probe` side-trip lane stays reserved for genuinely off-segment probes (±q, cross-zone
+equivalences), which travel with the lattice-as-hypothesis work (D8, DESIGN_GOALS Sample
+Knowledge — chiral phonons are the named ±q counterexample nothing here forecloses). SCENE-5
+delivers the on-path organic −E corroboration producer instead: `presence_probe` emits, beside
+each canonical +E proposal, one mirrored −E variant at the same node (window negated and
+swapped, `canonical=False`) — an ORDINARY `MeasurementIntent`, no intent field, no provenance or
+identity change, because the window sign alone already distinguishes its
+`scientific_action_fingerprint` (D4's admissible-set widening, the `track_bridge_scan`
+precedent). Emitted unconditionally, with no temperature/Bose gate in the producer — ruling (a)
+is what prices whether it is worth taking.
+
+### SCENE-5 closure (H23, 2026-08-25)
+
+SCENE-5 lands scene-EIG authoritative discovery placement: 5.0 phenomenon belief layer, 5.1 MI
+scoring engine, 5.2 controller integration, 5.3 the organic on-path −E corroboration producer
+(rulings above), 5.4 acceptance closure (this block). This absorbs the SCENE-5 program plan,
+deleted on landing (doc policy rule 2).
+
+**The governing razor.** Every scene-EIG behavior derives from the hypothesis-map / intensity-map
+comparison; anything that cannot is either the software-fault fallback or a defect to fix — never
+a third category.
+
+**D1–D9, the grilled program decisions (owner, 2026-08-25), carried over compactly:**
+
+- **D1 Phenomenon-owned predictive.** Prediction at unmeasured (q, ω) is owned by phenomenon
+  objects with a declared model-family registry: `curve` (branch and level in one family — a
+  level is a curve under a tight zero-slope prior), `elastic`, `quasielastic`, `unknown`
+  (maximally diffuse over the intrinsic domain — the universal floor), `continuum` declared and
+  refusing per O10. Every physical assumption lives inside one family's versioned entry.
+- **D2 Decide-side only.** Beliefs and scores feed EIG exclusively — never `ln W(S)`, local
+  evidence, or any predicate (the fit-vs-decide invariant, `design/steering.md` §4.4, extended to
+  the scene layer).
+- **D3 Zone geometry is a structural input to the curve family.** Fold symmetry at declared
+  folds; descent to zero only at declared gapless anchors; fold ≠ reflection (FCC (300):
+  integer-indexed, on a fold, extinct — the belief must never predict return-to-zero there).
+  Undeclared geometry ⇒ unconstrained belief, named in the `degradations` vocabulary. Never
+  inferred from integer indices.
+- **D4 Placement authority.** Generators keep sole authority over what candidates exist and their
+  question attribution; EIG owns which is taken. Admissible sets live on the frozen q/ω tile
+  quanta. Fallback behavior is byte-identical to pre-SCENE-5 over canonical picks.
+- **D5 Priority-weighted sum.** Score(a) = Σ_Q w(Q) · I(Y_a ; Θ_Q), each question's MI on its own
+  variable set. Weights are a declared, fingerprinted policy map keyed on `QuestionSpec.priority`
+  — family-level defaults in v1, the surface accepting per-subject values with no schema change.
+- **D6 Paranoia budget = operator prior input.** A declared weight on unknown/unexpected mass in
+  the hypothesis map (`paranoia_unknown_prior`), shipped with a decent default beside the
+  priority weights — makes verification scans win the ranking honestly; not a ritual, not a
+  threshold.
+- **D7 Fallback = software faults only.** No epistemic state is unscoreable (D1's unknown floor);
+  physical infeasibility is the geometry-decline machinery's, not scoring's. Closed reason
+  vocabulary (`scene_revision_missing`/unreadable, registry-manifest fingerprint mismatch,
+  scoring exception, `scored_set_empty`), persisted in `DecisionBasis`, plus a loud non-blocking
+  GUI alert in operator words. The beam never idles; the campaign continues on canonical
+  placements.
+- **D8 Off-path v1 = −E only.** The organic `context_probe` producer's SCENE-5 successor (5.3)
+  delivers on-path detailed-balance confirmation probes — the one equivalence functional in the
+  engine. ±q and cross-zone equivalences stay pinned behind lattice-as-hypothesis (DESIGN_GOALS,
+  Sample Knowledge — chiral phonons are the named ±q counterexample). Exposure per point stays
+  `discovery_monitor_ncount`: cost pricing is SCENE-5.5 (H21(a)).
+- **D9 Acceptance is behavioral.** Worlds assert decision sequences the map comparison produces
+  and heuristics cannot; no efficiency numbers (SCENE-7's benchmark). The fallback drill is an
+  ordinary test, not a headline world.
+
+**Deferred by name, off SCENE-5's scope:**
+
+- The E₀-shift nuisance and straddling-window logic — parked (separate, complicated, hopefully
+  obsoleted by upstream calibration; the survey machinery already emits straddling windows where
+  coverage wants them).
+- Tile-quantization blindness (continuous-parameter precision MI) — SCENE-5.5, where the
+  cost-vs-precision trade needs it.
+- Per-subject question priority ("X high, Y low") — SCENE-6 (the targeted swap's pinned question
+  sets are its natural home; D5's weight surface already accepts per-subject values when a
+  setter exists).
+- A full spurion catalogue class — the thermal-consistency Bernoulli (5.3) is the v1 carrier.
+- Cost/per-neutron pricing and the priced envelope — SCENE-5.5, per H21(a) (`design/eig.md`'s
+  boundary note, amended alongside this block).
+- The paranoia-saturation note (thermal-consistency MI saturates at H(paranoia); cannot rank two
+  detectable mirrors against each other) and the density-vs-per-point integration convention —
+  SCENE-7 calibration.
+- The window/exposure realization lever — SCENE-5.5 (the 5.4 closed-loop harness realizes
+  node-only; window and exposure choices go untested in-loop).
+
+**Hypothesis-attachment finding (5.4, owner disposition (c), 2026-08-25).** The acceptance
+battery's acoustic-priority A/B exposed that declared `[hypotheses.*]` are unreachable from real
+fits: the production catalogue declares no identity-conditioned priors
+(`isar.analyze.catalogue.DEFAULT_CATALOGUE`), so `_identity_candidates()` returns `()` and every
+real fit's `Hypothesis.identity` is `None`; `isar.scene.phenomena._resolve_hypothesis` only ever
+matches a NAMED identity, so a declared hypothesis mapping can never reach a real-fit-derived
+belief in production. The mechanism is fully live at the scoring-engine unit level
+(`tests/scene/test_scene_eig.py::test_declared_hypothesis_changes_the_score`, hand-set
+identities) — the gap is end-to-end attachment, not the mechanism itself. Corollary: the 5.0
+gapless-anchor machinery is inert in production for the same reason. Owner chose to record and
+defer: SCENE-5 closes with the honest narrowed claim — hypothesis machinery proven live at engine
+level; end-to-end ATTACHMENT is named open work. The permanent tripwire is a strict xfail,
+`tests/drive/test_fcc_battery.py::test_acoustic_priority_declared_hypothesis_moves_real_placements`.
+Hypothesis-attachment semantics (structural/geometric matching as the likely shape, vs H9(e)
+identity priors) is docketed as its own future design discussion, not decided here.
+
+**Verifier-advisory notes worth keeping (5.1–5.3):**
+
+- FIXED: `reference_counts` is now integrated spectral weight, conserved under linewidth retune
+  (family version bumped to 2, 5.1); the persisted `selection.reason` string no longer
+  interpolates a numpy repr (fixed at 5.3's first commit).
+- Recorded, not fixed: fallback `selection.associations` is the canonical-filtered view
+  (deliberate, under-reports winner provenance); `_design_for_evaluation`'s docstring overstates
+  a refusal; the GUI poll catches only `ValueError` and piggybacks on events/card_state ticks;
+  the facade reads `ws._report_dir` privately; a NaN MI would refuse at persistence rather than
+  fall back; `contributing_clusters` counts only clusters whose MI survives the zero clamp (more
+  honest, total unaffected); `_clip_omega` can invert a window for a band entirely below the
+  domain (pre-existing HEAD behavior, unreachable from shipped generators).
+- The paranoia MI is concave in the prior (a Bernoulli's MI peaks at p≈0.5 — "higher prior,
+  higher score" holds on (0, ~0.5], which covers every sane declaration); at shipped defaults a
+  gap node scores ~0.02 nats vs a presence question's ~0.69, so D6's verification scans need
+  SCENE-7's calibration of `paranoia_unknown_prior` and the unknown family's weight before they
+  genuinely compete; the predictive's per-meV density adds to a per-point background, so a
+  design's signal-to-background varies with grid density — the per-point integration convention
+  (density × resolution element) needs pinning before live rankings depend on it.
+
+**5.4 acceptance closure.** A test-local closed-loop runner (`tests/drive/_closed_loop.py`)
+closes the real physics path end to end per round: `plan_next_action` on the stored scene, the
+real fit + select through a fallback-tolerant variant of `_world_helpers.run_selection`, a real
+`build_scene` rebuild — bounded (≤ 12 rounds, a 10-minute wall ceiling, kill-and-report). It
+realizes node-only: window and exposure levers are untested in-loop (joins the SCENE-5.5
+window/cost work). The FCC world (acoustic + optic branches, warm/cold, declared fold geometry
+via `SampleKnowledge`) supplies the acceptance evidence for D9's behavioral standard across its
+worlds — FCC-boundary and the −E warm/cold pair (not-slow lane), optic-pivot and the three
+challenge battery runs (slow lane, `tests/drive/test_fcc_battery.py`): full-range discovery finds
+and maps both phonons with classification honestly inert (no identity-conditioned priors, per
+the finding above); boundary-convergence buys discrimination near the extinct fold rather than
+re-measuring one point, and the chosen probes differ between warm and cold runs with no
+temperature branch anywhere in steering code; the acoustic-priority run stands as the permanent
+xfail tripwire recorded above.
 
 ## 7. Status discipline
 

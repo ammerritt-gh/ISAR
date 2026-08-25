@@ -18,7 +18,7 @@ from isar.schema.generators import (
     DISCOVERY_GENERATOR_REGISTRY_VERSION, QuestionActionAssociation, QuestionBlockerEvidence)
 from isar.schema.question_policy import resolve_policy
 from isar.scene.agenda import AGENDA_STORE, derive_agenda
-from isar.scene.model import canonical_bytes, digest_bytes
+from isar.scene.model import canonical_bytes, digest_bytes, fingerprint
 from isar.scene.store import ConcurrentRevisionWrite, SCENE_STORE
 
 import isar.drive.steering.planner as planner_module
@@ -303,18 +303,34 @@ def test_generator_failed_on_one_question_succeeding_on_a_sibling_keeps_the_inve
 # ----------------------------------------------------------------------------
 # Locality + rank table persistence (PR #33 A-P1-e)
 # ----------------------------------------------------------------------------
+def _force_scoring_fallback(monkeypatch, reason: str = "scoring_exception"):
+    """SCENE-5 5.2: locality only decides a winner on the LEXICOGRAPHIC scheduler now (scored
+    decisions rank by scene-EIG total, tie-broken by design key -- never by locality). Tests
+    pinning locality's effect on the WINNER force the software-fault fallback so they exercise
+    the scheduler that still uses it, rather than asserting something scene-EIG no longer does."""
+    from isar.scene.eig import SceneScoringError
+
+    def boom(*args, **kwargs):
+        raise SceneScoringError(reason, "forced for test")
+
+    monkeypatch.setattr(planner_module.scene_eig, "score", boom)
+
+
 def test_locality_coordinate_changes_the_winner_and_surfaces_in_the_fingerprinted_basis(
         monkeypatch, tmp_path):
     """The reviewer's exact finding: locality_coordinate can change the selected action; it must
     not do so invisibly. Two decisions over the IDENTICAL scene/program, differing only in
     locality_coordinate, pick DIFFERENT winners AND produce different decision_basis.locality
     blocks AND different context_fingerprints -- locality rides INSIDE the fingerprinted input,
-    never merely beside it."""
+    never merely beside it. Forced onto the fallback/lexicographic scheduler (SCENE-5 5.2):
+    scored decisions no longer use locality to break a scoring tie, so this pins the scheduler
+    the reviewer's finding was actually about."""
     step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=0.3)
     program = program_with(step)
     patched = dict(GENERATOR_FUNCTIONS)
     patched["opening_book_survey"] = _two_action_generator((2.0, 2.9))
     monkeypatch.setattr(readiness_module, "GENERATOR_FUNCTIONS", patched)
+    _force_scoring_fallback(monkeypatch)
     write_scene(tmp_path, scene(footprints=[fp("e:1:d", 2.0)]))
 
     near_start = plan_next_action(tmp_path, program, "discover-1", locality_coordinate=2.0)
@@ -333,11 +349,14 @@ def test_locality_coordinate_changes_the_winner_and_surfaces_in_the_fingerprinte
     fp_b = lines[1]["scan_design_provenance"]["context_fingerprint"]
     assert fp_a != fp_b
 
-    # Every eligible evaluation appears exactly once, in scheduler order (winner row 0).
+    # Every eligible evaluation appears exactly once, in scheduler order (winner row 0) -- a
+    # FALLBACK decision's rank_table stays winner-first, unlike a scored one's audit table.
     table = lines[1]["selection"]["rank_table"]
     assert len(table) == 2
     assert table[0]["scientific_action_fingerprint"] == near_end.selection_fingerprint
     assert len({row["scientific_action_fingerprint"] for row in table}) == 2
+    assert lines[1]["decision_basis"]["fallback"] == {"reason": "scoring_exception",
+                                                       "pool": "canonical"}
 
 
 def test_a_retirement_is_visible_in_the_basis_and_in_the_context_fingerprint(monkeypatch, tmp_path):
@@ -346,7 +365,9 @@ def test_a_retirement_is_visible_in_the_basis_and_in_the_context_fingerprint(mon
     in ``retired_physical_actions``, pick different winners AND differ in both the decision basis and
     the context fingerprint. The empty set embeds as nothing at all — the same conditional rule
     ``declared_partition`` uses — which is what keeps every pre-C6 record byte-identical
-    (``test_double_run_is_byte_identical`` is that pin)."""
+    (``test_double_run_is_byte_identical`` is that pin). Forced onto the fallback/lexicographic
+    scheduler (SCENE-5 5.2) for the same reason ``test_locality_coordinate_...`` is: the claim is
+    about the RETIREMENT narrowing, not about scene-EIG's own ranking."""
     from isar.schema.action_identity import physical_action_key
 
     step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=0.3)
@@ -354,6 +375,7 @@ def test_a_retirement_is_visible_in_the_basis_and_in_the_context_fingerprint(mon
     patched = dict(GENERATOR_FUNCTIONS)
     patched["opening_book_survey"] = _two_action_generator((2.0, 2.9))
     monkeypatch.setattr(readiness_module, "GENERATOR_FUNCTIONS", patched)
+    _force_scoring_fallback(monkeypatch)
     write_scene(tmp_path, scene(footprints=[fp("e:1:d", 2.0)]))
 
     plain = plan_next_action(tmp_path, program, "discover-1")
@@ -918,3 +940,503 @@ def test_the_declared_physics_reaches_the_intent_not_just_the_request():
     _, second = fingerprints("physics-B")
     assert first and not set(first) & set(second), (
         "two different declared hypothesis sets minted the same scientific action identity")
+
+
+# ----------------------------------------------------------------------------
+# SCENE-5 5.2: controller integration (scene-EIG scoring path)
+# ----------------------------------------------------------------------------
+def _synthetic_pair(context, spec_dict, *, coord_a, coord_b, canonical_b=True,
+                    energy_b=(0.0, 10.0), placement_rank_b=1):
+    """One canonical proposal at ``coord_a`` and one (optionally non-canonical) proposal at
+    ``coord_b`` for the SAME question -- the shared shape every synthetic scoring test below
+    builds on."""
+    intent_a = MeasurementIntent(
+        action_class="discovery_scan", hkl=(coord_a, 0.0, 0.0), energy_lo=0.0, energy_hi=10.0,
+        window_family="discovery", evidence_basis_fingerprint=context.scene_digest,
+        hypotheses_fingerprint=context.hypotheses_fingerprint)
+    assoc_a = QuestionActionAssociation(
+        basis_agenda_digest=context.basis_agenda_digest, question_id=spec_dict["question_id"],
+        generator="opening_book_survey", family_priority=int(spec_dict["priority"]),
+        dependency_depth=dependency_depth(spec_dict, context.agenda_payload), reason="a")
+    intent_b = MeasurementIntent(
+        action_class="discovery_scan", hkl=(coord_b, 0.0, 0.0), energy_lo=energy_b[0],
+        energy_hi=energy_b[1], window_family="discovery",
+        evidence_basis_fingerprint=context.scene_digest,
+        hypotheses_fingerprint=context.hypotheses_fingerprint)
+    assoc_b = QuestionActionAssociation(
+        basis_agenda_digest=context.basis_agenda_digest, question_id=spec_dict["question_id"],
+        generator="opening_book_survey", family_priority=int(spec_dict["priority"]),
+        dependency_depth=dependency_depth(spec_dict, context.agenda_payload), reason="b",
+        placement_rank=placement_rank_b, canonical=canonical_b)
+    return (intent_a, assoc_a), (intent_b, assoc_b)
+
+
+def test_scored_decision_persists_a_score_table_and_replays_byte_identically(tmp_path):
+    """A real (unpatched) generator run: the SELECTED decision carries a ``score_table``, the
+    scene-EIG ``scheduler_policy`` block, no ``fallback`` block, and replays byte-identically on
+    an unchanged workspace (byte-identical scored-decision replay)."""
+    step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=0.3)
+    program = program_with(step)
+    write_scene(tmp_path, scene(
+        footprints=[fp("e:1:d", 2.0)],
+        observations=[obs("e:1:d", candidates=[cand("A", omegas=(5.0,))])],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 0.95)])],
+        sample_knowledge={"zone_period": 1.0, "lattice_epoch": 1}))
+
+    first = plan_next_action(tmp_path, program, "discover-1")
+    assert first.outcome == SELECTED
+    second = plan_next_action(tmp_path, program, "discover-1")
+    assert second.outcome == SELECTED
+
+    lines = decision_lines(tmp_path)
+    assert len(lines) == 2
+    assert lines[0]["selection"]["score_table"]
+    assert "fallback" not in lines[0]["decision_basis"]
+    assert lines[0]["decision_basis"]["scheduler_policy"]["id"] == "isar.scheduler.scene-eig/1"
+    assert lines[0] == lines[1]                     # byte-identical replay, score_table included
+
+
+def test_non_scoring_exception_propagates_out_of_plan_next_action(monkeypatch, tmp_path):
+    """D7: only ``SceneScoringError`` (plus ``scored_set_empty``) is a fallback trigger. A plain
+    bug in the scoring call (here: any other exception) must reach the caller, never be recorded
+    as a fallback decision."""
+    step = discover_step()
+    program = program_with(step)
+    write_scene(tmp_path, scene())
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("not a SceneScoringError")
+
+    def generator(context, spec_dict):
+        (intent, association), _ = _synthetic_pair(context, spec_dict, coord_a=2.2, coord_b=2.6)
+        return GeneratorOutcome.proposed(((intent, association),), proposals_exhaustive=True)
+
+    patched = dict(GENERATOR_FUNCTIONS)
+    patched["opening_book_survey"] = generator
+    monkeypatch.setattr(readiness_module, "GENERATOR_FUNCTIONS", patched)
+    monkeypatch.setattr(planner_module.scene_eig, "score", boom)
+
+    with pytest.raises(RuntimeError, match="not a SceneScoringError"):
+        plan_next_action(tmp_path, program, "discover-1")
+    assert decision_lines(tmp_path) == []
+
+
+@pytest.mark.parametrize("reason", ["scene_belief_construction_failed", "scoring_exception"])
+def test_each_scene_scoring_error_reason_falls_back_to_the_lexicographic_selection(
+        monkeypatch, tmp_path, reason):
+    """The fallback drill, per D7 reason: forcing each declared ``SceneScoringError`` reason
+    makes ``plan_next_action`` fall back to the UNCHANGED lexicographic ``select()`` over
+    canonical associations, with ``fallback.reason`` naming exactly which one fired -- proven
+    equal to what ``select()`` itself would return over the same (fully canonical) pool."""
+    from isar.scene.eig import SceneScoringError
+
+    step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=0.3)
+    program = program_with(step)
+
+    def generator(context, spec_dict):
+        return GeneratorOutcome.proposed(
+            _synthetic_pair(context, spec_dict, coord_a=2.0, coord_b=2.9),
+            proposals_exhaustive=True)
+
+    patched = dict(GENERATOR_FUNCTIONS)
+    patched["opening_book_survey"] = generator
+    monkeypatch.setattr(readiness_module, "GENERATOR_FUNCTIONS", patched)
+    write_scene(tmp_path, scene(footprints=[fp("e:1:d", 2.0)]))
+
+    def boom(*args, **kwargs):
+        raise SceneScoringError(reason, "forced for test")
+
+    monkeypatch.setattr(planner_module.scene_eig, "score", boom)
+
+    result = plan_next_action(tmp_path, program, "discover-1")
+    assert result.outcome == SELECTED
+    line = decision_lines(tmp_path)[-1]
+    assert line["decision_basis"]["fallback"] == {"reason": reason, "pool": "canonical"}
+    assert "score_table" not in line["selection"]
+    # A fallback decision's rank_table IS winner-first (the D4/D7 "lexicographic scheduler,
+    # byte-identical to today over canonical picks" claim) -- both associations here are
+    # canonical=True by default, so this pool is exactly what pre-5.2 select() would have ranked.
+    assert line["selection"]["rank_table"][0]["scientific_action_fingerprint"] == \
+        result.selection_fingerprint
+    assert len(line["selection"]["rank_table"]) == 2
+
+
+def test_scored_set_empty_when_every_candidate_is_design_unscoreable(monkeypatch, tmp_path):
+    """Every selectable evaluation refuses design construction (no energy window) -> the scored
+    set is empty -> fallback with reason ``scored_set_empty``, never a scoring call at all."""
+    step = discover_step()
+    program = program_with(step)
+
+    def generator(context, spec_dict):
+        intent = MeasurementIntent(
+            action_class="discovery_scan", hkl=(2.5, 0.0, 0.0), energy_lo=None, energy_hi=None,
+            window_family="discovery", evidence_basis_fingerprint=context.scene_digest,
+            hypotheses_fingerprint=context.hypotheses_fingerprint)
+        association = QuestionActionAssociation(
+            basis_agenda_digest=context.basis_agenda_digest, question_id=spec_dict["question_id"],
+            generator="opening_book_survey", family_priority=int(spec_dict["priority"]),
+            dependency_depth=dependency_depth(spec_dict, context.agenda_payload), reason="no window")
+        return GeneratorOutcome.proposed(((intent, association),), proposals_exhaustive=True)
+
+    patched = dict(GENERATOR_FUNCTIONS)
+    patched["opening_book_survey"] = generator
+    monkeypatch.setattr(readiness_module, "GENERATOR_FUNCTIONS", patched)
+    write_scene(tmp_path, scene())
+
+    called = []
+    monkeypatch.setattr(planner_module.scene_eig, "score",
+                        lambda *a, **kw: called.append(1) or (_ for _ in ()).throw(
+                            AssertionError("score() must not be called on an empty scored set")))
+
+    result = plan_next_action(tmp_path, program, "discover-1")
+    assert result.outcome == SELECTED
+    assert called == []
+    line = decision_lines(tmp_path)[-1]
+    assert line["decision_basis"]["fallback"] == {"reason": "scored_set_empty", "pool": "canonical"}
+
+
+def test_a_per_candidate_design_refusal_drops_it_from_the_score_table(monkeypatch, tmp_path):
+    """One candidate refuses design construction (no energy window); the decision stays
+    ``selected`` and scored -- the refused candidate is dropped with a recorded skip entry,
+    never a whole-decision fallback."""
+    step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=0.3)
+    program = program_with(step)
+
+    def generator(context, spec_dict):
+        good_intent = MeasurementIntent(
+            action_class="discovery_scan", hkl=(2.2, 0.0, 0.0), energy_lo=0.0, energy_hi=10.0,
+            window_family="discovery", evidence_basis_fingerprint=context.scene_digest,
+            hypotheses_fingerprint=context.hypotheses_fingerprint)
+        bad_intent = MeasurementIntent(
+            action_class="discovery_scan", hkl=(2.6, 0.0, 0.0), energy_lo=None, energy_hi=None,
+            window_family="discovery", evidence_basis_fingerprint=context.scene_digest,
+            hypotheses_fingerprint=context.hypotheses_fingerprint)
+        good_assoc = QuestionActionAssociation(
+            basis_agenda_digest=context.basis_agenda_digest, question_id=spec_dict["question_id"],
+            generator="opening_book_survey", family_priority=int(spec_dict["priority"]),
+            dependency_depth=dependency_depth(spec_dict, context.agenda_payload), reason="good")
+        bad_assoc = QuestionActionAssociation(
+            basis_agenda_digest=context.basis_agenda_digest, question_id=spec_dict["question_id"],
+            generator="opening_book_survey", family_priority=int(spec_dict["priority"]),
+            dependency_depth=dependency_depth(spec_dict, context.agenda_payload), reason="bad",
+            placement_rank=1)
+        return GeneratorOutcome.proposed(
+            ((good_intent, good_assoc), (bad_intent, bad_assoc)), proposals_exhaustive=True)
+
+    patched = dict(GENERATOR_FUNCTIONS)
+    patched["opening_book_survey"] = generator
+    monkeypatch.setattr(readiness_module, "GENERATOR_FUNCTIONS", patched)
+    write_scene(tmp_path, scene())
+
+    result = plan_next_action(tmp_path, program, "discover-1")
+    assert result.outcome == SELECTED
+    line = decision_lines(tmp_path)[-1]
+    assert "fallback" not in line["decision_basis"]
+    skips = line["selection"]["score_skips"]
+    assert len(skips) == 1
+    bad_fp = MeasurementIntent(
+        action_class="discovery_scan", hkl=(2.6, 0.0, 0.0), energy_lo=None, energy_hi=None,
+        window_family="discovery", evidence_basis_fingerprint=result.scene_digest
+        ).scientific_action_fingerprint
+    assert skips[0]["fingerprint"] == bad_fp
+    good_fp = MeasurementIntent(
+        action_class="discovery_scan", hkl=(2.2, 0.0, 0.0), energy_lo=0.0, energy_hi=10.0,
+        window_family="discovery", evidence_basis_fingerprint=result.scene_digest
+        ).scientific_action_fingerprint
+    assert result.selection_fingerprint == good_fp
+    assert {row["scientific_action_fingerprint"] for row in line["selection"]["score_table"]} \
+        == {good_fp}
+
+
+def test_authority_transfer_eig_winner_differs_from_the_lexicographic_winner(
+        monkeypatch, tmp_path):
+    """The real authority transfer scene-EIG exists for: the covered node (rank 0, lexicographic
+    favourite) is fully surveyed already (DiscoverRegion MI ~ 0 there), while the uncovered node
+    (rank 1) still teaches DiscoverRegion something -- scene-EIG picks the uncovered node even
+    though the lexicographic scheduler would have picked the covered one first."""
+    step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=0.3)
+    program = program_with(step)
+
+    def generator(context, spec_dict):
+        # placement_rank 0 (lexicographic favourite) sits ON the existing footprint (covered:
+        # DiscoverRegion MI collapses to 0 there); placement_rank 1 sits far from it (uncovered).
+        return GeneratorOutcome.proposed(
+            _synthetic_pair(context, spec_dict, coord_a=2.0, coord_b=2.9),
+            proposals_exhaustive=True)
+
+    patched = dict(GENERATOR_FUNCTIONS)
+    patched["opening_book_survey"] = generator
+    monkeypatch.setattr(readiness_module, "GENERATOR_FUNCTIONS", patched)
+    write_scene(tmp_path, scene(footprints=[fp("e:1:d", 2.0)]))
+
+    result = plan_next_action(tmp_path, program, "discover-1")
+    assert result.outcome == SELECTED
+    line = decision_lines(tmp_path)[-1]
+    assert "fallback" not in line["decision_basis"]
+
+    covered_fp = MeasurementIntent(
+        action_class="discovery_scan", hkl=(2.0, 0.0, 0.0), energy_lo=0.0, energy_hi=10.0,
+        window_family="discovery", evidence_basis_fingerprint=result.scene_digest
+        ).scientific_action_fingerprint
+    uncovered_fp = MeasurementIntent(
+        action_class="discovery_scan", hkl=(2.9, 0.0, 0.0), energy_lo=0.0, energy_hi=10.0,
+        window_family="discovery", evidence_basis_fingerprint=result.scene_digest
+        ).scientific_action_fingerprint
+    # The lexicographic scheduler's own audit table still has the covered node first (row 0)...
+    assert line["selection"]["rank_table"][0]["scientific_action_fingerprint"] == covered_fp
+    # ...but the SCORED decision picked the uncovered one -- the authority transfer.
+    assert result.selection_fingerprint == uncovered_fp
+    assert result.selection_fingerprint != covered_fp
+
+
+# ----------------------------------------------------------------------------
+# SCENE-5 5.3: the organic on-path −E corroboration producer, end to end
+# ----------------------------------------------------------------------------
+def _corroboration_step_and_scene(temperature_K: float, paranoia: float = 0.5,
+                                  present_posterior: float = 0.7):
+    """A single OPEN ConfirmPresence question (an ambiguous present/absent cluster — posterior
+    below the 0.9 ``confirm_presence_min_mass`` default so the spec stays open, never answered)
+    at q=2.0, with a declared partition temperature. presence_probe is the ONLY real generator
+    that can fire here (unpatched — an organic run), and it always emits its canonical +E
+    proposal beside a mirrored −E one (SCENE-5 5.3)."""
+    # spacing == the region width: the ONE footprint at q=2.0 already closes DiscoverRegion's
+    # coverage_complete (its default bands cover the full domain too), so ConfirmPresence's
+    # dependency on coverage is satisfied in this same round and presence_probe fires.
+    step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=1.0,
+                         domain=(0.0, 10.0))
+    step = CampaignStep(id=step.id, kind=step.kind, payload=DiscoverAndMapSpec(
+        q_start=step.payload.q_start, q_end=step.payload.q_end,
+        maximum_initial_spacing_rlu=step.payload.maximum_initial_spacing_rlu,
+        intrinsic_omega_domain_meV=step.payload.intrinsic_omega_domain_meV,
+        catalogue_profile=step.payload.catalogue_profile,
+        resolved_policy=resolve_policy(user_ask={
+            "min_effective_exposure": 1.0, "paranoia_unknown_prior": paranoia,
+            "mi_n_draws": 256, "discovery_monitor_ncount": 2_000_000.0})))
+    program = program_with(step)
+    footprint = {**fp("e:1:d", 2.0), "temperature_K": temperature_K}
+    # A truncated cluster with a discarded-mass bound wide enough that the retained-mass
+    # interval straddles the 0.9 min_mass threshold (``isar.scene.predicates.decide``): exact
+    # posterior mass alone always resolves definitively (yes/no), so keeping the ConfirmPresence
+    # question genuinely OPEN over a real matched cluster needs the bounded-authority lane, not
+    # just an ambiguous posterior split.
+    doubt_cluster = {**cluster(["e:1:d"], [alt([("e:1:d", "m")], present_posterior),
+                                           alt([("e:1:d", "e")], 1.0 - present_posterior)]),
+                     "truncated": True, "log_discarded_mass_bound": 1.5}
+    scene_payload = scene(
+        footprints=[footprint],
+        observations=[obs("e:1:d", candidates=[cand("m", omegas=(8.0,)), cand("e", omegas=())])],
+        clusters=[doubt_cluster],
+        # zone_period=2.0: only q=2.0 folds inside the declared region (2.0..3.0) -- a SINGLE
+        # declared zone-centre anchor, so no second (empty, far-away) ConfirmPresence question
+        # competes for the score-table top with an artifact of extrapolating this belief's
+        # undeclared dispersion slope out to a remote node.
+        sample_knowledge={"zone_period": 2.0, "lattice_epoch": 1})
+    return program, scene_payload
+
+
+def test_warm_minus_e_mirror_tops_the_score_table_and_realizes_as_an_ordinary_submission(
+        tmp_path):
+    """Warm, doubt-worthy world: the minted −E mirror's thermal_consistency term (Ruling A)
+    outweighs the ordinary (bounded-by-ambiguity) partition MI both windows share, so it tops
+    ``score_table`` and IS the selected decision -- realized as an ordinary submission (no role
+    anywhere in the selected association or intent)."""
+    program, scene_payload = _corroboration_step_and_scene(temperature_K=300.0)
+    write_scene(tmp_path, scene_payload)
+
+    result = plan_next_action(tmp_path, program, "discover-1")
+    assert result.outcome == SELECTED
+    line = decision_lines(tmp_path)[-1]
+    assert "fallback" not in line["decision_basis"]
+
+    score_table = line["selection"]["score_table"]
+    assert len(score_table) == 2                          # the canonical +E row and its −E mirror
+    top = score_table[0]
+    assert top["scientific_action_fingerprint"] == result.selection_fingerprint
+
+    # the winning row's own window is the negative one -- the mirror actually won, not a tie
+    # falling to the canonical by construction.
+    winning_association = next(
+        a for a in line["selection"]["associations"] if a["generator"] == "presence_probe")
+    assert winning_association["canonical"] is False
+    assert "role" not in winning_association
+    assert "role" not in line["selection"]
+
+
+def test_cold_twin_mirror_is_minted_scored_near_zero_and_never_selected(tmp_path):
+    """Cold twin: the mirror is still minted (unconditional emission, D4/Ruling A — no gate in
+    the producer), still scored (it enters score_table), but its thermal_consistency term
+    collapses at low T and it never wins the table -- the canonical +E row is selected."""
+    program, scene_payload = _corroboration_step_and_scene(temperature_K=5.0)
+    write_scene(tmp_path, scene_payload)
+
+    result = plan_next_action(tmp_path, program, "discover-1")
+    assert result.outcome == SELECTED
+    line = decision_lines(tmp_path)[-1]
+    assert "fallback" not in line["decision_basis"]
+
+    score_table = line["selection"]["score_table"]
+    assert len(score_table) == 2                          # the mirror was minted and scored
+    top, runner_up = score_table
+    assert top["total"] > runner_up["total"]
+    assert runner_up["total"] < 1e-6                      # the mirror's own row reads ~0
+    winning_association = next(
+        a for a in line["selection"]["associations"] if a["generator"] == "presence_probe")
+    # canonical is omitted-when-True (SCENE-5 5.2 serialization rule) -- its absence here IS the
+    # +E canonical winning, not the mirror.
+    assert "canonical" not in winning_association
+
+
+def test_same_design_two_partitions_deterministic_winner_no_duplicate_key_refusal(
+        monkeypatch, tmp_path):
+    """Two evaluations at ONE lattice node/window/temperature in different partitions ARE one
+    physical design in the scorer's terms: they must score as a single design (never
+    ``score()``'s duplicate-key refusal, which would be a planner bug) and resolve to ONE
+    evaluation, deterministically and replay-identically."""
+    step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=0.3)
+    program = program_with(step)
+
+    def generator(context, spec_dict):
+        pairs = []
+        for partition_id in ("pA", "pB"):
+            intent = MeasurementIntent(
+                action_class="discovery_scan", hkl=(2.5, 0.0, 0.0), energy_lo=0.0, energy_hi=10.0,
+                window_family="discovery", evidence_basis_fingerprint=context.scene_digest,
+                campaign_slice_fingerprint=f"isar.partition/{partition_id}",
+                hypotheses_fingerprint=context.hypotheses_fingerprint)
+            association = QuestionActionAssociation(
+                basis_agenda_digest=context.basis_agenda_digest,
+                question_id=spec_dict["question_id"], generator="opening_book_survey",
+                family_priority=int(spec_dict["priority"]),
+                dependency_depth=dependency_depth(spec_dict, context.agenda_payload),
+                reason=f"partition {partition_id}")
+            pairs.append((intent, association))
+        return GeneratorOutcome.proposed(tuple(pairs), proposals_exhaustive=True)
+
+    patched = dict(GENERATOR_FUNCTIONS)
+    patched["opening_book_survey"] = generator
+    monkeypatch.setattr(readiness_module, "GENERATOR_FUNCTIONS", patched)
+    write_scene(tmp_path, scene())
+
+    first = plan_next_action(tmp_path, program, "discover-1")
+    second = plan_next_action(tmp_path, program, "discover-1")
+    assert first.outcome == second.outcome == SELECTED
+    assert first.selection_fingerprint == second.selection_fingerprint
+
+    line = decision_lines(tmp_path)[-1]
+    assert "fallback" not in line["decision_basis"]
+    assert len(line["selection"]["score_table"]) == 1     # one unique design, scored once
+    assert line["selection"]["score_table"][0]["scientific_action_fingerprint"] == \
+        first.selection_fingerprint
+
+
+def test_a_declined_canonical_proposal_empties_the_canonical_pool_and_falls_back_to_all_selectable(
+        monkeypatch, tmp_path):
+    """A canonical proposal declined/retired, leaving only NON-CANONICAL survivors: the fallback
+    never crashes (the beam-idle guard outranks byte-identity in this corner) -- it ranks every
+    selectable evaluation instead and says so via ``pool: "all_selectable"``."""
+    from isar.scene.eig import SceneScoringError
+
+    step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=0.3)
+    program = program_with(step)
+
+    def generator(context, spec_dict):
+        return GeneratorOutcome.proposed(
+            _synthetic_pair(context, spec_dict, coord_a=2.2, coord_b=2.6, canonical_b=False),
+            proposals_exhaustive=True)
+
+    patched = dict(GENERATOR_FUNCTIONS)
+    patched["opening_book_survey"] = generator
+    monkeypatch.setattr(readiness_module, "GENERATOR_FUNCTIONS", patched)
+    write_scene(tmp_path, scene())
+
+    canonical_fp = MeasurementIntent(
+        action_class="discovery_scan", hkl=(2.2, 0.0, 0.0), energy_lo=0.0, energy_hi=10.0,
+        window_family="discovery",
+        evidence_basis_fingerprint=fingerprint(scene())).scientific_action_fingerprint
+
+    def boom(*args, **kwargs):
+        raise SceneScoringError("scoring_exception", "forced for test")
+
+    monkeypatch.setattr(planner_module.scene_eig, "score", boom)
+
+    result = plan_next_action(tmp_path, program, "discover-1",
+                              declined_fingerprints=frozenset({canonical_fp}))
+    assert result.outcome == SELECTED          # never crashes, never propagates
+    line = decision_lines(tmp_path)[-1]
+    assert line["decision_basis"]["fallback"] == {"reason": "scoring_exception",
+                                                   "pool": "all_selectable"}
+    non_canonical_fp = MeasurementIntent(
+        action_class="discovery_scan", hkl=(2.6, 0.0, 0.0), energy_lo=0.0, energy_hi=10.0,
+        window_family="discovery",
+        evidence_basis_fingerprint=fingerprint(scene())).scientific_action_fingerprint
+    assert result.selection_fingerprint == non_canonical_fp
+
+
+def test_hypotheses_value_change_reaches_scoring_and_changes_the_persisted_record(
+        monkeypatch, tmp_path):
+    """``hypotheses`` is threaded into ``isar.scene.eig.score`` (pinned by the spy below); its
+    CONTENT fingerprint folds into ``context_fingerprint`` on the locality precedent, so two
+    decisions differing only in a hypothesis field value never read identically -- and the
+    persisted ``score_table`` itself changes too, not merely a fingerprint. (The underlying MI
+    physics of a declared hypothesis is pinned separately at
+    ``tests/scene/test_scene_eig.py::test_declared_hypothesis_changes_the_score``; this test
+    pins the PLANNER's wiring of that live input through to the persisted decision.)"""
+    from dataclasses import replace as dc_replace
+
+    step = discover_step()
+    program = program_with(step)
+
+    def generator(context, spec_dict):
+        (intent, association), _ = _synthetic_pair(context, spec_dict, coord_a=2.5, coord_b=2.5)
+        return GeneratorOutcome.proposed(((intent, association),), proposals_exhaustive=True)
+
+    patched = dict(GENERATOR_FUNCTIONS)
+    patched["opening_book_survey"] = generator
+    monkeypatch.setattr(readiness_module, "GENERATOR_FUNCTIONS", patched)
+    write_scene(tmp_path, scene())
+
+    seen_hypotheses = []
+    real_score = planner_module.scene_eig.score
+
+    def spying_score(scene_payload, agenda_payload, hypotheses, designs, base_seed, **kw):
+        seen_hypotheses.append(hypotheses)
+        table = real_score(scene_payload, agenda_payload, hypotheses, designs, base_seed, **kw)
+        if hypotheses:
+            # Perturb deterministically by whether a hypothesis was declared, so the persisted
+            # score_table differs without depending on tuned curve-family physics.
+            bumped = tuple(dc_replace(row, total=row.total + 1.0) for row in table.rows)
+            table = dc_replace(table, rows=bumped)
+        return table
+
+    monkeypatch.setattr(planner_module.scene_eig, "score", spying_score)
+
+    without = plan_next_action(tmp_path, program, "discover-1")
+    with_hyp = plan_next_action(tmp_path, program, "discover-1",
+                                hypotheses={"acoustic": {"preset": "acoustic"}})
+
+    assert without.outcome == with_hyp.outcome == SELECTED
+    assert seen_hypotheses == [None, {"acoustic": {"preset": "acoustic"}}]
+
+    lines = decision_lines(tmp_path)
+    basis_a, basis_b = lines[0]["decision_basis"], lines[1]["decision_basis"]
+    assert "scoring_hypotheses_fingerprint" not in basis_a
+    assert basis_b["scoring_hypotheses_fingerprint"]
+    fp_a = lines[0]["scan_design_provenance"]["context_fingerprint"]
+    fp_b = lines[1]["scan_design_provenance"]["context_fingerprint"]
+    assert fp_a != fp_b
+    assert lines[0]["selection"]["score_table"] != lines[1]["selection"]["score_table"]
+
+
+def test_no_wall_clock_anywhere_in_the_scene_eig_scoring_path():
+    """Grep-level discipline check (byte-identity depends on it): neither the scorer nor the
+    planner's scoring integration reaches for the wall clock anywhere in their source."""
+    import inspect
+
+    import isar.scene.eig as eig_module
+
+    forbidden = ("time.time(", "time.monotonic(", "datetime.now(", "datetime.utcnow(",
+                "perf_counter(")
+    for module in (eig_module, planner_module):
+        source = inspect.getsource(module)
+        for needle in forbidden:
+            assert needle not in source, f"{module.__name__} reaches for the wall clock: {needle}"

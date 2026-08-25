@@ -29,6 +29,8 @@ def test_registry_covers_the_declared_suite():
         "canonical", "no_acoustic", "pure_elastic", "blank", "unknown_extra",
         "endpoint_under_bragg", "crossing", "as_warm", "as_cold",
         "off_lattice_elastic", "mismatch", "faint", "context_probe",
+        # SCENE-5 5.4: the FCC world (addition, never a retune of the twelve above).
+        "fcc_warm", "fcc_cold", "fcc_no_acoustic",
     }
     assert set(worlds.WORLDS) == expected
 

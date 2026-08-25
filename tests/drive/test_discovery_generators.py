@@ -287,6 +287,64 @@ def test_presence_probe_targets_the_emergent_tile_midpoint():
 
 
 # ----------------------------------------------------------------------------
+# SCENE-5 5.3: presence_probe's mirrored −E proposal (Ruling A/B)
+# ----------------------------------------------------------------------------
+def test_presence_probe_emits_the_mirrored_minus_e_window():
+    """Beside the canonical +E row, presence_probe always emits one −E row at the SAME node:
+    window = the clipped +E window negated and swapped (−hi, −lo). Ordinary intent -- no role
+    key anywhere in its dict, same as the canonical one."""
+    scene = payload(footprints=[fp("e:1:d", 2.5, partition=P1)], observations=[obs("e:1:d")],
+                    sample_knowledge={"zone_period": 1.0, "lattice_epoch": 1})
+    st = step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), domain=(0.0, 10.0))
+    revision = derive(scene, st)
+    anchored = spec_of(revision, "ConfirmPresence", "structural_presence", anchor=2.0)
+    ctx = context_for_revision(scene, st, revision)
+    outcome = presence_probe(ctx, anchored)
+    assert len(outcome.proposals) == 2
+    (canon_intent, canon_assoc), (mirror_intent, mirror_assoc) = outcome.proposals
+
+    assert canon_assoc.canonical is True
+    assert mirror_assoc.canonical is False
+    assert canon_assoc.placement_rank == 0
+    assert mirror_assoc.placement_rank == 1  # after the canonical row (D4 ordering rule)
+
+    assert mirror_intent.hkl == pytest.approx(canon_intent.hkl)
+    assert mirror_intent.energy_lo == pytest.approx(-canon_intent.energy_hi)
+    assert mirror_intent.energy_hi == pytest.approx(-canon_intent.energy_lo)
+
+    assert mirror_intent.scientific_action_fingerprint != canon_intent.scientific_action_fingerprint
+
+    # ordinary MeasurementIntent — no role field, no provenance/identity change (Ruling B): the
+    # window sign alone must be what distinguishes it.
+    import dataclasses
+    mirror_dict = dataclasses.asdict(mirror_intent)
+    canon_dict = dataclasses.asdict(canon_intent)
+    assert "role" not in mirror_dict
+    assert set(mirror_dict) == set(canon_dict)
+    differing = {k for k in mirror_dict if mirror_dict[k] != canon_dict[k]}
+    assert differing == {"energy_lo", "energy_hi"}
+
+
+def test_presence_probe_mirror_negates_the_already_clipped_window_not_a_fresh_domain_clip():
+    """The mirror is the negation of the ALREADY-CLIPPED +E window, not independently reclipped
+    against the domain -- a band that spills past the domain on one side clips asymmetrically,
+    and the mirror must carry that asymmetry through unchanged."""
+    subject = QuestionSubject(kind="phenomenon", partition_id=P1, anchor=2.0,
+                              omega_band_meV=(-5.0, 3.0))
+    spec = make_spec("ConfirmPresence", "structural_presence", subject, {})
+    st = step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), domain=(0.0, 10.0))
+    scene = payload(footprints=[fp("e:1:d", 2.5, partition=P1)], observations=[obs("e:1:d")])
+    ctx = manual_context(scene, st, [spec], [])
+    outcome = presence_probe(ctx, spec.to_dict())
+    (canon_intent, _), (mirror_intent, _) = outcome.proposals
+    # declared band (-5, 3) clipped to domain (0, 10) -> (0.0, 3.0), asymmetric.
+    assert canon_intent.energy_lo == pytest.approx(0.0)
+    assert canon_intent.energy_hi == pytest.approx(3.0)
+    assert mirror_intent.energy_lo == pytest.approx(-3.0)
+    assert mirror_intent.energy_hi == pytest.approx(-0.0)
+
+
+# ----------------------------------------------------------------------------
 # 4. identity_discriminator
 # ----------------------------------------------------------------------------
 def test_identity_discriminator_is_inapplicable_with_no_representable_identity():
@@ -363,6 +421,50 @@ def test_track_bridge_scan_bridges_the_widest_gap_between_disjoint_clusters():
     intent, association = outcome.proposals[0]
     # edges [1.95, 2.0, 2.3, 2.5] -> gaps 0.05 / 0.3 / 0.2; widest is (2.0, 2.3) -> node 2.15.
     assert intent.hkl[0] == pytest.approx(2.15)
+
+
+def test_track_bridge_scan_widens_with_non_canonical_between_nodes():
+    """SCENE-5 5.2 (D4): the canonical row (the endpoint pick) stays first and canonical=True;
+    every other unmeasured node of the frozen q-tile grid strictly between the endpoint tiles
+    follows as canonical=False, ranked after it by placement_rank, at the SAME (full-domain)
+    window every branch already uses."""
+    track = _track_spec((1.9, 1.95), (2.9, 2.95))
+    scene = payload(observations=[obs("e:1:d", [cand("A", omegas=(5.0,))])],
+                    footprints=[fp("e:1:d", 1.92, partition=P1)],
+                    clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 1.0)])])
+    assessment = evaluate_predicate(track, scene)
+    ctx = manual_context(scene, step(spacing=0.5), [track], [assessment])
+    outcome = track_bridge_scan(ctx, track.to_dict())
+
+    canonical_intent, canonical_assoc = outcome.proposals[0]
+    assert canonical_assoc.canonical is True
+    assert canonical_assoc.placement_rank == 0
+    extras = outcome.proposals[1:]
+    assert extras, "expected at least one between-node widening proposal"
+    for rank, (intent, association) in enumerate(extras, start=1):
+        assert association.canonical is False
+        assert association.placement_rank == rank
+        assert intent.energy_lo == pytest.approx(canonical_intent.energy_lo)
+        assert intent.energy_hi == pytest.approx(canonical_intent.energy_hi)
+        assert 1.95 < intent.hkl[0] < 2.9        # strictly between the endpoint tiles
+    # gap [1.95, 2.9] at spacing 0.5: ceil(0.95/0.5) - 1 == 1 node, at the midpoint.
+    assert len(extras) == 1
+    assert extras[0][0].hkl[0] == pytest.approx(1.95 + 0.95 / 2.0)
+
+
+def test_track_bridge_scan_widening_skips_already_measured_nodes():
+    """A between-node the grid would otherwise propose is dropped when a footprint already
+    sits there — 'unmeasured' is load-bearing, not decorative."""
+    track = _track_spec((1.9, 1.95), (2.9, 2.95))
+    already = 1.95 + 0.95 / 2.0
+    scene = payload(
+        observations=[obs("e:1:d", [cand("A", omegas=(5.0,))]), obs("e:mid", [cand("A")])],
+        footprints=[fp("e:1:d", 1.92, partition=P1), fp("e:mid", already, partition=P1)],
+        clusters=[cluster(["e:1:d"], [alt([("e:1:d", "A")], 1.0)])])
+    assessment = evaluate_predicate(track, scene)
+    ctx = manual_context(scene, step(spacing=0.5), [track], [assessment])
+    outcome = track_bridge_scan(ctx, track.to_dict())
+    assert len(outcome.proposals) == 1               # only the canonical endpoint pick survives
 
 
 def test_track_bridge_scan_raises_on_the_unreachable_third_reason():
@@ -748,27 +850,36 @@ def _presence_and_parameter_evaluations(scene, st, revision, partition):
 def test_presence_probe_and_parameter_refine_dedup_at_one_q_omega_partition():
     """The real bug: two REAL generators proposing the identical physical scan (same q, same ω
     window, same partition) must collapse into ONE action with unioned associations -- and the
-    None-yields-to-set window_center rule survives through the same call."""
+    None-yields-to-set window_center rule survives through the same call. presence_probe's
+    SCENE-5 5.3 −E mirror proposal is a THIRD evaluation here, at a disjoint window, so it never
+    joins the dedup pair -- it is its own survivor."""
     st = step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=1.0, domain=(4.0, 6.0))
     scene = _confirmed_anchor_scene(P1)
     revision = derive(scene, st)
     evaluations = _presence_and_parameter_evaluations(scene, st, revision, P1)
-    assert len(evaluations) == 2
+    assert len(evaluations) == 3
     assert {e.generator for e in evaluations} == {"presence_probe", "parameter_refine"}
-    assert len({e.intent.scientific_action_fingerprint for e in evaluations}) == 1, (
-        "presence_probe and parameter_refine did not construct the identical scientific action")
+    fingerprints = [e.intent.scientific_action_fingerprint for e in evaluations]
+    assert len(set(fingerprints)) == 2, (
+        "presence_probe and parameter_refine did not construct the identical scientific action, "
+        "or the mirror collapsed onto the canonical row")
+    assert len(fingerprints) - len(set(fingerprints)) == 1  # exactly the canonical dedup pair
 
     survivors, dropped = ActionInventory.dedupe_discovery_evaluations(evaluations)
-    assert len(survivors) == 1
-    survivor = survivors[0]
+    assert len(survivors) == 2
     presence_qid = spec_of(revision, "ConfirmPresence", "structural_presence",
                            partition_id=P1, anchor=2.0)["question_id"]
     estimate_qid = spec_of(revision, "EstimateParameter", "parameter_within_tolerance",
                            partition_id=P1)["question_id"]
-    assert {a.question_id for a in survivor.associations} == {presence_qid, estimate_qid}
+    dedup_survivor = next(s for s in survivors if len(s.associations) == 2)
+    mirror_survivor = next(s for s in survivors if s is not dedup_survivor)
+    assert {a.question_id for a in dedup_survivor.associations} == {presence_qid, estimate_qid}
     # None (presence_probe never names a target mode) yields to parameter_refine's declared one.
-    assert survivor.intent.window_center_meV == pytest.approx(5.0)
+    assert dedup_survivor.intent.window_center_meV == pytest.approx(5.0)
     assert dropped in ({"parameter_refine": 1}, {"presence_probe": 1})
+    assert {a.question_id for a in mirror_survivor.associations} == {presence_qid}
+    assert mirror_survivor.intent.energy_lo == pytest.approx(-6.0)
+    assert mirror_survivor.intent.energy_hi == pytest.approx(-4.0)
 
 
 def test_identical_q_omega_in_two_partitions_never_dedup():
@@ -783,10 +894,11 @@ def test_identical_q_omega_in_two_partitions_never_dedup():
 
     survivors, _dropped = ActionInventory.dedupe_discovery_evaluations(
         evaluations_1 + evaluations_2)
-    # Same q, same ω window, same action_class -- but two DIFFERENT partitions, so exactly two
-    # scientific actions survive (one per partition), never one.
-    assert len(survivors) == 2
+    # Same q, same ω window, same action_class -- but two DIFFERENT partitions, so the dedup
+    # pair survives once per partition (never collapsing across partitions), plus each
+    # partition's own SCENE-5 5.3 −E mirror survivor: four scientific actions total.
+    assert len(survivors) == 4
     fingerprints = {e.intent.scientific_action_fingerprint for e in survivors}
-    assert len(fingerprints) == 2
+    assert len(fingerprints) == 4
     slices = {e.intent.campaign_slice_fingerprint for e in survivors}
     assert slices == {f"isar.partition/{P1}", f"isar.partition/{P2}"}

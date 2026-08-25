@@ -29,16 +29,21 @@ retaining the survey. Neither is a default. The survey still wins the first pass
 before a q has been measured there is no prediction to centre a core on, so no core candidate
 exists — rather than by a rule that prefers it.
 
-**The DISCOVERY lane is outside this priced envelope, and stays outside it until SCENE-5.5
-(ruling H21(a)).** Everything above concerns same-action scan-window selection on a targeted
-step. A `discover_and_map` step selects through `isar.drive.steering.scheduler.select`, whose rank
-vector is `(family_priority, dependency_depth, locality, scientific_action_fingerprint)` — no
-information term and no cost term — while the exposure it commits is
-`discovery_monitor_ncount` per point times the point count the intent's window implies. Candidate
-costs there therefore spread by orders of magnitude with nothing comparing them, which is the
-symmetric per-neutron comparison O43 settled for the targeted lane not yet reaching the
-target-free one. Marked, not closed: no live instrument is exposed to the discovery controller,
-and the bound until SCENE-5.5 is a declared budget plus the step's delivery ceiling.
+**The DISCOVERY lane now SELECTS by scene-EIG MI (SCENE-5, H23, 2026-08-25), and stays outside
+this PRICED envelope until SCENE-5.5 (ruling H21(a), unchanged).** Everything above concerns
+same-action scan-window selection on a targeted step. A `discover_and_map` step now selects
+through `isar.scene.eig.score` — priority-weighted mutual information on each open question's
+own variables, additive across clusters — with `isar.drive.steering.scheduler.select`'s
+lexicographic rank vector `(family_priority, dependency_depth, locality,
+scientific_action_fingerprint)` surviving only as the software-fault fallback (D7: no epistemic
+state is unscoreable, so this fallback fires on a software fault, never on a physics state). The
+exposure discovery commits is still `discovery_monitor_ncount` per point times the point count
+the intent's window implies, with nothing comparing candidates' NEUTRON COST against each
+other — MI selects the action, but "worth it" per neutron is not yet priced, so the symmetric
+per-neutron comparison O43 settled for the targeted lane still does not reach the target-free
+one. Marked, not closed: no live instrument is exposed to the discovery controller, and the bound
+until SCENE-5.5 is a declared budget plus the step's delivery ceiling. See `design/scene.md`'s
+SCENE-5 closure amendment for the full program record.
 
 **Two limitations to read the grant rate against.** The QoI partition is `bin_width = 0.5 meV` while
 the design prediction sigma in a converging campaign has a median of 0.0182 meV, so once a fit

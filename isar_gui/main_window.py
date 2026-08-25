@@ -148,6 +148,12 @@ class _EmptyWorkspace:
         return iter(())
 
     @property
+    def _report_dir(self):
+        # No workspace root at all -> a path that can never exist, so latest_decision's is_file()
+        # check reads honestly as "no decisions.jsonl" rather than AttributeError-ing.
+        return Path("/nonexistent-empty-workspace/report")
+
+    @property
     def card(self) -> CardView:
         # state=None: CardView.lattice_epochs degrades to [] via getattr; no policy, no epochs.
         return CardView(policy=None, state=None)

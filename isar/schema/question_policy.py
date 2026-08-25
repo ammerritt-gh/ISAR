@@ -5,13 +5,26 @@ compiler resolves effective values here and freezes them into the ``discover_and
 REQUIRED ``resolved_policy`` block; predicates read only the frozen program, never these module
 constants, so a mid-campaign change is a new compiled program revision, not drift.
 
-``isar.question-policy/2`` (PR 4.2a, commit A3) retired ``/1`` by name — a ``/1`` block is refused
-with a message naming ``/2`` and instructing recompile, never silently read. ``/2`` adds two TARGET
+``isar.question-policy/3`` (SCENE-5 slice 5.1) retired ``/2`` the same way ``/2`` (PR 4.2a,
+commit A3) retired ``/1``: both stay refused by name with a message naming ``/3`` and instructing
+recompile, never silently read. ``/3`` adds ``priority_weights`` (the D5 exchange rates between
+question priorities), ``paranoia_unknown_prior`` (the D6 operator prior on unsurveyed tiles), and
+``mi_n_draws`` (the seeded predictive draw count — policy, not a hidden constant, because it
+changes decisions). ``/2`` had added two TARGET
 fields: ``survey_order`` (``"placement_informed"`` default, the ruled uniform-survey user option)
 and ``parameter_precision_min_mass`` (a posterior-support threshold in ``(0, 1]``, read by a later
 commit). It also repairs ``DEFAULT_CATALOGUE_PROFILE`` to the real profile ID
 (``isar.analyze.catalogue.DEFAULT_PROFILE``) — the old ``isar.catalogue.inelastic-default/1`` string
 named no profile that ever existed.
+
+``isar.question-policy/3`` (SCENE-5.1, D5/D6) retires ``/2`` by the same name-and-recompile
+pattern (both ``/1`` and ``/2`` are now refused). ``/3`` adds three TARGET fields the scene-EIG
+scorer consumes directly: ``priority_weights`` (D5's exchange rates — a weight for every priority
+integer that appears in ``priorities``' values, so a family-priority score sums to a comparable
+number across questions), ``paranoia_unknown_prior`` (D6 — the operator's declared prior that an
+unsurveyed tile holds something, entering the DiscoverRegion Bernoulli directly), and
+``mi_n_draws`` (the seeded predictive draw count per alternative — it changes decisions, so it is
+policy, not a hidden constant).
 
 **Three authority postures**, recorded per field in the block's provenance (the epoch-4 ruling):
 
@@ -30,10 +43,10 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping, Sequence
 
-QUESTION_POLICY_SCHEMA = "isar.question-policy/2"
+QUESTION_POLICY_SCHEMA = "isar.question-policy/3"
 #: Read as a refusal table, never a migration table (matches campaign_program's convention):
 #: a retired question-policy schema is refused by name, naming its replacement.
-RETIRED_QUESTION_POLICY_SCHEMAS = ("isar.question-policy/1",)
+RETIRED_QUESTION_POLICY_SCHEMAS = ("isar.question-policy/1", "isar.question-policy/2")
 DEFAULTS_PROFILE_ID = "isar.question-defaults"
 DEFAULTS_PROFILE_VERSION = 1
 
@@ -72,6 +85,15 @@ TARGET_DEFAULTS: dict[str, float] = {
     # guidelines > named default — and freezes into the compiled program, never a bare code
     # constant. Named provisional v1, SCENE-7-calibrated.
     "discovery_monitor_ncount": 1e8,
+    # 5.1 D6: the operator's declared prior that an unsurveyed tile holds something, other than
+    # background — enters the DiscoverRegion Bernoulli directly (present vs absent) so the scorer
+    # never invents a coverage prior of its own. Unit interval; a decent, modest default.
+    "paranoia_unknown_prior": 0.1,
+    # 5.1: the seeded predictive draw count per alternative the MI estimator draws from each
+    # alternative's composed rate vector. It changes which design wins, so it is policy — never a
+    # hidden constant buried in the scorer — and freezes into the compiled program like every
+    # other threshold.
+    "mi_n_draws": 32.0,
 }
 
 #: 4.2a: the ruled uniform-survey user option. TARGET authority, same precedence lane as the
@@ -116,6 +138,12 @@ FAMILY_PRIORITIES: dict[str, int] = {
     "VerifyCompleteness": 5,
 }
 
+#: 5.1 D5: the exchange-rate weight for each priority integer that appears in FAMILY_PRIORITIES'
+#: values — Score(design) sums priority_weights[Q.priority] * MI_Q across open questions, so
+#: these numbers are what makes a DiscoverRegion gain and an EstimateParameter gain comparable.
+#: Decreasing in priority number (breadth still generally outweighs polish); SCENE-7 calibrates.
+PRIORITY_WEIGHT_DEFAULTS: dict[int, float] = {0: 1.0, 1: 1.0, 2: 0.8, 3: 0.6, 4: 0.4, 5: 0.2}
+
 #: Refuse-don't-ignore vocabularies (Topic 7): a mode this build cannot honour is refused at
 #: validation, never accepted and silently run differently.
 SUPPORTED_EMERGENT_POLICIES = ("open_in_domain",)
@@ -149,7 +177,7 @@ _ALL_THRESHOLDS = {**TARGET_DEFAULTS, **IDENTITY_DEFAULTS, **CAPABILITY_DEFAULTS
 _UNIT_INTERVAL_FIELDS = {"confirm_presence_min_mass", "classify_identity_min_mass",
                          "connect_track_min_mass", "mismatch_min_mass",
                          "emergent_open_min_mass", "requested_zc_confidence",
-                         "maximum_justifiable_zc_confidence"}
+                         "maximum_justifiable_zc_confidence", "paranoia_unknown_prior"}
 #: parameter_precision_min_mass is a posterior-support threshold in (0, 1] — 0 would mean "no
 #: support required at all", not a meaningful precision floor, so unlike the other min-mass
 #: fields it excludes the zero endpoint.
@@ -159,10 +187,13 @@ _EXCLUSIVE_ZERO_UNIT_FIELDS = {"parameter_precision_min_mass"}
 _NON_NEGATIVE_INTEGER_FIELDS = {"broken_scan_retry_limit", "prompt_timeout_deliveries"}
 #: Also a count, but zero is NOT a legitimate declaration: an exposure of no neutrons is not a
 #: measurement, so it refuses like any other positive quantity while still rejecting fractions.
-_POSITIVE_INTEGER_FIELDS = {"discovery_monitor_ncount"}
+#: ``mi_n_draws`` joins it in /3: zero draws would score every design identically uninformative.
+_POSITIVE_INTEGER_FIELDS = {"discovery_monitor_ncount", "mi_n_draws"}
 #: Field names a caller may pass in ``user_ask``/``card_guidelines`` beyond the numeric
-#: thresholds — the one non-numeric target field.
-_NON_THRESHOLD_TARGET_FIELDS = {"survey_order"}
+#: thresholds. ``survey_order`` is a string enum; ``priority_weights`` (/3, D5) is a dict keyed
+#: on priority integer rather than a scalar, so both are resolved and provenance-tracked as whole
+#: declarations outside the ``thresholds`` map, same lane as every other target field.
+_NON_THRESHOLD_TARGET_FIELDS = {"survey_order", "priority_weights"}
 
 
 def _authority_of(name: str) -> str:
@@ -201,6 +232,35 @@ def _check_survey_order(value: Any, where: str) -> str:
         raise ValueError(f"{where}: survey_order must be one of {SUPPORTED_SURVEY_ORDERS}, "
                          f"got {value!r}")
     return value
+
+
+def _check_priority_weights(value: Any, where: str, required_keys: set[str]) -> dict[str, float]:
+    """Validate a whole ``priority_weights`` declaration against the block's own priority set.
+
+    All-or-nothing, like ``survey_order``: a partial override that silently kept some defaults
+    would be indistinguishable from a full declaration in provenance, so a mismatched key set
+    refuses by name rather than merging.
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{where}: priority_weights must be an object mapping priority to "
+                         "weight")
+    got = {str(key) for key in value}
+    missing = sorted(required_keys - got)
+    extra = sorted(got - required_keys)
+    if missing or extra:
+        raise ValueError(f"{where}: priority_weights must name exactly the priorities "
+                         f"{sorted(required_keys)}; missing {missing}, extra {extra}")
+    out: dict[str, float] = {}
+    for key, weight in value.items():
+        if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+            raise ValueError(f"{where}: priority_weights[{key!r}] must be a number, got "
+                             f"{weight!r}")
+        w = float(weight)
+        if not math.isfinite(w) or w <= 0.0:
+            raise ValueError(f"{where}: priority_weights[{key!r}] must be positive and finite, "
+                             f"got {weight!r}")
+        out[str(key)] = w
+    return out
 
 
 def resolve_policy(user_ask: Mapping[str, Any] | None = None,
@@ -255,11 +315,26 @@ def resolve_policy(user_ask: Mapping[str, Any] | None = None,
         survey_order, survey_source = _check_survey_order(user["survey_order"], "user ask"), "user"
     provenance["survey_order"] = {"source": survey_source, "authority": AUTHORITY_TARGET}
 
+    required_priority_keys = {str(p) for p in FAMILY_PRIORITIES.values()}
+    priority_weights = {str(k): v for k, v in PRIORITY_WEIGHT_DEFAULTS.items()}
+    priority_weights_source = "default"
+    if "priority_weights" in card:
+        priority_weights = _check_priority_weights(card["priority_weights"], "card guidelines",
+                                                    required_priority_keys)
+        priority_weights_source = "card"
+    if "priority_weights" in user:
+        priority_weights = _check_priority_weights(user["priority_weights"], "user ask",
+                                                    required_priority_keys)
+        priority_weights_source = "user"
+    provenance["priority_weights"] = {"source": priority_weights_source,
+                                       "authority": AUTHORITY_TARGET}
+
     block = {
         "schema": QUESTION_POLICY_SCHEMA,
         "profile": {"id": DEFAULTS_PROFILE_ID, "version": DEFAULTS_PROFILE_VERSION},
         "thresholds": thresholds,
         "priorities": dict(FAMILY_PRIORITIES),
+        "priority_weights": priority_weights,
         "emergent_question_policy": "open_in_domain",
         "survey_order": survey_order,
         "staleness_policy": {"mode": "synchronous", "lag": 0},
@@ -316,7 +391,7 @@ def _validate_consultation_overrides(section: Any, where: str) -> None:
 
 
 def validate_resolved_block(block: Any, where: str = "resolved_policy") -> None:
-    """Validate a frozen policy block completely — a /2 program is refused on any gap.
+    """Validate a frozen policy block completely — a /3 program is refused on any gap.
 
     Frozen may never mean "acquires today's defaults at read time" (H1): every threshold, every
     priority, and every provenance entry must be PRESENT and valid; an absent field refuses
@@ -337,8 +412,8 @@ def validate_resolved_block(block: Any, where: str = "resolved_policy") -> None:
             or not isinstance(profile.get("version"), int):
         raise ValueError(f"{where} needs a profile {{id: str, version: int}}")
 
-    allowed = {"schema", "profile", "thresholds", "priorities", "emergent_question_policy",
-               "survey_order", "staleness_policy", "prompt_defaults",
+    allowed = {"schema", "profile", "thresholds", "priorities", "priority_weights",
+               "emergent_question_policy", "survey_order", "staleness_policy", "prompt_defaults",
                "provenance", CONSULTATION_OVERRIDES_KEY}
     unknown = sorted(set(block) - allowed)
     if unknown:
@@ -365,6 +440,10 @@ def validate_resolved_block(block: Any, where: str = "resolved_policy") -> None:
     for family, rank in priorities.items():
         if isinstance(rank, bool) or not isinstance(rank, int):
             raise ValueError(f"{where}.priorities[{family!r}] must be an integer")
+
+    required_priority_keys = {str(rank) for rank in priorities.values()}
+    priority_weights = block.get("priority_weights")
+    _check_priority_weights(priority_weights, where, required_priority_keys)
 
     emergent = block.get("emergent_question_policy")
     if emergent not in SUPPORTED_EMERGENT_POLICIES:

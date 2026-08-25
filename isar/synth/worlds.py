@@ -216,6 +216,65 @@ def context_probe(seed: int = 1013):
     )
 
 
+# ----------------------------------------------------------------------------
+# The FCC world (SCENE-5 5.4): declared reflections (2.0, 4.0), an EXTINCT fold at 3.0 —
+# only the physics lives here (D3's zone geometry is a SampleKnowledge the harness declares
+# separately, never world config). The acoustic branch's period is 2.0 (twice every other
+# world's), so it rises monotonically from zero at H=2 to its boundary maximum at the fold
+# H=3, exactly the shape a real branch has between two reflections spaced 2 rlu apart. The
+# Bragg line sits ONLY at the declared reflection inside this world's [2, 3] domain — H=3 is
+# a fold, not a reflection, and must carry no elastic component (the extinction itself).
+FCC_ACOUSTIC = BranchSpec("fcc_acoustic", 0.0, 6.0, period=2.0)
+FCC_OPTIC = BranchSpec("fcc_optic", 9.0, 9.0)
+
+
+def _fcc_bragg(peak_counts: float = ELASTIC_PEAK, q_fwhm: float = BRAGG_FWHM) -> config.ComponentTruth:
+    return config.ComponentTruth(
+        kind="elastic", identity="bragg", peak_counts=peak_counts,
+        q_centers=(2.0,), q_fwhm=q_fwhm,
+    )
+
+
+def fcc_warm(seed: int = 1014):
+    """FCC test sample at 300 K: acoustic (0->6 meV, boundary max at the H=3 extinct fold) +
+    optic (~9 meV, flat) branches; the anti-Stokes side is clearly detectable."""
+    return _world(
+        "fcc_warm", seed,
+        "FCC acoustic (period 2, 0->6 meV, boundary max at H=3) + optic (~9 meV); 300 K",
+        [_fcc_bragg(), _mode(FCC_ACOUSTIC, "fcc_acoustic"), _mode(FCC_OPTIC, "fcc_optic")],
+        T=300.0,
+    )
+
+
+def fcc_cold(seed: int = 1014):
+    """FCC test sample at 5 K: same branches, anti-Stokes Bose-suppressed.
+
+    Deliberately the SAME default seed as :func:`fcc_warm`: the pair is a controlled
+    temperature A/B, and a different seed would confound the Bose factor with Poisson
+    realization noise — a warm/cold divergence would then prove nothing about the physics
+    (5.4 verifier advisory A2; the same-seed control is what demonstrated the divergence is
+    genuinely thermal).
+    """
+    return _world(
+        "fcc_cold", seed,
+        "FCC acoustic (period 2, 0->6 meV, boundary max at H=3) + optic (~9 meV); 5 K",
+        [_fcc_bragg(), _mode(FCC_ACOUSTIC, "fcc_acoustic"), _mode(FCC_OPTIC, "fcc_optic")],
+        T=5.0,
+    )
+
+
+def fcc_no_acoustic(seed: int = 1016):
+    """FCC world with the acoustic branch absent entirely: a low-omega search here comes back
+    empty by construction, for the optic-pivot closed-loop world (only the optic branch is
+    really there to find)."""
+    return _world(
+        "fcc_no_acoustic", seed,
+        "FCC Bragg line + optic band (~9 meV) only; no acoustic branch exists on this path",
+        [_fcc_bragg(), _mode(FCC_OPTIC, "fcc_optic")],
+        T=300.0,
+    )
+
+
 WORLDS: dict[str, Callable[..., tuple[config.WorldConfig, config.WorldTruth]]] = {
     "canonical": canonical,
     "no_acoustic": no_acoustic,
@@ -230,6 +289,9 @@ WORLDS: dict[str, Callable[..., tuple[config.WorldConfig, config.WorldTruth]]] =
     "mismatch": mismatch,
     "faint": faint,
     "context_probe": context_probe,
+    "fcc_warm": fcc_warm,
+    "fcc_cold": fcc_cold,
+    "fcc_no_acoustic": fcc_no_acoustic,
 }
 
 
