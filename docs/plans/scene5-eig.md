@@ -293,9 +293,57 @@ surfaces).
   partitions proposing one node/window produce a scored decision with a deterministic,
   replay-identical winner and no duplicate-key refusal; no wall-clock anywhere in the scoring
   path.
-- **5.3 Organic −E producer** (D8). The `context_probe` producer minting detailed-balance
-  confirmation probes priced by the same comparison; world-level off-path end-to-end (closes
-  H22's named deferral).
+- **5.3 Organic −E corroboration producer.** Re-gated after two owner rulings
+  (2026-08-25 evening) settled the epoch-1 blockers:
+
+  *Ruling A — corroboration is priced by declared doubt.* Two measurements that should agree
+  are worth exactly the prior mass on their disagreement: the fitter already ties the
+  Stokes/anti-Stokes pair functionally (hard rule 2 — the anti-Stokes amplitude is derived
+  via Bose, never fit), so under a fully-trusted map the mirror is always dominated by its +E
+  twin (the epoch-1 dominance proof). What makes it win is the decide-side doubt variable:
+  the relevance registry's ConfirmPresence entry gains a declared `thermal_consistency`
+  component — per contributing cluster, a synthetic two-state partition {as_believed,
+  not_as_believed}, rates = the composed rate WITH vs WITHOUT its anti-Stokes lobes (a
+  predict-level lobe switch reusing the existing predictive — no second physics), prior =
+  `paranoia_unknown_prior`, MI through `_mi_from_rates`, added to the question's cluster sum.
+  On a +E window or at cold T the two states predict identical counts → MI 0; paranoia 0 → 0
+  exactly (degenerate short-circuit, the DiscoverRegion precedent). No gate anywhere.
+
+  *Ruling B — the −E scan is an ordinary on-the-line measurement* (`canonical_path`): the
+  `context_probe` quarantine would bar its evidence from the very track it corroborates, and
+  a −E window at an on-path q is an on-path scan (its anti-Stokes coverage feeds the
+  partition through the existing `Footprint.sides` machinery). The side-trip lane stays
+  reserved for genuinely off-segment probes (±q, cross-zone), which travel with
+  lattice-as-hypothesis per D8 — H22(iv)'s "organic context-probe producer" is re-scoped by
+  dated amendment in `design/scene.md`, recorded with these rulings as this slice's
+  H23-series entries. Consequence: NO intent field, NO provenance or identity change — the
+  window sign already distinguishes the action fingerprint.
+
+  *Producer:* `presence_probe` emits, beside each canonical +E proposal, one mirrored −E
+  variant — window = the clipped +E window negated and swapped `(−hi, −lo)`, same node,
+  `canonical=False`, `placement_rank` after the canonical rows, ordinary intent.
+
+  *Parked/deferred by name:* the E₀-shift nuisance and straddling-window logic (separate,
+  complicated, hopefully obsoleted by upstream calibration; the survey machinery already
+  emits straddling windows where coverage wants them); the tile-quantization blindness
+  (continuous-parameter precision MI) → the 5.5 boundary, where the cost-vs-precision trade
+  needs it; a full spurion catalogue class (the Bernoulli is the v1 carrier).
+
+  *Also in this slice:* the deferred 5.2 cosmetic — `selection.reason` formats a plain
+  float, not a numpy repr (planner.py:404).
+
+  *Acceptance, harness named per clause:* producer units in
+  `tests/drive/test_discovery_generators.py` (mirror arithmetic incl. domain clipping,
+  canonical=False, placement ordering, ordinary intent — no role field anywhere);
+  corroboration units in `tests/scene/test_scene_eig.py` (warm T → a −E design's
+  ConfirmPresence MI gains a strictly positive thermal-consistency term while the +E twin's
+  term is ~0; cold twin → ~0 and the mirror never outranks the canonical; paranoia 0 →
+  exactly 0; relevance fingerprint moves with the declared component); the organic
+  end-to-end in the drive world idiom (FakeBuild): warm doubt-worthy world — the minted −E
+  design tops `score_table` and realizes as an ordinary on-path submission; cold twin —
+  minted, scored ~0, never selected; the partition clause in the real `build_and_store`
+  idiom: a delivered −E arena at the same q carries `canonical_path`, JOINS the same
+  partition as its +E sibling, and is not quarantined from path topology.
 - **5.4 Acceptance closure.** New fast worlds: optic-pivot (acoustic absence reshapes the
   posterior; the optic-band probe wins organically — H22(f)'s sequence), FCC-boundary,
   −E-producer behavior. The FCC test-sample challenge battery (§4). Docs: H23 amendments in
@@ -347,6 +395,14 @@ Plus fast worlds per D9 and the standing twelve unchanged.
   `_design_for_evaluation` docstring overstates a refusal, GUI poll catches only ValueError
   and piggybacks on events/card_state ticks, facade reads `ws._report_dir` privately, NaN MI
   would refuse at persistence rather than fall back.
+- **5.3 verifier notes** (all P4, recorded): the thermal-consistency term saturates at
+  H(paranoia) once the anti-Stokes lobe is detectable — it prices declared doubt, not lobe
+  strength, so it cannot rank two detectable mirrors against each other (a correct Ruling-A
+  property; joins 5.5's cost/precision boundary); `contributing_clusters` now counts only
+  clusters whose MI survives the zero clamp (more honest, total unaffected); H22(iv)'s
+  original paragraph lacks an inline pointer to its H23 re-scope (cosmetic, fix in 5.4's doc
+  pass); `_clip_omega` can invert a window for a band entirely below the domain (pre-existing
+  HEAD behavior, unreachable from shipped generators, noted).
 - **5.1 verifier notes for SCENE-7 / 5.2** (all P4, correct-but-worth-knowing): the paranoia
   MI is concave in the prior (a Bernoulli's MI peaks at p≈0.5 — "higher prior, higher score"
   holds on (0, ~0.5], which covers every sane declaration); at shipped defaults a gap node

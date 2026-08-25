@@ -307,7 +307,7 @@ emits otherwise fails the build rather than publishing an impossible reading.
 | SCENE-2 | `isar.campaign-program/1` sole contract; old envelope unreadable by design | Implemented (H2, 2026-08-08; PR #12 merged at `058fb40`) |
 | SCENE-3 | Scene layer core: clusters, structural factors, revisioned scene store, workspace_api read surface; tracker contracts ported as specifications | Implemented — PR 3a (H11/H12), 3b (H13), 3c (H14), all 2026-08-10, incl. the PR #19 response waves; final merge `a1c6e41` |
 | SCENE-4 | Question layer, deterministic opening book, generalized stop; first challenge run; scan-window authoritative default-on; shadow machinery deleted | Complete (H22, 2026-08-21) — PR 4.0 "scene authority readiness" Implemented (H15/H16, 2026-08-13; PR #30 merged): measurement-arena record + trust lanes, #21 Variant A origin lanes, (sample, ConditionSet, lattice-epoch) partitioning, refiner bounds + transformation ablation, expected_two relaxation. PR 4.1 "question + agenda core" Implemented (H17, 2026-08-14): three-object question layer, authority-aware predicates, `isar.question-policy/1` + fully frozen `discover_and_map/2`, content-addressed agenda snapshots with external transition history, `AgendaVerdict` beside `evaluate_stop` — offline (driver wiring 4.3, generator bindings 4.2). PR 4.2a "interval re-baseline + question-policy/2" Implemented (H18, 2026-08-14): per-candidate interval closure, producer-soundness interval authority, class-agnostic ConnectTrack. PR 4.2b "discovery generator layer + offline planner" Implemented (H19, 2026-08-15): seven question-bound generators, readiness gating, the exhaustion producer, `plan_next_action`'s five outcomes, the `report/inventory/discovery/` + `report/program/` + `report/decisions.jsonl` stores — offline. PR 4.3 "live driver integration" Implemented (H20, 2026-08-18): parent-owned scene build in a supervised `isar scene-build` subprocess with digest-pinned planning, the `run_program` seam and AgendaVerdict stop routing, campaign provenance + physical path identity in the partition key, the cold-start partition producer, the broken-scan lane, production durable-blocker emission over the two-member taxonomy, and the consultation channel with `isar answer`. PR 4.4 "authority flip, stop-law cleanup, acceptance closure" Implemented (H22, 2026-08-21): compile-time default-on flip scoped to targeted objectives with named shadow-mode refusal, shadow-only machinery deleted by call-site map, stop-law audit closed with zero removals, the off-path context-probe seam plus real-scene-build partition evidence (world `context_probe`, seed 1013), the causally connected cold-start acceptance sequence, the ncount discovery exemption, and the challenge run green end to end — SCENE-4 is complete |
-| SCENE-5 | Scene-EIG authoritative from birth | Planned |
+| SCENE-5 | Scene-EIG authoritative from birth | In progress (H23, 2026-08-25) — 5.0 phenomenon belief layer, 5.1 MI scoring engine, 5.2 controller integration, and 5.3 the organic on-path −E corroboration producer landed on the SCENE-5 branch; 5.4 acceptance closure remains, see `docs/plans/scene5-eig.md` |
 | SCENE-6 | Single-engine swap: targeted campaigns as pinned question sets over scenes; tracker deleted; `campaign-program/2` question-native targeted payload | Planned |
 | SCENE-7 | Calibration batteries + efficiency benchmark; program closeout | Planned |
 
@@ -817,6 +817,50 @@ proves: a seam-level campaign test (the per-delivery provenance seam, its inject
 genuinely off-segment coordinate) plus a real-scene-build partition test
 (`tests/scene/test_context_probe_partition.py`); the organic context-probe producer and the
 world-level organic end-to-end remain SCENE-5's.
+
+### SCENE-5 5.3 rulings (H23, 2026-08-25)
+
+Two owner rulings, grilled the evening of 2026-08-25, that re-gate the organic −E corroboration
+producer H22(iv) deferred to SCENE-5 and settle how it prices in.
+
+(a) **Corroboration is priced by declared doubt, not a gate.** Two measurements that should
+agree are worth exactly the prior mass on their disagreement: the fitter already ties the
+Stokes/anti-Stokes pair functionally (hard rule 2 — the anti-Stokes amplitude is derived via
+Bose, never fit), so under a fully-trusted hypothesis map a −E mirror is always dominated by its
++E twin (the epoch-1 dominance proof — a trusted map has nothing left for the mirror to teach
+that the +E measurement doesn't already resolve more directly). What makes a mirror worth
+measuring is the DECIDE-SIDE doubt variable: the scene-EIG relevance registry's ConfirmPresence
+entry (`isar/scene/eig.py`, version bumped to "2") gains a declared `thermal_consistency`
+component — per contributing cluster, one synthetic two-state partition
+{as_believed, not_as_believed}, rates = the cluster's leading (highest-posterior) alternative's
+composed rate WITH vs WITHOUT its anti-Stokes lobes. The WITHOUT-lobes rate is a predict-level
+lobe switch (`isar.scene.phenomena.predict(..., include_anti_stokes=False)`, default True) —
+reusing the one curve-family predictive rather than standing up a second physics path for the
+doubt it prices. Prior = `paranoia_unknown_prior` (D6): the same operator-declared paranoia that
+already prices DiscoverRegion's coverage doubt now also prices thermal-consistency doubt, and
+paranoia 0 short-circuits the term to exactly 0 (the DiscoverRegion degenerate-prior precedent —
+no Monte Carlo noise). On a +E window, or at cold temperature, or with no declared temperature at
+all, the WITH/WITHOUT rates coincide (the lobe term never entered the composed rate to begin
+with, or its Bose weight is negligible) and the term reads ~0 through the same MI estimator —
+**no temperature or window branch anywhere in the scoring path**; the dominance and the
+collapse are both properties of the rates the shared predictive already produces, never a
+special case in `isar.scene.eig`.
+
+(b) **The −E scan is an ordinary on-the-line measurement, `canonical_path` — not a
+`context_probe`.** The context-probe quarantine (H22(iv)) would bar a mirror's evidence from the
+very track it corroborates, and a −E window at an on-path q is an on-path scan: its anti-Stokes
+coverage feeds the partition through the existing `Footprint.sides` machinery like any other
+scan at that q. **H22(iv)'s "organic context-probe producer" is RE-SCOPED by this ruling**: the
+`context_probe` side-trip lane stays reserved for genuinely off-segment probes (±q, cross-zone
+equivalences), which travel with the lattice-as-hypothesis work (D8, DESIGN_GOALS Sample
+Knowledge — chiral phonons are the named ±q counterexample nothing here forecloses). SCENE-5
+delivers the on-path organic −E corroboration producer instead: `presence_probe` emits, beside
+each canonical +E proposal, one mirrored −E variant at the same node (window negated and
+swapped, `canonical=False`) — an ORDINARY `MeasurementIntent`, no intent field, no provenance or
+identity change, because the window sign alone already distinguishes its
+`scientific_action_fingerprint` (D4's admissible-set widening, the `track_bridge_scan`
+precedent). Emitted unconditionally, with no temperature/Bose gate in the producer — ruling (a)
+is what prices whether it is worth taking.
 
 ## 7. Status discipline
 

@@ -632,12 +632,19 @@ def _normal_density(grid: np.ndarray, mu: float, sigma: float) -> np.ndarray:
 
 def predict(belief: PhenomenonBelief, design: Design,
            families: Mapping[str, PhenomenonFamily] | None = None, *,
-           seed: int) -> Prediction:
+           seed: int, include_anti_stokes: bool = True) -> Prediction:
     """The seeded predictive Poisson draw for ``belief`` over ``design``'s energy grid.
 
     Deterministic in ``seed`` alone, for fixed ``belief``/``design``/``families``: the same
     triple with the same seed reproduces byte-identical draws, and a different seed reliably
     differs (this is what lets scene-EIG replay a decision).
+
+    ``include_anti_stokes`` (SCENE-5 5.3, default True — no caller changes) is a predict-level
+    lobe switch on the curve family's Bose mirror term only: ``False`` composes the SAME
+    predictive with the anti-Stokes lobe left out, reusing this one physics implementation
+    rather than standing up a second. It exists so scene-EIG's thermal_consistency corroboration
+    term can compare "believed with the derived anti-Stokes lobe" against "believed without it"
+    at the SAME belief/design — never a second predictive model for the doubt it prices.
     """
     families = families or FAMILIES
     if belief.family == "continuum":
@@ -665,8 +672,9 @@ def predict(belief: PhenomenonBelief, design: Design,
         weight = _reference_weight(fam, design.ncount)
         lam = weight * _normal_density(grid, center, sigma)
         if design.temperature_K is not None:
-            bose = bose_weight(center, design.temperature_K)
-            lam = lam + weight * bose * _normal_density(grid, -center, sigma)
+            if include_anti_stokes:
+                bose = bose_weight(center, design.temperature_K)
+                lam = lam + weight * bose * _normal_density(grid, -center, sigma)
         else:
             degrade.append("no_declared_temperature_for_bose")
     elif belief.family in ("elastic", "quasielastic"):

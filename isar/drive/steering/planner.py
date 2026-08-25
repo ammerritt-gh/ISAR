@@ -598,7 +598,7 @@ def _scene_eig_selection(scene_payload: Mapping, agenda_payload: Mapping,
     selection_block = {
         "fingerprint": winner.intent.scientific_action_fingerprint,
         "rank_vector": list(ranked_one.rank_vector),
-        "reason": f"scene-EIG scoring: total {winning_row.total!r} across "
+        "reason": f"scene-EIG scoring: total {format(float(winning_row.total), '.10g')} across "
                  f"{len(table.rows)} design(s)",
         "associations": [a.to_dict() for a in winner.associations],
         "supplying_association": ranked_one.supplying_association.to_dict(),

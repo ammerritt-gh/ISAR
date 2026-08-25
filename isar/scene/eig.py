@@ -119,7 +119,14 @@ class RelevanceExtractor:
         return default
 
 
-CONFIRM_PRESENCE = RelevanceExtractor("ConfirmPresence", "1")
+# SCENE-5 5.3 (Ruling A): the declared ``thermal_consistency`` corroboration component — a
+# synthetic two-state MI term (module docstring below) added per contributing cluster, priced by
+# the SAME ``paranoia_unknown_prior`` that prices DiscoverRegion's coverage doubt. Version "2":
+# the component's presence is a declared physics-path change, so a score table computed under
+# "1" (no corroboration term) can never be silently replayed as if scored under "2".
+CONFIRM_PRESENCE = RelevanceExtractor(
+    "ConfirmPresence", "2",
+    config=(("thermal_consistency_component", "thermal_consistency/1"),))
 CLASSIFY_IDENTITY = RelevanceExtractor("ClassifyIdentity", "1")
 CONNECT_TRACK = RelevanceExtractor("ConnectTrack", "1")
 ESTIMATE_PARAMETER = RelevanceExtractor("EstimateParameter", "1")
@@ -203,13 +210,20 @@ def design_key(design: Design) -> str:
 
 
 def _derive_seed(design: Design, cluster_id: str, question_id: str, alternative_index: int,
-                 base_seed: int) -> int:
+                 base_seed: int, *, component: str | None = None) -> int:
     """A seed that is a deterministic, content-derived function of exactly what it should be —
     never a running counter or iteration-order artifact, so a replay on the same inputs draws
-    byte-identical Poisson vectors regardless of dict/cluster iteration order."""
+    byte-identical Poisson vectors regardless of dict/cluster iteration order.
+
+    ``component`` (SCENE-5 5.3) is omitted from the payload by default, so every pre-5.3 seed is
+    byte-identical to before; the ``thermal_consistency`` corroboration term passes a distinct
+    component name so its two-state draws never collide with a partition-MI alternative's seed
+    at the same ``(design, cluster, question)`` key."""
     payload = {"design_key": design_key(design), "cluster_id": cluster_id,
               "question_id": question_id, "alternative_index": alternative_index,
               "base_seed": base_seed}
+    if component is not None:
+        payload["component"] = component
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"),
                          allow_nan=False).encode("utf-8")
     return int.from_bytes(hashlib.sha256(encoded).digest()[:8], "big", signed=False) \
@@ -468,12 +482,67 @@ def _mi_from_rates(rates: np.ndarray, posteriors: np.ndarray, classes: Sequence,
 
 
 def _composed_rate(beliefs: Sequence[PhenomenonBelief], design: Design,
-                   families: Mapping[str, PhenomenonFamily], background: np.ndarray) -> np.ndarray:
+                   families: Mapping[str, PhenomenonFamily], background: np.ndarray, *,
+                   include_anti_stokes: bool = True) -> np.ndarray:
     vec = background.copy()
     for belief in beliefs:
-        pred = predict(belief, design, families, seed=0)   # draws discarded; only the rate is used
+        # draws discarded; only the rate is used. ``include_anti_stokes`` (SCENE-5 5.3) is the
+        # thermal_consistency term's WITH/WITHOUT lobe switch — default True composes exactly
+        # what every pre-5.3 caller already got.
+        pred = predict(belief, design, families, seed=0, include_anti_stokes=include_anti_stokes)
         vec = vec + np.asarray(pred.expected_counts, dtype=float)
     return vec
+
+
+def _leading_alternative_index(cluster: Mapping) -> int | None:
+    """The highest-posterior alternative's index, or ``None`` for a cluster with none — ties
+    break to the smaller index (stable, replay-identical over dict/list iteration order)."""
+    alternatives = cluster.get("alternatives") or ()
+    if not alternatives:
+        return None
+    best_idx, best_posterior = 0, -1.0
+    for idx, alternative in enumerate(alternatives):
+        posterior = float(alternative.get("posterior") or 0.0)
+        if posterior > best_posterior:
+            best_idx, best_posterior = idx, posterior
+    return best_idx
+
+
+def _thermal_consistency_mi(scene_payload: Mapping, cluster_index: int,
+                            beliefs_by_ca: Mapping[tuple, Sequence[PhenomenonBelief]],
+                            design: Design, families: Mapping[str, PhenomenonFamily],
+                            background: np.ndarray, mi_n_draws: int, base_seed: int,
+                            question_id: str, paranoia: float) -> float:
+    """SCENE-5 5.3 (Ruling A) — the ConfirmPresence relevance extractor's declared
+    ``thermal_consistency`` component: one synthetic two-state MI term per contributing cluster,
+    {as_believed, not_as_believed}, rates = the cluster's LEADING alternative's composed rate
+    WITH vs WITHOUT its anti-Stokes lobes (the predict-level lobe switch in
+    :mod:`isar.scene.phenomena` — the SAME physics, never a second implementation). Prior =
+    ``paranoia_unknown_prior``, the DiscoverRegion precedent: paranoia 0 short-circuits to
+    exactly 0, no Monte Carlo noise. On a design whose window does not overlap where the
+    anti-Stokes lobe sits (a +E window, or a curve belief with no declared temperature), the two
+    states predict identical counts and the term is ~0 through the SAME MI estimator — no
+    temperature/window branch here, the dominance is priced by the rates alone.
+    """
+    if paranoia <= 0.0:
+        return 0.0
+    cluster = scene_payload["clusters"][cluster_index]
+    cluster_id = cluster["cluster_id"]
+    alt_idx = _leading_alternative_index(cluster)
+    if alt_idx is None:
+        return 0.0
+    beliefs = beliefs_by_ca.get((cluster_id, alt_idx), ())
+    if not beliefs:
+        return 0.0
+    with_lobes = _composed_rate(beliefs, design, families, background)
+    without_lobes = _composed_rate(beliefs, design, families, background,
+                                   include_anti_stokes=False)
+    rates = np.array([with_lobes, without_lobes])
+    posteriors = np.array([paranoia, 1.0 - paranoia])
+    classes = ["as_believed", "not_as_believed"]
+    seeds = [_derive_seed(design, cluster_id, question_id, i, base_seed,
+                          component="thermal_consistency") for i in (0, 1)]
+    return _mi_from_rates(rates, posteriors, classes, mi_n_draws, seeds)
 
 
 def _cluster_mi(scene_payload: Mapping, cluster_index: int, class_of: Mapping[int, object],
@@ -554,11 +623,24 @@ def _question_mi(spec: QuestionSpec, scene_payload: Mapping,
 
     total_mi, contributing = 0.0, 0
     for idx, class_of in cluster_classes:
-        if len(set(class_of.values())) < 2:
+        cluster_mi = 0.0
+        has_variance = len(set(class_of.values())) >= 2
+        if has_variance:
+            cluster_mi += _cluster_mi(scene_payload, idx, class_of, beliefs_by_ca, design,
+                                      families, background, mi_n_draws, base_seed,
+                                      spec.question_id)
+        if spec.family == "ConfirmPresence":
+            # SCENE-5 5.3 (Ruling A): the declared thermal_consistency component ADDS to this
+            # question's cluster MI sum, folded into mi_nats -- no new QuestionTerm field. It
+            # runs independent of ``has_variance``: a cluster where every alternative already
+            # agrees on presence can still carry corroboration doubt.
+            cluster_mi += _thermal_consistency_mi(
+                scene_payload, idx, beliefs_by_ca, design, families, background, mi_n_draws,
+                base_seed, spec.question_id, paranoia)
+        if cluster_mi <= 0.0:
             continue
         contributing += 1
-        total_mi += _cluster_mi(scene_payload, idx, class_of, beliefs_by_ca, design, families,
-                                background, mi_n_draws, base_seed, spec.question_id)
+        total_mi += cluster_mi
     return total_mi, contributing
 
 

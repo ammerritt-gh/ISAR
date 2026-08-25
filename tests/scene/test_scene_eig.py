@@ -478,6 +478,106 @@ def test_estimation_failure_raises_scene_scoring_error_with_reason():
     assert excinfo.value.reason == "scoring_exception"
 
 
+# ----------------------------------------------------------------------------
+# SCENE-5 5.3 (Ruling A): the thermal_consistency corroboration term
+# ----------------------------------------------------------------------------
+def _single_alternative_confirm_presence_scene(omega: float = 8.0, axis: float = 2.0,
+                                               region=(1.5, 2.5)) -> tuple[dict, tuple]:
+    """ONE alternative, posterior 1.0 -- no class variance at all, so the ordinary partition MI
+    (``_cluster_mi``) contributes exactly 0 and any MI on this question is the thermal_consistency
+    term alone (isolates the new component from the pre-existing partition-MI machinery)."""
+    obs = _observation("s1", (_mode_row("m", omega),))
+    fp = _footprint("s1", axis)
+    cluster = _cluster("c1", ["s1"], [_alt([("s1", "m")], posterior=1.0)])
+    return _scene([obs], [fp], [cluster]), region
+
+
+def test_thermal_consistency_term_positive_on_minus_e_zero_on_plus_e_twin_at_warm_t():
+    """Warm T: the −E design's ConfirmPresence MI gains a strictly positive thermal_consistency
+    term (its window covers where the derived anti-Stokes lobe sits); the +E twin's term stays
+    ~0 (its window never overlaps the lobe, so WITH- and WITHOUT-lobe composed rates coincide) —
+    no window/temperature branch in the term itself, only in the rates the shared predictive
+    already produces."""
+    scene, region = _single_alternative_confirm_presence_scene(omega=8.0)
+    spec = _confirm_presence_spec(region)
+    policy = _policy(mi_n_draws=128, paranoia_unknown_prior=0.3)
+    agenda = _agenda([(spec, "open")], policy)
+
+    minus_e = Design(axis_coordinate=2.0, window=(-15.0, -2.0), n_points=61, ncount=2_000_000.0,
+                     temperature_K=300.0)
+    plus_e = Design(axis_coordinate=2.0, window=(2.0, 15.0), n_points=61, ncount=2_000_000.0,
+                    temperature_K=300.0)
+
+    minus_mi = score(scene, agenda, None, [minus_e], base_seed=23).rows[0].terms[0].mi_nats
+    plus_mi = score(scene, agenda, None, [plus_e], base_seed=23).rows[0].terms[0].mi_nats
+    assert minus_mi > 1e-3
+    assert plus_mi < 1e-6
+
+
+def test_thermal_consistency_term_is_near_zero_at_cold_temperature():
+    """Cold twin: the Bose factor collapses the anti-Stokes lobe to ~nothing, so the WITH/WITHOUT
+    composed rates coincide even in the −E window and the isolated term reads ~0."""
+    scene, region = _single_alternative_confirm_presence_scene(omega=8.0)
+    spec = _confirm_presence_spec(region)
+    policy = _policy(mi_n_draws=128, paranoia_unknown_prior=0.3)
+    agenda = _agenda([(spec, "open")], policy)
+
+    cold_minus_e = Design(axis_coordinate=2.0, window=(-15.0, -2.0), n_points=61,
+                          ncount=2_000_000.0, temperature_K=5.0)
+    cold_mi = score(scene, agenda, None, [cold_minus_e], base_seed=23).rows[0].terms[0].mi_nats
+    assert cold_mi < 1e-6
+
+
+def test_cold_minus_e_mirror_never_outranks_the_plus_e_canonical_in_a_score_table():
+    """Ruling A's dominance proof (a two-alternative present/absent scene, the mechanism the
+    isolated single-alternative tests above deliberately factor out): a cold −E mirror is priced
+    a small thermal term on top of a near-zero partition-MI contribution (the class-variance term
+    itself barely separates present/absent through the tiny cold-T anti-Stokes tail), while the
+    +E canonical resolves presence directly at the Stokes peak with a large partition MI -- the
+    +E canonical wins the score() table outright."""
+    scene, region = _confirm_presence_scene(omega=8.0)
+    spec = _confirm_presence_spec(region)
+    policy = _policy(mi_n_draws=128, paranoia_unknown_prior=0.3)
+    agenda = _agenda([(spec, "open")], policy)
+
+    cold_minus_e = Design(axis_coordinate=2.0, window=(-15.0, -2.0), n_points=61,
+                          ncount=2_000_000.0, temperature_K=5.0)
+    plus_e_canonical = Design(axis_coordinate=2.0, window=(2.0, 15.0), n_points=61,
+                              ncount=2_000_000.0, temperature_K=5.0)
+    table = score(scene, agenda, None, [cold_minus_e, plus_e_canonical], base_seed=23)
+    assert table.rows[0].design_key == design_key(plus_e_canonical), (
+        "the cold mirror must never outrank the +E canonical")
+
+
+def test_thermal_consistency_term_is_exactly_zero_at_paranoia_zero():
+    """Paranoia 0 is the DiscoverRegion precedent: a degenerate short-circuit to exactly 0, no
+    Monte Carlo noise -- even in a warm −E window where the term is otherwise strongly positive."""
+    scene, region = _single_alternative_confirm_presence_scene(omega=8.0)
+    spec = _confirm_presence_spec(region)
+    policy = _policy(mi_n_draws=128, paranoia_unknown_prior=0.0)
+    agenda = _agenda([(spec, "open")], policy)
+    minus_e = Design(axis_coordinate=2.0, window=(-15.0, -2.0), n_points=61, ncount=2_000_000.0,
+                     temperature_K=300.0)
+    table = score(scene, agenda, None, [minus_e], base_seed=23)
+    assert table.rows[0].terms[0].mi_nats == 0.0
+
+
+def test_confirm_presence_relevance_fingerprint_moves_with_the_declared_component():
+    """The relevance_fingerprint changes iff the declared thermal_consistency component (or any
+    of its config) changes -- the same discipline as every other declared registry entry."""
+    from isar.scene import eig as eig_module
+
+    original = eig_module.RELEVANCE_REGISTRY["ConfirmPresence"]
+    baseline_fp = relevance_fingerprint()
+    without_component = eig_module.RelevanceExtractor("ConfirmPresence", "1")
+    eig_module.RELEVANCE_REGISTRY["ConfirmPresence"] = without_component
+    try:
+        assert relevance_fingerprint() != baseline_fp
+    finally:
+        eig_module.RELEVANCE_REGISTRY["ConfirmPresence"] = original
+    assert relevance_fingerprint() == baseline_fp
+
+
 def test_refuses_duplicate_design_keys():
     scene, region = _confirm_presence_scene(omega=8.0)
     spec = _confirm_presence_spec(region)

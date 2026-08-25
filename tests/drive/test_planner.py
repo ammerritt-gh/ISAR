@@ -1189,6 +1189,103 @@ def test_authority_transfer_eig_winner_differs_from_the_lexicographic_winner(
     assert result.selection_fingerprint != covered_fp
 
 
+# ----------------------------------------------------------------------------
+# SCENE-5 5.3: the organic on-path −E corroboration producer, end to end
+# ----------------------------------------------------------------------------
+def _corroboration_step_and_scene(temperature_K: float, paranoia: float = 0.5,
+                                  present_posterior: float = 0.7):
+    """A single OPEN ConfirmPresence question (an ambiguous present/absent cluster — posterior
+    below the 0.9 ``confirm_presence_min_mass`` default so the spec stays open, never answered)
+    at q=2.0, with a declared partition temperature. presence_probe is the ONLY real generator
+    that can fire here (unpatched — an organic run), and it always emits its canonical +E
+    proposal beside a mirrored −E one (SCENE-5 5.3)."""
+    # spacing == the region width: the ONE footprint at q=2.0 already closes DiscoverRegion's
+    # coverage_complete (its default bands cover the full domain too), so ConfirmPresence's
+    # dependency on coverage is satisfied in this same round and presence_probe fires.
+    step = discover_step(q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0, 0.0), spacing=1.0,
+                         domain=(0.0, 10.0))
+    step = CampaignStep(id=step.id, kind=step.kind, payload=DiscoverAndMapSpec(
+        q_start=step.payload.q_start, q_end=step.payload.q_end,
+        maximum_initial_spacing_rlu=step.payload.maximum_initial_spacing_rlu,
+        intrinsic_omega_domain_meV=step.payload.intrinsic_omega_domain_meV,
+        catalogue_profile=step.payload.catalogue_profile,
+        resolved_policy=resolve_policy(user_ask={
+            "min_effective_exposure": 1.0, "paranoia_unknown_prior": paranoia,
+            "mi_n_draws": 256, "discovery_monitor_ncount": 2_000_000.0})))
+    program = program_with(step)
+    footprint = {**fp("e:1:d", 2.0), "temperature_K": temperature_K}
+    # A truncated cluster with a discarded-mass bound wide enough that the retained-mass
+    # interval straddles the 0.9 min_mass threshold (``isar.scene.predicates.decide``): exact
+    # posterior mass alone always resolves definitively (yes/no), so keeping the ConfirmPresence
+    # question genuinely OPEN over a real matched cluster needs the bounded-authority lane, not
+    # just an ambiguous posterior split.
+    doubt_cluster = {**cluster(["e:1:d"], [alt([("e:1:d", "m")], present_posterior),
+                                           alt([("e:1:d", "e")], 1.0 - present_posterior)]),
+                     "truncated": True, "log_discarded_mass_bound": 1.5}
+    scene_payload = scene(
+        footprints=[footprint],
+        observations=[obs("e:1:d", candidates=[cand("m", omegas=(8.0,)), cand("e", omegas=())])],
+        clusters=[doubt_cluster],
+        # zone_period=2.0: only q=2.0 folds inside the declared region (2.0..3.0) -- a SINGLE
+        # declared zone-centre anchor, so no second (empty, far-away) ConfirmPresence question
+        # competes for the score-table top with an artifact of extrapolating this belief's
+        # undeclared dispersion slope out to a remote node.
+        sample_knowledge={"zone_period": 2.0, "lattice_epoch": 1})
+    return program, scene_payload
+
+
+def test_warm_minus_e_mirror_tops_the_score_table_and_realizes_as_an_ordinary_submission(
+        tmp_path):
+    """Warm, doubt-worthy world: the minted −E mirror's thermal_consistency term (Ruling A)
+    outweighs the ordinary (bounded-by-ambiguity) partition MI both windows share, so it tops
+    ``score_table`` and IS the selected decision -- realized as an ordinary submission (no role
+    anywhere in the selected association or intent)."""
+    program, scene_payload = _corroboration_step_and_scene(temperature_K=300.0)
+    write_scene(tmp_path, scene_payload)
+
+    result = plan_next_action(tmp_path, program, "discover-1")
+    assert result.outcome == SELECTED
+    line = decision_lines(tmp_path)[-1]
+    assert "fallback" not in line["decision_basis"]
+
+    score_table = line["selection"]["score_table"]
+    assert len(score_table) == 2                          # the canonical +E row and its −E mirror
+    top = score_table[0]
+    assert top["scientific_action_fingerprint"] == result.selection_fingerprint
+
+    # the winning row's own window is the negative one -- the mirror actually won, not a tie
+    # falling to the canonical by construction.
+    winning_association = next(
+        a for a in line["selection"]["associations"] if a["generator"] == "presence_probe")
+    assert winning_association["canonical"] is False
+    assert "role" not in winning_association
+    assert "role" not in line["selection"]
+
+
+def test_cold_twin_mirror_is_minted_scored_near_zero_and_never_selected(tmp_path):
+    """Cold twin: the mirror is still minted (unconditional emission, D4/Ruling A — no gate in
+    the producer), still scored (it enters score_table), but its thermal_consistency term
+    collapses at low T and it never wins the table -- the canonical +E row is selected."""
+    program, scene_payload = _corroboration_step_and_scene(temperature_K=5.0)
+    write_scene(tmp_path, scene_payload)
+
+    result = plan_next_action(tmp_path, program, "discover-1")
+    assert result.outcome == SELECTED
+    line = decision_lines(tmp_path)[-1]
+    assert "fallback" not in line["decision_basis"]
+
+    score_table = line["selection"]["score_table"]
+    assert len(score_table) == 2                          # the mirror was minted and scored
+    top, runner_up = score_table
+    assert top["total"] > runner_up["total"]
+    assert runner_up["total"] < 1e-6                      # the mirror's own row reads ~0
+    winning_association = next(
+        a for a in line["selection"]["associations"] if a["generator"] == "presence_probe")
+    # canonical is omitted-when-True (SCENE-5 5.2 serialization rule) -- its absence here IS the
+    # +E canonical winning, not the mirror.
+    assert "canonical" not in winning_association
+
+
 def test_same_design_two_partitions_deterministic_winner_no_duplicate_key_refusal(
         monkeypatch, tmp_path):
     """Two evaluations at ONE lattice node/window/temperature in different partitions ARE one

@@ -404,7 +404,18 @@ def exposure_fill(context: DiscoveryContext, spec_dict: Mapping) -> GeneratorOut
 # ----------------------------------------------------------------------------
 def presence_probe(context: DiscoveryContext, spec_dict: Mapping) -> GeneratorOutcome:
     """Open presence always admits (re)measurement — never a clean zero, never INAPPLICABLE; a
-    generator that produced nothing here would be a defect, not a scientific outcome."""
+    generator that produced nothing here would be a defect, not a scientific outcome.
+
+    SCENE-5 5.3 (Ruling A/B, ``design/scene.md`` H23): beside the canonical +E proposal, always
+    emits one mirrored −E variant at the SAME node — window = the clipped +E window negated and
+    swapped, ``canonical=False``. This is an ordinary on-path submission (Ruling B): no intent
+    field, no provenance change, no role. The window sign alone distinguishes its
+    ``scientific_action_fingerprint`` from the canonical row (``_identity_payload`` folds
+    ``energy_lo``/``energy_hi`` into scientific identity). Emitted unconditionally — no
+    temperature/Bose gate here; worth is priced later, at scoring, by the thermal_consistency
+    corroboration term (Ruling A: the fitter's Bose tie already makes an untrusted mirror
+    dominated by its +E twin under a trusted map, so gating in the producer would just duplicate
+    what the doubt-priced MI term already decides)."""
     subject = QuestionSubject.from_dict(spec_dict["subject"])
     t = subject.anchor if subject.anchor is not None else _tile_midpoint(subject.region_rlu)
     energy_lo, energy_hi = _clip_omega(context.step_payload, subject.omega_band_meV)
@@ -413,9 +424,16 @@ def presence_probe(context: DiscoveryContext, spec_dict: Mapping) -> GeneratorOu
     reason = ("reopen presence at declared anchor" if subject.anchor is not None
              else "reopen presence in emergent tile")
     association = _make_association(context, spec_dict, "presence_probe", reason=reason)
-    # One representative action, not an enumeration of the admissible ones — so a refusal of it
-    # does not prove the question unanswerable (review finding 2026-08-18).
-    return GeneratorOutcome.proposed(((intent, association),), proposals_exhaustive=False)
+    mirror_intent = _make_intent(context, hkl, -energy_hi, -energy_lo,
+                                 partition_id=subject.partition_id)
+    mirror_association = _make_association(
+        context, spec_dict, "presence_probe", reason=f"{reason} (−E mirror)",
+        placement_rank=1, canonical=False)
+    # One representative canonical action, not an enumeration of the admissible ones — so a
+    # refusal of it does not prove the question unanswerable (review finding 2026-08-18); the
+    # mirrored −E row is an additional admissible member, not an alternate representative.
+    return GeneratorOutcome.proposed(
+        ((intent, association), (mirror_intent, mirror_association)), proposals_exhaustive=False)
 
 
 # ----------------------------------------------------------------------------
