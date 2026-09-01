@@ -238,10 +238,15 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
 Speedup work is governed by [SPEEDUP_DESIGN.md](docs/plans/speedup.md); steering physics by
 the steering roadmap ([design/steering.md](docs/design/steering.md) §10). Only items outside those plans live here.
 
-- [ ] **DRV-1 — Supervisor-model auto-fallback.** `gpt-oss-120b` throws transient 503s; today the
-      operator pins `LLMM_SUPERVISOR_MODEL` by hand (`deepseek-v4-pro:thinking` is the proven
-      backup). Fall back automatically down a probed shortlist.
-      **Acceptance:** a 503 from the primary supervisor model does not require operator action.
+- [ ] **DRV-1 — Supervisor-model auto-fallback.** Largely closed by moving the supervisor onto the
+      LLMM `scientific_interpreter` role (2026-09-01): the role store owns the shortlist
+      (glm-5.2 → deepseek-v4-pro → kimi-k2.5, `fallback_behavior: warn`) and LLMM walks it, so no
+      hand-pinning is needed. `LLMM_SUPERVISOR_MODEL` survives only as a debugging override.
+      **Remaining:** observed rather than assumed — no real primary outage has exercised the chain
+      yet, and ISAR discards LLMM's `fallback_level` / `routing_warning` instead of recording which
+      model actually designed the campaign.
+      **Acceptance:** a 503 from the primary supervisor model does not require operator action, and
+      the session log names the model that answered.
 - [ ] **DRV-2 — Objective-aware Γ exclusion.** Acoustic ω₀ → 0 at zone centers is structurally
       unmeasurable; parse-time exclusion beats spending ~4 scans per campaign discovering it.
       **Acceptance:** a zone-center q is excluded at objective-compile time with the reason recorded.

@@ -8,13 +8,23 @@ The only thing the rest of ISAR depends on is the :class:`Dispatcher` protocol, 
 fake and never hit the network. :class:`LLMMClient` is the real implementation; its HTTP transport is
 injectable too, which is how this module's own tests stay offline.
 
-Contract (captured from ``llm-contracts`` ``DispatchRequest``): pin one model via the top-level
-``model: <ref>`` field (a direct request, no fallback chain — the older
-``routing={"mode":"pinned",...}`` block is rejected with 422 ``extra_forbidden`` by current LLMM);
-generation params use ``max_tokens`` (not ``max_output_tokens``); ``input.structured_output_schema``
-is a raw JSON-Schema dict; ``thinking`` is False to keep reasoning models from emitting reasoning
-instead of content. The response carries ``structured`` (the schema-valid object, or ``null`` on a
-schema-miss with ``output`` still present) and an optional ``error`` (``{code,message,...}``).
+Contract (captured from ``llm-contracts`` ``DispatchRequest``): every dispatch names a ``role``,
+and the role is how LLMM is meant to be addressed — the role store owns which model answers, its
+fallback chain, queue and timeout, so swapping a model or adding a fallback is an LLMM-side edit
+and never an ISAR release. An optional ``voice`` selects one binding within a role.
+
+``model`` is the escape hatch, not the norm: LLMM accepts it *only* alongside
+``role="passthrough"`` ("DispatchRequest.model is only legal alongside role='passthrough'") and
+rejects a body with no ``role`` at all (422 ``missing``). :class:`LLMMClient` enforces that pairing
+locally so a misconfiguration is a clear ``ValueError`` here rather than a 400 from the service.
+
+``metadata.client`` and ``metadata.node`` are both required; an unattributed request is refused
+with ``unattributed_request``. The legacy ``routing={"mode":"pinned",...}`` block stays rejected
+with 422 ``extra_forbidden``. Generation params use ``max_tokens`` (not ``max_output_tokens``);
+``input.structured_output_schema`` is a raw JSON-Schema dict; ``thinking`` is False to keep
+reasoning models from emitting reasoning instead of content. The response carries ``structured``
+(the schema-valid object, or ``null`` on a schema-miss with ``output`` still present) and an
+optional ``error`` (``{code,message,...}``).
 """
 from __future__ import annotations
 
@@ -151,15 +161,40 @@ def _default_transport(url: str, data: bytes, timeout: float) -> bytes:
         return _read_capped(resp)
 
 
+PASSTHROUGH_ROLE = "passthrough"   # the one role under which LLMM accepts an explicit model pin
+
+
 class LLMMClient:
-    """Pins one model and dispatches a structured request to a running LLMM."""
+    """Dispatch a structured request to a running LLMM, addressed by role (or a pinned model).
+
+    Normal use names a ``role`` and lets LLMM's role store choose the model, fallback chain, queue
+    and timeout. Passing ``model_pin`` instead selects ``role="passthrough"`` — the debugging /
+    override path that bypasses the role store to hit one exact model ref.
+    """
 
     def __init__(
-        self, endpoint: str, model_pin: str, *,
+        self, endpoint: str, model_pin: str | None = None, *,
+        role: str | None = None, voice: str | None = None,
+        node: str = "reduce.llm_client",
         timeout: float = 60.0, transport: Transport | None = None,
     ) -> None:
+        role = role or (PASSTHROUGH_ROLE if model_pin else None)
+        if role is None:
+            raise ValueError("LLMMClient needs either a role or a model_pin")
+        # Enforced here so a misconfiguration fails at construction with a readable message,
+        # rather than as an opaque 400 on the first dispatch of a long unattended campaign.
+        if role == PASSTHROUGH_ROLE and not model_pin:
+            raise ValueError("role='passthrough' requires a model pin")
+        if role != PASSTHROUGH_ROLE and model_pin:
+            raise ValueError(
+                f"a model pin is only legal under role='passthrough' (got role={role!r}); "
+                "let the role store choose the model, or pin via passthrough"
+            )
         self._endpoint = validate_endpoint(endpoint)
         self._model_pin = model_pin
+        self._role = role
+        self._voice = voice
+        self._node = node          # metadata.node: the call site LLMM attributes the dispatch to
         self._timeout = timeout
         self._transport = transport or _default_transport
 
@@ -167,9 +202,10 @@ class LLMMClient:
         self, *, system: str, user: str, schema: dict,
         temperature: float, max_tokens: int,
     ) -> DispatchResult:
-        body = {
+        body: dict[str, Any] = {
             "id": uuid.uuid4().hex,
-            "model": self._model_pin,
+            "role": self._role,
+            "metadata": {"client": "isar", "node": self._node},
             "generation_params": {"temperature": temperature, "max_tokens": max_tokens},
             "input": {
                 "system": system,
@@ -178,6 +214,10 @@ class LLMMClient:
                 "thinking": False,
             },
         }
+        if self._model_pin:            # passthrough only; illegal under any named role
+            body["model"] = self._model_pin
+        if self._voice:
+            body["voice"] = self._voice
         url = f"{self._endpoint}/v1/dispatch"
         try:
             raw = self._transport(url, json.dumps(body).encode("utf-8"), self._timeout)

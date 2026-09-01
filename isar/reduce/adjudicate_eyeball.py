@@ -66,7 +66,7 @@ def main(endpoint: str | None = None, pin: str | None = None) -> dict | None:
     for r in records:
         qc.qc_record(r, card)
 
-    client = LLMMClient(endpoint, pin, timeout=120)
+    client = LLMMClient(endpoint, pin, node="reduce.adjudicate_eyeball", timeout=120)
     adjudicate.adjudicate_records(records, card, client)
 
     written = report_build.generate_report(records, card, _OUT, name="report")

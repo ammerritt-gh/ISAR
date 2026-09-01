@@ -126,7 +126,11 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   natural-language goal it proposes scans, drives a virtual instrument (TAVI), fits each scan with
   the same `isar run` pipeline, and decides where to remeasure and when to stop — writing an
   audited `report/session_log.jsonl` and `report/campaign_summary.json`. Needs LLMM (goal-parsing)
-  and a running TAVI instrument. Use `--program program.json` for an LLM-free run — an
+  and a running TAVI instrument. Goal-parsing asks LLMM for the **`scientific_interpreter` role**,
+  so which model reads your goal — and what it falls back to when that model is unhealthy — is an
+  LLMM role-store setting, not an ISAR one: change it in LLMM (`PUT /v1/roles`, or the Roles tab),
+  never in ISAR. `LLMM_SUPERVISOR_MODEL=<exact ref>` bypasses the role store for one run when you
+  need to test a specific model. Use `--program program.json` for an LLM-free run — an
   `isar.campaign-program/1` file, which `--goal … --compile-only program.json` writes for you without
   contacting TAVI. **Currently drives the
   TAVI simulator only** (development tier), not a live beamline.

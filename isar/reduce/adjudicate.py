@@ -165,8 +165,8 @@ def make_client(cfg: AdjudicationConfig) -> FallbackDispatcher:
     if cfg.profile == "openai":
         primary = OpenAIClient(cfg.endpoint, cfg.model_pin, api_key=cfg.api_key)
         return FallbackDispatcher(primary, None)
-    primary = LLMMClient(cfg.endpoint, cfg.model_pin)
-    fallback = (LLMMClient(cfg.endpoint, cfg.fallback_pin)
+    primary = LLMMClient(cfg.endpoint, cfg.model_pin, node="reduce.adjudicate")
+    fallback = (LLMMClient(cfg.endpoint, cfg.fallback_pin, node="reduce.adjudicate.fallback")
                 if cfg.fallback_pin and cfg.fallback_pin != cfg.model_pin else None)
     return FallbackDispatcher(primary, fallback)
 

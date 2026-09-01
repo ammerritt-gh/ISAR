@@ -5,6 +5,8 @@ body-construction and DispatchResponse-parsing logic against a fake that capture
 """
 import json
 
+import pytest
+
 from isar.reduce import llm_client
 
 
@@ -36,7 +38,7 @@ def _ok_response(**over) -> dict:
 def test_dispatch_builds_pinned_request_body():
     tr = _FakeTransport(_ok_response())
     client = llm_client.LLMMClient(
-        "http://127.0.0.1:8766", "local_desktop/qwen3p5-9b", transport=tr
+        "http://127.0.0.1:8766", "local_desktop/qwen3p5-9b", node="reduce.test", transport=tr
     )
     schema = {"type": "object", "required": ["decisions"]}
 
@@ -46,9 +48,13 @@ def test_dispatch_builds_pinned_request_body():
     call = tr.calls[0]
     assert call["url"] == "http://127.0.0.1:8766/v1/dispatch"
     body = call["body"]
-    # Current llm-contracts DispatchRequest: a direct request pins via the top-level `model` field;
-    # the legacy `routing` block is rejected (422 extra_forbidden) and must never be sent.
+    # Current llm-contracts DispatchRequest: every dispatch names a `role`, and a pinned `model`
+    # is legal only under role="passthrough" (any other role 422s on the model field). Both
+    # metadata.client and metadata.node are required — LLMM refuses an unattributed request. The
+    # legacy `routing` block is rejected (422 extra_forbidden) and must never be sent.
+    assert body["role"] == "passthrough"
     assert body["model"] == "local_desktop/qwen3p5-9b"
+    assert body["metadata"] == {"client": "isar", "node": "reduce.test"}
     assert "routing" not in body
     assert body["generation_params"] == {"temperature": 0.2, "max_tokens": 1500}
     assert body["input"]["system"] == "SYS"
@@ -56,6 +62,44 @@ def test_dispatch_builds_pinned_request_body():
     assert body["input"]["structured_output_schema"] == schema
     assert body["input"]["thinking"] is False        # Qwen3 reasoning disabled
     assert body["id"]                                 # a non-empty request id
+
+
+def test_dispatch_addresses_a_role_and_sends_no_model():
+    """The normal path: name a role, let LLMM's role store choose the model and fallback."""
+    tr = _FakeTransport(_ok_response())
+    client = llm_client.LLMMClient(
+        "http://127.0.0.1:8766", role="scientific_interpreter", voice="default",
+        node="drive.supervisor.goal_to_program", transport=tr,
+    )
+
+    client.dispatch(system="SYS", user="USER", schema={}, temperature=0.1, max_tokens=800)
+
+    body = tr.calls[0]["body"]
+    assert body["role"] == "scientific_interpreter"
+    assert body["voice"] == "default"
+    # A pin alongside a named role is a 400 from LLMM; the role store owns the model here.
+    assert "model" not in body
+    assert body["metadata"] == {"client": "isar", "node": "drive.supervisor.goal_to_program"}
+
+
+def test_dispatch_omits_voice_when_unset():
+    tr = _FakeTransport(_ok_response())
+    client = llm_client.LLMMClient("http://127.0.0.1", role="extractor", transport=tr)
+
+    client.dispatch(system="s", user="u", schema={}, temperature=0.1, max_tokens=10)
+
+    assert "voice" not in tr.calls[0]["body"]
+
+
+@pytest.mark.parametrize("kwargs, expected", [
+    ({"model_pin": "some/ref", "role": "scientific_interpreter"}, "only legal under role='passthrough'"),
+    ({"role": "passthrough"}, "requires a model pin"),
+    ({}, "needs either a role or a model_pin"),
+])
+def test_illegal_role_model_pairings_fail_at_construction(kwargs, expected):
+    """Caught locally, so a misconfiguration is not a 400 on the first dispatch of a long run."""
+    with pytest.raises(ValueError, match=expected):
+        llm_client.LLMMClient("http://127.0.0.1", **kwargs)
 
 
 def test_dispatch_parses_structured_success():

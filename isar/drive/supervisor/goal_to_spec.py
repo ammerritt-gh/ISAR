@@ -54,11 +54,13 @@ import isar.schema.question_policy as _qpolicy
 Dispatcher = _llm.Dispatcher
 LLMMClient = _llm.LLMMClient
 
-# Cloud pin (configurable via LLMM_SUPERVISOR_MODEL). GLM 5.2 replaced gpt-oss-120b, whose NanoGPT
-# serviceability had collapsed (~23% success, frequent dropped dispatches at goal-parse time). GLM 5.2
-# reports >95% health, supports structured output, and dispatches in ~1.6s — right for a one-shot
-# schema-enforced goal parse. `thinking` is pinned False by the client, so the non-thinking base ref.
-DEFAULT_SUPERVISOR_MODEL = "nanogpt/zai-org/glm-5.2"
+# The supervisor is addressed by LLMM *role*, not by a model pin: the role store owns which model
+# answers, its fallback chain, queue and timeout. Swapping the supervisor model or adding a backup
+# is therefore an LLMM-side edit, never an ISAR release — and the role's fallback chain is what
+# retires the hand-pinning workaround in TODO DRV-1 (a 503 from the primary no longer needs the
+# operator). `LLMM_SUPERVISOR_MODEL` remains as a debugging escape hatch: setting it bypasses the
+# role store via role="passthrough" to hit one exact ref.
+DEFAULT_SUPERVISOR_ROLE = "scientific_interpreter"
 DEFAULT_ENDPOINT = "http://127.0.0.1:8766"
 
 _Q_ARRAY = {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
@@ -285,17 +287,21 @@ def goal_to_program(goal: str, *, dispatcher: Dispatcher | None = None,
     Args:
         goal: the natural-language measurement command; kept verbatim as the program's
             ``source_text``.
-        dispatcher: an injected :class:`Dispatcher` (tests pass a fake). When ``None`` a pinned
-            :class:`LLMMClient` is built from ``endpoint`` / ``model_pin`` (env-overridable).
+        dispatcher: an injected :class:`Dispatcher` (tests pass a fake). When ``None`` an
+            :class:`LLMMClient` is built from ``endpoint`` and the supervisor role
+            (env-overridable).
         defaults: overrides for :data:`DEFAULTS` (``step_h``, ``tier``).
-        endpoint, model_pin: LLMM endpoint and pinned model ref; default from
-            ``LLMM_SUPERVISOR_ENDPOINT`` / ``LLMM_SUPERVISOR_MODEL`` or the module constants.
+        endpoint: LLMM endpoint; default from ``LLMM_SUPERVISOR_ENDPOINT`` or the module constant.
+        model_pin: escape hatch — an exact model ref dispatched via ``role="passthrough"``,
+            bypassing the role store. Defaults to ``LLMM_SUPERVISOR_MODEL`` if set, else unset and
+            the :data:`DEFAULT_SUPERVISOR_ROLE` (or ``LLMM_SUPERVISOR_ROLE``) chooses the model.
     """
     merged = {**DEFAULTS, **(defaults or {})}
     if dispatcher is None:
         ep = endpoint or os.environ.get("LLMM_SUPERVISOR_ENDPOINT", DEFAULT_ENDPOINT)
-        pin = model_pin or os.environ.get("LLMM_SUPERVISOR_MODEL", DEFAULT_SUPERVISOR_MODEL)
-        dispatcher = LLMMClient(ep, pin)
+        pin = model_pin or os.environ.get("LLMM_SUPERVISOR_MODEL") or None
+        role = None if pin else os.environ.get("LLMM_SUPERVISOR_ROLE", DEFAULT_SUPERVISOR_ROLE)
+        dispatcher = LLMMClient(ep, pin, role=role, node="drive.supervisor.goal_to_program")
 
     res = dispatcher.dispatch(system=SYSTEM, user=goal, schema=LLM_PROGRAM_SCHEMA,
                               temperature=temperature, max_tokens=max_tokens)
