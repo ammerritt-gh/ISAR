@@ -135,6 +135,9 @@ Read in this order when returning after time away:
    [design/eig.md](design/eig.md) (same-action scan-window EIG).
 6. While it exists: [HANDOFF-doc-rebuild.md](HANDOFF-doc-rebuild.md) — the documentation
    rebuild's frontier and the operator closeout list.
+7. While it exists: [HANDOFF-scene-tuning.md](HANDOFF-scene-tuning.md) — the measured cost and
+   placement baseline from the first end-to-end discovery campaign, and the tuning targets it
+   names. Read before tuning discovery placement or building SCENE-5.5's priced envelope.
 
 ### Door 2 — running ISAR on data (the user door)
 
