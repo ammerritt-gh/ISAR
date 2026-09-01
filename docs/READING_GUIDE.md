@@ -138,6 +138,9 @@ Read in this order when returning after time away:
 7. While it exists: [HANDOFF-scene-tuning.md](HANDOFF-scene-tuning.md) — the measured cost and
    placement baseline from the first end-to-end discovery campaign, and the tuning targets it
    names. Read before tuning discovery placement or building SCENE-5.5's priced envelope.
+8. While it exists: [HANDOFF-campaign-pipeline-audit.md](HANDOFF-campaign-pipeline-audit.md) — the
+   live evidence ledger for the end-to-end campaign audit: objective semantics, Q/window selection,
+   scene-EIG correctness, performance, and verified findings.
 
 ### Door 2 — running ISAR on data (the user door)
 
