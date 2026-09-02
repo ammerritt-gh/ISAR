@@ -3365,7 +3365,11 @@ def _planner_scans(log_path, observations: list[dict], path, branches) -> dict[i
             float(payload["search_energy_lo"]), float(payload["search_energy_hi"]),
             int(payload.get("submitted_ncount") or payload.get("ncount") or 0),
             frozenset(seen)))
-    return out
+    # One entry per distinct measurement. The same window, exposure and outcome repeated is the same
+    # statement about which branches are not there, and the planner's negative evidence is
+    # multiplicative: told the identical thing a few dozen times it drives a branch's whole scenario
+    # weight to zero and the next normalisation is a divide by zero.
+    return {index: list(dict.fromkeys(scans)) for index, scans in out.items()}
 
 
 def _planner_scale(master_rows: list[dict], branches, temperature_K: float):

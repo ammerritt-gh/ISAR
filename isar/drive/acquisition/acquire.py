@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from isar.drive.acquisition.eig import counts_eig, eig_per_cost, predicted_sigma_after
 from isar.drive.acquisition.inventory import MeasurementIntent
@@ -46,10 +46,23 @@ class ScanProposal:
     n_points: int = 0
     acquisition_id: str | None = None
     meta: dict[str, Any] = field(default_factory=dict)
+    # In-memory only: refresh exposure-sensitive score fields after runtime clamps. Deliberately
+    # omitted from to_dict(), so the event/file contract remains plain JSON. Nothing on the EIG path
+    # sets it; it survives because the retired scan-window comparison still constructs proposals
+    # with it, and that stack is deleted in its own slice.
+    score_recompute: Callable[[int], dict[str, float | None]] | None = field(
+        default=None, repr=False, compare=False)
     # In-memory only: the scientific question this request realizes. The JSON contract carries only
     # ``meta["scientific_action_fingerprint"]``; the object itself is what lets the loop build the
     # finalized stage against the intent it belongs to instead of against a bare hash string.
     intent: MeasurementIntent | None = field(default=None, repr=False, compare=False)
+    # In-memory only, and nothing on the EIG path touches these three: they survive because the
+    # retired scan-window comparison still constructs proposals with them, and that whole stack
+    # (eig_runtime / eig_shadow / realized_comparison / authority) is deleted in its own slice.
+    scan_design_inventory: Any | None = field(default=None, repr=False, compare=False)
+    shadow_scoring_source: Any | None = field(default=None, repr=False, compare=False)
+    realized_scoring_remaining_seconds: float | None = field(
+        default=None, repr=False, compare=False)
 
     def scan_command(self) -> str:
         """The TAVI ``scan_command1`` for this window: ``deltaE <lo> <hi> <step>``.
