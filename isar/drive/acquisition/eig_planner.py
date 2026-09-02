@@ -211,6 +211,9 @@ class Decision:
     chosen: RankedDesign | None
     ranked: tuple[RankedDesign, ...]
     per_point: tuple[PointState, ...]
+    #: Set when the prize is unmet but no design is expected to complete a point: the cheapest
+    #: design is taken as a probe and the campaign feed says so, instead of a silent zero.
+    note: str = ""
 
 
 def default_intensity_scale(branches: Sequence[str]) -> IntensityScale:
@@ -816,8 +819,12 @@ def plan_next(inp: PlannerInput) -> Decision:
     tied = [d for d in designs if d.score >= cut]
     chosen = min(tied, key=lambda d: (d.cost_neutrons, _design_hash(d)))
     ranked = [chosen] + [d for d in designs if d is not chosen][:9]
+    note = ""
+    if chosen.utility_nats <= 0.0:
+        note = ("no design is expected to complete a point from here; taking the cheapest "
+                "probe (check the intensity map scale and the beliefs)")
     return Decision(stop=False, stop_reason="", chosen=chosen, ranked=tuple(ranked),
-                    per_point=per_point)
+                    per_point=per_point, note=note)
 
 
 def _design_hash(d: RankedDesign) -> str:
