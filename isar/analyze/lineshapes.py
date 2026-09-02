@@ -15,10 +15,11 @@ Constants
   KB  : Boltzmann constant in meV/K
 """
 
+from functools import lru_cache
+
 import numpy as np
 from scipy.special import wofz
 from scipy.signal import fftconvolve
-from scipy.interpolate import interp1d
 
 # ============================================================
 # Constants
@@ -102,6 +103,32 @@ def antiStokes_DHO(x, amplitude, damping, center):
 # Voigt ⊗ DHO convolution model
 # ============================================================
 
+@lru_cache(maxsize=64)
+def _grid_and_kernel(x_span, dx, gauss_fwhm, lorentz_fwhm):
+    """Cached uniform grid + unit-area Voigt resolution kernel on it.
+
+    Keyed on the quantities that are fixed within one fit (grid geometry and
+    resolution), never on the varying DHO parameters. Arrays are frozen
+    read-only so callers can't corrupt the cache.
+    """
+    x_uniform = np.arange(-x_span, x_span, dx)
+    voigt_kernel = Voigt(x_uniform, Area=1.0,
+                         gauss_fwhm=gauss_fwhm, lorentz_fwhm=lorentz_fwhm, center=0)
+    x_uniform.flags.writeable = False
+    voigt_kernel.flags.writeable = False
+    return x_uniform, voigt_kernel
+
+
+@lru_cache(maxsize=64)
+def _elastic_unit_voigt(x_target_bytes, x_target_shape, gauss_fwhm, lorentz_fwhm, center):
+    """Cached unit-area elastic Voigt profile on x_target (scale by elastic_amplitude)."""
+    x_target = np.frombuffer(x_target_bytes, dtype=float).reshape(x_target_shape)
+    profile = Voigt(x_target, Area=1.0,
+                    gauss_fwhm=gauss_fwhm, lorentz_fwhm=lorentz_fwhm, center=center)
+    profile.flags.writeable = False
+    return profile
+
+
 def convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, lorentz_fwhm,
                         damping, phonon_amplitude, elastic_amplitude, BG, T,
                         peak='all'):
@@ -140,7 +167,7 @@ def convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, lorentz_fwh
     # reports `unavailable` (an EIG-eligibility blocker), and the frozen Slice-8 replacement
     # candidate no longer reproduces. Fixing it needs its own owner-sequenced slice (fit-robustness
     # + candidate renewal). tests/analyze/test_lineshapes.py pins the defect as strict xfails.
-    x_uniform = np.arange(-x_span, x_span, dx)
+    x_uniform, voigt_kernel = _grid_and_kernel(float(x_span), dx, float(gauss_fwhm), float(lorentz_fwhm))
 
     peak_lower = peak.lower()
     if peak_lower == 'all':
@@ -159,17 +186,14 @@ def convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, lorentz_fwh
         signal += antiStokes_DHO(x_uniform, amplitude=astokes_amp,
                                  damping=damping, center=phonon_energy)
 
-    voigt_kernel = Voigt(x_uniform, Area=1.0,
-                         gauss_fwhm=gauss_fwhm, lorentz_fwhm=lorentz_fwhm, center=0)
     convolved = fftconvolve(signal, voigt_kernel, mode='same') * dx
 
-    interp_fn = interp1d(x_uniform, convolved, kind='linear',
-                         bounds_error=False, fill_value=0.0)
-    y = interp_fn(x_target - center)
+    y = np.interp(x_target - center, x_uniform, convolved, left=0.0, right=0.0)
 
     if 'elastic' in peak_parts:
-        y += Voigt(x_target, Area=elastic_amplitude,
-                   gauss_fwhm=gauss_fwhm, lorentz_fwhm=lorentz_fwhm, center=center)
+        unit_profile = _elastic_unit_voigt(x_target.tobytes(), x_target.shape,
+                                           float(gauss_fwhm), float(lorentz_fwhm), float(center))
+        y += elastic_amplitude * unit_profile
 
     y += BG
     return y
