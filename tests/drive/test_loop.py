@@ -40,6 +40,7 @@ from isar.drive.instrument.request_realization import (DEFAULT_MAX_POINTS, _emit
                                                        _target_supporting_feasible_points,
                                                        _validate_body)
 from isar.drive.acquisition.acquire import ScanProposal
+from isar.drive.acquisition.eig_planner import default_intensity_scale
 from isar.drive.acquisition.scan_design import points_in_window
 from isar.drive.acquisition.grid_adapters import TAVI_GRID_ADAPTER
 from isar.drive.acquisition.eig import counts_eig
@@ -3884,3 +3885,57 @@ def test_the_intensity_map_is_integrated_from_the_counts(tmp_path):
                               fwhm_meV=fwhm, temperature_K=temperature, scale=scale,
                               branches=("acoustic", "optic"), ncount=ncount)
     assert predicted[0] == pytest.approx(observed, rel=0.25)
+
+
+def _counts_scan(tmp_path, x, counts, *, ncount, energies, scan=7):
+    """One ingested scan plus its submission, the two things the intensity map is read from."""
+    ingest = tmp_path / "data" / "ingest"
+    ingest.mkdir(parents=True, exist_ok=True)
+    (ingest / f"unit-{scan}.json").write_text(json.dumps({
+        "schema": "isar.unit_data/1", "scan_number": scan, "detector_id": "det",
+        "x": x, "counts": counts}), encoding="utf-8")
+    log_event(tmp_path / "log.jsonl", "physical_submission", {
+        "acquisition_id": f"acq-{scan}", "hkl": [2.1, 0.0, 0.0], "submitted_ncount": ncount})
+    return {"scan": scan, "detector": "det", "acquisition_id": f"acq-{scan}", "resolved": True,
+            "branch_id": "acoustic", "disposition": "resolved",
+            "branch_candidates": [{"energy_meV": e, "sigma_meV": 0.02} for e in energies]}
+
+
+def test_the_elastic_term_is_read_only_where_a_window_sees_it(tmp_path):
+    """A window with a mode sitting on zero has not measured the elastic line, and must say nothing
+    about it rather than hand the mode's own counts to the elastic term.
+
+    Measured on the live path: at the reduced-q origin the acoustic Stokes/anti-Stokes pair straddles
+    zero inside one resolution width, and integrating it as elastic read ~30 counts*meV per 1e7 there
+    against ~0 at every separated point — a drifting elastic term that was never a measurement.
+    """
+    from isar.drive.loop import _planner_scale
+
+    ncount, temperature, fwhm = 5_000_000, 200.0, 0.5
+    step, lo = 0.12, -1.2
+    x = [round(lo + step * i, 6) for i in range(21)]
+
+    # (a) a 0.5 meV mode straddling zero: nothing here measures the elastic.
+    straddling = [2.0] * len(x)
+    for i, value in enumerate(x):
+        if min(abs(value - 0.5), abs(value + 0.5)) <= 0.25:
+            straddling[i] += 15.0
+    # (b) a mode far from zero, and a genuinely empty elastic position.
+    separated = [2.0] * len(x)
+    for i, value in enumerate(x):
+        if abs(value - 1.8) <= 0.25:
+            separated[i] += 15.0
+
+    cfg = types.SimpleNamespace(data_dir=tmp_path / "data", log_path=tmp_path / "log.jsonl")
+    path = ((2.1, 0.0, 0.0),)
+    obs_a = _counts_scan(tmp_path, x, straddling, ncount=ncount, energies=[0.5], scan=7)
+    obs_b = _counts_scan(tmp_path, x, separated, ncount=ncount, energies=[1.8], scan=8)
+
+    only_straddling = _planner_scale(cfg, [obs_a], path, ("acoustic", "optic"), temperature, (fwhm,))
+    both = _planner_scale(cfg, [obs_a, obs_b], path, ("acoustic", "optic"), temperature, (fwhm,))
+
+    # The straddling scan says nothing about the elastic, so the class default stands.
+    default = default_intensity_scale(("acoustic", "optic"))
+    assert only_straddling.elastic_counts_meV == pytest.approx(default.elastic_counts_meV)
+    # The separated scan looked at zero and found nothing there: that IS the measurement.
+    assert both.elastic_counts_meV == pytest.approx(0.0)

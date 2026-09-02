@@ -3461,13 +3461,23 @@ def _candidate_branch(candidate: Mapping, row: Mapping, branches) -> str | None:
     return branch if branch in branches else None
 
 
-def _lobe_area(x, counts, background: float, centre: float, half_width: float,
-               step: float) -> float | None:
-    """Counts*meV above ``background`` within ``half_width`` of ``centre``; ``None`` if out of view."""
+def _lobe_area(x, counts, background: float, centre: float, half_width: float, step: float,
+               *, exclude=()) -> float | None:
+    """Counts*meV above ``background`` within ``half_width`` of ``centre``, ignoring the points that
+    belong to another lobe. ``None`` when this scan did not measure this lobe at all.
+
+    ``None`` and ``0.0`` say different things and both are answers: ``None`` is "the window never
+    looked here", which contributes nothing; ``0.0`` is "the window looked and there is nothing",
+    which is a measurement and belongs in the median.
+    """
     if not (x[0] - 1e-9 <= centre <= x[-1] + 1e-9):
         return None
-    return sum(max(count - background, 0.0) * step
-               for value, count in zip(x, counts) if abs(value - centre) <= half_width)
+    inside = [(value, count) for value, count in zip(x, counts)
+              if abs(value - centre) <= half_width
+              and not any(abs(value - other) <= half_width for other in exclude)]
+    if not inside:
+        return None
+    return sum(max(count - background, 0.0) * step for _value, count in inside)
 
 
 def _planner_scale(cfg, observations: list[dict], path, branches, temperature_K: float,
@@ -3546,8 +3556,20 @@ def _planner_scale(cfg, observations: list[dict], path, branches, temperature_K:
         background = sorted(counts)[min(int(0.2 * len(counts)), len(counts) - 1)]
         background_levels.append(background / ncount)
         half_width = 2.0 * float(fwhm_meV[index])
-        area = _lobe_area(x, counts, background, 0.0, half_width, step)
-        if area is not None and area > 0.0:
+        # The elastic line is only measured where nothing else is sitting on it. At the reduced-q
+        # origin the acoustic Stokes/anti-Stokes pair straddles zero inside one resolution width, and
+        # integrating that as "elastic" is what made the elastic term read ~30 counts*meV per 1e7 at
+        # the near-fold points and ~0 everywhere else. Every delivered mode's own two lobes are
+        # excluded; when nothing is left, this scan did not measure the elastic and says nothing.
+        # ponytail: the converse contamination -- a real elastic line leaking into an unresolved
+        # phonon's lobe -- is not corrected, because on this instrument there is no elastic line to
+        # leak (scans at 1.8 and 2.7 meV read exactly zero counts at dE = 0). Split the two by a
+        # joint fit if a sample with a bright elastic ever needs its own scale.
+        occupied = [sign * float(candidate.get("energy_meV", candidate.get("omega0") or 0.0))
+                    for candidate in (observation.get("branch_candidates") or ())
+                    for sign in (1.0, -1.0)]
+        area = _lobe_area(x, counts, background, 0.0, half_width, step, exclude=occupied)
+        if area is not None:
             elastic.append(area / ncount)
         for candidate in (observation.get("branch_candidates") or ()):
             branch = _candidate_branch(candidate, observation, branches)
