@@ -36,7 +36,7 @@ from isar.drive.acquisition.scan_design import (
 )
 from isar.drive.acquisition.scan_grid import UniformGrid
 from isar.drive.session_log import read_log
-from isar.eig.realized_score import score_realized_pair
+from isar.eig.realized_score import RealizedScoringUnavailable, score_realized_pair
 from isar.eig.o41_authority import O41AuthoritativeProfile
 from isar.eig.shadow_inventory import score_shadow_inventory
 from isar.schema.eig_policy import ScanWindowShadowScoringConfig
@@ -830,6 +830,58 @@ def test_runtime_scoring_failure_persists_unavailable_exact_request_and_keeps_le
         proposal.meta["proposal_fingerprint"])
     assert proposal.meta["scan_design_realized_selected_grid_fingerprint"] == (
         comparison.selected_grid_fingerprint)
+
+
+def test_named_scoring_unavailable_fails_open_quietly_at_low_severity(
+        monkeypatch, tmp_path, caplog):
+    """A named, expected refusal (shadow_disagrees) must not alarm with a traceback.
+
+    Same fail-open state as the generic ``RuntimeError`` path
+    (``test_runtime_scoring_failure_persists_unavailable_exact_request_and_keeps_legacy``), but
+    logged quietly: no ERROR-level record, and the session-log event carries the named reason at
+    ``severity: low`` instead of the generic branch's ``high``.
+    """
+    import logging
+
+    inventory = _inventory()
+    proposal = _proposal(inventory)
+    proposal.meta["scan_design_inventory_ref"] = _inventory_reference(tmp_path, inventory)
+    before = (proposal.e_lo, proposal.e_hi, proposal.e_step, proposal.ncount)
+    cfg = SimpleNamespace(
+        workspace=tmp_path, log_path=tmp_path / "report" / "session.jsonl",
+        run_nonce="run", max_points=200, max_points_source="default",
+        instrument_limits=None)
+    objective = SimpleNamespace(
+        analysis_limit_seconds=100.0, tolerance_meV=0.5,
+        steering={"max_scan_points": 100, "production_batch_ncount": 10_000,
+                  "max_ncount_per_scan": 1_000_000})
+
+    def fail(*_args, **_kwargs):
+        raise RealizedScoringUnavailable("shadow_disagrees")
+
+    monkeypatch.setattr(eig_runtime, "score_proposal_realized_pair", fail)
+
+    with caplog.at_level(logging.WARNING):
+        reference = loop._refresh_realized_comparison(
+            cfg, objective, proposal,
+            {"kind": "neutrons", "amount": 10**12, "spent": 0.0}, it=3)
+    comparison = load_scan_design_realized_comparison(reference, tmp_path)
+
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+    assert before == (proposal.e_lo, proposal.e_hi, proposal.e_step, proposal.ncount)
+    assert comparison.score_disposition == "unavailable"
+    assert comparison.reason_codes == ("shadow_disagrees",)
+    assert comparison.variants == ()
+    assert comparison.seed_evidence is None
+    assert proposal.meta["scan_design_realized_selected_request_fingerprint"] == (
+        proposal.meta["proposal_fingerprint"])
+    assert proposal.meta["scan_design_realized_selected_grid_fingerprint"] == (
+        comparison.selected_grid_fingerprint)
+    failures = [event["payload"] for event in read_log(cfg.log_path)
+                if event["kind"] == "exception"]
+    assert failures[-1]["action"] == "shadow_disagrees"
+    assert failures[-1]["severity"] == "low"
+    assert failures[-1]["reason"] == "shadow_disagrees"
 
 
 def test_unexpected_target_construction_is_logged_and_retains_exact_legacy(

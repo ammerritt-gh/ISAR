@@ -51,7 +51,9 @@ from isar.drive.instrument.request_realization import (
 )
 from isar.drive.session_log import AnalysisLimitExceeded, analysis_operation, log_event, timed
 from isar.eig.o41_authority import validate_o41_authoritative_profile
+from isar.eig.realized_score import RealizedScoringUnavailable
 from isar.schema.eig_realized import RealizedScanRequest
+from isar.workspace_api.workspace import WorkspaceNotFound
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never a runtime import (cycle)
     from isar.drive.loop import CampaignConfig
@@ -137,6 +139,21 @@ def _score_shadow_proposal(proposal, objective, cfg, *, it: int) -> None:
         log_event(cfg.log_path, "exception", {
             "action": "shadow_scoring_deadline",
             "severity": "high",
+            "error": str(error),
+            "iter": it,
+        })
+    except WorkspaceNotFound as error:
+        # Cold-start: the workspace is auto-initialised after the first scan, so iteration 1
+        # has no workspace yet. No core candidate exists to score against — legacy control is
+        # the correct fallback, not a fault — so this logs at info with no traceback.
+        _LOG.info(
+            "scan-window shadow scoring skipped: workspace not yet initialized at %s",
+            cfg.workspace)
+        attach_unavailable_shadow(
+            proposal, "workspace_not_initialized", error=str(error))
+        log_event(cfg.log_path, "exception", {
+            "action": "shadow_scoring_workspace_not_initialized",
+            "severity": "low",
             "error": str(error),
             "iter": it,
         })
@@ -290,6 +307,21 @@ def _refresh_realized_comparison(
                 log_event(cfg.log_path, "exception", {
                     "action": "realized_scoring_deadline", "severity": "high",
                     "error": str(error), "iter": it})
+            except RealizedScoringUnavailable as error:
+                # Named, expected refusal (e.g. predictive_insufficient_bootstrap_mass,
+                # shadow_disagrees, modality_fork) — legacy control is the correct fallback, not
+                # a fault, so this logs at info with no traceback.
+                reason = str(getattr(error, "reason_code", "realized_scoring_failed"))
+                comparison = build_realized_comparison(
+                    inventory, inventory_ref, pair,
+                    remaining_seconds=float(proposal.realized_scoring_remaining_seconds or 0.0),
+                    rescorer=None, unavailable_reason=reason)
+                _LOG.info(
+                    "realized scan-window scoring unavailable (%s); continuing with legacy control",
+                    reason)
+                log_event(cfg.log_path, "exception", {
+                    "action": reason, "severity": "low", "error": str(error),
+                    "reason": str(error), "iter": it})
             except Exception as error:  # noqa: BLE001 - fail open at the authority boundary
                 reason = str(getattr(error, "reason_code", "realized_scoring_failed"))
                 comparison = build_realized_comparison(

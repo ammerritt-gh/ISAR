@@ -120,6 +120,33 @@ def test_shadow_deadline_and_crash_fail_open_on_the_same_legacy_candidate(
     assert failures[-1]["severity"] == "high"
 
 
+def test_shadow_scoring_on_an_uninitialized_workspace_fails_open_without_a_traceback(
+        tmp_path, caplog):
+    """Cold-start iteration 1: the workspace does not exist yet, so no core candidate exists.
+
+    Legacy control is the correct fallback here, not a fault, so this must not alarm the
+    operator with an ``_LOG.exception`` traceback.
+    """
+    import logging
+
+    proposal = _proposal()
+    proposal.shadow_scoring_source = SimpleNamespace(scientific_action_fingerprint="action")
+    cfg = _cfg(tmp_path / "not-yet-a-workspace")
+
+    with caplog.at_level(logging.WARNING):
+        eig_runtime._score_shadow_proposal(
+            proposal, SimpleNamespace(analysis_limit_seconds=100.0), cfg, it=6)
+
+    shadow = proposal.scan_design_inventory.shadow_scoring
+    assert shadow.status == "unavailable"
+    assert shadow.reason_codes == ("workspace_not_initialized",)
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+    events = [event["payload"] for event in read_log(cfg.log_path)
+              if event["kind"] == "exception"]
+    assert events[-1]["action"] == "shadow_scoring_workspace_not_initialized"
+    assert events[-1]["severity"] == "low"
+
+
 def test_shadow_boundary_never_catches_process_interrupts(monkeypatch, tmp_path):
     proposal = _proposal()
 
