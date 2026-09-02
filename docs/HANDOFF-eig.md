@@ -273,3 +273,20 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     campaign spends one probe and one optic sighting because the acoustic peak's identity
     cannot be settled until the optic 2.3 meV above it is located — the "more time where the
     branches approach" outcome, as a consequence of the mutually exclusive prize, not a rule.
+15. **First live run through the wired loop (2026-09-03 00:40, short path (2,0,0)→(2.3,0,0)):**
+    10 scans, 5 min, terminal `met` — but three wiring defects, none in the planner: the belief
+    rows are stamped with the ingest's sample id ("tavi") while the loop filtered on a config
+    default, so the planner got prior-only beliefs every iteration (windows of 69–104 points
+    where the simulation uses 12) and the temperature fell to 300 K; fast-tier master rows carry
+    no `certifiable` flag, so the prize read the raw fit σ (0.0003) instead of the published
+    calibrated halfwidth (0.053–0.064) and declared points done that the published intervals
+    miss; and certification only reported the disagreement instead of feeding back. All three
+    are being fixed in the wiring; the prize is judged on the published interval, and `met` is
+    declared only after certification and a re-plan agree.
+16. **Fit accuracy at the 0.05 bar:** `isar score --truth-fn phonon_dft` on that run: median
+    |Δω₀| 0.040 meV, centre pull −0.035 meV (systematic, fits low). The DHO model is interpolated
+    linearly on a 0.05 meV grid (`lineshapes.py`, predates today) and at low counts the fitted
+    centres snap to 0.05 multiples (0.5003, 0.8985, 1.4000, 1.8001, 2.3006, 2.5999 on that run);
+    h = 2.3 came out 0.12 meV low. Being measured against a 0.02 grid at the time of writing. The
+    planner's declared Cramér–Rao inflation is 2.0 (published calibrated halfwidths sit 2–3×
+    above the bound at these counts).
