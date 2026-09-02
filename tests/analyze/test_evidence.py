@@ -785,7 +785,9 @@ def test_all_railed_set_escalates_highest_ceiling_first(clean, monkeypatch):
 
 
 def test_candidate_set_escalations_use_the_scoped_n_live_cut(clean, monkeypatch):
-    """Owner ruling 2026-08-08: post-pruning escalations sample at ESCALATION_N_LIVE=128;
+    """Owner ruling 2026-08-08, amended 2026-09-03: post-pruning escalations sample at
+    ESCALATION_N_LIVE=32 (128 before the amendment; the ~1.2 nat evidence error at 32 is still
+    irrelevant against the 10–40 nat gaps the rung separates, and 128 cost five minutes a fit);
     the direct-call default and the bayes diagnostics tier (D4) stay at 400. An explicit
     caller n_live wins over the cut (setdefault, not override).
 
@@ -816,9 +818,9 @@ def test_candidate_set_escalations_use_the_scoped_n_live_cut(clean, monkeypatch)
 
     monkeypatch.setattr(E, "structure_evidence", _stub)
     es = E.candidate_set_evidence([(hyp, fit, bundle)], ctx)
-    assert seen == [E.ESCALATION_N_LIVE] and E.ESCALATION_N_LIVE == 128
+    assert seen == [E.ESCALATION_N_LIVE] and E.ESCALATION_N_LIVE == 32
     # the record carries the cut honestly (rides validity into the /2 semantics record)
-    assert es.by_label()[fit.label].validity["dynesty"]["n_live"] == 128
+    assert es.by_label()[fit.label].validity["dynesty"]["n_live"] == 32
 
     seen.clear()
     E.candidate_set_evidence([(hyp, fit, bundle)], ctx, n_live=80)

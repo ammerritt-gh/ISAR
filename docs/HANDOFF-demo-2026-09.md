@@ -40,10 +40,10 @@ is broken by cost.* (O41/O43 in `design/eig.md`.)
 ## 2. How to run it
 
 - Start TAVI (`..\TAVI\run-tavi-dev.bat`), Remote API dock set to **Allow control**.
-- Start ISAR with **`run-isar-demo.bat`**. It is `run-isar-gui.bat` plus one environment
-  variable: the evidence sampler's escalation rung runs at 32 live points instead of 128. That
-  is about one minute per fit instead of five, with the same certified result on the reference
-  campaign (measured 2026-09-02). Say so if asked; it is a documented knob, not a hidden one.
+- Start ISAR with `run-isar-gui.bat`, as always. The evidence sampler's escalation rung now runs
+  at 32 live points by default (128 before 2026-09-03): about one minute per fit instead of
+  five, same structures selected, same points certified on the reference campaign. The
+  rationale is in `STATS_PRIMER.md` §Evidence if anyone asks.
 - In the Drive dock: paste the sentence, set **analysis limit to `none`** (the compiler freezes
   one hour, and fifty fits at a minute each would brush it), leave scan-window EIG at its
   default. Start.
@@ -58,9 +58,9 @@ Short reference program, (2,0,0) to (2.3,0,0), three measurable points:
 
 | Run | Sampler | Outcome | Wall | Scans | Cores granted after the survey pass |
 |---|---|---|---|---|---|
-| production settings | 128 live points | stopped by hand after 2 fits | 11 min | 2 | none reachable |
-| capped | 32 | met, 3 of 3 certified | 7.5 min | 8 | 0 of 4 (veto, see §4) |
-| capped, vetoes fixed | 32 | met, 3 of 3 certified | 12.6 min | 9 | 3 of 3 scored, all 17-point cores |
+| old default | 128 live points | stopped by hand after 2 fits | 11 min | 2 | none reachable |
+| new default | 32 | met, 3 of 3 certified | 7.5 min | 8 | 0 of 4 (veto, see §4) |
+| new default, vetoes fixed | 32 | met, 3 of 3 certified | 12.6 min | 9 | 3 of 3 scored, all 17-point cores |
 
 Delivered against TAVI's analytic truth: 0.926, 1.838, 2.650 meV at h = 2.1, 2.2, 2.3, each
 within 0.04 meV. Centres are accurate to a median 0.025 meV over the scored rows.

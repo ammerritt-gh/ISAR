@@ -60,11 +60,14 @@ EVIDENCE_REVISION = "isar.laplace_evidence/1"
 # of sampled. Reaching the 0.01 survivor floor needs the ceiling within ~ln(N/0.01) ≈ 7 nats
 # of the leader; 100 leaves ~93 nats of slack for optimizer slop before pruning could matter.
 PRUNE_MARGIN = 100.0
-# Scoped escalation budget (owner ruling 2026-08-08): post-pruning deferred escalations sample
-# at n_live=128 — their job is separating Occam gaps of 10–40 nats, where the larger logzerr
-# (~0.6 vs ~0.3 nats) is decision-irrelevant. D4's n_live=400 stays for the bayes-tier error
-# diagnostics (errors --errors bayes) and for direct structure_evidence calls.
-ESCALATION_N_LIVE = 128
+# Scoped escalation budget (owner ruling 2026-08-08, amended 2026-09-03): post-pruning deferred
+# escalations sample at n_live=32 — their job is separating Occam gaps of 10–40 nats, where a
+# logzerr of ~1.2 nats (vs ~0.6 at 128, ~0.3 at 400) is still decision-irrelevant. Measured on
+# the acoustic reference campaign 2026-09-02: 128 live points cost ~5 min per fit and 32 cost
+# ~1 min, with the same structures selected and the same points certified; the 128 default made
+# a live campaign unwatchable for no decision benefit. D4's n_live=400 stays for the bayes-tier
+# error diagnostics (errors --errors bayes) and for direct structure_evidence calls.
+ESCALATION_N_LIVE = 32
 # Cost knob, read at call time so a child process spawned by a session pool honours it too
 # (the constant alone cannot: a spawned child re-imports this module fresh). Production leaves it
 # unset and gets ESCALATION_N_LIVE; the test suite caps it from the repo-root conftest, where the

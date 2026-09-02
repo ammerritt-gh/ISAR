@@ -52,7 +52,8 @@ an explicit argument always wins: ``candidate_set_evidence`` consults the enviro
 ``evidence.escalation_n_live()``, and only when no ``n_live`` was supplied.
 
 ``setdefault`` again, so an operator or a test needing the production value sets it themselves.
-Production leaves it unset and samples at ``ESCALATION_N_LIVE`` (128). The *environment* rather
+Production leaves it unset and samples at ``ESCALATION_N_LIVE`` (32 since 2026-09-03, 128 before;
+the cap below now coincides with production and stays as the explicit contract). The *environment* rather
 than a fixture patching the module constant is what matters here: a spawned pool child re-imports
 ``isar.analyze.evidence`` and would otherwise silently sample at 128, which is exactly the arm
 these tests exist to compare.

@@ -150,7 +150,10 @@ penalty is the integral itself, not a parameter tax. Evidence is comparable only
 data-likelihood arena (the record carries the arena fingerprint; cross-arena comparison raises),
 priors enter exactly once (a transported soft constraint IS its parameter's prior), and a
 deferred escalation whose evidence ceiling sits ≥100 nats below a trusted leader is recorded
-`dominated` instead of sampled; surviving escalations sample at n_live=128, scoped to that lane.
+`dominated` instead of sampled; surviving escalations sample at n_live=32, scoped to that lane
+(128 until 2026-09-03: the evidence error of about 1.2 nats at 32 is still irrelevant against the
+10–40 nat Occam gaps the rung exists to separate, and 128 cost five minutes a fit for no decision
+benefit on the acoustic reference campaign).
 The escalation phase also carries a wall-clock budget per candidate set (`ESCALATION_BUDGET_S`,
 a backstop against a pathological set rather than a throughput lever). A candidate the budget
 skips is recorded `unresolved` with its ceiling intact — kept out of the posterior like

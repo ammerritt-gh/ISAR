@@ -53,7 +53,8 @@ area.
 - **Escalation sampler cap:** the same conftest `setdefault`s `ISAR_ESCALATION_N_LIVE=32`. Under
   evidence selection the dynesty escalation rung is ~90% of a campaign test's wall clock (measured
   2026-08-09: one shadow-selection test, 348 s at `n_live=128` vs 35.6 s at 8, passing either way).
-  Production leaves the variable unset and samples at `ESCALATION_N_LIVE=128`. It travels by
+  Production leaves the variable unset and samples at `ESCALATION_N_LIVE=32` (128 until
+  2026-09-03; the cap and the default now coincide, the knob stays). It travels by
   *environment*, not a patched constant, because a spawned pool child re-imports
   `isar.analyze.evidence` — a fixture would leave the parallel arm sampling at 128. An explicit
   `n_live=` argument still wins over both. See the conftest docstring for why capping it does not
