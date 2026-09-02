@@ -30,13 +30,9 @@ import pytest
 
 from isar.drive import loop as loop_mod
 from isar.drive.acquisition import acquire as acq
-from isar.drive.acquisition import model as acq_model
 from isar.drive.acquisition.inventory import (
-    GENERATOR_REGISTRY,
     ActionEligibility,
     GeneratorSpec,
-    LEGACY_SELECTOR_GENERATOR,
-    NARROW_RIVAL_PROBE_GENERATOR,
     RejectionClass,
 )
 from isar.drive.objective import ObjectiveSpec
@@ -222,6 +218,9 @@ def test_a_request_scoped_refusal_condemns_the_design_it_was(tmp_path):
         cfg, None, _refused_proposal(), "validation_rejected", {}, {}, {}, it=3,
         suppressed_designs=suppressed)
 
-    expected = loop_mod.design_key((2.5, 0.0, 0.0), -1.0, 5.0, 0.2, 5_000_000)
-    assert suppressed == {expected}
-    assert loop_mod.suppressed_actions(cfg.log_path)[3] == {expected}
+    # Both the exact design and its WINDOW at any exposure: validation judged the geometry, and the
+    # same grid at another dose would be refused identically.
+    exact = loop_mod.design_key((2.5, 0.0, 0.0), -1.0, 5.0, 0.2, 5_000_000)
+    window = loop_mod.design_key((2.5, 0.0, 0.0), -1.0, 5.0, 0.2, 0)
+    assert suppressed == {exact, window}
+    assert loop_mod.suppressed_actions(cfg.log_path)[3] == {exact, window}

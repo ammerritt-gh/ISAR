@@ -47,9 +47,12 @@ import time
 import uuid
 
 from isar.drive.acquisition.acquire import (
+    DEFAULT_FWHM_MEV,
+    BudgetInsufficientForMinimumBatch,
+    InstrumentLimitBelowMinimumBatch,
+    InstrumentPointLimitExceeded,
     ScanProposal,
     _resolve_fwhm,
-    normalize_proposal_score,
     hkl_key,
 )
 from isar.drive.acquisition.classify_eig import belief_predict
@@ -62,17 +65,7 @@ from isar.drive.acquisition.eig_planner import (
     default_intensity_scale,
     plan_next,
 )
-from isar.drive.acquisition.scan_design import (
-    DEFAULT_FWHM_MEV,
-    MAX_POINTS,
-    BudgetInsufficientForMinimumBatch,
-    InstrumentLimitBelowMinimumBatch,
-    InstrumentPointLimitExceeded,
-)
-from isar.drive.acquisition.scan_grid import (
-    COARSEN_FROM_DESIGNED_SPAN,
-    resolve_uniform_grid,
-)
+from isar.drive.acquisition.scan_grid import MAX_POINTS, resolve_uniform_grid
 from isar.drive.acquisition.grid_adapters import TAVI_GRID_ADAPTER
 from isar.drive.acquisition.inventory import (
     TERMINAL_CONTROLLER_FAULT, CampaignSliceKey, MeasurementIntent, RejectionClass, canonical_json)
@@ -191,11 +184,10 @@ def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int
         return False
     old_step = float(proposal.e_step)
     grid = resolve_uniform_grid(
-        proposal.e_lo, proposal.e_hi, proposal.e_step,
-        max_points=max_points, coarsen_span=COARSEN_FROM_DESIGNED_SPAN)
+        proposal.e_lo, proposal.e_hi, proposal.e_step, max_points=max_points)
     if grid.n_points > int(max_points):
         raise InstrumentPointLimitExceeded(
-            "instrument_point_limit_exceeded: historical designed-span coarsening resolves to "
+            "instrument_point_limit_exceeded: coarsening resolves to "
             f"{grid.n_points} adapter-exact points above the live limit {int(max_points)} "
             f"from {source}")
     proposal.e_step = grid.e_step
@@ -293,7 +285,6 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int,
                 "n_points": n_points, "iter": it})
     budget = dict(budget_state or {})
     if budget.get("kind") != "neutrons" or budget.get("amount") is None:
-        normalize_proposal_score(proposal, float(getattr(objective, "tolerance_meV", 0.0)))
         _stamp_proposal_provenance(proposal)
         return
     # The design is unaffordable as designed, or it is not: the planner ranked cheaper designs too,
@@ -304,7 +295,6 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int,
         raise BudgetInsufficientForMinimumBatch(
             f"budget_insufficient_for_minimum_batch: the design costs {cost:g} neutrons "
             f"({n_points} points x {int(proposal.ncount)}), have {remaining:g}")
-    normalize_proposal_score(proposal, float(getattr(objective, "tolerance_meV", 0.0)))
     _stamp_proposal_provenance(proposal)
 
 
@@ -1861,10 +1851,25 @@ _DESIGN_KEY_DECIMALS = 3
 
 
 def design_key(hkl, e_lo, e_hi, e_step, ncount) -> tuple:
-    """The exact design a refusal or a non-result is charged to (addendum G.3)."""
+    """The exact design a refusal or a non-result is charged to (addendum G.3).
+
+    ``ncount = 0`` is the WINDOW key: the same geometry at any exposure. Validation judges whether
+    the instrument can reach a grid, and the dose plays no part in that answer, so a geometry-shaped
+    refusal condemns the window itself. Charging only the exact design let the planner — which now
+    ranks every window against every exposure rung — re-offer one refused window once per rung, and
+    a campaign spent 174 proposals discovering the same refusal.
+    """
     return (tuple(round(float(value), 6) for value in hkl),
             round(float(e_lo), _DESIGN_KEY_DECIMALS), round(float(e_hi), _DESIGN_KEY_DECIMALS),
             round(float(e_step), _DESIGN_KEY_DECIMALS), int(ncount))
+
+
+#: Refusals that judge the GEOMETRY of a request. The instrument answered about the window, not the
+#: dose, so re-asking at another exposure buys nothing but another refusal. A budget refusal is the
+#: opposite — it is entirely about the dose — and is deliberately absent.
+_GEOMETRY_SHAPED_VERDICTS = frozenset({
+    "validation_rejected", "insufficient_target_support", "infeasible_points_at_submit",
+    "geometry_unreachable", "all_points_infeasible", "instrument_point_limit_exceeded"})
 
 
 def suppressed_actions(log_path) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict],
@@ -1960,6 +1965,8 @@ def _record_action_rejection(cfg, plan, proposal, verdict: str,
         designed = (proposal.meta or {}).get("design_key")
         if designed:
             keys.add(design_key(*designed))
+        if str(verdict) in _GEOMETRY_SHAPED_VERDICTS:
+            keys.update(key[:-1] + (0,) for key in set(keys))
         if suppressed_designs is not None:
             suppressed_designs.update(keys)
     log_event(cfg.log_path, "action_suppressed", {
@@ -2254,17 +2261,10 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
     if tracks_after and tracks_after.get("revision") != tracks_before.get("revision"):
         log_event(cfg.log_path, "branch_track_update", {
             "iter": it, "revision": tracks_after.get("revision"),
-            "anchor_index": tracks_after.get("anchor_index"),
-            "acquisition_seed_index": tracks_after.get("acquisition_seed_index"),
-            "reduced_q_origin_index": tracks_after.get("reduced_q_origin_index"),
-            "frontiers": tracks_after.get("frontiers") or {}})
+            "reduced_q_origin_index": tracks_after.get("reduced_q_origin_index")})
         for reassignment in tracks_after.get("reassignments") or []:
             log_event(cfg.log_path, "branch_reassignment", {
                 "iter": it, "revision": tracks_after.get("revision"), **dict(reassignment)})
-        if (tracks_after.get("frontiers") or {}).get("frontier_blocked"):
-            log_event(cfg.log_path, "frontier_blocked", {
-                "iter": it, "revision": tracks_after.get("revision"),
-                "blocked_indices": (tracks_after.get("frontiers") or {}).get("blocked_indices") or []})
 
     with timed(cfg.log_path, "fold_rows", iteration=it) as metrics:
         rows = _new_rows(cfg.workspace, consumed)
@@ -3312,16 +3312,25 @@ def _planner_beliefs(durable_state: dict, objective, cfg, sample: str, temperatu
 def _planner_candidates(master_rows: list[dict], path, energy_domain) -> dict[int, list]:
     """Grid index to the pooled master's fitted peaks, as planner candidates.
 
-    The candidate's sigma is the master row's PUBLISHED calibrated half-width, whenever it has one:
-    that is the number the campaign will report, and the prize is stated over the reported number.
-    Never the fit's raw ``omega0_err`` — a fast-tier HESSE error of 0.0003 meV would declare a point
-    settled to a precision the published interval (0.06 meV) does not carry, and the campaign would
-    stop having answered a question nobody asked.
+    The candidate's sigma is the master row's CERTIFYING half-width and nothing else: the
+    model-averaged interval ``_master_obs_from_row`` publishes as ``halfwidth`` alongside
+    ``certifiable``. That is the number the campaign will certify and report, and the prize is
+    stated over the reported number.
 
-    Only three things degrade it to "detected, precision not established" — sigma = half the positive
-    energy domain: a fork (the fit has two answers), a pool-inconsistent row (its members disagree),
-    or no published interval at all. The peak still enters as evidence for *assignment*, and the
-    planner still values a scan there, which is what escalates the errors tier.
+    ``diagnostic_halfwidth`` is deliberately NOT accepted, though it is the same calibrated scale.
+    A row that is not model-robust publishes it *instead of* a certifying interval — the fit has an
+    answer but the model behind it is not settled — and reading it here let the prize be claimed on
+    a point that certification then refused to certify. The two numbers are equal on a model-robust
+    row and only differ where it matters, which is exactly why substituting one for the other is
+    invisible until a campaign certifies something it never measured. Never the fit's raw
+    ``omega0_err`` either: a fast-tier HESSE error of 0.0003 meV would declare a point settled to a
+    precision the published interval (0.06 meV) does not carry.
+
+    Everything else is "detected, precision not established" — sigma = half the positive energy
+    domain: a non-model-robust row, a fork (the fit has two answers), a pool-inconsistent row (its
+    members disagree), or no interval at all. The peak still enters as evidence for *assignment*,
+    and the planner still values a scan there, which is what escalates the errors tier and buys the
+    counts the point needs.
     """
     unknown_sigma = 0.5 * (float(energy_domain[1]) - max(float(energy_domain[0]), 0.0))
     out: dict[int, list] = {}
@@ -3330,16 +3339,12 @@ def _planner_candidates(master_rows: list[dict], path, energy_domain) -> dict[in
         index = None if hkl is None else match_grid_index(tuple(hkl), path)
         if index is None:
             continue
-        # ``halfwidth`` is the model-averaged certifying interval; ``diagnostic_halfwidth`` is what a
-        # row that is not model-robust publishes instead. Both are calibration-inflated.
-        halfwidth = row.get("halfwidth")
-        if halfwidth is None:
-            halfwidth = row.get("diagnostic_halfwidth")
         try:
-            halfwidth = float(halfwidth)
+            halfwidth = float(row.get("halfwidth"))
         except (TypeError, ValueError):
             halfwidth = None
-        trusted = (row.get("modality") != "fork" and row.get("pool_consistent") is not False
+        trusted = (bool(row.get("certifiable")) and row.get("modality") != "fork"
+                   and row.get("pool_consistent") is not False
                    and halfwidth is not None and math.isfinite(halfwidth) and halfwidth > 0.0)
         sigma = halfwidth if trusted else unknown_sigma
         candidates = []
@@ -3361,7 +3366,15 @@ def _planner_scans(log_path, observations: list[dict], path, branches) -> dict[i
 
     Negative evidence is per branch, not per scan: a scan that fitted the acoustic but no optic is
     evidence against the optic lying inside its window at its exposure, exactly as a scan that
-    fitted nothing is evidence against every branch there. ``seen`` carries that.
+    fitted nothing is evidence against every branch there.
+
+    ``seen`` carries that as a PROBABILITY per branch, not a set. A delivered mode is evidence its
+    branch was there in proportion to how strongly it IS that branch: an ambiguous mode at
+    P(optic) = 0.55 half-argues the optic was delivered and half-argues it was not, and rounding
+    that to "seen" threw away the doubt the identity gate exists to price. The value is the maximum
+    over the scan's delivered modes — one confident mode is enough to say the branch was there, and
+    a second weak one cannot argue it away. A scan that delivered nothing maps to nothing, which is
+    the full negative evidence.
 
     A count-untrusted arena is NOT evidence either way — a validation decline, a job that never
     reached ``done`` — and is skipped here (it carries no ``scan``). The window and exposure come
@@ -3385,24 +3398,22 @@ def _planner_scans(log_path, observations: list[dict], path, branches) -> dict[i
         index = match_grid_index(tuple(payload.get("hkl") or ()), path)
         if index is None:
             continue
-        seen = set()
+        seen: dict[str, float] = {}
         for candidate in (observation.get("branch_candidates") or []):
-            branch = _candidate_branch(candidate, observation, branches)
-            if branch is not None:
-                seen.add(branch)
+            for branch, probability in _candidate_probabilities(
+                    candidate, observation, branches).items():
+                seen[branch] = max(seen.get(branch, 0.0), probability)
         # A delivered peak whose branch nothing names is not evidence of ABSENCE for anyone:
         # crediting it to nobody would let one unlabelled fit contradict both beliefs.
         if observation.get("resolved") and not seen:
-            seen.update(branches)
+            seen = {branch: 1.0 for branch in branches}
         out.setdefault(index, []).append(ExecutedScan(
             float(payload["search_energy_lo"]), float(payload["search_energy_hi"]),
-            int(payload.get("submitted_ncount") or payload.get("ncount") or 0),
-            frozenset(seen)))
-    # One entry per distinct measurement. The same window, exposure and outcome repeated is the same
-    # statement about which branches are not there, and the planner's negative evidence is
-    # multiplicative: told the identical thing a few dozen times it drives a branch's whole scenario
-    # weight to zero and the next normalisation is a divide by zero.
-    return {index: list(dict.fromkeys(scans)) for index, scans in out.items()}
+            int(payload.get("submitted_ncount") or payload.get("ncount") or 0), seen))
+    # Every scan stands, repeats included: two identical scans are two independent observations and
+    # the second really is more evidence than the first. The scenario-weight underflow that made the
+    # planner divide by zero is guarded in the planner now, not by hiding measurements from it here.
+    return out
 
 
 def _ingest_counts(data_dir) -> dict[tuple, dict]:
@@ -3429,21 +3440,24 @@ def _ingest_counts(data_dir) -> dict[tuple, dict]:
     return out
 
 
-def _candidate_branch(candidate: Mapping, row: Mapping, branches) -> str | None:
-    """Which branch a fitted mode belongs to: its own probabilities, else its row's label.
+def _candidate_probabilities(candidate: Mapping, row: Mapping, branches) -> dict[str, float]:
+    """``P(branch | candidate)`` for one fitted mode, over the modelled branches.
 
     Only a POOLED master's candidates carry ``probabilities`` — the per-scan table
     (``evidence_update._mode_candidates``) has none, and the scan row's ``branch_id`` is the label
-    the tracker gave that delivery. Reading one and not the other is what left the counts-derived
-    intensity map crediting nothing and falling back to the class prior at every point.
+    the tracker gave that delivery. A label is a probability of one: the tracker said this mode is
+    that branch, so ``{branch: 1.0}`` with zero on the others is what it asserts. A mode nothing
+    labels asserts nothing and returns an empty mapping.
     """
     probabilities = {str(k): float(v)
                      for k, v in (candidate.get("probabilities") or {}).items()
                      if str(k) in branches}
     if probabilities:
-        return max(probabilities, key=probabilities.__getitem__)
+        return {b: probabilities.get(b, 0.0) for b in branches}
     branch = str(row.get("branch_id") or "")
-    return branch if branch in branches else None
+    if branch in branches:
+        return {b: (1.0 if b == branch else 0.0) for b in branches}
+    return {}
 
 
 def _lobe_area(x, counts, background: float, centre: float, half_width: float, step: float,
@@ -3575,12 +3589,20 @@ def _planner_scale(cfg, observations: list[dict], path, branches, temperature_K:
         if area is not None:
             elastic.append(area / ncount)
         for candidate in (observation.get("branch_candidates") or ()):
-            branch = _candidate_branch(candidate, observation, branches)
+            # The brightness goes to the mode's most probable branch, whole, rather than split
+            # across branches in proportion. A lobe area is one physical quantity — those counts
+            # came from one branch, whichever it was — and splitting it would hand the optic a
+            # fraction of an acoustic peak and make the map describe a mode that does not exist.
+            # The median over scans is what survives a wrong argmax; a smeared area would not.
+            probabilities = _candidate_probabilities(candidate, observation, branches)
+            branch = max(probabilities, key=probabilities.__getitem__) if probabilities else None
             try:
                 energy = float(candidate.get("energy_meV", candidate.get("omega0")))
             except (TypeError, ValueError):
                 continue
-            if branch is None or not math.isfinite(energy) or energy <= 0.0:
+            if branch is None or probabilities[branch] <= 0.0:
+                continue
+            if not math.isfinite(energy) or energy <= 0.0:
                 continue
             stokes = _lobe_area(x, counts, background, energy, half_width, step)
             if stokes is None or stokes <= 0.0:
@@ -3785,10 +3807,18 @@ def _not_the_prize(objective, outcome, per_q) -> StopDecision:
 
 
 def _design_dict(design) -> dict:
+    """One ranked design as the event records it.
+
+    ``neutrons`` is the dose the instrument is asked for (points x ncount) and ``price`` is what the
+    planner ranked on — the dose plus the fixed cost of taking a scan at all. They are separate
+    because they answer different questions: the operator reconciles ``neutrons`` against the beam
+    budget, and only ``price`` explains why a cheap-looking design lost.
+    """
     return {"grid_index": design.grid_index, "hkl": list(design.hkl),
             "e_lo": design.e_lo, "e_hi": design.e_hi, "e_step": design.e_step,
             "n_points": design.n_points, "ncount": design.ncount,
-            "utility_nats": design.utility_nats, "cost_neutrons": design.cost_neutrons,
+            "utility_nats": design.utility_nats,
+            "neutrons": design.neutrons, "price": design.price,
             "score": design.score}
 
 
@@ -3823,9 +3853,13 @@ def _log_eig_plan(cfg, inp, plan_decision, seconds: float, *, it: int,
         "intensity_scale_changed": previous_scale != scale,
         "stop": bool(plan_decision.stop), "stop_reason": plan_decision.stop_reason,
         "chosen": None if plan_decision.chosen is None else _design_dict(plan_decision.chosen),
+        # The planner now ranks EVERY design; the event keeps the top ten, which is what an operator
+        # reads. ``n_ranked`` says how many it chose from, so the ten never read as the whole field.
         "ranked": [_design_dict(design) for design in plan_decision.ranked[:10]],
+        "n_ranked": len(plan_decision.ranked),
         "per_point": [{"u": point.u, "hkl": list(point.hkl), "exempt": point.exempt,
                        "halfwidth_meV": point.halfwidth_meV, "deficit_nats": point.deficit_nats,
+                       "identified_mass": point.identified_mass,
                        "within_bar": point.within_bar, "n_candidates": point.n_candidates}
                       for point in plan_decision.per_point],
         "prize_points_within_bar": sum(1 for point in prize if point.within_bar),
@@ -3894,9 +3928,9 @@ def _next_planner_proposal(designs: list, objective, cfg, inp, grid, budget_stat
     budget_error: Exception | None = None
     while designs:
         design = designs.pop(0)
-        if (hkl_key(design.hkl) in unreachable_hkl
-                or design_key(design.hkl, design.e_lo, design.e_hi, design.e_step,
-                              design.ncount) in suppressed_designs):
+        key = design_key(design.hkl, design.e_lo, design.e_hi, design.e_step, design.ncount)
+        if (hkl_key(design.hkl) in unreachable_hkl or key in suppressed_designs
+                or key[:-1] + (0,) in suppressed_designs):
             continue
         proposal = _proposal_from_design(objective, inp, design, campaign_slice)
         try:

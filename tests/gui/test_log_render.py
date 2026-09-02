@@ -328,14 +328,16 @@ def test_the_eig_plan_line_names_the_choice_the_runner_up_and_the_prize():
     line = _rendered("eig_plan", {
         "iter": 3, "tolerance_meV": 0.05,
         "chosen": {"grid_index": 1, "hkl": [2.15, 0.0, 0.0], "e_lo": 0.6, "e_hi": 3.1,
-                   "e_step": 0.2, "n_points": 13, "ncount": 10_000_000, "score": 4.21e-6},
+                   "e_step": 0.2, "n_points": 13, "ncount": 10_000_000, "score": 4.21e-6,
+                   "neutrons": 1.3e8, "price": 1.8e8},
         "per_point": [{"hkl": [2.10, 0.0, 0.0], "halfwidth_meV": 0.04},
                       {"hkl": [2.15, 0.0, 0.0], "halfwidth_meV": 0.31}],
         "ranked": [{"hkl": [2.15, 0.0, 0.0], "score": 4.21e-6},
                    {"hkl": [2.20, 0.0, 0.0], "score": 3.88e-6}],
         "prize_points_within_bar": 0, "prize_points_total": 20})
     assert line.text == ("EIG → ±0.31 → H=2.15: 0.60–3.10 meV, "
-                         "13 pts × 10M, 4.21 nats/1e6 n — runner-up H=2.2 3.88 "
+                         "13 pts × 10M = 1.3e+08 n, price 1.8e+08, 4.21 nats/1e6 n "
+                         "— runner-up H=2.2 3.88 "
                          "— prize 0/20 within ±0.05 meV  [iter 3]")
     assert line.severity == "notice"
 
@@ -358,7 +360,8 @@ def _plan_payload(**extra):
     payload = {
         "iter": 3, "tolerance_meV": 0.05,
         "chosen": {"grid_index": 1, "hkl": [2.15, 0.0, 0.0], "e_lo": 0.6, "e_hi": 3.1,
-                   "e_step": 0.2, "n_points": 13, "ncount": 10_000_000, "score": 4.21e-6},
+                   "e_step": 0.2, "n_points": 13, "ncount": 10_000_000, "score": 4.21e-6,
+                   "neutrons": 1.3e8, "price": 1.8e8},
         "per_point": [{"hkl": [2.15, 0.0, 0.0], "halfwidth_meV": 0.31}],
         "ranked": [{"hkl": [2.15, 0.0, 0.0], "score": 4.21e-6}],
         "prize_points_within_bar": 0, "prize_points_total": 20,
@@ -388,3 +391,25 @@ def test_a_planner_note_rides_on_the_line_and_is_loud():
         "\u2014 no design is expected to complete a point; taking the cheapest probe  [iter 3]")
     assert line.severity == "warn"
     assert _rendered("eig_plan", _plan_payload(intensity_scale_changed=False)).severity == "notice"
+
+
+def test_a_point_held_back_by_identity_says_so_beside_its_width():
+    """A point can sit inside the bar on width and still not be answered, because the mass is spread
+    over rival identities. Showing only the half-width there reads as done when it is not."""
+    held = _rendered("eig_plan", _plan_payload(
+        intensity_scale_changed=False,
+        per_point=[{"hkl": [2.15, 0.0, 0.0], "halfwidth_meV": 0.03, "identified_mass": 0.71}]))
+    assert "\u00b10.03 but identified 0.71 \u2192 H=2.15" in held.text
+
+    clear = _rendered("eig_plan", _plan_payload(
+        intensity_scale_changed=False,
+        per_point=[{"hkl": [2.15, 0.0, 0.0], "halfwidth_meV": 0.03, "identified_mass": 0.98}]))
+    assert "\u00b10.03 \u2192 H=2.15" in clear.text
+    assert "identified" not in clear.text
+
+
+def test_the_requested_dose_and_the_ranked_price_are_both_shown():
+    """They are different numbers — the price carries the fixed cost of taking a scan at all — and
+    only the price explains why a cheap-looking design lost."""
+    line = _rendered("eig_plan", _plan_payload(intensity_scale_changed=False))
+    assert "13 pts \u00d7 10M = 1.3e+08 n, price 1.8e+08" in line.text

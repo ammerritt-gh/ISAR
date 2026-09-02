@@ -40,10 +40,9 @@ from isar.drive.instrument.request_realization import (DEFAULT_MAX_POINTS, _emit
                                                        _target_supporting_feasible_points,
                                                        _validate_body)
 from isar.drive.acquisition.acquire import ScanProposal
+from isar.drive.acquisition.scan_grid import MAX_POINTS
 from isar.drive.acquisition.eig_planner import default_intensity_scale
-from isar.drive.acquisition.scan_design import points_in_window
 from isar.drive.acquisition.grid_adapters import TAVI_GRID_ADAPTER
-from isar.drive.acquisition.eig import counts_eig
 from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
 from isar.drive.supervisor import goal_to_spec as g2s
 from isar.drive.instrument.tavi_client import TaviError
@@ -372,7 +371,7 @@ def _reduced(h, period=2.0):
 
 
 def make_mock_runner(omega_true, *, window_gate=True, hesse_only=False, blank_members=False,
-                     branch="acoustic"):
+                     branch="acoustic", model_robust=True):
     """A fake `isar run`: writes results.csv from the saved scans, including the master (pooled) row
     per (Q,T) that ISAR now emits. The master's interval shrinks ~1/√N with the pooled production
     count, so a q converges by accumulation. Declines when the window misses the peak.
@@ -431,7 +430,7 @@ def make_mock_runner(omega_true, *, window_gate=True, hesse_only=False, blank_me
                     "status": "fitted", "verdict": "resolved", "disposition": "resolved",
                     "omega0": true, "interval_reliable": True, "pooled": True, "n_members": npool,
                     "model_interval_lo": true - hw, "model_interval_med": true,
-                    "model_interval_hi": true + hw, "model_robust": True,
+                    "model_interval_hi": true + hw, "model_robust": model_robust,
                     # Chain of custody: member labels (";"-joined). blank_members leaves the cell
                     # empty while n_members>0 to exercise the summary's evidence-chain guard.
                     "members": ("" if blank_members else ";".join(str(i) for i in range(npool))),
@@ -1419,7 +1418,9 @@ def test_optic_campaign_with_supplied_energy_runs_nearest_selector(tmp_path, mon
         make_branch_aware_optic_runner(objective))
     proposals = [event["payload"] for event in read_log(summary["session_log"])
                  if event["kind"] == "propose"]
-    assert proposals[0]["e_lo"] < 6.1 < proposals[0]["e_hi"]
+    # The supplied energy is where the target is expected, not where the first scan must go: the
+    # planner opens where the information is. What it may not do is never look there at all.
+    assert any(p["e_lo"] < 6.1 < p["e_hi"] for p in proposals)
     # The exposure is the planner's, off its own ladder — the retired quicklook/production floors
     # no longer set it, so the assertion is that a real exposure was requested, not which rung.
     assert proposals[0]["ncount"] > 0
@@ -1659,9 +1660,6 @@ def _shadow_objective():
     let scan-design/realized-comparison machinery run without also invoking O41 selection).
     """
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
-    frozen["steering"] = {**frozen["steering"], "scan_window_eig_mode": "off"}
-    frozen["hypothesis_fingerprint"] = content_fingerprint(
-        frozen["hypotheses"], frozen["steering"])
     return ObjectiveSpec(
         path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
         budget={"kind": "neutrons", "amount": 1e12}, target_branch="optic",
@@ -2577,20 +2575,16 @@ def test_campaign_config_defaults_sample_and_honors_override(tmp_path):
 def _scan_proposal(e_lo, e_hi, e_step, kind="production"):
     nc = QUICKLOOK_NCOUNT if kind == "quicklook" else PRODUCTION_NCOUNT
     return ScanProposal(h=2.1, k=0.0, l=0.0, e_lo=e_lo, e_hi=e_hi, e_step=e_step, ncount=nc,
-                        kind=kind, reason="test", n_points=points_in_window(e_lo, e_hi, e_step))
+                        kind=kind, reason="test",
+                        n_points=min(_emitted_point_count(e_lo, e_hi, e_step), MAX_POINTS))
 
 
 def test_emitted_point_count_is_unclamped():
-    # The TRUE count TAVI computes from the command — NOT clamped to the acquisition budget (which
-    # points_in_window is): a wide window with a tight step is exactly the over-limit case (the
-    # documented 594-pt scan came from a widened window keeping a ~0.05 meV step).
-    from isar.drive.acquisition.scan_grid import MAX_POINTS
-
+    # The TRUE count TAVI computes from the command, NOT clamped to any budget: a wide window with a
+    # tight step is exactly the over-limit case (the documented 594-pt scan came from a widened
+    # window keeping a ~0.05 meV step). The guard is what clamps it, and it is tested next.
     assert _emitted_point_count(-2.0, 27.65, 0.05) > DEFAULT_MAX_POINTS   # ~594, unclamped
-    # The clamp value itself is a policy number and has moved; what this pins is that the ledger
-    # count IS clamped while the emitted count is not.
-    assert points_in_window(-2.0, 27.65, 0.05) == MAX_POINTS
-    assert _emitted_point_count(-2.0, 27.65, 0.05) > points_in_window(-2.0, 27.65, 0.05)
+    assert _emitted_point_count(-2.0, 27.65, 0.05) > MAX_POINTS
 
 
 def test_guard_clamps_over_limit_proposal_keeping_window(tmp_path):
@@ -2710,7 +2704,6 @@ def test_finalizer_composes_per_point_and_queue_limits_for_hour_budget(tmp_path)
     _finalize_proposal(
         p, objective, cfg, {"kind": "counting_seconds", "amount": 60.0, "spent": 0.0}, it=7)
     assert p.ncount == 100_000_000
-    assert p.meta["score"]["cost"] == 1_000_000_000.0
     clamp = [e["payload"] for e in read_log(cfg.log_path)
              if (e.get("payload") or {}).get("action") == "proposal_ncount_clamped_to_limit"]
     assert len(clamp) == 1
@@ -2867,7 +2860,10 @@ def test_validation_refusals_use_distinct_logical_acquisitions(tmp_path):
     requests = [(tuple(p["hkl"]), p["e_lo"], p["e_hi"], p["e_step"], p["ncount"])
                 for p in proposals]
     assert len(set(requests)) == len(requests), "an identical refused request is never re-emitted"
-    assert len(proposals) < 20, "the iteration limit is no longer the guardrail"
+    # A bound, not a target: the planner ranks every window against every exposure rung, so the
+    # count moves with the ladder. What it pins is that the campaign exhausts a finite action space
+    # and stops, rather than re-emitting forever until the iteration ceiling.
+    assert len(proposals) < 60, "the iteration limit is no longer the guardrail"
     assert summary["stop"]["terminal_cause"] == loop_mod.TERMINAL_CONTROLLER_FAULT
     assert "already refused" in summary["stop"]["reasons"][0]
 
@@ -3874,3 +3870,66 @@ def test_a_planner_stop_that_is_not_the_prize_is_incomplete(tmp_path):
     assert summary["stop"]["state"] == "incomplete"
     assert "without the prize" in summary["stop"]["reasons"][0]
     assert "no_admissible_window" in summary["stop"]["reasons"][0]
+
+
+def test_only_a_certifying_interval_is_a_candidates_precision():
+    """``diagnostic_halfwidth`` is the same calibrated scale but a different claim: a row publishes
+    it INSTEAD of a certifying interval when its model is not settled. Reading it as the candidate's
+    sigma let the prize be claimed on a point certification then refused to certify — invisible,
+    because the two numbers are equal on every row where it does not matter.
+    """
+    from isar.drive.loop import _planner_candidates
+
+    path = ((2.1, 0.0, 0.0),)
+    domain = (-2.0, 12.0)
+    unknown = 0.5 * (domain[1] - max(domain[0], 0.0))
+    candidates = [{"energy_meV": 1.0, "sigma_meV": 0.0003}]
+
+    certifying = {"hkl": (2.1, 0.0, 0.0), "certifiable": True, "halfwidth": 0.02,
+                  "diagnostic_halfwidth": 0.02, "modality": "fold", "pool_consistent": True,
+                  "branch_candidates": candidates}
+    assert _planner_candidates([certifying], path, domain)[0][0].sigma_meV == pytest.approx(0.02)
+
+    # Not model-robust: it still publishes a diagnostic interval, and that is NOT a precision.
+    for spoiled in ({"certifiable": False, "halfwidth": None},
+                    {"modality": "fork"},
+                    {"pool_consistent": False},
+                    {"halfwidth": None}):
+        row = {**certifying, **spoiled}
+        sigma = _planner_candidates([row], path, domain)[0][0].sigma_meV
+        assert sigma == pytest.approx(unknown), spoiled
+        assert sigma != pytest.approx(0.02), spoiled
+
+
+def test_a_non_model_robust_certification_cannot_produce_met(tmp_path):
+    """The consequence of the rule above, end to end: if the full-tier pass leaves every row without
+    a certifying interval, the prize is never claimable and the campaign keeps buying counts."""
+    omega = lambda h: (h - 2.0) * 2.0
+    objective = _objective()
+    # A budget, because the point of the test is that this campaign never finishes: without one it
+    # would keep buying counts at points certification will not certify until the iteration ceiling.
+    objective.budget = {"kind": "neutrons", "amount": 4.0e8}
+    summary, _workspace = _run(tmp_path, objective, MockTavi(omega),
+                               make_mock_runner(omega, model_robust=False))
+
+    assert summary["stop"]["state"] == "incomplete"
+    assert "budget" in " ".join(summary["stop"]["reasons"])
+    assert not any(point.get("converged") for point in summary["grid"])
+
+
+def test_delivery_evidence_is_a_probability_not_a_set():
+    """A mode at P(optic)=0.55 half-argues the optic was delivered. Rounding that to "seen" threw
+    away exactly the doubt the identity gate exists to price."""
+    from isar.drive.loop import _candidate_probabilities
+
+    branches = ("acoustic", "optic")
+    pooled = {"probabilities": {"acoustic": 0.45, "optic": 0.55, "new": 0.0}}
+    assert _candidate_probabilities(pooled, {}, branches) == pytest.approx(
+        {"acoustic": 0.45, "optic": 0.55})
+
+    # A per-scan row carries no probabilities; its tracker label is a probability of one.
+    assert _candidate_probabilities({}, {"branch_id": "acoustic"}, branches) == pytest.approx(
+        {"acoustic": 1.0, "optic": 0.0})
+
+    # A mode nothing labels asserts nothing about any branch.
+    assert _candidate_probabilities({}, {}, branches) == {}

@@ -29,10 +29,9 @@ log = logging.getLogger(__name__)
 #: Audit-trail kinds: the machinery behind a decision (fingerprints, candidate ids, artifact refs).
 #: Real, kept on disk, and useless as a running commentary — so they stay out of the dock.
 AUDIT_KINDS = frozenset({
-    "branch_track_update", "branch_reassignment", "frontier_blocked", "physical_submission",
+    "branch_track_update", "branch_reassignment", "physical_submission",
     "pooled_master_update", "candidate_update", "certification_crossing", "recovery_pending",
-    "recovery_completed", "scan_design_realization", "scan_design_realized_comparison",
-    "scan_design_authority_decision", "submission_intent",
+    "recovery_completed", "submission_intent",
 })
 
 #: Profiling kinds — ~16 spans per iteration. They are how the run is tuned, not what it is doing.
@@ -322,8 +321,14 @@ def _render_eig_plan(payload: dict, tail: str) -> tuple[str, str]:
         # own window or exposure is a record to go and look at, not a scan to describe.
         return (f"EIG \u2014 a design was chosen but its record carries no window or exposure"
                 f"{suffix}{tail}", "warn")
-    known = _num(_chosen_halfwidth(payload, chosen), ".2f")
+    known, identified = _chosen_point(payload, chosen)
+    known = _num(known, ".2f")
     prefix = f"\u00b1{known} \u2192 " if known is not None else ""
+    # A point can sit inside the bar on width and still not be answered, because the mass is spread
+    # over rival identities. Saying only the half-width there reads as "done" when it is not.
+    held = _num(identified, ".2f")
+    if known is not None and held is not None and float(identified) < 0.9:
+        prefix = f"\u00b1{known} but identified {held} \u2192 "
     score = _num(_per_million(chosen.get("score")), ".3g")
     rate = f", {score} nats/1e6 n" if score is not None else ""
     ranked = [row for row in (payload.get("ranked") or []) if isinstance(row, dict)]
@@ -337,8 +342,15 @@ def _render_eig_plan(payload: dict, tail: str) -> tuple[str, str]:
     within = payload.get("prize_points_within_bar")
     prize = (f" \u2014 prize {within}/{total} within{bar}"
              if total is not None and within is not None else "")
+    # The dose the instrument is asked for and the price the planner ranked on are different
+    # numbers: the price carries the fixed cost of taking a scan at all, and without it a
+    # cheap-looking design that lost looks like a ranking bug.
+    dose = _num(chosen.get("neutrons"), ".2g")
+    price = _num(chosen.get("price"), ".2g")
+    cost = f" = {dose} n" if dose is not None else ""
+    cost += f", price {price}" if price is not None else ""
     return (f"EIG \u2192 {prefix}{at}: {lo}\u2013{hi} meV, {points} pts \u00d7 "
-            f"{count_text(ncount)}{rate}{runner_up}{prize}{scale}{suffix}{tail}", severity)
+            f"{count_text(ncount)}{cost}{rate}{runner_up}{prize}{scale}{suffix}{tail}", severity)
 
 
 def _intensity_scale_text(payload: dict) -> str:
@@ -362,14 +374,14 @@ def _intensity_scale_text(payload: dict) -> str:
             if bits else "")
 
 
-def _chosen_halfwidth(payload: dict, chosen: dict):
-    """How well the chosen point's target energy is known right now, from the per-point rollup."""
+def _chosen_point(payload: dict, chosen: dict):
+    """``(half-width, identified mass)`` for the chosen point, from the per-point rollup."""
     index = chosen.get("grid_index")
     for point in (payload.get("per_point") or []):
         if isinstance(point, dict) and point.get("grid_index", index) == index:
             if point.get("hkl") == chosen.get("hkl"):
-                return point.get("halfwidth_meV")
-    return None
+                return point.get("halfwidth_meV"), point.get("identified_mass")
+    return None, None
 
 
 def _per_million(score):
