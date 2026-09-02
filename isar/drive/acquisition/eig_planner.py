@@ -98,7 +98,9 @@ SHAPING = 0.02
 #: optimistic at low counts; this is a declared model of the fitter's reliability, like
 #: :data:`NULL_MISS_PROBABILITY`, and it applies to the PLANNER's expectations only -- the world
 #: delivers the bare bound, so the planner has to earn its margin rather than assume it.
-FIT_SIGMA_INFLATION = 1.25
+FIT_SIGMA_INFLATION = 2.0   # live 2026-09-02: published calibrated halfwidths 0.053-0.064 meV against
+                            # a Cramér-Rao bound of ~0.02-0.03 at 5e6 counts/point (inflation-calibrated
+                            # intervals, not the raw HESSE sigma); 1.25 bought scans that could not finish
 #: Anchor weights are rounded to this many decimals before designs are grouped for the cross-point
 #: term (A4 caching).  A belief is insensitive to a 0.005 change in one anchor weight, and grouping
 #: is what keeps the per-design cross term inside the time budget.
