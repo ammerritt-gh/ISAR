@@ -180,3 +180,80 @@ beyond its class prior.
 
 The campaign-authorization repair plan (`plans/campaign-authorization-repair.md`) and the demo
 run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are not the work.
+
+## 7. Decisions of 2026-09-02 (owner-ruled in conversation; recorded here until the design docs absorb them)
+
+1. **The prize.** "Map the <branch> from A to B" asks: the energy of that branch at every grid
+   point of the path, to within the default bar, **±0.05 meV** (owner: "the centre of a peak is
+   trivial to fix to that detail"; the compiler's default and example now say 0.05). Every grid
+   point must carry its own measurement — interpolating between neighbours does not answer the
+   question a paper would ask. The one exemption is the zone centre of a gapless target, whose
+   energy the hypothesis fixes at 0 and the elastic line makes untestable.
+2. **The price.** Neutrons requested (points × count per point). No per-scan overhead constant.
+3. **EIG.** For every candidate scan inside the region and the energy domain, the expected progress
+   toward the prize per neutron, judged by simulating the intensity under the current hypotheses
+   and re-running the same belief update the real data goes through. Greedy, re-decided after
+   every scan. Progress is measured as entropy of each grid point's target-energy posterior above
+   the bar; a point within the bar is worth nothing more. Both branches are always in the forward
+   model whichever is the target; a scan whose peak is ambiguous between branches is priced as less
+   information, which is what buys exposure where the branches approach and buys optic
+   measurements only as far as excluding it needs.
+4. **The hypothesis map** stays the per-branch belief with its class prior entering as parameter
+   precision (O8), persisted in `card.state.json["branch_belief_models"]`; the assignment of fitted
+   modes to branches with soft probabilities stays. The acoustic class prior is only "zero at the
+   zone centre, roughly linear nearby, bounded by the energy domain": the preset's slope mean of
+   12 meV/r.l.u. was baking in the answer and is replaced by a zero-mean spread derived from the
+   search band. Owner: "what phenomena are here" and "map this branch" are one question, a
+   hypothesis map checked against an intensity map, answering whatever was asked — energy now,
+   linewidth or an intensity change later, through the same comparison.
+5. **The candidate space is not a ruling.** The sentence gives the region and the energy domain;
+   windows and exposures are generated from the beliefs; nothing is labelled a survey. The owner
+   refused to rule on Q, adjacency, windows or ceilings: "You have the space… if you use EIG there is
+   no question here."
+6. **Deleted, not routed around:** the tracker's frontier/anchor/bridge/same-q ceilings, the
+   survey flag, `legacy_uniform/1` and the whole same-action scan-window comparison (O36/O41/O43
+   machinery), missed-window recentre-and-widen, decline widening, predictive promotion, the
+   targeted opening book, the `scan_window_eig_mode` knob. `evaluate_stop` no longer decides
+   `met`; the planner's prize does. Certified pooled intervals remain the published numbers.
+7. **Implementation shape:** `isar/drive/acquisition/eig_planner.py` (pure, deterministic, no RNG,
+   Gauss–Hermite scenarios so equal predictions tie exactly), `tools/eig_sim.py` (closed loop
+   against the analytic truth, the demo's storyline before a neutron is simulated), the loop
+   calling `plan_next` at its one seam, an `eig_plan` event the campaign feed renders. The
+   discovery lane (`discover_and_map`, `isar/scene/`) is untouched by this objective.
+8. **Demo posture:** it does not have to be perfect; it must show the idea — scans placed
+   autonomously where they are most efficient, narrow where they can be, resolving the two
+   branches where they approach, no operator typing scans.
+9. **The class prior weakens with distance from the fold (2026-09-02, found by the planner's
+   simulator).** The per-branch belief applied its (gap, slope) prior at full precision to every
+   local fit, so at u ≈ 0.9 the origin pin tilted the local line and predicted the acoustic
+   ~1 meV high, reading the optic as its own. The survey pass had masked it (windows never
+   depended on the prediction). Both belief implementations (`classify_eig.belief_predict`,
+   `branch_assignment.BranchBelief`) now weight the prior precision by the anchors' locality
+   kernel, `exp(−u²/2·LOCALITY_BW²)`: pinned at the fold, data-driven far away, which is the
+   design goal's "linearity decays away from the fold" made literal. The decay alone was not
+   enough: an unanchored branch far from the fold then had an unbounded spread, and the
+   one-sided truncation at zero turned it into a mean of ~100 meV. The third clause of the
+   class prior, "bounded by the energy domain", is now literal too: the predictive is
+   truncated to [0, domain_hi], so a cold branch far out means "somewhere in the band".
+10. **A null scan is evidence, not proof.** A scan that fitted no peak multiplies the weight of
+    the scenarios it should have detected by a declared fitter miss probability (0.1); it never
+    zeroes them. Absolute exclusion walled off the true band after one failed fit.
+11. **Declared simplification (planner):** a grid point already within the bar is not offered as
+    a scan site. Its own-point utility is zero by the prize; its cross-point utility is not, and
+    without the exclusion the optic campaign re-scanned a solved point for the anchor. Marked in
+    code with the ceiling and the upgrade path. **Known costs, not for the demo:** the optic-only
+    campaign takes ~68 scans and the two-branch campaign ~95 in simulation against 20 for the
+    acoustic; the real session update (Viterbi assignment) and the planner's joint matching are
+    two implementations of one rule and should become one after the demo.
+12. **Two phantoms found by tracing one wrong ranking (2026-09-02 evening).** (a) The 68% interval
+    of a flat-dominated posterior came out four times too narrow because the level bisection ran
+    in linear scale and lost the tiny excess over the floor; it now bisects the excess in log
+    space (a uniform on the 9 meV band gives 3.07 meV, as it must). (b) Two peaks at one energy,
+    or a peak at ω ≈ 0 whose lobes coincide with the elastic line, made the ridge-regularised
+    Fisher inverse report σ = 0.000, so the planner bought that scan for a prize it could not
+    deliver; identifiability is now judged on the correlation form of the Fisher matrix and an
+    unidentifiable position is "not measured". Both are model corrections, not placement rules.
+    With them the two-branch campaign reaches the prize in simulation (68 scans); the optic-only
+    campaign still stalls because negative evidence was recorded per scan, not per branch — a scan
+    that found the acoustic but no optic is evidence against the optic in that window — being
+    fixed at the time of writing.

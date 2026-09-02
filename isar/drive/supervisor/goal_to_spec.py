@@ -190,7 +190,7 @@ DEFAULT_DELIVERABLES = _qpolicy.DEFAULT_DELIVERABLES
 _EXAMPLE = {
     "path": {"h_start": 1.0, "h_end": 2.0, "k": 0.0, "l": 0.0},
     "step_h": 0.1,
-    "tolerance_meV": 0.5,
+    "tolerance_meV": 0.05,
     "budget_hours": 8,
     "notes": "acoustic branch (1,0,0)->(2,0,0)",
 }
@@ -226,7 +226,8 @@ SYSTEM = (
     "q_end [h,k,l], and "
     "step_rlu (the maximum point spacing, default 0.05 if unstated). The legacy path/step_h shape is "
     "also valid for a segment purely along H. Extract tolerance_meV (the per-point target on the "
-    "phonon energy ω₀; map '±X meV' to X). Include a measurement budget as EITHER budget_hours "
+    "phonon energy ω₀; map '±X meV' to X; when the user states none, use the default 0.05 — the "
+    "centre of a resolved peak is routinely fixed to that). Include a measurement budget as EITHER budget_hours "
     "OR budget_neutrons only when the user states one; analysis time is a separate guardrail. "
     "Set target_branch to optic when the user asks for an optic or transverse optic phonon, otherwise "
     "acoustic; retain their wording in target_label. A request to map a named branch along a path "
