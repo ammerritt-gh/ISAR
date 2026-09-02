@@ -149,8 +149,10 @@ prior it must integrate, or dynesty nested sampling whenever a Gaussian volume c
 penalty is the integral itself, not a parameter tax. Evidence is comparable only within one
 data-likelihood arena (the record carries the arena fingerprint; cross-arena comparison raises),
 priors enter exactly once (a transported soft constraint IS its parameter's prior), and a
-deferred escalation whose evidence ceiling sits ≥100 nats below a trusted leader is recorded
-`dominated` instead of sampled; surviving escalations sample at n_live=32, scoped to that lane
+deferred escalation whose evidence ceiling sits ≥30 nats below a trusted leader is recorded
+`dominated` instead of sampled (100 nats until 2026-09-03: the survivor floor needs the ceiling
+within about 7 nats, and 100 sampled four structures per fit that had no route to survival);
+surviving escalations sample at n_live=32, scoped to that lane
 (128 until 2026-09-03: the evidence error of about 1.2 nats at 32 is still irrelevant against the
 10–40 nat Occam gaps the rung exists to separate, and 128 cost five minutes a fit for no decision
 benefit on the acoustic reference campaign).
@@ -615,7 +617,7 @@ realizes. `y` = counts, `f` = model expected counts.
 - Laplace rung **[def]**: `ln Z ≈ ln L(th^) + ln pi(th^) + (k/2) ln 2pi - (1/2) ln det H`,
   `H` the Hessian of `-ln(L pi)` at the optimum — the Gaussian-bump integral; refused on any
   boundary-pinned fit (escalate to nested sampling). Dominance prune: a deferred candidate whose
-  evidence *ceiling* sits ≥ 100 nats below a trusted leader is recorded `dominated`, unsampled.
+  evidence *ceiling* sits ≥ 30 nats below a trusted leader is recorded `dominated`, unsampled.
 - Diagnostics lane: `AIC = C + 2k`; Akaike weight `w_s = exp(-Delta_s/2) / sum exp(-Delta/2)`.
 - Soft dispersion prior (MAP, §5): the Gaussian belief `(prior_omega, prior_sigma)` enters the
   minimized cost once as its `-2 ln` density (`(w0 - prior_omega)^2 / prior_sigma^2` up to the

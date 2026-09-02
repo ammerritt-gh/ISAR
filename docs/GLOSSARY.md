@@ -88,7 +88,7 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   integrate, `laplace_truncated` for a Γ-floor-only pin, or dynesty nested sampling for other
   boundary-pinned/curvature-failed fits. Every record carries its rung, escalation reasons, and
   (for dynesty) the n_live used; evidence is comparable only within one data-likelihood arena.
-  Dominated candidates (evidence ceiling ≥100 nats below a trusted leader) are excluded without
+  Dominated candidates (evidence ceiling ≥30 nats below a trusted leader) are excluded without
   sampling and recorded as such.
 - **laplace_truncated** — the evidence rung for a converged fit whose single pin is one `.Gamma`
   at its floor: rung-1 Laplace with a boundary-mass correction, since the Γ floor is a modelling

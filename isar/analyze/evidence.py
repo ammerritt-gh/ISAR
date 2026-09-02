@@ -55,11 +55,14 @@ from isar.analyze import loop
 # percent in log-density.
 CURVATURE_RATIO = 5.0
 EVIDENCE_REVISION = "isar.laplace_evidence/1"
-# Dominance pruning (owner ruling 2026-08-08): a deferred escalation whose evidence CEILING
-# (lnZ ≤ −cost/2) sits this many nats below the trusted leader is recorded "dominated" instead
-# of sampled. Reaching the 0.01 survivor floor needs the ceiling within ~ln(N/0.01) ≈ 7 nats
-# of the leader; 100 leaves ~93 nats of slack for optimizer slop before pruning could matter.
-PRUNE_MARGIN = 100.0
+# Dominance pruning (owner ruling 2026-08-08, amended 2026-09-03): a deferred escalation whose
+# evidence CEILING (lnZ ≤ −cost/2) sits this many nats below the trusted leader is recorded
+# "dominated" instead of sampled. Reaching the 0.01 survivor floor needs the ceiling within
+# ~ln(N/0.01) ≈ 7 nats of the leader; 30 leaves ~23 nats of slack for optimizer slop before
+# pruning could matter. The original 100 sampled four structures per fit on the acoustic
+# reference campaign (2026-09-03 profile: 136 of 140 s in nested sampling for one quicklook and
+# its master), most of them tens of nats below the leader's ceiling with no route to survival.
+PRUNE_MARGIN = 30.0
 # Scoped escalation budget (owner ruling 2026-08-08, amended 2026-09-03): post-pruning deferred
 # escalations sample at n_live=32 — their job is separating Occam gaps of 10–40 nats, where a
 # logzerr of ~1.2 nats (vs ~0.6 at 128, ~0.3 at 400) is still decision-irrelevant. Measured on
