@@ -61,6 +61,7 @@ Short reference program, (2,0,0) to (2.3,0,0), three measurable points:
 | old default | 128 live points | stopped by hand after 2 fits | 11 min | 2 | none reachable |
 | new default | 32 | met, 3 of 3 certified | 7.5 min | 8 | 0 of 4 (veto, see §4) |
 | new default, vetoes fixed | 32 | met, 3 of 3 certified | 12.6 min | 9 | 3 of 3 scored, all 17-point cores |
+| final code, no overrides (`be8b34d`) | 32 | met, 3 of 3 certified | 10.0 min | 8 | 2 cores; zero recovery re-scans |
 
 Delivered against TAVI's analytic truth: 0.926, 1.838, 2.650 meV at h = 2.1, 2.2, 2.3, each
 within 0.04 meV. Centres are accurate to a median 0.025 meV over the scored rows.
