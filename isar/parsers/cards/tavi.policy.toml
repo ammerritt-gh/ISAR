@@ -61,6 +61,13 @@ senses = [1, -1, 1]            # SM, SS, SA (fallback for payload sense_m/sense_
 bet = [30.0, 30.0, 30.0, 30.0]
 collimations = [30.0, 30.0, 30.0, 30.0]
 
+[fitting]
+# The master refit of a group reuses its previous winner as a structure hint; a one-member master
+# (the common first-visit case) reuses its own scan's winner instead. Gated — a hint that doesn't
+# explain the pooled data falls back to the full enumeration — so the result is statistically
+# equivalent, not bit-identical, to the unhinted refit.
+reuse_master_structure = true
+
 [sample]
 name = "tavi"                  # experiment_id fallback (TAVI JSONs carry no EXPNO)
 # experiment_id = "SIM-001"    # optional explicit experiment id (wins over name)

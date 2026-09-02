@@ -105,6 +105,52 @@ def test_flag_on_previous_not_fitted_threads_no_hint(monkeypatch):
     assert seen == [("master:tavi_42_200.0", None)]
 
 
+def test_flag_on_no_previous_master_one_member_threads_scan_label(monkeypatch):
+    # First visit to a q: no previous master, but the single member's scan was already fit (the
+    # scan-fit pass runs before the master-pooling pass) — its winner is a legitimate hint.
+    seen = _capturing_stub(monkeypatch, best_label="stokes+bg")
+    s = SessionState()
+    scan_entry = ScanEntry(scan_id="tavi:1:det", scan_number=1, scan_type="measurement",
+                            content_hash="c", status="fitted")
+    scan_entry.detectors["det"] = {"best_label": "stokes+bg"}
+    s.put(scan_entry)
+    assert master_delivery._fit_masters(_grp1([("tavi", 1, "det")]), [], _card(True), None, None, s,
+                               M=10, seed_base=6000) == 1
+    assert seen == [("master:tavi_42_200.0", "stokes+bg")]
+
+
+def test_flag_off_no_previous_master_one_member_threads_no_hint(monkeypatch):
+    seen = _capturing_stub(monkeypatch, best_label="stokes+bg")
+    s = SessionState()
+    scan_entry = ScanEntry(scan_id="tavi:1:det", scan_number=1, scan_type="measurement",
+                            content_hash="c", status="fitted")
+    scan_entry.detectors["det"] = {"best_label": "stokes+bg"}
+    s.put(scan_entry)
+    assert master_delivery._fit_masters(_grp1([("tavi", 1, "det")]), [], _card(False), None, None, s,
+                               M=10, seed_base=6000) == 1
+    assert seen == [("master:tavi_42_200.0", None)]
+
+
+def test_previous_master_wins_over_one_member_scan_label(monkeypatch):
+    # A previous fitted master exists (its own best_label "elastic+stokes+bg") and the group is
+    # re-invalidated onto a DIFFERENT single member whose own scan fit carries a different label
+    # ("stokes+bg") — the previous-master hint path (whole-pool history) still takes precedence,
+    # since it is tried first and only falls through to the member-scan hint when absent.
+    seen = _capturing_stub(monkeypatch, best_label="elastic+stokes+bg")
+    s = SessionState()
+    scan_entry = ScanEntry(scan_id="tavi:2:det", scan_number=2, scan_type="measurement",
+                            content_hash="c", status="fitted")
+    scan_entry.detectors["det"] = {"best_label": "stokes+bg"}
+    s.put(scan_entry)
+    ms = _MS([("tavi", 1, "det")])
+    col = _Col("merge", [_Grp(("tavi", "42", 200.0), ms)])
+    assert master_delivery._fit_masters(col, [], _card(True), None, None, s, M=10, seed_base=6000) == 1
+    ms.members = [("tavi", 2, "det")]      # still n_members == 1, but a different member → refit
+    seen.clear()
+    assert master_delivery._fit_masters(col, [], _card(True), None, None, s, M=10, seed_base=6000) == 1
+    assert seen == [("master:tavi_42_200.0", "elastic+stokes+bg")]
+
+
 def test_provenance_stamped_when_fit_reports_skip(monkeypatch):
     # _fit_master_group stamps provenance["structure_skipped"] iff fit_one reports the shortcut.
     # Stub the heavy internals so only the stamping logic is under test.

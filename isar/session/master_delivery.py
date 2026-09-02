@@ -389,6 +389,17 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
         hint = None
         if reuse_structure and prev is not None and prev.status == "fitted":
             hint = (prev.detectors.get(member_det or "merged") or {}).get("best_label")
+        elif reuse_structure and ms.n_members == 1:
+            # No previous master to reuse (first visit to this q — the common case), but a
+            # one-member pool is the SAME data and the SAME enumeration as its member scan, fit
+            # seconds ago on the scan-fit pass. That scan's winner is therefore just as legitimate
+            # a hint as a previous master's: _try_structure_hint's gates (same as always) decide
+            # whether it actually explains the pooled data, so a bad hint still falls back to the
+            # full enumeration rather than silently mis-fitting.
+            member_exp = ms.members[0][0]
+            member_entry = session.get(f"{member_exp}:{member_scan}:{member_det}")
+            if member_entry is not None and member_entry.status == "fitted":
+                hint = (member_entry.detectors.get(member_det) or {}).get("best_label")
         refits.append((idx, grp, ms, master_id, chash, rec_by_scan.get(member_scan), member_det,
                        hint))
     if force_masters:
