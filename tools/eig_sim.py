@@ -46,7 +46,8 @@ DETECTION_COUNTS = 5.0               # the world's detection floor, not the plan
 
 #: The truth's intensity scale, per 1e7 neutrons (``test_workspaces/demo-rehearsal/F-final``).
 WORLD_NCOUNT_REFERENCE = 1.0e7
-WORLD_PEAK_COUNTS_MEV = 17.0
+WORLD_PEAK_COUNTS_MEV = 0.65  # PRE-BOSE Stokes area per 1e7, as the live TAVI runs measured it (the
+                              # 17 counts*meV seen in the rehearsal data is the lobe at ~1 meV, n+1 ~ 20)
 WORLD_ELASTIC_COUNTS_MEV = 30.0
 WORLD_BACKGROUND_PER_POINT = 0.3
 

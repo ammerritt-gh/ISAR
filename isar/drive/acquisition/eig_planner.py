@@ -93,12 +93,12 @@ NULL_MISS_PROBABILITY = 0.1
 #: Without it a half-count scan leaving sigma just over the bar scored ~99% of the value of the
 #: full-count scan that would actually finish the point, at half the cost, so the point never got
 #: finished.
-SHAPING = 0.02
+SHAPING = 0.001
 #: How far a real fit's sigma sits above the Cramer-Rao bound at the counts we run.  The bound is
 #: optimistic at low counts; this is a declared model of the fitter's reliability, like
 #: :data:`NULL_MISS_PROBABILITY`, and it applies to the PLANNER's expectations only -- the world
 #: delivers the bare bound, so the planner has to earn its margin rather than assume it.
-FIT_SIGMA_INFLATION = 3.0   # live 2026-09-03: published calibrated halfwidths 0.06-0.09 meV against
+FIT_SIGMA_INFLATION = 1.5   # live 2026-09-03: published calibrated halfwidths 0.06-0.09 meV against
                             # a Cramér-Rao bound of ~0.02-0.03 at 5e6 counts/point (inflation-calibrated
                             # intervals, not the raw HESSE sigma); 1.25 bought scans that could not finish
 #: Anchor weights are rounded to this many decimals before designs are grouped for the cross-point
@@ -108,7 +108,9 @@ ANCHOR_WEIGHT_DECIMALS = 2
 
 #: The intensity map's class prior, before any scan: counts per ``PRIOR_NCOUNT_REFERENCE`` neutrons.
 PRIOR_NCOUNT_REFERENCE = 1.0e7
-PRIOR_PEAK_COUNTS_MEV = 15.0
+PRIOR_PEAK_COUNTS_MEV = 1.0    # PRE-BOSE Stokes area per 1e7: the live TAVI runs of 2026-09-03 measured
+                                # 0.65 (a lobe of ~13 counts*meV at 0.9 meV is that times n+1 = 19.7);
+                                # 15 was the Bose-weighted lobe and made the rival 20x too bright
 PRIOR_ELASTIC_COUNTS_MEV = 30.0
 PRIOR_BACKGROUND_PER_POINT = 0.3
 
@@ -169,7 +171,15 @@ class PlannerInput:
     scale: IntensityScale
     tolerance_meV: float
     base_ncount: int = 10_000_000
-    ncount_ladder: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0)
+    #: Exposure rungs as multiples of base_ncount. The top rungs exist because a dim peak far from
+    #: the fold (pre-Bose ~0.6 counts*meV per 1e7 on TAVI, n+1 ~ 1.4 at 6 meV) needs ~1e8
+    #: neutrons per point to reach a 0.05 meV bar; the instrument cap still clamps.
+    ncount_ladder: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
+    #: The fixed price of one scan in neutron-equivalents: the instrument's move and the fit's
+    #: analysis time. Without it sixteen 5M scans and one 8e7 scan price identically and the
+    #: planner grinds a dim point in tiny repeats. A price, not a placement rule; the loop may
+    #: pass the instrument's own figure.
+    scan_overhead_neutrons: float = 5.0e7
     max_points: int = 220
     step_fraction: float = 0.25
     scans: Mapping[int, Sequence[ExecutedScan]] = field(default_factory=dict)
@@ -1058,7 +1068,7 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
     for wi, (lo, _hi, step, npts) in enumerate(windows):
         for ei, ncount in enumerate(ladder):
             d = wi * n_exp + ei
-            cost = float(npts) * float(ncount)
+            cost = float(npts) * float(ncount) + float(inp.scan_overhead_neutrons)
             out.append(RankedDesign(
                 grid_index=i, hkl=tuple(float(c) for c in inp.path[i]),
                 e_lo=float(lo), e_hi=float(lo + step * (npts - 1)), e_step=float(step),
