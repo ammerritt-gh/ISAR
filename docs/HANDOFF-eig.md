@@ -306,3 +306,13 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     pre-Bose, per branch; elastic; background), never from the fit amplitudes whose convention
     was not what the docstring assumed. The planner now says on its decision when no design is
     expected to complete a point. Declared Cramér–Rao inflation raised to 3.0 (d3d6f2b).
+18. **Prices from the realistic world (2026-09-03 04:30, commit after 6e2c8e9).** The live counts
+    put the acoustic's pre-Bose area at ~0.6 counts·meV per 1e7 (flat in energy; the lobe seen is
+    that × (n+1), so ~13 at 0.9 meV and ~0.9 at 6 meV). The simulator's world and the planner's
+    class prior had carried the Bose-weighted lobe and were 20× too bright, which is why the
+    simulation finished at 5M per point and the instrument did not. Corrected, four prices were
+    needed: pre-Bose class prior 1.0; exposure ladder to 16× base (a 6 meV acoustic needs ~1e8
+    per point for the bar); a fixed per-scan cost of 5e7 neutron-equivalents (the move and the
+    fit) so sixteen tiny repeats no longer price like one scan; shaping 1e-3 so a cheap probe
+    never outbids a completion. Realistic simulation: acoustic 21 scans with the exposure
+    climbing 2e7→1.6e8 toward the zone boundary; optic-only 22; both 56; null recovery 21.
