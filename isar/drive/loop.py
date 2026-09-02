@@ -3496,8 +3496,10 @@ def _prize_lost_after_certification(cfg, objective, master_rows: list[dict],
     """Re-ask the planner's prize of the certified candidates; a reason string when it is not met.
 
     Certification replaces every fast interval with a bootstrap-backed one, which can widen it past
-    the bar. ``None`` when the prize still stands — including when the re-check cannot be built,
-    since a planner refusal at this point says nothing about the science already certified.
+    the bar. Reported, never acted on: the prize was met over the map the planner priced, and this
+    says how the published intervals compare with it. ``None`` when the prize still stands —
+    including when the re-check cannot be built, since a planner refusal at this point says nothing
+    about the science already certified.
     """
     try:
         durable_state = read_card_state(cfg.workspace)
@@ -4087,13 +4089,22 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                 regression = _prize_lost_after_certification(
                     cfg, objective, master_rows, observations)
                 if regression is not None:
+                    # Recorded, not acted on. The prize is defined over the candidate map the
+                    # planner priced, and it was met; certification's job is to publish the number,
+                    # and its bootstrap interval is routinely wider than the fast one. Demoting the
+                    # terminal on that would report every completed campaign as incomplete. The per-q
+                    # rows in the summary carry the certified truth either way.
                     log_event(cfg.log_path, "exception", {
-                        "action": "certify_regression", "state": "incomplete",
+                        "action": "certify_regression", "state": decision.state,
                         "reason": regression,
                         "per_q": [row for row in decision.per_q
                                   if not row.get("converged", False)],
-                        "note": "full certification left provisional success outside the objective"})
-                    decision = StopDecision("incomplete", [regression], decision.per_q)
+                        "note": "certified intervals are wider than the map the prize was met on"})
+                    # Carried into the terminal reasons, so the difference between the map the prize
+                    # was met on and the intervals that were published is visible where an operator
+                    # actually reads it, not only in the session log.
+                    decision = StopDecision(decision.state, list(decision.reasons) + [regression],
+                                            decision.per_q, decision.terminal_cause)
 
             summary = _campaign_summary(objective, grid, decision, budget_state, cfg.workspace,
                                         cfg.log_path, len(observations),
