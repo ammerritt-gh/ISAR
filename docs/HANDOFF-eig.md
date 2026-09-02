@@ -316,3 +316,18 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     fit) so sixteen tiny repeats no longer price like one scan; shaping 1e-3 so a cheap probe
     never outbids a completion. Realistic simulation: acoustic 21 scans with the exposure
     climbing 2e7→1.6e8 toward the zone boundary; optic-only 22; both 56; null recovery 21.
+19. **The full demo path, live, on the final planner (2026-09-03 00:50, branch `eig-planner`,
+    PR #37).** `map the acoustic phonon from (2,0,0) to (3,0,0)`: 82 scans, 1.45e11 neutrons,
+    24.9 min, terminal `met` on certified intervals, 20/20 points; windows 15–18 points from the
+    fourth scan; the exposure ladder walks 5M → 160M per point as the acoustic dims toward the
+    zone boundary; certification pushed the campaign back out twice (4 then 2 points above the
+    bar) and it bought its way through. `isar score --truth-fn phonon_dft`: median |Δω₀|
+    0.028 meV, but interval coverage 0.444 and the fits sit systematically low on the rising
+    branch (worst −0.10 meV at h = 2.50 against a ±0.035 interval). That is the fitter's
+    calibration, not placement: the published intervals under-cover ~1.9× (the handoff table
+    already recorded ~1.8× before this work) and the 0.05 meV grid snaps centres (§7.16).
+    **Owner decisions pending:** apply `dx = 0.02` in `lineshapes.py`; re-run the σ-calibration
+    on the new selection rule and apply its inflation to the published intervals (then the
+    0.05 bar costs ~3–4× the neutrons); or present the demo at a 0.1 meV bar.
+    Also found: this instrument has no elastic line (zero counts at ΔE = 0 away from the fold);
+    the intensity map's elastic term is ~0.03–0.26 per 1e7 and steady.
