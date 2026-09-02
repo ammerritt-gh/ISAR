@@ -190,6 +190,10 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
    question a paper would ask. The one exemption is the zone centre of a gapless target, whose
    energy the hypothesis fixes at 0 and the elastic line makes untestable.
 2. **The price.** Neutrons requested (points × count per point). No per-scan overhead constant.
+   *Amended 2026-09-03 (item 18, PR #37 review):* a scan also carries a fixed cost — the
+   instrument's move and the fit's analysis time — whose honest currency is time; the planner
+   prices it at a declared exchange rate of 5e7 neutron-equivalents. The requested dose and the
+   price are reported separately; the budget ledger charges the dose only.
 3. **EIG.** For every candidate scan inside the region and the energy domain, the expected progress
    toward the prize per neutron, judged by simulating the intensity under the current hypotheses
    and re-running the same belief update the real data goes through. Greedy, re-decided after
