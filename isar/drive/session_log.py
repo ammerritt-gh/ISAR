@@ -41,6 +41,9 @@ EVENT_KINDS = ("propose", "validate", "run", "analyze", "decide", "escalate_fit"
                "certification_crossing", "recovery_pending", "recovery_completed",
                "scan_design_realization", "scan_design_realized_comparison",
                "scan_design_authority_decision", "submission_intent", "eig_decision",
+               # The EIG planner's one decision record: what it chose, what it beat, and how much
+               # of the prize is inside the bar (isar.drive.loop._log_eig_plan).
+               "eig_plan",
                "feasibility_trim")
 
 

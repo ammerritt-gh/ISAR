@@ -293,35 +293,63 @@ def _render_inventory(payload: dict, tail: str) -> tuple[str, str]:
             f"usable — chose {chosen}{at}{by}{tail}"), "info"
 
 
-def _render_eig_decision(payload: dict, tail: str) -> tuple[str, str]:
-    """Why the scan-window EIG did — or did not — change the window this iteration.
+def _render_eig_plan(payload: dict, tail: str) -> tuple[str, str]:
+    """The one line that says why this scan and not another.
 
-    The audit answer lives in ``report/scan-design-authority/<sha>.json``; this is the sentence that
-    saves an operator from having to open it. Everything is copied from the payload: the two point
-    counts, the paired information margin the engine already computed, and the role it selected.
+    Everything is copied from the ``eig_plan`` payload the planner seam writes: how well the chosen
+    point's target energy is known now, the design that was bought, the runner-up it beat, and how
+    much of the prize is already inside the bar.
     """
-    at = f" {q_text(payload['hkl'])}" if payload.get("hkl") is not None else ""
-    if not payload.get("ready"):
-        # Reason codes stay verbatim: they are the words the operator will grep the artifacts and
-        # the design docs for, and prettifying them breaks that search.
-        why = payload.get("blocker") or "no reason recorded"
-        return f"EIG{at} — not ready ({why}){tail}", "info"
-    bits = []
-    legacy, target = payload.get("legacy_points"), payload.get("target_points")
-    if legacy is not None and target is not None:
-        bits.append(f"legacy {legacy} pts vs core {target} pts")
-    delta = _num(payload.get("delta_nats_per_point"), "+.4f")
-    if delta is not None:
-        error = _num(payload.get("standard_error_nats"), ".4f")
-        bits.append(f"ΔI/pt {delta}±{error}" if error is not None else f"ΔI/pt {delta}")
-    detail = " — " + ", ".join(bits) if bits else ""
-    role = payload.get("selected_role")
-    chose = f" — {role} selected" if role else ""
-    severity = "notice" if role == "target_core" else "info"
-    if not bits and not role:
-        # A bare "EIG" tells the operator nothing; say that the record carried no margin.
-        return f"EIG{at} — ready, no margin or role recorded{tail}", "info"
-    return f"EIG{at}{detail}{chose}{tail}", severity
+    tolerance = _num(payload.get("tolerance_meV"), ".3g")
+    bar = f" \u00b1{tolerance} meV" if tolerance is not None else ""
+    if payload.get("stop"):
+        return (f"EIG: hypothesis map at{bar} at every point \u2014 done{tail}", "notice")
+    chosen = payload.get("chosen")
+    if not isinstance(chosen, dict):
+        return f"EIG \u2014 no design was chosen{tail}", "warn"
+    at = q_text(chosen.get("hkl")) if chosen.get("hkl") is not None else None
+    lo, hi = _num(chosen.get("e_lo"), ".2f"), _num(chosen.get("e_hi"), ".2f")
+    points, ncount = chosen.get("n_points"), chosen.get("ncount")
+    if at is None or lo is None or hi is None or points is None or ncount is None:
+        # Say so plainly rather than assemble a line out of "?" pieces: a design record missing its
+        # own window or exposure is a record to go and look at, not a scan to describe.
+        return (f"EIG \u2014 a design was chosen but its record carries no window or exposure"
+                f"{tail}", "warn")
+    known = _num(_chosen_halfwidth(payload, chosen), ".2f")
+    prefix = f"\u00b1{known} \u2192 " if known is not None else ""
+    score = _num(_per_million(chosen.get("score")), ".3g")
+    rate = f", {score} nats/1e6 n" if score is not None else ""
+    ranked = [row for row in (payload.get("ranked") or []) if isinstance(row, dict)]
+    runner_up = ""
+    if len(ranked) > 1:
+        second = ranked[1]
+        second_score = _num(_per_million(second.get("score")), ".3g")
+        runner_up = (f" \u2014 runner-up {q_text(second.get('hkl'))}"
+                     + (f" {second_score}" if second_score is not None else ""))
+    total = payload.get("prize_points_total")
+    within = payload.get("prize_points_within_bar")
+    prize = (f" \u2014 prize {within}/{total} within{bar}"
+             if total is not None and within is not None else "")
+    return (f"EIG \u2192 {prefix}{at}: {lo}\u2013{hi} meV, {points} pts \u00d7 "
+            f"{count_text(ncount)}{rate}{runner_up}{prize}{tail}", "notice")
+
+
+def _chosen_halfwidth(payload: dict, chosen: dict):
+    """How well the chosen point's target energy is known right now, from the per-point rollup."""
+    index = chosen.get("grid_index")
+    for point in (payload.get("per_point") or []):
+        if isinstance(point, dict) and point.get("grid_index", index) == index:
+            if point.get("hkl") == chosen.get("hkl"):
+                return point.get("halfwidth_meV")
+    return None
+
+
+def _per_million(score):
+    """Information per neutron read in the unit an operator can hold: nats per million neutrons."""
+    try:
+        return float(score) * 1e6
+    except (TypeError, ValueError):
+        return None
 
 
 def _render_activity(kind: str, payload: dict) -> tuple[str, str]:
@@ -384,8 +412,8 @@ def _render(kind: str, payload: dict) -> tuple[str, str]:
         return _render_scan_design(payload, tail)
     if kind == "inventory":
         return _render_inventory(payload, tail)
-    if kind == "eig_decision":
-        return _render_eig_decision(payload, tail)
+    if kind == "eig_plan":
+        return _render_eig_plan(payload, tail)
     if kind in ("activity_start", "activity_end"):
         return _render_activity(kind, payload)
     if kind == "feasibility_trim":

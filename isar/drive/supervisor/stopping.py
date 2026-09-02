@@ -227,8 +227,6 @@ class GridQ:
     requires_crossing_guard: bool = False
     requires_confirmed_track: bool = False
     crossing_fingerprints: list[str] = field(default_factory=list)
-    max_production_batches: int = MAX_PROD_ATTEMPTS
-    maximum_bridge_steps: int = 1
     master_updates: list[dict] = field(default_factory=list)
     evidence_updates: list[dict] = field(default_factory=list)
     # Chronological positions in the durable observation stream.  These are decision-local
@@ -284,10 +282,6 @@ class GridQ:
     def diagnostics(self) -> list[str]:
         m = self.evidence_master or self.master or {}
         out = []
-        if self.interval_floored:
-            out.append("interval_nonshrinking")
-        if self.info_saturated:
-            out.append("diminishing_returns")
         if self.candidate_rejected or m.get("modality") == "fork" or self.track_state in {
                 "ambiguous", "missing", "provisional", "blocked"}:
             out.append("model_ambiguous")
@@ -299,10 +293,6 @@ class GridQ:
             out.append("linewidth_resolution_limited")
         if m and not m.get("usable"):
             out.append("analysis_failed")
-        if self.exposure_saturated:
-            out.append("exposure_saturated")
-        if self.n_production >= self.max_production_batches:
-            out.append("same_q_strategy_ceiling")
         return list(dict.fromkeys(out))
 
     @property
@@ -376,60 +366,6 @@ class GridQ:
                     and self.is_reduced_q_origin)
 
     @property
-    def info_saturated(self) -> bool:
-        """Value-of-information stop (Phase 5): NOT converged, but one more scan would shrink σ(ω₀) by
-        less than :data:`~isar.drive.acquisition.eig.VOI_SIGMA_FRAC` — diminishing returns. Durable by
-        construction: a pure function of the accumulated ``counts_spent`` / certified half-width, so it
-        re-derives every iteration from the persisted observations (no side-channel state that could go
-        stale). Needs a measured cost history; dormant under the 5a √N model until the 5b Fisher σ
-        (which does not shrink when ω₀ is unidentifiable) feeds it teeth."""
-        if self.converged:
-            return False
-        sigma = self.cert_halfwidth
-        if sigma is None and (self.master or {}).get("diagnostic_halfwidth") is not None:
-            sigma = float(self.master["diagnostic_halfwidth"])
-        if sigma is None or self.last_prod_cost is None or self.counts_spent <= 0.0:
-            return False
-        from isar.drive.acquisition.eig import voi_saturated
-        return voi_saturated(sigma, self.tolerance, self.counts_spent, self.last_prod_cost)
-
-    @property
-    def interval_floored(self) -> bool:
-        """Empirical non-shrinkage brake over comparable chronological pooled-master updates."""
-        if self.converged or len(self.master_updates) < self.interval_floor_window:
-            return False
-        latest = self.master_updates[-1]
-        key_fields = ("candidate_id", "branch_id", "interval_method", "exposure_bucket",
-                      "calibration_version")
-        if latest.get("candidate_id") is None or latest.get("branch_id") is None:
-            return False
-        key = tuple(latest.get(field) for field in key_fields)
-        comparable = [update for update in self.master_updates
-                      if tuple(update.get(field) for field in key_fields) == key
-                       and bool(update.get("certifiable", update.get("reliable", False)))
-                       and update.get("diagnostic_halfwidth") is not None
-                      and update.get("effective_exposure") is not None]
-        window = comparable[-self.interval_floor_window:]
-        if len(window) < self.interval_floor_window:
-            return False
-        try:
-            first_hw = float(window[0]["diagnostic_halfwidth"])
-            last_hw = float(window[-1]["diagnostic_halfwidth"])
-            first_exposure = float(window[0]["effective_exposure"])
-            last_exposure = float(window[-1]["effective_exposure"])
-        except (TypeError, ValueError):
-            return False
-        if not all(math.isfinite(value) for value in (
-                first_hw, last_hw, first_exposure, last_exposure)):
-            return False
-        if first_hw <= 0.0 or first_exposure <= 0.0:
-            return False
-        if last_exposure / first_exposure < self.interval_floor_min_exposure_ratio:
-            return False
-        improvement = max((first_hw - last_hw) / first_hw, 0.0)
-        return improvement < self.interval_floor_min_improvement
-
-    @property
     def signal_seen(self) -> bool:
         """Whether this q has positive signal evidence, including an unresolved branch candidate."""
         return bool((self.evidence_master or self.master or {}).get("usable"))
@@ -437,154 +373,6 @@ class GridQ:
     @property
     def candidate_rejected(self) -> bool:
         return bool(self.master_updates and self.master_updates[-1].get("candidate_state") == "rejected")
-
-    @property
-    def exposure_saturated(self) -> bool:
-        """Additional same-q dwell is demonstrably unable to change the current decision."""
-        repeated_limit = (len(self.clamped_effective_ncounts) >= 2
-                          and self.clamped_effective_ncounts[-1]
-                          == self.clamped_effective_ncounts[-2])
-        return repeated_limit or self.interval_floored or self.info_saturated
-
-    @property
-    def same_q_ceiling_reached(self) -> bool:
-        """The scientist's own same-q production ceiling, the single budget for dwell at this q.
-
-        ``maximum_bridge_steps`` is a path-geometry knob and is deliberately absent: adding it here
-        was what let an identity revisit be charged to the wrong allowance (OP10).
-        """
-        return self.n_production >= self.max_production_batches
-
-    @property
-    def identity_saturated(self) -> bool:
-        """More counting demonstrably cannot sharpen the branch label at this q.
-
-        ``interval_floored`` and ``info_saturated`` both need a *selected target master*, which an
-        identity-ambiguous q by definition does not have — its updates never pass ``branch_matches``
-        and so never reach ``master_updates``.  This is the identity-space analogue: over comparable
-        authoritative revisions, if exposure grew by the configured ratio and neither the target
-        probability nor the identity entropy improved materially, the label is not count-limited.
-        """
-        if self.local_identity_clear:
-            return False
-        window = [update for update in self.identity_updates
-                  if update.get("effective_exposure") is not None
-                  and (update.get("target_probability") is not None
-                       or update.get("identity_entropy") is not None)]
-        if len(window) < self.identity_floor_window:
-            return False
-        # Only compare revisions that answer the same identity question. Mirrors ``interval_floored``'s
-        # comparability key: a change in the candidate set, calibration, model, hypothesis, or slice
-        # is a different question, and saturation across it would be a phantom.
-        latest = window[-1]
-        comparable = [update for update in window
-                      if _identity_comparable(update, latest, scale=self.tolerance)]
-        if len(comparable) < self.identity_floor_window:
-            return False
-        window = comparable[-self.identity_floor_window:]
-        first, last = window[0], window[-1]
-        try:
-            first_exposure = float(first["effective_exposure"])
-            last_exposure = float(last["effective_exposure"])
-        except (TypeError, ValueError):
-            return False
-        if first_exposure <= 0.0 or (
-                last_exposure / first_exposure) < self.identity_floor_min_exposure_ratio:
-            return False
-
-        def _gain(key: str, *, lower_is_better: bool) -> float | None:
-            before, after = first.get(key), last.get(key)
-            if before is None or after is None:
-                return None
-            try:
-                before, after = float(before), float(after)
-            except (TypeError, ValueError):
-                return None
-            if not (math.isfinite(before) and math.isfinite(after)):
-                return None
-            # A metric that got *worse* under more exposure clips to zero gain deliberately.  It is
-            # not weaker evidence than stagnation that counting has stopped paying — it is stronger,
-            # and continuing to spend beam on a diverging label would be the wrong response.
-            if lower_is_better:
-                return max((before - after) / before, 0.0) if before > 0.0 else 0.0
-            return max((after - before) / (1.0 - before), 0.0) if before < 1.0 else 0.0
-
-        gains = [_gain("identity_entropy", lower_is_better=True),
-                 _gain("target_probability", lower_is_better=False)]
-        # Both metrics must be present and both must have stalled.  A partial identity signal (a
-        # ledger written before these columns, say) is not evidence that counting cannot help, and
-        # the conservative reading of "unknown" here is to keep measuring rather than to stop.
-        if any(value is None for value in gains):
-            return False
-        return max(gains) < self.identity_floor_min_improvement
-
-    @property
-    def identity_basis_changed(self) -> bool:
-        """The identity question changed within the recent identity window — the candidate set moved
-        by more than this q's tolerance, or the calibration / hypotheses / campaign slice / identity
-        epoch changed — so the latest updates are not comparable for saturation. Observability for why
-        a saturated-looking series is not treated as saturated."""
-        window = [update for update in self.identity_updates
-                  if update.get("effective_exposure") is not None
-                  and (update.get("target_probability") is not None
-                       or update.get("identity_entropy") is not None)]
-        if len(window) < self.identity_floor_window:
-            return False
-        latest = window[-1]
-        recent = window[-self.identity_floor_window:]
-        return any(not _identity_comparable(update, latest, scale=self.tolerance)
-                   for update in recent)
-
-    @property
-    def ambiguity_exhausted(self) -> bool:
-        evidence_only = self.evidence_master is not None and self.master is None
-        ambiguous_track = self.track_state in {"ambiguous", "missing", "provisional", "blocked"}
-        return bool((evidence_only or ambiguous_track)
-                    and (self.identity_saturated
-                         or (self.same_q_ceiling_reached and self.exposure_saturated)))
-
-    @property
-    def stuck(self) -> bool:
-        """A bounded strategy stop, never evidence that the physical branch is absent."""
-        return self.ambiguity_exhausted
-
-    @property
-    def stuck_reason(self) -> str | None:
-        if not self.ambiguity_exhausted:
-            return None
-        if self.identity_saturated:
-            return ("branch_ambiguity; frontier_blocked after identity evidence stopped "
-                    "responding to exposure")
-        return "branch_ambiguity; frontier_blocked after saturated same-q strategy"
-
-    @property
-    def same_q_identity_work_remains(self) -> bool:
-        """Whether counting again here is still an authorized, physically meaningful action.
-
-        This is the controller invariant OP10 violated: it reported ``branch_ambiguity`` at points
-        for which this was true.  A decisive *local* identity makes further dwell pointless even
-        when the point is not connected — that is a connectivity problem, not a counting one.
-        """
-        if self.local_identity_clear:
-            return False
-        # Only the frontier itself is actionable.  ``_frontier_states`` labels the first non-clear
-        # point outward from the anchor ``ambiguous``/``missing`` and everything past it
-        # ``provisional``/``blocked``; acquisition can act on the former but reaches the latter only
-        # once the frontier ahead of them resolves.  Counting a point buried behind a blocked
-        # frontier is not an available move, so demanding it would be a false alarm.
-        if self.track_state not in {"ambiguous", "missing"}:
-            return False
-        return not (self.same_q_ceiling_reached or self.identity_saturated
-                    or self.exposure_saturated)
-
-    @property
-    def deficit(self) -> float:
-        """Master interval-above-tolerance deficit; ``+inf`` before a usable master exists."""
-        hw = self.cert_halfwidth
-        if hw is None and (self.master or {}).get("diagnostic_halfwidth") is not None:
-            hw = float(self.master["diagnostic_halfwidth"])
-        return _BIG if hw is None else hw - self.tolerance
-
 
 def _logical_observations(observations: list[dict], target_branch: str) -> list[dict]:
     """Collapse physical retry/detector rows to one logical outcome per acquisition.
@@ -659,13 +447,9 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
         if item.get("branch_id") is None and not crossing_guard:
             return True                  # static/posterior-off campaigns retain v2 behavior
         return item.get("branch_id") == target_branch
-    max_batches = int((getattr(objective, "steering", None) or {}).get(
-        "maximum_production_batches_per_q", MAX_PROD_ATTEMPTS))
     policy = getattr(objective, "steering", None) or {}
-    maximum_bridge_steps = max(0, int(policy.get("maximum_bridge_steps", 1)))
     grid = [GridQ(index=i, hkl=tuple(path[i]), q=scalars[i], tolerance=objective.tolerance_meV,
-                  requires_crossing_guard=crossing_guard, max_production_batches=max_batches,
-                  maximum_bridge_steps=maximum_bridge_steps,
+                  requires_crossing_guard=crossing_guard,
                   requires_confirmed_track=confirmed_track_required,
                   interval_floor_window=max(1, int(policy.get("interval_floor_window", 3))),
                   interval_floor_min_improvement=float(policy.get(
@@ -859,22 +643,17 @@ def systematic_floor(calibration=None, floor: float | None = None) -> float:
     return 0.0
 
 
-def local_exhaustion_status(g: GridQ) -> dict[str, Any]:
-    """The per-q local-exhaustion status, serialized identically wherever it is reported.
-
-    One source of truth for the three coupled fields (``stuck``, its reason, and the underlying
-    ``ambiguity_exhausted``) so the ``decide`` event's per-q rollup and the campaign summary's
-    ``grid_state`` can never drift again. Both previously hard-coded ``stuck=False``, hiding real
-    saturation from forensics — AP6's index 18 logged ``stuck=false`` while ``GridQ.stuck`` was ``True``.
-    """
-    return {"stuck": g.stuck, "stuck_reason": g.stuck_reason,
-            "ambiguity_exhausted": g.ambiguity_exhausted}
-
-
 def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                   calibration=None, floor: float | None = None,
                   max_declines: int = MAX_DECLINES) -> StopDecision:
-    """Decide ``met`` / ``incomplete`` / ``infeasible`` / ``continue``.
+    """Decide ``incomplete`` / ``infeasible`` / ``continue``, and roll the per-q summary up.
+
+    ``met`` is deliberately NOT decided here. The objective is "the hypothesis map at the requested
+    precision", and only the EIG planner's prize over the mapped candidates answers that question;
+    a stopping-side approximation of it (all eligible q converged) both duplicated the answer and
+    could disagree with it. ``isar.drive.loop.run_campaign`` produces ``met`` from
+    ``Decision.stop``. What remains here is the tolerance floor, the budget, and the per-q rows
+    certification and the report consume.
 
     Args:
         objective: the :class:`~isar.drive.objective.ObjectiveSpec` (path + tolerance).
@@ -928,22 +707,18 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                       "diagnostics": g.diagnostics,
                       "n_production": g.n_production,
                       "clamped_productions": g.clamped_productions,
-                      "exposure_saturated": g.exposure_saturated,
-                      "strategy_ceiling_reached": g.same_q_ceiling_reached,
-                      "interval_floored": g.interval_floored,
                       # The identity trio belongs in the per-q summary, not only in results.csv:
                       # a branch_ambiguity stop is unreadable without knowing whether the label was
                       # undecided (count more) or decided-but-disconnected (counting cannot help).
                       "target_probability": g.target_probability,
                       "identity_entropy": g.identity_entropy,
                       "local_identity_clear": g.local_identity_clear,
-                      "identity_saturated": g.identity_saturated,
                       "n_master_updates": len(g.master_updates),
                       "diagnostic_halfwidth": (g.master_updates[-1].get("diagnostic_halfwidth")
                                                if g.master_updates else None),
-                      "reason": reason, **local_exhaustion_status(g)})
+                      "reason": reason})
 
-    # Tolerance below the systematic floor is infeasible by construction — check before "met".
+    # Tolerance below the systematic floor is infeasible by construction.
     if tol < fl:
         for status in per_q:
             status["assessment_state"] = "infeasible"
@@ -953,24 +728,6 @@ def evaluate_stop(objective, grid: list[GridQ], budget_state: dict, *,
                              f"floor {fl:g} meV (calibration center_pull_mean) — unreachable"], per_q)
 
     eligible = [g for g in grid if g.precision_coverage_eligible]
-    if grid and eligible and all(g.converged for g in eligible):
-        inferred = len(grid) - len(eligible)
-        return StopDecision("met",
-                            [f"all {len(eligible)} measurable grid q converged"
-                             + (f"; {inferred} inferred unresolved acoustic endpoint excluded"
-                                if inferred else "")
-                             + ": a certified ω₀ interval "
-                             f"(pooled master, inflation-calibrated) "
-                             f"≤ {tol:g} meV at each point"], per_q)
-
-    # A branch-ambiguity terminal is NOT decided here.  ``evaluate_stop`` runs *before* acquisition
-    # enumerates the action space, so a local approximation of "is any classification route left?"
-    # (the former ``classification_route_remains`` grid scan) could terminalise a frontier the
-    # controller could in fact still act on — the early-terminal defect (ruling PR1).  Saturation
-    # is now a per-point diagnostic only (``GridQ.ambiguity_exhausted`` / ``stuck``); the honest
-    # ``incomplete`` is produced *after* acquisition returns no proposal, by
-    # ``_blocked_frontier_decision`` consuming the canonical ``ActionInventory`` and its
-    # ``terminal_cause``.
 
     reasons: list[str] = []
     spent = float(budget_state.get("spent", 0.0))

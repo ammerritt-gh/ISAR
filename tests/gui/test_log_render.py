@@ -169,49 +169,8 @@ def test_inventory_says_what_was_weighed_and_what_was_chosen():
     assert blocked.severity == "warn"
 
 
-def test_eig_decision_explains_a_selection_and_a_refusal():
-    selected = _rendered("eig_decision", {
-        "iter": 12, "hkl": [2.2, 0.0, 0.0], "mode": "authoritative",
-        "master_id": "b" * 64, "ready": True, "blocker": None,
-        "eligibility_status": "eligible", "point_count_basis": "authority_decision",
-        "legacy_points": 46, "target_points": 17,
-        "delta_nats_per_point": 0.02412, "standard_error_nats": 0.00318,
-        "lower_margin_nats": 0.01776, "selected_role": "target_core",
-        "decision_outcome": "select_target_core", "decision_ref": "d" * 64})
-    assert selected.text == ("EIG H=2.2 — legacy 46 pts vs core 17 pts, ΔI/pt +0.0241±0.0032 — "
-                             "target_core selected  [iter 12]")
-    assert selected.severity == "notice"                 # the one case that changed the window
-    assert "d" * 64 not in selected.text                 # the decision sha stays in the payload
-    assert "d" * 64 in selected.raw_json()
-
-    blocked = _rendered("eig_decision", {
-        "iter": 3, "hkl": [2.15, 0.0, 0.0], "mode": "authoritative", "master_id": None,
-        "ready": False, "blocker": "projection_currentness_unknown",
-        "eligibility_status": "ineligible", "point_count_basis": "planned_inventory",
-        "legacy_points": 54, "target_points": 17, "delta_nats_per_point": None,
-        "standard_error_nats": None, "lower_margin_nats": None, "selected_role": None,
-        "decision_outcome": None, "decision_ref": None})
-    assert blocked.text == ("EIG H=2.15 — not ready (projection_currentness_unknown)  [iter 3]")
-    assert blocked.severity == "info"
-
-
-def test_eig_decision_retains_legacy_without_pretending_to_a_score():
-    retained = _rendered("eig_decision", {
-        "iter": 8, "hkl": [2.75, 0.0, 0.0], "mode": "shadow", "master_id": "c" * 64,
-        "ready": True, "blocker": None, "eligibility_status": "eligible",
-        "point_count_basis": "planned_inventory", "legacy_points": 52, "target_points": None,
-        "delta_nats_per_point": None, "standard_error_nats": None, "lower_margin_nats": None,
-        "selected_role": None, "decision_outcome": None, "decision_ref": None})
-    # Still no invented score — but a bare "EIG H=2.75" told the operator nothing at all, so the
-    # line now says which fields the record was missing.
-    assert retained.text == "EIG H=2.75 — ready, no margin or role recorded  [iter 8]"
-    assert retained.severity == "info"
-    for forbidden in ("ΔI", "selected", "None"):
-        assert forbidden not in retained.text
-
-
-def test_eig_decision_reaches_the_dock():
-    assert "eig_decision" not in HIDDEN_KINDS
+def test_eig_plan_reaches_the_dock():
+    assert "eig_plan" not in HIDDEN_KINDS
 
 
 def test_activity_start_and_end_read_as_plain_progress():
@@ -351,8 +310,8 @@ def test_missing_counts_read_as_a_dash_not_as_the_word_none():
     assert "None" not in planning.text
     assert planning.text == "Planning a quicklook scan — 8 points"
 
-    bare = _rendered("eig_decision", {"ready": True})
-    assert bare.text == "EIG — ready, no margin or role recorded"
+    bare = _rendered("eig_plan", {"chosen": {}})
+    assert "None" not in bare.text and "?" not in bare.text
 
 
 def test_a_non_finite_budget_degrades_instead_of_killing_the_feed():
@@ -362,3 +321,34 @@ def test_a_non_finite_budget_degrades_instead_of_killing_the_feed():
     assert budget_status_line(state) is not None          # no exception escapes
     state.analysis_limit_seconds = float("inf")
     assert budget_status_line(state) is not None
+
+
+def test_the_eig_plan_line_names_the_choice_the_runner_up_and_the_prize():
+    """The one line an operator reads to know why this scan and not another."""
+    line = _rendered("eig_plan", {
+        "iter": 3, "tolerance_meV": 0.05,
+        "chosen": {"grid_index": 1, "hkl": [2.15, 0.0, 0.0], "e_lo": 0.6, "e_hi": 3.1,
+                   "e_step": 0.2, "n_points": 13, "ncount": 10_000_000, "score": 4.21e-6},
+        "per_point": [{"hkl": [2.10, 0.0, 0.0], "halfwidth_meV": 0.04},
+                      {"hkl": [2.15, 0.0, 0.0], "halfwidth_meV": 0.31}],
+        "ranked": [{"hkl": [2.15, 0.0, 0.0], "score": 4.21e-6},
+                   {"hkl": [2.20, 0.0, 0.0], "score": 3.88e-6}],
+        "prize_points_within_bar": 0, "prize_points_total": 20})
+    assert line.text == ("EIG → ±0.31 → H=2.15: 0.60–3.10 meV, "
+                         "13 pts × 10M, 4.21 nats/1e6 n — runner-up H=2.2 3.88 "
+                         "— prize 0/20 within ±0.05 meV  [iter 3]")
+    assert line.severity == "notice"
+
+
+def test_a_design_record_missing_its_window_says_so_instead_of_printing_question_marks():
+    line = _rendered("eig_plan", {"iter": 4, "chosen": {"hkl": [2.15, 0.0, 0.0]}})
+    assert line.text == ("EIG — a design was chosen but its record carries no window or "
+                         "exposure  [iter 4]")
+    assert line.severity == "warn"
+
+
+def test_the_eig_plan_stop_line_says_the_map_is_done():
+    line = _rendered("eig_plan", {"tolerance_meV": 0.05, "stop": True, "chosen": None,
+                                  "prize_points_within_bar": 20, "prize_points_total": 20})
+    assert line.text == "EIG: hypothesis map at ±0.05 meV at every point — done"
+    assert line.severity == "notice"

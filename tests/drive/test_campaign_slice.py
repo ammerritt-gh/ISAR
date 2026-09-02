@@ -175,28 +175,3 @@ def test_two_slices_asking_the_same_question_are_different_scientific_actions():
 
 # -- the key reaches the intents --------------------------------------------------------------------
 
-def test_enumerated_intents_carry_the_campaign_slice():
-    objective = ObjectiveSpec.along_h(h_start=2.1, h_end=2.4, step=0.1, tolerance_meV=0.5,
-                                      budget={"kind": "neutrons", "amount": 1e12})
-    key = CampaignSliceKey(sample="Al", temperature_bin=300.0, binning_policy_fingerprint="rule-1")
-    _inventory, candidates = acq.enumerate_actions(
-        objective, acq_model.fit([]), [], resolution_info={"fwhm_dE": 0.8}, campaign_slice=key)
-    assert candidates
-    assert candidates[0].evaluation.intent.campaign_slice_fingerprint == key.fingerprint
-
-
-def test_an_unresolved_slice_makes_the_inventory_incomplete_not_a_guess():
-    """Fail closed without crashing an unattended run: the generators could not be given a trustworthy
-    evidence basis, so they did not run, so exhaustion is unprovable and the terminal is a resumable
-    controller fault."""
-    objective = ObjectiveSpec.along_h(h_start=2.1, h_end=2.4, step=0.1, tolerance_meV=0.5,
-                                      budget={"kind": "neutrons", "amount": 1e12})
-    inventory, candidates = acq.enumerate_actions(
-        objective, acq_model.fit([]), [], resolution_info={"fwhm_dE": 0.8},
-        campaign_slice_error="campaign_slice_unresolved: complete slices at 100.0 K, 200.0 K")
-
-    assert candidates == []
-    assert inventory.is_complete is False
-    assert inventory.terminal_cause() == "controller_fault"
-    failed = inventory.failed_reports()
-    assert failed and "campaign_slice_unresolved" in failed[0].error_code
