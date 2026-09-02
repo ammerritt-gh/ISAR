@@ -296,3 +296,13 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     the published interval buys the counts the bar needs regardless. The
     planner's declared Cramér–Rao inflation is 2.0 (published calibrated halfwidths sit 2–3×
     above the bound at these counts).
+17. **Second live run (067babe, 2026-09-03 02:20):** with the beliefs reaching the planner the
+    windows go from 109 points on the class prior to 12–13 points from iteration 6 — the demo
+    behaviour, live. It took 82 scans for six points because the intensity map handed to the
+    planner was ~1e5 too dim (`phonon.A / effective_exposure` gave 7e-5 counts·meV where the
+    ingested counts show ~8–17), so no design was expected to complete a point and the cheapest
+    5M probe was bought every time, five of them identical at h = 2.3 with utility exactly 0.
+    Ruling: the intensity map is read from the counts (peak area above background per neutron,
+    pre-Bose, per branch; elastic; background), never from the fit amplitudes whose convention
+    was not what the docstring assumed. The planner now says on its decision when no design is
+    expected to complete a point. Declared Cramér–Rao inflation raised to 3.0 (d3d6f2b).
