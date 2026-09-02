@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from isar.drive.acquisition.inventory import scientific_fingerprint_from_mapping
-from isar.analyze.shadow_selection import unavailable_shadow_selection
+from isar.analyze.shadow_selection import (
+    compare_shadow_selection, shadow_model_identity, unavailable_shadow_selection)
 from isar.eig import EligibilityInput, QoIProjectionEvidence, evaluate_eig_eligibility
 from isar.eig.qoi import OMEGA0_ADAPTER_REVISION, QOI_EVIDENCE_CONTRACT
 from isar.schema.statistics import FIT_SELECTION_SCHEMA, authority_scopes, semantics_fingerprint, validate_for_write
@@ -162,6 +163,39 @@ def _neutral_shadow(*, runtime_increment_seconds: float = 0.0,
         legacy_model_weights={"one": 1.0},
         runtime_increment_seconds=runtime_increment_seconds,
         shadow_execution_kind=shadow_execution_kind)
+
+
+def _complete_shadow_disagreeing() -> dict:
+    """A ``complete`` shadow comparison whose AIC winner differs from the legacy label."""
+    labels = ("one", "two")
+    semantics = {label: _fit_semantics(label) for label in labels}
+    candidates = [SimpleNamespace(label=label, cost=10.0 + index, k=2, ndof=18,
+                                  optimizer_converged=True, fit_semantics=semantics[label])
+                 for index, label in enumerate(labels)]
+    offered = [shadow_model_identity(label, semantics[label]["model_parameterization_fingerprint"])
+              for label in labels]
+    return compare_shadow_selection(
+        candidates,
+        offered_model_identities=offered,
+        candidate_generation_route={"route_kind": "standard_two_stage", "offered_labels": list(labels)},
+        selection_context_fingerprint=semantics["one"]["data_likelihood_fingerprint"],
+        legacy_model_selection_fingerprint=semantics_fingerprint("tests.eig.legacy", {"winner": "legacy"}),
+        legacy_selected_label="legacy", legacy_model_weights={"legacy": 1.0},
+        shadow_execution_kind="fresh", reused_model_identities=[],
+        freshly_fitted_model_identities=offered)
+
+
+def test_shadow_disagreement_no_longer_vetoes_eligibility():
+    """2026-09-02: since H4 the delivered selection is posterior-driven and this AIC-ranked
+    shadow comparison is a diagnostic only, so an AIC/posterior disagreement is expected and
+    must not veto an otherwise-eligible target."""
+    shadow = _complete_shadow_disagreeing()
+    assert shadow["selection_status"] == "complete"
+    assert shadow["selection_changed"] is True
+    result = evaluate_eig_eligibility(
+        _input(selection_record=_clean_selection(), shadow_record=shadow))
+    assert result.status == "eligible"
+    assert "shadow_disagrees" not in result.scientific_codes
 
 
 def test_clean_current_contract_is_eligible_and_deterministic():

@@ -254,6 +254,14 @@ canonical target production or confirmation. The frozen eligible comparison is
 conditional target-QoI information per executed point; paired uncertainty must resolve the
 comparison before `target_core/1` may win.
 
+**2026-09-02 amendment:** the `shadow_disagrees` eligibility veto (an AIC-ranked shadow selection
+disagreeing with the delivered selection) is retired. H4 made the delivered selection
+posterior/evidence-driven while the persisted shadow comparison stays AIC-ranked, a diagnostic
+only, so the two disagree by design at most points and the veto blocked eligible targets. The
+shadow record is unchanged and still persisted. The proper long-term repair — teach the shadow
+comparator the posterior rule so the veto regains its original rescued/constrained meaning — is
+recorded in `plans/campaign-authorization-repair.md` slice 3.
+
 O41 accepts the coherent Slice 8 V3 gate as sufficient evidence to implement this selector. The
 positive envelope contains exactly one clean case. Its `delta - 2 * paired_SE > 0` threshold is a
 pragmatic engineering margin, not calibrated 95% coverage. Here `delta` is the mean of the eight

@@ -459,8 +459,12 @@ def _shadow_checks(record: Mapping[str, Any] | None, science: list[str], gaps: l
         return
     status = validated.get("selection_status")
     if status == "complete":
-        if validated.get("selection_changed") is True:
-            science.append("shadow_disagrees")
+        # 2026-09-02: since H4 the delivered selection is posterior/evidence-driven while this
+        # shadow record is AIC-ranked (a diagnostic only) -- the two disagree by design at most
+        # points, so an AIC/posterior split is expected and no longer a target-identity veto.
+        # The rescued/constrained cases this veto was meant to catch are already covered by the
+        # selection_rescued/selection_constrained checks on the delivered selection itself. The
+        # shadow record stays persisted unchanged.
         return
     if status == "degenerate_single_candidate":
         science.append("shadow_comparison_invalid")
