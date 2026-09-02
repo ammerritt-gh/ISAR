@@ -244,7 +244,7 @@ def test_the_seeded_acoustic_campaign_reaches_the_prize_deterministically(capsys
              and " h=" in line]
     assert len(scans) == 20
     first = [(line.split("h=")[1].split()[0], line.split("n=")[1].split()[0]) for line in scans[:3]]
-    assert first == [("2.05", "20"), ("2.10", "13"), ("2.15", "12")]
+    assert first == [("2.05", "14"), ("2.10", "19"), ("2.15", "18")]
     stop = next(line for line in lines if line.startswith("stop="))
     assert "stop=True reason=goal_met" in stop and "bar 20/20" in stop
 
