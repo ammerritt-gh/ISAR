@@ -257,3 +257,19 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     campaign still stalls because negative evidence was recorded per scan, not per branch — a scan
     that found the acoustic but no optic is evidence against the optic in that window — being
     fixed at the time of writing.
+13. **Windows follow the surviving scenario mass (2a7aeef).** An unanchored branch's windows sat
+    at the band midpoint even after negative evidence had pushed its surviving probability to
+    the band's ends; each surviving lump of the reweighted scenario set now generates windows
+    too. In simulation the optic-only campaign goes from never sighting the optic to finding it
+    at scan 37 and converging on the right branch; the two-branch campaign halves to 60 scans.
+14. **The prize is binary per point (cca78b5).** Log-progress scored a
+    half-count scan that leaves a boundary point at ±0.052 as 99% of the value at half the cost,
+    so the full-count scan that would finish it never won and the acoustic campaign ended with
+    idle probes. The utility becomes expected completions (points brought within the bar) per
+    neutron, with a small log-progress shaping term, and the planner applies a declared
+    inflation of 1.25 to the Cramér–Rao σ (a real fit sits above the bound at these counts).
+    Result in simulation: acoustic 22 scans, every boundary point finished on its first
+    scan; optic-only 21 scans (one per point); both branches 44. At h = 2.85 the acoustic
+    campaign spends one probe and one optic sighting because the acoustic peak's identity
+    cannot be settled until the optic 2.3 meV above it is located — the "more time where the
+    branches approach" outcome, as a consequence of the mutually exclusive prize, not a rule.
