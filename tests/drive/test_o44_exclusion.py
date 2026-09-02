@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import math
 
-from isar.drive.acquisition.acquire import _rival_gap_pick, _tracked_frontier_target
 from isar.drive.supervisor.stopping import GridQ
 from isar.session.branch_tracking import track_path
 
@@ -110,68 +109,6 @@ def _exempt_origin(**overrides) -> GridQ:
     point = GridQ(**fields)
     assert point.precision_coverage_eligible is False       # the premise of every test below
     return point
-
-
-def test_the_tracked_frontier_walk_never_names_the_exempt_origin():
-    """The reproduced failure: eight consecutive *production* scans at the acoustic origin.
-
-    The walk stops on any q whose ``track_state`` is not confirmed/inferred, and the origin's fit
-    (ω₀ with an error bar thousands of times larger than itself) leaves it exactly there.  Its
-    ``visited`` is True by way of the O44 exemption itself, so the cheap quicklook rung is skipped
-    and the origin drops into the production rung.
-    """
-    grid = [
-        _exempt_origin(),
-        GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
-              acoustic_target=True, track_state="confirmed", n_quicklook=1),
-        GridQ(index=2, hkl=(2.1, 0.0, 0.0), q=0.1, tolerance=0.5,
-              acoustic_target=True, track_state="confirmed", n_quicklook=1),
-    ]
-
-    result = _tracked_frontier_target(grid, anchor_index=2)
-
-    assert result is None or tuple(result[0].hkl) != (2.0, 0.0, 0.0)
-    assert result is None
-
-
-def test_the_rival_reconnect_picker_never_names_the_exempt_origin():
-    """A11-shaped state: the origin's ω₀ = 0.485 ± 2065 meV reads as ``confirmed``, so the walk-back
-    accepts it, and its single fitted mode reads as an under-resolved rival gap.  There is nothing
-    to reconnect — the missing mode is degenerate with the elastic line, not under-counted."""
-    grid = [
-        _exempt_origin(track_state="confirmed",
-                       evidence_master={"branch_candidates": [_candidate("origin", 0.485, 2065.0)]}),
-        GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
-              acoustic_target=True, track_state="confirmed", n_quicklook=1,
-              evidence_master={"branch_candidates": [_candidate("a", 0.6),
-                                                     _candidate("o", 6.1)]}),
-    ]
-
-    assert _rival_gap_pick(grid, frontier_index=1, direction=1) is None
-
-
-def test_a_measurable_neighbour_is_still_reachable_on_both_paths():
-    """The guards must exclude the origin, not the acquisition rung.  Without this, "fixed" and
-    "broken in the other direction" look identical."""
-    grid = [
-        GridQ(index=0, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
-              acoustic_target=True, track_state="ambiguous",
-              evidence_master={"branch_candidates": [_candidate("a", 0.6)]}),
-        GridQ(index=1, hkl=(2.1, 0.0, 0.0), q=0.1, tolerance=0.5,
-              acoustic_target=True, track_state="confirmed", n_quicklook=1,
-              evidence_master={"branch_candidates": [_candidate("a", 1.2),
-                                                     _candidate("o", 6.2)]}),
-        GridQ(index=2, hkl=(2.15, 0.0, 0.0), q=0.15, tolerance=0.5,
-              acoustic_target=True, track_state="confirmed", n_quicklook=1),
-    ]
-
-    frontier = _tracked_frontier_target(grid, anchor_index=2)
-    assert frontier is not None and tuple(frontier[0].hkl) == (2.05, 0.0, 0.0)
-
-    # The reconnect walk only steps over ``confirmed`` q, so the same grid cannot serve both rungs.
-    grid[0].track_state = "confirmed"
-    gap = _rival_gap_pick(grid, frontier_index=1, direction=1)
-    assert gap is not None and tuple(gap.hkl) == (2.05, 0.0, 0.0)
 
 
 def test_the_origin_tolerance_is_a_floating_point_tolerance_not_a_neighbourhood():

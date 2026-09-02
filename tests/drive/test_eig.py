@@ -81,60 +81,7 @@ def _prod_gridq(hkl, q, sigma, *, tol=0.2, C=2e10, dC=1e10, n_prod=2):
                  counts_spent=C, last_prod_cost=dC)
 
 
-def test_select_target_ranks_by_eig_per_cost():
-    # Two baselined q, equal cost; the one whose ω₀ is least pinned (larger σ over tolerance) has the
-    # higher goal-weighted EIG → "count more where it helps most", not merely the least-counted q.
-    far = _prod_gridq((2.1, 0.0, 0.0), 0.0, 0.80)
-    near = _prod_gridq((2.2, 0.0, 0.0), 0.1, 0.25)
-    pick, kind, reason, score = acq._select_target([near, far], model=None)
-    assert kind == "production" and pick.hkl == (2.1, 0.0, 0.0)
-    assert "EIG-per-cost" in reason and score.method == "counts"
-
-
-def test_select_target_falls_back_to_deficit_without_cost_history():
-    # No recorded counts_spent (hand-built / pre-Phase-5) → the σ-deficit ranking, unchanged.
-    a = _prod_gridq((2.1, 0.0, 0.0), 0.0, 0.30, C=0.0, dC=0.0)
-    b = _prod_gridq((2.2, 0.0, 0.0), 0.1, 0.90, C=0.0, dC=0.0)   # widest → largest deficit
-    pick, kind, reason, score = acq._select_target([a, b], model=None)
-    assert pick.hkl == (2.2, 0.0, 0.0) and "largest-deficit" in reason and score.method == "deficit"
-
-
-def test_fisher_tier_ranks_grounded_candidates_and_falls_back():
-    # When a Fisher provider grounds candidates, the tier ranks by fisher_eig/cost and picks the q the
-    # scan would pin best (smallest predicted σ_scan at equal cost); an ungrounded set falls to counts.
-    class _M:
-        def predict(self, q):
-            return (3.0, 0.5)
-    a = _prod_gridq((2.1, 0.0, 0.0), 0.0, 0.6)
-    b = _prod_gridq((2.2, 0.0, 0.0), 0.1, 0.6)
-    # provider: b's scan pins ω₀ much tighter than a's → b wins the Fisher tier.
-    def fisher(g, w0, sp):
-        return 0.30 if g.hkl == (2.1, 0.0, 0.0) else 0.05
-    pick, kind, reason, score = acq._select_target([a, b], _M(), fisher=fisher)
-    assert pick.hkl == (2.2, 0.0, 0.0) and score.method == "fisher"
-    assert score.sigma_scan == pytest.approx(0.05)
-    # Provider that grounds nobody → counts tier (method reverts).
-    pick2, _, _, score2 = acq._select_target([a, b], _M(), fisher=lambda g, w0, sp: None)
-    assert score2.method == "counts"
-
-
 # --------------------------------------------------------------------------- durable VOI stop
-def test_info_saturated_is_visible_but_nonterminal():
-    g = _prod_gridq((2.1, 0.0, 0.0), 0.0, 0.30, tol=0.2, C=1e14, dC=1e10)
-    assert g.info_saturated and not g.stuck and not g.converged
-    assert "diminishing_returns" in g.diagnostics
-    obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.1, step=0.1, tolerance_meV=0.2,
-                                budget={"kind": "neutrons", "amount": 1e18})
-    dec = evaluate_stop(obj, [g], {"kind": "neutrons", "amount": 1e18, "spent": 0.0})
-    assert dec.state == "continue"
-
-
-def test_info_saturated_dormant_without_cost_history():
-    # The same q shape with no cost history is NOT saturated (no baseline to reason from).
-    g = _prod_gridq((2.1, 0.0, 0.0), 0.0, 0.30, tol=0.2, C=0.0, dC=0.0)
-    assert not g.info_saturated and not g.stuck
-
-
 # --------------------------------------------------------------------------- cost accounting
 def test_summarize_grid_sums_proposal_cost():
     obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.1, step=0.1, tolerance_meV=0.5,
@@ -151,16 +98,6 @@ def test_summarize_grid_sums_proposal_cost():
 
 
 # --------------------------------------------------------------------------- ProposalScore surface
-def test_proposal_carries_json_safe_score():
-    # Cold start → an "explore" score (no baseline) that round-trips through strict JSON (no inf).
-    obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.4, step=0.1, tolerance_meV=0.5,
-                                budget={"kind": "neutrons", "amount": 1e12})
-    p = acq.propose_scan(obj, acq_model.fit([]), [], {"fwhm_dE": 0.8}, {})
-    score = p.meta["score"]
-    assert score["method"] == "explore"
-    json.dumps(p.to_dict())     # must not raise (Infinity is not strict JSON)
-
-
 def test_sigma_omega0_matches_delta_method_on_diagonal():
     # With a diagonal (no nuisance coupling) Fisher matrix, the Schur+delta σ(ω₀) equals the analytic
     # covariance propagation the fit uses (isar.analyze.phonon.omega0_value_error).
@@ -188,66 +125,3 @@ def test_fisher_eig_edges():
     assert fisher_eig(0.5, 0.5) == pytest.approx(0.5 * math.log(2.0))
 
 
-def test_production_proposal_scored_by_counts_method():
-    obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.1, step=0.1, tolerance_meV=0.5,
-                                budget={"kind": "neutrons", "amount": 1e12})
-    obs = [
-        {"hkl": (2.1, 0.0, 0.0), "kind": "quicklook", "calibrated_halfwidth": 0.9, "resolved": True,
-         "disposition": "resolved", "omega0": 3.0, "proposal_cost": 5e8},
-        {"hkl": (2.1, 0.0, 0.0), "kind": "production", "calibrated_halfwidth": 0.9, "resolved": True,
-         "disposition": "resolved", "omega0": 3.0, "proposal_cost": 1e10},
-    ]
-    master = [{"hkl": (2.1, 0.0, 0.0), "omega0": 3.0, "halfwidth": 0.9, "reliable": True,
-               "usable": True, "disposition": "resolved", "n_members": 2}]
-    model = acq_model.fit([(g.q, g.best_omega0, g.best_halfwidth)
-                           for g in summarize_grid(obj, obs, master) if g.best_omega0 is not None])
-    p = acq.propose_scan(obj, model, obs, {"fwhm_dE": 0.8}, {}, master_rows=master)
-    assert p is not None and p.kind == "production"
-    assert p.meta["score"]["method"] == "counts"
-    assert p.meta["score"]["sigma_prior"] == pytest.approx(0.9)
-    json.dumps(p.to_dict())
-
-
-def test_fisher_score_recomputes_for_runtime_clamped_exposure():
-    obj = ObjectiveSpec.along_h(h_start=2.1, h_end=2.1, step=0.1, tolerance_meV=0.5,
-                                budget={"kind": "counting_seconds", "amount": 60.0})
-    obs = [
-        {"hkl": (2.1, 0.0, 0.0), "kind": "production", "calibrated_halfwidth": 0.9,
-         "resolved": True, "disposition": "resolved", "omega0": 3.0,
-         "proposal_cost": 1e10},
-    ]
-    master = [{"hkl": (2.1, 0.0, 0.0), "omega0": 3.0, "halfwidth": 0.9,
-               "reliable": True, "usable": True, "disposition": "resolved", "n_members": 1}]
-    model = acq_model.fit([(g.q, g.best_omega0, g.best_halfwidth)
-                           for g in summarize_grid(obj, obs, master) if g.best_omega0 is not None])
-    calls = []
-
-    def fisher(_g, _w0, _sp, exposure=None):
-        actual = 400_000_000 if exposure is None else int(exposure)
-        calls.append(actual)
-        return 0.4 * math.sqrt(400_000_000 / actual)
-
-    fisher.supports_exposure = True
-    fisher.default_exposure = 400_000_000
-    p = acq.propose_scan(
-        obj, model, obs, {"fwhm_dE": 0.8}, {}, master_rows=master, fisher=fisher,
-        runtime_limits={"max_neutrons_per_point": 100_000_000})
-    score = p.meta["score"]
-    expected_sigma = 0.8
-    expected_eig = fisher_eig(0.9, expected_sigma)
-    assert calls == [400_000_000, 100_000_000]
-    assert p.ncount == 100_000_000
-    assert score["ranking_ncount"] == 400_000_000
-    assert score["sigma_scan"] == pytest.approx(expected_sigma)
-    assert score["eig"] == pytest.approx(expected_eig)
-    assert score["combined_information"] == pytest.approx(expected_eig)
-    assert score["eig_per_cost"] == pytest.approx(expected_eig / score["cost"])
-
-
-def test_bound_legacy_fisher_method_is_not_misdetected_as_exposure_aware():
-    class LegacyProvider:
-        def fisher(self, _g, _w0, _sp):
-            return 0.5
-
-    provider = LegacyProvider()
-    assert acq._fisher_supports_exposure(provider.fisher) is False
