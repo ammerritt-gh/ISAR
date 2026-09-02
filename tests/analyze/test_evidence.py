@@ -553,22 +553,34 @@ def test_failed_sampler_gate_yields_no_usable_evidence(clean, monkeypatch):
 def test_penalised_fit_is_never_dominance_pruned(monkeypatch):
     """−cost/2 is a ceiling only when θ̂ is the data MLE. For a soft-constrained fit θ̂ is the
     MAP, so the bound UNDERstates lnZ and pruning on it could drop a competitive candidate
-    unsampled. A penalised fit must therefore ignore the deferral and sample."""
+    unsampled. A penalised fit is still DEFERRED (so it can join the same escalation batch as
+    everything else — 2026-09-04 amendment, separating the pruning rule from execution order)
+    but is marked prune-exempt and carries no ceiling to be pruned by."""
     constraints = ParamConstraints(soft={"phonon.Gamma": (0.5, 0.2)},
                                    origins={"phonon.Gamma": "transport_test"})
     ctx = _spectrum_ctx(constraints=constraints)
     hyp, fit = _fitted(ctx)
     assert fit.prior_penalty is not None                  # the precondition the guard reads
-    sampled = types.SimpleNamespace(converged=True, fail_reason=None, ess=500.0,
-                                    log_evidence=-42.0, log_evidence_err=0.3)
-    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior",
-                        lambda *a, **k: sampled)
 
     rec = E.structure_evidence(hyp, ctx, replace(fit, at_limit=None), _bundle(hyp, ctx),
                                escalation="defer", **FAST)
 
-    assert rec.evidence_method == "dynesty"               # sampled despite escalation="defer"
+    assert rec.evidence_method == "deferred_escalation"   # deferred, not run inline
+    assert rec.validity["prune_exempt"] is True
     assert "log_evidence_upper_bound" not in rec.validity
+
+    # candidate_set_evidence must route it straight to escalation regardless of the leader: never
+    # "dominated", and it pays for the sampler even against a leader no cost-based ceiling of its
+    # own could ever beat.
+    sampled = types.SimpleNamespace(converged=True, fail_reason=None, ess=500.0,
+                                    log_evidence=-42.0, log_evidence_err=0.3)
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior",
+                        lambda *a, **k: sampled)
+    es = E.candidate_set_evidence([(hyp, replace(fit, at_limit=None), _bundle(hyp, ctx))], ctx,
+                                  **FAST)
+    only = es.records[0]
+    assert only.evidence_method == "dynesty"
+    assert "log_evidence_upper_bound" not in only.validity
 
 
 def test_genuine_contest_still_pays_for_dynesty():
@@ -837,6 +849,259 @@ def test_candidate_set_escalations_use_the_scoped_n_live_cut(clean, monkeypatch)
     # the two-lane split: direct calls and the bayes diagnostics tier keep D4's 400
     assert inspect.signature(original).parameters["n_live"].default == 400
     assert BZ.DEFAULT_NLIVE == 400
+
+
+# ------------------------------------------------------------------ parallel escalation (executor=)
+def _stub_evidence(ceilings, ran, *, leader_label=None, leader_lnz=-50.0):
+    """A ``structure_evidence`` stand-in: ``leader_label`` (if given) answers ``escalation="defer"``
+    with a trusted Gaussian-rung record (so the pre-batch leader is not -inf); every other label
+    defers with its ``ceilings[label]``, and a ``"run"`` call is deterministic in ``cost`` alone —
+    same seed-independent story ``test_all_railed_set_escalates_highest_ceiling_first`` uses — so
+    serial and parallel calls of the SAME candidate must land on bit-identical records."""
+    def _stub(h, c, f, b, *, escalation="run", **k):
+        arena = loop.data_likelihood_fingerprint(c)
+        if escalation == "defer":
+            if f.label == leader_label:
+                return E.EvidenceRecord(
+                    label=f.label, log_evidence=leader_lnz, log_evidence_err=None,
+                    evidence_method="laplace", k_free=f.k, arena_fingerprint=arena,
+                    prior_spec=(), validity={})
+            return E.EvidenceRecord(
+                label=f.label, log_evidence=float("nan"), log_evidence_err=None,
+                evidence_method="deferred_escalation", k_free=f.k, arena_fingerprint=arena,
+                prior_spec=(), validity={"log_evidence_upper_bound": ceilings[f.label]})
+        ran.append(f.label)
+        return E.EvidenceRecord(
+            label=f.label, log_evidence=-0.5 * f.cost - 10.0, log_evidence_err=0.3,
+            evidence_method="dynesty", k_free=f.k, arena_fingerprint=arena,
+            prior_spec=(), validity={"dynesty": {"converged": True}})
+    return _stub
+
+
+def _two_survivor_triples(clean):
+    ctx, hyp, fit = clean
+    bundle = _bundle(hyp, ctx)
+    a = replace(fit, label="a", cost=100.0)   # ceiling -50.0
+    b = replace(fit, label="b", cost=140.0)   # ceiling -70.0, within PRUNE_MARGIN of -inf leader
+    return ctx, hyp, bundle, [(hyp, a, bundle), (hyp, b, bundle)]
+
+
+def test_parallel_escalation_matches_serial(clean, monkeypatch):
+    """Same candidates, same seeds: ``executor=`` must yield records equal to the serial call —
+    same labels, ``log_evidence``/``log_evidence_err`` exactly equal, same method and validity."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    ctx, hyp, bundle, triples = _two_survivor_triples(clean)
+    ran_serial, ran_parallel = [], []
+
+    monkeypatch.setattr(E, "structure_evidence", _stub_evidence({"a": -50.0, "b": -70.0}, ran_serial))
+    es_serial = E.candidate_set_evidence(triples, ctx)
+
+    monkeypatch.setattr(E, "structure_evidence",
+                        _stub_evidence({"a": -50.0, "b": -70.0}, ran_parallel))
+    with ThreadPoolExecutor(2) as pool:
+        es_parallel = E.candidate_set_evidence(triples, ctx, executor=pool)
+
+    assert ran_serial == ran_parallel == ["a", "b"]            # both ran under both paths
+    rs, rp = es_serial.by_label(), es_parallel.by_label()
+    assert set(rs) == set(rp) == {"a", "b"}
+    for label in rs:
+        assert rs[label].log_evidence == rp[label].log_evidence
+        assert rs[label].log_evidence_err == rp[label].log_evidence_err
+        assert rs[label].evidence_method == rp[label].evidence_method
+        assert rs[label].validity == rp[label].validity
+
+
+def test_parallel_escalation_still_prunes_before_the_batch(clean, monkeypatch):
+    """A candidate whose ceiling sits PRUNE_MARGIN below the leader known before the batch is
+    ``dominated`` and never submitted — the pre-batch prune survives parallelization."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    ctx, hyp, fit = clean
+    bundle = _bundle(hyp, ctx)
+    survivor = replace(fit, label="survivor", cost=100.0)       # ceiling -50.0, near leader -50.0
+    survivor2 = replace(fit, label="survivor2", cost=104.0)     # ceiling -52.0, also near leader
+    dominated = replace(fit, label="doomed", cost=200.0)        # ceiling -100.0 < -50-30=-80
+    triples = [(hyp, replace(fit, label="leader"), bundle),
+              (hyp, survivor, bundle), (hyp, survivor2, bundle), (hyp, dominated, bundle)]
+    ran = []
+    monkeypatch.setattr(E, "structure_evidence", _stub_evidence(
+        {"survivor": -50.0, "survivor2": -52.0, "doomed": -100.0}, ran, leader_label="leader"))
+
+    with ThreadPoolExecutor(2) as pool:
+        es = E.candidate_set_evidence(triples, ctx, executor=pool)
+
+    assert "doomed" not in ran                                 # never submitted to the executor
+    assert es.by_label()["doomed"].evidence_method == "dominated"
+    assert es.by_label()["survivor"].evidence_method == "dynesty"
+    assert es.by_label()["survivor2"].evidence_method == "dynesty"
+
+
+def test_parallel_escalation_falls_back_to_serial_on_submit_failure(clean, monkeypatch):
+    """A broken executor (unpicklable candidate, dead pool) logs a warning and the set still
+    completes on the serial path, with the same records the serial call alone would produce."""
+    ctx, hyp, bundle, triples = _two_survivor_triples(clean)
+
+    class _BrokenExecutor:
+        def submit(self, *a, **k):
+            raise RuntimeError("pool is broken")
+
+    ran_serial, ran_fallback = [], []
+    monkeypatch.setattr(E, "structure_evidence", _stub_evidence({"a": -50.0, "b": -70.0}, ran_serial))
+    es_serial = E.candidate_set_evidence(triples, ctx)
+
+    monkeypatch.setattr(E, "structure_evidence",
+                        _stub_evidence({"a": -50.0, "b": -70.0}, ran_fallback))
+    es_fallback = E.candidate_set_evidence(triples, ctx, executor=_BrokenExecutor())
+
+    assert ran_fallback == ["a", "b"]
+    rs, rf = es_serial.by_label(), es_fallback.by_label()
+    for label in rs:
+        assert rs[label].log_evidence == rf[label].log_evidence
+        assert rs[label].evidence_method == rf[label].evidence_method
+
+
+def test_parallel_batch_includes_prune_exempt_penalised_candidate(monkeypatch):
+    """A penalised candidate whose Laplace is forced invalid (railed-fixture idiom: force
+    ``sigma_pd`` False rather than stub ``structure_evidence`` outright, so the real prune-exempt
+    branch runs) must still escalate, never be ``dominated``, and land in the SAME parallel batch
+    as a plain candidate — with a record equal to what the serial path alone produces."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    constraints = ParamConstraints(soft={"phonon.Gamma": (0.5, 0.2)},
+                                   origins={"phonon.Gamma": "transport_test"})
+    ctx = _spectrum_ctx(seed=1, constraints=constraints)
+    hyp, fit = _fitted(ctx)
+    assert fit.prior_penalty is not None                   # the precondition the guard reads
+    bundle = _bundle(hyp, ctx)
+    penalised = replace(fit, label="penalised", at_limit=None)
+    plain = replace(fit, label="plain", at_limit=None, prior_penalty=None)
+    triples = [(hyp, penalised, bundle), (hyp, plain, bundle)]
+
+    monkeypatch.setattr(E, "_is_pd", lambda sigma: False)   # every candidate's Laplace is invalid
+    sampled = types.SimpleNamespace(converged=True, fail_reason=None, ess=500.0,
+                                    log_evidence=-42.0, log_evidence_err=0.3)
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", lambda *a, **k: sampled)
+
+    es_serial = E.candidate_set_evidence(triples, ctx, **FAST)
+    with ThreadPoolExecutor(2) as pool:
+        es_parallel = E.candidate_set_evidence(triples, ctx, executor=pool, **FAST)
+
+    for es in (es_serial, es_parallel):
+        rec = es.by_label()["penalised"]
+        assert rec.evidence_method == "dynesty"             # escalated, never inline-run at defer
+        assert rec.evidence_method != "dominated"
+        assert "log_evidence_upper_bound" not in rec.validity
+
+    rs, rp = es_serial.by_label(), es_parallel.by_label()
+    assert set(rs) == set(rp) == {"penalised", "plain"}
+    for label in rs:
+        assert rs[label].log_evidence == rp[label].log_evidence
+        assert rs[label].evidence_method == rp[label].evidence_method
+        assert rs[label].validity == rp[label].validity
+
+
+def _stub_exempt_and_ceiling(ran):
+    """One prune-exempt deferred marker (label ``"exempt"``, no ceiling) and one ordinary
+    ceiling-bearing deferred marker (label ``"ceiling"``); both defer, since neither is Gaussian-
+    trusted, so a tiny budget can exhaust before either escalation runs."""
+    def _stub(h, c, f, b, *, escalation="run", **k):
+        arena = loop.data_likelihood_fingerprint(c)
+        if escalation == "defer":
+            validity = ({"prune_exempt": True} if f.label == "exempt"
+                       else {"log_evidence_upper_bound": -50.0})
+            return E.EvidenceRecord(label=f.label, log_evidence=float("nan"),
+                                    log_evidence_err=None, evidence_method="deferred_escalation",
+                                    k_free=f.k, arena_fingerprint=arena, prior_spec=(),
+                                    validity=validity)
+        ran.append(f.label)
+        return E.EvidenceRecord(
+            label=f.label, log_evidence=-0.5 * f.cost - 10.0, log_evidence_err=0.3,
+            evidence_method="dynesty", k_free=f.k, arena_fingerprint=arena,
+            prior_spec=(), validity={"dynesty": {"converged": True}})
+    return _stub
+
+
+def test_prune_exempt_candidate_ignores_the_budget(clean, monkeypatch):
+    """A prune-exempt candidate must always be sampled: with a tiny (exhausted) budget it is
+    still "dynesty", never "unresolved" — an unresolved contender can force select_models onto
+    the AIC fallback, and the whole point of deferring a penalised fit is that its own posterior
+    IS the number selection needs. A same-batch ceiling-ranked candidate still budgets out.
+    Serial and parallel must agree."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    ctx, hyp, fit = clean
+    bundle = _bundle(hyp, ctx)
+    triples = [(hyp, replace(fit, label="exempt", cost=90.0), bundle),
+              (hyp, replace(fit, label="ceiling", cost=100.0), bundle)]
+
+    ran_serial, ran_parallel = [], []
+    monkeypatch.setattr(E, "structure_evidence", _stub_exempt_and_ceiling(ran_serial))
+    es_serial = E.candidate_set_evidence(triples, ctx, budget_s=0.0)
+
+    monkeypatch.setattr(E, "structure_evidence", _stub_exempt_and_ceiling(ran_parallel))
+    with ThreadPoolExecutor(2) as pool:
+        es_parallel = E.candidate_set_evidence(triples, ctx, executor=pool, budget_s=0.0)
+
+    for es, ran in ((es_serial, ran_serial), (es_parallel, ran_parallel)):
+        recs = es.by_label()
+        assert recs["exempt"].evidence_method == "dynesty"
+        assert recs["ceiling"].evidence_method == "unresolved"
+        assert ran == ["exempt"]                          # only the exempt candidate was sampled
+
+    # "Agree" on the outcome (method, and lnZ when either has one) — not on every validity field:
+    # the "ceiling" candidate's ``leader_log_evidence`` legitimately differs, since the parallel
+    # path's budget check runs pre-batch (finding 2) while the serial path's per-item check can
+    # see a leader the exempt candidate already advanced by running first.
+    rs, rp = es_serial.by_label(), es_parallel.by_label()
+    for label in rs:
+        a, b = rs[label].log_evidence, rp[label].log_evidence
+        assert (math.isnan(a) and math.isnan(b)) or a == b
+        assert rs[label].evidence_method == rp[label].evidence_method
+
+
+def test_parallel_escalation_cancels_pending_futures_on_partial_submit_failure(clean, monkeypatch):
+    """submit() succeeding once and then raising must cancel the already-submitted (still
+    pending) future before falling back to serial, so no orphaned duplicate is left
+    unaccounted for. Records still equal the serial path."""
+    from concurrent.futures import Future
+
+    ctx, hyp, bundle, triples = _two_survivor_triples(clean)
+
+    class _TrackingFuture(Future):
+        def cancel(self):
+            self.cancel_called = True
+            return super().cancel()
+
+    class _PartialExecutor:
+        def __init__(self):
+            self.futures = []
+
+        def submit(self, fn, args):
+            if not self.futures:
+                fut = _TrackingFuture()
+                fut.cancel_called = False
+                self.futures.append(fut)
+                return fut
+            raise RuntimeError("submit failed on the second candidate")
+
+    ran_serial, ran_fallback = [], []
+    monkeypatch.setattr(E, "structure_evidence", _stub_evidence({"a": -50.0, "b": -70.0}, ran_serial))
+    es_serial = E.candidate_set_evidence(triples, ctx)
+
+    monkeypatch.setattr(E, "structure_evidence",
+                        _stub_evidence({"a": -50.0, "b": -70.0}, ran_fallback))
+    partial = _PartialExecutor()
+    es_partial = E.candidate_set_evidence(triples, ctx, executor=partial)
+
+    assert len(partial.futures) == 1
+    assert partial.futures[0].cancel_called and partial.futures[0].cancelled()
+
+    assert ran_fallback == ["a", "b"]                      # serial fallback still ran both
+    rs, rp = es_serial.by_label(), es_partial.by_label()
+    for label in rs:
+        assert rs[label].log_evidence == rp[label].log_evidence
+        assert rs[label].evidence_method == rp[label].evidence_method
 
 
 # ------------------------------------------------------------------ generalized bayes lane

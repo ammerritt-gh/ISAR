@@ -1832,7 +1832,9 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
 
     fits = {r.label: r for r in results}
 
-    prelim = select.select_models(results, by_hyp, ctx, stamp=False)
+    # The shared bootstrap pool also runs the surviving dynesty escalations concurrently
+    # (evidence.candidate_set_evidence, executor=); serial and bit-identical when None.
+    prelim = select.select_models(results, by_hyp, ctx, stamp=False, executor=boot_executor)
     escalation_reasons = (_auto_escalation_reasons(prelim, fits, ctx)
                           if errors_tier == "auto" else [])
     if errors_tier == "auto" and escalation_reasons:

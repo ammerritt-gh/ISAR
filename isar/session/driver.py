@@ -422,8 +422,14 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
     master_boot_workers = _resolve_boot_workers(scan_workers)
 
     shared_pool = None
-    if is_full and boot_workers > 1 and not use_pool:
-        shared_pool = ProcessPoolExecutor(max_workers=boot_workers)   # scans + masters, one spawn
+    if boot_workers > 1 and not use_pool:
+        # Full tiers: scans + masters bootstrap through one pool at full budget (one spawn).
+        # Fast/cheap tiers never bootstrap, but every tier's evidence selection runs its
+        # surviving dynesty escalations through the same pool (candidate_set_evidence,
+        # executor=) — at most one process per candidate structure, so a small pool suffices
+        # and the spawn cost stays a fraction of one escalation (2026-09-03).
+        pool_workers = boot_workers if is_full else min(boot_workers, 6)
+        shared_pool = ProcessPoolExecutor(max_workers=pool_workers)
     try:
         with timer.stage("fit_scans", n_tasks=len(tasks), use_pool=use_pool,
                          boot_workers=boot_workers) as _m_fit:

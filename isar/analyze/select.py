@@ -258,11 +258,13 @@ def _stamp(results, scores, pooled, fallback=None) -> None:
         r.across_model = {"score": per, "scan": scan}
 
 
-def _candidate_evidence(results, hyps, ctx):
+def _candidate_evidence(results, hyps, ctx, executor=None):
     """One :class:`~isar.analyze.evidence.EvidenceSet` for the converged candidates (via
     :func:`~isar.analyze.evidence.candidate_set_evidence`, which owns the escalation and
     dominance-pruning policy). A converged label with no hypothesis is a wiring error and
-    raises loudly — silent partial evidence would quietly bias every posterior it entered."""
+    raises loudly — silent partial evidence would quietly bias every posterior it entered.
+    ``executor`` (default ``None``, serial) is forwarded to parallelize the surviving deferred
+    dynesty escalations — see :func:`~isar.analyze.evidence.candidate_set_evidence`."""
     from isar.analyze import catalogue, evidence, loop
 
     triples = []
@@ -286,12 +288,12 @@ def _candidate_evidence(results, hyps, ctx):
             entry=catalogue.identity_entry(getattr(hyp, "identity", None)),
             exclude=[prob.free_names[i] for i in prob.fixed_pos])
         triples.append((hyp, r, bundle))
-    return evidence.candidate_set_evidence(triples, ctx)
+    return evidence.candidate_set_evidence(triples, ctx, executor=executor)
 
 
 def select_models(results, hyps=None, ctx=None, *, evidence=None,
                   weight_floor: float = DEFAULT_WEIGHT_FLOOR, level: float = 0.68,
-                  stamp: bool = True) -> Selection:
+                  stamp: bool = True, executor=None) -> Selection:
     """Run the full step-2 layer: score → evidence posterior → survivors → pooled
     across-model distribution + modality. ``hyps`` (label → Hypothesis, spanning every scored
     label) and ``ctx`` feed the evidence ladder; ``evidence`` reuses a previously computed
@@ -300,7 +302,9 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
     for hand-built diagnostics, never the production path. With ``stamp`` (default), writes
     the per-scan deliverable onto each result's ``across_model``. Survivors lacking bootstrap
     samples are dropped from the pool (run ``fit_admissible_structures(errors=True)`` first so
-    every converged fit carries them)."""
+    every converged fit carries them). ``executor`` (default ``None``) is forwarded to a freshly
+    computed evidence set (ignored when ``evidence`` is supplied, since nothing is escalated in
+    that case) — see :func:`~isar.analyze.evidence.candidate_set_evidence`."""
     scores = score_models(results, weight_floor=weight_floor)
     if not scores:
         if stamp:
@@ -311,7 +315,7 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
     fallback = None
     if evidence is None:
         if hyps is not None and ctx is not None:
-            evidence = _candidate_evidence(list(conv.values()), hyps, ctx)
+            evidence = _candidate_evidence(list(conv.values()), hyps, ctx, executor=executor)
         else:
             fallback = "aic_no_evidence_inputs"
     if evidence is not None:

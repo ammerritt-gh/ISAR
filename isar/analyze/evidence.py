@@ -386,8 +386,15 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
         # ceiling can drop a candidate whose true lnZ sits above it, so a penalised fit is never
         # deferred — it pays for the sampler. Pruning was always an optimisation, never a
         # shortcut around one.
-        if escalation == "defer" and fit_result.prior_penalty is None:
-            validity["log_evidence_upper_bound"] = -0.5 * float(fit_result.cost)
+        if escalation == "defer":
+            if fit_result.prior_penalty is None:
+                validity["log_evidence_upper_bound"] = -0.5 * float(fit_result.cost)
+                return _record(float("nan"), None, "deferred_escalation")
+            # A penalised fit is still deferred (so the caller can batch/parallelize it with the
+            # rest), but it carries no valid ceiling and must never be dominance-pruned — see the
+            # comment above. ``candidate_set_evidence`` reads this flag and routes such candidates
+            # straight into the escalation set, skipping the dominance check entirely.
+            validity["prune_exempt"] = True
             return _record(float("nan"), None, "deferred_escalation")
         return _dynesty_evidence(hyp, ctx, fit_result, bundle, _record, validity,
                                  seed=seed, n_live=n_live, max_iter=max_iter,
@@ -482,7 +489,73 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     return _escalate("map_refit_invalid")
 
 
-def candidate_set_evidence(candidates, ctx, *, budget_s=_BUDGET_DEFAULT,
+def _structure_evidence_task(args):
+    """Picklable process-worker entry point for one deferred escalation (mirrors
+    :func:`isar.analyze.loop._fit_hypothesis_task`)."""
+    hyp, ctx, fit_result, bundle, kwargs = args
+    return structure_evidence(hyp, ctx, fit_result, bundle, escalation="run", **kwargs)
+
+
+def _is_prune_exempt(marker) -> bool:
+    """A penalised fit's deferred marker: no valid ceiling (θ̂ is its MAP, not the data MLE, so
+    −cost/2 would understate lnZ), so it must never be dominance-pruned — it always escalates."""
+    return bool(marker.validity.get("prune_exempt"))
+
+
+def _ceiling_str(marker) -> str:
+    bound = marker.validity.get("log_evidence_upper_bound")
+    return "n/a (prune-exempt)" if bound is None else f"{bound:.2f}"
+
+
+def _run_deferred_serial(es, deferred, leader, started, budget_s, ctx, kwargs) -> float:
+    """The original single-threaded ladder: per-item dominance against the live-updating
+    ``leader``, budget checked before each escalation starts. A prune-exempt (penalised-fit)
+    candidate skips BOTH checks — it has no ceiling to be dominated by, and it must always be
+    sampled (never left "unresolved": an unresolved candidate can force ``select_models`` onto
+    the AIC fallback, and a penalised fit's own posterior is exactly the number selection needs).
+    Returns the updated leader."""
+    for hyp, fit, bundle, marker in deferred:
+        exempt = _is_prune_exempt(marker)
+        if not exempt and marker.validity["log_evidence_upper_bound"] < leader - PRUNE_MARGIN:
+            validity = dict(marker.validity)
+            validity["dominated_by_leader_log_evidence"] = float(leader)
+            validity["prune_margin"] = PRUNE_MARGIN
+            es.add(EvidenceRecord(label=marker.label, log_evidence=float("nan"),
+                                  log_evidence_err=None, evidence_method="dominated",
+                                  k_free=marker.k_free,
+                                  arena_fingerprint=marker.arena_fingerprint,
+                                  prior_spec=marker.prior_spec, validity=validity))
+            continue
+        if not exempt:
+            elapsed = time.monotonic() - started
+            if budget_s is not None and elapsed >= budget_s:
+                # Budget-exhausted honesty: the candidate is RECORDED as unresolved with its
+                # ceiling intact, never dropped and never given a number it did not earn. NaN lnZ
+                # keeps it out of the posterior exactly like "dominated"; unlike "dominated" it is
+                # not ruled out, so unresolved_contenders() reports it and selection degrades.
+                # Ordered descending by ceiling, so what survives the budget is always the
+                # strongest remaining claim. Never reached for a prune-exempt candidate above.
+                validity = dict(marker.validity)
+                validity["escalation_budget_s"] = float(budget_s)
+                validity["escalation_elapsed_s"] = float(elapsed)
+                validity["leader_log_evidence"] = float(leader)
+                log.warning("escalation budget %.1fs exhausted after %.1fs; %r left unresolved "
+                            "(ceiling %s vs leader %.2f)",
+                            budget_s, elapsed, marker.label, _ceiling_str(marker), leader)
+                es.add(EvidenceRecord(label=marker.label, log_evidence=float("nan"),
+                                      log_evidence_err=None, evidence_method="unresolved",
+                                      k_free=marker.k_free,
+                                      arena_fingerprint=marker.arena_fingerprint,
+                                      prior_spec=marker.prior_spec, validity=validity))
+                continue
+        rec = structure_evidence(hyp, ctx, fit, bundle, escalation="run", **kwargs)
+        es.add(rec)
+        if _trusted_evidence(rec):
+            leader = max(leader, rec.log_evidence)
+    return leader
+
+
+def candidate_set_evidence(candidates, ctx, *, budget_s=_BUDGET_DEFAULT, executor=None,
                            **kwargs) -> EvidenceSet:
     """Evidence for one scan's candidate set, with dominance pruning of the dynesty rung.
 
@@ -490,7 +563,10 @@ def candidate_set_evidence(candidates, ctx, *, budget_s=_BUDGET_DEFAULT,
     owns that filter). Strategy (owner ruling 2026-08-08): the Gaussian rungs run for every
     candidate first; escalations are then processed in descending order of their evidence
     ceiling ``lnZ ≤ −cost(θ̂)/2`` (exact for proper priors on an unpenalised fit, where θ̂ is the
-    data MLE: Z = ∫L·p ≤ L(θ̂)·∫p = L(θ̂); a penalised fit is excluded from pruning entirely).
+    data MLE: Z = ∫L·p ≤ L(θ̂)·∫p = L(θ̂); a penalised fit carries no valid ceiling and is
+    excluded from pruning entirely — it is still *deferred* rather than run inline, so it can
+    join the same escalation batch, but it is marked ``validity["prune_exempt"]`` and sorted
+    ahead of the ceiling-ranked candidates, since it has no ceiling to rank by).
     A candidate whose ceiling sits more than ``PRUNE_MARGIN`` nats below the current leader
     is recorded ``"dominated"`` — its true posterior is bounded above by e^−PRUNE_MARGIN of
     the leader's, orders of magnitude under the survivor floor, so skipping the sampler
@@ -507,14 +583,30 @@ def candidate_set_evidence(candidates, ctx, *, budget_s=_BUDGET_DEFAULT,
     the escalation phase may spend. Candidates left unsampled are recorded ``"unresolved"`` with
     their ceiling — see :meth:`EvidenceSet.unresolved_contenders`, which decides whether the set
     can still name a winner. The budget is a backstop against a pathological set, not a
-    throughput lever; see the constant."""
-    # ponytail: escalations run serially; parallelize the surviving dynesty runs through the
-    # session process pool (fit_one's boot_executor, task tuples like _fit_hypothesis_task)
-    # when per-scan latency matters — owner-flagged follow-up 2026-08-08.
+    throughput lever; see the constant.
+
+    ``executor`` (default ``None``, serial) parallelizes the surviving deferred escalations —
+    the per-fit dynesty runs that are ~85% of quicklook wall time (2026-09-03 profile) — through
+    a :class:`concurrent.futures.Executor` such as the session's ``boot_executor`` process pool.
+    Used only when more than one candidate survives the pre-batch dominance prune; the prune is
+    then taken against the leader known *before* the batch runs, so a candidate sampled inside
+    the batch can no longer prune a lower-ceiling batch-mate the way the serial loop's
+    mid-loop leader update could. With ``PRUNE_MARGIN=30`` nats of slack that difference is
+    decision-irrelevant. The serial path (``executor=None``, or a set with ≤1 survivor) keeps
+    the exact original per-item semantics. Submission failure (unpicklable candidate, broken
+    pool) cancels every future still pending, logs a warning, and falls back to the serial path
+    — on the SAME budget clock when any future was actually submitted (real sampler time may
+    already be spent, in-flight or discarded), on a fresh one only when submission failed before
+    anything started. The budget clock itself starts once, before the Gaussian pass, and is
+    shared by both paths — on the parallel path the budget gates only whether the batch STARTS;
+    once it starts, every survivor in it completes (no partial unresolve after the fact). A
+    prune-exempt (penalised-fit) candidate is further exempt from the budget itself, in both
+    paths: it always gets sampled, never recorded "unresolved"."""
     if budget_s is _BUDGET_DEFAULT:
         budget_s = ESCALATION_BUDGET_S
     kwargs.setdefault("n_live", escalation_n_live())
     es = EvidenceSet(arena_fingerprint=loop.data_likelihood_fingerprint(ctx))
+    started = time.monotonic()
     deferred = []
     for hyp, fit, bundle in candidates:
         rec = structure_evidence(hyp, ctx, fit, bundle, escalation="defer", **kwargs)
@@ -525,44 +617,94 @@ def candidate_set_evidence(candidates, ctx, *, budget_s=_BUDGET_DEFAULT,
 
     leader = max((r.log_evidence for r in es.records if _trusted_evidence(r)),
                  default=float("-inf"))
-    deferred.sort(key=lambda item: item[3].validity["log_evidence_upper_bound"], reverse=True)
-    started = time.monotonic()
-    for hyp, fit, bundle, marker in deferred:
-        bound = marker.validity["log_evidence_upper_bound"]
-        if bound < leader - PRUNE_MARGIN:
+    # Prune-exempt (penalised-fit) candidates always escalate, so ordering them against a
+    # ceiling is meaningless — they sort first, ahead of the ceiling-descending rest.
+    deferred_exempt = [item for item in deferred if _is_prune_exempt(item[3])]
+    deferred_ceiling = [item for item in deferred if not _is_prune_exempt(item[3])]
+    deferred_ceiling.sort(key=lambda item: item[3].validity["log_evidence_upper_bound"],
+                          reverse=True)
+    deferred = deferred_exempt + deferred_ceiling
+
+    pre_leader = leader
+    survivors = [item for item in deferred
+                 if _is_prune_exempt(item[3])
+                 or item[3].validity["log_evidence_upper_bound"] >= pre_leader - PRUNE_MARGIN]
+
+    if executor is not None and len(survivors) > 1:
+        dominated = [item for item in deferred
+                     if not _is_prune_exempt(item[3])
+                     and item[3].validity["log_evidence_upper_bound"] < pre_leader - PRUNE_MARGIN]
+        for _, _, _, marker in dominated:
             validity = dict(marker.validity)
-            validity["dominated_by_leader_log_evidence"] = float(leader)
+            validity["dominated_by_leader_log_evidence"] = float(pre_leader)
             validity["prune_margin"] = PRUNE_MARGIN
             es.add(EvidenceRecord(label=marker.label, log_evidence=float("nan"),
                                   log_evidence_err=None, evidence_method="dominated",
                                   k_free=marker.k_free,
                                   arena_fingerprint=marker.arena_fingerprint,
                                   prior_spec=marker.prior_spec, validity=validity))
-            continue
+        # Budget gates only whether the batch STARTS. A prune-exempt survivor is exempt from the
+        # budget too — it must always run — so only non-exempt survivors are ever marked
+        # "unresolved" here; an exhausted budget with nothing but exempt survivors left simply
+        # runs a smaller batch.
         elapsed = time.monotonic() - started
-        if budget_s is not None and elapsed >= budget_s:
-            # Budget-exhausted honesty: the candidate is RECORDED as unresolved with its ceiling
-            # intact, never dropped and never given a number it did not earn. NaN lnZ keeps it out
-            # of the posterior exactly like "dominated"; unlike "dominated" it is not ruled out, so
-            # unresolved_contenders() reports it and selection degrades. Ordered descending by
-            # ceiling, so what survives the budget is always the strongest remaining claim.
+        budget_exhausted = budget_s is not None and elapsed >= budget_s
+        if budget_exhausted:
+            to_unresolve = [item for item in survivors if not _is_prune_exempt(item[3])]
+            to_run = [item for item in survivors if _is_prune_exempt(item[3])]
+        else:
+            to_unresolve = []
+            to_run = survivors
+        for _, _, _, marker in to_unresolve:
             validity = dict(marker.validity)
             validity["escalation_budget_s"] = float(budget_s)
             validity["escalation_elapsed_s"] = float(elapsed)
-            validity["leader_log_evidence"] = float(leader)
+            validity["leader_log_evidence"] = float(pre_leader)
             log.warning("escalation budget %.1fs exhausted after %.1fs; %r left unresolved "
-                        "(ceiling %.2f vs leader %.2f)",
-                        budget_s, elapsed, marker.label, bound, leader)
+                        "(ceiling %s vs leader %.2f)",
+                        budget_s, elapsed, marker.label, _ceiling_str(marker), pre_leader)
             es.add(EvidenceRecord(label=marker.label, log_evidence=float("nan"),
                                   log_evidence_err=None, evidence_method="unresolved",
                                   k_free=marker.k_free,
                                   arena_fingerprint=marker.arena_fingerprint,
                                   prior_spec=marker.prior_spec, validity=validity))
-            continue
-        rec = structure_evidence(hyp, ctx, fit, bundle, escalation="run", **kwargs)
-        es.add(rec)
-        if _trusted_evidence(rec):
-            leader = max(leader, rec.log_evidence)
+        if to_run:
+            log.debug("parallel evidence escalation batch: %d candidate(s) via %s",
+                      len(to_run), type(executor).__name__)
+            results = None
+            futures = []
+            try:
+                task_kwargs = dict(kwargs)
+                for hyp, fit, bundle, _ in to_run:
+                    futures.append(executor.submit(_structure_evidence_task,
+                                                   (hyp, ctx, fit, bundle, task_kwargs)))
+                results = [f.result() for f in futures]
+            except Exception as exc:  # noqa: BLE001
+                # Cancel every future still pending so a partial failure does not leave the rest
+                # of the batch running to a discarded result. A future already running cannot be
+                # cancelled (ThreadPoolExecutor/ProcessPoolExecutor both refuse); it still
+                # completes in the background and its result is simply never collected.
+                for f in futures:
+                    if not f.cancel():
+                        log.debug("a submitted escalation could not be cancelled (already "
+                                 "running or done); its result completes and is discarded")
+                log.warning("parallel evidence escalation failed (%s: %s); falling back to "
+                            "serial escalation", type(exc).__name__, exc)
+            if results is None:
+                # Same budget clock once real work was submitted (a duplicate may already be
+                # sampling); a fresh one only when submission failed before anything started.
+                fallback_started = started if futures else time.monotonic()
+                leader = _run_deferred_serial(es, to_run, pre_leader, fallback_started, budget_s,
+                                              ctx, kwargs)
+            else:
+                for rec in results:
+                    es.add(rec)
+                trusted_vals = [r.log_evidence for r in results if _trusted_evidence(r)]
+                if trusted_vals:
+                    leader = max(pre_leader, max(trusted_vals))
+    else:
+        leader = _run_deferred_serial(es, deferred, leader, started, budget_s, ctx, kwargs)
+
     return es
 
 
