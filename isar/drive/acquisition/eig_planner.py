@@ -87,6 +87,18 @@ NULL_DETECTION_COUNTS = 5.0
 #: rest of the domain has returned nulls too, which is what brings the planner back at higher
 #: exposure instead of leaving the band excluded for ever.
 NULL_MISS_PROBABILITY = 0.1
+#: The prize is binary per point -- known to +-tau, or not -- so utility counts COMPLETIONS.  This
+#: is the weight on the log-deficit term kept beside it: it orders the designs that cannot finish a
+#: point by how much they learn, and is small enough that it can never outweigh a completion.
+#: Without it a half-count scan leaving sigma just over the bar scored ~99% of the value of the
+#: full-count scan that would actually finish the point, at half the cost, so the point never got
+#: finished.
+SHAPING = 0.02
+#: How far a real fit's sigma sits above the Cramer-Rao bound at the counts we run.  The bound is
+#: optimistic at low counts; this is a declared model of the fitter's reliability, like
+#: :data:`NULL_MISS_PROBABILITY`, and it applies to the PLANNER's expectations only -- the world
+#: delivers the bare bound, so the planner has to earn its margin rather than assume it.
+FIT_SIGMA_INFLATION = 1.25
 #: Anchor weights are rounded to this many decimals before designs are grouped for the cross-point
 #: term (A4 caching).  A belief is insensitive to a 0.005 change in one anchor weight, and grouping
 #: is what keeps the per-design cross term inside the time budget.
@@ -921,7 +933,8 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
     for wi, (lo, _hi, step, npts) in enumerate(windows):
         grid = lo + step * np.arange(npts, dtype=float)
         rate, deriv, _ = _rates(om, sres, grid, peak, elastic, background, float(inp.temperature_K))
-        sigma_fit[wi] = _sigma_fit(rate, deriv, np.array(ladder, dtype=float), n_branch, sres)
+        sigma_fit[wi] = _sigma_fit(rate, deriv, np.array(ladder, dtype=float), n_branch,
+                                   sres) * FIT_SIGMA_INFLATION
     sigma_fit = sigma_fit.reshape(n_win * n_exp, n_scen, n_branch)
     fit_measured = np.isfinite(sigma_fit)
     n_design = n_win * n_exp
@@ -1010,7 +1023,10 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
                                              [[q[1] for q in row] for row in preds_m],
                                              branches.index(t), width, tau,
                                              [exempt[m][k] for m, _c in others])
-                gain += float(sum(deficit_now[m][k] for m, _c in others) - after.sum())
+                now_deficit = np.array([deficit_now[m][k] for m, _c in others])
+                # Completions at the other points, plus the shaped remainder.
+                gain += float(np.count_nonzero(after <= 0.0) - np.count_nonzero(now_deficit <= 0.0)
+                              + SHAPING * float(now_deficit.sum() - after.sum()))
             upd = [predict(b, inp.u[i], updated[b]) for b in branches]
             w, w_none = target_posterior(comp_e[idx], comp_s[idx], valid[idx],
                                          [q[0] for q in upd], [q[1] for q in upd],
@@ -1018,7 +1034,9 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
             hw = hdi_halfwidth(comp_e[idx], comp_s[idx], w, w_none, width)
             after = (np.zeros_like(hw) if exempt[i][k]
                      else np.maximum(np.log(np.maximum(hw, 1e-300) / tau), 0.0))
-            gain += np.einsum("s,ds->d", weight_s, deficit_now[i][k] - after)
+            gain += (np.einsum("s,ds->d", weight_s, (after <= 0.0).astype(float))
+                     - float(deficit_now[i][k] <= 0.0)
+                     + SHAPING * np.einsum("s,ds->d", weight_s, deficit_now[i][k] - after))
         utility[idx] = gain
     utility = np.maximum(utility, 0.0)
 
