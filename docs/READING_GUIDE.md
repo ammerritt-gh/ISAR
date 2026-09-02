@@ -145,6 +145,9 @@ Read in this order when returning after time away:
    first and the ledger as evidence.
 9. While it exists: [HANDOFF-demo-2026-09.md](HANDOFF-demo-2026-09.md) — the run-sheet for the
    live targeted-lane EIG demo, what was measured, and what had to change.
+10. **Read first, before anything above:** [HANDOFF-eig.md](HANDOFF-eig.md) — the one objective
+   (hypothesis map, intensity map, EIG; no survey, no legacy), what the code does instead today,
+   and the measured facts of 2026-09-02/03.
 
 ### Door 2 — running ISAR on data (the user door)
 
