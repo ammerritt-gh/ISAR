@@ -287,6 +287,12 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     |Δω₀| 0.040 meV, centre pull −0.035 meV (systematic, fits low). The DHO model is interpolated
     linearly on a 0.05 meV grid (`lineshapes.py`, predates today) and at low counts the fitted
     centres snap to 0.05 multiples (0.5003, 0.8985, 1.4000, 1.8001, 2.3006, 2.5999 on that run);
-    h = 2.3 came out 0.12 meV low. Being measured against a 0.02 grid at the time of writing. The
+    h = 2.3 came out 0.12 meV low. Measured by refitting the same ten scans on a 0.02 meV grid:
+    the snapping disappears (0.4601, 0.9505, 1.4396 … instead of 0.5003, 0.8985, 1.4000) and
+    the mean pull goes from −0.025 to −0.001 meV, but the per-point scatter stays at a median
+    0.04 meV (statistics at 5e6 counts per point in wide windows) and h = 2.3 stays 0.08 low.
+    **Decision for the owner:** `dx = 0.02` in `lineshapes.py` is a statistics change that
+    moves every fit and its frozen tests; recommended, not applied. The planner's feedback on
+    the published interval buys the counts the bar needs regardless. The
     planner's declared Cramér–Rao inflation is 2.0 (published calibrated halfwidths sit 2–3×
     above the bound at these counts).
