@@ -110,6 +110,12 @@ def handle_missed_window(counts: Sequence, scan_values: Sequence, *, e_lo: float
     ``recenter_refused_elastic`` — still a bounded retry (the window is widened about the OLD center,
     never re-aimed at elastic, never an instant abandon). ``resolution_fwhm=None`` restores the exact
     pre-guard behavior (back-compat).
+
+    **Peak-inside-window.** When the (non-elastic) Stokes-side peak already lies inside the current
+    window by at least a margin (the greater of ``resolution_fwhm`` or 10% of the window width), the
+    window is left UNCHANGED and the action is ``peak_inside_window``: widening cannot help find a
+    peak that is already inside — the scan saw real signal the window covers, so the miss lies
+    elsewhere (e.g. a modelling gap) and the planner's next action, not another widen, is the recovery.
     """
     if attempt >= max_attempts:
         return ExceptionAction(
@@ -143,6 +149,21 @@ def handle_missed_window(counts: Sequence, scan_values: Sequence, *, e_lo: float
                 {"proposed_center": center, "resolution_fwhm": float(resolution_fwhm),
                  "guard_k": float(guard_k), "e_lo": new_lo, "e_hi": new_hi, "center": old_center,
                  "attempt": attempt + 1, "widen": float(widen)})
+        margin = max(float(resolution_fwhm) if resolution_fwhm is not None else 0.0, 0.1 * width)
+        lo, hi = float(e_lo), float(e_hi)
+        # Only once the elastic guard above has had a resolution to clear the peak with: without
+        # one, an elastic peak at ΔE ≈ 0 would read as "inside the window" and suppress the bounded
+        # retry, so ``resolution_fwhm=None`` keeps the exact pre-guard behaviour below.
+        if resolution_fwhm is not None and lo + margin <= center <= hi - margin:
+            # The peak is already inside the window (well clear of both edges) — widening cannot help
+            # find it, it's already found. Leave the window unchanged and return to the planner.
+            return ExceptionAction(
+                "peak_inside_window",
+                f"peak observed at deltaE={center:g} meV lies inside the current window "
+                f"[{lo:g}, {hi:g}]; widening cannot help — leaving the window and returning to "
+                "the planner",
+                {"peak": peak, "center": center, "e_lo": lo, "e_hi": hi, "attempt": attempt},
+                escalate=False)
         reason = (f"peak observed at deltaE={peak:g} meV, outside/near the window edge; "
                   f"re-centering on the Stokes side ({center:g} meV) and widening")
     new_lo = center - new_width / 2.0

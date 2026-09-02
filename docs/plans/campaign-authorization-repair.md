@@ -200,6 +200,12 @@ not built here.
   (iterations 4, 5, 7 selected `target_core`, 17 points against 129–147, and the 17-point
   request reached the wire).
 - `fa87059` stopped two expected refusals printing tracebacks at high severity.
+- Missed-window recovery no longer fires on an `unmodeled` row or on a peak that already lies
+  inside the window (F31's neighbour: eleven recoveries, 28 percent of rehearsal F's points, all
+  with the peak inside the window; two left the authorized domain). F31's domain re-authorization
+  of a genuine recovery is still owed in slice 1.
+- `02cc2cc` moved the evidence escalation rung's default to 32 live points (ruling amended in
+  `STATS_PRIMER.md`).
 
 ### Slice 4 — the discovery product contract (pending D1)
 

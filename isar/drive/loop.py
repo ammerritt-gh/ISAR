@@ -1774,10 +1774,19 @@ def _rows_missed(rows: list[dict]) -> bool:
     """True when a scan produced no usable detector (peak outside the window / no signal). A
     ``branch_continuation`` (Phase A: the near-Γ acoustic, confidently identified but not resolvable
     by position) is NOT a miss — widening the window would only chase the higher optic branch, never
-    resolve a peak sitting at the elastic origin — so it does not trigger the recenter/widen."""
+    resolve a peak sitting at the elastic origin — so it does not trigger the recenter/widen.
+
+    ``unmodeled`` is likewise NOT a miss: the descriptor localised significant signal inside the
+    window that the current structure set cannot fit — a modelling gap, not a targeting one. Rows
+    with disposition ``unmodeled`` come from catastrophic-GoF scans whose peaks sit well inside the
+    proposed window (e.g. an unaccounted second branch); re-centering/widening cannot help, and the
+    planner's next action (a production revisit or a richer structure) is the actual recovery.
+    ``isar/drive/supervisor/stopping.py`` already treats ``unmodeled`` alongside
+    ``branch_continuation`` as positive evidence when folding a grid group."""
     if not rows:
         return True
-    return not any(r.get("disposition") in _USABLE or r.get("disposition") == "branch_continuation"
+    return not any(r.get("disposition") in _USABLE
+                   or r.get("disposition") in ("branch_continuation", "unmodeled")
                    for r in rows)
 
 

@@ -70,6 +70,38 @@ def test_recenter_guard_none_fwhm_is_byte_identical_to_pre_change():
     assert guarded.params["center"] == pytest.approx(0.009)   # unguarded → re-aims at the elastic peak
 
 
+def test_peak_inside_window_leaves_window_unchanged():
+    # Peak at +5.5 meV, well inside [-9, 9] with margin to spare on both sides.
+    counts = [3.0, 5.0, 90.0]
+    values = [-1.0, 1.0, 5.5]
+    act = exc.handle_missed_window(counts, values, e_lo=-9.0, e_hi=9.0, attempt=0,
+                                   resolution_fwhm=1.0)
+    assert act.action == "peak_inside_window"
+    assert act.escalate is False
+    assert act.params["e_lo"] == pytest.approx(-9.0)
+    assert act.params["e_hi"] == pytest.approx(9.0)
+    assert act.params["center"] == pytest.approx(5.5)
+
+
+def test_peak_inside_window_defers_to_elastic_guard():
+    # Peak at -0.9 meV with resolution_fwhm=1.0 is within the elastic guard — that path wins.
+    counts = [3.0, 500.0, 4.0]
+    values = [-0.9, -0.5, 0.5]
+    act = exc.handle_missed_window(counts, values, e_lo=-9.0, e_hi=9.0, attempt=0,
+                                   resolution_fwhm=1.0)
+    assert act.action == "recenter_refused_elastic"
+
+
+def test_peak_near_edge_still_recenters():
+    # Peak at 8.7 meV in [-9, 9] is within the margin of the edge — normal recenter, not
+    # peak_inside_window.
+    counts = [3.0, 5.0, 90.0]
+    values = [-1.0, 1.0, 8.7]
+    act = exc.handle_missed_window(counts, values, e_lo=-9.0, e_hi=9.0, attempt=0)
+    assert act.action == "recenter"
+    assert act.params["center"] == pytest.approx(8.7)
+
+
 def test_recenter_escalates_past_the_attempt_cap():
     act = exc.handle_missed_window([1, 2, 3], [0, 1, 2], e_lo=-2, e_hi=2,
                                    attempt=exc.MAX_RECENTER_ATTEMPTS)

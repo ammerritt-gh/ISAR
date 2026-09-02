@@ -91,6 +91,12 @@ counting seconds and is nowhere near touched (a few seconds of virtual beam).
 - An executed core scan failed provenance the next time its q was scored, because the inventory's
   selected candidate is the survey by construction. Fixed in `0b02b98`.
 - Two expected refusals printed tracebacks on the console (`fa87059`).
+- The missed-window recovery fired on scans whose peak was already inside the window: an
+  "unmodeled" fit that had the phonon to the milli-eV but no second structure for the optic, or a
+  quicklook that saw the phonon and called no signal at that exposure. It widened to 200 points
+  and bought a scan that could not help, eleven times in rehearsal F, 28 percent of all points.
+  An unmodeled row is no longer a miss, and a peak inside the window no longer re-centres.
+- The evidence sampler's escalation rung now defaults to 32 live points (`02cc2cc`).
 
 ## 5. Honest caveats, in case they come up
 
