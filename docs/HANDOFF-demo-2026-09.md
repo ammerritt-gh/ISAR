@@ -62,6 +62,7 @@ Short reference program, (2,0,0) to (2.3,0,0), three measurable points:
 | new default | 32 | met, 3 of 3 certified | 7.5 min | 8 | 0 of 4 (veto, see §4) |
 | new default, vetoes fixed | 32 | met, 3 of 3 certified | 12.6 min | 9 | 3 of 3 scored, all 17-point cores |
 | final code, no overrides (`be8b34d`) | 32 | met, 3 of 3 certified | 10.0 min | 8 | 2 cores; zero recovery re-scans |
+| fit speed-ups (`4187374`) | 32 | met, 3 of 3 certified | 5.5 min | 8 | 2 cores; fits 7 to 28 s, mean 20 s; first fit done 29 s after go |
 
 Delivered against TAVI's analytic truth: 0.926, 1.838, 2.650 meV at h = 2.1, 2.2, 2.3, each
 within 0.04 meV. Centres are accurate to a median 0.025 meV over the scored rows.
@@ -76,7 +77,7 @@ Full demo path, (2,0,0) to (3,0,0), rehearsal F on `0b02b98`, sampler capped:
 | Points certified | 20 of 20 at 88 min; the 90-minute rehearsal wall limit cut the certification pass and `--resume-latest` finished it, stop state "met" |
 | Accuracy against truth | median 0.033 meV; 68 percent bars cover about a fifth of the scored rows |
 | Delivered curve | 0.47 meV at h=2.05 rising to 6.05 meV at the zone boundary, 20 certified points |
-| Per-scan cadence | about 90 s per scan including its fit |
+| Per-scan cadence | about 90 s per scan including its fit on that run; about 25 s after the 2026-09-03 fit speed-ups (short path), full path not yet re-measured |
 
 For a talk: start it at the beginning and it will be mid-narrowing by the time you reach the
 slide, with the survey pass and the first cores visible in the log; the completed run is the
@@ -98,6 +99,15 @@ counting seconds and is nowhere near touched (a few seconds of virtual beam).
   and bought a scan that could not help, eleven times in rehearsal F, 28 percent of all points.
   An unmodeled row is no longer a miss, and a peak inside the window no longer re-centres.
 - The evidence sampler's escalation rung now defaults to 32 live points (`02cc2cc`).
+- A scan was invisible in the GUI until its fit finished, because the ledger was saved only at
+  the end of the run; it is now registered as ingested and saved the moment its data lands
+  (`a645e93`). The feed names an alternative window being weighed as such, and an expected
+  low-severity event as a note, not a problem (`f15c654`).
+- One quicklook's fit spent 136 of 140 seconds in nested sampling, four structures escalated
+  one after another and then again for the single-member master. The resolution kernel is now
+  cached per fit (`3d63cdc`), a first-visit master takes its scan's winner as a hint
+  (`9593236`), and the escalations run concurrently through the session pool at every tier
+  (`4187374`). The same quicklook went from 85 seconds to 23.
 
 ## 5. Honest caveats, in case they come up
 
