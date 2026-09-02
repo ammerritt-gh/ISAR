@@ -126,8 +126,8 @@ Read in this order when returning after time away:
 3. **[ARCHITECTURE.md](ARCHITECTURE.md)** — the whole-project law: stages, principles, frozen
    contracts — and **§15, the capability table**, the single authority for what is Implemented /
    Partial / Planned right now.
-4. **The live frontier:** [design/scene.md](design/scene.md) §3 (the SCENE slice table — SCENE-4
-   is complete through PR 4.4 as of H22, 2026-08-21) and its §"SCENE-4.4 rulings (H22)".
+4. **The live frontier:** [design/scene.md](design/scene.md) §3 (the SCENE slice table — SCENE-5
+   is complete as of H23, 2026-08-25; SCENE-6/SCENE-7 are Planned) and its §"SCENE-4.4 rulings (H22)".
 5. **The podium path:** [STATS_PRIMER.md](STATS_PRIMER.md) — why Baker–Cousins and not
    Neyman/Pearson, why selection is the evidence posterior, how interval coverage was *measured*
    — the document to rehearse from before defending the methodology to an audience. Deeper:
@@ -139,8 +139,10 @@ Read in this order when returning after time away:
    placement baseline from the first end-to-end discovery campaign, and the tuning targets it
    names. Read before tuning discovery placement or building SCENE-5.5's priced envelope.
 8. While it exists: [HANDOFF-campaign-pipeline-audit.md](HANDOFF-campaign-pipeline-audit.md) — the
-   live evidence ledger for the end-to-end campaign audit: objective semantics, Q/window selection,
-   scene-EIG correctness, performance, and verified findings.
+   closed campaign-pipeline audit (2026-09-01/02): 34 dispositioned findings, the seam matrix, the
+   repair gates, and the ChatGPT second-opinion review. Its remediation is
+   [plans/campaign-authorization-repair.md](plans/campaign-authorization-repair.md) — read the plan
+   first and the ledger as evidence.
 
 ### Door 2 — running ISAR on data (the user door)
 
@@ -165,6 +167,7 @@ standing check that we are building a usable instrument, not a self-certifying l
    [design/reporting.md](design/reporting.md) · [STATS_PRIMER.md](STATS_PRIMER.md) (statistics;
    kept at this path because frozen evidence cites it).
 3. The plans — work not yet landed, each with an owner and exit criteria:
+   [plans/campaign-authorization-repair.md](plans/campaign-authorization-repair.md) ·
    [plans/speedup.md](plans/speedup.md) · [plans/background.md](plans/background.md) ·
    [plans/stats-audit.md](plans/stats-audit.md).
    The backlog is [../TODO.md](../TODO.md).
