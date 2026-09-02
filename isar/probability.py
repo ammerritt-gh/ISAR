@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from scipy.special import erfcx
+from scipy.special import erfcx, ndtr
 
 
 def lower_truncated_normal_moments(mu: float, sigma: float) -> tuple[float, float]:
@@ -33,3 +33,54 @@ def lower_truncated_normal_moments(mu: float, sigma: float) -> tuple[float, floa
     mean = mu + sigma * ratio
     variance = sigma * sigma * max(1.0 + alpha * ratio - ratio * ratio, 0.0)
     return max(mean, 0.0), math.sqrt(variance)
+
+
+def truncated_normal_moments(mu: float, sigma: float, lo: float, hi: float) -> tuple[float, float]:
+    """Mean/std of ``N(mu, sigma**2)`` conditioned on ``lo <= x <= hi``.
+
+    The closed form rather than ``scipy.stats.truncnorm``: this sits under every belief prediction,
+    and the frozen-distribution machinery costs ~100 us a call.  ``hi = inf`` delegates to
+    :func:`lower_truncated_normal_moments`, whose cancellation-free asymptotics beat this expression
+    far into the tail.  When the interval holds essentially no mass the distribution has collapsed
+    onto the nearer edge, and that is what is returned.
+    """
+    mu, lo, hi = float(mu), float(lo), float(hi)
+    sigma = max(float(sigma), 1e-12)
+    if not hi > lo:
+        raise ValueError("truncation interval must have hi > lo")
+    if math.isinf(hi):
+        mean, std = lower_truncated_normal_moments(mu - lo, sigma)
+        return mean + lo, std
+    alpha, beta = (lo - mu) / sigma, (hi - mu) / sigma
+    mass = float(ndtr(beta) - ndtr(alpha))
+    if mass < 1e-12:
+        # The interval holds essentially no mass: the distribution has collapsed onto the
+        # nearer edge.  Report the ORIGINAL sigma with it, never 0.0 -- a belief that claims a
+        # branch energy to +-0 makes every likelihood against it degenerate, and the honest
+        # statement is "pinned at the band edge, to within the spread the fit had".
+        return (lo if mu < lo else hi), sigma
+    phi_a = math.exp(-0.5 * alpha * alpha) / math.sqrt(2.0 * math.pi)
+    phi_b = math.exp(-0.5 * beta * beta) / math.sqrt(2.0 * math.pi)
+    ratio = (phi_a - phi_b) / mass
+    mean = mu + sigma * ratio
+    variance = sigma * sigma * (1.0 + (alpha * phi_a - beta * phi_b) / mass - ratio * ratio)
+    return min(max(mean, lo), hi), math.sqrt(max(variance, 0.0))
+
+
+def extrapolation_model_sigma(distance: float, period: float | None,
+                              domain_hi: float | None) -> float:
+    """Model error of carrying a LINEAR branch prediction ``distance`` in reduced q past its data.
+
+    The curvature clause of the class prior, and no sample knowledge: a branch periodic in the zone
+    and bounded by the authorized band has ``|omega''| <= domain_hi * (pi / period) ** 2``, so a
+    straight line carried a distance ``d`` beyond its nearest anchor can be wrong by up to
+    ``0.5 * |omega''| * d ** 2``.  Added in quadrature to the fitted spread, it is what stops an
+    extrapolated acoustic belief from claiming the optic's peak with the WLS spread alone.
+
+    Lives here because the drive and session layers each carry their own belief implementation and
+    the two must agree exactly.  Returns 0 when the period or the band is unknown, or at an anchor.
+    """
+    if period is None or domain_hi is None or float(distance) <= 0.0:
+        return 0.0
+    curvature = float(domain_hi) * (math.pi / float(period)) ** 2
+    return 0.5 * curvature * float(distance) ** 2

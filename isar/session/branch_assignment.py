@@ -32,7 +32,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from isar.probability import lower_truncated_normal_moments
+from isar.probability import (
+    extrapolation_model_sigma, lower_truncated_normal_moments, truncated_normal_moments)
 
 from isar.analyze.truth import _fold
 from isar.session.session_prior import is_unconstrained_prior_point
@@ -165,6 +166,7 @@ class BranchBelief:
     zone_anchor: bool = False
     window_k: int = WINDOW_K
     parameter_prior: dict | None = None
+    period: float | None = None      # zone period; without it the curvature clause is skipped
 
     @property
     def n_anchors(self) -> int:
@@ -190,13 +192,14 @@ class BranchBelief:
             prec = np.concatenate([[ZONE_ANCHOR_WEIGHT / (ZONE_SIGMA ** 2)], prec])
         return us, ys, prec
 
-    def predict(self, u: float) -> tuple[float, float]:
+    def predict(self, u: float, *, domain_hi: float | None = None) -> tuple[float, float]:
         """``(mu, sigma)`` of ω₀ at reduced-q ``u``. Weighted local-linear (precision × fixed-bandwidth
         Gaussian locality), so σ shrinks where anchors are dense/precise and grows on extrapolation.
         With only the zone anchor (acoustic cold start) ``mu≈0`` and ``sigma`` grows as
         ``ACOUSTIC_MAX_SLOPE·u`` — tight enough near Γ to reject a 6-meV feature, honest far out."""
         if self.parameter_prior:
-            return self._predict_with_parameter_prior(float(u), include_prior=True)
+            return self._predict_with_parameter_prior(float(u), include_prior=True,
+                                                     domain_hi=domain_hi)
         u = float(u)
         us, ys, prec = self._anchors()
         n = us.size
@@ -242,8 +245,16 @@ class BranchBelief:
             return self.predict(u)
         return self._predict_with_parameter_prior(float(u), include_prior=False)
 
-    def _predict_with_parameter_prior(self, u: float, *, include_prior: bool) -> tuple[float, float]:
-        """Local linear Gaussian update followed by non-negative marginal truncation moments."""
+    def _predict_with_parameter_prior(self, u: float, *, include_prior: bool,
+                                      domain_hi: float | None = None) -> tuple[float, float]:
+        """Local linear Gaussian update followed by marginal truncation moments.
+
+        The class prior's third clause -- bounded by the energy domain -- is this truncation:
+        an energy outside the authorized band is not a hypothesis the program can hold, so with
+        ``domain_hi`` given the predictive is truncated to ``[0, domain_hi]`` at BOTH ends.  A cold
+        branch far from the fold then predicts "somewhere in the band" (mean about hi/2, sigma
+        about hi/sqrt(12)) instead of a one-sided runaway to tens of meV outside it.
+        """
         if self.us.size:
             d = np.abs(self.us - u)
             idx = np.argsort(d, kind="stable")[:min(self.us.size, self.window_k)]
@@ -265,7 +276,13 @@ class BranchBelief:
                               float(slope.get("mean", 0.0))])
             sigmas = np.array([max(float(gap.get("sigma", 1e3)), 1e-9),
                                max(float(slope.get("sigma", 1e3)), 1e-9)])
-            prior_precision = confidence / np.square(sigmas)
+            # The (gap, slope) prior describes the line AT THE FOLD, so it is admitted into a
+            # LOCAL fit only as far as that fit is still near the fold -- through the same locality
+            # kernel the anchors use. At full precision everywhere the zone-centre pin tilts the
+            # local line, and near the zone boundary a saturating branch is predicted about a meV
+            # high, confidently enough that the rival branch's peak reads as its own.
+            prior_precision = (confidence / np.square(sigmas)
+                               * math.exp(-0.5 * (float(u) / LOCALITY_BW) ** 2))
             precision += np.diag(prior_precision)
             rhs += prior_precision * means
         if not np.any(precision):
@@ -278,9 +295,15 @@ class BranchBelief:
         xq = np.array([1.0, u])
         mu = float(xq @ beta)
         sigma = max(math.sqrt(max(float(xq @ cov @ xq), 0.0)), SIGMA_SLACK)
+        if self.us.size:
+            # Curvature clause: the fitted spread is the error of the LINE, not of the branch.
+            sigma = math.hypot(sigma, extrapolation_model_sigma(
+                float(np.min(np.abs(self.us - u))), self.period, domain_hi))
         if not include_prior:
             return mu, sigma
-        return lower_truncated_normal_moments(mu, sigma)
+        if domain_hi is None:
+            return lower_truncated_normal_moments(mu, sigma)
+        return truncated_normal_moments(mu, sigma, 0.0, float(domain_hi))
 
 
 def build_beliefs(points, *, sample, t_bin, period: float,
@@ -313,16 +336,18 @@ def build_beliefs(points, *, sample, t_bin, period: float,
         prior = resolved.get(bid)
         beliefs[bid] = BranchBelief(bid, us, ys, ws,
                                     zone_anchor=(bid == ACOUSTIC and prior is None),
-                                    parameter_prior=prior)
+                                    parameter_prior=prior, period=float(period))
     for bid, prior in resolved.items():
         if bid not in beliefs and bid != "null":
             empty = np.array([], dtype=float)
-            beliefs[bid] = BranchBelief(bid, empty, empty, empty, parameter_prior=prior)
+            beliefs[bid] = BranchBelief(bid, empty, empty, empty, parameter_prior=prior,
+                                        period=float(period))
     if ACOUSTIC not in beliefs:
         empty = np.array([], dtype=float)
         prior = resolved.get(ACOUSTIC)
         beliefs[ACOUSTIC] = BranchBelief(ACOUSTIC, empty, empty, empty,
-                                         zone_anchor=prior is None, parameter_prior=prior)
+                                         zone_anchor=prior is None, parameter_prior=prior,
+                                         period=float(period))
     return beliefs
 
 

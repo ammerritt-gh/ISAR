@@ -12,7 +12,8 @@ from typing import Iterable
 
 import numpy as np
 
-from isar.probability import lower_truncated_normal_moments
+from isar.probability import (
+    extrapolation_model_sigma, lower_truncated_normal_moments, truncated_normal_moments)
 
 from isar.schema.hypotheses import ACQUISITION_ESTIMATOR_VERSION
 
@@ -49,8 +50,16 @@ def _normal_pdf(x: np.ndarray, mean: float, sigma: float) -> np.ndarray:
     return np.exp(-0.5 * z * z) / (sigma * math.sqrt(2.0 * math.pi))
 
 
-def belief_predict(row: dict, u: float, *, data_only: bool = False) -> tuple[float, float]:
-    """Qt/session-free mirror of parameter-prior branch prediction from a persisted belief row."""
+def belief_predict(row: dict, u: float, *, data_only: bool = False,
+                   domain_hi: float | None = None) -> tuple[float, float]:
+    """Qt/session-free mirror of parameter-prior branch prediction from a persisted belief row.
+
+    The class prior's third clause -- bounded by the energy domain -- is this truncation:
+    an energy outside the authorized band is not a hypothesis the program can hold, so with
+    ``domain_hi`` given the predictive is truncated to ``[0, domain_hi]`` at BOTH ends.  A cold
+    branch far from the fold then predicts "somewhere in the band" (mean about hi/2, sigma
+    about hi/sqrt(12)) instead of a one-sided runaway to tens of meV outside it.
+    """
     anchors = list(row.get("anchors") or [])
     if anchors:
         us = np.array([float(a["u"]) for a in anchors])
@@ -74,7 +83,13 @@ def belief_predict(row: dict, u: float, *, data_only: bool = False) -> tuple[flo
                           float(slope.get("mean", 0.0))])
         sigmas = np.array([max(float(gap.get("sigma", 1e3)), 1e-9),
                            max(float(slope.get("sigma", 1e3)), 1e-9)])
-        prior_precision = confidence / np.square(sigmas)
+        # The (gap, slope) prior describes the line AT THE FOLD, so it is admitted into a LOCAL fit
+        # only as far as that fit is still near the fold -- through the same locality kernel the
+        # anchors use. At full precision everywhere the zone-centre pin tilts the local line, and
+        # near the zone boundary a saturating branch is predicted about a meV high, confidently
+        # enough that the rival branch's peak reads as its own.
+        prior_precision = (confidence / np.square(sigmas)
+                           * math.exp(-0.5 * (float(u) / LOCALITY_BW) ** 2))
         precision += np.diag(prior_precision)
         rhs += prior_precision * means
     if not np.any(precision):
@@ -83,9 +98,15 @@ def belief_predict(row: dict, u: float, *, data_only: bool = False) -> tuple[flo
     xq = np.array([1.0, float(u)])
     mu = float(xq @ (cov @ rhs))
     sigma = max(math.sqrt(max(float(xq @ cov @ xq), 0.0)), SIGMA_SLACK)
+    if anchors:
+        # Curvature clause: the fitted spread is the error of the LINE, not of the branch.
+        sigma = math.hypot(sigma, extrapolation_model_sigma(
+            float(np.min(np.abs(us - float(u)))), row.get("period"), domain_hi))
     if data_only or not prior:
         return mu, sigma
-    return lower_truncated_normal_moments(mu, sigma)
+    if domain_hi is None:
+        return lower_truncated_normal_moments(mu, sigma)
+    return truncated_normal_moments(mu, sigma, 0.0, float(domain_hi))
 
 
 def assignment_mi(components: Iterable[dict], *, meas_sigma: float,

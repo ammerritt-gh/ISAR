@@ -233,13 +233,27 @@ def _prior(value: Any, default: GaussianPrior, *, energy: bool = False) -> Gauss
 
 
 def preset(name: str, energy_search_meV: tuple[float, float] = (-2.0, 12.0)) -> ExcitationHypothesis:
-    """Resolve a shipped preset; optic defaults are derived once from the positive search band."""
+    """Resolve a shipped preset; both defaults are derived once from the positive search band.
+
+    The acoustic class prior asserts only what "acoustic" means: the branch is gapless
+    (``zc_energy`` pinned at 0 with a 0.2 meV slack) and roughly linear near the zone centre with a
+    slope that is otherwise unknown. Its slope prior is therefore derived from the authorized band
+    exactly as the optic gap is -- ``(hi - max(lo, 0)) / 0.5`` is the widest slope that can still
+    keep the branch inside the band across the half zone the preset can see (it does not know the
+    sample's period; the belief row's ``period`` supplies that). Mean 0 and full confidence make it
+    a *bound*, not a guess about dispersion shape: the earlier ``GaussianPrior(12.0, 12.0)`` at
+    confidence 0.8 asserted a 12 meV/rlu group velocity nobody had measured.
+    """
+    lo_band, hi_band = map(float, energy_search_meV)
     if name == "acoustic":
+        # ponytail: 0.5 r.l.u. stands in for the half zone the preset cannot know (the sample's
+        # period lives on the belief row); a period-aware preset would divide by period / 2.
+        slope_sigma = max(hi_band - max(0.0, lo_band), 1e-6) / 0.5
         return ExcitationHypothesis(name="acoustic", preset="acoustic",
                                     zc_energy=GaussianPrior(0.0, 0.2),
-                                    slope_zc=GaussianPrior(12.0, 12.0), confidence=0.8)
+                                    slope_zc=GaussianPrior(0.0, slope_sigma), confidence=1.0)
     if name == "optic":
-        lo, hi = map(float, energy_search_meV)
+        lo, hi = lo_band, hi_band
         positive_lo = max(0.0, lo)
         width = max(hi - positive_lo, 1e-6)
         return ExcitationHypothesis(name="optic", preset="optic",
