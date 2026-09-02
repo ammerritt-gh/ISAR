@@ -20,6 +20,7 @@ examples/
 .isar-local/
 .codex-validation/
 test_workspaces/
+.audit_tmp_*/
 
 # superpowers:brainstorming writes design specs here and its checklist says to commit them.
 # Committing one trips tests/docs/test_doc_drift.py (the register must map 1:1 to tracked

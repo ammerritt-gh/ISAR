@@ -1,12 +1,12 @@
 # HANDOFF — automated campaign pipeline audit
 
-> **Status:** live
-> **Owner:** Adrian (operator); Codex (active auditor)
+> **Status:** live (audit closed 2026-09-02; remediation tracked in [plans/campaign-authorization-repair.md](plans/campaign-authorization-repair.md))
+> **Owner:** Adrian (operator). Auditor: Codex (closed 2026-09-02); second-opinion review: ChatGPT (Appendix A)
 > **Purpose:** accumulate the evidence-backed audit of objective compilation, scientific-action
 > selection, scan-window realization, scene-EIG correctness, and campaign performance.
 > **Exit criteria:** every production seam in §3 has a PASS / FAIL / INCONCLUSIVE disposition;
 > the all-mode, acoustic-target, and optic-target calibration objectives have been exercised at
-> the strongest available local level; every reported issue has a reproduction and independent
+> the strongest available local level; every reported issue has a reproduction and second-pass
 > recheck; and remaining unknowns name the evidence required to close them.
 
 This is a working audit ledger, not a source of scientific authority. It records what was actually
@@ -68,8 +68,8 @@ that existing fitted results are invalid; it limits what the controller may auto
 
 ## 1. Audit contract
 
-- **Stable readiness unit:** `ISAR-CAMPAIGN-AUDIT-01` (plan revision R2, independently reviewed
-  `READY` before execution).
+- **Stable readiness unit:** `ISAR-CAMPAIGN-AUDIT-01` (plan revision R2, reviewed `READY` in a
+  second Codex context before execution).
 - **Audit start:** 2026-09-01.
 - **Current source at start:** `796a84b`.
 - **Pre-audit worktree:** no tracked or untracked entries reported by `git status --short`; Git
@@ -238,7 +238,7 @@ original-before, copy-before, copy-after, and original-after states exactly: 153
 textual pre-probe aggregate `8e96dbc4…760ca`; equality of every path, length, and content hash—not
 coincidental aggregate equality—proves the retained original was unchanged.
 
-## 5. Candidate issues — not findings
+## 5. Candidate hypotheses and their dispositions
 
 These hypotheses came from the calibration handoff and first static reconnaissance. They remain
 unreported until the evidence rule in §1 is met.
@@ -334,12 +334,12 @@ missing evidence and retry condition; do not keep probing.
 | 43 | A4 | frozen-deliverable agenda A/B/C | 60 s | `phenomenon_map`, empty, and optic-only `dispersion_map` produced byte-identical agendas and assessments | 1.46 s |
 | 44 | A7 | exact branch-specific worlds, target-window suites, and exhaustive two-recovery replay | 10 min worlds / 60 s suites | optic 21/21 converged through legacy windows; tracked acoustic did not terminate; 41/41 eligible target-core mutations lost support after two edge recoveries; physical-submit boundary sent for adversarial recheck; 510 focused passes, 2 skips across overlapping suites | 23.11 s optic world; 44.74 s recorded suites |
 | 45 | A1 | incomplete frozen-targeted payload versus compact-authoring probe | 60 s | frozen payload accepted and defaulted to −2…7 meV, no hypotheses, empty steering; compact acoustic authoring froze −9…9 meV, two hypotheses, authoritative O41 | 1.4 s |
-| 46 | A6 | independent discovery-report outcome verification | 10 min | F28 reproduced; terminal discovery has no automatic summary/diagnostic, while status/report expose only their narrower ledger/triage contracts | 3.8 s render |
+| 46 | A6 | second-pass discovery-report outcome verification | 10 min | F28 reproduced; terminal discovery has no automatic summary/diagnostic, while status/report expose only their narrower ledger/triage contracts | 3.8 s render |
 | 47 | A8 | five-lens repair-order council | 2 min | 3 yea / 2 nay; moved crash/replay and operator stop into the first safety gate, and coupled uncertainty/RNG/cost/latency design before scorer optimization | 31.4 s |
 | 48 | A7 | frame-compatible exact two-branch ALL closed loop and selected-question adjudication | 600 s | interrupted during planning pass 9 after eight committed observations; every selected window supported its selected question, no H=3 action occurred, and the agenda remained honestly open | 600 s hard limit |
-| 49 | A5 | independent performance-remedy and acceptance-contract review | 10 min | sequenced interruption safety, allocation-free hot-path work, replay-stable fixed-total estimation, realized-neutron pricing, bounded parallelism, and concrete latency/memory/replay gates | read-only synthesis |
-| 50 | A8 | independent report consistency and documentation-policy review | 10 min | found and corrected S10's stale F13 disposition; F31/F32 pending language flagged for final adjudication; banner/link policy passed | read-only review |
-| 51 | A7 | independent frozen-target schema and recovery-to-submit verification | 10 min | F33 reproduced; missing-manifest recovery physically submitted four progressively widened scans, including out-of-domain and targetless requests; complete manifest blocked low support but not domain escape | bounded in-memory/mock-client probes |
+| 49 | A5 | second-pass performance-remedy and acceptance-contract review | 10 min | sequenced interruption safety, allocation-free hot-path work, replay-stable fixed-total estimation, realized-neutron pricing, bounded parallelism, and concrete latency/memory/replay gates | read-only synthesis |
+| 50 | A8 | second-pass report consistency and documentation-policy review | 10 min | found and corrected S10's stale F13 disposition; F31/F32 pending language flagged for final adjudication; banner/link policy passed | read-only review |
+| 51 | A7 | second-pass frozen-target schema and recovery-to-submit verification | 10 min | F33 reproduced; missing-manifest recovery physically submitted four progressively widened scans, including out-of-domain and targetless requests; complete manifest blocked low support but not domain escape | bounded in-memory/mock-client probes |
 | 52 | A7 | tracked-acoustic fixture-causality review and production-faithful rerun | bounded rerun | original trace contained 76 physical actions, but its missing `scan_id` guaranteed whole-batch fallback; interrupted follow-ups temporarily downgraded F32 pending the direct rule probes in rows 53–54 | bounded run interrupted |
 | 53 | A7 | orphaned faithful-run containment and frozen-prefix audit | 5 min | stopped only the two identified audit PIDs; frozen acoustic/optic prefixes contained 515/489 physical submissions and valid master keys, but omitted tracker-state columns made their repeated nonconvergence fixture-induced | <1 s parsing after containment |
 | 54 | A7 | confirmed-master ceiling and pooled-branch authority A/Bs | 60 s each | at 12/12 batches the real selector emitted another same-Q production scan; replacing only acoustic evidence authority with an optic row flipped the selected Q and action authority identity | 1.1 s / 1.2 s |
@@ -394,6 +394,8 @@ eligibility is incorrectly reused as the rival's observability test (F06). Legac
 lack `branch_id` remain accepted by a compatibility path; fresh frozen campaigns carry the field.
 
 ## 7. Verified findings
+
+Numbering note: the finding series starts at F02; the F01 identifier was not assigned and is not reused.
 
 ### F02 — The handoff's discovery-window efficiency calculation omitted the optic branch
 
@@ -1582,7 +1584,7 @@ requires its literal O43 wire and bounded-progress gates. ALL/discovery authorit
 
 ## 9. Audit closure and residual unknowns
 
-The audit contract is complete at source `796a84b`. A fresh-context verifier returned **CONFIRMED**
+The audit contract is complete at source `796a84b`. A second-pass verifier in a fresh Codex context returned **CONFIRMED**
 with no required corrections: all 34 dispositions and 18 seam states reconcile; the numerical and
 calibration-specific boundaries are supported; F31/F32/F35 do not exceed their evidence; and every
 remedy is written as proposed work rather than current capability. Documentation drift passed before
@@ -1611,3 +1613,366 @@ the reported test counts. The retained directory contains 988 files / 15,221,959
 142,363 bytes with SHA-256
 `d0c1029994d06c8c4acc1ff1f5c63f2e70d7ffd6aa06eb1fd9c5193e6e4ecb20`. Remove it only after the
 operator explicitly decides the captured evidence is no longer needed.
+
+
+## Appendix A — ChatGPT second-opinion review (2026-09-02)
+
+Reviewed the closed ledger and the audited source at `796a84b`; the reviewer did not possess the
+retained workspace, so its empirical claims are audit-led. Dispositions of its amendments are recorded
+in [plans/campaign-authorization-repair.md](plans/campaign-authorization-repair.md).
+
+### Overall assessment
+
+**Codex’s central verdict is correct:** ISAR at `796a84b` is not ready for unattended, beam-authoritative operation. The audit identifies several independent ways in which the controller can purchase the wrong scientific action, repeat an exhausted action, lose or misattribute a submitted scan across restart, steer from statistically unauthoritative state, or leave the operator unable to see what it is doing. Those are genuine authorization blockers, not cosmetic reservations. 
+
+I checked the corresponding source paths at the audited commit rather than merely reviewing the prose.  The most important findings survive that scrutiny.
+
+That said, I would **accept the audit as the evidence base, but not adopt it verbatim as the implementation plan**. Three things need revision:
+
+1. Its “32 FAIL” headline conflates runtime defects, known unimplemented capabilities, acceptance-test gaps, documentation defects, and corrections to the earlier campaign interpretation.
+2. Several remedies—especially F16 and F18—advance from “confirmed failure” into a fairly specific statistical architecture that has not itself received the same level of proof.
+3. A few fixes need a better data model than the local patch proposed, particularly multimode identity, rival evidence authority, and acquisition recovery.
+
+There is also an evidence boundary worth stating plainly: I independently checked the source-level mechanisms, but I did not possess the authenticated retained workspace described in §4. I therefore cannot independently attest its manifests, exact 2,436–4,830-second measurements, 300 K→200 K artifact history, or live LLMM samples. Those empirical claims are internally coherent and often strongly corroborated by source, but they remain audit-led rather than independently reproduced here.
+
+#### What the audit does especially well
+
+The audit is unusually disciplined about distinguishing candidate hypotheses from findings and recording refutations. Its corrections of the earlier calibration handoff materially increase my confidence in it:
+
+* F02 correctly notices that the claimed fourfold window saving was calculated against only the acoustic branch even though the ALL objective contains both acoustic and optic modes.
+* F03 correctly separates a missed-window recovery scan from a scene-EIG-selected negative-energy corroboration action.
+* R02 withdraws the initially tempting—but wrong—claim that 200 K data were being scored using 300 K predictive rates.
+* R03 and R04 correctly preserve two useful design properties: discovery really can generate narrow question-conditioned windows, and an out-of-window mode is censored rather than treated as absent.
+
+That willingness to refute its own hypotheses is more valuable than another dozen red findings. It shows Codex was auditing rather than prosecuting.
+
+The dependency order in §8 is also broadly right:
+
+> authorize and recover scans first → define the scientific product → repair statistical comparison → optimize → make it legible.
+
+Correctness before speed. Rather fetching, really.
+
+### Findings I consider decisively confirmed
+
+#### 1. Acquisition, replay, and stopping safety
+
+F09–F12 are real and deserve early repair.
+
+`read_log()` catches a JSON parse error independently for every line and continues, even though its intended tolerance is a torn final append. That means interior history can disappear silently. The diagnostic has essentially the same weakness, so it cannot independently flag the damaged ledger.
+
+The submission sequence also has the crash window described by F10. ISAR writes a pre-submit `submission_intent`, calls the external submission, charges the budget, and then writes both `run` and `physical_submission`, with `run` first. The detailed recovery reducer treats `physical_submission` as the durable job-bearing authority. Consequently, a crash after `run` but before `physical_submission` can preserve spend while losing the record needed to recover the external job.
+
+F11 is similarly direct: `ConsultationChannel` reloads settlements and epochs, but not unresolved prompt issuance. After restart, an unresolved prompt can be re-issued using the current delivery as its new age origin.
+
+F12 is a small but genuine provenance bug: recovered submissions call the common finalizer without restoring the recorded attempt number, so the default attempt zero enters operation identity and timing.
+
+##### My amendment to the remedy
+
+Writing `physical_submission` before `run` is a reasonable immediate patch, but the durable design should not retain two competing “this scan happened” records.
+
+Use one authoritative acquisition lifecycle keyed by `acquisition_id` and idempotency key:
+
+* `prepared`: exact authorized request and idempotency key;
+* `submitted`: returned external job ID;
+* `completed`: authenticated executed-grid/count facts;
+* `analyzed`: analysis operation and outcome.
+
+Spend, scan counters, recovery, and reports should reduce from that lifecycle rather than choosing between `run` and `physical_submission`. Compatibility `run` events can be derived or retained as non-authoritative output. This is not enterprise ceremony; it removes the duplicated authority that caused F10.
+
+The unavoidable submit→first-local-write gap still requires TAVI-side idempotency lookup or reconciliation by idempotency key. Codex acknowledges that correctly.
+
+For F09, the exact repair should be:
+
+* reject malformed non-final records;
+* recognize at most one incomplete final record;
+* quarantine or truncate that tail before any subsequent append;
+* never append behind unparseable bytes.
+
+#### 2. Targeted acquisition authority
+
+F05, F06, F32, and F35 are all genuine, high-value findings.
+
+F32 is particularly clean. The ordinary candidate filter does not unconditionally exclude `same_q_ceiling_reached`; it excludes a ceiling-reached point only for certain evidence-only or ambiguous track states. A confirmed but still nonconverged target can therefore remain eligible after the declared production ceiling.
+
+F35 is equally clear. `summarize_grid()` branch-filters `master`, but overwrites `evidence_master` for every pooled row at that Q. Whichever branch row is encountered last becomes the general evidence authority, while downstream selection frequently prefers `evidence_master or master`.  The audit’s A/B showing a rival row changing Q selection is therefore entirely plausible and source-consistent.
+
+F05 exposes a related lifecycle split: rival classification value can be retired while the rival prediction band remains available to widen the fallback window. F06 shows that target eligibility is being reused as a proxy for rival observability, which fails for the gapless acoustic rival at the optic zone centre.
+
+##### My amendment to the remedy
+
+For F35, do **not** merely branch-filter the one `evidence_master` field. That risks throwing away rival evidence needed for branch discrimination.
+
+Replace the scalar ambiguity with something like:
+
+```text
+target_master
+evidence_masters_by_branch[branch_id]
+unassigned_evidence_master
+```
+
+Every consumer must explicitly request either target authority or rival/identity evidence. A target action fingerprint may reference only target-aligned authority; an identity action may cite the complete rival set. Add an invariant that the selected target role, target master branch, authority revision, and action identity agree.
+
+Likewise, F05 and F06 should be fixed through a shared hypothesis lifecycle rather than another special case:
+
+* Is this hypothesis observable at this Q and under this instrument resolution?
+* Is it active, resolved, retired, or explicitly reopened?
+* Has this exact null-search action already been completed?
+
+The acoustic-at-origin rule can be one implementation of `observable_at`, but should not become another isolated `if acoustic and H == 2` seam.
+
+For F32, Codex’s remedy is right: the ordinary production ceiling must be unconditional. Additional same-Q work should require a distinct, separately authorized override action with a durable reason—not a diagnostic warning that the selector may ignore.
+
+#### 3. Discovery’s scientific completion contract
+
+F07, F08, F16, F17, and F30 together show that discovery can find good peaks without yet possessing a trustworthy definition of “the requested scientific map is complete.”
+
+F07 is source-explicit: `_mode_intervals_of()` returns one `None` per fitted mode whenever a candidate has more than one omega. That is conservatively better than assigning the one existing primary interval to an arbitrary mode, but it makes genuine two-mode precision closure impossible.
+
+F08 is also real. The existing production catalogue does not provide the per-mode identity structure needed for declared acoustic/optic hypotheses to attach to real fitted modes. The repository’s own strict-XFAIL integration test documents that declared acoustic priority does not move real closed-loop placements.
+
+F17 is the straightforward floating-point boundary defect: the exact nominal 0.05-r.l.u. grid can fail the raw `widest > spacing` comparison because some binary differences are slightly above 0.05.
+
+F30 is the more foundational contract problem. `deliverables` are frozen and fingerprinted as what the campaign is asked to produce, but they have no runtime consumer. Changing `phenomenon_map` to an empty or optic-only deliverable does not alter agenda or completion semantics. The field is therefore presently declarative decoration rather than effective frozen intent.
+
+##### My amendment to F07 and F08
+
+Codex proposes “per-mode intervals with explicit slot identity.” The first half is right; raw slot identity is not enough.
+
+Modes can reorder, cross, split, or exchange posterior association. Persist uncertainties against a stable candidate/phenomenon identity, for example:
+
+```text
+mode_evidence_id
+local_mode_index
+energy posterior or interval
+covariance/joint-posterior reference
+association probabilities to scene phenomena
+```
+
+The fitter should publish **anonymous local mode evidence**, not pronounce that slot 0 is acoustic and slot 1 is optic. The scene layer should associate those local modes into persistent phenomena and maintain posterior identities across Q. That preserves the architecture you actually want for ISAR: evidence-backed identity rather than hard-coded energy ordering.
+
+A multimode covariance or posterior reference is also important. Independent scalar intervals can be misleading when two fitted centres are correlated or label-switching.
+
+##### My amendment to F16
+
+The core failure is serious and confirmed: predicates correctly become conservative when the retained assignment set is unauthoritative, but EIG still renormalizes and scores that retained set. The scorer therefore has a more permissive authority contract than the agenda it is supposed to serve. Its cost also scales through an alternative-by-alternative likelihood calculation.
+
+The **immediate repair** should be deliberately boring:
+
+> When any question’s contributing belief cluster lacks certified posterior authority, that question contributes no actionable EIG. If no authoritative question remains, stop with a durable model-authority blocker or consultation.
+
+That makes the current controller safe before solving approximate inference.
+
+The proposed dynamic omitted-mass bound is promising, but the retained-case value such as `−40.711` is not yet a general architectural result. Before adopting it, require:
+
+* a written derivation for every live factor type;
+* proof that linkage and future factor additions satisfy the required bound assumptions;
+* property tests comparing the bound with exact enumeration on tractable scenes;
+* one shared posterior-authority object consumed by both predicates and EIG.
+
+Longer term, factorized inference is sensible, but I would not prematurely promise “forward/backward” specifically. That is ideal for a strict chain; variable elimination, a junction tree, or bounded top-K message passing may better survive richer topology. The contract should be “posterior queries with a certified approximation error,” not a particular algorithm.
+
+#### 4. EIG statistics, cost, and performance
+
+F18, F23, and F24 are among the best parts of the audit.
+
+The source confirms all three structural points:
+
+* the Monte Carlo seed incorporates `design_key`, so scientifically identical predictions receive independent random streams;
+* `_mi_from_rates()` compares draws generated under each alternative against all alternatives, producing the reported quadratic scaling;
+* final ranking uses weighted raw MI and then a stable design-key tie-break, not realized neutron cost.
+
+The discovery loop checks the stop token before entering planning, but planning is synchronous and there is no corresponding stop/deadline check inside scoring or immediately after planning before continuing toward acquisition. The planner also writes several content-addressed artifacts and pointers during the planning operation rather than publishing one atomic completed decision afterward.
+
+That is enough to uphold the audit’s basic conclusion even without independently reproducing the retained timings.
+
+##### What I would change in the proposed statistical solution
+
+**Common random numbers:** yes—but first detect exactly identical predictive distributions and force exact ties without Monte Carlo. Hash or canonicalize the rate arrays and score one representative. Common random numbers then handle near-equal designs and correlated score differences.
+
+**Uncertainty:** compare candidates using paired uncertainty on the *score difference*, not two independent standard errors. With shared latent draws, the covariance is the useful part.
+
+**Fixed-total K:** a new fixed-total estimator is a sound direction and must indeed receive a new frozen policy revision. But `K=512` and the claimed speedup should remain calibration hypotheses, not architecture constants. Choose K adaptively or from a validated policy table.
+
+**Determinism versus deadlines:** the audit’s wall-clock cancellation proposal needs care. A wall deadline can make the same seed select on a fast machine and time out on a slow one. For replay-deterministic scientific behavior:
+
+* use a deterministic work budget—number of blocks, samples, or likelihood evaluations—as the scientific limit;
+* use wall time only as an emergency watchdog;
+* a watchdog expiry produces a machine/analysis failure and no decision, never a partial winner.
+
+**Publishing:** rather than moving several pointers one by one after scoring, publish one authoritative decision-commit record that references the already-written immutable inventory, agenda, scores, and selected intent. Unreferenced blobs are harmless. A half-published set of current pointers is not.
+
+**Cost-aware selection:** blindly maximizing `MI / neutrons` is also not quite enough. Ratios can favor tiny, nearly useless scans. A better sequence is:
+
+1. reject actions lacking required scientific support;
+2. reject or defer actions below an absolute worthwhileness threshold;
+3. compare scientifically distinguishable utilities;
+4. when utilities are indistinguishable, select lower realized cost;
+5. otherwise optimize a declared constrained or priced objective.
+
+The proven equal-MI, 4.2×-cost case should absolutely choose the cheaper window. That does not require committing the entire system to a ratio objective.
+
+The ≤30-second full-decision target is a sensible authorization gate. The proposed ≤2-second one-design microbenchmark is useful diagnostic scaffolding, but should not become a permanent scientific contract if the representation later changes.
+
+#### 5. Request realization and recovery
+
+F27 and F31 are correctly framed as local authorization defects.
+
+The request body is built from `ScanProposal.scan_command()` without a final universal finite/order/positive-step invariant.  A generator may usually normalize its own values, but replay and recovery must still pass one last controller-owned validator.
+
+For F31, target support is checked only when validation supplies a point manifest; absence yields `None`, which bypasses the refusal. Missed-window recovery then replaces the energy bounds and re-finalizes the proposal without checking the frozen objective domain or re-establishing target support locally.
+
+Codex’s “one pre-POST scientific validator” is exactly the right consolidation point.
+
+I would make the recovery rule stronger than clipping:
+
+> A recovered request must be newly authorized as a member of the frozen objective’s allowed request family.
+
+If recentering around observed counts cannot produce a domain-contained, target-supporting request, recovery ends. The controller then returns to the planner or raises a consultation saying that the apparent signal lies outside the authorized search domain. Silently clipping an invalid recovery may leave a formally valid but scientifically nonsensical fragment.
+
+Missing manifest information must mean “support unverified,” not “support permitted.”
+
+#### One finding whose wording should be corrected: F26
+
+The source supports the defect: `_executed_point_count()` uses an execution mask when present and otherwise falls back to the requested point count; it does not use the returned axis length.
+
+But the audit calls six returned axis values “the correct 600” rather too confidently. Without a contract saying `len(scan_values_1)` is authenticated proof of physically executed points, there are at least two possibilities:
+
+* six points executed;
+* ten points executed but only six results were returned because of truncation or transport failure.
+
+So the finding should read:
+
+> Execution accounting is ambiguous and is silently resolved as requested count.
+
+The repair should retain three separate facts:
+
+* requested points;
+* instrument-reported executed points;
+* returned data points.
+
+Charge from authenticated execution evidence. When those disagree or execution evidence is absent, reserve the conservative upper bound if necessary but **block further unattended acquisition pending reconciliation**. Do not silently substitute returned-array length unless TAVI’s API contract explicitly makes it authoritative.
+
+### Findings that need reclassification rather than rejection
+
+The audit admits that 32 FAILs are not 32 root causes, but the presentation still invites that interpretation. I would reclassify these:
+
+| Finding | Better classification                                                         |
+| ------- | ----------------------------------------------------------------------------- |
+| F02     | Correction to the earlier calibration interpretation                          |
+| F03     | Correction to action provenance in the earlier handoff                        |
+| F13     | Normative documentation contradiction                                         |
+| F14     | Missing integration proof; remain INCONCLUSIVE                                |
+| F15     | Missing integration proof; remain INCONCLUSIVE                                |
+| F23     | Known planned capability gap plus demonstrated consequence                    |
+| F29     | Acceptance-test insufficiency, not a demonstrated production false completion |
+| F30     | Unimplemented product contract, not a local regression                        |
+
+F08 also deserves a “known capability gap” tag because the repository already carries a strict XFAIL explaining it. That does not make it less important; it simply distinguishes unfinished design from a newly introduced defect.
+
+The current P1 population is so large that P1 no longer ranks anything. I would attach two orthogonal labels:
+
+* **authorization effect:** blocks unattended / blocks supervised / does not block;
+* **finding type:** runtime defect / missing capability / acceptance gap / observability / documentation / audit correction.
+
+Then group the findings by root cause. For example:
+
+* F07 + F08 + F30: incomplete phenomenon-product contract;
+* F16 + F18 + F23 + F24: scene posterior/scoring contract;
+* F09 + F10 + F11 + F12: event/replay contract;
+* F05 + F06 + F32 + F35: targeted branch-authority lifecycle;
+* F19 + F21 + F28 + F34: discovery observability/reporting contract.
+
+That would turn an intimidating red wall into a repairable architecture.
+
+### Changes I would make to the repair gates
+
+#### Gate 0
+
+Keep exactly as written. Proposal-only or exact human request approval is the right current boundary. Deterministic reduction and fitting remain usable.
+
+#### Gate 1
+
+The audit’s Gate 1 is fundamentally correct. I would add two items.
+
+First, bring the **condition mismatch portion of F22** into Gate 1. A declared 300 K campaign that receives a trusted 200 K first measurement should stop before buying scan two unless the frozen policy explicitly permits adoption of measured conditions. That is purchase authorization, not merely later scientific completion.
+
+Second, bring forward two minimal reporting safeguards:
+
+* discovery must appear as active in the GUI;
+* `isar diagnose` must refuse unsupported discovery input rather than emit a false targeted report;
+* campaign wall reporting must include an unattributed remainder rather than calling the sum of known timers “total wall.”
+
+A rich discovery report can remain Gate 5. Preventing an actively misleading report is safety work.
+
+#### Gate 2
+
+Keep the product-definition gate before major scene-EIG redesign. Until “phenomenon map” has typed completion semantics, it is impossible to say what the optimized planner is optimizing toward.
+
+Within Gate 2, separate targeted and discovery milestones. Targeted operation should not have to wait for the whole ALL-mode scene redesign:
+
+1. fix branch authority, rival retirement/observability, same-Q ceiling, recovery validation, and F14;
+2. qualify one branch-faithful targeted world;
+3. permit supervised targeted use;
+4. continue with multimode phenomenon identity and ALL deliverable semantics.
+
+#### Gates 3 and 4
+
+Correct order: freeze estimator semantics before optimizing its implementation.
+
+Treat Codex’s fixed-K/common-random-number design as a design brief requiring mathematical review, not as an already selected implementation. Preserve a small exact estimator as the validation oracle.
+
+#### Gate 5
+
+Full reporting belongs here, but reports should consume the same canonical acquisition and decision records introduced earlier. Do not build a separate reconciliation model just for diagnostics.
+
+### Acceptance testing should be layered
+
+F29 is right that the shipped FCC battery cannot certify literal energy-window or neutron behavior. The harness itself says it fits the world’s complete spectrum and does not execute selected window or `ncount`.  Its “both phonons mapped” assertion checks only that some selected fitted energy falls below 7 meV, another lies above it, and some presence question closed; it does not require both branches at H=3.
+
+Codex’s proposed branch-faithful end-to-end world is appropriate, but it should not become one enormous test on which every concern depends. I recommend four levels:
+
+| Level                          | Purpose                                                                                                        |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| Fixed-Q fitter tests           | Prove exact acoustic/optic spectra and per-mode intervals at key endpoints                                     |
+| Deterministic planner worlds   | Prove question, identity, censoring, and stopping semantics without expensive full fitting                     |
+| Small literal-acquisition loop | Execute selected windows, counts, returned grids, recovery, and charging over perhaps 5 representative Q nodes |
+| Full 21-node calibration       | Nightly/milestone authorization evidence for endpoint and connected-map behavior                               |
+
+That gives failures a useful location and keeps ordinary development tolerable.
+
+### Document-level revisions
+
+The audit ledger itself needs a final editorial pass:
+
+* Change **Status: live** to closed/final, or explicitly distinguish “audit closed; remediation open.” Section 9 already says the audit contract is complete.
+* Rename “Candidate issues—not findings”; nearly every row in that section now says confirmed or refuted.
+* Explain the missing F01 with a tombstone or retired-ID note.
+* Use “second-pass” or “fresh-context recheck” rather than “independent” when the verifier is another Codex context. Context isolation reduces anchoring, but it is not independent replication by a different implementation or reviewer.
+* Put a two-page decision memo ahead of this ledger: root cause, affected finding IDs, authorization consequence, proposed owner, repair slice, and exit test. Preserve the current document as the evidence appendix.
+
+The audit’s sheer thoroughness is an asset, but right now it makes every loose thread look equally capable of strangling the experiment. They are not.
+
+### Recommended disposition by finding
+
+| Disposition                                                   | Findings                                                                                           |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| **Accept substantially as written**                           | F04, F05, F06, F09, F10, F11, F12, F17, F19, F20, F21, F22, F24, F25, F27, F28, F31, F32, F34, F35 |
+| **Accept the finding; revise the remedy or wording**          | F07, F08, F16, F18, F23, F26, F30, F33                                                             |
+| **Reclassify as audit/documentation/acceptance correction**   | F02, F03, F13, F29                                                                                 |
+| **Keep INCONCLUSIVE and require the stated wire-level proof** | F14, F15                                                                                           |
+
+For F33 specifically, making the targeted `/1` reader strict is scientifically right, but consider compatibility deliberately. If real frozen `/1` programs exist, either mint targeted `/2` and require explicit migration, or provide a one-time offline migration that records exactly which former defaults were materialized. Do not make an old document silently change meaning, but also do not strand existing evidence without a named path.
+
+### Bottom line
+
+**Use this audit to stop unattended authority and to drive the next repair phase.** Its major safety, scientific-authority, and EIG findings are real, and the gate order is mostly excellent. It is considerably better than the calibration handoff it audits because it catches several of that handoff’s own overclaims.
+
+Before handing it to an implementer, I would require:
+
+1. the taxonomy/root-cause rewrite;
+2. the remedy amendments for F07, F08, F16, F18, F23, F26, F31, F33, and F35;
+3. condition reconciliation and minimal honest diagnostics moved into the first safety gate;
+4. a staged targeted-versus-discovery authorization path;
+5. F14 and F15 retained as explicit proof obligations rather than quietly converted into presumed fixes.
+
+So: **excellent audit, sound release-blocking conclusion, not yet a fully safe repair specification.** Codex found the right exposed seams; it occasionally became a little too enamoured of choosing the replacement machinery itself. That part still needs your architectural hand on it.
