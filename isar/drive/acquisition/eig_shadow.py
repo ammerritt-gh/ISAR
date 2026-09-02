@@ -173,7 +173,23 @@ def _scan_design_source(workspace: Path, acquisition_id: str | None,
             _LOG.warning("scan_design_provenance_invalid: acquisition %s inventory %s could not be "
                          "authenticated: %s", acquisition_id, reference.get("sha256"), error)
             return None, ("scan_design_provenance_invalid",)
-        if (inventory.selected_candidate_id != str(candidate_id)
+        # An authoritative O41 core selection submits the core candidate's id (authority.py
+        # writes scan_design_candidate_id = the O41 decision's chosen candidate, not the
+        # inventory's selected_candidate_id, which is the legacy_uniform/1 control by
+        # construction). Accept either: the inventory's own selected candidate, or the one
+        # authority role that exists today (target_core, authenticated at the submission
+        # boundary by authenticate_authority_submission) whose candidate id is one the inventory
+        # actually offered. Anything else (unknown candidate, an unrecognised role, or a
+        # legacy/absent role claiming a different id) still fails closed. Checking the id
+        # against the persisted authority decision record is the F14 proof still owed.
+        candidate_str = str(candidate_id)
+        selected_role = payload.get("scan_design_authority_selected_role")
+        candidate_authenticated = candidate_str == inventory.selected_candidate_id or (
+            selected_role == "target_core"
+            and any(candidate_str == getattr(c, "candidate_id", None)
+                    for c in inventory.candidates)
+        )
+        if (not candidate_authenticated
                 or inventory.context.fingerprint != str(context_fingerprint)):
             return None, ("scan_design_provenance_invalid",)
         identities.append((dict(reference), str(candidate_id), str(context_fingerprint)))

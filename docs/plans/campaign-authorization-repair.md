@@ -187,6 +187,20 @@ The hypothesis lifecycle ChatGPT proposes (`observable_at`, active / resolved / 
 reopened, completed null-search) is written into `design/scene.md` as a SCENE-6 requirement,
 not built here.
 
+**Interim repairs landed 2026-09-02 for the demo week (outside the slice order, main):**
+- `9fa11d4` retired the O36 `shadow_disagrees` veto: the AIC shadow selection disagreed with the
+  H4 posterior-driven delivered selection by design, so no centred core could ever be eligible
+  (3 of 4 post-first-pass decisions in the reference campaign). Owed here: teach the shadow
+  comparator the posterior rule so the veto regains its rescued/constrained meaning
+  (`design/eig.md`, 2026-09-02 amendment).
+- Core-scan provenance: `_scan_design_source` refused any executed `target_core` scan as a
+  member source because the inventory's selected candidate is the legacy control by construction.
+  Fixed to accept the core candidate under an authoritative role. Owed here: F14's
+  production-shaped test; the live evidence is `test_workspaces/demo-rehearsal/D-veto-fixed`
+  (iterations 4, 5, 7 selected `target_core`, 17 points against 129–147, and the 17-point
+  request reached the wire).
+- `fa87059` stopped two expected refusals printing tracebacks at high severity.
+
 ### Slice 4 — the discovery product contract (pending D1)
 
 - F30: bind the `phenomenon_map` deliverable to a typed terminal predicate; reject every

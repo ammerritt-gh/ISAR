@@ -201,7 +201,8 @@ def test_source_action_mismatch_refuses_before_workspace_loading(tmp_path):
         "shadow_source_action_mismatch",)
 
 
-def _write_source_events(tmp_path, inventory, *, ambiguous=False):
+def _write_source_events(tmp_path, inventory, *, ambiguous=False,
+                          candidate_id=None, authority_selected_role=None):
     digest = inventory.content_hash()
     design_path = tmp_path / "report" / "scan-design" / f"{digest}.json"
     design_path.parent.mkdir(parents=True, exist_ok=True)
@@ -212,9 +213,11 @@ def _write_source_events(tmp_path, inventory, *, ambiguous=False):
     }
     common = {
         "scan_design_inventory_ref": reference,
-        "scan_design_candidate_id": inventory.selected_candidate_id,
+        "scan_design_candidate_id": candidate_id or inventory.selected_candidate_id,
         "scan_design_context_fingerprint": inventory.context.fingerprint,
     }
+    if authority_selected_role is not None:
+        common["scan_design_authority_selected_role"] = authority_selected_role
     events = [
         {"kind": "physical_submission", "payload": {
             **common, "acquisition_id": "physical-a", "proposal_fingerprint": "request-a"}},
@@ -269,6 +272,49 @@ def test_ambiguous_pooled_source_join_refuses_instead_of_substituting(tmp_path):
     _write_source_events(tmp_path, inventory, ambiguous=True)
 
     assert ("master", "det", "revision-1") not in exact_pooled_master_sources(tmp_path)
+
+
+def test_authoritative_core_selection_authenticates_against_the_inventory(tmp_path):
+    """An O41 core selection submits the core candidate's id, not the inventory's legacy default.
+
+    ``ScanDesignInventory.selected_candidate_id`` is the legacy control by construction; an
+    authoritative decision that instead selects ``target_core/1`` writes that candidate's id onto
+    the submission payload alongside ``scan_design_authority_selected_role="target_core"``. That
+    combination must still authenticate.
+    """
+    inventory = _inventory()
+    core_id = next(c.candidate_id for c in inventory.candidates
+                   if c.candidate_family == "target_core/1")
+
+    _write_source_events(tmp_path, inventory, candidate_id=core_id,
+                         authority_selected_role="target_core")
+
+    source, _events = _scan_design_source(tmp_path, "physical-a", "request-a")
+    assert source is not None
+    assert source["selected_candidate_id"] == core_id
+
+
+def test_non_legacy_candidate_without_authority_role_still_refuses(tmp_path):
+    """The same core candidate id with no (or a legacy) authority role stays unauthenticated."""
+    inventory = _inventory()
+    core_id = next(c.candidate_id for c in inventory.candidates
+                   if c.candidate_family == "target_core/1")
+
+    _write_source_events(tmp_path, inventory, candidate_id=core_id)
+
+    assert _scan_design_source(tmp_path, "physical-a", "request-a") == (
+        None, ("scan_design_provenance_invalid",))
+
+
+def test_unknown_candidate_with_authority_role_still_refuses(tmp_path):
+    """A candidate id absent from the inventory never authenticates, even with a core role."""
+    inventory = _inventory()
+
+    _write_source_events(tmp_path, inventory, candidate_id="not-a-real-candidate",
+                         authority_selected_role="target_core")
+
+    assert _scan_design_source(tmp_path, "physical-a", "request-a") == (
+        None, ("scan_design_provenance_invalid",))
 
 
 def test_exact_pooled_source_runs_producer_grounded_numeric_path(monkeypatch, tmp_path):
