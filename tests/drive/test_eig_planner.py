@@ -15,8 +15,9 @@ import pytest
 
 from isar.analyze.truth import _fold
 from isar.drive.acquisition.eig_planner import (
-    Candidate, PlannerInput, _deficits_batch, _pad_candidates, default_intensity_scale,
-    hdi_halfwidth, plan_next, target_posterior,
+    CONFIRMED_PROBABILITY, Candidate, ExecutedScan, PlannerInput, _admitted_anchor, _deficit,
+    _deficits_batch, _pad_candidates, default_intensity_scale, hdi_halfwidth, plan_next,
+    target_posterior,
 )
 from isar.schema.hypotheses import preset
 
@@ -44,8 +45,9 @@ def planner_input(hs, *, targets=("acoustic",), beliefs=None, measured=None) -> 
 
 
 def deficit_of(cands, mus, sigs, target_index=0) -> tuple[float, float]:
-    hw, deficit = _deficits_batch(_pad_candidates([tuple(cands)]), [[m] for m in mus],
-                                  [[s] for s in sigs], target_index, WIDTH, TOLERANCE, [False])
+    hw, _identified, deficit = _deficits_batch(
+        _pad_candidates([tuple(cands)]), [[m] for m in mus], [[s] for s in sigs], target_index,
+        WIDTH, TOLERANCE, [False])
     return float(hw[0]), float(deficit[0])
 
 
@@ -64,6 +66,18 @@ def test_one_sharp_candidate_under_a_tight_belief_passes_despite_non_zero_none_m
     hw, deficit = deficit_of(cands, [4.0, 40.0], [0.3, 3.0])
     assert hw < TOLERANCE
     assert deficit == 0.0
+
+
+def test_completion_needs_identity_as_well_as_width():
+    """A 0.02 meV posterior on a peak that is only 70% likely to BE the target is not the answer
+    the scientist asked for; the same 0.85 the anchor gate uses means the same thing here."""
+    narrow = float(np.log(0.02 / TOLERANCE))            # width front alone: already satisfied
+    assert narrow < 0.0
+    assert _deficit(np.array([0.02]), np.array([0.70]), TOLERANCE)[0] > 0.0
+    assert _deficit(np.array([0.02]), np.array([0.95]), TOLERANCE)[0] == 0.0
+    # and the identity front alone can hold a point open however narrow the peak is
+    assert _deficit(np.array([1e-6]), np.array([0.70]), TOLERANCE)[0] == pytest.approx(
+        float(np.log(CONFIRMED_PROBABILITY / 0.70)))
 
 
 def test_an_unmeasured_point_is_half_the_positive_domain_wide():
@@ -202,7 +216,7 @@ def test_a_scan_that_saw_only_the_acoustic_argues_against_the_optic_in_its_windo
     from isar.drive.acquisition.eig_planner import ExecutedScan, _Predictor, _scenarios
 
     hs = [2.5]
-    window = ExecutedScan(3.0, 7.0, 10_000_000, seen=frozenset({"acoustic"}))
+    window = ExecutedScan(3.0, 7.0, 10_000_000, seen={"acoustic": 1.0})
     base = planner_input(hs, targets=("optic",))
     seen_input = PlannerInput(**{**base.__dict__, "scans": {0: (window,)}})
     branches = tuple(sorted(BRANCHES))
@@ -218,6 +232,45 @@ def test_a_scan_that_saw_only_the_acoustic_argues_against_the_optic_in_its_windo
     before, after = mass_inside(base), mass_inside(seen_input)
     assert after["optic"] < 0.5 * before["optic"]          # contradicted where it was not found
     assert after["acoustic"] == pytest.approx(before["acoustic"])   # it WAS found: no evidence
+
+
+def test_the_anchor_a_design_leaves_is_one_its_own_outcomes_produce():
+    """After negative evidence removes the middle of a branch's set, a window over one lump must
+    not be credited with an anchor in the contradicted gap -- an energy no outcome delivers."""
+    energies = np.array([1.0, 1.1, 1.2, 5.0, 5.1, 5.2])
+    weights = np.array([0.05, 0.05, 0.05, 0.30, 0.30, 0.25])   # heavier lump at ~5.1
+    energy, mass = _admitted_anchor(energies, weights, sres=0.34)
+    assert 5.0 <= energy <= 5.2                     # inside the lump, not the 1..5 gap
+    assert mass == pytest.approx(0.85)
+    # a design whose outcomes never admit leaves no anchor at all
+    assert _admitted_anchor(energies, np.zeros_like(weights), sres=0.34) == (0.0, 0.0)
+
+
+def test_five_hundred_identical_nulls_stay_finite():
+    """Repeated identical scans are independent observations and are not deduplicated, so the
+    weights are accumulated in log space; a linear product would underflow to a NaN posterior."""
+    from isar.drive.acquisition.eig_planner import _Predictor, _scenarios
+
+    hs = [2.5]
+    null = ExecutedScan(0.0, 9.0, 5_000_000, {})
+    base = planner_input(hs, targets=("acoustic",))
+    inp = PlannerInput(**{**base.__dict__, "scans": {0: tuple([null] * 500)}})
+    branches = tuple(sorted(BRANCHES))
+    rows = {b: dict(inp.beliefs[b]) for b in branches}
+    _om, wt, _tr, _marg = _scenarios(0, inp, branches, _Predictor(rows, DOMAIN[1]),
+                                     {k: tuple(v) for k, v in inp.scans.items()})
+    assert np.all(np.isfinite(wt))
+    assert float(wt.sum()) == pytest.approx(1.0)
+
+
+def test_a_scan_is_softly_certain_about_what_it_delivered():
+    """``seen`` is a probability per branch, so an unsure delivery argues only partly."""
+    scan = ExecutedScan(3.0, 7.0, 10_000_000, {"acoustic": 1.0, "optic": 0.5})
+    assert scan.probability("acoustic") == 1.0
+    assert scan.probability("optic") == 0.5
+    assert scan.probability("phonon") == 0.0
+    assert hash(scan) == hash(ExecutedScan(3.0, 7.0, 10_000_000,
+                                           (("optic", 0.5), ("acoustic", 1.0))))
 
 
 # ------------------------------------------------------------------ the campaign
@@ -242,9 +295,9 @@ def test_the_seeded_acoustic_campaign_reaches_the_prize_deterministically(capsys
     lines = capsys.readouterr().out.splitlines()
     scans = [line for line in lines if line.strip().startswith(tuple("0123456789"))
              and " h=" in line]
-    assert len(scans) == 21
+    assert len(scans) == 27
     first = [(line.split("h=")[1].split()[0], line.split("n=")[1].split()[0]) for line in scans[:3]]
-    assert first == [("2.05", "20"), ("2.05", "21"), ("2.10", "20")]
+    assert first == [("2.10", "33"), ("2.15", "27"), ("2.20", "16")]
     stop = next(line for line in lines if line.startswith("stop="))
     assert "stop=True reason=goal_met" in stop and "bar 20/20" in stop
 

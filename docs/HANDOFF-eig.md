@@ -239,6 +239,12 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
    one-sided truncation at zero turned it into a mean of ~100 meV. The third clause of the
    class prior, "bounded by the energy domain", is now literal too: the predictive is
    truncated to [0, domain_hi], so a cold branch far out means "somewhere in the band".
+   **Amendment 2026-09-03 (PR #37 review):** the extrapolation term
+   `extrapolation_model_sigma` is a DECLARED SMOOTHNESS ASSUMPTION, not a derived bound —
+   periodicity plus a bounded band do not bound curvature. What is assumed is that the
+   dispersion's curvature is set by its lowest harmonic, |ω''| ≲ domain_hi·(π/period)², the
+   quantitative form of the class prior's "roughly linear nearby" clause and wrong for a
+   branch with structure finer than one zone.
 10. **A null scan is evidence, not proof.** A scan that fitted no peak multiplies the weight of
     the scenarios it should have detected by a declared fitter miss probability (0.1); it never
     zeroes them. Absolute exclusion walled off the true band after one failed fit.

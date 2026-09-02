@@ -19,9 +19,19 @@ Two different questions are asked of the same fitted peaks, and they normalise d
   mixture over the point's peaks plus "none of them", summing to one.  It decides the *prize*.
 
 The prize is stated the way the scientist states it: the target's energy known to +-tau at one
-sigma.  It is measured as the half-width of the 68.27% highest-density interval of that posterior,
-so a sharp bimodal posterior -- two rival peaks, 50/50 -- fails the bar however narrow each mode is.
-The deficit at a point is ``max(log(hw / tau), 0)`` and the prize is met when every deficit is zero.
+sigma, on a peak that has been identified as the target.  Width is the half-width of the 68.27%
+highest-density interval of that posterior, so a sharp bimodal posterior -- two rival peaks, 50/50 --
+fails the bar however narrow each mode is; identity is ``sum_j w_j``, the mass that the target is one
+of the fitted peaks at all.  The deficit at a point is
+``max(log(hw / tau), 0) + max(log(CONFIRMED_PROBABILITY / sum_j w_j), 0)`` and the prize is met when
+every deficit is zero.
+
+Names the loop reads.  ``RankedDesign.neutrons`` is the requested dose, ``n_points * ncount``;
+``RankedDesign.price`` is that plus ``PlannerInput.scan_overhead_price``, the declared exchange value
+of one scan's fixed cost, and ``score`` is expected completions per unit price.  ``shaping_nats`` is
+the log-deficit a design removes and orders only the designs that complete nothing.
+``Decision.ranked`` holds EVERY design in rank order, chosen first; the caller decides how many to
+log.
 """
 from __future__ import annotations
 
@@ -40,7 +50,7 @@ __all__ = [
     "Candidate", "ExecutedScan", "IntensityScale", "PlannerInput", "PointState", "RankedDesign",
     "Decision", "plan_next", "assign", "identity_entropy", "anchor_admitted",
     "merge_candidate", "upsert_anchor",
-    "fisher_sigma_meV", "branch_counts", "hdi_halfwidth", "target_posterior",
+    "fisher_sigma_meV", "branch_counts", "expected_counts", "hdi_halfwidth", "target_posterior",
     "joint_assign", "_pad_candidates",
     "default_intensity_scale", "NEW", "NEW_LEVEL", "ASSIGNMENT_ENTROPY_STOP_NATS",
     "CONFIRMED_PROBABILITY",
@@ -87,13 +97,12 @@ NULL_DETECTION_COUNTS = 5.0
 #: rest of the domain has returned nulls too, which is what brings the planner back at higher
 #: exposure instead of leaving the band excluded for ever.
 NULL_MISS_PROBABILITY = 0.1
-#: The prize is binary per point -- known to +-tau, or not -- so utility counts COMPLETIONS.  This
-#: is the weight on the log-deficit term kept beside it: it orders the designs that cannot finish a
-#: point by how much they learn, and is small enough that it can never outweigh a completion.
-#: Without it a half-count scan leaving sigma just over the bar scored ~99% of the value of the
-#: full-count scan that would actually finish the point, at half the cost, so the point never got
-#: finished.
-SHAPING = 0.001
+#: The prize is binary per point -- known to +-tau and identified, or not -- so utility counts
+#: COMPLETIONS and nothing else.  The log-deficit removed is carried beside it as
+#: ``RankedDesign.shaping_nats`` and used only to order designs that complete nothing: a genuine
+#: tie-breaker now, not a weighted term that could ever be traded against a completion.  A weighted
+#: term let a half-count scan leaving sigma just over the bar score ~99% of the value of the
+#: full-count scan that would finish the point, at half the price, so the point never got finished.
 #: How far a real fit's sigma sits above the Cramer-Rao bound at the counts we run.  The bound is
 #: optimistic at low counts; this is a declared model of the fitter's reliability, like
 #: :data:`NULL_MISS_PROBABILITY`, and it applies to the PLANNER's expectations only -- the world
@@ -101,6 +110,9 @@ SHAPING = 0.001
 FIT_SIGMA_INFLATION = 1.5   # live 2026-09-03: published calibrated halfwidths 0.06-0.09 meV against
                             # a Cramér-Rao bound of ~0.02-0.03 at 5e6 counts/point (inflation-calibrated
                             # intervals, not the raw HESSE sigma); 1.25 bought scans that could not finish
+#: Floor on the identified mass in :func:`_deficit`, so an unmeasured point (no peaks at all, mass
+#: exactly zero) scores a large finite deficit rather than an infinity that would poison every sum.
+IDENTIFIED_FLOOR = 1e-6
 #: Anchor weights are rounded to this many decimals before designs are grouped for the cross-point
 #: term (A4 caching).  A belief is insensitive to a 0.005 change in one anchor weight, and grouping
 #: is what keeps the per-design cross term inside the time budget.
@@ -134,19 +146,36 @@ class Candidate:
 
 @dataclass(frozen=True)
 class ExecutedScan:
-    """One scan already executed at a grid point, and which branches' peaks it delivered.
+    """One scan already executed at a grid point, and how surely it delivered each branch's peak.
 
     Negative evidence is per branch, not per scan: a scan that fitted the acoustic but no optic is
     evidence against the optic lying inside its window at its exposure, exactly as a scan that
-    fitted nothing is evidence against every branch there.  ``seen`` names the branches whose peak
-    the fit delivered; every other modelled branch is contradicted wherever that window would have
-    detected it.
+    fitted nothing is evidence against every branch there.  It is also SOFT on both axes -- the fit
+    can miss a peak that is there, and it can be unsure which branch the peak it found belongs to.
+    ``seen`` carries that second uncertainty: per branch, the probability that this scan delivered
+    that branch's peak (the loop passes the maximum over the scan's candidates of
+    ``P(branch | candidate)``; the simulator passes its own :func:`joint_assign` output).
+
+    Frozen and hashable: a mapping is normalised to a sorted tuple of ``(branch, p)`` pairs on
+    construction, and :meth:`probability` reads it back.
     """
 
     e_lo: float
     e_hi: float
     ncount: int
-    seen: frozenset[str] = frozenset()
+    seen: tuple[tuple[str, float], ...] = ()
+
+    def __post_init__(self) -> None:
+        items = (self.seen.items() if isinstance(self.seen, Mapping) else self.seen)
+        object.__setattr__(self, "seen",
+                           tuple(sorted((str(k), float(v)) for k, v in items)))
+
+    def probability(self, branch: str) -> float:
+        """P(this scan delivered ``branch``'s peak); 0.0 for a branch it never reported."""
+        for name, p in self.seen:
+            if name == branch:
+                return p
+        return 0.0
 
 
 @dataclass(frozen=True)
@@ -175,11 +204,12 @@ class PlannerInput:
     #: the fold (pre-Bose ~0.6 counts*meV per 1e7 on TAVI, n+1 ~ 1.4 at 6 meV) needs ~1e8
     #: neutrons per point to reach a 0.05 meV bar; the instrument cap still clamps.
     ncount_ladder: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
-    #: The fixed price of one scan in neutron-equivalents: the instrument's move and the fit's
-    #: analysis time. Without it sixteen 5M scans and one 8e7 scan price identically and the
-    #: planner grinds a dim point in tiny repeats. A price, not a placement rule; the loop may
-    #: pass the instrument's own figure.
-    scan_overhead_neutrons: float = 5.0e7
+    #: The declared exchange value of one scan's fixed cost (the instrument's move and the fit's
+    #: analysis time) in neutron-equivalents; time is the honest currency and this is its declared
+    #: rate, a price, not a placement rule. Without it sixteen 5M scans and one 8e7 scan price
+    #: identically and the planner grinds a dim point in tiny repeats. The loop may pass the
+    #: instrument's own figure.
+    scan_overhead_price: float = 5.0e7
     max_points: int = 220
     step_fraction: float = 0.25
     scans: Mapping[int, Sequence[ExecutedScan]] = field(default_factory=dict)
@@ -192,6 +222,7 @@ class PointState:
     u: float
     exempt: bool
     halfwidth_meV: float          # 68.27% HDI half-width of the target-energy posterior
+    identified_mass: float        # sum_j w_j: the mass that the target IS one of the fitted peaks
     deficit_nats: float
     within_bar: bool
     n_candidates: int
@@ -206,9 +237,11 @@ class RankedDesign:
     e_step: float
     n_points: int
     ncount: int
-    utility_nats: float
-    cost_neutrons: float
-    score: float
+    utility_nats: float           # expected completions: the primary objective
+    shaping_nats: float           # log-deficit removed; orders designs that complete nothing
+    neutrons: float               # the requested dose, n_points * ncount
+    price: float                  # neutrons + the scan's fixed price
+    score: float                  # utility_nats / price, the primary ranking
     expected_sigma_fit_meV: Mapping[str, float]
     expected_assignment: Mapping[str, float]
     e_pred_meV: Mapping[str, tuple[float, float]]
@@ -219,6 +252,8 @@ class Decision:
     stop: bool
     stop_reason: str
     chosen: RankedDesign | None
+    #: EVERY design considered, in rank order with the chosen one first -- typically a few hundred
+    #: at one grid point and a few thousand across a path. The caller decides how many to log.
     ranked: tuple[RankedDesign, ...]
     per_point: tuple[PointState, ...]
     #: Set when the prize is unmet but no design is expected to complete a point: the cheapest
@@ -616,6 +651,23 @@ def fisher_sigma_meV(energies: Sequence[float], *, e_lo: float, e_step: float, n
     return tuple(float(v) for v in _sigma_fit(rate, deriv, float(ncount), len(peak), sres)[0, 0])
 
 
+def expected_counts(energies: Sequence[float], *, e_lo: float, e_step: float, n_points: int,
+                    fwhm_meV: float, temperature_K: float, scale: IntensityScale,
+                    branches: Sequence[str], ncount: float):
+    """Expected counts AT EACH POINT of one window: the Poisson mean a real scan would draw from.
+
+    The same forward model the planner scores with, exposed so the simulator's world can draw counts
+    from it rather than being handed the answer.  Returns an ``(n_points,)`` array.
+    """
+    grid = float(e_lo) + float(e_step) * np.arange(int(n_points), dtype=float)
+    sres = float(fwhm_meV) * FWHM_TO_SIGMA
+    peak = [float(scale.peak_counts_meV[b]) for b in branches]
+    rate, _deriv, _counts = _rates(np.array([[float(e) for e in energies]]), sres, grid, peak,
+                                   float(scale.elastic_counts_meV),
+                                   float(scale.background_per_point), temperature_K)
+    return np.asarray(rate[0], dtype=float) * float(ncount)
+
+
 def branch_counts(energies: Sequence[float], *, e_lo: float, e_step: float, n_points: int,
                   fwhm_meV: float, temperature_K: float, scale: IntensityScale,
                   branches: Sequence[str], ncount: float) -> tuple[float, ...]:
@@ -751,17 +803,35 @@ def _pad_candidates(lists):
     return e, s, valid
 
 
+def _deficit(hw, identified, tau: float):
+    """How far a point is from complete, on both fronts, in nats.
+
+    A point is complete only when the target's energy is known to +-tau AND the target has been
+    identified: the mass that it is one of the fitted peaks, ``sum_j w_j = 1 - w_none``, is at least
+    :data:`CONFIRMED_PROBABILITY`.  A narrow posterior on a peak that might not be the target at all
+    is not the answer the scientist asked for, and the same 0.85 the anchor gate uses means the same
+    thing here -- identified.  Either front alone can hold the deficit above zero, and the shaping
+    term still orders progress on either.
+    """
+    width_term = np.maximum(np.log(np.maximum(hw, 1e-300) / tau), 0.0)
+    identity_term = np.maximum(
+        np.log(CONFIRMED_PROBABILITY / np.maximum(identified, IDENTIFIED_FLOOR)), 0.0)
+    return width_term + identity_term
+
+
 def _deficits_batch(padded, mus, sigs, target_index, width: float, tau: float, exempt):
-    """HDI half-width and deficit of every point in a padded batch, in one vectorised pass.
+    """HDI half-width, identified mass and deficit of a padded batch, in one vectorised pass.
 
     ``mus`` / ``sigs`` are per-branch sequences of per-point belief predictions.
     """
     e, s, valid = padded
     w, w_none = target_posterior(e, s, valid, [np.asarray(m) for m in mus],
                                  [np.asarray(g) for g in sigs], target_index)
-    hw = np.where(valid.any(axis=-1), hdi_halfwidth(e, s, w, w_none, width), 0.5 * width)
-    deficit = np.maximum(np.log(np.maximum(hw, 1e-300) / tau), 0.0)
-    return hw, np.where(np.asarray(exempt, dtype=bool), 0.0, deficit)
+    any_peak = valid.any(axis=-1)
+    hw = np.where(any_peak, hdi_halfwidth(e, s, w, w_none, width), 0.5 * width)
+    identified = np.where(any_peak, w.sum(axis=-1), 0.0)
+    deficit = _deficit(hw, identified, tau)
+    return hw, identified, np.where(np.asarray(exempt, dtype=bool), 0.0, deficit)
 
 
 def plan_next(inp: PlannerInput) -> Decision:
@@ -782,20 +852,24 @@ def plan_next(inp: PlannerInput) -> Decision:
               for m in range(n_path)]
     padded_all = _pad_candidates([measured.get(m, ()) for m in range(n_path)])
     preds_all = [[predict(b, inp.u[m]) for m in range(n_path)] for b in branches]
-    halfwidth, deficit_now = [], []
+    halfwidth, identified, deficit_now = [], [], []
     for k, t in enumerate(targets):
-        hw, d = _deficits_batch(padded_all, [[q[0] for q in row] for row in preds_all],
-                                [[q[1] for q in row] for row in preds_all], branches.index(t),
-                                width, tau, [exempt[m][k] for m in range(n_path)])
+        hw, ident, d = _deficits_batch(padded_all, [[q[0] for q in row] for row in preds_all],
+                                       [[q[1] for q in row] for row in preds_all],
+                                       branches.index(t), width, tau,
+                                       [exempt[m][k] for m in range(n_path)])
         halfwidth.append(hw)
+        identified.append(ident)
         deficit_now.append(d)
     halfwidth = np.array(halfwidth).T
+    identified = np.array(identified).T
     deficit_now = np.array(deficit_now).T
 
     per_point = tuple(
         PointState(grid_index=m, hkl=tuple(float(c) for c in inp.path[m]), u=float(inp.u[m]),
                    exempt=all(exempt[m]),
                    halfwidth_meV=float(halfwidth[m].max()),
+                   identified_mass=float(identified[m].min()),
                    deficit_nats=float(deficit_now[m].sum()),
                    within_bar=bool(deficit_now[m].max() <= 0.0),
                    n_candidates=len(measured.get(m, ())))
@@ -823,12 +897,18 @@ def plan_next(inp: PlannerInput) -> Decision:
         return Decision(stop=True, stop_reason="no_admissible_window", chosen=None, ranked=(),
                         per_point=per_point)
 
-    designs.sort(key=lambda d: (-d.score, d.cost_neutrons, _design_hash(d)))
+    # Lexicographic: expected completions per unit price first.  Only among designs that tie on it
+    # -- and among all of them when nothing completes anything -- does the shaping deficit order the
+    # field, then the lower price, then the content hash.
+    def order(d: RankedDesign):
+        return (-d.shaping_nats / d.price, d.price, _design_hash(d))
+
+    designs.sort(key=lambda d: (-d.score,) + order(d))
     best = designs[0].score
-    cut = best * (1.0 - TIE_REL) if best > 0.0 else best - TIE_REL
-    tied = [d for d in designs if d.score >= cut]
-    chosen = min(tied, key=lambda d: (d.cost_neutrons, _design_hash(d)))
-    ranked = [chosen] + [d for d in designs if d is not chosen][:9]
+    cut = best * (1.0 - TIE_REL) if best > 0.0 else math.inf
+    tied = [d for d in designs if d.score >= cut] if best > 0.0 else designs
+    chosen = min(tied, key=order)
+    ranked = [chosen] + [d for d in designs if d is not chosen]
     note = ""
     if chosen.utility_nats <= 0.0:
         note = ("no design is expected to complete a point from here; taking the cheapest "
@@ -847,10 +927,16 @@ def _design_hash(d: RankedDesign) -> str:
 def _scenarios(i, inp, branches, predict, executed):
     """Joint scenario energies and weights, down-weighted by what the scans here did NOT find (A6).
 
-    A branch's node is contradicted by an executed scan when it lies inside that scan's window, the
-    scan would have detected it there, and the scan did not deliver that branch's peak.  A scan that
-    found the acoustic and not the optic therefore argues against the optic in its window just as a
-    scan that found nothing argues against both.
+    A branch's node is argued against by an executed scan when it lies inside that scan's window and
+    the scan would have detected it there.  How MUCH it is argued against is soft on two axes: the
+    fit can miss a peak that is there (:data:`NULL_MISS_PROBABILITY`), and the scan may be unsure it
+    delivered that branch at all (``ExecutedScan.probability``).  With ``p`` that probability, the
+    node's weight is multiplied by ``p + (1 - p) * NULL_MISS_PROBABILITY`` -- 1.0 when the branch was
+    surely seen there, 0.1 when it surely was not, 0.55 on a coin flip.
+
+    Repeated identical scans are NOT deduplicated: each is an independent observation and multiplies
+    again.  The accumulation is therefore done in log-weights, so five hundred of them stay finite
+    instead of underflowing to a zero that renormalises into NaN.
     """
     step = float(inp.step_fraction) * float(inp.fwhm_meV[i])
     scans = executed.get(i, ())
@@ -859,11 +945,16 @@ def _scenarios(i, inp, branches, predict, executed):
     reweighted = [False] * len(branches)
     for bi, b in enumerate(branches):
         mu, sig = predict(b, inp.u[i])
-        x = np.maximum(mu + _SQRT2 * sig * _GH8_X, 0.0)
-        w = _GH8_W.copy()
+        # Clipped to the authorized band at BOTH ends: the belief's moments are already truncated
+        # to it, but the Gauss-Hermite nodes spread around them were not, so a wide belief put
+        # scenario mass -- and the windows built from it -- outside the band the program may scan.
+        x = np.clip(mu + _SQRT2 * sig * _GH8_X, 0.0, float(inp.energy_domain_meV[1]))
+        log_w = np.log(_GH8_W)
         for scan in scans:
-            if b in scan.seen:
-                continue                      # this scan delivered that peak: no evidence against
+            factor = (scan.probability(b)
+                      + (1.0 - scan.probability(b)) * NULL_MISS_PROBABILITY)
+            if factor >= 1.0:
+                continue                      # surely delivered here: no evidence against
             inside = (x >= float(scan.e_lo)) & (x <= float(scan.e_hi))
             if not inside.any():
                 continue
@@ -875,8 +966,9 @@ def _scenarios(i, inp, branches, predict, executed):
                               temperature_K=float(inp.temperature_K), scale=inp.scale,
                               branches=branches, ncount=int(scan.ncount))[bi] for e in x])
             contradicted = inside & (detectable >= NULL_DETECTION_COUNTS)
-            w = np.where(contradicted, w * NULL_MISS_PROBABILITY, w)
+            log_w = np.where(contradicted, log_w + math.log(factor), log_w)
             reweighted[bi] |= bool(contradicted.any())
+        w = np.exp(log_w - log_w.max())       # shift before exponentiating, never underflow to 0
         nodes.append(x)
         weights.append(w / w.sum())
     mesh = np.meshgrid(*nodes, indexing="ij")
@@ -911,6 +1003,32 @@ def _scenario_clusters(nodes, weights, sres: float):
     # windows the branch already has.  Two or more is the case the moments cannot express: a mean
     # sitting in the contradicted gap between them.
     return out if len(out) > 1 else []
+
+
+def _admitted_anchor(energies, weights, sres: float):
+    """``(energy, mass)`` of the anchor a design would actually leave, given it admits one.
+
+    ``weights`` are the scenario weights already multiplied by this design's admission indicator, so
+    the mean is over the outcomes in which the scan measures AND admits the peak -- never the
+    marginal mean over all scenarios.  After negative evidence splits a branch's set the marginal
+    mean can sit in the contradicted gap, an energy no outcome of the scan produces, and crediting a
+    window with an anchor outside itself pays a design for evidence it cannot deliver.  When the
+    admitted outcomes themselves split into lumps more than two resolution widths apart, the heavier
+    lump is the anchor and its own mass is what the gain is scaled by.
+    """
+    order = np.argsort(np.asarray(energies), kind="stable")
+    x, w = np.asarray(energies)[order], np.asarray(weights)[order]
+    live = w > 0.0
+    x, w = x[live], w[live]
+    if x.size == 0:
+        return 0.0, 0.0
+    cuts = np.flatnonzero(np.diff(x) > 2.0 * sres) + 1
+    best_mean, best_mass = 0.0, -1.0
+    for part_x, part_w in zip(np.split(x, cuts), np.split(w, cuts)):
+        mass = float(part_w.sum())
+        if mass > best_mass:
+            best_mass, best_mean = mass, float(np.dot(part_w, part_x) / mass)
+    return best_mean, max(best_mass, 0.0)
 
 
 def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, measured, executed,
@@ -951,9 +1069,16 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
     sigma_fit = np.empty((n_win, n_exp, n_scen, n_branch))
     for wi, (lo, _hi, step, npts) in enumerate(windows):
         grid = lo + step * np.arange(npts, dtype=float)
-        rate, deriv, _ = _rates(om, sres, grid, peak, elastic, background, float(inp.temperature_K))
+        rate, deriv, per_neutron = _rates(om, sres, grid, peak, elastic, background,
+                                          float(inp.temperature_K))
         sigma_fit[wi] = _sigma_fit(rate, deriv, np.array(ladder, dtype=float), n_branch,
                                    sres) * FIT_SIGMA_INFLATION
+        # A fit also needs COUNTS, not only a favourable Fisher matrix.  Without this the planner
+        # buys a cheap probe of a dim band whose Cramer-Rao sigma looks fine and whose peak the
+        # fitter can never see, then buys it again for ever.  Same floor the null evidence uses:
+        # below it a scan is not evidence about that branch either way.
+        window_counts = per_neutron[None, :, :] * np.array(ladder, dtype=float)[:, None, None]
+        sigma_fit[wi] = np.where(window_counts >= NULL_DETECTION_COUNTS, sigma_fit[wi], np.inf)
     sigma_fit = sigma_fit.reshape(n_win * n_exp, n_scen, n_branch)
     fit_measured = np.isfinite(sigma_fit)
     n_design = n_win * n_exp
@@ -973,14 +1098,24 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
     entropy = _distribution_entropy(known)                                # (D, S, J=B)
     admitted = (fit_measured & (own >= CONFIRMED_PROBABILITY)
                 & (entropy <= ASSIGNMENT_ENTROPY_STOP_NATS))
-    admit_frac = np.einsum("s,dsb->db", weight_s, admitted.astype(float))
-    anchor_w = np.einsum("s,dsb->db", weight_s, np.where(fit_measured, own, 0.0))
-    present = (admit_frac > 0.5) & (anchor_w > 0.0)
+    admit_mass = np.einsum("s,dsb->db", weight_s, admitted.astype(float))
+    # The anchor's weight is conditional on admission too: it is what the belief would be told in
+    # the outcomes that tell it anything, not an average over outcomes that stay silent.
+    own_admitted = np.einsum("s,dsb->db", weight_s, np.where(admitted, own, 0.0))
+    anchor_w = np.where(admit_mass > 0.0, own_admitted / np.maximum(admit_mass, 1e-300), 0.0)
+    anchor_e = np.zeros((n_design, n_branch))
+    anchor_mass = np.zeros((n_design, n_branch))
+    for d in range(n_design):
+        for b in range(n_branch):
+            anchor_e[d, b], anchor_mass[d, b] = _admitted_anchor(
+                om[:, b], weight_s * admitted[d, :, b], sres)
+    present = anchor_mass > 0.0
 
-    rounded = np.round(anchor_w, ANCHOR_WEIGHT_DECIMALS)
     groups: dict[tuple, list[int]] = {}
     for d in range(n_design):
-        key = tuple((bool(present[d, b]), float(rounded[d, b])) for b in range(n_branch))
+        key = tuple((bool(present[d, b]), round(float(anchor_e[d, b]), ANCHOR_WEIGHT_DECIMALS),
+                     round(float(anchor_w[d, b]), ANCHOR_WEIGHT_DECIMALS))
+                    for b in range(n_branch))
         groups.setdefault(key, []).append(d)
 
     # --- own-point components: existing candidates merged with this scan's new peaks --------
@@ -1021,43 +1156,53 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
 
     # --- price every group: cross-point deficit removed, plus the own-point preposterior ----
     utility = np.zeros(n_design)
+    shaping = np.zeros(n_design)
     others = [(m, c) for m, c in sorted(measured.items()) if m != i]
     padded_others = _pad_candidates([c for _m, c in others]) if others else None
     for key, members in groups.items():
         idx = np.array(members)
         updated = dict(rows)
-        changed = False
-        for b in range(n_branch):
-            if key[b][0]:
-                updated[branches[b]] = upsert_anchor(rows[branches[b]], float(inp.u[i]),
-                                                     float(mus[b]), key[b][1])
-                changed = True
+        anchored = [b for b in range(n_branch) if key[b][0]]
+        for b in anchored:
+            updated[branches[b]] = upsert_anchor(rows[branches[b]], float(inp.u[i]),
+                                                 key[b][1], key[b][2])
+        # The cross-point gain arrives only in the outcomes that actually leave the anchor, so it
+        # is scaled by that expected fraction -- independently per anchored branch -- rather than
+        # credited in full on a Boolean.
+        reach = (np.prod(np.stack([anchor_mass[idx, b] for b in anchored]), axis=0)
+                 if anchored else np.zeros(len(members)))
         gain = np.zeros(len(members))
+        shaped = np.zeros(len(members))
         for k, t in enumerate(targets):
-            if changed and others:
+            if anchored and others:
                 preds_m = [[predict(b, inp.u[m], updated[b]) for m, _c in others]
                            for b in branches]
-                _hw, after = _deficits_batch(padded_others,
-                                             [[q[0] for q in row] for row in preds_m],
-                                             [[q[1] for q in row] for row in preds_m],
-                                             branches.index(t), width, tau,
-                                             [exempt[m][k] for m, _c in others])
+                _hw, _ident, after = _deficits_batch(
+                    padded_others, [[q[0] for q in row] for row in preds_m],
+                    [[q[1] for q in row] for row in preds_m], branches.index(t), width, tau,
+                    [exempt[m][k] for m, _c in others])
                 now_deficit = np.array([deficit_now[m][k] for m, _c in others])
-                # Completions at the other points, plus the shaped remainder.
-                gain += float(np.count_nonzero(after <= 0.0) - np.count_nonzero(now_deficit <= 0.0)
-                              + SHAPING * float(now_deficit.sum() - after.sum()))
+                gain += reach * float(np.count_nonzero(after <= 0.0)
+                                      - np.count_nonzero(now_deficit <= 0.0))
+                shaped += reach * float(now_deficit.sum() - after.sum())
             upd = [predict(b, inp.u[i], updated[b]) for b in branches]
+            # No window-absence evidence here, deliberately: the prize is judged on the point's
+            # accumulated candidates, which carry no single window, so a preposterior that used it
+            # would predict completions the prize rule can never confirm -- and the planner would
+            # re-buy the same scan for ever.  The design is scored by the rule that will judge it.
             w, w_none = target_posterior(comp_e[idx], comp_s[idx], valid[idx],
                                          [q[0] for q in upd], [q[1] for q in upd],
-                                         branches.index(t), absent[idx][:, None, :])
+                                         branches.index(t))
             hw = hdi_halfwidth(comp_e[idx], comp_s[idx], w, w_none, width)
             after = (np.zeros_like(hw) if exempt[i][k]
-                     else np.maximum(np.log(np.maximum(hw, 1e-300) / tau), 0.0))
+                     else _deficit(hw, w.sum(axis=-1), tau))
             gain += (np.einsum("s,ds->d", weight_s, (after <= 0.0).astype(float))
-                     - float(deficit_now[i][k] <= 0.0)
-                     + SHAPING * np.einsum("s,ds->d", weight_s, deficit_now[i][k] - after))
+                     - float(deficit_now[i][k] <= 0.0))
+            shaped += np.einsum("s,ds->d", weight_s, deficit_now[i][k] - after)
         utility[idx] = gain
+        shaping[idx] = shaped
     utility = np.maximum(utility, 0.0)
+    shaping = np.maximum(shaping, 0.0)
 
     sigma_mass = np.einsum("s,dsb->db", weight_s, fit_measured.astype(float))
     sigma_sum = np.einsum("s,dsb->db", weight_s, np.where(fit_measured, sigma_fit, 0.0))
@@ -1068,13 +1213,15 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
     for wi, (lo, _hi, step, npts) in enumerate(windows):
         for ei, ncount in enumerate(ladder):
             d = wi * n_exp + ei
-            cost = float(npts) * float(ncount) + float(inp.scan_overhead_neutrons)
+            dose = float(npts) * float(ncount)
+            price = dose + float(inp.scan_overhead_price)
             out.append(RankedDesign(
                 grid_index=i, hkl=tuple(float(c) for c in inp.path[i]),
                 e_lo=float(lo), e_hi=float(lo + step * (npts - 1)), e_step=float(step),
                 n_points=int(npts), ncount=int(ncount),
-                utility_nats=float(utility[d]), cost_neutrons=cost,
-                score=float(utility[d] / cost),
+                utility_nats=float(utility[d]), shaping_nats=float(shaping[d]),
+                neutrons=dose, price=price,
+                score=float(utility[d] / price),
                 expected_sigma_fit_meV={
                     b: (float(sigma_sum[d, k] / sigma_mass[d, k]) if sigma_mass[d, k] > 0.0
                         else math.inf) for k, b in enumerate(branches)},

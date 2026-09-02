@@ -71,11 +71,15 @@ def extrapolation_model_sigma(distance: float, period: float | None,
                               domain_hi: float | None) -> float:
     """Model error of carrying a LINEAR branch prediction ``distance`` in reduced q past its data.
 
-    The curvature clause of the class prior, and no sample knowledge: a branch periodic in the zone
-    and bounded by the authorized band has ``|omega''| <= domain_hi * (pi / period) ** 2``, so a
-    straight line carried a distance ``d`` beyond its nearest anchor can be wrong by up to
-    ``0.5 * |omega''| * d ** 2``.  Added in quadrature to the fitted spread, it is what stops an
-    extrapolated acoustic belief from claiming the optic's peak with the WLS spread alone.
+    This is a DECLARED SMOOTHNESS ASSUMPTION, not a derived bound.  Periodicity plus a bounded band
+    do not bound curvature -- a branch may stay inside the band and still turn arbitrarily sharply
+    over a short interval.  What is assumed is that the dispersion's curvature is set by its lowest
+    harmonic, ``|omega''| <~ domain_hi * (pi / period) ** 2``, which is the quantitative form of the
+    "roughly linear nearby" clause of the class prior: a smoothness scale the scientist declares,
+    on the same footing as a slope prior, and wrong for a branch with structure finer than one zone.
+    A straight line carried a distance ``d`` beyond its nearest anchor is then taken to be wrong by
+    up to ``0.5 * |omega''| * d ** 2``.  Added in quadrature to the fitted spread, it is what stops
+    an extrapolated acoustic belief from claiming the optic's peak on the WLS spread alone.
 
     Lives here because the drive and session layers each carry their own belief implementation and
     the two must agree exactly.  Returns 0 when the period or the band is unknown, or at an anchor.

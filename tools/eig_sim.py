@@ -31,8 +31,9 @@ if __package__ in (None, ""):                      # run as a script from anywhe
 from isar.analyze.truth import _fold
 from isar.drive.acquisition.eig_planner import (
     Candidate, ExecutedScan, IntensityScale, PlannerInput, anchor_admitted, branch_counts,
-    default_intensity_scale, fisher_sigma_meV, joint_assign, merge_candidate, plan_next,
-    upsert_anchor,
+    KB_MEV_PER_K, default_intensity_scale, expected_counts, fisher_sigma_meV, joint_assign,
+    merge_candidate,
+    plan_next, upsert_anchor,
 )
 from isar.schema.hypotheses import preset
 
@@ -55,6 +56,79 @@ WORLD_SCALE = IntensityScale(
     peak_counts_meV={b: WORLD_PEAK_COUNTS_MEV / WORLD_NCOUNT_REFERENCE for b in BRANCHES},
     elastic_counts_meV=WORLD_ELASTIC_COUNTS_MEV / WORLD_NCOUNT_REFERENCE,
     background_per_point=WORLD_BACKGROUND_PER_POINT / WORLD_NCOUNT_REFERENCE)
+
+
+#: A lobe is read only over this many FWHM either side of its centre, and only where no other
+#: lobe centre falls inside that span.
+LOBE_HALF_FWHM = 2.0
+
+
+def _bose(omega: float) -> float:
+    return 1.0 / math.expm1(max(abs(omega), 1e-9) / (KB_MEV_PER_K * TEMPERATURE_K))
+
+
+def estimate_intensity_scale(records, defaults: IntensityScale) -> IntensityScale:
+    """The intensity map the world's own accounting reads back out of the counts it collected.
+
+    The planner is not handed the truth: it gets what a fitter could work out from the scans that
+    have run.  Per scan, the background is the 20th percentile of the counts; a delivered peak's
+    Stokes lobe is the background-subtracted area within ``LOBE_HALF_FWHM`` FWHM of its centre, plus
+    the anti-Stokes lobe when the window holds it, divided by ``2n+1`` in that case and ``n+1``
+    otherwise, then by ``ncount``.  A lobe is read only where no other lobe centre falls within its
+    span, so overlapping lobes near the zone centre contribute nothing rather than a blend.  The
+    elastic line is read the same way about 0.  Per branch the median over scans wins; a branch that
+    has never been measured keeps its class default.
+    """
+    peak, elastic, backgrounds, ncounts = {b: [] for b in BRANCHES}, [], [], []
+    for grid, counts, ncount, delivered in records:
+        if len(grid) < 2:
+            continue
+        step = float(grid[1] - grid[0])
+        background = float(np.percentile(counts, 20.0))
+        backgrounds.append(background / ncount)
+        ncounts.append(float(ncount))
+        excess = np.maximum(np.asarray(counts, dtype=float) - background, 0.0)
+        span = LOBE_HALF_FWHM * FWHM_MEV
+        centres = [(0.0, None)]
+        for branch, omega in delivered:
+            centres.extend([(omega, branch), (-omega, branch)])
+
+        def area(centre):
+            """Background-subtracted area about ``centre``, or None if unreadable here."""
+            if not (grid[0] <= centre <= grid[-1]):
+                return None
+            if any(abs(centre - other) <= span for other, _b in centres if other is not centre):
+                return None
+            return float(excess[np.abs(grid - centre) <= span].sum() * step)
+
+        for branch, omega in delivered:
+            stokes = area(omega)
+            if stokes is None:
+                continue
+            n = _bose(omega)
+            anti = area(-omega)
+            total = stokes + anti if anti is not None else stokes
+            weight = (2.0 * n + 1.0) if anti is not None else (n + 1.0)
+            peak[branch].append(total / weight / ncount)
+        line = area(0.0)
+        if line is not None:
+            elastic.append(line / ncount)
+
+    floor = 0.5 / float(np.median(ncounts)) if ncounts else defaults.background_per_point
+    return IntensityScale(
+        peak_counts_meV={b: (float(np.median(v)) if v else defaults.peak_counts_meV[b])
+                         for b, v in peak.items()},
+        elastic_counts_meV=(float(np.median(elastic)) if elastic
+                            else defaults.elastic_counts_meV),
+        background_per_point=max(float(np.median(backgrounds)) if backgrounds
+                                 else defaults.background_per_point, floor))
+
+
+def _fmt_scale(scale: IntensityScale) -> str:
+    peaks = ", ".join(f"{b}={scale.peak_counts_meV[b] * WORLD_NCOUNT_REFERENCE:.3f}"
+                      for b in BRANCHES)
+    return (f"peak[{peaks}] elastic={scale.elastic_counts_meV * WORLD_NCOUNT_REFERENCE:.2f} "
+            f"bg={scale.background_per_point * WORLD_NCOUNT_REFERENCE:.3f} (counts per 1e7)")
 
 
 def truth_energies(u: float) -> dict[str, float]:
@@ -88,8 +162,11 @@ def run(args) -> int:
     measured: dict[int, tuple[Candidate, ...]] = {}
     executed_scans: dict[int, tuple[ExecutedScan, ...]] = {}
     executed: set[tuple] = set()
-    scale = default_intensity_scale(BRANCHES)
+    class_scale = default_intensity_scale(BRANCHES)
+    scale = class_scale
+    count_records: list[tuple] = []
     total_neutrons = 0.0
+    total_price = 0.0
     timings: list[float] = []
     decision = None
     scans = 0
@@ -113,7 +190,8 @@ def run(args) -> int:
             raise AssertionError(f"grid point {i} (u={state.u:.3f}) is already within the bar "
                                  "and must never be scanned again")
         scans += 1
-        total_neutrons += design.cost_neutrons
+        total_neutrons += design.neutrons
+        total_price += design.price
         fingerprint = (i, round(design.e_lo, 6), round(design.e_hi, 6), design.ncount)
         if args.inject_null and fingerprint in executed:
             raise AssertionError(f"scan {scans} repeats {fingerprint} after a null at that point")
@@ -129,6 +207,12 @@ def run(args) -> int:
                                e_step=design.e_step, n_points=design.n_points,
                                fwhm_meV=FWHM_MEV, temperature_K=TEMPERATURE_K, scale=WORLD_SCALE,
                                branches=BRANCHES, ncount=design.ncount)
+        # The scan collects real counts, and they are all the simulator ever learns the scale from.
+        grid = design.e_lo + design.e_step * np.arange(design.n_points)
+        drawn = rng.poisson(expected_counts(
+            [truth[b] for b in BRANCHES], e_lo=design.e_lo, e_step=design.e_step,
+            n_points=design.n_points, fwhm_meV=FWHM_MEV, temperature_K=TEMPERATURE_K,
+            scale=WORLD_SCALE, branches=BRANCHES, ncount=design.ncount))
         # The world fits the peaks the scan actually delivered, then identifies them jointly --
         # the same rule the planner priced the design with.
         found = []
@@ -159,18 +243,29 @@ def run(args) -> int:
                         f"{'' if admitted else ' [ambiguous, no anchor]'}")
         # Every executed scan is negative evidence about the branches it did NOT deliver, so all
         # of them are recorded -- not only the ones that found nothing.
+        # Negative evidence is soft: the scan reports how surely it delivered each branch, which is
+        # its own joint identification, not a yes/no list.
+        delivered = {}
+        for (branch, _observed, _sigma), probs in zip(found, identities):
+            for name in BRANCHES:
+                delivered[name] = max(delivered.get(name, 0.0), float(probs.get(name, 0.0)))
         executed_scans[i] = tuple(executed_scans.get(i, ())) + (
-            ExecutedScan(design.e_lo, design.e_hi, design.ncount,
-                         frozenset(branch for branch, _e, _s in found)),)
+            ExecutedScan(design.e_lo, design.e_hi, design.ncount, delivered),)
         if not found:
             seen = seen or ["nothing detected"]
-        scale = WORLD_SCALE
+        count_records.append((grid, drawn, float(design.ncount),
+                              [(branch, observed) for branch, observed, _s in found]))
+        previous = scale
+        scale = estimate_intensity_scale(count_records, class_scale)
+        if _fmt_scale(scale) != _fmt_scale(previous):
+            print(f"     intensity map: {_fmt_scale(scale)}")
 
         prize = [p for p in decision.per_point if not p.exempt]
         done = sum(1 for p in prize if p.within_bar)
         print(f"{scans:3d}  h={design.hkl[0]:5.2f} u={us[i]:4.2f}  "
               f"[{design.e_lo:6.2f},{design.e_hi:6.2f}] d={design.e_step:.2f} n={design.n_points:3d} "
-              f"nc={design.ncount:>9d}  N={total_neutrons:.3e}  score={design.score:.3e}  "
+              f"nc={design.ncount:>9d}  N={total_neutrons:.3e} P={total_price:.3e}  "
+              f"score={design.score:.3e}  "
               f"pred({targets[0]})={_fmt_pred(design, targets[0])}  "
               f"| {'; '.join(seen) if seen else 'nothing detected'}  "
               f"| bar {done}/{len(prize)}")
@@ -178,7 +273,8 @@ def run(args) -> int:
     prize = [p for p in decision.per_point if not p.exempt]
     done = sum(1 for p in prize if p.within_bar)
     print(f"\nstop={decision.stop} reason={decision.stop_reason or '-'}  "
-          f"scans={scans}  neutrons={total_neutrons:.4e}  bar {done}/{len(prize)}")
+          f"scans={scans}  neutrons={total_neutrons:.4e}  price={total_price:.4e}  "
+          f"bar {done}/{len(prize)}")
     print(f"decision time: max {max(timings):.2f} s, mean {sum(timings)/len(timings):.2f} s "
           f"over {len(timings)} decisions")
 
