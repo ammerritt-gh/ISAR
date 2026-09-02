@@ -126,6 +126,34 @@ class IngestReport:
                 "last_ingest": dict(self.last_ingest)}
 
 
+def upsert_ingested_entry(session, rec, det, *, chash, prov) -> str:
+    """Upsert one ``(experiment_id, scan_number, det)`` ledger entry at status ``"ingested"``.
+
+    Shared by :func:`ingest_batch` and ``driver.run_batch``'s early-visibility registration (so a
+    GUI watcher sees a scan with its counts while its fit still runs). ``prov`` is merged into
+    provenance on add/update. Never downgrades a fitted/held/excluded entry whose content is
+    unchanged. Returns ``"added" | "updated" | "unchanged"``.
+    """
+    from isar.session.state import ScanEntry
+
+    key = f"{rec.experiment_id}:{rec.scan_number}:{det}"
+    prev = session.get(key)
+    if prev is None:
+        session.put(ScanEntry(
+            scan_id=key, scan_number=rec.scan_number, scan_type=rec.scan_type,
+            status="ingested", content_hash=chash, guidelines_hash="",
+            detectors={}, provenance=dict(prov)))
+        return "added"
+    if prev.content_hash == chash:
+        # Same content: leave the entry COMPLETELY untouched — never downgrade a
+        # fitted/held/excluded status, never re-stamp provenance.
+        return "unchanged"
+    prev.content_hash = chash
+    prev.status = "ingested"
+    prev.provenance = {**(prev.provenance or {}), **prov}
+    return "updated"
+
+
 def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestReport:
     """Parse ``data_paths`` into the session ledger WITHOUT fitting (the retired unification plan §2.3, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 
@@ -150,7 +178,7 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
     """
     from isar.reduce import combine, qc
     from isar.session import router, unit_data
-    from isar.session.state import ScanEntry, content_hash
+    from isar.session.state import content_hash
 
     def _write_unit(rec, det, det_state):
         """Write changed data, or repair a non-canonical unchanged unit; isolate failures."""
@@ -238,28 +266,10 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
         for det, sp in rec.spectra.items():
             touched = True
             analyzer_unit_count += 1
-            key = f"{rec.experiment_id}:{rec.scan_number}:{det}"
             q = [float(v) for v in sp.q] if sp.q is not None else None
             prov_add = {"source_file": src, "T": T, "q": q, "ingested_at": now_iso, **extras}
-            prev = session.get(key)
-            if prev is None:
-                session.put(ScanEntry(
-                    scan_id=key, scan_number=rec.scan_number, scan_type=rec.scan_type,
-                    status="ingested", content_hash=chash, guidelines_hash="",
-                    detectors={}, provenance=dict(prov_add)))
-                det_state = "added"
-                report.dirty = True
-            elif prev.content_hash == chash:
-                # Same content: leave the entry COMPLETELY untouched — never downgrade a
-                # fitted/held/excluded status, never re-stamp provenance.
-                det_state = "unchanged"
-            else:
-                # Content drifted: re-queue for fitting. Keep the (now stale) detectors payload so
-                # the old fit stays visible until `isar run` supersedes it; merge provenance.
-                prev.content_hash = chash
-                prev.status = "ingested"
-                prev.provenance = {**(prev.provenance or {}), **prov_add}
-                det_state = "updated"
+            det_state = upsert_ingested_entry(session, rec, det, chash=chash, prov=prov_add)
+            if det_state != "unchanged":
                 report.dirty = True
             _write_unit(rec, det, det_state)
             scan_rank = max(scan_rank, _RANK[det_state])

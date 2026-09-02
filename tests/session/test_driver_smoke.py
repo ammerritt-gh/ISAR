@@ -15,6 +15,7 @@ fast machine (see the retired unification build order §10.5, git history, and t
              "test_data/APS S30/FeSe_1-xS_x_1.spec" --workspace ws_s30 --M 200
     isar score --workspace ws_s30 --gold "test_data/APS S30/FeSe_1_fit_results.csv"
 """
+import json
 import shutil
 from pathlib import Path
 
@@ -67,6 +68,39 @@ def test_s30_held_is_idempotent(tmp_path):
     # Held scans re-enter the queue every run (bootstrap re-examination) — still held here.
     s2 = driver.run_batch(ws, [data], M=10, detectors="ana5")
     assert all(e.status == "held_for_calibration" for e in ws.load()[1].scans.values())
+
+
+# --------------------------------------------------------------------------- early GUI visibility
+def test_run_batch_registers_ingested_before_fit_stage(tmp_path, monkeypatch):
+    """A scan is parsed/reduced and its per-unit data file written within ~1s, but a fit can take
+    ~70s; `run_batch` must register + save the ledger at status "ingested" before the fit stage
+    runs (operator report 2026-09-03), so a GUI watcher sees the scan's counts while it fits."""
+    from isar.parsers import spec_s30 as s30
+    from isar.session import scan_delivery
+    ws = _init_workspace(tmp_path, s30)
+    run = run_builder.build_s30_run("SYN", n_scans=2, seed0=1000)
+    data = tmp_path / "SYN.spec_supplementary.dat"
+    data.write_bytes(s30.emit_file(run, s30.card_template()))
+
+    captured = {}
+    real_run_tasks = scan_delivery._run_tasks
+
+    def spy(*args, **kwargs):
+        if "statuses" not in captured:
+            raw = json.loads(ws.session_path.read_text(encoding="utf-8"))
+            captured["statuses"] = {sid: row["status"] for sid, row in raw.get("scans", {}).items()}
+        return real_run_tasks(*args, **kwargs)
+
+    monkeypatch.setattr(scan_delivery, "_run_tasks", spy)
+    driver.run_batch(ws, [data], M=10, detectors="ana5")
+
+    # BEFORE the fit stage ran, the on-disk ledger already listed both scans as "ingested".
+    assert captured.get("statuses"), "fit stage (_run_tasks) was never invoked"
+    assert set(captured["statuses"].values()) == {"ingested"}
+
+    # AFTER the run, the entries reached their normal (non-"ingested") terminal status.
+    _card, session = ws.load()
+    assert {e.status for e in session.scans.values()} == {"held_for_calibration"}
 
 
 # --------------------------------------------------------------------------- timing instrumentation

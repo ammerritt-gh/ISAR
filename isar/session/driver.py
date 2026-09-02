@@ -275,6 +275,30 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
     exclusions = _exclusion_ids(card)
     seed_base = 6000
 
+    # Register these scans in the ledger at status "ingested" and save now — before the fit stage,
+    # which can take ~70s per scan — so a GUI watcher sees the scan with its counts (already parsed,
+    # reduced, and unit-data-written above) instead of waiting for the fit to finish. Only the
+    # detectors actually slated to fit (fit_dets) — matches Pass 1 below, so nothing is left stuck at
+    # "ingested" for a detector the fit stage never visits. Reuses ingest's own upsert (never
+    # downgrades a fitted/held/excluded entry with unchanged content); the fit pass below already
+    # treats an "ingested" entry as fresh (`prev.status == "ingested"`).
+    if not master_certification:
+        with timer.stage("ingest_save") as _m_save:
+            _now_iso = datetime.now(timezone.utc).isoformat()
+            _dirty = False
+            for rec in routed.measurements:
+                _chash = content_hash(rec)
+                for det in fit_dets:
+                    if det not in rec.spectra:
+                        continue
+                    _prov = {**_core_provenance(rec, det, source_by_name), "ingested_at": _now_iso}
+                    if ingest.upsert_ingested_entry(
+                            session, rec, det, chash=_chash, prov=_prov) != "unchanged":
+                        _dirty = True
+            _m_save["dirty"] = _dirty
+            if _dirty:
+                workspace.save(card, session)
+
     summary = RunSummary(gaps=ingest.file_gaps(records), context_lines=ctx_lines)
 
     if master_certification:
