@@ -3834,3 +3834,53 @@ def test_analysis_overrun_during_planning_stops_before_any_measurement_is_submit
 
 
 # ------------------------------------------- PR #9 R27: an invariant violation is a named terminal
+
+
+def test_the_intensity_map_is_integrated_from_the_counts(tmp_path):
+    """The map the forward model prices designs with is read from the counts, not the fitted
+    amplitudes, and it reproduces the counts it was read from.
+
+    The fitted amplitudes do not carry the convention the planner needs — the second live run
+    published ``phonon.A = 6.7e-5`` against a 5e6 exposure for a scan holding an 18-count peak, five
+    orders of magnitude too dim — so every design's expected information was exactly zero.
+    """
+    from isar.drive.acquisition.eig_planner import branch_counts
+    from isar.drive.loop import _planner_scale
+
+    ncount, temperature, fwhm = 5_000_000, 200.0, 0.5
+    energy, step, lo = 0.9, 0.125, -0.4
+    x = [round(lo + step * i, 6) for i in range(31)]
+    # A 7-count background with a Stokes lobe on it; no anti-Stokes in view.
+    counts = [7.0] * len(x)
+    for i, value in enumerate(x):
+        if abs(value - energy) <= 0.3:
+            counts[i] += 20.0
+
+    ingest = tmp_path / "data" / "ingest"
+    ingest.mkdir(parents=True)
+    (ingest / "unit.json").write_text(json.dumps({
+        "schema": "isar.unit_data/1", "scan_number": 7, "detector_id": "det",
+        "x": x, "counts": counts}), encoding="utf-8")
+    log_path = tmp_path / "log.jsonl"
+    log_event(log_path, "physical_submission", {
+        "acquisition_id": "acq-7", "hkl": [2.1, 0.0, 0.0], "submitted_ncount": ncount})
+    cfg = types.SimpleNamespace(data_dir=tmp_path / "data", log_path=log_path)
+    observations = [{"scan": 7, "detector": "det", "acquisition_id": "acq-7", "resolved": True,
+                     "branch_id": "acoustic", "disposition": "resolved",
+                     "branch_candidates": [{"energy_meV": energy, "sigma_meV": 0.02}]}]
+
+    path = ((2.1, 0.0, 0.0),)
+    scale = _planner_scale(cfg, observations, path, ("acoustic", "optic"), temperature, (fwhm,))
+
+    # The optic was never measured, so it keeps the planner's class default; the acoustic does not.
+    assert scale.peak_counts_meV["acoustic"] != pytest.approx(
+        scale.peak_counts_meV["optic"], rel=1e-6)
+    assert scale.background_per_point == pytest.approx(7.0 / ncount, rel=1e-9)
+
+    # The contract that matters: feed the map back through the planner's own forward model and it
+    # reproduces the counts it was integrated from.
+    observed = sum(value - 7.0 for value in counts)
+    predicted = branch_counts([energy, 6.0], e_lo=x[0], e_step=step, n_points=len(x),
+                              fwhm_meV=fwhm, temperature_K=temperature, scale=scale,
+                              branches=("acoustic", "optic"), ncount=ncount)
+    assert predicted[0] == pytest.approx(observed, rel=0.25)

@@ -352,3 +352,39 @@ def test_the_eig_plan_stop_line_says_the_map_is_done():
                                   "prize_points_within_bar": 20, "prize_points_total": 20})
     assert line.text == "EIG: hypothesis map at ±0.05 meV at every point — done"
     assert line.severity == "notice"
+
+
+def _plan_payload(**extra):
+    payload = {
+        "iter": 3, "tolerance_meV": 0.05,
+        "chosen": {"grid_index": 1, "hkl": [2.15, 0.0, 0.0], "e_lo": 0.6, "e_hi": 3.1,
+                   "e_step": 0.2, "n_points": 13, "ncount": 10_000_000, "score": 4.21e-6},
+        "per_point": [{"hkl": [2.15, 0.0, 0.0], "halfwidth_meV": 0.31}],
+        "ranked": [{"hkl": [2.15, 0.0, 0.0], "score": 4.21e-6}],
+        "prize_points_within_bar": 0, "prize_points_total": 20,
+        "intensity_scale": {"per_ncount": 1e7,
+                            "peak_counts_meV": {"acoustic": 17.0, "optic": 15.0},
+                            "elastic_counts_meV": 30.0, "background_per_point": 0.3},
+        "intensity_scale_changed": True}
+    payload.update(extra)
+    return payload
+
+
+def test_the_intensity_map_is_said_once_when_it_changes():
+    """It is the same three numbers every iteration otherwise, and a feed that repeats them teaches
+    an operator to stop reading the line."""
+    changed = _rendered("eig_plan", _plan_payload())
+    assert "intensity map: acoustic 17, optic 15, elastic 30, bg 0.3 /1e+07" in changed.text
+    unchanged = _rendered("eig_plan", _plan_payload(intensity_scale_changed=False))
+    assert "intensity map" not in unchanged.text
+
+
+def test_a_planner_note_rides_on_the_line_and_is_loud():
+    """The planner says so when no design can complete a point; that is a warning, not a footnote."""
+    line = _rendered("eig_plan", _plan_payload(
+        intensity_scale_changed=False,
+        note="no design is expected to complete a point; taking the cheapest probe"))
+    assert line.text.endswith(
+        "\u2014 no design is expected to complete a point; taking the cheapest probe  [iter 3]")
+    assert line.severity == "warn"
+    assert _rendered("eig_plan", _plan_payload(intensity_scale_changed=False)).severity == "notice"

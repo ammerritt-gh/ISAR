@@ -40,6 +40,7 @@ import itertools
 import logging
 import math
 import os
+import statistics
 import subprocess
 import sys
 import time
@@ -3401,16 +3402,13 @@ def _planner_scans(log_path, observations: list[dict], path, branches) -> dict[i
             continue
         seen = set()
         for candidate in (observation.get("branch_candidates") or []):
-            probabilities = {str(k): float(v)
-                             for k, v in (candidate.get("probabilities") or {}).items()
-                             if str(k) in branches}
-            if probabilities:
-                seen.add(max(probabilities, key=probabilities.__getitem__))
-        if observation.get("resolved"):
-            branch = str(observation.get("branch_id") or "")
-            # A delivered peak whose branch the row does not name is not evidence of ABSENCE for
-            # anyone: crediting it to nothing would let one unlabelled fit contradict both beliefs.
-            seen.update({branch} if branch in branches else branches)
+            branch = _candidate_branch(candidate, observation, branches)
+            if branch is not None:
+                seen.add(branch)
+        # A delivered peak whose branch nothing names is not evidence of ABSENCE for anyone:
+        # crediting it to nobody would let one unlabelled fit contradict both beliefs.
+        if observation.get("resolved") and not seen:
+            seen.update(branches)
         out.setdefault(index, []).append(ExecutedScan(
             float(payload["search_energy_lo"]), float(payload["search_energy_hi"]),
             int(payload.get("submitted_ncount") or payload.get("ncount") or 0),
@@ -3422,69 +3420,173 @@ def _planner_scans(log_path, observations: list[dict], path, branches) -> dict[i
     return {index: list(dict.fromkeys(scans)) for index, scans in out.items()}
 
 
-def _planner_scale(master_rows: list[dict], branches, temperature_K: float):
-    """The intensity map: counts per ONE neutron of ncount, read off the delivered fits.
+def _ingest_counts(data_dir) -> dict[tuple, dict]:
+    """``(scan_number, detector_id)`` -> the ``isar.unit_data/1`` record analysis ingested.
 
-    The conversion, checked against ``isar/analyze/components.py``:
+    The counts are the authoritative measurement (``DESIGN_GOALS``: fits are the human-readable
+    layer, not the proof layer), and this is where they are durable. Found by scanning the directory
+    rather than rebuilding the filename, because the name encoding belongs to
+    :mod:`isar.session.unit_data` and the drive may not import the session package.
+    """
+    out: dict[tuple, dict] = {}
+    ingest = Path(data_dir) / "ingest"
+    if not ingest.is_dir():
+        return out
+    for path in sorted(ingest.glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            _LOG.warning("could not read the ingested counts at %s: %s", path, error)
+            continue
+        if record.get("scan_number") is None:
+            continue
+        out[(str(record["scan_number"]), str(record.get("detector_id")))] = record
+    return out
 
-    * ``phonon.A`` is the **intrinsic** Stokes strength (H4) — the model multiplies it by
-      ``(n(w,T)+1)`` before the frozen lineshape sees an amplitude, and the lineshape's amplitude
-      argument is an AREA in counts*meV, the same convention ``elastic.E`` uses. The planner's
-      ``peak_counts_meV`` is that pre-Bose area, so no occupation factor belongs on it.
-    * A fitted amplitude means "counts per ``exposure_reference``" (``isar.analyze.context``), and
-      the master row publishes that reference as ``effective_exposure`` — neutrons per point. So
-      dividing by it gives counts*meV per neutron, exactly the planner's contract.
-    * A candidate's recorded ``amplitude`` is the MEASURED strength ``A*(n+1)``
-      (``isar/analyze/loop.py``), so it is divided by the occupation to recover the intrinsic area.
-      Using the per-candidate amplitude — rather than ``amplitudes["phonon.A"]``/``phonon2.A`` — is
-      what lets each mode's brightness follow the branch its candidate was assigned to.
-    * ``bg.BG`` is a flat per-point level in the same exposure basis.
 
-    Before any fit exists, the planner's own class-prior scale stands.
+def _candidate_branch(candidate: Mapping, row: Mapping, branches) -> str | None:
+    """Which branch a fitted mode belongs to: its own probabilities, else its row's label.
+
+    Only a POOLED master's candidates carry ``probabilities`` — the per-scan table
+    (``evidence_update._mode_candidates``) has none, and the scan row's ``branch_id`` is the label
+    the tracker gave that delivery. Reading one and not the other is what left the counts-derived
+    intensity map crediting nothing and falling back to the class prior at every point.
+    """
+    probabilities = {str(k): float(v)
+                     for k, v in (candidate.get("probabilities") or {}).items()
+                     if str(k) in branches}
+    if probabilities:
+        return max(probabilities, key=probabilities.__getitem__)
+    branch = str(row.get("branch_id") or "")
+    return branch if branch in branches else None
+
+
+def _lobe_area(x, counts, background: float, centre: float, half_width: float,
+               step: float) -> float | None:
+    """Counts*meV above ``background`` within ``half_width`` of ``centre``; ``None`` if out of view."""
+    if not (x[0] - 1e-9 <= centre <= x[-1] + 1e-9):
+        return None
+    return sum(max(count - background, 0.0) * step
+               for value, count in zip(x, counts) if abs(value - centre) <= half_width)
+
+
+def _planner_scale(cfg, observations: list[dict], path, branches, temperature_K: float,
+                   fwhm_meV) -> IntensityScale:
+    """The intensity map, integrated from the counts each scan actually recorded.
+
+    Read from the counts, not from the fits: the fitted amplitudes do not carry the convention this
+    needs. Measured on the second live run, master (41,0,0) published ``phonon.A = 6.7e-5`` against
+    an ``effective_exposure`` of 5e6 -- 1.3e-11 counts*meV per neutron -- while the scan that
+    produced it holds an 18-count peak over a background of 6, about 8 counts*meV above background.
+    The forward model was five orders of magnitude too dim, so no design could complete a point,
+    every expected information was exactly zero, and the planner bought the cheapest probe forever.
+    ``bg.BG`` swings 0.05-0.64 between scans of the same declared background, which is the same
+    story. Counts are authoritative and fits are disposable, so the map comes from the counts.
+
+    Per executed scan at a path point, from its ingested ``x``/``counts`` and its submitted
+    ``ncount``:
+
+    * ``background`` is the 20th percentile of the scan's counts -- the level away from the lobes;
+    * a delivered candidate's **Stokes lobe area** is the counts above background within two
+      resolution widths of its energy. When the window also holds the anti-Stokes lobe at ``-w`` its
+      area joins in and the total divides by ``2n+1`` rather than ``n+1`` (``n`` the Bose occupation
+      at that energy and the campaign temperature) -- the planner's ``peak_counts_meV`` is the
+      **pre-Bose** area, and the forward model puts the occupation back;
+    * the **elastic** area is measured the same way about zero, when zero is inside the window;
+    * all three divide by ``ncount``, giving counts*meV (or counts per point) per ONE neutron.
+
+    The median over scans per branch, so one clipped window or one mislabelled mode cannot move the
+    map. A branch nothing has measured keeps the planner's class default.
+
+    # ponytail: an elastic line closer than two resolution widths to the phonon shares its counts
+    # with it, and both areas are then over-read. Real below ~1 meV at this resolution; the median
+    # over the path is what keeps it out of the map. Fix by fitting the two lobes jointly if the
+    # low-q points ever need their own scale.
     """
     branches = tuple(str(b) for b in branches)
+    records = _ingest_counts(cfg.data_dir)
+    if not records:
+        return default_intensity_scale(branches)
+    submissions: dict[str, dict] = {}
+    for event in read_log(cfg.log_path):
+        if event.get("kind") != "physical_submission":
+            continue
+        payload = event.get("payload") or {}
+        if payload.get("acquisition_id") is not None:
+            submissions[str(payload["acquisition_id"])] = payload
+
     peaks: dict[str, list[float]] = {}
     elastic: list[float] = []
-    background: list[float] = []
-    for row in master_rows:
+    background_levels: list[float] = []
+    for observation in observations:
+        if observation.get("kind") == "pooled_master_update" or observation.get("scan") is None:
+            continue
+        record = records.get((str(observation["scan"]), str(observation.get("detector"))))
+        submission = submissions.get(str(observation.get("acquisition_id")))
+        if record is None or submission is None:
+            continue
+        index = match_grid_index(tuple(submission.get("hkl") or ()), path)
         try:
-            exposure = float(row.get("effective_exposure") or 0.0)
+            ncount = float(submission.get("submitted_ncount") or submission.get("ncount") or 0.0)
         except (TypeError, ValueError):
             continue
-        if not math.isfinite(exposure) or exposure <= 0.0:
+        if index is None or ncount <= 0.0:
             continue
-        amplitudes = row.get("amplitudes")
-        if isinstance(amplitudes, Mapping):
-            for key, sink in (("elastic.E", elastic), ("bg.BG", background)):
-                try:
-                    value = float(amplitudes.get(key))
-                except (TypeError, ValueError):
-                    continue
-                if math.isfinite(value) and value > 0.0:
-                    sink.append(value / exposure)
-        for candidate in (row.get("branch_candidates") or []):
-            probabilities = {str(k): float(v)
-                             for k, v in (candidate.get("probabilities") or {}).items()
-                             if str(k) in branches}
+        try:
+            x = [float(v) for v in (record.get("x") or ())]
+            counts = [float(v) for v in (record.get("counts") or ())]
+        except (TypeError, ValueError):
+            continue
+        if len(x) < 3 or len(counts) != len(x):
+            continue
+        step = abs(x[1] - x[0])
+        if step <= 0.0:
+            continue
+        # Nearest-rank 20th percentile: the level the scan sits at away from its lobes.
+        background = sorted(counts)[min(int(0.2 * len(counts)), len(counts) - 1)]
+        background_levels.append(background / ncount)
+        half_width = 2.0 * float(fwhm_meV[index])
+        area = _lobe_area(x, counts, background, 0.0, half_width, step)
+        if area is not None and area > 0.0:
+            elastic.append(area / ncount)
+        for candidate in (observation.get("branch_candidates") or ()):
+            branch = _candidate_branch(candidate, observation, branches)
             try:
-                amplitude = float(candidate.get("amplitude"))
                 energy = float(candidate.get("energy_meV", candidate.get("omega0")))
             except (TypeError, ValueError):
                 continue
-            if not probabilities or not math.isfinite(amplitude) or amplitude <= 0.0:
+            if branch is None or not math.isfinite(energy) or energy <= 0.0:
                 continue
-            branch = max(probabilities, key=probabilities.__getitem__)
-            peaks.setdefault(branch, []).append(
-                amplitude / _bose_plus_one(energy, temperature_K) / exposure)
-
-    def mean(values: list[float], fallback: float) -> float:
-        return sum(values) / len(values) if values else float(fallback)
+            stokes = _lobe_area(x, counts, background, energy, half_width, step)
+            if stokes is None or stokes <= 0.0:
+                continue
+            anti_stokes = _lobe_area(x, counts, background, -energy, half_width, step)
+            occupation = _bose_plus_one(energy, temperature_K)                  # n + 1
+            intrinsic = (stokes / occupation if anti_stokes is None
+                         else (stokes + anti_stokes) / (2.0 * occupation - 1.0))   # 2n + 1
+            if intrinsic > 0.0:
+                peaks.setdefault(branch, []).append(intrinsic / ncount)
 
     default = default_intensity_scale(branches)
+
+    def middle(values: list[float], fallback: float) -> float:
+        return statistics.median(values) if values else float(fallback)
+
+    # A background of zero is a real reading — at five million neutrons most of these windows hold
+    # no background counts at all — but the forward model divides by the rate, so it needs the
+    # smallest level the scan could have resolved rather than the zero it measured: half a count.
+    background = middle(background_levels, default.background_per_point)
+    if background <= 0.0:
+        exposures = [float(s.get("submitted_ncount") or s.get("ncount") or 0.0)
+                     for s in submissions.values()]
+        exposures = [value for value in exposures if value > 0.0]
+        background = (0.5 / statistics.median(exposures) if exposures
+                      else default.background_per_point)
     return IntensityScale(
-        peak_counts_meV={b: mean(peaks.get(b, []), default.peak_counts_meV[b]) for b in branches},
-        elastic_counts_meV=mean(elastic, default.elastic_counts_meV),
-        background_per_point=mean(background, default.background_per_point))
+        peak_counts_meV={b: middle(peaks.get(b, []), default.peak_counts_meV[b])
+                         for b in branches},
+        elastic_counts_meV=middle(elastic, default.elastic_counts_meV),
+        background_per_point=background)
 
 
 def _planner_temperature(durable_state: dict, objective, cfg, sample: str,
@@ -3565,15 +3667,18 @@ def _build_planner_input(cfg, objective, master_rows: list[dict], observations: 
         energy_domain_meV=(float(domain[0]), float(domain[1])),
         fwhm_meV=tuple(float(value) for value in fwhm),
         temperature_K=temperature,
-        scale=_planner_scale(master_rows, tuple(sorted(beliefs)), temperature),
+        scale=_planner_scale(cfg, observations, path, tuple(sorted(beliefs)),
+                             temperature, fwhm),
         tolerance_meV=float(objective.tolerance_meV),
         base_ncount=QUICKLOOK_NCOUNT,
         max_points=int(_runtime_limits(cfg, objective)["max_points"])), campaign_slice
 
 
 def _certified_prize(*, cfg, objective, grid, budget_state: dict, observations: list[dict],
-                     scan_kind: dict, it: int):
-    """Certify the prize points, then ask the planner again. ``(observations, met, terminal)``.
+                     scan_kind: dict, it: int, previous_scale: dict | None = None):
+    """Certify the prize points, then ask the planner again.
+
+    ``(observations, met, terminal, logged_scale)``.
 
     The planner's first stop is claimed on whatever intervals the masters currently publish, and on
     the fast tier those are HESSE-backed and narrower than the bootstrap intervals the campaign will
@@ -3595,7 +3700,7 @@ def _certified_prize(*, cfg, objective, grid, budget_state: dict, observations: 
             cfg=cfg, objective=objective, decision=provisional,
             observations=observations, scan_kind=scan_kind)
     except AnalysisLimitExceeded as error:
-        return observations, False, StopDecision("incomplete", [str(error)], per_q)
+        return observations, False, StopDecision("incomplete", [str(error)], per_q), previous_scale
     if not ran_certify:
         # ``_certify`` returns False here only through its own catch-all fault (the analysis-limit
         # checkpoint raises), so this is a controller fault, not a data-limited outcome.
@@ -3603,7 +3708,7 @@ def _certified_prize(*, cfg, objective, grid, budget_state: dict, observations: 
             "incomplete",
             ["controller_fault: certification of the prize points did not complete; checkpoints "
              "retained and resume is supported after repair"],
-            per_q, terminal_cause=TERMINAL_CONTROLLER_FAULT)
+            per_q, terminal_cause=TERMINAL_CONTROLLER_FAULT), previous_scale
 
     master_rows, certified_grid = _grid_state(
         objective, observations, cfg.workspace, cfg.calibration)
@@ -3615,10 +3720,12 @@ def _certified_prize(*, cfg, objective, grid, budget_state: dict, observations: 
             cfg, objective, master_rows, observations, read_card_state(cfg.workspace))
         outcome = plan_next(planner_input)
     except PlannerRefusal as error:
-        return observations, False, StopDecision("incomplete", [str(error)], certified.per_q)
-    _log_eig_plan(cfg, planner_input, outcome, 0.0, it=it)
+        return (observations, False, StopDecision("incomplete", [str(error)], certified.per_q),
+                previous_scale)
+    previous_scale = _log_eig_plan(cfg, planner_input, outcome, 0.0, it=it,
+                                   previous_scale=previous_scale)
     if outcome.stop:
-        return observations, True, None
+        return observations, True, None, previous_scale
     outstanding = [point for point in outcome.per_point
                    if not point.exempt and not point.within_bar]
     log_event(cfg.log_path, "decide", {
@@ -3630,7 +3737,7 @@ def _certified_prize(*, cfg, objective, grid, budget_state: dict, observations: 
         "halfwidth_meV": [point.halfwidth_meV for point in outstanding],
         "reason": ("the certified intervals do not carry the prize the fast-tier map claimed; "
                    "the campaign continues at the points that are still above the bar")})
-    return observations, False, None
+    return observations, False, None, previous_scale
 
 
 def _design_dict(design) -> dict:
@@ -3641,12 +3748,35 @@ def _design_dict(design) -> dict:
             "score": design.score}
 
 
-def _log_eig_plan(cfg, inp, plan_decision, seconds: float, *, it: int) -> None:
-    """The one operator-facing record of why this scan and not another."""
+#: The intensity map is logged in the unit an operator can hold: counts (or counts*meV) per ten
+#: million neutrons, the exposure a scan is actually bought in.
+_SCALE_REFERENCE_NCOUNT = 1.0e7
+
+
+def _scale_dict(scale) -> dict:
+    """The intensity map as counts per :data:`_SCALE_REFERENCE_NCOUNT` neutrons."""
+    return {"per_ncount": _SCALE_REFERENCE_NCOUNT,
+            "peak_counts_meV": {str(b): round(float(v) * _SCALE_REFERENCE_NCOUNT, 4)
+                                for b, v in scale.peak_counts_meV.items()},
+            "elastic_counts_meV": round(float(scale.elastic_counts_meV)
+                                        * _SCALE_REFERENCE_NCOUNT, 4),
+            "background_per_point": round(float(scale.background_per_point)
+                                          * _SCALE_REFERENCE_NCOUNT, 4)}
+
+
+def _log_eig_plan(cfg, inp, plan_decision, seconds: float, *, it: int,
+                  previous_scale: dict | None = None) -> dict:
+    """The one operator-facing record of why this scan and not another. Returns the logged scale."""
     prize = [point for point in plan_decision.per_point if not point.exempt]
+    scale = _scale_dict(inp.scale)
     log_event(cfg.log_path, "eig_plan", {
         "iter": it, "seconds": float(seconds),
         "tolerance_meV": float(inp.tolerance_meV),
+        # The planner says so when no design is expected to complete a point and it is taking the
+        # cheapest probe; an empty note is the ordinary case.
+        "note": str(getattr(plan_decision, "note", "") or ""),
+        "intensity_scale": scale,
+        "intensity_scale_changed": previous_scale != scale,
         "stop": bool(plan_decision.stop), "stop_reason": plan_decision.stop_reason,
         "chosen": None if plan_decision.chosen is None else _design_dict(plan_decision.chosen),
         "ranked": [_design_dict(design) for design in plan_decision.ranked[:10]],
@@ -3656,6 +3786,7 @@ def _log_eig_plan(cfg, inp, plan_decision, seconds: float, *, it: int) -> None:
                       for point in plan_decision.per_point],
         "prize_points_within_bar": sum(1 for point in prize if point.within_bar),
         "prize_points_total": len(prize)})
+    return scale
 
 
 def _proposal_from_design(objective, inp, design, campaign_slice) -> ScanProposal:
@@ -3832,6 +3963,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     op_stop_iter: int | None = None
     pending_recovery_reason: str | None = None
     certified_terminal = False   # the prize was asked again on certified intervals and still stopped
+    logged_scale: dict | None = None   # the intensity map the feed last announced
     try:
         pending_recovery_reason = _recover_unmatched_submissions(
             cfg=cfg, objective=objective,
@@ -3926,7 +4058,9 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             "error": str(error), "iter": it})
                         decision = StopDecision("incomplete", [str(error)], decision.per_q)
                     else:
-                        _log_eig_plan(cfg, planner_input, plan_decision, planner_seconds, it=it)
+                        logged_scale = _log_eig_plan(
+                            cfg, planner_input, plan_decision, planner_seconds, it=it,
+                            previous_scale=logged_scale)
                 if plan_decision is None:
                     break
                 if plan_decision.stop:
@@ -3936,9 +4070,10 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     # second stop is ``met``. A first stop the certified intervals do not support
                     # simply continues the loop — the planner sees the widened half-widths and buys
                     # counts where they are widest, which is the whole mechanism.
-                    observations, met, terminal = _certified_prize(
+                    observations, met, terminal, logged_scale = _certified_prize(
                         cfg=cfg, objective=objective, grid=grid, budget_state=budget_state,
-                        observations=observations, scan_kind=scan_kind, it=it)
+                        observations=observations, scan_kind=scan_kind, it=it,
+                        previous_scale=logged_scale)
                     if terminal is not None:
                         decision = terminal
                         break

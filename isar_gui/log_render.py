@@ -302,11 +302,18 @@ def _render_eig_plan(payload: dict, tail: str) -> tuple[str, str]:
     """
     tolerance = _num(payload.get("tolerance_meV"), ".3g")
     bar = f" \u00b1{tolerance} meV" if tolerance is not None else ""
+    # The planner sets a note when no design is expected to complete a point and it is taking the
+    # cheapest probe. That is the operator\'s cue that the map or the exposure ladder is wrong, so it
+    # rides on the line and is loud.
+    note = str(payload.get("note") or "")
+    suffix = f" \u2014 {note}" if note else ""
+    severity = "warn" if note else "notice"
+    scale = _intensity_scale_text(payload)
     if payload.get("stop"):
         return (f"EIG: hypothesis map at{bar} at every point \u2014 done{tail}", "notice")
     chosen = payload.get("chosen")
     if not isinstance(chosen, dict):
-        return f"EIG \u2014 no design was chosen{tail}", "warn"
+        return f"EIG \u2014 no design was chosen{suffix}{tail}", "warn"
     at = q_text(chosen.get("hkl")) if chosen.get("hkl") is not None else None
     lo, hi = _num(chosen.get("e_lo"), ".2f"), _num(chosen.get("e_hi"), ".2f")
     points, ncount = chosen.get("n_points"), chosen.get("ncount")
@@ -314,7 +321,7 @@ def _render_eig_plan(payload: dict, tail: str) -> tuple[str, str]:
         # Say so plainly rather than assemble a line out of "?" pieces: a design record missing its
         # own window or exposure is a record to go and look at, not a scan to describe.
         return (f"EIG \u2014 a design was chosen but its record carries no window or exposure"
-                f"{tail}", "warn")
+                f"{suffix}{tail}", "warn")
     known = _num(_chosen_halfwidth(payload, chosen), ".2f")
     prefix = f"\u00b1{known} \u2192 " if known is not None else ""
     score = _num(_per_million(chosen.get("score")), ".3g")
@@ -331,7 +338,28 @@ def _render_eig_plan(payload: dict, tail: str) -> tuple[str, str]:
     prize = (f" \u2014 prize {within}/{total} within{bar}"
              if total is not None and within is not None else "")
     return (f"EIG \u2192 {prefix}{at}: {lo}\u2013{hi} meV, {points} pts \u00d7 "
-            f"{count_text(ncount)}{rate}{runner_up}{prize}{tail}", "notice")
+            f"{count_text(ncount)}{rate}{runner_up}{prize}{scale}{suffix}{tail}", severity)
+
+
+def _intensity_scale_text(payload: dict) -> str:
+    """The intensity map, said once when it changes: what the forward model thinks a scan will see.
+
+    Only on change — it is the same three numbers every iteration otherwise, and a feed that repeats
+    them teaches an operator to stop reading the line.
+    """
+    scale = payload.get("intensity_scale")
+    if not payload.get("intensity_scale_changed") or not isinstance(scale, dict):
+        return ""
+    reference = _num(scale.get("per_ncount"), ".0e") or "1e7"
+    bits = [f"{name} {_num(value, '.3g')}"
+            for name, value in sorted((scale.get("peak_counts_meV") or {}).items())
+            if _num(value, ".3g") is not None]
+    for name, key in (("elastic", "elastic_counts_meV"), ("bg", "background_per_point")):
+        value = _num(scale.get(key), ".3g")
+        if value is not None:
+            bits.append(f"{name} {value}")
+    return ("  |  intensity map: " + ", ".join(bits) + f" /{reference}"
+            if bits else "")
 
 
 def _chosen_halfwidth(payload: dict, chosen: dict):
