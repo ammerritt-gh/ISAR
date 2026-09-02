@@ -182,14 +182,21 @@ def scan_text(kind: str, payload: dict) -> str | None:
 
 
 def _render_validate(payload: dict, tail: str) -> tuple[str, str]:
+    role = payload.get("candidate_role")
+    alternative = role is not None and role != "legacy_uniform"
+    blockers = payload.get("blockers") or []
+    joined = ", ".join(_phrase(b) for b in blockers) if isinstance(blockers, list) else _phrase(blockers)
     if payload.get("would_queue"):
         feasible = payload.get("feasible_points")
         requested = payload.get("requested_points")
         detail = (f" — {feasible} of {requested} points reachable"
                   if feasible is not None and requested is not None else "")
+        if alternative:
+            return f"Alternative window ({_phrase(role)}) feasible{detail}{tail}", "info"
         return f"Instrument check passed{detail}{tail}", "info"
-    blockers = payload.get("blockers") or []
-    joined = ", ".join(_phrase(b) for b in blockers) if isinstance(blockers, list) else _phrase(blockers)
+    if alternative:
+        return (f"Alternative window ({_phrase(role)}) not available — "
+                f"{joined or 'reason unspecified'}{tail}", "info")
     return f"Instrument check blocked — {joined or 'reason unspecified'}{tail}", "warn"
 
 
@@ -252,6 +259,8 @@ def _render_exception(payload: dict, tail: str) -> tuple[str, str]:
     # action slug and nothing about what actually failed.
     reason = payload.get("reason") or payload.get("error")
     because = f" — {_clip(reason)}" if reason else ""
+    if payload.get("severity") == "low":
+        return f"Note: {action}{because}{tail}", "info"
     return f"Problem: {action}{because}{tail}", "warn"
 
 

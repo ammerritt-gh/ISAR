@@ -55,6 +55,25 @@ def test_validate_reports_reachability_and_flags_a_block():
     assert blocked.severity == "warn"
 
 
+def test_validate_names_a_blocked_alternative_window_as_info_not_a_warning():
+    alternative = _rendered("validate", {
+        "would_queue": False, "candidate_role": "target_core", "requested_points": 32,
+        "blockers": ["target_core_truncated_after_domain_clip"], "iter": 0})
+    assert alternative.text == ("Alternative window (target core) not available — "
+                                "target core truncated after domain clip  [iter 0]")
+    assert alternative.severity == "info"
+
+    absent_role = _rendered("validate", {"would_queue": False, "requested_points": 32,
+                                         "blockers": ["some_reason"], "iter": 1})
+    assert absent_role.text.startswith("Instrument check blocked")
+    assert absent_role.severity == "warn"
+
+    legacy = _rendered("validate", {"would_queue": False, "candidate_role": "legacy_uniform",
+                                    "blockers": ["some_reason"], "iter": 2})
+    assert legacy.text.startswith("Instrument check blocked")
+    assert legacy.severity == "warn"
+
+
 def test_run_names_the_job_the_point_and_the_expected_time():
     event = _rendered("run", {
         "job_id": "j-0084", "state": "queued", "hkl": [2.15, 0.0, 0.0], "ncount": 10000000,
@@ -305,6 +324,18 @@ def test_the_exception_line_carries_the_error_text_whichever_key_holds_it():
                           "  [iter 12]")
     legacy = _rendered("exception", {"action": "analyze", "reason": "fit did not converge"})
     assert legacy.text == "Problem: analyze — fit did not converge"
+
+
+def test_a_low_severity_exception_reads_as_a_note_not_a_problem():
+    low = _rendered("exception", {"action": "shadow_scoring_workspace_not_initialized",
+                                  "severity": "low", "reason": "shadow_disagrees", "iter": 0})
+    assert low.text == ("Note: shadow scoring workspace not initialized — shadow_disagrees"
+                        "  [iter 0]")
+    assert low.severity == "info" and low.loud       # still an exception kind: never filtered away
+
+    ordinary = _rendered("exception", {"action": "recenter", "reason": "peak drifted"})
+    assert ordinary.text == "Problem: recenter — peak drifted"
+    assert ordinary.severity == "warn"
 
 
 def test_missing_counts_read_as_a_dash_not_as_the_word_none():
