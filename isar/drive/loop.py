@@ -3209,26 +3209,32 @@ class PlannerRefusal(RuntimeError):
 _TAVI_CARD_TEMPLATE = Path(__file__).resolve().parents[1] / "parsers" / "cards" / "tavi.policy.toml"
 
 
-def _declared_zone_period(workspace) -> float | None:
-    """The reduced-zone fold period: the workspace card once it exists, else its own card template.
+def _declared_card_policy(workspace) -> dict:
+    """The scientist-owned card policy: the workspace's own card once it exists, else its template.
 
     ``isar init`` writes ``card.policy.toml`` only after the FIRST scan has landed, and the planner
-    needs the coordinate before the first scan is chosen. Reading the template the workspace is
-    about to be initialised from is the same declaration one step earlier, not a guessed default —
-    a workspace whose card later declares a different period simply uses that from then on.
+    needs the zone period and the sample temperature before the first scan is chosen. Reading the
+    template the workspace is about to be initialised from is the same declaration one step earlier,
+    not a guessed default — a workspace whose card later declares different values uses those from
+    then on, because this reads the card whenever it is there.
     """
+    import tomllib
+    path = Path(workspace) / "card.policy.toml"
+    source = path if path.exists() else _TAVI_CARD_TEMPLATE
+    try:
+        return tomllib.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as error:
+        _LOG.warning("could not read the card policy from %s: %s", source, error)
+        return {}
+
+
+def _declared_zone_period(workspace) -> float | None:
+    """The reduced-zone fold period the branch beliefs' ``u`` is measured in."""
     declared = _workspace_zone_period(Path(workspace))
     if declared:
         return declared
-    try:
-        import tomllib
-        payload = tomllib.loads(_TAVI_CARD_TEMPLATE.read_text(encoding="utf-8"))
-        value = (payload.get("dispersion") or {}).get("zone_period")
-        return float(value) if value is not None else None
-    except (OSError, ValueError, TypeError) as error:
-        _LOG.warning("could not read the zone period from the card template %s: %s",
-                     _TAVI_CARD_TEMPLATE, error)
-        return None
+    value = (_declared_card_policy(workspace).get("dispersion") or {}).get("zone_period")
+    return float(value) if value is not None else None
 
 
 def _reduced_u(hkl, period: float) -> float:
@@ -3263,14 +3269,46 @@ def _prior_belief_row(hypothesis: Mapping, period: float) -> dict:
                                 "confidence": float(hypothesis.get("confidence", 0.0) or 0.0)}}
 
 
-def _planner_beliefs(durable_state: dict, objective, cfg, campaign_slice, period: float) -> dict:
+def _belief_sample(durable_state: dict, cfg) -> str:
+    """Which sample's belief rows ARE this campaign's hypothesis map.
+
+    The session layer stamps the sample name it parsed off the instrument payload (``"tavi"``); the
+    driver submits under its own configured name (``cfg.sample``, ``"Al_phonon_DFT"`` by default).
+    They are routinely different, and matching on the driver's name found nothing: every iteration
+    of the first live run planned against a synthesised class prior while six confirmed anchors sat
+    in ``card.state.json``, and asked for 100-point windows where a settled belief wants twelve.
+
+    So the map is the workspace's own. One sample in the workspace IS the campaign's sample,
+    whatever the driver calls it. Several, and the driver's name is what disambiguates them — and
+    if it names none of them there is no map here, which is a refusal, not a licence to plan against
+    a prior the workspace has already superseded.
+    """
+    samples = sorted({str(row["sample"])
+                      for row in (durable_state.get("branch_belief_models") or [])
+                      if isinstance(row, Mapping) and row.get("sample")})
+    if not samples:
+        return str(cfg.sample)
+    if len(samples) == 1:
+        if samples[0] != str(cfg.sample):
+            _LOG.info("planning against the workspace's belief rows for sample %r "
+                      "(the campaign submits as %r)", samples[0], cfg.sample)
+        return samples[0]
+    if str(cfg.sample) in samples:
+        return str(cfg.sample)
+    raise PlannerRefusal(
+        f"campaign refused: the workspace holds belief rows for {', '.join(samples)} and none for "
+        f"{cfg.sample!r}, so there is no hypothesis map for this campaign to plan against; planning "
+        "on the class prior instead would ignore evidence the workspace already holds")
+
+
+def _planner_beliefs(durable_state: dict, objective, cfg, sample: str, temperature_bin,
+                     period: float) -> dict:
     """The hypothesis map: one belief row per modelled branch, measured slice first, prior otherwise.
 
     BOTH branches are always present whichever is the target — the planner's joint peak-to-branch
     matching is what lets a scan reject the rival, and it cannot run against a single branch.
     """
-    slices = _belief_slices(durable_state, sample=cfg.sample)
-    temperature_bin = None if campaign_slice is None else campaign_slice.temperature_bin
+    slices = _belief_slices(durable_state, sample=sample)
     rows = {str(row["branch_id"]): dict(row)
             for row in (slices.get(temperature_bin) or []) if row.get("branch_id")}
     declared = {str(h.get("name")): h for h in (objective.hypotheses or [])
@@ -3288,11 +3326,16 @@ def _planner_beliefs(durable_state: dict, objective, cfg, campaign_slice, period
 def _planner_candidates(master_rows: list[dict], path, energy_domain) -> dict[int, list]:
     """Grid index to the pooled master's fitted peaks, as planner candidates.
 
-    Candidate precision is trusted only when the fit's interval is: a certifiable, pool-consistent,
-    non-fork row publishes ``calibrated_halfwidth`` and that is the peak's sigma. Anything else — a
-    fork, an inconsistent pool, an uncertifiable interval — still enters as evidence for *assignment*
-    (the peak was detected) but with sigma = half the positive energy domain: detected, precision not
-    established. The planner then still values a scan there, which is what escalates the errors tier.
+    The candidate's sigma is the master row's PUBLISHED calibrated half-width, whenever it has one:
+    that is the number the campaign will report, and the prize is stated over the reported number.
+    Never the fit's raw ``omega0_err`` — a fast-tier HESSE error of 0.0003 meV would declare a point
+    settled to a precision the published interval (0.06 meV) does not carry, and the campaign would
+    stop having answered a question nobody asked.
+
+    Only three things degrade it to "detected, precision not established" — sigma = half the positive
+    energy domain: a fork (the fit has two answers), a pool-inconsistent row (its members disagree),
+    or no published interval at all. The peak still enters as evidence for *assignment*, and the
+    planner still values a scan there, which is what escalates the errors tier.
     """
     unknown_sigma = 0.5 * (float(energy_domain[1]) - max(float(energy_domain[0]), 0.0))
     out: dict[int, list] = {}
@@ -3301,11 +3344,18 @@ def _planner_candidates(master_rows: list[dict], path, energy_domain) -> dict[in
         index = None if hkl is None else match_grid_index(tuple(hkl), path)
         if index is None:
             continue
+        # ``halfwidth`` is the model-averaged certifying interval; ``diagnostic_halfwidth`` is what a
+        # row that is not model-robust publishes instead. Both are calibration-inflated.
         halfwidth = row.get("halfwidth")
-        trusted = (bool(row.get("certifiable")) and row.get("modality") != "fork"
-                   and row.get("pool_consistent") is not False and halfwidth is not None
-                   and float(halfwidth) > 0.0)
-        sigma = float(halfwidth) if trusted else unknown_sigma
+        if halfwidth is None:
+            halfwidth = row.get("diagnostic_halfwidth")
+        try:
+            halfwidth = float(halfwidth)
+        except (TypeError, ValueError):
+            halfwidth = None
+        trusted = (row.get("modality") != "fork" and row.get("pool_consistent") is not False
+                   and halfwidth is not None and math.isfinite(halfwidth) and halfwidth > 0.0)
+        sigma = halfwidth if trusted else unknown_sigma
         candidates = []
         for candidate in (row.get("branch_candidates") or []):
             try:
@@ -3437,25 +3487,51 @@ def _planner_scale(master_rows: list[dict], branches, temperature_K: float):
         background_per_point=mean(background, default.background_per_point))
 
 
-def _planner_temperature(durable_state: dict, objective, cfg, campaign_slice) -> float:
-    """The temperature the forward model runs at: the resolved slice, the objective, the workspace."""
-    if campaign_slice is not None and campaign_slice.temperature_bin is not None:
-        return float(campaign_slice.temperature_bin)
-    if getattr(objective, "target_temperature_K", None) is not None:
-        return float(objective.target_temperature_K)
-    declared = sorted(_belief_slices(durable_state, sample=cfg.sample))
+def _planner_temperature(durable_state: dict, objective, cfg, sample: str,
+                         temperature_bin) -> float:
+    """The temperature the Bose factor runs at, from the same sample the hypothesis map came from.
+
+    Ladder, re-walked every iteration so the first measured slice takes over the moment it lands:
+    the resolved (complete) slice, else the newest slice of that sample at all, else the objective's
+    declared temperature, else the card's ``[temperature_rule]`` setpoint. TAVI's ``GET /state``
+    carries no sample temperature — its ``parameters`` block is all geometry and the simulator only
+    reports ``temperature`` inside a completed scan — so the card gap-filler is the last declared
+    source, and there is no bare constant below it.
+    """
+    if temperature_bin is not None:
+        return float(temperature_bin)
+    declared = sorted(_belief_slices(durable_state, sample=sample))
     if declared:
         return float(declared[-1])
-    _LOG.warning("no sample temperature is declared by the objective or the workspace; the EIG "
-                 "forward model uses 300 K for the Bose factor")
-    return 300.0
+    if getattr(objective, "target_temperature_K", None) is not None:
+        return float(objective.target_temperature_K)
+    setpoint = (_declared_card_policy(cfg.workspace).get("temperature_rule") or {}).get("setpoint")
+    if setpoint is not None:
+        _LOG.info("no measured belief slice yet; the EIG forward model uses the card's declared "
+                  "sample setpoint %.4g K for the Bose factor", float(setpoint))
+        return float(setpoint)
+    raise PlannerRefusal(
+        "campaign refused: no sample temperature is declared anywhere — no measured belief slice, "
+        "no objective target_temperature_K, and no [temperature_rule] setpoint on the card — so the "
+        "Bose factor in the forward model would be a guess")
 
 
 def _build_planner_input(cfg, objective, master_rows: list[dict], observations: list[dict],
-                         durable_state: dict, campaign_slice, campaign_slice_error: str | None):
-    """Assemble the planner's world: the hypothesis map, the intensity map, and what is measured."""
+                         durable_state: dict):
+    """Assemble the planner's world: the hypothesis map, the intensity map, and what is measured.
+
+    Returns ``(input, campaign_slice)``. The sample and the slice are resolved HERE, every
+    iteration, off the belief rows themselves — the campaign's own name for the sample is only a
+    disambiguator (see :func:`_belief_sample`), and the slice a campaign acts on changes the moment
+    its first measured belief lands.
+    """
+    sample = _belief_sample(durable_state, cfg)
+    campaign_slice, campaign_slice_error = resolve_campaign_slice(
+        durable_state, objective, sample=sample,
+        binning_policy_fingerprint=_temperature_binning_fingerprint(cfg.workspace))
     if campaign_slice_error is not None:
         raise PlannerRefusal(campaign_slice_error)
+    temperature_bin = None if campaign_slice is None else campaign_slice.temperature_bin
     period = _declared_zone_period(cfg.workspace)
     if not period:
         raise PlannerRefusal(
@@ -3471,8 +3547,8 @@ def _build_planner_input(cfg, objective, master_rows: list[dict], observations: 
     u = tuple(_reduced_u(point, period) for point in path)
     target_branch = str(getattr(objective, "target_branch", "acoustic"))
     targets = ("acoustic", "optic") if target_branch == "both" else (target_branch,)
-    beliefs = _planner_beliefs(durable_state, objective, cfg, campaign_slice, period)
-    temperature = _planner_temperature(durable_state, objective, cfg, campaign_slice)
+    beliefs = _planner_beliefs(durable_state, objective, cfg, sample, temperature_bin, period)
+    temperature = _planner_temperature(durable_state, objective, cfg, sample, temperature_bin)
     fwhm = []
     for point, reduced in zip(path, u):
         try:
@@ -3492,40 +3568,69 @@ def _build_planner_input(cfg, objective, master_rows: list[dict], observations: 
         scale=_planner_scale(master_rows, tuple(sorted(beliefs)), temperature),
         tolerance_meV=float(objective.tolerance_meV),
         base_ncount=QUICKLOOK_NCOUNT,
-        max_points=int(_runtime_limits(cfg, objective)["max_points"]))
+        max_points=int(_runtime_limits(cfg, objective)["max_points"])), campaign_slice
 
 
-def _prize_lost_after_certification(cfg, objective, master_rows: list[dict],
-                                    observations: list[dict]) -> str | None:
-    """Re-ask the planner's prize of the certified candidates; a reason string when it is not met.
+def _certified_prize(*, cfg, objective, grid, budget_state: dict, observations: list[dict],
+                     scan_kind: dict, it: int):
+    """Certify the prize points, then ask the planner again. ``(observations, met, terminal)``.
 
-    Certification replaces every fast interval with a bootstrap-backed one, which can widen it past
-    the bar. Reported, never acted on: the prize was met over the map the planner priced, and this
-    says how the published intervals compare with it. ``None`` when the prize still stands —
-    including when the re-check cannot be built, since a planner refusal at this point says nothing
-    about the science already certified.
+    The planner's first stop is claimed on whatever intervals the masters currently publish, and on
+    the fast tier those are HESSE-backed and narrower than the bootstrap intervals the campaign will
+    actually report — the first live run stopped ``met`` while every published interval sat outside
+    the bar. So certification is part of asking the question, not a report filed after it: the
+    existing ``_certify`` escalates each pending point to the full tier and republishes its interval,
+    the map is rebuilt from those masters, and the prize is asked again.
+
+    ``met`` only when the second ask also stops. Otherwise the caller continues the loop, and the
+    planner — now seeing the widened half-widths — buys counts where they are widest. ``_certify``
+    is idempotent per master revision (``_pending_certification_indices``), so a point whose master
+    has not moved since its certificate is not re-fitted, and the loop cannot churn on it.
     """
+    per_q = evaluate_stop(objective, grid, budget_state,
+                          calibration=cfg.calibration, floor=cfg.floor).per_q
+    provisional = StopDecision("met", ["provisional prize; certifying before it is claimed"], per_q)
     try:
-        durable_state = read_card_state(cfg.workspace)
-        campaign_slice, campaign_slice_error = resolve_campaign_slice(
-            durable_state, objective, sample=cfg.sample,
-            binning_policy_fingerprint=_temperature_binning_fingerprint(cfg.workspace))
-        inp = _build_planner_input(cfg, objective, master_rows, observations, durable_state,
-                                   campaign_slice, campaign_slice_error)
-        outcome = plan_next(inp)
-    except Exception as error:                        # noqa: BLE001 - a re-check must not crash the run
-        _LOG.exception("could not re-check the EIG prize after certification")
-        log_event(cfg.log_path, "exception", {
-            "action": "certification_prize_recheck_failed", "severity": "high",
-            "error": str(error)})
-        return None
+        observations, ran_certify = _certify(
+            cfg=cfg, objective=objective, decision=provisional,
+            observations=observations, scan_kind=scan_kind)
+    except AnalysisLimitExceeded as error:
+        return observations, False, StopDecision("incomplete", [str(error)], per_q)
+    if not ran_certify:
+        # ``_certify`` returns False here only through its own catch-all fault (the analysis-limit
+        # checkpoint raises), so this is a controller fault, not a data-limited outcome.
+        return observations, False, StopDecision(
+            "incomplete",
+            ["controller_fault: certification of the prize points did not complete; checkpoints "
+             "retained and resume is supported after repair"],
+            per_q, terminal_cause=TERMINAL_CONTROLLER_FAULT)
+
+    master_rows, certified_grid = _grid_state(
+        objective, observations, cfg.workspace, cfg.calibration)
+    certified = evaluate_stop(objective, certified_grid, budget_state,
+                              calibration=cfg.calibration, floor=cfg.floor)
+    _record_certification_acceptance(cfg, certified, _full_tier(cfg))
+    try:
+        planner_input, _slice = _build_planner_input(
+            cfg, objective, master_rows, observations, read_card_state(cfg.workspace))
+        outcome = plan_next(planner_input)
+    except PlannerRefusal as error:
+        return observations, False, StopDecision("incomplete", [str(error)], certified.per_q)
+    _log_eig_plan(cfg, planner_input, outcome, 0.0, it=it)
     if outcome.stop:
-        return None
+        return observations, True, None
     outstanding = [point for point in outcome.per_point
                    if not point.exempt and not point.within_bar]
-    return (f"certification widened {len(outstanding)} of "
-            f"{sum(1 for point in outcome.per_point if not point.exempt)} prize points back above "
-            f"±{float(objective.tolerance_meV):g} meV")
+    log_event(cfg.log_path, "decide", {
+        "event": "certified_prize_not_met", "action": "certified_prize_not_met", "iter": it,
+        "outstanding": len(outstanding),
+        "prize_points_total": sum(1 for point in outcome.per_point if not point.exempt),
+        "tolerance_meV": float(objective.tolerance_meV),
+        "hkl": [list(point.hkl) for point in outstanding],
+        "halfwidth_meV": [point.halfwidth_meV for point in outstanding],
+        "reason": ("the certified intervals do not carry the prize the fast-tier map claimed; "
+                   "the campaign continues at the points that are still above the bar")})
+    return observations, False, None
 
 
 def _design_dict(design) -> dict:
@@ -3726,6 +3831,7 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     operator_stop = False        # set when a cooperative operator-stop file is found at an iteration top
     op_stop_iter: int | None = None
     pending_recovery_reason: str | None = None
+    certified_terminal = False   # the prize was asked again on certified intervals and still stopped
     try:
         pending_recovery_reason = _recover_unmatched_submissions(
             cfg=cfg, objective=objective,
@@ -3800,19 +3906,15 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                 planner_input = None
                 campaign_slice = None
                 with timed(cfg.log_path, "propose", iteration=it):
-                    durable_state = read_card_state(cfg.workspace)
-                    campaign_slice, campaign_slice_error = resolve_campaign_slice(
-                        durable_state, objective, sample=cfg.sample,
-                        binning_policy_fingerprint=_temperature_binning_fingerprint(cfg.workspace))
                     try:
                         # Planner time is analysis time, one budget (operating rule 2026-09-03).
                         with analysis_operation(
                                 cfg.log_path, f"plan:{cfg.run_nonce}:{proposal_counter}",
                                 "eig_planning",
                                 limit_seconds=objective.analysis_limit_seconds, iteration=it):
-                            planner_input = _build_planner_input(
-                                cfg, objective, master_rows, observations, durable_state,
-                                campaign_slice, campaign_slice_error)
+                            planner_input, campaign_slice = _build_planner_input(
+                                cfg, objective, master_rows, observations,
+                                read_card_state(cfg.workspace))
                             started = time.perf_counter()
                             plan_decision = plan_next(planner_input)
                             planner_seconds = time.perf_counter() - started
@@ -3828,13 +3930,30 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                 if plan_decision is None:
                     break
                 if plan_decision.stop:
-                    # "met" is the planner's prize, never a stopping-side approximation of it.
-                    decision = StopDecision(
-                        "met",
-                        ["hypothesis map at the requested precision: every prize point within "
-                         f"±{float(objective.tolerance_meV):g} meV"],
-                        decision.per_q)
-                    break
+                    # The prize is claimed on the intervals the campaign PUBLISHES, so certification
+                    # is part of asking, not a report afterwards: certify every prize point that
+                    # needs it, rebuild the map from the certified masters, and ask again. Only a
+                    # second stop is ``met``. A first stop the certified intervals do not support
+                    # simply continues the loop — the planner sees the widened half-widths and buys
+                    # counts where they are widest, which is the whole mechanism.
+                    observations, met, terminal = _certified_prize(
+                        cfg=cfg, objective=objective, grid=grid, budget_state=budget_state,
+                        observations=observations, scan_kind=scan_kind, it=it)
+                    if terminal is not None:
+                        decision = terminal
+                        break
+                    master_rows, grid = _grid_state(
+                        objective, observations, cfg.workspace, cfg.calibration)
+                    if met:
+                        certified_terminal = True
+                        decision = StopDecision(
+                            "met",
+                            ["hypothesis map at the requested precision: every prize point within "
+                             f"±{float(objective.tolerance_meV):g} meV, on the certified intervals"],
+                            evaluate_stop(objective, grid, budget_state,
+                                          calibration=cfg.calibration, floor=cfg.floor).per_q)
+                        break
+                    continue
                 designs = list(plan_decision.ranked)
                 proposal, selection_terminal = _next_planner_proposal(
                     designs, objective, cfg, planner_input, grid, budget_state,
@@ -4050,13 +4169,18 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     "incomplete",
                     [f"analysis limit exhausted before final certification ({analysis_spent:.1f}/"
                      f"{float(objective.analysis_limit_seconds):.1f}s)"], decision.per_q)
-            try:
-                observations, ran_certify = _certify(
-                    cfg=cfg, objective=objective, decision=decision, observations=observations,
-                    scan_kind=scan_kind)
-            except AnalysisLimitExceeded as error:
-                ran_certify = False
-                decision = StopDecision("incomplete", [str(error)], decision.per_q)
+            if certified_terminal:
+                # The prize was claimed on certified intervals at the seam; ``_certify`` there
+                # already published them and recorded their acceptance.
+                ran_certify = True
+            else:
+                try:
+                    observations, ran_certify = _certify(
+                        cfg=cfg, objective=objective, decision=decision, observations=observations,
+                        scan_kind=scan_kind)
+                except AnalysisLimitExceeded as error:
+                    ran_certify = False
+                    decision = StopDecision("incomplete", [str(error)], decision.per_q)
 
             if decision is not None and decision.state == "met" and not ran_certify:
                 # A certify fault reached here from a ``met`` decision is a controller fault (the
@@ -4084,31 +4208,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                 decision = final_decision
             elif decision is not None and decision.state == "met":
                 decision = StopDecision("met", decision.reasons, final_decision.per_q)
-            if ran_certify:
+            if ran_certify and not certified_terminal:
                 _record_certification_acceptance(cfg, decision, _full_tier(cfg))
-            if ran_certify and decision.state == "met":
-                # Certification replaces every fast interval with a bootstrap-backed one, so the
-                # prize has to be re-asked of the certified candidates — the same question, through
-                # the same seam, never a stopping-side approximation of it (addendum G.4).
-                regression = _prize_lost_after_certification(
-                    cfg, objective, master_rows, observations)
-                if regression is not None:
-                    # Recorded, not acted on. The prize is defined over the candidate map the
-                    # planner priced, and it was met; certification's job is to publish the number,
-                    # and its bootstrap interval is routinely wider than the fast one. Demoting the
-                    # terminal on that would report every completed campaign as incomplete. The per-q
-                    # rows in the summary carry the certified truth either way.
-                    log_event(cfg.log_path, "exception", {
-                        "action": "certify_regression", "state": decision.state,
-                        "reason": regression,
-                        "per_q": [row for row in decision.per_q
-                                  if not row.get("converged", False)],
-                        "note": "certified intervals are wider than the map the prize was met on"})
-                    # Carried into the terminal reasons, so the difference between the map the prize
-                    # was met on and the intervals that were published is visible where an operator
-                    # actually reads it, not only in the session log.
-                    decision = StopDecision(decision.state, list(decision.reasons) + [regression],
-                                            decision.per_q, decision.terminal_cause)
 
             summary = _campaign_summary(objective, grid, decision, budget_state, cfg.workspace,
                                         cfg.log_path, len(observations),
