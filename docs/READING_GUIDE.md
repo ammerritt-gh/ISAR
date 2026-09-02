@@ -143,6 +143,8 @@ Read in this order when returning after time away:
    repair gates, and the ChatGPT second-opinion review. Its remediation is
    [plans/campaign-authorization-repair.md](plans/campaign-authorization-repair.md) — read the plan
    first and the ledger as evidence.
+9. While it exists: [HANDOFF-demo-2026-09.md](HANDOFF-demo-2026-09.md) — the run-sheet for the
+   live targeted-lane EIG demo, what was measured, and what had to change.
 
 ### Door 2 — running ISAR on data (the user door)
 
