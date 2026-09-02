@@ -1877,10 +1877,10 @@ def suppressed_actions(log_path) -> tuple[dict[str, dict], dict[str, dict], dict
 
     ``by_request`` is keyed by ``request_fingerprint`` and holds requests that were refused *as that
     exact request* (``validation_rejected`` / ``insufficient_target_support``). It deliberately does
-    NOT feed ``by_action``: the widen / re-center / step-shrink ladder answering the same scientific
-    question with a *different* window keys off the scientific action fingerprint and must stay open —
-    only the identical request is blocked from re-emitting. Transient entries are recorded for
-    forensics and narrow nothing.
+    NOT feed ``by_action``: a different window at the same q answers the same scientific question and
+    must stay open, so only the identical request is blocked from re-emitting. ``by_design`` is the
+    same idea at the design the planner chose (addendum G.3). Transient entries are recorded for
+    forensics and narrow nothing -- they carry no ``design_keys``, so a resume cannot revive them.
     """
     by_action: dict[str, dict] = {}
     by_hkl: dict[str, dict] = {}
@@ -1929,9 +1929,9 @@ def _record_action_rejection(cfg, plan, proposal, verdict: str,
 
     * ``geometry`` charges the **hkl** (``unreachable_hkl``);
     * ``action`` charges the **scientific action fingerprint** (``action_suppressions``);
-    * ``request`` charges only the **request fingerprint** (``request_suppressions``) so the exact
-      request is not re-emitted, while the scientific action — and with it the widen / re-center /
-      step-shrink ladder that answers the same question with a different window — stays untouched;
+    * ``request`` charges only the **request fingerprint** (``request_suppressions``) and the exact
+      design (``suppressed_designs``) so neither is re-emitted, while the scientific action stays
+      untouched and the planner is free to answer it with a different window or exposure;
     * a transient refusal is left entirely alone and does not advance to another action.
 
     The logged ``action_suppressed`` event carries the scope and the request fingerprint, so a resume
@@ -1952,12 +1952,16 @@ def _record_action_rejection(cfg, plan, proposal, verdict: str,
     # have moved. Charging only the trimmed one leaves the planner's own design unsuppressed, and it
     # is re-ranked first, re-trimmed and re-refused on every remaining iteration. Recorded on the
     # event so a resume rebuilds the set from the durable log rather than a second store.
-    keys = {design_key(hkl, proposal.e_lo, proposal.e_hi, proposal.e_step, proposal.ncount)}
-    designed = (proposal.meta or {}).get("design_key")
-    if designed:
-        keys.add(design_key(*designed))
-    if suppressed_designs is not None:
-        suppressed_designs.update(keys)
+    # A TRANSIENT refusal -- the beam went down, the job was cancelled -- says nothing about the
+    # design and must narrow nothing, in memory or on resume. Only a durable scope condemns it.
+    keys = set()
+    if rejection.scope != "none":
+        keys = {design_key(hkl, proposal.e_lo, proposal.e_hi, proposal.e_step, proposal.ncount)}
+        designed = (proposal.meta or {}).get("design_key")
+        if designed:
+            keys.add(design_key(*designed))
+        if suppressed_designs is not None:
+            suppressed_designs.update(keys)
     log_event(cfg.log_path, "action_suppressed", {
         "design_keys": [[list(key[0]), key[1], key[2], key[3], key[4]]
                         for key in sorted(keys)],
@@ -2404,7 +2408,6 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
     log_path, workspace, data_dir = cfg.log_path, cfg.workspace, cfg.data_dir
     attempt = 0
     rows: list[dict] = []
-    support_adjusted = False
     feasibility_trimmed = False
     # The request as it stood before a feasibility trim. A decline after the trim charges the
     # *trimmed* fingerprint, so without this the untrimmed original stays unsuppressed and the
@@ -2476,9 +2479,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                         + 1e-9)
 
             if not _in_window(target_energy):
-                # A survey quicklook leaves ``e_pred`` at 0.0 and searches a whole band; the
-                # hypothesis' own centre is then what the window is about. With neither, the
-                # proposal declares no target and longest-run is the honest choice.
+                # No declared target inside the window: longest-run is the honest choice.
                 target_energy = None
                 if target_band is not None and _in_window(float(target_band[0])):
                     target_energy = float(target_band[0])
@@ -2586,22 +2587,6 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                 "submitting unchanged", feasible_points, requested_points)
         if (min_support > 0 and target_support is not None and target_support < min_support
                 and val.get("would_queue", False)):
-            mean, sigma = map(float, target_band)
-            desired_step = max((4.0 * sigma) / max(min_support - 1, 1), 1e-6)
-            if not support_adjusted and desired_step < proposal.e_step:
-                old_step = proposal.e_step
-                previous_request_fingerprint = (proposal.meta or {}).get(
-                    "proposal_fingerprint")
-                proposal.e_step = desired_step
-                _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
-                support_adjusted = True
-                log_event(log_path, "exception", {
-                    "action": "increase_target_support", "hkl": [proposal.h, proposal.k, proposal.l],
-                    "old_step": old_step, "requested_step": desired_step,
-                    "new_step": proposal.e_step, "finalized_step": proposal.e_step,
-                    "target_supporting_feasible_points": target_support,
-                    "required": min_support, "iter": it})
-                continue
             log_event(log_path, "exception", {
                 "action": "insufficient_target_support", "hkl": [proposal.h, proposal.k, proposal.l],
                 "target_supporting_feasible_points": target_support,
@@ -3505,6 +3490,15 @@ def _planner_scale(cfg, observations: list[dict], path, branches, temperature_K:
     * the **elastic** area is measured the same way about zero, when zero is inside the window;
     * all three divide by ``ncount``, giving counts*meV (or counts per point) per ONE neutron.
 
+    QC-rejected points are honoured, never deleted (hard rule 5): a point the reducer masked
+    contributes to neither a lobe area nor the background percentile.
+
+    TODO: this integrates the record's RAW abscissa, which is the energy transfer only while the
+    card declares ``raw_abscissa_kind = "absolute"`` -- true of TAVI and of every instrument this
+    lane drives today. A ``needs_zero`` instrument (hard rule 4) records an uncalibrated axis, and
+    its counts must be shifted by the calibrated energy zero before any of these windows mean
+    anything. Do not run this map on one until that shift is applied.
+
     The median over scans per branch, so one clipped window or one mislabelled mode cannot move the
     map. A branch nothing has measured keeps the planner's class default.
 
@@ -3543,14 +3537,23 @@ def _planner_scale(cfg, observations: list[dict], path, branches, temperature_K:
         if index is None or ncount <= 0.0:
             continue
         try:
-            x = [float(v) for v in (record.get("x") or ())]
-            counts = [float(v) for v in (record.get("counts") or ())]
+            raw_x = [float(v) for v in (record.get("x") or ())]
+            raw_counts = [float(v) for v in (record.get("counts") or ())]
         except (TypeError, ValueError):
             continue
-        if len(x) < 3 or len(counts) != len(x):
+        if len(raw_x) < 3 or len(raw_counts) != len(raw_x):
             continue
-        step = abs(x[1] - x[0])
+        step = abs(raw_x[1] - raw_x[0])
         if step <= 0.0:
+            continue
+        # QC masks, never deletes (hard rule 5): a rejected point is still in the record and must
+        # weigh on nothing -- not a lobe area, not the background level.
+        mask = record.get("mask")
+        keep = ([bool(v) for v in mask] if isinstance(mask, list) and len(mask) == len(raw_x)
+                else [True] * len(raw_x))
+        x = [value for value, ok in zip(raw_x, keep) if ok]
+        counts = [count for count, ok in zip(raw_counts, keep) if ok]
+        if len(x) < 3:
             continue
         # Nearest-rank 20th percentile: the level the scan sits at away from its lobes.
         background = sorted(counts)[min(int(0.2 * len(counts)), len(counts) - 1)]
@@ -3746,6 +3749,8 @@ def _certified_prize(*, cfg, objective, grid, budget_state: dict, observations: 
                 previous_scale)
     previous_scale = _log_eig_plan(cfg, planner_input, outcome, 0.0, it=it,
                                    previous_scale=previous_scale)
+    if outcome.stop and outcome.stop_reason != _PLANNER_GOAL_MET:
+        return observations, False, _not_the_prize(objective, outcome, certified.per_q), previous_scale
     if outcome.stop:
         return observations, True, None, previous_scale
     outstanding = [point for point in outcome.per_point
@@ -3760,6 +3765,23 @@ def _certified_prize(*, cfg, objective, grid, budget_state: dict, observations: 
         "reason": ("the certified intervals do not carry the prize the fast-tier map claimed; "
                    "the campaign continues at the points that are still above the bar")})
     return observations, False, None, previous_scale
+
+
+#: The planner's ONE stop that means the objective was answered. Every other stop it can return --
+#: today ``no_admissible_window``, when the point limit drops every candidate at a deficit point --
+#: says the planner ran out of moves, not that the map is at the requested precision.
+_PLANNER_GOAL_MET = "goal_met"
+
+
+def _not_the_prize(objective, outcome, per_q) -> StopDecision:
+    """A planner stop that is not the prize is ``incomplete``, in the planner's own words."""
+    outstanding = sum(1 for point in outcome.per_point
+                      if not point.exempt and not point.within_bar)
+    return StopDecision(
+        "incomplete",
+        [f"the planner stopped without the prize ({outcome.stop_reason}): {outstanding} point(s) "
+         f"remain above \u00b1{float(objective.tolerance_meV):g} meV and no admissible design "
+         "remains at them"], per_q)
 
 
 def _design_dict(design) -> dict:
@@ -4084,6 +4106,9 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             cfg, planner_input, plan_decision, planner_seconds, it=it,
                             previous_scale=logged_scale)
                 if plan_decision is None:
+                    break
+                if plan_decision.stop and plan_decision.stop_reason != _PLANNER_GOAL_MET:
+                    decision = _not_the_prize(objective, plan_decision, decision.per_q)
                     break
                 if plan_decision.stop:
                     # The prize is claimed on the intervals the campaign PUBLISHES, so certification

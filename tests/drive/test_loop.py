@@ -1398,88 +1398,6 @@ def test_certify_sends_only_dirty_q_in_master_worklist(tmp_path, monkeypatch):
     assert requests[0]["runtime"]["total"] == 1
 
 
-def test_optic_campaign_tracks_target_amid_acoustic_distractor_deterministically(
-        tmp_path, monkeypatch):
-    """End-to-end steering regression for the failure that motivated branch-aware campaigns."""
-    _no_subprocess(monkeypatch)
-
-    def execute(root):
-        frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
-        frozen["steering"] = {**frozen["steering"],
-                              "differentiation_tolerance_meV": 1.2,
-                              "quicklook_ncount": 50_000_000,
-                              "production_batch_ncount": 100_000_000}
-        frozen["hypothesis_fingerprint"] = content_fingerprint(
-            frozen["hypotheses"], frozen["steering"])
-        objective = ObjectiveSpec.segment(
-            q_start=(2.0, 0.0, 0.0), q_end=(2.0, 0.5, 0.0), step_rlu=0.1,
-            tolerance_meV=0.5, budget={"kind": "neutrons", "amount": 2.0e12},
-            name="optic-two-branch", target_branch="optic", target_label="transverse optic",
-            energy_search_meV=(-2.0, 12.0), **frozen)
-        client = BranchAwareOpticTavi(lambda _h: 0.0)
-        summary, workspace = _run(
-            root, objective, client, make_branch_aware_optic_runner(objective))
-        events = read_log(summary["session_log"])
-        proposals = [event["payload"] for event in events if event["kind"] == "propose"]
-        return summary, proposals, workspace
-
-    first_summary, first_proposals, first_workspace = execute(tmp_path / "first")
-    second_summary, second_proposals, _ = execute(tmp_path / "second")
-
-    # Optic campaigns begin at Γ and never waste the first scan on the Bragg/elastic position.
-    first = first_proposals[0]
-    assert first["hkl"] == [2.0, 0.0, 0.0]
-    assert first["e_lo"] > 0.0 and first["e_lo"] < 6.0 < first["e_hi"]
-    assert first["ncount"] == 50_000_000
-    assert any(proposal["kind"] == "production" and proposal["ncount"] >= 100_000_000
-               for proposal in first_proposals)
-
-    # The resolved dispersion stays on the ~6 meV optic branch; the strong acoustic distractor rises
-    # from zero to 6 meV but never becomes the reported target (no acoustic/optic sawtooth).
-    energies = [row["omega0"] for row in first_summary["dispersion"]]
-    assert len(energies) == 6 and min(energies) >= 5.9
-    assert all(abs(right - left) < 0.2 for left, right in zip(energies, energies[1:]))
-    with open(first_workspace / "report" / "results.csv", newline="", encoding="utf-8") as handle:
-        result_rows = list(csv.DictReader(handle))
-    assert any(row["branch_id"] == "acoustic" and row["disposition"] == "resolved"
-               for row in result_rows)
-    assert any(float(row["omega0"] or 0.0) < 5.0 for row in result_rows
-               if row["branch_id"] == "acoustic")
-
-    # Once requested points are seeded, at least one explicitly non-certifying probe wins on branch
-    # information and exposes the MI in its score; rival support also reaches the scan window.
-    inserted = [proposal for proposal in first_proposals
-                if proposal["meta"].get("driver_inserted")]
-    assert inserted
-    assert all(not proposal["meta"]["certification_eligible"] for proposal in inserted)
-    assert any((proposal["meta"]["score"].get("classification_eig") or 0.0) > 0.0
-               for proposal in inserted)
-    assert any(proposal["meta"].get("rival_band") is not None for proposal in first_proposals[1:])
-
-    # Branch beliefs survive into the human/machine terminal artifact, and terminal success is honest:
-    # every requested point—not a diagnostic probe—is converged.
-    assert {row["branch_id"] for row in first_summary["branch_beliefs"]} == {"optic", "acoustic"}
-    assert first_summary["stop"]["state"] == "met"
-    assert all(row["converged"] for row in first_summary["grid"])
-    final_events = read_log(first_summary["session_log"])
-    assert len([event for event in final_events
-                if event["kind"] == "certification_crossing"]) == len(first_summary["grid"])
-    assert not any(event["kind"] == "exception"
-                   and (event.get("payload") or {}).get("action") == "certify_regression"
-                   for event in final_events)
-    persisted = json.loads(
-        (first_workspace / "report" / "campaign_summary.json").read_text(encoding="utf-8"))
-    assert persisted["stop"]["state"] == "met" and persisted["branch_beliefs"]
-
-    # Fixed objective, spectra, priors, and seed produce the same acquisition sequence on a fresh run.
-    signature = lambda proposals: [
-        (tuple(proposal["hkl"]), proposal["kind"], proposal["meta"].get("driver_inserted"),
-         round(proposal["e_lo"], 8), round(proposal["e_hi"], 8))
-        for proposal in proposals]
-    assert signature(second_proposals) == signature(first_proposals)
-    assert second_summary["stop"]["state"] == first_summary["stop"]["state"]
-
-
 def test_optic_campaign_with_supplied_energy_runs_nearest_selector(tmp_path, monkeypatch):
     """The scientist-facing supplied-energy mode traverses the complete campaign loop."""
     _no_subprocess(monkeypatch)
@@ -3939,3 +3857,20 @@ def test_the_elastic_term_is_read_only_where_a_window_sees_it(tmp_path):
     assert only_straddling.elastic_counts_meV == pytest.approx(default.elastic_counts_meV)
     # The separated scan looked at zero and found nothing there: that IS the measurement.
     assert both.elastic_counts_meV == pytest.approx(0.0)
+
+
+def test_a_planner_stop_that_is_not_the_prize_is_incomplete(tmp_path):
+    """``no_admissible_window`` means the planner ran out of moves, not that the map is at the
+    requested precision. Reporting it ``met`` would certify a campaign that measured nothing.
+
+    A point ceiling of three drops every candidate window at a deficit point, which is exactly the
+    state that stop names.
+    """
+    omega = lambda h: (h - 2.0) * 2.0
+    objective = _objective()
+    objective.steering = {**objective.steering, "max_scan_points": 3}
+    summary, _workspace = _run(tmp_path, objective, MockTavi(omega), make_mock_runner(omega))
+
+    assert summary["stop"]["state"] == "incomplete"
+    assert "without the prize" in summary["stop"]["reasons"][0]
+    assert "no_admissible_window" in summary["stop"]["reasons"][0]

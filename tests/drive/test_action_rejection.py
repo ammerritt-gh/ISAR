@@ -96,8 +96,19 @@ def test_suppressions_are_rederived_from_the_session_log(tmp_path):
         "scientific_action_fingerprint": "fp-blip", "hkl": [2.6, 0.0, 0.0], "scope": "none",
         "rejection_class": "transient", "reason": "connection lost", "iter": 6})
 
+    # A request-scoped refusal condemns the exact design too, and a resume must rebuild it...
+    loop_mod.log_event(log_path, "action_suppressed", {
+        "request_fingerprint": "req-2", "hkl": [2.4, 0.0, 0.0], "scope": "request",
+        "rejection_class": "structural", "reason": "validation_rejected", "iter": 7,
+        "design_keys": [[[2.4, 0.0, 0.0], -1.0, 5.0, 0.2, 5_000_000]]})
+    # ...while a TRANSIENT one carries no design and must narrow nothing, in memory or on resume:
+    # the beam going down says nothing about the design that was in flight.
+    loop_mod.log_event(log_path, "action_suppressed", {
+        "hkl": [2.7, 0.0, 0.0], "scope": "none", "rejection_class": "transient",
+        "reason": "scan_not_done:cancelled", "iter": 8, "design_keys": []})
+
     by_action, by_hkl, by_request, by_design = loop_mod.suppressed_actions(log_path)
-    assert by_design == set()          # none of these events named a design
+    assert by_design == {loop_mod.design_key((2.4, 0.0, 0.0), -1.0, 5.0, 0.2, 5_000_000)}
     assert by_action == {}
     assert set(by_hkl) == {"3,0,0"}
     assert by_hkl["3,0,0"]["class"] == "structural"
@@ -106,7 +117,7 @@ def test_suppressions_are_rederived_from_the_session_log(tmp_path):
     # an unchanged request the instrument already refused is not re-emitted after a resume. It must NOT
     # touch by_action: the widen / re-center ladder answering the same question with a different window
     # keys off the scientific action fingerprint and has to stay open.
-    assert set(by_request) == {"req-1"}
+    assert set(by_request) == {"req-1", "req-2"}
     assert by_request["req-1"]["class"] == "structural"
     assert "validation_rejected" in by_request["req-1"]["reason"]
 
@@ -179,3 +190,38 @@ def test_a_transient_rejection_records_nothing_durable_and_offers_no_next_action
     assert action_suppressions == {} and unreachable_hkl == {} and by_request == {}
 
 
+
+
+def test_a_transient_refusal_condemns_no_design(tmp_path):
+    """The beam going down is not a statement about the design that was in flight.
+
+    A transient refusal must narrow nothing — not the in-memory set the selector reads this
+    iteration, and not the durable event a resume rebuilds it from.
+    """
+    cfg = types.SimpleNamespace(log_path=tmp_path / "log.jsonl")
+    suppressed: set = set()
+
+    loop_mod._record_action_rejection(
+        cfg, None, _refused_proposal(), "scan_not_done:cancelled", {}, {}, {}, it=3,
+        suppressed_designs=suppressed)
+
+    assert suppressed == set()
+    event = next(e["payload"] for e in loop_mod.read_log(cfg.log_path)
+                 if e.get("kind") == "action_suppressed")
+    assert event["scope"] == "none"
+    assert event["design_keys"] == []
+    assert loop_mod.suppressed_actions(cfg.log_path)[3] == set()
+
+
+def test_a_request_scoped_refusal_condemns_the_design_it_was(tmp_path):
+    """The other half of the same rule: a durable refusal does condemn the exact design."""
+    cfg = types.SimpleNamespace(log_path=tmp_path / "log.jsonl")
+    suppressed: set = set()
+
+    loop_mod._record_action_rejection(
+        cfg, None, _refused_proposal(), "validation_rejected", {}, {}, {}, it=3,
+        suppressed_designs=suppressed)
+
+    expected = loop_mod.design_key((2.5, 0.0, 0.0), -1.0, 5.0, 0.2, 5_000_000)
+    assert suppressed == {expected}
+    assert loop_mod.suppressed_actions(cfg.log_path)[3] == {expected}
