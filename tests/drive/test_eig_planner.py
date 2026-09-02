@@ -210,7 +210,7 @@ def test_a_scan_that_saw_only_the_acoustic_argues_against_the_optic_in_its_windo
 
     def mass_inside(inp):
         rows = {b: dict(inp.beliefs[b]) for b in branches}
-        om, wt, _ = _scenarios(0, inp, branches, _Predictor(rows, DOMAIN[1]),
+        om, wt, _tr, _marg = _scenarios(0, inp, branches, _Predictor(rows, DOMAIN[1]),
                                {k: tuple(v) for k, v in inp.scans.items()})
         return {b: float(wt[(om[:, i] >= window.e_lo) & (om[:, i] <= window.e_hi)].sum())
                 for b, i in (("optic", optic), ("acoustic", acoustic))}
@@ -242,7 +242,7 @@ def test_the_seeded_acoustic_campaign_reaches_the_prize_deterministically(capsys
     lines = capsys.readouterr().out.splitlines()
     scans = [line for line in lines if line.strip().startswith(tuple("0123456789"))
              and " h=" in line]
-    assert len(scans) == 23
+    assert len(scans) == 25
     first = [(line.split("h=")[1].split()[0], line.split("n=")[1].split()[0]) for line in scans[:3]]
     assert first == [("2.05", "14"), ("2.10", "13"), ("2.15", "12")]
     stop = next(line for line in lines if line.startswith("stop="))

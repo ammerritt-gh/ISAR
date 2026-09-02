@@ -605,13 +605,18 @@ def branch_counts(energies: Sequence[float], *, e_lo: float, e_step: float, n_po
 # --------------------------------------------------------------------------- windows
 
 def _window_list(mus, sigs, sres: float, fwhm: float, lo_d: float, hi_d: float,
-                 step_fraction: float, max_points: int):
-    """Every window the beliefs generate at one grid point, hull windows included."""
+                 step_fraction: float, max_points: int, extra=()):
+    """Every window the beliefs generate at one grid point, hull windows included.
+
+    ``extra`` carries additional ``(centre, spread)`` pairs -- the clusters of surviving scenario
+    mass -- which get the same window families as a branch's own moments.  With a unimodal scenario
+    set they land on the moment windows and dedup away.
+    """
     step = float(step_fraction) * float(fwhm)
     if step <= 0.0:
         raise ValueError("step_fraction * fwhm_meV must be positive")
     raw: list[tuple[float, float]] = []
-    for mu, sg in zip(mus, sigs):
+    for mu, sg in list(zip(mus, sigs)) + list(extra):
         for k in WINDOW_K_FACTORS:
             hw = k * math.sqrt(sg * sg + sres * sres) + sres
             raw.append((mu - hw, mu + hw))
@@ -820,6 +825,7 @@ def _scenarios(i, inp, branches, predict, executed):
     scans = executed.get(i, ())
     mu_all = [predict(b, inp.u[i])[0] for b in branches]
     nodes, weights = [], []
+    reweighted = [False] * len(branches)
     for bi, b in enumerate(branches):
         mu, sig = predict(b, inp.u[i])
         x = np.maximum(mu + _SQRT2 * sig * _GH8_X, 0.0)
@@ -837,15 +843,43 @@ def _scenarios(i, inp, branches, predict, executed):
                               fwhm_meV=float(inp.fwhm_meV[i]),
                               temperature_K=float(inp.temperature_K), scale=inp.scale,
                               branches=branches, ncount=int(scan.ncount))[bi] for e in x])
-            w = np.where(inside & (detectable >= NULL_DETECTION_COUNTS),
-                         w * NULL_MISS_PROBABILITY, w)
+            contradicted = inside & (detectable >= NULL_DETECTION_COUNTS)
+            w = np.where(contradicted, w * NULL_MISS_PROBABILITY, w)
+            reweighted[bi] |= bool(contradicted.any())
         nodes.append(x)
         weights.append(w / w.sum())
     mesh = np.meshgrid(*nodes, indexing="ij")
     wmesh = np.meshgrid(*weights, indexing="ij")
     om = np.stack([m.ravel() for m in mesh], axis=-1)
     wt = np.prod(np.stack([w.ravel() for w in wmesh], axis=-1), axis=-1)
-    return om, wt / wt.sum(), bool(scans)
+    return om, wt / wt.sum(), bool(scans), list(zip(nodes, weights, reweighted))
+
+
+def _scenario_clusters(nodes, weights, sres: float):
+    """Weighted (mean, spread) of each separated lump of one branch's scenario mass.
+
+    Negative evidence moves scenario WEIGHT without moving the belief's moments, so a branch whose
+    middle has been contradicted keeps a mean at the band centre while its surviving mass sits at
+    the ends -- and windows built from the moments look exactly where the evidence says the branch
+    is not.  Nodes are split wherever a gap exceeds two resolution widths, which is the smallest
+    separation a scan could resolve into distinct peaks anyway; a lump holding less weight than one
+    fitter miss (:data:`NULL_MISS_PROBABILITY`) is not worth a window of its own.
+    """
+    order = np.argsort(nodes, kind="stable")
+    x, w = np.asarray(nodes)[order], np.asarray(weights)[order]
+    cuts = np.flatnonzero(np.diff(x) > 2.0 * sres) + 1
+    out = []
+    for part_x, part_w in zip(np.split(x, cuts), np.split(w, cuts)):
+        mass = float(part_w.sum())
+        if mass <= NULL_MISS_PROBABILITY:
+            continue
+        mean = float(np.dot(part_w, part_x) / mass)
+        spread = math.sqrt(max(float(np.dot(part_w, part_x ** 2) / mass) - mean * mean, 0.0))
+        out.append((mean, spread))
+    # One surviving lump is already what the moments describe, so it would only re-derive the
+    # windows the branch already has.  Two or more is the case the moments cannot express: a mean
+    # sitting in the contradicted gap between them.
+    return out if len(out) > 1 else []
 
 
 def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, measured, executed,
@@ -861,16 +895,23 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
     background = float(inp.scale.background_per_point)
 
     belief = [predict(b, inp.u[i]) for b in branches]
-    om, weight_s, truncated = _scenarios(i, inp, branches, predict, executed)
+    om, weight_s, truncated, marginals = _scenarios(i, inp, branches, predict, executed)
     n_scen = om.shape[0]
+    extra: list[tuple[float, float]] = []
     if truncated:
         mus = np.einsum("s,sb->b", weight_s, om)
         sigs = np.sqrt(np.maximum(np.einsum("s,sb->b", weight_s, om ** 2) - mus ** 2, 1e-6))
+        # Candidate windows follow the surviving scenario mass, not only its moments -- but only
+        # for a branch some scan actually argued against.  An untouched branch's nodes are a
+        # quadrature grid, not structure, and splitting it on absolute gaps would invent windows.
+        for nodes, node_w, was_reweighted in marginals:
+            if was_reweighted:
+                extra.extend(_scenario_clusters(nodes, node_w, sres))
     else:
         mus = np.array([p[0] for p in belief])
         sigs = np.array([p[1] for p in belief])
     windows = _window_list(mus, sigs, sres, fwhm, lo_d, hi_d, float(inp.step_fraction),
-                           int(inp.max_points))
+                           int(inp.max_points), extra=extra)
     if not windows:
         return []
 
