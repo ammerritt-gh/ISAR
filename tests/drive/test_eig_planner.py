@@ -345,6 +345,31 @@ def test_a_scan_measures_a_branch_only_when_the_fitter_would_see_it():
     assert detection_significance([1.0, 6.0], ncount=200_000_000, **kw)[0] < DETECT_FLOOR
 
 
+def test_detectability_is_a_property_of_the_pooled_master():
+    """ISAR pools every scan at a q into a master and fits the MASTER, so the forward question --
+    can this design deliver a fitted peak -- is asked of what is banked here plus what the design
+    adds.  Both directions: a top-up that finishes an almost-there point is admitted, and the same
+    small scan at an untouched point is still refused."""
+    from isar.drive.acquisition.eig_planner import (DETECT_FLOOR, banked_exposure,
+                                                    detection_significance)
+
+    kw = dict(e_lo=4.0, e_step=0.2, n_points=25, fwhm_meV=0.8, temperature_K=200.0,
+              branches=BRANCHES, scale=default_intensity_scale(BRANCHES))
+    top_up = 5_000_000
+    banked = (ExecutedScan(4.0, 9.0, 20_000_000, {}), ExecutedScan(4.0, 9.0, 20_000_000, {}))
+
+    # only scans whose window covers the peak count toward its master
+    assert banked_exposure(banked, 6.0) == pytest.approx(4.0e7)
+    assert banked_exposure(banked, 1.0) == 0.0
+    assert banked_exposure((), 6.0) == 0.0
+
+    alone = detection_significance([1.0, 6.0], ncount=top_up, **kw)[1]
+    pooled = detection_significance([1.0, 6.0],
+                                    ncount=top_up + banked_exposure(banked, 6.0), **kw)[1]
+    assert alone < DETECT_FLOOR                      # too small a first scan: still refused
+    assert pooled >= DETECT_FLOOR                    # the same scan on a pool: finishes the point
+
+
 def test_the_miss_factor_is_soft_and_shared():
     """One factor, read by the scenario weights and by the point's presence alike."""
     surely_seen = ExecutedScan(0.0, 9.0, 5_000_000, {"optic": 1.0})

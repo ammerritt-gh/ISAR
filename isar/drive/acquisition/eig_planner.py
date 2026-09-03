@@ -52,7 +52,7 @@ __all__ = [
     "merge_candidate", "upsert_anchor",
     "fisher_sigma_meV", "branch_counts", "expected_counts", "detection_significance",
     "DETECT_FLOOR", "hdi_halfwidth",
-    "target_posterior", "point_presence", "miss_factor", "FALSE_IDENTIFICATION", "PRESENCE_PRIOR_ODDS",
+    "target_posterior", "point_presence", "banked_exposure", "miss_factor", "FALSE_IDENTIFICATION", "PRESENCE_PRIOR_ODDS",
     "joint_assign", "_pad_candidates",
     "default_intensity_scale", "NEW", "NEW_LEVEL", "ASSIGNMENT_ENTROPY_STOP_NATS",
     "CONFIRMED_PROBABILITY",
@@ -469,6 +469,19 @@ def miss_factor(scan: ExecutedScan, branch: str) -> float:
     """
     p = scan.probability(branch)
     return p + (1.0 - p) * NULL_MISS_PROBABILITY
+
+
+def banked_exposure(scans: Sequence[ExecutedScan], energy: float) -> float:
+    """Exposure already collected at this grid point that covers ``energy``.
+
+    ISAR pools every scan at a (q, condition) into a master and fits the MASTER; a single scan's
+    own fittability is not the evidence.  So the forward question -- can a design deliver a fitted
+    peak -- is asked of the pool: what is banked here already, plus what this design would add.
+    Only scans whose window covers the energy count, since a scan that never looked there
+    contributes nothing to that peak in the master.
+    """
+    return float(sum(int(scan.ncount) for scan in scans
+                     if float(scan.e_lo) <= float(energy) <= float(scan.e_hi)))
 
 
 def point_presence(branches: Sequence[str], energies: Sequence[float],
@@ -1197,6 +1210,11 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
         return []
 
     # --- Fisher sigma for every window and exposure ----------------------------------------
+    # Banked exposure per branch: what the master at this q already holds at that peak. The Fisher
+    # sigma itself stays per design -- precision accumulates through merge_candidate pooling the
+    # delivered peaks, and counting it here too would double it.
+    banked = np.array([banked_exposure(executed.get(i, ()), belief[b][0])
+                       for b in range(n_branch)], dtype=float)
     n_win, n_exp = len(windows), len(ladder)
     sigma_fit = np.empty((n_win, n_exp, n_scen, n_branch))
     for wi, (lo, _hi, step, npts) in enumerate(windows):
@@ -1210,7 +1228,13 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
         # significance A/sqrt(A+B) against DETECT_FLOOR. Without it the planner buys a cheap probe
         # of a dim band whose Cramer-Rao sigma looks fine, the fitter abstains, the point's state
         # never changes, and the identical design wins again.
-        exposure = np.array(ladder, dtype=float)[:, None, None]
+        #
+        # The test is on the POOLED exposure -- what is banked at this q plus what this design
+        # would add -- because the fit that matters is the master's, not this scan's. Height and
+        # background both scale with exposure, so this is the same arithmetic at a larger ncount,
+        # not a second model. A point with nothing banked is unchanged; a point already part-way
+        # there can be finished by a cheap top-up instead of a fresh full-significance scan.
+        exposure = np.array(ladder, dtype=float)[:, None, None] + banked[None, None, :]
         significance = _significance(height[None, :, :] * exposure, background * exposure)
         sigma_fit[wi] = np.where(significance >= DETECT_FLOOR, sigma_fit[wi], np.inf)
     sigma_fit = sigma_fit.reshape(n_win * n_exp, n_scen, n_branch)
