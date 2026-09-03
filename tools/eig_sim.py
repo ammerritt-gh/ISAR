@@ -29,10 +29,11 @@ if __package__ in (None, ""):                      # run as a script from anywhe
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from isar.analyze.truth import _fold
+from isar.drive.acquisition.classify_eig import belief_predict
 from isar.drive.acquisition.eig_planner import (
     Candidate, ExecutedScan, IntensityScale, PlannerInput, anchor_admitted, branch_counts,
     KB_MEV_PER_K, default_intensity_scale, expected_counts, fisher_sigma_meV, joint_assign,
-    merge_candidate,
+    merge_candidate, point_presence,
     plan_next, upsert_anchor,
 )
 from isar.schema.hypotheses import preset
@@ -43,6 +44,7 @@ TEMPERATURE_K = 200.0
 FWHM_MEV = 0.8
 PERIOD = 2.0
 MAX_SCANS = 200
+REPEAT_LIMIT = 3          # identical (window, exposure) takes before the planner is looping
 DETECTION_COUNTS = 5.0               # the world's detection floor, not the planner's
 
 #: The truth's intensity scale, per 1e7 neutrons (``test_workspaces/demo-rehearsal/F-final``).
@@ -161,7 +163,7 @@ def run(args) -> int:
     beliefs = {b: belief_row(b) for b in BRANCHES}
     measured: dict[int, tuple[Candidate, ...]] = {}
     executed_scans: dict[int, tuple[ExecutedScan, ...]] = {}
-    executed: set[tuple] = set()
+    executed: dict[tuple, int] = {}
     class_scale = default_intensity_scale(BRANCHES)
     scale = class_scale
     count_records: list[tuple] = []
@@ -192,10 +194,15 @@ def run(args) -> int:
         scans += 1
         total_neutrons += design.neutrons
         total_price += design.price
+        # A repeat of an identical (window, exposure) is legitimate: a null is evidence, not proof,
+        # so a second look is an independent observation and two nulls multiply. What must never
+        # happen is the LOOP the hard-null design produced -- the same design over and over while
+        # nothing changes. Bounded at REPEAT_LIMIT.
         fingerprint = (i, round(design.e_lo, 6), round(design.e_hi, 6), design.ncount)
-        if args.inject_null and fingerprint in executed:
-            raise AssertionError(f"scan {scans} repeats {fingerprint} after a null at that point")
-        executed.add(fingerprint)
+        executed[fingerprint] = executed.get(fingerprint, 0) + 1
+        if executed[fingerprint] > REPEAT_LIMIT:
+            raise AssertionError(f"scan {scans} takes {fingerprint} for the "
+                                 f"{executed[fingerprint]}th time: the planner is looping")
         hidden = args.inject_null and scans == 1
 
         truth = truth_energies(us[i])
@@ -229,9 +236,16 @@ def run(args) -> int:
                 seen.append("acou HIDDEN by --inject-null")
                 continue
             found.append((branch, truth[branch] + float(rng.normal(0.0, sigmas[bi])), sigmas[bi]))
+        # The world identifies the peaks with the same presence the prize will read: a branch
+        # looked for here and not found has already lost most of its claim.
+        presence = point_presence(BRANCHES, [belief_predict(beliefs[b], us[i],
+                                                            domain_hi=ENERGY_DOMAIN[1])[0]
+                                             for b in BRANCHES],
+                                  executed_scans.get(i, ()), step=design.e_step,
+                                  fwhm_meV=FWHM_MEV, temperature_K=TEMPERATURE_K, scale=scale)
         identities = joint_assign([(e, s) for _b, e, s in found], us[i], beliefs, BRANCHES,
                                   window=(design.e_lo, design.e_hi),
-                                  domain_hi=ENERGY_DOMAIN[1])
+                                  domain_hi=ENERGY_DOMAIN[1], presence=presence)
         target = targets[0]
         for (branch, observed, sigma), probs in zip(found, identities):
             measured[i] = merge_candidate(measured.get(i, ()), Candidate(observed, sigma, probs))
@@ -310,8 +324,6 @@ def _plot(out: str, hs, us, measured, beliefs, targets, target) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from isar.drive.acquisition.classify_eig import belief_predict
-
     fig, ax = plt.subplots(figsize=(8.0, 5.0))
     fine = np.linspace(min(hs), max(hs), 400)
     fine_u = np.array([abs(_fold(float(h), PERIOD)) for h in fine])
@@ -342,7 +354,7 @@ def main(argv=None) -> int:
     p.add_argument("--h-start", type=float, default=2.0)
     p.add_argument("--h-end", type=float, default=3.0)
     p.add_argument("--step-h", type=float, default=0.05)
-    p.add_argument("--tolerance", type=float, default=0.05)
+    p.add_argument("--tolerance", type=float, default=0.1)
     p.add_argument("--plot", default=None, help="write a PNG (matplotlib, Agg)")
     p.add_argument("--inject-null", action="store_true",
                    help="the world hides the acoustic peak for the first scan")

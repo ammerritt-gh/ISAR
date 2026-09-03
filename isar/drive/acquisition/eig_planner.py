@@ -50,7 +50,8 @@ __all__ = [
     "Candidate", "ExecutedScan", "IntensityScale", "PlannerInput", "PointState", "RankedDesign",
     "Decision", "plan_next", "assign", "identity_entropy", "anchor_admitted",
     "merge_candidate", "upsert_anchor",
-    "fisher_sigma_meV", "branch_counts", "expected_counts", "hdi_halfwidth", "target_posterior",
+    "fisher_sigma_meV", "branch_counts", "expected_counts", "hdi_halfwidth",
+    "target_posterior", "point_presence", "miss_factor",
     "joint_assign", "_pad_candidates",
     "default_intensity_scale", "NEW", "NEW_LEVEL", "ASSIGNMENT_ENTROPY_STOP_NATS",
     "CONFIRMED_PROBABILITY",
@@ -344,7 +345,8 @@ def hdi_halfwidth(energies, sigmas, weights, w_none, width: float, *, iterations
     return 0.5 * extent
 
 
-def target_posterior(energies, sigmas, valid, mus, sigs, target_index: int, absent=None):
+def target_posterior(energies, sigmas, valid, mus, sigs, target_index: int, absent=None,
+                     presence=None):
     """Weights of the mutually exclusive "which peak, if any, IS the target" mixture.
 
     Returns ``(w_j, w_none)``, summing to one: the joint peak <-> branch matching gives the target
@@ -360,6 +362,8 @@ def target_posterior(energies, sigmas, valid, mus, sigs, target_index: int, abse
     like = np.stack([np.where(valid, _norm_pdf(e, np.asarray(mu)[..., None],
                                                np.sqrt(np.asarray(sig)[..., None] ** 2 + s ** 2)),
                               0.0) for mu, sig in zip(mus, sigs)], axis=-2)
+    if presence is not None:
+        like = like * np.asarray(presence, dtype=float)[..., :, None]
     marg, _p_new = _joint_marginals(like, valid, absent)
     w = marg[..., target_index]
     return w, np.clip(1.0 - w.sum(axis=-1), 0.0, 1.0)
@@ -427,6 +431,46 @@ def _absent_weight(mu, sig, window):
     return np.clip(1.0 - inside, 1e-9, 1.0)
 
 
+def miss_factor(scan: ExecutedScan, branch: str) -> float:
+    """How much a scan that looked for ``branch`` and did not report it leaves of its claim.
+
+    ``p + (1 - p) * NULL_MISS_PROBABILITY`` with ``p`` the probability the scan DID deliver that
+    branch: 1.0 when it surely did, :data:`NULL_MISS_PROBABILITY` when it surely did not, and in
+    between when the identification was unsure.  Both halves of "a null is evidence" read this --
+    the scenario weights and the point's presence -- so they cannot drift apart.
+    """
+    p = scan.probability(branch)
+    return p + (1.0 - p) * NULL_MISS_PROBABILITY
+
+
+def point_presence(branches: Sequence[str], energies: Sequence[float],
+                   scans: Sequence[ExecutedScan], *, step: float, fwhm_meV: float,
+                   temperature_K: float, scale: IntensityScale):
+    """P(each branch is present at this grid point at all), from the scans already run there.
+
+    Reweighting the scenarios was only half of "a null is evidence": it moves where a branch would
+    be if it is there, and never whether it is there.  So a rival that is broad, unanchored and just
+    under the detection floor kept a full claim on someone else's peak no matter how often it was
+    looked for and not found -- and the target's identity could never resolve, whatever was measured.
+
+    A scan counts against a branch only if it would have DETECTED that branch at the branch's
+    predicted energy (expected counts at or above :data:`NULL_DETECTION_COUNTS`); a scan that could
+    not have seen it says nothing either way.  Each qualifying scan multiplies by
+    :func:`miss_factor`, so five fruitless looks leave a rival 1e-5 of its claim.  A branch with no
+    scans at that point has presence 1.
+    """
+    presence = np.ones(len(branches))
+    for scan in scans:
+        n_points = max(int(math.floor((float(scan.e_hi) - float(scan.e_lo)) / step)) + 1, 1)
+        counts = branch_counts(energies, e_lo=float(scan.e_lo), e_step=step, n_points=n_points,
+                               fwhm_meV=fwhm_meV, temperature_K=temperature_K, scale=scale,
+                               branches=branches, ncount=int(scan.ncount))
+        for bi, b in enumerate(branches):
+            if counts[bi] >= NULL_DETECTION_COUNTS:
+                presence[bi] *= miss_factor(scan, b)
+    return presence
+
+
 def _joint_marginals(like, present, absent=None):
     """Per-peak branch marginals from the JOINT peak <-> branch identification.
 
@@ -472,7 +516,8 @@ def _joint_marginals(like, present, absent=None):
 def joint_assign(peaks: Sequence[tuple[float, float]], u: float,
                  beliefs: Mapping[str, Mapping], branches: Sequence[str], *,
                  window: tuple[float, float] | None = None,
-                 domain_hi: float | None = None) -> list[dict[str, float]]:
+                 domain_hi: float | None = None,
+                 presence=None) -> list[dict[str, float]]:
     """Per-peak branch probabilities from the joint identification of one scan's peaks.
 
     ``peaks`` is ``[(energy, sigma), ...]`` -- the peaks one scan delivered; ``window`` is the scan's
@@ -486,6 +531,8 @@ def joint_assign(peaks: Sequence[tuple[float, float]], u: float,
     e = np.array([float(p[0]) for p in peaks])
     sg = np.array([max(float(p[1]), 1e-9) for p in peaks])
     like = np.stack([_norm_pdf(e, mu, np.sqrt(sig * sig + sg * sg)) for mu, sig in preds])
+    if presence is not None:
+        like = like * np.asarray(presence, dtype=float)[:, None]
     absent = np.array([[_absent_weight(np.array(mu), np.array(sig), window) for mu, sig in preds]])
     marg, p_new = _joint_marginals(like[None, ...], np.ones((1, len(peaks)), dtype=bool),
                                    absent.reshape(1, len(names)))
@@ -819,14 +866,15 @@ def _deficit(hw, identified, tau: float):
     return width_term + identity_term
 
 
-def _deficits_batch(padded, mus, sigs, target_index, width: float, tau: float, exempt):
+def _deficits_batch(padded, mus, sigs, target_index, width: float, tau: float, exempt,
+                    presence=None):
     """HDI half-width, identified mass and deficit of a padded batch, in one vectorised pass.
 
     ``mus`` / ``sigs`` are per-branch sequences of per-point belief predictions.
     """
     e, s, valid = padded
     w, w_none = target_posterior(e, s, valid, [np.asarray(m) for m in mus],
-                                 [np.asarray(g) for g in sigs], target_index)
+                                 [np.asarray(g) for g in sigs], target_index, presence=presence)
     any_peak = valid.any(axis=-1)
     hw = np.where(any_peak, hdi_halfwidth(e, s, w, w_none, width), 0.5 * width)
     identified = np.where(any_peak, w.sum(axis=-1), 0.0)
@@ -852,12 +900,19 @@ def plan_next(inp: PlannerInput) -> Decision:
               for m in range(n_path)]
     padded_all = _pad_candidates([measured.get(m, ()) for m in range(n_path)])
     preds_all = [[predict(b, inp.u[m]) for m in range(n_path)] for b in branches]
+    presence_all = np.array([
+        point_presence(branches, [preds_all[b][m][0] for b in range(len(branches))],
+                       executed.get(m, ()), step=float(inp.step_fraction) * float(inp.fwhm_meV[m]),
+                       fwhm_meV=float(inp.fwhm_meV[m]), temperature_K=float(inp.temperature_K),
+                       scale=inp.scale)
+        for m in range(n_path)])                                   # (M, B)
     halfwidth, identified, deficit_now = [], [], []
     for k, t in enumerate(targets):
         hw, ident, d = _deficits_batch(padded_all, [[q[0] for q in row] for row in preds_all],
                                        [[q[1] for q in row] for row in preds_all],
                                        branches.index(t), width, tau,
-                                       [exempt[m][k] for m in range(n_path)])
+                                       [exempt[m][k] for m in range(n_path)],
+                                       presence=presence_all)
         halfwidth.append(hw)
         identified.append(ident)
         deficit_now.append(d)
@@ -892,7 +947,7 @@ def plan_next(inp: PlannerInput) -> Decision:
         if deficit_now[i].max() <= 0.0:
             continue
         designs.extend(_designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now,
-                                   measured, executed, width, ladder))
+                                   measured, executed, width, ladder, presence_all))
     if not designs:
         return Decision(stop=True, stop_reason="no_admissible_window", chosen=None, ranked=(),
                         per_point=per_point)
@@ -951,8 +1006,7 @@ def _scenarios(i, inp, branches, predict, executed):
         x = np.clip(mu + _SQRT2 * sig * _GH8_X, 0.0, float(inp.energy_domain_meV[1]))
         log_w = np.log(_GH8_W)
         for scan in scans:
-            factor = (scan.probability(b)
-                      + (1.0 - scan.probability(b)) * NULL_MISS_PROBABILITY)
+            factor = miss_factor(scan, b)
             if factor >= 1.0:
                 continue                      # surely delivered here: no evidence against
             inside = (x >= float(scan.e_lo)) & (x <= float(scan.e_hi))
@@ -1032,7 +1086,7 @@ def _admitted_anchor(energies, weights, sres: float):
 
 
 def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, measured, executed,
-                width, ladder):
+                width, ladder, presence_all):
     """Every ranked design at one grid point, with its preposterior utility."""
     n_branch = len(branches)
     lo_d, hi_d = float(inp.energy_domain_meV[0]), float(inp.energy_domain_meV[1])
@@ -1180,7 +1234,8 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
                 _hw, _ident, after = _deficits_batch(
                     padded_others, [[q[0] for q in row] for row in preds_m],
                     [[q[1] for q in row] for row in preds_m], branches.index(t), width, tau,
-                    [exempt[m][k] for m, _c in others])
+                    [exempt[m][k] for m, _c in others],
+                    presence=presence_all[[m for m, _c in others]])
                 now_deficit = np.array([deficit_now[m][k] for m, _c in others])
                 gain += reach * float(np.count_nonzero(after <= 0.0)
                                       - np.count_nonzero(now_deficit <= 0.0))
@@ -1190,9 +1245,14 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
             # accumulated candidates, which carry no single window, so a preposterior that used it
             # would predict completions the prize rule can never confirm -- and the planner would
             # re-buy the same scan for ever.  The design is scored by the rule that will judge it.
+            # ponytail: the presence used here is the one the point already has, not the one this
+            # design would leave -- a scan that looks and does not find lowers a rival's presence
+            # further, so the preposterior UNDER-states its own gain. Safe direction (it can never
+            # promise a completion the prize will refuse); lift it by folding the design's own
+            # expected non-detection into presence per scenario if the campaigns get slow.
             w, w_none = target_posterior(comp_e[idx], comp_s[idx], valid[idx],
                                          [q[0] for q in upd], [q[1] for q in upd],
-                                         branches.index(t))
+                                         branches.index(t), presence=presence_all[i])
             hw = hdi_halfwidth(comp_e[idx], comp_s[idx], w, w_none, width)
             after = (np.zeros_like(hw) if exempt[i][k]
                      else _deficit(hw, w.sum(axis=-1), tau))

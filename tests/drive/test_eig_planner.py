@@ -15,9 +15,9 @@ import pytest
 
 from isar.analyze.truth import _fold
 from isar.drive.acquisition.eig_planner import (
-    CONFIRMED_PROBABILITY, Candidate, ExecutedScan, PlannerInput, _admitted_anchor, _deficit,
-    _deficits_batch, _pad_candidates, default_intensity_scale, hdi_halfwidth, plan_next,
-    target_posterior,
+    NULL_MISS_PROBABILITY, CONFIRMED_PROBABILITY, Candidate, ExecutedScan, PlannerInput, _admitted_anchor, _deficit,
+    _deficits_batch, _pad_candidates, default_intensity_scale, hdi_halfwidth, miss_factor,
+    plan_next, point_presence, target_posterior,
 )
 from isar.schema.hypotheses import preset
 
@@ -44,10 +44,10 @@ def planner_input(hs, *, targets=("acoustic",), beliefs=None, measured=None) -> 
         scale=default_intensity_scale(BRANCHES), tolerance_meV=TOLERANCE)
 
 
-def deficit_of(cands, mus, sigs, target_index=0) -> tuple[float, float]:
+def deficit_of(cands, mus, sigs, target_index=0, presence=None) -> tuple[float, float]:
     hw, _identified, deficit = _deficits_batch(
         _pad_candidates([tuple(cands)]), [[m] for m in mus], [[s] for s in sigs], target_index,
-        WIDTH, TOLERANCE, [False])
+        WIDTH, TOLERANCE, [False], presence=None if presence is None else np.array([presence]))
     return float(hw[0]), float(deficit[0])
 
 
@@ -273,6 +273,39 @@ def test_a_scan_is_softly_certain_about_what_it_delivered():
                                            (("optic", 0.5), ("acoustic", 1.0))))
 
 
+def test_a_rival_looked_for_and_not_found_loses_its_claim():
+    """The missing half of "a null is evidence".  A narrow acoustic candidate under a broad,
+    unanchored optic is NOT the answer -- the optic could be that peak.  Three scans that would
+    have detected the optic there and did not settle it, without measuring the acoustic again."""
+    cands = [Candidate(5.70, 0.030)]
+    mus, sigs = [5.71, 5.50], [0.30, 1.00]              # a broad optic sitting over the same peak
+    _hw, deficit = deficit_of(cands, mus, sigs)
+    assert deficit > 0.0                                # width is fine; identity is not
+
+    looked = ExecutedScan(4.0, 7.4, 40_000_000, {"acoustic": 1.0})
+    presence = point_presence(("acoustic", "optic"), mus, (looked,) * 3, step=0.2, fwhm_meV=0.8,
+                              temperature_K=200.0, scale=default_intensity_scale(BRANCHES))
+    assert presence[0] == pytest.approx(1.0)            # it WAS delivered: no evidence against
+    assert presence[1] == pytest.approx(NULL_MISS_PROBABILITY ** 3)
+    _hw, after = deficit_of(cands, mus, sigs, presence=presence)
+    assert after == 0.0
+
+
+def test_the_miss_factor_is_soft_and_shared():
+    """One factor, read by the scenario weights and by the point's presence alike."""
+    surely_seen = ExecutedScan(0.0, 9.0, 5_000_000, {"optic": 1.0})
+    surely_not = ExecutedScan(0.0, 9.0, 5_000_000, {})
+    coin = ExecutedScan(0.0, 9.0, 5_000_000, {"optic": 0.5})
+    assert miss_factor(surely_seen, "optic") == 1.0
+    assert miss_factor(surely_not, "optic") == pytest.approx(NULL_MISS_PROBABILITY)
+    assert miss_factor(coin, "optic") == pytest.approx(0.5 + 0.5 * NULL_MISS_PROBABILITY)
+    # a scan that could not have detected the branch says nothing either way
+    faint = point_presence(("optic",), [8.0], (ExecutedScan(7.5, 8.5, 1, {}),), step=0.2,
+                           fwhm_meV=0.8, temperature_K=200.0,
+                           scale=default_intensity_scale(("optic",)))
+    assert faint[0] == 1.0
+
+
 # ------------------------------------------------------------------ the campaign
 
 def _load_sim():
@@ -295,7 +328,7 @@ def test_the_seeded_acoustic_campaign_reaches_the_prize_deterministically(capsys
     lines = capsys.readouterr().out.splitlines()
     scans = [line for line in lines if line.strip().startswith(tuple("0123456789"))
              and " h=" in line]
-    assert len(scans) == 27
+    assert len(scans) == 26
     first = [(line.split("h=")[1].split()[0], line.split("n=")[1].split()[0]) for line in scans[:3]]
     assert first == [("2.10", "33"), ("2.15", "27"), ("2.20", "16")]
     stop = next(line for line in lines if line.startswith("stop="))
