@@ -341,3 +341,15 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     0.05 bar costs ~3–4× the neutrons); or present the demo at a 0.1 meV bar.
     Also found: this instrument has no elastic line (zero counts at ΔE = 0 away from the fold);
     the intensity map's elastic term is ~0.03–0.26 per 1e7 and steady.
+20. **PR #37 review round and the deletion slice (2026-09-03).** The external review's four P1s
+    and five P2s are dispositioned on the PR (comment of 2026-09-03) and fixed in `6a4a372`
+    (planner: completion needs identified mass ≥ 0.85; cross-point anchors conditional on
+    admission; per-branch soft delivery evidence; whole ranking to the loop; nodes clipped to
+    the band; lexicographic shaping; price named apart from neutrons; the simulator learns its
+    intensity map from its own counts) and `e36e220` (loop: only the certifying halfwidth
+    carries the prize; soft `seen`; a geometry refusal condemns a window at every exposure).
+    The deletion slice landed as `38fc4a7`/`570a22d`: 35 source files and 22 test files gone,
+    `design/eig.md` rewritten, steering's frontier contract replaced. Not-slow lane 4389/0.
+    Live short path after the round: `met` in 19 scans, 5.9 min, every point identified ≥ 0.91.
+    Open owner decisions: the intervals (§7.19) and whether the curvature smoothness clause
+    (§7.9 amendment) stays.
