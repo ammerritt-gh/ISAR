@@ -353,3 +353,14 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     Live short path after the round: `met` in 19 scans, 5.9 min, every point identified ≥ 0.91.
     Open owner decisions: the intervals (§7.19) and whether the curvature smoothness clause
     (§7.9 amendment) stays.
+21. **Grid experiment on the full path (2026-09-03 03:45, evidence for §7.16).** The 82 scans of
+    the final full-path run refitted on a 0.02 meV convolution grid in a detached worktree, against
+    the live fits on 0.05, per grid point against `phonon_dft`:
+
+    | grid | median \|Δω₀\| | mean Δω₀ | max \|Δω₀\| | within ±0.05 |
+    |---|---|---|---|---|
+    | 0.05 (live) | 0.021 meV | −0.027 | 0.094 (h = 2.50) | 16/20 |
+    | 0.02 (refit) | 0.012 meV | −0.013 | 0.061 (h = 2.50) | 18/20 |
+
+    The finer grid halves the error and removes half the pull; h = 2.50 remains the outlier on both.
+    The σ-calibration inflation (`isar score` suggests k ≈ 1.9 on the live fits) is the other half.
