@@ -13,7 +13,7 @@ from typing import Iterable
 import numpy as np
 
 from isar.probability import (
-    extrapolation_model_sigma, lower_truncated_normal_moments, truncated_normal_moments)
+    continuity_adjust, lower_truncated_normal_moments, truncated_normal_moments)
 
 from isar.schema.hypotheses import ACQUISITION_ESTIMATOR_VERSION
 
@@ -99,9 +99,15 @@ def belief_predict(row: dict, u: float, *, data_only: bool = False,
     mu = float(xq @ (cov @ rhs))
     sigma = max(math.sqrt(max(float(xq @ cov @ xq), 0.0)), SIGMA_SLACK)
     if anchors:
-        # Curvature clause: the fitted spread is the error of the LINE, not of the branch.
-        sigma = math.hypot(sigma, extrapolation_model_sigma(
-            float(np.min(np.abs(us - float(u)))), row.get("period"), domain_hi))
+        # Continuity governs the predictive beyond the anchors: the mean reverts to the level at the
+        # edge of the anchored range instead of carrying the fitted slope onward, and the sigma
+        # reverts with it and widens at the declared group velocity with the distance to the nearest
+        # measurement. Inside the anchored range this leaves the local fit unchanged.
+        edge = min(max(float(u), float(us.min())), float(us.max()))
+        mu, sigma = continuity_adjust(
+            mu, sigma, float(np.array([1.0, edge]) @ (cov @ rhs)), max(math.sqrt(max(float(np.array([1.0, edge]) @ cov @ np.array([1.0, edge])),
+                                0.0)), SIGMA_SLACK),
+            abs(float(u) - edge), float(np.min(np.abs(us - float(u)))))
     if data_only or not prior:
         return mu, sigma
     if domain_hi is None:

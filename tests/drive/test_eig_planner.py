@@ -144,26 +144,40 @@ def test_a_cold_branch_far_from_the_fold_predicts_somewhere_in_the_band():
     assert belief_predict(belief_row("optic"), 1.0)[0] > 60.0     # untruncated, for contrast
 
 
-def test_extrapolating_a_branch_widens_it_by_the_bounded_curvature():
-    """The curvature clause: |omega''| <= hi*(pi/period)^2, so a line carried d past its last anchor
-    can be wrong by 0.5*|omega''|*d^2, and the belief must say so."""
+def test_a_dispersion_is_continuous_in_q():
+    """The owner's clause: "from q to q, the change in energy reduces to zero as deltaQ becomes 0".
+    These are the anchors of the run that stalled at 17/20, where the acoustic extrapolated its
+    fitted slope onto the optic's peak and the optic, on one anchor, was pulled onto the
+    acoustic's -- crossed beliefs, identified mass 0.00, unresolvable by any measurement."""
     from isar.drive.acquisition.classify_eig import belief_predict
-    from isar.probability import extrapolation_model_sigma
 
-    assert extrapolation_model_sigma(0.0, 2.0, 9.0) == 0.0
-    assert extrapolation_model_sigma(0.2, 2.0, 9.0) == pytest.approx(0.5 * 9.0 * (math.pi / 2) ** 2
-                                                                    * 0.04)
-    assert extrapolation_model_sigma(0.2, None, 9.0) == 0.0      # period unknown: term skipped
-    assert extrapolation_model_sigma(0.2, 2.0, None) == 0.0      # band unknown: term skipped
+    acoustic = belief_row("acoustic", [{"u": u, "omega0": w, "weight": 1.0} for u, w in
+                                       ((0.1, 0.93), (0.3, 2.74), (0.45, 3.93), (0.6, 4.81),
+                                        (0.7, 5.32))])
+    optic = belief_row("optic", [{"u": 0.7, "omega0": 7.68, "weight": 1.0}])
 
-    anchors = [{"u": 0.50, "omega0": 4.24, "weight": 1.0}, {"u": 0.55, "omega0": 4.56, "weight": 1.0},
-               {"u": 0.60, "omega0": 4.85, "weight": 1.0}]
-    row = belief_row("acoustic", anchors)
-    at_anchor = belief_predict(dict(row), 0.60, domain_hi=DOMAIN[1])[1]
-    far = belief_predict(dict(row), 0.95, domain_hi=DOMAIN[1])[1]
-    assert far > 1.0 and far > 3.0 * at_anchor   # 0.35 rlu of extrapolation, band-truncated
-    no_period = dict(row); no_period.pop("period")
-    assert belief_predict(no_period, 0.95, domain_hi=DOMAIN[1])[1] < far
+    assert belief_predict(acoustic, 0.90, domain_hi=DOMAIN[1])[0] == pytest.approx(5.93, abs=0.3)
+    assert belief_predict(acoustic, 1.00, domain_hi=DOMAIN[1])[0] == pytest.approx(6.00, abs=0.3)
+    assert belief_predict(optic, 1.00, domain_hi=DOMAIN[1])[0] >= 7.0
+    # and the two no longer cross anywhere along the boundary
+    for u in (0.80, 0.85, 0.90, 0.95, 1.00):
+        assert (belief_predict(optic, u, domain_hi=DOMAIN[1])[0]
+                > belief_predict(acoustic, u, domain_hi=DOMAIN[1])[0])
+
+
+def test_continuity_bounds_the_change_and_vanishes_at_an_anchor():
+    from isar.probability import CONTINUITY_LENGTH, MAX_GROUP_VELOCITY, continuity_adjust
+
+    # at an anchor: no distance, no reversion, the fit stands
+    assert continuity_adjust(5.0, 0.2, 4.0, 0.3, 0.0, 0.0) == (5.0, 0.2)
+    # beyond the anchors the mean reverts toward the anchored level over CONTINUITY_LENGTH
+    mu, _ = continuity_adjust(9.0, 0.3, 6.0, 0.3, CONTINUITY_LENGTH, 0.1)
+    assert 6.0 < mu < 9.0 and mu == pytest.approx(6.0 + 3.0 * math.exp(-1.0))
+    # the sigma is a bound: a line whose own sigma diverges is not a wider belief
+    _mu, sigma = continuity_adjust(9.0, 9.3, 6.0, 0.3, 0.3, 0.3)
+    assert sigma == pytest.approx(math.hypot(0.3, MAX_GROUP_VELOCITY * 0.3))
+    # where the fit is genuinely tighter than the bound, the fit wins
+    assert continuity_adjust(5.0, 0.05, 5.0, 0.3, 0.0, 0.01)[1] == 0.05
 
 
 # ------------------------------------------------------------------ ranking behaviour
@@ -368,9 +382,9 @@ def test_the_seeded_acoustic_campaign_reaches_the_prize_deterministically(capsys
     lines = capsys.readouterr().out.splitlines()
     scans = [line for line in lines if line.strip().startswith(tuple("0123456789"))
              and " h=" in line]
-    assert len(scans) == 22
+    assert len(scans) == 21
     first = [(line.split("h=")[1].split()[0], line.split("n=")[1].split()[0]) for line in scans[:3]]
-    assert first == [("2.10", "33"), ("2.15", "32"), ("2.20", "16")]
+    assert first == [("2.10", "33"), ("2.15", "25"), ("2.20", "16")]
     stop = next(line for line in lines if line.startswith("stop="))
     assert "stop=True reason=goal_met" in stop and "bar 20/20" in stop
 

@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from isar.probability import (
-    extrapolation_model_sigma, lower_truncated_normal_moments, truncated_normal_moments)
+    continuity_adjust, lower_truncated_normal_moments, truncated_normal_moments)
 
 from isar.analyze.truth import _fold
 from isar.session.session_prior import is_unconstrained_prior_point
@@ -296,9 +296,15 @@ class BranchBelief:
         mu = float(xq @ beta)
         sigma = max(math.sqrt(max(float(xq @ cov @ xq), 0.0)), SIGMA_SLACK)
         if self.us.size:
-            # Curvature clause: the fitted spread is the error of the LINE, not of the branch.
-            sigma = math.hypot(sigma, extrapolation_model_sigma(
-                float(np.min(np.abs(self.us - u))), self.period, domain_hi))
+            # Continuity governs the predictive beyond the anchors: the mean reverts to the level at the
+            # edge of the anchored range instead of carrying the fitted slope onward, and the sigma
+            # reverts with it and widens at the declared group velocity with the distance to the nearest
+            # measurement. Inside the anchored range this leaves the local fit unchanged.
+            edge = min(max(float(u), float(self.us.min())), float(self.us.max()))
+            mu, sigma = continuity_adjust(
+                mu, sigma, float(np.array([1.0, edge]) @ beta), max(math.sqrt(max(float(np.array([1.0, edge]) @ cov @ np.array([1.0, edge])),
+                                    0.0)), SIGMA_SLACK),
+                abs(float(u) - edge), float(np.min(np.abs(self.us - float(u)))))
         if not include_prior:
             return mu, sigma
         if domain_hi is None:

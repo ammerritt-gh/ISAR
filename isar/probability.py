@@ -67,24 +67,49 @@ def truncated_normal_moments(mu: float, sigma: float, lo: float, hi: float) -> t
     return min(max(mean, lo), hi), math.sqrt(max(variance, 0.0))
 
 
-def extrapolation_model_sigma(distance: float, period: float | None,
-                              domain_hi: float | None) -> float:
-    """Model error of carrying a LINEAR branch prediction ``distance`` in reduced q past its data.
+#: Largest group velocity |domega/dq| a branch is assumed to reach, meV per r.l.u.  The declared
+#: continuity scale: energy is a continuous function of q, so the CHANGE between two nearby q is
+#: bounded by this times their separation and goes to zero with it.  Matches
+#: ``branch_assignment.ACOUSTIC_MAX_SLOPE``, which named the same quantity for the acoustic branch.
+MAX_GROUP_VELOCITY = 6.0
+#: How far an extrapolated trend carries in r.l.u. before it has decayed to the anchored level.  A
+#: fitted slope is evidence about the q where it was measured, not a promise about q further out,
+#: so beyond the anchors it reverts rather than continuing without limit.
+CONTINUITY_LENGTH = 0.25
 
-    This is a DECLARED SMOOTHNESS ASSUMPTION, not a derived bound.  Periodicity plus a bounded band
-    do not bound curvature -- a branch may stay inside the band and still turn arbitrarily sharply
-    over a short interval.  What is assumed is that the dispersion's curvature is set by its lowest
-    harmonic, ``|omega''| <~ domain_hi * (pi / period) ** 2``, which is the quantitative form of the
-    "roughly linear nearby" clause of the class prior: a smoothness scale the scientist declares,
-    on the same footing as a slope prior, and wrong for a branch with structure finer than one zone.
-    A straight line carried a distance ``d`` beyond its nearest anchor is then taken to be wrong by
-    up to ``0.5 * |omega''| * d ** 2``.  Added in quadrature to the fitted spread, it is what stops
-    an extrapolated acoustic belief from claiming the optic's peak on the WLS spread alone.
 
-    Lives here because the drive and session layers each carry their own belief implementation and
-    the two must agree exactly.  Returns 0 when the period or the band is unknown, or at an anchor.
+def continuity_adjust(mu_fit: float, sigma_fit: float, anchored_level: float,
+                      anchored_sigma: float, distance_outside: float,
+                      distance_to_anchor: float) -> tuple[float, float]:
+    """Apply continuity to a locally fitted prediction: ``(mean, sigma)``.
+
+    The governing statement of the predictive, in the owner's words: "from q to q, the change in
+    energy reduces to zero as deltaQ becomes 0".  A dispersion is a continuous function of q with a
+    bounded group velocity, so two nearby q have nearby energies and the further apart they are the
+    less one says about the other.
+
+    Two consequences, and the local linear fit obeys neither on its own.  The MEAN beyond the
+    anchored range reverts toward the level at the range's edge over :data:`CONTINUITY_LENGTH`,
+    because an extrapolated trend is not a measurement -- carrying a fitted slope without limit is
+    what put the acoustic at 7.26 where the truth was 6.00, landing it on the rival's peak.  The
+    SIGMA is the continuity bound itself, :data:`MAX_GROUP_VELOCITY` times the distance to the
+    nearest anchor, in quadrature with the fit's own uncertainty: zero at an anchor, growing with
+    separation, so a prediction far from any measurement is honestly uncertain rather than
+    confidently wrong.
+
+    The sigma is a BOUND, not an addition: continuity says the energy cannot have moved further
+    than the group velocity allows, so a line whose own uncertainty exceeds that is not evidence of
+    a wider belief -- it is the absence of evidence, and the bound replaces it.  That is the whole
+    optic case: one anchor leaves the SLOPE unconstrained, the line's own sigma 0.3 r.l.u. out is
+    about 9 meV, band truncation then drags the mean from 7.7 down to 4.8, and the branch lands on
+    its rival.  Where the fit is genuinely tighter than the bound -- interpolation between dense
+    anchors -- the fit wins and nothing changes.
+
+    Inside the anchored range ``distance_outside`` is zero and both are the fit unchanged.
+    Supersedes the earlier curvature term, which asserted the same bounded-change idea through the
+    lowest harmonic of the zone; one statement of continuity, not two.
     """
-    if period is None or domain_hi is None or float(distance) <= 0.0:
-        return 0.0
-    curvature = float(domain_hi) * (math.pi / float(period)) ** 2
-    return 0.5 * curvature * float(distance) ** 2
+    carried = math.exp(-float(distance_outside) / CONTINUITY_LENGTH)
+    mu = anchored_level + (mu_fit - anchored_level) * carried
+    bound = math.hypot(float(anchored_sigma), MAX_GROUP_VELOCITY * float(distance_to_anchor))
+    return mu, min(float(sigma_fit), bound)
