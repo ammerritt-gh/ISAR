@@ -176,7 +176,7 @@ DEFAULT_DELIVERABLES = _qpolicy.DEFAULT_DELIVERABLES
 _EXAMPLE = {
     "path": {"h_start": 1.0, "h_end": 2.0, "k": 0.0, "l": 0.0},
     "step_h": 0.1,
-    "tolerance_meV": 0.05,
+    "tolerance_meV": 0.1,
     "budget_hours": 8,
     "notes": "acoustic branch (1,0,0)->(2,0,0)",
 }
@@ -212,7 +212,7 @@ SYSTEM = (
     "q_end [h,k,l], and "
     "step_rlu (the maximum point spacing, default 0.05 if unstated). The legacy path/step_h shape is "
     "also valid for a segment purely along H. Extract tolerance_meV (the per-point target on the "
-    "phonon energy ω₀; map '±X meV' to X; when the user states none, use the default 0.05 — the "
+    "phonon energy ω₀; map '±X meV' to X; when the user states none, use the default 0.1 — the "
     "centre of a resolved peak is routinely fixed to that). Include a measurement budget as EITHER budget_hours "
     "OR budget_neutrons only when the user states one; analysis time is a separate guardrail. "
     "Set target_branch to optic when the user asks for an optic or transverse optic phonon, otherwise "
@@ -229,7 +229,7 @@ SYSTEM = (
     "goals [-9,9] unless the user provides a range. Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
     "these keys, no extra keys, and never enumerate grid points:\n"
     + json.dumps(LLM_PROGRAM_SCHEMA)
-    + "\n\nExample. Command: 'map the acoustic phonon from (1,0,0) to (2,0,0) to +-0.5 meV, steps "
+    + "\n\nExample. Command: 'map the acoustic phonon from (1,0,0) to (2,0,0) to +-0.1 meV, steps "
     "of 0.1, overnight'. Reply:\n" + json.dumps({"kind": "targeted", "targeted": _EXAMPLE})
     + "\n\nExample. Command: 'Scan the region from (2,0,0) to (3,0,0) up to 10meV, map out all the "
     "phenomena of interest.' Reply:\n" + json.dumps(_DISCOVER_EXAMPLE)

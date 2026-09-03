@@ -364,3 +364,24 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
 
     The finer grid halves the error and removes half the pull; h = 2.50 remains the outlier on both.
     The σ-calibration inflation (`isar score` suggests k ≈ 1.9 on the live fits) is the other half.
+22. **The default bar is 0.1 meV on a 0.01 meV convolution grid (owner ruling, 2026-09-03
+    morning).** `isar score` on the live full-path run showed the published intervals under-covering
+    the analytic truth by ~1.9×, and the scorer decomposed the miss as roughly half random scatter
+    and half a systematic centre pull. Inflation cannot fix a pull — widening an interval that is
+    centred in the wrong place buys coverage by being wrong more loosely — so two changes land
+    together. (a) The DHO convolution grid in `isar/analyze/lineshapes.py` drops from 0.05 to
+    **0.01 meV** (`CONVOLUTION_DX`), removing the share of the pull the grid itself caused: §7.21
+    measured 0.021 → 0.012 meV median error and −0.027 → −0.013 mean pull on the same 82 scans at
+    0.02, and 0.01 continues that direction. Measured cost on the real lineshape: **0.159 ms per
+    evaluation at 0.01 against 0.086 ms at 0.05, 1.85×**, which a 25-minute campaign absorbs.
+    (b) The default per-point bar becomes **±0.1 meV** (it was 0.05 this week and 0.5 before that),
+    which honestly covers the residual rather than claiming a precision ISAR cannot certify. The
+    residual's physical cause is resolution focusing — the instrument's resolution ellipsoid is not
+    the 1D energy Gaussian ISAR's fitter convolves with — and the proper fix is deconvolution,
+    **deliberately deferred**, not attempted for the demo.
+
+    **The σ-calibration campaign is NOT being run.** It would estimate an inflation factor k and
+    multiply every published interval by it. That is the right instrument for a random-scatter miss
+    and the wrong one here: half of this miss is a pull, k would absorb it into wider bars, and the
+    campaign's cost would buy a number that hides a bias instead of removing it. Deconvolution, or
+    a fitter that models the focusing, is what closes §7.16 — not a calibration constant.

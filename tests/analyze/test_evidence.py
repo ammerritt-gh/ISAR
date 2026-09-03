@@ -161,7 +161,7 @@ def railed():
     H8 carve-out. Counts are deliberately modest: at high statistics σ_Γ shrinks until the
     truncated mass is numerically 1 and the correction stops testing anything."""
     x = np.linspace(-10.0, 10.0, 81)
-    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.01, 15.0, 20.0, 40.0, 100.0, peak="all")
+    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.002, 15.0, 20.0, 40.0, 100.0, peak="all")
     counts = np.random.default_rng(4).poisson(np.clip(lam, 0.0, None)).astype(float)
     ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
@@ -285,8 +285,8 @@ def test_two_railed_gammas_escalate_instead_of_multiplying_per_axis_masses():
     from isar.analyze.phonon import GAMMA_FLOOR, enumerate_phonon_multimode
 
     x = np.linspace(-12.0, 12.0, 121)
-    lam = (convolute_voigt_dho(x, 3.0, 0.0, 1.0, 0.0, 0.01, 40.0, 0.0, 25.0, 100.0, peak="all")
-           + convolute_voigt_dho(x, 8.0, 0.0, 1.0, 0.0, 0.01, 30.0, 0.0, 0.0, 100.0, peak="all"))
+    lam = (convolute_voigt_dho(x, 3.0, 0.0, 1.0, 0.0, 0.02, 40.0, 0.0, 25.0, 100.0, peak="all")
+           + convolute_voigt_dho(x, 8.0, 0.0, 1.0, 0.0, 0.02, 30.0, 0.0, 0.0, 100.0, peak="all"))
     counts = np.random.default_rng(4).poisson(np.clip(lam, 0.0, None)).astype(float)
     ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",

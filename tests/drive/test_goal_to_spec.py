@@ -388,6 +388,9 @@ _DISCOVER_REPLY = {"kind": "discover_and_map", "discover_and_map": {
     "maximum_initial_spacing_rlu": 0.1, "intrinsic_omega_domain_meV": [0.0, 10.0],
     "notes": "map all phenomena of interest"}}
 
+# The 0.05 meV here is DELIBERATELY not the compiler default (0.1 meV since 2026-09-03): the
+# command states the bar explicitly, so this golden pins that an operator-declared tolerance is
+# carried through untouched. Make it equal the default and the golden stops discriminating.
 _TARGETED_COMMAND = "Map the acoustic phonon from (2,0,0) to (3,0,0) to +-0.05 meV, overnight."
 _TARGETED_REPLY = {"kind": "targeted", "targeted": {
     "path": {"h_start": 2.0, "h_end": 3.0, "k": 0.0, "l": 0.0}, "step_h": 0.05,

@@ -27,7 +27,7 @@ places a scan.
   current hypotheses and re-running the same belief update the real data goes through. Greedy,
   re-decided after every scan.
 - **The prize** — the target branch's energy at every grid point of the declared path, known to
-  within the requested bar (default **±0.05 meV**), and identified. One exemption: the zone centre
+  within the requested bar (default **±0.1 meV**), and identified. One exemption: the zone centre
   of a gapless target, whose energy the hypothesis fixes at 0 and the elastic line makes
   untestable.
 - **The price** — neutrons requested (`n_points × ncount`) plus a declared fixed per-scan price
@@ -157,7 +157,7 @@ identity-gate work of that day moved it from 21 scans at the previous revision �
 sensitive to the declared prices, and the campaign completing is what is being pinned).
 
 **Known, and outside this design:** `isar score --truth-fn phonon_dft` on the live run reports a
-median |Δω₀| of 0.028 meV — inside the 0.05 meV bar — but an interval coverage of 0.444 against a
+median |Δω₀| of 0.028 meV — inside the 0.05 meV bar that run used — but an interval coverage of 0.444 against a
 nominal 0.68, i.e. the published intervals under-cover by roughly 1.9×. That is a fitter σ-calibration
 matter, not a placement matter: the planner buys against the interval the fitter publishes, so an
 under-covering interval makes it stop slightly early. It is recorded here honestly and owned by the

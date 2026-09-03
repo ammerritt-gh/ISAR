@@ -14,7 +14,7 @@ map the acoustic phonon from (2,0,0) to (3,0,0)
 ```
 
 The compiler turns it into a targeted campaign: 21 grid points at 0.05 r.l.u., acoustic branch as
-the target with the optic branch as a rival to be identified and then ignored, a **±0.05 meV** bar,
+the target with the optic branch as a rival to be identified and then ignored, a **±0.1 meV** bar,
 an 18 meV search window. No information about the phonon itself enters: the hypotheses are the
 shipped class presets (an acoustic branch goes to zero at the zone centre with a zero-mean slope
 prior; an optic branch has a finite energy there), which the design goals name as the legitimate

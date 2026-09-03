@@ -547,6 +547,40 @@ Verify the gold-set numbers:
 python docs/phase3_gold_check.py
 ```
 
+### 6.1 What "coverage" means here, and the 2026-09-03 campaign that missed it
+
+Coverage is a frequency, not a property of one number. A published 68% interval claims that if you
+repeated the measurement many times, the truth would fall inside the interval about 68% of the
+time. You check it by measuring many things whose truth you already know and counting.
+
+The live targeted campaign of 2026-09-03 — 82 scans along (2,0,0)→(3,0,0), scored against the
+analytic `phonon_dft` truth — gave **0.444 coverage against a nominal 0.68** on a 0.05 meV bar. The
+truth landed outside the published interval on more than half the points; the intervals are too
+narrow by roughly **1.9×**. The central values were fine (median |Δω₀| = 0.028 meV): this is a
+width-and-centre problem, not a "the fitter found the wrong peak" problem.
+
+The scorer splits that miss two ways, and the split is what decides the fix:
+
+- **Random scatter** — the interval is honestly centred but too narrow. This is what an inflation
+  factor is for: multiply every published σ by a calibrated *k* and coverage climbs to nominal.
+- **A systematic centre pull** — every fitted centre is displaced in the same direction (mean Δω₀
+  was −0.027 meV). **No inflation can fix a pull.** Widening an interval that sits in the wrong
+  place does buy coverage, but only by being wrong more loosely; the bias is still there and it
+  does not average away over more scans.
+
+Roughly half the 2026-09-03 miss was pull. Part of it was ISAR's own doing — the DHO convolution
+grid quantised fitted centres — and refitting the same 82 scans on a finer grid halved both the
+error and the pull (0.021 → 0.012 meV median, −0.027 → −0.013 mean). That grid is now 0.01 meV
+(`CONVOLUTION_DX` in `isar/analyze/lineshapes.py`).
+
+What remains after the grid fix is suspected to be **resolution focusing**: on a triple-axis
+instrument the resolution ellipsoid is tilted in (Q, ω), so a dispersive branch is sampled
+asymmetrically across the peak and the measured centroid is pulled along the dispersion. ISAR
+convolves with a 1D energy-resolution Gaussian and therefore cannot see this at all. The proper fix
+is to deconvolve with the full 4D resolution function (or fit in the resolution's own frame); it is
+**deliberately deferred**, and until it lands the honest response is a wider default bar — ±0.1 meV
+— rather than a calibration constant that would launder a bias into a bigger error bar.
+
 ---
 
 ## 7. Known weak points — the 2026-07-19 statistics-contract audit

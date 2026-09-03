@@ -25,6 +25,10 @@ from scipy.signal import fftconvolve
 # Constants
 # ============================================================
 KB = 0.086173324   # Boltzmann constant (meV / K)
+
+#: Internal convolution grid step (meV) for :func:`convolute_voigt_dho`. Tests that rebuild the
+#: grid must read it from here, never re-declare the number.
+CONVOLUTION_DX = 0.01
 kB = KB            # alias
 
 
@@ -155,7 +159,12 @@ def convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, lorentz_fwh
     y : ndarray — model intensity at x_target
     """
     x_target = np.asarray(x_target, dtype=float)
-    dx = 0.05
+    # The convolution grid (CONVOLUTION_DX). At 0.05 meV the interpolation quantised the fitted centre: on the live
+    # campaign of 2026-09-03 the delivered energies snapped to 0.05 multiples and the run carried a
+    # systematic pull of -0.027 meV, half its total error. Refitting the same 82 scans at a finer grid
+    # halved both. Measured cost of 0.01 against 0.05 on the real lineshape: 0.159 vs 0.086 ms per
+    # evaluation, 1.85x, which the campaign absorbs.
+    dx = CONVOLUTION_DX
     pad_range = 20
 
     x_span = max(abs(x_target.min()), abs(x_target.max())) + pad_range

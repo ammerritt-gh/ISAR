@@ -172,8 +172,9 @@ renders it. It is the whole account of why this scan and not another:
 - a **warning note** when no design is expected to complete a point: the planner takes the cheapest
   probe and says so, rather than showing a silent zero.
 
-The bar is the objective's `tolerance_meV`, **±0.05 meV** by default — the precision a paper would
-ask of a peak centre. Declare a different one in the goal ("… to ±0.02 meV") or in the spec.
+The bar is the objective's `tolerance_meV`, **±0.1 meV** by default — the precision ISAR can honestly
+deliver on a peak centre once resolution focusing is accounted for (`docs/STATS_PRIMER.md`).
+Declare a different one in the goal ("… to ±0.02 meV") or in the spec.
 
 There is no scan-window mode to choose and no survey to switch off: the planner generates every
 window from the beliefs and picks the best one per neutron. A wide window early means a wide
