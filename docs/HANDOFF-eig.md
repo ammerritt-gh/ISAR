@@ -782,4 +782,6 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     `PlannerInput.abstained` names grid points whose master abstained as `underpowered`
     (`loop._abstained_points`); their counts still bank, their silence is not evidence
     (`_scenarios`, `point_presence`). Tests: `test_an_underpowered_abstain_is_not_a_null`,
-    `test_abstained_points_name_only_underpowered_masters`.
+    `test_abstained_points_name_only_underpowered_masters`. Live at close (`718372d`): short path
+    `met`, 12 scans, 4 min; every fit start in its log preceded by its `scan_landed`; 14 plan
+    events for 12 proposals (the two extra are the certified re-asks), no phantoms.
