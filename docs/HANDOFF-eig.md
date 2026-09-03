@@ -47,7 +47,10 @@ prices; it is never legislated per phenomenon"; "a first-look survey is not a un
 it looks where the hypothesis says the phenomenon is findable, and each fix feeds extrapolation
 to the next placement."
 
-## 2. What the code does instead, honestly
+## 2. What the code did instead, honestly (as of 2026-09-02 — historical; see §6 and §7)
+
+*This section describes the code before the EIG planner replaced the targeted lane. It is kept
+as the record of what was deleted and why; nothing in it describes current behaviour.*
 
 Two engines exist and neither is the objective end to end.
 
@@ -158,25 +161,39 @@ live under `%LOCALAPPDATA%\isar_gui\temp_workspaces\`.
 - No patches on top of the legacy machinery to make it look like EIG. The objective is the
   objective.
 
-## 6. For the fresh session
+## 6. State at close, 2026-09-03 night — start here tomorrow
 
-Start from §1. Then decide, in order, and write each decision down where it lands:
+The objective of §1 is met live, through the GUI, on the demo sentence: the owner's own
+campaigns `eig-1-test` and `eig-2-test` (`test_workspaces/`) ran the sentence end to end, the
+second to `met` 20/20 in 12.5 min; the CLI full path at the same code is `met` in 64 scans and
+11.8 min with both branches anchored to the zone boundary (§7.33). §6's original five decisions
+are all taken and recorded in §7 and `design/eig.md`; §2 below is the record of what was
+replaced, kept for the reasoning, not a description of the code.
 
-1. Which belief representation carries the hypothesis map for the targeted objective — the
-   scene's phenomenon belief with class priors, or a leaner ω(q) posterior per declared branch.
-   It must be cheap enough to score many candidates per decision in seconds.
-2. How one EIG scores (Q, window, exposure) jointly and per neutron, with exact ties and no
-   seed-ordered noise (audit F23/F24 remedies), and how "two modes interfere" becomes a place
-   EIG spends exposure rather than a rule.
-3. The first scan from priors alone, and the update from the intensity map after each scan.
-4. What replaces every legislated placement rule and every survey: the tracker's frontier
-   rules, `survey`, `legacy_uniform/1` as the selected control, O36's same-q requirement,
-   missed-window recovery, the discovery opening book. They are deleted, not routed around.
-5. The stop: goal met when the hypothesis map reaches the requested precision along the path.
+**Branch `eig-planner`, PR #37** (body and two review-response comments current); main is
+`32b8a23`, never commit to it. Bar 0.1 meV, convolution grid 0.05 (both closed by measurement,
+§7.22–§7.24). NanoGPT's limit is reached: no `review_files`/`council`/`brainstorm`; Codex works;
+the goal compiler runs on a local 35B model (its stray-sigma output is tolerated, §7.31).
 
-Acceptance is §1's five points, live, through the GUI, on "map the acoustic phonon from
-(2,0,0) to (3,0,0)", with the optic rejected and no information about the acoustic phonon
-beyond its class prior.
+**Tomorrow, in order:**
+
+1. Restart the GUI (the scan-first ordering of §7.32 needs it) and run the sentence once with the
+   owner watching. Expect: a scan within seconds, "Scan landed" before "Started fast fit", windows
+   narrowing from the fourth scan, `escalate_fit … belief_anchor` as points lock in, both peaks
+   in view from h ≈ 2.75, `met` in ~60–100 scans.
+2. The dispersion view's green dots and grey line: the owner will say which colours; change
+   exactly those two (`isar_gui/plotspec_pg.py`, `_GLYPH_STYLE` / `_ROLE_COLOR`) and nothing
+   else in the palette. The white canvas was tried and rejected (§7.32).
+3. Still open, by name (§7.31, `design/eig.md` amendments of 2026-09-03): presence as a joint
+   location-and-delivery likelihood; the planner's detectability mirror against the fitter's
+   evidence-based selection (§7.34 — a "fitter response surface"); the last duplication of the
+   belief model (`belief_predict` vs `BranchBelief.predict`); one lattice quantum across step
+   changes; the session-side `met` cross-check. None of these blocks the demo.
+
+**Method that worked all day, in one line:** at the FIRST stuck point, read `card.state.json`
+beliefs and anchors, `session.json` master provenance and candidate tables, and the `eig_plan`
+trace per point — never the run summaries. The three defects of §7.30, §7.33 and §7.34 were each
+found in under an hour that way after longer detours without it.
 
 The campaign-authorization repair plan (`plans/campaign-authorization-repair.md`) and the demo
 run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are not the work.
@@ -747,3 +764,22 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     ≤ 0.089 meV; `isar score` median |Δω₀| 0.046 meV, pull −0.018, coverage 0.73. Analysis time
     fits 315 s, escalations 199 s, certify 78 s. The best full-path run so far, and the first in
     which both branches are anchored to the boundary by the session's own verdicts.
+
+34. **`eig-2-test` (the owner's second GUI campaign, `met` 20/20 in 12.5 min): "very broad
+    scans", explained and fixed.** Four 58-point, 8 meV plans at h = 2.30 (iterations 28–35).
+    Only ONE was executed: the other three were planned, then set aside for an anchor escalation
+    and never submitted — the loop logged the plan before deciding to escalate, so the feed drew
+    three phantom "planning a 58-point scan" lines. Fixed: the escalation check runs before the
+    plan is logged; a plan is logged only when it is acted on (a stop or a scan). The one real wide
+    scan came from the first look at h = 2.30 (20M, 14 points over [1.4, 3.4]) returning
+    `underpowered` — "background alone won selection; prior expects a phonon below the detection
+    threshold" — with 10 counts at the peak and the intensity map exactly right (measured 0.50 vs
+    map 0.498 counts·meV per 1e7). The planner's 3σ mirror of the fitter's floor said 20M would
+    show it (~7σ); the fitter's evidence-based model selection would not call a 10-count peak a
+    phonon — the "fitter response surface" gap the reviewer named, still open. The planner then
+    read the abstain as a null, pushed the acoustic's mass out of its own window, and the only
+    window left was the band. Fixed at the boundary the fitter's own word defines:
+    `PlannerInput.abstained` names grid points whose master abstained as `underpowered`
+    (`loop._abstained_points`); their counts still bank, their silence is not evidence
+    (`_scenarios`, `point_presence`). Tests: `test_an_underpowered_abstain_is_not_a_null`,
+    `test_abstained_points_name_only_underpowered_masters`.

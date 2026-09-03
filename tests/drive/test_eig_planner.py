@@ -448,3 +448,23 @@ def test_a_missed_peak_is_recovered_because_a_null_is_evidence_not_proof(capsys)
     assert any("HIDDEN" in line for line in scans)
     stop = next(line for line in lines if line.startswith("stop="))
     assert "stop=True reason=goal_met" in stop and "bar 20/20" in stop
+
+
+def test_an_underpowered_abstain_is_not_a_null():
+    """eig-2-test, h = 2.30: the fitter abstained as ``underpowered`` on a 20M first look, and the
+    planner read the silence as a null, pushed the acoustic's mass out of its own window and bought
+    an 8 meV scan to find it again. A point whose master abstained keeps its scenario weights and
+    its presence exactly as if nothing had been looked at -- the counts still bank."""
+    from isar.drive.acquisition.eig_planner import _Predictor, _scenarios
+    hs = [2.3]
+    deep = ExecutedScan(1.4, 3.4, 40_000_000)          # covers where the acoustic is believed
+    base = planner_input(hs, targets=("acoustic",))
+    branches = tuple(sorted(BRANCHES))
+    rows = {b: dict(base.beliefs[b]) for b in branches}
+    quiet = PlannerInput(**{**base.__dict__, "scans": {0: (deep,)}})
+    _om, w_null, _tr, _marg = _scenarios(0, quiet, branches, _Predictor(rows, DOMAIN[1]), {0: (deep,)})
+    abstained = PlannerInput(**{**base.__dict__, "scans": {0: (deep,)}, "abstained": {0: True}})
+    _om, w_abst, _tr, _marg = _scenarios(0, abstained, branches, _Predictor(rows, DOMAIN[1]), {0: (deep,)})
+    _om, w_none, _tr, _marg = _scenarios(0, base, branches, _Predictor(rows, DOMAIN[1]), {})
+    assert np.allclose(w_abst, w_none)                  # silence: no evidence
+    assert not np.allclose(w_null, w_none)              # a real null: evidence

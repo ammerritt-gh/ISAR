@@ -224,6 +224,11 @@ class PlannerInput:
     max_points: int = 220
     step_fraction: float = 0.25
     scans: Mapping[int, Sequence[ExecutedScan]] = field(default_factory=dict)
+    #: Grid indices whose master ABSTAINED as ``underpowered``: the fitter said "I could not see it
+    #: at this exposure", not "there is nothing here". Its counts still bank, but its silence is
+    #: not negative evidence -- read as a null it pushed the branch's mass out of the very window
+    #: it sits in and bought an 8 meV scan to find it again (eig-2-test, h = 2.30, 2026-09-03).
+    abstained: Mapping[int, bool] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1030,7 +1035,8 @@ def plan_next(inp: PlannerInput) -> Decision:
     preds_all = [[predict(b, inp.u[m]) for m in range(n_path)] for b in branches]
     presence_all = np.array([
         point_presence(branches, [preds_all[b][m][0] for b in range(len(branches))],
-                       executed.get(m, ()), step=float(inp.step_fraction) * float(inp.fwhm_meV[m]),
+                       (() if inp.abstained.get(m) else executed.get(m, ())),
+                       step=float(inp.step_fraction) * float(inp.fwhm_meV[m]),
                        fwhm_meV=float(inp.fwhm_meV[m]), temperature_K=float(inp.temperature_K),
                        scale=inp.scale, candidates=measured.get(m, ()))
         for m in range(n_path)])                                   # (M, B)
@@ -1128,7 +1134,8 @@ def _scenarios(i, inp, branches, predict, executed, candidates=()):
     is still done in log-weights, which cost nothing and keep a long pool finite.
     """
     step = float(inp.step_fraction) * float(inp.fwhm_meV[i])
-    scans = executed.get(i, ())
+    # An underpowered abstain is not a null: the fitter could not see, it did not see nothing.
+    scans = () if inp.abstained.get(i) else executed.get(i, ())
     cands = tuple(candidates or ())
     # Two peaks closer than two resolution widths are one peak, which is the same separation
     # _scenario_clusters splits on -- so it is the radius within which a candidate answers for a

@@ -761,7 +761,7 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         # to clear it too or the ω(q) model would still be fitted through the auxiliary energy.
         "usable": (deliverable and disp in _USABLE and row.get("omega0") is not None),
         "target_delivery_eligible": deliverable,
-        "disposition": disp, "n_members": row.get("n_members"),
+        "disposition": disp, "verdict": row.get("verdict"), "n_members": row.get("n_members"),
         "effective_exposure": effective_exposure, "exposure_source": exposure_source,
         "exposure_bucket": bucket,
         "diagnostic_halfwidth": diagnostic_hw, "interval_method": diagnostic_method,
@@ -3881,6 +3881,26 @@ def _slice_rows(rows: list[dict], sample: str | None, temperature_bin, t_round) 
     return [row for row in rows if same_sample(row.get("sample")) and same_bin(row.get("T"))]
 
 
+def _abstained_points(master_rows: list[dict], path) -> dict[int, bool]:
+    """Grid indices whose pooled master abstained as ``underpowered``.
+
+    The fitter's own word for "I could not see it at this exposure". The planner must not read
+    that as a null -- it is the reason a 20M first look at h = 2.30 (10 counts at the peak, the
+    intensity map exactly right) pushed the acoustic's mass out of its own window and bought an
+    8 meV scan to find it again (eig-2-test, 2026-09-03). The counts still bank; the silence is not
+    evidence.
+    """
+    out: dict[int, bool] = {}
+    for row in master_rows:
+        hkl = row.get("hkl")
+        index = None if hkl is None else match_grid_index(tuple(hkl), path)
+        if index is None:
+            continue
+        if row.get("disposition") == "abstain" and row.get("verdict") == "underpowered":
+            out[index] = True
+    return out
+
+
 def _build_planner_input(cfg, objective, master_rows: list[dict], observations: list[dict],
                          durable_state: dict):
     """Assemble the planner's world: the hypothesis map, the intensity map, and what is measured.
@@ -3937,7 +3957,8 @@ def _build_planner_input(cfg, objective, master_rows: list[dict], observations: 
                              temperature, fwhm),
         tolerance_meV=float(objective.tolerance_meV),
         base_ncount=QUICKLOOK_NCOUNT,
-        max_points=int(_runtime_limits(cfg, objective)["max_points"])), campaign_slice
+        max_points=int(_runtime_limits(cfg, objective)["max_points"]),
+        abstained=_abstained_points(master_rows, path)), campaign_slice
 
 
 def _certified_prize(*, cfg, objective, grid, budget_state: dict, observations: list[dict],
@@ -4357,48 +4378,17 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             "action": "eig_planner_refused", "severity": "high",
                             "error": str(error), "iter": it})
                         decision = StopDecision("incomplete", [str(error)], decision.per_q)
-                    else:
-                        logged_scale = _log_eig_plan(
-                            cfg, planner_input, plan_decision, planner_seconds, it=it,
-                            previous_scale=logged_scale)
                 if plan_decision is None:
                     break
-                if plan_decision.stop and plan_decision.stop_reason != _PLANNER_GOAL_MET:
-                    decision = _not_the_prize(objective, plan_decision, decision.per_q)
-                    break
-                if plan_decision.stop:
-                    # The prize is claimed on the intervals the campaign PUBLISHES, so certification
-                    # is part of asking, not a report afterwards: certify every prize point that
-                    # needs it, rebuild the map from the certified masters, and ask again. Only a
-                    # second stop is ``met``. A first stop the certified intervals do not support
-                    # simply continues the loop — the planner sees the widened half-widths and buys
-                    # counts where they are widest, which is the whole mechanism.
-                    observations, met, terminal, logged_scale = _certified_prize(
-                        cfg=cfg, objective=objective, grid=grid, budget_state=budget_state,
-                        observations=observations, scan_kind=scan_kind, it=it,
-                        previous_scale=logged_scale)
-                    if terminal is not None:
-                        decision = terminal
-                        break
-                    master_rows, grid = _grid_state(
-                        objective, observations, cfg.workspace, cfg.calibration)
-                    if met:
-                        certified_terminal = True
-                        decision = StopDecision(
-                            "met",
-                            ["hypothesis map at the requested precision: every prize point within "
-                             f"±{float(objective.tolerance_meV):g} meV, on the certified intervals"],
-                            evaluate_stop(objective, grid, budget_state,
-                                          calibration=cfg.calibration, floor=cfg.floor).per_q)
-                        break
-                    continue
                 # A prize point the planner has stopped revisiting (``within_bar``) but whose fit is
                 # still an untrusted HESSE estimate can never become a belief anchor — escalate it to
                 # the full tier now, incrementally, rather than waiting for a whole-campaign certify
                 # pass this campaign may never reach if a further point's own convergence depends on
                 # the anchor this one would supply (found live at the zone boundary, HANDOFF-eig.md
                 # §7.29/§7.30). Idempotent: once escalated, ``_pending_anchor_escalations`` no longer
-                # names it, so this can never spin on the same point.
+                # names it, so this can never spin on the same point. Decided BEFORE the plan is
+                # logged: a plan set aside for an escalation is never acted on, and logging it drew
+                # phantom "planning a 58-point scan" lines in the feed (eig-2-test, 2026-09-03).
                 pending_anchors = _pending_anchor_escalations(
                     cfg.workspace, plan_decision,
                     sample=(None if campaign_slice is None else campaign_slice.sample),
@@ -4450,6 +4440,39 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             "reason": "the full-tier refit did not leave a fold master; not retried"})
                     master_rows, grid = _grid_state(
                         objective, observations, cfg.workspace, cfg.calibration)
+                    continue
+                # The plan is acted on from here (a stop or a scan), so this is where it is logged.
+                logged_scale = _log_eig_plan(
+                    cfg, planner_input, plan_decision, planner_seconds, it=it,
+                    previous_scale=logged_scale)
+                if plan_decision.stop and plan_decision.stop_reason != _PLANNER_GOAL_MET:
+                    decision = _not_the_prize(objective, plan_decision, decision.per_q)
+                    break
+                if plan_decision.stop:
+                    # The prize is claimed on the intervals the campaign PUBLISHES, so certification
+                    # is part of asking, not a report afterwards: certify every prize point that
+                    # needs it, rebuild the map from the certified masters, and ask again. Only a
+                    # second stop is ``met``. A first stop the certified intervals do not support
+                    # simply continues the loop — the planner sees the widened half-widths and buys
+                    # counts where they are widest, which is the whole mechanism.
+                    observations, met, terminal, logged_scale = _certified_prize(
+                        cfg=cfg, objective=objective, grid=grid, budget_state=budget_state,
+                        observations=observations, scan_kind=scan_kind, it=it,
+                        previous_scale=logged_scale)
+                    if terminal is not None:
+                        decision = terminal
+                        break
+                    master_rows, grid = _grid_state(
+                        objective, observations, cfg.workspace, cfg.calibration)
+                    if met:
+                        certified_terminal = True
+                        decision = StopDecision(
+                            "met",
+                            ["hypothesis map at the requested precision: every prize point within "
+                             f"±{float(objective.tolerance_meV):g} meV, on the certified intervals"],
+                            evaluate_stop(objective, grid, budget_state,
+                                          calibration=cfg.calibration, floor=cfg.floor).per_q)
+                        break
                     continue
                 designs = list(plan_decision.ranked)
                 proposal, selection_terminal = _next_planner_proposal(

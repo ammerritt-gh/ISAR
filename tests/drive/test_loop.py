@@ -3920,3 +3920,14 @@ def test_delivery_evidence_is_a_probability_not_a_set():
 
     # A mode nothing labels asserts nothing about any branch.
     assert _candidate_probabilities({}, {}, branches) == {}
+
+
+def test_abstained_points_name_only_underpowered_masters():
+    """The fitter's ``underpowered`` abstain is "could not see", not "saw nothing"; the planner is
+    told which grid points that is true of so their silence is not read as a null."""
+    from isar.drive.loop import _abstained_points
+    path = [(2.3, 0.0, 0.0), (2.35, 0.0, 0.0), (2.4, 0.0, 0.0)]
+    rows = [{"hkl": (2.3, 0.0, 0.0), "disposition": "abstain", "verdict": "underpowered"},
+            {"hkl": (2.35, 0.0, 0.0), "disposition": "declined", "verdict": "no_signal"},
+            {"hkl": (2.4, 0.0, 0.0), "disposition": "resolved", "verdict": "resolved"}]
+    assert _abstained_points(rows, path) == {0: True}

@@ -204,6 +204,18 @@ optic 8.07 ± 0.32 meV), 18 escalations costing 214 s of analysis time. The EIG-
 pricing "re-analyse this point at the full tier" as a design beside "measure this point" — is the
 principled successor and is not built.
 
+**2026-09-03 — an underpowered abstain is not a null.** The fitter's `underpowered` verdict says
+"I could not see it at this exposure", not "there is nothing here". Read as a null, a 20M first
+look at h = 2.30 — ten counts at the peak, the intensity map exactly right — pushed the acoustic's
+scenario mass out of its own window and the planner bought an 8 meV, 58-point scan to find it
+again. `PlannerInput.abstained` (from `loop._abstained_points`, the master's own verdict) names
+those points; their counts still bank and their silence is not evidence in `_scenarios` or
+`point_presence`. The gap underneath — the planner's 3σ mirror of the fitter's detection floor
+against the fitter's evidence-based model selection — is the "fitter response surface" of the
+review's question 2 and stays open. Also from the same campaign: a plan is logged only when it is
+acted on; the anchor-escalation check runs first, so a plan set aside for an escalation no longer
+draws a phantom "planning a 58-point scan" line in the feed.
+
 **2026-09-03 — the session's tracker reads the campaign's belief.** The session's identity
 tracker (`branch_tracking.track_path`) located each branch at each path point from the class prior
 alone — zone-centre energy plus slope × distance, sigma from the slope prior — which is flat away
