@@ -710,6 +710,25 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
                                          row.get("model_interval_hi"))
     model_robust = bool(deliverable and row.get("model_robust") is True and model_lo is not None
                         and model_hi is not None)
+    # The model-averaged interval is fit-local: it describes the fit's PRIMARY mode, and the
+    # tracker may have selected another mode as the target (h = 3.0 on the reference path: the
+    # selected acoustic at 5.99 meV, the model interval at 7.95-8.00 around the optic). An interval
+    # that does not describe the row's ``omega0`` cannot certify it, and reading it anyway
+    # certified the target on the rival's precision (PR #37 review, P1). The selected mode then
+    # certifies on its OWN interval chain -- bootstrap, profile, trusted HESSE -- which
+    # ``_select_mode`` copied onto the row from the candidate table.
+    selected_omega0 = row.get("omega0")
+    try:
+        selected_omega0 = float(selected_omega0)
+    except (TypeError, ValueError):
+        selected_omega0 = math.nan
+    # Only a row whose model IS settled (the session's ``model_robust``) may fall back to the
+    # selected mode's own chain: a non-robust model has no settled answer for any mode to certify,
+    # and that rule stands (test_a_non_model_robust_certification_cannot_produce_met).
+    other_mode = bool(model_robust and math.isfinite(selected_omega0) and model_med is not None
+                      and abs(float(model_med) - selected_omega0) > _PRIMARY_MODE_TOLERANCE_MEV)
+    if other_mode:
+        model_robust = False
     hw = None
     if model_robust:
         try:
@@ -719,13 +738,23 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
     diagnostic_hw, diagnostic_method = _diagnostic_halfwidth(row, calibration, calibration_arg)
     if model_robust:
         diagnostic_hw, diagnostic_method = hw, "model_averaged_predictive"
+    own_certifiable = False
+    if other_mode and deliverable and not model_robust and math.isfinite(selected_omega0):
+        own_lo, own_hi, own_ok = _pick_interval(row)
+        if _is_certifiable(row, own_ok):
+            try:
+                hw = calibration.calibrated_halfwidth(own_lo, own_hi, bucket=calibration_arg)
+                own_certifiable = hw is not None and math.isfinite(float(hw))
+            except Exception:  # noqa: BLE001 — an invalid interval cannot certify
+                hw = None
+    certifiable = model_robust or own_certifiable
     disp = row.get("disposition")
     return {
         "hkl": _row_hkl(row),
         "omega0": ((model_med if model_robust and model_med is not None else row.get("omega0"))
                    if deliverable else None),
-        "halfwidth": hw,
-        "reliable": model_robust, "certifiable": model_robust,
+        "halfwidth": hw if certifiable else None,
+        "reliable": certifiable, "certifiable": certifiable,
         "model_robust": model_robust, "model_entropy": row.get("model_entropy"),
         "model_interval": ([model_lo, model_med, model_hi] if model_robust else None),
         # ``usable`` is what model_points and the signal-seen check read, so a withheld delivery has

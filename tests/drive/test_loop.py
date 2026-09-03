@@ -562,6 +562,35 @@ def test_master_gamma_at_bound_certifies_when_model_robust_omega_is_identified()
     assert m["halfwidth"] == pytest.approx(0.02)
 
 
+def test_master_certifies_a_selected_secondary_mode_on_its_own_interval():
+    """PR #37 review P1, measured at h=3.0 on the reference path: the model-averaged interval is
+    the fit's PRIMARY mode (the optic, 7.95-8.00) while the tracker selected the acoustic at 5.99 as
+    the target. That interval cannot certify this row; the selected mode certifies on its own
+    bootstrap interval, and its omega0 is the selected energy, not the primary mode's."""
+    m = _master_obs_from_row(
+        _urow(omega0=5.99, interval_lo=5.98, interval_hi=6.00, interval_reliable=True,
+              model_interval_lo=7.95, model_interval_med=7.97, model_interval_hi=8.00,
+              model_robust=True),
+        _UNITY_CAL)
+    assert m["model_robust"] is False
+    assert m["certifiable"] is True and m["omega0"] == pytest.approx(5.99)
+    assert m["halfwidth"] == pytest.approx(0.01)
+    # with no interval of its own, the selected mode is not certifiable -- and never inherits
+    m = _master_obs_from_row(
+        _urow(omega0=5.99, interval_lo=None, interval_hi=None, interval_reliable=None,
+              hesse_lo=None, hesse_hi=None,
+              model_interval_lo=7.95, model_interval_med=7.97, model_interval_hi=8.00,
+              model_robust=True),
+        _UNITY_CAL)
+    assert m["certifiable"] is False and m["halfwidth"] is None
+    # the model interval still certifies the mode it describes
+    m = _master_obs_from_row(
+        _urow(omega0=7.96, model_interval_lo=7.95, model_interval_med=7.97,
+              model_interval_hi=8.00, model_robust=True),
+        _UNITY_CAL)
+    assert m["model_robust"] is True and m["omega0"] == pytest.approx(7.97)
+
+
 def test_pick_interval_prefers_bootstrap_when_reliable():
     row = {"interval_lo": 4.9, "interval_hi": 5.1, "interval_reliable": True,
            "omega0_profile_lo": 4.95, "omega0_profile_hi": 5.05}

@@ -205,13 +205,19 @@ pricing "re-analyse this point at the full tier" as a design beside "measure thi
 principled successor and is not built.
 
 **2026-09-03 — the PR #37 second review round (five P1, six P2), dispositioned.** Fixed, each
-with a test: (1) the master's certifying half-width is bound to the ONE candidate at the row's
-`omega0` — the primary mode the model-averaged interval describes — and a secondary mode carries
-"detected, precision unknown" (`loop._planner_candidates`), since `_clear_tracked_selection`
-never touches `model_interval`. Not gated on the tracker's `track_state`: a first cut was, and it
-re-created a stall at h = 2.05 live (23 scans, nothing within the bar) because the session's
-per-peak `assign` reads a lone near-fold peak as ambiguous under the optic's broad class prior
-where the planner's joint matching settles it; (2) the planner's world is
+with a test: (1) the certifying interval belongs to the SELECTED mode. The model-averaged
+interval is fit-local — it describes the fit's primary mode — and at h = 3.0 on the reference
+path that is the optic (7.95–8.00 meV) while the tracker's selected target is the acoustic at
+5.99: the point had been certified on the rival's interval. `_master_obs_from_row` now refuses the
+model interval when it does not describe the row's `omega0` (within a resolution width) and
+certifies the selected mode on its own chain — bootstrap, profile, trusted HESSE — which
+`_select_mode` copies onto the row; `_planner_candidates` then binds that half-width to the ONE
+candidate at `omega0` and a secondary mode carries "detected, precision unknown". Not gated on the
+tracker's `track_state`: a first cut was, and it re-created a stall at h = 2.05 live (23 scans,
+nothing within the bar) because the session's per-peak `assign` reads a lone near-fold peak as
+ambiguous under the optic's broad class prior where the planner's joint matching settles it; a
+second cut bound the width to the model interval's own mode and stalled h = 3.0 (104 scans),
+which is how the optic-interval certification was found; (2) the planner's world is
 one (sample, temperature bin): master rows, scan exposure, the intensity map and anchor
 escalations are filtered to the campaign slice before any Q match (`loop._slice_rows`), where they
 had matched by hkl alone; (3) banked exposure is asked per scenario energy, not at the branch mean
