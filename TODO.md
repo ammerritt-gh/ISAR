@@ -54,9 +54,8 @@ Things that are wrong now, as opposed to things not yet built.
 
 - [ ] **DEFECT-6 — Convolution-grid centring bias in `convolute_voigt_dho` (fix deferred).**
       The internal `arange(-span, span, dx)` grid contains exact 0 only when the span is a dx
-      multiple, so `fftconvolve(mode='same')` carries a sub-dx (≤ dx/2 = 0.005 meV at the
-      2026-09-03 grid of dx = 0.01 meV), fit-window-dependent centring offset on every convolved
-      model. The finer grid shrank the residual bias tenfold but did not remove the defect.
+      multiple, so `fftconvolve(mode='same')` carries a sub-dx (≤ dx/2 = 0.025 meV), fit-window-
+      dependent centring offset on every convolved model, biasing fitted ω₀ by up to ~0.03 meV.
       The symmetric odd-grid fix was implemented during the PR #10 review response and reverted:
       the corrected (honestly flat) landscape makes degenerate k≥7 candidates fail MIGRAD often
       enough that shadow selection reports `unavailable` — which `isar/eig/eligibility.py` treats

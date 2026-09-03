@@ -408,6 +408,32 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
       nothing about where, which is the scenarios' business). Missed 3 then seen 3 recovers to
       0.98; missed 5 and never seen falls to 1.2e-4; the posterior is order-independent.
 
-    The 0.01 campaign carried both faults at once, so the grid is being re-tested on the fixed
-    code before the value is settled. **Owner decision open:** 0.02 (recommended: all the measured
-    gain, no abstention, 1.4× cheaper than 0.01) or 0.01 as ruled.
+    The 0.01 campaign carried both faults at once, so the grid was re-tested on the fixed code.
+    **This decision is now closed by measurement (§7.24): 0.05 stays, and the 0.1 meV bar carries
+    the accuracy.** Neither 0.01 nor 0.02 completes a live campaign, so the offline refit gain is
+    not purchasable at any exposure budget the demo has.
+
+24. **The convolution grid reverts to 0.05, closed by three live campaigns (2026-09-03).** The same
+    six-point path (`map the acoustic phonon from (2,0,0) to (2.3,0,0)`, 0.1 meV bar) was run three
+    times, identical code apart from `CONVOLUTION_DX`:
+
+    | grid | outcome |
+    |---|---|
+    | 0.01 | did not finish — 93 scans, then 49 scans after the `f4ea622` planner fix; both timed out at 30–50 min |
+    | 0.02 | did not finish — 77 scans, timed out |
+    | 0.05 | **`met` in 60 scans and 22.6 minutes**, every point within 0.041 meV of truth |
+
+    The fine grids also return verdicts the coarse one never produces — `no_signal`,
+    `signal_unmodeled`, and at the near-fold point an `elastic_only` abstention on a real peak — so
+    a finer grid degrades the fit's *model selection*, not merely its arithmetic. The accuracy
+    argument that motivated §7.22 (the 82-scan refit: median error 0.021 → 0.012 meV at 0.02) does
+    not survive contact with a live campaign, and the 0.1 meV per-point bar the owner chose already
+    covers the residual error.
+
+    **What reverts:** `CONVOLUTION_DX` and the test/fixture repairs that existed only to keep the
+    suite green on the finer grid (the H8 railed-Γ damping, the two-railed-Γ damping, the sparse
+    two-peak seed, the predictive-evaluator fixture, the C2 characterization goldens, the DEFECT-6
+    `dx/2` statement). **What stays:** everything §7.22 landed for the 0.1 meV bar — the compiler
+    default and prompt text, `docs/STATS_PRIMER.md` §6.1, the docs, and the `goal_to_spec` golden.
+    The named constant stays too, with the three campaign results written at its definition so the
+    experiment is not re-run blind.
