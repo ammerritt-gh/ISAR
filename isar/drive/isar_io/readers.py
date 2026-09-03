@@ -160,6 +160,10 @@ def exact_pooled_master_sources(workspace) -> dict[tuple[str, str, str], dict[st
     physical acquisition and submitted request fingerprint.  Ambiguous, incomplete, or orphaned
     joins are omitted so callers fail closed instead of substituting a same-Q or newer master.
     """
+    # ponytail: ``read_log`` parses only what was appended, but this still walks every record twice
+    # on every call -- O(events), not O(new events). Measured at 6 ms per call for a 3000-event log
+    # against a 6 s fit, so it is noise; make the join incremental too if a campaign ever runs long
+    # enough for it not to be.
     events = read_log(Path(workspace) / "report" / "session_log.jsonl")
     submitted: set[tuple[str, str]] = set()
     for event in events:
@@ -241,7 +245,13 @@ def read_master_rows(workspace, calibration, *, row_hkl, master_obs_from_row) ->
                     # evaluator run — a schema check alone let a malformed or stale-fingerprinted
                     # basis reach the loop that the other two readers would have refused.
                     validate_master_predictive_artifact(predictive)
-                    master["predictive"] = predictive
+                    # The artifact itself is NOT attached. It is a few hundred kilobytes of
+                    # parameter draws, it is already content-addressed on disk and named by
+                    # ``predictive_ref`` beside this row, and nothing reads it any more -- the
+                    # predictive-promotion machinery that did was retired with the legislated
+                    # placement rules. Carrying it made every ``pooled_master_update`` event 413 KB
+                    # and the session log 87% parameter draws (34 of 38 MB on a 113-scan campaign),
+                    # which every reader of that log then paid for on every iteration.
                     master["expected_next_information"] = predictive.get("diagnostics")
                 except PredictiveArtifactError as error:
                     # An unusable predictive artifact is no predictive basis at all (ADR-006): the
