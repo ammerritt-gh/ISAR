@@ -8,7 +8,7 @@ Three families, in original driver order:
   for the Qt-free drive and viewers;
 * branch identity — candidate materialisation, mode selection, the connected tracker
   (``_materialize_branch_candidates`` … ``_apply_tracked_branch``) and prior rebuilds
-  (``_rebuild_tracked_prior``, ``_rebuild_pooled_prior``);
+  (``_rebuild_tracked_prior``);
 * ``_resolve_target_projections`` — the post-triage ADR-019 target projection per pooled master.
 
 ``_master_prior_admissible`` is the SINGLE admission source for independent fit evidence
@@ -33,7 +33,7 @@ from isar.session import branch_assignment as BA
 from isar.session import branch_model, branch_tracking, predictive_artifact, session_prior
 from isar.session.master_delivery import _persist_content_addressed
 from isar.session.scan_delivery import (
-    FULL_TIERS, _campaign_hypotheses, _campaign_selector, _campaign_target, _dispersion_period,
+    FULL_TIERS, _campaign_hypotheses, _campaign_target, _dispersion_period,
     _refresh_interval_semantics, _refresh_probability_semantics,
 )
 from isar.session.state import ScanEntry, SessionState, canonical_hash
@@ -204,10 +204,6 @@ def _update_hypothesis_mismatch(state, t_round: float, *, period: float | None,
         "fingerprint": snapshot.get("fingerprint"),
         "message": (f"declared {target} hypothesis disagrees with data-only branch prediction"
                     if active else "declared hypothesis remains compatible with data-only prediction")}
-
-
-def _tracked_selector(card) -> bool:
-    return _campaign_selector(card)[0] == "tracked_branch"
 
 
 def _mode_candidates(scan_id: str, detector: str, outcome: dict) -> list[dict]:
@@ -683,8 +679,6 @@ def _authorized_tracking_domain(target: dict, observations: list[dict]):
 
 
 def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dict | None:
-    if not _tracked_selector(card):
-        return None
     target = getattr(card.state, "campaign_target", None) or {}
     path = target.get("path") or []
     if not path:
@@ -758,31 +752,6 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
     _rebuild_tracked_prior(card, session, track, observations, refs, t_round=t_round)
     card.state.branch_tracks = track
     return track
-
-
-def _rebuild_pooled_prior(card, session: SessionState, session_prior, *, t_round: float) -> None:
-    """Rebuild the non-tracked running dispersion prior from pooled masters only."""
-    if _tracked_selector(card):
-        return
-    source_ids = set(session.scans)
-    card.state.dispersion_prior = [
-        point for point in (card.state.dispersion_prior or [])
-        if str(point.get("scan_id", "")).split("#", 1)[0] not in source_ids]
-    for entry in sorted(session.scans.values(), key=lambda item: item.scan_number):
-        for outcome in entry.detectors.values():
-            if (not outcome.get("pooled") or outcome.get("modality") != "fold"
-                    or not _master_prior_admissible(entry, outcome)
-                    or outcome.get("pool_consistent") is False):
-                continue
-            session_prior.add_point(
-                card.state, scan_id=entry.scan_id, sample=outcome.get("sample"),
-                T=outcome.get("T"), q=outcome.get("q"), omega0=outcome.get("omega0"),
-                modality="fold", verdict=outcome.get("verdict"), gamma=outcome.get("gamma"),
-                intensity=outcome.get("intensity"), fit_kind=outcome.get("fit_kind"),
-                branch_id=outcome.get("branch_id"), weight=outcome.get("branch_weight"),
-                branch_posterior=outcome.get("branch_posterior"),
-                assignment_entropy=outcome.get("assignment_entropy"), t_round=t_round,
-                require_fold=True)
 
 
 def _master_prior_admissible(entry: ScanEntry, outcome: dict) -> bool:

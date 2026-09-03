@@ -874,41 +874,39 @@ default to 3600 analysis seconds and no measurement budget; measurement-dominate
 eight measurement hours and no analysis limit. Durable checkpoints make both ceilings cumulative over
 resume. Limits stop dispatching new work; acquired data finish or checkpoint their active wave.
 
-### 7.9 Branch disambiguation — four rules, each earned by a live deadlock
+### 7.9 Branch disambiguation — two surviving rules, each earned by a live deadlock
 
 Absorbed from the 2026-07 zone-retest campaign (log in git history); the mechanisms live in
 `isar/session/branch_model.py` / `branch_assignment.py`. Each rule exists because its absence
-deadlocked a real campaign, so none may be relaxed casually:
+deadlocked a real campaign, so neither may be relaxed casually:
 
 1. **Features live in phonon energy |ω|, and an anti-Stokes descriptor peak folds onto its
    Stokes partner** (detailed balance), pooling intensity and significance. Otherwise the
    anti-Stokes wing at −ω — often the *brighter* side — enters as a rival feature, and a cold
-   zone belief (μ=0) rates ±ω about equally: dominance pins at ~0.5 and every scan whose
-   anti-Stokes is in-window abstains forever.
-2. **Rival-branch banking.** A delivered scan's clearly-non-acoustic higher features
-   (P(acoustic)≤0.3, significance≥8, above the QoI) are stored as `optic` anchors
-   (`secondary_branch_points`), so the optic's belief claims its own kin. Otherwise, wherever the
-   acoustic belief extrapolates with inflated σ, the occupancy prior reads the optic feature as
-   acoustic → dominance ~0.5 → permanent abstention. Banking deliberately bypasses the
-   fold-modality gate (`require_fold=False`) because the scans that *see* the optic are the wide
-   unpooled surveys; `fork` outcomes stay hard-excluded.
-3. **A non-zone-anchored belief with fewer than 3 anchors extrapolates flat**
+   zone belief (μ=0) rates ±ω about equally: the two are indistinguishable and every scan whose
+   anti-Stokes is in-window is ambiguous forever.
+2. **A non-zone-anchored belief with fewer than 3 anchors extrapolates flat**
    (precision-weighted level, group-velocity-scale σ). Two close noisy anchors otherwise assert
    a plunging local-linear slope into a rival's band and claim its features.
-4. **A Phase-A-triaged acoustic delivery may seed the prior from unpooled quicklooks**, carrying
-   its own hygiene gates (P/dominance/entropy; `fork` never enters). Otherwise mid-band
-   productions run against a multi-anchor optic and a zero-anchor acoustic, and occupancy lets
-   the optic outvote the acoustic for its own features.
 
-These rules are implemented as named module constants in the tracker
-(`SECONDARY_P_ACOUSTIC_MAX = 0.3`, `SECONDARY_MIN_SIGNIFICANCE`, `MIN_ANCHORS = 3`,
+Two further rules — **rival-branch banking** (`secondary_branch_points`) and **Phase-A-triaged
+acoustic delivery seeding the prior from unpooled quicklooks** — were deleted on 2026-09-03 with
+per-q feature selection (HANDOFF-eig.md item 27). Both were remedies for *per-scan* branch
+assignment: they existed so that the feature chosen at one q would not be mis-labelled by a belief
+that had never seen its rival. Nothing chooses a feature per q any more. The scan-level triage
+preserves every fitted mode as unordered evidence under one candidate identity, and the
+authoritative label is assigned once every pooled master has updated, over the whole objective path
+in both directions (`evidence_update._apply_tracked_branch`) — which reads both branches together
+and so cannot lose one to the other's occupancy.
+
+These rules are implemented as named module constants in the tracker (`MIN_ANCHORS = 3`,
 `LOCALITY_BW` — `isar/session/branch_assignment.py` / `branch_model.py`). Reconciliation with
 the no-hard-rules-for-phenomena doctrine (DESIGN_GOALS Inbox, "priors exist to be weakened"):
-none legislates what a phenomenon *does* — they are belief bookkeeping and prior-admission
-gates, each earned by a named live deadlock — but the thresholds are legislated numbers rather
-than priced quantities, and that is acknowledged: all four live in the tracked-branch machinery
-that SCENE-6 deletes (design/scene.md §3), where identity becomes catalogue-driven,
-evidence-priced scene posterior and gates of this kind should dissolve into priors and prices.
+neither legislates what a phenomenon *does* — they are belief bookkeeping, each earned by a named
+live deadlock — but the thresholds are legislated numbers rather than priced quantities, and that
+is acknowledged: both live in the tracked-branch machinery that SCENE-6 deletes
+(design/scene.md §3), where identity becomes catalogue-driven, evidence-priced scene posterior and
+gates of this kind should dissolve into priors and prices.
 The targeted lane's *placement* half of that demolition happened on 2026-09-02 (see "Placement
 is the EIG planner" above): what remains here is belief bookkeeping and prior admission, which
 the planner reads and does not legislate.

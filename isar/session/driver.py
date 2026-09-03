@@ -29,7 +29,7 @@ from isar.predictive import json_fingerprint as _json_fingerprint
 from isar.schema.card import Card
 from isar.schema.measurement import (MeasurementArena, campaign_provenance,
                                      current_lattice_epoch)
-from isar.session import calibrations, guidelines as guide_mod, ingest, router, session_prior
+from isar.session import calibrations, guidelines as guide_mod, ingest, router
 from isar.session import measurement_store
 from isar.session.outcome import (
     _coerce_fit_outcome, _outcome_from_entry, _write_results_csv,
@@ -511,7 +511,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                    "bootstrap_M_effective": e.provenance.get("bootstrap_M_effective")}
                 for e in entries if e.provenance.get("fit_seconds") is not None]
         completed_master_keys: list[str] = []
-        _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
+        _apply_and_finish(summary, session, card, records, runcal, g, plan, entries,
                           workspace, force=force, force_masters=force_masters,
                           M=M, seed_base=seed_base, errors_tier=master_tier,
                           master_boot_workers=master_boot_workers, boot_executor=shared_pool,
@@ -554,7 +554,7 @@ def _core_provenance(rec, det, source_by_name=None) -> dict:
     return core
 
 
-def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
+def _apply_and_finish(summary, session, card, records, runcal, g, plan, entries,
                       workspace, *, force, force_masters=frozenset(), M, seed_base, errors_tier,
                       master_boot_workers,
                       boot_executor, boot_adaptive, scan_workers=1, bayes_opts=None, timer=None,
@@ -642,7 +642,6 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
 
     if _campaign_hypotheses(card):
         evidence_update._materialize_branch_candidates(session)
-    evidence_update._rebuild_pooled_prior(card, session, session_prior, t_round=t_round)
     # Identity assignment is deliberately after pooled-master updates. It reads the complete
     # candidate field, may revise earlier labels, then rebuilds the connected fold-only prior.
     track = evidence_update._apply_tracked_branch(session, card, t_round=t_round)
@@ -903,7 +902,6 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
     t_round = float((card.policy.collation or {}).get("t_round", 5.0))
     if _campaign_hypotheses(card):
         evidence_update._materialize_branch_candidates(session)
-    evidence_update._rebuild_pooled_prior(card, session, session_prior, t_round=t_round)
     track = evidence_update._apply_tracked_branch(session, card, t_round=t_round)
     evidence_update._resolve_target_projections(session, workspace.root / "data")
     # Tracking may annotate individual rows for display. Certification is master-only, so restore

@@ -1,9 +1,10 @@
-"""Bayesian branch-assignment posterior (steering; docs/MEASUREMENT_STEERING.md §2, confidence ladder).
+"""Branch beliefs: a per-branch dispersion ω_b(u) with an honest σ (steering;
+docs/MEASUREMENT_STEERING.md §2, confidence ladder).
 
 Replaces the hard branch-identity gates (the ``_is_clean_anchor`` provenance gate, the ``prior_for``
-global polyfit, the ``primary_phonon_index`` nearest-prior rule) with a **posterior over branch
-assignment**: for each observed feature at a q, ``P(feature -> {acoustic, optic, ...}, new/spurious)``.
-Physics enters as *priors in the likelihood*, never as switches:
+global polyfit, the ``primary_phonon_index`` nearest-prior rule) with a belief the session prior,
+the cross-q evidence update and the near-Γ constrained recipe all read. Physics enters as *priors
+in the likelihood*, never as switches:
 
 - **zone-centre gaplessness** — the acoustic branch has ω₀→0 at the Γ-point, so the acoustic belief
   carries a soft zone anchor ``(u=0, ω₀=0)`` whose influence *decays* with reduced-q distance. "Near
@@ -15,12 +16,10 @@ Physics enters as *priors in the likelihood*, never as switches:
 - **branch persistence** — a mild occupancy prior ∝ a branch's anchor count, plus a fixed new/spurious
   escape so a feature never has to be forced onto a known branch.
 
-The QoI (acoustic ω₀ at this q) is the posterior mixture over acoustic-assigned features; its variance
-carries the assignment-entropy inflation (law of total variance) that the acquisition consumes as
-``σ_prior``. Delivery is honest triage: deliver an acoustic ω₀ only when it is confidently assigned
-AND resolvable (ω₀ ≳ 1 FWHM from the elastic origin) — near the Γ-point it is unresolvable *by
-position* and is measured instead by a fixed-resolution + 1/ω-brightness constrained fit (see the
-driver / branch_model), or abstains as ``branch_continuation``.
+This module no longer decides which feature at a q IS the target. Per-q feature selection retired
+with the ``target_selector`` values the EIG planner replaced: the planner maps a DECLARED branch,
+and the authoritative label is assigned once every pooled master has updated, over the whole
+objective path in both directions (``evidence_update._apply_tracked_branch``).
 
 Session-side (imports analyze/schema). The drive never imports this module; it reads the persisted
 ``branch_belief`` / ``branch_id`` from ``card.state.json`` / ``results.csv``.
@@ -28,7 +27,7 @@ Session-side (imports analyze/schema). The drive never imports this module; it r
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -48,19 +47,10 @@ ACOUSTIC_MAX_SLOPE = 6.0   # meV / rlu — cold-start dispersion-uncertainty sca
 #                            outward), broad enough to still admit a real steep low-q acoustic.
 LOCALITY_BW = 0.35         # rlu — Gaussian locality bandwidth (fixed, so 2 anchors stay well-weighted)
 WINDOW_K = 6               # nearest anchors entering each local fit
-OCC_PSEUDO = 1.0           # occupancy pseudo-count (mild persistence prior)
-NEW_LEVEL = 0.01           # flat likelihood floor for the new/spurious hypothesis (per meV)
-W_MIN = 0.15               # min summed acoustic weight for an acoustic delivery to be considered
+NEW_LEVEL = 0.01           # flat likelihood floor for the new/spurious hypothesis (per meV).
+#                            Canonical definition; the EIG planner mirrors it (it may not
+#                            import the session package) and the two must not drift.
 RESOLVABLE_FWHM_FACTOR = 1.0   # ω₀ ≳ this × gauss_fwhm to be a position-separable peak
-P_ACOUSTIC_MIN = 0.6       # min P(acoustic) of the top feature to deliver
-ENTROPY_MAX = 0.7          # max Shannon entropy (nats) of the top feature's assignment to deliver
-DOMINANCE_MIN = 0.7        # top acoustic feature must hold ≥ this share of the total acoustic weight
-#                            (a bimodal "is it the 2.7 or the 6.9?" scan fails this and abstains)
-EXTRAP_MARGIN = 0.25       # rlu — how far past the highest ACOUSTIC anchor an acoustic ω₀ may still be
-#                            delivered. The linear belief overshoots the saturating true dispersion near
-#                            the zone boundary; beyond this margin a lone optic feature would read as
-#                            "on the acoustic line", so we abstain there (bounded-continuity guard).
-#                            Generous enough to bootstrap outward (each delivery extends the range).
 ACOUSTIC = "acoustic"
 NEW = "new"
 BRANCH_ASSIGNMENT_SCORER_REVISION = "isar.branch_assignment/1"
@@ -171,14 +161,6 @@ class BranchBelief:
     @property
     def n_anchors(self) -> int:
         return int(self.us.size)
-
-    def deliverable(self, u: float, margin: float = EXTRAP_MARGIN) -> bool:
-        """Whether an acoustic ω₀ at ``u`` may be *delivered* (vs abstained). Near/below the anchored
-        range and up to ``margin`` beyond the highest real anchor it is trustworthy; far past the last
-        anchor the linear belief overshoots into the optic, so we withhold (bounded continuity). With
-        no real anchors only the near-Γ zone region is deliverable (cold-start bootstrap)."""
-        u_max = float(self.us.max()) if self.us.size else 0.0
-        return float(u) <= u_max + float(margin)
 
     def _anchors(self):
         """``(us, ys, precision)`` — real anchors carry precision ``weight/σ²`` (σ = SIGMA_SLACK); the
@@ -355,210 +337,3 @@ def build_beliefs(points, *, sample, t_bin, period: float,
                                          zone_anchor=prior is None, parameter_prior=prior,
                                          period=float(period))
     return beliefs
-
-
-def _gauss(x: float, mu: float, sigma: float) -> float:
-    s = max(float(sigma), 1e-9)
-    return math.exp(-0.5 * ((float(x) - float(mu)) / s) ** 2) / (s * math.sqrt(2.0 * math.pi))
-
-
-def assignment_posterior(features, beliefs, u: float) -> list[dict]:
-    """``P(feature -> branch)`` for each feature, over the branch beliefs plus a ``"new"`` (spurious /
-    unseen-branch) escape. ``L_cont`` is the branch's continuity likelihood at this q, widened by the
-    feature's own σ and the slack floor; the occupancy prior mildly prefers established branches; the
-    new hypothesis is a flat likelihood floor so a feature far from every branch is not forced on."""
-    out: list[dict] = []
-    for f in features:
-        scores: dict[str, float] = {}
-        for bid, belief in beliefs.items():
-            mu, sigma = belief.predict(u)
-            s = math.sqrt(sigma ** 2 + f.sigma_e ** 2 + SIGMA_SLACK ** 2)
-            scores[bid] = _gauss(f.energy, mu, s) * (belief.n_anchors + OCC_PSEUDO)
-        scores[NEW] = NEW_LEVEL * OCC_PSEUDO
-        total = sum(scores.values())
-        out.append({k: v / total for k, v in scores.items()} if total > 0 else {NEW: 1.0})
-    return out
-
-
-def condition_on_target_energy(features, posterior, branch_id: str, *, target_energy: float,
-                               sigma: float) -> list[dict]:
-    """Update branch odds from a scientist-supplied approximate target energy.
-
-    This is prior evidence about branch identity, not a dispersion anchor and not a selector. A
-    matching feature gains odds for ``branch_id`` relative to the flat new-feature likelihood; a
-    distant feature loses those odds. Every competing hypothesis remains present and normalized.
-    """
-    conditioned: list[dict] = []
-    width = max(float(sigma), SIGMA_SLACK)
-    for feature, probs in zip(features, posterior):
-        scores = dict(probs)
-        evidence_ratio = _gauss(feature.energy, float(target_energy), width) / NEW_LEVEL
-        scores[branch_id] = scores.get(branch_id, 0.0) * max(evidence_ratio, 1e-12)
-        total = sum(scores.values())
-        conditioned.append({key: value / total for key, value in scores.items()}
-                           if total > 0.0 else {NEW: 1.0})
-    return conditioned
-
-
-def _entropy(probs: dict) -> float:
-    return float(-sum(p * math.log(p) for p in probs.values() if p > 0.0))
-
-
-def acoustic_qoi(features, posterior, *, gauss_fwhm: float,
-                 resolvable_factor: float = RESOLVABLE_FWHM_FACTOR) -> dict:
-    """The acoustic ω₀ QoI at this q from the posterior over acoustic-assigned features.
-
-    ``omega0`` is the MAP (top-acoustic) feature's energy — a *real* measured feature, never a blend
-    of two branches. ``sigma`` is the law-of-total-variance over the acoustic-weighted features, whose
-    between-component term inflates when a second feature also claims acoustic (the assignment-entropy
-    signal the acquisition reads). ``dominance`` is the top feature's share of the total acoustic
-    weight (a bimodal acoustic/optic scan → low dominance → abstain). ``omega0=None`` when no feature
-    carries meaningful acoustic weight."""
-    wa = np.array([p.get(ACOUSTIC, 0.0) for p in posterior], dtype=float)
-    if wa.sum() < W_MIN or not features:
-        return {"omega0": None, "sigma": None, "p_acoustic": float(wa.max() if wa.size else 0.0),
-                "entropy": float("inf"), "dominance": 0.0, "resolvable": False,
-                "feature": None, "posterior": None, "feature_index": None}
-    j = int(np.argmax(wa))
-    mu = float(features[j].energy)
-    wn = wa / wa.sum()
-    mean = float(sum(wn[i] * features[i].energy for i in range(len(features))))
-    var = float(sum(wn[i] * (features[i].sigma_e ** 2 + (features[i].energy - mean) ** 2)
-                    for i in range(len(features))))
-    return {"omega0": mu, "sigma": math.sqrt(max(var, 0.0)),
-            "p_acoustic": float(wa[j]), "entropy": _entropy(posterior[j]),
-            "dominance": float(wa[j] / wa.sum()),
-            "resolvable": bool(mu >= resolvable_factor * float(gauss_fwhm)),
-            "feature": features[j], "posterior": dict(posterior[j]), "feature_index": j}
-
-
-def branch_qoi(features, posterior, branch_id: str, *, gauss_fwhm: float) -> dict:
-    """The measured QoI for an established non-acoustic branch."""
-    weights = np.array([p.get(branch_id, 0.0) for p in posterior], dtype=float)
-    if weights.sum() < W_MIN or not features:
-        return {"omega0": None, "sigma": None, "p_branch": float(weights.max() if weights.size else 0.0),
-                "entropy": float("inf"), "dominance": 0.0, "resolvable": False, "feature": None}
-    j = int(np.argmax(weights))
-    wn = weights / weights.sum()
-    mean = float(sum(wn[i] * features[i].energy for i in range(len(features))))
-    var = float(sum(wn[i] * (features[i].sigma_e ** 2 + (features[i].energy - mean) ** 2)
-                    for i in range(len(features))))
-    feature = features[j]
-    return {"omega0": float(feature.energy), "sigma": math.sqrt(max(var, 0.0)),
-            "p_branch": float(weights[j]), "entropy": _entropy(posterior[j]),
-            "dominance": float(weights[j] / weights.sum()),
-            "resolvable": bool(feature.energy >= RESOLVABLE_FWHM_FACTOR * float(gauss_fwhm)),
-            "feature": feature}
-
-
-def selected_branch_qoi(features, posterior, branch_id: str, *, gauss_fwhm: float,
-                        selector: str = "lowest_energy", target_energy: float | None = None,
-                        energy_search: tuple[float, float] | None = None) -> dict:
-    """QoI for the scientist-selected candidate without overriding branch probabilities.
-
-    Selection answers *which feature to investigate*; ``assignment_posterior`` still answers what
-    that feature most likely is.  Thus a lowest-energy acoustic leak remains a low-probability optic
-    candidate and causes abstention/evidence collection instead of being forced onto either branch.
-    """
-    candidates = list(range(len(features)))
-    if energy_search is not None:
-        lo, hi = map(float, energy_search)
-        candidates = [i for i in candidates if lo <= float(features[i].energy) <= hi]
-    if not candidates:
-        return {"omega0": None, "sigma": None, "p_branch": 0.0, "entropy": float("inf"),
-                "dominance": 0.0, "resolvable": False, "feature": None,
-                "posterior": None, "feature_index": None}
-    if selector == "lowest_energy":
-        selected = min(candidates, key=lambda i: float(features[i].energy))
-    elif selector == "highest_energy":
-        selected = max(candidates, key=lambda i: float(features[i].energy))
-    elif selector == "nearest_energy" and target_energy is not None:
-        selected = min(candidates, key=lambda i: abs(float(features[i].energy) - float(target_energy)))
-    else:
-        raise ValueError(f"invalid target selector {selector!r}")
-    feature = features[selected]
-    probs = dict(posterior[selected])
-    weights = np.asarray([p.get(branch_id, 0.0) for p in posterior], dtype=float)
-    p_branch = float(weights[selected])
-    dominance = float(p_branch / weights.sum()) if weights.sum() > 0 else 0.0
-    return {"omega0": float(feature.energy), "sigma": float(feature.sigma_e),
-            "p_branch": p_branch, "entropy": _entropy(probs), "dominance": dominance,
-            "resolvable": bool(feature.energy >= RESOLVABLE_FWHM_FACTOR * float(gauss_fwhm)),
-            "feature": feature, "posterior": probs, "feature_index": selected}
-
-
-def deliver_branch(qoi: dict, *, p_min: float = P_ACOUSTIC_MIN,
-                   entropy_max: float = ENTROPY_MAX,
-                   dominance_min: float = DOMINANCE_MIN) -> bool:
-    return bool(qoi.get("omega0") is not None and qoi.get("resolvable")
-                and qoi.get("p_branch", 0.0) >= p_min
-                and qoi.get("dominance", 0.0) >= dominance_min
-                and qoi.get("entropy", math.inf) <= entropy_max)
-
-
-def deliver_acoustic(qoi: dict, *, p_min: float = P_ACOUSTIC_MIN, entropy_max: float = ENTROPY_MAX,
-                     dominance_min: float = DOMINANCE_MIN) -> bool:
-    """Triage: deliver the acoustic ω₀ only when it is a single, confidently-assigned, *resolvable*
-    feature. A confident but *unresolvable* (near-Γ) QoI is NOT delivered here — the driver routes it
-    to the constrained fit; a bimodal (low-dominance) scan abstains."""
-    return bool(qoi.get("omega0") is not None and qoi.get("resolvable")
-                and qoi.get("p_acoustic", 0.0) >= p_min
-                and qoi.get("dominance", 0.0) >= dominance_min
-                and qoi.get("entropy", math.inf) <= entropy_max)
-
-
-SECONDARY_P_ACOUSTIC_MAX = 0.3   # a feature this un-acoustic may seed a rival (optic) branch
-SECONDARY_MIN_SIGNIFICANCE = 8.0  # descriptor-source features must be this significant to seed
-
-
-def secondary_branch_points(features, posterior, qoi, *, gauss_fwhm: float,
-                            p_acoustic_max: float = SECONDARY_P_ACOUSTIC_MAX,
-                            min_significance: float = SECONDARY_MIN_SIGNIFICANCE) -> list[dict]:
-    """Non-acoustic anchor candidates from a scan's OTHER features — the rival-branch seeds.
-
-    Phase A stopped an optic feature from seeding "acoustic", but left it unclaimed: with no optic
-    belief, the acoustic occupancy prior makes a mid-band 6–7 meV feature read acoustic wherever the
-    acoustic belief is extrapolating (its inflated σ spans the optic), so ``dominance`` pins at ~0.5
-    and every such q abstains forever. The remedy is for the branches the sample actually has to
-    EXIST in the belief set: when a scan also contains a confidently-detected feature that the
-    posterior clearly rejects as acoustic AND that lies above the acoustic QoI, bank it as an
-    ``optic`` anchor so the optic belief can claim its kin at the next q (assignment_posterior then
-    splits acoustic/optic weight correctly and the acoustic delivery recovers its dominance).
-
-    Guards: the QoI feature itself never banks; P(acoustic) must be ≤ ``p_acoustic_max`` (so an
-    ambiguous feature near the acoustic line is never banked); descriptor-source features need
-    ``significance ≥ min_significance`` (fit modes pass — they carry +inf); the energy must be
-    position-resolvable (≥ 1 FWHM) and above the acoustic QoI (phonon-first: a lower shoulder is not
-    an "optic"). The caller only stores these for scans whose primary acoustic DELIVERED — rival
-    anchors inherit the same certification bar as acoustic ones (contract 4 untouched: these are
-    unconstrained detections, not constrained/demoted fits)."""
-    top = qoi.get("feature")
-    w_acoustic = qoi.get("omega0")
-    if top is None or w_acoustic is None:
-        return []
-    out: list[dict] = []
-    for f, p in zip(features, posterior):
-        if f is top:
-            continue
-        if p.get(ACOUSTIC, 0.0) > p_acoustic_max:
-            continue
-        if f.source == "descriptor" and f.significance < min_significance:
-            continue
-        if f.energy < float(gauss_fwhm) or f.energy <= w_acoustic:
-            continue
-        probabilities = dict(p)
-        out.append({"omega0": float(f.energy), "branch_id": "optic",
-                    "weight": float(1.0 - p.get(ACOUSTIC, 0.0)),
-                    "branch_posterior": probabilities,
-                    "assignment_entropy": _entropy(probabilities)})
-    return out
-
-
-def assign_label(energy: float, sigma_e: float, beliefs, u: float,
-                 *, gauss_fwhm: float) -> tuple[str, float]:
-    """Argmax branch id + its posterior weight for a single delivered feature (used to tag an outcome
-    for storage). Reuses :func:`assignment_posterior` so the store-time label matches the QoI logic."""
-    f = Feature(float(energy), max(float(sigma_e), 0.1 * float(gauss_fwhm), 1e-3), 0.0, float("inf"), "mode")
-    probs = assignment_posterior([f], beliefs, u)[0]
-    bid = max(probs, key=probs.get)
-    return bid, float(probs[bid])

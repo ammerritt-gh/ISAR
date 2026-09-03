@@ -484,3 +484,43 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     implemented downstream in `session/scan_delivery.py` / `session/branch_assignment.py`
     (`selected_branch_qoi`), now unreachable from any compiled campaign; deleting it is a separate
     slice.
+
+27. **Per-q feature selection is deleted (2026-09-03).** The separate slice item 26 named. The
+    reachability argument, established by grep over source, tools and tests before anything was
+    removed: `scan_delivery._assign_and_triage` read the selector from
+    `card.state.campaign_target["selector"]`, written only by `loop._persist_campaign_target` from
+    `ObjectiveSpec.target_selector`, which item 26 narrowed to `("tracked_branch",)`; the reader
+    also defaults to `tracked_branch` when the key is absent. The function therefore always took
+    its `selector == "tracked_branch"` early return, and *everything after it* was unreachable —
+    not only the `target_branch != acoustic` selection block but the acoustic triage below it,
+    since the early return precedes both. Deleted with it, each having had no other caller in
+    `isar/` or `tools/`: `branch_assignment.assignment_posterior`, `condition_on_target_energy`,
+    `acoustic_qoi`, `branch_qoi`, `selected_branch_qoi`, `deliver_branch`, `deliver_acoustic`,
+    `secondary_branch_points`, `assign_label`, `BranchBelief.deliverable`, and the constants only
+    they used (`OCC_PSEUDO`, `W_MIN`, `P_ACOUSTIC_MIN`, `ENTROPY_MAX`, `DOMINANCE_MIN`,
+    `EXTRAP_MARGIN`). `NEW_LEVEL` is kept though now unread here: the EIG planner mirrors it by
+    value and names this as the canonical definition. `evidence_update._tracked_selector` was a
+    constant `True`, so its two gates went: `_apply_tracked_branch` proceeds unconditionally, and
+    `_rebuild_pooled_prior` — whose whole body sat behind `if _tracked_selector(card): return` —
+    is gone along with its two `driver.py` calls and the now-unused `session_prior` parameter of
+    `_apply_and_finish`.
+
+    **What was kept, and why:** `build_beliefs`, `BranchBelief.predict` / `predict_data_only`,
+    `features_from`, `reduced_q`, `probability_semantics`, `SIGMA_SLACK`,
+    `RESOLVABLE_FWHM_FACTOR` — the belief and assignment machinery the planner, `session_prior`
+    and the cross-q evidence update read every iteration. `_apply_branch_triage` was left intact:
+    its `deliver is False` branch is now unreachable in conjunction with a non-null ω₀, but
+    removing it nulls nine return values across two consumers, which is the delivery-path refactor
+    this slice deliberately did not become.
+
+    Docs: `design/steering.md` §7.9 went from four disambiguation rules to two — rival-branch
+    banking and quicklook prior seeding were remedies for *per-scan* assignment and die with it;
+    the anti-Stokes fold and the flat two-anchor extrapolation are still implemented.
+    `docs/plans/stats-audit.md` §5 still describes the deleted QoI/delivery quantities; its line
+    references were already stale before this slice and repairing that table is its own job.
+
+    Tests: `tests/session/test_branch_assignment.py` 26 → 17 (nine deleted, five rewritten onto
+    the surviving beliefs), `tests/session/test_branch_assignment_wiring.py` 18 → 16 (four
+    selector cases replaced by two on the tracked path). Everything else was untouched.
+    `tests/session/test_master_fit.py::test_parallel_masters_match_serial_end_to_end` fails —
+    verified failing on a clean tree at `fe00c81` as well, so it predates this slice.
