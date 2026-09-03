@@ -524,3 +524,50 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     selector cases replaced by two on the tracked path). Everything else was untouched.
     `tests/session/test_master_fit.py::test_parallel_masters_match_serial_end_to_end` fails —
     verified failing on a clean tree at `fe00c81` as well, so it predates this slice.
+
+28. **Session handed off 2026-09-03 afternoon. Read this item first.**
+
+    **State.** Branch `eig-planner`, PR #37, main untouched at 32b8a23 (never commit to main).
+    Not-slow lane green. One pre-existing, unrelated failure:
+    `tests/session/test_master_fit.py::test_parallel_masters_match_serial_end_to_end`, confirmed
+    failing identically on clean `fe00c81` before any of this work — do not chase it here.
+
+    **The finding that matters, and the reason today looked like tuning.** Repeat scans at one q
+    never pooled. On the full-path run in `scratchpad/demo-C`, h = 2.90 took 65 of 110 scans; its
+    master lists `n_members: 65` yet reports `modality: unpooled` and `effective_exposure: 1e7`,
+    where those scans represent ~3e8. The 65 submissions used ~40 windows differing by hundredths
+    of a meV — (2.24, 8.52), (2.25, 8.53), (2.23, 8.51) … all at step 0.19 — whose sample points
+    are mutually offset, so counts cannot be summed bin by bin. The planner's model (owner ruling:
+    detectability is a property of the pooled master) says a repeat adds counts; the reducer can
+    only pool a shared grid; nothing enforced it. **Every "buy more counts here" decision at a hard
+    point was spent on a pool that never grew.** That is why three earlier fixes each moved the
+    sink to a different q instead of removing it.
+
+    **In flight when this was written:** executor `pooling`, one commit "Drive: a repeat scan must
+    land on the grid it is pooling with" — establish the real pooling criterion from the code
+    first (`session/master_delivery.py`, `reduce/`, whatever writes `exposure_provenance` and
+    `modality`), then snap emitted windows to a common lattice (quantise `e_lo` to a multiple of
+    `e_step` anchored at zero) so repeats coincide. Acceptance: a same-q pair whose designed
+    windows differ by a fraction of a step must pool; short path still `met`; full path live with
+    scans, wall time, terminal, scans per point, `isar score` errors. **Collect its result first.**
+
+    - If it lands and the full path reaches `met`: run the full sentence live twice, refresh the
+      PR body (it still quotes the ±0.05 bar and pre-pooling numbers), then the GUI rehearsal,
+      which the owner wants to attend.
+    - If it does not: the SHORT path is demo-ready as of this session — (2,0,0)→(2.3,0,0), 10
+      scans, 98 s, `met` on certified intervals, every point inside the bar, wide first window
+      narrowing to 12 points, ladder climbing, rival excluded. **Owner decision pending:** demo the
+      short sentence live and name the zone-boundary region as the frontier, rather than show the
+      long one stalling.
+
+    **Method note for the next session, learned the hard way.** Three defects were diagnosed from
+    run summaries and each fix moved the symptom. What actually found the causes was instrumenting
+    the campaign's own state: a probe reading `card.state.json` beliefs and anchors, a faulthandler
+    stack dump, and a per-point trace of `eig_plan`. Do that at the FIRST stuck point, not the
+    third. Related: the Cramér–Rao inflation was moved 1.25 → 2.0 → 3.0 → 1.5 across the day,
+    most of which was compensating for the pooling defect rather than calibrating anything; do not
+    read those constants as settled evidence.
+
+    **Concurrency rule, learned the hard way too.** Two executors sharing this checkout lost their
+    in-flight slices to a `git reset --hard` mid-run. Give concurrent executors their own
+    worktrees, and never run checkout/reset/clean on a tree another agent is writing.
