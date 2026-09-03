@@ -27,6 +27,7 @@ from isar.drive.loop import (_campaign_config,
                              resolve_campaign_slice,
                              _pending_certification_indices, _record_certification_acceptance,
                              _pending_anchor_escalations, _unfolded_master,
+                             _planner_candidates, _candidate_probabilities, _slice_rows,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
                              _proposal_from_submission,
                              _reconcile_budget_points, _resume_state,
@@ -1880,6 +1881,65 @@ def test_pending_anchor_escalations_names_within_bar_masters_that_are_not_folds(
     # An exempt point (the untestable zone-centre point) is never a candidate either.
     plan_decision.per_point[0].exempt = True
     assert _pending_anchor_escalations(tmp_path, plan_decision) == ["master:tavi_(50, 0, 0)_200.0"]
+
+
+def test_unfolded_master_leaves_a_fork_alone():
+    """A fork is the full tier's own answer (two answers); refitting cannot make it a fold, so it is
+    never named — otherwise the same escalation would be bought on every iteration."""
+    rows = [{"h": 2.7, "k": 0.0, "l": 0.0, "pooled": True, "disposition": "resolved",
+             "omega0": 4.88, "modality": "fork", "scan_id": "master:tavi_(54, 0, 0)_200.0"}]
+    assert _unfolded_master(rows, (2.7, 0.0, 0.0)) is None
+
+
+def test_planner_candidates_bind_the_certifying_halfwidth_to_the_selected_candidate():
+    """PR #37 review P1: the master's certifying half-width is the primary mode's model-averaged
+    interval, located by the row's ``omega0``; a secondary mode gets only "detected, precision
+    unknown", and a row that publishes no ``omega0`` binds it to nothing — otherwise a peak the
+    interval never described carried the primary mode's precision into the prize. Not gated on the
+    session tracker's state: that re-created a stall at the near-fold point, live."""
+    path = [(2.7, 0.0, 0.0)]
+    domain = (-9.0, 9.0)
+    row = {"hkl": (2.7, 0.0, 0.0), "halfwidth": 0.05, "certifiable": True, "modality": "fold",
+           "pool_consistent": True, "omega0": 4.881, "track_state": "ambiguous",
+           "branch_candidates": [{"energy_meV": 4.88}, {"energy_meV": 6.90}]}
+    cands = _planner_candidates([row], path, domain)[0]
+    assert cands[0].sigma_meV == pytest.approx(0.05)
+    assert cands[1].sigma_meV == pytest.approx(4.5)          # half the positive domain
+    # the interval follows the mode it describes, whichever the tracker later selected
+    cands = _planner_candidates([dict(row, omega0=6.90)], path, domain)[0]
+    assert (cands[0].sigma_meV, cands[1].sigma_meV) == (pytest.approx(4.5), pytest.approx(0.05))
+    cands = _planner_candidates([dict(row, omega0=None)], path, domain)[0]
+    assert all(c.sigma_meV == pytest.approx(4.5) for c in cands)
+
+
+def test_candidate_probabilities_label_only_the_selected_mode():
+    """PR #37 review P1: a physical row's ``branch_id`` labels the mode the tracker selected, not
+    every fitted mode — a two-mode fit's second lobe must not enter the acoustic brightness."""
+    row = {"branch_id": "acoustic", "selected_candidate_index": 0}
+    branches = ("acoustic", "optic")
+    assert _candidate_probabilities({}, row, branches, 0) == {"acoustic": 1.0, "optic": 0.0}
+    assert _candidate_probabilities({}, row, branches, 1) == {}
+    # explicit per-candidate probabilities (a pooled master) always win
+    assert _candidate_probabilities({"probabilities": {"optic": 0.9, "acoustic": 0.1}}, row,
+                                    branches, 1) == {"acoustic": 0.1, "optic": 0.9}
+
+
+def test_slice_rows_keep_only_the_campaign_condition():
+    """PR #37 review P1: the planner's world is one (sample, temperature bin); a reused workspace
+    holding the same Q at another temperature or sample must not feed it. Rows without a stamp are
+    kept — there is nothing to disagree with."""
+    rows = [{"hkl": (2.7, 0, 0), "sample": "tavi", "T": 200.4},
+            {"hkl": (2.7, 0, 0), "sample": "tavi", "T": 300.0},
+            {"hkl": (2.7, 0, 0), "sample": "other", "T": 200.0},
+            {"hkl": (2.7, 0, 0)}]
+    kept = _slice_rows(rows, "tavi", 200.0, 1.0)
+    assert [r.get("T") for r in kept] == [200.4, None]
+    assert len(_slice_rows(rows, None, None, None)) == 4
+    # One sample in the evidence IS the campaign's sample, whatever the driver calls it: before the
+    # first belief row the resolved name is the driver's default, and filtering on it dropped every
+    # master (live, h=2.05 for ever).
+    one_sample = [r for r in rows if r.get("sample") != "other"]
+    assert len(_slice_rows(one_sample, "Al_phonon_DFT", None, 1.0)) == 3
 
 
 def test_unfolded_master_ignores_individual_scan_rows():

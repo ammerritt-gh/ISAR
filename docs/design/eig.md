@@ -204,6 +204,50 @@ optic 8.07 ± 0.32 meV), 18 escalations costing 214 s of analysis time. The EIG-
 pricing "re-analyse this point at the full tier" as a design beside "measure this point" — is the
 principled successor and is not built.
 
+**2026-09-03 — the PR #37 second review round (five P1, six P2), dispositioned.** Fixed, each
+with a test: (1) the master's certifying half-width is bound to the ONE candidate at the row's
+`omega0` — the primary mode the model-averaged interval describes — and a secondary mode carries
+"detected, precision unknown" (`loop._planner_candidates`), since `_clear_tracked_selection`
+never touches `model_interval`. Not gated on the tracker's `track_state`: a first cut was, and it
+re-created a stall at h = 2.05 live (23 scans, nothing within the bar) because the session's
+per-peak `assign` reads a lone near-fold peak as ambiguous under the optic's broad class prior
+where the planner's joint matching settles it; (2) the planner's world is
+one (sample, temperature bin): master rows, scan exposure, the intensity map and anchor
+escalations are filtered to the campaign slice before any Q match (`loop._slice_rows`), where they
+had matched by hkl alone; (3) banked exposure is asked per scenario energy, not at the branch mean
+(`_designs_at`), so a deep old window over an excluded gap no longer pays for a top-up at a lump it
+never covered; (4) the own-point preposterior uses the anchored belief only in the outcomes that
+admit the anchor — an outcome that admits nothing sees the belief as it was; (5) a physical row's
+`branch_id` labels only its selected mode for the intensity map, never a two-mode fit's second
+lobe; (6) an anchor escalation requires a completed runner result (`enforce_completion`), names only
+`unpooled` masters (a `fork` is the full tier's own answer and cannot be refit into a fold), and is
+attempted once per master per run.
+
+Declared rather than fixed: the continuity rule's group-velocity bound (`MAX_GROUP_VELOCITY`,
+6 meV/r.l.u., shared with `branch_assignment.ACOUSTIC_MAX_SLOPE`) and reversion length
+(0.25 r.l.u.) are a **dispersion prior**, not a consequence of continuity — and the reference
+truth ω = 6 sin(πu/2) has slope 3π ≈ 9.4 meV/r.l.u. at the fold, above the bound. The bound acts
+only beyond the anchored range, as a cap on the extrapolation sigma, so it cannot narrow an
+interpolation between anchors and the fold is anchored from the first scan; where it does act, at
+an unanchored far end, a branch still rising at 9 meV/r.l.u. would be extrapolated more confidently
+than it deserves. Kept at 6 rather than tuned to the truth (the class prior may not know the
+acoustic's slope); a value derived from the band alone is the honest replacement and is not
+built. And the planner's price is the neutron dose plus the fixed per-scan cost; the
+full-tier reanalysis an anchor escalation buys is **not** in the price. The optimised objective
+therefore excludes variable analysis time, which the reference run shows is ~5 % of the fits'
+analysis time (214 s against 488 s + 3146 s of scans' own fits across two runs); pricing it belongs
+to the EIG-native successor above.
+
+Deferred by name: presence as a joint location-and-delivery likelihood (it is judged at the
+predictive mean with a fixed miss ratio; the delivery probability takes the max over peaks where
+the mutually exclusive marginals should be summed); negative evidence from the executed grid after
+QC and point-cap coarsening rather than the requested window; one lattice quantum across step
+changes (the snap is per proposal step, and a point-cap coarsening after the snap can leave a
+window off the pool's lattice — same-Q resolution is fixed, so it needs the 220-point cap to bite);
+`reach` as a joint admission probability rather than a product of marginals; the second `met` ask
+cross-checked against the session-side certified grid; the stopping layer and certification
+indices still seat masters by hkl alone.
+
 **2026-09-02 — two model corrections found by tracing one wrong ranking.** The 68% interval of a
 flat-dominated posterior came out four times too narrow because the level bisection ran in linear
 scale; it now bisects the excess in log space. And an unidentifiable position (two peaks at one

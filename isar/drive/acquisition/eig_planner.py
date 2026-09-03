@@ -1255,11 +1255,15 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
         return []
 
     # --- Fisher sigma for every window and exposure ----------------------------------------
-    # Banked exposure per branch: what the master at this q already holds at that peak. The Fisher
-    # sigma itself stays per design -- precision accumulates through merge_candidate pooling the
-    # delivered peaks, and counting it here too would double it.
-    banked = np.array([banked_exposure(executed.get(i, ()), belief[b][0])
-                       for b in range(n_branch)], dtype=float)
+    # Banked exposure per SCENARIO energy and branch: what the master at this q already holds at
+    # the energy this outcome puts the peak at. Asked at the branch mean it credited a deep old
+    # window over an excluded gap to a surviving lump that window never covered, and a small top-up
+    # there scored as fit-delivering with only its own counts at that energy (PR #37 review). The
+    # Fisher sigma itself stays per design -- precision accumulates through merge_candidate pooling
+    # the delivered peaks, and counting it here too would double it.
+    executed_here = executed.get(i, ())
+    banked = np.array([[banked_exposure(executed_here, float(om[s, b])) for b in range(n_branch)]
+                       for s in range(n_scen)], dtype=float)                 # (S, B)
     n_win, n_exp = len(windows), len(ladder)
     sigma_fit = np.empty((n_win, n_exp, n_scen, n_branch))
     for wi, (lo, _hi, step, npts) in enumerate(windows):
@@ -1279,7 +1283,7 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
         # background both scale with exposure, so this is the same arithmetic at a larger ncount,
         # not a second model. A point with nothing banked is unchanged; a point already part-way
         # there can be finished by a cheap top-up instead of a fresh full-significance scan.
-        exposure = np.array(ladder, dtype=float)[:, None, None] + banked[None, None, :]
+        exposure = np.array(ladder, dtype=float)[:, None, None] + banked[None, :, :]
         significance = _significance(height[None, :, :] * exposure, background * exposure)
         sigma_fit[wi] = np.where(significance >= DETECT_FLOOR, sigma_fit[wi], np.inf)
     sigma_fit = sigma_fit.reshape(n_win * n_exp, n_scen, n_branch)
@@ -1390,6 +1394,16 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
                                       - np.count_nonzero(now_deficit <= 0.0))
                 shaped += reach * float(now_deficit.sum() - after.sum())
             upd = [predict(b, inp.u[i], updated[b]) for b in branches]
+            # The anchored belief speaks only in the outcomes that admit the anchor. The group key
+            # collapses every admitting outcome into one anchor, which is fine for the cross-point
+            # gain (scaled by ``reach``), but the own-point posterior below is evaluated per
+            # outcome, and an outcome that admits nothing leaves the belief as it was. Crediting the
+            # anchored belief to those outcomes bought self-identification most of a design's
+            # outcomes would not earn (PR #37 review).
+            sel_mu = [np.where(admitted[idx][:, :, b], upd[b][0], belief[b][0])
+                      for b in range(n_branch)]
+            sel_sig = [np.where(admitted[idx][:, :, b], upd[b][1], belief[b][1])
+                       for b in range(n_branch)]
             # No window-absence evidence here, deliberately: the prize is judged on the point's
             # accumulated candidates, which carry no single window, so a preposterior that used it
             # would predict completions the prize rule can never confirm -- and the planner would
@@ -1399,8 +1413,7 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
             # further, so the preposterior UNDER-states its own gain. Safe direction (it can never
             # promise a completion the prize will refuse); lift it by folding the design's own
             # expected non-detection into presence per scenario if the campaigns get slow.
-            w, w_none = target_posterior(comp_e[idx], comp_s[idx], valid[idx],
-                                         [q[0] for q in upd], [q[1] for q in upd],
+            w, w_none = target_posterior(comp_e[idx], comp_s[idx], valid[idx], sel_mu, sel_sig,
                                          branches.index(t), presence=presence_all[i])
             hw = hdi_halfwidth(comp_e[idx], comp_s[idx], w, w_none, width)
             after = (np.zeros_like(hw) if exempt[i][k]

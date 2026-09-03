@@ -654,3 +654,26 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
 
     **Next:** run the full sentence live once more, refresh the PR #37 body (still quotes the ±0.05
     bar and pre-pooling numbers), then the GUI rehearsal the owner wants to attend.
+
+31. **Second external review of PR #37 at `21ceed6` (five P1, six P2), dispositioned and landed
+    (2026-09-03 night).** Every finding was checked against source before a line changed; the
+    verifications and remedies are in `design/eig.md`'s 2026-09-03 amendment. In one line each:
+
+    | # | Finding | Disposition |
+    |---|---|---|
+    | P1 | fit-local `model_interval` certifies a secondary / session-ambiguous candidate | FIX — `_planner_candidates` binds the certifying sigma to the ONE candidate at the row's `omega0` (the primary mode the interval describes). A first cut gated it on the tracker's `confirmed` state and re-created a stall at h = 2.05 live (23 scans, 0/6): the session's per-peak `assign` reads a lone near-fold peak as ambiguous under the optic's broad prior where the planner's joint matching settles it — the tracker's verdict is not the planner's gate |
+    | P1 | candidates, exposure, intensity, escalation matched by Q alone across (sample, T) | FIX — `_slice_rows` filters master rows and observations to the campaign slice; `_master_obs_from_row` / `_observation_from_row` now carry `sample`, `T`. DEFER: stopping and certification indices still seat by hkl |
+    | P1 | banked exposure at the branch mean credited to every scenario | FIX — per scenario energy in `_designs_at` |
+    | P1 | averaged anchor installed in outcomes that admit none | FIX — own-point posterior selects the anchored belief per (design, scenario, branch) by `admitted`. DEFER: `reach` stays a product of marginals |
+    | P1 | every mode in a physical fit labelled with the row's branch for the intensity map | FIX — `_candidate_probabilities` labels only `selected_candidate_index` |
+    | P2 | presence judged at the predictive mean, delivery as max over peaks, fixed miss ratio | DEFER — design-level, named in `eig.md` |
+    | P2 | negative evidence from the requested window, not the executed/QC'd grid; multi-detector double count | DEFER — named; TAVI has one detector |
+    | P2 | continuity rule is a dispersion prior; the truth's fold slope (3π ≈ 9.4) exceeds the 6 meV/r.l.u. bound | DECLARED in `eig.md`; value kept, not tuned to the truth |
+    | P2 | checkpointed anchor escalation treated as complete | FIX — `enforce_completion=True`, once per master per run, `anchor_escalation_unresolved` logged; only `unpooled` masters are named (a `fork` cannot be refit into a fold) |
+    | P2 | price omits the variable full-tier reanalysis | DECLARED in `eig.md`: the optimised price excludes analysis time (~5 % of fit time on the reference run) |
+    | P2 | lattice is per proposal step; point-cap coarsening after the snap | DEFER — same-Q resolution is fixed; needs the 220-point cap to bite |
+
+    Tests: `tests/drive/test_loop.py` +4 (interval binding, selected-mode labelling, slice
+    filtering, fork exclusion); `tests/drive/test_eig_planner.py` 31/31 with the seeded campaign
+    golden re-pinned — it now opens at h = 2.05 with a 14-point window instead of h = 2.10 with 33,
+    still 21 scans to the prize. The PR body and a review-response comment carry the same table.

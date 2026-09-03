@@ -424,7 +424,10 @@ def test_the_seeded_acoustic_campaign_reaches_the_prize_deterministically(capsys
              and " h=" in line]
     assert len(scans) == 21
     first = [(line.split("h=")[1].split()[0], line.split("n=")[1].split()[0]) for line in scans[:3]]
-    assert first == [("2.10", "33"), ("2.15", "25"), ("2.20", "16")]
+    # Re-pinned 2026-09-03 (PR #37 review round: banked exposure per scenario energy, anchors
+    # admitted per outcome): the campaign opens at the point nearest the fold, where the class
+    # prior is tightest, with a 14-point window, tops it up once, and moves on. Still 21 scans.
+    assert first == [("2.05", "14"), ("2.05", "14"), ("2.10", "21")]
     stop = next(line for line in lines if line.startswith("stop="))
     assert "stop=True reason=goal_met" in stop and "bar 20/20" in stop
 

@@ -677,6 +677,7 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         "pool_consistent": row.get("pool_consistent"),
         "consistency_pvalue": row.get("consistency_pvalue"),
         "consistency_deviance": row.get("consistency_deviance"),
+        "sample": row.get("sample"), "T": row.get("T"),
         "consistency_alpha": row.get("consistency_alpha"),
         "spectrum_ref": row.get("spectrum_ref"),
         "predictive_ref": row.get("predictive_ref"),
@@ -762,6 +763,9 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         "fit_selection_semantics": row.get("fit_selection_semantics"),
         "shadow_model_selection": row.get("shadow_model_selection"),
         "master_session_key": row.get("scan_id"),
+        # The condition this master belongs to: the planner's world is one (sample, T) slice, and a
+        # reused workspace may hold the same Q under another (PR #37 review, ``_slice_rows``).
+        "sample": row.get("sample"), "T": row.get("T"),
         "detector_id": row.get("detector"),
         "acquisition_id": row.get("acquisition_id"),
         "content_hash": row.get("content_hash"),
@@ -1018,13 +1022,17 @@ def _unfolded_master(rows, hkl) -> str | None:
             continue
         if r.get("disposition") not in _USABLE or r.get("omega0") is None:
             continue
-        if r.get("modality") == "fold":
+        # Only ``unpooled`` — never pooled across structures, the fast tier's signature — can
+        # become a fold by refitting. A ``fork`` is already the full tier's answer (two answers),
+        # and re-fitting it would only be asked again on every iteration.
+        if r.get("modality") != "unpooled":
             return None
         return r.get("scan_id")
     return None
 
 
-def _pending_anchor_escalations(workspace, plan_decision) -> list[str]:
+def _pending_anchor_escalations(workspace, plan_decision, *, sample=None, temperature_bin=None,
+                                t_round=None, attempted=frozenset()) -> list[str]:
     """Master ids of prize points the planner is finished with (``within_bar``) whose fit is not yet
     a ``fold`` master, and so cannot enter the running dispersion prior as a belief anchor.
 
@@ -1047,10 +1055,13 @@ def _pending_anchor_escalations(workspace, plan_decision) -> list[str]:
         rows = read_results_csv(workspace)
     except FileNotFoundError:
         return []
+    rows = _slice_rows(rows, sample, temperature_bin, t_round)
     ids = []
     for hkl in hkls:
         scan_id = _unfolded_master(rows, hkl)
-        if scan_id:
+        # A master escalated once and still not a fold is not asked again: the refit had its say,
+        # and re-buying the same analysis every iteration is the churn the idempotency claim forbids.
+        if scan_id and scan_id not in attempted:
             ids.append(scan_id)
     return ids
 
@@ -3396,6 +3407,11 @@ def _planner_beliefs(durable_state: dict, objective, cfg, sample: str, temperatu
     return rows
 
 
+#: How far the row's ``omega0`` may sit from a fitted mode and still be that mode — a resolution
+#: width; beyond it the certifying interval describes no candidate and binds to none.
+_PRIMARY_MODE_TOLERANCE_MEV = 0.5
+
+
 def _planner_candidates(master_rows: list[dict], path, energy_domain) -> dict[int, list]:
     """Grid index to the pooled master's fitted peaks, as planner candidates.
 
@@ -3418,6 +3434,19 @@ def _planner_candidates(master_rows: list[dict], path, energy_domain) -> dict[in
     members disagree), or no interval at all. The peak still enters as evidence for *assignment*,
     and the planner still values a scan there, which is what escalates the errors tier and buys the
     counts the point needs.
+
+    The certifying half-width belongs to ONE candidate: the mode the interval describes. It is the
+    model-averaged predictive of the fit's primary mode, whose location the row publishes as
+    ``omega0`` (``model_interval_med``); the session's tracker may later select a secondary mode or
+    clear the selection as ambiguous without that interval moving (``_clear_tracked_selection``
+    leaves ``model_interval`` alone). Handing it to every fitted peak let a secondary peak carry the
+    primary mode's certified precision into the prize (PR #37 review), so it goes to the candidate
+    nearest ``omega0`` and to no other; the rest are "detected, precision not established".
+
+    Deliberately NOT gated on the tracker's ``track_state``: the session assigns each peak on its
+    own (``assign``) and reads a lone near-fold peak as ``ambiguous`` under the optic's broad class
+    prior, where the planner's joint matching with window-absence evidence settles it. Making the
+    session's verdict a gate re-created the stall at h = 2.05 (23 scans, nothing within the bar).
     """
     unknown_sigma = 0.5 * (float(energy_domain[1]) - max(float(energy_domain[0]), 0.0))
     out: dict[int, list] = {}
@@ -3433,15 +3462,28 @@ def _planner_candidates(master_rows: list[dict], path, energy_domain) -> dict[in
         trusted = (bool(row.get("certifiable")) and row.get("modality") != "fork"
                    and row.get("pool_consistent") is not False
                    and halfwidth is not None and math.isfinite(halfwidth) and halfwidth > 0.0)
-        sigma = halfwidth if trusted else unknown_sigma
-        candidates = []
+        energies = []
         for candidate in (row.get("branch_candidates") or []):
             try:
                 energy = float(candidate.get("energy_meV", candidate.get("omega0")))
             except (TypeError, ValueError):
                 continue
-            if not math.isfinite(energy):
-                continue
+            if math.isfinite(energy):
+                energies.append((energy, candidate))
+        primary = None
+        try:
+            omega0 = float(row.get("omega0"))
+        except (TypeError, ValueError):
+            omega0 = math.nan
+        if trusted and energies and math.isfinite(omega0):
+            nearest = min(range(len(energies)), key=lambda j: abs(energies[j][0] - omega0))
+            if abs(energies[nearest][0] - omega0) <= _PRIMARY_MODE_TOLERANCE_MEV:
+                primary = nearest
+        elif trusted and len(energies) == 1:
+            primary = 0                   # a lone mode is the one the interval describes
+        candidates = []
+        for j, (energy, candidate) in enumerate(energies):
+            sigma = halfwidth if j == primary else unknown_sigma
             candidates.append(Candidate(energy, max(sigma, 1e-9),
                                         dict(candidate.get("probabilities") or {})))
         out[index] = candidates
@@ -3511,20 +3553,28 @@ def _ingest_counts(data_dir) -> dict[tuple, dict]:
     return out
 
 
-def _candidate_probabilities(candidate: Mapping, row: Mapping, branches) -> dict[str, float]:
+def _candidate_probabilities(candidate: Mapping, row: Mapping, branches,
+                             index: int | None = None) -> dict[str, float]:
     """``P(branch | candidate)`` for one fitted mode, over the modelled branches.
 
     Only a POOLED master's candidates carry ``probabilities`` — the per-scan table
     (``evidence_update._mode_candidates``) has none, and the scan row's ``branch_id`` is the label
-    the tracker gave that delivery. A label is a probability of one: the tracker said this mode is
-    that branch, so ``{branch: 1.0}`` with zero on the others is what it asserts. A mode nothing
-    labels asserts nothing and returns an empty mapping.
+    the tracker gave THE SELECTED delivery, ``selected_candidate_index``. A label is a probability
+    of one for that one mode: the tracker said this mode is that branch, so ``{branch: 1.0}`` with
+    zero on the others is what it asserts. Every other mode on the row asserts nothing and returns
+    an empty mapping — handing the row label to a two-mode fit's second lobe entered the optic's
+    counts into the acoustic brightness (PR #37 review).
     """
     probabilities = {str(k): float(v)
                      for k, v in (candidate.get("probabilities") or {}).items()
                      if str(k) in branches}
     if probabilities:
         return {b: probabilities.get(b, 0.0) for b in branches}
+    selected = row.get("selected_candidate_index")
+    if selected is None and len(row.get("branch_candidates") or ()) == 1:
+        selected = 0                      # a single fitted mode is the selection, named or not
+    if index is not None and (selected is None or int(selected) != int(index)):
+        return {}
     branch = str(row.get("branch_id") or "")
     if branch in branches:
         return {b: (1.0 if b == branch else 0.0) for b in branches}
@@ -3659,13 +3709,13 @@ def _planner_scale(cfg, observations: list[dict], path, branches, temperature_K:
         area = _lobe_area(x, counts, background, 0.0, half_width, step, exclude=occupied)
         if area is not None:
             elastic.append(area / ncount)
-        for candidate in (observation.get("branch_candidates") or ()):
+        for j, candidate in enumerate(observation.get("branch_candidates") or ()):
             # The brightness goes to the mode's most probable branch, whole, rather than split
             # across branches in proportion. A lobe area is one physical quantity — those counts
             # came from one branch, whichever it was — and splitting it would hand the optic a
             # fraction of an acoustic peak and make the map describe a mode that does not exist.
             # The median over scans is what survives a wrong argmax; a smeared area would not.
-            probabilities = _candidate_probabilities(candidate, observation, branches)
+            probabilities = _candidate_probabilities(candidate, observation, branches, j)
             branch = max(probabilities, key=probabilities.__getitem__) if probabilities else None
             try:
                 energy = float(candidate.get("energy_meV", candidate.get("omega0")))
@@ -3736,6 +3786,56 @@ def _planner_temperature(durable_state: dict, objective, cfg, sample: str,
         "Bose factor in the forward model would be a guess")
 
 
+def _declared_t_round(workspace) -> float | None:
+    """``collation.t_round`` from the card policy — the temperature-bin granularity every session
+    slice is keyed by (``round(T / t_round) * t_round``); ``None`` when the card declares none."""
+    policy_path = Path(workspace) / "card.policy.toml"
+    if not policy_path.exists():
+        return None
+    try:
+        card = Card.load(policy_path, Path(workspace) / "card.state.json")
+        value = (getattr(card.policy, "collation", None) or {}).get("t_round")
+    except (OSError, ValueError, TypeError) as exc:
+        _LOG.warning("could not read collation.t_round from %s: %s", policy_path, exc)
+        return None
+    return None if value is None else float(value)
+
+
+def _slice_rows(rows: list[dict], sample: str | None, temperature_bin, t_round) -> list[dict]:
+    """Only the rows measured under the campaign's own (sample, temperature bin).
+
+    The beliefs are resolved to one slice every iteration; the candidates, banked exposure,
+    intensity map and anchor escalations must read the same slice or a reused workspace holding
+    the same Q at another temperature or sample plans and stops from the wrong master, and
+    de-Bose-corrects old counts at the wrong temperature (PR #37 review). A row that carries no
+    sample or T at all is kept — it predates the stamp and there is nothing to disagree with.
+
+    The sample test applies only when the rows themselves carry more than one sample. Before the
+    first belief row exists ``_belief_sample`` can only return the driver's configured name
+    (``"Al_phonon_DFT"``), and the session stamps every row with the instrument's (``"tavi"``);
+    filtering a one-sample workspace on that name dropped every master, so no anchor ever formed
+    and the campaign sat at h = 2.05 for ever (live, 2026-09-03). One sample in the evidence IS the
+    campaign's sample, whatever the driver calls it — the rule ``_belief_sample`` already applies.
+    """
+    present = {str(row.get("sample")) for row in rows if row.get("sample") is not None}
+    if len(present) <= 1:
+        sample = None
+    def same_bin(value) -> bool:
+        if temperature_bin is None or value is None:
+            return True
+        try:
+            t = float(value)
+        except (TypeError, ValueError):
+            return True
+        binned = round(t / float(t_round)) * float(t_round) if t_round else t
+        return abs(binned - float(temperature_bin)) <= 1e-6
+
+    def same_sample(value) -> bool:
+        return sample is None or value is None or str(value) == str(sample)
+
+    return [row for row in rows if same_sample(row.get("sample")) and same_bin(row.get("T"))]
+
+
 def _build_planner_input(cfg, objective, master_rows: list[dict], observations: list[dict],
                          durable_state: dict):
     """Assemble the planner's world: the hypothesis map, the intensity map, and what is measured.
@@ -3778,6 +3878,9 @@ def _build_planner_input(cfg, objective, master_rows: list[dict], observations: 
             _LOG.warning("could not resolve the energy FWHM at %s (%s); using %s meV",
                          point, error, DEFAULT_FWHM_MEV)
             fwhm.append(DEFAULT_FWHM_MEV)
+    t_round = _declared_t_round(cfg.workspace)
+    master_rows = _slice_rows(master_rows, sample, temperature_bin, t_round)
+    observations = _slice_rows(observations, sample, temperature_bin, t_round)
     return PlannerInput(
         path=path, u=u, targets=targets, beliefs=beliefs,
         measured=_planner_candidates(master_rows, path, domain),
@@ -4077,6 +4180,9 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     scan_kind: dict = resumed["scan_kind"]   # (scan, detector) -> (kind, ncount), to rebuild obs after certify
     scan_counter = resumed["scan_counter"]
     proposal_counter = resumed.get("proposal_counter", 0)
+    # Masters already sent for a belief-anchor escalation this run; a refit that did not leave a
+    # fold is logged once and never re-bought (see _pending_anchor_escalations).
+    escalated_masters: set[str] = set()
     # Derived from the durable log, never a second store: a resume that could not rebuild this would
     # re-propose an action the instrument has already refused on every remaining iteration.
     (action_suppressions, unreachable_hkl, request_suppressions,
@@ -4248,13 +4354,19 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                 # the anchor this one would supply (found live at the zone boundary, HANDOFF-eig.md
                 # §7.29/§7.30). Idempotent: once escalated, ``_pending_anchor_escalations`` no longer
                 # names it, so this can never spin on the same point.
-                pending_anchors = _pending_anchor_escalations(cfg.workspace, plan_decision)
+                pending_anchors = _pending_anchor_escalations(
+                    cfg.workspace, plan_decision,
+                    sample=(None if campaign_slice is None else campaign_slice.sample),
+                    temperature_bin=(None if campaign_slice is None
+                                     else campaign_slice.temperature_bin),
+                    t_round=_declared_t_round(cfg.workspace), attempted=escalated_masters)
                 if pending_anchors:
                     full_tier = _full_tier(cfg)
                     log_event(cfg.log_path, "escalate_fit", {
                         "phase": "anchor", "iter": it, "hkl": None, "from_tier": "fast",
                         "to_tier": full_tier, "reason": "belief_anchor",
                         "master_ids": pending_anchors})
+                    escalated_masters.update(pending_anchors)
                     try:
                         with timed(cfg.log_path, "anchor_escalation", iteration=it):
                             with analysis_operation(
@@ -4262,15 +4374,35 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                     "anchor_escalation", limit_seconds=objective.analysis_limit_seconds,
                                     iteration=it):
                                 allowance = _analysis_allowance_seconds(cfg, objective)
+                                # enforce_completion: a checkpointed worker (exit 75) returns
+                                # completed=False, and treating that as "escalated" would re-plan
+                                # on masters that never became folds (PR #37 review).
                                 refresh_analysis(
                                     cfg.runner, cfg.workspace, [cfg.data_dir], errors_tier=full_tier,
                                     force_masters=pending_anchors, render=False,
                                     analysis_allowance_seconds=allowance,
                                     finish_initial_wave=(False if allowance is not None else None),
+                                    enforce_completion=True,
                                     analysis_limit_seconds=objective.analysis_limit_seconds)
                     except AnalysisLimitExceeded as error:
                         decision = StopDecision("incomplete", [str(error)], decision.per_q)
                         break
+                    # Deliberately WITHOUT ``attempted``: the question is whether the masters just
+                    # refit are still unfolded, and excluding them would make it unanswerable.
+                    # ``refresh_analysis`` returned with ``enforce_completion``, so results.csv holds
+                    # the refit.
+                    still = _pending_anchor_escalations(
+                        cfg.workspace, plan_decision,
+                        sample=(None if campaign_slice is None else campaign_slice.sample),
+                        temperature_bin=(None if campaign_slice is None
+                                         else campaign_slice.temperature_bin),
+                        t_round=_declared_t_round(cfg.workspace))
+                    unresolved = sorted(set(still) & set(pending_anchors))
+                    if unresolved:
+                        log_event(cfg.log_path, "exception", {
+                            "action": "anchor_escalation_unresolved", "iter": it,
+                            "master_ids": unresolved,
+                            "reason": "the full-tier refit did not leave a fold master; not retried"})
                     master_rows, grid = _grid_state(
                         objective, observations, cfg.workspace, cfg.calibration)
                     continue
