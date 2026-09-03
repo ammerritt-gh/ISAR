@@ -571,3 +571,44 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     **Concurrency rule, learned the hard way too.** Two executors sharing this checkout lost their
     in-flight slices to a `git reset --hard` mid-run. Give concurrent executors their own
     worktrees, and never run checkout/reset/clean on a tree another agent is writing.
+
+29. **Pooling fixed and confirmed (`bbbae9b`); one new, different stall at the zone boundary.**
+
+    **The criterion, established from the code not guessed.** `isar.reduce.collate._merge_group`
+    pools same-(sample, Q, T) scans by concatenating members' EXECUTED energies and binning at ¼
+    the median spacing of that concatenated set (`_auto_energy_tol`). Members add counts to one bin
+    only when their executed points coincide; `modality` and `effective_exposure` (the peak-local
+    MEDIAN of the summed monitor) are downstream of that binning. Measured on the forensic
+    workspace: h = 2.90's master had 65 members but 1419 bins at 0.001 meV median spacing, so the
+    summed 1.4e10 monitor spread so thin that the peak-local median was still one scan's 1e7.
+
+    **The fix.** `scan_grid.snap_to_lattice()` quantises a window's step to the adapter's executed
+    precision and its bounds to whole multiples of that step, moving OUTWARD so the requested band
+    is never trimmed; wired into `loop._finalize_proposal`, the one normalization seam every
+    proposal passes, so it covers feasibility-trimmed repeats too, not only the planner's.
+    `proposal_snapped_to_lattice` is logged when it moves a window. A test pins the pre-fix defect
+    so it cannot silently return.
+
+    **Confirmed live.** `pooled_master_update` at h = 3.0 shows `n_members` and `effective_exposure`
+    climbing monotonically (114 members, 1.285e9 by the last sample) — impossible under the defect.
+
+    **Short path is demo-ready:** (2,0,0)→(2.3,0,0), 13 scans, 4.2 min, `met`, 6/6 within the bar.
+
+    **NEW and different: an EIG convergence stall at the zone boundary.** Full path, 208 scans,
+    49.6 min, 17/20; h = 2.85, 2.95 and 3.00 never close. Scans per point are 1–4 everywhere except
+    h = 2.7 (23, the acoustic/optic crossing) and h = 3.0 (**149**, half-width flat at ≈1.02 meV
+    across the last ~40 iterations while exposure repeatedly doubled). This is NOT pooling and not
+    precision: more counts cannot move it.
+
+    **Hypothesis for the next session, to verify before acting.** 1.02 meV is close to half the
+    2.0 meV gap between the acoustic (6.00) and the optic (8.00) at the boundary, and an earlier
+    trace showed exactly this shape — `u=1.00 hw=1.007 ident=0.98 cands=2`. The identity gate asks
+    whether the target is one of the fitted peaks (Σ w_j ≥ 0.85) but not whether the mass sits on
+    ONE of them; the HDI correctly spans both and so refuses the point, but nothing resolves which
+    peak is the target, because that is decided by the beliefs and not by counts. Verify first with
+    a per-point trace at u = 1.00 — `identified_mass`, `n_candidates`, both candidate energies and
+    their posterior weights, and `belief_predict` for both branches — then decide whether the fix
+    is in the assignment (the joint matching should prefer the injective assignment acoustic→6.0,
+    optic→8.0) or in the prize (require the mass to be concentrated on one peak, which would make
+    the deficit finite and let EIG price the scan that separates them). Do not add exposure rungs;
+    exposure is demonstrably not the lever here.
