@@ -437,3 +437,32 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     default and prompt text, `docs/STATS_PRIMER.md` §6.1, the docs, and the `goal_to_spec` golden.
     The named constant stays too, with the three campaign results written at its definition so the
     experiment is not re-run blind.
+
+25. **Paused 2026-09-03 midday at `1d81d11`, PR #37, branch `eig-planner`.** Working tree clean,
+    no executors running, no live campaign running, experiment worktrees removed. The day's arc:
+    the owner set the bar at 0.1 meV (kept) and the convolution grid at 0.01 (reverted by
+    measurement, §7.24). Applying them exposed four real faults, none of them the settings:
+
+    | Fault | Fix | State |
+    |---|---|---|
+    | Presence could only decay, so a point whose fit intermittently failed lost its own branch for ever | posterior odds, a detection pushes back up | `f4ea622` |
+    | The planner judged a scan able to measure a peak while the fitter has its own 3σ rule and disagreed, so it bought scans the fitter discarded (20 of 26 at one point) | mirror `isar.analyze.verdict.DETECT_FLOOR` | `85efa81` |
+    | The campaign re-read its whole session log every scan, and 87 % of that log was a 413 KB `predictive` blob with no consumer, left by the retired promotion machinery | incremental read, blob not written; 300 ms → 6 ms, log 4.4× smaller, per-iteration time flat | `f1522fa` |
+    | Beliefs extrapolated a fitted slope past their anchors as though it were a measurement, crossing acoustic and optic at the zone boundary so the rival could never be excluded | continuity: the mean reverts over a correlation length, and the group-velocity limit **bounds** the sigma rather than adding to it | `279fb77` |
+
+    **Open, mid-thought, and the next thing to do.** The owner's correction that detectability is
+    a property of the pooled master, not of one scan, landed for the FORWARD question (`1d81d11`,
+    with both directional tests). It has not landed for the BACKWARD one: a brief was dispatched
+    and stopped unstarted. The reason it must land is measured — `--target optic --tolerance 0.05`
+    now loops at h = 2.75, where the master has 4.5e7 counts covering where the optic is believed
+    to be and shows nothing, but no single scan could have seen it alone, so presence never decays
+    and the planner tops up a pool looking in the wrong place for ever. The fix is one question
+    asked once per point: at or above the floor on POOLED exposure the master would have seen the
+    branch, so apply the presence likelihood ratio once with `p` the probability the master
+    delivered it, and drop the product over scans; the scenario reweighting uses the same pooled
+    test. Brief text is in the session log; it is a small change to `point_presence` and
+    `_scenarios`.
+
+    **Not yet done after that:** a full-path live campaign to `met`, twice, before anything is
+    called ready (the last full attempt predates all four fixes above and reached 17/20); refresh
+    the PR body and post the dispositions; the GUI rehearsal, which the owner wants to attend.
