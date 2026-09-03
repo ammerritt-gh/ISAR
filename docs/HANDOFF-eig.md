@@ -738,4 +738,11 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     rebuild, i.e. only when observations do, and hashing them re-scored every repeat call. Test:
     `test_anchored_beliefs_decide_identity_where_the_class_prior_cannot`. This is the "two
     implementations of one rule" item from §7.11, now unified on the session side because the
-    demo path depended on it. Live result: see below when the run completes.
+    demo path depended on it.
+
+    **Live (`edd0373`), full path:** `met`, **64 scans, 11.8 min**, 2.8e10 neutrons, 20/20; no
+    point above 7 scans (h = 3.0: 7); h = 2.6–2.75 `confirmed` at P(acoustic) = 1.00 where the
+    rehearsal had 55/45; anchors at the end acoustic 20, optic 3; every certified half-width
+    ≤ 0.089 meV; `isar score` median |Δω₀| 0.046 meV, pull −0.018, coverage 0.73. Analysis time
+    fits 315 s, escalations 199 s, certify 78 s. The best full-path run so far, and the first in
+    which both branches are anchored to the boundary by the session's own verdicts.
