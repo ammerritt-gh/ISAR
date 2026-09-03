@@ -17,6 +17,7 @@ from isar.analyze.truth import _fold
 from isar.drive.acquisition.eig_planner import (
     NULL_MISS_PROBABILITY, PRESENCE_PRIOR_ODDS, CONFIRMED_PROBABILITY, Candidate, ExecutedScan, PlannerInput, _admitted_anchor, _deficit,
     _deficits_batch, _pad_candidates, default_intensity_scale, hdi_halfwidth, miss_factor,
+    pooled_delivery,
     plan_next, point_presence, target_posterior,
 )
 from isar.schema.hypotheses import preset
@@ -230,22 +231,26 @@ def test_a_scan_that_saw_only_the_acoustic_argues_against_the_optic_in_its_windo
     from isar.drive.acquisition.eig_planner import ExecutedScan, _Predictor, _scenarios
 
     hs = [2.5]
-    window = ExecutedScan(3.0, 7.0, 40_000_000, seen={"acoustic": 1.0})   # bright enough to see the optic
+    window = ExecutedScan(3.0, 7.0, 40_000_000)           # bright enough to see the optic
+    # What the master delivered, and WHERE, is read off the pooled fit's own candidates.
+    delivered = {0: (Candidate(5.70, 0.02, {"acoustic": 1.0}),)}
     base = planner_input(hs, targets=("optic",))
-    seen_input = PlannerInput(**{**base.__dict__, "scans": {0: (window,)}})
+    seen_input = PlannerInput(**{**base.__dict__, "scans": {0: (window,)},
+                                 "measured": delivered})
     branches = tuple(sorted(BRANCHES))
     optic, acoustic = branches.index("optic"), branches.index("acoustic")
 
     def mass_inside(inp):
         rows = {b: dict(inp.beliefs[b]) for b in branches}
         om, wt, _tr, _marg = _scenarios(0, inp, branches, _Predictor(rows, DOMAIN[1]),
-                               {k: tuple(v) for k, v in inp.scans.items()})
+                               {k: tuple(v) for k, v in inp.scans.items()},
+                               inp.measured.get(0, ()))
         return {b: float(wt[(om[:, i] >= window.e_lo) & (om[:, i] <= window.e_hi)].sum())
                 for b, i in (("optic", optic), ("acoustic", acoustic))}
 
     before, after = mass_inside(base), mass_inside(seen_input)
     assert after["optic"] < 0.5 * before["optic"]          # contradicted where it was not found
-    assert after["acoustic"] == pytest.approx(before["acoustic"])   # it WAS found: no evidence
+    assert after["acoustic"] == pytest.approx(before["acoustic"])   # found there: no evidence
 
 
 def test_the_anchor_a_design_leaves_is_one_its_own_outcomes_produce():
@@ -289,42 +294,47 @@ def test_a_scan_is_softly_certain_about_what_it_delivered():
 
 def test_a_rival_looked_for_and_not_found_loses_its_claim():
     """The missing half of "a null is evidence".  A narrow acoustic candidate under a broad,
-    unanchored optic is NOT the answer -- the optic could be that peak.  Three scans that would
-    have detected the optic there and did not settle it, without measuring the acoustic again."""
-    cands = [Candidate(5.70, 0.030)]
+    unanchored optic is NOT the answer -- the optic could be that peak.  A master deep enough to
+    have detected the optic there, whose fit delivers only the acoustic, settles it, without
+    measuring the acoustic again."""
+    cands = [Candidate(5.70, 0.030, {"acoustic": 1.0})]
     mus, sigs = [5.71, 5.50], [0.30, 1.00]              # a broad optic sitting over the same peak
     _hw, deficit = deficit_of(cands, mus, sigs)
     assert deficit > 0.0                                # width is fine; identity is not
 
     looked = ExecutedScan(4.0, 7.4, 40_000_000, {"acoustic": 1.0})
     presence = point_presence(("acoustic", "optic"), mus, (looked,) * 3, step=0.2, fwhm_meV=0.8,
-                              temperature_K=200.0, scale=default_intensity_scale(BRANCHES))
-    assert presence[0] > 0.99                           # it WAS delivered, three times over
-    assert presence[1] < 0.02                           # looked for three times, never found
+                              temperature_K=200.0, scale=default_intensity_scale(BRANCHES),
+                              candidates=cands)
+    assert presence[0] > 0.98                           # the master delivers it
+    assert presence[1] < 0.55                           # looked into, never delivered
     _hw, after = deficit_of(cands, mus, sigs, presence=presence)
     assert after == 0.0
 
 
-def test_presence_is_evidence_in_both_directions():
-    """A monotone decay could only ever take presence away: a detection contributed exactly 1.0, so
-    a branch that its own point intermittently failed to fit collapsed to zero claim on its own peak
-    and the point could never complete.  Posterior odds move both ways."""
+def test_presence_is_one_pooled_question_asked_once():
+    """Detectability is a property of the pooled master, backwards as well as forwards.  A stack of
+    scans too small to have seen the branch alone still constitutes a look once their counts are in
+    one master -- the fault that stalled the optic campaign -- and, being one look, the odds move
+    once however many scans built the pool."""
     branches = ("acoustic",)
     kw = dict(step=0.2, fwhm_meV=0.8, temperature_K=200.0,
               scale=default_intensity_scale(branches))
-    miss = ExecutedScan(0.0, 9.0, 40_000_000, {})
-    hit = ExecutedScan(0.0, 9.0, 40_000_000, {"acoustic": 1.0})
+    delivered = [Candidate(3.0, 0.02, {"acoustic": 1.0})]
+    solo = ExecutedScan(0.0, 9.0, 300_000)   # 0.46 sigma alone; fifty of them pool to 3.3
+    deep = ExecutedScan(0.0, 9.0, 40_000_000)
 
     unexamined = float(point_presence(branches, [3.0], (), **kw)[0])
-    recovered = float(point_presence(branches, [3.0], (miss,) * 3 + (hit,) * 3, **kw)[0])
-    gone = float(point_presence(branches, [3.0], (miss,) * 5, **kw)[0])
+    one_small = float(point_presence(branches, [3.0], (solo,), **kw)[0])
+    pooled = float(point_presence(branches, [3.0], (solo,) * 50, **kw)[0])
+    seen = float(point_presence(branches, [3.0], (deep,), candidates=delivered, **kw)[0])
 
     assert unexamined == pytest.approx(PRESENCE_PRIOR_ODDS / (1.0 + PRESENCE_PRIOR_ODDS))
-    assert recovered > 0.5          # three misses undone by three detections
-    assert gone < 0.05              # looked for five times, never found
-    assert gone < unexamined < recovered
-    # and it is a posterior, so the order of the same evidence cannot matter
-    assert float(point_presence(branches, [3.0], (hit, miss, hit, miss, hit, miss), **kw)[0]) ==         pytest.approx(recovered)
+    assert one_small == pytest.approx(unexamined)   # below the floor alone: no evidence either way
+    assert pooled < unexamined                      # the same scans, pooled, ARE a look
+    assert seen > unexamined                        # and a master that delivers it argues for it
+    # one pooled fit is one observation, so a deeper pool of the same silence does not compound it
+    assert float(point_presence(branches, [3.0], (deep,) * 5, **kw)[0]) == pytest.approx(pooled)
 
 
 def test_a_scan_measures_a_branch_only_when_the_fitter_would_see_it():
@@ -370,15 +380,23 @@ def test_detectability_is_a_property_of_the_pooled_master():
     assert pooled >= DETECT_FLOOR                    # the same scan on a pool: finishes the point
 
 
-def test_the_miss_factor_is_soft_and_shared():
-    """One factor, read by the scenario weights and by the point's presence alike."""
-    surely_seen = ExecutedScan(0.0, 9.0, 5_000_000, {"optic": 1.0})
-    surely_not = ExecutedScan(0.0, 9.0, 5_000_000, {})
-    coin = ExecutedScan(0.0, 9.0, 5_000_000, {"optic": 0.5})
-    assert miss_factor(surely_seen, "optic") == 1.0
-    assert miss_factor(surely_not, "optic") == pytest.approx(NULL_MISS_PROBABILITY)
-    assert miss_factor(coin, "optic") == pytest.approx(0.5 + 0.5 * NULL_MISS_PROBABILITY)
-    # a scan that could not have detected the branch says nothing either way
+def test_the_miss_factor_is_soft_and_the_master_says_what_it_delivered_and_where():
+    """One factor, read by the scenario weights and by the point's presence alike, and the delivery
+    probability behind it is the pooled master's.  Presence asks WHETHER the branch is here at all,
+    so it reads the best claim any peak has; the scenario weights ask whether it is here AT an
+    energy, so they read only the peaks near it -- a distant part-claimed peak must not protect a
+    band the master looked into and found empty."""
+    assert miss_factor(1.0) == 1.0
+    assert miss_factor(0.0) == pytest.approx(NULL_MISS_PROBABILITY)
+    assert miss_factor(0.5) == pytest.approx(0.5 + 0.5 * NULL_MISS_PROBABILITY)
+    cands = (Candidate(6.0, 0.02, {"optic": 0.5, "acoustic": 0.4}),
+             Candidate(1.0, 0.02, {"acoustic": 1.0}))
+    assert pooled_delivery(cands, "optic") == pytest.approx(0.5)
+    assert pooled_delivery(cands, "acoustic") == pytest.approx(1.0)
+    assert pooled_delivery((), "optic") == 0.0
+    assert pooled_delivery(cands, "optic", near=6.1, within=0.7) == pytest.approx(0.5)
+    assert pooled_delivery(cands, "optic", near=3.0, within=0.7) == 0.0
+    # a master that could not have detected the branch says nothing either way
     faint = point_presence(("optic",), [8.0], (ExecutedScan(7.5, 8.5, 1, {}),), step=0.2,
                            fwhm_meV=0.8, temperature_K=200.0,
                            scale=default_intensity_scale(("optic",)))

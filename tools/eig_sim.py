@@ -236,13 +236,14 @@ def run(args) -> int:
                 seen.append("acou HIDDEN by --inject-null")
                 continue
             found.append((branch, truth[branch] + float(rng.normal(0.0, sigmas[bi])), sigmas[bi]))
-        # The world identifies the peaks with the same presence the prize will read: a branch
-        # looked for here and not found has already lost most of its claim.
+        # The world identifies the peaks with the same presence the prize will read: a branch the
+        # master here would have detected and did not deliver has already lost most of its claim.
         presence = point_presence(BRANCHES, [belief_predict(beliefs[b], us[i],
                                                             domain_hi=ENERGY_DOMAIN[1])[0]
                                              for b in BRANCHES],
                                   executed_scans.get(i, ()), step=design.e_step,
-                                  fwhm_meV=FWHM_MEV, temperature_K=TEMPERATURE_K, scale=scale)
+                                  fwhm_meV=FWHM_MEV, temperature_K=TEMPERATURE_K, scale=scale,
+                                  candidates=measured.get(i, ()))
         identities = joint_assign([(e, s) for _b, e, s in found], us[i], beliefs, BRANCHES,
                                   window=(design.e_lo, design.e_hi),
                                   domain_hi=ENERGY_DOMAIN[1], presence=presence)

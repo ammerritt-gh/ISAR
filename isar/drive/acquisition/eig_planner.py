@@ -52,7 +52,8 @@ __all__ = [
     "merge_candidate", "upsert_anchor",
     "fisher_sigma_meV", "branch_counts", "expected_counts", "detection_significance",
     "DETECT_FLOOR", "hdi_halfwidth",
-    "target_posterior", "point_presence", "banked_exposure", "miss_factor", "FALSE_IDENTIFICATION", "PRESENCE_PRIOR_ODDS",
+    "target_posterior", "point_presence", "banked_exposure", "pooled_delivery", "pooled_significance",
+    "miss_factor", "FALSE_IDENTIFICATION", "PRESENCE_PRIOR_ODDS",
     "joint_assign", "_pad_candidates",
     "default_intensity_scale", "NEW", "NEW_LEVEL", "ASSIGNMENT_ENTROPY_STOP_NATS",
     "CONFIRMED_PROBABILITY",
@@ -455,19 +456,19 @@ def _absent_weight(mu, sig, window):
     return np.clip(1.0 - inside, 1e-9, 1.0)
 
 
-def miss_factor(scan: ExecutedScan, branch: str) -> float:
-    """How much a scan that looked for ``branch`` and did not report it leaves of its claim.
+def miss_factor(delivered: float) -> float:
+    """How much a look that would have detected a branch and did not report it leaves of its claim.
 
-    ``p + (1 - p) * NULL_MISS_PROBABILITY`` with ``p`` the probability the scan DID deliver that
+    ``p + (1 - p) * NULL_MISS_PROBABILITY`` with ``p`` the probability the look DID deliver that
     branch: 1.0 when it surely did, :data:`NULL_MISS_PROBABILITY` when it surely did not, and in
-    between when the identification was unsure.
+    between when the identification was unsure.  The look is the pooled master's fit, so ``p`` is
+    :func:`pooled_delivery`; it read one scan's ``seen`` while the backward question was still
+    asked per scan.
 
     This weights a scenario's LOCATION -- where a branch would be if it is there -- and is a
-    different question from whether it is there at all, which is :func:`point_presence`.  Location
-    weight is only ever reduced by a look that came up empty, so a monotone factor is right here;
-    presence must be able to go back up, and uses posterior odds instead.
+    different question from whether it is there at all, which is :func:`point_presence`.
     """
-    p = scan.probability(branch)
+    p = float(delivered)
     return p + (1.0 - p) * NULL_MISS_PROBABILITY
 
 
@@ -484,47 +485,98 @@ def banked_exposure(scans: Sequence[ExecutedScan], energy: float) -> float:
                      if float(scan.e_lo) <= float(energy) <= float(scan.e_hi)))
 
 
+def pooled_delivery(candidates: Sequence["Candidate"], branch: str, *,
+                    near: float | None = None, within: float = math.inf) -> float:
+    """P(the MASTER delivered ``branch``'s peak) at one grid point, read off its candidates.
+
+    ISAR pools every scan at a (q, condition) into a master and fits the MASTER; the point's
+    candidates ARE that fit.  Each candidate carries ``P(branch | peak)`` from the same joint
+    identification the prize reads, so the master's delivery probability for a branch is the best
+    claim any of its peaks has on it -- exactly the rule the loop already used to build one scan's
+    ``seen``, asked of the pool instead of a scan.
+
+    ``near`` restricts that to peaks within ``within`` of one energy, which is what the scenario
+    weights need: "did the master deliver this branch AT 6 meV" is a different question from "did
+    it deliver this branch at all", and answering the first with the second is how a distant,
+    part-claimed peak protected a band the master had looked into and found empty.
+    """
+    return max((float(c.probabilities.get(branch, 0.0)) for c in candidates
+                if near is None or abs(float(c.energy_meV) - float(near)) <= float(within)),
+               default=0.0)
+
+
+def pooled_significance(energies: Sequence[float], index: int, scans: Sequence[ExecutedScan], *,
+                        step: float, fwhm_meV: float, temperature_K: float,
+                        scale: IntensityScale, branches: Sequence[str]) -> float:
+    """Detection significance of ``branches[index]`` on the exposure BANKED at its energy.
+
+    The same test as :func:`detection_significance`, asked of the pool: every scan whose window
+    covers the energy contributes its counts, because they all land in one master.  The window's
+    own grid is taken from the deepest covering scan -- the peak lies inside all of them, so the
+    choice only shifts which grid point samples its crest by less than one step.  No covering scan
+    means the master never looked there, which is 0.0: no evidence, not weak evidence.
+    """
+    e = float(energies[index])
+    covering = [s for s in scans if float(s.e_lo) <= e <= float(s.e_hi)]
+    if not covering:
+        return 0.0
+    pooled = float(sum(int(s.ncount) for s in covering))
+    ref = max(covering, key=lambda s: (int(s.ncount), float(s.e_hi) - float(s.e_lo)))
+    n_points = max(int(math.floor((float(ref.e_hi) - float(ref.e_lo)) / step)) + 1, 1)
+    return float(detection_significance(
+        energies, e_lo=float(ref.e_lo), e_step=step, n_points=n_points, fwhm_meV=fwhm_meV,
+        temperature_K=temperature_K, scale=scale, branches=branches, ncount=pooled)[index])
+
+
 def point_presence(branches: Sequence[str], energies: Sequence[float],
                    scans: Sequence[ExecutedScan], *, step: float, fwhm_meV: float,
-                   temperature_K: float, scale: IntensityScale):
-    """P(each branch is present at this grid point at all), from the scans already run there.
+                   temperature_K: float, scale: IntensityScale,
+                   candidates: Sequence["Candidate"] = ()):
+    """P(each branch is present at this grid point at all), from the master pooled here.
 
     Reweighting the scenarios was only half of "a null is evidence": it moves where a branch would
     be if it is there, and never whether it is there.  So a rival that is broad, unanchored and just
     under the detection floor kept a full claim on someone else's peak no matter how often it was
     looked for and not found -- and the target's identity could never resolve, whatever was measured.
 
-    A scan counts either way only if it would have DETECTED that branch at the branch's predicted
-    energy, by the fitter's own test (:data:`DETECT_FLOOR`); a scan too weak to have seen it says
-    nothing.  One question, one answer: whether a scan can measure a branch and whether its silence
-    is evidence about that branch are the same question, so they share the test.  Each qualifying scan multiplies the PRESENT-vs-ABSENT odds by
+    One question, asked once.  The exposure banked at the branch's predicted energy either clears
+    the fitter's own floor (:data:`DETECT_FLOOR`) or it does not.  Below it the master could not
+    have seen the branch, so there is no evidence either way and presence stays at
+    :data:`PRESENCE_PRIOR_ODDS`.  At or above it the master WOULD have seen it, so the odds move
+    once by
 
         LR = [p(1 - NULL_MISS_PROBABILITY) + (1 - p) NULL_MISS_PROBABILITY]
              / [p FALSE_IDENTIFICATION + (1 - p)(1 - FALSE_IDENTIFICATION)]
 
-    with ``p`` the scan's delivery probability for that branch, starting from
-    :data:`PRESENCE_PRIOR_ODDS`.
+    with ``p`` = :func:`pooled_delivery`, the probability the MASTER delivered that branch.
 
-    Evidence in BOTH directions, which is the whole point: the first version multiplied a monotone
-    factor in [NULL_MISS_PROBABILITY, 1], so a detection contributed exactly 1.0 and could never
-    restore what misses had taken away.  Live at a near-fold point whose pooled fit intermittently
-    selects elastic-plus-background, the acoustic accrued misses at its OWN point, its claim on its
-    own peak collapsed to zero identified mass with a candidate sitting right there, and the point
-    could never complete however well it was measured.
+    **Why the product over scans was the wrong shape.**  It multiplied one such ratio per executed
+    scan, which counted a single pooled observation many times: the master is fitted once, so ten
+    scans into one pool are ten shares of one look, not ten looks.  It was wrong in both
+    directions.  Forwards it over-claimed -- ten scans that each surely delivered the branch drove
+    presence to certainty a single fit cannot support.  Backwards it under-claimed, and that was
+    the fault that stalled a campaign: each scan was tested for detectability ALONE, so at
+    h = 2.75 a master holding 4.5e7 counts over the band where the optic was believed to be, and
+    showing nothing, said nothing at all -- no single 5e6 scan could have seen the optic by itself
+    (solo significance 1.27 against a pooled 4.03), so presence never decayed, the belief never
+    moved, and the planner topped up a pool looking in the wrong place for ever.  Pooled, the
+    silence of that master is evidence exactly as its signal would have been.
+
+    Being a function of the pool's current state rather than an accumulation, presence also moves
+    in BOTH directions for free: a point whose master starts delivering its own branch again
+    recovers, which the earlier monotone decay could never do.
     """
     log_odds = np.full(len(branches), math.log(PRESENCE_PRIOR_ODDS))
-    for scan in scans:
-        n_points = max(int(math.floor((float(scan.e_hi) - float(scan.e_lo)) / step)) + 1, 1)
-        significance = detection_significance(
-            energies, e_lo=float(scan.e_lo), e_step=step, n_points=n_points, fwhm_meV=fwhm_meV,
-            temperature_K=temperature_K, scale=scale, branches=branches, ncount=int(scan.ncount))
-        for bi, b in enumerate(branches):
-            if significance[bi] < DETECT_FLOOR:
-                continue
-            p = scan.probability(b)
-            present = p * (1.0 - NULL_MISS_PROBABILITY) + (1.0 - p) * NULL_MISS_PROBABILITY
-            absent = p * FALSE_IDENTIFICATION + (1.0 - p) * (1.0 - FALSE_IDENTIFICATION)
-            log_odds[bi] += math.log(max(present, 1e-300) / max(absent, 1e-300))
+    for bi, b in enumerate(branches):
+        significance = pooled_significance(energies, bi, scans, step=step, fwhm_meV=fwhm_meV,
+                                           temperature_K=temperature_K, scale=scale,
+                                           branches=branches)
+        if significance < DETECT_FLOOR:
+            continue
+        p = pooled_delivery(candidates, b)
+        present = p * (1.0 - NULL_MISS_PROBABILITY) + (1.0 - p) * NULL_MISS_PROBABILITY
+        absent = p * FALSE_IDENTIFICATION + (1.0 - p) * (1.0 - FALSE_IDENTIFICATION)
+        log_odds[bi] += math.log(max(present, 1e-300) / max(absent, 1e-300))
     odds = np.exp(np.clip(log_odds, -700.0, 700.0))
     return odds / (1.0 + odds)
 
@@ -995,7 +1047,7 @@ def plan_next(inp: PlannerInput) -> Decision:
         point_presence(branches, [preds_all[b][m][0] for b in range(len(branches))],
                        executed.get(m, ()), step=float(inp.step_fraction) * float(inp.fwhm_meV[m]),
                        fwhm_meV=float(inp.fwhm_meV[m]), temperature_K=float(inp.temperature_K),
-                       scale=inp.scale)
+                       scale=inp.scale, candidates=measured.get(m, ()))
         for m in range(n_path)])                                   # (M, B)
     halfwidth, identified, deficit_now = [], [], []
     for k, t in enumerate(targets):
@@ -1070,22 +1122,33 @@ def _design_hash(d: RankedDesign) -> str:
     return hashlib.sha256(canonical.encode("ascii")).hexdigest()
 
 
-def _scenarios(i, inp, branches, predict, executed):
-    """Joint scenario energies and weights, down-weighted by what the scans here did NOT find (A6).
+def _scenarios(i, inp, branches, predict, executed, candidates=()):
+    """Joint scenario energies and weights, down-weighted by what the master here did NOT find (A6).
 
-    A branch's node is argued against by an executed scan when it lies inside that scan's window and
-    the scan would have detected it there.  How MUCH it is argued against is soft on two axes: the
-    fit can miss a peak that is there (:data:`NULL_MISS_PROBABILITY`), and the scan may be unsure it
-    delivered that branch at all (``ExecutedScan.probability``).  With ``p`` that probability, the
-    node's weight is multiplied by ``p + (1 - p) * NULL_MISS_PROBABILITY`` -- 1.0 when the branch was
-    surely seen there, 0.1 when it surely was not, 0.55 on a coin flip.
+    This is the energy-resolved half of :func:`point_presence`, and it asks the same pooled
+    question: a branch's node is argued against when the exposure BANKED at that energy would have
+    detected the branch there and the master's fit does not report it.  How MUCH it is argued
+    against is soft on two axes -- the fit can miss a peak that is there
+    (:data:`NULL_MISS_PROBABILITY`), and the master may be unsure it delivered that branch at all
+    (:func:`pooled_delivery`).  With ``p`` that probability the node's weight is multiplied by
+    ``p + (1 - p) * NULL_MISS_PROBABILITY``, once: 1.0 when the branch was surely seen here, 0.1
+    when it surely was not, 0.55 on a coin flip.
 
-    Repeated identical scans are NOT deduplicated: each is an independent observation and multiplies
-    again.  The accumulation is therefore done in log-weights, so five hundred of them stay finite
-    instead of underflowing to a zero that renormalises into NaN.
+    Asked once per node, not once per scan, and of the pool.  The product over scans was wrong in
+    both directions.  Judging each scan's reach alone let a band the master had looked into deeply
+    keep its full weight whenever no single scan could have seen the branch by itself -- the
+    ordinary case for a pool built out of cheap top-ups, and the reason the optic campaign could
+    top up a pool looking in the wrong place for ever.  And where a scan did clear the floor alone,
+    multiplying per scan counted one pooled fit as many independent observations.  The accumulation
+    is still done in log-weights, which cost nothing and keep a long pool finite.
     """
     step = float(inp.step_fraction) * float(inp.fwhm_meV[i])
     scans = executed.get(i, ())
+    cands = tuple(candidates or ())
+    # Two peaks closer than two resolution widths are one peak, which is the same separation
+    # _scenario_clusters splits on -- so it is the radius within which a candidate answers for a
+    # scenario node.
+    near_radius = 2.0 * float(inp.fwhm_meV[i]) * FWHM_TO_SIGMA
     mu_all = [predict(b, inp.u[i])[0] for b in branches]
     nodes, weights = [], []
     reweighted = [False] * len(branches)
@@ -1096,23 +1159,19 @@ def _scenarios(i, inp, branches, predict, executed):
         # scenario mass -- and the windows built from it -- outside the band the program may scan.
         x = np.clip(mu + _SQRT2 * sig * _GH8_X, 0.0, float(inp.energy_domain_meV[1]))
         log_w = np.log(_GH8_W)
-        for scan in scans:
-            factor = miss_factor(scan, b)
-            if factor >= 1.0:
-                continue                      # surely delivered here: no evidence against
-            inside = (x >= float(scan.e_lo)) & (x <= float(scan.e_hi))
-            if not inside.any():
-                continue
-            n_pts = max(int(math.floor((float(scan.e_hi) - float(scan.e_lo)) / step)) + 1, 1)
-            detectable = np.array([
-                detection_significance([e if k == bi else mu_all[k] for k in range(len(branches))],
-                                       e_lo=float(scan.e_lo), e_step=step, n_points=n_pts,
-                                       fwhm_meV=float(inp.fwhm_meV[i]),
-                                       temperature_K=float(inp.temperature_K), scale=inp.scale,
-                                       branches=branches, ncount=int(scan.ncount))[bi] for e in x])
-            contradicted = inside & (detectable >= DETECT_FLOOR)
-            log_w = np.where(contradicted, log_w + math.log(factor), log_w)
-            reweighted[bi] |= bool(contradicted.any())
+        if scans:
+            # Both halves of the one question, node by node: could the master here have seen this
+            # branch at that energy, and does its fit report it there.
+            seeable = np.array([
+                pooled_significance([e if k == bi else mu_all[k] for k in range(len(branches))],
+                                    bi, scans, step=step, fwhm_meV=float(inp.fwhm_meV[i]),
+                                    temperature_K=float(inp.temperature_K), scale=inp.scale,
+                                    branches=branches) for e in x]) >= DETECT_FLOOR
+            factor = np.array([miss_factor(pooled_delivery(cands, b, near=e, within=near_radius))
+                               for e in x])
+            contradicted = seeable & (factor < 1.0)
+            log_w = np.where(contradicted, log_w + np.log(np.maximum(factor, 1e-300)), log_w)
+            reweighted[bi] = bool(contradicted.any())
         w = np.exp(log_w - log_w.max())       # shift before exponentiating, never underflow to 0
         nodes.append(x)
         weights.append(w / w.sum())
@@ -1189,7 +1248,8 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
     background = float(inp.scale.background_per_point)
 
     belief = [predict(b, inp.u[i]) for b in branches]
-    om, weight_s, truncated, marginals = _scenarios(i, inp, branches, predict, executed)
+    om, weight_s, truncated, marginals = _scenarios(i, inp, branches, predict, executed,
+                                                    measured.get(i, ()))
     n_scen = om.shape[0]
     extra: list[tuple[float, float]] = []
     if truncated:
