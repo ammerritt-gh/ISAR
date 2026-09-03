@@ -156,38 +156,28 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   slowest stages. Logs written before timing instrumentation degrade to approximate per-kind gap
   estimates from event timestamps.
 
-### Run the restricted O41 EIG example in the GUI
+### Reading the `eig_plan` line in the campaign feed
 
-Slice 9 adds an opt-in `authoritative` scan-window mode for the exact O41 profile. It remains a
-development-tier TAVI workflow until SCENE-4 delivers the default-on flip, with world-suite
-coverage of the selector as its acceptance evidence (H1 retired the O42 release review that
-previously gated it); `off` remains the default and `shadow` continues to execute the legacy
-request.
+Every iteration, before a scan is submitted, the planner writes one `eig_plan` event and the feed
+renders it. It is the whole account of why this scan and not another:
 
-1. Start the GUI and choose **File → Create O41 Authoritative Example…**. Select an empty parent
-   folder. The GUI copies the maintained positive seed into
-   `isar-eig4-o41-authoritative`, opens it through the normal workspace path, and prefills the
-   ordinary Campaign controls. It never mutates the retained evidence seed.
-2. Start deterministic TAVI with the normal **Launch TAVI** control.
-3. Review the Campaign form. The source is the copied `campaign-program.json`, prefilled as the
-   program path; the mode is **Authoritative — restricted O41**, and the deterministic tier is
-   selected. Choose **Start**.
-4. Watch the EIG status in the Campaign dock or compact monitor. It shows the latest selected role,
-   point-count reduction and lower-margin result. Predicate-failure counts make repeated legacy
-   retention visible; an invalid profile is shown as a user-facing refusal rather than merely a
-   machine reason code.
-5. Inspect `report/scan-design-authority/` and `report/session_log.jsonl` afterward. Each submitted
-   authoritative request binds a decision hash that was durably written before submission.
+- the **chosen design** — Q, energy window and step, point count, neutrons per point, its expected
+  utility (prize points it should complete), its price, and its score (utility per neutron);
+- the **top ten** ranked designs behind it, so the runner-up is visible;
+- **per grid point** — the half-width of that point's target-energy posterior, whether it is inside
+  the bar, and how many fitted peaks it has;
+- the **prize count** — points inside the bar, of the points the objective asks for;
+- the **intensity map** in operator units (counts per 10⁷ neutrons for each branch, the elastic
+  line, and background), shown again whenever it changes;
+- a **warning note** when no design is expected to complete a point: the planner takes the cheapest
+  probe and says so, rather than showing a silent zero.
 
-The bundled resource files live under `isar_gui/resources/eig4-o41-authoritative/`, outside the
-gitignored `test_data/` and `examples/` conventions. CI copies the seed, opens it through
-`Workspace.open`, and compiles the objective through the same CLI path used by the GUI. The retained
-seed is under 500 KB; schema drift therefore fails fast instead of quietly rotting the demo.
+The bar is the objective's `tolerance_meV`, **±0.05 meV** by default — the precision a paper would
+ask of a peak centre. Declare a different one in the goal ("… to ±0.02 meV") or in the spec.
 
-For CLI authoring, add `--scan-window-eig-mode authoritative` to a new goal or compact-payload drive.
-Frozen step payloads and resumes retain their recorded mode: a conflicting override is
-rejected. Campaigns whose default/off mode agrees resume with their original
-identity unchanged.
+There is no scan-window mode to choose and no survey to switch off: the planner generates every
+window from the beliefs and picks the best one per neutron. A wide window early means a wide
+belief, not a survey.
 
 ## Telling ISAR what you know — the `[fitting]` guidelines
 
@@ -280,14 +270,12 @@ The loop: batch lands → `isar run` → skim the report → act.
 Calibration is versioned: if you re-measure resolution mid-run, subsequent fits use — and record —
 the new version. Nothing is ever silently re-interpreted.
 
-`maximum_production_batches_per_q` limits one same-q counting strategy; it does not declare a branch
-absent. On reaching it, the campaign tries an adjacent differentiation probe. Ending as `incomplete`
-with `branch_ambiguity` and `frontier_blocked` takes more than running out of bridge and revisit moves:
-the driver must first exhaust its **whole registered action inventory** — every kind of measurement it
-knows how to propose, including the narrow identity probe that scans a predicted rival mode rather than
-counting longer at the frontier. Only when that inventory is provably empty, *and* the q is genuinely
-done (dwell requests clamped to the same live instrument limit, or saturation independently shown),
-does the campaign stop, preserving every candidate and naming the unresolved region.
+A campaign never stops because one q was hard. There is no same-q ceiling and no frontier: the
+planner re-ranks every candidate scan on the whole path after every result, so if counting longer at
+one q stops paying, a scan somewhere else simply scores higher and wins. Ending as `incomplete`
+means the planner ran out of *admissible* designs — every remaining candidate was refused by the
+instrument or priced out of the budget — and the campaign says which points are still above the bar,
+preserving every candidate.
 
 The campaign always ends itself rather than pausing for you, but the terminal tells you which of three
 things to do. A `controller_fault` is a software defect, not a data limit: checkpoints are kept and the

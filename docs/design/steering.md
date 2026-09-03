@@ -37,187 +37,60 @@ catalogue-driven in (Q,E) (`design/scene.md`). SCENE-6 replaces this tracker out
 then, treat this document's per-q, per-branch vocabulary as the legacy targeted engine's
 dialect, with the scene layer as the general form.
 
-### Tracked-branch frontier and evidence semantics (updated 2026-07-21)
+### Placement is the EIG planner (2026-09-02)
 
-`target_selector="tracked_branch"` makes identity coverage precede final precision. The driver first
-confirms an optic target at the point nearest reduced q=0. A gapless acoustic target instead starts at
-the nearest point whose predicted energy is separated from the elastic line by the local resolution;
-the zone-centre point is classified later from connected neighbors or remains explicitly ambiguous.
-The walk then advances only to adjacent q connected to the confirmed component. One unresolved point
-permits at most `maximum_bridge_steps=1` provisional quicklook beyond it; the bridge supplies evidence
-for a joint forward/backward reassignment but cannot seed the prior, certify the objective, or extend a
-plotted line.
+Nothing in this document places a targeted scan any more. Exactly one thing does:
+`isar/drive/acquisition/eig_planner.py::plan_next`, called at the single seam in
+`isar.drive.loop.run_campaign`, which ranks every `(Q, energy window, exposure)` the beliefs
+generate by expected progress toward the prize per neutron. Its contract, algorithm, invariants and
+declared ceilings are **[`design/eig.md`](eig.md)** — read that, not this section, for how a scan
+gets chosen.
 
-Tracked campaigns use this connected walk from their resolvable anchor; they do not begin with a full
-path survey. At the anchor and every later frontier, acquisition distinguishes statistical evidence
-from identity evidence, and these are **separate adequacy questions**. Candidate precision above the
-objective tolerance permits another same-q production. Precision adequacy does *not* settle identity:
-whether the branch label is decided is the tracker's own confirmation predicate
-(`local_identity_clear`, from `target_probability` and `identity_entropy`), never the ω₀ interval
-width. Reading the interval as an identity verdict is what stopped OP9/OP10 (O27) — a 0.129 meV
-interval against a 0.5 meV tolerance made an undecided assignment look settled.
+What survives here is the state contract the planner reads and the rules that are not placement:
 
-Once candidates are precise but their identity is undecided, cheap discrimination still comes first:
-the driver prefers an unvisited adjacent classification point, chosen by expected classification
-information with path order as the deterministic tie-breaker, and the whole path is retracked after
-that result before another proposal is made. A neighbor-informed same-q revisit still requires that
-neighbor to have produced fitted candidate/track evidence — a submitted or visited-only quicklook is
-insufficient.
+- **Evidence / identity / delivery stay three separate facts.** A current pooled fit is *evidence*
+  that q was measured and preserves every fitted mode candidate. A branch assignment is *identity*
+  and may remain ambiguous — `track_state` is now exactly `confirmed` or `ambiguous`, the tracker's
+  own two-part predicate (`local_identity_clear`, from `target_probability` and
+  `identity_entropy`), computed per point with no frontier, anchor or bridge. Only a confirmed
+  target master is *delivery*: it supplies authoritative `omega0`, seats convergence, or refreshes
+  the target prior. Candidate modes stay visible as open, unwhiskered markers while delivery is
+  null.
+- **Precision is not identity.** Reading the ω₀ interval as an identity verdict is what stopped
+  OP9/OP10 (O27): a 0.129 meV interval against a 0.5 meV tolerance made an undecided assignment
+  look settled. The planner keeps the two apart by construction — the prize posterior is one
+  mutually exclusive mixture over the point's peaks plus "none of them", so two rival peaks at
+  50/50 fail the bar however narrow each is.
+- **The zone-centre exemption is geometry.** A gapless target at reduced q = 0 is degenerate with
+  the elastic line; that point carries no prize (`GridQ.precision_coverage_eligible`,
+  `PointState.exempt`). An optic branch has a finite energy there and is measured like any other q.
+- **Certification is unchanged.** Certified pooled intervals remain the published numbers, and the
+  prize is judged on the published interval — never on a raw fit σ. `met` is declared only after
+  certification and a re-plan agree.
+- **Four reasons end a campaign** and no others (`DESIGN_GOALS.md`): the goal met, the operator,
+  the budget, a machine failure. `evaluate_stop` no longer decides `met` — the planner's prize
+  does; `evaluate_stop` decides only `infeasible` / `incomplete` / `continue`. A stop that is not
+  the prize, with beam time left, is a defect to hunt and not a result.
 
-When those routes are spent the driver does **not** stop while authorised work remains. Because a
-tracked target is confirmed by continuity, an undecided identity can be blocked by a hole in the
-*rival* trajectory rather than by anything about the frontier. Acquisition therefore walks back along
-the confirmed run and, where a q resolved fewer modes than the frontier does, spends a production
-there to restore the rival evidence, bounded per gap q so a reconnect that never resolves yields the
-beam. Only below that does the frontier receive more of its own exposure. A proposal-less frontier
-that still holds authorised same-q work is a controller fault and raises `ControllerInvariantError`
-rather than being reported as a scientific `branch_ambiguity` result.
-
-The state contract deliberately separates three facts. A current pooled fit is **evidence** that q was
-measured and preserves every fitted mode candidate. A branch assignment is **identity** and may remain
-ambiguous. Only a confirmed target master is **delivery**: it supplies authoritative `omega0`, seats
-convergence, or refreshes the target prior. Candidate modes remain visible as open, unwhiskered markers
-while delivery is null.
-
-`maximum_production_batches_per_q` is a same-q strategy ceiling, not a quota and not an absence verdict.
-It is also the **single** same-q budget: every production at a q charges to it, whether the driver
-called that scan statistics, an identity revisit, or a rival reconnection. `maximum_bridge_steps`
-means path geometry only — how far acquisition may cross an unresolved gap — and never caps same-q
-counting. Charging identity revisits to the geometry knob (a default of one) is the second half of
-the OP9/OP10 stop (O27); it made the production ladder, the ncount escalation and `exposure_saturated`
-unreachable at an ambiguous frontier. `identity_revisit_sequences` survives as provenance, not as a
-spending allowance.
-
-Adequate ambiguous evidence switches to an adjacent differentiation probe immediately; it does not wait
-for the ceiling. Statistics-limited evidence may continue at the same q until that ceiling, at which
-point the driver must try an unmeasured adjacent probe before revisiting the frontier. The durable
-outcome is `incomplete` with `branch_ambiguity` plus `frontier_blocked` only once the **complete
-registered action inventory** is exhausted *and* the q is genuinely done: its same-q ceiling reached,
-its repeated requests clamped to the same instrument dwell, or a saturation diagnostic independently
-proved it. Exhaustion is not "no connected classification route remains" — that local approximation,
-computed before acquisition ever enumerated the action space, is the early-terminal defect O28 repaired.
-It is `ActionInventory.terminal_cause` proving the space empty *relative to* `GENERATOR_REGISTRY`, so
-every declaratively registered generator — the narrow rival probe included — is asked before the
-campaign may call itself blocked, and growing the registry cannot leave an old proof looking current.
-Once an action is selected, `ScanDesignInventory` resolves it into window/count candidates. The
-`legacy_uniform/1` candidate — the exact historical window arithmetic — is always generated and is
-always the selected, executed one. The `scan_window_eig_mode` steering knob decides what else is
-recorded beside it: `off` designs that candidate alone (`legacy_control_off`). The now-retired
-`shadow` mode historically generated the alternative uniform-window family and, when one exact
-completed source master passed the frozen eligibility and policy joins, scored only
-`legacy_uniform/1` against `target_core/1` — a valid score recorded `shadow_legacy_control_scored`;
-every scoreless or unavailable case recorded `shadow_legacy_control_unscored`; both retained the
-unique legacy selection and left the emitted request unchanged by a single neutron. That scoring
-engine survives under `authoritative` (below); only the `shadow` mode selector value is gone
-(H22(b), 2026-08-21).
-O41 authorizes the implemented restricted selector after owner acceptance of the coherent Slice 8
-V3 evidence. Declaring `authoritative` requires the exact O41 profile; invalid profiles refuse with a
-user-visible reason, while authenticated eligible evidence may select `target_core/1`. This is
-**default-on at compile time as of SCENE-4.4** (H22, 2026-08-21; world-suite coverage of the
-selection path served as its acceptance evidence); H1 retired the separate O42 release review. A
-frozen program naming the retired `shadow` mode refuses by name with a recompile message. The derived `/3` inventory is content-addressed under
-`report/scan-design/<sha256>.json` and referenced from proposal provenance. Its candidate id names the
-pre-finalization design; the existing proposal fingerprint separately names the exact request after
-live point/count clamps. A changed realization appends an `isar.scan_design_realization/1` record
-linking those identities through initial finalization, target-support step reduction, or missed-window
-recovery. Every physical submission and acquisition-provenance entry repeats the design reference,
-candidate/context fingerprints, and exact realized window/count, so crash recovery does not sever the
-join; the inventory itself remains derived and recomputed rather than loaded as controller state.
-Shadow scoring runs at the loop's pre-finalization seam under its own five-second soft allowance and
-is charged to the cumulative analysis clock. It resolves the source through its exact session key,
-detector, revision, and side-artifact references—never by Q or recency. Deadline, missing evidence,
-unsupported policy, and unexpected scorer failure all persist diagnostic unavailable evidence and
-continue with the same legacy request. The score envelope and variant fingerprints travel only as
-compact provenance; they do not enter the finalized request fingerprint. Historical inventory `/2`
-remains a strict read contract and is never reminted as `/3`.
-
-After finalization, authoritative mode (formerly shadow mode too, before its retirement — H22(b))
-additionally persists `isar.scan_design_realized_comparison/o36.7` under
-`report/scan-design-realizations/<sha256>.json`. It records the exact rendered legacy request and an
-isolated target-core counterfactual at the same finalized per-point `ncount`. If identities, ordered
-adapter grids, and exposure still equal the Slice 6 pair, the sidecar references the existing score;
-otherwise both realized candidates are evaluated and scored together under a separate cumulative
-five-second per-proposal allowance. Failure publishes numerical unavailability but still carries the
-exact selected legacy request and grid fingerprints. Initial and execution-time finalization refresh
-stale evidence; minimum-target-support step reduction forces a refresh before revalidation.
-Because Slice 6 and Slice 7 have separate five-second allowances, a scored proposal can spend roughly
-ten seconds in the worst case; a forced pre-submit refresh consumes only the Slice 7 allowance that
-remains.
-
-Submission and card provenance carry seven realized fields: five identities (comparison reference and
-fingerprint, ordered variant fingerprints, selected request fingerprint, and selected grid
-fingerprint), applicability, and invalidation reason. A rescored `o36.7` variant nests the existing
-`o36.5` score-set internals. Completed TAVI data compare `result.scan_values_1` with the selected grid
-using ordered adapter-canonical equality after representation normalization, not raw floating-point bit
-equality. A changed value/order/length logs `executed_grid_mismatch` and cannot support later authority,
-while ordinary authoritative-mode analysis continues. Missed-window recovery clears the realized
-variant/request/grid claims, marks `eig_realization_invalidated_by_recovery`, and proceeds outside EIG.
-If recovery cannot authenticate the retained sidecar, it logs `realized_comparison_unavailable` and
-continues without recomputation or replacement evidence. Refresh/persistence failure or a failed
-pre-submit authentication after its single forced refresh removes all five current EIG identities,
-marks applicability unavailable, and leaves the ordinary legacy request available for submission.
-
-`isar.scan_design_realization/1` is additive-open: readers must ignore unknown additive fields. The
-coherent Slice 8 V3 gate is owner-accepted under O41: it reauthenticates eligibility, `/3` inventory,
-the actual production-created realized comparison, submission, acquisition, target request, and
-executed-grid evidence and calculates a counterfactual classification after the run. Its positive
-authority envelope contains one clean case, and `delta - 2 * paired_SE > 0` remains a pragmatic
-engineering margin rather than calibrated 95% coverage. The tools-only evaluator is not imported by
-the controller and grants no current eligibility, selection, proposal, or submission authority.
-
-Slice 9 implements the O41-restricted authority path. Eligible decisive superiority may select
-target-core; eligible unresolved or inferior evidence retains legacy; ineligible states use the
-existing non-EIG path. Stale, malformed, unauthenticated, unavailable, or grid-mismatched evidence
-has no EIG authority. One shared refresh permits at most one rebuild and reselection; a second
-mutation submits authenticated legacy without a third pass. The durable authority decision precedes
-submission and its hash is bound into the submission record. Returned-grid mismatch invalidates only
-that acquisition lineage. H1 retired the separate O42 release review: the selection path went
-default-on at SCENE-4.4 (H22, 2026-08-21), with world-suite coverage as its acceptance evidence.
-
-The allowance is cooperative, not preemptive: the adapter checks before each synchronous variant
-score and again after it returns. If the second check crosses the deadline, that raw score set is
-discarded before validation, the current and remaining variants record `shadow_scoring_deadline`,
-and the in-flight legacy proposal continues normally.
-
-The proposal-wide `authoritative_evidence_revision` remains transition-first and continues to name
-the evidence transition used by proposal/request identity. The scoring engine has a narrower
-exact-source join: its in-memory action provenance names the selected completed master's
-`master_revision` (or null), independently of the proposal-wide revision. This preserves
-off/authoritative request parity while refusing same-Q or later-master substitution. A targeted step payload that omits the `scan_window_eig`
-block loads as a no-policy/default-scoring objective; readers never consult the current card to
-supplement such a frozen payload, program, or resume record.
-Alongside the interval/no-progress brakes there is an identity-space one, `identity_saturated`, for
-the case those cannot speak to — an identity-ambiguous q never matches the target branch, so it never
-accumulates the pooled-master updates `interval_floored` reads. It requires both the target
-probability and the identity entropy to stall across a real exposure increase; a partial identity
-signal is unknown, not saturation, and unknown means keep measuring. The driver never pauses for an
-operator, never blindly repeats a saturated q, and never reports ambiguity while it still holds
-authorised scans.
-Once the acoustic rival's identity entropy is below the stopping threshold, it remains labeled context
-and receives no target-precision acquisition value.
-
-This generalizes into a standing terminal-taxonomy invariant (rulings O29, amended by O31): **the
-campaign must not enter a terminal stop while measurement budget remains** unless one of six legitimate
-terminals holds — `met`, `infeasible` (tolerance below the systematic floor), `incomplete` on genuine
-budget/analysis-clock exhaustion, `operator_stopped`, a `controller_fault` surfaced for
-repair-and-resume, or an exhaustion whose one remaining action the operator's **own declared policy
-forbids**. Any *other* stop with beam time left — an `action_inventory_exhausted` or a
-`branch_ambiguity`/`frontier_blocked` while budget remains — is a defect to hunt, not a result: either
-the generator registry lacks an action for a situation that is in fact resolvable, or a resolvable state
-was misclassified as terminal. A software fault must be classified `controller_fault` rather than
-reported as a data-limited `incomplete`, and a point that only needs more or better data (an
-inconsistent pool, an unconfirmed identity) must be re-acquired rather than have its confirmed
-neighbours discarded.
-
-The sixth terminal is the O28/O29 seam and is narrow on purpose. A search band the operator declared —
-or one carrying no provenance at all — is a hard constraint, so an identity action that would have to
-reach outside it is reported `policy_forbidden` rather than silently scanned past, and a durable
-`OPERATOR` rejection lets the inventory prove exhaustion honestly. It is not a `controller_fault`: the
-inventory is *complete* and the proof stands; the one action left is withheld by policy, not unknown.
-Because the escape is neither more beam nor a repair, the stop reason itself names the forbidden action
-and how to authorise it (declare `identity_search_meV`, or re-compile so the band carries compiler
-provenance) — burying that in the persisted inventory would report a resolvable campaign as a
-scientific dead end.
+**Amendment, 2026-09-02 — the legislated placement machinery is deleted, not routed around.** The
+targeted lane used to confirm identity at a resolvable anchor, walk outward one adjacent q at a
+time along a connected frontier, allow `maximum_bridge_steps` provisional crossings of an
+unresolved gap, cap same-q work with `maximum_production_batches_per_q`, widen a window after a
+decline (O11), re-track from the frontier (O15), enumerate a legacy `GENERATOR_REGISTRY` of
+targeted action generators (O28), apply same-q ceilings (O27), open with an opening book, and
+survey the whole search band on every first visit to a q. Each rule was earned by a real deadlock,
+and together they answered the wrong question: they decided placement by legislation and then
+asked EIG, at most, which of two windows to use for a placement something else had already made.
+The owner's ruling is that placement *is* the EIG question. All of it is deleted — the frontier and
+its `frontier_blocked` terminal, the anchor and acquisition-seed indices, the bridge, the same-q
+ceilings, the `survey` flag, the `legacy_uniform/1` control, the targeted generator registry, the
+missed-window recentre-and-widen, decline widening, predictive promotion, and the
+`scan_window_eig_mode` knob — because a patch on top of legislated placement to make it look like
+EIG is exactly what the objective forbids. The rule identifiers survive as history only: **O11**
+(decline widening), **O15** (connected frontier), **O27** (same-q ceilings), **O28** (action
+inventory as an exhaustion proof for the targeted lane), **O44** (the zone-centre exemption, which
+survives as geometry). The discovery lane's own action inventory and its `opening_book_survey`
+generator are a different engine and are untouched.
 
 ---
 
@@ -248,7 +121,8 @@ The first autonomous campaigns exposed three failure zones, and thinking about t
   and a clearly visible optic mode at the zone centre carried **zero** acquisition value because
   it was not the target's ω₀ — the loop never spent a scan establishing what it was. The fix is
   the branch-identity-aware acquisition (§2 fourth consequence, §4.1 item 7, §4.5; implemented
-  through the O15 joint tracker and connected frontier).
+  through the joint tracker's assignment and, since 2026-09-02, the EIG planner, which prices a
+  scan that settles which branch a peak belongs to instead of treating the rival as contamination).
 
 **The deeper risk (what must not happen):** the natural fix — build a phonon dispersion model and lean
 on it — would lock ISAR into being **phonon-only and model-required**. A triage tool cannot assume it
@@ -437,14 +311,12 @@ So the chosen engine is:
    converted into the other's units by a λ weight. Common random numbers make action/Q comparisons
    deterministic, with progressively larger simulation batches when the leading candidates are not
    separated. The older λ-weighted deterministic
-   branch-confusion proxy remains only in the explicit classification/opening-move fallback where a
-   master predictive artifact does not yet exist; it is not the acquisition score for a usable master.
-   Here a “candidate” is a scientific action/Q alternative whose counts are already evaluated on its
-   master's fitted grid. In the now-retired `shadow` mode the controller could diagnostically score
-   the exact `legacy_uniform/1` and `target_core/1` pair from one exact eligible source master, but
-   never selected among them: it executed the legacy control in every outcome. That diagnostic
-   scoring engine survives (renamed nowhere) and now serves `authoritative` selection exclusively
-   (H22(b), 2026-08-21). The restricted contract is specified in `eig.md`.
+   branch-confusion proxy remains only where a master predictive artifact does not yet exist; it is
+   not the acquisition score for a usable master. The targeted lane's realization of this is the EIG
+   planner: Gauss-Hermite scenarios in place of common random numbers (equal predictions tie
+   exactly rather than approximately), cost in the ranking by construction, and the branch-confusion
+   term folded into a single mutually exclusive target posterior rather than carried beside it by a
+   λ weight. The contract is specified in [`eig.md`](eig.md).
 
 **Honest limit:** at single-digit counts the information is simply not there; no method conjures it.
 Correct behaviour is to report low confidence honestly and let EIG decide *count more here / move*;
@@ -1037,7 +909,9 @@ gates, each earned by a named live deadlock — but the thresholds are legislate
 than priced quantities, and that is acknowledged: all four live in the tracked-branch machinery
 that SCENE-6 deletes (design/scene.md §3), where identity becomes catalogue-driven,
 evidence-priced scene posterior and gates of this kind should dissolve into priors and prices.
-They are the bridge, with a scheduled demolition.
+The targeted lane's *placement* half of that demolition happened on 2026-09-02 (see "Placement
+is the EIG planner" above): what remains here is belief bookkeeping and prior admission, which
+the planner reads and does not legislate.
 
 Standing repair from the same campaign: the TAVI idempotency key carries a per-workspace nonce
 (`.run_nonce`), so a fresh campaign can never replay a previous run's poisoned instrument-side

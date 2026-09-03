@@ -695,7 +695,8 @@ call, in write order:
   built and the planner used to discard: one row per ELIGIBLE surviving evaluation, winner first
   (row 0), each `{scientific_action_fingerprint, rank_vector, supplying_association:
   {question_id, generator}}`), `scan_design_provenance` (EXACTLY the five keys
-  `isar/eig/eligibility.py`'s `_scan_design_identity` reads — its `context_fingerprint` now folds
+  the retired `isar/eig/eligibility.py`'s `_scan_design_identity` read; the five keys stay in the
+  discovery decision record, their consumer is gone — its `context_fingerprint` now folds
   `locality` into its own digest INPUT, not merely alongside it in `decision_basis`, so two
   decisions differing ONLY in `locality_coordinate` — PR #33 review finding: locality "can change
   the selected action without appearing in the decision basis or context fingerprint" — now
@@ -737,6 +738,13 @@ always wins.)
 
 PR 4.4 closes SCENE-4: the authority flip, the shadow-machinery deletion, the stop-law audit, the
 cold-start acceptance script, and the challenge-run exit.
+
+> **Superseded 2026-09-02 for the targeted lane only.** Everything below that names
+> `scan_window_eig_mode` describes a knob that no longer exists: the same-action scan-window
+> comparison was retired outright and the targeted lane's placement is now the EIG planner
+> (`design/eig.md` §8). The discovery-lane facts recorded here — that a `discover_and_map` step
+> never carried the mode, and that the question-policy chain must not read it — are unchanged and
+> are why nothing in `isar/scene/` needed to move.
 
 (a) **Compile-time default-on is scoped to targeted objectives.** `goal_to_spec` freezes an
 explicit `scan_window_eig_mode` into every newly compiled TARGETED objective, defaulting

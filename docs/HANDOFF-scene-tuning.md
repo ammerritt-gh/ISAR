@@ -89,10 +89,11 @@ So **81–87% of every scan's points sat far from the only mode in the region**,
 never narrowed as the dispersion became known — not even at iteration 9, with 9 observations and a
 posterior confident to six nines.
 
-This is structural, not a bug: scan-window EIG is the **targeted** lane's realization layer. A
-`discover_and_map` step carries no `scan_window_eig_mode` at all (`DiscoverAndMapSpec` has no such
-field, pinned by `tests/drive/test_discovery_world.py:67`), and the CLI refuses the flag by name
-for discovery under H21(a). Scene-EIG chooses *where*; nothing chooses *how wide*.
+This is structural, not a bug: window choice lives in the **targeted** lane. Since 2026-09-02 that
+lane's `eig_planner` prices window and exposure jointly with Q (`design/eig.md`); the discovery lane
+has no equivalent — scene-EIG chooses *where*, and nothing chooses *how wide*. (The
+`scan_window_eig_mode` knob this note originally named is deleted; the gap it describes is
+unchanged.)
 
 **Tuning target 2 — give the discovery lane a window policy.** The cheapest version is not full
 EIG: once a cluster's `n_modes` posterior is decided and ω is localized, clip the domain to the
