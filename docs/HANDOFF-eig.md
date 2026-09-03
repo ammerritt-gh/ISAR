@@ -385,3 +385,29 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     and the wrong one here: half of this miss is a pull, k would absorb it into wider bars, and the
     campaign's cost would buy a number that hides a bias instead of removing it. Deconvolution, or
     a fitter that models the focusing, is what closes §7.16 — not a calibration constant.
+
+23. **The convolution grid at 0.01 is not safe, and a presence defect it exposed (2026-09-03
+    morning).** Live short path at `CONVOLUTION_DX = 0.01` and the 0.1 meV bar did not finish:
+    93 scans and 50 minutes on the six-point path that had taken 19 scans and 6 minutes, with 24
+    scans sunk into h = 2.05. Two causes, both measured:
+
+    - **The grid.** At the near-fold point the acoustic sits at 0.47 meV inside a 0.8 meV
+      resolution width, and on the finer grid the pooled fit oscillates between a phonon and
+      elastic-plus-background (the same flip the refit showed: at 0.02 that point fits a phonon,
+      at 0.01 it abstains `elastic_only`). Refitting the 82 full-path scans on all three grids:
+      0.05 → median 0.021 meV, 16/20 within 0.05; 0.02 → 0.012, 18/20; 0.01 → 0.016, 17/19 with
+      one point lost. The whole accuracy gain is 0.05 → 0.02; 0.01 buys nothing and costs a point.
+    - **Presence could only decay.** `point_presence` multiplied `miss_factor ≤ 1` per fruitless
+      look, so a detection contributed exactly 1.0 and could never restore a lost claim. A point
+      whose fit intermittently delivers nothing therefore lost its own branch permanently:
+      identified mass 0.00 beside a candidate at 0.475 ± 0.006, the prize count oscillating
+      4/6 → 1/6. Fixed in `f4ea622` as posterior odds — each qualifying scan contributes the
+      likelihood ratio of present against absent, with `FALSE_IDENTIFICATION = 0.05` the declared
+      mirror of `NULL_MISS_PROBABILITY`, and an unexamined branch at prior odds 9 because the
+      hypothesis map declaring a branch *is* the assertion that it exists (the class prior says
+      nothing about where, which is the scenarios' business). Missed 3 then seen 3 recovers to
+      0.98; missed 5 and never seen falls to 1.2e-4; the posterior is order-independent.
+
+    The 0.01 campaign carried both faults at once, so the grid is being re-tested on the fixed
+    code before the value is settled. **Owner decision open:** 0.02 (recommended: all the measured
+    gain, no abstention, 1.4× cheaper than 0.01) or 0.01 as ruled.
