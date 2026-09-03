@@ -15,7 +15,7 @@ import pytest
 
 from isar.analyze.truth import _fold
 from isar.drive.acquisition.eig_planner import (
-    NULL_MISS_PROBABILITY, CONFIRMED_PROBABILITY, Candidate, ExecutedScan, PlannerInput, _admitted_anchor, _deficit,
+    NULL_MISS_PROBABILITY, PRESENCE_PRIOR_ODDS, CONFIRMED_PROBABILITY, Candidate, ExecutedScan, PlannerInput, _admitted_anchor, _deficit,
     _deficits_batch, _pad_candidates, default_intensity_scale, hdi_halfwidth, miss_factor,
     plan_next, point_presence, target_posterior,
 )
@@ -285,10 +285,32 @@ def test_a_rival_looked_for_and_not_found_loses_its_claim():
     looked = ExecutedScan(4.0, 7.4, 40_000_000, {"acoustic": 1.0})
     presence = point_presence(("acoustic", "optic"), mus, (looked,) * 3, step=0.2, fwhm_meV=0.8,
                               temperature_K=200.0, scale=default_intensity_scale(BRANCHES))
-    assert presence[0] == pytest.approx(1.0)            # it WAS delivered: no evidence against
-    assert presence[1] == pytest.approx(NULL_MISS_PROBABILITY ** 3)
+    assert presence[0] > 0.99                           # it WAS delivered, three times over
+    assert presence[1] < 0.02                           # looked for three times, never found
     _hw, after = deficit_of(cands, mus, sigs, presence=presence)
     assert after == 0.0
+
+
+def test_presence_is_evidence_in_both_directions():
+    """A monotone decay could only ever take presence away: a detection contributed exactly 1.0, so
+    a branch that its own point intermittently failed to fit collapsed to zero claim on its own peak
+    and the point could never complete.  Posterior odds move both ways."""
+    branches = ("acoustic",)
+    kw = dict(step=0.2, fwhm_meV=0.8, temperature_K=200.0,
+              scale=default_intensity_scale(branches))
+    miss = ExecutedScan(0.0, 9.0, 40_000_000, {})
+    hit = ExecutedScan(0.0, 9.0, 40_000_000, {"acoustic": 1.0})
+
+    unexamined = float(point_presence(branches, [3.0], (), **kw)[0])
+    recovered = float(point_presence(branches, [3.0], (miss,) * 3 + (hit,) * 3, **kw)[0])
+    gone = float(point_presence(branches, [3.0], (miss,) * 5, **kw)[0])
+
+    assert unexamined == pytest.approx(PRESENCE_PRIOR_ODDS / (1.0 + PRESENCE_PRIOR_ODDS))
+    assert recovered > 0.5          # three misses undone by three detections
+    assert gone < 0.05              # looked for five times, never found
+    assert gone < unexamined < recovered
+    # and it is a posterior, so the order of the same evidence cannot matter
+    assert float(point_presence(branches, [3.0], (hit, miss, hit, miss, hit, miss), **kw)[0]) ==         pytest.approx(recovered)
 
 
 def test_the_miss_factor_is_soft_and_shared():
@@ -303,7 +325,7 @@ def test_the_miss_factor_is_soft_and_shared():
     faint = point_presence(("optic",), [8.0], (ExecutedScan(7.5, 8.5, 1, {}),), step=0.2,
                            fwhm_meV=0.8, temperature_K=200.0,
                            scale=default_intensity_scale(("optic",)))
-    assert faint[0] == 1.0
+    assert faint[0] == pytest.approx(PRESENCE_PRIOR_ODDS / (1.0 + PRESENCE_PRIOR_ODDS))
 
 
 # ------------------------------------------------------------------ the campaign
@@ -328,9 +350,9 @@ def test_the_seeded_acoustic_campaign_reaches_the_prize_deterministically(capsys
     lines = capsys.readouterr().out.splitlines()
     scans = [line for line in lines if line.strip().startswith(tuple("0123456789"))
              and " h=" in line]
-    assert len(scans) == 26
+    assert len(scans) == 32
     first = [(line.split("h=")[1].split()[0], line.split("n=")[1].split()[0]) for line in scans[:3]]
-    assert first == [("2.10", "33"), ("2.15", "27"), ("2.20", "16")]
+    assert first == [("2.10", "33"), ("2.15", "32"), ("2.20", "16")]
     stop = next(line for line in lines if line.startswith("stop="))
     assert "stop=True reason=goal_met" in stop and "bar 20/20" in stop
 

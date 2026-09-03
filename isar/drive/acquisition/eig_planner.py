@@ -51,7 +51,7 @@ __all__ = [
     "Decision", "plan_next", "assign", "identity_entropy", "anchor_admitted",
     "merge_candidate", "upsert_anchor",
     "fisher_sigma_meV", "branch_counts", "expected_counts", "hdi_halfwidth",
-    "target_posterior", "point_presence", "miss_factor",
+    "target_posterior", "point_presence", "miss_factor", "FALSE_IDENTIFICATION", "PRESENCE_PRIOR_ODDS",
     "joint_assign", "_pad_candidates",
     "default_intensity_scale", "NEW", "NEW_LEVEL", "ASSIGNMENT_ENTROPY_STOP_NATS",
     "CONFIRMED_PROBABILITY",
@@ -98,6 +98,19 @@ NULL_DETECTION_COUNTS = 5.0
 #: rest of the domain has returned nulls too, which is what brings the planner back at higher
 #: exposure instead of leaving the band excluded for ever.
 NULL_MISS_PROBABILITY = 0.1
+#: The declared rate at which a fitted peak is assigned to a branch that is not there.  The mirror
+#: of :data:`NULL_MISS_PROBABILITY`: one says how often a real peak is missed, this says how often
+#: an absent one is claimed.  A model parameter of the fitter's reliability, not a placement rule --
+#: and it is what lets a detection *restore* presence a run of misses took away.
+FALSE_IDENTIFICATION = 0.05
+#: Prior odds that a DECLARED branch is present at a grid point before anything is looked for.
+#: Not 1: the hypothesis map declaring a branch is itself the statement that the branch exists along
+#: the path, so before looking, absence is the unlikely case; what the class prior does not assert
+#: is WHERE, which is the scenarios' business.  Measured at 1 (an even prior), an unexamined branch
+#: sits at presence 0.5 -- a standing halving of its claim on its own peak that no measurement can
+#: lift, because a branch outside every window scanned so far never accrues evidence either way --
+#: and `--target both --tolerance 0.05` looped on it, 13 takes of one design at h=2.15.
+PRESENCE_PRIOR_ODDS = 9.0
 #: The prize is binary per point -- known to +-tau and identified, or not -- so utility counts
 #: COMPLETIONS and nothing else.  The log-deficit removed is carried beside it as
 #: ``RankedDesign.shaping_nats`` and used only to order designs that complete nothing: a genuine
@@ -436,8 +449,12 @@ def miss_factor(scan: ExecutedScan, branch: str) -> float:
 
     ``p + (1 - p) * NULL_MISS_PROBABILITY`` with ``p`` the probability the scan DID deliver that
     branch: 1.0 when it surely did, :data:`NULL_MISS_PROBABILITY` when it surely did not, and in
-    between when the identification was unsure.  Both halves of "a null is evidence" read this --
-    the scenario weights and the point's presence -- so they cannot drift apart.
+    between when the identification was unsure.
+
+    This weights a scenario's LOCATION -- where a branch would be if it is there -- and is a
+    different question from whether it is there at all, which is :func:`point_presence`.  Location
+    weight is only ever reduced by a look that came up empty, so a monotone factor is right here;
+    presence must be able to go back up, and uses posterior odds instead.
     """
     p = scan.probability(branch)
     return p + (1.0 - p) * NULL_MISS_PROBABILITY
@@ -453,22 +470,38 @@ def point_presence(branches: Sequence[str], energies: Sequence[float],
     under the detection floor kept a full claim on someone else's peak no matter how often it was
     looked for and not found -- and the target's identity could never resolve, whatever was measured.
 
-    A scan counts against a branch only if it would have DETECTED that branch at the branch's
-    predicted energy (expected counts at or above :data:`NULL_DETECTION_COUNTS`); a scan that could
-    not have seen it says nothing either way.  Each qualifying scan multiplies by
-    :func:`miss_factor`, so five fruitless looks leave a rival 1e-5 of its claim.  A branch with no
-    scans at that point has presence 1.
+    A scan counts either way only if it would have DETECTED that branch at the branch's predicted
+    energy (expected counts at or above :data:`NULL_DETECTION_COUNTS`); a scan that could not have
+    seen it says nothing.  Each qualifying scan multiplies the PRESENT-vs-ABSENT odds by
+
+        LR = [p(1 - NULL_MISS_PROBABILITY) + (1 - p) NULL_MISS_PROBABILITY]
+             / [p FALSE_IDENTIFICATION + (1 - p)(1 - FALSE_IDENTIFICATION)]
+
+    with ``p`` the scan's delivery probability for that branch, starting from
+    :data:`PRESENCE_PRIOR_ODDS`.
+
+    Evidence in BOTH directions, which is the whole point: the first version multiplied a monotone
+    factor in [NULL_MISS_PROBABILITY, 1], so a detection contributed exactly 1.0 and could never
+    restore what misses had taken away.  Live at a near-fold point whose pooled fit intermittently
+    selects elastic-plus-background, the acoustic accrued misses at its OWN point, its claim on its
+    own peak collapsed to zero identified mass with a candidate sitting right there, and the point
+    could never complete however well it was measured.
     """
-    presence = np.ones(len(branches))
+    log_odds = np.full(len(branches), math.log(PRESENCE_PRIOR_ODDS))
     for scan in scans:
         n_points = max(int(math.floor((float(scan.e_hi) - float(scan.e_lo)) / step)) + 1, 1)
         counts = branch_counts(energies, e_lo=float(scan.e_lo), e_step=step, n_points=n_points,
                                fwhm_meV=fwhm_meV, temperature_K=temperature_K, scale=scale,
                                branches=branches, ncount=int(scan.ncount))
         for bi, b in enumerate(branches):
-            if counts[bi] >= NULL_DETECTION_COUNTS:
-                presence[bi] *= miss_factor(scan, b)
-    return presence
+            if counts[bi] < NULL_DETECTION_COUNTS:
+                continue
+            p = scan.probability(b)
+            present = p * (1.0 - NULL_MISS_PROBABILITY) + (1.0 - p) * NULL_MISS_PROBABILITY
+            absent = p * FALSE_IDENTIFICATION + (1.0 - p) * (1.0 - FALSE_IDENTIFICATION)
+            log_odds[bi] += math.log(max(present, 1e-300) / max(absent, 1e-300))
+    odds = np.exp(np.clip(log_odds, -700.0, 700.0))
+    return odds / (1.0 + odds)
 
 
 def _joint_marginals(like, present, absent=None):
