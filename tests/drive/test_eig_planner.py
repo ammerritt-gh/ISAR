@@ -216,7 +216,7 @@ def test_a_scan_that_saw_only_the_acoustic_argues_against_the_optic_in_its_windo
     from isar.drive.acquisition.eig_planner import ExecutedScan, _Predictor, _scenarios
 
     hs = [2.5]
-    window = ExecutedScan(3.0, 7.0, 10_000_000, seen={"acoustic": 1.0})
+    window = ExecutedScan(3.0, 7.0, 40_000_000, seen={"acoustic": 1.0})   # bright enough to see the optic
     base = planner_input(hs, targets=("optic",))
     seen_input = PlannerInput(**{**base.__dict__, "scans": {0: (window,)}})
     branches = tuple(sorted(BRANCHES))
@@ -313,6 +313,24 @@ def test_presence_is_evidence_in_both_directions():
     assert float(point_presence(branches, [3.0], (hit, miss, hit, miss, hit, miss), **kw)[0]) ==         pytest.approx(recovered)
 
 
+def test_a_scan_measures_a_branch_only_when_the_fitter_would_see_it():
+    """The planner mirrors ``isar.analyze.verdict.detection_power``: expected significance
+    ``A / sqrt(A + B)`` on the peak HEIGHT over the flat background, against DETECT_FLOOR.  Its
+    previous gate -- 5 integrated counts anywhere in the window -- said the counts sufficed where
+    the real fitter then abstained, and the planner re-bought the identical design."""
+    from isar.drive.acquisition.eig_planner import DETECT_FLOOR, detection_significance
+
+    kw = dict(e_lo=4.0, e_step=0.2, n_points=25, fwhm_meV=0.8, temperature_K=200.0,
+              branches=BRANCHES, scale=default_intensity_scale(BRANCHES))
+    faint = detection_significance([1.0, 6.0], ncount=2_000_000, **kw)[1]
+    bright = detection_significance([1.0, 6.0], ncount=200_000_000, **kw)[1]
+    assert faint < DETECT_FLOOR < bright                 # the same peak, two exposures
+    # significance grows as sqrt(exposure) once the peak dominates its background
+    assert bright / faint == pytest.approx(10.0, rel=0.25)
+    # a branch whose peak is outside the window is never measured, however long the count
+    assert detection_significance([1.0, 6.0], ncount=200_000_000, **kw)[0] < DETECT_FLOOR
+
+
 def test_the_miss_factor_is_soft_and_shared():
     """One factor, read by the scenario weights and by the point's presence alike."""
     surely_seen = ExecutedScan(0.0, 9.0, 5_000_000, {"optic": 1.0})
@@ -350,7 +368,7 @@ def test_the_seeded_acoustic_campaign_reaches_the_prize_deterministically(capsys
     lines = capsys.readouterr().out.splitlines()
     scans = [line for line in lines if line.strip().startswith(tuple("0123456789"))
              and " h=" in line]
-    assert len(scans) == 32
+    assert len(scans) == 22
     first = [(line.split("h=")[1].split()[0], line.split("n=")[1].split()[0]) for line in scans[:3]]
     assert first == [("2.10", "33"), ("2.15", "32"), ("2.20", "16")]
     stop = next(line for line in lines if line.startswith("stop="))

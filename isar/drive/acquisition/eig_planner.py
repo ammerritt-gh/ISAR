@@ -50,7 +50,8 @@ __all__ = [
     "Candidate", "ExecutedScan", "IntensityScale", "PlannerInput", "PointState", "RankedDesign",
     "Decision", "plan_next", "assign", "identity_entropy", "anchor_admitted",
     "merge_candidate", "upsert_anchor",
-    "fisher_sigma_meV", "branch_counts", "expected_counts", "hdi_halfwidth",
+    "fisher_sigma_meV", "branch_counts", "expected_counts", "detection_significance",
+    "DETECT_FLOOR", "hdi_halfwidth",
     "target_posterior", "point_presence", "miss_factor", "FALSE_IDENTIFICATION", "PRESENCE_PRIOR_ODDS",
     "joint_assign", "_pad_candidates",
     "default_intensity_scale", "NEW", "NEW_LEVEL", "ASSIGNMENT_ENTROPY_STOP_NATS",
@@ -90,7 +91,17 @@ _FISHER_NULL_WEIGHT = 1e-6
 TIE_REL = 1e-12
 #: Expected counts a null scan's window must have held for it to be evidence against a branch
 #: energy inside that window.
-NULL_DETECTION_COUNTS = 5.0
+#: Expected significance a branch's peak must reach for a scan to MEASURE it -- and, equally, for
+#: that scan's silence to be evidence the branch is not there.  A mirror of
+#: ``isar.analyze.verdict.DETECT_FLOOR``, whose ``detection_power`` computes ``A / sqrt(A + B)``
+#: with ``A`` the peak strength in counts on the fitted background ``B`` per point and calls the
+#: peak detectable at 3 sigma.  Copied rather than imported because the drive may not import the
+#: analyze package (the same rule as ``NEW_LEVEL``), so the two MUST NOT DRIFT: the planner's whole
+#: job is to buy scans the real fitter will deliver, and its previous cruder gate -- 5 integrated
+#: counts anywhere in the window -- said the counts sufficed where the fitter then abstained,
+#: 20 scans out of 26 at one live grid point returning "underpowered / abstain" with no candidate
+#: while the planner re-bought the identical design.
+DETECT_FLOOR = 3.0
 #: The declared probability that the fitter misses a peak it should have detected.  A null scan is
 #: evidence, not proof, so a contradicted scenario is down-weighted by this factor rather than
 #: killed: this is a model parameter of the fitter's reliability, not a placement rule.  Two nulls
@@ -216,7 +227,7 @@ class PlannerInput:
     base_ncount: int = 10_000_000
     #: Exposure rungs as multiples of base_ncount. The top rungs exist because a dim peak far from
     #: the fold (pre-Bose ~0.6 counts*meV per 1e7 on TAVI, n+1 ~ 1.4 at 6 meV) needs ~1e8
-    #: neutrons per point to reach a 0.05 meV bar; the instrument cap still clamps.
+    #: neutrons per point to reach the requested energy bar at all; the instrument cap still clamps.
     ncount_ladder: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
     #: The declared exchange value of one scan's fixed cost (the instrument's move and the fit's
     #: analysis time) in neutron-equivalents; time is the honest currency and this is its declared
@@ -471,8 +482,9 @@ def point_presence(branches: Sequence[str], energies: Sequence[float],
     looked for and not found -- and the target's identity could never resolve, whatever was measured.
 
     A scan counts either way only if it would have DETECTED that branch at the branch's predicted
-    energy (expected counts at or above :data:`NULL_DETECTION_COUNTS`); a scan that could not have
-    seen it says nothing.  Each qualifying scan multiplies the PRESENT-vs-ABSENT odds by
+    energy, by the fitter's own test (:data:`DETECT_FLOOR`); a scan too weak to have seen it says
+    nothing.  One question, one answer: whether a scan can measure a branch and whether its silence
+    is evidence about that branch are the same question, so they share the test.  Each qualifying scan multiplies the PRESENT-vs-ABSENT odds by
 
         LR = [p(1 - NULL_MISS_PROBABILITY) + (1 - p) NULL_MISS_PROBABILITY]
              / [p FALSE_IDENTIFICATION + (1 - p)(1 - FALSE_IDENTIFICATION)]
@@ -490,11 +502,11 @@ def point_presence(branches: Sequence[str], energies: Sequence[float],
     log_odds = np.full(len(branches), math.log(PRESENCE_PRIOR_ODDS))
     for scan in scans:
         n_points = max(int(math.floor((float(scan.e_hi) - float(scan.e_lo)) / step)) + 1, 1)
-        counts = branch_counts(energies, e_lo=float(scan.e_lo), e_step=step, n_points=n_points,
-                               fwhm_meV=fwhm_meV, temperature_K=temperature_K, scale=scale,
-                               branches=branches, ncount=int(scan.ncount))
+        significance = detection_significance(
+            energies, e_lo=float(scan.e_lo), e_step=step, n_points=n_points, fwhm_meV=fwhm_meV,
+            temperature_K=temperature_K, scale=scale, branches=branches, ncount=int(scan.ncount))
         for bi, b in enumerate(branches):
-            if counts[bi] < NULL_DETECTION_COUNTS:
+            if significance[bi] < DETECT_FLOOR:
                 continue
             p = scan.probability(b)
             present = p * (1.0 - NULL_MISS_PROBABILITY) + (1.0 - p) * NULL_MISS_PROBABILITY
@@ -644,8 +656,12 @@ def _rates(om, sres: float, grid, peak, elastic: float, background: float, tempe
     """Per-neutron rate, its parameter derivatives, and per-branch window counts.
 
     ``om`` is ``(S, B)`` branch energies, ``grid`` the ``(N,)`` energy points.  Returns
-    ``(rate (S,N), deriv (S, 2B+2, N), branch_counts (S, B))`` with parameter order
-    ``(omega_b..., P_b..., elastic, background)``.  ``dn/domega`` is deliberately ignored.
+    ``(rate (S,N), deriv (S, 2B+2, N), branch_counts (S, B), peak_height (S, B))`` with parameter
+    order ``(omega_b..., P_b..., elastic, background)``.  ``dn/domega`` is deliberately ignored.
+
+    ``peak_height`` is the tallest per-point contribution that branch makes anywhere on the grid --
+    ``area / (sigma_res * sqrt(2 pi))`` at the lobe centre, but read off the grid so a lobe that
+    falls outside the window, or is clipped by its edge, reports the height actually on offer.
     """
     om = np.asarray(om, dtype=float)
     s, b = om.shape
@@ -661,7 +677,7 @@ def _rates(om, sres: float, grid, peak, elastic: float, background: float, tempe
     deriv = np.concatenate([d_om, shape,
                             np.broadcast_to(g0[None, None, :], (s, 1, len(grid))),
                             np.ones((s, 1, len(grid)))], axis=1)
-    return rate, deriv, np.sum(amp * shape, axis=2)
+    return rate, deriv, np.sum(amp * shape, axis=2), np.max(amp * shape, axis=2)
 
 
 def _sigma_fit(rate, deriv, ncount, n_branches: int, resolution_sigma: float):
@@ -725,7 +741,7 @@ def fisher_sigma_meV(energies: Sequence[float], *, e_lo: float, e_step: float, n
     grid = float(e_lo) + float(e_step) * np.arange(int(n_points), dtype=float)
     sres = float(fwhm_meV) * FWHM_TO_SIGMA
     peak = [float(scale.peak_counts_meV[b]) for b in branches]
-    rate, deriv, _ = _rates(np.array([[float(e) for e in energies]]), sres, grid, peak,
+    rate, deriv, _c, _h = _rates(np.array([[float(e) for e in energies]]), sres, grid, peak,
                             float(scale.elastic_counts_meV), float(scale.background_per_point),
                             temperature_K)
     return tuple(float(v) for v in _sigma_fit(rate, deriv, float(ncount), len(peak), sres)[0, 0])
@@ -742,10 +758,39 @@ def expected_counts(energies: Sequence[float], *, e_lo: float, e_step: float, n_
     grid = float(e_lo) + float(e_step) * np.arange(int(n_points), dtype=float)
     sres = float(fwhm_meV) * FWHM_TO_SIGMA
     peak = [float(scale.peak_counts_meV[b]) for b in branches]
-    rate, _deriv, _counts = _rates(np.array([[float(e) for e in energies]]), sres, grid, peak,
+    rate, _deriv, _c, _h = _rates(np.array([[float(e) for e in energies]]), sres, grid, peak,
                                    float(scale.elastic_counts_meV),
                                    float(scale.background_per_point), temperature_K)
     return np.asarray(rate[0], dtype=float) * float(ncount)
+
+
+def detection_significance(energies: Sequence[float], *, e_lo: float, e_step: float,
+                           n_points: int, fwhm_meV: float, temperature_K: float,
+                           scale: IntensityScale, branches: Sequence[str], ncount: float):
+    """Expected detection significance of each branch's peak in one window, the fitter's own test.
+
+    ``A / sqrt(A + B)`` with ``A`` the branch's expected peak HEIGHT in counts at its tallest point
+    on the grid and ``B`` the flat background per point -- exactly
+    ``isar.analyze.verdict.detection_power``, which takes ``B`` from the fitted ``bg.BG`` and so
+    ignores the elastic line sitting under a low-energy peak.  Mirrored, not re-derived: a peak the
+    fitter would call underpowered is one the planner must not buy.
+    """
+    grid = float(e_lo) + float(e_step) * np.arange(int(n_points), dtype=float)
+    sres = float(fwhm_meV) * FWHM_TO_SIGMA
+    peak = [float(scale.peak_counts_meV[b]) for b in branches]
+    _rate, _deriv, _counts, height = _rates(
+        np.array([[float(e) for e in energies]]), sres, grid, peak,
+        float(scale.elastic_counts_meV), float(scale.background_per_point), temperature_K)
+    return tuple(float(v) for v in _significance(height[0] * float(ncount),
+                                                 float(scale.background_per_point) * float(ncount)))
+
+
+def _significance(peak_counts, background_counts):
+    """``A / sqrt(A + B)``, zero where there is nothing to see."""
+    total = np.asarray(peak_counts) + np.asarray(background_counts)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(total > 0.0, np.asarray(peak_counts) / np.sqrt(np.maximum(total, 1e-300)),
+                        0.0)
 
 
 def branch_counts(energies: Sequence[float], *, e_lo: float, e_step: float, n_points: int,
@@ -755,7 +800,7 @@ def branch_counts(energies: Sequence[float], *, e_lo: float, e_step: float, n_po
     grid = float(e_lo) + float(e_step) * np.arange(int(n_points), dtype=float)
     sres = float(fwhm_meV) * FWHM_TO_SIGMA
     peak = [float(scale.peak_counts_meV[b]) for b in branches]
-    _, _, counts = _rates(np.array([[float(e) for e in energies]]), sres, grid, peak,
+    _r, _d, counts, _h = _rates(np.array([[float(e) for e in energies]]), sres, grid, peak,
                           float(scale.elastic_counts_meV), float(scale.background_per_point),
                           temperature_K)
     return tuple(float(v) * float(ncount) for v in counts[0])
@@ -1047,12 +1092,12 @@ def _scenarios(i, inp, branches, predict, executed):
                 continue
             n_pts = max(int(math.floor((float(scan.e_hi) - float(scan.e_lo)) / step)) + 1, 1)
             detectable = np.array([
-                branch_counts([e if k == bi else mu_all[k] for k in range(len(branches))],
-                              e_lo=float(scan.e_lo), e_step=step, n_points=n_pts,
-                              fwhm_meV=float(inp.fwhm_meV[i]),
-                              temperature_K=float(inp.temperature_K), scale=inp.scale,
-                              branches=branches, ncount=int(scan.ncount))[bi] for e in x])
-            contradicted = inside & (detectable >= NULL_DETECTION_COUNTS)
+                detection_significance([e if k == bi else mu_all[k] for k in range(len(branches))],
+                                       e_lo=float(scan.e_lo), e_step=step, n_points=n_pts,
+                                       fwhm_meV=float(inp.fwhm_meV[i]),
+                                       temperature_K=float(inp.temperature_K), scale=inp.scale,
+                                       branches=branches, ncount=int(scan.ncount))[bi] for e in x])
+            contradicted = inside & (detectable >= DETECT_FLOOR)
             log_w = np.where(contradicted, log_w + math.log(factor), log_w)
             reweighted[bi] |= bool(contradicted.any())
         w = np.exp(log_w - log_w.max())       # shift before exponentiating, never underflow to 0
@@ -1156,16 +1201,18 @@ def _designs_at(i, inp, branches, rows, targets, predict, exempt, deficit_now, m
     sigma_fit = np.empty((n_win, n_exp, n_scen, n_branch))
     for wi, (lo, _hi, step, npts) in enumerate(windows):
         grid = lo + step * np.arange(npts, dtype=float)
-        rate, deriv, per_neutron = _rates(om, sres, grid, peak, elastic, background,
-                                          float(inp.temperature_K))
+        rate, deriv, _counts, height = _rates(om, sres, grid, peak, elastic, background,
+                                              float(inp.temperature_K))
         sigma_fit[wi] = _sigma_fit(rate, deriv, np.array(ladder, dtype=float), n_branch,
                                    sres) * FIT_SIGMA_INFLATION
-        # A fit also needs COUNTS, not only a favourable Fisher matrix.  Without this the planner
-        # buys a cheap probe of a dim band whose Cramer-Rao sigma looks fine and whose peak the
-        # fitter can never see, then buys it again for ever.  Same floor the null evidence uses:
-        # below it a scan is not evidence about that branch either way.
-        window_counts = per_neutron[None, :, :] * np.array(ladder, dtype=float)[:, None, None]
-        sigma_fit[wi] = np.where(window_counts >= NULL_DETECTION_COUNTS, sigma_fit[wi], np.inf)
+        # A fit also needs a peak the fitter can SEE, not only a favourable Fisher matrix, and
+        # "can see" is the fitter's own published test rather than one invented here: expected
+        # significance A/sqrt(A+B) against DETECT_FLOOR. Without it the planner buys a cheap probe
+        # of a dim band whose Cramer-Rao sigma looks fine, the fitter abstains, the point's state
+        # never changes, and the identical design wins again.
+        exposure = np.array(ladder, dtype=float)[:, None, None]
+        significance = _significance(height[None, :, :] * exposure, background * exposure)
+        sigma_fit[wi] = np.where(significance >= DETECT_FLOOR, sigma_fit[wi], np.inf)
     sigma_fit = sigma_fit.reshape(n_win * n_exp, n_scen, n_branch)
     fit_measured = np.isfinite(sigma_fit)
     n_design = n_win * n_exp

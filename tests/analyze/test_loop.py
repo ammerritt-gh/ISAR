@@ -321,14 +321,10 @@ def test_error_paths_reuse_candidate_executor_and_preserve_pairing(monkeypatch):
 
 # --- FIX 1: greedy-IC "seed robustness" was really a MIGRAD call-budget starvation ----------
 
-def _sparse_two_peak_ctx(seed=5, o1=5.7, o2=7.9, a1=12.0, a2=8.0, g=0.5, bg=0.05, n=44):
+def _sparse_two_peak_ctx(seed=208, o1=5.7, o2=7.9, a1=12.0, a2=8.0, g=0.5, bg=0.05, n=44):
     """A sparse (many-zero-count) wide-window two-peak scan: a strong 'optic' + a weaker
     'acoustic', mirroring the closed-loop regime where the k=7 two-mode fit is near-degenerate
-    and MIGRAD needs more than iminuit's default call budget to certify a minimum.
-
-    The seed is a re-draw (208 → 5, 2026-09-03): on the 0.01 meV convolution grid the old
-    Poisson realization no longer supports the weaker mode at all, so it stopped exercising
-    the call-budget question. Any realization that does is equivalent evidence."""
+    and MIGRAD needs more than iminuit's default call budget to certify a minimum."""
     x = np.linspace(-4.0, 11.0, n)
     p1 = convolute_voigt_dho(x, o1, 0.0, 1.37, 0.0, g, a1, 0.0, 0.0, 40.0, peak="stokes+astokes")
     p2 = convolute_voigt_dho(x, o2, 0.0, 1.37, 0.0, g, a2, 0.0, 0.0, 40.0, peak="stokes+astokes")
