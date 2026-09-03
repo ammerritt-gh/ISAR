@@ -65,7 +65,11 @@ from isar.drive.acquisition.eig_planner import (
     default_intensity_scale,
     plan_next,
 )
-from isar.drive.acquisition.scan_grid import MAX_POINTS, resolve_uniform_grid
+from isar.drive.acquisition.scan_grid import (
+    MAX_POINTS,
+    resolve_uniform_grid,
+    snap_to_lattice,
+)
 from isar.drive.acquisition.grid_adapters import TAVI_GRID_ADAPTER
 from isar.drive.acquisition.inventory import (
     TERMINAL_CONTROLLER_FAULT, CampaignSliceKey, MeasurementIntent, RejectionClass, canonical_json)
@@ -169,6 +173,35 @@ def _analysis_allowance_seconds(cfg, objective) -> float | None:
     return max(float(limit) - spent, 0.0)
 
 
+def _snap_to_lattice(proposal, log_path, it: int, *, event_sink=log_event) -> bool:
+    """Put ``proposal``'s energy window on the shared lattice BEFORE anything derives from it.
+
+    A repeat scan is only worth its neutrons if the reducer can add them to the master it is topping
+    up, and :func:`isar.reduce.collate._merge_group` can only do that for members whose executed
+    energies coincide (see :func:`~isar.drive.acquisition.scan_grid.snap_to_lattice` for the measured
+    failure).  Nothing upstream guarantees that: two designs for the same point routinely differ by
+    hundredths of a meV, and the campaign then tops up a pool that never grows.
+
+    The rule is the same one the feasibility trim already lives by -- the EMITTED window is the truth
+    downstream, not the designed one -- so the snap happens here, at the single normalization seam
+    every proposal passes immediately before validation and submission, and therefore covers every
+    repeat rather than only the planner's.  Returns ``True`` when the window moved.
+    """
+    e_lo, e_hi, e_step = snap_to_lattice(proposal.e_lo, proposal.e_hi, proposal.e_step)
+    if (e_lo, e_hi, e_step) == (float(proposal.e_lo), float(proposal.e_hi), float(proposal.e_step)):
+        return False
+    if event_sink is not None:
+        event_sink(log_path, "exception", {
+            "action": "proposal_snapped_to_lattice",
+            "hkl": [proposal.h, proposal.k, proposal.l],
+            "old_window": [float(proposal.e_lo), float(proposal.e_hi), float(proposal.e_step)],
+            "new_window": [e_lo, e_hi, e_step],
+            "iter": it,
+        })
+    proposal.e_lo, proposal.e_hi, proposal.e_step = e_lo, e_hi, e_step
+    return True
+
+
 def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int, *,
                        event_sink=log_event) -> bool:
     """Clamp ``proposal`` to the instrument's ``max_points`` limit BEFORE any validate/submit call.
@@ -254,6 +287,7 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int,
     remain scan-boundary-only because ISAR has no invented ncount-to-seconds conversion.
     """
     policy = dict(getattr(objective, "steering", None) or {})
+    _snap_to_lattice(proposal, cfg.log_path, it, event_sink=event_sink)
     limits = _runtime_limits(cfg, objective)
     cap = int(limits["max_points"])
     source = f"policy+{limits['sources'].get('max_points', 'default')}"

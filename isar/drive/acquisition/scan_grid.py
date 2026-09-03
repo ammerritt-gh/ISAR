@@ -15,6 +15,7 @@ stored candidate declares which instrument semantics it was scored under.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from isar.drive.acquisition.grid_adapters import (
@@ -41,6 +42,39 @@ def resolve_point_count(e_lo: float, e_hi: float, e_step: float, *,
     step = max(float(e_step), 1e-9)
     lo, hi = float(e_lo), float(e_hi)
     return adapter.point_count(lo, max(hi, lo), step), step
+
+
+def snap_to_lattice(e_lo: float, e_hi: float, e_step: float, *,
+                    adapter: TaviUniformGridAdapter = DEFAULT_GRID_ADAPTER
+                    ) -> tuple[float, float, float]:
+    """Quantise one designed window onto the instrument's SHARED energy lattice.
+
+    Two scans at the same (sample, Q, T) only add counts to a pooled master when their executed
+    points coincide: :func:`isar.reduce.collate._merge_group` sums counts and monitors per energy
+    BIN, and its binning tolerance is a quarter of the median spacing of the members' concatenated
+    energies.  Windows that differ by a fraction of a step therefore do not merely bin coarsely --
+    they drive that tolerance down until every member owns its own bins, so the master's
+    ``n_members`` grows while its per-bin exposure does not.  Measured on the 2026-09-03 full-path
+    campaign: 65 members at h = 2.90 produced 1419 bins at 0.001 meV median spacing, a summed
+    monitor of 1.4e10 spread so thinly that the peak-local median (which is what
+    ``effective_exposure`` reports) stayed at one scan's 1e7.
+
+    The lattice is the instrument's own: the step is quantised to the adapter's executed precision,
+    and the bounds to whole multiples of that step anchored at zero.  Bounds move OUTWARD (``e_lo``
+    down, ``e_hi`` up) so the emitted window never trims the band the design asked for; it grows by
+    at most one point per end, and :func:`resolve_uniform_grid` still owns the point cap.
+    """
+    lo, hi, raw_step = float(e_lo), float(e_hi), float(e_step)
+    if not all(math.isfinite(v) for v in (lo, hi, raw_step)) or raw_step <= 0.0:
+        return lo, hi, raw_step
+    places = int(adapter.executed_decimals)
+    quantum = 10.0 ** -places
+    step = max(round(raw_step / quantum) * quantum, quantum)
+    # The tolerance absorbs binary-float error in ``bound / step`` so a bound already ON the lattice
+    # is not pushed a whole point outward (2.28 / 0.19 evaluates to 11.999999999999998).
+    lo_k = math.floor(lo / step + 1e-9)
+    hi_k = math.ceil(max(hi, lo) / step - 1e-9)
+    return round(lo_k * step, places), round(hi_k * step, places), round(step, places)
 
 
 def format_scan_command(e_lo: float, e_hi: float, e_step: float, *,
@@ -112,4 +146,5 @@ __all__ = [
     "format_scan_command",
     "resolve_point_count",
     "resolve_uniform_grid",
+    "snap_to_lattice",
 ]
