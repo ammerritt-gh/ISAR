@@ -677,3 +677,18 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     filtering, fork exclusion); `tests/drive/test_eig_planner.py` 31/31 with the seeded campaign
     golden re-pinned — it now opens at h = 2.05 with a 14-point window instead of h = 2.10 with 33,
     still 21 scans to the prize. The PR body and a review-response comment carry the same table.
+
+    **Live after the round (`7503d13`):** short path `met`, 16 scans, 2.5 min. Full path `met`,
+    100 scans, 21.2 min, 6.2e10 neutrons, 20/20, h = 3.0 in 18 scans; every certified half-width
+    ≤ 0.089 meV; `isar score --truth-fn phonon_dft` median |Δω₀| 0.037 meV, centre pull −0.019,
+    68 % coverage 0.64. These are the honest figures: §7.30's 0.016 meV / 0.90 were partly the
+    optic's precision certifying the acoustic at the boundary, and h = 3.0 now pays for its own
+    interval. Analysis time: fits 794 s, anchor escalations 224 s, certify 64 s.
+
+    **Seats.** The `review_files` seat ran on `0d82d47` (one finding, rejected with the reason in
+    code); NanoGPT's limit was reached afterwards, so `7503d13` carries no external seat — the
+    loop suite (153) and the live full path are its verification. Codex remains available. The
+    goal compiler on the local 35B model is nondeterministic: one attempt emitted a stray
+    `target_zc_energy_sigma_meV` and was refused (`goal_to_spec`, a pinned contract), the retry
+    compiled correctly. **Owner decision:** a bounded retry at that boundary, or a pre-compiled
+    program for the demo (`--compile-only`, then `--program`), which is what every run here used.
