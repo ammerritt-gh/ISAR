@@ -185,6 +185,25 @@ local line and predicted the acoustic ~1 meV high, reading the optic as its own.
 masked it, because windows never depended on the prediction. Prior precision is now weighted by the
 anchors' locality kernel and the predictive truncated to the domain.
 
+**2026-09-03 — a point the planner is finished with is escalated to the full tier so it can anchor
+the belief.** Only a `fold` master enters the running dispersion prior (Hard Rule 5;
+`session_prior.add_point(require_fold=True)`), and a fast-tier fit is never a fold — it has no
+bootstrap samples to pool, whether or not its HESSE interval is trusted. The session's identity
+tracker, meanwhile, confirms a point off that same fast fit and the planner moves on. Nothing
+reconciled the two: the full tier was requested only when a q was re-scanned with an untrusted
+HESSE interval, or at the end-of-campaign certify pass. Measured live on the full acoustic path,
+every point from u = 0.55 to 0.95 was `confirmed` at target probability ≥ 0.92 and never became an
+anchor; the acoustic belief at u = 1.0 extrapolated half a zone from its last anchor to σ ≈ 1.5 meV,
+the optic had no anchor at all, and the two fitted peaks 2 meV apart could not be told apart at any
+exposure (149 and then 155 scans at h = 3.0). The loop now escalates every prize point that is
+`within_bar` but not yet a `fold` master (`loop._pending_anchor_escalations`, one `force_masters`
+refit, logged as `escalate_fit` with reason `belief_anchor`) before proposing the next scan;
+idempotent, since a folded master is no longer named. Full path after the change: `met`, 92 scans,
+15.2 min, 20/20, h = 3.0 in 3 scans, both branches anchored to u = 1.0 (acoustic 6.29 ± 0.30,
+optic 8.07 ± 0.32 meV), 18 escalations costing 214 s of analysis time. The EIG-native form —
+pricing "re-analyse this point at the full tier" as a design beside "measure this point" — is the
+principled successor and is not built.
+
 **2026-09-02 — two model corrections found by tracing one wrong ranking.** The 68% interval of a
 flat-dominated posterior came out four times too narrow because the level bisection ran in linear
 scale; it now bisects the excess in log space. And an unidentifiable position (two peaks at one

@@ -26,6 +26,7 @@ from isar.drive.loop import (_campaign_config,
                              _record_eligible_crossings,
                              resolve_campaign_slice,
                              _pending_certification_indices, _record_certification_acceptance,
+                             _pending_anchor_escalations, _unfolded_master,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
                              _proposal_from_submission,
                              _reconcile_budget_points, _resume_state,
@@ -1823,6 +1824,70 @@ def make_untrusted_hesse_runner(omega, *, window_gate=True):
             for r in rows:
                 w.writerow({c: r.get(c) for c in cols})
     return runner
+
+
+def test_pending_anchor_escalations_names_within_bar_masters_that_are_not_folds(tmp_path):
+    """Guards the belief-anchor-starvation fix (HANDOFF-eig.md 7.29/7.30): a prize point the planner
+    has stopped revisiting (``within_bar``) whose pooled master is not yet a ``fold`` fit must be named
+    for escalation, since the dispersion prior admits only folds and the fast tier never produces
+    one — whether its HESSE interval is trusted or not (the first version stopped at "trusted" and
+    the anchor chain broke at the first trusted fast fit, live, h=2.50). A point that is already a
+    fold, or one the planner is still actively scanning (not ``within_bar``), must not be named."""
+    report = tmp_path / "report"
+    report.mkdir(parents=True)
+    cols = ["scan", "detector", "h", "k", "l", "status", "verdict", "disposition", "confidence",
+            "omega0", "interval_lo", "interval_hi", "interval_reliable",
+            "hesse_lo", "hesse_hi", "hesse_trusted", "pooled", "modality", "scan_id"]
+    rows = [
+        # within_bar, fast/untrusted -> named.
+        {"scan": 1, "detector": "det", "h": 2.7, "k": 0.0, "l": 0.0, "status": "fitted",
+         "verdict": "resolved", "disposition": "resolved", "omega0": 4.88,
+         "hesse_lo": 4.6, "hesse_hi": 5.2, "hesse_trusted": False, "interval_reliable": False,
+         "pooled": True, "modality": "unpooled", "scan_id": "master:tavi_(54, 0, 0)_200.0"},
+        # within_bar, fast/TRUSTED -> still named: trusted is not folded.
+        {"scan": 2, "detector": "det", "h": 2.5, "k": 0.0, "l": 0.0, "status": "fitted",
+         "verdict": "resolved", "disposition": "resolved", "omega0": 4.26,
+         "hesse_lo": 4.2, "hesse_hi": 4.32, "hesse_trusted": True, "interval_reliable": False,
+         "pooled": True, "modality": "unpooled", "scan_id": "master:tavi_(50, 0, 0)_200.0"},
+        # within_bar, already a fold master -> NOT named.
+        {"scan": 3, "detector": "det", "h": 2.3, "k": 0.0, "l": 0.0, "status": "fitted",
+         "verdict": "resolved", "disposition": "resolved", "omega0": 2.73,
+         "interval_lo": 2.71, "interval_hi": 2.75, "interval_reliable": True,
+         "pooled": True, "modality": "fold", "scan_id": "master:tavi_(46, 0, 0)_200.0"},
+        # still above the bar (not within_bar) -> NOT named.
+        {"scan": 4, "detector": "det", "h": 3.0, "k": 0.0, "l": 0.0, "status": "fitted",
+         "verdict": "resolved", "disposition": "resolved", "omega0": 6.0,
+         "hesse_lo": 5.5, "hesse_hi": 6.5, "hesse_trusted": False, "interval_reliable": False,
+         "pooled": True, "modality": "unpooled", "scan_id": "master:tavi_(60, 0, 0)_200.0"},
+    ]
+    with open(report / "results.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols)
+        w.writeheader()
+        for r in rows:
+            w.writerow({c: r.get(c) for c in cols})
+
+    def point(hkl, within_bar, exempt=False):
+        return types.SimpleNamespace(hkl=hkl, exempt=exempt, within_bar=within_bar)
+
+    plan_decision = types.SimpleNamespace(per_point=[
+        point((2.7, 0.0, 0.0), within_bar=True),
+        point((2.5, 0.0, 0.0), within_bar=True),
+        point((2.3, 0.0, 0.0), within_bar=True),
+        point((3.0, 0.0, 0.0), within_bar=False),
+    ])
+    assert (_pending_anchor_escalations(tmp_path, plan_decision)
+            == ["master:tavi_(54, 0, 0)_200.0", "master:tavi_(50, 0, 0)_200.0"])
+    # An exempt point (the untestable zone-centre point) is never a candidate either.
+    plan_decision.per_point[0].exempt = True
+    assert _pending_anchor_escalations(tmp_path, plan_decision) == ["master:tavi_(50, 0, 0)_200.0"]
+
+
+def test_unfolded_master_ignores_individual_scan_rows():
+    """An individual (unpooled) scan's own fit must not count — only the pooled master's fit decides
+    whether a q's evidence is durable."""
+    rows = [{"h": 2.7, "k": 0.0, "l": 0.0, "pooled": False, "disposition": "resolved",
+             "omega0": 4.88, "modality": "unpooled", "scan_id": "tavi:501:det"}]
+    assert _unfolded_master(rows, (2.7, 0.0, 0.0)) is None
 
 
 # --------------------------------------------------------------------------- crash-safe resume (Part C)

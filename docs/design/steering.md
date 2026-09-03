@@ -66,7 +66,11 @@ What survives here is the state contract the planner reads and the rules that ar
   `PointState.exempt`). An optic branch has a finite energy there and is measured like any other q.
 - **Certification is unchanged.** Certified pooled intervals remain the published numbers, and the
   prize is judged on the published interval — never on a raw fit σ. `met` is declared only after
-  certification and a re-plan agree.
+  certification and a re-plan agree. *Amended 2026-09-03:* a prize point the planner has finished
+  with (`within_bar`) whose pooled master is not yet a `fold` fit is escalated to the full tier at
+  once (`loop._pending_anchor_escalations`, `escalate_fit` reason `belief_anchor`), because only a
+  fold may anchor the belief and a campaign whose last points depend on that anchor never reaches
+  the end-of-campaign certify pass otherwise (`design/eig.md`, 2026-09-03 amendment).
 - **Four reasons end a campaign** and no others (`DESIGN_GOALS.md`): the goal met, the operator,
   the budget, a machine failure. `evaluate_stop` no longer decides `met` — the planner's prize
   does; `evaluate_stop` decides only `infeasible` / `incomplete` / `continue`. A stop that is not

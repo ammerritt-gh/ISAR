@@ -612,3 +612,45 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     optic→8.0) or in the prize (require the mass to be concentrated on one peak, which would make
     the deficit finite and let EIG price the scan that separates them). Do not add exposure rungs;
     exposure is demonstrably not the lever here.
+
+30. **The zone-boundary stall was anchor starvation, and the full path now reaches `met`
+    (2026-09-03 evening).** Verified as §7.29 asked, with a per-point probe on a fresh live run that
+    reproduced the stall in 15 minutes (22 identical designs at h = 3.0, half-width 1.07 meV,
+    identified mass 0.90, two clean peaks at 5.99 and 7.99 meV). Neither hypothesis in §7.29 was the
+    cause: the identity gate and the injective matching were correct on their inputs. The inputs
+    were wrong. `belief_predict("acoustic", u = 1.0)` had no anchor nearer than u = 0.5 and
+    extrapolated to σ = 1.54 meV; the optic had no anchor anywhere (σ = 2.60, the class prior). With
+    both beliefs that wide the joint matching genuinely cannot say which peak is which, and counts
+    sharpen the peaks, not the beliefs.
+
+    **Why the anchors were missing.** Every master from h = 2.55 to 2.95 was `track_state =
+    confirmed` at target probability 0.92–0.9998 — and `errors_tier = fast`, `modality =
+    unpooled`. Only a `fold` master enters the dispersion prior (`_rebuild_tracked_prior`,
+    `session_prior.add_point(require_fold=True)`, Hard Rule 5), and a fast fit is never a fold: no
+    bootstrap samples, so nothing to pool. The full tier was requested only on a re-scan with an
+    untrusted HESSE interval (`_q_needs_full_errors`) or by the certify pass — and the planner never
+    re-scans a `within_bar` point, while the certify pass runs only after `plan_decision.stop`, which
+    the stalled point prevents. Two correct mechanisms, never reconciled. Owner chose the pragmatic
+    repair over the EIG-native one (pricing "re-analyse at full tier" as a design).
+
+    **The fix (`isar/drive/loop.py`).** After each plan, `_pending_anchor_escalations` names every
+    prize point that is `within_bar` but whose pooled master is not a `fold`, and the loop refits
+    exactly those (`refresh_analysis(force_masters=…)`, `escalate_fit` reason `belief_anchor`) and
+    re-plans before proposing a scan. Idempotent: a folded master is no longer named. A first version
+    named only UNtrusted HESSE fits and the chain broke again at the first *trusted* one (h = 2.50,
+    2.60): trusted or not, a fast fit is not a fold — that is why the predicate reads `modality`.
+
+    | run | scans | wall | prize | h = 3.0 scans | anchors (ac / op) at u = 1.0 |
+    |---|---|---|---|---|---|
+    | before (`bbbae9b`) | 208 | 49.6 min | 17/20 | 149 | 3 / 0 |
+    | escalate untrusted only | 255 | 65 min, analysis limit | 17/20 | 155 | 10 / 0 |
+    | **escalate any non-fold** | **92** | **15.2 min** | **20/20 `met`** | **3** | **20 / 5** |
+
+    Final run: 3.1e10 neutrons; 18 escalations cost 214 s of analysis against 488 s of fits;
+    `isar score --truth-fn phonon_dft` median |Δω₀| 0.016 meV, centre pull −0.013, 68 % coverage
+    0.90 on the bootstrap intervals; every point's certified half-width ≤ 0.093 meV. Short path:
+    `met`, 10 scans, 2.8 min (was 13 / 4.2). Residual hot spot h = 2.50 (24 scans) — not a stall, not
+    chased. Tests: `tests/drive/test_loop.py` 148/148 with two new cases pinning the predicate.
+
+    **Next:** run the full sentence live once more, refresh the PR #37 body (still quotes the ±0.05
+    bar and pre-pooling numbers), then the GUI rehearsal the owner wants to attend.

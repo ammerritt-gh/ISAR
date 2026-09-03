@@ -1001,6 +1001,60 @@ def _q_needs_full_errors(workspace, hkl) -> bool:
     return saw_untrusted
 
 
+def _unfolded_master(rows, hkl) -> str | None:
+    """Ledger id of the usable pooled master at ``hkl`` that is not yet a ``fold`` fit, else ``None``.
+
+    Only a ``fold`` master (full tier: bootstrap samples pooled across the surviving structures and
+    found unimodal) may enter the running dispersion prior — ``session_prior.add_point`` with
+    ``require_fold``, Hard Rule 5. A fast-tier fit has no bootstrap samples, so its modality is
+    ``unpooled`` whether or not its HESSE interval is trusted: it is not a fork, but nothing has
+    examined whether it would be one, which is why the gate is right to hold it out and why this
+    predicate does not stop at "trusted".
+    """
+    for r in rows:
+        if not _hkl_close(_row_hkl(r), hkl):
+            continue
+        if not r.get("pooled"):
+            continue
+        if r.get("disposition") not in _USABLE or r.get("omega0") is None:
+            continue
+        if r.get("modality") == "fold":
+            return None
+        return r.get("scan_id")
+    return None
+
+
+def _pending_anchor_escalations(workspace, plan_decision) -> list[str]:
+    """Master ids of prize points the planner is finished with (``within_bar``) whose fit is not yet
+    a ``fold`` master, and so cannot enter the running dispersion prior as a belief anchor.
+
+    The session's own identity tracker is happy to call a point ``confirmed`` off a fast HESSE fit
+    and move on; the evidence pipeline is right to then refuse that same fit as an anchor. Left
+    alone the two never reconcile: nothing else asks for the full-tier fit that would let a point
+    the campaign is done navigating past also become durable evidence. Measured live at the zone
+    boundary of the acoustic reference program (HANDOFF-eig.md §7.29/§7.30, 2026-09-03): every point
+    from u=0.55 to u=0.95 reached ``track_state=confirmed`` at target_probability up to 0.9998 on a
+    fast fit and never entered the dispersion prior, so the belief at the path's end had no anchor
+    closer than half a zone away and could not separate two peaks 2 meV apart at any exposure. A
+    first version escalated only UNtrusted HESSE fits (``_q_needs_full_errors``'s test) and the chain
+    broke again at the first trusted one: trusted or not, a fast fit is never a fold.
+    """
+    hkls = [tuple(float(c) for c in point.hkl) for point in plan_decision.per_point
+            if not point.exempt and point.within_bar]
+    if not hkls:
+        return []
+    try:
+        rows = read_results_csv(workspace)
+    except FileNotFoundError:
+        return []
+    ids = []
+    for hkl in hkls:
+        scan_id = _unfolded_master(rows, hkl)
+        if scan_id:
+            ids.append(scan_id)
+    return ids
+
+
 def _full_tier(cfg) -> str:
     """The tier standing in for "full" (bootstrap+profile) errors: ``bayes`` (superset of ``full`` —
     adds MINOS + posterior as CSV diagnostics, bootstrap stays the authoritative interval) when the
@@ -4186,6 +4240,39 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                             evaluate_stop(objective, grid, budget_state,
                                           calibration=cfg.calibration, floor=cfg.floor).per_q)
                         break
+                    continue
+                # A prize point the planner has stopped revisiting (``within_bar``) but whose fit is
+                # still an untrusted HESSE estimate can never become a belief anchor — escalate it to
+                # the full tier now, incrementally, rather than waiting for a whole-campaign certify
+                # pass this campaign may never reach if a further point's own convergence depends on
+                # the anchor this one would supply (found live at the zone boundary, HANDOFF-eig.md
+                # §7.29/§7.30). Idempotent: once escalated, ``_pending_anchor_escalations`` no longer
+                # names it, so this can never spin on the same point.
+                pending_anchors = _pending_anchor_escalations(cfg.workspace, plan_decision)
+                if pending_anchors:
+                    full_tier = _full_tier(cfg)
+                    log_event(cfg.log_path, "escalate_fit", {
+                        "phase": "anchor", "iter": it, "hkl": None, "from_tier": "fast",
+                        "to_tier": full_tier, "reason": "belief_anchor",
+                        "master_ids": pending_anchors})
+                    try:
+                        with timed(cfg.log_path, "anchor_escalation", iteration=it):
+                            with analysis_operation(
+                                    cfg.log_path, f"anchor:{cfg.run_nonce}:{proposal_counter}",
+                                    "anchor_escalation", limit_seconds=objective.analysis_limit_seconds,
+                                    iteration=it):
+                                allowance = _analysis_allowance_seconds(cfg, objective)
+                                refresh_analysis(
+                                    cfg.runner, cfg.workspace, [cfg.data_dir], errors_tier=full_tier,
+                                    force_masters=pending_anchors, render=False,
+                                    analysis_allowance_seconds=allowance,
+                                    finish_initial_wave=(False if allowance is not None else None),
+                                    analysis_limit_seconds=objective.analysis_limit_seconds)
+                    except AnalysisLimitExceeded as error:
+                        decision = StopDecision("incomplete", [str(error)], decision.per_q)
+                        break
+                    master_rows, grid = _grid_state(
+                        objective, observations, cfg.workspace, cfg.calibration)
                     continue
                 designs = list(plan_decision.ranked)
                 proposal, selection_terminal = _next_planner_proposal(
