@@ -19,13 +19,6 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
-# The palette below mirrors backends/mpl.py byte for byte (the legend-parity pin) and was chosen
-# for matplotlib's white canvas: mid greys for the branch and prior curves, CSS green for a resolved
-# pooled point. pyqtgraph draws on black by default, where those greys and that green vanish
-# (owner, GUI rehearsal 2026-09-03: "basically invisible"). One canvas, the one the palette was
-# designed for, rather than a second palette to keep in step.
-pg.setConfigOptions(background="w", foreground="k")
-
 from isar.plotspec.spec import Glyph, MarkerKind, PlotSpec, Role, State, Tier, entropy_rgb
 
 # Matplotlib default colour cycle (C0..C9) as concrete hex, so tier/role colours mean the same thing

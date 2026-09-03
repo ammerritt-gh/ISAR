@@ -708,10 +708,11 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     `scan_landed` (rendered "Scan landed at q, N points, E lo…hi meV") *before* it opens the fit
     activity. Best effort: a failed early ingest is logged and the fit's own ingest still runs.
     (b) *The dispersion view's green dots and grey line were invisible.* The pyqtgraph backend
-    mirrors the matplotlib palette byte for byte (the legend-parity pin) — mid greys and CSS green
-    chosen for a white canvas — but pyqtgraph draws on black by default. The canvas is now white
-    with black foreground (`plotspec_pg`, one config call) rather than a second palette to keep in
-    step. Both need a GUI restart to show; the campaign it is running is unaffected.
+    mirrors the matplotlib palette (mid greys, CSS green) on pyqtgraph's black canvas. A first
+    cut switched the canvas to white; the owner rejected it ("blinding", and not what was asked)
+    and it was reverted the same night — the canvas is black as before. **Open, owner's
+    instruction pending:** which colours to change for the dots and the line; nothing else in the
+    palette is to be touched. (a) needs a GUI restart to show.
 
 33. **The tracker scored identity on the bare class prior; it now reads the campaign's belief
     (GUI rehearsal, 2026-09-03 late).** The owner's rehearsal campaign (saved as `eig-1-test`)
