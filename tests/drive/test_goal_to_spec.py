@@ -305,15 +305,27 @@ def test_the_retired_objective_envelope_is_unreadable_by_design(tmp_path, retire
     assert not hasattr(g2s, "envelope_from_json") and not hasattr(g2s, "make_envelope")
 
 
-@pytest.mark.parametrize("payload, message", [
-    ({"target_zc_energy_meV": 10.0, "target_zc_energy_sigma_meV": -0.5}, "must be positive"),
-    ({"target_zc_energy_sigma_meV": 0.5}, "requires target_zc_energy_meV"),
-])
-def test_gap_uncertainty_validation_is_explicit(payload, message):
+def test_gap_uncertainty_validation_is_explicit():
     data = {"q_start": [2, 0, 0], "q_end": [2, 0.5, 0], "step_rlu": 0.05,
-            "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic", **payload}
-    with pytest.raises(g2s.GoalParseError, match=message):
+            "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic",
+            "target_zc_energy_meV": 10.0, "target_zc_energy_sigma_meV": -0.5}
+    with pytest.raises(g2s.GoalParseError, match="must be positive"):
         _objective("optic", data)
+
+
+def test_a_sigma_without_an_energy_is_dropped_not_refused(caplog):
+    """A sigma with no energy to qualify carries no operator intent -- the sentence never said it,
+    the model's structured output filled it in (a local 35B model did so on four of four compiles
+    of the demo sentence, 2026-09-03). Refusing it turned "enter the sentence, hit go" into no scan
+    at all; it is dropped with a warning and the branch keeps its shipped prior."""
+    data = {"q_start": [2, 0, 0], "q_end": [2, 0.5, 0], "step_rlu": 0.05,
+            "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic",
+            "target_zc_energy_sigma_meV": 0.5}
+    with caplog.at_level("WARNING"):
+        spec = _objective("optic", data)
+    assert any("ignoring target_zc_energy_sigma_meV" in r.getMessage() for r in caplog.records)
+    optic = next(h for h in spec.hypotheses if h.get("name") == "optic")
+    assert optic["zc_energy"]["sigma"] != 0.5
 
 
 def test_goal_layer_rejects_degenerate_segment():

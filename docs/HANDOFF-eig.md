@@ -688,7 +688,11 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     **Seats.** The `review_files` seat ran on `0d82d47` (one finding, rejected with the reason in
     code); NanoGPT's limit was reached afterwards, so `7503d13` carries no external seat — the
     loop suite (153) and the live full path are its verification. Codex remains available. The
-    goal compiler on the local 35B model is nondeterministic: one attempt emitted a stray
-    `target_zc_energy_sigma_meV` and was refused (`goal_to_spec`, a pinned contract), the retry
-    compiled correctly. **Owner decision:** a bounded retry at that boundary, or a pre-compiled
-    program for the demo (`--compile-only`, then `--program`), which is what every run here used.
+    goal compiler on the local 35B model emitted a stray `target_zc_energy_sigma_meV` on four of
+    four compiles of the demo sentence and `goal_to_spec` refused each (a pinned contract). Decided
+    before the GUI rehearsal: a sigma with no energy to qualify carries no operator intent — the
+    sentence never said it — so it is now dropped with a logged warning instead of refused
+    (`test_a_sigma_without_an_energy_is_dropped_not_refused`); two compiles on the local model
+    then produced the same program as the earlier compiler, byte for byte on every field that
+    matters. A retry would not have helped (4/4), and a pre-compiled program is not "enter the
+    sentence, hit go".

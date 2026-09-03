@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,8 @@ from isar.schema.campaign_program import (
     targeted_program,
 )
 import isar.schema.question_policy as _qpolicy
+
+log = logging.getLogger(__name__)
 
 Dispatcher = _llm.Dispatcher
 LLMMClient = _llm.LLMMClient
@@ -450,8 +453,13 @@ def _build_spec(data: dict, merged: dict, *,
     target_zc_energy = data.get("target_zc_energy_meV", tracked_anchor_energy)
     if (data.get("target_zc_energy_sigma_meV") is not None
             and target_zc_energy is None):
-        raise GoalParseError(
-            "target_zc_energy_sigma_meV requires target_zc_energy_meV")
+        # A sigma with no energy carries no intent: the operator typed a sentence, and the key is
+        # the model's filler (a local 35B model emitted it on four of four compiles of the demo
+        # sentence, 2026-09-03). Dropping it loses nothing the sentence said; refusing it turned
+        # "enter the sentence, hit go" into no scan at all.
+        log.warning("ignoring target_zc_energy_sigma_meV=%r: no target_zc_energy_meV to qualify",
+                    data.get("target_zc_energy_sigma_meV"))
+        data = {k: v for k, v in data.items() if k != "target_zc_energy_sigma_meV"}
     if target_zc_energy is not None:
         shipped_sigma = max((float(resolved_energy[1]) - max(float(resolved_energy[0]), 0.0)) / 4.0,
                             1e-6)
