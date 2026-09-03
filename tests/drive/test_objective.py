@@ -134,29 +134,24 @@ def test_generic_segment_uses_step_as_a_maximum_and_includes_endpoints():
     assert spec.path[-1] == (2.0, 0.5, 0.0)
     assert max(spec.path[i + 1][1] - spec.path[i][1] for i in range(10)) <= 0.05 + 1e-12
     assert spec.energy_search_meV == (-2.0, 12.0)
-    assert spec.target_selector == "lowest_energy"
+    assert spec.target_selector == "tracked_branch"
 
 
-def test_target_selector_defaults_and_validation():
+def test_the_declared_branch_is_the_only_target_the_planner_can_map():
+    """The planner's prize is defined per declared branch, so a per-q feature selector names a
+    prize it can never satisfy — and a campaign carrying one runs until its budget dies."""
     common = dict(path=[(2, 0, 0)], tolerance_meV=0.5,
                   budget={"kind": "neutrons", "amount": 1}, target_branch="optic")
-    assert ObjectiveSpec(**common).target_selector == "lowest_energy"
-    nearest = ObjectiveSpec(**common, target_energy_meV=7.25)
-    assert nearest.target_selector == "nearest_energy" and nearest.target_energy_meV == 7.25
+    assert ObjectiveSpec(**common).target_selector == "tracked_branch"
     tracked = ObjectiveSpec(**common, target_selector="tracked_branch")
-    assert tracked.target_selector == "tracked_branch" and tracked.target_energy_meV is None
+    assert tracked.target_selector == "tracked_branch"
     acoustic = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
                              budget={"kind": "neutrons", "amount": 1e6},
                              target_branch="acoustic", target_selector="tracked_branch")
     assert acoustic.target_selector == "tracked_branch"
-    with pytest.raises(ValueError, match="requires target_energy_meV"):
-        ObjectiveSpec(**common, target_selector="nearest_energy")
-    with pytest.raises(ValueError, match="target_selector"):
-        ObjectiveSpec(**common, target_selector="brightest")
-    with pytest.raises(ValueError, match="finite"):
-        ObjectiveSpec(**common, target_energy_meV=float("nan"))
-    with pytest.raises(ValueError, match="finite"):
-        ObjectiveSpec(**common, target_energy_meV=float("inf"))
+    for retired in ("nearest_energy", "lowest_energy", "highest_energy", "brightest"):
+        with pytest.raises(ValueError, match="target_branch"):
+            ObjectiveSpec(**common, target_selector=retired)
 
 
 def test_explicit_degenerate_segment_remains_a_valid_single_point():

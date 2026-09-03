@@ -2044,8 +2044,7 @@ def _persist_campaign_target(workspace: Path, objective) -> None:
     card = Card.load(policy_path, state_path)
     target = {"branch": getattr(objective, "target_branch", "acoustic"),
               "label": getattr(objective, "target_label", "acoustic"),
-              "selector": getattr(objective, "target_selector", "lowest_energy"),
-              "target_energy_meV": getattr(objective, "target_energy_meV", None),
+              "selector": getattr(objective, "target_selector", "tracked_branch"),
               "energy_search_meV": list(getattr(objective, "energy_search_meV", (-2.0, 7.0))),
               # The session identity tracker needs the frozen scientific path order; sorting fitted
               # q after the fact would silently turn a looped path into a different experiment.

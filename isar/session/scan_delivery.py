@@ -2249,7 +2249,7 @@ def _campaign_target(card) -> tuple[str, str, tuple[float, float]]:
 
 def _campaign_selector(card) -> tuple[str, float | None]:
     target = getattr(getattr(card, "state", None), "campaign_target", None) or {}
-    selector = str(target.get("selector") or "lowest_energy")
+    selector = str(target.get("selector") or "tracked_branch")
     energy = target.get("target_energy_meV")
     return selector, (float(energy) if energy is not None else None)
 

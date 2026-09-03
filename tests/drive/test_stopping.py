@@ -29,7 +29,9 @@ def _master(hkl, hw, disp="resolved", reliable=True, n=2, members=None, certifia
             "certifiable": certifiable,
             "usable": disp in st.USABLE_DISPOSITIONS and hw is not None,
             "disposition": disp, "n_members": n,
-            "members": (members if members is not None else [str(i) for i in range(n)])}
+            "members": (members if members is not None else [str(i) for i in range(n)]),
+            # Every campaign maps a declared branch, so a pooled master carries its track state.
+            "track_state": "confirmed", "track_revision": 1}
 
 
 # --------------------------------------------------------------------------- master provenance
@@ -202,7 +204,9 @@ def test_unpooled_track_state_blocks_scalar_convergence_and_model_seeding():
     obs = _obs((2.0, 0.0, 0.0), "production", 0.2)
     obs.update({"branch_id": "optic", "track_state": "ambiguous", "track_revision": 2})
     # The individual ambiguity cannot become authority; the target master still lacks confirmation.
-    grid = st.summarize_grid(obj, [obs], [_master((2.0, 0.0, 0.0), 0.1)])
+    unconfirmed = _master((2.0, 0.0, 0.0), 0.1)
+    unconfirmed["track_state"] = None
+    grid = st.summarize_grid(obj, [obs], [unconfirmed])
     assert grid[0].track_state is None
     assert not grid[0].converged
     assert st.model_points(grid) == []
@@ -396,7 +400,7 @@ def test_successful_recenter_resolves_its_logical_acquisition():
 
 def _master_update(exposure, halfwidth, **overrides):
     update = {"kind": "pooled_master_update", "hkl": (2.1, 0.0, 0.0),
-              "candidate_id": "acoustic:0.1:lowest_energy", "branch_id": "acoustic",
+              "candidate_id": "acoustic:tracked_branch", "branch_id": "acoustic",
               "interval_method": "profile", "exposure_bucket": "global",
               "calibration_version": "v1", "effective_exposure": exposure,
               "diagnostic_halfwidth": halfwidth, "certifiable": True}

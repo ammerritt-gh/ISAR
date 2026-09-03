@@ -33,7 +33,12 @@ from isar.schema.hypotheses import (
 # is TAVI's fast analytic engine (develop the loop); "mcstas" is the full Monte-Carlo (validate).
 TIERS = ("deterministic", "mcstas")
 TARGET_BRANCHES = ("acoustic", "optic")
-TARGET_SELECTORS = ("lowest_energy", "highest_energy", "nearest_energy", "tracked_branch")
+# The EIG planner places every targeted scan, and its prize is defined per DECLARED BRANCH
+# (``target_branch`` plus that branch's class prior and belief). The per-q feature selectors that
+# the retired tracker understood — lowest / highest / nearest energy — reach nothing that plans a
+# scan, so a campaign compiled with one has a prize the planner can never satisfy and runs until
+# its budget dies. Only the declared-branch selector is accepted.
+TARGET_SELECTORS = ("tracked_branch",)
 # The objective *content* below is unchanged science; only its contract identity moved. It is now
 # the payload of a ``targeted`` step inside an ``isar.campaign-program/1`` (ruling H1), so it
 # carries that step's schema string. ``isar.objective/2`` and its ``isar.objective-envelope/2``
@@ -96,7 +101,6 @@ class ObjectiveSpec:
     target_branch: str = "acoustic"
     target_label: str = "acoustic"
     target_selector: str | None = None
-    target_energy_meV: float | None = None
     energy_search_meV: tuple[float, float] | None = None
     # Where the *identity* question may be asked, as opposed to where the target is expected.
     # ``energy_search_meV`` bounds target delivery and precision work; a rival mode that settles which
@@ -125,20 +129,16 @@ class ObjectiveSpec:
             raise ValueError(f"tier {self.tier!r} not in {TIERS}")
         if self.target_branch not in TARGET_BRANCHES:
             raise ValueError(f"target_branch {self.target_branch!r} not in {TARGET_BRANCHES}")
-        if self.target_energy_meV is not None:
-            self.target_energy_meV = float(self.target_energy_meV)
-            if not math.isfinite(self.target_energy_meV):
-                raise ValueError("target_energy_meV must be finite")
         if self.target_selector is None:
-            self.target_selector = ("nearest_energy" if self.target_energy_meV is not None
-                                    else "lowest_energy")
+            self.target_selector = "tracked_branch"
         if self.target_selector not in TARGET_SELECTORS:
-            raise ValueError(f"target_selector {self.target_selector!r} not in {TARGET_SELECTORS}")
-        if self.target_selector == "nearest_energy" and self.target_energy_meV is None:
-            raise ValueError("nearest_energy target_selector requires target_energy_meV")
-        # A tracked selector follows one connected physical branch along the objective path.  Both
-        # shipped branch identities are supported; local lowest/highest/nearest selectors remain
-        # available when independent per-q feature selection is what the operator requested.
+            raise ValueError(
+                f"target_selector {self.target_selector!r} is not a target the planner can map: "
+                "the EIG planner maps the branch declared in target_branch, so 'tracked_branch' is "
+                "the only selector. An energy that merely IDENTIFIES which branch to map is a "
+                "zone-centre anchor and belongs in target_zc_energy_meV.")
+        # The tracked selector follows one connected physical branch along the objective path. Both
+        # shipped branch identities are supported.
         # Normalize path entries to plain float triples so round-trips are stable.
         norm: list[tuple[float, float, float]] = []
         for p in self.path:
@@ -264,7 +264,7 @@ class ObjectiveSpec:
                 tier: str = "deterministic",
                 name: str = "", meta: dict[str, Any] | None = None,
                 target_branch: str = "acoustic", target_label: str = "acoustic",
-                target_selector: str | None = None, target_energy_meV: float | None = None,
+                target_selector: str | None = None,
                 energy_search_meV: tuple[float, float] | None = None,
                 identity_search_meV: tuple[float, float] | None = None,
                 target_search_source: str | None = None,
@@ -290,7 +290,7 @@ class ObjectiveSpec:
                    budget=(dict(budget) if budget is not None else None),
                    tier=tier, name=name, meta=dict(meta or {}), target_branch=target_branch,
                    target_label=target_label, target_selector=target_selector,
-                   target_energy_meV=target_energy_meV, energy_search_meV=energy_search_meV,
+                   energy_search_meV=energy_search_meV,
                    identity_search_meV=identity_search_meV,
                    target_search_source=target_search_source,
                    identity_search_source=identity_search_source,
@@ -306,7 +306,7 @@ class ObjectiveSpec:
                 budget: dict[str, Any] | None = None, tier: str = "deterministic", name: str = "",
                 meta: dict[str, Any] | None = None, target_branch: str = "acoustic",
                 target_label: str = "acoustic",
-                target_selector: str | None = None, target_energy_meV: float | None = None,
+                target_selector: str | None = None,
                 energy_search_meV: tuple[float, float] | None = None,
                 identity_search_meV: tuple[float, float] | None = None,
                 target_search_source: str | None = None,
@@ -338,7 +338,7 @@ class ObjectiveSpec:
                    budget=(dict(budget) if budget is not None else None), tier=tier,
                    name=name, meta=dict(meta or {}), target_branch=target_branch,
                    target_label=target_label, target_selector=target_selector,
-                   target_energy_meV=target_energy_meV, energy_search_meV=energy_search_meV,
+                   energy_search_meV=energy_search_meV,
                    identity_search_meV=identity_search_meV,
                    target_search_source=target_search_source,
                    identity_search_source=identity_search_source,
@@ -363,7 +363,6 @@ class ObjectiveSpec:
             "target_branch": self.target_branch,
             "target_label": self.target_label,
             "target_selector": self.target_selector,
-            "target_energy_meV": self.target_energy_meV,
             "energy_search_meV": list(self.energy_search_meV),
             "identity_search_meV": (list(self.identity_search_meV)
                                     if self.identity_search_meV is not None else None),
@@ -397,7 +396,6 @@ class ObjectiveSpec:
             target_branch=d.get("target_branch", "acoustic"),
             target_label=d.get("target_label", d.get("target_branch", "acoustic")),
             target_selector=d.get("target_selector"),
-            target_energy_meV=d.get("target_energy_meV"),
             energy_search_meV=(tuple(d["energy_search_meV"])
                                if d.get("energy_search_meV") is not None else None),
             identity_search_meV=(tuple(d["identity_search_meV"])
@@ -435,7 +433,6 @@ def current_objective_comparison_scope(objective: ObjectiveSpec) -> Mapping[str,
         "target_branch": raw["target_branch"],
         "target_label": raw["target_label"],
         "target_selector": raw["target_selector"],
-        "target_energy_meV": raw["target_energy_meV"],
         "energy_search_meV": raw["energy_search_meV"],
         "identity_search_meV": raw["identity_search_meV"],
         "target_temperature_K": raw["target_temperature_K"],

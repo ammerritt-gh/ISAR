@@ -89,7 +89,10 @@ def test_prior_for_can_select_optic_branch():
 
 
 def test_optic_cold_start_keeps_lowest_candidate_provisional_with_bayesian_evidence():
+    # Declared, not defaulted: an omitted selector now means the tracked branch, which is the only
+    # selector a campaign can be compiled with.
     state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
+                                      "selector": "lowest_energy",
                                       "energy_search_meV": [-2.0, 12.0]})
     card = SimpleNamespace(
         state=state,

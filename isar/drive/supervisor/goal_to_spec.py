@@ -79,9 +79,11 @@ LLM_GOAL_SCHEMA = {
         "notes": {"type": "string"},
         "target_branch": {"type": "string", "enum": ["acoustic", "optic"]},
         "target_label": {"type": "string"},
-        "target_selector": {"type": "string",
-                            "enum": ["lowest_energy", "highest_energy", "nearest_energy",
-                                     "tracked_branch"]},
+        # The planner maps the declared branch; per-q lowest/highest/nearest feature selection
+        # reaches nothing that plans a scan and is refused rather than compiled.
+        "target_selector": {"type": "string", "enum": ["tracked_branch"]},
+        # Accepted only as an input alias for the branch's zone-centre anchor
+        # (``target_zc_energy_meV``); it is never a per-q selection energy.
         "target_energy_meV": {"type": "number"},
         "energy_search_meV": {"type": "array", "items": {"type": "number"},
                               "minItems": 2, "maxItems": 2},
@@ -216,14 +218,13 @@ SYSTEM = (
     "centre of a resolved peak is routinely fixed to that). Include a measurement budget as EITHER budget_hours "
     "OR budget_neutrons only when the user states one; analysis time is a separate guardrail. "
     "Set target_branch to optic when the user asks for an optic or transverse optic phonon, otherwise "
-    "acoustic; retain their wording in target_label. A request to map a named branch along a path "
-    "uses target_selector='tracked_branch' unless the user explicitly asks for the lowest, highest, "
-    "or nearest-energy feature independently at every q. An energy stated as the identity of a branch (for "
-    "example 'the optic phonon around 6 meV') is a zone-centre anchor: put it in "
-    "target_zc_energy_meV and use target_selector='tracked_branch'; do not set target_energy_meV. "
-    "Only when the user explicitly requests the feature nearest an energy at every q or throughout "
-    "the path, put that energy in target_energy_meV and use target_selector='nearest_energy'. If the user explicitly asks for the "
-    "highest optic mode use target_selector='highest_energy'. If the user states a zone-centre or gap energy, "
+    "acoustic; retain their wording in target_label. A targeted campaign always maps the declared "
+    "branch: target_selector is 'tracked_branch' and there is no other value. An energy stated as "
+    "the identity of a branch (for example 'the optic phonon around 6 meV') is a zone-centre "
+    "anchor: put it in target_zc_energy_meV. Picking whichever feature is lowest, highest, or "
+    "nearest an energy independently at every q is NOT something this driver can measure; if that "
+    "is what the user asked for, say so rather than emitting a campaign. "
+    "If the user states a zone-centre or gap energy, "
     "put it in target_zc_energy_meV and put an explicitly stated uncertainty in "
     "target_zc_energy_sigma_meV. For optic goals use energy_search_meV [-2,12] and for acoustic "
     "goals [-9,9] unless the user provides a range. Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
@@ -373,6 +374,9 @@ def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec"
     # ``ObjectiveSpec.from_dict``, whose refusal names the current contract for a retired one.
     if d.get("schema") is not None or isinstance(d.get("path"), list):
         return ObjectiveSpec.from_dict(d)         # already a full ObjectiveSpec
+    # Checked before conformance so a spec written against the retired per-q selectors is told what
+    # is wrong with it, rather than being reported as a shapeless goal.
+    _refuse_retired_selector(d.get("target_selector"), where=where)
     if not _conforms(d, FILE_SPEC_SCHEMA):
         raise GoalParseError(f"{where}: not a valid goal spec (needs path{{h_start,h_end,k,l}}, step_h, "
                              "and tolerance_meV; a budget is optional and defaults per tier)")
@@ -404,25 +408,34 @@ def make_program(spec: ObjectiveSpec, *, source: dict,
 
 
 # --------------------------------------------------------------------------- shared
+def _refuse_retired_selector(selector, *, where: str = "goal") -> None:
+    """Refuse a target the EIG planner cannot map.
+
+    The planner's prize is defined per DECLARED BRANCH, so the retired per-q feature selectors
+    (``nearest_energy``, ``lowest_energy``, ``highest_energy``) name a prize it can never satisfy —
+    a campaign compiled with one runs until its budget dies. Refuse at compile time instead.
+    """
+    if selector is None or selector == "tracked_branch":
+        return
+    raise GoalParseError(
+        f"{where}: target_selector {selector!r} is not a target the planner can map. The planner "
+        "maps the branch declared in target_branch, so 'tracked_branch' is the only selector; "
+        "picking the lowest, highest, or nearest-energy feature independently at every q is not "
+        "something this driver measures. An energy that merely IDENTIFIES which branch to map is a "
+        "zone-centre anchor and belongs in target_zc_energy_meV.")
+
+
 def _build_spec(data: dict, merged: dict, *,
                 card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
     tier = str(merged.get("tier", "deterministic"))
     budget = _budget(data, tier=tier)
     branch = str(data.get("target_branch", "acoustic"))
     label = str(data.get("target_label") or branch)
-    target_energy = data.get("target_energy_meV")
-    selector = data.get("target_selector")
-    if selector is None:
-        selector = ("nearest_energy" if target_energy is not None else "tracked_branch")
-    if selector == "nearest_energy" and target_energy is None:
-        raise GoalParseError("nearest_energy target_selector requires target_energy_meV")
-    # The tracked selector identifies a dispersing branch.  Accept target_energy_meV as an input
-    # alias for its zone-centre anchor, but never carry that value into the global nearest-energy
-    # field consumed at every q.
-    tracked_anchor_energy = None
-    if selector == "tracked_branch" and target_energy is not None:
-        tracked_anchor_energy = target_energy
-        target_energy = None
+    selector = data.get("target_selector") or "tracked_branch"
+    _refuse_retired_selector(selector)
+    # The tracked selector identifies a dispersing branch. ``target_energy_meV`` survives only as an
+    # input alias for its zone-centre anchor.
+    tracked_anchor_energy = data.get("target_energy_meV")
     energy = data.get("energy_search_meV")
     resolved_energy = tuple(energy) if energy is not None else (
         DEFAULT_ENERGY_SEARCH_OPTIC_MEV if branch == "optic"
@@ -460,7 +473,6 @@ def _build_spec(data: dict, merged: dict, *,
                   name=str(data.get("notes", "")),
                   meta={"source": "goal_to_spec", "raw": data}, target_branch=branch,
                   target_label=label, target_selector=str(selector),
-                  target_energy_meV=(float(target_energy) if target_energy is not None else None),
                   energy_search_meV=resolved_energy,
                   identity_search_meV=(tuple(identity_energy)
                                        if identity_energy is not None else None),

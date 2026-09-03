@@ -466,3 +466,21 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     **Not yet done after that:** a full-path live campaign to `met`, twice, before anything is
     called ready (the last full attempt predates all four fixes above and reached 17/20); refresh
     the PR body and post the dispositions; the GUI rehearsal, which the owner wants to attend.
+
+26. **The compiler refuses a target the planner cannot map (2026-09-03).** `ObjectiveSpec` carried
+    four `target_selector` values — `tracked_branch`, `nearest_energy`, `lowest_energy`,
+    `highest_energy` — inherited from the retired tracker. Since the EIG planner replaced it the
+    value reaches nothing that plans a scan (its one remaining use in `loop.py` was a diagnostic
+    field on an event payload); the planner's prize is defined per DECLARED BRANCH
+    (`target_branch`, with that branch's class prior and belief). A campaign compiled with
+    `nearest_energy` therefore had a prize the planner could never satisfy and ran until its budget
+    died — measured as a `tests/drive/test_loop.py` case that did not terminate in 500 s. An
+    accepted input that hangs is worse than a refusal, so `tracked_branch` is now the only
+    selector: `ObjectiveSpec` and the goal compiler both refuse any other value and name the branch
+    route, and the supervisor prompt and `LLM_GOAL_SCHEMA` enum no longer teach the retired names.
+    `target_energy_meV` went with them — nothing read it once the per-q selectors were gone; an
+    energy that merely identifies a branch is a zone-centre anchor (`target_zc_energy_meV`), which
+    the compiler still accepts under the old key as an input alias. Per-q feature selection remains
+    implemented downstream in `session/scan_delivery.py` / `session/branch_assignment.py`
+    (`selected_branch_qoi`), now unreachable from any compiled campaign; deleting it is a separate
+    slice.

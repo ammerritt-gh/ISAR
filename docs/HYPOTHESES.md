@@ -39,8 +39,10 @@ to look first and what the features it finds most plausibly are. If the data dis
 say so (see *When you're wrong*, below), not to fit your expectation anyway.
 
 For a tracked branch, a stated energy is an **anchor identity prior**, not an instruction
-to pick whichever peak lies nearest 6 meV at every q. The global-nearest behavior remains available
-only through the explicit `nearest_energy` selector. `tracked_branch` jointly assigns the optic,
+to pick whichever peak lies nearest 6 meV at every q. Picking a feature independently at every q is
+not something this driver measures: `tracked_branch` is the only selector, and a goal asking for the
+lowest, highest, or nearest-energy feature at every q is refused at compile time rather than
+compiled into a campaign whose prize the planner cannot map. `tracked_branch` jointly assigns the optic,
 acoustic rival, new, and missing states over the ordered path. Only modes from a published pooled
 master are authoritative track evidence; physical-fit modes remain inspectable diagnostics.
 Assignments may be revised when a neighboring pooled master arrives.

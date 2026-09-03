@@ -141,7 +141,6 @@
         "target_branch": "acoustic",
         "target_label": "acoustic",
         "target_selector": "tracked_branch",
-        "target_energy_meV": null,
         "energy_search_meV": [
           -9.0,
           9.0

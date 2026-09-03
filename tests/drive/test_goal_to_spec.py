@@ -186,7 +186,7 @@ def test_transverse_optic_k_segment_compiles_to_eleven_points():
     assert len(spec.path) == 11 and spec.path[-1] == (2.0, 0.5, 0.0)
     assert spec.target_branch == "optic" and spec.target_label == "transverse optic"
     assert spec.energy_search_meV == (-2.0, 12.0)
-    assert spec.target_selector == "tracked_branch" and spec.target_energy_meV is None
+    assert spec.target_selector == "tracked_branch"
 
 
 def test_acoustic_goal_without_a_range_gets_the_canonical_symmetric_band():
@@ -196,12 +196,14 @@ def test_acoustic_goal_without_a_range_gets_the_canonical_symmetric_band():
     assert spec.energy_search_meV == g2s.DEFAULT_ENERGY_SEARCH_ACOUSTIC_MEV == (-9.0, 9.0)
 
 
-def test_supplied_target_energy_implies_nearest_selector():
+def test_supplied_target_energy_is_a_zone_centre_anchor_on_the_declared_branch():
     payload = {"q_start": [2, 0, 0], "q_end": [2, 0.5, 0], "step_rlu": 0.05,
                "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic",
                "target_energy_meV": 7.5}
     spec = _objective("measure the optic phonon near 7.5 meV", payload)
-    assert spec.target_selector == "nearest_energy" and spec.target_energy_meV == 7.5
+    assert spec.target_selector == "tracked_branch"
+    optic = next(h for h in spec.hypotheses if h["name"] == "optic")
+    assert optic["zc_energy"]["mean"] == 7.5
 
 
 def test_optic_energy_identity_compiles_as_zone_center_tracked_branch():
@@ -211,7 +213,6 @@ def test_optic_energy_identity_compiles_as_zone_center_tracked_branch():
     spec = _objective("map the optic phonon around 6 meV", payload)
     optic = next(h for h in spec.hypotheses if h["name"] == "optic")
     assert spec.target_selector == "tracked_branch"
-    assert spec.target_energy_meV is None
     assert optic["zc_energy"]["mean"] == 6.0
 
 
@@ -221,7 +222,6 @@ def test_zone_center_energy_implies_tracked_branch_when_selector_is_omitted():
                "target_zc_energy_meV": 6.0}
     spec = g2s.spec_from_dict(payload)
     assert spec.target_selector == "tracked_branch"
-    assert spec.target_energy_meV is None
 
 
 def test_tracked_branch_promotes_target_energy_alias_without_global_selector():
@@ -230,17 +230,20 @@ def test_tracked_branch_promotes_target_energy_alias_without_global_selector():
                "target_selector": "tracked_branch", "target_energy_meV": 6.0}
     spec = g2s.spec_from_dict(payload)
     optic = next(h for h in spec.hypotheses if h["name"] == "optic")
-    assert spec.target_energy_meV is None
     assert optic["zc_energy"]["mean"] == 6.0
 
 
-def test_explicit_nearest_energy_throughout_remains_global_nearest():
+def test_a_per_q_energy_selector_is_refused_and_names_the_branch_route():
+    """The planner maps a declared branch, so a spec asking for the feature nearest an energy at
+    every q is refused at compile time instead of becoming a campaign that never terminates."""
     payload = {"q_start": [2, 0, 0], "q_end": [2.5, 0, 0], "step_rlu": 0.05,
                "tolerance_meV": 0.5, "budget_hours": 8, "target_branch": "optic",
                "target_selector": "nearest_energy", "target_energy_meV": 6.0}
-    spec = _objective("at every q, measure the feature nearest 6 meV", payload)
-    assert spec.target_selector == "nearest_energy"
-    assert spec.target_energy_meV == 6.0
+    with pytest.raises(g2s.GoalParseError, match="target_branch"):
+        g2s.spec_from_dict(payload)
+    # The supervisor cannot emit one either: the retired names are out of the schema enum.
+    assert not g2s._conforms(payload, g2s.LLM_GOAL_SCHEMA)
+    assert "nearest_energy" not in g2s.SYSTEM and "lowest_energy" not in g2s.SYSTEM
 
 
 def test_file_schema_accepts_operator_steering_but_llm_schema_does_not():
