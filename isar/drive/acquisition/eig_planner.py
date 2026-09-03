@@ -172,36 +172,21 @@ class Candidate:
 
 @dataclass(frozen=True)
 class ExecutedScan:
-    """One scan already executed at a grid point, and how surely it delivered each branch's peak.
+    """One scan already executed at a grid point: where it looked and for how long.
 
-    Negative evidence is per branch, not per scan: a scan that fitted the acoustic but no optic is
-    evidence against the optic lying inside its window at its exposure, exactly as a scan that
-    fitted nothing is evidence against every branch there.  It is also SOFT on both axes -- the fit
-    can miss a peak that is there, and it can be unsure which branch the peak it found belongs to.
-    ``seen`` carries that second uncertainty: per branch, the probability that this scan delivered
-    that branch's peak (the loop passes the maximum over the scan's candidates of
-    ``P(branch | candidate)``; the simulator passes its own :func:`joint_assign` output).
+    Negative evidence is per branch: a band the pooled master has looked into deeply and found
+    empty is evidence that branch is not there, exactly as a delivered peak is evidence that it is.
 
-    Frozen and hashable: a mapping is normalised to a sorted tuple of ``(branch, p)`` pairs on
-    construction, and :meth:`probability` reads it back.
+    A scan carries only what it asked of the instrument -- where it looked and how long.  Whether a
+    branch was DELIVERED is deliberately not on it: ISAR pools every scan at a q into a master and
+    fits the master, so both halves of the evidence read the point's pooled candidates, never one
+    scan's own fit.  What each scan contributes here is its share of the exposure over a given
+    energy, which is what decides whether the master could have seen the branch at all.
     """
 
     e_lo: float
     e_hi: float
     ncount: int
-    seen: tuple[tuple[str, float], ...] = ()
-
-    def __post_init__(self) -> None:
-        items = (self.seen.items() if isinstance(self.seen, Mapping) else self.seen)
-        object.__setattr__(self, "seen",
-                           tuple(sorted((str(k), float(v)) for k, v in items)))
-
-    def probability(self, branch: str) -> float:
-        """P(this scan delivered ``branch``'s peak); 0.0 for a branch it never reported."""
-        for name, p in self.seen:
-            if name == branch:
-                return p
-        return 0.0
 
 
 @dataclass(frozen=True)

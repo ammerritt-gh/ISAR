@@ -3362,19 +3362,12 @@ def _planner_candidates(master_rows: list[dict], path, energy_domain) -> dict[in
 
 
 def _planner_scans(log_path, observations: list[dict], path, branches) -> dict[int, list]:
-    """Grid index to the scans already executed there, and which branches' peaks each delivered.
+    """Grid index to the scans already executed there: where each looked and for how long.
 
-    Negative evidence is per branch, not per scan: a scan that fitted the acoustic but no optic is
-    evidence against the optic lying inside its window at its exposure, exactly as a scan that
-    fitted nothing is evidence against every branch there.
-
-    ``seen`` carries that as a PROBABILITY per branch, not a set. A delivered mode is evidence its
-    branch was there in proportion to how strongly it IS that branch: an ambiguous mode at
-    P(optic) = 0.55 half-argues the optic was delivered and half-argues it was not, and rounding
-    that to "seen" threw away the doubt the identity gate exists to price. The value is the maximum
-    over the scan's delivered modes — one confident mode is enough to say the branch was there, and
-    a second weak one cannot argue it away. A scan that delivered nothing maps to nothing, which is
-    the full negative evidence.
+    What a scan contributes is its share of the exposure over an energy. Whether a branch was
+    delivered is NOT recorded per scan, deliberately: ISAR pools every scan at a q into a master
+    and fits the master, so the planner reads delivery off the point's pooled candidates. Asking
+    one scan's own fit counted a single pooled observation once per scan that went into it.
 
     A count-untrusted arena is NOT evidence either way — a validation decline, a job that never
     reached ``done`` — and is skipped here (it carries no ``scan``). The window and exposure come
@@ -3398,18 +3391,9 @@ def _planner_scans(log_path, observations: list[dict], path, branches) -> dict[i
         index = match_grid_index(tuple(payload.get("hkl") or ()), path)
         if index is None:
             continue
-        seen: dict[str, float] = {}
-        for candidate in (observation.get("branch_candidates") or []):
-            for branch, probability in _candidate_probabilities(
-                    candidate, observation, branches).items():
-                seen[branch] = max(seen.get(branch, 0.0), probability)
-        # A delivered peak whose branch nothing names is not evidence of ABSENCE for anyone:
-        # crediting it to nobody would let one unlabelled fit contradict both beliefs.
-        if observation.get("resolved") and not seen:
-            seen = {branch: 1.0 for branch in branches}
         out.setdefault(index, []).append(ExecutedScan(
             float(payload["search_energy_lo"]), float(payload["search_energy_hi"]),
-            int(payload.get("submitted_ncount") or payload.get("ncount") or 0), seen))
+            int(payload.get("submitted_ncount") or payload.get("ncount") or 0)))
     # Every scan stands, repeats included: two identical scans are two independent observations and
     # the second really is more evidence than the first. The scenario-weight underflow that made the
     # planner divide by zero is guarded in the planner now, not by hiding measurements from it here.

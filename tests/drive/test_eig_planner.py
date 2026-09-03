@@ -271,7 +271,7 @@ def test_five_hundred_identical_nulls_stay_finite():
     from isar.drive.acquisition.eig_planner import _Predictor, _scenarios
 
     hs = [2.5]
-    null = ExecutedScan(0.0, 9.0, 5_000_000, {})
+    null = ExecutedScan(0.0, 9.0, 5_000_000)
     base = planner_input(hs, targets=("acoustic",))
     inp = PlannerInput(**{**base.__dict__, "scans": {0: tuple([null] * 500)}})
     branches = tuple(sorted(BRANCHES))
@@ -282,15 +282,12 @@ def test_five_hundred_identical_nulls_stay_finite():
     assert float(wt.sum()) == pytest.approx(1.0)
 
 
-def test_a_scan_is_softly_certain_about_what_it_delivered():
-    """``seen`` is a probability per branch, so an unsure delivery argues only partly."""
-    scan = ExecutedScan(3.0, 7.0, 10_000_000, {"acoustic": 1.0, "optic": 0.5})
-    assert scan.probability("acoustic") == 1.0
-    assert scan.probability("optic") == 0.5
-    assert scan.probability("phonon") == 0.0
-    assert hash(scan) == hash(ExecutedScan(3.0, 7.0, 10_000_000,
-                                           (("optic", 0.5), ("acoustic", 1.0))))
-
+def test_a_scan_records_only_what_it_asked_of_the_instrument():
+    """Delivery is a property of the pooled master, so it is not carried on a single scan."""
+    scan = ExecutedScan(3.0, 7.0, 10_000_000)
+    assert (scan.e_lo, scan.e_hi, scan.ncount) == (3.0, 7.0, 10_000_000)
+    assert not hasattr(scan, "seen") and not hasattr(scan, "probability")
+    assert hash(scan) == hash(ExecutedScan(3.0, 7.0, 10_000_000))
 
 def test_a_rival_looked_for_and_not_found_loses_its_claim():
     """The missing half of "a null is evidence".  A narrow acoustic candidate under a broad,
@@ -302,7 +299,7 @@ def test_a_rival_looked_for_and_not_found_loses_its_claim():
     _hw, deficit = deficit_of(cands, mus, sigs)
     assert deficit > 0.0                                # width is fine; identity is not
 
-    looked = ExecutedScan(4.0, 7.4, 40_000_000, {"acoustic": 1.0})
+    looked = ExecutedScan(4.0, 7.4, 40_000_000)
     presence = point_presence(("acoustic", "optic"), mus, (looked,) * 3, step=0.2, fwhm_meV=0.8,
                               temperature_K=200.0, scale=default_intensity_scale(BRANCHES),
                               candidates=cands)
@@ -366,7 +363,7 @@ def test_detectability_is_a_property_of_the_pooled_master():
     kw = dict(e_lo=4.0, e_step=0.2, n_points=25, fwhm_meV=0.8, temperature_K=200.0,
               branches=BRANCHES, scale=default_intensity_scale(BRANCHES))
     top_up = 5_000_000
-    banked = (ExecutedScan(4.0, 9.0, 20_000_000, {}), ExecutedScan(4.0, 9.0, 20_000_000, {}))
+    banked = (ExecutedScan(4.0, 9.0, 20_000_000), ExecutedScan(4.0, 9.0, 20_000_000))
 
     # only scans whose window covers the peak count toward its master
     assert banked_exposure(banked, 6.0) == pytest.approx(4.0e7)
@@ -397,7 +394,7 @@ def test_the_miss_factor_is_soft_and_the_master_says_what_it_delivered_and_where
     assert pooled_delivery(cands, "optic", near=6.1, within=0.7) == pytest.approx(0.5)
     assert pooled_delivery(cands, "optic", near=3.0, within=0.7) == 0.0
     # a master that could not have detected the branch says nothing either way
-    faint = point_presence(("optic",), [8.0], (ExecutedScan(7.5, 8.5, 1, {}),), step=0.2,
+    faint = point_presence(("optic",), [8.0], (ExecutedScan(7.5, 8.5, 1),), step=0.2,
                            fwhm_meV=0.8, temperature_K=200.0,
                            scale=default_intensity_scale(("optic",)))
     assert faint[0] == pytest.approx(PRESENCE_PRIOR_ODDS / (1.0 + PRESENCE_PRIOR_ODDS))

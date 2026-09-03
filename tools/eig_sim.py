@@ -256,16 +256,11 @@ def run(args) -> int:
             seen.append(f"{branch[:4]} {observed:.3f}+-{sigma:.3f} "
                         f"P({target})={probs.get(target, 0.0):.2f}"
                         f"{'' if admitted else ' [ambiguous, no anchor]'}")
-        # Every executed scan is negative evidence about the branches it did NOT deliver, so all
-        # of them are recorded -- not only the ones that found nothing.
-        # Negative evidence is soft: the scan reports how surely it delivered each branch, which is
-        # its own joint identification, not a yes/no list.
-        delivered = {}
-        for (branch, _observed, _sigma), probs in zip(found, identities):
-            for name in BRANCHES:
-                delivered[name] = max(delivered.get(name, 0.0), float(probs.get(name, 0.0)))
+        # Every executed scan is recorded, not only the ones that found nothing: what it
+        # contributes is exposure over an energy, and whether a branch was delivered is read off
+        # the point's pooled candidates rather than off any one scan.
         executed_scans[i] = tuple(executed_scans.get(i, ())) + (
-            ExecutedScan(design.e_lo, design.e_hi, design.ncount, delivered),)
+            ExecutedScan(design.e_lo, design.e_hi, design.ncount),)
         if not found:
             seen = seen or ["nothing detected"]
         count_records.append((grid, drawn, float(design.ncount),
