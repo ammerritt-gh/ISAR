@@ -902,3 +902,43 @@ def test_ap6_rival_needs_an_authorized_disjoint_probe_window():
     from isar.session.branch_tracking import _baselined_compatibility
     assert _baselined_compatibility(7.04, 7.115, 0.1, 1.0, [
         (-2.0, 7.0), (7.08, 7.2)]) == -math.inf
+
+
+def test_anchored_beliefs_decide_identity_where_the_class_prior_cannot():
+    """GUI rehearsal 2026-09-03: at u = 0.8 the bare class prior is flat (acoustic 0 +- 14 meV), so a
+    two-peak master at 5.7 / 8.2 meV scored 55/45 either way and went ambiguous -- while the
+    campaign held fourteen acoustic anchors rising to 5.35 meV at u = 0.7. Scored on the belief
+    those anchors define, the lower peak is the acoustic, confidently."""
+    import numpy as np
+    from isar.session import branch_assignment as BA
+    hypotheses = [
+        {"name": "acoustic", "zc_energy": {"mean": 0.0, "sigma": 0.2},
+         "slope_zc": {"mean": 0.0, "sigma": 18.0}, "confidence": 1.0},
+        {"name": "optic", "zc_energy": {"mean": 4.5, "sigma": 2.25},
+         "slope_zc": {"mean": 0.0, "sigma": 8.0}, "confidence": 0.6},
+    ]
+    path = [[2.7, 0, 0], [2.75, 0, 0], [2.8, 0, 0]]
+    peaks = [[_candidate("a", 5.35), _candidate("b", 7.6)],
+             [_candidate("c", 5.55), _candidate("d", 7.9)],
+             [_candidate("e", 5.71, 0.05), _candidate("f", 8.18, 0.14)]]
+    observations = [{"authority": f"m{i}", "candidates": peaks[i]} for i in range(3)]
+
+    bare = track_path(path, observations, period=2.0, hypotheses=hypotheses,
+                      target_branch="acoustic", energy_domain_meV=[-9.0, 9.0])
+    p_bare = bare["assignments"][2]["candidates"][0]["probabilities"]["acoustic"]
+
+    us = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7])
+    ys = np.array([0.96, 1.88, 2.73, 3.54, 4.26, 4.83, 5.35])
+    beliefs = {
+        "acoustic": BA.BranchBelief("acoustic", us, ys, np.ones_like(us),
+                                    parameter_prior=hypotheses[0], period=2.0),
+        "optic": BA.BranchBelief("optic", np.array([]), np.array([]), np.array([]),
+                                 parameter_prior=hypotheses[1], period=2.0),
+    }
+    believed = track_path(path, observations, period=2.0, hypotheses=hypotheses,
+                          target_branch="acoustic", energy_domain_meV=[-9.0, 9.0],
+                          beliefs=beliefs)
+    row = believed["assignments"][2]
+    p_believed = row["candidates"][0]["probabilities"]["acoustic"]
+    assert p_believed > max(p_bare, 0.85), (p_bare, p_believed)
+    assert row["acoustic_candidate_index"] == 0 and row["optic_candidate_index"] == 1

@@ -204,6 +204,21 @@ optic 8.07 ± 0.32 meV), 18 escalations costing 214 s of analysis time. The EIG-
 pricing "re-analyse this point at the full tier" as a design beside "measure this point" — is the
 principled successor and is not built.
 
+**2026-09-03 — the session's tracker reads the campaign's belief.** The session's identity
+tracker (`branch_tracking.track_path`) located each branch at each path point from the class prior
+alone — zone-centre energy plus slope × distance, sigma from the slope prior — which is flat away
+from the fold by construction (acoustic 0 ± 14 meV at u = 0.8) and blind to the anchors the
+campaign has banked. The planner located the same branches from the belief (anchors under the
+class prior, band-truncated). Two implementations of one rule, and they disagreed exactly where
+it mattered: every two-peak master past h = 2.75 on the reference path went 55 / 45 in the
+session (ambiguous, no delivery, no anchor) while the planner said 0.97 — the chain of anchors
+broke as the optic entered view, the optic never anchored, and the planner spent the rest of the
+campaign hunting it. `track_path` now takes the campaign's beliefs and scores each anchored
+branch's emission from `BranchBelief.predict(u, domain_hi)`; an unanchored branch keeps the class
+prior (which still says more than "somewhere in the band"); the path-continuity transition is
+unchanged. The remaining duplication — the planner's `belief_predict` and the session's
+`BranchBelief.predict` as two arithmetically-mirrored functions — is the last of that item.
+
 **2026-09-03 — the PR #37 second review round (five P1, six P2), dispositioned.** Fixed, each
 with a test: (1) the certifying interval belongs to the SELECTED mode. The model-averaged
 interval is fit-local — it describes the fit's primary mode — and at h = 3.0 on the reference

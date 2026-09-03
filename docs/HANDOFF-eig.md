@@ -712,3 +712,30 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     chosen for a white canvas — but pyqtgraph draws on black by default. The canvas is now white
     with black foreground (`plotspec_pg`, one config call) rather than a second palette to keep in
     step. Both need a GUI restart to show; the campaign it is running is unaffected.
+
+33. **The tracker scored identity on the bare class prior; it now reads the campaign's belief
+    (GUI rehearsal, 2026-09-03 late).** The owner's rehearsal campaign (saved as `eig-1-test`)
+    ran cleanly to h ≈ 2.75 and then "went weird": one q skipped, scans at 2–4 meV and −1–1.5 meV
+    where nothing is, and 42 scans at h = 3.0. Traced from the workspace, not the summaries:
+    every two-peak master from h = 2.75 on (5.7 / 8.2, 5.9 / 7.9, 5.9 / 8.0 meV) carried
+    55 / 45 for *both* peaks in the session's assignment and went `ambiguous` — delivering
+    nothing, anchoring nothing — while the planner's joint matching said 0.97 for the acoustic at
+    the same points. The session's `branch_tracking._emission` located each branch from the class
+    prior alone (mean = zone-centre energy + slope × distance, sigma = √(zc² + (slope σ ×
+    distance)²)): at u = 0.8 that is "acoustic 0 ± 14 meV, optic 4.5 ± 6.8" — flat, and blind to
+    the fourteen acoustic anchors the campaign had banked to u = 0.7. The optic never anchored at
+    all, so its belief stayed the class prior and the planner hunted it across the band (the
+    low-energy probes were its surviving scenario lumps); h = 2.85 lost on price to 5M probes at
+    h = 3.0 whose predicted gain the prize could never confirm. Cause and effect all the way down
+    from one flat emission.
+
+    **The fix:** `track_path(..., beliefs=)` — the tracker's emission takes each anchored branch's
+    (mean, sigma) at the path point from `BranchBelief.predict(u, domain_hi)`, the same belief the
+    planner reads (`_tracked_beliefs` builds it from `dispersion_prior` exactly as
+    `_store_branch_beliefs` persists it); a branch without anchors still uses the class prior,
+    which says more than "somewhere in the band". The continuity transition is unchanged. The
+    track's cache key does not include the anchors: they change only through the track's own
+    rebuild, i.e. only when observations do, and hashing them re-scored every repeat call. Test:
+    `test_anchored_beliefs_decide_identity_where_the_class_prior_cannot`. This is the "two
+    implementations of one rule" item from §7.11, now unified on the session side because the
+    demo path depended on it. Live result: see below when the run completes.

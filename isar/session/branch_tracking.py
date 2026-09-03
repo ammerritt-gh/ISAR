@@ -332,29 +332,47 @@ def _emission(state: _State, candidates: list[dict], *, reduced_distance: float,
               optic_hypothesis: dict, acoustic_hypothesis: dict,
               null_windows=None,
               energy_domain: tuple[float, float] = DEFAULT_ENERGY_DOMAIN_MEV,
+              belief_moments: dict | None = None,
               ) -> float:
+    """Log-score of one assignment state at one path point.
+
+    Where a branch is predicted comes from ``belief_moments`` -- ``{branch: (mean, sigma)}`` from the
+    campaign's own belief, the accumulated anchors under the class prior, band-truncated -- when the
+    caller supplies it, and from the bare class prior extrapolated by the slope prior otherwise.
+    The bare prior is flat away from the fold by construction (acoustic 0 +- 14 meV at u = 0.8), so
+    it cannot tell two peaks 2.5 meV apart from each other, and a track scored on it went 55/45 on
+    every two-peak master from h = 2.75 on while the planner, reading the anchors, said 0.97: the
+    chain of anchors broke exactly where the rival entered view (GUI rehearsal, 2026-09-03). One
+    belief for one rule.
+    """
     assigned = {index for index in (state.optic, state.acoustic) if index is not None}
     score = (len(candidates) - len(assigned)) * UNASSIGNED_LOG_PENALTY
+
+    def predicted(branch: str, hypothesis: dict, default) -> tuple[float, float]:
+        if belief_moments and branch in belief_moments:
+            mean, sigma = belief_moments[branch]
+            return float(mean), max(float(sigma), 1e-6)
+        mean, sigma = _prior_pair(hypothesis, "zc_energy", default)
+        if reduced_distance > 0.0:
+            slope, slope_sigma = _prior_pair(
+                hypothesis, "slope_zc", (0.0, 8.0) if branch == "optic" else (12.0, 12.0))
+            mean += slope * reduced_distance
+            sigma = math.sqrt(sigma * sigma + (slope_sigma * reduced_distance) ** 2)
+        return mean, sigma
+
     if state.optic is None:
-        relax = _null_relaxation(
-            _predicted_branch_mean("optic", optic_hypothesis, reduced_distance), null_windows)
+        relax = _null_relaxation(predicted("optic", optic_hypothesis, (6.0, 3.0))[0], null_windows)
         score += MISSING_LOG_PENALTY * (1.0 - relax)
     if state.acoustic is None:
-        relax = _null_relaxation(
-            _predicted_branch_mean("acoustic", acoustic_hypothesis, reduced_distance), null_windows)
+        relax = _null_relaxation(predicted("acoustic", acoustic_hypothesis, (0.0, 0.2))[0],
+                                 null_windows)
         score += MISSING_LOG_PENALTY * (1.0 - relax)
     for branch, index, hypothesis, default in (
             ("optic", state.optic, optic_hypothesis, (6.0, 3.0)),
             ("acoustic", state.acoustic, acoustic_hypothesis, (0.0, 0.2))):
         if index is None:
             continue
-        mean, sigma = _prior_pair(hypothesis, "zc_energy", default)
-        if reduced_distance > 0.0:
-            slope, slope_sigma = _prior_pair(
-                hypothesis, "slope_zc", (0.0, 8.0) if branch == "optic" else (12.0, 12.0))
-            mean += slope * reduced_distance
-            sigma = math.sqrt(sigma * sigma
-                              + (slope_sigma * reduced_distance) ** 2)
+        mean, sigma = predicted(branch, hypothesis, default)
         candidate = candidates[index]
         combined = math.sqrt(sigma * sigma + _candidate_sigma(candidate) ** 2)
         confidence = _hypothesis_confidence(hypothesis)
@@ -534,11 +552,18 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
                hypotheses: list[dict], target_branch: str = "optic", previous: dict | None = None,
                assignment_entropy_stop_nats: float = 0.2,
                energy_domain_meV: (tuple[float, float] | list[float]
-                                   | Iterable[Iterable[float]] | None) = None) -> dict:
+                                   | Iterable[Iterable[float]] | None) = None,
+               beliefs: dict | None = None) -> dict:
     """Run Viterbi plus forward/backward marginals over an ordered objective path.
 
     ``observations`` has one row per path point and each row has an unordered ``candidates`` list.
     Missing lists are valid observations.  The result is entirely JSON-serialisable.
+
+    ``beliefs`` -- ``{branch_id: BranchBelief}`` from :func:`branch_assignment.build_beliefs`, the
+    campaign's accumulated anchors under the class prior -- locates each branch at each path point
+    (band-truncated to the domain's upper edge) for the emission scores; without it the bare class
+    prior extrapolated by the slope prior is used, which is flat away from the fold. The transition
+    scores (continuity along the path) are unchanged either way.
     """
     if target_branch not in {"optic", "acoustic"}:
         raise ValueError("tracked branch must be 'optic' or 'acoustic'")
@@ -587,12 +612,25 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
                 "scorer_revision": BRANCH_TRACKING_SCORER_REVISION,
                 "assignments": [], "tracks": []}
 
+    moments_by_q: list[dict | None] = [None] * len(points)
+    if beliefs and period is not None and np.isfinite(period) and period > 0.0:
+        domain_hi = max(float(interval[1]) for interval in domain)
+        half = 0.5 * float(period)
+        for index, point in enumerate(points):
+            # The reduced-zone coordinate every anchor was stored in (branch_assignment.reduced_q).
+            u = math.sqrt(sum((((float(c) + half) % float(period)) - half) ** 2 for c in point))
+            # Only a branch with anchors speaks through its belief: with none, the belief says
+            # "somewhere in the band", which is less than the class prior's own slope says.
+            moments_by_q[index] = {
+                str(branch): belief.predict(u, domain_hi=domain_hi)
+                for branch, belief in beliefs.items()
+                if hasattr(belief, "predict") and int(getattr(belief, "n_anchors", 0)) > 0}
     emissions = [[_emission(state, candidates_by_q[index],
                             reduced_distance=reduced_distance[index], period=period,
                             optic_hypothesis=optic_hypothesis,
                             acoustic_hypothesis=acoustic_hypothesis,
                             null_windows=null_windows_by_q[index],
-                            energy_domain=domain)
+                            energy_domain=domain, belief_moments=moments_by_q[index])
                   for state in states[index]] for index in range(len(points))]
     transitions: list[np.ndarray] = []
     for index in range(1, len(points)):

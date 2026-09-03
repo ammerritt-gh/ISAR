@@ -415,7 +415,11 @@ def _tracked_authority_signature(
         hypotheses: list[dict], entropy_stop: float, energy_domain_meV=None,
         scorer_revision: int = branch_tracking.BRANCH_TRACKING_SCORER_REVISION,
 ) -> str:
-    """Stable identity input; derived probabilities are deliberately excluded."""
+    """Stable identity input; derived probabilities are deliberately excluded.
+
+    The beliefs the track is scored against are not part of the identity on purpose: their
+    anchors change only through ``_rebuild_tracked_prior``, i.e. only when the observations have,
+    so hashing them would re-score every repeat call on the track's own output."""
     authorities = []
     for observation in observations:
         candidates = []
@@ -444,6 +448,31 @@ def _tracked_authority_signature(
             list(interval) for interval in branch_tracking.normalize_energy_domain(energy_domain_meV)],
         "scorer_revision": int(scorer_revision),
     })
+
+
+def _tracked_beliefs(card, refs: dict, *, period, hypotheses, t_round: float):
+    """The campaign's belief per branch for the tracker's emissions.
+
+    Built from ``card.state.dispersion_prior`` for the (sample, T bin) of the authorities being
+    tracked, exactly as ``_store_branch_beliefs`` persists them for the drive -- the planner and the
+    tracker then locate each branch from one belief. ``None`` when there is nothing to build on (no
+    period, no authority with a sample), in which case the tracker falls back to the bare class
+    prior as before. One revision behind by construction: the anchors come from the previous
+    track's rebuild, and each new observation re-runs the track on them.
+    """
+    if period is None:
+        return None
+    sample, temperature = None, None
+    for _key, (_entry, _detector, outcome) in refs.items():
+        if outcome.get("sample") is not None and outcome.get("T") is not None:
+            sample, temperature = str(outcome["sample"]), float(outcome["T"])
+            break
+    if sample is None:
+        return None
+    t_bin = round(temperature / t_round) * t_round if t_round else temperature
+    points = card.state.dispersion_prior or []
+    return BA.build_beliefs(points, sample=sample, t_bin=t_bin, period=float(period),
+                            t_round=t_round, hypotheses=hypotheses)
 
 
 def _materialize_branch_candidates(session: SessionState) -> None:
@@ -693,6 +722,7 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
     hypotheses = _campaign_hypotheses(card)
     entropy_stop = float(policy.get("assignment_entropy_stop_nats", 0.2))
     energy_domain = _authorized_tracking_domain(target, observations)
+    beliefs = _tracked_beliefs(card, refs, period=period, hypotheses=hypotheses, t_round=t_round)
     authority_signature = _tracked_authority_signature(
         observations, target_branch=target_branch, period=period, hypotheses=hypotheses,
         entropy_stop=entropy_stop, energy_domain_meV=energy_domain,
@@ -706,7 +736,7 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
             path, observations, period=period, hypotheses=hypotheses,
             target_branch=target_branch, previous=previous,
             assignment_entropy_stop_nats=entropy_stop,
-            energy_domain_meV=energy_domain)
+            energy_domain_meV=energy_domain, beliefs=beliefs)
         track["authoritative_evidence_signature"] = authority_signature
     revision = int(track["revision"])
     for assignment, observation in zip(track["assignments"], observations):
