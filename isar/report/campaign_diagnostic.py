@@ -138,7 +138,7 @@ class EventCounts:
 
 
 _KNOWN_KINDS = frozenset({"propose", "validate", "run", "analyze", "decide", "escalate_fit",
-                          "branch_track_update", "branch_reassignment", "frontier_blocked",
+                          "branch_track_update", "branch_reassignment",
                           "exception", "stop", "timing", "activity_start",
                           "activity_progress", "activity_end", "analysis_clock",
                           "physical_submission", "pooled_master_update", "candidate_update",
@@ -301,7 +301,7 @@ def _per_q(summary: dict, results: list, defects: list) -> list:
         elif "analysis_failed" in diagnostics:
             reason = "analysis_failed"
         elif ("model_ambiguous" in diagnostics
-              or r.get("track_state") in {"ambiguous", "provisional", "missing", "blocked"}):
+              or r.get("track_state") == "ambiguous"):
             reason = "model_ambiguous"
         elif "diminishing_returns" in diagnostics or "interval_nonshrinking" in diagnostics:
             reason = "diminishing_returns"
@@ -832,7 +832,6 @@ def _section_dispersion(doc: FindingsDoc, di: DiagInputs, per_q: list) -> None:
     doc.section("4. Delivered dispersion vs truth")
     tracks = (di.card_state or {}).get("branch_tracks") or {}
     if tracks:
-        frontier = tracks.get("frontiers") or {}
         assignments = tracks.get("assignments") or []
         has_acoustic = any(
             isinstance(assignment.get("acoustic_candidate_index"), int)
@@ -845,13 +844,11 @@ def _section_dispersion(doc: FindingsDoc, di: DiagInputs, per_q: list) -> None:
             acoustic_status = ("Acoustic target trajectory identified."
                                if target_branch == "acoustic" else
                                "Acoustic identified; retained as non-target context.")
+        decided = sum(1 for assignment in assignments
+                      if assignment.get("track_state") == "confirmed")
         doc.para(
-            f"Tracked-branch revision {tracks.get('revision', '—')}; anchor path index "
-            f"{tracks.get('anchor_index', '—')}; connected target points: "
-            f"{len(frontier.get('confirmed_indices') or [])}. "
-            + ("The connected frontier is blocked by unresolved identity. "
-               if frontier.get("frontier_blocked") else "The reachable identity frontier is connected. ")
-            + acoustic_status)
+            f"Tracked-branch revision {tracks.get('revision', '—')}; points with a decided "
+            f"identity: {decided} of {len(assignments)}. " + acoustic_status)
         assignment_rows = []
         for assignment in assignments:
             candidates = assignment.get("candidates") or []

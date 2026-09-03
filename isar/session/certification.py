@@ -262,12 +262,7 @@ def _is_structurally_unresolvable(point: dict) -> bool:
     """
     if not isinstance(point, dict):
         return False
-    eligible = point.get("precision_coverage_eligible")
-    if eligible is not None:
-        return not bool(eligible)
-    # Older decision records predate that field; fall back to the endpoint marks it was derived from.
-    return (point.get("structural_endpoint_status") == "inferred_unresolved"
-            and bool(point.get("is_reduced_q_origin", False)))
+    return not bool(point.get("precision_coverage_eligible", True))
 
 
 def _entry_from_dict(row: dict) -> ScanEntry:

@@ -226,25 +226,6 @@ def test_resume_latest_errors_cleanly_when_no_log(tmp_path, monkeypatch, capsys)
     assert "no campaign to resume" in capsys.readouterr().err
 
 
-def test_resume_loads_legacy_objective_without_explicit_scan_window_eig(tmp_path, monkeypatch):
-    workspace = tmp_path / "ws"
-    (workspace / "report").mkdir(parents=True)
-    objective = ObjectiveSpec.along_h(
-        h_start=2.1, h_end=2.2, step=0.1, tolerance_meV=0.5,
-        budget={"kind": "neutrons", "amount": 1e3}).to_dict()
-    del objective["scan_window_eig"]
-    log_event(
-        workspace / "report" / "session_log.jsonl", "decide",
-        {"event": "campaign_start", "action": "campaign_start", "objective": objective,
-         "source": {"kind": "goal", "sha256": "legacy"}},
-    )
-    captured = _stub_run_campaign(monkeypatch)
-    assert main(["drive", "--resume-latest", "--workspace", str(workspace)]) == 0
-    assert captured[0][0].scan_window_eig.policy_set is None
-    assert captured[0][0].to_dict()["scan_window_eig"]["scoring_config"][
-        "simulation_count"] == 128
-
-
 # --------------------------------------------------------------------------- provenance fingerprint
 def test_program_start_fingerprint_is_sha256_of_file_bytes(tmp_path, monkeypatch):
     captured = _stub_run_campaign(monkeypatch)
@@ -272,111 +253,6 @@ def test_goal_start_fingerprint_is_sha256_of_goal_text(tmp_path, monkeypatch):
     assert source["program_schema"] == PROGRAM_SCHEMA
     assert len(source["objective_fingerprint"]) == 64
     assert len(source["campaign_authoring_fingerprint"]) == 64
-
-
-def test_shadow_mode_cli_choice_is_retired(tmp_path, monkeypatch, capsys):
-    """SCENE-4 PR 4.4, D3: "shadow" is retired — the CLI narrows its own ``choices`` rather than
-    accepting it and refusing downstream, so argparse itself rejects it (exit code 2) before any
-    objective is built. Was test_shadow_mode_override_is_frozen_into_new_compact_spec, which pinned
-    the opposite (that "shadow" compiled cleanly)."""
-    _stub_run_campaign(monkeypatch)
-    with pytest.raises(SystemExit) as raised:
-        main([
-            "drive", "--program", str(_program_file(tmp_path)),
-            "--workspace", str(tmp_path / "ws"), "--scan-window-eig-mode", "shadow",
-        ])
-    assert raised.value.code == 2
-    assert "invalid choice: 'shadow'" in capsys.readouterr().err
-
-
-def test_mode_override_rebinds_the_card_eig_policy_to_the_new_objective_scope(
-        tmp_path, monkeypatch):
-    """--scan-window-eig-mode recomputes the hypothesis fingerprint, which is part of the objective
-    comparison scope a card EIG policy binds to. Without a rebind the policy stops matching and the
-    whole campaign scores qoi_policy_missing (the O41 Test9 failure)."""
-    import isar.schema.card as card_module
-    from isar.drive.objective import current_objective_comparison_scope
-    from isar.schema.eig_policy import matching_qoi_policies
-
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    (workspace / "card.policy.toml").write_text("# mocked card\n", encoding="utf-8")
-    authoring = {"policies": [{
-        "policy_id": "eig4_slice8_excitation_energy",
-        "policy_kind": "isar.scalar_absolute_partitions/o36.5",
-        "source_qoi": {"id": "excitation.energy", "unit": "meV"},
-        "scope": {"bind_to_current_campaign_configuration": True,
-                  "annotation": {"campaign_name": "regression",
-                                 "experiment_description": "policy scope rebinding",
-                                 "date": "2026-08-05"}},
-        "provenance": {"kind": "explicit_user_analysis/1", "source_id": "O41",
-                       "rationale": "regression fixture"},
-        "variants": [{"variant_id": "primary_0p5_mev",
-                      "parameters": {"origin": 0.0, "bin_width": 0.5, "offsets": [0.0, 0.25]}}],
-    }]}
-
-    class _Policy:
-        hypotheses = None
-        scan_window_eig_policy_set = authoring
-
-    monkeypatch.setattr(card_module, "load_policy", lambda _path: _Policy())
-    captured = _stub_run_campaign(monkeypatch)
-    assert main([
-        "drive", "--program", str(_program_file(tmp_path)), "--workspace", str(workspace),
-        "--scan-window-eig-mode", "authoritative",
-    ]) == 0
-    objective = captured[0][0]
-    assert objective.steering["scan_window_eig_mode"] == "authoritative"
-    scope = current_objective_comparison_scope(objective)
-    assert [policy.policy_id for policy in matching_qoi_policies(
-        objective.scan_window_eig.policy_set, qoi_id="excitation.energy", qoi_unit="meV",
-        scope_kind="campaign_configuration",
-        scope_fingerprint=scope["fingerprint"])] == ["eig4_slice8_excitation_energy"]
-
-
-def test_resume_rejects_mode_that_conflicts_with_frozen_objective(
-        tmp_path, monkeypatch, capsys):
-    workspace = tmp_path / "ws"
-    (workspace / "report").mkdir(parents=True)
-    objective = ObjectiveSpec.along_h(
-        h_start=2.1, h_end=2.2, step=0.1, tolerance_meV=0.5,
-        budget={"kind": "neutrons", "amount": 1e3})
-    log_event(
-        workspace / "report" / "session_log.jsonl", "decide",
-        {"action": "campaign_start", "objective": objective.to_dict(),
-         "source": {"kind": "goal", "sha256": "legacy"}},
-    )
-    _stub_run_campaign(monkeypatch)
-    assert main([
-        "drive", "--resume-latest", "--workspace", str(workspace),
-        "--scan-window-eig-mode", "authoritative",
-    ]) == 2
-    assert "conflicts with the frozen objective (off)" in capsys.readouterr().err
-
-
-def test_natural_goal_passes_inline_card_eig_authoring_to_objective_compiler(tmp_path, monkeypatch):
-    import isar.schema.card as card_module
-
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    (workspace / "card.policy.toml").write_text("# mocked card\n", encoding="utf-8")
-    authoring = {"policies": []}
-
-    class _Policy:
-        hypotheses = {"acoustic": {}}
-        scan_window_eig_policy_set = authoring
-
-    monkeypatch.setattr(card_module, "load_policy", lambda _path: _Policy())
-    seen = {}
-    _stub_goal_program(
-        monkeypatch,
-        ObjectiveSpec.along_h(h_start=2.0, h_end=2.1, step=0.1, tolerance_meV=0.5,
-                              budget={"kind": "neutrons", "amount": 1e3}),
-        capture=seen)
-    _stub_run_campaign(monkeypatch)
-    assert main(["drive", "--goal", "map acoustic", "--workspace", str(workspace)]) == 0
-    assert seen["card_hypotheses"] == _Policy.hypotheses
-    assert seen["card_eig_policy_set"] is authoring
 
 
 # --------------------------------------------------------------------------- exit codes
@@ -605,60 +481,6 @@ def test_a_retired_envelope_file_is_refused_with_the_new_contract_named(tmp_path
     assert "isar.objective-envelope/2" in err and "isar.campaign-program/1" in err
 
 
-def test_compact_spec_compile_only_freezes_inline_card_eig_policy(tmp_path, monkeypatch):
-    import isar.schema.card as card_module
-
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    (workspace / "card.policy.toml").write_text("# mocked card\n", encoding="utf-8")
-
-    class _Policy:
-        hypotheses = {}
-        scan_window_eig_policy_set = {"policies": []}
-
-    monkeypatch.setattr(card_module, "load_policy", lambda _path: _Policy())
-    out = tmp_path / "compact-envelope.json"
-    # This card mock declares an EMPTY scan-window EIG policy set on purpose (asserted below), so
-    # the objective must ask for "off" explicitly: the compiler's authoritative default requires
-    # exactly one O41 policy, which an empty set cannot satisfy.
-    payload = {**_GOAL_SPEC, "steering": {"scan_window_eig_mode": "off"}}
-    assert main([
-        "drive", "--program", str(_program_file(tmp_path, payload)), "--workspace", str(workspace),
-        "--compile-only", str(out),
-    ]) == 0
-    objective = json.loads(out.read_text(encoding="utf-8"))["steps"][0]["payload"]
-    assert objective["scan_window_eig"]["policy_set"]["policies"] == []
-    assert objective["scan_window_eig"]["scoring_config"]["simulation_count"] == 128
-
-
-def test_full_spec_never_reads_or_supplements_card_policy(tmp_path, monkeypatch):
-    import isar.schema.card as card_module
-
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    (workspace / "card.policy.toml").write_text("malformed on purpose", encoding="utf-8")
-    monkeypatch.setattr(
-        card_module, "load_policy",
-        lambda _path: (_ for _ in ()).throw(AssertionError("full spec read card policy")),
-    )
-    frozen = ObjectiveSpec.along_h(
-        h_start=2.1, h_end=2.2, step=0.1, tolerance_meV=0.5,
-        budget={"kind": "neutrons", "amount": 1e3})
-    legacy = frozen.to_dict()
-    del legacy["scan_window_eig"]
-    path = _program_file(tmp_path, legacy, name="frozen.json")
-    captured = _stub_run_campaign(monkeypatch)
-    assert main(["drive", "--program", str(path), "--workspace", str(workspace)]) == 0
-    assert captured[0][0].scan_window_eig.policy_set is None
-
-    out = tmp_path / "legacy-compiled.json"
-    assert main(["drive", "--program", str(path), "--workspace", str(workspace),
-                 "--compile-only", str(out)]) == 0
-    compiled = json.loads(out.read_text(encoding="utf-8"))["steps"][0]["payload"]
-    assert compiled["scan_window_eig"]["policy_set"] is None
-    assert compiled["scan_window_eig"]["scoring_config"]["simulation_count"] == 128
-
-
 def test_a_frozen_program_start_preserves_its_original_source_fingerprint(tmp_path, monkeypatch):
     spec = ObjectiveSpec.segment(q_start=[2, 0, 0], q_end=[2, 0.5, 0], step_rlu=0.05,
                                  tolerance_meV=0.5,
@@ -673,19 +495,6 @@ def test_a_frozen_program_start_preserves_its_original_source_fingerprint(tmp_pa
     assert captured[0][0].target_branch == "optic"
     assert captured[0][1]["source"]["sha256"] == "frozen123"
     assert captured[0][1]["source"]["source_text"] == "map transverse optic"
-
-
-def test_a_program_loads_a_frozen_objective_without_explicit_scan_window_eig(tmp_path,
-                                                                            monkeypatch):
-    objective = ObjectiveSpec.along_h(
-        h_start=2.1, h_end=2.2, step=0.1, tolerance_meV=0.5,
-        budget={"kind": "neutrons", "amount": 1e3}).to_dict()
-    del objective["scan_window_eig"]
-    path = _program_file(tmp_path, objective, source={"kind": "goal", "sha256": "legacy"})
-    captured = _stub_run_campaign(monkeypatch)
-    assert main(["drive", "--program", str(path), "--workspace", str(tmp_path / "ws")]) == 0
-    assert captured[0][0].scan_window_eig.policy_set is None
-    assert captured[0][0].to_dict()["scan_window_eig"]["policy_set"] is None
 
 
 def test_a_frozen_program_start_applies_an_absolute_budget_override(tmp_path, monkeypatch):

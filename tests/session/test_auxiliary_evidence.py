@@ -127,7 +127,7 @@ def test_a_new_probe_changes_the_authority_signature():
     """If the signature ignored auxiliary candidates the cached track would survive the very evidence
     that was acquired to revise it, and the probe would have cost beam time for nothing."""
     kw = dict(target_branch="acoustic", period=1.0, hypotheses=[], entropy_stop=0.35,
-              maximum_bridge_steps=2)
+              )
     before, _ = _tracked_authorities(_session(("exp:1:det", _master(PATH[1], 5.754))), PATH)
     after, _ = _tracked_authorities(_session(("exp:1:det", _master(PATH[1], 5.754)),
                                              ("exp:2:det", _probe(PATH[1], 7.115))), PATH)
@@ -168,7 +168,7 @@ def _tracked_card(path):
                  "slope_zc": {"mean": 0.0, "sigma": 0.3}},
             ],
             "target_hypothesis": "acoustic",
-            "steering": {"assignment_entropy_stop_nats": 2.0, "maximum_bridge_steps": 1}})
+            "steering": {"assignment_entropy_stop_nats": 2.0}})
     return SimpleNamespace(state=state, policy=SimpleNamespace(
         dispersion={"zone_period": 2.0}, collation={"t_round": 5.0}))
 

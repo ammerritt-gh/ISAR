@@ -416,8 +416,7 @@ def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tupl
 
 def _tracked_authority_signature(
         observations: list[dict], *, target_branch: str, period: float | None,
-        hypotheses: list[dict], entropy_stop: float, maximum_bridge_steps: int,
-        energy_domain_meV=None,
+        hypotheses: list[dict], entropy_stop: float, energy_domain_meV=None,
         scorer_revision: int = branch_tracking.BRANCH_TRACKING_SCORER_REVISION,
 ) -> str:
     """Stable identity input; derived probabilities are deliberately excluded."""
@@ -445,7 +444,6 @@ def _tracked_authority_signature(
         "authorities": authorities, "target_branch": target_branch,
         "period": period, "hypotheses": hypotheses,
         "assignment_entropy_stop_nats": float(entropy_stop),
-        "maximum_bridge_steps": int(maximum_bridge_steps),
         "energy_domain_meV": [
             list(interval) for interval in branch_tracking.normalize_energy_domain(energy_domain_meV)],
         "scorer_revision": int(scorer_revision),
@@ -700,12 +698,10 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
     period = _dispersion_period(card)
     hypotheses = _campaign_hypotheses(card)
     entropy_stop = float(policy.get("assignment_entropy_stop_nats", 0.2))
-    maximum_bridge_steps = int(policy.get("maximum_bridge_steps", 1))
     energy_domain = _authorized_tracking_domain(target, observations)
     authority_signature = _tracked_authority_signature(
         observations, target_branch=target_branch, period=period, hypotheses=hypotheses,
-        entropy_stop=entropy_stop, maximum_bridge_steps=maximum_bridge_steps,
-        energy_domain_meV=energy_domain,
+        entropy_stop=entropy_stop, energy_domain_meV=energy_domain,
         scorer_revision=branch_tracking.BRANCH_TRACKING_SCORER_REVISION)
     if (previous.get("authoritative_evidence_signature") == authority_signature
             and previous.get("target_branch") == target_branch
@@ -716,7 +712,6 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
             path, observations, period=period, hypotheses=hypotheses,
             target_branch=target_branch, previous=previous,
             assignment_entropy_stop_nats=entropy_stop,
-            maximum_bridge_steps=maximum_bridge_steps,
             energy_domain_meV=energy_domain)
         track["authoritative_evidence_signature"] = authority_signature
     revision = int(track["revision"])

@@ -83,7 +83,6 @@ class CardPolicy:
     hypotheses: dict = field(default_factory=dict)           # [hypotheses.*] — human physics intent
     # Inline human-authored distinction policies.  Authoring markers are materialized into exact
     # campaign scope fingerprints when an objective is frozen; code never writes this table.
-    scan_window_eig_policy_set: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -273,12 +272,4 @@ class Card:
                     resolve_hypothesis(str(name), declaration)
                 except (TypeError, ValueError) as exc:
                     errs.append(f"hypotheses.{name}: {exc}")
-        if not isinstance(pol.scan_window_eig_policy_set, dict):
-            errs.append("scan_window_eig_policy_set must be a table")
-        elif pol.scan_window_eig_policy_set:
-            try:
-                from isar.eig.policy import validate_card_eig_policy_authoring
-                validate_card_eig_policy_authoring(pol.scan_window_eig_policy_set)
-            except (TypeError, ValueError) as exc:
-                errs.append(f"scan_window_eig_policy_set: {exc}")
         return errs

@@ -18,7 +18,6 @@ Event ``kind``s (the documented vocabulary):
   and the promotion's result (``phase="outcome"``: ``seated`` / ``failed`` / ``superseded``).
 - ``branch_track_update`` — a pooled update caused a new joint path-assignment revision.
 - ``branch_reassignment`` — neighboring evidence changed a candidate's branch identity.
-- ``frontier_blocked`` — an unresolved identity gap currently prevents outward certification.
 - ``exception``    — a non-routine branch (missed window, flagged/held, budget, validation rejection).
 - ``stop``         — the terminal decision: met / incomplete / infeasible, with reasons.
 - ``timing``       — a profiling span: how long a named stage took (``stage``, ``iter``, ``seconds``, ``ok``).
@@ -35,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 EVENT_KINDS = ("propose", "validate", "run", "analyze", "decide", "escalate_fit",
-               "branch_track_update", "branch_reassignment", "frontier_blocked", "exception",
+               "branch_track_update", "branch_reassignment", "exception",
                "stop", "timing", "activity_start", "activity_progress", "activity_end",
                "analysis_clock", "physical_submission", "pooled_master_update", "candidate_update",
                "certification_crossing", "recovery_pending", "recovery_completed",

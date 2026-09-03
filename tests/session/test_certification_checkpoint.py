@@ -215,18 +215,7 @@ def test_predicate_prefers_the_emitted_eligibility_verdict():
     """evaluate_stop's precision_coverage_eligible is the authority when present."""
     assert _is_structurally_unresolvable({"precision_coverage_eligible": False})
     assert not _is_structurally_unresolvable({"precision_coverage_eligible": True})
-    # It wins over the endpoint marks, so the two rules can never disagree in opposite directions.
-    assert not _is_structurally_unresolvable({
-        "precision_coverage_eligible": True,
-        "structural_endpoint_status": "inferred_unresolved", "is_reduced_q_origin": True})
-
-
-def test_predicate_falls_back_for_records_predating_the_field():
-    assert _is_structurally_unresolvable({
-        "structural_endpoint_status": "inferred_unresolved", "is_reduced_q_origin": True})
-    # A reduced-q origin that was actually measured is still an ordinary certifiable target.
-    assert not _is_structurally_unresolvable({
-        "structural_endpoint_status": None, "is_reduced_q_origin": True})
+    # A record that carries no verdict at all is an ordinary certifiable target.
     assert not _is_structurally_unresolvable({})
 
 

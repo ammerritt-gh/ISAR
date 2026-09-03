@@ -22,7 +22,6 @@ import pytest
 
 from isar.drive import loop as loop_mod
 from isar.drive.acquisition import acquire as acq
-from isar.drive.acquisition import model as acq_model
 from isar.drive.acquisition.inventory import CampaignSliceKey, MeasurementIntent
 from isar.drive.objective import ObjectiveSpec, shipped_hypothesis_snapshot
 

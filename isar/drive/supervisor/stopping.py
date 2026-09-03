@@ -25,7 +25,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 MAX_DECLINES = 3              # compatibility/diagnostic threshold; never a stop condition
-FIRST_CROSSING_MARGIN = 1.2  # retained for back-compat (legacy q_converged); unused by the master path
+#: Margin an interval must clear before its first crossing counts (the certification crossing guard).
+FIRST_CROSSING_MARGIN = 1.2
 _HKL_TOL = 1e-4              # r.l.u. tolerance for matching an observation to a path grid point
 _BIG = float("inf")
 
@@ -62,46 +63,6 @@ def match_grid_index(hkl, path, *, tol: float = _HKL_TOL) -> int | None:
 
 
 # --------------------------------------------------------------------------- per-q convergence core
-# LEGACY (unused by the driver): the old "two consecutive independent production fits" convergence.
-# Replaced by GridQ.converged (the master/pooled fit). Kept only so older callers/tests still import.
-def q_converged(prod_fits: list[dict], tolerance: float, *,
-                first_margin: float = FIRST_CROSSING_MARGIN) -> bool:
-    """Is a grid q converged, given its chronological production/confirm fits?
-
-    ``prod_fits`` entries are ``{"halfwidth": float|None, "resolved": bool}`` (production & confirm
-    scans only — quick-looks never count). Requires the last two to both be resolved, the first (the
-    crossing) to meet ``first_margin × halfwidth ≤ tolerance``, and the second (the confirm) to meet
-    ``halfwidth ≤ tolerance``. Fewer than two fits is never converged — a single lucky crossing does
-    not stop.
-    """
-    if len(prod_fits) < 2:
-        return False
-    a, b = prod_fits[-2], prod_fits[-1]
-    ha, hb = a.get("halfwidth"), b.get("halfwidth")
-    if ha is None or hb is None:
-        return False
-    return bool(a.get("resolved") and b.get("resolved")
-                and first_margin * ha <= tolerance
-                and hb <= tolerance)
-
-
-def next_kind_for_q(prod_fits: list[dict], tolerance: float, *,
-                    first_margin: float = FIRST_CROSSING_MARGIN) -> str | None:
-    """The next production-tier scan kind for a q: ``"confirm"``, ``"production"``, or ``None`` (done).
-
-    A resolved first crossing (``first_margin × halfwidth ≤ tolerance``) earns a dedicated ``confirm``
-    scan; anything short of that keeps counting with a ``production`` scan.
-    """
-    if q_converged(prod_fits, tolerance, first_margin=first_margin):
-        return None
-    if prod_fits:
-        last = prod_fits[-1]
-        hw = last.get("halfwidth")
-        if last.get("resolved") and hw is not None and first_margin * hw <= tolerance:
-            return "confirm"
-    return "production"
-
-
 # A fit whose ω₀ is usable for an ω₀-tolerance objective. `flagged` (model_incomplete) is INCLUDED:
 # at low q the 1-D-resolution model has a structured residual (the tas4d ceiling) so the fit flags,
 # but ω₀ and its interval are still good — the flag documents peak-shape imperfection, not an ω₀
@@ -250,11 +211,10 @@ class GridQ:
     # zone centre and is perfectly measurable there, so this cannot key on the origin alone.
     acoustic_target: bool = False
     # Local branch identity, carried verbatim from the tracker's own confirmation predicate
-    # (``branch_tracking._frontier_states``).  ``track_state`` answers whether this q is *connected*
-    # to the confirmed trajectory; these answer whether its identity is decisive *here*, which is a
-    # different question and the one that decides whether more counting can help.  They must be read
-    # from the tracker rather than re-derived from ``branch_posterior``: the driver deliberately
-    # clears that posterior for exactly the ambiguous case this has to distinguish.
+    # (``branch_tracking._identity_states``) — whether this q's identity is decisive HERE, which is
+    # what decides whether more counting can help.  Read from the tracker rather than re-derived
+    # from ``branch_posterior``: the driver deliberately clears that posterior for exactly the
+    # ambiguous case this has to distinguish.
     target_probability: float | None = None
     identity_entropy: float | None = None
     local_identity_clear: bool | None = None
@@ -282,8 +242,8 @@ class GridQ:
     def diagnostics(self) -> list[str]:
         m = self.evidence_master or self.master or {}
         out = []
-        if self.candidate_rejected or m.get("modality") == "fork" or self.track_state in {
-                "ambiguous", "missing", "provisional", "blocked"}:
+        if (self.candidate_rejected or m.get("modality") == "fork"
+                or self.track_state == "ambiguous"):
             out.append("model_ambiguous")
         if m.get("pool_consistent") is False:
             out.append("pool_inconsistent")
@@ -298,7 +258,7 @@ class GridQ:
     @property
     def assessment_state(self) -> str:
         if not self.precision_coverage_eligible:
-            return "inferred_unresolved"
+            return "exempt"
         if self.evidence_master is None:
             return "unmeasured"
         if self.master is None:
@@ -349,21 +309,13 @@ class GridQ:
     def precision_coverage_eligible(self) -> bool:
         """Whether this q represents a measurable target requiring a certified interval.
 
-        An acoustic branch is exempt at the reduced-q origin from the first iteration, on the
-        geometry alone.  The tracker also retires the origin once it can *infer* the intercept from
-        resolved neighbours (``branch_tracking`` sets ``inferred_unresolved`` after a linear fit
-        through them succeeds), but that is earned late and only if the fit passes — and until it
-        does, the controller keeps demanding a certified interval at a q where the mode sits under
-        the elastic line.  Fitting a DHO there returns a centre with an error bar thousands of times
-        larger than itself, which classifies as a confirmed identity rather than an unresolved one,
-        so the campaign never earns the exemption and returns forever: three quarters of the scans
-        in the R3 cold-start campaigns went to that single q.
+        The one exemption, on the geometry alone and from the first iteration: an acoustic branch at
+        the reduced-q origin, whose ω(q→0) → 0 is degenerate with the elastic line.  Fitting a DHO
+        there returns a centre with an error bar thousands of times larger than itself, so demanding
+        a certified interval sends the campaign back forever — three quarters of the scans in the R3
+        cold-start campaigns went to that single q.
         """
-        if self.acoustic_target and self.is_reduced_q_origin:
-            return False
-        return not (self.track_state == "inferred_unresolved"
-                    and self.structural_endpoint_status == "inferred_unresolved"
-                    and self.is_reduced_q_origin)
+        return not (self.acoustic_target and self.is_reduced_q_origin)
 
     @property
     def signal_seen(self) -> bool:
@@ -541,8 +493,7 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
             except (TypeError, ValueError):
                 master_revision = 0
             master_state = master.get("track_state")
-            if (master_state in {"confirmed", "ambiguous", "missing", "provisional", "blocked",
-                                 "inferred_unresolved"}
+            if (master_state in {"confirmed", "ambiguous"}
                     and (grid[i].track_revision is None
                          or master_revision >= grid[i].track_revision)):
                 grid[i].track_state = master_state
@@ -556,27 +507,12 @@ def summarize_grid(objective, observations: list[dict], master_rows: list[dict] 
                 # unclear so the controller counts rather than stops — the safe direction here.
                 grid[i].local_identity_clear = None if clear is None else bool(clear)
     track = dict(branch_track or {})
-    # The tracker publishes the zone anchor as plain geometry from its first revision, long before
-    # the linear-fit inference below can retire the origin.  Read it here so an acoustic campaign
-    # knows on iteration one which q has nothing separable to measure, rather than discovering it
-    # after spending most of its beam there.
+    # The tracker publishes the zone anchor as plain geometry from its first revision, so an
+    # acoustic campaign knows on iteration one which q has nothing separable to measure, rather
+    # than discovering it after spending most of its beam there.
     origin_index = track.get("reduced_q_origin_index")
     if isinstance(origin_index, int) and 0 <= origin_index < len(grid):
         grid[origin_index].is_reduced_q_origin = True
-    for assignment in track.get("assignments") or []:
-        if (assignment.get("structural_endpoint_status") != "inferred_unresolved"
-                or not assignment.get("is_reduced_q_origin")):
-            continue
-        try:
-            index = int(assignment["path_index"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if not 0 <= index < len(grid):
-            continue
-        grid[index].track_state = "inferred_unresolved"
-        grid[index].track_revision = int(track.get("revision", 0))
-        grid[index].structural_endpoint_status = "inferred_unresolved"
-        grid[index].is_reduced_q_origin = True
     return grid
 
 

@@ -2,7 +2,7 @@
 
 Two halves, and the PR #9 review found both broken:
 
-* the exemption must be **published only where the physics holds**.  ``anchor_index`` returns the
+* the exemption must be **published only where the physics holds**.  ``zone_anchor_index`` returns the
   *nearest* path point to the zone centre, with no test that the winner is actually there, and
   falls back to path index 0 whenever the period is absent, non-finite or non-positive — which the
   driver reaches whenever ``[dispersion] zone_period`` is missing from the hand-edited
@@ -61,7 +61,6 @@ def test_a_path_that_never_reaches_the_zone_centre_exempts_nothing():
     track = _acoustic_track(path, period=2.0)
 
     assert track["reduced_q_origin_index"] is None
-    assert track["inferred_endpoint_indices"] == []
 
 
 def test_an_absent_or_unusable_period_exempts_nothing():

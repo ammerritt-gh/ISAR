@@ -102,16 +102,6 @@ def test_the_frozen_fingerprint_vectors_still_reproduce(name):
     assert schema_identity.scientific_fingerprint_from_mapping(payload) == expected
 
 
-def test_a_retained_inventory_artifact_still_authenticates():
-    """The only real historical payload in the tree — the artifact this format must keep readable."""
-    record = json.loads(_FIXTURE_INVENTORY.read_text(encoding="utf-8"))
-    evaluations = record["evaluations"]
-    assert evaluations, "fixture inventory holds no evaluation to authenticate"
-    for evaluation in evaluations:
-        assert (schema_identity.scientific_fingerprint_from_mapping(evaluation["intent"])
-                == evaluation["scientific_action_fingerprint"])
-
-
 @pytest.mark.parametrize("name", sorted(_FROZEN))
 def test_the_value_type_and_the_mapping_path_agree(name):
     """A ``MeasurementIntent`` rebuilt from a mapping must hash to the mapping's own fingerprint."""

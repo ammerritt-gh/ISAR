@@ -83,8 +83,6 @@ class CampaignState:
     analysis_limit_seconds: float | None = None
     certification_status: dict | None = None
     certification_end_status: str | None = None
-    scan_design_authority: dict | None = None
-    authority_predicate_failure_counts: dict = field(default_factory=dict)
 
 
 def _is_campaign_start(rec: dict) -> bool:
@@ -154,8 +152,6 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
     last_scan = None
     exceptions = 0
     stage_seconds: dict = {}
-    scan_design_authority = None
-    authority_predicate_failure_counts: dict[str, int] = {}
 
     for rec in events[start_idx:]:
         kind = rec.get("kind")
@@ -196,13 +192,6 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
         elif kind == "exception":
             exceptions += 1
             last_decision = f"exception: {p.get('action', '?')}"
-        elif kind == "scan_design_authority_decision":
-            scan_design_authority = dict(p)
-            if p.get("decision_outcome") == "retain_legacy_control":
-                for reason in p.get("reason_codes") or ():
-                    key = str(reason)
-                    authority_predicate_failure_counts[key] = (
-                        authority_predicate_failure_counts.get(key, 0) + 1)
         elif kind == "stop":
             stop_state = p.get("state")
             reasons = p.get("reasons")
@@ -233,8 +222,7 @@ def reduce_campaign(events: list[dict]) -> CampaignState:
         analysis_spent_seconds=sum(analysis_operations.values()),
         analysis_limit_seconds=(objective or {}).get("analysis_limit_seconds"),
         certification_end_status=certification_end_status,
-        scan_design_authority=scan_design_authority,
-        authority_predicate_failure_counts=authority_predicate_failure_counts)
+        )
 
 
 def _fmt_hkl(hkl) -> str:
@@ -280,20 +268,6 @@ def analysis_readout(state: CampaignState) -> tuple[int, str]:
     fraction = min(state.analysis_spent_seconds / limit, 1.0) if limit > 0 else 0.0
     return int(fraction * 1000), (f"analysis: {state.analysis_spent_seconds / 60.0:.1f} / "
                                   f"{limit / 60.0:.1f} min")
-
-
-def authority_iter_text(authority: dict | None) -> str:
-    """`" [iter 4]"` for an authority decision, or `""` when the payload carried no iteration.
-
-    The reducer keeps the LAST authority decision seen since ``campaign_start`` and never ages it
-    out, so a decision from an early iteration keeps rendering while the campaign moves on. The
-    stamp is what lets an operator tell a live grant from a stale one; it is read straight off the
-    payload (1-based, like every other iteration the docks print) and never re-derived.
-    """
-    it = (authority or {}).get("iter", (authority or {}).get("iteration"))
-    if not isinstance(it, (int, float)) or isinstance(it, bool):
-        return ""
-    return f" [iter {int(it) + 1}]"
 
 
 def terminal_status_text(state: CampaignState) -> str:

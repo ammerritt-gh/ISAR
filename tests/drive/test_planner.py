@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from isar.drive.acquisition.inventory import ActionEligibility, ActionEvaluation, GeneratorStatus
-from isar.eig.eligibility import EligibilityInput, _scan_design_identity
 from isar.schema.action_identity import MeasurementIntent
 from isar.schema.campaign_program import (
     CampaignProgram, CampaignStep, DiscoverAndMapSpec, program_fingerprint)
@@ -575,69 +574,6 @@ def test_agenda_complete_when_nothing_is_open(tmp_path):
                                                 "mode_intervals": []}])]))
     result = plan_next_action(tmp_path, program, "discover-1")
     assert result.outcome == AGENDA_COMPLETE
-
-
-# ----------------------------------------------------------------------------
-# Persisted record round-trips through EligibilityInput / _scan_design_identity
-# ----------------------------------------------------------------------------
-def test_scan_design_provenance_round_trips_through_eligibility(tmp_path):
-    step = discover_step()
-    program = program_with(step)
-    write_scene(tmp_path, scene())
-    plan_next_action(tmp_path, program, "discover-1")
-    record = decision_lines(tmp_path)[-1]
-
-    provenance = record["scan_design_provenance"]
-    assert set(provenance) == {"inventory_fingerprint", "context_fingerprint",
-                               "selected_candidate_id", "status", "recovery_state"}
-    value = EligibilityInput.from_current_contract(
-        action_intent=None, action_provenance=None, target_outcome=None, selection_record=None,
-        qoi_evidence=None, shadow_record=None, scan_design_provenance=provenance,
-        scan_design_events=record["scan_design_events"])
-    identity = _scan_design_identity(value.scan_design_provenance, value.scan_design_events)
-    assert identity["inventory_fingerprint"] == provenance["inventory_fingerprint"]
-    assert identity["context_fingerprint"] == provenance["context_fingerprint"]
-    assert identity["selected_candidate_id"] == provenance["selected_candidate_id"]
-    assert identity["status"] == provenance["status"]
-    assert identity["recovery_state"] == provenance["recovery_state"]
-    assert identity["events"] == sorted(record["scan_design_events"])
-
-
-# ----------------------------------------------------------------------------
-# Census kind-check refuses a discovery ref
-# ----------------------------------------------------------------------------
-def test_census_kind_check_refuses_a_discovery_inventory_ref(tmp_path):
-    from tools.stats._eig_eligibility_census import _inventory_intent
-
-    step = discover_step()
-    program = program_with(step)
-    write_scene(tmp_path, scene())
-    result = plan_next_action(tmp_path, program, "discover-1")
-
-    record, problem = _inventory_intent(tmp_path, result.inventory_ref, "irrelevant")
-    assert record is None and problem == "inventory_reference_missing"
-    # The legacy kind is what the census actually accepts -- confirms the check is a real kind
-    # filter, not a path/shape rejection that happens to also catch ours.
-    legacy_ref = {**result.inventory_ref, "kind": "action_inventory"}
-    _record2, problem2 = _inventory_intent(tmp_path, legacy_ref, "irrelevant")
-    assert problem2 != "inventory_reference_missing"
-
-
-# ----------------------------------------------------------------------------
-# Replay glob blindness
-# ----------------------------------------------------------------------------
-def test_replay_glob_is_blind_to_the_discovery_subdirectory(tmp_path):
-    """tools/eig_replay/replay_o41_test4.py globs (workspace/"report"/"inventory").glob("*.json")
-    -- non-recursive. A discovery artifact one level deeper is invisible to it by construction."""
-    top_level = tmp_path / "report" / "inventory"
-    top_level.mkdir(parents=True)
-    (top_level / "legacy123.json").write_text("{}", encoding="utf-8")
-    discovery_dir = top_level / "discovery"
-    discovery_dir.mkdir()
-    (discovery_dir / "x.json").write_text("{}", encoding="utf-8")
-
-    seen = sorted(p.name for p in top_level.glob("*.json"))
-    assert seen == ["legacy123.json"]
 
 
 # ----------------------------------------------------------------------------

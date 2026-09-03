@@ -22,7 +22,6 @@ from isar.schema.campaign_program import (
     TARGETED_STEP_SCHEMA,
     retired_schema_error,
 )
-from isar.schema.eig_policy import ScanWindowEIGConfig
 from isar.schema.hypotheses import (
     SteeringPolicy,
     content_fingerprint,
@@ -119,8 +118,6 @@ class ObjectiveSpec:
     hypothesis_source: str | None = None
     hypothesis_fingerprint: str | None = None
     steering: dict[str, Any] = field(default_factory=dict)
-    scan_window_eig: ScanWindowEIGConfig | Mapping[str, Any] = field(
-        default_factory=ScanWindowEIGConfig)
     analysis_limit_seconds: float | None | object = _DEFAULT_ANALYSIS_LIMIT
 
     def __post_init__(self) -> None:
@@ -213,25 +210,6 @@ class ObjectiveSpec:
         self.target_label = str(self.target_label or self.target_branch)
         self.hypotheses = [dict(h) for h in self.hypotheses]
         self.steering = dict(self.steering)
-        if isinstance(self.scan_window_eig, Mapping):
-            self.scan_window_eig = ScanWindowEIGConfig.from_dict(self.scan_window_eig)
-        elif isinstance(self.scan_window_eig, ScanWindowEIGConfig):
-            self.scan_window_eig = ScanWindowEIGConfig.from_dict(self.scan_window_eig.to_dict())
-        else:
-            raise TypeError("scan_window_eig must be a frozen ScanWindowEIGConfig")
-        # A full frozen objective is a campaign-start contract, not merely a policy container.
-        # Validate every currently supported scientific policy before beamtime starts.  Unknown
-        # versioned policy kinds remain authenticated and are refused diagnostically at runtime.
-        policy_set = self.scan_window_eig.policy_set
-        if policy_set is not None:
-            from isar.eig.policy import compile_qoi_distinction_policy
-            for policy in policy_set.policies:
-                if policy.policy_kind == "isar.scalar_absolute_partitions/o36.5":
-                    for variant in policy.variants:
-                        compile_qoi_distinction_policy(policy, variant)
-        if self.steering.get("scan_window_eig_mode", "off") == "authoritative":
-            from isar.eig.o41_authority import validate_o41_authoritative_profile
-            validate_o41_authoritative_profile(self.scan_window_eig)
         if self.hypotheses:
             names: set[str] = set()
             for hypothesis in self.hypotheses:
@@ -244,15 +222,6 @@ class ObjectiveSpec:
             if not self.target_hypothesis or self.target_hypothesis not in names:
                 raise ValueError("target_hypothesis must name one of the frozen hypotheses")
             supplied_steering = dict(self.steering)
-            # SCENE-4 PR 4.4, D1: a frozen objective never acquires a read-time default for its
-            # scan-window EIG mode (H1). SteeringPolicy's own field default would silently read a
-            # historical dict missing the key as "off" — check the key's PRESENCE here, before
-            # that default has a chance to apply, and name the recompile rather than adapt.
-            if "scan_window_eig_mode" not in supplied_steering:
-                raise ValueError(
-                    f"{OBJECTIVE_SCHEMA} steering requires an explicit scan_window_eig_mode; a "
-                    "frozen objective never acquires read-time defaults (H1) — recompile the "
-                    "campaign with `isar drive --goal ... --compile-only`")
             SteeringPolicy(**supplied_steering)
             # A frozen objective's hash covers the exact steering dictionary written at compile time.
             # Validate that historical dictionary with current typed defaults, but do not expand it:
@@ -305,7 +274,6 @@ class ObjectiveSpec:
                 target_hypothesis: str | None = None, hypothesis_source: str | None = None,
                 hypothesis_fingerprint: str | None = None,
                 steering: dict[str, Any] | None = None,
-                scan_window_eig: ScanWindowEIGConfig | Mapping[str, Any] | None = None,
                 analysis_limit_seconds: float | None | object = _DEFAULT_ANALYSIS_LIMIT) -> "ObjectiveSpec":
         """A path that walks H from ``h_start`` to ``h_end`` in increments of ``step`` at fixed K, L.
 
@@ -331,8 +299,6 @@ class ObjectiveSpec:
                    hypothesis_source=hypothesis_source,
                    hypothesis_fingerprint=hypothesis_fingerprint,
                    steering=dict(steering or {}),
-                   scan_window_eig=(ScanWindowEIGConfig() if scan_window_eig is None
-                                    else scan_window_eig),
                    analysis_limit_seconds=analysis_limit_seconds)
 
     @classmethod
@@ -350,7 +316,6 @@ class ObjectiveSpec:
                 target_hypothesis: str | None = None, hypothesis_source: str | None = None,
                 hypothesis_fingerprint: str | None = None,
                 steering: dict[str, Any] | None = None,
-                scan_window_eig: ScanWindowEIGConfig | Mapping[str, Any] | None = None,
                 analysis_limit_seconds: float | None | object = _DEFAULT_ANALYSIS_LIMIT) -> "ObjectiveSpec":
         """A straight reciprocal-space segment whose intervals never exceed ``step_rlu``.
 
@@ -382,8 +347,6 @@ class ObjectiveSpec:
                    hypothesis_source=hypothesis_source,
                    hypothesis_fingerprint=hypothesis_fingerprint,
                    steering=dict(steering or {}),
-                   scan_window_eig=(ScanWindowEIGConfig() if scan_window_eig is None
-                                    else scan_window_eig),
                    analysis_limit_seconds=analysis_limit_seconds)
 
     # ---- (de)serialization -------------------------------------------------
@@ -412,7 +375,6 @@ class ObjectiveSpec:
             "hypothesis_source": self.hypothesis_source,
             "hypothesis_fingerprint": self.hypothesis_fingerprint,
             "steering": dict(self.steering),
-            "scan_window_eig": self.scan_window_eig.to_dict(),
         }
 
     @classmethod
@@ -448,12 +410,6 @@ class ObjectiveSpec:
             hypothesis_source=d.get("hypothesis_source"),
             hypothesis_fingerprint=d.get("hypothesis_fingerprint"),
             steering=dict(d.get("steering") or {}),
-            # ``scan_window_eig`` was added to objective/2 without minting a new objective schema.
-            # Old frozen objective/2 records therefore read as the frozen no-policy/default-scoring
-            # value.  New writers still materialize the block through ``to_dict``; an explicit null
-            # remains invalid and is deliberately not treated as omission.
-            scan_window_eig=(
-                ScanWindowEIGConfig() if "scan_window_eig" not in d else d["scan_window_eig"]),
             analysis_limit_seconds=(d["analysis_limit_seconds"]
                                     if "analysis_limit_seconds" in d else _DEFAULT_ANALYSIS_LIMIT),
         )
@@ -462,8 +418,8 @@ class ObjectiveSpec:
 def current_objective_comparison_scope(objective: ObjectiveSpec) -> Mapping[str, str]:
     """Adapt the scientific objective to the stable campaign-policy applicability identity.
 
-    Steering and ``scan_window_eig`` are deliberately excluded.  A policy can therefore bind to
-    this exact identity and then be embedded in the objective without a recursive fingerprint.
+    Steering is deliberately excluded, so a policy can bind to this exact scientific identity
+    without a recursive fingerprint.
     """
     from isar.schema.statistics import semantics_fingerprint
 
@@ -531,19 +487,7 @@ def resolve_hypothesis_snapshot(target_branch: str, energy_search_meV, *,
     hypotheses = [resolve_hypothesis(
         name, declarations.get(name), energy_search_meV=energy).to_dict()
         for name in ordered_names]
-    # SCENE-4 PR 4.4, D1: every newly compiled targeted objective freezes an explicit
-    # scan_window_eig_mode. An operator ask (steering_override) still wins, including an explicit
-    # "off"; absent, the compiler now resolves the O42-retirement default "authoritative" rather
-    # than SteeringPolicy's own bare-field default. "shadow" is retired for a NEW compile — a
-    # historical frozen objective may still carry it (refused by name in a later commit); this is
-    # only where a fresh one gets minted.
-    steering_values = {"dynamic_ncount": True, "scan_window_eig_mode": "authoritative",
-                       **dict(steering_override or {})}
-    if steering_values["scan_window_eig_mode"] == "shadow":
-        raise ValueError(
-            "scan_window_eig_mode='shadow' is not accepted for a new compile; the shadow-only "
-            "diagnostic mode is retired for newly compiled objectives (SCENE-4 PR 4.4) — declare "
-            "'off' or 'authoritative', or omit the field for the authoritative default")
+    steering_values = {"dynamic_ncount": True, **dict(steering_override or {})}
     steering = SteeringPolicy(**steering_values).to_dict()
     return {"hypotheses": hypotheses, "target_hypothesis": target_branch,
             "hypothesis_source": source,

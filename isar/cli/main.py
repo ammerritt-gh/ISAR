@@ -124,9 +124,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     pdg = sub.add_parser("diagnose", help="render the architect's CAMPAIGN_DIAGNOSTIC.md for a campaign")
     pdg.add_argument("--workspace", required=True)
-    pdg.add_argument("--eig", action="store_true",
-                     help="print the scan-window EIG decision table instead (read-only: says why "
-                          "EIG did or did not change each scan window, and what blocked it)")
 
     psc = sub.add_parser("score", help="score a run against a human gold CSV or known analytic truth")
     psc.add_argument("--workspace", required=True)
@@ -193,10 +190,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="override budget as '<amount><unit>' e.g. '8h', '1e10n' (else from the spec/goal)")
     pd.add_argument("--analysis-limit", default=None,
                     help="absolute cumulative analysis ceiling, e.g. '1h', '10m', '3600s', or 'none'")
-    pd.add_argument("--scan-window-eig-mode", choices=["off", "authoritative"],
-                    default=None,
-                    help="operator authoring choice for scan-window EIG; authoritative is restricted "
-                         "to the exact O41 profile frozen from a ready workspace")
     pd.add_argument("--calibration", default=None,
                     help="σ-calibration artifact path (default the repo phonon_dft_deterministic.json)")
     pd.add_argument("--tavi", default=None, help="TAVI API base URL (default http://127.0.0.1:8642/api/v1)")
@@ -357,17 +350,14 @@ def main(argv=None) -> int:
     if cmd == "drive":
         import hashlib
         import json
-        from dataclasses import replace
         from pathlib import Path
         from isar.drive.loop import run_campaign
         from isar.drive.session_log import read_log
         from isar.drive.supervisor.goal_to_spec import (
-            GoalParseError, goal_to_program, make_program, program_from_json,
-            rebind_scan_window_eig_policy, spec_from_dict,
+            GoalParseError, goal_to_program, make_program, program_from_json, spec_from_dict,
         )
         from isar.drive.objective import OBJECTIVE_SCHEMA
         from isar.schema.campaign_program import PROGRAM_SCHEMA
-        from isar.schema.hypotheses import content_fingerprint
         try:
             if args.compile_only and args.resume_latest:
                 raise GoalParseError("--compile-only accepts --goal or --program, not resume")
@@ -376,44 +366,12 @@ def main(argv=None) -> int:
 
             def card_objective_authoring():
                 if not args.workspace:
-                    return None, None
+                    return None
                 policy_path = Path(args.workspace) / "card.policy.toml"
                 if not policy_path.exists():
-                    return None, None
+                    return None
                 from isar.schema.card import load_policy
-                card_policy = load_policy(policy_path)
-                return card_policy.hypotheses, card_policy.scan_window_eig_policy_set
-
-            def apply_mode_override(objective, *, frozen: bool, declared_mode=None,
-                                    card_eig_policy_set=None):
-                requested = args.scan_window_eig_mode
-                current = str((objective.steering or {}).get("scan_window_eig_mode", "off"))
-                if requested is None:
-                    return objective
-                if frozen:
-                    if requested != current:
-                        raise GoalParseError(
-                            "--scan-window-eig-mode conflicts with the frozen objective "
-                            f"({current})")
-                    return objective
-                if declared_mode is not None and requested != declared_mode:
-                    raise GoalParseError(
-                        "--scan-window-eig-mode conflicts with steering.scan_window_eig_mode "
-                        f"in the authoring input ({declared_mode})")
-                if requested == "authoritative" and not args.workspace:
-                    raise GoalParseError(
-                        "authoritative scan-window EIG requires a ready --workspace with "
-                        "card.policy.toml")
-                steering = {**dict(objective.steering), "scan_window_eig_mode": requested}
-                overridden = replace(
-                    objective, steering=steering,
-                    hypothesis_fingerprint=content_fingerprint(
-                        objective.hypotheses, steering))
-                # The recomputed hypothesis fingerprint is part of the objective comparison scope a
-                # card EIG policy binds to, so the policy compiled before this override no longer
-                # matches. Rebind it here, or scan-window scoring reports qoi_policy_missing for the
-                # whole campaign.
-                return rebind_scan_window_eig_policy(overridden, card_eig_policy_set)
+                return load_policy(policy_path).hypotheses
 
             # Set to ``(program, step)`` when the one executable step is a discovery step: the
             # SCENE-4.3 program-step seam runs it, and none of the objective compilation below
@@ -446,7 +404,6 @@ def main(argv=None) -> int:
                 objective = spec_from_dict(payload["objective"],
                                            defaults={"tier": args.tier or "deterministic"},
                                            where="resume")
-                objective = apply_mode_override(objective, frozen=True)
                 # The frozen objective carries its own tier; an explicit --tier cannot override it
                 # (a full ObjectiveSpec dict bypasses the defaults). Say so instead of silently ignoring.
                 if args.tier is not None and objective.tier != args.tier:
@@ -472,17 +429,14 @@ def main(argv=None) -> int:
                 frozen_payloads = {s.id: s.payload.get("schema") == OBJECTIVE_SCHEMA
                                    for s in targeted_steps}
                 card_hypotheses = None
-                card_eig_policy_set = None
                 if not all(frozen_payloads.values()):
-                    card_hypotheses, card_eig_policy_set = card_objective_authoring()
+                    card_hypotheses = card_objective_authoring()
                 compiled_objectives = {
                     s.id: spec_from_dict(
                         s.payload,
                         defaults={"tier": args.tier or "deterministic"},
                         where=f"{args.program}:{s.id}",
                         card_hypotheses=None if frozen_payloads[s.id] else card_hypotheses,
-                        card_eig_policy_set=(None if frozen_payloads[s.id]
-                                             else card_eig_policy_set),
                     )
                     for s in targeted_steps
                 }
@@ -505,12 +459,6 @@ def main(argv=None) -> int:
                     payload = step.payload
                     frozen_payload = frozen_payloads[step.id]
                     objective = compiled_objectives[step.id]
-                    declared_mode = None
-                    if isinstance(payload.get("steering"), dict):
-                        declared_mode = payload["steering"].get("scan_window_eig_mode")
-                    objective = apply_mode_override(
-                        objective, frozen=frozen_payload, declared_mode=declared_mode,
-                        card_eig_policy_set=card_eig_policy_set)
             else:
                 # ``--goal`` is natural language for the LLM supervisor; ``--program`` reads a file.
                 # Handing a path to the supervisor does not fail — it compiles *something*, and the
@@ -524,11 +472,9 @@ def main(argv=None) -> int:
                           f"       Use --program {args.goal} to read a campaign program from a "
                           "file.", file=sys.stderr)
                     return 2
-                card_hypotheses, card_eig_policy_set = card_objective_authoring()
                 program = goal_to_program(
                     args.goal, defaults={"tier": args.tier or "deterministic"},
-                    card_hypotheses=card_hypotheses,
-                    card_eig_policy_set=card_eig_policy_set)
+                    card_hypotheses=card_objective_authoring())
                 step = _single_executable_step(program, where="--goal")
                 source = {"kind": "goal",
                           "sha256": hashlib.sha256(args.goal.encode("utf-8")).hexdigest(),
@@ -538,13 +484,6 @@ def main(argv=None) -> int:
                     discovery = (program, step)
                 else:
                     objective = spec_from_dict(step.payload, where=f"--goal:{step.id}")
-                    raw = (objective.meta.get("raw")
-                           if isinstance(objective.meta, dict) else None)
-                    declared_mode = ((raw.get("steering") or {}).get("scan_window_eig_mode")
-                                     if isinstance(raw, dict) else None)
-                    objective = apply_mode_override(
-                        objective, frozen=False, declared_mode=declared_mode,
-                        card_eig_policy_set=card_eig_policy_set)
             if discovery:
                 # A discovery step is frozen already: there is no objective to override,
                 # fingerprint or recompile, and `--compile-only` on one would be a re-emission of
@@ -553,19 +492,6 @@ def main(argv=None) -> int:
                     print("isar drive: --compile-only compiles an objective; a "
                           "discover_and_map program is already frozen — run it, or copy the file",
                           file=sys.stderr)
-                    return 2
-                if args.scan_window_eig_mode is not None:
-                    # REFUSED, never accepted-and-ignored (the same rule
-                    # `_require_synchronous_staleness` applies to an unimplemented staleness mode).
-                    # Every targeted branch above routes this flag through `apply_mode_override`;
-                    # the discovery branch has no ObjectiveSpec to override and passes nothing to
-                    # `run_program`, so accepting it would silently drop an operator's authoring
-                    # choice. Discovery selection carries no EIG authority in this build at all —
-                    # it ranks lexicographically and prices nothing (ruling H21(a)).
-                    print("isar drive: --scan-window-eig-mode steers a TARGETED objective's scan "
-                          "window; a discover_and_map step has no scan-window EIG authority in "
-                          "this build (DECISIONS H21(a)), so the flag is refused rather than "
-                          "accepted and ignored.", file=sys.stderr)
                     return 2
                 discovery_budget = _parse_budget(args.budget) if args.budget else None
                 discovery_limit = (_parse_analysis_limit(args.analysis_limit)
@@ -581,13 +507,8 @@ def main(argv=None) -> int:
                 objective_fingerprint = hashlib.sha256(json.dumps(
                     objective_payload, sort_keys=True, separators=(",", ":"),
                     ensure_ascii=True).encode("utf-8")).hexdigest()
-                policy_set = objective.scan_window_eig.policy_set
                 authoring_payload = {
                     "source_sha256": source.get("sha256"),
-                    "scan_window_eig_mode": objective.steering.get(
-                        "scan_window_eig_mode", "off"),
-                    "policy_set_fingerprint": (
-                        None if policy_set is None else policy_set.policy_set_fingerprint),
                     "tier": objective.tier,
                     "budget": objective.budget,
                     "analysis_limit_seconds": objective.analysis_limit_seconds,

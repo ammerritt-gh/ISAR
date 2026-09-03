@@ -86,25 +86,7 @@ from isar.schema.generators import (  # noqa: F401  (re-exported for drive-inter
     registry_manifest,
     union_associations,
 )
-from isar.schema.generators import registry_fingerprint as _schema_registry_fingerprint
-
-
-# The registered generator set that produced an inventory. An ``action_inventory_exhausted`` terminal
-# is exhaustion *relative to this registry* — a later version that adds generators (PR2) does not make
-# an old honest terminal a lie, so the proof must always name the version it was computed under.
-#
-# Today this is deliberately a single **compatibility adapter** around the legacy selector, not the
-# complete physical action space: it selects one action by the legacy priority/ranking logic. Naming it
-# so keeps the exhaustion proof honest about its scope. PR2 splits it into explicit per-intent
-# generators and grows this tuple; the fingerprint below changes with it automatically.
-GENERATOR_REGISTRY: tuple[GeneratorSpec, ...] = (
-    GeneratorSpec("legacy_selector_adapter", version=1),
-    # The identity-class action the legacy selector cannot express. It fires only where counting has
-    # demonstrably stopped paying, so it does not compete with the ordinary path for beam.
-    GeneratorSpec("narrow_rival_probe", version=1),
-)
-LEGACY_SELECTOR_GENERATOR = GENERATOR_REGISTRY[0].generator_id
-NARROW_RIVAL_PROBE_GENERATOR = GENERATOR_REGISTRY[1].generator_id
+from isar.schema.generators import registry_fingerprint  # noqa: F401  (re-export)
 
 
 # The canonicalization the content addresses are computed under. Versioned in its own right so a
@@ -143,21 +125,6 @@ def json_number(value):
     if math.isinf(number):
         return "+inf" if number > 0.0 else "-inf"
     return number
-
-
-def registry_fingerprint(registry: tuple[GeneratorSpec, ...] = GENERATOR_REGISTRY) -> str:
-    """Drive-side wrapper over :func:`isar.schema.generators.registry_fingerprint`, keeping
-    the historical legacy-registry default for drive-internal callers. The schema
-    implementation takes the registry explicitly (it cannot import this module's registry,
-    and an implicit fingerprint subject is how two registries end up sharing one version);
-    same payload, same hash — pinned by test.
-    """
-    return _schema_registry_fingerprint(registry)
-
-
-GENERATOR_REGISTRY_VERSION = registry_fingerprint()
-GENERATOR_REGISTRY_MANIFEST: tuple[tuple[str, int], ...] = tuple(
-    (spec.generator_id, spec.version) for spec in GENERATOR_REGISTRY)
 
 
 @dataclass(frozen=True)
@@ -288,13 +255,14 @@ class ActionInventory:
 
     evaluations: list[ActionEvaluation] = field(default_factory=list)
     reports: list[GeneratorReport] = field(default_factory=list)
-    # /2 (PR 4.2b B1): the registry an inventory was generated under became INSTANCE data —
-    # serialization stamps these fields, never the module-global, so a discovery inventory
-    # names the discovery registry and a legacy one the legacy registry. The defaults keep
-    # every legacy constructor exactly as it was.
+    # /2 (PR 4.2b B1): the registry an inventory was generated under is INSTANCE data —
+    # serialization stamps these fields, never a module-global, so an inventory always names
+    # the registry it was actually enumerated under. Only the discovery registry remains.
     inventory_version: str = "isar.action-inventory/2"
-    generator_registry_fingerprint: str = GENERATOR_REGISTRY_VERSION
-    generator_registry_manifest: tuple[tuple[str, int], ...] = GENERATOR_REGISTRY_MANIFEST
+    generator_registry_fingerprint: str = DISCOVERY_GENERATOR_REGISTRY_VERSION
+    generator_registry_manifest: tuple[tuple[str, int], ...] = field(
+        default_factory=lambda: tuple(tuple(row) for row in
+                                      registry_manifest(DISCOVERY_GENERATOR_REGISTRY)))
 
     def structural_problems(self) -> list[str]:
         """Registry-independent ways an inventory can fail to back its own completeness claim.
@@ -326,7 +294,7 @@ class ActionInventory:
                     f"{evaluated} evaluation(s) are recorded")
         return problems
 
-    def validate(self, registry: tuple[GeneratorSpec, ...] = GENERATOR_REGISTRY) -> list[str]:
+    def validate(self, registry: tuple[GeneratorSpec, ...] = DISCOVERY_GENERATOR_REGISTRY) -> list[str]:
         """Every way this inventory fails to be a valid proof for ``registry`` — empty list when valid.
 
         Adds the registry-dependent checks to :meth:`structural_problems`: a registered generator that

@@ -1,6 +1,6 @@
 {
   "schema": "isar.campaign-program/1",
-  "source_text": "Map the acoustic phonon from (2,0,0) to (3,0,0) to +-0.5 meV, overnight.",
+  "source_text": "Map the acoustic phonon from (2,0,0) to (3,0,0) to +-0.05 meV, overnight.",
   "steps": [
     {
       "id": "targeted-1",
@@ -114,7 +114,7 @@
             0.0
           ]
         ],
-        "tolerance_meV": 0.5,
+        "tolerance_meV": 0.05,
         "budget": {
           "kind": "counting_seconds",
           "amount": 28800.0
@@ -132,7 +132,7 @@
               "l": 0.0
             },
             "step_h": 0.05,
-            "tolerance_meV": 0.5,
+            "tolerance_meV": 0.05,
             "budget_hours": 8,
             "target_branch": "acoustic",
             "notes": "acoustic branch (2,0,0)->(3,0,0)"
@@ -160,10 +160,10 @@
               "sigma": 0.2
             },
             "slope_zc": {
-              "mean": 12.0,
-              "sigma": 12.0
+              "mean": 0.0,
+              "sigma": 18.0
             },
-            "confidence": 0.8,
+            "confidence": 1.0,
             "preset": "acoustic",
             "preset_version": "isar.hypothesis-presets/1"
           },
@@ -186,7 +186,7 @@
         ],
         "target_hypothesis": "acoustic",
         "hypothesis_source": "shipped_preset",
-        "hypothesis_fingerprint": "bc9bb3d6c5a489f8ca0380e20c3830f987318b98510bed7b0dadd86346403670",
+        "hypothesis_fingerprint": "428b8b8385f5e4f173a5d3fd7ce4b37088c3881cb4f2cd14cb108a3b779490e8",
         "steering": {
           "classification_weight": 1.0,
           "differentiation_tolerance_meV": null,
@@ -202,72 +202,13 @@
           "quicklook_ncount": 10000000,
           "production_batch_ncount": 25000000,
           "maximum_production_batches_per_q": 12,
-          "maximum_bridge_steps": 1,
           "dynamic_ncount": true,
           "max_ncount_per_scan": 10000000000,
           "ncount_growth_cap": 4.0,
           "tolerance_margin": 0.8,
           "interval_floor_window": 3,
           "interval_floor_min_improvement": 0.05,
-          "interval_floor_min_exposure_ratio": 2.0,
-          "scan_window_eig_mode": "authoritative"
-        },
-        "scan_window_eig": {
-          "contract": "isar.scan_window_eig_objective_config/o36.6",
-          "policy_set": {
-            "contract": "isar.qoi_distinction_policy_set/o36.5",
-            "policies": [
-              {
-                "contract": "isar.qoi_distinction_policy/o36.5",
-                "policy_id": "eig4_slice8_excitation_energy",
-                "policy_kind": "isar.scalar_absolute_partitions/o36.5",
-                "source_qoi": {
-                  "id": "excitation.energy",
-                  "unit": "meV"
-                },
-                "scope": {
-                  "kind": "campaign_configuration",
-                  "fingerprint": "db463ac4a04dd3f5fcd1bb49d5b2f756939d57520bc9adfce185e4ec9580dd9e",
-                  "annotation": {
-                    "campaign_name": "default scan-window EIG policy",
-                    "date": "2026-08-05",
-                    "experiment_description": "excitation energy at the restricted 0.5 meV absolute partition"
-                  }
-                },
-                "provenance": {
-                  "kind": "explicit_user_analysis/1",
-                  "rationale": "Reviewed Slice 8 V3 positive authority envelope",
-                  "source_id": "O41"
-                },
-                "variants": [
-                  {
-                    "variant_id": "primary_0p5_mev",
-                    "parameters": {
-                      "origin": 0.0,
-                      "bin_width": 0.5,
-                      "offsets": [
-                        0.0,
-                        0.25
-                      ]
-                    },
-                    "variant_fingerprint": "c2f991a69f30ebed05d953c67fbdbca8b9c59bf7eb20796d4aee56eba5eefd9f"
-                  }
-                ],
-                "policy_fingerprint": "c8a5c75c0d46bac384531e0804a4f3942b89f14716e6ef56b8938ec319acfb91"
-              }
-            ],
-            "policy_set_fingerprint": "f8bbaccff25b6ab870e7198f7514851d30663b5a866481b65dc5cab041c6b350"
-          },
-          "scoring_config": {
-            "contract": "isar.scan_window_shadow_scoring_config/o36.6",
-            "revision": "isar.scan_window_shadow_scoring/o36.6",
-            "simulation_count": 128,
-            "block_count": 8,
-            "max_runtime_variants": 8,
-            "seed_derivation_revision": "isar.scan_window_shadow_seed/o36.6",
-            "scoring_config_fingerprint": "c13778320ef113625e8a7784733d414d334d64908446db1334ef4a8f98ecc790"
-          },
-          "scan_window_eig_fingerprint": "67a850bedf0329663ea47944ae6e3f94de5e32d7796f310833a2ba72bffa8662"
+          "interval_floor_min_exposure_ratio": 2.0
         }
       }
     }

@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from isar_gui.plotspec_pg import clear_render, render_into
-from isar_gui.viewmodels.campaign import (analysis_readout, authority_iter_text, budget_readout,
+from isar_gui.viewmodels.campaign import (analysis_readout, budget_readout,
                                           current_activity_text, terminal_status_text)
 
 log = logging.getLogger(__name__)
@@ -140,11 +140,6 @@ class CampaignMonitor(QWidget):
             text = "no campaign yet"
         if state.converged is not None and state.n_grid:
             text += f"   ({state.converged}/{state.n_grid} converged)"
-        authority = state.scan_design_authority or {}
-        if authority:
-            text += (f"   EIG: {authority.get('selected_role', '—')} "
-                     f"({authority.get('decision_outcome', '—')})"
-                     f"{authority_iter_text(authority)}")
         self._status.setText(text)
         permille, fmt = budget_readout(state)
         self._budget_bar.setVisible(state.budget_amount is not None)

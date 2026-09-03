@@ -651,11 +651,11 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
     # per-draw mode energies, so a track revision changes it without any refit.
     evidence_update._resolve_target_projections(session, workspace.root / "data")
     if track is not None:
+        confirmed = sum(1 for row in track.get("assignments") or []
+                        if row.get("track_state") == "confirmed")
         summary.context_lines.append(
             f"branch track revision {track['revision']}: "
-            f"{len(track['frontiers']['confirmed_indices'])} connected point(s)")
-        if track["frontiers"].get("frontier_blocked"):
-            summary.context_lines.append("branch_ambiguity; frontier_blocked")
+            f"{confirmed} point(s) with a decided identity")
 
     # Persist cross-q views only after the authoritative prior has been rebuilt.
     evidence_update._store_branch_models(card.state, t_round)

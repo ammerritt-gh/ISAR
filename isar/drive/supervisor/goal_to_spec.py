@@ -21,7 +21,6 @@ sits in the runtime path of a number.
 from __future__ import annotations
 
 import copy
-from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -29,16 +28,7 @@ from typing import Any
 
 import isar.reduce.llm_client as _llm  # boundary carve-out: the shared LLMM HTTP plumbing only
 import isar.drive.objective as _obj
-from isar.drive.objective import (
-    ObjectiveSpec,
-    current_objective_comparison_scope,
-    resolve_hypothesis_snapshot,
-)
-from isar.eig.policy import (
-    canonical_scan_window_eig_policy_authoring,
-    compile_card_eig_policy_set,
-    policy_identity,
-)
+from isar.drive.objective import ObjectiveSpec, resolve_hypothesis_snapshot
 from isar.schema.campaign_program import (
     PROGRAM_SCHEMA,
     STEP_KINDS,
@@ -47,8 +37,6 @@ from isar.schema.campaign_program import (
     DiscoverAndMapSpec,
     targeted_program,
 )
-from isar.schema.eig_policy import ScanWindowEIGConfig
-from isar.schema.hypotheses import content_fingerprint
 import isar.schema.question_policy as _qpolicy
 
 Dispatcher = _llm.Dispatcher
@@ -132,7 +120,6 @@ FILE_SPEC_SCHEMA["properties"]["steering"] = {
         "quicklook_ncount": {"type": "integer"},
         "production_batch_ncount": {"type": "integer"},
         "maximum_production_batches_per_q": {"type": "integer"},
-        "maximum_bridge_steps": {"type": "integer"},
         "dynamic_ncount": {"type": "boolean"},
         "max_ncount_per_scan": {"type": "integer"},
         "ncount_growth_cap": {"type": "number"},
@@ -140,7 +127,6 @@ FILE_SPEC_SCHEMA["properties"]["steering"] = {
         "interval_floor_window": {"type": "integer"},
         "interval_floor_min_improvement": {"type": "number"},
         "interval_floor_min_exposure_ratio": {"type": "number"},
-        "scan_window_eig_mode": {"type": "string"},
     },
 }
 # Compatibility alias for callers/tests that imported the original public name.
@@ -274,7 +260,6 @@ class GoalParseError(ValueError):
 def goal_to_program(goal: str, *, dispatcher: Dispatcher | None = None,
                     defaults: dict | None = None,
                     card_hypotheses: dict[str, Any] | None = None,
-                    card_eig_policy_set: dict[str, Any] | None = None,
                     card_question_guidelines: dict[str, Any] | None = None,
                     user_policy_ask: dict[str, Any] | None = None,
                     endpoint: str | None = None, model_pin: str | None = None,
@@ -328,7 +313,7 @@ def goal_to_program(goal: str, *, dispatcher: Dispatcher | None = None,
                                     user_policy_ask=user_policy_ask)),),
             source_text=goal)
     spec = _build_spec(data["targeted"], merged, card_hypotheses=card_hypotheses,
-                       card_eig_policy_set=card_eig_policy_set)
+)
     return targeted_program(spec.to_dict(), source_text=goal)
 
 
@@ -371,8 +356,7 @@ def _discover_spec(data: dict, *,
 
 # --------------------------------------------------------------------------- LLM-free path
 def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec",
-                   card_hypotheses: dict[str, Any] | None = None,
-                   card_eig_policy_set: dict[str, Any] | None = None) -> ObjectiveSpec:
+                   card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
     """Build an :class:`ObjectiveSpec` from an already-parsed dict — no LLM, no file I/O.
 
     Accepts either the goal schema (``{"path": {"h_start", …}, "step_h", "tolerance_meV", …}``) or a
@@ -397,7 +381,6 @@ def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec"
         d,
         merged,
         card_hypotheses=card_hypotheses,
-        card_eig_policy_set=card_eig_policy_set,
     )
 
 
@@ -422,8 +405,7 @@ def make_program(spec: ObjectiveSpec, *, source: dict,
 
 # --------------------------------------------------------------------------- shared
 def _build_spec(data: dict, merged: dict, *,
-                card_hypotheses: dict[str, Any] | None = None,
-                card_eig_policy_set: dict[str, Any] | None = None) -> ObjectiveSpec:
+                card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
     tier = str(merged.get("tier", "deterministic"))
     budget = _budget(data, tier=tier)
     branch = str(data.get("target_branch", "acoustic"))
@@ -470,15 +452,6 @@ def _build_spec(data: dict, merged: dict, *,
     frozen = resolve_hypothesis_snapshot(
         branch, resolved_energy, card_hypotheses=card_hypotheses, goal_override=goal_override,
         steering_override=data.get("steering"))
-    final_steering = dict(frozen["steering"])
-    if final_steering.get("scan_window_eig_mode") == "authoritative":
-        # The policy set is bound only after the objective comparison scope exists.  Construct the
-        # temporary scope carrier in off mode, then freeze authoritative mode together with the
-        # compiled card policy in the single final replacement below.
-        construction_steering = {**final_steering, "scan_window_eig_mode": "off"}
-        frozen = {**frozen, "steering": construction_steering,
-                  "hypothesis_fingerprint": content_fingerprint(
-                      frozen["hypotheses"], construction_steering)}
     common = dict(tolerance_meV=float(data["tolerance_meV"]), budget=budget,
                   tier=tier,
                   analysis_limit_seconds=(data.get("analysis_limit_seconds", 3600.0)
@@ -510,103 +483,7 @@ def _build_spec(data: dict, merged: dict, *,
             h_start=float(p["h_start"]), h_end=float(p["h_end"]),
             k=float(p.get("k", 0.0)), l=float(p.get("l", 0.0)),
             step=float(data.get("step_h") or merged.get("step_h") or 0.05), **common)
-    scope = current_objective_comparison_scope(objective)
-    policy_set = compile_card_eig_policy_set(
-        _eig_policy_authoring(card_eig_policy_set, final_steering),
-        scope,
-        max_runtime_variants=objective.scan_window_eig.scoring_config.max_runtime_variants,
-    )
-    frozen = replace(
-        objective,
-        steering=final_steering,
-        hypothesis_fingerprint=content_fingerprint(objective.hypotheses, final_steering),
-        scan_window_eig=ScanWindowEIGConfig(
-            policy_set=policy_set,
-            scoring_config=objective.scan_window_eig.scoring_config,
-        ),
-    )
-    # The policy above was compiled against ``scope`` — the CONSTRUCTION-time scope (taken while
-    # steering was still ``off``, before the freeze above recomputed ``hypothesis_fingerprint``,
-    # which is itself part of the scope payload). SCENE-4 PR 4.4, D1 finding: whenever the freeze
-    # actually changes steering — now the common case, off -> authoritative by default — the true
-    # scope has already moved by the time ``frozen`` exists, so a policy bound to ``scope`` can
-    # never match ``frozen``'s own live scope (exactly the qoi_policy_missing "Test9 failure
-    # shape" ``rebind_scan_window_eig_policy`` exists to close). Rebind here rather than freeze an
-    # objective whose own compiled policy cannot serve it.
-    return rebind_scan_window_eig_policy(frozen, card_eig_policy_set)
-
-
-def _eig_policy_authoring(card_eig_policy_set, steering=None):
-    """The card's scan-window EIG authoring, or the canonical default when it declares none.
-
-    Compiled unconditionally, exactly as a declared card policy always was: ``ObjectiveSpec``
-    validates the authoritative profile on construction, so the policy has to be in place *before*
-    the mode can be switched on. Compiling it only for campaigns already in shadow/authoritative
-    would leave every ordinary campaign unable to turn EIG on at all — the failure this exists to
-    remove. In ``off`` mode the policy is carried and never consulted.
-    """
-    if card_eig_policy_set not in (None, {}):
-        return card_eig_policy_set
-    return canonical_scan_window_eig_policy_authoring()
-
-
-def rebind_scan_window_eig_policy(objective: ObjectiveSpec, card_eig_policy_set) -> ObjectiveSpec:
-    """Recompile the card's scan-window EIG policy against the objective's *current* scope.
-
-    A card policy binds to the current campaign configuration, so its compiled scope fingerprint is
-    only valid for the objective identity it was compiled from.  Anything that edits a scope-bearing
-    field after compilation (notably a steering change, which recomputes ``hypothesis_fingerprint``)
-    silently invalidates the binding: the policy still exists, it simply stops matching, and every
-    scan-window score then reports ``qoi_policy_missing`` for the whole campaign.  Recompiling from
-    the card authoring keeps the match exact while computing it from current truth.
-
-    Switching the mode on is also what first *earns* a policy set: an objective frozen in ``off``
-    mode carries none, so a ``--scan-window-eig-mode`` override compiles the card's authoring (or
-    the canonical default) here rather than leaving the campaign in a mode it cannot serve.
-    """
-    current = objective.scan_window_eig
-    if current.policy_set is None:
-        # An objective frozen before the canonical default existed carries no policy set. Backfill
-        # one only when the mode is actually on: an ``off`` objective has nothing to serve, and
-        # silently rewriting a frozen campaign's identity to add an unused policy is not a rebind.
-        if str((objective.steering or {}).get("scan_window_eig_mode", "off")) == "off":
-            return objective
-        authoring = _eig_policy_authoring(card_eig_policy_set)
-        if authoring in (None, {}):
-            return objective
-        scope = current_objective_comparison_scope(objective)
-        rebound = replace(objective, scan_window_eig=ScanWindowEIGConfig(
-            policy_set=compile_card_eig_policy_set(
-                authoring, scope,
-                max_runtime_variants=current.scoring_config.max_runtime_variants),
-            scoring_config=current.scoring_config))
-        if current_objective_comparison_scope(rebound) != scope:
-            raise ValueError("scan-window EIG policy binding changed objective comparison scope")
-        return rebound
-    if card_eig_policy_set in (None, {}):
-        # A campaign that never declared the table carries the canonical default, which can be
-        # recompiled from truth. Anything else is a hand-authored policy whose source is genuinely
-        # gone — substituting the default there would silently measure a different QoI partition.
-        card_eig_policy_set = canonical_scan_window_eig_policy_authoring()
-        default_set = compile_card_eig_policy_set(
-            card_eig_policy_set, current_objective_comparison_scope(objective),
-            max_runtime_variants=current.scoring_config.max_runtime_variants)
-        if policy_identity(default_set) != policy_identity(current.policy_set):
-            raise GoalParseError(
-                "the objective carries a hand-authored scan-window EIG policy set but its card "
-                "authoring source is unavailable, so the binding cannot be recomputed for the "
-                "current campaign configuration")
-    scope = current_objective_comparison_scope(objective)
-    policy_set = compile_card_eig_policy_set(
-        card_eig_policy_set,
-        scope,
-        max_runtime_variants=current.scoring_config.max_runtime_variants,
-    )
-    rebound = replace(objective, scan_window_eig=ScanWindowEIGConfig(
-        policy_set=policy_set, scoring_config=current.scoring_config))
-    if current_objective_comparison_scope(rebound) != scope:
-        raise ValueError("scan-window EIG policy binding changed objective comparison scope")
-    return rebound
+    return objective
 
 
 def _budget(data: dict, *, tier: str) -> dict[str, Any] | None:

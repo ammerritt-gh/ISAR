@@ -188,13 +188,12 @@ def test_frozen_hypothesis_snapshot_round_trips_and_detects_tampering():
 def test_new_snapshots_enable_dynamic_counting_but_legacy_fingerprint_stays_exact():
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
     assert frozen["steering"]["dynamic_ncount"] is True
-    assert frozen["steering"]["maximum_bridge_steps"] == 1
 
     old_policy = SteeringPolicy().to_dict()
     for key in ("dynamic_ncount", "max_ncount_per_scan", "ncount_growth_cap",
                 "tolerance_margin", "interval_floor_window",
                 "interval_floor_min_improvement", "interval_floor_min_exposure_ratio",
-                "maximum_bridge_steps"):
+                ):
         old_policy.pop(key)
     old_fingerprint = content_fingerprint(frozen["hypotheses"], old_policy)
     legacy = ObjectiveSpec(
@@ -210,7 +209,6 @@ def test_new_snapshots_enable_dynamic_counting_but_legacy_fingerprint_stays_exac
 def test_pre_bridge_snapshot_with_dynamic_counting_keeps_exact_fingerprint():
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
     old_policy = dict(frozen["steering"])
-    old_policy.pop("maximum_bridge_steps")
     old_fingerprint = content_fingerprint(frozen["hypotheses"], old_policy)
     legacy = ObjectiveSpec(
         path=[(2, 0, 0)], tolerance_meV=0.5,
