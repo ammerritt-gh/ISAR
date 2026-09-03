@@ -394,18 +394,26 @@ def test_a_planner_note_rides_on_the_line_and_is_loud():
 
 
 def test_a_point_held_back_by_identity_says_so_beside_its_width():
-    """A point can sit inside the bar on width and still not be answered, because the mass is spread
-    over rival identities. Showing only the half-width there reads as done when it is not."""
-    held = _rendered("eig_plan", _plan_payload(
-        intensity_scale_changed=False,
-        per_point=[{"hkl": [2.15, 0.0, 0.0], "halfwidth_meV": 0.03, "identified_mass": 0.71}]))
-    assert "\u00b10.03 but identified 0.71 \u2192 H=2.15" in held.text
+    """A MEASURED point can sit inside the bar on width and still not be answered, because the mass
+    is spread over rival identities, and showing only the half-width there reads as done when it is
+    not. A point with no candidate yet is not held back by identity -- it has no identity to be
+    unsure of -- and "identified 0.00" on every opening scan trains the operator to ignore the
+    clause exactly where it matters."""
+    def line(**point):
+        return _rendered("eig_plan", _plan_payload(
+            intensity_scale_changed=False,
+            per_point=[{"hkl": [2.15, 0.0, 0.0], **point}])).text
 
-    clear = _rendered("eig_plan", _plan_payload(
-        intensity_scale_changed=False,
-        per_point=[{"hkl": [2.15, 0.0, 0.0], "halfwidth_meV": 0.03, "identified_mass": 0.98}]))
-    assert "\u00b10.03 \u2192 H=2.15" in clear.text
-    assert "identified" not in clear.text
+    held = line(halfwidth_meV=0.03, identified_mass=0.71, n_candidates=2)
+    assert "\u00b10.03 but identified 0.71 \u2192 H=2.15" in held
+
+    clear = line(halfwidth_meV=0.03, identified_mass=0.98, n_candidates=1)
+    assert "\u00b10.03 \u2192 H=2.15" in clear
+    assert "identified" not in clear
+
+    unmeasured = line(halfwidth_meV=4.5, identified_mass=0.0, n_candidates=0)
+    assert "\u00b14.50 \u2192 H=2.15" in unmeasured
+    assert "identified" not in unmeasured
 
 
 def test_the_requested_dose_and_the_ranked_price_are_both_shown():

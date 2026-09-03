@@ -324,10 +324,14 @@ def _render_eig_plan(payload: dict, tail: str) -> tuple[str, str]:
     known, identified = _chosen_point(payload, chosen)
     known = _num(known, ".2f")
     prefix = f"\u00b1{known} \u2192 " if known is not None else ""
-    # A point can sit inside the bar on width and still not be answered, because the mass is spread
-    # over rival identities. Saying only the half-width there reads as "done" when it is not.
+    # A MEASURED point can sit inside the bar on width and still not be answered, because the
+    # mass is spread over rival identities, and saying only the half-width there reads as done
+    # when it is not. A point with no candidate yet is not held back by identity -- it has no
+    # identity to be unsure of -- and 'identified 0.00' on every opening scan trains the operator
+    # to ignore the clause exactly where it matters.
     held = _num(identified, ".2f")
-    if known is not None and held is not None and float(identified) < 0.9:
+    if (known is not None and held is not None and float(identified) < 0.9
+            and _chosen_n_candidates(payload, chosen)):
         prefix = f"\u00b1{known} but identified {held} \u2192 "
     score = _num(_per_million(chosen.get("score")), ".3g")
     rate = f", {score} nats/1e6 n" if score is not None else ""
@@ -376,12 +380,29 @@ def _intensity_scale_text(payload: dict) -> str:
 
 def _chosen_point(payload: dict, chosen: dict):
     """``(half-width, identified mass)`` for the chosen point, from the per-point rollup."""
+    point = _chosen_per_point(payload, chosen)
+    if point is None:
+        return None, None
+    return point.get("halfwidth_meV"), point.get("identified_mass")
+
+
+def _chosen_per_point(payload: dict, chosen: dict):
+    """The chosen design's own row in the per-point rollup, or ``None``."""
     index = chosen.get("grid_index")
     for point in (payload.get("per_point") or []):
         if isinstance(point, dict) and point.get("grid_index", index) == index:
             if point.get("hkl") == chosen.get("hkl"):
-                return point.get("halfwidth_meV"), point.get("identified_mass")
-    return None, None
+                return point
+    return None
+
+
+def _chosen_n_candidates(payload: dict, chosen: dict) -> int:
+    """How many modes have been fitted at the chosen point; 0 means never measured."""
+    point = _chosen_per_point(payload, chosen) or {}
+    try:
+        return int(point.get("n_candidates") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _per_million(score):
