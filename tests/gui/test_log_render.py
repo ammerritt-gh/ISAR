@@ -421,3 +421,15 @@ def test_the_requested_dose_and_the_ranked_price_are_both_shown():
     only the price explains why a cheap-looking design lost."""
     line = _rendered("eig_plan", _plan_payload(intensity_scale_changed=False))
     assert "13 pts \u00d7 10M = 1.3e+08 n, price 1.8e+08" in line.text
+
+
+def test_scan_landed_reads_before_any_fit_line():
+    """The event the drive logs the moment a scan is in the ledger and before the fit activity
+    opens — the operator sees the data before "Started fast fit at q" (owner, 2026-09-03)."""
+    from isar_gui.log_render import render_event
+    row = render_event({"ts": 1.0, "kind": "scan_landed",
+                        "payload": {"iter": 3, "q": [2.05, 0.0, 0.0], "n_points": 14,
+                                    "ncount": 5_000_000, "e_lo": -0.6, "e_hi": 2.0}})
+    assert row is not None and row.severity == "notice"
+    assert row.text.startswith("Scan landed at ")
+    assert "14 points" in row.text and "E -0.60…2.00 meV" in row.text

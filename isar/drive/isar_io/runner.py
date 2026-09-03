@@ -138,6 +138,15 @@ class SubprocessRunner:
             cmd.append("--finish-initial-wave")
         return _exec_run(cmd, timeout)
 
+    def ingest(self, workspace: str | Path, data_paths: Sequence[str | Path], *,
+               timeout: float | None = None) -> RunResult:
+        """Run ``isar ingest <data...> --workspace <workspace>``: parse into the ledger, no fit."""
+        paths = [str(p) for p in data_paths]
+        if not paths:
+            raise ValueError("SubprocessRunner.ingest needs at least one data path")
+        return _exec_run([sys.executable, "-m", "isar.cli.main", "ingest", *paths,
+                          "--workspace", str(workspace)], timeout)
+
     def close(self) -> None:
         """No-op — the subprocess runner spawns per job and holds nothing to release."""
 
@@ -228,6 +237,20 @@ def runner_accepts(runner, name: str) -> bool:
         return True
     return name in parameters or any(item.kind == inspect.Parameter.VAR_KEYWORD
                                      for item in parameters.values())
+
+
+def ingest_new(runner, workspace, data_paths) -> RunResult | None:
+    """Parse ``data_paths`` into the ledger through the runner seam, without fitting.
+
+    The campaign calls this the moment a scan lands and BEFORE it opens the fit activity, so the
+    session ledger — and every viewer that reads it — shows the scan first and "fitting at q" is
+    never said of data nobody can see (owner, GUI rehearsal 2026-09-03). ``None`` when the runner
+    has no ``ingest`` (a bare callable / test double): the fit that follows ingests the same files
+    itself, so nothing is lost but the early sighting.
+    """
+    if not hasattr(runner, "ingest"):
+        return None
+    return runner.ingest(workspace, list(data_paths))
 
 
 def refresh_analysis(runner, workspace, data_dirs, *,

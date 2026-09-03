@@ -381,3 +381,30 @@ def test_refresh_analysis_reproduces_each_loop_call_site_kwargs():
         "force_masters": None, "certification_manifest": None,
         "certification_request": "req.json",
         "analysis_allowance_seconds": 30.0, "finish_initial_wave": False}]
+
+
+# --------------------------------------------------------------------------- early ingest seam
+def test_ingest_new_is_a_no_op_for_a_runner_without_ingest():
+    """A bare callable / test double has no ``ingest``; the fit that follows ingests the same files,
+    so the seam returns None rather than failing the campaign."""
+    from isar.drive.isar_io.runner import as_runner, ingest_new
+    calls = []
+    runner = as_runner(lambda ws, paths, extra_args=None: calls.append(paths))
+    assert ingest_new(runner, "ws", ["scan.json"]) is None
+    assert calls == []                       # never routed through run()
+
+
+def test_subprocess_runner_ingest_runs_isar_ingest(monkeypatch):
+    """``isar ingest <paths> --workspace ws`` — parse into the ledger, never fit."""
+    import isar.drive.isar_io.runner as runner_mod
+    seen = {}
+
+    def fake_exec(cmd, timeout):
+        seen["cmd"] = list(cmd)
+        return runner_mod.RunResult(0, "", "")
+
+    monkeypatch.setattr(runner_mod, "_exec_run", fake_exec)
+    runner_mod.SubprocessRunner().ingest("WS", ["a.json", "b.json"])
+    assert seen["cmd"][1:] == ["-m", "isar.cli.main", "ingest", "a.json", "b.json",
+                               "--workspace", "WS"]
+    assert "run" not in seen["cmd"] and "--errors" not in seen["cmd"]

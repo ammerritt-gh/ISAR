@@ -479,9 +479,22 @@ def _render(kind: str, payload: dict) -> tuple[str, str]:
         return _render_activity(kind, payload)
     if kind == "feasibility_trim":
         return _render_feasibility_trim(payload, tail)
+    if kind == "scan_landed":
+        return _render_scan_landed(payload, tail)
     # Unknown kinds surface rather than vanish: the log vocabulary grows upstream, and an operator
     # seeing "event: something_new" can still expand the row for the payload.
     return f"event: {kind}", "info"
+
+
+def _render_scan_landed(payload: dict, tail: str) -> tuple[str, str]:
+    """The scan is on disk and in the ledger; the fit has not started. Read before any
+    "Started … fit at q" line for the same q — that ordering is the point of the event."""
+    at = f" at {q_text(payload['q'])}" if payload.get("q") is not None else ""
+    n = payload.get("n_points")
+    lo, hi = _num(payload.get("e_lo"), ".2f"), _num(payload.get("e_hi"), ".2f")
+    window = f", E {lo}…{hi} meV" if lo is not None and hi is not None else ""
+    points = f", {int(n)} points" if isinstance(n, (int, float)) else ""
+    return f"Scan landed{at}{points}{window}{tail}", "notice"
 
 
 def _render_feasibility_trim(payload: dict, tail: str) -> tuple[str, str]:

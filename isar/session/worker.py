@@ -124,6 +124,25 @@ def _run_job(workspace_path, req) -> tuple[dict, dict]:
     return reply_summary, timings
 
 
+def _ingest_job(workspace_path, req) -> dict:
+    """Parse ``data_paths`` into the ledger WITHOUT fitting — the same step ``isar ingest`` runs.
+
+    The drive calls this the moment a scan lands, before it opens the fit activity, so the ledger
+    (and every viewer reading it) shows the scan before "fitting at q" is ever said of it. Saves
+    the machine-owned session only; never the card policy.
+    """
+    from isar.session import ingest
+    from isar.session.workspace import Workspace
+
+    ws = Workspace.open(workspace_path)
+    card, session = ws.load()
+    report = ingest.ingest_batch(card, session, [str(p) for p in (req.get("data_paths") or [])],
+                                 data_dir=ws.root / "data")
+    if report.dirty:
+        session.save(ws.session_path)
+    return {"added": report.added, "updated": report.updated, "unchanged": report.unchanged}
+
+
 def serve(workspace_path, stdin, proto_out) -> int:
     """JSONL request/reply loop. Returns 0 on ``shutdown`` or stdin EOF.
 
@@ -152,6 +171,16 @@ def serve(workspace_path, stdin, proto_out) -> int:
             return 0
         if cmd == "ping":
             _reply(proto_out, {"id": req.get("id"), "ok": True})
+            continue
+        if cmd == "ingest":
+            try:
+                summary = _ingest_job(workspace_path, req)
+                _reply(proto_out, {"id": req.get("id"), "ok": True, "summary": summary,
+                                   "timings": None, "error": None})
+            except Exception as e:  # noqa: BLE001 — job failure: report it, worker stays alive
+                _reply(proto_out, {"id": req.get("id"), "ok": False, "summary": None, "timings": None,
+                                   "error": {"type": type(e).__name__, "message": str(e),
+                                             "traceback": traceback.format_exc()}})
             continue
         if cmd == "run":
             try:

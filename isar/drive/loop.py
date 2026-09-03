@@ -93,7 +93,7 @@ from isar.drive.instrument.request_realization import (
 )
 from isar.drive.isar_io.readers import (read_card_state, read_master_rows, read_results_csv,
                                         read_run_timings)
-from isar.drive.isar_io.runner import SubprocessRunner, as_runner, refresh_analysis
+from isar.drive.isar_io.runner import SubprocessRunner, as_runner, ingest_new, refresh_analysis
 from isar.drive.isar_io.runner import init_isar as _default_init_isar
 from isar.drive.isar_io.worker_client import WorkerRunner
 from isar.drive.isar_io.scan_writer import save_scan_json, scan_json_path
@@ -2359,6 +2359,22 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
     _persist_campaign_target(cfg.workspace, objective)
     _persist_acquisition_provenance(cfg.workspace, submission_payload)
     tracks_before = _read_branch_tracks(cfg.workspace)
+
+    # The scan is shown the moment it lands; its fit is drawn over it when the fit completes
+    # (owner, 2026-09-03). Parse it into the ledger NOW, before the fit activity is announced, so
+    # a viewer never reads "fitting at q" of data it cannot see. Best effort: the fit that follows
+    # ingests the same file itself, so a failure here costs only the early sighting.
+    with timed(cfg.log_path, "isar_ingest", iteration=it):
+        try:
+            ingest_new(cfg.runner, cfg.workspace, [scan_path])
+        except Exception as error:  # noqa: BLE001 — never let the sighting block the fit
+            log_event(cfg.log_path, "exception", {
+                "action": "early_ingest_failed", "iter": it, "job_id": job_id,
+                "hkl": [proposal.h, proposal.k, proposal.l], "error": str(error)})
+    log_event(cfg.log_path, "scan_landed", {
+        "iter": it, "job_id": job_id, "q": [proposal.h, proposal.k, proposal.l],
+        "n_points": int(executed_points), "ncount": int(proposal.ncount),
+        "e_lo": float(proposal.e_lo), "e_hi": float(proposal.e_hi)})
 
     scan_tier, tier = _errors_tiers_for(proposal, cfg.workspace, cfg)
     promoted = proposal.kind in PRODUCTION_KINDS and tier in ("full", "bayes")

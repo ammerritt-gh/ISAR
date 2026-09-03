@@ -696,3 +696,19 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     then produced the same program as the earlier compiler, byte for byte on every field that
     matters. A retry would not have helped (4/4), and a pre-compiled program is not "enter the
     sentence, hit go".
+
+32. **GUI rehearsal, 2026-09-03 evening — two changes from the owner at the screen.** The
+    rehearsal itself ran as specified (sentence in, scan within seconds, windows narrowing,
+    anchors escalating, on the same trajectory as the CLI runs). (a) *The scan must be seen
+    before "fitting at q" is said of it.* The drive logged the fit activity right after saving the
+    scan file, and the ledger only learned of the scan inside the worker's `run` (ingest, then fit)
+    — so the feed read "Started fast fit at q" over an empty plot. The worker now has an
+    `ingest` command (the same step as `isar ingest`), the runner seam an `ingest_new` that no-ops
+    for doubles without it, and the loop parses the landed scan into the ledger and logs
+    `scan_landed` (rendered "Scan landed at q, N points, E lo…hi meV") *before* it opens the fit
+    activity. Best effort: a failed early ingest is logged and the fit's own ingest still runs.
+    (b) *The dispersion view's green dots and grey line were invisible.* The pyqtgraph backend
+    mirrors the matplotlib palette byte for byte (the legend-parity pin) — mid greys and CSS green
+    chosen for a white canvas — but pyqtgraph draws on black by default. The canvas is now white
+    with black foreground (`plotspec_pg`, one config call) rather than a second palette to keep in
+    step. Both need a GUI restart to show; the campaign it is running is unaffected.
