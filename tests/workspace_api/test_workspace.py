@@ -126,6 +126,38 @@ def test_master_groups_and_pooled_spectrum_round_trip(make_ws):
     assert spectrum.counts.tolist() == [0.0, 4.0, 9.0]
     assert spectrum.yerr.tolist() == [0.0, 2.0, 3.0]  # no zero-count floor
     assert spectrum.mask.tolist() == [True, False, True]
+    # Uniform monitor: the exposure frame is the identity and the reference is that monitor.
+    assert spectrum.exposure_reference == 10.0
+    assert spectrum.exposure_scale.tolist() == [1.0, 1.0, 1.0]
+    assert spectrum.counts_ref.tolist() == [0.0, 4.0, 9.0]
+
+
+def test_pooled_spectrum_exposure_frame_follows_the_fitter(make_ws):
+    """A member-union grid has a different ΣM per point. The master fit models ΣN_i as
+    (ΣM_i / median ΣM) x f(E_i), so the reader exposes that scale and the counts per
+    reference monitor — the frame in which the persisted curve f(E) is the expected count.
+    Raw ΣN drawn against f(E) was off by the local ratio (3.3x on a real 8-member master)."""
+    root = make_ws(rows=[
+        {"scan_id": "master:q2", "scan": 9000001, "detector": "det", "status": "fitted",
+         "h": 2.0, "k": 0.0, "l": 0.0, "T": 200.0, "omega0": 5.1, "pooled": "True",
+         "n_members": 3, "members": "7;8;9", "spectrum_ref": "data/pooled/abc.json"}])
+    pooled = root / "data" / "pooled" / "abc.json"
+    pooled.parent.mkdir(parents=True)
+    pooled.write_text(json.dumps({
+        "schema": "isar.pooled_spectrum/1", "energy": [-1.0, 0.0, 1.0, 2.0],
+        "counts": [3.0, 8.0, 12.0, 0.0], "variance": [3.0, 8.0, 12.0, 0.0],
+        "monitor": [5.0, 10.0, 20.0, 0.0], "mask": [True, True, True, False],
+        "members": [["tavi", 7, "det"], ["tavi", 8, "det"], ["tavi", 9, "det"]],
+        "n_members": 3,
+    }), encoding="utf-8")
+    spectrum = Workspace.open(root).pooled_spectrum("data/pooled/abc.json")
+    assert spectrum.exposure_reference == 10.0  # median of the kept positive ΣM
+    assert spectrum.exposure_scale.tolist() == [0.5, 1.0, 2.0, 0.0]
+    np.testing.assert_allclose(spectrum.counts_ref[:3], [6.0, 8.0, 6.0])
+    np.testing.assert_allclose(
+        spectrum.yerr_ref[:3], [np.sqrt(3.0) / 0.5, np.sqrt(8.0), np.sqrt(12.0) / 2.0])
+    assert np.isnan(spectrum.counts_ref[3]) and np.isnan(spectrum.yerr_ref[3])  # unmeasured
+    assert spectrum.counts.tolist() == [3.0, 8.0, 12.0, 0.0]  # raw ΣN untouched
 
 
 def test_master_group_marks_unpublished_acquisition_stale(make_ws):

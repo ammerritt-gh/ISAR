@@ -55,6 +55,11 @@ WORKSPACE_API_ALLOWED = {
     # the predictive producer and evaluator use, so a workspace curve cannot disagree with a stored
     # prediction.
     "isar.analyze.model_manifest",
+    # The ONE definition of the exposure frame a pooled master was fitted in (``normalized_exposure``:
+    # per-point ΣM over the kept median ΣM). The facade exposes that scale on the pooled spectrum so
+    # every display draws the master in the frame the fitter used; a second median rule here would
+    # be exactly the drift that put the drawn curve 3.3× under the data. numpy + schema only.
+    "isar.analyze.context",
     # The ONE strict predictive-artifact validator (ADR-020). The facade must run exactly the same
     # checks as the arbitrary-grid evaluator and the drive loop, so it imports the validator rather
     # than maintaining its own subset — which is precisely how the three readers drifted apart.

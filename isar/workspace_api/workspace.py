@@ -376,9 +376,23 @@ class Workspace:
         return groups
 
     def pooled_spectrum(self, fit_or_ref):
-        """Load one validated pooled-spectrum blob; return ``None`` for a legacy master."""
+        """Load one validated pooled-spectrum blob; return ``None`` for a legacy master.
+
+        Besides the raw ΣN ``counts`` the namespace carries the exposure frame the master fit used:
+        ``exposure_scale`` (per-point ΣM over the kept median ΣM, 0 where no member measured) and
+        ``exposure_reference`` (that median), from the same helper the fitter calls
+        (:func:`isar.analyze.context.normalized_exposure`). ``counts_ref``/``yerr_ref`` are the
+        counts and Poisson whiskers divided by that scale — the frame in which the persisted model
+        curve is the expected count, so a display in this frame needs no per-point rescaling of the
+        curve. A member-union grid has a different ΣM at every point (each energy is covered by a
+        different subset of members); raw ΣN drawn against the model curve is therefore off by the
+        local scale — up to 3.3× on a real optic-phonon master — which is the reader defect this
+        frame removes. Points with ``exposure_scale == 0`` are NaN in the ``_ref`` arrays.
+        """
         from types import SimpleNamespace
         import numpy as np
+
+        from isar.analyze.context import normalized_exposure
 
         ref = (fit_or_ref.spectrum_ref if hasattr(fit_or_ref, "spectrum_ref") else fit_or_ref)
         if not ref:
@@ -415,10 +429,18 @@ class Workspace:
             raise ValueError(f"pooled spectrum arrays contain non-finite values in {ref!r}")
         if np.any(counts < 0.0) or np.any(variance < 0.0) or np.any(monitor < 0.0):
             raise ValueError(f"pooled spectrum counts, variance, and monitor must be nonnegative in {ref!r}")
+        yerr = np.sqrt(np.clip(variance, 0.0, None))
+        scale, reference = normalized_exposure(monitor, mask)
+        if scale is None:
+            scale = np.zeros(counts.shape, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            counts_ref = np.where(scale > 0, counts / scale, np.nan)
+            yerr_ref = np.where(scale > 0, yerr / scale, np.nan)
         return SimpleNamespace(
-            x=energy, counts=counts,
-            yerr=np.sqrt(np.clip(variance, 0.0, None)), variance=variance,
+            x=energy, counts=counts, yerr=yerr, variance=variance,
             monitor=monitor, mask=mask,
+            exposure_scale=scale, exposure_reference=reference,
+            counts_ref=counts_ref, yerr_ref=yerr_ref,
             members=tuple(tuple(item) for item in payload.get("members") or ()))
 
     def _side_artifact(self, ref, subdirectory: str, label: str):
