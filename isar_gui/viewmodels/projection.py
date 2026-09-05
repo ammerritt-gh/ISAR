@@ -354,3 +354,68 @@ def nearest_point(points, x, y, tol):
         if best_d is None or d < best_d:
             best_d, best = d, payload
     return best if (best_d is not None and best_d <= tol * tol) else None
+
+
+# ---- pooled masters as the plane's measured columns --------------------------------------------
+def pooled_masters(ws, fits) -> list:
+    """Every collated master with a persisted spectrum whose members sit among ``fits``.
+
+    A master is the collated group, not its fit: it is located through the ledger entry's ``pooled``
+    provenance and ``members`` (:attr:`Workspace.scans`), never through a fit row, so a master whose
+    fit was withheld, underpowered or failed still shows its ΣN. Each item is a namespace with
+    ``members`` (the member FitViews present in ``fits`` — they carry the plane position and T),
+    ``master`` (the master's own FitView when it has one, else ``None``), ``spectrum``
+    (:meth:`Workspace.pooled_spectrum`), ``scan_id``, ``scan_number`` and ``member_ids``. An
+    unreadable spectrum is logged and skipped — never silently drawn from a member instead.
+    """
+    import logging
+    from types import SimpleNamespace
+
+    log = logging.getLogger(__name__)
+    by_unit = {fv.unit_id: fv for fv in fits if fv.unit_id and not fv.pooled}
+    by_master = {fv.unit_id: fv for fv in fits if fv.unit_id and fv.pooled}
+    out = []
+    for sv in getattr(ws, "scans", ()) or ():
+        prov = getattr(sv, "provenance", None) or {}
+        ref = prov.get("spectrum_ref")
+        if not prov.get("pooled") or not ref:
+            continue
+        member_ids = [":".join(str(part) for part in member) for member in prov.get("members") or ()]
+        members = [by_unit[mid] for mid in member_ids if mid in by_unit]
+        if not members:
+            continue  # none of its members is on this plane (other T, or outside the projection)
+        try:
+            spectrum = ws.pooled_spectrum(ref)
+        except (ValueError, OSError) as exc:
+            log.warning("pooled spectrum for %s unreadable, no column drawn: %s", sv.scan_id, exc)
+            continue
+        if spectrum is None:
+            continue
+        out.append(SimpleNamespace(
+            members=members, master=by_master.get(sv.scan_id), spectrum=spectrum,
+            scan_id=sv.scan_id, scan_number=sv.scan_number, member_ids=member_ids))
+    return out
+
+
+def common_exposure_reference(spectra) -> float | None:
+    """One monitor value every displayed master is normalised to: the median kept ΣM over all of
+    their points. Masters pool different numbers of members with different exposures, so raw ΣN
+    columns are not comparable across q; counts per common reference monitor are."""
+    kept = [np.asarray(s.monitor, float)[np.asarray(s.mask, bool) & (np.asarray(s.monitor, float) > 0)]
+            for s in spectra]
+    values = np.concatenate(kept) if kept else np.zeros(0)
+    return float(np.median(values)) if values.size else None
+
+
+def counts_per_reference(spectrum, reference):
+    """``(values, yerr)`` of a pooled spectrum expressed as counts per ``reference`` monitor;
+    NaN where no member measured (ΣM = 0 or masked), so a renderer leaves those cells empty."""
+    monitor = np.asarray(spectrum.monitor, float)
+    counts = np.asarray(spectrum.counts, float)
+    yerr = np.asarray(spectrum.yerr, float)
+    keep = np.asarray(spectrum.mask, bool) & (monitor > 0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        scale = monitor / float(reference)
+        values = np.where(keep, counts / scale, np.nan)
+        errors = np.where(keep, yerr / scale, np.nan)
+    return values, errors

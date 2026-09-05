@@ -237,14 +237,32 @@ class WaterfallViewModel(ViewModel):
 
     # -- waterfall mode --------------------------------------------------------
     def _build_waterfall(self, fits, varying) -> ps.PlotSpec:
+        # One trace per T bin. The trace is the pooled MASTER wherever the collated group has a
+        # persisted spectrum (located through its members, never through its fit — a withheld or
+        # failed master fit still shows its data); a bin without one keeps the first physical fit.
+        masters = projection.pooled_masters(self._ws, fits)
+        reference = projection.common_exposure_reference([m.spectrum for m in masters])
+        master_by_t: dict = {}
+        for m in masters:
+            T = m.members[0].T
+            if T is not None:
+                master_by_t.setdefault(round(T, 6), m)
         by_t: dict = {}
         for fv in fits:
             if fv.T is None:
                 continue
-            by_t.setdefault(round(fv.T, 6), fv)  # one trace per T bin (first fit wins)
+            by_t.setdefault(round(fv.T, 6), fv)
 
-        t_bins = sorted(by_t)
-        traces = [self._trace_for(by_t[T], T) for T in t_bins]
+        t_bins = sorted(set(by_t) | set(master_by_t))
+        traces, owners = [], []
+        for T in t_bins:
+            if T in master_by_t:
+                m = master_by_t[T]
+                traces.append(self._master_trace(m, T, reference))
+                owners.append(m.master if m.master is not None else m.members[0])
+            else:
+                traces.append(self._trace_for(by_t[T], T))
+                owners.append(by_t[T])
 
         # Auto heuristic: 1.2x the largest trace amplitude (max-min of counts/curve), so adjacent
         # traces separate cleanly without the user having to tune it by hand; still user-adjustable
@@ -253,16 +271,46 @@ class WaterfallViewModel(ViewModel):
             self._effective_offset = self._auto_offset_step(traces)
         offset_step = self.offset_step
 
-        self._trace_points = [self._trace_click_point(tr, i * offset_step, by_t[T])
-                              for i, (T, tr) in enumerate(zip(t_bins, traces))]
+        self._trace_points = [self._trace_click_point(tr, i * offset_step, fv)
+                              for i, (fv, tr) in enumerate(zip(owners, traces))]
 
         q = self._selected_q
         axis = projection.AXIS[varying]
         title = f"waterfall · {axis}={_g(q)}" if q is not None else "waterfall"
+        ylabel = (f"counts per {reference:g} monitor (offset per trace)" if reference
+                  else "counts (offset per trace)")
         return builders.waterfall_spec(
             traces=traces, offset_step=offset_step, q=q, axis_label=axis, title=title,
-            meta={"varying": varying, "selected_q": q, "temperatures": sorted(by_t)},
+            ylabel=ylabel,
+            meta={"varying": varying, "selected_q": q, "temperatures": t_bins,
+                  "exposure_reference": reference},
         )
+
+    def _master_trace(self, m, T, reference) -> dict:
+        """A pooled master's trace: its ΣN as counts per the shared ``reference`` monitor, and the
+        delivered curve re-expressed at that reference. The stored curve f(E) is the expected count
+        at the master's OWN reference (the median ΣM of its union grid, the frame its fit used), so
+        one constant factor moves it to the shared frame; drawing raw ΣN against f(E) would be off by
+        the local exposure ratio wherever members cover different windows."""
+        values, yerr = projection.counts_per_reference(m.spectrum, reference)
+        keep = np.isfinite(values)
+        energy = np.asarray(m.spectrum.x, float)[keep]
+        curve_x = curve_total = None
+        if m.master is not None:
+            fine = self._fine_grid(m.master, energy)
+            if fine is not None:
+                try:
+                    curve = self._ws.evaluate_fit(m.master, x_eval=fine)
+                except (KeyError, ValueError, OSError):
+                    curve_x = curve_total = None
+                else:
+                    own = m.spectrum.exposure_reference or reference
+                    curve_x = curve.x
+                    curve_total = np.asarray(curve.total, float) * (float(reference) / float(own))
+        n_members = len(m.spectrum.members) or (m.master.n_members if m.master else None)
+        return {"label": f"T={_g(T)} K", "x": energy, "counts": values[keep], "yerr": yerr[keep],
+                "curve_x": curve_x, "curve_total": curve_total,
+                "pooled": True, "n_members": n_members}
 
     def _trace_for(self, fv, T) -> dict:
         pooled = bool(fv.pooled)

@@ -523,13 +523,24 @@ a persistent legend like `plane (H, 1, 0) × E — integrating |L| < 0.02, |K−
 - **Heatmap (item 2):** measured strips render as strips; gaps render as gaps. **No
   interpolation by default.** An optional smoothed/kriged surface is a *model overlay*,
   toggled explicitly and labeled as a model — the same discipline as everywhere else in ISAR.
-  Conservative-by-construction applies to pixels. One high-contrast unfilled double outline
-  marks the globally latest physical submission with a completed matching analysis, joined to
-  visible strips by `acquisition_id`; pending/failed work, pooled products, and
-  certification-only analyses are excluded. The outline spans the union of displayed strip
-  widths and measured energy extrema. If that global acquisition is outside the selected
-  temperature/projection slice, nothing is drawn. Physical-result order is a legacy fallback
-  only when detailed event identity is absent.
+  Conservative-by-construction applies to pixels. **The column at a q is the collated master**
+  (2026-09-05): its persisted ΣN expressed as counts per one plane-wide reference monitor (the
+  median kept ΣM over all displayed masters), so columns pooling different member counts and
+  exposures are comparable. The master is located through its members in the ledger, never
+  through its fit row, so a withheld or failed master fit still shows its data. Per-scan
+  columns draw only at a q with no persisted master (separate collation, or a workspace
+  predating the pooled-spectrum artifact); before this rule the member columns of one q stacked
+  at the same x and the most recent scan silently covered the rest. The same frame governs the
+  waterfall trace and the inspector's pooled data: the master fit models ΣN_i as
+  (ΣM_i / reference) × f(E_i) on the member-union grid, so the persisted curve f(E) is the
+  expected count *per reference monitor*, and raw ΣN drawn against it is off by the local
+  exposure ratio (3.3× on a real 8-member optic master). One high-contrast unfilled double
+  outline marks the globally latest physical submission with a completed matching analysis,
+  joined to visible strips by `acquisition_id` — directly, or through the master column that
+  pools it; pending/failed work and certification-only analyses are excluded. The outline spans
+  the union of displayed strip widths and measured energy extrema. If that global acquisition is
+  outside the selected temperature/projection slice, nothing is drawn. Physical-result order is
+  a legacy fallback only when detailed event identity is absent.
 - **Overlay grammar:** each result is one composed glyph, classified by the shared Qt-free
   display state:
   - small filled green circle — usable individual evidence;

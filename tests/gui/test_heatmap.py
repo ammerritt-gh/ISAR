@@ -49,7 +49,8 @@ _SPECS = [
 ]
 
 
-def _make(make_ws, *, with_master: bool = False, specs=_SPECS) -> Workspace:
+def _make(make_ws, *, with_master: bool = False, master_spectrum: bool = False,
+          specs=_SPECS) -> Workspace:
     scans, rows, data = {}, [], []
     for s in specs:
         T = s.get("T", 200.0)
@@ -78,7 +79,24 @@ def _make(make_ws, *, with_master: bool = False, specs=_SPECS) -> Workspace:
         rows.append({"scan": 10, "detector": "det", "sample": "tavi", "T": 200.0,
                      "h": 2.1, "k": 0.0, "l": 0.0, "status": "fitted",
                      "pooled": True, "n_members": 3})
+        if master_spectrum:
+            # The collated group's persisted ΣN: pools scan 2 (the H=2.1 member); its union
+            # grid is covered by ΣM=2 everywhere except the last four points (ΣM=4), so the
+            # plane's normalisation to the common reference (median ΣM = 2) halves those.
+            scans["tavi:10:det"]["provenance"].update({
+                "pooled": True, "members": [["tavi", 2, "det"]],
+                "spectrum_ref": "data/pooled/m.json"})
+            rows[-1]["spectrum_ref"] = "data/pooled/m.json"
     root = make_ws(scans=scans, rows=rows, data_files=data)
+    if with_master and master_spectrum:
+        import json
+        pooled = root / "data" / "pooled" / "m.json"
+        pooled.parent.mkdir(parents=True, exist_ok=True)
+        counts = _counts(5.0)
+        pooled.write_text(json.dumps({
+            "schema": "isar.pooled_spectrum/1", "energy": list(_X), "counts": counts,
+            "variance": counts, "monitor": [2.0] * 17 + [4.0] * 4, "mask": [True] * 21,
+            "members": [["tavi", 2, "det"]], "n_members": 1}), encoding="utf-8")
     return Workspace.open(root)
 
 
@@ -178,9 +196,42 @@ def test_pooled_master_on_overlay_but_not_strips(make_ws):
     members = [s for s in vm.spec.series
                if s.glyph is Glyph.INDIVIDUAL_VALID]
     assert len(members) == 1 and len(members[0].x) == 2
-    # ...and the master contributes NO strip (no persisted spectrum): still 3 strips.
+    # ...and a master WITHOUT a persisted spectrum (pre-artifact workspace) contributes no
+    # strip; its member's own column stays: still 3 strips.
     assert len(vm.spec.strips) == 3
     assert vm.spec.markers == []
+
+
+def test_master_with_persisted_spectrum_is_the_column_at_its_q(make_ws):
+    """The plane's column at a q is the collated MASTER, normalised to one plane-wide
+    reference monitor, and it replaces its members' columns (which would otherwise stack at
+    the same x with the latest scan on top). The master is found through its members, not
+    its fit row."""
+    ws = _make(make_ws, with_master=True, master_spectrum=True)
+    vm = HeatmapViewModel(ws)
+    strips = vm.spec.strips
+    assert sorted(round(s.x_center, 3) for s in strips) == [2.0, 2.1, 2.2]  # one per q
+    master = next(s for s in strips if abs(s.x_center - 2.1) < 1e-9)
+    assert master.meta["pooled"] is True
+    assert master.meta["unit_id"] == "tavi:10:det"
+    assert master.meta["member_unit_ids"] == ["tavi:2:det"]
+    counts = np.asarray(_counts(5.0))
+    # median ΣM over the union grid is 2 -> reference 2: ΣM=2 points are raw ΣN, ΣM=4 halve.
+    np.testing.assert_allclose(master.values[:17], counts[:17])
+    np.testing.assert_allclose(master.values[17:], counts[17:] / 2.0)
+    assert vm.spec.value_label == "counts per 2 monitor"
+    # The member's own column is gone (the master stands for it); other q's stay per-scan.
+    assert all(not s.meta.get("pooled") for s in strips if abs(s.x_center - 2.1) > 1e-9)
+
+
+def test_latest_acquisition_box_resolves_through_the_master_column(make_ws):
+    """With no detailed driver events the legacy fallback is the last physical result; when
+    that scan is pooled into the master column, the box lands on the master's column."""
+    specs = [_SPECS[0], _SPECS[2], _SPECS[1]]  # scan 2 (H=2.1, the pooled member) is last
+    vm = HeatmapViewModel(_make(make_ws, with_master=True, master_spectrum=True, specs=specs))
+    assert len(vm.spec.regions) == 1
+    assert vm.spec.regions[0].x_min == pytest.approx(2.06)
+    assert vm.spec.regions[0].x_max == pytest.approx(2.14)
 
 
 def test_fit_display_glyphs_replace_verdict_overlays(make_ws):
