@@ -387,3 +387,28 @@ def test_mvp16_heatmap_smoke():
     assert isinstance(vm.excluded_count, int)
     assert spec.projection is not None
     assert len(spec.strips) > 0
+
+
+def test_colour_scale_is_set_by_the_inelastic_signal_and_the_elastic_line_saturates(make_ws):
+    """A Bragg-elastic cell thousands of counts tall must not paint every phonon black: the plane's
+    levels come from |E| beyond 1.5 resolution FWHM (1.2 fixture: gauss_fwhm 1.2 -> 1.8 meV),
+    the elastic line saturates, and the spec says so. Without an elastic cell there is no clip."""
+    import json
+    ws = _make(make_ws, with_master=True, master_spectrum=True)
+    vm = HeatmapViewModel(ws)
+    assert vm.spec.strip_levels is None                      # nothing reaches the elastic band
+    pooled = ws.root / "data" / "pooled" / "m.json"
+    payload = json.loads(pooled.read_text(encoding="utf-8"))
+    at_zero = int(np.argmin(np.abs(_X)))                     # E = 0 on the fixture grid
+    payload["counts"][at_zero] = 50000.0
+    payload["variance"][at_zero] = 50000.0
+    pooled.write_text(json.dumps(payload), encoding="utf-8")
+    ws.refresh()
+    vm.refresh()
+    spec = vm.spec
+    inelastic_max = max(float(np.nanmax(np.asarray(s.values)[np.abs(np.asarray(s.y)) > 1.8]))
+                        for s in spec.strips)
+    assert spec.strip_levels is not None
+    assert spec.strip_levels[1] == pytest.approx(inelastic_max)
+    assert spec.strip_levels[1] < 1000.0                     # the elastic cell is above the scale
+    assert any("elastic line saturates" in a.text for a in spec.annotations)

@@ -477,7 +477,8 @@ def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
     legend_entries: list = []
 
     if spec.strips:  # measured columns underneath everything (the plane background)
-        levels = _strip_levels(spec.strips)
+        levels = (tuple(float(v) for v in spec.strip_levels) if spec.strip_levels is not None
+                  else _strip_levels(spec.strips))
         lut = _strip_lut(spec.strip_colormap)
         rs.strip_levels = levels
         rs.strip_colormap = spec.strip_colormap

@@ -503,6 +503,7 @@
     }
   ],
   "strip_colormap": "viridis",
+  "strip_levels": null,
   "strips": [],
   "title": "dispersion \u03c9\u0302(q) \u00b7 (H, 0, 0) \u00d7 E \u00b7 T=200 K",
   "value_label": null,

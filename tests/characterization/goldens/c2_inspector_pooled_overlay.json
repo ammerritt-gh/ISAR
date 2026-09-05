@@ -2516,6 +2516,7 @@
     }
   ],
   "strip_colormap": "viridis",
+  "strip_levels": null,
   "strips": [],
   "title": "pooled \u2014 scan 1  det",
   "value_label": null,

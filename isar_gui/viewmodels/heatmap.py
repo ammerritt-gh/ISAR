@@ -230,6 +230,9 @@ class HeatmapViewModel(ViewModel):
         if self._excluded_count > 0:
             annotations.append(ps.Annotation(
                 text=f"{self._excluded_count} scans outside this projection", xy=None))
+        strip_levels, clip_note = self._inelastic_levels(strips, fits)
+        if clip_note:
+            annotations.append(ps.Annotation(text=clip_note, xy=None))
 
         axis = _AXIS[varying]
         T = self._temperature
@@ -249,8 +252,51 @@ class HeatmapViewModel(ViewModel):
             series=series, markers=markers, annotations=annotations, strips=strips,
             regions=regions,
             projection=projection, value_label=self._value_label(),
+            strip_levels=strip_levels,
             meta=meta,
         )
+
+    #: The elastic line is excluded from the colour scale out to this many resolution FWHMs of
+    #: E = 0. The line is resolution-limited, so 1.5 FWHM covers it with its wings; a phonon that
+    #: close to zero is inside the elastic line anyway.
+    ELASTIC_EXCLUSION_FWHM = 1.5
+
+    @classmethod
+    def _inelastic_levels(cls, strips, fits):
+        """``((vmin, vmax), note)`` for the plane's colour scale, set by the INELASTIC signal.
+
+        The scan axis is calibrated energy transfer, so E = 0 is the elastic line wherever a column
+        reaches it. At a Bragg position that line is thousands of counts against phonons of ten,
+        and a min..max scale then shows nothing but the line (the operator's report, 2026-09-05).
+        Levels come from the cells with ``|E| > ELASTIC_EXCLUSION_FWHM x`` the plane's resolution
+        FWHM; cells above ``vmax`` saturate and a note says so. ``(None, None)`` when no column
+        reaches the elastic band or nothing is finite — the renderers then span min..max as before.
+        The operator can still drag the colourbar; this is only the default the plane opens with.
+        """
+        fwhm = [float(f.gauss_fwhm) for f in fits
+                if getattr(f, "gauss_fwhm", None) is not None and float(f.gauss_fwhm) > 0]
+        exclusion = cls.ELASTIC_EXCLUSION_FWHM * (float(np.median(fwhm)) if fwhm else 1.0)
+        inelastic, everything, reaches = [], [], False
+        for s in strips:
+            y = np.asarray(s.y, float)
+            v = np.asarray(s.values, float)
+            keep = np.isfinite(v)
+            if not keep.any():
+                continue
+            everything.append(v[keep])
+            outside = keep & (np.abs(y) > exclusion)
+            reaches = reaches or bool((keep & ~outside).any())
+            if outside.any():
+                inelastic.append(v[outside])
+        if not reaches or not inelastic:
+            return None, None
+        allv = np.concatenate(everything)
+        inel = np.concatenate(inelastic)
+        vmin, vmax = float(np.min(allv)), float(np.max(inel))
+        if vmax <= vmin or float(np.max(allv)) <= vmax:
+            return None, None            # nothing brighter than the inelastic signal: no clip
+        return (vmin, vmax), (f"colour scale set by |E| > {exclusion:.2g} meV; "
+                              "the elastic line saturates")
 
     def _strips(self, fits, varying, step):
         """One MEASURED column per in-window q position.

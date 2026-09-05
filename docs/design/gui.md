@@ -534,7 +534,12 @@ a persistent legend like `plane (H, 1, 0) × E — integrating |L| < 0.02, |K−
   waterfall trace and the inspector's pooled data: the master fit models ΣN_i as
   (ΣM_i / reference) × f(E_i) on the member-union grid, so the persisted curve f(E) is the
   expected count *per reference monitor*, and raw ΣN drawn against it is off by the local
-  exposure ratio (3.3× on a real 8-member optic master). One high-contrast unfilled double
+  exposure ratio (3.3× on a real 8-member optic master). **The colour scale is set by the
+  inelastic signal** (2026-09-05): the spec carries `strip_levels`, which the plane view model
+  takes from the cells with |E| beyond 1.5 resolution FWHM whenever a column reaches the elastic
+  band; the elastic line saturates and an annotation says so. Both renderers and the colourbar read
+  the spec's levels, and the colourbar stays draggable. Without this a single Bragg-elastic cell
+  (2000× a phonon cell) painted every phonon black. One high-contrast unfilled double
   outline marks the globally latest physical submission with a completed matching analysis,
   joined to visible strips by `acquisition_id` — directly, or through the master column that
   pools it; pending/failed work and certification-only analyses are excluded. The outline spans

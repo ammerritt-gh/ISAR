@@ -199,6 +199,7 @@
     }
   ],
   "strip_colormap": "viridis",
+  "strip_levels": null,
   "strips": [],
   "title": "scan 469  det",
   "value_label": null,

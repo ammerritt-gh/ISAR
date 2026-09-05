@@ -188,6 +188,7 @@
     }
   ],
   "strip_colormap": "viridis",
+  "strip_levels": null,
   "strips": [],
   "title": "residuals",
   "value_label": null,

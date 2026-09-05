@@ -330,3 +330,25 @@ def test_unreliable_marker_has_no_errorbar(qtbot):
     assert _count(rs.items, pg.ErrorBarItem) == 0
     assert _count(rs.items, pg.ScatterPlotItem) == 1
     assert isinstance(rs, RenderedSpec)
+
+
+def test_render_honours_the_spec_colour_levels(qtbot):
+    """The spec owns the strip colour scale (both backends and the colourbar read it): a plane
+    whose one elastic cell dwarfs the phonons is drawn on the spec's clipped levels, not min..max."""
+    import numpy as np
+    import pyqtgraph as pg
+    from isar.plotspec import spec as ps
+    from isar_gui.plotspec_pg import render_into
+    y = np.linspace(-2.0, 8.0, 11)
+    values = np.ones_like(y)
+    values[2] = 5000.0                                       # E = 0 on this grid
+    spec = ps.PlotSpec(title="t", xlabel="q", ylabel="E",
+                       strips=[ps.Strip(x_center=2.0, width=0.1, y=y, values=values)],
+                       strip_levels=(0.0, 3.0))
+    plot = pg.PlotItem()
+    rendered = render_into(plot, spec)
+    assert rendered.strip_levels == (0.0, 3.0)
+    assert list(rendered.strip_images[0].getLevels()) == [0.0, 3.0]
+    spec.strip_levels = None
+    rendered = render_into(plot, spec)
+    assert rendered.strip_levels == (1.0, 5000.0)            # unset -> min..max as before
