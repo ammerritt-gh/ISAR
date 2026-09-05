@@ -142,11 +142,11 @@
         "target_label": "acoustic",
         "target_selector": "tracked_branch",
         "energy_search_meV": [
-          -9.0,
-          9.0
+          0.0,
+          20.0
         ],
         "identity_search_meV": null,
-        "target_search_source": "compiler",
+        "target_search_source": "instrument_default",
         "identity_search_source": null,
         "target_temperature_K": null,
         "hypotheses": [
@@ -160,7 +160,7 @@
             },
             "slope_zc": {
               "mean": 0.0,
-              "sigma": 18.0
+              "sigma": 40.0
             },
             "confidence": 1.0,
             "preset": "acoustic",
@@ -171,8 +171,8 @@
             "name": "optic",
             "dispersion_type": "branch",
             "zc_energy": {
-              "mean": 4.5,
-              "sigma": 2.25
+              "mean": 10.0,
+              "sigma": 5.0
             },
             "slope_zc": {
               "mean": 0.0,
@@ -185,7 +185,7 @@
         ],
         "target_hypothesis": "acoustic",
         "hypothesis_source": "shipped_preset",
-        "hypothesis_fingerprint": "07db3dbd3d514bfa4dc16efc3373a9aeef4ebf07a1f18aae75f9d35f8581bea0",
+        "hypothesis_fingerprint": "637f44f7992872d636f3a913aa7ab151021e4e548a80eb634ee41569646111be",
         "steering": {
           "classification_weight": 1.0,
           "differentiation_tolerance_meV": null,

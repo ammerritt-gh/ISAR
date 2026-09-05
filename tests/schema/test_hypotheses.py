@@ -20,8 +20,8 @@ def test_hypothesis_is_weight_not_force_and_energy_is_nonnegative():
 
 
 def test_null_is_explicit_and_differs_from_absence():
-    assert preset("null").name == "null"
-    assert preset("null").confidence == 0.0
+    assert preset("null", (0.0, 20.0)).name == "null"
+    assert preset("null", (0.0, 20.0)).confidence == 0.0
 
 
 def test_unimplemented_dispersion_mechanics_are_rejected():
@@ -30,7 +30,7 @@ def test_unimplemented_dispersion_mechanics_are_rejected():
 
 
 def test_fingerprint_changes_with_preset_or_estimator_inputs():
-    h = [preset("optic").to_dict()]
+    h = [preset("optic", (0.0, 20.0)).to_dict()]
     a = content_fingerprint(h, SteeringPolicy().to_dict())
     changed = content_fingerprint(h, SteeringPolicy(classification_weight=0.5).to_dict())
     assert a != changed

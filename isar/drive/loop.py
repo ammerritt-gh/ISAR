@@ -3419,6 +3419,47 @@ def _declared_zone_period(workspace) -> float | None:
     return float(value) if value is not None else None
 
 
+#: An optic branch lives above the elastic line: the domain a targeted optic campaign plans in
+#: starts this many elastic-resolution FWHMs above zero transfer (owner ruling 2026-09-05, three so
+#: the line's wings never leak in). A class prior on "optic", like "gapless" is on "acoustic" — not a
+#: placement rule: it says where the phenomenon can be, and the planner still chooses every window.
+OPTIC_ELASTIC_EXCLUSION_FWHM = 3.0
+
+
+def _planner_energy_domain(objective, path, resolution_cb) -> tuple[float, float]:
+    """The energy domain the planner builds windows in and truncates beliefs against.
+
+    Two honest sources and nothing phonon-specific (owner ruling 2026-09-05; the retired
+    ``[-2, 12]`` / ``[-9, 9]`` per-branch ranges were the demo sample's numbers and made an
+    acoustic branch above 9 meV or an optic branch above 12 meV unmeasurable):
+
+    - above: the objective's ``energy_search_meV[1]``, which the compiler sets to the card's
+      ``max_energy_transfer_meV`` — the instrument's kinematic ceiling;
+    - below: zero for an acoustic target (the branch is gapless there), and
+      :data:`OPTIC_ELASTIC_EXCLUSION_FWHM` elastic resolution widths for an optic target. The
+      elastic FWHM is the resolution callback at zero transfer along the path (median); its
+      advisory default stands in when the instrument cannot answer, as everywhere else.
+    """
+    lo, hi = (float(v) for v in objective.energy_search_meV)
+    lo = max(lo, 0.0)
+    if str(getattr(objective, "target_branch", "acoustic")) == "optic":
+        widths = []
+        for point in path:
+            try:
+                widths.append(float(_resolve_fwhm(resolution_cb, point[0], point[1], point[2], 0.0)))
+            except Exception as error:                     # noqa: BLE001 - resolution is advisory
+                _LOG.warning("could not resolve the elastic FWHM at %s (%s); using %s meV",
+                             point, error, DEFAULT_FWHM_MEV)
+                widths.append(float(DEFAULT_FWHM_MEV))
+        elastic_fwhm = float(statistics.median(widths)) if widths else float(DEFAULT_FWHM_MEV)
+        lo = max(lo, OPTIC_ELASTIC_EXCLUSION_FWHM * elastic_fwhm)
+    if not lo < hi:
+        raise PlannerRefusal(
+            f"campaign refused: the energy domain [{lo:g}, {hi:g}] meV is empty — the card's "
+            "max_energy_transfer_meV sits below the elastic exclusion")
+    return lo, hi
+
+
 def _reduced_u(hkl, period: float) -> float:
     """Reduced-zone coordinate — each component folded about its nearest zone centre, Euclidean.
 
@@ -3976,12 +4017,12 @@ def _build_planner_input(cfg, objective, master_rows: list[dict], observations: 
             "campaign refused: the card declares no dispersion.zone_period, so a path coordinate "
             "cannot be folded into the reduced zone the branch beliefs are stored in — declare "
             "[dispersion] zone_period in card.policy.toml rather than let the planner assume one")
-    domain = objective.energy_search_meV
-    if domain is None:
+    if objective.energy_search_meV is None:
         raise PlannerRefusal(
-            "campaign refused: the objective declares no energy_search_meV, so there is no energy "
+            "campaign refused: the objective declares no energy domain, so there is no energy "
             "domain to place a window in")
     path = tuple(tuple(float(c) for c in point) for point in objective.path)
+    domain = _planner_energy_domain(objective, path, cfg.resolution_cb)
     u = tuple(_reduced_u(point, period) for point in path)
     target_branch = str(getattr(objective, "target_branch", "acoustic"))
     targets = ("acoustic", "optic") if target_branch == "both" else (target_branch,)
@@ -4159,6 +4200,9 @@ def _log_eig_plan(cfg, inp, plan_decision, seconds: float, *, it: int,
     log_event(cfg.log_path, "eig_plan", {
         "iter": it, "seconds": float(seconds),
         "tolerance_meV": float(inp.tolerance_meV),
+        # The domain the windows were built in: instrument ceiling above, elastic exclusion (optic)
+        # or zero (acoustic) below. Recorded so a reader can see no phonon-specific range acted.
+        "energy_domain_meV": [float(v) for v in inp.energy_domain_meV],
         # The planner says so when no design is expected to complete a point and it is taking the
         # cheapest probe; an empty note is the ordinary case.
         "note": str(getattr(plan_decision, "note", "") or ""),

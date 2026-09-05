@@ -198,8 +198,14 @@ def _prior(value: Any, default: GaussianPrior, *, energy: bool = False) -> Gauss
     return prior
 
 
-def preset(name: str, energy_search_meV: tuple[float, float] = (-2.0, 12.0)) -> ExcitationHypothesis:
-    """Resolve a shipped preset; both defaults are derived once from the positive search band.
+def preset(name: str, energy_search_meV: tuple[float, float]) -> ExcitationHypothesis:
+    """Resolve a shipped preset; both defaults are derived once from the positive energy domain.
+
+    The domain is ``(0, instrument ceiling)`` for every branch (owner ruling 2026-09-05: no
+    phonon-specific search ranges — a 25 meV optic branch or an acoustic branch rising past 9 meV
+    must be as measurable as the 6 meV demo phonon). It is REQUIRED here on purpose: the old
+    ``(-2, 12)`` default was the demo sample's range, and a preset that quietly assumed it was the
+    exact thing that made "is this tuned to the sample?" answerable with yes.
 
     The acoustic class prior asserts only what "acoustic" means: the branch is gapless
     (``zc_energy`` pinned at 0 with a 0.2 meV slack) and roughly linear near the zone centre with a

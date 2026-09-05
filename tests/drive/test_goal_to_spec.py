@@ -185,15 +185,36 @@ def test_transverse_optic_k_segment_compiles_to_eleven_points():
                       payload)
     assert len(spec.path) == 11 and spec.path[-1] == (2.0, 0.5, 0.0)
     assert spec.target_branch == "optic" and spec.target_label == "transverse optic"
-    assert spec.energy_search_meV == (-2.0, 12.0)
+    assert spec.energy_search_meV == (0.0, g2s.DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV)
     assert spec.target_selector == "tracked_branch"
 
 
-def test_acoustic_goal_without_a_range_gets_the_canonical_symmetric_band():
+def test_the_energy_domain_is_the_instruments_not_the_branchs():
+    """Owner ruling 2026-09-05: no per-branch search ranges. Every branch plans in [0, ceiling];
+    the ceiling is the card's kinematic maximum when given, else the shipped default (and said)."""
     payload = {"path": {"h_start": 2.0, "h_end": 3.0, "k": 0.0, "l": 0.0}, "step_h": 0.05,
                "tolerance_meV": 0.5, "target_branch": "acoustic"}
     spec = _objective("map the acoustic phonon from (2,0,0) to (3,0,0)", payload)
-    assert spec.energy_search_meV == g2s.DEFAULT_ENERGY_SEARCH_ACOUSTIC_MEV == (-9.0, 9.0)
+    assert spec.energy_search_meV == (0.0, g2s.DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV)
+    assert spec.target_search_source == "instrument_default"
+    program = g2s.goal_to_program(
+        "map the acoustic phonon from (2,0,0) to (3,0,0)",
+        dispatcher=_FakeDispatcher(DispatchResult(structured={"kind": "targeted", "targeted": payload})),
+        energy_ceiling_meV=35.0)
+    compiled = program.steps[0].payload
+    assert compiled["energy_search_meV"] == [0.0, 35.0]
+    assert compiled["target_search_source"] == "instrument"
+    # The acoustic slope prior is a BOUND derived from the domain, so it grows with the ceiling
+    # instead of freezing a demo-sample number.
+    acoustic = next(h for h in compiled["hypotheses"] if h["name"] == "acoustic")
+    assert acoustic["slope_zc"]["sigma"] == pytest.approx(35.0 / 0.5)
+
+
+def test_a_declared_energy_search_range_is_refused_by_name():
+    spec = {"path": {"h_start": 2.0, "h_end": 3.0, "k": 0.0, "l": 0.0}, "step_h": 0.05,
+            "tolerance_meV": 0.5, "target_branch": "acoustic", "energy_search_meV": [-9.0, 9.0]}
+    with pytest.raises(g2s.GoalParseError, match="energy_search_meV is retired"):
+        g2s.spec_from_dict(spec, where="file")
 
 
 def test_supplied_target_energy_is_a_zone_centre_anchor_on_the_declared_branch():
@@ -290,7 +311,11 @@ def test_hypothesis_resolution_precedence_goal_then_card_then_shipped():
 
     shipped = _objective("optic", base)
     assert shipped.hypothesis_source == "shipped_preset"
-    assert next(h for h in shipped.hypotheses if h["name"] == "optic")["zc_energy"]["mean"] == 6.0
+    # The shipped optic prior is the middle of the instrument's domain [0, ceiling], not a sample
+    # number: with the default ceiling of 20 meV that is 10 +- 5 (owner ruling 2026-09-05).
+    ceiling = g2s.DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV
+    optic = next(h for h in shipped.hypotheses if h["name"] == "optic")["zc_energy"]
+    assert optic == {"mean": ceiling / 2.0, "sigma": ceiling / 4.0}
 
 
 @pytest.mark.parametrize("retired", ["isar.objective-envelope/1", "isar.objective-envelope/2"])
@@ -365,8 +390,7 @@ _CARD_EIG_AUTHORING = {"policies": [{
 }]}
 
 _EIG_SPEC = {"path": {"h_start": 2.0, "h_end": 2.2, "k": 0.0, "l": 0.0}, "step_h": 0.1,
-             "tolerance_meV": 0.5, "target_branch": "acoustic", "budget_hours": 1,
-             "energy_search_meV": [-9.0, 9.0]}
+             "tolerance_meV": 0.5, "target_branch": "acoustic", "budget_hours": 1}
 
 
 def _eig_objective():

@@ -133,7 +133,7 @@ def test_generic_segment_uses_step_as_a_maximum_and_includes_endpoints():
     assert spec.path[0] == (2.0, 0.0, 0.0)
     assert spec.path[-1] == (2.0, 0.5, 0.0)
     assert max(spec.path[i + 1][1] - spec.path[i][1] for i in range(10)) <= 0.05 + 1e-12
-    assert spec.energy_search_meV == (-2.0, 12.0)
+    assert spec.energy_search_meV == (0.0, 20.0)   # the instrument default, not a phonon range
     assert spec.target_selector == "tracked_branch"
 
 

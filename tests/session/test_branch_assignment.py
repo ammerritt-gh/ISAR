@@ -59,18 +59,20 @@ def test_real_anchor_outvotes_zone_prior():
 
 
 def test_parameter_priors_create_beliefs_without_creating_occupancy():
-    hypotheses = [preset("acoustic").to_dict(), preset("optic").to_dict()]
+    hypotheses = [preset("acoustic", (0.0, 20.0)).to_dict(), preset("optic", (0.0, 20.0)).to_dict()]
     beliefs = BA.build_beliefs([], sample="S", t_bin=200.0, period=2.0,
                                hypotheses=hypotheses)
     assert beliefs["acoustic"].n_anchors == 0
     assert beliefs["optic"].n_anchors == 0
     optic_mu, _ = beliefs["optic"].predict(0.0)
-    assert 6.0 < optic_mu < 7.0  # non-negative truncation shifts the 6 meV mode upward
+    # The shipped optic prior is the middle of the instrument's domain (10 +- 5 meV for the 20 meV
+    # ceiling); non-negative truncation shifts that mode upward a little.
+    assert 10.0 < optic_mu < 11.0
     assert beliefs["optic"].predict_data_only(0.0) == (0.0, 1000.0)
 
 
 def test_real_data_outvotes_wrong_optic_prior_and_data_only_never_sees_it():
-    hypotheses = [preset("optic").to_dict()]
+    hypotheses = [preset("optic", (0.0, 20.0)).to_dict()]
     pts = [_pt(f"O:{i}", q, energy, branch_id="optic")
            for i, (q, energy) in enumerate(((0.0, 3.0), (0.1, 3.1), (0.2, 3.2), (0.3, 3.3)))]
     belief = BA.build_beliefs(pts, sample="S", t_bin=200.0, period=2.0,

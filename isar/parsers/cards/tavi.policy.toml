@@ -17,6 +17,11 @@
 
 facility = "TAVI"              # dedicated simulator catalogue — never collides with real-instrument
 instrument = "PUMA"            # parsers (ill_in8, spec_s30). Registry tuple (facility, instrument, fmt).
+max_energy_transfer_meV = 20.0 # kinematic ceiling of this configuration (meV): the top of the energy
+                               # domain every targeted campaign plans in. INSTRUMENT fact, not a phonon
+                               # guess — there are no per-branch search ranges (owner, 2026-09-05); the
+                               # domain is this ceiling above and the elastic line below. Set it from the
+                               # monochromator range of the real instrument.
 format_version = "v1"
 plugin = "tavi"
 

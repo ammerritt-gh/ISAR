@@ -682,10 +682,22 @@ The retired `isar.objective/1`, `isar.objective/2`, `isar.objective-envelope/1`,
 compatibility reader and none will be written: under ruling H1 a shim for a retired pre-release
 contract is a defect, not a courtesy (H2).
 
-The objective carries additive `target_branch`, `target_label`, and `energy_search_meV` fields. Older
-objectives default to acoustic and `[-2, 7]` meV. An optic objective defaults to `[-2, 12]` meV; that
-range drives the cold survey, while the acoustic-only near-Γ and Fisher advisory paths stay disabled for
-the optic slice. Branch assignment, prior seeding, pooled delivery, and stopping certify only the
+The objective carries additive `target_branch`, `target_label`, and `energy_search_meV` fields.
+**The energy domain is the instrument's, never the phonon's (owner ruling 2026-09-05).**
+`energy_search_meV` is `[0, ceiling]` for every branch, where the ceiling is the card's
+`max_energy_transfer_meV` (the spectrometer's kinematic reach; the TAVI template declares 20 meV and
+an undeclared card gets that default with a logged warning). The compiler never accepts a declared
+range and the supervisor prompt never asks for one — the retired per-branch defaults (`[-2, 12]`
+optic, `[-9, 9]` / `[-2, 7]` acoustic) were the demo sample's numbers and made an acoustic branch above
+9 meV or an optic branch above 12 meV unmeasurable, which is what "is this tuned to the sample?"
+would have had to answer yes to. The drive lowers the domain's floor for an optic target to
+`OPTIC_ELASTIC_EXCLUSION_FWHM` (3) elastic-resolution widths above zero, from the resolution callback
+at zero transfer: a class prior on "optic" — the branch lives above the elastic line — exactly as
+"gapless" is on "acoustic", and not a placement rule (the planner still chooses every window). A
+stated energy narrows the optic zone-centre *prior* only. Without one the prior spans the domain and
+the planner's belief-driven windows search upward from the exclusion edge until a peak anchors the
+branch, then track it. The derived domain is recorded on every `eig_plan` event
+(`energy_domain_meV`). Branch assignment, prior seeding, pooled delivery, and stopping certify only the
 requested branch. Clean pooled folds may seed that branch; ambiguous forks still may not. Terminal
 reporting uses master diagnostics such as model ambiguity, pool inconsistency, analysis failure,
 resolution-limited linewidth, and interval above tolerance. The active target is copied

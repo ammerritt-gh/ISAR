@@ -94,6 +94,15 @@ recorded **per branch**, not per scan: a scan that found the acoustic but no opt
 against the optic in that window at that exposure. Absolute exclusion walled off the true band
 after one failed fit.
 
+**2026-09-05 — the energy domain is the instrument's.** `PlannerInput.energy_domain_meV` is
+`[floor, ceiling]` with the ceiling the card's `max_energy_transfer_meV` (kinematic reach; TAVI
+template 20 meV) and the floor zero for an acoustic target or three elastic-resolution FWHMs for an
+optic target (`isar.drive.loop.OPTIC_ELASTIC_EXCLUSION_FWHM`, resolution callback at ΔE = 0). The
+retired per-branch ranges `[-2, 12]` / `[-9, 9]` were the demo sample's numbers: they clipped every
+window, truncated every belief and shaped every class prior, so an acoustic branch rising past 9 meV
+or an optic branch above 12 meV could not be followed, and their −2 meV floor was where the hull
+windows that scanned the elastic line came from. The compiler refuses a declared range by name.
+
 ## 3. Invariants
 
 - No RNG anywhere on the path. Equal predictions tie exactly.

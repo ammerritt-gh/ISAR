@@ -62,6 +62,11 @@ log = logging.getLogger(__name__)
 DEFAULT_BUDGET_HOURS_BY_TIER: dict[str, float] = {"deterministic": 1.0, "mcstas": 8.0}
 #: The fallback for a tier not listed above — the conservative overnight figure.
 DEFAULT_BUDGET_HOURS = 8.0
+#: The instrument's kinematic ceiling (meV) when the card does not declare
+#: ``max_energy_transfer_meV``: the top of the energy domain every targeted campaign plans in. An
+#: instrument fact, not a phonon guess — there are no per-branch search ranges (owner ruling
+#: 2026-09-05). The TAVI template declares it; a bare objective or an older card gets this.
+DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV = 20.0
 #: No neutron budget by default. ``None`` means UNLIMITED, and every spend check treats it as
 #: unconstrained via an explicit ``is None`` guard (never as an infinite amount to compare against).
 DEFAULT_BUDGET_NEUTRONS: float | None = None
@@ -187,7 +192,10 @@ class ObjectiveSpec:
             if not math.isfinite(self.target_temperature_K) or self.target_temperature_K <= 0.0:
                 raise ValueError("target_temperature_K must be a positive, finite temperature in K")
         if self.energy_search_meV is None:
-            self.energy_search_meV = (-2.0, 12.0) if self.target_branch == "optic" else (-2.0, 7.0)
+            # No per-branch search range (owner ruling 2026-09-05): the domain is the instrument's
+            # kinematic ceiling above and zero below, for every branch. The compiler sets it from
+            # the card's ``max_energy_transfer_meV``; a bare objective gets the shipped default.
+            self.energy_search_meV = (0.0, DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV)
         else:
             lo, hi = self.energy_search_meV
             self.energy_search_meV = (float(lo), float(hi))
@@ -203,10 +211,15 @@ class ObjectiveSpec:
             self.identity_search_meV = (float(lo), float(hi))
             if not self.identity_search_meV[0] < self.identity_search_meV[1]:
                 raise ValueError("identity_search_meV must be [low, high] with low < high")
+        # Who chose each band. The target domain is the instrument's since 2026-09-05: "instrument"
+        # when the card declared its ceiling, "instrument_default" when the shipped ceiling stood in.
+        # "operator"/"compiler" remain for the identity band and for frozen programs from before.
         for name in ("target_search_source", "identity_search_source"):
             value = getattr(self, name)
-            if value is not None and value not in ("operator", "compiler"):
-                raise ValueError(f"{name} must be 'operator', 'compiler', or None")
+            if value is not None and value not in ("operator", "compiler", "instrument",
+                                                   "instrument_default"):
+                raise ValueError(f"{name} must be 'operator', 'compiler', 'instrument', "
+                                 "'instrument_default', or None")
         self.target_label = str(self.target_label or self.target_branch)
         self.hypotheses = [dict(h) for h in self.hypotheses]
         self.steering = dict(self.steering)
@@ -467,8 +480,7 @@ def resolve_hypothesis_snapshot(target_branch: str, energy_search_meV, *,
     The returned source names the declaration that won for the target.  Rivals from the card remain
     available to classification even when a goal override replaces only the target declaration.
     """
-    energy = tuple(energy_search_meV or (
-        (-2.0, 12.0) if target_branch == "optic" else (-2.0, 7.0)))
+    energy = tuple(energy_search_meV or (0.0, DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV))
     declarations = {str(name): dict(value or {})
                     for name, value in dict(card_hypotheses or {}).items()}
     source = "card_policy" if target_branch in declarations else "shipped_preset"

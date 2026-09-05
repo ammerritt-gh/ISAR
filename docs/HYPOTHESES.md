@@ -103,7 +103,7 @@ uninformative default):
 | `confidence` | 0..1; scales the prior's precision. Treat it as "how much data would it take to talk me out of this." The prior's influence decays automatically as real data accumulates regardless. |
 
 Shipped presets: **`acoustic`** (gapless — zone-centre energy pinned to 0, and a **zero-mean**
-slope prior whose sigma is derived from the objective's energy search band: the shipped mean of
+slope prior whose sigma is derived from the objective's energy domain (`[0, instrument ceiling]`, the card's `max_energy_transfer_meV`; no per-branch search range exists since 2026-09-05): the shipped mean of
 12 meV/r.l.u. was baking in the answer and was removed on 2026-09-02), **`optic`** (gapped;
 if you give no `zc_energy` its mode is derived deterministically from the objective's energy
 search band), **`null`** (agnostic — near-zero precision everywhere; the escape hatch for

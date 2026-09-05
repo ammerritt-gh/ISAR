@@ -444,6 +444,7 @@ rulings W1–W3.)*
 | Pooled master displayed in its fit's exposure frame; plane and waterfall columns are the master per reference monitor | Implemented (2026-09-05; design/gui.md heatmap item) |
 | Campaign never stops on a survived failure; `campaign_alert` channel + GUI banner; retrying atomic swap for session writers | Implemented (2026-09-05; design/steering.md §7.10) |
 | Outward alert connectors on `campaign_alert` (WhatsApp, e-mail, desktop) | Planned (design/steering.md §7.10) |
+| Energy domain is the instrument's: card `max_energy_transfer_meV` above, elastic exclusion (optic) or zero below; no per-branch search ranges | Implemented (2026-09-05; design/steering.md §7.2, design/eig.md) |
 | Master-authoritative assessment, prior, branch tracking, and stopping | Implemented (2026-07-19) |
 | Pooled member homogeneity bootstrap | Implemented (2026-07-19; seeded exposure-scaled Poisson deviance, α=0.01) |
 | Full-parameter master-predictive artifacts + model-discriminating information ranking | Implemented (2026-07-19) |

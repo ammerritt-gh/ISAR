@@ -373,6 +373,17 @@ def main(argv=None) -> int:
                 from isar.schema.card import load_policy
                 return load_policy(policy_path).hypotheses
 
+            def card_energy_ceiling():
+                """The instrument's kinematic ceiling from the human-owned card, or ``None``
+                (the compiler then uses the shipped default and says so)."""
+                if not args.workspace:
+                    return None
+                policy_path = Path(args.workspace) / "card.policy.toml"
+                if not policy_path.exists():
+                    return None
+                from isar.schema.card import load_policy
+                return load_policy(policy_path).max_energy_transfer_meV
+
             # Set to ``(program, step)`` when the one executable step is a discovery step: the
             # SCENE-4.3 program-step seam runs it, and none of the objective compilation below
             # applies (a discover_and_map payload is a frozen DiscoverAndMapSpec, not an
@@ -437,6 +448,8 @@ def main(argv=None) -> int:
                         defaults={"tier": args.tier or "deterministic"},
                         where=f"{args.program}:{s.id}",
                         card_hypotheses=None if frozen_payloads[s.id] else card_hypotheses,
+                        energy_ceiling_meV=(None if frozen_payloads[s.id]
+                                            else card_energy_ceiling()),
                     )
                     for s in targeted_steps
                 }
@@ -474,7 +487,8 @@ def main(argv=None) -> int:
                     return 2
                 program = goal_to_program(
                     args.goal, defaults={"tier": args.tier or "deterministic"},
-                    card_hypotheses=card_objective_authoring())
+                    card_hypotheses=card_objective_authoring(),
+                    energy_ceiling_meV=card_energy_ceiling())
                 step = _single_executable_step(program, where="--goal")
                 source = {"kind": "goal",
                           "sha256": hashlib.sha256(args.goal.encode("utf-8")).hexdigest(),

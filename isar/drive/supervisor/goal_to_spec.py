@@ -29,7 +29,8 @@ from typing import Any
 
 import isar.reduce.llm_client as _llm  # boundary carve-out: the shared LLMM HTTP plumbing only
 import isar.drive.objective as _obj
-from isar.drive.objective import ObjectiveSpec, resolve_hypothesis_snapshot
+from isar.drive.objective import (DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV, ObjectiveSpec,
+                                  resolve_hypothesis_snapshot)
 from isar.schema.campaign_program import (
     PROGRAM_SCHEMA,
     STEP_KINDS,
@@ -88,8 +89,6 @@ LLM_GOAL_SCHEMA = {
         # Accepted only as an input alias for the branch's zone-centre anchor
         # (``target_zc_energy_meV``); it is never a per-q selection energy.
         "target_energy_meV": {"type": "number"},
-        "energy_search_meV": {"type": "array", "items": {"type": "number"},
-                              "minItems": 2, "maxItems": 2},
         # The sample temperature the campaign is measuring at, which selects the belief slice.
         # Scientific context the supervisor may legitimately state; it grants no scanning authority.
         "target_temperature_K": {"type": "number"},
@@ -189,8 +188,6 @@ _EXAMPLE = {
 # Canonical compiler defaults for the energy search band when the goal states none. These are the
 # single source for both the compile fallback and the LLM prompt guidance — the example
 # example campaign program ships the same acoustic band, so goal-path and program-path campaigns agree.
-DEFAULT_ENERGY_SEARCH_ACOUSTIC_MEV = (-9.0, 9.0)
-DEFAULT_ENERGY_SEARCH_OPTIC_MEV = (-2.0, 12.0)
 
 _DISCOVER_EXAMPLE = {
     "kind": "discover_and_map",
@@ -229,8 +226,9 @@ SYSTEM = (
     "is what the user asked for, say so rather than emitting a campaign. "
     "If the user states a zone-centre or gap energy, "
     "put it in target_zc_energy_meV and put an explicitly stated uncertainty in "
-    "target_zc_energy_sigma_meV. For optic goals use energy_search_meV [-2,12] and for acoustic "
-    "goals [-9,9] unless the user provides a range. Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
+    "target_zc_energy_sigma_meV. Never emit an energy search range: the driver plans in the "
+    "instrument's own energy domain and tracks the branch wherever it goes. Optionally a short "
+    "notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
     "these keys, no extra keys, and never enumerate grid points:\n"
     + json.dumps(LLM_PROGRAM_SCHEMA)
     + "\n\nExample. Command: 'map the acoustic phonon from (1,0,0) to (2,0,0) to +-0.1 meV, steps "
@@ -264,6 +262,7 @@ class GoalParseError(ValueError):
 def goal_to_program(goal: str, *, dispatcher: Dispatcher | None = None,
                     defaults: dict | None = None,
                     card_hypotheses: dict[str, Any] | None = None,
+                    energy_ceiling_meV: float | None = None,
                     card_question_guidelines: dict[str, Any] | None = None,
                     user_policy_ask: dict[str, Any] | None = None,
                     endpoint: str | None = None, model_pin: str | None = None,
@@ -317,7 +316,7 @@ def goal_to_program(goal: str, *, dispatcher: Dispatcher | None = None,
                                     user_policy_ask=user_policy_ask)),),
             source_text=goal)
     spec = _build_spec(data["targeted"], merged, card_hypotheses=card_hypotheses,
-)
+                       energy_ceiling_meV=energy_ceiling_meV)
     return targeted_program(spec.to_dict(), source_text=goal)
 
 
@@ -360,7 +359,8 @@ def _discover_spec(data: dict, *,
 
 # --------------------------------------------------------------------------- LLM-free path
 def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec",
-                   card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
+                   card_hypotheses: dict[str, Any] | None = None,
+                   energy_ceiling_meV: float | None = None) -> ObjectiveSpec:
     """Build an :class:`ObjectiveSpec` from an already-parsed dict — no LLM, no file I/O.
 
     Accepts either the goal schema (``{"path": {"h_start", …}, "step_h", "tolerance_meV", …}``) or a
@@ -380,6 +380,13 @@ def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec"
     # Checked before conformance so a spec written against the retired per-q selectors is told what
     # is wrong with it, rather than being reported as a shapeless goal.
     _refuse_retired_selector(d.get("target_selector"), where=where)
+    if "energy_search_meV" in d:
+        # Retired input (owner ruling 2026-09-05): the energy domain is the instrument's — zero to
+        # the card's max_energy_transfer_meV — never a per-phonon range. Refused by name so the
+        # author learns what to delete, rather than reported as a shapeless goal.
+        raise GoalParseError(
+            f"{where}: energy_search_meV is retired — the energy domain is the instrument's "
+            "(card max_energy_transfer_meV above, the elastic line below); delete the key")
     if not _conforms(d, FILE_SPEC_SCHEMA):
         raise GoalParseError(f"{where}: not a valid goal spec (needs path{{h_start,h_end,k,l}}, step_h, "
                              "and tolerance_meV; a budget is optional and defaults per tier)")
@@ -388,6 +395,7 @@ def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec"
         d,
         merged,
         card_hypotheses=card_hypotheses,
+        energy_ceiling_meV=energy_ceiling_meV,
     )
 
 
@@ -429,7 +437,8 @@ def _refuse_retired_selector(selector, *, where: str = "goal") -> None:
 
 
 def _build_spec(data: dict, merged: dict, *,
-                card_hypotheses: dict[str, Any] | None = None) -> ObjectiveSpec:
+                card_hypotheses: dict[str, Any] | None = None,
+                energy_ceiling_meV: float | None = None) -> ObjectiveSpec:
     tier = str(merged.get("tier", "deterministic"))
     budget = _budget(data, tier=tier)
     branch = str(data.get("target_branch", "acoustic"))
@@ -439,14 +448,20 @@ def _build_spec(data: dict, merged: dict, *,
     # The tracked selector identifies a dispersing branch. ``target_energy_meV`` survives only as an
     # input alias for its zone-centre anchor.
     tracked_anchor_energy = data.get("target_energy_meV")
-    energy = data.get("energy_search_meV")
-    resolved_energy = tuple(energy) if energy is not None else (
-        DEFAULT_ENERGY_SEARCH_OPTIC_MEV if branch == "optic"
-        else DEFAULT_ENERGY_SEARCH_ACOUSTIC_MEV)
-    # Record who chose the band here, where the answer is still known. Downstream, a band that equals
-    # the shipped default is indistinguishable from one the scientist asked for exactly — and the
-    # difference decides whether identity work may be widened past it.
-    target_search_source = "operator" if energy is not None else "compiler"
+    # The energy domain is the instrument's, never the phonon's (owner ruling 2026-09-05): zero to
+    # the card's kinematic ceiling for every branch. The old per-branch ranges ([-2, 12] optic,
+    # [-9, 9] acoustic) were the demo sample's numbers, and made an acoustic branch above 9 meV or
+    # an optic branch above 12 meV unmeasurable. The lower edge for an optic target (the elastic
+    # exclusion) needs the live resolution and is applied by the drive, not frozen here.
+    ceiling = (float(energy_ceiling_meV) if energy_ceiling_meV is not None
+               else DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV)
+    if not ceiling > 0.0:
+        raise GoalParseError("the card's max_energy_transfer_meV must be positive")
+    resolved_energy = (0.0, ceiling)
+    target_search_source = "instrument" if energy_ceiling_meV is not None else "instrument_default"
+    if energy_ceiling_meV is None:
+        log.warning("card declares no max_energy_transfer_meV; planning to the shipped ceiling of "
+                    "%g meV", DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV)
     identity_energy = data.get("identity_search_meV")
     identity_search_source = "operator" if identity_energy is not None else None
     goal_override = None

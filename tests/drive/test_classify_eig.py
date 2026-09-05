@@ -29,7 +29,7 @@ def test_classification_information_vanishes_when_labels_or_bands_are_settled():
 def test_drive_belief_prediction_matches_session_with_and_without_prior():
     anchors = [{"u": 0.1, "omega0": 5.8, "weight": 0.8},
                {"u": 0.2, "omega0": 5.9, "weight": 1.0}]
-    prior = preset("optic").to_dict()
+    prior = preset("optic", (0.0, 20.0)).to_dict()
     row = {"anchors": anchors, "parameter_prior": prior}
     session = BranchBelief("optic", np.array([0.1, 0.2]), np.array([5.8, 5.9]),
                            np.array([0.8, 1.0]), parameter_prior=prior)

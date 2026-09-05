@@ -464,7 +464,7 @@ class CampaignDock(QDockWidget):
             f"Target: {objective.get('target_label') or objective.get('target_branch', 'acoustic')}",
             f"Branch certified: {objective.get('target_branch', 'acoustic')}",
             f"Q path: {path[0] if path else '?'} → {path[-1] if path else '?'} ({len(path)} points)",
-            f"Energy search: {objective.get('energy_search_meV')} meV",
+            f"Energy domain (instrument): {objective.get('energy_search_meV')} meV",
             f"Tolerance: ±{objective.get('tolerance_meV')} meV",
             f"Budget: {budget.get('amount')} {budget.get('kind')}",
             f"Analysis limit: {objective.get('analysis_limit_seconds')} seconds",
