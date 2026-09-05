@@ -953,14 +953,19 @@ analysis pass would have fitted it.
 
 **The mechanisms** (`isar/drive/loop.py`, `isar/session/atomic.py`, `isar/drive/session_log.py`):
 
-- *Tolerate.* The fit stage of `_finalize_completed_submission` catches every failure except the
-  campaign's own analysis ceiling (`AnalysisLimitExceeded`, a stop condition by design). The
-  iteration folds no new rows; `refresh_analysis` re-runs over every record next iteration, so the
-  un-analysed scan is picked up then. The planner runs one scan stale, once.
+- *Tolerate.* Both analysis paths — the fit stage of `_finalize_completed_submission` and the
+  belief-anchor refit in the iteration loop — catch every failure except the campaign's own
+  analysis ceiling (`AnalysisLimitExceeded`, a stop condition by design). The iteration folds no
+  new rows; `refresh_analysis` re-runs over every record next iteration, so the un-analysed scan
+  is picked up then. The planner runs one scan stale, once. A failed anchor refit is not counted
+  as an attempt, so the next iteration may ask again. When a later pass publishes rows from
+  earlier acquisitions, each row is folded with ITS OWN submission's exposure, Q and fingerprint
+  through the persisted acquisition provenance (`_row_provenance`), never re-badged as the scan
+  that triggered the analysis.
 - *Shout.* Every survived failure logs one `campaign_alert` event: `alert` (what failed, e.g.
-  `analysis_failed`), `policy: continue`, `consecutive` (alerts of that kind since the last
-  successful `analyze` event — the number that separates one glitch from a broken worker), the
-  error and its traceback. It is in `EVENT_KINDS`, loud in the GUI feed, and drives a red banner in
+  `analysis_failed`, `anchor_escalation_failed`), `policy: continue`, `consecutive` (alerts of
+  that kind since the last SUCCESSFUL analysis — an `analyze` event with `status: failed`, which a
+  failed iteration still emits, does not reset it), the error and its traceback. It is in `EVENT_KINDS`, loud in the GUI feed, and drives a red banner in
   the campaign monitor that stays up until the next successful analysis clears it (a banner that
   outlives its recovery teaches the operator to ignore banners).
 - *Remove the cause where it is mechanical.* All session writers swap through

@@ -785,3 +785,24 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     `test_abstained_points_name_only_underpowered_masters`. Live at close (`718372d`): short path
     `met`, 12 scans, 4 min; every fit start in its log preceded by its `scan_landed`; 14 plan
     events for 12 proposals (the two extra are the certified re-asks), no phantoms.
+
+35. **Third external review of PR #37 at `04ebaa6` (four P1, two P2), dispositioned and landed
+    (2026-09-05 evening).** Every finding was read against source before a line changed; all six
+    reproduced as described. In one line each:
+
+    | # | Finding | Disposition |
+    |---|---|---|
+    | P1 | a tracker-CLEARED target still certifies on the fit-local `model_interval` (cleared `omega0` defeats the `other_mode` test), and the planner binds that width to the nearest candidate | FIX — `_master_obs_from_row` requires a selection (`omega0` present) before the model interval may certify; a cleared row is a measurement with a diagnostic width and no delivered number, and its modes enter the planner as "detected, precision not established". DEFER: the 0.5 meV `_PRIMARY_MODE_TOLERANCE_MEV` proximity rule stands — two modes closer than a resolution width are not separately certifiable by any chain |
+    | P1 | catch-up rows after a survived analysis failure are stamped with the CURRENT proposal's acquisition, exposure and fingerprint | FIX — `_row_provenance` joins each new row to its own persisted `acquisition_provenance` record (exposure, kind, roles, fingerprint); the scan cost is charged once to the current acquisition; an unmatched id keeps its own id and is logged |
+    | P1 | `escalated_masters` keyed by master id bars a q for the rest of the run after new data; the set is empty on resume | FIX — attempts are keyed `<master>@<master_revision>` (`_anchor_escalation_key`), a new member set reopens eligibility, and the set is rebuilt from the log's `escalate_fit`/anchor events on start (`master_keys` in the payload) |
+    | P1 | the anchor-escalation refit catches only `AnalysisLimitExceeded`; the results.csv collision there still ends the campaign | FIX — same continue-and-alert handling (`anchor_escalation_failed`), the attempt uncounted so it may be asked again; the analysis ceiling still stops |
+    | P2 | the unconditional `analyze` event after a caught failure resets `consecutive`, so a dead worker reads as a run of first failures | FIX — `analyze` carries `status: ok|failed`; the loop counter and the GUI banner reset only on a successful one |
+    | P2 | the lattice snap and point coarsening move the emitted grid outside the derived energy domain (below the optic floor, above the ceiling) | FIX — `_clip_to_energy_domain` in `_finalize_proposal` moves bounds INWARD along the lattice after every grid transformation; fewer than three surviving points refuses the design (`proposal_outside_energy_domain`) and the ranking moves on |
+
+    Tests: `tests/drive/test_review_round2.py` (11): selected vs cleared master certification and
+    the planner's candidate widths; per-row provenance for a recovered scan and an unmatched id;
+    revision-keyed escalation reopening and log rebuild; the failure counter across failed
+    `analyze` events; the domain clip below the floor, above the ceiling, refusal, and no-op.
+    Not driven end to end: the anchor path's survival (the mock campaign's masters carry no
+    `modality`, so it never escalates) — covered by inspection and the shared alert helper's test.
+    Not re-run: a live TAVI campaign at this head.

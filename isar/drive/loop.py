@@ -205,6 +205,51 @@ def _snap_to_lattice(proposal, log_path, it: int, *, event_sink=log_event) -> bo
     return True
 
 
+class ProposalOutsideEnergyDomain(ValueError):
+    """The emitted grid cannot be kept inside the derived energy domain with three points left."""
+
+
+def _clip_to_energy_domain(proposal, objective, cfg, it: int, *, event_sink=log_event) -> bool:
+    """Keep the EMITTED grid inside the domain the design was scored in.
+
+    The lattice snap moves bounds outward and the point guard coarsens the step, and neither knew
+    the domain: a window designed at the optic floor came out one step below it, and one designed
+    up to the instrument ceiling came out one step above (PR #37 review, second round). The domain
+    is the planner's own (:func:`_planner_energy_domain`); bounds are moved INWARD along the
+    lattice, dropping whole points, so the surviving grid is still the shared lattice. Returns
+    ``True`` when the window moved; raises :class:`ProposalOutsideEnergyDomain` when fewer than
+    three points survive, which the ranking loop treats like any other unrealizable design.
+    """
+    try:
+        path = tuple(tuple(float(c) for c in point) for point in objective.path)
+        lo_d, hi_d = _planner_energy_domain(objective, path, cfg.resolution_cb)
+    except (PlannerRefusal, AttributeError, TypeError, ValueError) as error:
+        _LOG.warning("energy domain unavailable at finalize (%s); window left as emitted", error)
+        return False
+    step = float(proposal.e_step)
+    lo, hi = float(proposal.e_lo), float(proposal.e_hi)
+    if step <= 0.0 or not all(math.isfinite(v) for v in (lo, hi, step)):
+        return False
+    new_lo = lo if lo >= lo_d - 1e-9 else lo + math.ceil((lo_d - lo) / step - 1e-9) * step
+    new_hi = hi if hi <= hi_d + 1e-9 else hi - math.ceil((hi - hi_d) / step - 1e-9) * step
+    new_lo, new_hi = round(new_lo, 6), round(new_hi, 6)
+    if (new_lo, new_hi) == (lo, hi):
+        return False
+    n_points = int(math.floor((new_hi - new_lo) / step + 1e-9)) + 1 if new_hi > new_lo else 0
+    if n_points < 3:
+        raise ProposalOutsideEnergyDomain(
+            f"proposal_outside_energy_domain: window [{lo:g}, {hi:g}] meV keeps fewer than three "
+            f"points inside the domain [{lo_d:g}, {hi_d:g}]")
+    if event_sink is not None:
+        event_sink(cfg.log_path, "exception", {
+            "action": "proposal_clipped_to_energy_domain",
+            "hkl": [proposal.h, proposal.k, proposal.l],
+            "old_window": [lo, hi, step], "new_window": [new_lo, new_hi, step],
+            "energy_domain": [float(lo_d), float(hi_d)], "iter": it})
+    proposal.e_lo, proposal.e_hi, proposal.n_points = new_lo, new_hi, n_points
+    return True
+
+
 def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int, *,
                        event_sink=log_event) -> bool:
     """Clamp ``proposal`` to the instrument's ``max_points`` limit BEFORE any validate/submit call.
@@ -296,6 +341,7 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int,
     source = f"policy+{limits['sources'].get('max_points', 'default')}"
     _guard_point_count(
         proposal, cap, source, cfg.log_path, it, event_sink=event_sink)
+    _clip_to_energy_domain(proposal, objective, cfg, it, event_sink=event_sink)
     n_points = int(proposal.n_points or 0)
     limits = _runtime_limits(cfg, objective, n_points)
     instrument_cap = int(limits["max_neutrons_per_point"])
@@ -708,11 +754,19 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         row, PRODUCTION_NCOUNT)
     bucket, calibration_arg = _calibration_bucket(calibration, exposure_key)
     deliverable = row.get("target_delivery_eligible") is not False
+    # A master whose tracked target selection has been CLEARED (``_clear_tracked_selection`` nulls
+    # ``omega0`` for an ambiguous or missing target) owns no target: its fit-local model interval
+    # still describes the fit's primary mode, but nothing says that mode is the target. Reading it
+    # anyway restored a certified precision the tracker had just withdrawn, and the planner then
+    # bound that width to the nearest candidate and could claim the prize on it (PR #37 review,
+    # second round, P1). The row stays a measurement (diagnostic half-width below); it cannot stand
+    # as the target's delivered number until a selection exists.
+    has_selection = row.get("omega0") is not None
     model_lo, model_med, model_hi = (row.get("model_interval_lo"),
                                          row.get("model_interval_med"),
                                          row.get("model_interval_hi"))
-    model_robust = bool(deliverable and row.get("model_robust") is True and model_lo is not None
-                        and model_hi is not None)
+    model_robust = bool(deliverable and has_selection and row.get("model_robust") is True
+                        and model_lo is not None and model_hi is not None)
     # The model-averaged interval is fit-local: it describes the fit's PRIMARY mode, and the
     # tracker may have selected another mode as the target (h = 3.0 on the reference path: the
     # selected acoustic at 5.99 meV, the model interval at 7.95-8.00 around the optic). An interval
@@ -1091,11 +1145,34 @@ def _pending_anchor_escalations(workspace, plan_decision, *, sample=None, temper
     ids = []
     for hkl in hkls:
         scan_id = _unfolded_master(rows, hkl)
-        # A master escalated once and still not a fold is not asked again: the refit had its say,
-        # and re-buying the same analysis every iteration is the churn the idempotency claim forbids.
-        if scan_id and scan_id not in attempted:
+        # A master escalated once at THIS data revision and still not a fold is not asked again:
+        # the refit had its say, and re-buying the same analysis every iteration is the churn the
+        # idempotency claim forbids. New members change the revision and reopen it — keying on the
+        # id alone barred a q for the rest of the run after better data arrived (PR #37 review,
+        # second round, P1).
+        if scan_id and _anchor_escalation_key(rows, scan_id) not in attempted:
             ids.append(scan_id)
     return ids
+
+
+def _anchor_escalation_key(rows, scan_id: str) -> str:
+    """``<master id>@<master revision>``: one attempt per master AND data revision."""
+    revision = next((r.get("master_revision") for r in rows
+                     if r.get("scan_id") == scan_id and r.get("master_revision")), None)
+    return f"{scan_id}@{revision}"
+
+
+def _attempted_anchor_escalations(log_path) -> set[str]:
+    """The escalation attempts already made, rebuilt from the durable log so a resumed run and an
+    uninterrupted one hold the same eligibility (the in-memory set alone forgot them on restart)."""
+    keys: set[str] = set()
+    for record in read_log(log_path):
+        if record.get("kind") != "escalate_fit":
+            continue
+        payload = record.get("payload") or {}
+        if payload.get("phase") == "anchor":
+            keys.update(str(k) for k in (payload.get("master_keys") or ()))
+    return keys
 
 
 def _full_tier(cfg) -> str:
@@ -2320,6 +2397,66 @@ def _workspace_zone_period(workspace: Path) -> float | None:
         return None
 
 
+def _row_provenance(row: dict, proposal, card_state: dict, log_path=None, *, it=None) -> dict:
+    """The submission a newly published physical row belongs to, as observation kwargs.
+
+    A row stamped with the current proposal's acquisition id (or none at all — a workspace before
+    acquisition provenance existed) takes the proposal's kind, exposure and roles. A row from an
+    earlier acquisition — one whose own analysis failed and which a later pass caught up — takes
+    them from the ``acquisition_provenance`` record the loop persisted at its submission
+    (``_persist_acquisition_provenance``), so exposure, Q and fingerprint stay its own. ``current``
+    says which case applied (the scan cost is charged once, to the current acquisition's rows).
+    """
+    meta = dict(getattr(proposal, "meta", None) or {})
+    row_acq = row.get("acquisition_id")
+    if row_acq in (None, "") or str(row_acq) == str(proposal.acquisition_id):
+        return {
+            "current": True, "kind": proposal.kind, "ncount": int(proposal.ncount),
+            "acquisition_id": proposal.acquisition_id,
+            "driver_inserted": bool(meta.get("driver_inserted", False)),
+            "certification_eligible": bool(meta.get("certification_eligible", True)),
+            "count_diagnostics": meta.get("count_diagnostics"),
+            "acquisition_action_role": meta.get("acquisition_action_role"),
+            "target_branch_role": meta.get("target_branch_role"),
+            "rival_branch_role": meta.get("rival_branch_role"),
+            "authoritative_evidence_revision": meta.get("authoritative_evidence_revision"),
+            "proposal_fingerprint": meta.get("proposal_fingerprint"),
+            "evidence_sink": meta.get("evidence_sink") or CANONICAL_MASTER,
+        }
+    for item in reversed((card_state or {}).get("acquisition_provenance") or []):
+        if str(item.get("acquisition_id")) != str(row_acq):
+            continue
+        return {
+            "current": False,
+            "kind": str(item.get("scan_kind") or proposal.kind),
+            "ncount": int(item.get("submitted_ncount") or proposal.ncount),
+            "acquisition_id": str(row_acq),
+            "driver_inserted": False, "certification_eligible": True, "count_diagnostics": None,
+            "acquisition_action_role": item.get("acquisition_action_role"),
+            "target_branch_role": item.get("target_branch_role"),
+            "rival_branch_role": item.get("rival_branch_role"),
+            "authoritative_evidence_revision": item.get("authoritative_evidence_revision"),
+            "proposal_fingerprint": item.get("proposal_fingerprint"),
+            "evidence_sink": item.get("evidence_sink") or CANONICAL_MASTER,
+        }
+    # Provenance exists for the id but no record matches: keep the row's OWN id (the planner's
+    # scan index then finds its physical_submission) and say so, rather than re-badge it.
+    if log_path is not None:
+        log_event(log_path, "exception", {
+            "action": "row_acquisition_unmatched", "iter": it, "scan": row.get("scan"),
+            "acquisition_id": str(row_acq),
+            "reason": "no persisted acquisition provenance for this id; exposure taken from the "
+                      "current proposal"})
+    return {
+        "current": False, "kind": proposal.kind, "ncount": int(proposal.ncount),
+        "acquisition_id": str(row_acq),
+        "driver_inserted": False, "certification_eligible": True, "count_diagnostics": None,
+        "acquisition_action_role": None, "target_branch_role": None, "rival_branch_role": None,
+        "authoritative_evidence_revision": None, "proposal_fingerprint": None,
+        "evidence_sink": CANONICAL_MASTER,
+    }
+
+
 def _consecutive_alerts(log_path, alert: str) -> int:
     """How many ``campaign_alert`` events of this ``alert`` have been raised since the last
     successful analysis (an ``analyze`` event) — the count the operator, and any connector, needs
@@ -2327,9 +2464,13 @@ def _consecutive_alerts(log_path, alert: str) -> int:
     count = 0
     for record in reversed(read_log(log_path)):
         kind = record.get("kind")
-        if kind == "analyze":
+        payload = record.get("payload") or {}
+        # Only a SUCCESSFUL analysis resets the run: the iteration still emits ``analyze`` after a
+        # caught failure (with ``status: failed``), and counting that as success reported every
+        # failure of a dead worker as the first (PR #37 review, second round).
+        if kind == "analyze" and payload.get("status") != "failed":
             break
-        if kind == "campaign_alert" and (record.get("payload") or {}).get("alert") == alert:
+        if kind == "campaign_alert" and payload.get("alert") == alert:
             count += 1
     return count
 
@@ -2422,6 +2563,7 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
             "hkl": [proposal.h, proposal.k, proposal.l], "from_tier": "fast",
             "to_tier": tier, "reason": "untrusted_hesse_no_reliable_interval"})
     stage = "full_fit" if tier in ("full", "bayes") else "fast_fit"
+    analysis_failed = False
     try:
         with activity(cfg.log_path, stage, q=[proposal.h, proposal.k, proposal.l],
                       job_id=job_id, fit_tier=tier, iteration=it):
@@ -2453,6 +2595,7 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
         # handler here, the campaign — 174 iterations in, with beam time left.
         _raise_campaign_alert(cfg.log_path, "analysis_failed", error, it=it, job_id=job_id,
                               hkl=[proposal.h, proposal.k, proposal.l], tier=tier)
+        analysis_failed = True
     tracks_after = _read_branch_tracks(cfg.workspace)
     if tracks_after and tracks_after.get("revision") != tracks_before.get("revision"):
         log_event(cfg.log_path, "branch_track_update", {
@@ -2465,30 +2608,39 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
     with timed(cfg.log_path, "fold_rows", iteration=it) as metrics:
         rows = _new_rows(cfg.workspace, consumed)
         scan_cost = float(executed_points) * float(proposal.ncount)
-        for index, row in enumerate(rows):
+        # Since the campaign continues past a failed analysis (policy A), a later successful pass
+        # can publish rows from EARLIER acquisitions alongside this one. Each row is joined to its
+        # own submission through the acquisition provenance the session stamped on it; stamping
+        # every row with the current proposal gave a recovered scan the newest scan's exposure,
+        # Q and fingerprint, and the planner then saw 160M at one q and nothing at another
+        # (PR #37 review, second round, P1).
+        card_state = read_card_state(cfg.workspace)
+        charged = False
+        for row in rows:
+            prov = _row_provenance(row, proposal, card_state, cfg.log_path, it=it)
+            cost = scan_cost if (prov["current"] and not charged) else 0.0
+            charged = charged or prov["current"]
             observations.append(_observation_from_row(
-                row, proposal.kind, proposal.ncount, cfg.calibration,
-                proposal_cost=scan_cost if index == 0 else 0.0,
-                driver_inserted=bool((proposal.meta or {}).get("driver_inserted", False)),
-                certification_eligible=bool((proposal.meta or {}).get(
-                    "certification_eligible", True)),
-                acquisition_id=proposal.acquisition_id,
-                count_diagnostics=(proposal.meta or {}).get("count_diagnostics"),
-                acquisition_action_role=(proposal.meta or {}).get("acquisition_action_role"),
-                target_branch_role=(proposal.meta or {}).get("target_branch_role"),
-                rival_branch_role=(proposal.meta or {}).get("rival_branch_role"),
-                authoritative_evidence_revision=(proposal.meta or {}).get(
-                    "authoritative_evidence_revision"),
-                proposal_fingerprint=(proposal.meta or {}).get("proposal_fingerprint"),
-                evidence_sink=((proposal.meta or {}).get("evidence_sink")
-                               or CANONICAL_MASTER)))
+                row, prov["kind"], prov["ncount"], cfg.calibration,
+                proposal_cost=cost,
+                driver_inserted=prov["driver_inserted"],
+                certification_eligible=prov["certification_eligible"],
+                acquisition_id=prov["acquisition_id"],
+                count_diagnostics=prov["count_diagnostics"],
+                acquisition_action_role=prov["acquisition_action_role"],
+                target_branch_role=prov["target_branch_role"],
+                rival_branch_role=prov["rival_branch_role"],
+                authoritative_evidence_revision=prov["authoritative_evidence_revision"],
+                proposal_fingerprint=prov["proposal_fingerprint"],
+                evidence_sink=prov["evidence_sink"]))
             scan_kind[(row.get("scan"), row.get("detector"))] = (
-                proposal.kind, proposal.ncount, proposal.acquisition_id)
+                prov["kind"], prov["ncount"], prov["acquisition_id"])
         metrics["n_rows"] = len(rows)
 
     timings = read_run_timings(cfg.workspace)
     analyze_payload = {"job_id": job_id, "errors_tier": tier,
                        "scan_errors_tier": scan_tier, "master_errors_tier": tier, "iter": it,
+                       "status": "failed" if analysis_failed else "ok",
                        "n_rows": len(rows),
                        "dispositions": [row.get("disposition") or row.get("verdict")
                                         for row in rows]}
@@ -4300,6 +4452,12 @@ def _next_planner_proposal(designs: list, objective, cfg, inp, grid, budget_stat
                 "error": str(error), "hkl": list(design.hkl), "iter": it})
             instrument_error = error
             continue
+        except ProposalOutsideEnergyDomain as error:
+            log_event(cfg.log_path, "exception", {
+                "action": "proposal_outside_energy_domain", "severity": "low",
+                "error": str(error), "hkl": list(design.hkl), "iter": it})
+            instrument_error = error
+            continue
         except BudgetInsufficientForMinimumBatch as error:
             log_event(cfg.log_path, "exception", {
                 "action": "budget_insufficient_for_minimum_batch",
@@ -4363,9 +4521,10 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     scan_kind: dict = resumed["scan_kind"]   # (scan, detector) -> (kind, ncount), to rebuild obs after certify
     scan_counter = resumed["scan_counter"]
     proposal_counter = resumed.get("proposal_counter", 0)
-    # Masters already sent for a belief-anchor escalation this run; a refit that did not leave a
-    # fold is logged once and never re-bought (see _pending_anchor_escalations).
-    escalated_masters: set[str] = set()
+    # Master@revision keys already sent for a belief-anchor escalation; a refit that did not leave
+    # a fold is logged once and never re-bought at that revision (see _pending_anchor_escalations).
+    # Rebuilt from the log so a resume keeps the same eligibility as an uninterrupted run.
+    escalated_masters: set[str] = _attempted_anchor_escalations(cfg.log_path)
     # Derived from the durable log, never a second store: a resume that could not rebuild this would
     # re-propose an action the instrument has already refused on every remaining iteration.
     (action_suppressions, unreachable_hkl, request_suppressions,
@@ -4514,11 +4673,13 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     t_round=_declared_t_round(cfg.workspace), attempted=escalated_masters)
                 if pending_anchors:
                     full_tier = _full_tier(cfg)
+                    anchor_rows = read_results_csv(cfg.workspace)
+                    anchor_keys = [_anchor_escalation_key(anchor_rows, sid) for sid in pending_anchors]
                     log_event(cfg.log_path, "escalate_fit", {
                         "phase": "anchor", "iter": it, "hkl": None, "from_tier": "fast",
                         "to_tier": full_tier, "reason": "belief_anchor",
-                        "master_ids": pending_anchors})
-                    escalated_masters.update(pending_anchors)
+                        "master_ids": pending_anchors, "master_keys": anchor_keys})
+                    escalated_masters.update(anchor_keys)
                     try:
                         with timed(cfg.log_path, "anchor_escalation", iteration=it):
                             with analysis_operation(
@@ -4539,6 +4700,18 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     except AnalysisLimitExceeded as error:
                         decision = StopDecision("incomplete", [str(error)], decision.per_q)
                         break
+                    except Exception as error:  # noqa: BLE001 — policy A: never stop, shout
+                        # The same continue-and-alert rule as the ordinary fit stage: a transient
+                        # analysis failure here (the results.csv swap collision included) must not
+                        # end the campaign because it happened in a refit rather than a fit (PR #37
+                        # review, second round, P1). The attempt is not counted, so the next
+                        # iteration may ask again.
+                        escalated_masters.difference_update(anchor_keys)
+                        _raise_campaign_alert(cfg.log_path, "anchor_escalation_failed", error,
+                                              it=it, master_ids=pending_anchors)
+                        master_rows, grid = _grid_state(
+                            objective, observations, cfg.workspace, cfg.calibration)
+                        continue
                     # Deliberately WITHOUT ``attempted``: the question is whether the masters just
                     # refit are still unfolded, and excluding them would make it unanswerable.
                     # ``refresh_analysis`` returned with ``enforce_completion``, so results.csv holds

@@ -423,8 +423,8 @@ class CampaignViewModel(ViewModel):
         for record in reversed(list(self._ws.session_events())):
             kind = record.get("kind")
             payload = record.get("payload") or {}
-            if kind == "analyze" or (kind == "decide"
-                                     and payload.get("event") == "campaign_start"):
+            if (kind == "analyze" and payload.get("status") != "failed") or (
+                    kind == "decide" and payload.get("event") == "campaign_start"):
                 break
             if kind == "campaign_alert":
                 active = dict(payload)
