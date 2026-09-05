@@ -341,7 +341,12 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int,
     source = f"policy+{limits['sources'].get('max_points', 'default')}"
     _guard_point_count(
         proposal, cap, source, cfg.log_path, it, event_sink=event_sink)
-    _clip_to_energy_domain(proposal, objective, cfg, it, event_sink=event_sink)
+    # The energy domain is the TARGETED planner's ("_planner_energy_domain" reads the target
+    # branch and search band). A discovery step submits through a carrier objective whose
+    # target fields are inert defaults, and its signed window was realized under its own
+    # declared domain — clipping it here would hand the carrier's defaults scan authority.
+    if not (getattr(objective, "meta", None) or {}).get("discover_and_map"):
+        _clip_to_energy_domain(proposal, objective, cfg, it, event_sink=event_sink)
     n_points = int(proposal.n_points or 0)
     limits = _runtime_limits(cfg, objective, n_points)
     instrument_cap = int(limits["max_neutrons_per_point"])

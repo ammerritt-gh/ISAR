@@ -73,6 +73,28 @@ def discover_step(step_id="discover-1", q_start=(2.0, 0.0, 0.0), q_end=(3.0, 0.0
     return CampaignStep(id=step_id, kind="discover_and_map", payload=spec)
 
 
+def test_the_shared_finalizer_leaves_a_discovery_window_signed(tmp_path):
+    """PR #37 (9fb190b) made ``_finalize_proposal`` clip every window to the targeted planner's
+    energy domain. The discovery carrier objective has no target, so that domain is the
+    ``ObjectiveSpec`` defaults ([0, 20], acoustic): a realized ``[-2, 2]`` discovery window came
+    out ``[0, 2]`` and a purely anti-Stokes one was refused. The carrier's inert defaults must
+    carry no scan authority on the discovery lane."""
+    from types import SimpleNamespace
+    from isar.drive.acquisition.acquire import ScanProposal
+    from isar.drive.steering.realization import DISCOVERY_SCAN_KIND
+    objective = runner_mod._carrier_objective(
+        discover_step(domain=(0.0, 25.0)), {"budget": {"kind": "neutrons", "amount": 1e12}})
+    cfg = SimpleNamespace(log_path=tmp_path / "log.jsonl",
+                          resolution_cb=lambda h, k, l, dE: {"fwhm_dE": 0.8})
+    for lo, hi in ((-2.0, 2.0), (-2.0, -0.5), (18.0, 24.0)):
+        n = int(round((hi - lo) / 0.5)) + 1
+        p = ScanProposal(h=2.5, k=0.0, l=0.0, e_lo=lo, e_hi=hi, e_step=0.5, ncount=10_000,
+                         kind=DISCOVERY_SCAN_KIND, reason="test", e_pred=0.5 * (lo + hi),
+                         fwhm_dE=0.8, n_points=n, meta={"acquisition_action_role": "discovery"})
+        loop_mod._finalize_proposal(p, objective, cfg, objective.budget, it=0, event_sink=None)
+        assert (p.e_lo, p.e_hi, p.n_points) == (lo, hi, n)
+
+
 def workspace(tmp_path: Path) -> Path:
     """An INITIALIZED workspace: a card with the declarations cold start mints its partition from.
 
