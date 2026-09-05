@@ -448,3 +448,21 @@ def test_campaign_alert_is_loud_says_continuing_and_counts_the_streak():
     three = render_event({"ts": 2.0, "kind": "campaign_alert", "payload": {
         "alert": "analysis_failed", "consecutive": 3, "policy": "continue", "iter": 176}})
     assert "3 in a row" in three.text
+
+
+def test_the_lattice_snap_is_a_note_in_the_feed_not_a_problem():
+    """The loop snaps nearly every planner window onto the pool's energy lattice (that is what lets a
+    repeat scan join the master). It is bookkeeping, and it drowned the feed as "Problem: …" (219
+    of 583 exception lines at one q on 2026-09-05). The loop tags it low severity; the feed says Note."""
+    from types import SimpleNamespace
+    from isar.drive.loop import _snap_to_lattice
+    captured = []
+    proposal = SimpleNamespace(h=2.0, k=0.0, l=0.0, e_lo=5.294, e_hi=6.833, e_step=0.1026)
+    moved = _snap_to_lattice(proposal, "unused.jsonl", 38,
+                             event_sink=lambda _p, kind, payload: captured.append((kind, payload)))
+    assert moved and captured and captured[0][0] == "exception"
+    payload = captured[0][1]
+    assert payload["action"] == "proposal_snapped_to_lattice" and payload["severity"] == "low"
+    line = render_event({"ts": 1.0, "kind": "exception", "payload": payload})
+    assert line.text.startswith("Note: proposal snapped to lattice") and "[iter 38]" in line.text
+    assert line.severity == "info"

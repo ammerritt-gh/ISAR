@@ -191,8 +191,11 @@ def _snap_to_lattice(proposal, log_path, it: int, *, event_sink=log_event) -> bo
     if (e_lo, e_hi, e_step) == (float(proposal.e_lo), float(proposal.e_hi), float(proposal.e_step)):
         return False
     if event_sink is not None:
+        # Routine bookkeeping, not a problem: nearly every planner proposal is snapped, and the
+        # feed showed each one as "Problem: …" (219 of 583 exception lines at one q, 2026-09-05).
+        # ``severity: low`` keeps the record for forensics and renders it as a plain note.
         event_sink(log_path, "exception", {
-            "action": "proposal_snapped_to_lattice",
+            "action": "proposal_snapped_to_lattice", "severity": "low",
             "hkl": [proposal.h, proposal.k, proposal.l],
             "old_window": [float(proposal.e_lo), float(proposal.e_hi), float(proposal.e_step)],
             "new_window": [e_lo, e_hi, e_step],
