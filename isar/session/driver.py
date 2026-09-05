@@ -935,10 +935,11 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
     workspace.report_dir.mkdir(parents=True, exist_ok=True)
     # Every payload is complete and fsynced before the first replacement. The current marker is
     # already non-published, so a crash between these atomic replaces is visible and repairable.
-    os.replace(staged_workspace.session_path, workspace.session_path)
-    os.replace(staged_workspace.state_path, workspace.state_path)
-    os.replace(staged_workspace.report_dir / "results.csv",
-               workspace.report_dir / "results.csv")
+    from isar.session.atomic import replace_retrying
+    replace_retrying(staged_workspace.session_path, workspace.session_path)
+    replace_retrying(staged_workspace.state_path, workspace.state_path)
+    replace_retrying(staged_workspace.report_dir / "results.csv",
+                     workspace.report_dir / "results.csv")
     hashes = _publication_hashes(workspace)
     checkpoint_store.mark_published(unit_keys=unit_keys, published_hashes=hashes)
     progress(phase="completed", published=True)

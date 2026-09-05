@@ -47,7 +47,8 @@ def _atomic_json(path: Path, value: dict) -> None:
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    from isar.session.atomic import replace_retrying
+    replace_retrying(temporary, path)
 
 
 def master_fit_fingerprint(*, spectrum_digest: str, policy, resolved_guidelines: dict,

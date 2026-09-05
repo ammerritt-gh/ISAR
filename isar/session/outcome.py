@@ -25,6 +25,7 @@ from pathlib import Path
 
 from isar.schema.statistics import compact_for_csv
 from isar.schema.steering import CANONICAL_MASTER
+from isar.session.atomic import replace_retrying
 from isar.session.state import ScanEntry, SessionState
 from isar.session.workspace import Workspace
 
@@ -564,5 +565,5 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
             w.writerow({k: r.get(k) for k in _CSV_COLUMNS})
         f.flush()
         os.fsync(f.fileno())
-    os.replace(temporary, path)
+    replace_retrying(temporary, path)
     return path

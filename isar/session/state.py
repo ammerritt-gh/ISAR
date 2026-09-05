@@ -142,10 +142,10 @@ def content_hash(record) -> str:
 
 # ---------------------------------------------------------------------------
 def _atomic_write_json(path, data: dict) -> Path:
-    import os
+    from isar.session.atomic import replace_retrying
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(p.suffix + ".tmp")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    os.replace(tmp, p)
+    replace_retrying(tmp, p)
     return p
