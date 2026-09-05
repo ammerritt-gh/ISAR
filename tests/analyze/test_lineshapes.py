@@ -19,11 +19,11 @@ from scipy.interpolate import interp1d
 from scipy.signal import fftconvolve
 
 from isar.analyze.lineshapes import (
-    KB, Stokes_DHO, Voigt, antiStokes_DHO, convolute_voigt_dho,
+    CONVOLUTION_DX, KB, Stokes_DHO, Voigt, antiStokes_DHO, convolute_voigt_dho,
 )
 
 TRUE_OMEGA0 = 5.0
-DX = 0.05          # the model's internal grid step (lineshapes.convolute_voigt_dho)
+DX = CONVOLUTION_DX   # the model's internal grid step (lineshapes.convolute_voigt_dho)
 
 _GRID_DEFECT = pytest.mark.xfail(
     strict=True,
@@ -62,7 +62,7 @@ def _reference_convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, 
     """Pre-caching reference: identical formulas to the original convolute_voigt_dho, built
     with interp1d directly instead of np.interp, and with no lru_cache in the loop."""
     x_target = np.asarray(x_target, dtype=float)
-    dx = 0.05
+    dx = DX
     pad_range = 20
     x_span = max(abs(x_target.min()), abs(x_target.max())) + pad_range
     x_uniform = np.arange(-x_span, x_span, dx)
@@ -108,7 +108,7 @@ def test_cached_convolution_matches_precache_reference():
     # bit-identical to the pre-change per-call computation.
     ref_kernel = Voigt(x_uniform, Area=1.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, center=0)
     x_span = max(abs(x.min()), abs(x.max())) + 20
-    cached_grid, cached_kernel = _grid_and_kernel(float(x_span), 0.05, 1.0, 0.0)
+    cached_grid, cached_kernel = _grid_and_kernel(float(x_span), DX, 1.0, 0.0)
     assert np.array_equal(cached_grid, x_uniform)
     assert np.array_equal(cached_kernel, ref_kernel)
 
@@ -132,7 +132,7 @@ def test_repeated_calls_share_cached_kernel_and_grid():
 def test_cached_kernel_grid_and_elastic_profile_are_read_only():
     from isar.analyze.lineshapes import _elastic_unit_voigt, _grid_and_kernel
 
-    x_uniform, kernel = _grid_and_kernel(28.0, 0.05, 1.0, 0.0)
+    x_uniform, kernel = _grid_and_kernel(28.0, DX, 1.0, 0.0)
     assert not x_uniform.flags.writeable
     assert not kernel.flags.writeable
 

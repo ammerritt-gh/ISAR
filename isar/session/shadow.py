@@ -20,7 +20,7 @@ from isar.drive.session_log import read_log
 
 _DECISION_KINDS = {
     "propose", "escalate_fit", "decide", "stop", "branch_track_update",
-    "branch_reassignment", "frontier_blocked", "certification_crossing",
+    "branch_reassignment", "certification_crossing",
 }
 _VOLATILE_KEYS = {
     "ts", "seconds", "elapsed_seconds", "estimated_seconds", "activity_id", "job_id",
@@ -36,7 +36,6 @@ _DECISION_FIELDS = {
     "stop": ("state", "terminal_cause", "reasons", "per_q", "grid_state"),
     "branch_track_update": ("iter", "revision", "assignments", "confirmed"),
     "branch_reassignment": ("iter", "revision", "hkl", "from_branch", "to_branch"),
-    "frontier_blocked": ("iter", "hkl", "branch", "state"),
     "certification_crossing": ("iter", "hkl", "production_batch_fingerprint", "state"),
 }
 _ANALYSIS_SPENT_REASON = re.compile(

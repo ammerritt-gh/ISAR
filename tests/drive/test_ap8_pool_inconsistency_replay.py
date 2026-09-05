@@ -47,12 +47,11 @@ def _replay_track():
 
 def test_frozen_ap8_no_longer_retracts_the_confirmed_tail():
     """The recorded failure wiped indices 13-20 to ``blocked``/``missing``. After the fix the tracker,
-    re-run over AP8's own frozen session, keeps the whole tail connected and confirmed."""
+    re-run over AP8's own frozen session, keeps every one of them decisively identified."""
     track, _card = _replay_track()
     states = [a["track_state"] for a in track["assignments"]]
 
-    assert track["frontiers"]["frontier_blocked"] is False, states
-    assert track["frontiers"]["blocked_indices"] == [], states
+    assert "ambiguous" not in states[13:], states
     # Indices 13-20 (H=2.65..3.00) — the tail AP8 abandoned — all stay confirmed with a selected mode.
     for index in range(13, 21):
         assert states[index] == "confirmed", (index, states)

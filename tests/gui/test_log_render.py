@@ -169,49 +169,8 @@ def test_inventory_says_what_was_weighed_and_what_was_chosen():
     assert blocked.severity == "warn"
 
 
-def test_eig_decision_explains_a_selection_and_a_refusal():
-    selected = _rendered("eig_decision", {
-        "iter": 12, "hkl": [2.2, 0.0, 0.0], "mode": "authoritative",
-        "master_id": "b" * 64, "ready": True, "blocker": None,
-        "eligibility_status": "eligible", "point_count_basis": "authority_decision",
-        "legacy_points": 46, "target_points": 17,
-        "delta_nats_per_point": 0.02412, "standard_error_nats": 0.00318,
-        "lower_margin_nats": 0.01776, "selected_role": "target_core",
-        "decision_outcome": "select_target_core", "decision_ref": "d" * 64})
-    assert selected.text == ("EIG H=2.2 — legacy 46 pts vs core 17 pts, ΔI/pt +0.0241±0.0032 — "
-                             "target_core selected  [iter 12]")
-    assert selected.severity == "notice"                 # the one case that changed the window
-    assert "d" * 64 not in selected.text                 # the decision sha stays in the payload
-    assert "d" * 64 in selected.raw_json()
-
-    blocked = _rendered("eig_decision", {
-        "iter": 3, "hkl": [2.15, 0.0, 0.0], "mode": "authoritative", "master_id": None,
-        "ready": False, "blocker": "projection_currentness_unknown",
-        "eligibility_status": "ineligible", "point_count_basis": "planned_inventory",
-        "legacy_points": 54, "target_points": 17, "delta_nats_per_point": None,
-        "standard_error_nats": None, "lower_margin_nats": None, "selected_role": None,
-        "decision_outcome": None, "decision_ref": None})
-    assert blocked.text == ("EIG H=2.15 — not ready (projection_currentness_unknown)  [iter 3]")
-    assert blocked.severity == "info"
-
-
-def test_eig_decision_retains_legacy_without_pretending_to_a_score():
-    retained = _rendered("eig_decision", {
-        "iter": 8, "hkl": [2.75, 0.0, 0.0], "mode": "shadow", "master_id": "c" * 64,
-        "ready": True, "blocker": None, "eligibility_status": "eligible",
-        "point_count_basis": "planned_inventory", "legacy_points": 52, "target_points": None,
-        "delta_nats_per_point": None, "standard_error_nats": None, "lower_margin_nats": None,
-        "selected_role": None, "decision_outcome": None, "decision_ref": None})
-    # Still no invented score — but a bare "EIG H=2.75" told the operator nothing at all, so the
-    # line now says which fields the record was missing.
-    assert retained.text == "EIG H=2.75 — ready, no margin or role recorded  [iter 8]"
-    assert retained.severity == "info"
-    for forbidden in ("ΔI", "selected", "None"):
-        assert forbidden not in retained.text
-
-
-def test_eig_decision_reaches_the_dock():
-    assert "eig_decision" not in HIDDEN_KINDS
+def test_eig_plan_reaches_the_dock():
+    assert "eig_plan" not in HIDDEN_KINDS
 
 
 def test_activity_start_and_end_read_as_plain_progress():
@@ -351,8 +310,8 @@ def test_missing_counts_read_as_a_dash_not_as_the_word_none():
     assert "None" not in planning.text
     assert planning.text == "Planning a quicklook scan — 8 points"
 
-    bare = _rendered("eig_decision", {"ready": True})
-    assert bare.text == "EIG — ready, no margin or role recorded"
+    bare = _rendered("eig_plan", {"chosen": {}})
+    assert "None" not in bare.text and "?" not in bare.text
 
 
 def test_a_non_finite_budget_degrades_instead_of_killing_the_feed():
@@ -362,3 +321,148 @@ def test_a_non_finite_budget_degrades_instead_of_killing_the_feed():
     assert budget_status_line(state) is not None          # no exception escapes
     state.analysis_limit_seconds = float("inf")
     assert budget_status_line(state) is not None
+
+
+def test_the_eig_plan_line_names_the_choice_the_runner_up_and_the_prize():
+    """The one line an operator reads to know why this scan and not another."""
+    line = _rendered("eig_plan", {
+        "iter": 3, "tolerance_meV": 0.05,
+        "chosen": {"grid_index": 1, "hkl": [2.15, 0.0, 0.0], "e_lo": 0.6, "e_hi": 3.1,
+                   "e_step": 0.2, "n_points": 13, "ncount": 10_000_000, "score": 4.21e-6,
+                   "neutrons": 1.3e8, "price": 1.8e8},
+        "per_point": [{"hkl": [2.10, 0.0, 0.0], "halfwidth_meV": 0.04},
+                      {"hkl": [2.15, 0.0, 0.0], "halfwidth_meV": 0.31}],
+        "ranked": [{"hkl": [2.15, 0.0, 0.0], "score": 4.21e-6},
+                   {"hkl": [2.20, 0.0, 0.0], "score": 3.88e-6}],
+        "prize_points_within_bar": 0, "prize_points_total": 20})
+    assert line.text == ("EIG → ±0.31 → H=2.15: 0.60–3.10 meV, "
+                         "13 pts × 10M = 1.3e+08 n, price 1.8e+08, 4.21 nats/1e6 n "
+                         "— runner-up H=2.2 3.88 "
+                         "— prize 0/20 within ±0.05 meV  [iter 3]")
+    assert line.severity == "notice"
+
+
+def test_a_design_record_missing_its_window_says_so_instead_of_printing_question_marks():
+    line = _rendered("eig_plan", {"iter": 4, "chosen": {"hkl": [2.15, 0.0, 0.0]}})
+    assert line.text == ("EIG — a design was chosen but its record carries no window or "
+                         "exposure  [iter 4]")
+    assert line.severity == "warn"
+
+
+def test_the_eig_plan_stop_line_says_the_map_is_done():
+    line = _rendered("eig_plan", {"tolerance_meV": 0.05, "stop": True, "chosen": None,
+                                  "prize_points_within_bar": 20, "prize_points_total": 20})
+    assert line.text == "EIG: hypothesis map at ±0.05 meV at every point — done"
+    assert line.severity == "notice"
+
+
+def _plan_payload(**extra):
+    payload = {
+        "iter": 3, "tolerance_meV": 0.05,
+        "chosen": {"grid_index": 1, "hkl": [2.15, 0.0, 0.0], "e_lo": 0.6, "e_hi": 3.1,
+                   "e_step": 0.2, "n_points": 13, "ncount": 10_000_000, "score": 4.21e-6,
+                   "neutrons": 1.3e8, "price": 1.8e8},
+        "per_point": [{"hkl": [2.15, 0.0, 0.0], "halfwidth_meV": 0.31}],
+        "ranked": [{"hkl": [2.15, 0.0, 0.0], "score": 4.21e-6}],
+        "prize_points_within_bar": 0, "prize_points_total": 20,
+        "intensity_scale": {"per_ncount": 1e7,
+                            "peak_counts_meV": {"acoustic": 17.0, "optic": 15.0},
+                            "elastic_counts_meV": 30.0, "background_per_point": 0.3},
+        "intensity_scale_changed": True}
+    payload.update(extra)
+    return payload
+
+
+def test_the_intensity_map_is_said_once_when_it_changes():
+    """It is the same three numbers every iteration otherwise, and a feed that repeats them teaches
+    an operator to stop reading the line."""
+    changed = _rendered("eig_plan", _plan_payload())
+    assert "intensity map: acoustic 17, optic 15, elastic 30, bg 0.3 /1e+07" in changed.text
+    unchanged = _rendered("eig_plan", _plan_payload(intensity_scale_changed=False))
+    assert "intensity map" not in unchanged.text
+
+
+def test_a_planner_note_rides_on_the_line_and_is_loud():
+    """The planner says so when no design can complete a point; that is a warning, not a footnote."""
+    line = _rendered("eig_plan", _plan_payload(
+        intensity_scale_changed=False,
+        note="no design is expected to complete a point; taking the cheapest probe"))
+    assert line.text.endswith(
+        "\u2014 no design is expected to complete a point; taking the cheapest probe  [iter 3]")
+    assert line.severity == "warn"
+    assert _rendered("eig_plan", _plan_payload(intensity_scale_changed=False)).severity == "notice"
+
+
+def test_a_point_held_back_by_identity_says_so_beside_its_width():
+    """A MEASURED point can sit inside the bar on width and still not be answered, because the mass
+    is spread over rival identities, and showing only the half-width there reads as done when it is
+    not. A point with no candidate yet is not held back by identity -- it has no identity to be
+    unsure of -- and "identified 0.00" on every opening scan trains the operator to ignore the
+    clause exactly where it matters."""
+    def line(**point):
+        return _rendered("eig_plan", _plan_payload(
+            intensity_scale_changed=False,
+            per_point=[{"hkl": [2.15, 0.0, 0.0], **point}])).text
+
+    held = line(halfwidth_meV=0.03, identified_mass=0.71, n_candidates=2)
+    assert "\u00b10.03 but identified 0.71 \u2192 H=2.15" in held
+
+    clear = line(halfwidth_meV=0.03, identified_mass=0.98, n_candidates=1)
+    assert "\u00b10.03 \u2192 H=2.15" in clear
+    assert "identified" not in clear
+
+    unmeasured = line(halfwidth_meV=4.5, identified_mass=0.0, n_candidates=0)
+    assert "\u00b14.50 \u2192 H=2.15" in unmeasured
+    assert "identified" not in unmeasured
+
+
+def test_the_requested_dose_and_the_ranked_price_are_both_shown():
+    """They are different numbers — the price carries the fixed cost of taking a scan at all — and
+    only the price explains why a cheap-looking design lost."""
+    line = _rendered("eig_plan", _plan_payload(intensity_scale_changed=False))
+    assert "13 pts \u00d7 10M = 1.3e+08 n, price 1.8e+08" in line.text
+
+
+def test_scan_landed_reads_before_any_fit_line():
+    """The event the drive logs the moment a scan is in the ledger and before the fit activity
+    opens — the operator sees the data before "Started fast fit at q" (owner, 2026-09-03)."""
+    from isar_gui.log_render import render_event
+    row = render_event({"ts": 1.0, "kind": "scan_landed",
+                        "payload": {"iter": 3, "q": [2.05, 0.0, 0.0], "n_points": 14,
+                                    "ncount": 5_000_000, "e_lo": -0.6, "e_hi": 2.0}})
+    assert row is not None and row.severity == "notice"
+    assert row.text.startswith("Scan landed at ")
+    assert "14 points" in row.text and "E -0.60…2.00 meV" in row.text
+
+
+def test_campaign_alert_is_loud_says_continuing_and_counts_the_streak():
+    """Policy A (owner 2026-09-05): the campaign never stops on a survived failure; it yells. The
+    line must say what failed, that the campaign is continuing, and how many in a row."""
+    assert "campaign_alert" in LOUD_KINDS
+    one = render_event({"ts": 1.0, "kind": "campaign_alert", "payload": {
+        "alert": "analysis_failed", "consecutive": 1, "policy": "continue", "iter": 174,
+        "error": "IsarRunError: `isar run` failed (exit 1)"}})
+    assert one.loud and one.severity == "warn"
+    assert one.text.startswith("ALERT: analysis failed — campaign continuing; needs attention")
+    assert "in a row" not in one.text and "isar run" in one.text
+    three = render_event({"ts": 2.0, "kind": "campaign_alert", "payload": {
+        "alert": "analysis_failed", "consecutive": 3, "policy": "continue", "iter": 176}})
+    assert "3 in a row" in three.text
+
+
+def test_the_lattice_snap_is_a_note_in_the_feed_not_a_problem():
+    """The loop snaps nearly every planner window onto the pool's energy lattice (that is what lets a
+    repeat scan join the master). It is bookkeeping, and it drowned the feed as "Problem: …" (219
+    of 583 exception lines at one q on 2026-09-05). The loop tags it low severity; the feed says Note."""
+    from types import SimpleNamespace
+    from isar.drive.loop import _snap_to_lattice
+    captured = []
+    proposal = SimpleNamespace(h=2.0, k=0.0, l=0.0, e_lo=5.294, e_hi=6.833, e_step=0.1026)
+    moved = _snap_to_lattice(proposal, "unused.jsonl", 38,
+                             event_sink=lambda _p, kind, payload: captured.append((kind, payload)))
+    assert moved and captured and captured[0][0] == "exception"
+    payload = captured[0][1]
+    assert payload["action"] == "proposal_snapped_to_lattice" and payload["severity"] == "low"
+    line = render_event({"ts": 1.0, "kind": "exception", "payload": payload})
+    assert line.text.startswith("Note: proposal snapped to lattice") and "[iter 38]" in line.text
+    assert line.severity == "info"

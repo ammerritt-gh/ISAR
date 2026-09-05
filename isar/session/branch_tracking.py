@@ -81,54 +81,23 @@ class _State:
     acoustic: int | None
 
 
-def anchor_index(path: Iterable[Iterable[float]], period: float | None, *,
-                 target_branch: str = "optic", observations: list[dict] | None = None,
-                 acoustic_hypothesis: dict | None = None) -> int:
-    """Return the deterministic identity anchor for a connected branch.
+def zone_anchor_index(path: Iterable[Iterable[float]], period: float | None) -> int:
+    """The path point nearest the reduced-zone centre — pure geometry, no placement rule.
 
-    Optic branches anchor at reduced q=0.  An acoustic mode is position-unresolvable there, so its
-    acquisition seed is chosen only from the declared gap/slope hypothesis and local resolution.
-    Fitted candidates are intentionally not energy-ranked or locally labeled here; the joint tracker
-    owns identity.  The zone centre remains the conservative fallback.
+    Used for the transition geometry (the sign of dE/d|q| is taken outward from here) and, when
+    the point really sits *at* the centre, for the zone-centre precision-coverage exemption.
+    With no usable period the fallback is index 0.
     """
     points = [tuple(float(value) for value in q) for q in path]
     if not points:
         return 0
+    if period is None or not np.isfinite(period) or period <= 0.0:
+        return 0
     spans = [max(q[axis] for q in points) - min(q[axis] for q in points)
              for axis in range(len(points[0]))]
     axis = int(np.argmax(spans)) if any(span > 0.0 for span in spans) else 0
-    if period is None or not np.isfinite(period) or period <= 0.0:
-        return 0
     reduced = [abs(q[axis] - round(q[axis] / period) * period) for q in points]
-    zone_anchor = min(range(len(points)), key=lambda index: (reduced[index], index))
-    if target_branch != "acoustic" or not observations:
-        return zone_anchor
-    hypothesis = dict(acoustic_hypothesis or {})
-    if hypothesis:
-        zc_mean, _zc_sigma = _prior_pair(hypothesis, "zc_energy", (0.0, 0.5))
-        slope_mean, _slope_sigma = _prior_pair(hypothesis, "slope_zc", (12.0, 12.0))
-        observed = []
-        for index, row in enumerate(observations):
-            if not (row.get("candidates") or []):
-                continue
-            try:
-                width = float(row.get("gauss_fwhm"))
-            except (TypeError, ValueError):
-                continue
-            if np.isfinite(width) and width > 0.0:
-                observed.append((index, width))
-        if observed:
-            predicted_resolvable = [
-                index for index, fwhm in observed
-                if abs(zc_mean + slope_mean * reduced[index]) >= fwhm
-            ]
-            if predicted_resolvable:
-                return min(predicted_resolvable, key=lambda index: (reduced[index], index))
-            farthest = max(reduced[index] for index, _fwhm in observed)
-            return min(index for index, _fwhm in observed
-                       if math.isclose(reduced[index], farthest,
-                                       rel_tol=0.0, abs_tol=1e-12))
-    return zone_anchor
+    return min(range(len(points)), key=lambda index: (reduced[index], index))
 
 
 def _logsumexp(values) -> float:
@@ -363,29 +332,47 @@ def _emission(state: _State, candidates: list[dict], *, reduced_distance: float,
               optic_hypothesis: dict, acoustic_hypothesis: dict,
               null_windows=None,
               energy_domain: tuple[float, float] = DEFAULT_ENERGY_DOMAIN_MEV,
+              belief_moments: dict | None = None,
               ) -> float:
+    """Log-score of one assignment state at one path point.
+
+    Where a branch is predicted comes from ``belief_moments`` -- ``{branch: (mean, sigma)}`` from the
+    campaign's own belief, the accumulated anchors under the class prior, band-truncated -- when the
+    caller supplies it, and from the bare class prior extrapolated by the slope prior otherwise.
+    The bare prior is flat away from the fold by construction (acoustic 0 +- 14 meV at u = 0.8), so
+    it cannot tell two peaks 2.5 meV apart from each other, and a track scored on it went 55/45 on
+    every two-peak master from h = 2.75 on while the planner, reading the anchors, said 0.97: the
+    chain of anchors broke exactly where the rival entered view (GUI rehearsal, 2026-09-03). One
+    belief for one rule.
+    """
     assigned = {index for index in (state.optic, state.acoustic) if index is not None}
     score = (len(candidates) - len(assigned)) * UNASSIGNED_LOG_PENALTY
+
+    def predicted(branch: str, hypothesis: dict, default) -> tuple[float, float]:
+        if belief_moments and branch in belief_moments:
+            mean, sigma = belief_moments[branch]
+            return float(mean), max(float(sigma), 1e-6)
+        mean, sigma = _prior_pair(hypothesis, "zc_energy", default)
+        if reduced_distance > 0.0:
+            slope, slope_sigma = _prior_pair(
+                hypothesis, "slope_zc", (0.0, 8.0) if branch == "optic" else (12.0, 12.0))
+            mean += slope * reduced_distance
+            sigma = math.sqrt(sigma * sigma + (slope_sigma * reduced_distance) ** 2)
+        return mean, sigma
+
     if state.optic is None:
-        relax = _null_relaxation(
-            _predicted_branch_mean("optic", optic_hypothesis, reduced_distance), null_windows)
+        relax = _null_relaxation(predicted("optic", optic_hypothesis, (6.0, 3.0))[0], null_windows)
         score += MISSING_LOG_PENALTY * (1.0 - relax)
     if state.acoustic is None:
-        relax = _null_relaxation(
-            _predicted_branch_mean("acoustic", acoustic_hypothesis, reduced_distance), null_windows)
+        relax = _null_relaxation(predicted("acoustic", acoustic_hypothesis, (0.0, 0.2))[0],
+                                 null_windows)
         score += MISSING_LOG_PENALTY * (1.0 - relax)
     for branch, index, hypothesis, default in (
             ("optic", state.optic, optic_hypothesis, (6.0, 3.0)),
             ("acoustic", state.acoustic, acoustic_hypothesis, (0.0, 0.2))):
         if index is None:
             continue
-        mean, sigma = _prior_pair(hypothesis, "zc_energy", default)
-        if reduced_distance > 0.0:
-            slope, slope_sigma = _prior_pair(
-                hypothesis, "slope_zc", (0.0, 8.0) if branch == "optic" else (12.0, 12.0))
-            mean += slope * reduced_distance
-            sigma = math.sqrt(sigma * sigma
-                              + (slope_sigma * reduced_distance) ** 2)
+        mean, sigma = predicted(branch, hypothesis, default)
         candidate = candidates[index]
         combined = math.sqrt(sigma * sigma + _candidate_sigma(candidate) ** 2)
         confidence = _hypothesis_confidence(hypothesis)
@@ -517,100 +504,22 @@ def _identity_entropy(probabilities: dict[str, float]) -> float:
     return _entropy({name: value / total for name, value in known.items()})
 
 
-def _frontier_states(assignments: list[dict], anchor: int, *, entropy_stop: float,
-                     maximum_bridge_steps: int) -> None:
-    clear = [bool(row.get("selected_candidate_index") is not None
-                  and row.get("target_probability", 0.0) >= CONFIRMED_PROBABILITY
-                  and row.get("identity_entropy", math.inf) <= entropy_stop)
-             for row in assignments]
-    # Persist the verdict rather than leaving it implicit in ``track_state``.  Acquisition needs to
-    # tell "identity is undecided here" (more counting can help) from "identity is decided but this
-    # q is not connected to the trajectory" (more counting cannot), and ``track_state`` alone
-    # collapses both into ``ambiguous``/``blocked``.
-    for row, is_clear in zip(assignments, clear):
-        row["local_identity_clear"] = is_clear
+def _identity_states(assignments: list[dict], *, entropy_stop: float) -> None:
+    """Each point's own identity verdict: ``confirmed`` when this q's branch identity is decided.
+
+    There is no frontier, no anchor and no bridge: whether one q is *connected* to a trajectory
+    is not a question the EIG planner asks — it prices information wherever the beam can go.
+    What the planner and the stopping rule both need is the local question, "is the identity
+    decided HERE?", which is the same two-part gate the dispersion prior admits an anchor
+    under: a selected candidate carrying at least ``CONFIRMED_PROBABILITY`` of the target's
+    mass, with an identity entropy at or below the declared stop.
+    """
     for row in assignments:
-        row["track_state"] = "blocked"
-    if not assignments:
-        return
-    assignments[anchor]["track_state"] = "confirmed" if clear[anchor] else "ambiguous"
-    if not clear[anchor]:
-        return
-    for direction in (-1, 1):
-        index = anchor + direction
-        frontier_open = True
-        bridges = 0
-        while 0 <= index < len(assignments):
-            row = assignments[index]
-            if frontier_open and clear[index]:
-                row["track_state"] = "confirmed"
-            elif frontier_open:
-                row["track_state"] = "ambiguous" if row.get("selected_candidate_index") is not None else "missing"
-                frontier_open = False
-            elif bridges < maximum_bridge_steps and row.get("selected_candidate_index") is not None:
-                row["track_state"] = "provisional"
-                bridges += 1
-            else:
-                row["track_state"] = "blocked"
-            index += direction
-
-
-def _infer_unresolved_acoustic_origin(assignments: list[dict], origin: int,
-                                      reduced_distance: list[float],
-                                      observations: list[dict]) -> bool:
-    """Mark an unfitted Gamma endpoint supported by a connected low-q acoustic trajectory."""
-    if not assignments or not math.isclose(reduced_distance[origin], 0.0, abs_tol=1e-9):
-        return False
-    origin_row = assignments[origin]
-    acoustic_index = origin_row.get("acoustic_candidate_index")
-    if acoustic_index is not None:
-        # This status represents the experimentally hidden endpoint, not a fitted low-energy mode.
-        # A fitted candidate remains ordinary evidence even when it lies inside the resolution.
-        return False
-
-    support = []
-    for direction in (-1, 1):
-        index = origin + direction
-        while 0 <= index < len(assignments) and len(support) < 8:
-            row = assignments[index]
-            candidate_index = row.get("acoustic_candidate_index")
-            if candidate_index is None:
-                break
-            candidate = (row.get("candidates") or [])[candidate_index]
-            probability = float((candidate.get("probabilities") or {}).get("acoustic", 0.0))
-            if probability < CONFIRMED_PROBABILITY:
-                break
-            support.append((reduced_distance[index], _candidate_energy(candidate),
-                            _candidate_sigma(candidate)))
-            index += direction
-    if len(support) < 3:
-        return False
-    x = np.asarray([point[0] for point in support], dtype=float)
-    y = np.asarray([point[1] for point in support], dtype=float)
-    sigma = np.asarray([point[2] for point in support], dtype=float)
-    design = np.column_stack((np.ones_like(x), x))
-    weights = 1.0 / np.square(np.maximum(sigma, 1e-6))
-    precision = design.T @ (weights[:, None] * design)
-    covariance = np.linalg.pinv(precision, hermitian=True)
-    intercept, slope = covariance @ (design.T @ (weights * y))
-    residual_rms = math.sqrt(float(np.average(np.square(y - design @ [intercept, slope]),
-                                               weights=weights)))
-    intercept_limit = max(0.5, 3.0 * math.sqrt(max(float(covariance[0, 0]), 0.0)))
-    residual_limit = max(0.35, 2.0 * float(np.median(sigma)))
-    if slope <= 0.0 or abs(intercept) > intercept_limit or residual_rms > residual_limit:
-        return False
-
-    origin_row.update({
-        "track_state": "inferred_unresolved",
-        "structural_endpoint_status": "inferred_unresolved",
-        "is_reduced_q_origin": True,
-        "target_delivery_eligible": False,
-        "precision_coverage_eligible": False,
-        "inference_support_points": len(support),
-        "inferred_intercept_meV": float(intercept),
-        "inferred_slope_meV_per_rlu": float(slope),
-    })
-    return True
+        clear = bool(row.get("selected_candidate_index") is not None
+                     and row.get("target_probability", 0.0) >= CONFIRMED_PROBABILITY
+                     and row.get("identity_entropy", math.inf) <= entropy_stop)
+        row["local_identity_clear"] = clear
+        row["track_state"] = "confirmed" if clear else "ambiguous"
 
 
 def _segments(assignments: list[dict], branch: str, target_branch: str) -> list[dict]:
@@ -642,13 +551,19 @@ def _segments(assignments: list[dict], branch: str, target_branch: str) -> list[
 def track_path(path: list[list[float]], observations: list[dict], *, period: float | None,
                hypotheses: list[dict], target_branch: str = "optic", previous: dict | None = None,
                assignment_entropy_stop_nats: float = 0.2,
-               maximum_bridge_steps: int = 1,
                energy_domain_meV: (tuple[float, float] | list[float]
-                                   | Iterable[Iterable[float]] | None) = None) -> dict:
+                                   | Iterable[Iterable[float]] | None) = None,
+               beliefs: dict | None = None) -> dict:
     """Run Viterbi plus forward/backward marginals over an ordered objective path.
 
     ``observations`` has one row per path point and each row has an unordered ``candidates`` list.
     Missing lists are valid observations.  The result is entirely JSON-serialisable.
+
+    ``beliefs`` -- ``{branch_id: BranchBelief}`` from :func:`branch_assignment.build_beliefs`, the
+    campaign's accumulated anchors under the class prior -- locates each branch at each path point
+    (band-truncated to the domain's upper edge) for the emission scores; without it the bare class
+    prior extrapolated by the slope prior is used, which is flat away from the fold. The transition
+    scores (continuity along the path) are unchanged either way.
     """
     if target_branch not in {"optic", "acoustic"}:
         raise ValueError("tracked branch must be 'optic' or 'acoustic'")
@@ -659,22 +574,10 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
     if len(path) != len(observations):
         raise ValueError("path and observations must have the same length")
     points = [[float(value) for value in q] for q in path]
-    previous_anchor = (previous or {}).get(
-        "acquisition_seed_index", (previous or {}).get("anchor_index"))
-    persisted_anchor = (isinstance(previous_anchor, int)
-                        and 0 <= previous_anchor < len(points)
-                        and (previous or {}).get("target_branch") == target_branch)
-    acoustic_hypothesis = _hypothesis(hypotheses, "acoustic")
-    anchor = (previous_anchor if persisted_anchor else
-              anchor_index(points, period, target_branch=target_branch,
-                           observations=observations,
-                           acoustic_hypothesis=acoustic_hypothesis))
     spans = [max(q[axis] for q in points) - min(q[axis] for q in points)
              for axis in range(len(points[0]))]
     axis = int(np.argmax(spans)) if any(span > 0.0 for span in spans) else 0
-    # The acquisition/identity anchor may sit away from the zone centre for a gapless branch.  Its
-    # location must not reverse the physical sign of dE/d|q| on the zone-centre side of that anchor.
-    zone_anchor = anchor_index(points, period)
+    zone_anchor = zone_anchor_index(points, period)
     path_distance, radial = _path_geometry(points, zone_anchor)
     reduced_distance = list(radial)
     if period is not None and np.isfinite(period) and period > 0.0:
@@ -688,7 +591,7 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
     # closest point is reduced q=0.05 the tracker's own resolvability predicate predicts ω ≈ 0.6 meV,
     # resolvable at FWHM 0.3 and 0.5 — exempting it discards a measurable q.  And with no usable
     # period (``[dispersion] zone_period`` absent from the hand-edited card, which the driver passes
-    # through unconditionally) ``anchor_index`` returns 0 as a fallback, so the exemption would land
+    # through unconditionally) ``zone_anchor_index`` returns 0 as a fallback, so the exemption would land
     # on path index 0 regardless of geometry — on a descending path, the point *farthest* from the
     # zone centre.  Publish the field only when the geometry actually supports the claim; a consumer
     # reads ``None`` as "no exempt origin" (``stopping._apply_branch_track`` requires an ``int``).
@@ -704,19 +607,30 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
     if not states:
         return {"revision": 1, "target_branch": target_branch,
                 "rival_branch": "acoustic" if target_branch == "optic" else "optic",
-                "anchor_index": anchor,
-                "acquisition_seed_index": anchor,
                 "reduced_q_origin_index": origin_index,
                 "energy_domain_meV": [list(interval) for interval in domain],
                 "scorer_revision": BRANCH_TRACKING_SCORER_REVISION,
-                "assignments": [], "tracks": [], "frontiers": {}}
+                "assignments": [], "tracks": []}
 
+    moments_by_q: list[dict | None] = [None] * len(points)
+    if beliefs and period is not None and np.isfinite(period) and period > 0.0:
+        domain_hi = max(float(interval[1]) for interval in domain)
+        half = 0.5 * float(period)
+        for index, point in enumerate(points):
+            # The reduced-zone coordinate every anchor was stored in (branch_assignment.reduced_q).
+            u = math.sqrt(sum((((float(c) + half) % float(period)) - half) ** 2 for c in point))
+            # Only a branch with anchors speaks through its belief: with none, the belief says
+            # "somewhere in the band", which is less than the class prior's own slope says.
+            moments_by_q[index] = {
+                str(branch): belief.predict(u, domain_hi=domain_hi)
+                for branch, belief in beliefs.items()
+                if hasattr(belief, "predict") and int(getattr(belief, "n_anchors", 0)) > 0}
     emissions = [[_emission(state, candidates_by_q[index],
                             reduced_distance=reduced_distance[index], period=period,
                             optic_hypothesis=optic_hypothesis,
                             acoustic_hypothesis=acoustic_hypothesis,
                             null_windows=null_windows_by_q[index],
-                            energy_domain=domain)
+                            energy_domain=domain, belief_moments=moments_by_q[index])
                   for state in states[index]] for index in range(len(points))]
     transitions: list[np.ndarray] = []
     for index in range(1, len(points)):
@@ -797,15 +711,7 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
             "identity_entropy": _identity_entropy(selected_probabilities),
         })
 
-    _frontier_states(assignments, anchor, entropy_stop=float(assignment_entropy_stop_nats),
-                     maximum_bridge_steps=max(0, int(maximum_bridge_steps)))
-    # Same "nearest is not at" test as the published index above, and for the same reason: this rung
-    # writes ``is_reduced_q_origin`` / ``precision_coverage_eligible: False`` onto the assignment row,
-    # which ``stopping._apply_branch_track`` reads as a second, independent route to the O44
-    # exemption.  Gating only the published field would leave that route exempting a measurable q.
-    inferred_origin = (target_branch == "acoustic" and origin_index is not None
-                       and _infer_unresolved_acoustic_origin(
-                           assignments, origin_index, reduced_distance, observations))
+    _identity_states(assignments, entropy_stop=float(assignment_entropy_stop_nats))
     old_revision = int((previous or {}).get("revision", 0))
     old_assignments = (previous or {}).get("assignments") or []
     reassignments = []
@@ -822,18 +728,13 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
         row["selected_candidate_ref"] = ((row.get("candidates") or [])[selected].get("candidate_ref")
                                            if selected is not None else None)
 
-    confirmed = [row["path_index"] for row in assignments if row["track_state"] == "confirmed"]
-    blocked = [row["path_index"] for row in assignments if row["track_state"] in ("ambiguous", "missing")]
     revision = old_revision + 1
     return {
         "revision": revision, "target_branch": target_branch,
         "rival_branch": "acoustic" if target_branch == "optic" else "optic",
-        "anchor_index": anchor,
-        "acquisition_seed_index": anchor,
         "reduced_q_origin_index": origin_index,
         "energy_domain_meV": [list(interval) for interval in domain],
         "scorer_revision": BRANCH_TRACKING_SCORER_REVISION,
-        "inferred_endpoint_indices": [origin_index] if inferred_origin else [],
         "assignments": assignments,
         "tracks": [
             {"branch_id": branch, "role": ("target" if branch == target_branch else "rival"),
@@ -843,7 +744,5 @@ def track_path(path: list[list[float]], observations: list[dict], *, period: flo
              "segments": _segments(assignments, branch, target_branch)}
             for branch in (target_branch, "acoustic" if target_branch == "optic" else "optic")
         ],
-        "frontiers": {"confirmed_indices": confirmed, "blocked_indices": blocked,
-                      "frontier_blocked": bool(blocked)},
         "reassignments": reassignments,
     }

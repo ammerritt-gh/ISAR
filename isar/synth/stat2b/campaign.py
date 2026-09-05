@@ -724,7 +724,6 @@ def _certification_projection(fit: Mapping[str, Any], tolerance: float) -> dict[
         tolerance_meV=float(tolerance),
         budget=None,
         target_branch="acoustic",
-        target_selector="lowest_energy",
         analysis_limit_seconds=None,
     )
     master = {

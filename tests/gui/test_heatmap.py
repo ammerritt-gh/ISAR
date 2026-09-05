@@ -49,7 +49,8 @@ _SPECS = [
 ]
 
 
-def _make(make_ws, *, with_master: bool = False, specs=_SPECS) -> Workspace:
+def _make(make_ws, *, with_master: bool = False, master_spectrum: bool = False,
+          specs=_SPECS) -> Workspace:
     scans, rows, data = {}, [], []
     for s in specs:
         T = s.get("T", 200.0)
@@ -78,7 +79,24 @@ def _make(make_ws, *, with_master: bool = False, specs=_SPECS) -> Workspace:
         rows.append({"scan": 10, "detector": "det", "sample": "tavi", "T": 200.0,
                      "h": 2.1, "k": 0.0, "l": 0.0, "status": "fitted",
                      "pooled": True, "n_members": 3})
+        if master_spectrum:
+            # The collated group's persisted ΣN: pools scan 2 (the H=2.1 member); its union
+            # grid is covered by ΣM=2 everywhere except the last four points (ΣM=4), so the
+            # plane's normalisation to the common reference (median ΣM = 2) halves those.
+            scans["tavi:10:det"]["provenance"].update({
+                "pooled": True, "members": [["tavi", 2, "det"]],
+                "spectrum_ref": "data/pooled/m.json"})
+            rows[-1]["spectrum_ref"] = "data/pooled/m.json"
     root = make_ws(scans=scans, rows=rows, data_files=data)
+    if with_master and master_spectrum:
+        import json
+        pooled = root / "data" / "pooled" / "m.json"
+        pooled.parent.mkdir(parents=True, exist_ok=True)
+        counts = _counts(5.0)
+        pooled.write_text(json.dumps({
+            "schema": "isar.pooled_spectrum/1", "energy": list(_X), "counts": counts,
+            "variance": counts, "monitor": [2.0] * 17 + [4.0] * 4, "mask": [True] * 21,
+            "members": [["tavi", 2, "det"]], "n_members": 1}), encoding="utf-8")
     return Workspace.open(root)
 
 
@@ -178,9 +196,42 @@ def test_pooled_master_on_overlay_but_not_strips(make_ws):
     members = [s for s in vm.spec.series
                if s.glyph is Glyph.INDIVIDUAL_VALID]
     assert len(members) == 1 and len(members[0].x) == 2
-    # ...and the master contributes NO strip (no persisted spectrum): still 3 strips.
+    # ...and a master WITHOUT a persisted spectrum (pre-artifact workspace) contributes no
+    # strip; its member's own column stays: still 3 strips.
     assert len(vm.spec.strips) == 3
     assert vm.spec.markers == []
+
+
+def test_master_with_persisted_spectrum_is_the_column_at_its_q(make_ws):
+    """The plane's column at a q is the collated MASTER, normalised to one plane-wide
+    reference monitor, and it replaces its members' columns (which would otherwise stack at
+    the same x with the latest scan on top). The master is found through its members, not
+    its fit row."""
+    ws = _make(make_ws, with_master=True, master_spectrum=True)
+    vm = HeatmapViewModel(ws)
+    strips = vm.spec.strips
+    assert sorted(round(s.x_center, 3) for s in strips) == [2.0, 2.1, 2.2]  # one per q
+    master = next(s for s in strips if abs(s.x_center - 2.1) < 1e-9)
+    assert master.meta["pooled"] is True
+    assert master.meta["unit_id"] == "tavi:10:det"
+    assert master.meta["member_unit_ids"] == ["tavi:2:det"]
+    counts = np.asarray(_counts(5.0))
+    # median ΣM over the union grid is 2 -> reference 2: ΣM=2 points are raw ΣN, ΣM=4 halve.
+    np.testing.assert_allclose(master.values[:17], counts[:17])
+    np.testing.assert_allclose(master.values[17:], counts[17:] / 2.0)
+    assert vm.spec.value_label == "counts per 2 monitor"
+    # The member's own column is gone (the master stands for it); other q's stay per-scan.
+    assert all(not s.meta.get("pooled") for s in strips if abs(s.x_center - 2.1) > 1e-9)
+
+
+def test_latest_acquisition_box_resolves_through_the_master_column(make_ws):
+    """With no detailed driver events the legacy fallback is the last physical result; when
+    that scan is pooled into the master column, the box lands on the master's column."""
+    specs = [_SPECS[0], _SPECS[2], _SPECS[1]]  # scan 2 (H=2.1, the pooled member) is last
+    vm = HeatmapViewModel(_make(make_ws, with_master=True, master_spectrum=True, specs=specs))
+    assert len(vm.spec.regions) == 1
+    assert vm.spec.regions[0].x_min == pytest.approx(2.06)
+    assert vm.spec.regions[0].x_max == pytest.approx(2.14)
 
 
 def test_fit_display_glyphs_replace_verdict_overlays(make_ws):
@@ -336,3 +387,28 @@ def test_mvp16_heatmap_smoke():
     assert isinstance(vm.excluded_count, int)
     assert spec.projection is not None
     assert len(spec.strips) > 0
+
+
+def test_colour_scale_is_set_by_the_inelastic_signal_and_the_elastic_line_saturates(make_ws):
+    """A Bragg-elastic cell thousands of counts tall must not paint every phonon black: the plane's
+    levels come from |E| beyond 1.5 resolution FWHM (1.2 fixture: gauss_fwhm 1.2 -> 1.8 meV),
+    the elastic line saturates, and the spec says so. Without an elastic cell there is no clip."""
+    import json
+    ws = _make(make_ws, with_master=True, master_spectrum=True)
+    vm = HeatmapViewModel(ws)
+    assert vm.spec.strip_levels is None                      # nothing reaches the elastic band
+    pooled = ws.root / "data" / "pooled" / "m.json"
+    payload = json.loads(pooled.read_text(encoding="utf-8"))
+    at_zero = int(np.argmin(np.abs(_X)))                     # E = 0 on the fixture grid
+    payload["counts"][at_zero] = 50000.0
+    payload["variance"][at_zero] = 50000.0
+    pooled.write_text(json.dumps(payload), encoding="utf-8")
+    ws.refresh()
+    vm.refresh()
+    spec = vm.spec
+    inelastic_max = max(float(np.nanmax(np.asarray(s.values)[np.abs(np.asarray(s.y)) > 1.8]))
+                        for s in spec.strips)
+    assert spec.strip_levels is not None
+    assert spec.strip_levels[1] == pytest.approx(inelastic_max)
+    assert spec.strip_levels[1] < 1000.0                     # the elastic cell is above the scale
+    assert any("elastic line saturates" in a.text for a in spec.annotations)

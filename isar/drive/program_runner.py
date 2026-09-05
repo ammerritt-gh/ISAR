@@ -119,10 +119,9 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from isar.drive.acquisition.acquire import _resolve_fwhm
-from isar.drive.acquisition.scan_design import (
+from isar.drive.acquisition.acquire import (
     BudgetInsufficientForMinimumBatch, InstrumentLimitBelowMinimumBatch,
-    InstrumentPointLimitExceeded)
+    InstrumentPointLimitExceeded, _resolve_fwhm)
 from isar.drive.consultation import ConsultationChannel
 from isar.drive.instrument.tavi_client import TaviError
 from isar.drive.objective import ObjectiveSpec

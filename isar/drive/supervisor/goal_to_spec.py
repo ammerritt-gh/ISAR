@@ -21,24 +21,16 @@ sits in the runtime path of a number.
 from __future__ import annotations
 
 import copy
-from dataclasses import replace
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 import isar.reduce.llm_client as _llm  # boundary carve-out: the shared LLMM HTTP plumbing only
 import isar.drive.objective as _obj
-from isar.drive.objective import (
-    ObjectiveSpec,
-    current_objective_comparison_scope,
-    resolve_hypothesis_snapshot,
-)
-from isar.eig.policy import (
-    canonical_scan_window_eig_policy_authoring,
-    compile_card_eig_policy_set,
-    policy_identity,
-)
+from isar.drive.objective import (DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV, ObjectiveSpec,
+                                  resolve_hypothesis_snapshot)
 from isar.schema.campaign_program import (
     PROGRAM_SCHEMA,
     STEP_KINDS,
@@ -47,9 +39,9 @@ from isar.schema.campaign_program import (
     DiscoverAndMapSpec,
     targeted_program,
 )
-from isar.schema.eig_policy import ScanWindowEIGConfig
-from isar.schema.hypotheses import content_fingerprint
 import isar.schema.question_policy as _qpolicy
+
+log = logging.getLogger(__name__)
 
 Dispatcher = _llm.Dispatcher
 LLMMClient = _llm.LLMMClient
@@ -91,12 +83,12 @@ LLM_GOAL_SCHEMA = {
         "notes": {"type": "string"},
         "target_branch": {"type": "string", "enum": ["acoustic", "optic"]},
         "target_label": {"type": "string"},
-        "target_selector": {"type": "string",
-                            "enum": ["lowest_energy", "highest_energy", "nearest_energy",
-                                     "tracked_branch"]},
+        # The planner maps the declared branch; per-q lowest/highest/nearest feature selection
+        # reaches nothing that plans a scan and is refused rather than compiled.
+        "target_selector": {"type": "string", "enum": ["tracked_branch"]},
+        # Accepted only as an input alias for the branch's zone-centre anchor
+        # (``target_zc_energy_meV``); it is never a per-q selection energy.
         "target_energy_meV": {"type": "number"},
-        "energy_search_meV": {"type": "array", "items": {"type": "number"},
-                              "minItems": 2, "maxItems": 2},
         # The sample temperature the campaign is measuring at, which selects the belief slice.
         # Scientific context the supervisor may legitimately state; it grants no scanning authority.
         "target_temperature_K": {"type": "number"},
@@ -132,7 +124,6 @@ FILE_SPEC_SCHEMA["properties"]["steering"] = {
         "quicklook_ncount": {"type": "integer"},
         "production_batch_ncount": {"type": "integer"},
         "maximum_production_batches_per_q": {"type": "integer"},
-        "maximum_bridge_steps": {"type": "integer"},
         "dynamic_ncount": {"type": "boolean"},
         "max_ncount_per_scan": {"type": "integer"},
         "ncount_growth_cap": {"type": "number"},
@@ -140,7 +131,6 @@ FILE_SPEC_SCHEMA["properties"]["steering"] = {
         "interval_floor_window": {"type": "integer"},
         "interval_floor_min_improvement": {"type": "number"},
         "interval_floor_min_exposure_ratio": {"type": "number"},
-        "scan_window_eig_mode": {"type": "string"},
     },
 }
 # Compatibility alias for callers/tests that imported the original public name.
@@ -190,7 +180,7 @@ DEFAULT_DELIVERABLES = _qpolicy.DEFAULT_DELIVERABLES
 _EXAMPLE = {
     "path": {"h_start": 1.0, "h_end": 2.0, "k": 0.0, "l": 0.0},
     "step_h": 0.1,
-    "tolerance_meV": 0.5,
+    "tolerance_meV": 0.1,
     "budget_hours": 8,
     "notes": "acoustic branch (1,0,0)->(2,0,0)",
 }
@@ -198,8 +188,6 @@ _EXAMPLE = {
 # Canonical compiler defaults for the energy search band when the goal states none. These are the
 # single source for both the compile fallback and the LLM prompt guidance — the example
 # example campaign program ships the same acoustic band, so goal-path and program-path campaigns agree.
-DEFAULT_ENERGY_SEARCH_ACOUSTIC_MEV = (-9.0, 9.0)
-DEFAULT_ENERGY_SEARCH_OPTIC_MEV = (-2.0, 12.0)
 
 _DISCOVER_EXAMPLE = {
     "kind": "discover_and_map",
@@ -226,23 +214,24 @@ SYSTEM = (
     "q_end [h,k,l], and "
     "step_rlu (the maximum point spacing, default 0.05 if unstated). The legacy path/step_h shape is "
     "also valid for a segment purely along H. Extract tolerance_meV (the per-point target on the "
-    "phonon energy ω₀; map '±X meV' to X). Include a measurement budget as EITHER budget_hours "
+    "phonon energy ω₀; map '±X meV' to X; when the user states none, use the default 0.1 — the "
+    "centre of a resolved peak is routinely fixed to that). Include a measurement budget as EITHER budget_hours "
     "OR budget_neutrons only when the user states one; analysis time is a separate guardrail. "
     "Set target_branch to optic when the user asks for an optic or transverse optic phonon, otherwise "
-    "acoustic; retain their wording in target_label. A request to map a named branch along a path "
-    "uses target_selector='tracked_branch' unless the user explicitly asks for the lowest, highest, "
-    "or nearest-energy feature independently at every q. An energy stated as the identity of a branch (for "
-    "example 'the optic phonon around 6 meV') is a zone-centre anchor: put it in "
-    "target_zc_energy_meV and use target_selector='tracked_branch'; do not set target_energy_meV. "
-    "Only when the user explicitly requests the feature nearest an energy at every q or throughout "
-    "the path, put that energy in target_energy_meV and use target_selector='nearest_energy'. If the user explicitly asks for the "
-    "highest optic mode use target_selector='highest_energy'. If the user states a zone-centre or gap energy, "
+    "acoustic; retain their wording in target_label. A targeted campaign always maps the declared "
+    "branch: target_selector is 'tracked_branch' and there is no other value. An energy stated as "
+    "the identity of a branch (for example 'the optic phonon around 6 meV') is a zone-centre "
+    "anchor: put it in target_zc_energy_meV. Picking whichever feature is lowest, highest, or "
+    "nearest an energy independently at every q is NOT something this driver can measure; if that "
+    "is what the user asked for, say so rather than emitting a campaign. "
+    "If the user states a zone-centre or gap energy, "
     "put it in target_zc_energy_meV and put an explicitly stated uncertainty in "
-    "target_zc_energy_sigma_meV. For optic goals use energy_search_meV [-2,12] and for acoustic "
-    "goals [-9,9] unless the user provides a range. Optionally a short notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
+    "target_zc_energy_sigma_meV. Never emit an energy search range: the driver plans in the "
+    "instrument's own energy domain and tracks the branch wherever it goes. Optionally a short "
+    "notes string. Return ONLY a JSON object matching this schema — use EXACTLY "
     "these keys, no extra keys, and never enumerate grid points:\n"
     + json.dumps(LLM_PROGRAM_SCHEMA)
-    + "\n\nExample. Command: 'map the acoustic phonon from (1,0,0) to (2,0,0) to +-0.5 meV, steps "
+    + "\n\nExample. Command: 'map the acoustic phonon from (1,0,0) to (2,0,0) to +-0.1 meV, steps "
     "of 0.1, overnight'. Reply:\n" + json.dumps({"kind": "targeted", "targeted": _EXAMPLE})
     + "\n\nExample. Command: 'Scan the region from (2,0,0) to (3,0,0) up to 10meV, map out all the "
     "phenomena of interest.' Reply:\n" + json.dumps(_DISCOVER_EXAMPLE)
@@ -273,7 +262,7 @@ class GoalParseError(ValueError):
 def goal_to_program(goal: str, *, dispatcher: Dispatcher | None = None,
                     defaults: dict | None = None,
                     card_hypotheses: dict[str, Any] | None = None,
-                    card_eig_policy_set: dict[str, Any] | None = None,
+                    energy_ceiling_meV: float | None = None,
                     card_question_guidelines: dict[str, Any] | None = None,
                     user_policy_ask: dict[str, Any] | None = None,
                     endpoint: str | None = None, model_pin: str | None = None,
@@ -327,7 +316,7 @@ def goal_to_program(goal: str, *, dispatcher: Dispatcher | None = None,
                                     user_policy_ask=user_policy_ask)),),
             source_text=goal)
     spec = _build_spec(data["targeted"], merged, card_hypotheses=card_hypotheses,
-                       card_eig_policy_set=card_eig_policy_set)
+                       energy_ceiling_meV=energy_ceiling_meV)
     return targeted_program(spec.to_dict(), source_text=goal)
 
 
@@ -371,7 +360,7 @@ def _discover_spec(data: dict, *,
 # --------------------------------------------------------------------------- LLM-free path
 def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec",
                    card_hypotheses: dict[str, Any] | None = None,
-                   card_eig_policy_set: dict[str, Any] | None = None) -> ObjectiveSpec:
+                   energy_ceiling_meV: float | None = None) -> ObjectiveSpec:
     """Build an :class:`ObjectiveSpec` from an already-parsed dict — no LLM, no file I/O.
 
     Accepts either the goal schema (``{"path": {"h_start", …}, "step_h", "tolerance_meV", …}``) or a
@@ -388,6 +377,16 @@ def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec"
     # ``ObjectiveSpec.from_dict``, whose refusal names the current contract for a retired one.
     if d.get("schema") is not None or isinstance(d.get("path"), list):
         return ObjectiveSpec.from_dict(d)         # already a full ObjectiveSpec
+    # Checked before conformance so a spec written against the retired per-q selectors is told what
+    # is wrong with it, rather than being reported as a shapeless goal.
+    _refuse_retired_selector(d.get("target_selector"), where=where)
+    if "energy_search_meV" in d:
+        # Retired input (owner ruling 2026-09-05): the energy domain is the instrument's — zero to
+        # the card's max_energy_transfer_meV — never a per-phonon range. Refused by name so the
+        # author learns what to delete, rather than reported as a shapeless goal.
+        raise GoalParseError(
+            f"{where}: energy_search_meV is retired — the energy domain is the instrument's "
+            "(card max_energy_transfer_meV above, the elastic line below); delete the key")
     if not _conforms(d, FILE_SPEC_SCHEMA):
         raise GoalParseError(f"{where}: not a valid goal spec (needs path{{h_start,h_end,k,l}}, step_h, "
                              "and tolerance_meV; a budget is optional and defaults per tier)")
@@ -396,7 +395,7 @@ def spec_from_dict(d: dict, *, defaults: dict | None = None, where: str = "spec"
         d,
         merged,
         card_hypotheses=card_hypotheses,
-        card_eig_policy_set=card_eig_policy_set,
+        energy_ceiling_meV=energy_ceiling_meV,
     )
 
 
@@ -420,42 +419,62 @@ def make_program(spec: ObjectiveSpec, *, source: dict,
 
 
 # --------------------------------------------------------------------------- shared
+def _refuse_retired_selector(selector, *, where: str = "goal") -> None:
+    """Refuse a target the EIG planner cannot map.
+
+    The planner's prize is defined per DECLARED BRANCH, so the retired per-q feature selectors
+    (``nearest_energy``, ``lowest_energy``, ``highest_energy``) name a prize it can never satisfy —
+    a campaign compiled with one runs until its budget dies. Refuse at compile time instead.
+    """
+    if selector is None or selector == "tracked_branch":
+        return
+    raise GoalParseError(
+        f"{where}: target_selector {selector!r} is not a target the planner can map. The planner "
+        "maps the branch declared in target_branch, so 'tracked_branch' is the only selector; "
+        "picking the lowest, highest, or nearest-energy feature independently at every q is not "
+        "something this driver measures. An energy that merely IDENTIFIES which branch to map is a "
+        "zone-centre anchor and belongs in target_zc_energy_meV.")
+
+
 def _build_spec(data: dict, merged: dict, *,
                 card_hypotheses: dict[str, Any] | None = None,
-                card_eig_policy_set: dict[str, Any] | None = None) -> ObjectiveSpec:
+                energy_ceiling_meV: float | None = None) -> ObjectiveSpec:
     tier = str(merged.get("tier", "deterministic"))
     budget = _budget(data, tier=tier)
     branch = str(data.get("target_branch", "acoustic"))
     label = str(data.get("target_label") or branch)
-    target_energy = data.get("target_energy_meV")
-    selector = data.get("target_selector")
-    if selector is None:
-        selector = ("nearest_energy" if target_energy is not None else "tracked_branch")
-    if selector == "nearest_energy" and target_energy is None:
-        raise GoalParseError("nearest_energy target_selector requires target_energy_meV")
-    # The tracked selector identifies a dispersing branch.  Accept target_energy_meV as an input
-    # alias for its zone-centre anchor, but never carry that value into the global nearest-energy
-    # field consumed at every q.
-    tracked_anchor_energy = None
-    if selector == "tracked_branch" and target_energy is not None:
-        tracked_anchor_energy = target_energy
-        target_energy = None
-    energy = data.get("energy_search_meV")
-    resolved_energy = tuple(energy) if energy is not None else (
-        DEFAULT_ENERGY_SEARCH_OPTIC_MEV if branch == "optic"
-        else DEFAULT_ENERGY_SEARCH_ACOUSTIC_MEV)
-    # Record who chose the band here, where the answer is still known. Downstream, a band that equals
-    # the shipped default is indistinguishable from one the scientist asked for exactly — and the
-    # difference decides whether identity work may be widened past it.
-    target_search_source = "operator" if energy is not None else "compiler"
+    selector = data.get("target_selector") or "tracked_branch"
+    _refuse_retired_selector(selector)
+    # The tracked selector identifies a dispersing branch. ``target_energy_meV`` survives only as an
+    # input alias for its zone-centre anchor.
+    tracked_anchor_energy = data.get("target_energy_meV")
+    # The energy domain is the instrument's, never the phonon's (owner ruling 2026-09-05): zero to
+    # the card's kinematic ceiling for every branch. The old per-branch ranges ([-2, 12] optic,
+    # [-9, 9] acoustic) were the demo sample's numbers, and made an acoustic branch above 9 meV or
+    # an optic branch above 12 meV unmeasurable. The lower edge for an optic target (the elastic
+    # exclusion) needs the live resolution and is applied by the drive, not frozen here.
+    ceiling = (float(energy_ceiling_meV) if energy_ceiling_meV is not None
+               else DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV)
+    if not ceiling > 0.0:
+        raise GoalParseError("the card's max_energy_transfer_meV must be positive")
+    resolved_energy = (0.0, ceiling)
+    target_search_source = "instrument" if energy_ceiling_meV is not None else "instrument_default"
+    if energy_ceiling_meV is None:
+        log.warning("card declares no max_energy_transfer_meV; planning to the shipped ceiling of "
+                    "%g meV", DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV)
     identity_energy = data.get("identity_search_meV")
     identity_search_source = "operator" if identity_energy is not None else None
     goal_override = None
     target_zc_energy = data.get("target_zc_energy_meV", tracked_anchor_energy)
     if (data.get("target_zc_energy_sigma_meV") is not None
             and target_zc_energy is None):
-        raise GoalParseError(
-            "target_zc_energy_sigma_meV requires target_zc_energy_meV")
+        # A sigma with no energy carries no intent: the operator typed a sentence, and the key is
+        # the model's filler (a local 35B model emitted it on four of four compiles of the demo
+        # sentence, 2026-09-03). Dropping it loses nothing the sentence said; refusing it turned
+        # "enter the sentence, hit go" into no scan at all.
+        log.warning("ignoring target_zc_energy_sigma_meV=%r: no target_zc_energy_meV to qualify",
+                    data.get("target_zc_energy_sigma_meV"))
+        data = {k: v for k, v in data.items() if k != "target_zc_energy_sigma_meV"}
     if target_zc_energy is not None:
         shipped_sigma = max((float(resolved_energy[1]) - max(float(resolved_energy[0]), 0.0)) / 4.0,
                             1e-6)
@@ -469,15 +488,6 @@ def _build_spec(data: dict, merged: dict, *,
     frozen = resolve_hypothesis_snapshot(
         branch, resolved_energy, card_hypotheses=card_hypotheses, goal_override=goal_override,
         steering_override=data.get("steering"))
-    final_steering = dict(frozen["steering"])
-    if final_steering.get("scan_window_eig_mode") == "authoritative":
-        # The policy set is bound only after the objective comparison scope exists.  Construct the
-        # temporary scope carrier in off mode, then freeze authoritative mode together with the
-        # compiled card policy in the single final replacement below.
-        construction_steering = {**final_steering, "scan_window_eig_mode": "off"}
-        frozen = {**frozen, "steering": construction_steering,
-                  "hypothesis_fingerprint": content_fingerprint(
-                      frozen["hypotheses"], construction_steering)}
     common = dict(tolerance_meV=float(data["tolerance_meV"]), budget=budget,
                   tier=tier,
                   analysis_limit_seconds=(data.get("analysis_limit_seconds", 3600.0)
@@ -486,7 +496,6 @@ def _build_spec(data: dict, merged: dict, *,
                   name=str(data.get("notes", "")),
                   meta={"source": "goal_to_spec", "raw": data}, target_branch=branch,
                   target_label=label, target_selector=str(selector),
-                  target_energy_meV=(float(target_energy) if target_energy is not None else None),
                   energy_search_meV=resolved_energy,
                   identity_search_meV=(tuple(identity_energy)
                                        if identity_energy is not None else None),
@@ -509,103 +518,7 @@ def _build_spec(data: dict, merged: dict, *,
             h_start=float(p["h_start"]), h_end=float(p["h_end"]),
             k=float(p.get("k", 0.0)), l=float(p.get("l", 0.0)),
             step=float(data.get("step_h") or merged.get("step_h") or 0.05), **common)
-    scope = current_objective_comparison_scope(objective)
-    policy_set = compile_card_eig_policy_set(
-        _eig_policy_authoring(card_eig_policy_set, final_steering),
-        scope,
-        max_runtime_variants=objective.scan_window_eig.scoring_config.max_runtime_variants,
-    )
-    frozen = replace(
-        objective,
-        steering=final_steering,
-        hypothesis_fingerprint=content_fingerprint(objective.hypotheses, final_steering),
-        scan_window_eig=ScanWindowEIGConfig(
-            policy_set=policy_set,
-            scoring_config=objective.scan_window_eig.scoring_config,
-        ),
-    )
-    # The policy above was compiled against ``scope`` — the CONSTRUCTION-time scope (taken while
-    # steering was still ``off``, before the freeze above recomputed ``hypothesis_fingerprint``,
-    # which is itself part of the scope payload). SCENE-4 PR 4.4, D1 finding: whenever the freeze
-    # actually changes steering — now the common case, off -> authoritative by default — the true
-    # scope has already moved by the time ``frozen`` exists, so a policy bound to ``scope`` can
-    # never match ``frozen``'s own live scope (exactly the qoi_policy_missing "Test9 failure
-    # shape" ``rebind_scan_window_eig_policy`` exists to close). Rebind here rather than freeze an
-    # objective whose own compiled policy cannot serve it.
-    return rebind_scan_window_eig_policy(frozen, card_eig_policy_set)
-
-
-def _eig_policy_authoring(card_eig_policy_set, steering=None):
-    """The card's scan-window EIG authoring, or the canonical default when it declares none.
-
-    Compiled unconditionally, exactly as a declared card policy always was: ``ObjectiveSpec``
-    validates the authoritative profile on construction, so the policy has to be in place *before*
-    the mode can be switched on. Compiling it only for campaigns already in shadow/authoritative
-    would leave every ordinary campaign unable to turn EIG on at all — the failure this exists to
-    remove. In ``off`` mode the policy is carried and never consulted.
-    """
-    if card_eig_policy_set not in (None, {}):
-        return card_eig_policy_set
-    return canonical_scan_window_eig_policy_authoring()
-
-
-def rebind_scan_window_eig_policy(objective: ObjectiveSpec, card_eig_policy_set) -> ObjectiveSpec:
-    """Recompile the card's scan-window EIG policy against the objective's *current* scope.
-
-    A card policy binds to the current campaign configuration, so its compiled scope fingerprint is
-    only valid for the objective identity it was compiled from.  Anything that edits a scope-bearing
-    field after compilation (notably a steering change, which recomputes ``hypothesis_fingerprint``)
-    silently invalidates the binding: the policy still exists, it simply stops matching, and every
-    scan-window score then reports ``qoi_policy_missing`` for the whole campaign.  Recompiling from
-    the card authoring keeps the match exact while computing it from current truth.
-
-    Switching the mode on is also what first *earns* a policy set: an objective frozen in ``off``
-    mode carries none, so a ``--scan-window-eig-mode`` override compiles the card's authoring (or
-    the canonical default) here rather than leaving the campaign in a mode it cannot serve.
-    """
-    current = objective.scan_window_eig
-    if current.policy_set is None:
-        # An objective frozen before the canonical default existed carries no policy set. Backfill
-        # one only when the mode is actually on: an ``off`` objective has nothing to serve, and
-        # silently rewriting a frozen campaign's identity to add an unused policy is not a rebind.
-        if str((objective.steering or {}).get("scan_window_eig_mode", "off")) == "off":
-            return objective
-        authoring = _eig_policy_authoring(card_eig_policy_set)
-        if authoring in (None, {}):
-            return objective
-        scope = current_objective_comparison_scope(objective)
-        rebound = replace(objective, scan_window_eig=ScanWindowEIGConfig(
-            policy_set=compile_card_eig_policy_set(
-                authoring, scope,
-                max_runtime_variants=current.scoring_config.max_runtime_variants),
-            scoring_config=current.scoring_config))
-        if current_objective_comparison_scope(rebound) != scope:
-            raise ValueError("scan-window EIG policy binding changed objective comparison scope")
-        return rebound
-    if card_eig_policy_set in (None, {}):
-        # A campaign that never declared the table carries the canonical default, which can be
-        # recompiled from truth. Anything else is a hand-authored policy whose source is genuinely
-        # gone — substituting the default there would silently measure a different QoI partition.
-        card_eig_policy_set = canonical_scan_window_eig_policy_authoring()
-        default_set = compile_card_eig_policy_set(
-            card_eig_policy_set, current_objective_comparison_scope(objective),
-            max_runtime_variants=current.scoring_config.max_runtime_variants)
-        if policy_identity(default_set) != policy_identity(current.policy_set):
-            raise GoalParseError(
-                "the objective carries a hand-authored scan-window EIG policy set but its card "
-                "authoring source is unavailable, so the binding cannot be recomputed for the "
-                "current campaign configuration")
-    scope = current_objective_comparison_scope(objective)
-    policy_set = compile_card_eig_policy_set(
-        card_eig_policy_set,
-        scope,
-        max_runtime_variants=current.scoring_config.max_runtime_variants,
-    )
-    rebound = replace(objective, scan_window_eig=ScanWindowEIGConfig(
-        policy_set=policy_set, scoring_config=current.scoring_config))
-    if current_objective_comparison_scope(rebound) != scope:
-        raise ValueError("scan-window EIG policy binding changed objective comparison scope")
-    return rebound
+    return objective
 
 
 def _budget(data: dict, *, tier: str) -> dict[str, Any] | None:

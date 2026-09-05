@@ -126,15 +126,3 @@ def test_union_associations_two_non_canonical_copies_stay_non_canonical():
     assert merged[0].canonical is False
 
 
-def test_drive_wrapper_and_agenda_reexport_are_the_same_declaration():
-    """The relocations are re-exports, not copies: same objects, same hash for the same
-    registry, and the agenda's historical name still serves the identical mapping."""
-    from isar.drive.acquisition import inventory as drive_inventory
-    from isar.scene import agenda
-
-    assert agenda.GENERATOR_REFS is FAMILY_GENERATORS
-    assert drive_inventory.GeneratorSpec is GeneratorSpec
-    assert drive_inventory.registry_fingerprint(drive_inventory.GENERATOR_REGISTRY) == \
-        registry_fingerprint(drive_inventory.GENERATOR_REGISTRY)
-    # The legacy default is preserved on the drive side: same payload, same hash.
-    assert drive_inventory.registry_fingerprint() == drive_inventory.GENERATOR_REGISTRY_VERSION

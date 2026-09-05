@@ -29,10 +29,9 @@ log = logging.getLogger(__name__)
 #: Audit-trail kinds: the machinery behind a decision (fingerprints, candidate ids, artifact refs).
 #: Real, kept on disk, and useless as a running commentary — so they stay out of the dock.
 AUDIT_KINDS = frozenset({
-    "branch_track_update", "branch_reassignment", "frontier_blocked", "physical_submission",
+    "branch_track_update", "branch_reassignment", "physical_submission",
     "pooled_master_update", "candidate_update", "certification_crossing", "recovery_pending",
-    "recovery_completed", "scan_design_realization", "scan_design_realized_comparison",
-    "scan_design_authority_decision", "submission_intent",
+    "recovery_completed", "submission_intent",
 })
 
 #: Profiling kinds — ~16 spans per iteration. They are how the run is tuned, not what it is doing.
@@ -43,7 +42,7 @@ HIDDEN_KINDS = AUDIT_KINDS | PROFILING_KINDS
 
 #: Kinds that are always shown, always styled loud, and never removed by a feed filter: the two
 #: events that mean "a human may need to look at this".
-LOUD_KINDS = frozenset({"exception", "escalate_fit"})
+LOUD_KINDS = frozenset({"exception", "escalate_fit", "campaign_alert"})
 
 
 @dataclass(frozen=True)
@@ -293,35 +292,125 @@ def _render_inventory(payload: dict, tail: str) -> tuple[str, str]:
             f"usable — chose {chosen}{at}{by}{tail}"), "info"
 
 
-def _render_eig_decision(payload: dict, tail: str) -> tuple[str, str]:
-    """Why the scan-window EIG did — or did not — change the window this iteration.
+def _render_eig_plan(payload: dict, tail: str) -> tuple[str, str]:
+    """The one line that says why this scan and not another.
 
-    The audit answer lives in ``report/scan-design-authority/<sha>.json``; this is the sentence that
-    saves an operator from having to open it. Everything is copied from the payload: the two point
-    counts, the paired information margin the engine already computed, and the role it selected.
+    Everything is copied from the ``eig_plan`` payload the planner seam writes: how well the chosen
+    point's target energy is known now, the design that was bought, the runner-up it beat, and how
+    much of the prize is already inside the bar.
     """
-    at = f" {q_text(payload['hkl'])}" if payload.get("hkl") is not None else ""
-    if not payload.get("ready"):
-        # Reason codes stay verbatim: they are the words the operator will grep the artifacts and
-        # the design docs for, and prettifying them breaks that search.
-        why = payload.get("blocker") or "no reason recorded"
-        return f"EIG{at} — not ready ({why}){tail}", "info"
-    bits = []
-    legacy, target = payload.get("legacy_points"), payload.get("target_points")
-    if legacy is not None and target is not None:
-        bits.append(f"legacy {legacy} pts vs core {target} pts")
-    delta = _num(payload.get("delta_nats_per_point"), "+.4f")
-    if delta is not None:
-        error = _num(payload.get("standard_error_nats"), ".4f")
-        bits.append(f"ΔI/pt {delta}±{error}" if error is not None else f"ΔI/pt {delta}")
-    detail = " — " + ", ".join(bits) if bits else ""
-    role = payload.get("selected_role")
-    chose = f" — {role} selected" if role else ""
-    severity = "notice" if role == "target_core" else "info"
-    if not bits and not role:
-        # A bare "EIG" tells the operator nothing; say that the record carried no margin.
-        return f"EIG{at} — ready, no margin or role recorded{tail}", "info"
-    return f"EIG{at}{detail}{chose}{tail}", severity
+    tolerance = _num(payload.get("tolerance_meV"), ".3g")
+    bar = f" \u00b1{tolerance} meV" if tolerance is not None else ""
+    # The planner sets a note when no design is expected to complete a point and it is taking the
+    # cheapest probe. That is the operator\'s cue that the map or the exposure ladder is wrong, so it
+    # rides on the line and is loud.
+    note = str(payload.get("note") or "")
+    suffix = f" \u2014 {note}" if note else ""
+    severity = "warn" if note else "notice"
+    scale = _intensity_scale_text(payload)
+    if payload.get("stop"):
+        return (f"EIG: hypothesis map at{bar} at every point \u2014 done{tail}", "notice")
+    chosen = payload.get("chosen")
+    if not isinstance(chosen, dict):
+        return f"EIG \u2014 no design was chosen{suffix}{tail}", "warn"
+    at = q_text(chosen.get("hkl")) if chosen.get("hkl") is not None else None
+    lo, hi = _num(chosen.get("e_lo"), ".2f"), _num(chosen.get("e_hi"), ".2f")
+    points, ncount = chosen.get("n_points"), chosen.get("ncount")
+    if at is None or lo is None or hi is None or points is None or ncount is None:
+        # Say so plainly rather than assemble a line out of "?" pieces: a design record missing its
+        # own window or exposure is a record to go and look at, not a scan to describe.
+        return (f"EIG \u2014 a design was chosen but its record carries no window or exposure"
+                f"{suffix}{tail}", "warn")
+    known, identified = _chosen_point(payload, chosen)
+    known = _num(known, ".2f")
+    prefix = f"\u00b1{known} \u2192 " if known is not None else ""
+    # A MEASURED point can sit inside the bar on width and still not be answered, because the
+    # mass is spread over rival identities, and saying only the half-width there reads as done
+    # when it is not. A point with no candidate yet is not held back by identity -- it has no
+    # identity to be unsure of -- and 'identified 0.00' on every opening scan trains the operator
+    # to ignore the clause exactly where it matters.
+    held = _num(identified, ".2f")
+    if (known is not None and held is not None and float(identified) < 0.9
+            and _chosen_n_candidates(payload, chosen)):
+        prefix = f"\u00b1{known} but identified {held} \u2192 "
+    score = _num(_per_million(chosen.get("score")), ".3g")
+    rate = f", {score} nats/1e6 n" if score is not None else ""
+    ranked = [row for row in (payload.get("ranked") or []) if isinstance(row, dict)]
+    runner_up = ""
+    if len(ranked) > 1:
+        second = ranked[1]
+        second_score = _num(_per_million(second.get("score")), ".3g")
+        runner_up = (f" \u2014 runner-up {q_text(second.get('hkl'))}"
+                     + (f" {second_score}" if second_score is not None else ""))
+    total = payload.get("prize_points_total")
+    within = payload.get("prize_points_within_bar")
+    prize = (f" \u2014 prize {within}/{total} within{bar}"
+             if total is not None and within is not None else "")
+    # The dose the instrument is asked for and the price the planner ranked on are different
+    # numbers: the price carries the fixed cost of taking a scan at all, and without it a
+    # cheap-looking design that lost looks like a ranking bug.
+    dose = _num(chosen.get("neutrons"), ".2g")
+    price = _num(chosen.get("price"), ".2g")
+    cost = f" = {dose} n" if dose is not None else ""
+    cost += f", price {price}" if price is not None else ""
+    return (f"EIG \u2192 {prefix}{at}: {lo}\u2013{hi} meV, {points} pts \u00d7 "
+            f"{count_text(ncount)}{cost}{rate}{runner_up}{prize}{scale}{suffix}{tail}", severity)
+
+
+def _intensity_scale_text(payload: dict) -> str:
+    """The intensity map, said once when it changes: what the forward model thinks a scan will see.
+
+    Only on change — it is the same three numbers every iteration otherwise, and a feed that repeats
+    them teaches an operator to stop reading the line.
+    """
+    scale = payload.get("intensity_scale")
+    if not payload.get("intensity_scale_changed") or not isinstance(scale, dict):
+        return ""
+    reference = _num(scale.get("per_ncount"), ".0e") or "1e7"
+    bits = [f"{name} {_num(value, '.3g')}"
+            for name, value in sorted((scale.get("peak_counts_meV") or {}).items())
+            if _num(value, ".3g") is not None]
+    for name, key in (("elastic", "elastic_counts_meV"), ("bg", "background_per_point")):
+        value = _num(scale.get(key), ".3g")
+        if value is not None:
+            bits.append(f"{name} {value}")
+    return ("  |  intensity map: " + ", ".join(bits) + f" /{reference}"
+            if bits else "")
+
+
+def _chosen_point(payload: dict, chosen: dict):
+    """``(half-width, identified mass)`` for the chosen point, from the per-point rollup."""
+    point = _chosen_per_point(payload, chosen)
+    if point is None:
+        return None, None
+    return point.get("halfwidth_meV"), point.get("identified_mass")
+
+
+def _chosen_per_point(payload: dict, chosen: dict):
+    """The chosen design's own row in the per-point rollup, or ``None``."""
+    index = chosen.get("grid_index")
+    for point in (payload.get("per_point") or []):
+        if isinstance(point, dict) and point.get("grid_index", index) == index:
+            if point.get("hkl") == chosen.get("hkl"):
+                return point
+    return None
+
+
+def _chosen_n_candidates(payload: dict, chosen: dict) -> int:
+    """How many modes have been fitted at the chosen point; 0 means never measured."""
+    point = _chosen_per_point(payload, chosen) or {}
+    try:
+        return int(point.get("n_candidates") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _per_million(score):
+    """Information per neutron read in the unit an operator can hold: nats per million neutrons."""
+    try:
+        return float(score) * 1e6
+    except (TypeError, ValueError):
+        return None
 
 
 def _render_activity(kind: str, payload: dict) -> tuple[str, str]:
@@ -384,15 +473,47 @@ def _render(kind: str, payload: dict) -> tuple[str, str]:
         return _render_scan_design(payload, tail)
     if kind == "inventory":
         return _render_inventory(payload, tail)
-    if kind == "eig_decision":
-        return _render_eig_decision(payload, tail)
+    if kind == "eig_plan":
+        return _render_eig_plan(payload, tail)
     if kind in ("activity_start", "activity_end"):
         return _render_activity(kind, payload)
     if kind == "feasibility_trim":
         return _render_feasibility_trim(payload, tail)
+    if kind == "scan_landed":
+        return _render_scan_landed(payload, tail)
+    if kind == "campaign_alert":
+        return _render_campaign_alert(payload, tail)
     # Unknown kinds surface rather than vanish: the log vocabulary grows upstream, and an operator
     # seeing "event: something_new" can still expand the row for the payload.
     return f"event: {kind}", "info"
+
+
+def campaign_alert_text(payload: dict) -> str:
+    """The one sentence a banner, the feed and any connector say for a ``campaign_alert``: what
+    failed, that the campaign is continuing, and how many have piled up in a row (policy A, owner
+    2026-09-05: never stop, yell for help). Shared so no two surfaces word the same alert
+    differently."""
+    what = _phrase(payload.get("alert"), "problem")
+    n = payload.get("consecutive")
+    streak = (f" — {int(n)} in a row" if isinstance(n, (int, float)) and int(n) > 1 else "")
+    return f"ALERT: {what}{streak} — campaign continuing; needs attention"
+
+
+def _render_campaign_alert(payload: dict, tail: str) -> tuple[str, str]:
+    reason = payload.get("error")
+    because = f" — {_clip(reason)}" if reason else ""
+    return f"{campaign_alert_text(payload)}{because}{tail}", "warn"
+
+
+def _render_scan_landed(payload: dict, tail: str) -> tuple[str, str]:
+    """The scan is on disk and in the ledger; the fit has not started. Read before any
+    "Started … fit at q" line for the same q — that ordering is the point of the event."""
+    at = f" at {q_text(payload['q'])}" if payload.get("q") is not None else ""
+    n = payload.get("n_points")
+    lo, hi = _num(payload.get("e_lo"), ".2f"), _num(payload.get("e_hi"), ".2f")
+    window = f", E {lo}…{hi} meV" if lo is not None and hi is not None else ""
+    points = f", {int(n)} points" if isinstance(n, (int, float)) else ""
+    return f"Scan landed{at}{points}{window}{tail}", "notice"
 
 
 def _render_feasibility_trim(payload: dict, tail: str) -> tuple[str, str]:

@@ -545,17 +545,19 @@ def waterfall_spec(*, traces, offset_step, q=None, axis_label=None,
     offset (``i * offset_step`` for the i-th trace, 0-indexed) — plain data only, no workspace_api.
 
     ``traces`` is a list of per-trace dicts: ``label`` (e.g. ``"T=12 K"``), ``x``/``counts``/``yerr``
-    (the measured spectrum; ``counts`` is ``None`` for a pooled trace), ``curve_x``/``curve_total``
-    (the delivered fit curve), ``pooled`` (bool), ``n_members``.
+    (the measured spectrum), ``curve_x``/``curve_total`` (the delivered fit curve), ``pooled``
+    (bool), ``n_members``.
 
     The offset is a pure VIEW-STATE display device (G10: never written to the workspace/card) — so
     it is ALWAYS declared on screen via an Annotation (``"offset +<step> per trace"``), the honesty
     rule for stacked plots. ``yerr`` is preserved at its true magnitude (NOT shifted) since it is a
     property of the data, not of the display offset.
 
-    A **pooled** waterfall trace remains curve-only until this trace contract carries a validated
-    combined spectrum. Its fit-curve label carries ``"pooled (N) — member data not shown"`` so the
-    missing counts are never silently implied to be a real measured trace.
+    A **pooled** trace draws its data only when the caller supplied the master's validated combined
+    spectrum (``counts`` not ``None``); its labels then say ``"pooled master (N)"``. A pooled trace
+    without one (a workspace predating the pooled-spectrum artifact) stays curve-only and its fit
+    label carries ``"— member data not shown"``, so missing counts are never silently implied to be
+    a real measured trace. Member counts are never substituted under a pooled label.
 
     ``q``/``axis_label`` (optional) add the fixed-q honesty declaration as a :class:`ProjectionLegend`
     (this view fixes q and varies T — the ``dispersion_spec`` mandatory-projection rule doesn't apply
@@ -569,21 +571,27 @@ def waterfall_spec(*, traces, offset_step, q=None, axis_label=None,
         pooled = bool(tr.get("pooled"))
         n_members = tr.get("n_members")
 
-        if pooled:
+        has_data = tr.get("counts") is not None
+        if pooled and not has_data:
             annotations.append(ps.Annotation(
                 text=f"{label}: pooled master ({n_members or '?'}) — member data not shown",
                 xy=None, role=ps.State.POOLED))
-        elif tr.get("counts") is not None:
+        elif has_data:
             x = np.asarray(tr["x"], dtype=float)
             y = np.asarray(tr["counts"], dtype=float) + offset
             yerr = None if tr.get("yerr") is None else np.asarray(tr["yerr"], dtype=float)
-            series.append(ps.Series(x=x, y=y, yerr=yerr, label=label, role=ps.Role.DATA))
+            data_label = f"{label} · pooled master ({n_members or '?'})" if pooled else label
+            series.append(ps.Series(x=x, y=y, yerr=yerr, label=data_label, role=ps.Role.DATA))
 
         if tr.get("curve_x") is not None and tr.get("curve_total") is not None:
             xf = np.asarray(tr["curve_x"], dtype=float)
             yf = np.asarray(tr["curve_total"], dtype=float) + offset
-            fit_label = (f"{label}: pooled master ({n_members or '?'}) — member data not shown"
-                        if pooled else label)
+            if pooled:
+                fit_label = f"{label}: pooled master ({n_members or '?'})"
+                if not has_data:
+                    fit_label += " — member data not shown"
+            else:
+                fit_label = label
             series.append(ps.Series(x=xf, y=yf, label=fit_label, role=ps.Role.FIT))
 
     annotations.append(ps.Annotation(text=f"offset +{float(offset_step):g} per trace", xy=None))

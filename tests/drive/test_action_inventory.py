@@ -14,12 +14,9 @@ from isar.drive.acquisition.inventory import (
     ActionEligibility,
     ActionEvaluation,
     ActionInventory,
-    GENERATOR_REGISTRY,
-    GENERATOR_REGISTRY_VERSION,
     GeneratorReport,
     GeneratorSpec,
     GeneratorStatus,
-    LEGACY_SELECTOR_GENERATOR,
     MeasurementIntent,
     RejectionClass,
     canonical_hkl,
@@ -28,6 +25,14 @@ from isar.drive.acquisition.inventory import (
     scientific_fingerprint,
     scientific_fingerprint_from_mapping,
 )
+
+#: A sample registry local to these tests. ``ActionInventory`` is registry-agnostic — the one
+#: registry the program actually ships is the discovery set in ``isar.schema.generators`` — so the
+#: completeness-proof behaviour is exercised against a fixture registry declared right here.
+LEGACY_SELECTOR_GENERATOR = "sample_selector"
+GENERATOR_REGISTRY = (GeneratorSpec(LEGACY_SELECTOR_GENERATOR, version=1),
+                      GeneratorSpec("narrow_rival_probe", version=1))
+GENERATOR_REGISTRY_VERSION = registry_fingerprint(GENERATOR_REGISTRY)
 
 
 def _intent(action_class="same_q_identity", *, hkl=(2.9, 0.0, 0.0), e_lo=-2.0, e_hi=7.0,
@@ -210,13 +215,10 @@ def test_validate_checks_membership_of_the_declared_registry():
     assert any("unknown generator" in problem for problem in unknown.validate(registry))
 
 
-def test_the_live_registry_declares_its_generators_and_its_version_is_derived():
-    """PR2.7a grew the registry from the lone legacy adapter to the legacy adapter plus the identity
-    probe. The declared set is pinned here because it is what an ``action_inventory_exhausted``
-    terminal is exhaustion *relative to*: a generator silently added or dropped would change the
-    meaning of every such proof without changing its wording."""
-    assert [spec.generator_id for spec in GENERATOR_REGISTRY] == [
-        LEGACY_SELECTOR_GENERATOR, "narrow_rival_probe"]
+def test_a_registry_version_is_derived_from_its_declared_generators():
+    """An ``action_inventory_exhausted`` terminal is exhaustion *relative to a registry*, so a
+    generator silently added or dropped must change the derived version — otherwise an old proof
+    would still look current under a registry it never covered."""
     assert GENERATOR_REGISTRY_VERSION == registry_fingerprint(GENERATOR_REGISTRY)
     # Growing the registry must change the derived version, or an old proof computed over one
     # generator would still look current under two.
@@ -236,7 +238,7 @@ def test_summary_carries_the_completeness_proof_and_registry_version():
                           reports=[_report("g", generated=1)])
     summary = inv.summary(selected_action_class="same_q_identity")
     assert summary["inventory_version"] == inv.inventory_version
-    assert summary["generator_registry_version"] == GENERATOR_REGISTRY_VERSION
+    assert summary["generator_registry_version"] == inv.generator_registry_fingerprint
     assert summary["n_evaluations"] == 1 and summary["n_eligible"] == 0
     assert summary["is_complete"] is True
     assert summary["has_eligible_action"] is False
@@ -252,7 +254,7 @@ def test_full_dict_exposes_every_evaluation_and_its_intent():
     inv = ActionInventory(evaluations=[_eligible(a), _rejected(b)],
                           reports=[_report("g", generated=2)])
     full = inv.to_full_dict()
-    assert full["generator_registry_version"] == GENERATOR_REGISTRY_VERSION
+    assert full["generator_registry_version"] == inv.generator_registry_fingerprint
     assert [e["intent"]["action_class"] for e in full["evaluations"]] == [
         "same_q_identity", "narrow_rival"]
     rejected = full["evaluations"][1]
@@ -282,7 +284,7 @@ def test_terminal_cause_with_a_registry_faults_on_a_missing_generator():
     the registry makes that a controller fault rather than a false exhaustion claim."""
     from isar.drive.acquisition.inventory import (TERMINAL_ACTION_INVENTORY_EXHAUSTED,
                                                   TERMINAL_CONTROLLER_FAULT)
-    # Only the legacy selector reported; GENERATOR_REGISTRY also requires narrow_rival_probe.
+    # Only the first generator reported; GENERATOR_REGISTRY also requires narrow_rival_probe.
     inv = ActionInventory(
         evaluations=[_rejected(_intent(), generator=LEGACY_SELECTOR_GENERATOR)],
         reports=[_report(LEGACY_SELECTOR_GENERATOR, generated=1)])

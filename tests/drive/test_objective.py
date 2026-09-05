@@ -133,30 +133,25 @@ def test_generic_segment_uses_step_as_a_maximum_and_includes_endpoints():
     assert spec.path[0] == (2.0, 0.0, 0.0)
     assert spec.path[-1] == (2.0, 0.5, 0.0)
     assert max(spec.path[i + 1][1] - spec.path[i][1] for i in range(10)) <= 0.05 + 1e-12
-    assert spec.energy_search_meV == (-2.0, 12.0)
-    assert spec.target_selector == "lowest_energy"
+    assert spec.energy_search_meV == (0.0, 20.0)   # the instrument default, not a phonon range
+    assert spec.target_selector == "tracked_branch"
 
 
-def test_target_selector_defaults_and_validation():
+def test_the_declared_branch_is_the_only_target_the_planner_can_map():
+    """The planner's prize is defined per declared branch, so a per-q feature selector names a
+    prize it can never satisfy — and a campaign carrying one runs until its budget dies."""
     common = dict(path=[(2, 0, 0)], tolerance_meV=0.5,
                   budget={"kind": "neutrons", "amount": 1}, target_branch="optic")
-    assert ObjectiveSpec(**common).target_selector == "lowest_energy"
-    nearest = ObjectiveSpec(**common, target_energy_meV=7.25)
-    assert nearest.target_selector == "nearest_energy" and nearest.target_energy_meV == 7.25
+    assert ObjectiveSpec(**common).target_selector == "tracked_branch"
     tracked = ObjectiveSpec(**common, target_selector="tracked_branch")
-    assert tracked.target_selector == "tracked_branch" and tracked.target_energy_meV is None
+    assert tracked.target_selector == "tracked_branch"
     acoustic = ObjectiveSpec(path=[(2.0, 0.0, 0.0)], tolerance_meV=0.5,
                              budget={"kind": "neutrons", "amount": 1e6},
                              target_branch="acoustic", target_selector="tracked_branch")
     assert acoustic.target_selector == "tracked_branch"
-    with pytest.raises(ValueError, match="requires target_energy_meV"):
-        ObjectiveSpec(**common, target_selector="nearest_energy")
-    with pytest.raises(ValueError, match="target_selector"):
-        ObjectiveSpec(**common, target_selector="brightest")
-    with pytest.raises(ValueError, match="finite"):
-        ObjectiveSpec(**common, target_energy_meV=float("nan"))
-    with pytest.raises(ValueError, match="finite"):
-        ObjectiveSpec(**common, target_energy_meV=float("inf"))
+    for retired in ("nearest_energy", "lowest_energy", "highest_energy", "brightest"):
+        with pytest.raises(ValueError, match="target_branch"):
+            ObjectiveSpec(**common, target_selector=retired)
 
 
 def test_explicit_degenerate_segment_remains_a_valid_single_point():
@@ -188,13 +183,12 @@ def test_frozen_hypothesis_snapshot_round_trips_and_detects_tampering():
 def test_new_snapshots_enable_dynamic_counting_but_legacy_fingerprint_stays_exact():
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
     assert frozen["steering"]["dynamic_ncount"] is True
-    assert frozen["steering"]["maximum_bridge_steps"] == 1
 
     old_policy = SteeringPolicy().to_dict()
     for key in ("dynamic_ncount", "max_ncount_per_scan", "ncount_growth_cap",
                 "tolerance_margin", "interval_floor_window",
                 "interval_floor_min_improvement", "interval_floor_min_exposure_ratio",
-                "maximum_bridge_steps"):
+                ):
         old_policy.pop(key)
     old_fingerprint = content_fingerprint(frozen["hypotheses"], old_policy)
     legacy = ObjectiveSpec(
@@ -210,7 +204,6 @@ def test_new_snapshots_enable_dynamic_counting_but_legacy_fingerprint_stays_exac
 def test_pre_bridge_snapshot_with_dynamic_counting_keeps_exact_fingerprint():
     frozen = shipped_hypothesis_snapshot("optic", (-2.0, 12.0))
     old_policy = dict(frozen["steering"])
-    old_policy.pop("maximum_bridge_steps")
     old_fingerprint = content_fingerprint(frozen["hypotheses"], old_policy)
     legacy = ObjectiveSpec(
         path=[(2, 0, 0)], tolerance_meV=0.5,

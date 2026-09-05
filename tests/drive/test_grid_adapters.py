@@ -25,18 +25,7 @@ from isar.drive.acquisition.grid_adapters import (
     TAVI_GRID_ADAPTER,
     TaviUniformGridAdapter,
 )
-from isar.drive.acquisition.physical_windows import (
-    STEP_RES_FRACTION,
-    _declared_window,
-    _energy_window,
-)
-from isar.drive.acquisition.scan_design import ScanDesignContext, design_scan_windows
-from isar.drive.acquisition.scan_grid import (
-    COARSEN_FROM_DESIGNED_SPAN,
-    points_in_window,
-    resolve_point_count,
-    resolve_uniform_grid,
-)
+from isar.drive.acquisition.scan_grid import resolve_point_count, resolve_uniform_grid
 
 
 # (name, (e_lo, e_hi, e_step), expected scan command, expected executed energies)
@@ -150,11 +139,9 @@ def test_adapter_declares_a_versioned_identity():
         "adapter_version": 1,
     }
     assert DEFAULT_GRID_ADAPTER is TAVI_GRID_ADAPTER
-    # A different adapter is a different measurement contract, and grid identities must say so.
+    # A different adapter is a different measurement contract, and the identity must say so.
     other = TaviUniformGridAdapter(adapter_id="other", adapter_version=1)
-    grid = resolve_uniform_grid(-2.0, 7.0, 0.2)
-    assert grid.fingerprint(1000) != resolve_uniform_grid(
-        -2.0, 7.0, 0.2, adapter=other).fingerprint(1000)
+    assert other.identity() != TAVI_GRID_ADAPTER.identity()
 
 
 def test_returned_grid_canonicalization_accepts_only_serialization_noise():
@@ -187,144 +174,9 @@ def test_the_budget_ledger_and_the_resolver_count_degenerate_windows_identically
         count, step = resolve_point_count(e_lo, e_hi, e_step)
         assert step > 0.0
         assert count >= 1
-        assert points_in_window(e_lo, e_hi, e_step, max_points=1000) == min(count, 1000)
         if count <= 1000:
             assert resolve_uniform_grid(
                 e_lo, e_hi, e_step, max_points=1000).n_points == count
-
-
-def _context(**overrides) -> ScanDesignContext:
-    values = {
-        "scientific_action_fingerprint": "grid-parity",
-        "hkl": (2.1, 0.0, 0.0), "q": 0.1, "kind": "quicklook", "reason": "parity",
-        "window_family": "target", "declared_energy_lo": None, "declared_energy_hi": None,
-        "target_prediction_mean_meV": 5.0, "target_prediction_sigma_meV": 0.2,
-        "design_prediction_mean_meV": 5.0, "design_prediction_sigma_meV": 0.2,
-        "resolution_fwhm_meV": 0.8, "survey": False, "energy_search_meV": (-2.0, 7.0),
-        "target_band": None, "rival_band": None, "widen_factor": 1.0, "positive_only": False,
-        "policy_max_points": 100, "runtime_max_points": 200, "tolerance_meV": 0.5,
-        "scan_window_eig_mode": "off",
-    }
-    values.update(overrides)
-    return ScanDesignContext(**values)
-
-
-def test_every_designed_candidate_scores_the_grid_it_will_execute():
-    # The ledger point count and the executed point list must agree for every candidate the
-    # designer emits, legacy control included — a disagreement is exactly the class of bug the
-    # adapter seam exists to make impossible.
-    contexts = [
-        _context(scan_window_eig_mode="authoritative"),
-        _context(scan_window_eig_mode="authoritative", resolution_fwhm_meV=0.37),
-        _context(scan_window_eig_mode="authoritative", resolution_fwhm_meV=0.05,
-                 policy_max_points=40, runtime_max_points=40),
-        _context(scan_window_eig_mode="authoritative", design_prediction_mean_meV=1.3,
-                 resolution_fwhm_meV=0.123, rival_band=(2.7, 0.31)),
-        _context(scan_window_eig_mode="authoritative", survey=True, positive_only=True),
-    ]
-    for context in contexts:
-        inventory = design_scan_windows(context)
-        for candidate in inventory.candidates:
-            energies = candidate.energies
-            assert len(energies) == candidate.n_points, candidate.candidate_family
-            assert energies == DEFAULT_GRID_ADAPTER.executed_energies(
-                candidate.e_lo, candidate.e_step, candidate.n_points)
-            # The submitted command is the one the executed grid was derived from.
-            assert candidate.grid.scan_command() == DEFAULT_GRID_ADAPTER.format_scan_command(
-                candidate.e_lo, candidate.e_hi, candidate.e_step)
-
-
-# ---- the legacy/declared window is adapter-canonical for POINT COUNT too -------------------------
-#
-# ADR-018 claims the adapter is the single authority on how many points a request has. The legacy and
-# declared-window paths kept their own `floor(span/step + 0.5) + 1` on the RAW designed span plus a
-# clamp at the cap, so on near-tie windows ISAR recorded, priced and scored a point the instrument
-# never visits. The count now comes from the adapter; the emitted command does not change.
-
-def test_the_legacy_window_counts_the_points_tavi_will_actually_execute():
-    """The measured counterexample, pinned exactly.
-
-    Survey action, prediction 3.4449328224910514 meV at a 0.6507152993820858 meV resolution over the
-    (-2, 7) search band. The command is ``deltaE -5.44493 7 0.162679``; TAVI executes 77 points, and
-    ISAR recorded 78 — the extra one at 7.081 meV, past the declared upper bound and past anywhere
-    the instrument goes.
-    """
-    e_lo, e_hi, e_step, n_points = _energy_window(
-        3.4449328224910514, 0.6507152993820858, 0.0, survey=True,
-        energy_search_meV=(-2.0, 7.0), max_points=100)
-
-    assert DEFAULT_GRID_ADAPTER.format_scan_command(e_lo, e_hi, e_step) == (
-        "deltaE -5.44493 7 0.162679")
-    assert DEFAULT_GRID_ADAPTER.point_count(e_lo, e_hi, e_step) == 77
-    assert n_points == 77
-    # And the whole chain agrees: recorded count, scored grid, and the adapter's own point list.
-    grid = resolve_uniform_grid(e_lo, e_hi, e_step, max_points=100,
-                                coarsen_span=COARSEN_FROM_DESIGNED_SPAN)
-    assert grid.n_points == 77 and len(grid.energies) == 77
-    # The 78th point TAVI never visits sat at 7.081 meV, past the declared bound.
-    assert grid.energies[-1] == 6.919
-    assert max(grid.energies) <= e_hi
-
-
-def test_the_designed_candidate_records_the_adapter_count_for_that_context():
-    context = _context(
-        design_prediction_mean_meV=3.4449328224910514, target_prediction_mean_meV=3.4449328224910514,
-        design_prediction_sigma_meV=0.0, target_prediction_sigma_meV=0.0,
-        resolution_fwhm_meV=0.6507152993820858, survey=True, energy_search_meV=(-2.0, 7.0),
-        policy_max_points=100, runtime_max_points=100)
-    candidate = design_scan_windows(context).selected_candidate
-
-    assert candidate.grid.scan_command() == "deltaE -5.44493 7 0.162679"
-    assert candidate.n_points == 77
-    assert len(candidate.to_dict()["scoring_grid"]) == 77
-    assert candidate.nominal_cost == 77 * candidate.ncount
-
-
-@pytest.mark.parametrize("declared", [True, False], ids=["declared_window", "energy_window"])
-def test_routing_the_legacy_count_through_the_adapter_changes_no_command_byte(declared):
-    """The count may move; the request may not.
-
-    The legacy window's step — including its cap-coarsened form, which is derived from the RAW
-    designed span on purpose — is rendered verbatim into the submitted ``deltaE``. Coarsening against
-    the wire span instead would be the better rule in the abstract and changes the sixth significant
-    digit of the step on roughly one capped window in six, which is a different scan.
-    """
-    rng = random.Random(20260729)
-    moved = 0
-    samples = 60_000
-    for _ in range(samples):
-        e_lo = rng.uniform(-20.0, 0.0)
-        e_hi = e_lo + rng.uniform(0.01, 40.0)
-        fwhm = rng.uniform(1e-3, 3.0)
-        cap = rng.choice([20, 50, 100, 200])
-        if declared:
-            lo, hi, step, count = _declared_window(e_lo, e_hi, fwhm, max_points=cap)
-        else:
-            lo, hi, step, count = _energy_window(
-                (e_lo + e_hi) / 2.0, fwhm, 0.0, energy_search_meV=(e_lo, e_hi), max_points=cap)
-        historical_step = STEP_RES_FRACTION * max(fwhm, 1e-3)
-        span = hi - lo
-        historical_count = int(math.floor(span / historical_step + 0.5)) + 1
-        if historical_count > cap:
-            historical_step = span / (cap - 1)
-            historical_count = cap
-        assert f"{step:g}" == f"{historical_step:g}"                     # byte-identical request
-        assert count == DEFAULT_GRID_ADAPTER.point_count(lo, hi, step)   # honest count
-        moved += count != historical_count
-    # The counts that move are exactly the near-ties where the old arithmetic disagreed with TAVI:
-    # a handful in 60k (measured 2 declared / 3 derived), and every one of them was a scan ISAR
-    # mis-recorded. The bound is on the RATE — a change that starts moving counts in bulk is moving
-    # something other than the near-ties, and that is the failure this pins.
-    assert moved < samples // 1000
-
-
-def test_the_legacy_command_string_is_unchanged_by_the_adapter_seam():
-    # The adapter changed the scoring *representation* of a window, never the request: the legacy
-    # control's emitted deltaE string is still the plain %g rendering ISAR has always submitted.
-    candidate = design_scan_windows(_context()).selected_candidate
-    assert candidate.grid.scan_command() == (
-        f"deltaE {candidate.e_lo:g} {candidate.e_hi:g} {candidate.e_step:g}")
-    assert candidate.grid.scan_command() == "deltaE -7 6.2 0.2"
 
 
 # ---- live round trip -----------------------------------------------------------------------------

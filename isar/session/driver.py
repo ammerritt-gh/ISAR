@@ -29,7 +29,7 @@ from isar.predictive import json_fingerprint as _json_fingerprint
 from isar.schema.card import Card
 from isar.schema.measurement import (MeasurementArena, campaign_provenance,
                                      current_lattice_epoch)
-from isar.session import calibrations, guidelines as guide_mod, ingest, router, session_prior
+from isar.session import calibrations, guidelines as guide_mod, ingest, router
 from isar.session import measurement_store
 from isar.session.outcome import (
     _coerce_fit_outcome, _outcome_from_entry, _write_results_csv,
@@ -511,7 +511,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                    "bootstrap_M_effective": e.provenance.get("bootstrap_M_effective")}
                 for e in entries if e.provenance.get("fit_seconds") is not None]
         completed_master_keys: list[str] = []
-        _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
+        _apply_and_finish(summary, session, card, records, runcal, g, plan, entries,
                           workspace, force=force, force_masters=force_masters,
                           M=M, seed_base=seed_base, errors_tier=master_tier,
                           master_boot_workers=master_boot_workers, boot_executor=shared_pool,
@@ -554,7 +554,7 @@ def _core_provenance(rec, det, source_by_name=None) -> dict:
     return core
 
 
-def _apply_and_finish(summary, session, session_prior, card, records, runcal, g, plan, entries,
+def _apply_and_finish(summary, session, card, records, runcal, g, plan, entries,
                       workspace, *, force, force_masters=frozenset(), M, seed_base, errors_tier,
                       master_boot_workers,
                       boot_executor, boot_adaptive, scan_workers=1, bayes_opts=None, timer=None,
@@ -642,7 +642,6 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
 
     if _campaign_hypotheses(card):
         evidence_update._materialize_branch_candidates(session)
-    evidence_update._rebuild_pooled_prior(card, session, session_prior, t_round=t_round)
     # Identity assignment is deliberately after pooled-master updates. It reads the complete
     # candidate field, may revise earlier labels, then rebuilds the connected fold-only prior.
     track = evidence_update._apply_tracked_branch(session, card, t_round=t_round)
@@ -651,11 +650,11 @@ def _apply_and_finish(summary, session, session_prior, card, records, runcal, g,
     # per-draw mode energies, so a track revision changes it without any refit.
     evidence_update._resolve_target_projections(session, workspace.root / "data")
     if track is not None:
+        confirmed = sum(1 for row in track.get("assignments") or []
+                        if row.get("track_state") == "confirmed")
         summary.context_lines.append(
             f"branch track revision {track['revision']}: "
-            f"{len(track['frontiers']['confirmed_indices'])} connected point(s)")
-        if track["frontiers"].get("frontier_blocked"):
-            summary.context_lines.append("branch_ambiguity; frontier_blocked")
+            f"{confirmed} point(s) with a decided identity")
 
     # Persist cross-q views only after the authoritative prior has been rebuilt.
     evidence_update._store_branch_models(card.state, t_round)
@@ -903,7 +902,6 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
     t_round = float((card.policy.collation or {}).get("t_round", 5.0))
     if _campaign_hypotheses(card):
         evidence_update._materialize_branch_candidates(session)
-    evidence_update._rebuild_pooled_prior(card, session, session_prior, t_round=t_round)
     track = evidence_update._apply_tracked_branch(session, card, t_round=t_round)
     evidence_update._resolve_target_projections(session, workspace.root / "data")
     # Tracking may annotate individual rows for display. Certification is master-only, so restore
@@ -937,10 +935,11 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
     workspace.report_dir.mkdir(parents=True, exist_ok=True)
     # Every payload is complete and fsynced before the first replacement. The current marker is
     # already non-published, so a crash between these atomic replaces is visible and repairable.
-    os.replace(staged_workspace.session_path, workspace.session_path)
-    os.replace(staged_workspace.state_path, workspace.state_path)
-    os.replace(staged_workspace.report_dir / "results.csv",
-               workspace.report_dir / "results.csv")
+    from isar.session.atomic import replace_retrying
+    replace_retrying(staged_workspace.session_path, workspace.session_path)
+    replace_retrying(staged_workspace.state_path, workspace.state_path)
+    replace_retrying(staged_workspace.report_dir / "results.csv",
+                     workspace.report_dir / "results.csv")
     hashes = _publication_hashes(workspace)
     checkpoint_store.mark_published(unit_keys=unit_keys, published_hashes=hashes)
     progress(phase="completed", published=True)

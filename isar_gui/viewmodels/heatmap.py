@@ -1,7 +1,8 @@
 """HeatmapViewModel — view-ready state for the C3 growing (q, E) plane (Task 11, A-5).
 
-design/gui.md item 2: measured spectra render as STRIPS (one measured column per scan), gaps stay gaps,
-and the declared projection is always on screen (G9 4D-honesty). The honesty overlays ride on top:
+design/gui.md item 2: measured spectra render as STRIPS (one measured column per q: the pooled master's
+ΣN per common reference monitor where the card collates by merge, else one column per scan), gaps
+stay gaps, and the declared projection is always on screen (G9 4D-honesty). The honesty overlays ride on top:
 the certifying-tier ω̂ whisker (a warning marker where no tier certifies), the branch-model curve,
 per-point assignment-entropy colouring, verdict glyphs, and a visible count of the scans excluded by
 the projection window.
@@ -67,6 +68,7 @@ class HeatmapViewModel(ViewModel):
         self._temperatures: list = []
         self._projection: ps.ProjectionLegend | None = None
         self._color_by_entropy = False
+        self._exposure_reference: float | None = None   # set per rebuild when master columns draw
         self._rebuild()
 
     # ---- public state -----------------------------------------------------
@@ -170,6 +172,9 @@ class HeatmapViewModel(ViewModel):
         return float(getattr(pol, "hkl_round_step", None) or 0.05)
 
     def _value_label(self) -> str:
+        reference = getattr(self, "_exposure_reference", None)
+        if reference:
+            return f"counts per {reference:g} monitor"
         pol = getattr(self._ws.card, "policy", None)
         mode = getattr(pol, "counting_mode", None)
         return f"counts/{mode}" if mode else "counts"
@@ -225,6 +230,9 @@ class HeatmapViewModel(ViewModel):
         if self._excluded_count > 0:
             annotations.append(ps.Annotation(
                 text=f"{self._excluded_count} scans outside this projection", xy=None))
+        strip_levels, clip_note = self._inelastic_levels(strips, fits)
+        if clip_note:
+            annotations.append(ps.Annotation(text=clip_note, xy=None))
 
         axis = _AXIS[varying]
         T = self._temperature
@@ -244,21 +252,91 @@ class HeatmapViewModel(ViewModel):
             series=series, markers=markers, annotations=annotations, strips=strips,
             regions=regions,
             projection=projection, value_label=self._value_label(),
+            strip_levels=strip_levels,
             meta=meta,
         )
 
+    #: The elastic line is excluded from the colour scale out to this many resolution FWHMs of
+    #: E = 0. The line is resolution-limited, so 1.5 FWHM covers it with its wings; a phonon that
+    #: close to zero is inside the elastic line anyway.
+    ELASTIC_EXCLUSION_FWHM = 1.5
+
+    @classmethod
+    def _inelastic_levels(cls, strips, fits):
+        """``((vmin, vmax), note)`` for the plane's colour scale, set by the INELASTIC signal.
+
+        The scan axis is calibrated energy transfer, so E = 0 is the elastic line wherever a column
+        reaches it. At a Bragg position that line is thousands of counts against phonons of ten,
+        and a min..max scale then shows nothing but the line (the operator's report, 2026-09-05).
+        Levels come from the cells with ``|E| > ELASTIC_EXCLUSION_FWHM x`` the plane's resolution
+        FWHM; cells above ``vmax`` saturate and a note says so. ``(None, None)`` when no column
+        reaches the elastic band or nothing is finite — the renderers then span min..max as before.
+        The operator can still drag the colourbar; this is only the default the plane opens with.
+        """
+        fwhm = [float(f.gauss_fwhm) for f in fits
+                if getattr(f, "gauss_fwhm", None) is not None and float(f.gauss_fwhm) > 0]
+        exclusion = cls.ELASTIC_EXCLUSION_FWHM * (float(np.median(fwhm)) if fwhm else 1.0)
+        inelastic, everything, reaches = [], [], False
+        for s in strips:
+            y = np.asarray(s.y, float)
+            v = np.asarray(s.values, float)
+            keep = np.isfinite(v)
+            if not keep.any():
+                continue
+            everything.append(v[keep])
+            outside = keep & (np.abs(y) > exclusion)
+            reaches = reaches or bool((keep & ~outside).any())
+            if outside.any():
+                inelastic.append(v[outside])
+        if not reaches or not inelastic:
+            return None, None
+        allv = np.concatenate(everything)
+        inel = np.concatenate(inelastic)
+        vmin, vmax = float(np.min(allv)), float(np.max(inel))
+        if vmax <= vmin or float(np.max(allv)) <= vmax:
+            return None, None            # nothing brighter than the inelastic signal: no clip
+        return (vmin, vmax), (f"colour scale set by |E| > {exclusion:.2g} meV; "
+                              "the elastic line saturates")
+
     def _strips(self, fits, varying, step):
-        """One MEASURED column per in-window scan that still has a re-readable data file. Width =
-        0.8 x the median spacing between distinct varying-q positions (cosmetic; never overlaps)."""
+        """One MEASURED column per in-window q position.
+
+        Where the card collates by merge the column is the pooled MASTER — the collated group's ΣN,
+        normalised to one plane-wide reference monitor so columns pooling different member counts
+        are comparable. The master is located through its members, never through its fit, so a
+        withheld or failed master fit still shows its data (:func:`projection.pooled_masters`).
+        Only a q with no persisted master at all (separate collation, or a workspace predating the
+        pooled-spectrum artifact) draws one column per member scan; without this rule the member
+        columns of one q stack at the same x and the most recent scan silently covers the rest.
+        Width = 0.8 x the median spacing between distinct varying-q positions (cosmetic; never
+        overlaps)."""
         rows = []
+        masters = projection.pooled_masters(self._ws, fits)
+        reference = projection.common_exposure_reference([m.spectrum for m in masters])
+        self._exposure_reference = reference
+        covered = set()
+        for m in masters:
+            covered.update(fv.unit_id for fv in m.members)
+            values, _yerr = projection.counts_per_reference(m.spectrum, reference)
+            if not np.isfinite(values).any():
+                continue
+            rows.append((float(m.members[0].q[varying]), np.asarray(m.spectrum.x, float), values, {
+                "scan_id": m.scan_number, "unit_id": m.scan_id, "pooled": True,
+                "acquisition_id": getattr(m.master, "acquisition_id", None),
+                "member_unit_ids": list(m.member_ids),
+                "member_acquisition_ids": [fv.acquisition_id for fv in m.members
+                                           if fv.acquisition_id is not None],
+                "exposure_reference": reference}))
         for fv in fits:
-            if fv.pooled:
-                continue  # a pooled master has NO persisted spectrum — no strip (Task 10 honesty rule)
+            if fv.pooled or fv.unit_id in covered:
+                continue
             energy, counts, _yerr = self._ws.scan_data(fv.scan_number)
             if energy is None or counts is None or len(energy) == 0:
                 continue
             rows.append((float(fv.q[varying]), np.asarray(energy, float),
-                         np.asarray(counts, float), fv))
+                         np.asarray(counts, float),
+                         {"scan_id": fv.scan_number, "unit_id": fv.unit_id,
+                          "acquisition_id": fv.acquisition_id}))
         if not rows:
             return [], []
         xs = sorted({round(x, 6) for x, *_ in rows})
@@ -267,12 +345,19 @@ class HeatmapViewModel(ViewModel):
         else:
             spacing = 2.0 * step
         width = 0.8 * spacing if spacing > 0 else 0.8 * (2.0 * step)
-        strips = [ps.Strip(
-            x_center=x, width=width, y=e, values=c,
-            meta={"scan_id": fv.scan_number, "unit_id": fv.unit_id,
-                  "acquisition_id": fv.acquisition_id})
-                  for (x, e, c, fv) in rows]
+        strips = [ps.Strip(x_center=x, width=width, y=e, values=c, meta=meta)
+                  for (x, e, c, meta) in rows]
         return strips, rows
+
+    @staticmethod
+    def _strip_covers(strip, *, acquisition_id=None, unit_id=None) -> bool:
+        """Whether a column stands for this acquisition/unit — directly, or as a master pooling it."""
+        meta = strip.meta
+        if acquisition_id is not None:
+            return (meta.get("acquisition_id") == acquisition_id
+                    or acquisition_id in (meta.get("member_acquisition_ids") or ()))
+        return (meta.get("unit_id") == unit_id
+                or unit_id in (meta.get("member_unit_ids") or ()))
 
     def _latest_regions(self, strips, fits) -> list[ps.RegionBox]:
         events = list(self._ws.session_events()) if hasattr(self._ws, "session_events") else []
@@ -281,22 +366,21 @@ class HeatmapViewModel(ViewModel):
         if latest.detailed_events_present:
             if latest.acquisition_id is None:
                 return []
-            selected = [
-                strip for strip in strips
-                if strip.meta.get("acquisition_id") == latest.acquisition_id]
+            selected = [strip for strip in strips
+                        if self._strip_covers(strip, acquisition_id=latest.acquisition_id)]
         else:
             physical = [fit for fit in getattr(self._ws, "results", ()) if not fit.pooled]
             if not physical:
                 return []
             fallback = physical[-1]
             if fallback.acquisition_id is not None:
-                selected = [
-                    strip for strip in strips
-                    if strip.meta.get("acquisition_id") == fallback.acquisition_id]
+                selected = [strip for strip in strips
+                            if self._strip_covers(strip, acquisition_id=fallback.acquisition_id)]
             else:
                 selected = [
                     strip for strip in strips
-                    if strip.meta.get("unit_id") == fallback.unit_id
+                    if (fallback.unit_id is not None
+                        and self._strip_covers(strip, unit_id=fallback.unit_id))
                     or (fallback.unit_id is None
                         and strip.meta.get("scan_id") == fallback.scan_number)]
         if not selected:

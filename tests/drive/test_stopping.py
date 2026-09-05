@@ -29,7 +29,9 @@ def _master(hkl, hw, disp="resolved", reliable=True, n=2, members=None, certifia
             "certifiable": certifiable,
             "usable": disp in st.USABLE_DISPOSITIONS and hw is not None,
             "disposition": disp, "n_members": n,
-            "members": (members if members is not None else [str(i) for i in range(n)])}
+            "members": (members if members is not None else [str(i) for i in range(n)]),
+            # Every campaign maps a declared branch, so a pooled master carries its track state.
+            "track_state": "confirmed", "track_revision": 1}
 
 
 # --------------------------------------------------------------------------- master provenance
@@ -63,41 +65,40 @@ def test_interval_floor_window_is_clamped_to_one():
 
 
 # --------------------------------------------------------------------------- master convergence
-def test_met_when_all_masters_within_tolerance():
+def test_every_master_within_tolerance_converges_without_a_met_verdict():
+    """``met`` belongs to the EIG planner's prize; ``evaluate_stop`` only rolls the grid up."""
     obj = _obj()
     masters = [_master((h, 0.0, 0.0), 0.30) for h in (2.1, 2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, [], masters)
-    assert st.evaluate_stop(obj, grid, _BUDGET).state == "met"
+    assert all(point.converged for point in grid)
+    assert st.evaluate_stop(obj, grid, _BUDGET).state == "continue"
 
 
-def test_inferred_unresolved_gamma_is_excluded_from_precision_completion():
+def test_the_acoustic_zone_centre_is_excluded_from_precision_completion():
     obj = _obj()
     origin = st.GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
-                      track_state="inferred_unresolved",
-                      structural_endpoint_status="inferred_unresolved",
-                      is_reduced_q_origin=True,
-                      evidence_master={"track_state": "inferred_unresolved",
-                                       "branch_candidates": [{"energy_meV": 5.8}]})
+                      acoustic_target=True, is_reduced_q_origin=True,
+                      evidence_master={"branch_candidates": [{"energy_meV": 5.8}]})
     measured = st.GridQ(index=1, hkl=(2.05, 0.0, 0.0), q=0.05, tolerance=0.5,
                         master=_master((2.05, 0.0, 0.0), 0.3))
 
     decision = st.evaluate_stop(obj, [origin, measured], _BUDGET)
 
-    assert decision.state == "met"
-    assert decision.per_q[0]["assessment_state"] == "inferred_unresolved"
+    assert decision.per_q[0]["assessment_state"] == "exempt"
     assert decision.per_q[0]["precision_coverage_eligible"] is False
     assert decision.per_q[0]["omega0"] is None
-    assert "1 measurable grid q converged" in decision.reasons[0]
+    assert measured.converged and not origin.precision_coverage_eligible
 
 
-def test_bare_inferred_state_without_structural_origin_cannot_shrink_denominator():
-    malformed = st.GridQ(index=0, hkl=(2.5, 0.0, 0.0), q=0.5, tolerance=0.5,
-                         track_state="inferred_unresolved",
-                         evidence_master={"track_state": "inferred_unresolved"})
+def test_a_reduced_q_origin_off_an_acoustic_campaign_cannot_shrink_the_denominator():
+    """The exemption is the acoustic zone centre and nothing else: an optic branch has a finite
+    energy there and is perfectly measurable, so the origin alone must never exempt a point."""
+    origin = st.GridQ(index=0, hkl=(2.0, 0.0, 0.0), q=0.0, tolerance=0.5,
+                      acoustic_target=False, is_reduced_q_origin=True)
     measured = st.GridQ(index=1, hkl=(2.55, 0.0, 0.0), q=0.55, tolerance=0.5,
                         master=_master((2.55, 0.0, 0.0), 0.3))
 
-    decision = st.evaluate_stop(_obj(), [malformed, measured], _BUDGET)
+    decision = st.evaluate_stop(_obj(), [origin, measured], _BUDGET)
 
     assert decision.state != "met"
     assert decision.per_q[0]["precision_coverage_eligible"] is True
@@ -146,7 +147,7 @@ def test_flagged_master_with_reliable_interval_converges():
     obj = _obj()
     masters = [_master((h, 0.0, 0.0), 0.30, disp="flagged") for h in (2.1, 2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, [], masters)
-    assert st.evaluate_stop(obj, grid, _BUDGET).state == "met"
+    assert all(point.converged for point in grid)
 
 
 def test_unreliable_master_does_not_converge():
@@ -203,7 +204,9 @@ def test_unpooled_track_state_blocks_scalar_convergence_and_model_seeding():
     obs = _obs((2.0, 0.0, 0.0), "production", 0.2)
     obs.update({"branch_id": "optic", "track_state": "ambiguous", "track_revision": 2})
     # The individual ambiguity cannot become authority; the target master still lacks confirmation.
-    grid = st.summarize_grid(obj, [obs], [_master((2.0, 0.0, 0.0), 0.1)])
+    unconfirmed = _master((2.0, 0.0, 0.0), 0.1)
+    unconfirmed["track_state"] = None
+    grid = st.summarize_grid(obj, [obs], [unconfirmed])
     assert grid[0].track_state is None
     assert not grid[0].converged
     assert st.model_points(grid) == []
@@ -256,7 +259,7 @@ def test_scan_uncertifiability_never_becomes_master_state_or_stuck():
     grid = st.summarize_grid(obj, obs, masters)
     g0 = grid[0]
     assert g0.n_decline == 0 and g0.n_uncertifiable == 0
-    assert not g0.converged and not g0.stuck and g0.stuck_reason is None
+    assert not g0.converged
     d = st.evaluate_stop(obj, grid, _BUDGET)
     assert d.state == "continue"
     per_q = {tuple(q["hkl"]): q for q in d.to_dict()["per_q"]}
@@ -279,7 +282,6 @@ def test_fast_tier_scan_sequence_never_abandons_q():
            for _ in range(st.MAX_PROD_ATTEMPTS)]
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
-    assert not grid[0].stuck and grid[0].stuck_reason is None
     d = st.evaluate_stop(obj, grid, _BUDGET)
     assert d.state == "continue"
 
@@ -293,7 +295,6 @@ def test_scan_validation_verdicts_do_not_establish_physical_infeasibility():
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
     assert grid[0].n_infeasible == 0 and grid[0].n_decline == 0
-    assert not grid[0].stuck
     d = st.evaluate_stop(obj, grid, _BUDGET)
     assert d.state == "continue"
 
@@ -305,7 +306,6 @@ def test_unmodeled_individual_fits_do_not_abandon_q():
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
     assert grid[0].n_unmodeled == 0
-    assert not grid[0].stuck
     d = st.evaluate_stop(obj, grid, _BUDGET)
     assert d.state == "continue"
 
@@ -319,7 +319,6 @@ def test_mixed_individual_verdicts_remain_acquisition_provenance_only():
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
     assert grid[0].n_infeasible == 0 and grid[0].n_decline == 0
-    assert not grid[0].stuck
 
 
 def test_no_usable_individual_fits_still_does_not_abandon_q():
@@ -327,7 +326,6 @@ def test_no_usable_individual_fits_still_does_not_abandon_q():
     obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="junk") for _ in range(3)]
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
-    assert not grid[0].stuck and grid[0].stuck_reason is None
     assert st.evaluate_stop(obj, grid, _BUDGET).state == "continue"
 
 
@@ -358,7 +356,6 @@ def test_individual_branch_continuation_does_not_become_terminal_state():
         row["verdict"] = "branch_continuation"
     masters = [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
-    assert grid[0].stuck_reason is None
     decision = st.evaluate_stop(obj, grid, _BUDGET)
     assert decision.state == "continue"
 
@@ -403,7 +400,7 @@ def test_successful_recenter_resolves_its_logical_acquisition():
 
 def _master_update(exposure, halfwidth, **overrides):
     update = {"kind": "pooled_master_update", "hkl": (2.1, 0.0, 0.0),
-              "candidate_id": "acoustic:0.1:lowest_energy", "branch_id": "acoustic",
+              "candidate_id": "acoustic:tracked_branch", "branch_id": "acoustic",
               "interval_method": "profile", "exposure_bucket": "global",
               "calibration_version": "v1", "effective_exposure": exposure,
               "diagnostic_halfwidth": halfwidth, "certifiable": True}
@@ -411,37 +408,11 @@ def _master_update(exposure, halfwidth, **overrides):
     return update
 
 
-def test_empirical_interval_floor_requires_three_comparable_updates_and_doubled_exposure():
-    obj = _obj()
-    updates = [_master_update(100.0, 1.0), _master_update(150.0, 0.99),
-               _master_update(210.0, 0.96)]
-    grid = st.summarize_grid(obj, updates)
-    assert grid[0].interval_floored is True
-    assert "interval_nonshrinking" in grid[0].diagnostics and not grid[0].stuck
-
-    insufficient_exposure = updates[:-1] + [_master_update(190.0, 0.96)]
-    assert not st.summarize_grid(obj, insufficient_exposure)[0].interval_floored
-    real_improvement = updates[:-1] + [_master_update(210.0, 0.90)]
-    assert not st.summarize_grid(obj, real_improvement)[0].interval_floored
-
-
-def test_empirical_interval_floor_requires_finite_matching_provenance():
-    obj = _obj()
-    base = [_master_update(100.0, 1.0), _master_update(150.0, 1.01),
-            _master_update(220.0, 1.02)]
-    assert st.summarize_grid(obj, base)[0].interval_floored  # widening is zero improvement
-    changed = base[:-1] + [_master_update(220.0, 1.02, calibration_version="v2")]
-    assert not st.summarize_grid(obj, changed)[0].interval_floored
-    missing = base[:-1] + [_master_update(220.0, None)]
-    assert not st.summarize_grid(obj, missing)[0].interval_floored
-
-
 def test_posterior_rejected_candidate_is_a_visible_nonterminal_diagnostic():
     update = _master_update(100.0, 1.0, candidate_state="rejected")
     grid = st.summarize_grid(_obj(), [update])
     assert grid[0].candidate_rejected
     assert "model_ambiguous" in grid[0].diagnostics
-    assert grid[0].stuck_reason is None and not grid[0].stuck
 
 
 def test_wrong_branch_master_updates_cannot_trigger_floor_or_rejection():
@@ -450,7 +421,7 @@ def test_wrong_branch_master_updates_cannot_trigger_floor_or_rejection():
                _master_update(220.0, 1.0, branch_id="optic", candidate_state="rejected")]
     grid = st.summarize_grid(_obj(), updates)
     assert grid[0].master_updates == []
-    assert not grid[0].interval_floored and not grid[0].candidate_rejected
+    assert not grid[0].candidate_rejected
 
 
 def test_wrong_branch_master_is_measured_evidence_without_target_delivery():
@@ -463,36 +434,6 @@ def test_wrong_branch_master_is_measured_evidence_without_target_delivery():
     assert not point.converged
 
 
-def test_saturated_ambiguous_frontier_is_not_terminalised_by_evaluate_stop():
-    """The early-terminal defect, removed (PR1): ``evaluate_stop`` runs *before* acquisition, so it no
-    longer converts a saturated ambiguous frontier into a ``branch_ambiguity`` incomplete on its own.
-    Saturation stays a per-point diagnostic (``ambiguity_exhausted``); the honest terminal is produced
-    after acquisition returns no proposal, by ``_blocked_frontier_decision`` consuming the inventory
-    (covered in ``test_loop`` / ``test_ap6_forensic_replay``)."""
-    obj = _obj()
-    obj.steering["maximum_production_batches_per_q"] = 2
-    obj.steering["maximum_bridge_steps"] = 1
-    observations = []
-    for index in range(3):
-        row = _obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
-        row.update({"acquisition_id": f"A{index}", "ncount_clamped": index >= 1,
-                    "submitted_ncount": 100_000_000})
-        observations.append(row)
-    # The full survey has already visited every neighboring q.  The only pooled fit is real two-mode
-    # evidence but belongs to the rival branch.
-    observations.extend(_obs((h, 0.0, 0.0), "quicklook", None, resolved=False,
-                             disp="branch_ambiguous") for h in (2.2, 2.3, 2.4))
-    wrong = _master((2.1, 0.0, 0.0), 0.2)
-    wrong.update({"branch_id": "optic", "branch_candidates": [
-        {"energy_meV": 2.7}, {"energy_meV": 6.85}]})
-    grid = st.summarize_grid(obj, observations, [wrong])
-    decision = st.evaluate_stop(obj, grid, _BUDGET)
-    # The point is diagnostically saturated, but that is no longer evaluate_stop's terminal authority.
-    assert grid[0].clamped_productions == 2 and grid[0].ambiguity_exhausted
-    assert decision.state == "continue"
-    assert decision.terminal_cause is None
-
-
 def test_stop_decision_terminal_cause_is_additive_and_omitted_when_absent():
     plain = st.StopDecision("continue", [], [])
     assert plain.terminal_cause is None
@@ -500,30 +441,6 @@ def test_stop_decision_terminal_cause_is_additive_and_omitted_when_absent():
     tagged = st.StopDecision("incomplete", ["frontier_blocked"], [],
                              terminal_cause="action_inventory_exhausted")
     assert tagged.to_dict()["terminal_cause"] == "action_inventory_exhausted"
-
-
-def test_saturated_frontier_stays_nonterminal_while_untried_neighbor_remains():
-    obj = _obj()
-    obj.steering["maximum_production_batches_per_q"] = 1
-    obj.steering["maximum_bridge_steps"] = 1
-    observations = []
-    for index in range(2):
-        row = _obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
-        row.update({"acquisition_id": f"A{index}", "ncount_clamped": True,
-                    "submitted_ncount": 100_000_000})
-        observations.append(row)
-    wrong = _master((2.1, 0.0, 0.0), 0.2)
-    wrong["branch_id"] = "optic"
-    grid = st.summarize_grid(obj, observations, [wrong])
-    assert grid[0].ambiguity_exhausted
-    assert st.evaluate_stop(obj, grid, _BUDGET).state == "continue"
-
-
-def test_production_cap_without_master_does_not_abandon_q():
-    obs = [_obs((2.1, 0.0, 0.0), "production", None, resolved=False, disp="declined")
-           for _ in range(st.MAX_PROD_ATTEMPTS)]
-    grid = st.summarize_grid(_obj(), obs)
-    assert not grid[0].stuck and grid[0].stuck_reason is None
 
 
 def test_master_over_tolerance_keeps_accumulating():
@@ -565,7 +482,6 @@ def test_declines_are_nonterminal_strategy_inputs():
     grid = st.summarize_grid(obj, obs)
     d = st.evaluate_stop(obj, grid, _BUDGET)
     assert d.state == "continue"
-    assert not any(point.stuck for point in grid)
 
 
 def test_max_production_count_is_not_a_terminal_cap():
@@ -573,7 +489,6 @@ def test_max_production_count_is_not_a_terminal_cap():
     obs = [_obs((2.1, 0.0, 0.0), "production", 0.9) for _ in range(st.MAX_PROD_ATTEMPTS)]
     masters = [_master((2.1, 0.0, 0.0), 0.9)] + [_master((h, 0.0, 0.0), 0.3) for h in (2.2, 2.3, 2.4)]
     grid = st.summarize_grid(obj, obs, masters)
-    assert not grid[0].stuck
     d = st.evaluate_stop(obj, grid, _BUDGET)
     assert d.state == "continue"
 
@@ -585,7 +500,6 @@ def test_unresolved_q_continues_until_global_limit():
     grid = st.summarize_grid(obj, obs, masters)
     d = st.evaluate_stop(obj, grid, _BUDGET)
     assert d.state == "continue"
-    assert not grid[0].stuck
 
 
 def test_path_scalars_are_arclength():
@@ -621,8 +535,7 @@ def test_an_acoustic_zone_centre_is_never_a_measurable_target():
 
     assert origin.precision_coverage_eligible is False
     assert decision.per_q[0]["precision_coverage_eligible"] is False
-    assert decision.state == "met"
-    assert "1 measurable grid q converged" in decision.reasons[0]
+    assert measured.converged
 
 
 def test_an_optic_zone_centre_is_still_a_measurable_target():

@@ -25,6 +25,10 @@ from scipy.signal import fftconvolve
 # Constants
 # ============================================================
 KB = 0.086173324   # Boltzmann constant (meV / K)
+
+#: Internal convolution grid step (meV) for :func:`convolute_voigt_dho`. Tests that rebuild the
+#: grid must read it from here, never re-declare the number.
+CONVOLUTION_DX = 0.05
 kB = KB            # alias
 
 
@@ -155,7 +159,18 @@ def convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, lorentz_fwh
     y : ndarray — model intensity at x_target
     """
     x_target = np.asarray(x_target, dtype=float)
-    dx = 0.05
+    # The convolution grid (CONVOLUTION_DX). DO NOT make this finer without a live campaign to
+    # show for it: 0.01 and 0.02 were both tried on 2026-09-03, on the same six-point path
+    # ("map the acoustic phonon from (2,0,0) to (2.3,0,0)", 0.1 meV bar), and neither finished.
+    # At 0.01 the campaign ran 93 scans, then 49 after an unrelated planner fix, and timed out
+    # both times (30-50 min); at 0.02 it ran 77 scans and timed out. At 0.05, identical code
+    # otherwise, it reached `met` in 60 scans and 22.6 minutes with every point within 0.041 meV
+    # of truth. The fine grids also produce verdicts the coarse one never does (`no_signal`,
+    # `signal_unmodeled`, and an `elastic_only` abstention on a real near-fold peak), so they
+    # degrade model selection, not just arithmetic. The offline accuracy case for 0.01/0.02 (a
+    # refit of 82 scans, median error 0.021 -> 0.012 meV at 0.02) does not survive contact with a
+    # live campaign, and the 0.1 meV per-point bar already covers the residual error.
+    dx = CONVOLUTION_DX
     pad_range = 20
 
     x_span = max(abs(x_target.min()), abs(x_target.max())) + pad_range

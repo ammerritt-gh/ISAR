@@ -62,6 +62,12 @@ class CardPolicy:
     hkl_round_step: float = 0.05
     quasielastic_fwhm: float | None = None  # broad QE Lorentzian FWHM (meV) for the §8 TAS
     #                                         structure component; None ⇒ no QE hypothesis (IXS default)
+    # The largest energy transfer this instrument configuration can reach (meV): the kinematic
+    # ceiling of the spectrometer, an INSTRUMENT fact and the top of the energy domain every
+    # targeted campaign plans in (owner ruling 2026-09-05: no phonon-specific search ranges — the
+    # domain is the instrument above and the elastic line below). Absent ⇒ the drive assumes the
+    # shipped default and says so in the log.
+    max_energy_transfer_meV: float | None = None
     dispersion: dict = field(default_factory=dict)  # steering branch-assignment geometry:
     #   {"zone_period": float}  — reduced-zone fold period (rlu) in which the acoustic branch is
     #   gapless (ω₀→0 at a zone centre). Absent ⇒ the branch-assignment posterior is off and the
@@ -83,7 +89,6 @@ class CardPolicy:
     hypotheses: dict = field(default_factory=dict)           # [hypotheses.*] — human physics intent
     # Inline human-authored distinction policies.  Authoring markers are materialized into exact
     # campaign scope fingerprints when an objective is frozen; code never writes this table.
-    scan_window_eig_policy_set: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -273,12 +278,4 @@ class Card:
                     resolve_hypothesis(str(name), declaration)
                 except (TypeError, ValueError) as exc:
                     errs.append(f"hypotheses.{name}: {exc}")
-        if not isinstance(pol.scan_window_eig_policy_set, dict):
-            errs.append("scan_window_eig_policy_set must be a table")
-        elif pol.scan_window_eig_policy_set:
-            try:
-                from isar.eig.policy import validate_card_eig_policy_authoring
-                validate_card_eig_policy_authoring(pol.scan_window_eig_policy_set)
-            except (TypeError, ValueError) as exc:
-                errs.append(f"scan_window_eig_policy_set: {exc}")
         return errs

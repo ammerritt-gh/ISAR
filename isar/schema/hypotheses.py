@@ -26,38 +26,6 @@ DISPERSION_TYPES = ("branch", "level", "continuum")
 IMPLEMENTED_DISPERSION_TYPES = ("branch",)
 PRESET_NAMES = ("acoustic", "optic", "null")
 
-#: Same-action scan-window EIG regime. ``off`` designs the legacy window; ``authoritative`` scores
-#: alternatives and may execute the scored winner under the restricted O41 profile validated at
-#: campaign setup. Authoritative is the COMPILE-TIME DEFAULT for newly compiled targeted
-#: objectives as of SCENE-4 PR 4.4 (H22; O42 itself was retired by H1, 2026-08-08).
-#: ``"shadow"`` (diagnostic-only scoring, never selecting) was retired in SCENE-4 PR 4.4, D3: the
-#: authoritative path already runs through the same scoring machinery, so the separate diagnostic
-#: mode had no remaining reason to exist. A frozen program or context still naming it refuses by
-#: name at :func:`_validate_scan_window_eig_mode` rather than being silently read as ``"off"``.
-SCAN_WINDOW_EIG_MODES = ("off", "authoritative")
-
-#: Retired in SCENE-4 PR 4.4, D3 — kept only so a literal ``"shadow"`` value can be recognized and
-#: refused BY NAME (distinct from the generic "must be one of" message), directing recompilation.
-_RETIRED_SCAN_WINDOW_EIG_MODE = "shadow"
-
-
-def _validate_scan_window_eig_mode(value: str) -> None:
-    """Raise on an invalid ``scan_window_eig_mode``, naming the retired ``"shadow"`` mode.
-
-    Shared by :class:`SteeringPolicy` here and ``ScanDesignContext`` in
-    ``isar.drive.acquisition.scan_design`` — one implementation, two validation sites.
-    """
-    if value == _RETIRED_SCAN_WINDOW_EIG_MODE:
-        raise ValueError(
-            "scan_window_eig_mode 'shadow' was retired in SCENE-4 PR 4.4 (D3): the shadow-only "
-            "diagnostic mode no longer exists. Recompile the objective selecting one of "
-            f"{SCAN_WINDOW_EIG_MODES}")
-    if value not in SCAN_WINDOW_EIG_MODES:
-        raise ValueError(
-            "scan_window_eig_mode must be one of "
-            f"{', '.join(SCAN_WINDOW_EIG_MODES)}")
-
-
 @dataclass(frozen=True)
 class GaussianPrior:
     mean: float
@@ -134,9 +102,12 @@ class SteeringPolicy:
     acquisition_estimator_version: str = ACQUISITION_ESTIMATOR_VERSION
     mismatch_z_threshold: float = 3.0
     quicklook_ncount: int = 10_000_000
-    production_batch_ncount: int = 25_000_000
+    # The exposure one real scan counts to, and the base of the EIG planner's ladder (0.5x..16x).
+    # 25e6 gave 2-4 counts per point per scan at the optic peak on TAVI (owner, 2026-09-05): not an
+    # experiment. 1e8 is ~12 counts per point at the peak on the middle rung; raise it in the
+    # objective when the sample is dimmer or a background is switched on.
+    production_batch_ncount: int = 100_000_000
     maximum_production_batches_per_q: int = 12
-    maximum_bridge_steps: int = 1
     dynamic_ncount: bool = False
     max_ncount_per_scan: int = MAX_NCOUNT_PER_SCAN
     ncount_growth_cap: float = 4.0
@@ -144,7 +115,6 @@ class SteeringPolicy:
     interval_floor_window: int = 3
     interval_floor_min_improvement: float = 0.05
     interval_floor_min_exposure_ratio: float = 2.0
-    scan_window_eig_mode: str = "off"
 
     def __post_init__(self) -> None:
         finite_values = {
@@ -171,7 +141,6 @@ class SteeringPolicy:
             "quicklook_ncount": self.quicklook_ncount,
             "production_batch_ncount": self.production_batch_ncount,
             "maximum_production_batches_per_q": self.maximum_production_batches_per_q,
-            "maximum_bridge_steps": self.maximum_bridge_steps,
             "max_ncount_per_scan": self.max_ncount_per_scan,
             "interval_floor_window": self.interval_floor_window,
         }
@@ -200,8 +169,6 @@ class SteeringPolicy:
             raise ValueError("count batches must be positive")
         if int(self.maximum_production_batches_per_q) < 2:
             raise ValueError("maximum_production_batches_per_q must be at least two")
-        if int(self.maximum_bridge_steps) < 0:
-            raise ValueError("maximum_bridge_steps must be non-negative")
         if int(self.max_ncount_per_scan) < int(self.production_batch_ncount):
             raise ValueError("max_ncount_per_scan must be at least the production batch floor")
         if float(self.ncount_growth_cap) < 1.0:
@@ -214,7 +181,6 @@ class SteeringPolicy:
             raise ValueError("interval_floor_min_improvement must be in [0, 1)")
         if float(self.interval_floor_min_exposure_ratio) <= 1.0:
             raise ValueError("interval_floor_min_exposure_ratio must exceed one")
-        _validate_scan_window_eig_mode(self.scan_window_eig_mode)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -232,14 +198,34 @@ def _prior(value: Any, default: GaussianPrior, *, energy: bool = False) -> Gauss
     return prior
 
 
-def preset(name: str, energy_search_meV: tuple[float, float] = (-2.0, 12.0)) -> ExcitationHypothesis:
-    """Resolve a shipped preset; optic defaults are derived once from the positive search band."""
+def preset(name: str, energy_search_meV: tuple[float, float]) -> ExcitationHypothesis:
+    """Resolve a shipped preset; both defaults are derived once from the positive energy domain.
+
+    The domain is ``(0, instrument ceiling)`` for every branch (owner ruling 2026-09-05: no
+    phonon-specific search ranges — a 25 meV optic branch or an acoustic branch rising past 9 meV
+    must be as measurable as the 6 meV demo phonon). It is REQUIRED here on purpose: the old
+    ``(-2, 12)`` default was the demo sample's range, and a preset that quietly assumed it was the
+    exact thing that made "is this tuned to the sample?" answerable with yes.
+
+    The acoustic class prior asserts only what "acoustic" means: the branch is gapless
+    (``zc_energy`` pinned at 0 with a 0.2 meV slack) and roughly linear near the zone centre with a
+    slope that is otherwise unknown. Its slope prior is therefore derived from the authorized band
+    exactly as the optic gap is -- ``(hi - max(lo, 0)) / 0.5`` is the widest slope that can still
+    keep the branch inside the band across the half zone the preset can see (it does not know the
+    sample's period; the belief row's ``period`` supplies that). Mean 0 and full confidence make it
+    a *bound*, not a guess about dispersion shape: the earlier ``GaussianPrior(12.0, 12.0)`` at
+    confidence 0.8 asserted a 12 meV/rlu group velocity nobody had measured.
+    """
+    lo_band, hi_band = map(float, energy_search_meV)
     if name == "acoustic":
+        # ponytail: 0.5 r.l.u. stands in for the half zone the preset cannot know (the sample's
+        # period lives on the belief row); a period-aware preset would divide by period / 2.
+        slope_sigma = max(hi_band - max(0.0, lo_band), 1e-6) / 0.5
         return ExcitationHypothesis(name="acoustic", preset="acoustic",
                                     zc_energy=GaussianPrior(0.0, 0.2),
-                                    slope_zc=GaussianPrior(12.0, 12.0), confidence=0.8)
+                                    slope_zc=GaussianPrior(0.0, slope_sigma), confidence=1.0)
     if name == "optic":
-        lo, hi = map(float, energy_search_meV)
+        lo, hi = lo_band, hi_band
         positive_lo = max(0.0, lo)
         width = max(hi - positive_lo, 1e-6)
         return ExcitationHypothesis(name="optic", preset="optic",

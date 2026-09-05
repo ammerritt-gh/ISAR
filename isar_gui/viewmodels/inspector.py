@@ -290,14 +290,26 @@ class InspectorViewModel(ViewModel):
     def _attach_specs(self, fit, st: InspectorState) -> None:
         ws = self._ws
         pooled = bool(fit.pooled)
+        ylabel = "counts (raw; Poisson sqrt N errors)"
+        resid_ylabel = "data - fit (counts)"
         try:
             if pooled:
                 pooled_data = ws.pooled_spectrum(fit)
                 if pooled_data is None:  # legacy workspace: honest curve-only fallback below
                     energy = counts = yerr = mask = axis = None
                 else:
-                    energy, counts, yerr = pooled_data.x, pooled_data.counts, pooled_data.yerr
-                    mask, axis = pooled_data.mask, None
+                    # The master fit models ΣN_i = (ΣM_i / reference) × f(E_i) on the member-union
+                    # grid, so the persisted curve f(E) is the expected count at the REFERENCE
+                    # monitor. Show the data in that frame (counts per reference monitor) and the
+                    # curve as stored; raw ΣN against f(E) is off by the local exposure ratio.
+                    energy = pooled_data.x
+                    counts, yerr = pooled_data.counts_ref, pooled_data.yerr_ref
+                    mask = pooled_data.mask & np.isfinite(counts)
+                    axis = None
+                    ref = pooled_data.exposure_reference
+                    ylabel = (f"counts per {ref:g} monitor (Poisson errors, same scale)"
+                              if ref else "counts per reference monitor")
+                    resid_ylabel = "data - fit (counts per reference monitor)"
             else:
                 unit = ws.unit_data(fit.unit_id) if fit.unit_id else None
                 if unit is not None:
@@ -372,7 +384,7 @@ class InspectorViewModel(ViewModel):
                 scan_number=fit.scan_number, det_id=fit.detector_id, q=fit.q,
                 pooled=pooled, members=fit.members, n_members=fit.n_members,
                 pooled_data=bool(pooled and fit.spectrum_ref and energy is not None),
-                xlabel=xlabel,
+                xlabel=xlabel, ylabel=ylabel,
             )
         except ValueError as exc:
             st.curve_error = f"invalid fitted unit data: {exc}"
@@ -382,7 +394,7 @@ class InspectorViewModel(ViewModel):
                                       np.asarray(curve.total, float))
             st.residuals_spec = builders.residuals_spec(
                 x=energy, residuals=counts - total_on_data, yerr=yerr, mask=mask,
-                xlabel=xlabel)
+                xlabel=xlabel, ylabel=resid_ylabel)
 
     @staticmethod
     def _fine_grid(fit, energy):

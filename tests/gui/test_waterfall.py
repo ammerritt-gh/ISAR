@@ -101,7 +101,46 @@ def test_q_selector_lists_distinct_q(make_ws):
     assert set(round(q, 3) for q in vm.q_values) == {2.0, 2.1}
 
 
-def test_pooled_master_at_a_q_is_curve_only_trace(make_ws):
+def _with_master_spectrum(ws: Workspace) -> Workspace:
+    """Give the fixture's master (scan 10 at H=2.0) a persisted ΣN pooling scan 1 (T=10 K):
+    ΣM=5 on the first ten points, ΣM=10 on the rest, so the reference (median) is 10 and the
+    first ten points double when expressed per reference monitor."""
+    import json
+    session_path = ws.root / "session.json"
+    session = json.loads(session_path.read_text(encoding="utf-8"))
+    entry = session["scans"]["tavi:10:det"]
+    entry["provenance"].update({"pooled": True, "members": [["tavi", 1, "det"]],
+                                "spectrum_ref": "data/pooled/m.json"})
+    session_path.write_text(json.dumps(session), encoding="utf-8")
+    pooled = ws.root / "data" / "pooled" / "m.json"
+    pooled.parent.mkdir(parents=True, exist_ok=True)
+    counts = _counts(4.1)
+    pooled.write_text(json.dumps({
+        "schema": "isar.pooled_spectrum/1", "energy": list(_X), "counts": counts,
+        "variance": counts, "monitor": [5.0] * 10 + [10.0] * 11, "mask": [True] * 21,
+        "members": [["tavi", 1, "det"]], "n_members": 1}), encoding="utf-8")
+    return Workspace.open(ws.root)
+
+
+def test_master_with_persisted_spectrum_is_the_trace_for_its_t_bin(make_ws):
+    ws = _with_master_spectrum(_make(make_ws, with_master=True))
+    vm = WaterfallViewModel(ws)
+    vm.set_selected_q(2.0)
+    spec = vm.spec
+    data = [s for s in spec.series if s.role is Role.DATA]
+    # T=10 K is the master's bin (through its member scan 1); T=20 K stays the physical scan.
+    assert sorted(s.label for s in data) == ["T=10 K · pooled master (1)", "T=20 K"]
+    master = next(s for s in data if "pooled" in s.label)
+    counts = np.asarray(_counts(4.1))
+    np.testing.assert_allclose(master.y[:10], counts[:10] * 2.0)  # ΣM=5 vs reference 10
+    np.testing.assert_allclose(master.y[10:], counts[10:])
+    assert spec.ylabel == "counts per 10 monitor (offset per trace)"
+    fit = [s for s in spec.series if s.role is Role.FIT]
+    # The master's curve at its bin carries no "member data not shown" — the data are drawn.
+    assert next(s.label for s in fit if s.label.startswith("T=10 K")) == "T=10 K: pooled master (1)"
+
+
+def test_pooled_master_without_spectrum_is_curve_only_trace(make_ws):
     ws = _make(make_ws, with_master=True)
     vm = WaterfallViewModel(ws)
     vm.set_selected_q(2.0)

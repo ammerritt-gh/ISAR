@@ -12,7 +12,8 @@ from typing import Iterable
 
 import numpy as np
 
-from isar.probability import lower_truncated_normal_moments
+from isar.probability import (
+    continuity_adjust, lower_truncated_normal_moments, truncated_normal_moments)
 
 from isar.schema.hypotheses import ACQUISITION_ESTIMATOR_VERSION
 
@@ -49,8 +50,16 @@ def _normal_pdf(x: np.ndarray, mean: float, sigma: float) -> np.ndarray:
     return np.exp(-0.5 * z * z) / (sigma * math.sqrt(2.0 * math.pi))
 
 
-def belief_predict(row: dict, u: float, *, data_only: bool = False) -> tuple[float, float]:
-    """Qt/session-free mirror of parameter-prior branch prediction from a persisted belief row."""
+def belief_predict(row: dict, u: float, *, data_only: bool = False,
+                   domain_hi: float | None = None) -> tuple[float, float]:
+    """Qt/session-free mirror of parameter-prior branch prediction from a persisted belief row.
+
+    The class prior's third clause -- bounded by the energy domain -- is this truncation:
+    an energy outside the authorized band is not a hypothesis the program can hold, so with
+    ``domain_hi`` given the predictive is truncated to ``[0, domain_hi]`` at BOTH ends.  A cold
+    branch far from the fold then predicts "somewhere in the band" (mean about hi/2, sigma
+    about hi/sqrt(12)) instead of a one-sided runaway to tens of meV outside it.
+    """
     anchors = list(row.get("anchors") or [])
     if anchors:
         us = np.array([float(a["u"]) for a in anchors])
@@ -74,7 +83,13 @@ def belief_predict(row: dict, u: float, *, data_only: bool = False) -> tuple[flo
                           float(slope.get("mean", 0.0))])
         sigmas = np.array([max(float(gap.get("sigma", 1e3)), 1e-9),
                            max(float(slope.get("sigma", 1e3)), 1e-9)])
-        prior_precision = confidence / np.square(sigmas)
+        # The (gap, slope) prior describes the line AT THE FOLD, so it is admitted into a LOCAL fit
+        # only as far as that fit is still near the fold -- through the same locality kernel the
+        # anchors use. At full precision everywhere the zone-centre pin tilts the local line, and
+        # near the zone boundary a saturating branch is predicted about a meV high, confidently
+        # enough that the rival branch's peak reads as its own.
+        prior_precision = (confidence / np.square(sigmas)
+                           * math.exp(-0.5 * (float(u) / LOCALITY_BW) ** 2))
         precision += np.diag(prior_precision)
         rhs += prior_precision * means
     if not np.any(precision):
@@ -83,9 +98,21 @@ def belief_predict(row: dict, u: float, *, data_only: bool = False) -> tuple[flo
     xq = np.array([1.0, float(u)])
     mu = float(xq @ (cov @ rhs))
     sigma = max(math.sqrt(max(float(xq @ cov @ xq), 0.0)), SIGMA_SLACK)
+    if anchors:
+        # Continuity governs the predictive beyond the anchors: the mean reverts to the level at the
+        # edge of the anchored range instead of carrying the fitted slope onward, and the sigma
+        # reverts with it and widens at the declared group velocity with the distance to the nearest
+        # measurement. Inside the anchored range this leaves the local fit unchanged.
+        edge = min(max(float(u), float(us.min())), float(us.max()))
+        mu, sigma = continuity_adjust(
+            mu, sigma, float(np.array([1.0, edge]) @ (cov @ rhs)), max(math.sqrt(max(float(np.array([1.0, edge]) @ cov @ np.array([1.0, edge])),
+                                0.0)), SIGMA_SLACK),
+            abs(float(u) - edge), float(np.min(np.abs(us - float(u)))))
     if data_only or not prior:
         return mu, sigma
-    return lower_truncated_normal_moments(mu, sigma)
+    if domain_hi is None:
+        return lower_truncated_normal_moments(mu, sigma)
+    return truncated_normal_moments(mu, sigma, 0.0, float(domain_hi))
 
 
 def assignment_mi(components: Iterable[dict], *, meas_sigma: float,
@@ -119,42 +146,3 @@ def assignment_mi(components: Iterable[dict], *, meas_sigma: float,
     conditional_entropy = float(np.dot(probabilities,
         0.5 * np.log(2.0 * math.pi * math.e * np.square(sigmas))))
     return max(mixture_entropy - conditional_entropy, 0.0)
-
-
-def information_per_cost(target_information: float, classification_information: float, *,
-                         classification_weight: float, cost: float) -> float:
-    """O6 ranking: dimensionless information divided by positive measurement cost."""
-    if float(cost) <= 0.0:
-        return math.inf
-    return (max(float(target_information), 0.0)
-            + max(float(classification_weight), 0.0) * max(float(classification_information), 0.0)) / float(cost)
-
-
-def lambda_eff(classification_weight: float, label_probabilities: Iterable[float]) -> float:
-    """Explicit confidence throttle in addition to MI's intrinsic ``MI <= H`` bound."""
-    p = np.array([max(float(v), 0.0) for v in label_probabilities], dtype=float)
-    if not p.size or p.sum() <= 0.0:
-        return 0.0
-    p /= p.sum()
-    entropy = -float(np.sum(p[p > 0.0] * np.log(p[p > 0.0])))
-    return max(float(classification_weight), 0.0) * entropy / math.log(max(len(p), 2))
-
-
-def widen_factor(absent_signal_count: int, *, step: float = 0.5, max_steps: int = 3) -> float:
-    """Crash-safe O11 widening schedule; its input is a persisted decline counter."""
-    return 1.0 + float(step) * min(max(int(absent_signal_count), 0), int(max_steps))
-
-
-def opening_order(grid_us: Iterable[float], target_hypothesis: dict | None, *,
-                  resolution_fwhm: float, predictions: dict[float, tuple[float, float]] | None = None) -> list[float]:
-    """Character-aware opening order; absent/explicit-null uses largest-predicted-sigma survey."""
-    us = [float(u) for u in grid_us]
-    predictions = predictions or {}
-    name = str((target_hypothesis or {}).get("name", ""))
-    if name == "optic":
-        return sorted(us)
-    if name == "acoustic":
-        resolvable = [u for u in sorted(us) if predictions.get(u, (0.0, 0.0))[0] >= resolution_fwhm]
-        unresolved = [u for u in sorted(us) if u not in resolvable]
-        return resolvable + unresolved
-    return sorted(us, key=lambda u: (-predictions.get(u, (0.0, math.inf))[1], u))

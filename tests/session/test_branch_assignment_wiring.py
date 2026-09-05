@@ -7,7 +7,7 @@ import pytest
 from isar.schema.card import CardState
 from isar.session import branch_model as BM
 from isar.session import session_prior as SP
-from isar.session import driver, scan_delivery
+from isar.session import scan_delivery
 
 
 def _add(state, scan_id, q, omega0, *, branch_id, weight=1.0, sample="S", T=200.0):
@@ -88,104 +88,40 @@ def test_prior_for_can_select_optic_branch():
     assert pr is not None and pr.omega0 == pytest.approx(6.3, abs=0.5)
 
 
-def test_optic_cold_start_keeps_lowest_candidate_provisional_with_bayesian_evidence():
+def test_triage_preserves_every_fit_as_a_provisional_tracked_candidate():
+    """Per-q feature selection is gone: the triage no longer picks which fitted mode is the target,
+    nor assigns a branch. Every fit is preserved as unordered evidence under one candidate identity
+    that is stable across q, and the authoritative label is assigned later, over the whole path."""
     state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
-                                      "energy_search_meV": [-2.0, 12.0]})
-    card = SimpleNamespace(
-        state=state,
-        policy=SimpleNamespace(dispersion={"zone_period": 2.0}),
-    )
-    ctx = SimpleNamespace(gauss_fwhm=1.0)
-    modes = [
-        {"omega0": 1.2, "omega0_err": 0.1, "gamma": 0.2, "amplitude": 900.0},
-        {"omega0": 6.0, "omega0_err": 0.1, "gamma": 0.3, "amplitude": 300.0},
-    ]
-    optic = scan_delivery._assign_and_triage(
-        {"omega0": 6.0, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
-        q=[2.1, 0.0, 0.0], t_round=5.0, near_gamma=False)
-    acoustic = scan_delivery._assign_and_triage(
-        {"omega0": 1.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
-        q=[2.1, 0.0, 0.0], t_round=5.0, near_gamma=False)
-    assert optic["deliver"] is False and acoustic["deliver"] is False
-    assert acoustic["branch_id"] == "acoustic"
-    assert acoustic["candidate_state"] == "provisional"
-    assert acoustic["posterior"]["acoustic"] > acoustic["posterior"].get("optic", 0.0)
-    neighbor = scan_delivery._assign_and_triage(
-        {"omega0": 1.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
-        q=[2.2, 0.0, 0.0], t_round=5.0, near_gamma=False)
-    assert neighbor["candidate_id"] == acoustic["candidate_id"]
-
-
-def test_optic_cold_start_nearest_energy_can_deliver_supported_mode():
-    state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
-                                      "selector": "nearest_energy", "target_energy_meV": 6.0,
-                                      "energy_search_meV": [-2.0, 12.0]})
+                                       "energy_search_meV": [-2.0, 12.0]})
     card = SimpleNamespace(state=state, policy=SimpleNamespace(dispersion={"zone_period": 2.0}))
     ctx = SimpleNamespace(gauss_fwhm=1.0)
     modes = [
         {"omega0": 1.2, "omega0_err": 0.1, "gamma": 0.2, "amplitude": 900.0},
         {"omega0": 6.0, "omega0_err": 0.1, "gamma": 0.3, "amplitude": 300.0},
     ]
-    result = scan_delivery._assign_and_triage(
+    optic = scan_delivery._assign_and_triage(
         {"omega0": 6.0, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
-        q=[2.0, 0.0, 0.0], t_round=5.0, near_gamma=False)
-    assert result["deliver"] is True and result["branch_id"] == "optic"
-    assert result["candidate_state"] == "accepted"
-
-
-def test_explicit_highest_selector_keeps_unsupported_upper_mode_provisional():
-    state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
-                                      "selector": "highest_energy",
-                                      "energy_search_meV": [-2.0, 12.0]})
-    _add(state, "O0", 0.0, 6.0, branch_id="optic")
-    card = SimpleNamespace(
-        state=state,
-        policy=SimpleNamespace(dispersion={"zone_period": 2.0}),
-    )
-    ctx = SimpleNamespace(gauss_fwhm=1.0)
-    modes = [
-        {"omega0": 4.2, "omega0_err": 0.1, "gamma": 0.2, "amplitude": 900.0},
-        {"omega0": 7.4, "omega0_err": 0.1, "gamma": 0.3, "amplitude": 300.0},
-    ]
-
-    optic = scan_delivery._assign_and_triage(
-        {"omega0": 7.4, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
-        q=[2.0, 0.5, 0.0], t_round=5.0, near_gamma=False)
+        q=[2.1, 0.0, 0.0], t_round=5.0, near_gamma=False)
     acoustic = scan_delivery._assign_and_triage(
-        {"omega0": 4.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
-        q=[2.0, 0.5, 0.0], t_round=5.0, near_gamma=False)
-
-    assert optic["deliver"] is False and optic["branch_id"] == "optic"
+        {"omega0": 1.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
+        q=[2.1, 0.0, 0.0], t_round=5.0, near_gamma=False)
+    assert optic["deliver"] is True and acoustic["deliver"] is True
+    assert optic["branch_id"] is None and acoustic["branch_id"] is None
     assert optic["candidate_state"] == "provisional"
-    assert acoustic["deliver"] is False
+    assert optic["selected_energy"] == 6.0 and acoustic["selected_energy"] == 1.2
+    neighbor = scan_delivery._assign_and_triage(
+        {"omega0": 1.2, "modes": modes}, None, ctx, card=card, sample="S", T=200.0,
+        q=[2.2, 0.0, 0.0], t_round=5.0, near_gamma=False)
+    assert neighbor["candidate_id"] == acoustic["candidate_id"] == optic["candidate_id"]
 
 
-def test_established_optic_uses_fitted_modes_before_descriptor_rivals():
-    state = CardState(campaign_target={"branch": "optic", "label": "transverse optic",
-                                      "selector": "nearest_energy", "target_energy_meV": 7.4,
-                                      "energy_search_meV": [-2.0, 12.0]})
-    _add(state, "O0", 0.0, 6.0, branch_id="optic")
-    _add(state, "O1", 0.25, 6.7, branch_id="optic")
-    _add(state, "O2", 0.4, 7.2, branch_id="optic")
-    card = SimpleNamespace(
-        state=state,
-        policy=SimpleNamespace(dispersion={"zone_period": 2.0}),
-    )
-    ctx = SimpleNamespace(gauss_fwhm=1.0)
-    modes = [
-        {"omega0": 4.2, "omega0_err": 0.1, "gamma": 0.2, "amplitude": 900.0},
-        {"omega0": 7.4, "omega0_err": 0.1, "gamma": 0.3, "amplitude": 300.0},
-    ]
-    descriptor = SimpleNamespace(peaks=[
-        SimpleNamespace(energy=6.8, width=0.2, integrated_intensity=100.0, significance=20.0),
-        SimpleNamespace(energy=8.0, width=0.2, integrated_intensity=100.0, significance=20.0),
-    ])
-
-    optic = scan_delivery._assign_and_triage(
-        {"omega0": 7.4, "modes": modes}, descriptor, ctx, card=card, sample="S", T=200.0,
-        q=[2.0, 0.5, 0.0], t_round=5.0, near_gamma=False)
-
-    assert optic["deliver"] is True and optic["branch_id"] == "optic"
+def test_triage_is_off_without_a_zone_period():
+    """The one remaining gate: no configured fold period ⇒ no branch-assignment posterior at all."""
+    card = SimpleNamespace(state=CardState(), policy=SimpleNamespace(dispersion={}))
+    assert scan_delivery._assign_and_triage(
+        {"omega0": 6.0, "modes": []}, None, SimpleNamespace(gauss_fwhm=1.0), card=card,
+        sample="S", T=200.0, q=[2.1, 0.0, 0.0], t_round=5.0, near_gamma=False) is None
 
 
 # ---------------------------------------------------------------- branch-filtered seeding

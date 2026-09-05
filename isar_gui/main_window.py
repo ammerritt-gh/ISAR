@@ -761,9 +761,6 @@ class MainWindow(QMainWindow):
         self._new_workspace_menu_action.triggered.connect(self.new_workspace)
         self._open_workspace_menu_action = file_menu.addAction("Open Workspace…")
         self._open_workspace_menu_action.triggered.connect(self._on_open_workspace)
-        self._create_o41_example_action = file_menu.addAction(
-            "Create O41 Authoritative Example…")
-        self._create_o41_example_action.triggered.connect(self._create_o41_example)
         self._save_as_menu_action = file_menu.addAction("Save Workspace As…")
         self._save_as_menu_action.triggered.connect(self.save_workspace_as)
 
@@ -806,71 +803,6 @@ class MainWindow(QMainWindow):
             QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
         if path:
             self.load_workspace(path)
-
-    def _create_o41_example(self) -> None:
-        """Copy the maintained positive seed to a user workspace and prefill normal controls."""
-        if self._operations.is_busy():
-            self.statusBar().showMessage("Workspace is busy — wait before creating the example")
-            return
-        # Non-native dialog: the Windows-native picker refuses paths whose parents
-        # do not exist yet, and the backend creates the chain at promote time.
-        parent = QFileDialog.getExistingDirectory(
-            self, "Create O41 Example (choose a parent folder)", "",
-            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
-        if not parent:
-            return
-        repo = Path(__file__).resolve().parents[1]
-        source = (repo / "docs" / "campaigns" /
-                  "2026-08-04_EIG4_SLICE8_SHADOW_GATE_REPAIR_V3" /
-                  "artifacts" / "s8-c01-strong-confirmed")
-        resources = repo / "isar_gui" / "resources" / "eig4-o41-authoritative"
-        destination = Path(parent) / "isar-eig4-o41-authoritative"
-        if destination.exists():
-            QMessageBox.warning(
-                self, "Example already exists",
-                f"Choose another parent folder or rename this existing folder:\n{destination}")
-            return
-        # Staged in a sibling temp folder and renamed into place, so a failure part-way through
-        # (missing resource in a non-editable install, permission or AV lock) leaves NO partial
-        # workspace behind — a partial one would trip the exists() guard above on the next attempt
-        # and send the operator hunting for a name clash that is not the real problem.
-        staging = Path(tempfile.mkdtemp(dir=parent, prefix=".isar-example-"))
-        staged = staging / destination.name
-        try:
-            shutil.copytree(source, staged)
-            shutil.copy2(resources / "card.policy.toml", staged / "card.policy.toml")
-            shutil.copy2(resources / "campaign-program.json", staged / "campaign-program.json")
-            shutil.copy2(resources / "example-manifest.json", staged / "example-manifest.json")
-            # Historical gate events are evidence for the seed, not the new operator campaign's
-            # spend ledger. The copied prior/model artifacts remain; the campaign log starts clean.
-            (staged / "report" / "session_log.jsonl").write_text("", encoding="utf-8")
-            os.replace(staged, destination)
-        except OSError as exc:
-            log.exception("failed to create the O41 example workspace")
-            message = f"Could not create O41 example — {exc}"
-            self.statusBar().showMessage(message)
-            self.log(message)
-            return
-        finally:
-            try:
-                shutil.rmtree(staging)
-            except OSError:
-                log.warning("could not remove the O41 example staging folder %s",
-                            staging, exc_info=True)
-        self.load_workspace(str(destination))
-        if self.campaign_dock is not None:
-            self.campaign_dock.apply_form({
-                "source": "program",
-                "program_path": str(destination / "campaign-program.json"),
-                "tier": "deterministic",
-                "scan_window_eig_mode": "authoritative",
-                "budget": "",
-                "analysis_limit": "",
-                "seed": 0,
-            })
-            self.campaign_dock._save_form()
-        self.statusBar().showMessage(
-            "O41 example ready — review the Campaign settings, then select Start")
 
     # ---- Workspace toolbar (New / Open / Save As / Recent, Phase C) --------
     def _init_workspace_toolbar(self) -> None:
@@ -920,8 +852,7 @@ class MainWindow(QMainWindow):
         for action in (getattr(self, "_new_workspace_action", None),
                        getattr(self, "_open_workspace_action", None),
                        getattr(self, "_new_workspace_menu_action", None),
-                       getattr(self, "_open_workspace_menu_action", None),
-                       getattr(self, "_create_o41_example_action", None)):
+                       getattr(self, "_open_workspace_menu_action", None)):
             if action is not None:
                 action.setEnabled(not busy)
         if getattr(self, "_recents_button", None) is not None:

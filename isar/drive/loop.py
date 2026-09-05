@@ -9,8 +9,17 @@ Wires the three parts into the §8 loop:
     } → stop (met / incomplete / infeasible) → campaign summary
 
 The loop is **decision-only**: numbers come only from ISAR's ``results.csv`` (read through the file
-contract), never from a fit imported here. It LOOKS at raw counts solely to re-center a missed window
-(§1). Every decision is written to the session log (:mod:`isar.drive.session_log`).
+contract), never from a fit imported here. Every decision is written to the session log
+(:mod:`isar.drive.session_log`).
+
+There is exactly ONE place a Q, an energy window or an exposure is chosen:
+:func:`isar.drive.acquisition.eig_planner.plan_next`, called at the single seam in
+:func:`run_campaign`. No survey, no frontier or bridge rule, no same-q ceiling, no opening book, no
+scan-window comparison and no missed-window recentre-and-widen — a wide window happens only because
+a belief is wide, and a scan that finds nothing is ordinary evidence the planner prices as a clean
+null. ``met`` is the planner's prize (every prize point's target energy known to the requested bar);
+:func:`~isar.drive.supervisor.stopping.evaluate_stop` decides only ``infeasible`` / ``incomplete`` /
+``continue``.
 
 Seams are injectable so the loop is unit-testable with no network and no real ISAR: pass ``client`` (a
 :class:`~isar.drive.instrument.tavi_client.TaviClient`-shaped object), ``run_isar`` (a callable that
@@ -23,7 +32,7 @@ from collections.abc import Mapping
 import copy
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable
 
 import json
 import hashlib
@@ -31,58 +40,39 @@ import itertools
 import logging
 import math
 import os
+import statistics
 import subprocess
 import sys
 import time
 import uuid
 
-from isar.drive.acquisition import model as acq_model
 from isar.drive.acquisition.acquire import (
-    ScanProposal,
-    _candidate_precision,
-    normalize_proposal_score,
-    hkl_key,
-    plan_actions,
-    propose_action,
-)
-from isar.drive.acquisition.scan_design import (
-    MAX_POINTS,
+    DEFAULT_FWHM_MEV,
     BudgetInsufficientForMinimumBatch,
-    FAMILY_LEGACY_UNIFORM,
-    FAMILY_TARGET_CORE,
     InstrumentLimitBelowMinimumBatch,
     InstrumentPointLimitExceeded,
-    points_in_window,
+    ScanProposal,
+    _resolve_fwhm,
+    hkl_key,
+)
+from isar.drive.acquisition.classify_eig import belief_predict
+from isar.drive.acquisition.eig_planner import (
+    KB_MEV_PER_K,
+    Candidate,
+    IntensityScale,
+    ExecutedScan,
+    PlannerInput,
+    default_intensity_scale,
+    plan_next,
 )
 from isar.drive.acquisition.scan_grid import (
-    COARSEN_FROM_DESIGNED_SPAN,
-    resolve_point_count,
+    MAX_POINTS,
     resolve_uniform_grid,
+    snap_to_lattice,
 )
 from isar.drive.acquisition.grid_adapters import TAVI_GRID_ADAPTER
-from isar.drive.acquisition.realized_comparison import (
-    authenticate_realized_submission,
-    load_scan_design_realized_comparison,
-)
-from isar.drive.acquisition.authority import (
-    authenticate_authority_submission,
-    load_authority_decision,
-)
-from isar.drive.acquisition.eig_runtime import (
-    _AUTHORITY_SUBMISSION_FIELDS,
-    _REALIZED_SUBMISSION_FIELDS,
-    ScanDesignInvariantViolation,
-    _invalidate_realized_comparison_for_recovery,
-    _prepare_authoritative_submission,
-    _proposal_for_realized_request,
-    _refresh_realized_comparison,
-    _score_shadow_proposal,
-    eig_submission_metadata,
-)
 from isar.drive.acquisition.inventory import (
-    GENERATOR_REGISTRY, GENERATOR_REGISTRY_VERSION, TERMINAL_ACTION_INVENTORY_EXHAUSTED,
-    TERMINAL_CONTROLLER_FAULT, CampaignSliceKey, FinalizedProposal, RejectionClass,
-    ValidatedAttempt, canonical_json)
+    TERMINAL_CONTROLLER_FAULT, CampaignSliceKey, MeasurementIntent, RejectionClass, canonical_json)
 from isar.drive.acquisition.calibration import Calibration, load_calibration
 from isar.drive.instrument.tavi_client import TaviClient, TaviError
 from isar.drive.instrument.request_realization import (
@@ -103,7 +93,7 @@ from isar.drive.instrument.request_realization import (
 )
 from isar.drive.isar_io.readers import (read_card_state, read_master_rows, read_results_csv,
                                         read_run_timings)
-from isar.drive.isar_io.runner import SubprocessRunner, as_runner, refresh_analysis, runner_accepts
+from isar.drive.isar_io.runner import SubprocessRunner, as_runner, ingest_new, refresh_analysis
 from isar.drive.isar_io.runner import init_isar as _default_init_isar
 from isar.drive.isar_io.worker_client import WorkerRunner
 from isar.drive.isar_io.scan_writer import save_scan_json, scan_json_path
@@ -121,17 +111,15 @@ from isar.drive.supervisor.stopping import (
     StopDecision,
     USABLE_DISPOSITIONS as _USABLE,
     evaluate_stop,
-    local_exhaustion_status,
-    model_points,
+    match_grid_index,
     summarize_grid,
     systematic_floor,
 )
 from isar.schema.card import Card
-from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN
+from isar.schema.hypotheses import MAX_NCOUNT_PER_SCAN, preset
 from isar.schema.measurement import (CAMPAIGN_PROVENANCE_FIELDS, TOPOLOGY_ROLES,
                                      campaign_provenance)
-from isar.schema.steering import (ANALYSIS_UNUSABLE, AUXILIARY_TRACK_NODE, CANDIDATE_NOT_DETECTED,
-                                  CANONICAL_MASTER, realized_outcome_for)
+from isar.schema.steering import CANONICAL_MASTER, realized_outcome_for
 
 DEFAULT_WAIT_TIMEOUT = 600.0
 # A runaway backstop, NOT a scientific limit. Campaign length is bounded by the declared budget, and
@@ -185,6 +173,83 @@ def _analysis_allowance_seconds(cfg, objective) -> float | None:
     return max(float(limit) - spent, 0.0)
 
 
+def _snap_to_lattice(proposal, log_path, it: int, *, event_sink=log_event) -> bool:
+    """Put ``proposal``'s energy window on the shared lattice BEFORE anything derives from it.
+
+    A repeat scan is only worth its neutrons if the reducer can add them to the master it is topping
+    up, and :func:`isar.reduce.collate._merge_group` can only do that for members whose executed
+    energies coincide (see :func:`~isar.drive.acquisition.scan_grid.snap_to_lattice` for the measured
+    failure).  Nothing upstream guarantees that: two designs for the same point routinely differ by
+    hundredths of a meV, and the campaign then tops up a pool that never grows.
+
+    The rule is the same one the feasibility trim already lives by -- the EMITTED window is the truth
+    downstream, not the designed one -- so the snap happens here, at the single normalization seam
+    every proposal passes immediately before validation and submission, and therefore covers every
+    repeat rather than only the planner's.  Returns ``True`` when the window moved.
+    """
+    e_lo, e_hi, e_step = snap_to_lattice(proposal.e_lo, proposal.e_hi, proposal.e_step)
+    if (e_lo, e_hi, e_step) == (float(proposal.e_lo), float(proposal.e_hi), float(proposal.e_step)):
+        return False
+    if event_sink is not None:
+        # Routine bookkeeping, not a problem: nearly every planner proposal is snapped, and the
+        # feed showed each one as "Problem: …" (219 of 583 exception lines at one q, 2026-09-05).
+        # ``severity: low`` keeps the record for forensics and renders it as a plain note.
+        event_sink(log_path, "exception", {
+            "action": "proposal_snapped_to_lattice", "severity": "low",
+            "hkl": [proposal.h, proposal.k, proposal.l],
+            "old_window": [float(proposal.e_lo), float(proposal.e_hi), float(proposal.e_step)],
+            "new_window": [e_lo, e_hi, e_step],
+            "iter": it,
+        })
+    proposal.e_lo, proposal.e_hi, proposal.e_step = e_lo, e_hi, e_step
+    return True
+
+
+class ProposalOutsideEnergyDomain(ValueError):
+    """The emitted grid cannot be kept inside the derived energy domain with three points left."""
+
+
+def _clip_to_energy_domain(proposal, objective, cfg, it: int, *, event_sink=log_event) -> bool:
+    """Keep the EMITTED grid inside the domain the design was scored in.
+
+    The lattice snap moves bounds outward and the point guard coarsens the step, and neither knew
+    the domain: a window designed at the optic floor came out one step below it, and one designed
+    up to the instrument ceiling came out one step above (PR #37 review, second round). The domain
+    is the planner's own (:func:`_planner_energy_domain`); bounds are moved INWARD along the
+    lattice, dropping whole points, so the surviving grid is still the shared lattice. Returns
+    ``True`` when the window moved; raises :class:`ProposalOutsideEnergyDomain` when fewer than
+    three points survive, which the ranking loop treats like any other unrealizable design.
+    """
+    try:
+        path = tuple(tuple(float(c) for c in point) for point in objective.path)
+        lo_d, hi_d = _planner_energy_domain(objective, path, cfg.resolution_cb)
+    except (PlannerRefusal, AttributeError, TypeError, ValueError) as error:
+        _LOG.warning("energy domain unavailable at finalize (%s); window left as emitted", error)
+        return False
+    step = float(proposal.e_step)
+    lo, hi = float(proposal.e_lo), float(proposal.e_hi)
+    if step <= 0.0 or not all(math.isfinite(v) for v in (lo, hi, step)):
+        return False
+    new_lo = lo if lo >= lo_d - 1e-9 else lo + math.ceil((lo_d - lo) / step - 1e-9) * step
+    new_hi = hi if hi <= hi_d + 1e-9 else hi - math.ceil((hi - hi_d) / step - 1e-9) * step
+    new_lo, new_hi = round(new_lo, 6), round(new_hi, 6)
+    if (new_lo, new_hi) == (lo, hi):
+        return False
+    n_points = int(math.floor((new_hi - new_lo) / step + 1e-9)) + 1 if new_hi > new_lo else 0
+    if n_points < 3:
+        raise ProposalOutsideEnergyDomain(
+            f"proposal_outside_energy_domain: window [{lo:g}, {hi:g}] meV keeps fewer than three "
+            f"points inside the domain [{lo_d:g}, {hi_d:g}]")
+    if event_sink is not None:
+        event_sink(cfg.log_path, "exception", {
+            "action": "proposal_clipped_to_energy_domain",
+            "hkl": [proposal.h, proposal.k, proposal.l],
+            "old_window": [lo, hi, step], "new_window": [new_lo, new_hi, step],
+            "energy_domain": [float(lo_d), float(hi_d)], "iter": it})
+    proposal.e_lo, proposal.e_hi, proposal.n_points = new_lo, new_hi, n_points
+    return True
+
+
 def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int, *,
                        event_sink=log_event) -> bool:
     """Clamp ``proposal`` to the instrument's ``max_points`` limit BEFORE any validate/submit call.
@@ -200,11 +265,10 @@ def _guard_point_count(proposal, max_points: int, source: str, log_path, it: int
         return False
     old_step = float(proposal.e_step)
     grid = resolve_uniform_grid(
-        proposal.e_lo, proposal.e_hi, proposal.e_step,
-        max_points=max_points, coarsen_span=COARSEN_FROM_DESIGNED_SPAN)
+        proposal.e_lo, proposal.e_hi, proposal.e_step, max_points=max_points)
     if grid.n_points > int(max_points):
         raise InstrumentPointLimitExceeded(
-            "instrument_point_limit_exceeded: historical designed-span coarsening resolves to "
+            "instrument_point_limit_exceeded: coarsening resolves to "
             f"{grid.n_points} adapter-exact points above the live limit {int(max_points)} "
             f"from {source}")
     proposal.e_step = grid.e_step
@@ -262,26 +326,25 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int,
                        event_sink=log_event) -> None:
     """Normalize one proposal immediately before validation/submission.
 
-    The frozen steering ceiling and the live instrument ceiling are both authoritative.  Once the
-    true emitted point count is known, neutron affordability is recalculated against it; hour budgets
+    Two ceilings are authoritative and nothing else is: the frozen steering point ceiling and the
+    live instrument neutrons-per-point limit. There is NO exposure floor — ``quicklook_ncount`` /
+    ``production_batch_ncount`` were the quicklook/production ladder's minimum batch, and the ladder
+    is retired: the planner chooses the exposure, its ladder runs from half a quicklook upward, and
+    raising its choice to a policy floor would be legislated placement. Affordability is judged
+    against the proposal's OWN request once the true emitted point count is known; hour budgets
     remain scan-boundary-only because ISAR has no invented ncount-to-seconds conversion.
     """
     policy = dict(getattr(objective, "steering", None) or {})
+    _snap_to_lattice(proposal, cfg.log_path, it, event_sink=event_sink)
     limits = _runtime_limits(cfg, objective)
     cap = int(limits["max_points"])
     source = f"policy+{limits['sources'].get('max_points', 'default')}"
     _guard_point_count(
         proposal, cap, source, cfg.log_path, it, event_sink=event_sink)
+    _clip_to_energy_domain(proposal, objective, cfg, it, event_sink=event_sink)
     n_points = int(proposal.n_points or 0)
     limits = _runtime_limits(cfg, objective, n_points)
-    minimum = int(policy.get(
-        "quicklook_ncount" if proposal.kind == "quicklook" else "production_batch_ncount",
-        QUICKLOOK_NCOUNT if proposal.kind == "quicklook" else PRODUCTION_NCOUNT))
     instrument_cap = int(limits["max_neutrons_per_point"])
-    if instrument_cap < minimum:
-        raise InstrumentLimitBelowMinimumBatch(
-            f"instrument_limit_below_minimum_batch: {instrument_cap:g} neutrons/point "
-            f"is below the {minimum:g} {proposal.kind} floor")
     diagnostics = (proposal.meta or {}).get("count_diagnostics")
     preclamp_requested = (diagnostics.get("requested_before_runtime_limit")
                           if isinstance(diagnostics, dict) else None)
@@ -305,33 +368,16 @@ def _finalize_proposal(proposal, objective, cfg, budget_state: dict, *, it: int,
                 "n_points": n_points, "iter": it})
     budget = dict(budget_state or {})
     if budget.get("kind") != "neutrons" or budget.get("amount") is None:
-        normalize_proposal_score(proposal, float(getattr(objective, "tolerance_meV", 0.0)))
         _stamp_proposal_provenance(proposal)
         return
-    if bool(policy.get("dynamic_ncount", False)) and int(proposal.ncount) < minimum:
-        old_ncount = int(proposal.ncount)
-        proposal.ncount = minimum
-        if event_sink is not None:
-            event_sink(cfg.log_path, "exception", {
-                "action": "proposal_ncount_raised_to_floor",
-                "hkl": [proposal.h, proposal.k, proposal.l],
-                "old_ncount": old_ncount, "new_ncount": minimum,
-                "n_points": n_points, "iter": it})
+    # The design is unaffordable as designed, or it is not: the planner ranked cheaper designs too,
+    # and the loop tries the next one rather than silently buying a different measurement.
     remaining = max(float(budget["amount"]) - float(budget.get("spent", 0.0)), 0.0)
-    affordable = int(math.floor(remaining / max(n_points, 1)))
-    if affordable < minimum:
+    cost = float(proposal.ncount) * float(max(n_points, 1))
+    if cost > remaining:
         raise BudgetInsufficientForMinimumBatch(
-            f"budget_insufficient_for_minimum_batch: need {minimum * max(n_points, 1):g} "
-            f"neutrons, have {remaining:g}")
-    if int(proposal.ncount) > affordable:
-        old_ncount = int(proposal.ncount)
-        proposal.ncount = affordable
-        if event_sink is not None:
-            event_sink(cfg.log_path, "exception", {
-                "action": "proposal_ncount_clamped", "hkl": [proposal.h, proposal.k, proposal.l],
-                "old_ncount": old_ncount, "new_ncount": affordable, "n_points": n_points,
-                "remaining_neutrons": remaining, "iter": it})
-    normalize_proposal_score(proposal, float(getattr(objective, "tolerance_meV", 0.0)))
+            f"budget_insufficient_for_minimum_batch: the design costs {cost:g} neutrons "
+            f"({n_points} points x {int(proposal.ncount)}), have {remaining:g}")
     _stamp_proposal_provenance(proposal)
 
 
@@ -451,88 +497,6 @@ def _temperature_binning_fingerprint(workspace: Path) -> str | None:
         return None
     payload = canonical_json({"temperature_rule": rule, "t_round": t_round})
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
-
-
-def _make_classification_providers(card_state: dict, objective, resolution_cb, *, sample: str,
-                                   temperature_bin: float | None = None):
-    """Build MI/rival providers from the resolved belief slice.
-
-    ``temperature_bin`` is the slice :func:`resolve_campaign_slice` settled on; ``None`` means the
-    cold start, where no measured slice exists and the common prior is used.
-    """
-    from isar.drive.acquisition.acquire import _resolve_fwhm
-    from isar.drive.acquisition.classify_eig import assignment_mi, belief_predict
-
-    slices = _belief_slices(card_state, sample=sample)
-    selected = list(slices.get(temperature_bin) or []) if temperature_bin is not None else []
-    if not selected:
-        # A common prior-only slice is safe across samples/T; unrelated measured slices are not.
-        selected = [{"branch_id": h.get("name"), "anchors": [], "n_anchors": 0,
-                     "parameter_prior": h, "period": None}
-                    for h in (getattr(objective, "hypotheses", []) or [])
-                    if h.get("name") not in (None, "null")]
-    if len({row.get("branch_id") for row in selected if row.get("branch_id")}) < 2:
-        return None, None
-    target = (getattr(objective, "target_hypothesis", None)
-              or getattr(objective, "target_branch", None))
-    policy = dict(getattr(objective, "steering", {}) or {})
-    entropy_stop = float(policy.get("assignment_entropy_stop_nats", 0.2))
-    target_branch = getattr(objective, "target_branch", None) or target
-    rival_branch = "acoustic" if target_branch == "optic" else "optic"
-    rival_resolved_hkls = []
-    for assignment in ((card_state.get("branch_tracks") or {}).get("assignments") or []):
-        candidates = assignment.get("candidates") or []
-        candidate_index = assignment.get(f"{rival_branch}_candidate_index")
-        if not isinstance(candidate_index, int) or not 0 <= candidate_index < len(candidates):
-            continue
-        probabilities = (candidates[candidate_index].get("probabilities") or {})
-        acoustic = float(probabilities.get("acoustic", 0.0))
-        optic = float(probabilities.get("optic", 0.0))
-        known_total = acoustic + optic
-        known = ([acoustic / known_total, optic / known_total] if known_total > 0.0 else [])
-        identity_entropy = -sum(value * math.log(value) for value in known if value > 0.0)
-        if (float(probabilities.get(rival_branch, 0.0)) >= 0.85
-                and identity_entropy <= entropy_stop and assignment.get("q")):
-            rival_resolved_hkls.append(tuple(float(value) for value in assignment["q"]))
-
-    def reduced(hkl, period):
-        if not period:
-            return None
-        folded = [((float(v) + 0.5 * period) % period) - 0.5 * period for v in hkl]
-        return math.sqrt(sum(v * v for v in folded))
-
-    def components(g):
-        out = []
-        for row in selected:
-            u = reduced(g.hkl, row.get("period"))
-            mu, sigma = belief_predict(row, g.q if u is None else u)
-            out.append({"branch_id": row.get("branch_id"), "mean": mu, "sigma": sigma,
-                        "probability": float(row.get("n_anchors", 0)) + 1.0})
-        total = sum(item["probability"] for item in out) or 1.0
-        for item in out:
-            item["probability"] /= total
-        return out
-
-    def classify(g):
-        if any(math.dist(g.hkl, hkl) <= 1e-5 for hkl in rival_resolved_hkls):
-            return 0.0  # labeled rival context has no target-precision acquisition value
-        parts = components(g)
-        target_part = next((part for part in parts if part["branch_id"] == target), parts[0])
-        fwhm = _resolve_fwhm(resolution_cb, *g.hkl, max(target_part["mean"], 0.0))
-        tolerance = policy.get("differentiation_tolerance_meV")
-        if tolerance is None:
-            tolerance = max(3.0 * float(objective.tolerance_meV), fwhm / 2.3548)
-        return assignment_mi(parts, meas_sigma=fwhm / 2.3548,
-                             differentiation_tolerance_meV=float(tolerance))
-
-    def rival_band(g):
-        parts = [part for part in components(g) if part["branch_id"] != target]
-        if not parts:
-            return None
-        rival = max(parts, key=lambda part: part["probability"])
-        return rival["mean"], rival["sigma"]
-
-    return classify, rival_band
 
 
 def _tavi_error_code(error: TaviError) -> str | None:
@@ -762,6 +726,7 @@ def _observation_from_row(row: dict, kind: str, ncount: int, calibration: Calibr
         "pool_consistent": row.get("pool_consistent"),
         "consistency_pvalue": row.get("consistency_pvalue"),
         "consistency_deviance": row.get("consistency_deviance"),
+        "sample": row.get("sample"), "T": row.get("T"),
         "consistency_alpha": row.get("consistency_alpha"),
         "spectrum_ref": row.get("spectrum_ref"),
         "predictive_ref": row.get("predictive_ref"),
@@ -789,11 +754,38 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         row, PRODUCTION_NCOUNT)
     bucket, calibration_arg = _calibration_bucket(calibration, exposure_key)
     deliverable = row.get("target_delivery_eligible") is not False
+    # A master whose tracked target selection has been CLEARED (``_clear_tracked_selection`` nulls
+    # ``omega0`` for an ambiguous or missing target) owns no target: its fit-local model interval
+    # still describes the fit's primary mode, but nothing says that mode is the target. Reading it
+    # anyway restored a certified precision the tracker had just withdrawn, and the planner then
+    # bound that width to the nearest candidate and could claim the prize on it (PR #37 review,
+    # second round, P1). The row stays a measurement (diagnostic half-width below); it cannot stand
+    # as the target's delivered number until a selection exists.
+    has_selection = row.get("omega0") is not None
     model_lo, model_med, model_hi = (row.get("model_interval_lo"),
                                          row.get("model_interval_med"),
                                          row.get("model_interval_hi"))
-    model_robust = bool(deliverable and row.get("model_robust") is True and model_lo is not None
-                        and model_hi is not None)
+    model_robust = bool(deliverable and has_selection and row.get("model_robust") is True
+                        and model_lo is not None and model_hi is not None)
+    # The model-averaged interval is fit-local: it describes the fit's PRIMARY mode, and the
+    # tracker may have selected another mode as the target (h = 3.0 on the reference path: the
+    # selected acoustic at 5.99 meV, the model interval at 7.95-8.00 around the optic). An interval
+    # that does not describe the row's ``omega0`` cannot certify it, and reading it anyway
+    # certified the target on the rival's precision (PR #37 review, P1). The selected mode then
+    # certifies on its OWN interval chain -- bootstrap, profile, trusted HESSE -- which
+    # ``_select_mode`` copied onto the row from the candidate table.
+    selected_omega0 = row.get("omega0")
+    try:
+        selected_omega0 = float(selected_omega0)
+    except (TypeError, ValueError):
+        selected_omega0 = math.nan
+    # Only a row whose model IS settled (the session's ``model_robust``) may fall back to the
+    # selected mode's own chain: a non-robust model has no settled answer for any mode to certify,
+    # and that rule stands (test_a_non_model_robust_certification_cannot_produce_met).
+    other_mode = bool(model_robust and math.isfinite(selected_omega0) and model_med is not None
+                      and abs(float(model_med) - selected_omega0) > _PRIMARY_MODE_TOLERANCE_MEV)
+    if other_mode:
+        model_robust = False
     hw = None
     if model_robust:
         try:
@@ -803,20 +795,30 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
     diagnostic_hw, diagnostic_method = _diagnostic_halfwidth(row, calibration, calibration_arg)
     if model_robust:
         diagnostic_hw, diagnostic_method = hw, "model_averaged_predictive"
+    own_certifiable = False
+    if other_mode and deliverable and not model_robust and math.isfinite(selected_omega0):
+        own_lo, own_hi, own_ok = _pick_interval(row)
+        if _is_certifiable(row, own_ok):
+            try:
+                hw = calibration.calibrated_halfwidth(own_lo, own_hi, bucket=calibration_arg)
+                own_certifiable = hw is not None and math.isfinite(float(hw))
+            except Exception:  # noqa: BLE001 — an invalid interval cannot certify
+                hw = None
+    certifiable = model_robust or own_certifiable
     disp = row.get("disposition")
     return {
         "hkl": _row_hkl(row),
         "omega0": ((model_med if model_robust and model_med is not None else row.get("omega0"))
                    if deliverable else None),
-        "halfwidth": hw,
-        "reliable": model_robust, "certifiable": model_robust,
+        "halfwidth": hw if certifiable else None,
+        "reliable": certifiable, "certifiable": certifiable,
         "model_robust": model_robust, "model_entropy": row.get("model_entropy"),
         "model_interval": ([model_lo, model_med, model_hi] if model_robust else None),
         # ``usable`` is what model_points and the signal-seen check read, so a withheld delivery has
         # to clear it too or the ω(q) model would still be fitted through the auxiliary energy.
         "usable": (deliverable and disp in _USABLE and row.get("omega0") is not None),
         "target_delivery_eligible": deliverable,
-        "disposition": disp, "n_members": row.get("n_members"),
+        "disposition": disp, "verdict": row.get("verdict"), "n_members": row.get("n_members"),
         "effective_exposure": effective_exposure, "exposure_source": exposure_source,
         "exposure_bucket": bucket,
         "diagnostic_halfwidth": diagnostic_hw, "interval_method": diagnostic_method,
@@ -826,6 +828,9 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         "target_branch": row.get("target_branch"),
         "candidate_id": row.get("candidate_id"), "candidate_state": row.get("candidate_state"),
         "branch_candidates": row.get("branch_candidates"),
+        # The delivered fit's linear amplitudes, in the exposure basis ``effective_exposure`` names.
+        # This is the intensity map the EIG planner prices designs against (_planner_scale).
+        "amplitudes": row.get("amplitudes"),
         "selected_candidate_index": row.get("selected_candidate_index"),
         "track_state": row.get("track_state"), "track_revision": row.get("track_revision"),
         "target_probability": row.get("target_probability"),
@@ -844,6 +849,9 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         "fit_selection_semantics": row.get("fit_selection_semantics"),
         "shadow_model_selection": row.get("shadow_model_selection"),
         "master_session_key": row.get("scan_id"),
+        # The condition this master belongs to: the planner's world is one (sample, T) slice, and a
+        # reused workspace may hold the same Q under another (PR #37 review, ``_slice_rows``).
+        "sample": row.get("sample"), "T": row.get("T"),
         "detector_id": row.get("detector"),
         "acquisition_id": row.get("acquisition_id"),
         "content_hash": row.get("content_hash"),
@@ -1015,189 +1023,6 @@ def _grid_state(objective, observations: list[dict], workspace, calibration: Cal
 EIG_SIMULATION_GRADE_DRAW_BASES = frozenset({"parametric_bootstrap", "nested_sampling"})
 
 
-def _predictive_draw_bases(predictive) -> list[str]:
-    """The distinct draw bases a published predictive artifact was built from."""
-    if not isinstance(predictive, Mapping):
-        return []
-    provenance = predictive.get("uncertainty_provenance")
-    declared = provenance.get("draw_basis") if isinstance(provenance, Mapping) else None
-    if isinstance(declared, str):
-        declared = [declared]
-    if not isinstance(declared, (list, tuple)):
-        # Pre-provenance payloads: fall back to the per-model declaration the artifact must carry.
-        models = predictive.get("models")
-        declared = [model.get("draw_basis") for model in models
-                    if isinstance(model, Mapping)] if isinstance(models, list) else []
-    return sorted({str(value) for value in declared if value})
-
-
-def _predictive_design_measure_ready(master) -> bool:
-    """Whether this master's predictive artifact can serve as the EIG design measure.
-
-    "Has a predictive artifact" and "is ready to be designed against" are different questions, and
-    conflating them is what previously suppressed the promotion EIG needs: a cheap Laplace/HESSE
-    ensemble is a perfectly valid artifact — the workspace facade publishes it, the loop scores
-    expected counts from it — while being exactly the basis the design measure refuses. Readiness
-    therefore mirrors what the design measure itself requires of the particle basis:
-
-    - a validated artifact is present (the loader already refused an incomplete one — ADR-014's
-      ``predictive_complete_for_eig`` — and it is re-checked here defensively);
-    - and **at least one** retained model carries a simulation-grade basis
-      (:data:`EIG_SIMULATION_GRADE_DRAW_BASES`), so there is a resampled particle set to design
-      against at all.
-
-    Homogeneity is deliberately NOT required. It was, and it made escalation largely futile: only
-    ``optimizer_converged`` candidates are bootstrapped, so a master whose retained Akaike set mixes
-    converged and unconverged structures publishes a mixed basis, and a single ``laplace_hesse``
-    model disqualified the whole master — permanently, because the promotion charge is durable.
-    Measured on the O41 Test 10 masters, that rejected 19 of 21 *after* a full-tier refit. The
-    design measure does not need homogeneity: it already marginalises over the bootstrap-grade
-    models alone and renormalises their weights, recording each exclusion as
-    ``nonbootstrap_source_basis`` (:mod:`isar.eig.design_measure`). What still has to hold is that
-    the surviving bootstrap mass is enough to carry the measure, and that is adjudicated on the
-    real masses one layer down (``predictive_insufficient_bootstrap_mass`` in
-    :mod:`isar.eig.qoi`) rather than guessed from the basis list here.
-    """
-    predictive = (master or {}).get("predictive")
-    if not isinstance(predictive, Mapping):
-        return False
-    completeness = predictive.get("completeness")
-    if isinstance(completeness, Mapping) \
-            and completeness.get("predictive_complete_for_eig") is not True:
-        return False
-    bases = _predictive_draw_bases(predictive)
-    return any(basis in EIG_SIMULATION_GRADE_DRAW_BASES for basis in bases)
-
-
-def _master_revision_key(master) -> str:
-    """The identity of the exact published master revision a promotion is charged against."""
-    return ":".join(str(value or "unknown") for value in (
-        (master or {}).get("content_hash") or (master or {}).get("production_batch_fingerprint"),
-        (master or {}).get("master_revision") or (master or {}).get("track_revision")))
-
-
-def _promoted_master_revisions(log_path) -> set[str]:
-    """Master revisions a full-tier predictive promotion has already been spent on.
-
-    Read from the durable log, so a resume never re-charges a promotion the previous invocation
-    already paid for, and a *failed* attempt stays visible without trapping the campaign in an
-    analysis-only retry loop.
-    """
-    return {
-        str((record.get("payload") or {}).get("revision_key"))
-        for record in read_log(log_path)
-        if record.get("kind") == "escalate_fit"
-        and (record.get("payload") or {}).get("reason") == "master_predictive_basis_missing"
-        and (record.get("payload") or {}).get("phase") == "outcome"
-    }
-
-
-def _predictive_promotion_target(proposal, grid, log_path):
-    """The one master a full-tier predictive promotion is owed, or ``None``.
-
-    Scoped to the source master of the *selected* proposal rather than swept across the grid: a
-    promotion costs a charged full-tier reanalysis, and the only master whose design measure the
-    campaign is about to consume is the one the planned canonical production/confirmation request
-    scores against. A global sweep spent that analysis on q points nothing had asked about.
-
-    Convergence is deliberately not a disqualifier. Whether a q has stopped needing counts and
-    whether its predictive basis can carry an EIG design measure are different questions; a
-    converged master still supplies the basis for the requests that follow it.
-    """
-    if proposal is None or str(proposal.kind) not in ("production", "confirm"):
-        return None
-    intent = getattr(proposal, "intent", None)
-    sink = getattr(intent, "evidence_sink", CANONICAL_MASTER) if intent is not None \
-        else CANONICAL_MASTER
-    if sink != CANONICAL_MASTER:
-        return None
-    hkl = (float(proposal.h), float(proposal.k), float(proposal.l))
-    for item in grid:
-        if not _hkl_close(tuple(item.hkl), hkl):
-            continue
-        master = item.master or {}
-        if not master.get("usable") or _predictive_design_measure_ready(master):
-            return None
-        revision_key = _master_revision_key(master)
-        if revision_key in _promoted_master_revisions(log_path):
-            return None
-        return item, revision_key
-    return None
-
-
-def _promote_master_predictive_basis(cfg, objective, item, revision_key: str, *, it: int):
-    """Run one charged full-tier reanalysis so ``item``'s master publishes an EIG-grade basis.
-
-    Returns ``(outcome, error)`` where outcome is ``"completed"``, ``"failed"``, or
-    ``"analysis_limit"``. Both terminal outcomes are recorded as paired ``escalate_fit``
-    promote/outcome events, which is also what stops the same master revision being promoted twice
-    (see :func:`_promoted_master_revisions`).
-    """
-    full_tier = _full_tier(cfg)
-    # Targeted refit: only the promoted master is owed a full-tier basis, and the ledger id in
-    # ``master_session_key`` names it exactly (results.csv scan_id == the driver's master id). A
-    # global ``force`` re-fit every scan and every master — routing the batch onto the
-    # parallel-across-groups path whose per-child bootstrap is deliberately serial — so one owed
-    # basis cost a whole-campaign reanalysis (~20 serial 200-draw bootstraps' wall time). The
-    # single-target refit takes the serial master path, whose bootstrap fans out over the full
-    # worker budget. Fallback to the old whole-batch force only when the id is unavailable.
-    target_master = str((item.master or {}).get("master_session_key") or "") or None
-    if target_master is None:
-        _LOG.warning("predictive promotion for %s: master_session_key unavailable; "
-                     "falling back to whole-batch force", revision_key)
-    elif not runner_accepts(cfg.runner, "force_masters"):
-        # A config-supplied runner predating the targeted seam would raise TypeError here, and the
-        # promotion charge is durable — a spent revision is never retried — so an unsupported
-        # keyword would permanently deny this master its basis. Degrade to the old whole-batch
-        # force instead: slower, but it still publishes the basis the campaign is owed.
-        _LOG.warning("predictive promotion for %s: runner %s does not accept targeted refits; "
-                     "falling back to whole-batch force",
-                     revision_key, type(cfg.runner).__name__)
-        target_master = None
-    log_event(cfg.log_path, "escalate_fit", {
-        "phase": "promote", "iter": it, "hkl": list(item.hkl),
-        "from_tier": (item.master or {}).get("fit_kind"),
-        "to_tier": full_tier, "reason": "master_predictive_basis_missing",
-        "revision_key": revision_key, "target_master": target_master})
-    try:
-        with activity(cfg.log_path, "full_fit", q=list(item.hkl),
-                      fit_tier=full_tier, iteration=it):
-            with analysis_operation(
-                    cfg.log_path, f"predictive-escalation:{revision_key}",
-                    "master_predictive_escalation",
-                    limit_seconds=objective.analysis_limit_seconds,
-                    iteration=it, q=list(item.hkl)):
-                allowance = _analysis_allowance_seconds(cfg, objective)
-                refresh_analysis(
-                    cfg.runner, cfg.workspace, [cfg.data_dir], errors_tier=full_tier,
-                    scan_errors_tier="fast", master_errors_tier=full_tier,
-                    force=target_master is None, render=False,
-                    force_masters=([target_master] if target_master else None),
-                    analysis_allowance_seconds=allowance,
-                    finish_initial_wave=(False if allowance is not None else None),
-                    enforce_completion=True,
-                    analysis_limit_seconds=objective.analysis_limit_seconds)
-    except AnalysisLimitExceeded as error:
-        # The analysis clock is a campaign terminal, not a promotion failure: it is NOT recorded as
-        # an outcome, so the revision stays promotable after a resume that grants more analysis time.
-        _LOG.warning("predictive promotion for %s stopped on the analysis limit: %s",
-                     revision_key, error)
-        return "analysis_limit", error
-    except Exception as error:  # noqa: BLE001 — visible failure, then measure again
-        log_event(cfg.log_path, "escalate_fit", {
-            "phase": "outcome", "iter": it, "hkl": list(item.hkl),
-            "to_tier": full_tier, "reason": "master_predictive_basis_missing",
-            "revision_key": revision_key, "outcome": "failed", "error": str(error)})
-        _LOG.warning("predictive promotion for %s failed: %s: %s",
-                     revision_key, type(error).__name__, error)
-        return "failed", error
-    log_event(cfg.log_path, "escalate_fit", {
-        "phase": "outcome", "iter": it, "hkl": list(item.hkl),
-        "to_tier": full_tier, "reason": "master_predictive_basis_missing",
-        "revision_key": revision_key, "outcome": "completed"})
-    return "completed", None
-
-
 def _record_eligible_crossings(grid, observations: list[dict], log_path=None) -> int:
     """Record each initial/re-crossing chronologically; unchanged pools never duplicate."""
     def eligible(update, tolerance) -> bool:
@@ -1266,6 +1091,90 @@ def _q_needs_full_errors(workspace, hkl) -> bool:
     return saw_untrusted
 
 
+def _unfolded_master(rows, hkl) -> str | None:
+    """Ledger id of the usable pooled master at ``hkl`` that is not yet a ``fold`` fit, else ``None``.
+
+    Only a ``fold`` master (full tier: bootstrap samples pooled across the surviving structures and
+    found unimodal) may enter the running dispersion prior — ``session_prior.add_point`` with
+    ``require_fold``, Hard Rule 5. A fast-tier fit has no bootstrap samples, so its modality is
+    ``unpooled`` whether or not its HESSE interval is trusted: it is not a fork, but nothing has
+    examined whether it would be one, which is why the gate is right to hold it out and why this
+    predicate does not stop at "trusted".
+    """
+    for r in rows:
+        if not _hkl_close(_row_hkl(r), hkl):
+            continue
+        if not r.get("pooled"):
+            continue
+        if r.get("disposition") not in _USABLE or r.get("omega0") is None:
+            continue
+        # Only ``unpooled`` — never pooled across structures, the fast tier's signature — can
+        # become a fold by refitting. A ``fork`` is already the full tier's answer (two answers),
+        # and re-fitting it would only be asked again on every iteration.
+        if r.get("modality") != "unpooled":
+            return None
+        return r.get("scan_id")
+    return None
+
+
+def _pending_anchor_escalations(workspace, plan_decision, *, sample=None, temperature_bin=None,
+                                t_round=None, attempted=frozenset()) -> list[str]:
+    """Master ids of prize points the planner is finished with (``within_bar``) whose fit is not yet
+    a ``fold`` master, and so cannot enter the running dispersion prior as a belief anchor.
+
+    The session's own identity tracker is happy to call a point ``confirmed`` off a fast HESSE fit
+    and move on; the evidence pipeline is right to then refuse that same fit as an anchor. Left
+    alone the two never reconcile: nothing else asks for the full-tier fit that would let a point
+    the campaign is done navigating past also become durable evidence. Measured live at the zone
+    boundary of the acoustic reference program (HANDOFF-eig.md §7.29/§7.30, 2026-09-03): every point
+    from u=0.55 to u=0.95 reached ``track_state=confirmed`` at target_probability up to 0.9998 on a
+    fast fit and never entered the dispersion prior, so the belief at the path's end had no anchor
+    closer than half a zone away and could not separate two peaks 2 meV apart at any exposure. A
+    first version escalated only UNtrusted HESSE fits (``_q_needs_full_errors``'s test) and the chain
+    broke again at the first trusted one: trusted or not, a fast fit is never a fold.
+    """
+    hkls = [tuple(float(c) for c in point.hkl) for point in plan_decision.per_point
+            if not point.exempt and point.within_bar]
+    if not hkls:
+        return []
+    try:
+        rows = read_results_csv(workspace)
+    except FileNotFoundError:
+        return []
+    rows = _slice_rows(rows, sample, temperature_bin, t_round)
+    ids = []
+    for hkl in hkls:
+        scan_id = _unfolded_master(rows, hkl)
+        # A master escalated once at THIS data revision and still not a fold is not asked again:
+        # the refit had its say, and re-buying the same analysis every iteration is the churn the
+        # idempotency claim forbids. New members change the revision and reopen it — keying on the
+        # id alone barred a q for the rest of the run after better data arrived (PR #37 review,
+        # second round, P1).
+        if scan_id and _anchor_escalation_key(rows, scan_id) not in attempted:
+            ids.append(scan_id)
+    return ids
+
+
+def _anchor_escalation_key(rows, scan_id: str) -> str:
+    """``<master id>@<master revision>``: one attempt per master AND data revision."""
+    revision = next((r.get("master_revision") for r in rows
+                     if r.get("scan_id") == scan_id and r.get("master_revision")), None)
+    return f"{scan_id}@{revision}"
+
+
+def _attempted_anchor_escalations(log_path) -> set[str]:
+    """The escalation attempts already made, rebuilt from the durable log so a resumed run and an
+    uninterrupted one hold the same eligibility (the in-memory set alone forgot them on restart)."""
+    keys: set[str] = set()
+    for record in read_log(log_path):
+        if record.get("kind") != "escalate_fit":
+            continue
+        payload = record.get("payload") or {}
+        if payload.get("phase") == "anchor":
+            keys.update(str(k) for k in (payload.get("master_keys") or ()))
+    return keys
+
+
 def _full_tier(cfg) -> str:
     """The tier standing in for "full" (bootstrap+profile) errors: ``bayes`` (superset of ``full`` —
     adds MINOS + posterior as CSV diagnostics, bootstrap stays the authoritative interval) when the
@@ -1312,35 +1221,6 @@ def _errors_arg_for(proposal, workspace, cfg=None) -> list[str]:
     return ["--errors", _errors_tier_for(proposal, workspace, cfg)]
 
 
-def _unresolved_current_promotions(workspace) -> list[dict]:
-    """Reconcile promotion manifests against the frozen results contract at a loop boundary."""
-    from isar.promotion_contract import PromotionStore
-
-    store = PromotionStore(workspace)
-    if not store.root.exists():
-        return []
-    revisions = {}
-    try:
-        rows = read_results_csv(workspace)
-    except (OSError, UnicodeError, ValueError) as error:
-        _LOG.warning("could not read current master revisions for promotion gate: %s: %s",
-                     type(error).__name__, error)
-        return [record for record in store.records()
-                if record.get("status") in ("pending", "completed")]
-    for row in rows:
-        if not row.get("pooled"):
-            continue
-        master_id = row.get("scan_id")
-        revision = row.get("master_revision")
-        if master_id and revision:
-            revisions[str(master_id)] = str(revision)
-    try:
-        return store.reconcile(revisions)
-    except RuntimeError as error:
-        _LOG.warning("promotion reconciliation failed closed: %s", error)
-        return [{"promotion_id": "unreadable-promotion-record", "status": "pending"}]
-
-
 def _recertified_observations(workspace, calibration: Calibration, scan_kind: dict) -> list[dict]:
     """Rebuild the per-scan observations from the (now bootstrap-certified) results.csv so the campaign
     summary reports certified intervals. Uses the recorded ``(kind, ncount)`` per (scan, detector);
@@ -1374,27 +1254,6 @@ def _proposal_from_submission(payload: dict) -> ScanProposal:
         "rival_branch_role": payload.get("rival_branch_role"),
         "authoritative_evidence_revision": payload.get("authoritative_evidence_revision"),
         "proposal_fingerprint": payload.get("proposal_fingerprint"),
-        "scan_design_inventory_ref": payload.get("scan_design_inventory_ref"),
-        "scan_design_candidate_id": payload.get("scan_design_candidate_id"),
-        "scan_design_context_fingerprint": payload.get("scan_design_context_fingerprint"),
-        "scan_design_selection_basis": payload.get("scan_design_selection_basis"),
-        "scan_design_shadow_status": payload.get("scan_design_shadow_status"),
-        "scan_design_shadow_fingerprint": payload.get("scan_design_shadow_fingerprint"),
-        "scan_design_shadow_variant_fingerprints": payload.get(
-            "scan_design_shadow_variant_fingerprints"),
-        "scan_design_realized_comparison_ref": payload.get(
-            "scan_design_realized_comparison_ref"),
-        "scan_design_realized_comparison_fingerprint": payload.get(
-            "scan_design_realized_comparison_fingerprint"),
-        "scan_design_realized_variant_fingerprints": payload.get(
-            "scan_design_realized_variant_fingerprints"),
-        "scan_design_realized_selected_request_fingerprint": payload.get(
-            "scan_design_realized_selected_request_fingerprint"),
-        "scan_design_realized_selected_grid_fingerprint": payload.get(
-            "scan_design_realized_selected_grid_fingerprint"),
-        "scan_design_eig_applicability": payload.get("scan_design_eig_applicability"),
-        "scan_design_eig_invalidation_reason": payload.get(
-            "scan_design_eig_invalidation_reason"),
         # The action identity a resumed scan must not lose. Without the sink a recovered auxiliary
         # probe becomes canonical by default and pools into the certified master; the scientific and
         # feasibility fingerprints are its audit identity. All three are already persisted on the
@@ -1403,8 +1262,6 @@ def _proposal_from_submission(payload: dict) -> ScanProposal:
         "scientific_action_fingerprint": payload.get("scientific_action_fingerprint"),
         "feasibility_manifest_fingerprint": payload.get("feasibility_manifest_fingerprint"),
     }
-    for field in _AUTHORITY_SUBMISSION_FIELDS:
-        meta[field] = copy.deepcopy(payload.get(field))
     if payload.get("insertion_purpose") is not None:
         meta["insertion_purpose"] = payload.get("insertion_purpose")
     return ScanProposal(
@@ -1768,87 +1625,6 @@ def _new_rows(workspace, consumed: set) -> list[dict]:
         consumed.add(key)
         out.append(r)
     return out
-
-
-def _rows_missed(rows: list[dict]) -> bool:
-    """True when a scan produced no usable detector (peak outside the window / no signal). A
-    ``branch_continuation`` (Phase A: the near-Γ acoustic, confidently identified but not resolvable
-    by position) is NOT a miss — widening the window would only chase the higher optic branch, never
-    resolve a peak sitting at the elastic origin — so it does not trigger the recenter/widen.
-
-    ``unmodeled`` is likewise NOT a miss: the descriptor localised significant signal inside the
-    window that the current structure set cannot fit — a modelling gap, not a targeting one. Rows
-    with disposition ``unmodeled`` come from catastrophic-GoF scans whose peaks sit well inside the
-    proposed window (e.g. an unaccounted second branch); re-centering/widening cannot help, and the
-    planner's next action (a production revisit or a richer structure) is the actual recovery.
-    ``isar/drive/supervisor/stopping.py`` already treats ``unmodeled`` alongside
-    ``branch_continuation`` as positive evidence when folding a grid group."""
-    if not rows:
-        return True
-    return not any(r.get("disposition") in _USABLE
-                   or r.get("disposition") in ("branch_continuation", "unmodeled")
-                   for r in rows)
-
-
-def _auxiliary_clean_null(proposal, rows: list[dict]) -> bool:
-    """True when an auxiliary identity probe returned a *trustworthy clean null* — a result, not a miss.
-
-    The probe searched where a rival was predicted and cleanly found no mode; recentring/widening would
-    chase a feature the scan was fired to rule out, turning a focused discriminator into a survey for
-    something that may genuinely be absent (Blocker #2). Guarded on both sides: only auxiliary probes
-    qualify (a canonical delivery is fully described by its disposition), and a *broken* analysis is not
-    a clean null — with no ``candidate_not_detected`` row, or any ``analysis_unusable`` one, recovery
-    still runs (fail-open, so a failed scan never masquerades as a settled question)."""
-    if (proposal.meta or {}).get("evidence_sink") != AUXILIARY_TRACK_NODE:
-        return False
-    if not rows:
-        return False
-    outcomes = [realized_outcome_for(r.get("disposition"),
-                                     has_candidate=bool(r.get("branch_candidates")))
-                for r in rows]
-    return CANDIDATE_NOT_DETECTED in outcomes and ANALYSIS_UNUSABLE not in outcomes
-
-
-def _pooled_target_delivered(observations: list[dict], proposal, target_branch: str) -> bool:
-    """Whether analysis found the requested mode even if an individual row favored the rival.
-
-    The pooled master is the identity authority.  A two-mode fit with a usable selected optic must
-    never be called a missed window merely because the individual fit's dominant scalar feature was
-    the much stronger acoustic peak.
-    """
-    for update in reversed(observations):
-        if update.get("kind") != "pooled_master_update":
-            continue
-        if update.get("acquisition_id") != proposal.acquisition_id:
-            continue
-        if not _hkl_close(update.get("hkl"), (proposal.h, proposal.k, proposal.l)):
-            continue
-        return bool(update.get("usable") and update.get("branch_id") == target_branch
-                    and update.get("selected_candidate_index") is not None
-                    and update.get("omega0") is not None)
-    return False
-
-
-def _pooled_recenter_inputs(workspace, hkl) -> tuple[list, list] | None:
-    """Combined counts/energy for the latest master at ``hkl``, with a validated local reference."""
-    try:
-        rows = [row for row in read_results_csv(workspace)
-                if row.get("pooled") and _hkl_close(_row_hkl(row), hkl)
-                and row.get("spectrum_ref")]
-        if not rows:
-            return None
-        row = max(rows, key=lambda item: int(item.get("n_members") or 0))
-        candidate = (Path(workspace) / str(row["spectrum_ref"])).resolve()
-        root = (Path(workspace) / "data" / "pooled").resolve()
-        candidate.relative_to(root)
-        payload = json.loads(candidate.read_text(encoding="utf-8"))
-        if payload.get("schema") != "isar.pooled_spectrum/1":
-            raise ValueError("unsupported pooled spectrum schema")
-        return list(payload.get("counts") or []), list(payload.get("energy") or [])
-    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError) as error:
-        log_event(Path(workspace) / "report" / "session_log.jsonl", "exception", {
-            "action": "pooled_recenter_unavailable", "hkl": list(hkl), "error": str(error)})
-        return None
 
 
 @dataclass(frozen=True)
@@ -2256,6 +2032,15 @@ _REJECTION_RULES: dict[str, tuple[RejectionClass, str]] = {
     "insufficient_target_support": (RejectionClass.STRUCTURAL, "request"),
     "instrument_point_limit_exceeded": (RejectionClass.STRUCTURAL, "request"),
     "budget_insufficient_for_minimum_batch": (RejectionClass.BUDGET, "request"),
+    # The scan ran and analysis produced nothing at all (a fit crash, an analysis failure).
+    "analysis_delivered_no_row": (RejectionClass.STRUCTURAL, "request"),
+    # The scan ran, was analysed, and held no peak: a clean null. The absence is real evidence and
+    # the planner prices it (``PlannerInput.nulls``), but re-buying the IDENTICAL window at the
+    # identical exposure can only reproduce it — and the planner, whose beliefs the null barely
+    # moves, will otherwise re-rank that same design first every iteration for the rest of the
+    # campaign. Charged to the request only, so a wider window, a longer count or another q at the
+    # same point all stay open; that is what "decide again" means here.
+    "clean_null_delivered_no_peak": (RejectionClass.STRUCTURAL, "request"),
 }
 
 
@@ -2266,7 +2051,37 @@ def classify_rejection(verdict: str) -> ActionRejection:
     return ActionRejection(verdict=str(verdict), rejection_class=rejection_class, scope=scope)
 
 
-def suppressed_actions(log_path) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
+#: Two windows differing by less than a micro-eV are the same physical measurement — the wire
+#: renders ``scan_command1`` at six significant digits, and no instrument resolves 1e-3 meV. The
+#: planner's designs drift by far less than that as a belief settles, so an un-rounded key would let
+#: a numerically-fresh copy of an already-refused design through on every iteration.
+_DESIGN_KEY_DECIMALS = 3
+
+
+def design_key(hkl, e_lo, e_hi, e_step, ncount) -> tuple:
+    """The exact design a refusal or a non-result is charged to (addendum G.3).
+
+    ``ncount = 0`` is the WINDOW key: the same geometry at any exposure. Validation judges whether
+    the instrument can reach a grid, and the dose plays no part in that answer, so a geometry-shaped
+    refusal condemns the window itself. Charging only the exact design let the planner — which now
+    ranks every window against every exposure rung — re-offer one refused window once per rung, and
+    a campaign spent 174 proposals discovering the same refusal.
+    """
+    return (tuple(round(float(value), 6) for value in hkl),
+            round(float(e_lo), _DESIGN_KEY_DECIMALS), round(float(e_hi), _DESIGN_KEY_DECIMALS),
+            round(float(e_step), _DESIGN_KEY_DECIMALS), int(ncount))
+
+
+#: Refusals that judge the GEOMETRY of a request. The instrument answered about the window, not the
+#: dose, so re-asking at another exposure buys nothing but another refusal. A budget refusal is the
+#: opposite — it is entirely about the dose — and is deliberately absent.
+_GEOMETRY_SHAPED_VERDICTS = frozenset({
+    "validation_rejected", "insufficient_target_support", "infeasible_points_at_submit",
+    "geometry_unreachable", "all_points_infeasible", "instrument_point_limit_exceeded"})
+
+
+def suppressed_actions(log_path) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict],
+                                          set[tuple]]:
     """Rebuild the durable suppression sets from the session log.
 
     Suppression is derived state, never a second durable store: a resume that could not rebuild it
@@ -2275,14 +2090,15 @@ def suppressed_actions(log_path) -> tuple[dict[str, dict], dict[str, dict], dict
 
     ``by_request`` is keyed by ``request_fingerprint`` and holds requests that were refused *as that
     exact request* (``validation_rejected`` / ``insufficient_target_support``). It deliberately does
-    NOT feed ``by_action``: the widen / re-center / step-shrink ladder answering the same scientific
-    question with a *different* window keys off the scientific action fingerprint and must stay open —
-    only the identical request is blocked from re-emitting. Transient entries are recorded for
-    forensics and narrow nothing.
+    NOT feed ``by_action``: a different window at the same q answers the same scientific question and
+    must stay open, so only the identical request is blocked from re-emitting. ``by_design`` is the
+    same idea at the design the planner chose (addendum G.3). Transient entries are recorded for
+    forensics and narrow nothing -- they carry no ``design_keys``, so a resume cannot revive them.
     """
     by_action: dict[str, dict] = {}
     by_hkl: dict[str, dict] = {}
     by_request: dict[str, dict] = {}
+    by_design: set[tuple] = set()
     for event in read_log(log_path):
         if event.get("kind") != "action_suppressed":
             continue
@@ -2292,6 +2108,9 @@ def suppressed_actions(log_path) -> tuple[dict[str, dict], dict[str, dict], dict
             "class": str(payload.get("rejection_class") or RejectionClass.STRUCTURAL.value),
             "reason": str(payload.get("reason") or "previously refused"),
         }
+        for entry_key in (payload.get("design_keys") or []):
+            hkl, e_lo, e_hi, e_step, ncount = entry_key
+            by_design.add(design_key(hkl, e_lo, e_hi, e_step, ncount))
         if scope == "geometry" and payload.get("hkl"):
             by_hkl[hkl_key(payload["hkl"])] = entry
         elif scope == "action" and payload.get("scientific_action_fingerprint"):
@@ -2303,7 +2122,7 @@ def suppressed_actions(log_path) -> tuple[dict[str, dict], dict[str, dict], dict
             for value in (payload.get("superseded_request_fingerprints") or []):
                 if value:
                     by_request[str(value)] = entry
-    return by_action, by_hkl, by_request
+    return by_action, by_hkl, by_request, by_design
 
 
 # How many actions one iteration may try before giving the loop back its turn. A refused request
@@ -2313,7 +2132,8 @@ MAX_ACTION_ATTEMPTS_PER_ITERATION = 3
 
 def _record_action_rejection(cfg, plan, proposal, verdict: str,
                              action_suppressions: dict, unreachable_hkl: dict,
-                             request_suppressions: dict, *, it: int):
+                             request_suppressions: dict, *, it: int,
+                             suppressed_designs: set | None = None):
     """Record one refusal at its correct scope and return the next action to try, if any.
 
     Always logs, because a refusal is evidence about the action space even when it suppresses
@@ -2322,9 +2142,9 @@ def _record_action_rejection(cfg, plan, proposal, verdict: str,
 
     * ``geometry`` charges the **hkl** (``unreachable_hkl``);
     * ``action`` charges the **scientific action fingerprint** (``action_suppressions``);
-    * ``request`` charges only the **request fingerprint** (``request_suppressions``) so the exact
-      request is not re-emitted, while the scientific action — and with it the widen / re-center /
-      step-shrink ladder that answers the same question with a different window — stays untouched;
+    * ``request`` charges only the **request fingerprint** (``request_suppressions``) and the exact
+      design (``suppressed_designs``) so neither is re-emitted, while the scientific action stays
+      untouched and the planner is free to answer it with a different window or exposure;
     * a transient refusal is left entirely alone and does not advance to another action.
 
     The logged ``action_suppressed`` event carries the scope and the request fingerprint, so a resume
@@ -2340,7 +2160,26 @@ def _record_action_rejection(cfg, plan, proposal, verdict: str,
                   if value and str(value) != str(request_fingerprint)]
     hkl = [proposal.h, proposal.k, proposal.l]
     reason = f"{verdict} at hkl={hkl}"
+    # The exact designs this refusal or non-result condemns (addendum G.3): the request as it
+    # stands, AND the design the planner actually chose, which an in-flight feasibility trim will
+    # have moved. Charging only the trimmed one leaves the planner's own design unsuppressed, and it
+    # is re-ranked first, re-trimmed and re-refused on every remaining iteration. Recorded on the
+    # event so a resume rebuilds the set from the durable log rather than a second store.
+    # A TRANSIENT refusal -- the beam went down, the job was cancelled -- says nothing about the
+    # design and must narrow nothing, in memory or on resume. Only a durable scope condemns it.
+    keys = set()
+    if rejection.scope != "none":
+        keys = {design_key(hkl, proposal.e_lo, proposal.e_hi, proposal.e_step, proposal.ncount)}
+        designed = (proposal.meta or {}).get("design_key")
+        if designed:
+            keys.add(design_key(*designed))
+        if str(verdict) in _GEOMETRY_SHAPED_VERDICTS:
+            keys.update(key[:-1] + (0,) for key in set(keys))
+        if suppressed_designs is not None:
+            suppressed_designs.update(keys)
     log_event(cfg.log_path, "action_suppressed", {
+        "design_keys": [[list(key[0]), key[1], key[2], key[3], key[4]]
+                        for key in sorted(keys)],
         "scope": rejection.scope,
         "verdict": rejection.verdict,
         "rejection_class": rejection.rejection_class.value,
@@ -2363,147 +2202,6 @@ def _record_action_rejection(cfg, plan, proposal, verdict: str,
     else:
         return None
     return plan.next_proposal() if plan is not None else None
-
-
-def _next_finalized_proposal(plan, objective, cfg, grid, budget_state: dict,
-                             request_suppressions: dict, *, it: int):
-    """Select the best not-yet-tried action, finalize it, and hand back a ready proposal (O29).
-
-    Selection and finalization are one bounded step so that a first action which cannot fund its
-    minimum batch — or which the instrument cannot deliver — no longer terminates a campaign while a
-    cheaper eligible action is still affordable. A budget / instrument refusal raised during
-    finalization is caught here, logged, and the next candidate is tried instead; only when *no*
-    remaining candidate can be finalized does a terminal fire — ``infeasible`` if any instrument limit
-    was hit, otherwise ``incomplete``.
-
-    A finalized proposal whose ``request_fingerprint`` is already in ``request_suppressions`` (an
-    unchanged request the log says was refused) is skipped in favour of a fresh action; a different
-    window at the same q keeps its own fingerprint and stays allowed, so the widen / re-center /
-    step-shrink ladder is untouched.
-
-    The identical request is **never** re-emitted. Only ``validation_rejected``,
-    ``insufficient_target_support`` and ``budget_insufficient_for_minimum_batch`` ever reach
-    ``request_suppressions`` — transient verdicts are scoped ``"none"`` and recorded for forensics only
-    — so every entry there is a structural or budget refusal, and re-submitting it would repeat a
-    refused request once per iteration for the rest of the campaign.
-
-    When the only realizable action is such a request, the honest report is a **resumable
-    controller fault** naming the refusal. Note what is deliberately *not* done: the scientific intent
-    stays eligible in the inventory. One refused finalized request does not prove its
-    ``MeasurementIntent`` is scientifically exhausted, and rejecting the parent action to manufacture
-    an ``action_inventory_exhausted`` would both collapse the request/action distinction the
-    three-stage lifecycle exists to draw and mis-class a BUDGET refusal as an empty action space. The
-    honest terminal for complete *realization* exhaustion belongs to a realization inventory beneath
-    the scientific one, once the widen/re-center/step ladder is explicitly enumerated.
-
-    Returns ``(proposal, None)`` for a ready proposal, ``(None, StopDecision)`` when a budget /
-    instrument / unrealizable-request terminal is the honest outcome, or ``(None, None)`` when the plan
-    genuinely ran out of candidates — the caller then falls through to the blocked-frontier /
-    exhausted-action-space path, which reads the same canonical inventory for its terminal proof.
-    """
-    instrument_error: Exception | None = None
-    budget_error: Exception | None = None
-    suppressed_refusal: dict | None = None   # the sole realizable action was an already-refused request
-    while True:
-        # Both the realization (``next_proposal`` → ``_build_proposal``) and the finalize clamp can
-        # raise the affordability/instrument-limit exceptions, so both live inside one handler — the
-        # refusal is charged and the loop tries the next candidate rather than terminating (O29).
-        try:
-            proposal = plan.next_proposal()
-            if proposal is not None:
-                _score_shadow_proposal(proposal, objective, cfg, it=it)
-                _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
-        except (InstrumentLimitBelowMinimumBatch, InstrumentPointLimitExceeded) as error:
-            log_event(cfg.log_path, "exception", {
-                "action": ("instrument_point_limit_exceeded"
-                           if isinstance(error, InstrumentPointLimitExceeded)
-                           else "instrument_limit_below_minimum_batch"),
-                "error": str(error), "iter": it})
-            instrument_error = error
-            continue
-        except BudgetInsufficientForMinimumBatch as error:
-            log_event(cfg.log_path, "exception", {
-                "action": "budget_insufficient_for_minimum_batch",
-                "error": str(error), "iter": it})
-            budget_error = error
-            continue
-        except ScanDesignInvariantViolation as error:
-            # Not a refusal: the next candidate would hit the same broken invariant, so this is a
-            # terminal, not a ``continue``. Classified rather than propagated — an uncaught raise
-            # aborted ``run_campaign`` without any ``stop`` event.
-            _LOG.exception("scan-design invariant violated; terminating as a controller fault")
-            log_event(cfg.log_path, "exception", {
-                "action": "scan_design_invariant_violated", "severity": "high",
-                "error": str(error), "iter": it})
-            return None, StopDecision(
-                "incomplete",
-                [f"controller_fault: scan-design invariant violated ({error}). Checkpoints "
-                 "retained and resume is supported after repair."],
-                evaluate_stop(objective, grid, budget_state,
-                              calibration=cfg.calibration, floor=cfg.floor).per_q,
-                terminal_cause=TERMINAL_CONTROLLER_FAULT)
-        if proposal is None:
-            # A named resource limit is a better answer than a generic fault, so an instrument or
-            # budget terminal established during the sweep outranks the unrealizable-request one.
-            if instrument_error is None and budget_error is None and suppressed_refusal is not None:
-                # The recorded class decides the terminal. A BUDGET-scoped refusal from an *earlier*
-                # iteration reaches here with no live ``budget_error``, and reporting it as a software
-                # fault would tell the operator to repair the controller when the answer is to add
-                # budget. Only a structural refusal is a controller-side fault.
-                budget_refusal = suppressed_refusal["class"] == RejectionClass.BUDGET.value
-                if budget_refusal:
-                    reason = (
-                        "incomplete: the remaining budget cannot fund any realization of an eligible "
-                        f"action at hkl={suppressed_refusal['hkl']} — its only emittable request was "
-                        f"already refused ({suppressed_refusal['reason']}). More budget, or a looser "
-                        "minimum batch, is what unblocks it.")
-                else:
-                    reason = (
-                        "controller_fault: an eligible action has no unsuppressed realization — the "
-                        f"only request it can emit at hkl={suppressed_refusal['hkl']} was already "
-                        f"refused ({suppressed_refusal['reason']}). The scientific action remains "
-                        "eligible; re-emitting the identical refused request would repeat it every "
-                        "iteration. Checkpoints retained and resume is supported after repair.")
-                log_event(cfg.log_path, "decide", {
-                    "event": "request_has_no_unsuppressed_realization",
-                    "action": "request_has_no_unsuppressed_realization",
-                    "request_fingerprint": suppressed_refusal["request_fingerprint"],
-                    "rejection_class": suppressed_refusal["class"],
-                    "hkl": suppressed_refusal["hkl"], "iter": it})
-                return None, StopDecision(
-                    "incomplete", [reason],
-                    evaluate_stop(objective, grid, budget_state,
-                                  calibration=cfg.calibration, floor=cfg.floor).per_q,
-                    terminal_cause=(None if budget_refusal else TERMINAL_CONTROLLER_FAULT))
-            if instrument_error is not None:
-                return None, StopDecision(
-                    "infeasible", [str(instrument_error)],
-                    evaluate_stop(objective, grid, budget_state,
-                                  calibration=cfg.calibration, floor=cfg.floor).per_q)
-            if budget_error is not None:
-                return None, StopDecision(
-                    "incomplete", [str(budget_error)],
-                    evaluate_stop(objective, grid, budget_state,
-                                  calibration=cfg.calibration, floor=cfg.floor).per_q)
-            return None, None
-        finalized = finalized_proposal(proposal)
-        if finalized is not None and finalized.request_fingerprint in request_suppressions:
-            log_event(cfg.log_path, "decide", {
-                "event": "request_suppressed_skip", "action": "request_suppressed_skip",
-                "request_fingerprint": finalized.request_fingerprint,
-                "hkl": [proposal.h, proposal.k, proposal.l], "iter": it})
-            entry = request_suppressions.get(finalized.request_fingerprint) or {}
-            suppressed_refusal = suppressed_refusal or {
-                "request_fingerprint": finalized.request_fingerprint,
-                "hkl": [proposal.h, proposal.k, proposal.l],
-                "class": str(entry.get("class") or "structural"),
-                "reason": str(entry.get("reason") or "previously refused")}
-            continue
-        _persist_scan_design_inventory(cfg, proposal, it=it)
-        _refresh_realized_comparison(
-            cfg, objective, proposal, budget_state, it=it,
-            legacy_adjustments=("initial_finalization",), finalizer=_finalize_proposal)
-        return proposal, None
 
 
 def _mark_request_superseded(proposal, fingerprint: str | None) -> None:
@@ -2554,8 +2252,7 @@ def _persist_campaign_target(workspace: Path, objective) -> None:
     card = Card.load(policy_path, state_path)
     target = {"branch": getattr(objective, "target_branch", "acoustic"),
               "label": getattr(objective, "target_label", "acoustic"),
-              "selector": getattr(objective, "target_selector", "lowest_energy"),
-              "target_energy_meV": getattr(objective, "target_energy_meV", None),
+              "selector": getattr(objective, "target_selector", "tracked_branch"),
               "energy_search_meV": list(getattr(objective, "energy_search_meV", (-2.0, 7.0))),
               # The session identity tracker needs the frozen scientific path order; sorting fitted
               # q after the fact would silently turn a looped path into a different experiment.
@@ -2700,682 +2397,103 @@ def _workspace_zone_period(workspace: Path) -> float | None:
         return None
 
 
-class ControllerInvariantError(RuntimeError):
-    """Acquisition abandoned a frontier it was still authorized to act on.
+def _row_provenance(row: dict, proposal, card_state: dict, log_path=None, *, it=None) -> dict:
+    """The submission a newly published physical row belongs to, as observation kwargs.
 
-    This is a controller defect, never a scientific result, so it is raised rather than reported.
-    The loop breaks unconditionally after :func:`_blocked_frontier_decision`, so a softened verdict
-    would end the campaign anyway — and OP10 showed what that costs: six q reported as
-    ``branch_ambiguity`` while holding 11 of 12 authorized productions and an untouched per-scan
-    ceiling three orders of magnitude above the largest scan actually submitted.
+    A row stamped with the current proposal's acquisition id (or none at all — a workspace before
+    acquisition provenance existed) takes the proposal's kind, exposure and roles. A row from an
+    earlier acquisition — one whose own analysis failed and which a later pass caught up — takes
+    them from the ``acquisition_provenance`` record the loop persisted at its submission
+    (``_persist_acquisition_provenance``), so exposure, Q and fingerprint stay its own. ``current``
+    says which case applied (the scan cost is charged once, to the current acquisition's rows).
     """
-
-
-def _invariant_payload(point) -> dict:
-    """Everything needed to reconstruct why acquisition declined to act on this point."""
+    meta = dict(getattr(proposal, "meta", None) or {})
+    row_acq = row.get("acquisition_id")
+    if row_acq in (None, "") or str(row_acq) == str(proposal.acquisition_id):
+        return {
+            "current": True, "kind": proposal.kind, "ncount": int(proposal.ncount),
+            "acquisition_id": proposal.acquisition_id,
+            "driver_inserted": bool(meta.get("driver_inserted", False)),
+            "certification_eligible": bool(meta.get("certification_eligible", True)),
+            "count_diagnostics": meta.get("count_diagnostics"),
+            "acquisition_action_role": meta.get("acquisition_action_role"),
+            "target_branch_role": meta.get("target_branch_role"),
+            "rival_branch_role": meta.get("rival_branch_role"),
+            "authoritative_evidence_revision": meta.get("authoritative_evidence_revision"),
+            "proposal_fingerprint": meta.get("proposal_fingerprint"),
+            "evidence_sink": meta.get("evidence_sink") or CANONICAL_MASTER,
+        }
+    for item in reversed((card_state or {}).get("acquisition_provenance") or []):
+        if str(item.get("acquisition_id")) != str(row_acq):
+            continue
+        return {
+            "current": False,
+            "kind": str(item.get("scan_kind") or proposal.kind),
+            "ncount": int(item.get("submitted_ncount") or proposal.ncount),
+            "acquisition_id": str(row_acq),
+            "driver_inserted": False, "certification_eligible": True, "count_diagnostics": None,
+            "acquisition_action_role": item.get("acquisition_action_role"),
+            "target_branch_role": item.get("target_branch_role"),
+            "rival_branch_role": item.get("rival_branch_role"),
+            "authoritative_evidence_revision": item.get("authoritative_evidence_revision"),
+            "proposal_fingerprint": item.get("proposal_fingerprint"),
+            "evidence_sink": item.get("evidence_sink") or CANONICAL_MASTER,
+        }
+    # Provenance exists for the id but no record matches: keep the row's OWN id (the planner's
+    # scan index then finds its physical_submission) and say so, rather than re-badge it.
+    if log_path is not None:
+        log_event(log_path, "exception", {
+            "action": "row_acquisition_unmatched", "iter": it, "scan": row.get("scan"),
+            "acquisition_id": str(row_acq),
+            "reason": "no persisted acquisition provenance for this id; exposure taken from the "
+                      "current proposal"})
     return {
-        "path_index": point.index,
-        "hkl": list(point.hkl),
-        "track_state": point.track_state,
-        "target_probability": point.target_probability,
-        "identity_entropy": point.identity_entropy,
-        "local_identity_clear": point.local_identity_clear,
-        "candidate_precision_meV": _candidate_precision(
-            point.evidence_master or point.master or {}),
-        "n_production": point.n_production,
-        "max_production_batches": point.max_production_batches,
-        "same_q_ceiling_reached": point.same_q_ceiling_reached,
-        "exposure_saturated": point.exposure_saturated,
-        "identity_saturated": point.identity_saturated,
-        "n_quicklook": point.n_quicklook,
-        "production_sequences": list(point.production_sequences),
-        "identity_revisit_sequences": list(point.identity_revisit_sequences),
-        "evidence_update_sequences": list(point.evidence_update_sequences),
+        "current": False, "kind": proposal.kind, "ncount": int(proposal.ncount),
+        "acquisition_id": str(row_acq),
+        "driver_inserted": False, "certification_eligible": True, "count_diagnostics": None,
+        "acquisition_action_role": None, "target_branch_role": None, "rival_branch_role": None,
+        "authoritative_evidence_revision": None, "proposal_fingerprint": None,
+        "evidence_sink": CANONICAL_MASTER,
     }
 
 
-def _operator_authorization_hint(inventory) -> str | None:
-    """The operator-authorizable reason an exhausted inventory holds, if it holds one (ruling O31).
-
-    An exhaustion terminal whose *only* remaining action is forbidden by declared policy is a
-    legitimate terminal, but it is escaped by authorizing the action — not by more beam, not by a
-    repair. That escape has to reach the operator reading the stop reason; leaving it in the persisted
-    inventory alone reports a resolvable campaign as a scientific dead end (O28's strict-historical
-    AP6: the rival that would settle the identity sat above the declared search band).
-
-    Two shapes carry the signal, and both are read here because a generator may take either route:
-    an action that was generated and then rejected as ``OPERATOR``, and a generator that emitted
-    nothing at all and declared ``policy_forbidden`` as its reason code. Anything else — structural,
-    saturation, budget, transient — is deliberately excluded: those are not the operator's to lift,
-    and presenting them as authorizable would send a scientist to edit a policy that cannot help.
-    """
-    if inventory is None:
-        return None
-    hints: list[str] = []
-    for evaluation in getattr(inventory, "evaluations", []):
-        if (evaluation.rejection_class is RejectionClass.OPERATOR
-                and evaluation.rejection_reason):
-            hints.append(str(evaluation.rejection_reason))
-    for report in getattr(inventory, "reports", []):
-        reason = report.reason_code
-        if reason and str(reason).startswith("policy_forbidden"):
-            hints.append(str(reason))
-    if not hints:
-        return None
-    unique = list(dict.fromkeys(hints))          # first-seen order; a repeated band says it once
-    return "; ".join(unique[:3])
+def _consecutive_alerts(log_path, alert: str) -> int:
+    """How many ``campaign_alert`` events of this ``alert`` have been raised since the last
+    successful analysis (an ``analyze`` event) — the count the operator, and any connector, needs
+    to tell one transient collision from a broken worker. Counts the trailing run only."""
+    count = 0
+    for record in reversed(read_log(log_path)):
+        kind = record.get("kind")
+        payload = record.get("payload") or {}
+        # Only a SUCCESSFUL analysis resets the run: the iteration still emits ``analyze`` after a
+        # caught failure (with ``status: failed``), and counting that as success reported every
+        # failure of a dead worker as the first (PR #37 review, second round).
+        if kind == "analyze" and payload.get("status") != "failed":
+            break
+        if kind == "campaign_alert" and payload.get("alert") == alert:
+            count += 1
+    return count
 
 
-def _blocked_frontier_decision(objective, grid, decision: StopDecision,
-                               inventory=None) -> StopDecision:
-    """Turn a proposal-less tracked identity frontier into an honest incomplete outcome.
-
-    ``inventory`` is the :class:`~isar.drive.acquisition.inventory.ActionInventory` acquisition just
-    enumerated. Its :meth:`terminal_cause` decides *why* the action space ended — an exhaustion proof
-    (``action_inventory_exhausted``) only when every applicable generator ran cleanly, otherwise a
-    ``controller_fault`` — and that cause is stamped on the returned terminal. When no inventory is
-    supplied (unit callers of this helper) the honest legacy meaning, ``action_inventory_exhausted``,
-    is used.
-    """
-    if (decision.state != "continue"
-            or getattr(objective, "target_selector", None) != "tracked_branch"):
-        return decision
-    blocked = [point for point in grid
-               if point.visited and point.track_state in {
-                   "ambiguous", "missing", "provisional", "blocked"}]
-    if not blocked:
-        return decision
-    # This helper runs only after the acquisition controller returned no proposal.  That controller
-    # has already checked local statistics, newer-neighbor revisit tokens, every unvisited requested
-    # point ranked by branch information, and saturation.  Duplicating an approximate route test here
-    # previously let the loop break while still reporting ``continue``.
-    actionable = [point for point in blocked if point.same_q_identity_work_remains]
-    if actionable:
-        details = "; ".join(
-            f"path index {point.index} {tuple(point.hkl)} "
-            f"{point.n_production}/{point.max_production_batches} productions"
-            for point in actionable)
-        raise ControllerInvariantError(
-            "acquisition returned no proposal for an actionable blocked frontier: "
-            f"{details}. Authorized same-q identity work remained, so branch ambiguity here is a "
-            f"controller fault rather than a result. state={[_invariant_payload(p) for p in actionable]}")
-    # The cause comes straight from the canonical inventory — never coerced. A ``None`` cause means the
-    # inventory still holds an eligible action while acquisition produced no proposal: that is a
-    # controller bug, not an exhaustion proof, so it must raise rather than be relabelled as exhausted
-    # (the ``same_q`` guard above catches the legacy-predicate form; this catches it generally).
-    cause = (inventory.terminal_cause(GENERATOR_REGISTRY) if inventory is not None
-             else TERMINAL_ACTION_INVENTORY_EXHAUSTED)
-    if cause is None:
-        eligible = [e.intent.action_class for e in inventory.eligible_actions()]
-        raise ControllerInvariantError(
-            "acquisition returned no proposal although the canonical inventory holds eligible "
-            f"action(s) {eligible}: branch ambiguity here is a controller fault, not a result.")
-    indices = ", ".join(str(point.index) for point in blocked)
-    per_q = [dict(row) for row in decision.per_q]
-    if cause == TERMINAL_CONTROLLER_FAULT:
-        # A controller failure is not a scientific branch-ambiguity result: name it as such so a
-        # GUI/report reader that ignores the additive cause cannot mistake a software fault for a
-        # scientific terminal. Checkpoints are retained; the campaign resumes after repair.
-        failed = ", ".join(f"{r.generator}({r.error_code or 'unknown'})"
-                           for r in inventory.failed_reports()) or "unknown"
-        top_reason = (f"controller_fault: the action inventory is incomplete — generator(s) {failed} "
-                      "did not run to completion, so action-space exhaustion cannot be proven; "
-                      "checkpoints retained and resume is supported after repair")
-        per_q_reason = f"controller_fault: inventory incomplete ({failed}); resume supported after repair"
-    else:
-        top_reason = (f"branch_ambiguity; frontier_blocked at path index/indices {indices}: "
-                      "the connected classification route and identity-revisit allowance were exhausted")
-        hint = _operator_authorization_hint(inventory)
-        if hint:
-            top_reason += f" — an action remains that declared policy forbids: {hint}"
-        per_q_reason = "branch_ambiguity; frontier_blocked after identity-route allowance was exhausted"
-    for point in blocked:
-        if point.index < len(per_q):
-            per_q[point.index]["assessment_state"] = "incomplete"
-            per_q[point.index]["reason"] = per_q_reason
-    return StopDecision("incomplete", [top_reason], per_q, terminal_cause=cause)
-
-
-def _exhausted_action_space_decision(decision: StopDecision, inventory=None) -> StopDecision:
-    """Terminalize a still-``continue`` decision when acquisition has no action left to offer.
-
-    :func:`_blocked_frontier_decision` speaks only for a *tracked* identity frontier; every other
-    objective fell straight through it, and because the loop breaks unconditionally on a missing
-    proposal the campaign then reported ``continue`` — a non-terminal masquerading as a terminal
-    state, with no cause and no inventory proof attached.
-
-    Nothing could reach that path while the selector always returned some action. Durable suppression
-    (PR2.3) makes an empty action space ordinary, so the general case now needs the same honest
-    terminal the frontier case gets: the cause comes from the canonical inventory, never a coercion,
-    and an inventory still holding an eligible action is a controller fault rather than an outcome.
-    """
-    if decision.state != "continue":
-        return decision
-    cause = (inventory.terminal_cause(GENERATOR_REGISTRY) if inventory is not None
-             else TERMINAL_ACTION_INVENTORY_EXHAUSTED)
-    if cause is None:
-        eligible = [e.intent.action_class for e in inventory.eligible_actions()]
-        raise ControllerInvariantError(
-            "acquisition returned no proposal although the canonical inventory holds eligible "
-            f"action(s) {eligible}: an empty action space here is a controller fault, not a result.")
-    if cause == TERMINAL_CONTROLLER_FAULT:
-        failed = ", ".join(f"{r.generator}({r.error_code or 'unknown'})"
-                           for r in inventory.failed_reports()) or "unknown"
-        reason = (f"controller_fault: the action inventory is incomplete — generator(s) {failed} "
-                  "did not run to completion, so action-space exhaustion cannot be proven; "
-                  "checkpoints retained and resume is supported after repair")
-    else:
-        reason = ("action_inventory_exhausted: no eligible measurement action remains for this "
-                  "objective under the registered generators")
-        hint = _operator_authorization_hint(inventory)
-        if hint:
-            reason += f" — an action remains that declared policy forbids: {hint}"
-    return StopDecision("incomplete", [reason], decision.per_q, terminal_cause=cause)
-
-
-def _selected_action_class(proposal) -> str | None:
-    """The action class the selected proposal realizes, matching ``MeasurementIntent.action_class``."""
-    if proposal is None:
-        return None
-    meta = proposal.meta or {}
-    if meta.get("purpose") == "differentiate":
-        return "differentiation_probe"
-    return proposal.kind
-
-
-def _selected_action_record(proposal, inventory) -> dict:
-    """Identify the selected action in the compact per-iteration record.
-
-    The class alone cannot distinguish twenty production scans at twenty different q, so the record
-    also carries the scientific fingerprint, the q, the generator that produced it, and the emitted
-    request fingerprint — enough to follow a campaign's action sequence from the log alone.
-    """
-    if proposal is None:
-        return {"selected_action_class": None, "selected_scientific_action_fingerprint": None,
-                "selected_hkl": None, "selected_request_fingerprint": None,
-                "selected_generator": None}
-    meta = proposal.meta or {}
-    # Match the generator to the action actually realized, by its scientific fingerprint. After a
-    # fallback the selected proposal need not be the first eligible action, so ``eligible_actions()[0]``
-    # would mis-attribute the record to whatever ranked first. Fall back to the first eligible only when
-    # the proposal carries no fingerprint (legacy/driver-inserted).
-    selected_fingerprint = meta.get("scientific_action_fingerprint")
-    generator = None
-    if selected_fingerprint is not None:
-        generator = next(
-            (e.generator for e in inventory.evaluations
-             if e.intent.scientific_action_fingerprint == selected_fingerprint), None)
-    if generator is None:
-        eligible = inventory.eligible_actions()
-        generator = eligible[0].generator if eligible else None
-    return {
-        "selected_action_class": meta.get("action_class") or _selected_action_class(proposal),
-        "selected_scientific_action_fingerprint": selected_fingerprint,
-        "selected_hkl": [proposal.h, proposal.k, proposal.l],
-        "selected_request_fingerprint": meta.get("proposal_fingerprint"),
-        "selected_generator": generator,
+def _raise_campaign_alert(log_path, alert: str, error: BaseException, *, it, job_id=None,
+                          hkl=None, **detail) -> dict:
+    """Yell for help without stopping: log one ``campaign_alert`` event (owner ruling 2026-09-05,
+    policy A). The campaign continues; the alert carries what failed, the traceback, and how many
+    have piled up in a row, so a banner or a connector can say "one glitch" or "every scan since
+    18:09". Returns the written record."""
+    import traceback
+    consecutive = _consecutive_alerts(log_path, alert) + 1
+    payload = {
+        "alert": alert, "policy": "continue", "consecutive": consecutive, "iter": it,
+        "job_id": job_id, "hkl": hkl,
+        "error": f"{type(error).__name__}: {error}"[:2000],
+        "traceback": "".join(traceback.format_exception(type(error), error,
+                                                        error.__traceback__))[-4000:],
+        **detail,
     }
-
-
-def _inventory_artifact_matches(path: Path, digest: str) -> bool:
-    """Whether an existing content-addressed artifact still hashes to the address it is stored under."""
-    try:
-        raw = path.read_bytes()
-        parsed = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError):
-        return False
-    return (
-        hashlib.sha256(raw).hexdigest() == digest
-        and hashlib.sha256(canonical_json(parsed).encode("utf-8")).hexdigest() == digest
-    )
-
-
-def _record_scan_design_realization(
-        cfg: CampaignConfig,
-        proposal,
-        *,
-        adjustment: str,
-        previous_request_fingerprint: str | None,
-        it: int,
-        attempt: int | None = None,
-) -> bool:
-    """Record how an immutable selected candidate became a different exact request."""
-    meta = proposal.meta if isinstance(proposal.meta, dict) else {}
-    current = meta.get("proposal_fingerprint")
-    inventory_ref = meta.get("scan_design_inventory_ref")
-    candidate_id = meta.get("scan_design_candidate_id")
-    context_fingerprint = meta.get("scan_design_context_fingerprint")
-    if (not current or current == previous_request_fingerprint or inventory_ref is None
-            or candidate_id is None or context_fingerprint is None):
-        return False
-    log_event(cfg.log_path, "scan_design_realization", {
-        "schema": "isar.scan_design_realization/1",
-        "iter": it,
-        "attempt": attempt,
-        "adjustment": str(adjustment),
-        "inventory_ref": inventory_ref,
-        "candidate_id": str(candidate_id),
-        "context_fingerprint": str(context_fingerprint),
-        "previous_request_fingerprint": previous_request_fingerprint,
-        "request_fingerprint": str(current),
-        "hkl": [float(proposal.h), float(proposal.k), float(proposal.l)],
-        "e_lo": float(proposal.e_lo),
-        "e_hi": float(proposal.e_hi),
-        "e_step": float(proposal.e_step),
-        "n_points": int(proposal.n_points or 0),
-        "ncount": int(proposal.ncount),
-    })
-    return True
-
-
-def _persist_scan_design_inventory(cfg: CampaignConfig, proposal, *, it: int) -> dict | None:
-    """Persist and join the selected scan-design inventory to its finalized request.
-
-    The inventory describes the planned uniform candidate before loop-level realization clamps. The
-    existing ``proposal_fingerprint`` describes the exact request after those clamps. Carrying both IDs
-    preserves that distinction instead of silently rewriting the design artifact to match execution.
-    """
-    inventory = getattr(proposal, "scan_design_inventory", None)
-    if inventory is None:
-        return None
-    digest = inventory.content_hash()
-    path = cfg.workspace / "report" / "scan-design" / f"{digest}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    corrupt = path.exists() and not _inventory_artifact_matches(path, digest)
-    if corrupt:
-        log_event(cfg.log_path, "exception", {
-            "action": "scan_design_artifact_mismatch",
-            "sha256": digest,
-            "iter": it,
-            "path": f"report/scan-design/{digest}.json",
-            "error": "stored artifact did not match its content address; rewritten",
-        })
-    if corrupt or not path.exists():
-        temporary = path.with_suffix(".json.tmp")
-        encoded = canonical_json(inventory.to_full_dict()).encode("utf-8")
-        with open(temporary, "wb") as stream:
-            stream.write(encoded)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    ref = {
-        "kind": "scan_design_inventory",
-        "sha256": digest,
-        "path": f"report/scan-design/{digest}.json",
-    }
-    meta = proposal.meta if isinstance(proposal.meta, dict) else {}
-    proposal.meta = meta
-    meta["scan_design_inventory_ref"] = ref
-    meta["scan_design_candidate_id"] = inventory.selected_candidate_id
-    meta["scan_design_context_fingerprint"] = inventory.context.fingerprint
-    meta["scan_design_selection_basis"] = inventory.selection_basis
-    shadow = inventory.shadow_scoring
-    meta["scan_design_shadow_status"] = shadow.status
-    meta["scan_design_shadow_fingerprint"] = shadow.shadow_scoring_fingerprint
-    meta["scan_design_shadow_variant_fingerprints"] = [
-        item.variant_evidence_fingerprint for item in shadow.variants
-    ]
-    log_event(cfg.log_path, "scan_design", {
-        "iter": it,
-        "scientific_action_fingerprint": meta.get("scientific_action_fingerprint"),
-        "request_fingerprint": meta.get("proposal_fingerprint"),
-        "selected_candidate_id": inventory.selected_candidate_id,
-        "context_fingerprint": inventory.context.fingerprint,
-        "selection_basis": inventory.selection_basis,
-        "shadow_status": shadow.status,
-        "shadow_scoring_fingerprint": shadow.shadow_scoring_fingerprint,
-        "shadow_variant_fingerprints": [
-            item.variant_evidence_fingerprint for item in shadow.variants
-        ],
-        "inventory_ref": ref,
-    })
-    candidate = inventory.selected_candidate
-    planned_request_fingerprint = _request_fingerprint_for(
-        proposal,
-        e_lo=candidate.e_lo,
-        e_hi=candidate.e_hi,
-        e_step=candidate.e_step,
-        ncount=candidate.ncount,
-    )
-    _record_scan_design_realization(
-        cfg,
-        proposal,
-        adjustment="initial_finalization_clamp",
-        previous_request_fingerprint=planned_request_fingerprint,
-        it=it,
-    )
-    return ref
-
-
-def _restore_authenticated_legacy_request(cfg: CampaignConfig, proposal) -> None:
-    """Replace any selected target with the persisted exact legacy request after late auth loss."""
-    meta = proposal.meta if isinstance(proposal.meta, dict) else {}
-    comparison = load_scan_design_realized_comparison(
-        meta.get("scan_design_realized_comparison_ref"), cfg.workspace)
-    legacy = comparison.realized_pair.legacy
-    restored = _proposal_for_realized_request(proposal, legacy)
-    proposal.h, proposal.k, proposal.l = restored.h, restored.k, restored.l
-    proposal.e_lo, proposal.e_hi, proposal.e_step = (
-        restored.e_lo, restored.e_hi, restored.e_step)
-    proposal.n_points, proposal.ncount = restored.n_points, restored.ncount
-    meta["proposal_fingerprint"] = legacy.request_fingerprint
-    meta["scan_design_candidate_id"] = legacy.source_candidate_id
-    for field in _AUTHORITY_SUBMISSION_FIELDS:
-        meta.pop(field, None)
-    meta["scan_design_realized_selected_request_fingerprint"] = legacy.request_fingerprint
-    meta["scan_design_realized_selected_grid_fingerprint"] = legacy.grid_fingerprint
-    authenticate_realized_submission(proposal, cfg.workspace)
-
-
-def _eig_eligibility(inventory) -> Mapping[str, Any] | None:
-    scoring = getattr(inventory, "shadow_scoring", None)
-    eligibility = getattr(scoring, "eligibility", None)
-    return eligibility if isinstance(eligibility, Mapping) else None
-
-
-def _eig_primary_blocker(inventory, meta: Mapping[str, Any]) -> str | None:
-    """The single code that answers "why did EIG not act this iteration", most specific first.
-
-    The authority's own reason codes win when a decision exists, because they already account for
-    everything below them; eligibility codes answer the far more common case where no decision was
-    ever reachable.  ``None`` means nothing recorded a blocker — an operator reads that as "ready".
-    """
-    codes = meta.get("scan_design_authority_reason_codes")
-    if isinstance(codes, (list, tuple)) and codes:
-        return str(codes[0])
-    invalidation = meta.get("scan_design_eig_invalidation_reason")
-    if invalidation:
-        return str(invalidation)
-    eligibility = _eig_eligibility(inventory)
-    if eligibility is not None:
-        for key in ("scientific_codes", "observability_codes"):
-            values = eligibility.get(key)
-            if isinstance(values, (list, tuple)) and values:
-                return str(values[0])
-    reasons = getattr(getattr(inventory, "shadow_scoring", None), "reason_codes", ())
-    if isinstance(reasons, (list, tuple)) and reasons:
-        return str(reasons[0])
-    applicability = meta.get("scan_design_eig_applicability")
-    if applicability and applicability != "applicable":
-        return f"realized_evidence_{applicability}"
-    return None
-
-
-def _eig_blocker_detail(inventory, meta: Mapping[str, Any], blocker: str | None) -> tuple[str, ...]:
-    """The underlying evidence codes behind a generic blocker, most proximate first.
-
-    The O41 selector's own codes ("primary score evidence unavailable") deliberately say only that
-    the evidence was missing.  Without the realized/shadow reason beside them an operator sees a
-    histogram of generic blockers and cannot tell a stale policy binding from a genuinely
-    unscoreable pair, so the reason is carried here rather than folded into selector semantics.
-    """
-    detail: list[str] = []
-    for value in (meta.get("scan_design_realized_reason_codes"),
-                  getattr(getattr(inventory, "shadow_scoring", None), "reason_codes", ())):
-        if isinstance(value, (list, tuple)):
-            detail.extend(str(code) for code in value)
-    return tuple(code for code in dict.fromkeys(detail) if code != blocker)
-
-
-def _eig_planned_point_counts(inventory) -> tuple[int | None, int | None]:
-    """Planned legacy / target-core point counts straight off the in-memory inventory."""
-    legacy = target = None
-    for candidate in getattr(inventory, "candidates", ()) or ():
-        if candidate.candidate_family == FAMILY_LEGACY_UNIFORM and legacy is None:
-            legacy = int(candidate.n_points)
-        elif candidate.candidate_family == FAMILY_TARGET_CORE and target is None:
-            target = int(candidate.n_points)
-    return legacy, target
-
-
-def _log_eig_decision(cfg: CampaignConfig, proposal, *, it: int) -> bool:
-    """Emit the one operator-facing ``eig_decision`` summary for an iteration that considered EIG.
-
-    Presentation only: every value is copied from evidence the authority path already wrote
-    (``proposal.meta`` and the in-memory inventory).  Nothing is loaded, recomputed or decided here,
-    and the emitter never raises — a campaign must not die because a log line could not be formed.
-
-    ``point_count_basis`` says which counts the payload carries, because the two differ: under an
-    authority decision they are the *validated realized* counts, otherwise they are the *planned*
-    inventory counts (the realized pair is only content-addressed on disk).
-
-    Returns ``True`` when this iteration's single event slot has been spent (including the failure
-    case, so a failed emission is not retried and re-reported at the end of the iteration), and
-    ``False`` when the iteration never considered EIG at all.
-    """
-    try:
-        inventory = getattr(proposal, "scan_design_inventory", None)
-        mode = None if inventory is None else inventory.context.scan_window_eig_mode
-        if mode != "authoritative":
-            return False
-        meta = proposal.meta if isinstance(proposal.meta, dict) else {}
-        decision_ref = meta.get("scan_design_authority_decision_ref")
-        decision_sha = (decision_ref.get("sha256") if isinstance(decision_ref, Mapping) else None)
-        if decision_sha is not None:
-            legacy_points = meta.get("scan_design_authority_legacy_point_count")
-            target_points = meta.get("scan_design_authority_target_point_count")
-            basis = "authority_decision"
-        else:
-            legacy_points, target_points = _eig_planned_point_counts(inventory)
-            basis = "planned_inventory"
-        ready = meta.get("scan_design_authority_status") == "granted"
-        blocker = None if ready else _eig_primary_blocker(inventory, meta)
-        blocker_detail = () if ready else _eig_blocker_detail(inventory, meta, blocker)
-        eligibility = _eig_eligibility(inventory)
-        design = getattr(getattr(inventory, "shadow_scoring", None), "design_measure", None)
-        identities = design.get("source_identities") if isinstance(design, Mapping) else None
-        master_id = (identities.get("predictive_basis_fingerprint")
-                     if isinstance(identities, Mapping) else None)
-        diagnostics = design.get("diagnostics") if isinstance(design, Mapping) else None
-        eligibility_diagnostics = {
-            str(name): item for name, item in (dict(diagnostics or {})).items()
-            if str(name).startswith("eligibility_")}
-        log_event(cfg.log_path, "eig_decision", {
-            "iter": it,
-            "hkl": [proposal.h, proposal.k, proposal.l],
-            "mode": mode,
-            "master_id": master_id,
-            "ready": bool(ready),
-            "blocker": blocker,
-            "blocker_detail": list(blocker_detail),
-            "eligibility_status": (None if eligibility is None
-                                   else eligibility.get("status")),
-            # Without these an ``o36_ineligible`` histogram cannot separate an honest fork
-            # rejection from an unpooled single-member master, and a fifth of the entries stay
-            # indeterminate.  The design measure keeps them off its fingerprint, so reading them
-            # here explains the blocker without touching a decided number.
-            "eligibility_diagnostics": eligibility_diagnostics,
-            # Quicklook and production requests are not the same denominator: a survey pass buys
-            # identification, and only production requests are the beam time an EIG-designed scan
-            # is meant to save. Reporting a rate over both mixes the two.
-            "request_kind": getattr(getattr(inventory, "context", None), "kind", None),
-            "point_count_basis": basis,
-            "legacy_points": legacy_points,
-            "target_points": target_points,
-            "delta_nats_per_point": meta.get("scan_design_authority_delta"),
-            "standard_error_nats": meta.get("scan_design_authority_standard_error"),
-            "lower_margin_nats": meta.get("scan_design_authority_lower_margin"),
-            "selected_role": meta.get("scan_design_authority_selected_role"),
-            "decision_outcome": meta.get("scan_design_authority_outcome"),
-            "decision_ref": decision_sha,
-        })
-        return True
-    except Exception as error:  # noqa: BLE001 - an operator line may never break the campaign
-        _LOG.exception("could not form the eig_decision operator event")
-        try:
-            log_event(cfg.log_path, "exception", {
-                "action": "eig_decision_event_failed", "severity": "low",
-                "error": str(error), "iter": it})
-        except Exception:  # noqa: BLE001 - the process logger stays the final visible channel
-            _LOG.exception("failed to persist the eig_decision emission failure")
-        return True
-
-
-def _persist_action_inventory(cfg: CampaignConfig, inventory, *, it: int, proposal,
-                              prev_fingerprint: str | None,
-                              force_full: bool) -> tuple[dict | None, str | None]:
-    """Log the compact inventory summary every iteration, and persist the full ranked inventory as a
-    content-addressed artifact when it is worth keeping: the selected *scientific action* changed, the
-    inventory is empty, or this is a forced terminal boundary.
-
-    Returns ``(inventory_ref, selected_fingerprint)``; the ref is ``None`` when no full artifact was
-    written. The artifact is content-addressed, so a resume that recomputes the same inventory from the
-    same authoritative evidence re-references it rather than duplicating it. The ``inventory`` event
-    kind is resume-inert (``_resume_state`` never reads it), keeping the inventory a derived,
-    recomputed-on-resume view rather than load-bearing state.
-    """
-    selected = _selected_action_record(proposal, inventory)
-    summary = inventory.summary(selected_action_class=selected["selected_action_class"],
-                                registry=GENERATOR_REGISTRY)
-    summary.update({key: value for key, value in selected.items()
-                    if key != "selected_action_class"})
-    fingerprint = selected["selected_scientific_action_fingerprint"]
-    # Trigger on the scientific fingerprint, not the broad class: a run of production scans at
-    # different q is a different action each time and must not collapse to one persisted artifact.
-    write_full = bool(force_full
-                      or not inventory.has_eligible_action
-                      or fingerprint != prev_fingerprint)
-    inventory_ref = None
-    if write_full:
-        digest = inventory.content_hash()
-        path = cfg.workspace / "report" / "inventory" / f"{digest}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        corrupt = path.exists() and not _inventory_artifact_matches(path, digest)
-        if corrupt:
-            # Never reference a file that does not hash to its own address. The atomic write below
-            # rules out partial writes from this process, so a mismatch means external damage: repair
-            # it from the inventory in hand (which IS the correct content) and say so.
-            log_event(cfg.log_path, "exception", {
-                "action": "inventory_artifact_mismatch", "sha256": digest, "iter": it,
-                "path": f"report/inventory/{digest}.json",
-                "error": "stored artifact did not match its content address; rewritten"})
-        if corrupt or not path.exists():
-            # Atomic write (temp + fsync + os.replace), matching the certification-artifact pattern:
-            # a crash mid-write must never leave a partial file at the content-addressed path, which
-            # ``path.exists()`` would then trust forever and reference from the terminal proof.
-            temporary = path.with_suffix(".json.tmp")
-            with open(temporary, "w", encoding="utf-8") as stream:
-                json.dump(inventory.to_full_dict(), stream, indent=2)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-        inventory_ref = {"kind": "action_inventory", "sha256": digest,
-                         "path": f"report/inventory/{digest}.json"}
-    payload = {**summary, "iter": it}
-    if inventory_ref is not None:
-        payload["inventory_ref"] = inventory_ref
-    log_event(cfg.log_path, "inventory", payload)
-    return inventory_ref, fingerprint
-
-
-def _compare_returned_realized_grid(
-        cfg: CampaignConfig, proposal, submission_payload: dict,
-        document: Mapping[str, Any], *, it: int | None) -> tuple[str, str | None]:
-    """Authenticate Slice 7 evidence and compare TAVI's returned grid without blocking analysis."""
-    authority_ref = submission_payload.get("scan_design_authority_decision_ref")
-    if authority_ref is not None:
-        try:
-            decision = load_authority_decision(authority_ref, cfg.workspace)
-            request = decision.selected_request
-            if request is None and decision.physical_role == "none":
-                return "not_applicable", None
-            if request is None:
-                raise ValueError("authority decision has no selected physical request")
-            if (submission_payload.get("scan_design_authority_decision_fingerprint")
-                    != decision.authority_decision_fingerprint
-                    or submission_payload.get("scan_design_authority_selected_role")
-                    != decision.physical_role
-                    or submission_payload.get("proposal_fingerprint")
-                    != request["request_fingerprint"]):
-                raise ValueError("authority-decision submission identity is inconsistent")
-        except Exception as error:  # noqa: BLE001 - analysis continues after evidence loss
-            _LOG.exception("authority evidence is unavailable for returned-grid comparison")
-            log_event(cfg.log_path, "exception", {
-                "action": "scan_design_authority_unavailable", "severity": "high",
-                "job_id": submission_payload.get("job_id"), "error": str(error), "iter": it,
-                "authority_decision_ref": authority_ref,
-            })
-            return "unavailable", "scan_design_authority_unavailable"
-        # Canonicalization sits OUTSIDE the evidence-load try, mirroring the non-authority branch
-        # below: a malformed grid returned by the INSTRUMENT is a grid mismatch, not missing ISAR
-        # evidence, and reporting it as "unavailable" both misdirects the operator and hides the
-        # scan from the slice-8 gate, which keys on "mismatch".
-        result = document.get("result") if isinstance(document, Mapping) else None
-        returned_raw = result.get("scan_values_1") if isinstance(result, Mapping) else None
-        try:
-            expected = TAVI_GRID_ADAPTER.canonicalize_returned_energies(
-                request["executed_energies"])
-            returned = TAVI_GRID_ADAPTER.canonicalize_returned_energies(returned_raw)
-        except (TypeError, ValueError) as error:
-            expected = tuple(request["executed_energies"] or ())
-            returned = ()
-            reason = str(error)
-        else:
-            reason = "executed grid differs from the authority-selected request"
-        if returned != expected:
-            log_event(cfg.log_path, "exception", {
-                "action": "executed_grid_mismatch", "severity": "high",
-                "job_id": submission_payload.get("job_id"),
-                "reason": reason,
-                "expected_energies": list(expected), "returned_energies": list(returned),
-                "authority_decision_ref": authority_ref,
-                "authority_decision_fingerprint": decision.authority_decision_fingerprint,
-                "selected_role": decision.physical_role,
-                "selected_request_fingerprint": request["request_fingerprint"], "iter": it,
-            })
-            return "mismatch", "executed_grid_mismatch"
-        return "matched", None
-    selected_grid = submission_payload.get("scan_design_realized_selected_grid_fingerprint")
-    if selected_grid is None:
-        return "not_applicable", None
-    reference = submission_payload.get("scan_design_realized_comparison_ref")
-    try:
-        comparison = load_scan_design_realized_comparison(reference, cfg.workspace)
-        if (submission_payload.get("scan_design_realized_comparison_fingerprint")
-                != comparison.realized_comparison_fingerprint
-                or submission_payload.get(
-                    "scan_design_realized_selected_request_fingerprint")
-                != comparison.selected_request_fingerprint
-                or selected_grid != comparison.selected_grid_fingerprint
-                or (proposal.meta or {}).get("proposal_fingerprint")
-                != comparison.selected_request_fingerprint):
-            raise ValueError("realized-comparison submission identity is inconsistent")
-    except Exception as error:  # noqa: BLE001 - evidence loss must not suppress recovery/analysis
-        _LOG.exception("realized-comparison evidence is unavailable for returned-grid comparison")
-        log_event(cfg.log_path, "exception", {
-            "action": "realized_comparison_unavailable", "severity": "high",
-            "job_id": submission_payload.get("job_id"), "error": str(error), "iter": it,
-            "comparison_ref": reference,
-            "selected_request_fingerprint": submission_payload.get(
-                "scan_design_realized_selected_request_fingerprint"),
-            "selected_grid_fingerprint": selected_grid,
-        })
-        return "unavailable", "realized_comparison_unavailable"
-
-    result = document.get("result") if isinstance(document, Mapping) else None
-    returned_raw = result.get("scan_values_1") if isinstance(result, Mapping) else None
-    try:
-        expected = TAVI_GRID_ADAPTER.canonicalize_returned_energies(
-            comparison.realized_pair.legacy.executed_energies)
-        returned = TAVI_GRID_ADAPTER.canonicalize_returned_energies(returned_raw)
-    except (TypeError, ValueError) as error:
-        expected = tuple(comparison.realized_pair.legacy.executed_energies)
-        returned = ()
-        reason = str(error)
-    else:
-        reason = "executed grid differs from the selected realized grid"
-    if returned != expected:
-        log_event(cfg.log_path, "exception", {
-            "action": "executed_grid_mismatch", "severity": "high",
-            "job_id": submission_payload.get("job_id"), "reason": reason,
-            "expected_energies": list(expected), "returned_energies": list(returned),
-            "comparison_ref": reference,
-            "realized_comparison_fingerprint": comparison.realized_comparison_fingerprint,
-            "selected_request_fingerprint": comparison.selected_request_fingerprint,
-            "selected_grid_fingerprint": comparison.selected_grid_fingerprint, "iter": it,
-        })
-        return "mismatch", "executed_grid_mismatch"
-    return "matched", None
+    _LOG.error("campaign alert %s (%d in a row) at iteration %s: %s", alert, consecutive, it,
+               payload["error"])
+    return log_event(log_path, "campaign_alert", payload)
 
 
 def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
@@ -3398,10 +2516,6 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
     with timed(cfg.log_path, "fetch_save", iteration=it):
         document = data if data is not None else cfg.client.get_scan_data(job_id)
         scan_path = save_scan_json(document, cfg.data_dir)
-    grid_status, grid_reason = _compare_returned_realized_grid(
-        cfg, proposal, submission_payload, document, it=it)
-    submission_payload["scan_design_executed_grid_status"] = grid_status
-    submission_payload["scan_design_executed_grid_reason"] = grid_reason
     executed_points = _executed_point_count(document, planned_points)
     if executed_points != planned_points and not reconciliation_applied:
         neutron_delta, seconds_delta = _reconcile_budget_points(
@@ -3425,6 +2539,22 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
     _persist_acquisition_provenance(cfg.workspace, submission_payload)
     tracks_before = _read_branch_tracks(cfg.workspace)
 
+    # The scan is shown the moment it lands; its fit is drawn over it when the fit completes
+    # (owner, 2026-09-03). Parse it into the ledger NOW, before the fit activity is announced, so
+    # a viewer never reads "fitting at q" of data it cannot see. Best effort: the fit that follows
+    # ingests the same file itself, so a failure here costs only the early sighting.
+    with timed(cfg.log_path, "isar_ingest", iteration=it):
+        try:
+            ingest_new(cfg.runner, cfg.workspace, [scan_path])
+        except Exception as error:  # noqa: BLE001 — never let the sighting block the fit
+            log_event(cfg.log_path, "exception", {
+                "action": "early_ingest_failed", "iter": it, "job_id": job_id,
+                "hkl": [proposal.h, proposal.k, proposal.l], "error": str(error)})
+    log_event(cfg.log_path, "scan_landed", {
+        "iter": it, "job_id": job_id, "q": [proposal.h, proposal.k, proposal.l],
+        "n_points": int(executed_points), "ncount": int(proposal.ncount),
+        "e_lo": float(proposal.e_lo), "e_hi": float(proposal.e_hi)})
+
     scan_tier, tier = _errors_tiers_for(proposal, cfg.workspace, cfg)
     promoted = proposal.kind in PRODUCTION_KINDS and tier in ("full", "bayes")
     if promoted:
@@ -3433,65 +2563,84 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
             "hkl": [proposal.h, proposal.k, proposal.l], "from_tier": "fast",
             "to_tier": tier, "reason": "untrusted_hesse_no_reliable_interval"})
     stage = "full_fit" if tier in ("full", "bayes") else "fast_fit"
-    with activity(cfg.log_path, stage, q=[proposal.h, proposal.k, proposal.l],
-                  job_id=job_id, fit_tier=tier, iteration=it):
-        with timed(cfg.log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
-            with analysis_operation(
-                    cfg.log_path, f"reduce:{proposal.acquisition_id}:{tier}:{attempt}",
-                    "pooled_reduction_and_fit",
-                    limit_seconds=objective.analysis_limit_seconds,
-                    allow_overrun_start=True, iteration=it, q=[proposal.h, proposal.k, proposal.l]):
-                allowance = _analysis_allowance_seconds(cfg, objective)
-                refresh_analysis(
-                    cfg.runner, cfg.workspace, [cfg.data_dir], errors_tier=tier,
-                    scan_errors_tier=scan_tier, master_errors_tier=tier, render=False,
-                    analysis_allowance_seconds=allowance,
-                    finish_initial_wave=(True if allowance is not None else None),
-                    enforce_completion=True,
-                    analysis_limit_seconds=objective.analysis_limit_seconds)
+    analysis_failed = False
+    try:
+        with activity(cfg.log_path, stage, q=[proposal.h, proposal.k, proposal.l],
+                      job_id=job_id, fit_tier=tier, iteration=it):
+            with timed(cfg.log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
+                with analysis_operation(
+                        cfg.log_path, f"reduce:{proposal.acquisition_id}:{tier}:{attempt}",
+                        "pooled_reduction_and_fit",
+                        limit_seconds=objective.analysis_limit_seconds,
+                        allow_overrun_start=True, iteration=it,
+                        q=[proposal.h, proposal.k, proposal.l]):
+                    allowance = _analysis_allowance_seconds(cfg, objective)
+                    refresh_analysis(
+                        cfg.runner, cfg.workspace, [cfg.data_dir], errors_tier=tier,
+                        scan_errors_tier=scan_tier, master_errors_tier=tier, render=False,
+                        analysis_allowance_seconds=allowance,
+                        finish_initial_wave=(True if allowance is not None else None),
+                        enforce_completion=True,
+                        analysis_limit_seconds=objective.analysis_limit_seconds)
+    except AnalysisLimitExceeded:
+        raise   # the campaign's own analysis ceiling is a stop condition, not a failure
+    except Exception as error:  # noqa: BLE001 — policy A (owner ruling 2026-09-05): never stop, shout
+        # The campaign does not stop on an analysis failure. The scan is on disk and in the ledger
+        # (early ingest above), and ``refresh_analysis`` re-runs over every record next iteration,
+        # so the un-analysed scan is picked up then; this iteration folds no new rows and the
+        # planner runs one scan stale, which is harmless once. What must not happen is silence: the
+        # failure is raised as a ``campaign_alert`` with its consecutive count, the channel every
+        # yell-for-help connector subscribes to. Measured 2026-09-05: a Windows file-lock race on
+        # results.csv (a reader held the file during the atomic swap) killed the worker and, with no
+        # handler here, the campaign — 174 iterations in, with beam time left.
+        _raise_campaign_alert(cfg.log_path, "analysis_failed", error, it=it, job_id=job_id,
+                              hkl=[proposal.h, proposal.k, proposal.l], tier=tier)
+        analysis_failed = True
     tracks_after = _read_branch_tracks(cfg.workspace)
     if tracks_after and tracks_after.get("revision") != tracks_before.get("revision"):
         log_event(cfg.log_path, "branch_track_update", {
             "iter": it, "revision": tracks_after.get("revision"),
-            "anchor_index": tracks_after.get("anchor_index"),
-            "acquisition_seed_index": tracks_after.get("acquisition_seed_index"),
-            "reduced_q_origin_index": tracks_after.get("reduced_q_origin_index"),
-            "frontiers": tracks_after.get("frontiers") or {}})
+            "reduced_q_origin_index": tracks_after.get("reduced_q_origin_index")})
         for reassignment in tracks_after.get("reassignments") or []:
             log_event(cfg.log_path, "branch_reassignment", {
                 "iter": it, "revision": tracks_after.get("revision"), **dict(reassignment)})
-        if (tracks_after.get("frontiers") or {}).get("frontier_blocked"):
-            log_event(cfg.log_path, "frontier_blocked", {
-                "iter": it, "revision": tracks_after.get("revision"),
-                "blocked_indices": (tracks_after.get("frontiers") or {}).get("blocked_indices") or []})
 
     with timed(cfg.log_path, "fold_rows", iteration=it) as metrics:
         rows = _new_rows(cfg.workspace, consumed)
         scan_cost = float(executed_points) * float(proposal.ncount)
-        for index, row in enumerate(rows):
+        # Since the campaign continues past a failed analysis (policy A), a later successful pass
+        # can publish rows from EARLIER acquisitions alongside this one. Each row is joined to its
+        # own submission through the acquisition provenance the session stamped on it; stamping
+        # every row with the current proposal gave a recovered scan the newest scan's exposure,
+        # Q and fingerprint, and the planner then saw 160M at one q and nothing at another
+        # (PR #37 review, second round, P1).
+        card_state = read_card_state(cfg.workspace)
+        charged = False
+        for row in rows:
+            prov = _row_provenance(row, proposal, card_state, cfg.log_path, it=it)
+            cost = scan_cost if (prov["current"] and not charged) else 0.0
+            charged = charged or prov["current"]
             observations.append(_observation_from_row(
-                row, proposal.kind, proposal.ncount, cfg.calibration,
-                proposal_cost=scan_cost if index == 0 else 0.0,
-                driver_inserted=bool((proposal.meta or {}).get("driver_inserted", False)),
-                certification_eligible=bool((proposal.meta or {}).get(
-                    "certification_eligible", True)),
-                acquisition_id=proposal.acquisition_id,
-                count_diagnostics=(proposal.meta or {}).get("count_diagnostics"),
-                acquisition_action_role=(proposal.meta or {}).get("acquisition_action_role"),
-                target_branch_role=(proposal.meta or {}).get("target_branch_role"),
-                rival_branch_role=(proposal.meta or {}).get("rival_branch_role"),
-                authoritative_evidence_revision=(proposal.meta or {}).get(
-                    "authoritative_evidence_revision"),
-                proposal_fingerprint=(proposal.meta or {}).get("proposal_fingerprint"),
-                evidence_sink=((proposal.meta or {}).get("evidence_sink")
-                               or CANONICAL_MASTER)))
+                row, prov["kind"], prov["ncount"], cfg.calibration,
+                proposal_cost=cost,
+                driver_inserted=prov["driver_inserted"],
+                certification_eligible=prov["certification_eligible"],
+                acquisition_id=prov["acquisition_id"],
+                count_diagnostics=prov["count_diagnostics"],
+                acquisition_action_role=prov["acquisition_action_role"],
+                target_branch_role=prov["target_branch_role"],
+                rival_branch_role=prov["rival_branch_role"],
+                authoritative_evidence_revision=prov["authoritative_evidence_revision"],
+                proposal_fingerprint=prov["proposal_fingerprint"],
+                evidence_sink=prov["evidence_sink"]))
             scan_kind[(row.get("scan"), row.get("detector"))] = (
-                proposal.kind, proposal.ncount, proposal.acquisition_id)
+                prov["kind"], prov["ncount"], prov["acquisition_id"])
         metrics["n_rows"] = len(rows)
 
     timings = read_run_timings(cfg.workspace)
     analyze_payload = {"job_id": job_id, "errors_tier": tier,
                        "scan_errors_tier": scan_tier, "master_errors_tier": tier, "iter": it,
+                       "status": "failed" if analysis_failed else "ok",
                        "n_rows": len(rows),
                        "dispositions": [row.get("disposition") or row.get("verdict")
                                         for row in rows]}
@@ -3593,32 +2742,26 @@ def _recover_unmatched_submissions(*, cfg: CampaignConfig, objective,
 def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan_counter: int,
                       budget_state: dict, observations: list[dict], consumed: set,
                       scan_kind: dict) -> tuple[list[dict], int, str | None]:
-    """Run one proposed scan to a folded result, with bounded missed-window re-centering (a LOOK, §1).
+    """Run one proposed scan to a folded result.
 
     Owns the inner validate → submit → wait → fetch/save → (lazy init) → ``isar run`` → fold → analyze
-    loop and its recenter/widen retries. Mutates ``observations`` (appends folded or declined rows),
-    ``consumed`` (via :func:`_new_rows`), ``scan_kind``, ``budget_state``, and ``proposal`` (e_lo/e_hi/
-    n_points on recenter) in place; returns ``(rows, scan_counter, declined_verdict)`` — the final
-    folded rows (empty on a decline), the advanced scan counter, and the decline verdict (``None`` on
-    success) that :func:`classify_rejection` turns into a durable consequence. Every ``timed`` span and
-    ``log_event`` payload is verbatim from the original loop body (the profiling / event contract is
-    part of the identity gate)."""
+    step and the instrument's own feasibility trim / target-support retries. There is no
+    missed-window recentre-and-widen: a scan that finds nothing is ordinary evidence (a clean null),
+    the planner sees the beliefs unchanged and the point still unmeasured, and it decides again.
+    Mutates ``observations`` (appends folded or declined rows), ``consumed`` (via :func:`_new_rows`),
+    ``scan_kind`` and ``budget_state`` in place; returns ``(rows, scan_counter, declined_verdict)``
+    — the folded rows (empty on a decline), the advanced scan counter, and the decline verdict
+    (``None`` on success) that :func:`classify_rejection` turns into a durable consequence."""
     client, runner = cfg.client, cfg.runner
     log_path, workspace, data_dir = cfg.log_path, cfg.workspace, cfg.data_dir
-    # ---- run this proposal, with bounded missed-window re-centering (a LOOK, §1) ----------
     attempt = 0
     rows: list[dict] = []
-    support_adjusted = False
     feasibility_trimmed = False
     # The request as it stood before a feasibility trim. A decline after the trim charges the
     # *trimmed* fingerprint, so without this the untrimmed original stays unsuppressed and the
     # selector re-emits it next iteration, repeating trim → decline for the rest of the campaign.
     pre_trim_request_fingerprint: str | None = None
     declined_verdict: str | None = None
-    # One operator-facing EIG line per iteration, wherever this iteration's EIG story ends: right
-    # after the authority path concludes when it gets that far, otherwise at the single exit below
-    # (a declined or unvalidatable request still owes the operator a "why nothing happened").
-    eig_event_emitted = False
     while True:
         # Single checkpoint before EVERY validate/submit, including support/recenter retries.
         previous_request_fingerprint = (proposal.meta or {}).get("proposal_fingerprint")
@@ -3632,17 +2775,6 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                 _declined_observation(proposal, "instrument_point_limit_exceeded"))
             declined_verdict = "instrument_point_limit_exceeded"
             break
-        _refresh_realized_comparison(
-            cfg, objective, proposal, budget_state, it=it,
-            legacy_adjustments=("execution_time_finalization",), finalizer=_finalize_proposal)
-        _record_scan_design_realization(
-            cfg,
-            proposal,
-            adjustment="execution_time_finalization_clamp",
-            previous_request_fingerprint=previous_request_fingerprint,
-            it=it,
-            attempt=attempt,
-        )
         finalized = finalized_proposal(proposal)
         with timed(log_path, "validate", iteration=it, attempt=attempt):
             val = client.validate(_validate_body(proposal, sample=cfg.sample,
@@ -3695,9 +2827,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                         + 1e-9)
 
             if not _in_window(target_energy):
-                # A survey quicklook leaves ``e_pred`` at 0.0 and searches a whole band; the
-                # hypothesis' own centre is then what the window is about. With neither, the
-                # proposal declares no target and longest-run is the honest choice.
+                # No declared target inside the window: longest-run is the honest choice.
                 target_energy = None
                 if target_band is not None and _in_window(float(target_band[0])):
                     target_energy = float(target_band[0])
@@ -3780,18 +2910,6 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                 # ``_guard_point_count``, so the trimmed grid is re-costed and re-fingerprinted the
                 # same way the step-shrink path is.
                 _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
-                _refresh_realized_comparison(
-                    cfg, objective, proposal, budget_state, it=it,
-                    legacy_adjustments=("validation_feasibility_trim",), force=True,
-                    finalizer=_finalize_proposal)
-                _record_scan_design_realization(
-                    cfg,
-                    proposal,
-                    adjustment="validation_feasibility_trim",
-                    previous_request_fingerprint=previous_request_fingerprint,
-                    it=it,
-                    attempt=attempt,
-                )
                 feasibility_trimmed = True
                 log_event(log_path, "feasibility_trim", {
                     "hkl": [proposal.h, proposal.k, proposal.l],
@@ -3817,34 +2935,6 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
                 "submitting unchanged", feasible_points, requested_points)
         if (min_support > 0 and target_support is not None and target_support < min_support
                 and val.get("would_queue", False)):
-            mean, sigma = map(float, target_band)
-            desired_step = max((4.0 * sigma) / max(min_support - 1, 1), 1e-6)
-            if not support_adjusted and desired_step < proposal.e_step:
-                old_step = proposal.e_step
-                previous_request_fingerprint = (proposal.meta or {}).get(
-                    "proposal_fingerprint")
-                proposal.e_step = desired_step
-                _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
-                _refresh_realized_comparison(
-                    cfg, objective, proposal, budget_state, it=it,
-                    legacy_adjustments=("minimum_target_support",), force=True,
-                    finalizer=_finalize_proposal)
-                _record_scan_design_realization(
-                    cfg,
-                    proposal,
-                    adjustment="minimum_target_support",
-                    previous_request_fingerprint=previous_request_fingerprint,
-                    it=it,
-                    attempt=attempt,
-                )
-                support_adjusted = True
-                log_event(log_path, "exception", {
-                    "action": "increase_target_support", "hkl": [proposal.h, proposal.k, proposal.l],
-                    "old_step": old_step, "requested_step": desired_step,
-                    "new_step": proposal.e_step, "finalized_step": proposal.e_step,
-                    "target_supporting_feasible_points": target_support,
-                    "required": min_support, "iter": it})
-                continue
             log_event(log_path, "exception", {
                 "action": "insufficient_target_support", "hkl": [proposal.h, proposal.k, proposal.l],
                 "target_supporting_feasible_points": target_support,
@@ -3867,39 +2957,7 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             declined_verdict = "validation_rejected"
             break
 
-        legacy_validation = val
-        val = _prepare_authoritative_submission(
-            cfg, objective, proposal, budget_state, legacy_validation, it=it,
-            finalizer=_finalize_proposal)
-        if not eig_event_emitted:
-            eig_event_emitted = _log_eig_decision(cfg, proposal, it=it)
-        finalized = finalized_proposal(proposal)
-        manifest_fingerprint = (validated_attempt(
-            finalized, val, status=("would_queue" if val.get("would_queue", False)
-                                    else "validation_rejected")).feasibility_manifest_fingerprint
-            if finalized is not None else _feasibility_manifest_fingerprint(val))
-        feasible_points = _feasible_point_count(val, proposal.n_points or 1)
-
         with timed(log_path, "submit", iteration=it, attempt=attempt) as _m:
-            if (proposal.meta or {}).get("scan_design_authority_selected_role") in {
-                    "legacy", "target_core"}:
-                try:
-                    authenticate_authority_submission(proposal, cfg.workspace)
-                except Exception as error:  # noqa: BLE001 - final fail-safe is exact legacy
-                    _LOG.exception(
-                        "authority identity changed at the submission boundary; restoring legacy")
-                    _restore_authenticated_legacy_request(cfg, proposal)
-                    val = legacy_validation
-                    finalized = finalized_proposal(proposal)
-                    manifest_fingerprint = (validated_attempt(
-                        finalized, val, status="would_queue").feasibility_manifest_fingerprint
-                        if finalized is not None else _feasibility_manifest_fingerprint(val))
-                    feasible_points = _feasible_point_count(val, proposal.n_points or 1)
-                    log_event(log_path, "exception", {
-                        "action": "scan_design_authority_late_authentication_failed",
-                        "severity": "high", "error": str(error), "iter": it,
-                        "recovery": "authenticated_legacy_request",
-                    })
             body = _scan_body(proposal, cfg.engine, cfg.base_seed + scan_counter,
                               sample=cfg.sample, background=cfg.sample_background_frozen)
             idempotency_key = f"{objective.name or 'campaign'}-{cfg.run_nonce}-{scan_counter}"
@@ -3997,7 +3055,6 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             # None either way, which is the manual/legacy lane.
             **{name: (proposal.meta or {})[name] for name in CAMPAIGN_PROVENANCE_FIELDS
                if (proposal.meta or {}).get(name) is not None},
-            **eig_submission_metadata(proposal),
             # The other two lifecycle identities, so a submitted scan joins back to the scientific
             # question it answers and the geometry its request was accepted under.
             "scientific_action_fingerprint": (proposal.meta or {}).get(
@@ -4023,98 +3080,22 @@ def _execute_proposal(*, cfg: CampaignConfig, objective, proposal, it: int, scan
             declined_verdict = f"scan_not_done:{snap.get('state')}"
             break
 
-        rows, data = _finalize_completed_submission(
+        rows, _data = _finalize_completed_submission(
             cfg=cfg, objective=objective, proposal=proposal,
             submission_payload=submission_payload, budget_state=budget_state,
             observations=observations, consumed=consumed, scan_kind=scan_kind,
             it=it, attempt=attempt)
+        # A scan whose window held nothing is a clean null, not a failure to recover from: it is
+        # ordinary evidence of absence, the planner sees it as such, and the next decision is the
+        # planner's. There is no recentre-and-widen retry.
+        break
 
-        target_delivered = _pooled_target_delivered(
-            observations, proposal, getattr(objective, "target_branch", "acoustic"))
-        clean_null = _auxiliary_clean_null(proposal, rows)
-        if not _rows_missed(rows) or target_delivered or clean_null:
-            if clean_null and _rows_missed(rows):
-                log_event(log_path, "decide", {
-                    "event": "clean_null_suppressed", "action": "missed_window_suppressed",
-                    "reason": "auxiliary identity probe returned a trustworthy clean null; the rival "
-                              "was not detected in the searched window — not a missed window",
-                    "hkl": [proposal.h, proposal.k, proposal.l], "iter": it})
-            elif target_delivered and _rows_missed(rows):
-                log_event(log_path, "decide", {
-                    "event": "missed_window_suppressed", "action": "missed_window_suppressed",
-                    "reason": "pooled master delivered the selected target mode",
-                    "hkl": [proposal.h, proposal.k, proposal.l], "iter": it})
-            break
-        # Missed window: LOOK at the counts to re-center + widen, up to the attempt cap.
-        with timed(log_path, "missed_window", iteration=it):
-            result = data.get("result") or {}
-            pooled_inputs = _pooled_recenter_inputs(
-                cfg.workspace, (proposal.h, proposal.k, proposal.l))
-            recenter_counts, recenter_energy = (pooled_inputs if pooled_inputs is not None else
-                                                (result.get("counts") or [],
-                                                 result.get("scan_values_1") or []))
-            act = exc.handle_missed_window(
-                recenter_counts, recenter_energy,
-                e_lo=proposal.e_lo, e_hi=proposal.e_hi, attempt=attempt,
-                resolution_fwhm=(proposal.fwhm_dE or None))
-        log_event(log_path, "exception", {**act.to_dict(), "iter": it})
-        # Both `recenter` and `recenter_refused_elastic` mutate the window (act.params carry e_lo/e_hi)
-        # and re-enter the loop; the elastic refusal widens about the OLD center rather than chasing
-        # ΔE ≈ 0. Any other action (escalate) ends the retry loop.
-        if act.action not in ("recenter", "recenter_refused_elastic"):
-            break
-        previous_request_fingerprint = (proposal.meta or {}).get("proposal_fingerprint")
-        _invalidate_realized_comparison_for_recovery(proposal)
-        proposal.e_lo = act.params["e_lo"]
-        proposal.e_hi = act.params["e_hi"]
-        try:
-            _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
-        except InstrumentPointLimitExceeded as error:
-            proposal.n_points, _sanitized_step = resolve_point_count(
-                proposal.e_lo, proposal.e_hi, proposal.e_step,
-                adapter=TAVI_GRID_ADAPTER)
-            _stamp_proposal_provenance(proposal)
-            _record_scan_design_realization(
-                cfg, proposal, adjustment="missed_window_recovery_point_limit_refusal",
-                previous_request_fingerprint=previous_request_fingerprint,
-                it=it, attempt=attempt + 1)
-            log_event(log_path, "exception", {
-                "action": "instrument_point_limit_exceeded", "phase": "missed_window_recovery",
-                "error": str(error), "hkl": [proposal.h, proposal.k, proposal.l], "iter": it})
-            observations.append(
-                _declined_observation(proposal, "instrument_point_limit_exceeded"))
-            declined_verdict = "instrument_point_limit_exceeded"
-            break
-        _record_scan_design_realization(
-            cfg,
-            proposal,
-            adjustment=(
-                "missed_window_recenter"
-                if act.action == "recenter"
-                else "missed_window_elastic_refusal_widening"
-            ),
-            previous_request_fingerprint=previous_request_fingerprint,
-            it=it,
-            attempt=attempt + 1,
-        )
-        attempt += 1
-
-    if not eig_event_emitted:
-        _log_eig_decision(cfg, proposal, it=it)
     return rows, scan_counter, declined_verdict
 
 
 def _certification_revision(point: dict) -> str | None:
     revision = point.get("master_revision")
     return str(revision) if revision not in (None, "") else None
-
-
-def _certification_decision_signature(decision) -> tuple:
-    """Stable scientific state used only to prevent zero-progress certification loops."""
-    return tuple((tuple(point.get("hkl") or ()), _certification_revision(point),
-                  point.get("calibrated_halfwidth"), point.get("assessment_state"),
-                  bool(point.get("converged", False)))
-                 for point in decision.per_q or ())
 
 
 def _certification_acceptance_path(workspace: Path) -> Path:
@@ -4546,38 +3527,967 @@ def _operator_stop_requested(cfg: CampaignConfig, it: int) -> bool:
         return False
 
 
-def _terminalize_certification_regression(decision: StopDecision) -> StopDecision:
-    """Turn a certified ``continue`` into an honest, resumable terminal outcome.
+# --------------------------------------------------------------------------- the EIG planner seam
 
-    ``continue`` is an in-loop instruction, not one of the campaign's terminal outcomes.  A full
-    certification pass can legitimately widen an interval that passed the provisional tier; when
-    that happens at the end of an invocation the persisted result must say both that the objective
-    remains incomplete and that another acquisition run is required.
+class PlannerRefusal(RuntimeError):
+    """A declared input the EIG planner needs is missing, so the campaign cannot be planned.
+
+    Raised rather than defaulted: guessing a zone period or an energy domain would silently place
+    every scan of the campaign in the wrong coordinate.
     """
-    if decision.state != "continue":
-        return decision
 
-    failed = [row for row in decision.per_q if not row.get("converged", False)]
-    labels = []
-    for row in failed:
+
+#: The card template ``isar init`` builds a TAVI workspace's ``card.policy.toml`` from. The drive's
+#: targeted lane is TAVI-only (``_scan_body`` / ``_validate_body`` speak that wire), so this is the
+#: declaration the workspace WILL carry, read one step early.
+_TAVI_CARD_TEMPLATE = Path(__file__).resolve().parents[1] / "parsers" / "cards" / "tavi.policy.toml"
+
+
+def _declared_card_policy(workspace) -> dict:
+    """The scientist-owned card policy: the workspace's own card once it exists, else its template.
+
+    ``isar init`` writes ``card.policy.toml`` only after the FIRST scan has landed, and the planner
+    needs the zone period and the sample temperature before the first scan is chosen. Reading the
+    template the workspace is about to be initialised from is the same declaration one step earlier,
+    not a guessed default — a workspace whose card later declares different values uses those from
+    then on, because this reads the card whenever it is there.
+    """
+    import tomllib
+    path = Path(workspace) / "card.policy.toml"
+    source = path if path.exists() else _TAVI_CARD_TEMPLATE
+    try:
+        return tomllib.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as error:
+        _LOG.warning("could not read the card policy from %s: %s", source, error)
+        return {}
+
+
+def _declared_zone_period(workspace) -> float | None:
+    """The reduced-zone fold period the branch beliefs' ``u`` is measured in."""
+    declared = _workspace_zone_period(Path(workspace))
+    if declared:
+        return declared
+    value = (_declared_card_policy(workspace).get("dispersion") or {}).get("zone_period")
+    return float(value) if value is not None else None
+
+
+#: An optic branch lives above the elastic line: the domain a targeted optic campaign plans in
+#: starts this many elastic-resolution FWHMs above zero transfer (owner ruling 2026-09-05, three so
+#: the line's wings never leak in). A class prior on "optic", like "gapless" is on "acoustic" — not a
+#: placement rule: it says where the phenomenon can be, and the planner still chooses every window.
+OPTIC_ELASTIC_EXCLUSION_FWHM = 3.0
+
+
+def _planner_energy_domain(objective, path, resolution_cb) -> tuple[float, float]:
+    """The energy domain the planner builds windows in and truncates beliefs against.
+
+    Two honest sources and nothing phonon-specific (owner ruling 2026-09-05; the retired
+    ``[-2, 12]`` / ``[-9, 9]`` per-branch ranges were the demo sample's numbers and made an
+    acoustic branch above 9 meV or an optic branch above 12 meV unmeasurable):
+
+    - above: the objective's ``energy_search_meV[1]``, which the compiler sets to the card's
+      ``max_energy_transfer_meV`` — the instrument's kinematic ceiling;
+    - below: zero for an acoustic target (the branch is gapless there), and
+      :data:`OPTIC_ELASTIC_EXCLUSION_FWHM` elastic resolution widths for an optic target. The
+      elastic FWHM is the resolution callback at zero transfer along the path (median); its
+      advisory default stands in when the instrument cannot answer, as everywhere else.
+    """
+    lo, hi = (float(v) for v in objective.energy_search_meV)
+    lo = max(lo, 0.0)
+    if str(getattr(objective, "target_branch", "acoustic")) == "optic":
+        widths = []
+        for point in path:
+            try:
+                widths.append(float(_resolve_fwhm(resolution_cb, point[0], point[1], point[2], 0.0)))
+            except Exception as error:                     # noqa: BLE001 - resolution is advisory
+                _LOG.warning("could not resolve the elastic FWHM at %s (%s); using %s meV",
+                             point, error, DEFAULT_FWHM_MEV)
+                widths.append(float(DEFAULT_FWHM_MEV))
+        elastic_fwhm = float(statistics.median(widths)) if widths else float(DEFAULT_FWHM_MEV)
+        lo = max(lo, OPTIC_ELASTIC_EXCLUSION_FWHM * elastic_fwhm)
+    if not lo < hi:
+        raise PlannerRefusal(
+            f"campaign refused: the energy domain [{lo:g}, {hi:g}] meV is empty — the card's "
+            "max_energy_transfer_meV sits below the elastic exclusion")
+    return lo, hi
+
+
+def _reduced_u(hkl, period: float) -> float:
+    """Reduced-zone coordinate — each component folded about its nearest zone centre, Euclidean.
+
+    Identical to :func:`isar.session.branch_assignment.reduced_q`, which is what wrote the ``u`` of
+    every anchor in ``card.state.json["branch_belief_models"]``. A belief prediction is only
+    meaningful in the coordinate its anchors were stored in, so the two must agree exactly.
+    """
+    half = 0.5 * float(period)
+    return math.sqrt(sum(((((float(c) + half) % float(period)) - half) ** 2) for c in hkl))
+
+
+def _bose_plus_one(omega_meV: float, temperature_K: float) -> float:
+    """``n(w,T)+1 = 1/(1-exp(-w/k_BT))`` — the factor :func:`isar.analyze.phonon.bose_occupation`
+    applies, re-stated here because the drive may not import the analysis package."""
+    if temperature_K is None or float(temperature_K) <= 0.0 or float(omega_meV) <= 0.0:
+        return 1.0
+    return 1.0 / -math.expm1(-float(omega_meV) / (KB_MEV_PER_K * float(temperature_K)))
+
+
+def _prior_belief_row(hypothesis: Mapping, period: float) -> dict:
+    """A prior-only belief row for a branch with no measured anchors yet (the cold start).
+
+    ``_store_branch_beliefs`` writes nothing until the first scan lands, so without this the planner
+    would see one branch and could never price "which of the two is this peak".
+    """
+    return {"branch_id": str(hypothesis.get("name")), "anchors": [], "n_anchors": 0,
+            "period": float(period),
+            "parameter_prior": {"zc_energy": dict(hypothesis.get("zc_energy") or {}),
+                                "slope_zc": dict(hypothesis.get("slope_zc") or {}),
+                                "confidence": float(hypothesis.get("confidence", 0.0) or 0.0)}}
+
+
+def _belief_sample(durable_state: dict, cfg) -> str:
+    """Which sample's belief rows ARE this campaign's hypothesis map.
+
+    The session layer stamps the sample name it parsed off the instrument payload (``"tavi"``); the
+    driver submits under its own configured name (``cfg.sample``, ``"Al_phonon_DFT"`` by default).
+    They are routinely different, and matching on the driver's name found nothing: every iteration
+    of the first live run planned against a synthesised class prior while six confirmed anchors sat
+    in ``card.state.json``, and asked for 100-point windows where a settled belief wants twelve.
+
+    So the map is the workspace's own. One sample in the workspace IS the campaign's sample,
+    whatever the driver calls it. Several, and the driver's name is what disambiguates them — and
+    if it names none of them there is no map here, which is a refusal, not a licence to plan against
+    a prior the workspace has already superseded.
+    """
+    samples = sorted({str(row["sample"])
+                      for row in (durable_state.get("branch_belief_models") or [])
+                      if isinstance(row, Mapping) and row.get("sample")})
+    if not samples:
+        return str(cfg.sample)
+    if len(samples) == 1:
+        if samples[0] != str(cfg.sample):
+            _LOG.info("planning against the workspace's belief rows for sample %r "
+                      "(the campaign submits as %r)", samples[0], cfg.sample)
+        return samples[0]
+    if str(cfg.sample) in samples:
+        return str(cfg.sample)
+    raise PlannerRefusal(
+        f"campaign refused: the workspace holds belief rows for {', '.join(samples)} and none for "
+        f"{cfg.sample!r}, so there is no hypothesis map for this campaign to plan against; planning "
+        "on the class prior instead would ignore evidence the workspace already holds")
+
+
+def _planner_beliefs(durable_state: dict, objective, cfg, sample: str, temperature_bin,
+                     period: float) -> dict:
+    """The hypothesis map: one belief row per modelled branch, measured slice first, prior otherwise.
+
+    BOTH branches are always present whichever is the target — the planner's joint peak-to-branch
+    matching is what lets a scan reject the rival, and it cannot run against a single branch.
+    """
+    slices = _belief_slices(durable_state, sample=sample)
+    rows = {str(row["branch_id"]): dict(row)
+            for row in (slices.get(temperature_bin) or []) if row.get("branch_id")}
+    declared = {str(h.get("name")): h for h in (objective.hypotheses or [])
+                if isinstance(h, Mapping) and h.get("name") not in (None, "null")}
+    for name in sorted(set(declared) | {"acoustic", "optic"}):
+        if name in rows:
+            continue
+        hypothesis = declared.get(name)
+        if hypothesis is None:
+            hypothesis = preset(name, objective.energy_search_meV).to_dict()
+        rows[name] = _prior_belief_row(hypothesis, period)
+    return rows
+
+
+#: How far the row's ``omega0`` may sit from a fitted mode and still be that mode — a resolution
+#: width; beyond it the certifying interval describes no candidate and binds to none.
+_PRIMARY_MODE_TOLERANCE_MEV = 0.5
+
+
+def _planner_candidates(master_rows: list[dict], path, energy_domain) -> dict[int, list]:
+    """Grid index to the pooled master's fitted peaks, as planner candidates.
+
+    The candidate's sigma is the master row's CERTIFYING half-width and nothing else: the
+    model-averaged interval ``_master_obs_from_row`` publishes as ``halfwidth`` alongside
+    ``certifiable``. That is the number the campaign will certify and report, and the prize is
+    stated over the reported number.
+
+    ``diagnostic_halfwidth`` is deliberately NOT accepted, though it is the same calibrated scale.
+    A row that is not model-robust publishes it *instead of* a certifying interval — the fit has an
+    answer but the model behind it is not settled — and reading it here let the prize be claimed on
+    a point that certification then refused to certify. The two numbers are equal on a model-robust
+    row and only differ where it matters, which is exactly why substituting one for the other is
+    invisible until a campaign certifies something it never measured. Never the fit's raw
+    ``omega0_err`` either: a fast-tier HESSE error of 0.0003 meV would declare a point settled to a
+    precision the published interval (0.06 meV) does not carry.
+
+    Everything else is "detected, precision not established" — sigma = half the positive energy
+    domain: a non-model-robust row, a fork (the fit has two answers), a pool-inconsistent row (its
+    members disagree), or no interval at all. The peak still enters as evidence for *assignment*,
+    and the planner still values a scan there, which is what escalates the errors tier and buys the
+    counts the point needs.
+
+    The certifying half-width belongs to ONE candidate: the mode the interval describes. It is the
+    model-averaged predictive of the fit's primary mode, whose location the row publishes as
+    ``omega0`` (``model_interval_med``); the session's tracker may later select a secondary mode or
+    clear the selection as ambiguous without that interval moving (``_clear_tracked_selection``
+    leaves ``model_interval`` alone). Handing it to every fitted peak let a secondary peak carry the
+    primary mode's certified precision into the prize (PR #37 review), so it goes to the candidate
+    nearest ``omega0`` and to no other; the rest are "detected, precision not established".
+
+    Deliberately NOT gated on the tracker's ``track_state``: the session assigns each peak on its
+    own (``assign``) and reads a lone near-fold peak as ``ambiguous`` under the optic's broad class
+    prior, where the planner's joint matching with window-absence evidence settles it. Making the
+    session's verdict a gate re-created the stall at h = 2.05 (23 scans, nothing within the bar).
+    """
+    unknown_sigma = 0.5 * (float(energy_domain[1]) - max(float(energy_domain[0]), 0.0))
+    out: dict[int, list] = {}
+    for row in master_rows:
         hkl = row.get("hkl")
-        halfwidth = row.get("calibrated_halfwidth")
-        tolerance = row.get("tolerance")
-        if isinstance(hkl, (list, tuple)) and len(hkl) == 3:
-            q_text = "(" + ", ".join(f"{float(value):g}" for value in hkl) + ")"
-        else:
-            q_text = str(hkl or "unknown q")
-        if halfwidth is not None and tolerance is not None:
-            labels.append(f"{q_text}: ±{float(halfwidth):.4g} > ±{float(tolerance):.4g} meV")
-        else:
-            labels.append(q_text)
-    detail = "; ".join(labels) if labels else "one or more requested q points"
+        index = None if hkl is None else match_grid_index(tuple(hkl), path)
+        if index is None:
+            continue
+        try:
+            halfwidth = float(row.get("halfwidth"))
+        except (TypeError, ValueError):
+            halfwidth = None
+        trusted = (bool(row.get("certifiable")) and row.get("modality") != "fork"
+                   and row.get("pool_consistent") is not False
+                   and halfwidth is not None and math.isfinite(halfwidth) and halfwidth > 0.0)
+        energies = []
+        for candidate in (row.get("branch_candidates") or []):
+            try:
+                energy = float(candidate.get("energy_meV", candidate.get("omega0")))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(energy):
+                energies.append((energy, candidate))
+        primary = None
+        try:
+            omega0 = float(row.get("omega0"))
+        except (TypeError, ValueError):
+            omega0 = math.nan
+        if trusted and energies and math.isfinite(omega0):
+            nearest = min(range(len(energies)), key=lambda j: abs(energies[j][0] - omega0))
+            if abs(energies[nearest][0] - omega0) <= _PRIMARY_MODE_TOLERANCE_MEV:
+                primary = nearest
+        elif trusted and len(energies) == 1:
+            primary = 0                   # a lone mode is the one the interval describes
+        candidates = []
+        for j, (energy, candidate) in enumerate(energies):
+            sigma = halfwidth if j == primary else unknown_sigma
+            candidates.append(Candidate(energy, max(sigma, 1e-9),
+                                        dict(candidate.get("probabilities") or {})))
+        out[index] = candidates
+    return out
+
+
+def _planner_scans(log_path, observations: list[dict], path, branches) -> dict[int, list]:
+    """Grid index to the scans already executed there: where each looked and for how long.
+
+    What a scan contributes is its share of the exposure over an energy. Whether a branch was
+    delivered is NOT recorded per scan, deliberately: ISAR pools every scan at a q into a master
+    and fits the master, so the planner reads delivery off the point's pooled candidates. Asking
+    one scan's own fit counted a single pooled observation once per scan that went into it.
+
+    A count-untrusted arena is NOT evidence either way — a validation decline, a job that never
+    reached ``done`` — and is skipped here (it carries no ``scan``). The window and exposure come
+    from the durable ``physical_submission`` record, so a resume rebuilds the same set.
+    """
+    branches = tuple(str(b) for b in branches)
+    windows: dict[str, dict] = {}
+    for event in read_log(log_path):
+        if event.get("kind") != "physical_submission":
+            continue
+        payload = event.get("payload") or {}
+        if payload.get("acquisition_id") is not None:
+            windows[str(payload["acquisition_id"])] = payload
+    out: dict[int, list] = {}
+    for observation in observations:
+        if observation.get("kind") == "pooled_master_update" or observation.get("scan") is None:
+            continue
+        payload = windows.get(str(observation.get("acquisition_id")))
+        if payload is None or payload.get("search_energy_lo") is None:
+            continue
+        index = match_grid_index(tuple(payload.get("hkl") or ()), path)
+        if index is None:
+            continue
+        out.setdefault(index, []).append(ExecutedScan(
+            float(payload["search_energy_lo"]), float(payload["search_energy_hi"]),
+            int(payload.get("submitted_ncount") or payload.get("ncount") or 0)))
+    # Every scan stands, repeats included: two identical scans are two independent observations and
+    # the second really is more evidence than the first. The scenario-weight underflow that made the
+    # planner divide by zero is guarded in the planner now, not by hiding measurements from it here.
+    return out
+
+
+def _ingest_counts(data_dir) -> dict[tuple, dict]:
+    """``(scan_number, detector_id)`` -> the ``isar.unit_data/1`` record analysis ingested.
+
+    The counts are the authoritative measurement (``DESIGN_GOALS``: fits are the human-readable
+    layer, not the proof layer), and this is where they are durable. Found by scanning the directory
+    rather than rebuilding the filename, because the name encoding belongs to
+    :mod:`isar.session.unit_data` and the drive may not import the session package.
+    """
+    out: dict[tuple, dict] = {}
+    ingest = Path(data_dir) / "ingest"
+    if not ingest.is_dir():
+        return out
+    for path in sorted(ingest.glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            _LOG.warning("could not read the ingested counts at %s: %s", path, error)
+            continue
+        if record.get("scan_number") is None:
+            continue
+        out[(str(record["scan_number"]), str(record.get("detector_id")))] = record
+    return out
+
+
+def _candidate_probabilities(candidate: Mapping, row: Mapping, branches,
+                             index: int | None = None) -> dict[str, float]:
+    """``P(branch | candidate)`` for one fitted mode, over the modelled branches.
+
+    Only a POOLED master's candidates carry ``probabilities`` — the per-scan table
+    (``evidence_update._mode_candidates``) has none, and the scan row's ``branch_id`` is the label
+    the tracker gave THE SELECTED delivery, ``selected_candidate_index``. A label is a probability
+    of one for that one mode: the tracker said this mode is that branch, so ``{branch: 1.0}`` with
+    zero on the others is what it asserts. Every other mode on the row asserts nothing and returns
+    an empty mapping — handing the row label to a two-mode fit's second lobe entered the optic's
+    counts into the acoustic brightness (PR #37 review).
+    """
+    probabilities = {str(k): float(v)
+                     for k, v in (candidate.get("probabilities") or {}).items()
+                     if str(k) in branches}
+    if probabilities:
+        return {b: probabilities.get(b, 0.0) for b in branches}
+    selected = row.get("selected_candidate_index")
+    if selected is None and len(row.get("branch_candidates") or ()) == 1:
+        selected = 0                      # a single fitted mode is the selection, named or not
+    if index is not None and (selected is None or int(selected) != int(index)):
+        return {}
+    branch = str(row.get("branch_id") or "")
+    if branch in branches:
+        return {b: (1.0 if b == branch else 0.0) for b in branches}
+    return {}
+
+
+def _lobe_area(x, counts, background: float, centre: float, half_width: float, step: float,
+               *, exclude=()) -> float | None:
+    """Counts*meV above ``background`` within ``half_width`` of ``centre``, ignoring the points that
+    belong to another lobe. ``None`` when this scan did not measure this lobe at all.
+
+    ``None`` and ``0.0`` say different things and both are answers: ``None`` is "the window never
+    looked here", which contributes nothing; ``0.0`` is "the window looked and there is nothing",
+    which is a measurement and belongs in the median.
+    """
+    if not (x[0] - 1e-9 <= centre <= x[-1] + 1e-9):
+        return None
+    inside = [(value, count) for value, count in zip(x, counts)
+              if abs(value - centre) <= half_width
+              and not any(abs(value - other) <= half_width for other in exclude)]
+    if not inside:
+        return None
+    return sum(max(count - background, 0.0) * step for _value, count in inside)
+
+
+def _planner_scale(cfg, observations: list[dict], path, branches, temperature_K: float,
+                   fwhm_meV) -> IntensityScale:
+    """The intensity map, integrated from the counts each scan actually recorded.
+
+    Read from the counts, not from the fits: the fitted amplitudes do not carry the convention this
+    needs. Measured on the second live run, master (41,0,0) published ``phonon.A = 6.7e-5`` against
+    an ``effective_exposure`` of 5e6 -- 1.3e-11 counts*meV per neutron -- while the scan that
+    produced it holds an 18-count peak over a background of 6, about 8 counts*meV above background.
+    The forward model was five orders of magnitude too dim, so no design could complete a point,
+    every expected information was exactly zero, and the planner bought the cheapest probe forever.
+    ``bg.BG`` swings 0.05-0.64 between scans of the same declared background, which is the same
+    story. Counts are authoritative and fits are disposable, so the map comes from the counts.
+
+    Per executed scan at a path point, from its ingested ``x``/``counts`` and its submitted
+    ``ncount``:
+
+    * ``background`` is the 20th percentile of the scan's counts -- the level away from the lobes;
+    * a delivered candidate's **Stokes lobe area** is the counts above background within two
+      resolution widths of its energy. When the window also holds the anti-Stokes lobe at ``-w`` its
+      area joins in and the total divides by ``2n+1`` rather than ``n+1`` (``n`` the Bose occupation
+      at that energy and the campaign temperature) -- the planner's ``peak_counts_meV`` is the
+      **pre-Bose** area, and the forward model puts the occupation back;
+    * the **elastic** area is measured the same way about zero, when zero is inside the window;
+    * all three divide by ``ncount``, giving counts*meV (or counts per point) per ONE neutron.
+
+    QC-rejected points are honoured, never deleted (hard rule 5): a point the reducer masked
+    contributes to neither a lobe area nor the background percentile.
+
+    TODO: this integrates the record's RAW abscissa, which is the energy transfer only while the
+    card declares ``raw_abscissa_kind = "absolute"`` -- true of TAVI and of every instrument this
+    lane drives today. A ``needs_zero`` instrument (hard rule 4) records an uncalibrated axis, and
+    its counts must be shifted by the calibrated energy zero before any of these windows mean
+    anything. Do not run this map on one until that shift is applied.
+
+    The median over scans per branch, so one clipped window or one mislabelled mode cannot move the
+    map. A branch nothing has measured keeps the planner's class default.
+
+    # ponytail: an elastic line closer than two resolution widths to the phonon shares its counts
+    # with it, and both areas are then over-read. Real below ~1 meV at this resolution; the median
+    # over the path is what keeps it out of the map. Fix by fitting the two lobes jointly if the
+    # low-q points ever need their own scale.
+    """
+    branches = tuple(str(b) for b in branches)
+    records = _ingest_counts(cfg.data_dir)
+    if not records:
+        return default_intensity_scale(branches)
+    submissions: dict[str, dict] = {}
+    for event in read_log(cfg.log_path):
+        if event.get("kind") != "physical_submission":
+            continue
+        payload = event.get("payload") or {}
+        if payload.get("acquisition_id") is not None:
+            submissions[str(payload["acquisition_id"])] = payload
+
+    peaks: dict[str, list[float]] = {}
+    elastic: list[float] = []
+    background_levels: list[float] = []
+    for observation in observations:
+        if observation.get("kind") == "pooled_master_update" or observation.get("scan") is None:
+            continue
+        record = records.get((str(observation["scan"]), str(observation.get("detector"))))
+        submission = submissions.get(str(observation.get("acquisition_id")))
+        if record is None or submission is None:
+            continue
+        index = match_grid_index(tuple(submission.get("hkl") or ()), path)
+        try:
+            ncount = float(submission.get("submitted_ncount") or submission.get("ncount") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if index is None or ncount <= 0.0:
+            continue
+        try:
+            raw_x = [float(v) for v in (record.get("x") or ())]
+            raw_counts = [float(v) for v in (record.get("counts") or ())]
+        except (TypeError, ValueError):
+            continue
+        if len(raw_x) < 3 or len(raw_counts) != len(raw_x):
+            continue
+        step = abs(raw_x[1] - raw_x[0])
+        if step <= 0.0:
+            continue
+        # QC masks, never deletes (hard rule 5): a rejected point is still in the record and must
+        # weigh on nothing -- not a lobe area, not the background level.
+        mask = record.get("mask")
+        keep = ([bool(v) for v in mask] if isinstance(mask, list) and len(mask) == len(raw_x)
+                else [True] * len(raw_x))
+        x = [value for value, ok in zip(raw_x, keep) if ok]
+        counts = [count for count, ok in zip(raw_counts, keep) if ok]
+        if len(x) < 3:
+            continue
+        # Nearest-rank 20th percentile: the level the scan sits at away from its lobes.
+        background = sorted(counts)[min(int(0.2 * len(counts)), len(counts) - 1)]
+        background_levels.append(background / ncount)
+        half_width = 2.0 * float(fwhm_meV[index])
+        # The elastic line is only measured where nothing else is sitting on it. At the reduced-q
+        # origin the acoustic Stokes/anti-Stokes pair straddles zero inside one resolution width, and
+        # integrating that as "elastic" is what made the elastic term read ~30 counts*meV per 1e7 at
+        # the near-fold points and ~0 everywhere else. Every delivered mode's own two lobes are
+        # excluded; when nothing is left, this scan did not measure the elastic and says nothing.
+        # ponytail: the converse contamination -- a real elastic line leaking into an unresolved
+        # phonon's lobe -- is not corrected, because on this instrument there is no elastic line to
+        # leak (scans at 1.8 and 2.7 meV read exactly zero counts at dE = 0). Split the two by a
+        # joint fit if a sample with a bright elastic ever needs its own scale.
+        occupied = [sign * float(candidate.get("energy_meV", candidate.get("omega0") or 0.0))
+                    for candidate in (observation.get("branch_candidates") or ())
+                    for sign in (1.0, -1.0)]
+        area = _lobe_area(x, counts, background, 0.0, half_width, step, exclude=occupied)
+        if area is not None:
+            elastic.append(area / ncount)
+        for j, candidate in enumerate(observation.get("branch_candidates") or ()):
+            # The brightness goes to the mode's most probable branch, whole, rather than split
+            # across branches in proportion. A lobe area is one physical quantity — those counts
+            # came from one branch, whichever it was — and splitting it would hand the optic a
+            # fraction of an acoustic peak and make the map describe a mode that does not exist.
+            # The median over scans is what survives a wrong argmax; a smeared area would not.
+            probabilities = _candidate_probabilities(candidate, observation, branches, j)
+            branch = max(probabilities, key=probabilities.__getitem__) if probabilities else None
+            try:
+                energy = float(candidate.get("energy_meV", candidate.get("omega0")))
+            except (TypeError, ValueError):
+                continue
+            if branch is None or probabilities[branch] <= 0.0:
+                continue
+            if not math.isfinite(energy) or energy <= 0.0:
+                continue
+            stokes = _lobe_area(x, counts, background, energy, half_width, step)
+            if stokes is None or stokes <= 0.0:
+                continue
+            anti_stokes = _lobe_area(x, counts, background, -energy, half_width, step)
+            occupation = _bose_plus_one(energy, temperature_K)                  # n + 1
+            intrinsic = (stokes / occupation if anti_stokes is None
+                         else (stokes + anti_stokes) / (2.0 * occupation - 1.0))   # 2n + 1
+            if intrinsic > 0.0:
+                peaks.setdefault(branch, []).append(intrinsic / ncount)
+
+    default = default_intensity_scale(branches)
+
+    def middle(values: list[float], fallback: float) -> float:
+        return statistics.median(values) if values else float(fallback)
+
+    # A background of zero is a real reading — at five million neutrons most of these windows hold
+    # no background counts at all — but the forward model divides by the rate, so it needs the
+    # smallest level the scan could have resolved rather than the zero it measured: half a count.
+    background = middle(background_levels, default.background_per_point)
+    if background <= 0.0:
+        exposures = [float(s.get("submitted_ncount") or s.get("ncount") or 0.0)
+                     for s in submissions.values()]
+        exposures = [value for value in exposures if value > 0.0]
+        background = (0.5 / statistics.median(exposures) if exposures
+                      else default.background_per_point)
+    return IntensityScale(
+        peak_counts_meV={b: middle(peaks.get(b, []), default.peak_counts_meV[b])
+                         for b in branches},
+        elastic_counts_meV=middle(elastic, default.elastic_counts_meV),
+        background_per_point=background)
+
+
+def _planner_temperature(durable_state: dict, objective, cfg, sample: str,
+                         temperature_bin) -> float:
+    """The temperature the Bose factor runs at, from the same sample the hypothesis map came from.
+
+    Ladder, re-walked every iteration so the first measured slice takes over the moment it lands:
+    the resolved (complete) slice, else the newest slice of that sample at all, else the objective's
+    declared temperature, else the card's ``[temperature_rule]`` setpoint. TAVI's ``GET /state``
+    carries no sample temperature — its ``parameters`` block is all geometry and the simulator only
+    reports ``temperature`` inside a completed scan — so the card gap-filler is the last declared
+    source, and there is no bare constant below it.
+    """
+    if temperature_bin is not None:
+        return float(temperature_bin)
+    declared = sorted(_belief_slices(durable_state, sample=sample))
+    if declared:
+        return float(declared[-1])
+    if getattr(objective, "target_temperature_K", None) is not None:
+        return float(objective.target_temperature_K)
+    setpoint = (_declared_card_policy(cfg.workspace).get("temperature_rule") or {}).get("setpoint")
+    if setpoint is not None:
+        _LOG.info("no measured belief slice yet; the EIG forward model uses the card's declared "
+                  "sample setpoint %.4g K for the Bose factor", float(setpoint))
+        return float(setpoint)
+    raise PlannerRefusal(
+        "campaign refused: no sample temperature is declared anywhere — no measured belief slice, "
+        "no objective target_temperature_K, and no [temperature_rule] setpoint on the card — so the "
+        "Bose factor in the forward model would be a guess")
+
+
+def _declared_t_round(workspace) -> float | None:
+    """``collation.t_round`` from the card policy — the temperature-bin granularity every session
+    slice is keyed by (``round(T / t_round) * t_round``); ``None`` when the card declares none."""
+    policy_path = Path(workspace) / "card.policy.toml"
+    if not policy_path.exists():
+        return None
+    try:
+        card = Card.load(policy_path, Path(workspace) / "card.state.json")
+        value = (getattr(card.policy, "collation", None) or {}).get("t_round")
+    except (OSError, ValueError, TypeError) as exc:
+        _LOG.warning("could not read collation.t_round from %s: %s", policy_path, exc)
+        return None
+    return None if value is None else float(value)
+
+
+def _slice_rows(rows: list[dict], sample: str | None, temperature_bin, t_round) -> list[dict]:
+    """Only the rows measured under the campaign's own (sample, temperature bin).
+
+    The beliefs are resolved to one slice every iteration; the candidates, banked exposure,
+    intensity map and anchor escalations must read the same slice or a reused workspace holding
+    the same Q at another temperature or sample plans and stops from the wrong master, and
+    de-Bose-corrects old counts at the wrong temperature (PR #37 review). A row that carries no
+    sample or T at all is kept — it predates the stamp and there is nothing to disagree with.
+
+    The sample test applies only when the rows themselves carry more than one sample. Before the
+    first belief row exists ``_belief_sample`` can only return the driver's configured name
+    (``"Al_phonon_DFT"``), and the session stamps every row with the instrument's (``"tavi"``);
+    filtering a one-sample workspace on that name dropped every master, so no anchor ever formed
+    and the campaign sat at h = 2.05 for ever (live, 2026-09-03). One sample in the evidence IS the
+    campaign's sample, whatever the driver calls it — the rule ``_belief_sample`` already applies.
+    """
+    present = {str(row.get("sample")) for row in rows if row.get("sample") is not None}
+    if len(present) <= 1:
+        sample = None
+    def same_bin(value) -> bool:
+        if temperature_bin is None or value is None:
+            return True
+        try:
+            t = float(value)
+        except (TypeError, ValueError):
+            return True
+        binned = round(t / float(t_round)) * float(t_round) if t_round else t
+        return abs(binned - float(temperature_bin)) <= 1e-6
+
+    def same_sample(value) -> bool:
+        return sample is None or value is None or str(value) == str(sample)
+
+    return [row for row in rows if same_sample(row.get("sample")) and same_bin(row.get("T"))]
+
+
+def _abstained_points(master_rows: list[dict], path) -> dict[int, bool]:
+    """Grid indices whose pooled master abstained as ``underpowered``.
+
+    The fitter's own word for "I could not see it at this exposure". The planner must not read
+    that as a null -- it is the reason a 20M first look at h = 2.30 (10 counts at the peak, the
+    intensity map exactly right) pushed the acoustic's mass out of its own window and bought an
+    8 meV scan to find it again (eig-2-test, 2026-09-03). The counts still bank; the silence is not
+    evidence.
+    """
+    out: dict[int, bool] = {}
+    for row in master_rows:
+        hkl = row.get("hkl")
+        index = None if hkl is None else match_grid_index(tuple(hkl), path)
+        if index is None:
+            continue
+        if row.get("disposition") == "abstain" and row.get("verdict") == "underpowered":
+            out[index] = True
+    return out
+
+
+def _build_planner_input(cfg, objective, master_rows: list[dict], observations: list[dict],
+                         durable_state: dict):
+    """Assemble the planner's world: the hypothesis map, the intensity map, and what is measured.
+
+    Returns ``(input, campaign_slice)``. The sample and the slice are resolved HERE, every
+    iteration, off the belief rows themselves — the campaign's own name for the sample is only a
+    disambiguator (see :func:`_belief_sample`), and the slice a campaign acts on changes the moment
+    its first measured belief lands.
+    """
+    sample = _belief_sample(durable_state, cfg)
+    campaign_slice, campaign_slice_error = resolve_campaign_slice(
+        durable_state, objective, sample=sample,
+        binning_policy_fingerprint=_temperature_binning_fingerprint(cfg.workspace))
+    if campaign_slice_error is not None:
+        raise PlannerRefusal(campaign_slice_error)
+    temperature_bin = None if campaign_slice is None else campaign_slice.temperature_bin
+    period = _declared_zone_period(cfg.workspace)
+    if not period:
+        raise PlannerRefusal(
+            "campaign refused: the card declares no dispersion.zone_period, so a path coordinate "
+            "cannot be folded into the reduced zone the branch beliefs are stored in — declare "
+            "[dispersion] zone_period in card.policy.toml rather than let the planner assume one")
+    if objective.energy_search_meV is None:
+        raise PlannerRefusal(
+            "campaign refused: the objective declares no energy domain, so there is no energy "
+            "domain to place a window in")
+    path = tuple(tuple(float(c) for c in point) for point in objective.path)
+    domain = _planner_energy_domain(objective, path, cfg.resolution_cb)
+    u = tuple(_reduced_u(point, period) for point in path)
+    target_branch = str(getattr(objective, "target_branch", "acoustic"))
+    targets = ("acoustic", "optic") if target_branch == "both" else (target_branch,)
+    beliefs = _planner_beliefs(durable_state, objective, cfg, sample, temperature_bin, period)
+    temperature = _planner_temperature(durable_state, objective, cfg, sample, temperature_bin)
+    fwhm = []
+    for point, reduced in zip(path, u):
+        try:
+            mean, _sigma = belief_predict(dict(beliefs[targets[0]]), float(reduced))
+            fwhm.append(_resolve_fwhm(cfg.resolution_cb, point[0], point[1], point[2], mean))
+        except Exception as error:                    # noqa: BLE001 - resolution is advisory
+            _LOG.warning("could not resolve the energy FWHM at %s (%s); using %s meV",
+                         point, error, DEFAULT_FWHM_MEV)
+            fwhm.append(DEFAULT_FWHM_MEV)
+    t_round = _declared_t_round(cfg.workspace)
+    master_rows = _slice_rows(master_rows, sample, temperature_bin, t_round)
+    observations = _slice_rows(observations, sample, temperature_bin, t_round)
+    return PlannerInput(
+        path=path, u=u, targets=targets, beliefs=beliefs,
+        measured=_planner_candidates(master_rows, path, domain),
+        scans=_planner_scans(cfg.log_path, observations, path, tuple(sorted(beliefs))),
+        energy_domain_meV=(float(domain[0]), float(domain[1])),
+        fwhm_meV=tuple(float(value) for value in fwhm),
+        temperature_K=temperature,
+        scale=_planner_scale(cfg, observations, path, tuple(sorted(beliefs)),
+                             temperature, fwhm),
+        tolerance_meV=float(objective.tolerance_meV),
+        base_ncount=_production_ncount(objective),
+        max_points=int(_runtime_limits(cfg, objective)["max_points"]),
+        abstained=_abstained_points(master_rows, path)), campaign_slice
+
+
+def _production_ncount(objective) -> int:
+    """The exposure the planner's ladder is built on: the objective's declared production count.
+
+    The ladder ran from half a QUICKLOOK upward (5e6 neutrons per point on TAVI), and with pooling
+    making a short look nearly as good as a long one the planner took the bottom rung almost every
+    time: 2-4 counts per point per scan at the optic peak, 46 single-scan nulls at one q, and a
+    master that needed eight scans to show a peak at all (owner, 2026-09-05: "not enough intensity
+    to do a real experiment"). The base is the operator's number — ``steering.production_batch_ncount``
+    in the compiled objective — so the operator declares what one real scan counts to; the planner
+    still chooses the rung. Not a floor on the planner's choice (that ruling stands, see
+    :func:`_finalize_proposal`): the whole design space scales.
+    """
+    policy = dict(getattr(objective, "steering", None) or {})
+    try:
+        value = int(policy.get("production_batch_ncount") or 0)
+    except (TypeError, ValueError):
+        value = 0
+    return value if value > 0 else PRODUCTION_NCOUNT
+
+
+def _certified_prize(*, cfg, objective, grid, budget_state: dict, observations: list[dict],
+                     scan_kind: dict, it: int, previous_scale: dict | None = None):
+    """Certify the prize points, then ask the planner again.
+
+    ``(observations, met, terminal, logged_scale)``.
+
+    The planner's first stop is claimed on whatever intervals the masters currently publish, and on
+    the fast tier those are HESSE-backed and narrower than the bootstrap intervals the campaign will
+    actually report — the first live run stopped ``met`` while every published interval sat outside
+    the bar. So certification is part of asking the question, not a report filed after it: the
+    existing ``_certify`` escalates each pending point to the full tier and republishes its interval,
+    the map is rebuilt from those masters, and the prize is asked again.
+
+    ``met`` only when the second ask also stops. Otherwise the caller continues the loop, and the
+    planner — now seeing the widened half-widths — buys counts where they are widest. ``_certify``
+    is idempotent per master revision (``_pending_certification_indices``), so a point whose master
+    has not moved since its certificate is not re-fitted, and the loop cannot churn on it.
+    """
+    per_q = evaluate_stop(objective, grid, budget_state,
+                          calibration=cfg.calibration, floor=cfg.floor).per_q
+    provisional = StopDecision("met", ["provisional prize; certifying before it is claimed"], per_q)
+    try:
+        observations, ran_certify = _certify(
+            cfg=cfg, objective=objective, decision=provisional,
+            observations=observations, scan_kind=scan_kind)
+    except AnalysisLimitExceeded as error:
+        return observations, False, StopDecision("incomplete", [str(error)], per_q), previous_scale
+    if not ran_certify:
+        # ``_certify`` returns False here only through its own catch-all fault (the analysis-limit
+        # checkpoint raises), so this is a controller fault, not a data-limited outcome.
+        return observations, False, StopDecision(
+            "incomplete",
+            ["controller_fault: certification of the prize points did not complete; checkpoints "
+             "retained and resume is supported after repair"],
+            per_q, terminal_cause=TERMINAL_CONTROLLER_FAULT), previous_scale
+
+    master_rows, certified_grid = _grid_state(
+        objective, observations, cfg.workspace, cfg.calibration)
+    certified = evaluate_stop(objective, certified_grid, budget_state,
+                              calibration=cfg.calibration, floor=cfg.floor)
+    _record_certification_acceptance(cfg, certified, _full_tier(cfg))
+    try:
+        planner_input, _slice = _build_planner_input(
+            cfg, objective, master_rows, observations, read_card_state(cfg.workspace))
+        outcome = plan_next(planner_input)
+    except PlannerRefusal as error:
+        return (observations, False, StopDecision("incomplete", [str(error)], certified.per_q),
+                previous_scale)
+    previous_scale = _log_eig_plan(cfg, planner_input, outcome, 0.0, it=it,
+                                   previous_scale=previous_scale)
+    if outcome.stop and outcome.stop_reason != _PLANNER_GOAL_MET:
+        return observations, False, _not_the_prize(objective, outcome, certified.per_q), previous_scale
+    if outcome.stop:
+        return observations, True, None, previous_scale
+    outstanding = [point for point in outcome.per_point
+                   if not point.exempt and not point.within_bar]
+    log_event(cfg.log_path, "decide", {
+        "event": "certified_prize_not_met", "action": "certified_prize_not_met", "iter": it,
+        "outstanding": len(outstanding),
+        "prize_points_total": sum(1 for point in outcome.per_point if not point.exempt),
+        "tolerance_meV": float(objective.tolerance_meV),
+        "hkl": [list(point.hkl) for point in outstanding],
+        "halfwidth_meV": [point.halfwidth_meV for point in outstanding],
+        "reason": ("the certified intervals do not carry the prize the fast-tier map claimed; "
+                   "the campaign continues at the points that are still above the bar")})
+    return observations, False, None, previous_scale
+
+
+#: The planner's ONE stop that means the objective was answered. Every other stop it can return --
+#: today ``no_admissible_window``, when the point limit drops every candidate at a deficit point --
+#: says the planner ran out of moves, not that the map is at the requested precision.
+_PLANNER_GOAL_MET = "goal_met"
+
+
+def _not_the_prize(objective, outcome, per_q) -> StopDecision:
+    """A planner stop that is not the prize is ``incomplete``, in the planner's own words."""
+    outstanding = sum(1 for point in outcome.per_point
+                      if not point.exempt and not point.within_bar)
     return StopDecision(
         "incomplete",
-        ["final certification left provisional success outside the objective; "
-         f"resume the campaign to collect more data ({detail})"],
-        decision.per_q,
-    )
+        [f"the planner stopped without the prize ({outcome.stop_reason}): {outstanding} point(s) "
+         f"remain above \u00b1{float(objective.tolerance_meV):g} meV and no admissible design "
+         "remains at them"], per_q)
+
+
+def _design_dict(design) -> dict:
+    """One ranked design as the event records it.
+
+    ``neutrons`` is the dose the instrument is asked for (points x ncount) and ``price`` is what the
+    planner ranked on — the dose plus the fixed cost of taking a scan at all. They are separate
+    because they answer different questions: the operator reconciles ``neutrons`` against the beam
+    budget, and only ``price`` explains why a cheap-looking design lost.
+    """
+    return {"grid_index": design.grid_index, "hkl": list(design.hkl),
+            "e_lo": design.e_lo, "e_hi": design.e_hi, "e_step": design.e_step,
+            "n_points": design.n_points, "ncount": design.ncount,
+            "utility_nats": design.utility_nats,
+            "neutrons": design.neutrons, "price": design.price,
+            "score": design.score}
+
+
+#: The intensity map is logged in the unit an operator can hold: counts (or counts*meV) per ten
+#: million neutrons, the exposure a scan is actually bought in.
+_SCALE_REFERENCE_NCOUNT = 1.0e7
+
+
+def _scale_dict(scale) -> dict:
+    """The intensity map as counts per :data:`_SCALE_REFERENCE_NCOUNT` neutrons."""
+    return {"per_ncount": _SCALE_REFERENCE_NCOUNT,
+            "peak_counts_meV": {str(b): round(float(v) * _SCALE_REFERENCE_NCOUNT, 4)
+                                for b, v in scale.peak_counts_meV.items()},
+            "elastic_counts_meV": round(float(scale.elastic_counts_meV)
+                                        * _SCALE_REFERENCE_NCOUNT, 4),
+            "background_per_point": round(float(scale.background_per_point)
+                                          * _SCALE_REFERENCE_NCOUNT, 4)}
+
+
+def _log_eig_plan(cfg, inp, plan_decision, seconds: float, *, it: int,
+                  previous_scale: dict | None = None) -> dict:
+    """The one operator-facing record of why this scan and not another. Returns the logged scale."""
+    prize = [point for point in plan_decision.per_point if not point.exempt]
+    scale = _scale_dict(inp.scale)
+    log_event(cfg.log_path, "eig_plan", {
+        "iter": it, "seconds": float(seconds),
+        "tolerance_meV": float(inp.tolerance_meV),
+        # The domain the windows were built in: instrument ceiling above, elastic exclusion (optic)
+        # or zero (acoustic) below. Recorded so a reader can see no phonon-specific range acted.
+        "energy_domain_meV": [float(v) for v in inp.energy_domain_meV],
+        # The planner says so when no design is expected to complete a point and it is taking the
+        # cheapest probe; an empty note is the ordinary case.
+        "note": str(getattr(plan_decision, "note", "") or ""),
+        "intensity_scale": scale,
+        "intensity_scale_changed": previous_scale != scale,
+        "stop": bool(plan_decision.stop), "stop_reason": plan_decision.stop_reason,
+        "chosen": None if plan_decision.chosen is None else _design_dict(plan_decision.chosen),
+        # The planner now ranks EVERY design; the event keeps the top ten, which is what an operator
+        # reads. ``n_ranked`` says how many it chose from, so the ten never read as the whole field.
+        "ranked": [_design_dict(design) for design in plan_decision.ranked[:10]],
+        "n_ranked": len(plan_decision.ranked),
+        "per_point": [{"u": point.u, "hkl": list(point.hkl), "exempt": point.exempt,
+                       "halfwidth_meV": point.halfwidth_meV, "deficit_nats": point.deficit_nats,
+                       "identified_mass": point.identified_mass,
+                       "within_bar": point.within_bar, "n_candidates": point.n_candidates}
+                      for point in plan_decision.per_point],
+        "prize_points_within_bar": sum(1 for point in prize if point.within_bar),
+        "prize_points_total": len(prize)})
+    return scale
+
+
+def _proposal_from_design(objective, inp, design, campaign_slice) -> ScanProposal:
+    """One ranked design to the submittable request, with every identity the chain downstream reads."""
+    target = inp.targets[0]
+    rival = next((b for b in sorted(inp.beliefs) if b != target), None)
+    mean, sigma = design.e_pred_meV.get(target, (0.0, 0.0))
+    slice_fingerprint = None if campaign_slice is None else campaign_slice.fingerprint
+    intent = MeasurementIntent(
+        action_class="production", hkl=tuple(float(c) for c in design.hkl),
+        energy_lo=float(design.e_lo), energy_hi=float(design.e_hi), window_family="eig",
+        target_branch_role=target, rival_branch_role=rival, evidence_sink=CANONICAL_MASTER,
+        hypotheses_fingerprint=objective.hypothesis_fingerprint,
+        campaign_slice_fingerprint=slice_fingerprint)
+    meta = {
+        "scientific_action_fingerprint": intent.scientific_action_fingerprint,
+        "action_class": "production",
+        "evidence_sink": CANONICAL_MASTER,
+        "acquisition_action_role": "production",
+        "target_branch_role": target,
+        "rival_branch_role": rival,
+        "certification_eligible": True,
+        "driver_inserted": False,
+        "count_diagnostics": {},
+        "hypotheses_fingerprint": objective.hypothesis_fingerprint,
+        "campaign_slice_fingerprint": slice_fingerprint,
+        "design_prediction_source": "eig_planner",
+        "design_prediction_mean": float(mean),
+        "design_prediction_sigma": float(sigma),
+        "score": float(design.score),
+        "purpose": "eig",
+        "max_scan_points": int(inp.max_points),
+        # The design as the planner chose it, before any instrument clamp or feasibility trim moves
+        # the window. A refusal or a clean null is charged to THIS as well as to what was executed.
+        "design_key": [list(design.hkl), float(design.e_lo), float(design.e_hi),
+                       float(design.e_step), int(design.ncount)],
+    }
+    return ScanProposal(
+        h=float(design.hkl[0]), k=float(design.hkl[1]), l=float(design.hkl[2]),
+        e_lo=float(design.e_lo), e_hi=float(design.e_hi), e_step=float(design.e_step),
+        ncount=int(design.ncount), kind="production",
+        reason=f"eig {design.score:.3g} nats/neutron",
+        e_pred=float(mean), fwhm_dE=float(inp.fwhm_meV[design.grid_index]),
+        n_points=int(design.n_points), acquisition_id=uuid.uuid4().hex,
+        meta=meta, intent=intent)
+
+
+def _next_planner_proposal(designs: list, objective, cfg, inp, grid, budget_state: dict,
+                           request_suppressions: dict, unreachable_hkl: dict,
+                           suppressed_designs: set, campaign_slice, *, it: int):
+    """The best remaining ranked design that finalizes and is not an already-refused request.
+
+    ``designs`` is consumed in place, so a retry after a decline continues down the same ranking
+    instead of re-offering the design the instrument just refused. Two durable suppressions are
+    consulted, both rebuilt from the session log by :func:`suppressed_actions`: a q the instrument
+    declared unreachable is never proposed again (geometry is a property of the q, not of the
+    question asked there), and an exact request it already refused is never re-emitted. Returns
+    ``(proposal, None)``, or ``(None, StopDecision)`` when nothing left is realizable.
+    """
+    instrument_error: Exception | None = None
+    budget_error: Exception | None = None
+    while designs:
+        design = designs.pop(0)
+        key = design_key(design.hkl, design.e_lo, design.e_hi, design.e_step, design.ncount)
+        if (hkl_key(design.hkl) in unreachable_hkl or key in suppressed_designs
+                or key[:-1] + (0,) in suppressed_designs):
+            continue
+        proposal = _proposal_from_design(objective, inp, design, campaign_slice)
+        try:
+            _finalize_proposal(proposal, objective, cfg, budget_state, it=it)
+        except (InstrumentLimitBelowMinimumBatch, InstrumentPointLimitExceeded) as error:
+            log_event(cfg.log_path, "exception", {
+                "action": ("instrument_point_limit_exceeded"
+                           if isinstance(error, InstrumentPointLimitExceeded)
+                           else "instrument_limit_below_minimum_batch"),
+                "error": str(error), "hkl": list(design.hkl), "iter": it})
+            instrument_error = error
+            continue
+        except ProposalOutsideEnergyDomain as error:
+            log_event(cfg.log_path, "exception", {
+                "action": "proposal_outside_energy_domain", "severity": "low",
+                "error": str(error), "hkl": list(design.hkl), "iter": it})
+            instrument_error = error
+            continue
+        except BudgetInsufficientForMinimumBatch as error:
+            log_event(cfg.log_path, "exception", {
+                "action": "budget_insufficient_for_minimum_batch",
+                "error": str(error), "hkl": list(design.hkl), "iter": it})
+            budget_error = error
+            continue
+        finalized = finalized_proposal(proposal)
+        if finalized is not None and finalized.request_fingerprint in request_suppressions:
+            log_event(cfg.log_path, "decide", {
+                "event": "request_suppressed_skip", "action": "request_suppressed_skip",
+                "request_fingerprint": finalized.request_fingerprint,
+                "hkl": list(design.hkl), "iter": it})
+            continue
+        return proposal, None
+    per_q = evaluate_stop(objective, grid, budget_state,
+                          calibration=cfg.calibration, floor=cfg.floor).per_q
+    if instrument_error is not None:
+        return None, StopDecision("infeasible", [str(instrument_error)], per_q)
+    if budget_error is not None:
+        return None, StopDecision("incomplete", [str(budget_error)], per_q)
+    # Every ranked design is an unchanged request the instrument already refused, or sits at a q it
+    # declared unreachable. Re-emitting one would repeat the refusal once per iteration forever, so
+    # this is a resumable controller fault, not a data-limited outcome: checkpoints are kept and the
+    # campaign resumes after repair.
+    return None, StopDecision(
+        "incomplete",
+        ["controller_fault: no ranked EIG design is realizable — every remaining candidate is an "
+         "unchanged request the instrument already refused, or sits at an unreachable q. "
+         "Checkpoints retained and resume is supported after repair."],
+        per_q, terminal_cause=TERMINAL_CONTROLLER_FAULT)
 
 
 def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[str, Any]:
@@ -4611,9 +4521,14 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     scan_kind: dict = resumed["scan_kind"]   # (scan, detector) -> (kind, ncount), to rebuild obs after certify
     scan_counter = resumed["scan_counter"]
     proposal_counter = resumed.get("proposal_counter", 0)
+    # Master@revision keys already sent for a belief-anchor escalation; a refit that did not leave
+    # a fold is logged once and never re-bought at that revision (see _pending_anchor_escalations).
+    # Rebuilt from the log so a resume keeps the same eligibility as an uninterrupted run.
+    escalated_masters: set[str] = _attempted_anchor_escalations(cfg.log_path)
     # Derived from the durable log, never a second store: a resume that could not rebuild this would
     # re-propose an action the instrument has already refused on every remaining iteration.
-    action_suppressions, unreachable_hkl, request_suppressions = suppressed_actions(cfg.log_path)
+    (action_suppressions, unreachable_hkl, request_suppressions,
+     suppressed_designs) = suppressed_actions(cfg.log_path)
     limit_envelope = {
         "discovered": dict(cfg.instrument_limits or {}),
         "effective": _runtime_limits(cfg, objective),
@@ -4644,11 +4559,8 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
     operator_stop = False        # set when a cooperative operator-stop file is found at an iteration top
     op_stop_iter: int | None = None
     pending_recovery_reason: str | None = None
-    certified_terminal = False
-    promotion_terminal_blocked = False
-    last_regression_basis: tuple | None = None
-    prev_action_fingerprint: str | None = None    # last selected scientific action, for change-triggered persistence
-    terminal_inventory_proof: dict | None = None  # versioned inventory proof stamped on an inventory terminal
+    certified_terminal = False   # the prize was asked again on certified intervals and still stopped
+    logged_scale: dict | None = None   # the intensity map the feed last announced
     try:
         pending_recovery_reason = _recover_unmatched_submissions(
             cfg=cfg, objective=objective,
@@ -4701,85 +4613,9 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                     decision = StopDecision("incomplete", [reason], decision.per_q,
                                             terminal_cause=TERMINAL_CONTROLLER_FAULT)
                     break
-                if decision.state == "met":
-                    unresolved_promotions = _unresolved_current_promotions(cfg.workspace)
-                    if unresolved_promotions:
-                        promotion_ids = [str(record.get("promotion_id"))
-                                         for record in unresolved_promotions]
-                        decision = StopDecision(
-                            "incomplete",
-                            ["terminal decision refused: unresolved current master promotion(s): "
-                             + ", ".join(promotion_ids)], decision.per_q)
-                        log_event(cfg.log_path, "recovery_pending", {
-                            "action": "master_promotion_pending", "promotion_ids": promotion_ids,
-                            "reason": ("terminal stopping and certification require resolved "
-                                       "promotions"), "iter": it})
-                        promotion_terminal_blocked = True
-                        break
-                    certification_basis = _certification_decision_signature(decision)
-                    if (last_regression_basis is not None
-                            and certification_basis == last_regression_basis):
-                        decision = StopDecision(
-                            "incomplete",
-                            ["certification remained outside the objective without a changed "
-                             "scientific state; automatic continuation stopped to avoid a retry loop"],
-                            decision.per_q)
-                        break
-                    analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
-                    if (objective.analysis_limit_seconds is not None
-                            and analysis_spent >= float(objective.analysis_limit_seconds)):
-                        decision = StopDecision(
-                            "incomplete",
-                            [f"analysis limit exhausted before final certification ({analysis_spent:.1f}/"
-                             f"{float(objective.analysis_limit_seconds):.1f}s)"], decision.per_q)
-                        break
-                    try:
-                        observations, ran_certify = _certify(
-                            cfg=cfg, objective=objective, decision=decision,
-                            observations=observations, scan_kind=scan_kind)
-                    except AnalysisLimitExceeded as error:
-                        decision = StopDecision("incomplete", [str(error)], decision.per_q)
-                        break
-                    if not ran_certify:
-                        # The only way here from a ``met`` decision is the catch-all fault in
-                        # ``_certify`` (an ``AnalysisLimitExceeded`` checkpoint is handled on its own
-                        # branch above, and the reused-early-exit returns True), so this is a
-                        # controller fault, not a scientific outcome.  Name it as such — checkpoints
-                        # are retained and the campaign resumes after repair — so a software bug is
-                        # never reported as a data-limited ``incomplete``.
-                        decision = StopDecision(
-                            "incomplete",
-                            ["controller_fault: final certification did not complete; checkpoints "
-                             "retained and resume is supported after repair"],
-                            decision.per_q, terminal_cause=TERMINAL_CONTROLLER_FAULT)
-                        break
-                    master_rows, grid = _grid_state(
-                        objective, observations, cfg.workspace, cfg.calibration)
-                    decision = evaluate_stop(
-                        objective, grid, budget_state,
-                        calibration=cfg.calibration, floor=cfg.floor)
-                    _record_certification_acceptance(cfg, decision, _full_tier(cfg))
-                    if decision.state == "met":
-                        certified_terminal = True
-                        break
-                    log_event(cfg.log_path, "exception", {
-                        "action": "certify_regression", "state": decision.state,
-                        "automatic_resume": True, "iter": it,
-                        "per_q": [row for row in decision.per_q
-                                  if not row.get("converged", False)],
-                        "note": "full certification left provisional success outside the objective"})
-                    last_regression_basis = certification_basis
-                    # Certification does not consume an acquisition iteration.  With a physical and
-                    # analysis budget still available, fall through and propose the corrective scan.
-                    if _operator_stop_requested(cfg, it):
-                        log_event(cfg.log_path, "decide", {
-                            "event": "operator_stop", "action": "operator_stop",
-                            "iter": it, "token": cfg.control_token,
-                            "boundary": "post_certification"})
-                        operator_stop = True
-                        op_stop_iter = it
-                        break
-                elif decision.state != "continue":
+                # ``met`` is the EIG planner's prize and is produced at the planning seam below,
+                # never here: ``evaluate_stop`` decides only infeasible / incomplete / continue.
+                if decision.state != "continue":
                     break
                 analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
                 if (objective.analysis_limit_seconds is not None
@@ -4791,127 +4627,150 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         decision.per_q)
                     break
 
-                # Plan, select, and — at most once per iteration — provision the predictive basis
-                # the selected request will be scored against, then replan against it. The promotion
-                # is deliberately inside the planning step rather than a sweep before it: only the
-                # source master of the request the controller actually chose is worth a charged
-                # full-tier reanalysis (R1-C).
-                predictive_promotion_spent = False
-                promotion_changed_stop = False
-                for _plan_attempt in range(2):
-                    with timed(cfg.log_path, "model_fit", iteration=it):
-                        model = acq_model.fit(model_points(grid))
-                    # Classification still consumes durable branch state. Expected-count acquisition is
-                    # supplied exclusively by each master's frozen predictive artifact; the driver never
-                    # reconstructs an analysis model from branch summaries.
-                    with timed(cfg.log_path, "classification_provider", iteration=it):
-                        durable_state = read_card_state(cfg.workspace)
-                        campaign_slice, campaign_slice_error = resolve_campaign_slice(
-                            durable_state, objective, sample=cfg.sample,
-                            binning_policy_fingerprint=_temperature_binning_fingerprint(cfg.workspace))
-                        classify, rival_band = _make_classification_providers(
-                            durable_state, objective, cfg.resolution_cb, sample=cfg.sample,
-                            temperature_bin=(campaign_slice.temperature_bin
-                                             if campaign_slice is not None else None))
-                    action_inventory = None
-                    plan = None
-                    proposal = None
-                    selection_terminal: StopDecision | None = None
-                    with timed(cfg.log_path, "propose", iteration=it):
-                        try:
-                            analysis_remaining = (float("inf") if objective.analysis_limit_seconds is None
-                                                  else max(float(objective.analysis_limit_seconds) -
-                                                           float(analysis_clock_state(
-                                                               cfg.log_path)["spent_seconds"]), 0.0))
-                            scoring_allowance = min(60.0, 0.05 * analysis_remaining)
+                # ONE seam: the EIG planner chooses the Q, the energy window and the exposure, and
+                # nothing else may. Every legislated placement rule is gone (ruling 2026-09-02 §6) —
+                # no survey, no frontier or bridge, no same-q ceiling, no opening book, no scan-window
+                # comparison. A wide window happens only because a belief is wide.
+                plan_decision = None
+                planner_input = None
+                campaign_slice = None
+                with timed(cfg.log_path, "propose", iteration=it):
+                    try:
+                        # Planner time is analysis time, one budget (operating rule 2026-09-03).
+                        with analysis_operation(
+                                cfg.log_path, f"plan:{cfg.run_nonce}:{proposal_counter}",
+                                "eig_planning",
+                                limit_seconds=objective.analysis_limit_seconds, iteration=it):
+                            planner_input, campaign_slice = _build_planner_input(
+                                cfg, objective, master_rows, observations,
+                                read_card_state(cfg.workspace))
+                            started = time.perf_counter()
+                            plan_decision = plan_next(planner_input)
+                            planner_seconds = time.perf_counter() - started
+                    except AnalysisLimitExceeded as error:
+                        decision = StopDecision("incomplete", [str(error)], decision.per_q)
+                    except PlannerRefusal as error:
+                        log_event(cfg.log_path, "exception", {
+                            "action": "eig_planner_refused", "severity": "high",
+                            "error": str(error), "iter": it})
+                        decision = StopDecision("incomplete", [str(error)], decision.per_q)
+                if plan_decision is None:
+                    break
+                # A prize point the planner has stopped revisiting (``within_bar``) but whose fit is
+                # still an untrusted HESSE estimate can never become a belief anchor — escalate it to
+                # the full tier now, incrementally, rather than waiting for a whole-campaign certify
+                # pass this campaign may never reach if a further point's own convergence depends on
+                # the anchor this one would supply (found live at the zone boundary, HANDOFF-eig.md
+                # §7.29/§7.30). Idempotent: once escalated, ``_pending_anchor_escalations`` no longer
+                # names it, so this can never spin on the same point. Decided BEFORE the plan is
+                # logged: a plan set aside for an escalation is never acted on, and logging it drew
+                # phantom "planning a 58-point scan" lines in the feed (eig-2-test, 2026-09-03).
+                pending_anchors = _pending_anchor_escalations(
+                    cfg.workspace, plan_decision,
+                    sample=(None if campaign_slice is None else campaign_slice.sample),
+                    temperature_bin=(None if campaign_slice is None
+                                     else campaign_slice.temperature_bin),
+                    t_round=_declared_t_round(cfg.workspace), attempted=escalated_masters)
+                if pending_anchors:
+                    full_tier = _full_tier(cfg)
+                    anchor_rows = read_results_csv(cfg.workspace)
+                    anchor_keys = [_anchor_escalation_key(anchor_rows, sid) for sid in pending_anchors]
+                    log_event(cfg.log_path, "escalate_fit", {
+                        "phase": "anchor", "iter": it, "hkl": None, "from_tier": "fast",
+                        "to_tier": full_tier, "reason": "belief_anchor",
+                        "master_ids": pending_anchors, "master_keys": anchor_keys})
+                    escalated_masters.update(anchor_keys)
+                    try:
+                        with timed(cfg.log_path, "anchor_escalation", iteration=it):
                             with analysis_operation(
-                                    cfg.log_path, f"score:{cfg.run_nonce}:{proposal_counter}",
-                                    "predictive_scoring",
-                                    limit_seconds=objective.analysis_limit_seconds, iteration=it):
-                                plan = plan_actions(
-                                    objective, model, observations, cfg.resolution_cb, budget_state,
-                                    master_rows=master_rows, fisher=None,
-                                    classify=classify, rival_band=rival_band,
-                                    runtime_limits=_runtime_limits(cfg, objective),
-                                    track_anchor_index=((durable_state.get("branch_tracks") or {}).get(
-                                        "acquisition_seed_index",
-                                        (durable_state.get("branch_tracks") or {}).get("anchor_index"))),
-                                    track_zone_period=_workspace_zone_period(cfg.workspace),
-                                    branch_track=(durable_state.get("branch_tracks") or {}),
-                                    scoring_allowance_seconds=scoring_allowance,
-                                    suppressed=action_suppressions,
-                                    unreachable_hkl=unreachable_hkl,
-                                    campaign_slice=campaign_slice,
-                                    campaign_slice_error=campaign_slice_error)
-                                action_inventory = plan.inventory
-                            # Selection + finalization are one bounded step: an unaffordable / instrument-
-                            # refused first action is charged and the next eligible candidate tried, rather
-                            # than terminating the campaign while a cheaper action is still affordable (O29).
-                            proposal, selection_terminal = _next_finalized_proposal(
-                                plan, objective, cfg, grid, budget_state, request_suppressions, it=it)
-                        except AnalysisLimitExceeded as error:
-                            decision = StopDecision("incomplete", [str(error)], decision.per_q)
-                            proposal = None
-                    if predictive_promotion_spent or proposal is None:
+                                    cfg.log_path, f"anchor:{cfg.run_nonce}:{proposal_counter}",
+                                    "anchor_escalation", limit_seconds=objective.analysis_limit_seconds,
+                                    iteration=it):
+                                allowance = _analysis_allowance_seconds(cfg, objective)
+                                # enforce_completion: a checkpointed worker (exit 75) returns
+                                # completed=False, and treating that as "escalated" would re-plan
+                                # on masters that never became folds (PR #37 review).
+                                refresh_analysis(
+                                    cfg.runner, cfg.workspace, [cfg.data_dir], errors_tier=full_tier,
+                                    force_masters=pending_anchors, render=False,
+                                    analysis_allowance_seconds=allowance,
+                                    finish_initial_wave=(False if allowance is not None else None),
+                                    enforce_completion=True,
+                                    analysis_limit_seconds=objective.analysis_limit_seconds)
+                    except AnalysisLimitExceeded as error:
+                        decision = StopDecision("incomplete", [str(error)], decision.per_q)
                         break
-                    promotion = _predictive_promotion_target(proposal, grid, cfg.log_path)
-                    if promotion is None:
-                        break
-                    promotion_item, promotion_revision = promotion
-                    outcome, promotion_error = _promote_master_predictive_basis(
-                        cfg, objective, promotion_item, promotion_revision, it=it)
-                    predictive_promotion_spent = True
-                    if outcome == "analysis_limit":
-                        decision = StopDecision(
-                            "incomplete", [str(promotion_error)], decision.per_q)
-                        proposal = None
-                        break
-                    if outcome != "completed":
-                        # The failure is already logged as an escalate_fit outcome. Keep the request
-                        # that was selected against the basis that exists rather than stalling: a
-                        # measurement still advances the campaign, and the revision is not retried.
+                    except Exception as error:  # noqa: BLE001 — policy A: never stop, shout
+                        # The same continue-and-alert rule as the ordinary fit stage: a transient
+                        # analysis failure here (the results.csv swap collision included) must not
+                        # end the campaign because it happened in a refit rather than a fit (PR #37
+                        # review, second round, P1). The attempt is not counted, so the next
+                        # iteration may ask again.
+                        escalated_masters.difference_update(anchor_keys)
+                        _raise_campaign_alert(cfg.log_path, "anchor_escalation_failed", error,
+                                              it=it, master_ids=pending_anchors)
+                        master_rows, grid = _grid_state(
+                            objective, observations, cfg.workspace, cfg.calibration)
+                        continue
+                    # Deliberately WITHOUT ``attempted``: the question is whether the masters just
+                    # refit are still unfolded, and excluding them would make it unanswerable.
+                    # ``refresh_analysis`` returned with ``enforce_completion``, so results.csv holds
+                    # the refit.
+                    still = _pending_anchor_escalations(
+                        cfg.workspace, plan_decision,
+                        sample=(None if campaign_slice is None else campaign_slice.sample),
+                        temperature_bin=(None if campaign_slice is None
+                                         else campaign_slice.temperature_bin),
+                        t_round=_declared_t_round(cfg.workspace))
+                    unresolved = sorted(set(still) & set(pending_anchors))
+                    if unresolved:
+                        log_event(cfg.log_path, "exception", {
+                            "action": "anchor_escalation_unresolved", "iter": it,
+                            "master_ids": unresolved,
+                            "reason": "the full-tier refit did not leave a fold master; not retried"})
+                    master_rows, grid = _grid_state(
+                        objective, observations, cfg.workspace, cfg.calibration)
+                    continue
+                # The plan is acted on from here (a stop or a scan), so this is where it is logged.
+                logged_scale = _log_eig_plan(
+                    cfg, planner_input, plan_decision, planner_seconds, it=it,
+                    previous_scale=logged_scale)
+                if plan_decision.stop and plan_decision.stop_reason != _PLANNER_GOAL_MET:
+                    decision = _not_the_prize(objective, plan_decision, decision.per_q)
+                    break
+                if plan_decision.stop:
+                    # The prize is claimed on the intervals the campaign PUBLISHES, so certification
+                    # is part of asking, not a report afterwards: certify every prize point that
+                    # needs it, rebuild the map from the certified masters, and ask again. Only a
+                    # second stop is ``met``. A first stop the certified intervals do not support
+                    # simply continues the loop — the planner sees the widened half-widths and buys
+                    # counts where they are widest, which is the whole mechanism.
+                    observations, met, terminal, logged_scale = _certified_prize(
+                        cfg=cfg, objective=objective, grid=grid, budget_state=budget_state,
+                        observations=observations, scan_kind=scan_kind, it=it,
+                        previous_scale=logged_scale)
+                    if terminal is not None:
+                        decision = terminal
                         break
                     master_rows, grid = _grid_state(
                         objective, observations, cfg.workspace, cfg.calibration)
-                    promoted_decision = evaluate_stop(
-                        objective, grid, budget_state,
-                        calibration=cfg.calibration, floor=cfg.floor)
-                    if promoted_decision.state != "continue":
-                        # The promoted basis answered the stopping question. Hand the iteration back
-                        # to the top so the terminal/certification path decides what happens next —
-                        # replanning here would reach the no-proposal path instead and report a
-                        # blocked frontier for a campaign that is actually finished.
-                        decision = promoted_decision
-                        proposal = None
-                        promotion_changed_stop = True
+                    if met:
+                        certified_terminal = True
+                        decision = StopDecision(
+                            "met",
+                            ["hypothesis map at the requested precision: every prize point within "
+                             f"±{float(objective.tolerance_meV):g} meV, on the certified intervals"],
+                            evaluate_stop(objective, grid, budget_state,
+                                          calibration=cfg.calibration, floor=cfg.floor).per_q)
                         break
-                if promotion_changed_stop:
                     continue
-                if selection_terminal is not None:
-                    # No remaining candidate could be finalized/afforded: a budget (incomplete) or
-                    # instrument (infeasible) terminal. The proposal-less path below leaves an already
-                    # non-continue decision untouched and still stamps the inventory proof.
-                    decision = selection_terminal
-                    proposal = None
-                if action_inventory is not None:
-                    inventory_ref, selected_fingerprint = _persist_action_inventory(
-                        cfg, action_inventory, it=it, proposal=proposal,
-                        prev_fingerprint=prev_action_fingerprint, force_full=(proposal is None))
-                    if proposal is not None:
-                        prev_action_fingerprint = selected_fingerprint
-                    elif action_inventory.terminal_cause(GENERATOR_REGISTRY) is not None:
-                        terminal_inventory_proof = {
-                            "inventory_version": action_inventory.inventory_version,
-                            "generator_registry_version": GENERATOR_REGISTRY_VERSION,
-                            "inventory_ref": inventory_ref}
+                designs = list(plan_decision.ranked)
+                proposal, selection_terminal = _next_planner_proposal(
+                    designs, objective, cfg, planner_input, grid, budget_state,
+                    request_suppressions, unreachable_hkl, suppressed_designs, campaign_slice,
+                    it=it)
                 if proposal is None:
-                    if decision is None or decision.state == "continue":
-                        decision = evaluate_stop(
-                            objective, grid, budget_state,
-                            calibration=cfg.calibration, floor=cfg.floor)
-                    decision = _blocked_frontier_decision(
-                        objective, grid, decision, action_inventory)
-                    decision = _exhausted_action_space_decision(decision, action_inventory)
+                    decision = selection_terminal
                     break
                 # A refused request must not cost the whole iteration while the inventory still holds
                 # other eligible actions (PR2.3). Bounded, so a pathological inventory cannot spin;
@@ -4923,14 +4782,6 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                                or f"{cfg.run_nonce}:{proposal_counter:08d}")
                     proposal_counter += 1
                     log_event(cfg.log_path, "propose", {**proposal.to_dict(), "iter": it})
-                    if (proposal.meta or {}).get("purpose") == "differentiate":
-                        transition = (proposal.meta or {}).get("evidence_transition") or {}
-                        log_event(cfg.log_path, "differentiation_probe", {
-                            "hkl": [proposal.h, proposal.k, proposal.l],
-                            "kind": proposal.kind, "reason": proposal.reason,
-                            "acquisition_id": proposal.acquisition_id, "iter": it,
-                            **transition,
-                        })
 
                     # Re-check the analysis clock here, not only before planning: planning itself is
                     # charged (predictive + shadow + realized scoring), and ``analysis_operation``
@@ -5020,26 +4871,38 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                         break
 
                     if declined_verdict is None:
+                        # A scan that delivered no peak — no row at all, or rows carrying only a
+                        # missed verdict — is a non-result for THIS exact design. It is recorded as
+                        # evidence either way; suppressing the design is what stops the planner
+                        # being handed the identical window and exposure again next iteration.
+                        if not any(row.get("disposition") in _USABLE for row in rows):
+                            _record_action_rejection(
+                                cfg, None, proposal,
+                                ("analysis_delivered_no_row" if not rows
+                                 else "clean_null_delivered_no_peak"),
+                                action_suppressions, unreachable_hkl, request_suppressions, it=it,
+                                suppressed_designs=suppressed_designs)
                         break
                     # Charge the refusal at its scope (populating suppressions / by_request and logging
                     # the durable event). A transient refusal (scope "none") suppresses nothing and does
                     # not advance to another action, matching the original break.
                     _record_action_rejection(
                         cfg, None, proposal, declined_verdict, action_suppressions,
-                        unreachable_hkl, request_suppressions, it=it)
+                        unreachable_hkl, request_suppressions, it=it,
+                        suppressed_designs=suppressed_designs)
                     if classify_rejection(declined_verdict).scope == "none":
                         break
-                    # Pull + finalize the next candidate through the same bounded helper the initial
-                    # selection uses, so a budget/instrument refusal here is classified into a terminal
-                    # instead of escaping as an exception (GAP 1), and an already-refused request is not
-                    # re-emitted (GAP 2).
-                    proposal, fallback_terminal = _next_finalized_proposal(
-                        plan, objective, cfg, grid, budget_state, request_suppressions, it=it)
+                    # Continue down the SAME EIG ranking through the same helper the initial
+                    # selection used, so a budget/instrument refusal here is classified into a
+                    # terminal instead of escaping as an exception, and an already-refused request is
+                    # not re-emitted.
+                    proposal, fallback_terminal = _next_planner_proposal(
+                        designs, objective, cfg, planner_input, grid, budget_state,
+                        request_suppressions, unreachable_hkl, suppressed_designs, campaign_slice,
+                        it=it)
                     if fallback_terminal is not None:
                         decision = fallback_terminal
                         stop_campaign = True
-                        break
-                    if proposal is None:
                         break
                 if stop_campaign:
                     break
@@ -5064,19 +4927,6 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                                                    "converged": sum(1 for g in grid if g.converged),
                                                    "n_grid": len(grid), "per_q": grid_snapshot.per_q,
                                                    "iter": it})
-                for point in grid:
-                    if point.n_production == point.max_production_batches:
-                        log_event(cfg.log_path, "strategy_ceiling", {
-                            "hkl": list(point.hkl), "n_production": point.n_production,
-                            "maximum_production_batches_per_q": point.max_production_batches,
-                            "action": "switch_to_differentiation_probe", "iter": it,
-                        })
-                    if point.clamped_productions == 2 and point.exposure_saturated:
-                        log_event(cfg.log_path, "exposure_saturation", {
-                            "hkl": list(point.hkl),
-                            "reason": "requested dwell repeatedly clamped to the same instrument limit",
-                            "clamped_productions": point.clamped_productions, "iter": it,
-                        })
 
         if pending_recovery_reason is not None:
             master_rows, grid = _grid_state(objective, observations, cfg.workspace, cfg.calibration)
@@ -5121,31 +4971,17 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             # certify" decision). Bounded — once, at the end, only when the objective is met. Then
             # re-evaluate honestly: if a q's bootstrap-certified interval crosses tolerance the summary
             # reflects that, not the optimistic fast-tier stop (the triage tool reports the certified truth).
-            unresolved_promotions = ([] if promotion_terminal_blocked else
-                                     _unresolved_current_promotions(cfg.workspace))
-            promotion_blocked = promotion_terminal_blocked or bool(unresolved_promotions)
-            if unresolved_promotions:
-                promotion_ids = [str(record.get("promotion_id"))
-                                 for record in unresolved_promotions]
-                prior_rows = [] if decision is None else decision.per_q
-                decision = StopDecision(
-                    "incomplete",
-                    ["terminal decision refused: unresolved current master promotion(s): "
-                     + ", ".join(promotion_ids)], prior_rows)
-                log_event(cfg.log_path, "recovery_pending", {
-                    "action": "master_promotion_pending", "promotion_ids": promotion_ids,
-                    "reason": "terminal stopping and certification require resolved promotions"})
             analysis_spent = analysis_clock_state(cfg.log_path)["spent_seconds"]
-            if (not certified_terminal and decision is not None and decision.state == "met"
+            if (decision is not None and decision.state == "met"
                     and objective.analysis_limit_seconds is not None
                     and analysis_spent >= float(objective.analysis_limit_seconds)):
                 decision = StopDecision(
                     "incomplete",
                     [f"analysis limit exhausted before final certification ({analysis_spent:.1f}/"
                      f"{float(objective.analysis_limit_seconds):.1f}s)"], decision.per_q)
-            if promotion_blocked:
-                ran_certify = False
-            elif certified_terminal:
+            if certified_terminal:
+                # The prize was claimed on certified intervals at the seam; ``_certify`` there
+                # already published them and recorded their acceptance.
                 ran_certify = True
             else:
                 try:
@@ -5175,23 +5011,19 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
             # A prospective neutron-budget refusal occurs before spend reaches the nominal amount; a
             # plain final budget evaluation therefore still says "continue". Preserve that terminal
             # decision while retaining ordinary recomputation for every measured-scan exit path.
-            if not (decision is not None and decision.state in {"incomplete", "infeasible"}):
+            # ``met`` is preserved too: it is the planner's prize, and ``evaluate_stop`` no longer
+            # produces it, so recomputing over it would silently downgrade a finished campaign.
+            if not (decision is not None
+                    and decision.state in {"met", "incomplete", "infeasible"}):
                 decision = final_decision
-            if ran_certify:
+            elif decision is not None and decision.state == "met":
+                decision = StopDecision("met", decision.reasons, final_decision.per_q)
+            if ran_certify and not certified_terminal:
                 _record_certification_acceptance(cfg, decision, _full_tier(cfg))
-            if ran_certify and decision.state != "met":
-                decision = _terminalize_certification_regression(decision)
-                log_event(cfg.log_path, "exception",
-                          {"action": "certify_regression", "state": decision.state,
-                           "reasons": decision.reasons,
-                           "per_q": [row for row in decision.per_q
-                                     if not row.get("converged", False)],
-                           "note": "full certification left provisional success outside the objective"})
 
             summary = _campaign_summary(objective, grid, decision, budget_state, cfg.workspace,
                                         cfg.log_path, len(observations),
-                                        instrument_limits=limit_envelope,
-                                        inventory_proof=terminal_inventory_proof)
+                                        instrument_limits=limit_envelope)
             stop_payload = {"state": decision.state, "reasons": decision.reasons}
             if decision.terminal_cause is not None:
                 stop_payload["terminal_cause"] = decision.terminal_cause
@@ -5199,8 +5031,6 @@ def run_campaign(objective: ObjectiveSpec, config: dict | None = None) -> dict[s
                 # A controller fault is an unattended-safe terminal: checkpoints are retained and the
                 # campaign resumes after repair rather than crashing overnight.
                 stop_payload["resume_supported"] = True
-            if terminal_inventory_proof is not None:
-                stop_payload.update(terminal_inventory_proof)
 
         (cfg.workspace / "report").mkdir(parents=True, exist_ok=True)
         (cfg.workspace / "report" / "campaign_summary.json").write_text(
@@ -5307,8 +5137,7 @@ def _campaign_summary(objective, grid, decision, budget_state, workspace, log_pa
                   "structural_endpoint_status": g.structural_endpoint_status,
                   "is_reduced_q_origin": g.is_reduced_q_origin,
                   "track_state": g.track_state,
-                  "linewidth_state": g.linewidth_state,
-                  **local_exhaustion_status(g)} for g in grid],
+                  "linewidth_state": g.linewidth_state} for g in grid],
         "dispersion": dispersion,
         "dispersion_prior_points": len(prior_points),
         "branch_beliefs": branch_beliefs,

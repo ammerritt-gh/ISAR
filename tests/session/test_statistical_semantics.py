@@ -1291,7 +1291,6 @@ def test_metadata_is_excluded_from_scientific_selection_and_identity_firewalls()
         "period": 1.0,
         "hypotheses": [],
         "entropy_stop": 0.2,
-        "maximum_bridge_steps": 1,
     }
     sig_before = evidence_update._tracked_authority_signature([observation], **signature_args)
     sig_after = evidence_update._tracked_authority_signature(

@@ -24,7 +24,6 @@ from isar.analyze.context import ScanContext, effective_exposure, select_exposur
 from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 from isar.schema.card import Card
-from isar.schema.hypotheses import preset as hypothesis_preset
 from isar.schema.measurement import (MeasurementArena, campaign_provenance,
                                      current_lattice_epoch)
 from isar.schema.statistics import (
@@ -2247,13 +2246,6 @@ def _campaign_target(card) -> tuple[str, str, tuple[float, float]]:
     return branch, label, (float(energy[0]), float(energy[1]))
 
 
-def _campaign_selector(card) -> tuple[str, float | None]:
-    target = getattr(getattr(card, "state", None), "campaign_target", None) or {}
-    selector = str(target.get("selector") or "lowest_energy")
-    energy = target.get("target_energy_meV")
-    return selector, (float(energy) if energy is not None else None)
-
-
 def _campaign_hypotheses(card) -> list[dict]:
     state = getattr(card, "state", None)
     snapshot = getattr(state, "hypothesis_snapshot", None) or {}
@@ -2271,27 +2263,20 @@ def _target_fold_anchor_count(card, *, sample: str, branch: str) -> int:
 
 
 def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, near_gamma):
-    """Bayesian branch assignment + honest triage over a completed fit (Phase A). Returns override
-    fields ``{deliver, branch_id, weight, entropy, resolvable}`` or ``None`` when the posterior is off.
+    """Preserve a completed fit as unordered evidence for the tracked branch (Phase A). Returns
+    override fields ``{deliver, branch_id, weight, entropy, resolvable, selected_energy}`` plus the
+    candidate identity, or ``None`` when the posterior is off.
 
-    Delivers the acoustic ω₀ when it is a confident, dominant, *resolvable* feature — OR when a
-    converged near-Γ **constrained** (branch_conditional) fit measured it (the brightness constraint
-    supplies identifiability where position cannot). Otherwise the scan is NOT an acoustic delivery:
-    the caller nulls ω₀ and reports ``branch_continuation``, tagging the fit's assigned branch so an
-    optic/spurious feature can never seed or be scored as the acoustic branch."""
+    The authoritative branch label is NOT assigned here: it is assigned only after every pooled
+    master has updated, using the whole objective path in both directions
+    (:func:`isar.session.evidence_update._apply_tracked_branch`). Per-q feature selection — picking
+    the feature nearest/lowest/highest in energy at this q and calling it the target — was deleted
+    with the retired ``target_selector`` values; the EIG planner maps a DECLARED branch, so no
+    compiled campaign can ask for it."""
     period = _dispersion_period(card)
     if period is None:
         return None
-    t_bin = round(float(T) / t_round) * t_round if t_round else float(T)
-    target_branch, _target_label, energy_search = _campaign_target(card)
-    hypotheses = _campaign_hypotheses(card)
-    if target_branch != BA.ACOUSTIC and not any(h.get("name") == target_branch for h in hypotheses):
-        # Transition tolerance for old campaign state: create a broad shipped hypothesis, never an
-        # assignment or anchor.  Its zero occupancy remains weak evidence in the posterior.
-        hypotheses.append(hypothesis_preset(target_branch, energy_search).to_dict())
-    beliefs = BA.build_beliefs(card.state.dispersion_prior, sample=sample, t_bin=t_bin,
-                               period=period, t_round=t_round,
-                               hypotheses=hypotheses)
+    target_branch, _target_label, _energy_search = _campaign_target(card)
     modes = fit.get("modes")
     if not modes and fit.get("omega0") is not None:
         modes = [{"omega0": fit["omega0"], "omega0_err": fit.get("omega0_err"),
@@ -2301,74 +2286,10 @@ def _assign_and_triage(fit, descriptor, ctx, *, card, sample, T, q, t_round, nea
         return {"deliver": bool(fit.get("omega0") is not None), "branch_id": None,
                 "weight": None, "entropy": None, "resolvable": None,
                 "selected_energy": fit.get("omega0")}
-    selector, target_energy = _campaign_selector(card)
-    if selector == "tracked_branch":
-        # Preserve the fit as unordered evidence. The authoritative branch label is assigned only
-        # after every pooled master has updated, using the whole objective path in both directions.
-        return {"deliver": True, "branch_id": None, "weight": None, "entropy": None,
-                "resolvable": None, "selected_energy": fit.get("omega0"),
-                "candidate_id": f"{target_branch}:tracked_branch",
-                "candidate_state": "provisional"}
-    u = BA.reduced_q(q, period)
-    if target_branch != BA.ACOUSTIC:
-        # A fitted mode and the model-free descriptor commonly report the same physical peak.  Do
-        # branch assignment from the fitted modes when they exist: counting both representations as
-        # rival features splits dominance and can demote an otherwise clean pooled optic fit.  The
-        # descriptor remains the honest fallback when no model mode survived.
-        target_feats = [feature for feature in feats if feature.source == "mode"] or feats
-        target_post = BA.assignment_posterior(target_feats, beliefs, u)
-        if target_energy is not None:
-            target_post = BA.condition_on_target_energy(
-                target_feats, target_post, target_branch, target_energy=target_energy,
-                sigma=max(float(ctx.gauss_fwhm), BA.SIGMA_SLACK))
-        qoi = BA.selected_branch_qoi(
-            target_feats, target_post, target_branch, gauss_fwhm=ctx.gauss_fwhm,
-            selector=selector, target_energy=target_energy, energy_search=energy_search)
-        ent = float(qoi["entropy"]) if np.isfinite(qoi["entropy"]) else None
-        aligned = fit.get("omega0") is not None and qoi.get("omega0") is not None \
-            and abs(float(fit["omega0"]) - float(qoi["omega0"])) <= 0.5 * ctx.gauss_fwhm
-        deliver = BA.deliver_branch(qoi) and aligned
-        posterior = qoi.get("posterior")
-        assigned = max(posterior, key=posterior.get) if posterior else None
-        # Stable across q so neighboring measurements update the same scientific hypothesis.  The q
-        # remains on every evidence record; it is not part of the candidate's identity.
-        energy_key = (f"{float(target_energy):.6g}" if target_energy is not None else "unspecified")
-        candidate_id = f"{target_branch}:{selector}:{energy_key}"
-        return {"deliver": bool(deliver), "branch_id": assigned,
-                "weight": float(qoi.get("p_branch", 0.0)), "entropy": ent,
-                "resolvable": bool(qoi.get("resolvable")), "posterior": posterior,
-                "selected_energy": qoi.get("omega0"),
-                "candidate_id": candidate_id,
-                "candidate_state": ("accepted" if deliver else "provisional")}
-    post = BA.assignment_posterior(feats, beliefs, u)
-    qoi = BA.acoustic_qoi(feats, post, gauss_fwhm=ctx.gauss_fwhm)
-    ent = float(qoi["entropy"]) if np.isfinite(qoi["entropy"]) else None
-    # Bounded-continuity guard: apply it only once the belief is ESTABLISHED (≥ MIN_ANCHORS real
-    # anchors). During bootstrap the belief has few anchors and MUST be allowed to deliver outward to
-    # seed itself; a hard guard there deadlocks the whole prior. Once established, a lone feature far
-    # past the anchored range (a zone-boundary optic) is withheld. The near-Γ constrained fit is exempt.
-    acoustic_belief = beliefs.get(BA.ACOUSTIC)
-    established = acoustic_belief is not None and acoustic_belief.n_anchors >= branch_model.MIN_ANCHORS
-    extrap_ok = (not established) or acoustic_belief.deliverable(u)
-    constrained_ok = (near_gamma and fit.get("fit_kind") == "branch_conditional"
-                      and fit.get("omega0") is not None and not fit.get("gamma_at_bound")
-                      and qoi["p_acoustic"] >= BA.P_ACOUSTIC_MIN)
-    if constrained_ok or (BA.deliver_acoustic(qoi) and extrap_ok):
-        # Rival-branch banking: a DELIVERED scan's clearly-non-acoustic higher features seed the
-        # optic belief, so at the next q the optic claims its own kin instead of splitting the
-        # acoustic dominance (the post-Phase-A abstention deadlock at mid-band q).
-        return {"deliver": True, "branch_id": "acoustic", "weight": float(qoi["p_acoustic"]),
-                "entropy": ent, "resolvable": bool(qoi["resolvable"]),
-                "posterior": qoi.get("posterior"), "selected_energy": qoi.get("omega0"),
-                "secondary_points": BA.secondary_branch_points(feats, post, qoi,
-                                                               gauss_fwhm=ctx.gauss_fwhm)}
-    bid = "optic"
-    if fit.get("omega0") is not None:
-        bid, _ = BA.assign_label(fit["omega0"], fit.get("omega0_err") or 0.3 * ctx.gauss_fwhm,
-                                 beliefs, u, gauss_fwhm=ctx.gauss_fwhm)
-    return {"deliver": False, "branch_id": bid, "weight": 0.0, "entropy": ent,
-            "resolvable": bool(qoi["resolvable"]), "posterior": qoi.get("posterior"),
-            "selected_energy": qoi.get("omega0")}
+    return {"deliver": True, "branch_id": None, "weight": None, "entropy": None,
+            "resolvable": None, "selected_energy": fit.get("omega0"),
+            "candidate_id": f"{target_branch}:tracked_branch",
+            "candidate_state": "provisional"}
 
 
 def _record_identity_ba_disagreement(fit, branch_id):

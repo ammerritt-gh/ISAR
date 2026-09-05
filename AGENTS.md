@@ -123,7 +123,7 @@ area.
 | Card / schema across facilities | `docs/SCHEMA_LANDSCAPE.md` |
 | Flag adjudication (opt-in LLM) | `docs/ADJUDICATION.md` |
 | The autonomous driver (`isar drive`) | `docs/design/steering.md` |
-| Same-action scan-window EIG (targeted-lane realization, Implemented, authoritative default-on at compile time since SCENE-4.4) and scene-EIG (discovery-lane placement, Implemented from birth since SCENE-5, H23 — status: ARCHITECTURE §15) | `docs/design/eig.md`, then `docs/design/steering.md` |
+| The EIG planner (targeted-lane placement — Q, energy window and exposure, Implemented; it is the only thing that places a targeted scan) and scene-EIG (discovery-lane placement, Implemented from birth since SCENE-5, H23 — status: ARCHITECTURE §15) | `docs/design/eig.md`, then `docs/design/steering.md` |
 | Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
 | The SCENE program — scene layer, catalogue, target-free discovery (status: ARCHITECTURE §15) | `docs/design/scene.md` |
 | Campaign diagnostic report | `docs/design/reporting.md` |
@@ -133,8 +133,8 @@ area.
 ## Module map (ownership boundaries that matter)
 
 `schema` (ScanRecord + card; `schema/action_identity.py` is the one implementation of scientific
-action identity — `drive/acquisition/inventory.py` re-exports those names for its callers and
-`tests/schema/test_action_identity.py` pins them as re-exports so no second implementation appears)
+action identity, and `drive/acquisition/inventory.py` re-exports those names for its callers so no
+second implementation appears)
 · `parsers` (plugin registry: S30 SPEC, IN8 numor, TAVI, BL43LXU; card
 templates in `parsers/cards/*.toml` — in8, s30, s30_raw, tavi) · `reduce` (QC mask-not-delete,
 combine-before-divide, collate) · `calibrate` (elastic fits, versioned energy-zero series;
@@ -148,8 +148,10 @@ orders the stages; `outcome.py` owns the FitOutcome persistence DTO and `results
 orchestrates the targeted campaign and `program_runner.py` the discovery step — `run_program` is
 the one seam that runs a `discover_and_map` step end to end, and the consultation channel
 (`drive/consultation.py`) and cold-start producer (`drive/steering/cold_start.py`) hang off it;
-TAVI wire details live in `drive/instrument/request_realization.py` and
-EIG runtime adaptation in `drive/acquisition/eig_runtime.py`; `loop.<CONST>` re-imports are
+TAVI wire details live in `drive/instrument/request_realization.py`. `acquisition/eig_planner.py`
+is the ONE place a Q, an energy window or an exposure is chosen — no survey, no frontier, no
+opening book, no scan-window comparison (`docs/design/eig.md`); `acquisition/classify_eig.py` is
+the drive-side read of the hypothesis map; `loop.<CONST>` re-imports are
 deliberate, production reads them) ·
 `report` · `synth` (Phase-1 synthetic core) / `synth_format` (synthetic-run tooling) ·
 `workspace_api` / `geometry` / `plotspec` (Qt-free; `workspace_api/config_gates.py` is the G16

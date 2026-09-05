@@ -5,7 +5,7 @@ rendered into the instrument command*.  Two implementations of that arithmetic �
 designer and one at submission — would let a scored design and the executed request disagree while
 both look correct in isolation.  This module is that single seam.
 
-All three answers are delegated to an **instrument grid adapter**
+Both answers are delegated to an **instrument grid adapter**
 (:mod:`isar.drive.acquisition.grid_adapters`): the instrument, not ISAR, decides how many points a
 ``deltaE lo hi step`` command has and at what precision they are executed.  The grid fingerprints a
 later scoring/selection stage compares are therefore taken over the *adapter-canonical executed*
@@ -15,38 +15,19 @@ stored candidate declares which instrument semantics it was scored under.
 """
 from __future__ import annotations
 
-import hashlib
+import math
 from dataclasses import dataclass, field
 
 from isar.drive.acquisition.grid_adapters import (
     DEFAULT_GRID_ADAPTER,
     TaviUniformGridAdapter,
 )
-from isar.drive.acquisition.inventory import canonical_json, json_number
 
 
 #: Point ceiling used when a caller supplies no policy cap; kept equal to
 #: ``SteeringPolicy.max_scan_points`` so a window built without a policy is not clamped harder than
 #: one built with the default policy. See that field for why 100 no longer covers a survey band.
 MAX_POINTS = 220
-UNIFORM_SCAN_GRID_SCHEMA = "isar.uniform_scan_grid/2"
-
-#: Which span the step is widened against when a window exceeds the point cap.  The two values are
-#: **not** interchangeable, and the choice is a property of the caller, never of the arithmetic:
-#:
-#: * :data:`COARSEN_FROM_WIRE_SPAN` divides the span the adapter actually counts over — the bounds
-#:   after the ``%g`` round trip.  It is the correct rule and the only one that keeps the count at or
-#:   below the cap for every cap (ADR-018; see :func:`resolve_uniform_grid`).  Every *newly invented*
-#:   window uses it.
-#: * :data:`COARSEN_FROM_DESIGNED_SPAN` divides the raw designed span.  It is the historical rule,
-#:   and it is frozen for the legacy control alone: the coarsened step is rendered straight into the
-#:   emitted ``deltaE`` command, so changing it would change the scan ISAR has always submitted.  The
-#:   *count* is still the adapter's answer under it — the point of routing legacy through here — so
-#:   in the rare regime where the two rules disagree the legacy candidate records the over-cap count
-#:   the instrument will really execute instead of a clamp that hides it.
-COARSEN_FROM_WIRE_SPAN = "wire_span"
-COARSEN_FROM_DESIGNED_SPAN = "designed_span"
-
 
 def resolve_point_count(e_lo: float, e_hi: float, e_step: float, *,
                         adapter: TaviUniformGridAdapter = DEFAULT_GRID_ADAPTER) -> tuple[int, float]:
@@ -63,12 +44,37 @@ def resolve_point_count(e_lo: float, e_hi: float, e_step: float, *,
     return adapter.point_count(lo, max(hi, lo), step), step
 
 
-def points_in_window(e_lo: float, e_hi: float, e_step: float, *,
-                     max_points: int = MAX_POINTS,
-                     adapter: TaviUniformGridAdapter = DEFAULT_GRID_ADAPTER) -> int:
-    """Number of instrument scan points, capped by the caller's frozen policy."""
-    count, _ = resolve_point_count(e_lo, e_hi, e_step, adapter=adapter)
-    return min(count, max(int(max_points), 2))
+def snap_to_lattice(e_lo: float, e_hi: float, e_step: float, *,
+                    adapter: TaviUniformGridAdapter = DEFAULT_GRID_ADAPTER
+                    ) -> tuple[float, float, float]:
+    """Quantise one designed window onto the instrument's SHARED energy lattice.
+
+    Two scans at the same (sample, Q, T) only add counts to a pooled master when their executed
+    points coincide: :func:`isar.reduce.collate._merge_group` sums counts and monitors per energy
+    BIN, and its binning tolerance is a quarter of the median spacing of the members' concatenated
+    energies.  Windows that differ by a fraction of a step therefore do not merely bin coarsely --
+    they drive that tolerance down until every member owns its own bins, so the master's
+    ``n_members`` grows while its per-bin exposure does not.  Measured on the 2026-09-03 full-path
+    campaign: 65 members at h = 2.90 produced 1419 bins at 0.001 meV median spacing, a summed
+    monitor of 1.4e10 spread so thinly that the peak-local median (which is what
+    ``effective_exposure`` reports) stayed at one scan's 1e7.
+
+    The lattice is the instrument's own: the step is quantised to the adapter's executed precision,
+    and the bounds to whole multiples of that step anchored at zero.  Bounds move OUTWARD (``e_lo``
+    down, ``e_hi`` up) so the emitted window never trims the band the design asked for; it grows by
+    at most one point per end, and :func:`resolve_uniform_grid` still owns the point cap.
+    """
+    lo, hi, raw_step = float(e_lo), float(e_hi), float(e_step)
+    if not all(math.isfinite(v) for v in (lo, hi, raw_step)) or raw_step <= 0.0:
+        return lo, hi, raw_step
+    places = int(adapter.executed_decimals)
+    quantum = 10.0 ** -places
+    step = max(round(raw_step / quantum) * quantum, quantum)
+    # The tolerance absorbs binary-float error in ``bound / step`` so a bound already ON the lattice
+    # is not pushed a whole point outward (2.28 / 0.19 evaluates to 11.999999999999998).
+    lo_k = math.floor(lo / step + 1e-9)
+    hi_k = math.ceil(max(hi, lo) / step - 1e-9)
+    return round(lo_k * step, places), round(hi_k * step, places), round(step, places)
 
 
 def format_scan_command(e_lo: float, e_hi: float, e_step: float, *,
@@ -100,43 +106,9 @@ class UniformGrid:
     def scan_command(self) -> str:
         return self.adapter.format_scan_command(self.e_lo, self.e_hi, self.e_step)
 
-    def support_points(self, band: tuple[float, float] | None,
-                       sigma_multiple: float = 2.0) -> int | None:
-        """Grid points inside ``mean ± sigma_multiple·sigma``; ``None`` without a declared band.
-
-        Mirrors the validation-time target-support rule
-        (:func:`isar.drive.instrument.request_realization._target_supporting_feasible_points`)
-        at design time, where no feasibility manifest exists yet.  Counted over the *executed*
-        energies: support the instrument will not actually measure is not support.
-        """
-        if band is None:
-            return None
-        mean, sigma = float(band[0]), float(band[1])
-        lo = mean - float(sigma_multiple) * sigma
-        hi = mean + float(sigma_multiple) * sigma
-        return sum(1 for energy in self.energies if lo <= energy <= hi)
-
-    def fingerprint(self, ncount: int) -> str:
-        """Content address of ``(executed grid, per-point exposure, adapter)`` — the scoring identity.
-
-        The adapter identity is inside the hash on purpose: the same ``(lo, hi, step)`` executed under
-        different instrument semantics is a different measurement, and a score is only valid for the
-        semantics it was computed under.
-        """
-        payload = canonical_json({
-            "grid_schema": UNIFORM_SCAN_GRID_SCHEMA,
-            "adapter": self.adapter.identity(),
-            # Through the shared non-finite-safe rendering: a degenerate window must fingerprint to
-            # a stable address that records its degeneracy, not raise out of the designer.
-            "energies": [json_number(value) for value in self.energies],
-            "ncount": int(ncount),
-        })
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
 
 def resolve_uniform_grid(e_lo: float, e_hi: float, e_step: float, *,
                          max_points: int = MAX_POINTS,
-                         coarsen_span: str = COARSEN_FROM_WIRE_SPAN,
                          adapter: TaviUniformGridAdapter = DEFAULT_GRID_ADAPTER) -> UniformGrid:
     """Resolve a window into an executable grid, coarsening the step only at the point cap.
 
@@ -157,35 +129,22 @@ def resolve_uniform_grid(e_lo: float, e_hi: float, e_step: float, *,
     adapter's ``0.5``-point rounding margin below a cap around ``10**6`` — six orders above TAVI's
     200-point ceiling.  Past that the wire protocol has too few significant digits to express a
     conforming step at all, and no arithmetic here can recover it.
-
-    ``coarsen_span`` selects which span the widened step is derived from
-    (:data:`COARSEN_FROM_WIRE_SPAN` / :data:`COARSEN_FROM_DESIGNED_SPAN`).  Only the legacy control
-    passes the designed span, and only because that step is rendered verbatim into the submitted
-    command.  Either way the returned count is the adapter's, never a clamp.
     """
-    if coarsen_span not in (COARSEN_FROM_WIRE_SPAN, COARSEN_FROM_DESIGNED_SPAN):
-        raise ValueError(f"unknown coarsening span basis {coarsen_span!r}")
     e_lo, e_hi = float(e_lo), float(e_hi)
     point_cap = max(int(max_points), 2)
     n_points, step = resolve_point_count(e_lo, e_hi, e_step, adapter=adapter)
     if n_points > point_cap:
-        if coarsen_span == COARSEN_FROM_WIRE_SPAN:
-            span_lo, span_hi, _ = adapter.wire_window(e_lo, max(e_hi, e_lo), step)
-        else:
-            span_lo, span_hi = e_lo, max(e_hi, e_lo)
+        span_lo, span_hi, _ = adapter.wire_window(e_lo, max(e_hi, e_lo), step)
         step = (span_hi - span_lo) / (point_cap - 1)
         n_points, step = resolve_point_count(e_lo, e_hi, step, adapter=adapter)
     return UniformGrid(e_lo=e_lo, e_hi=e_hi, e_step=step, n_points=n_points, adapter=adapter)
 
 
 __all__ = [
-    "COARSEN_FROM_DESIGNED_SPAN",
-    "COARSEN_FROM_WIRE_SPAN",
     "MAX_POINTS",
-    "UNIFORM_SCAN_GRID_SCHEMA",
     "UniformGrid",
     "format_scan_command",
-    "points_in_window",
     "resolve_point_count",
     "resolve_uniform_grid",
+    "snap_to_lattice",
 ]

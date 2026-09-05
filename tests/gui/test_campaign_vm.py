@@ -104,33 +104,6 @@ def test_reducer_tolerates_unknown_kinds_and_missing_fields(make_ws):
     assert state.scan_count == 1
 
 
-def test_reducer_surfaces_authority_selection_and_campaign_predicate_failures():
-    events = [
-        {"kind": "decide", "payload": {
-            "action": "campaign_start",
-            "objective": {"budget": {"kind": "neutrons", "amount": 1000}},
-            "source": {"kind": "spec", "sha256": "a" * 64},
-        }},
-        {"kind": "scan_design_authority_decision", "ts": 1.0, "payload": {
-            "decision_outcome": "retain_legacy_control", "selected_role": "legacy",
-            "reason_codes": ["per_point_ncount_equal", "o41_margin_not_decisive"],
-            "point_counts": {"legacy": 41, "target_core": 21}, "iter": 0,
-        }},
-        {"kind": "scan_design_authority_decision", "ts": 2.0, "payload": {
-            "decision_outcome": "select_target_core", "selected_role": "target_core",
-            "reason_codes": ["o41_margin_decisive"],
-            "point_counts": {"legacy": 41, "target_core": 21}, "iter": 1,
-        }},
-    ]
-    state = reduce_campaign(events)
-    assert state.scan_design_authority["selected_role"] == "target_core"
-    assert state.authority_predicate_failure_counts == {
-        "per_point_ncount_equal": 1, "o41_margin_not_decisive": 1}
-    # The per-iteration authority decisions are audit trail: the dock's dedicated authority label
-    # carries the current selection (from the state above), so the rows stay out of the feed.
-    assert render_feed_item(events[1]) is None
-
-
 def test_reducer_captures_last_scan_identical_to_the_feed_line(make_ws):
     # last_scan is state-derived so a consumer built mid-campaign (the lazily-created compact
     # monitor) shows the current scan immediately — and it must be the SAME text the feed shows.
@@ -382,3 +355,25 @@ def test_scan_verdict_counts_by_definition(make_ws):
     assert counts.get("held", 0) == 1
     assert counts.get("flagged", 0) == 1
     assert counts.get("ok", 0) >= 1
+
+
+def test_alert_is_active_until_the_next_good_analysis(make_ws, tmp_path):
+    """Policy A (owner 2026-09-05): a survived failure yells through ``campaign_alert``; the GUI
+    keeps the alert up until an analysis succeeds, then clears it — a banner that outlives its
+    recovery teaches the operator to ignore banners."""
+    root = make_ws(rows=[])
+    path = _log_path(root)
+    _start_event(path)
+    _run_event(path, 0)
+    ws = Workspace.open(root)
+    vm = CampaignViewModel(ws)
+    assert vm.alert is None
+    log_event(path, "campaign_alert", {"alert": "analysis_failed", "consecutive": 1,
+                                       "policy": "continue", "iter": 0, "error": "boom"})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    assert vm.alert is not None and vm.alert["consecutive"] == 1
+    log_event(path, "analyze", {"iter": 1, "n_rows": 1, "dispositions": ["resolved"]})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    assert vm.alert is None

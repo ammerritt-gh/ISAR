@@ -350,8 +350,13 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   or amendments); the append-only `DECISIONS.md` ledger that originally defined the lettered
   series was retired 2026-08-20 (doc rebuild) and every version of it is in git history
   (`git log --all -- docs/DECISIONS.md`). A few IDs also survive as code vocabulary — e.g.
-  `o41_authority` (`isar/eig/o41_authority.py`), the O41-restricted opt-in authority path for
-  same-action scan-window EIG selection (`design/eig.md`); **H1**, the SCENE program's
+  **H1**, the SCENE program's
   constitution (`design/scene.md`); **S10**, evidence freezes only at owner-named milestones;
-  **O43**, the symmetric per-neutron scan-window comparison; **O44**, the acoustic zone-centre
-  exclusion (`ARCHITECTURE.md` §15).
+  **O44**, the acoustic zone-centre exclusion (`ARCHITECTURE.md` §15).
+
+  **Retired 2026-09-02, kept here so a citation in git history resolves:** **O11** (decline
+  widening), **O15** (the connected frontier), **O27** (same-q production ceilings), **O28** (the
+  targeted action-inventory exhaustion proof), **O36 / O41 / O42 / O43 / H22** (the same-action
+  scan-window comparison, its restricted authority profile and its default-on flip). The targeted
+  lane's placement is the EIG planner and none of these mechanisms exists any more
+  (`design/eig.md` §8, `design/steering.md` "Placement is the EIG planner").

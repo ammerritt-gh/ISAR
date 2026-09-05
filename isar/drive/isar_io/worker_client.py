@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 from typing import Callable, Sequence
 
-from isar.drive.isar_io.runner import IsarRunError, RunResult
+from isar.drive.isar_io.runner import IsarRunError, RunResult, SubprocessRunner
 
 # Sentinel distinguishing a transport failure (fall back) from a real reply (dispatch it).
 _TRANSPORT_FAIL = object()
@@ -122,6 +122,36 @@ class WorkerRunner:
         err = reply.get("error") or {}
         tb = err.get("traceback") or f"{err.get('type', 'Error')}: {err.get('message', '')}"
         raise IsarRunError(1, "", tb, ["python", "-m", "isar.session.worker", "run"])
+
+    def ingest(self, workspace, data_paths: Sequence, *, timeout: float | None = None) -> RunResult:
+        """Parse ``data_paths`` into the ledger without fitting (the worker's ``ingest`` command).
+
+        Falls back to ``isar ingest`` as a subprocess when the worker is degraded or the transport
+        fails; a failure here is reported, never fatal to the campaign — the fit that follows
+        ingests the same files itself, so the only loss is that the viewer sees the scan later.
+        """
+        if Path(workspace).resolve() != self._workspace.resolve():
+            raise ValueError(
+                f"WorkerRunner is bound to workspace {self._workspace}; got {workspace}")
+        paths = [str(p) for p in data_paths]
+        if not self._degraded and self._ensure_worker():
+            req_id = self._next_id
+            self._next_id += 1
+            try:
+                self._send({"id": req_id, "cmd": "ingest", "data_paths": paths})
+                reply = self._await_reply(req_id, self._job_timeout if timeout is None
+                                          else float(timeout))
+            except Exception:  # noqa: BLE001 — broken stdin pipe: worker died
+                reply = _TRANSPORT_FAIL
+            if reply is not _TRANSPORT_FAIL:
+                self._consecutive_failures = 0
+                if reply.get("ok"):
+                    return RunResult(0, "", "")
+                err = reply.get("error") or {}
+                tb = err.get("traceback") or f"{err.get('type', 'Error')}: {err.get('message', '')}"
+                raise IsarRunError(1, "", tb, ["python", "-m", "isar.session.worker", "ingest"])
+            self._on_transport_failure()
+        return SubprocessRunner().ingest(workspace, paths, timeout=timeout)
 
     def close(self) -> None:
         """Ask the worker to shut down, then ensure it is gone (terminate → kill)."""

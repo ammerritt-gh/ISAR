@@ -14,28 +14,38 @@ map the acoustic phonon from (2,0,0) to (3,0,0)
 ```
 
 The compiler turns it into a targeted campaign: 21 grid points at 0.05 r.l.u., acoustic branch as
-the target with the optic branch as a rival to be identified and then ignored, 0.5 meV tolerance,
-an 18 meV search window, scan-window EIG authoritative. No information about the phonon itself
-enters: the hypotheses are the shipped class presets (an acoustic branch goes to zero at the zone
-centre; an optic branch has a finite energy there), which the design goals name as the legitimate
+the target with the optic branch as a rival to be identified and then ignored, a **±0.1 meV** bar,
+an 18 meV search window. No information about the phonon itself enters: the hypotheses are the
+shipped class presets (an acoustic branch goes to zero at the zone centre with a zero-mean slope
+prior; an optic branch has a finite energy there), which the design goals name as the legitimate
 starting point.
 
 What the room sees, in order:
 
-1. **Survey pass.** Every unmeasured q gets the full search window, because an unmeasured q has
-   no prediction to centre a core on. The scans march outward from (2.05,0,0) along the line.
-2. **Identity.** The tracker establishes the acoustic branch against the optic rival and
-   connects the frontier point by point.
-3. **Centred cores.** Once a q has a confirmed prediction, the window EIG compares the survey
-   against a 17-point core centred on the predicted energy, on information per neutron, and
-   takes the winner. Ties go to the cheaper scan. From that point most scans are 17 points
-   instead of 120 to 150.
-4. **Certification and stop.** Each q certifies a pooled ω₀ interval at or below tolerance; the
-   campaign stops "met".
+1. **A scan within seconds.** The planner ranks every `(Q, window, exposure)` the class priors
+   generate and submits the best one. Nothing surveys the line first.
+2. **Wide because the belief is wide.** The first windows run to ~100 points, because a cold
+   acoustic belief far from the fold predicts "somewhere in the band". That is the prior showing,
+   not a survey rule.
+3. **Narrow as the map firms up.** The first fits anchor the belief; by iteration 4 the windows are
+   15–18 points, centred on the predicted energy.
+4. **More exposure where the branches approach.** The exposure ladder climbs from 5M to 160M
+   neutrons per point toward the zone boundary, where the acoustic lobe is dimmest and the optic
+   sits closest — an EIG outcome, not a rule, because a scan that cannot tell the two branches
+   apart carries less information about the prize.
+5. **Certification and stop.** Each q certifies a pooled ω₀ interval at or inside the bar; the
+   planner's prize is met and the campaign stops `met`.
 
-The rule an expert will ask for, in one sentence: *two candidate windows are scored on expected
-information per neutron about the excitation energy; the winner is taken, and a statistical tie
-is broken by cost.* (O41/O43 in `design/eig.md`.)
+The rule an expert will ask for, in one sentence: *every candidate scan is scored on the expected
+number of grid points it would bring inside the bar, per neutron, by simulating its counts under
+the current hypothesis map and the measured intensity map — and the best one is taken.*
+(`design/eig.md`.)
+
+**The live full path, 2026-09-03:** 82 scans, 1.45e11 neutrons, 24.9 minutes, terminal `met` on
+certified intervals, 20/20 prize points. `isar score --truth-fn phonon_dft` on it: median |Δω₀|
+0.028 meV, inside the bar. Be ready for the honest caveat if a statistician asks — the published
+intervals under-cover by about 1.9× (coverage 0.444 against a nominal 0.68), which is a fitter
+σ-calibration matter and not a placement one; it makes the planner stop slightly early.
 
 ## 2. How to run it
 
@@ -45,14 +55,18 @@ is broken by cost.* (O41/O43 in `design/eig.md`.)
   five, same structures selected, same points certified on the reference campaign. The
   rationale is in `STATS_PRIMER.md` §Evidence if anyone asks.
 - In the Drive dock: paste the sentence, set **analysis limit to `none`** (the compiler freezes
-  one hour, and fifty fits at a minute each would brush it), leave scan-window EIG at its
-  default. Start.
+  one hour, and fifty fits at a minute each would brush it). Start.
 - Stop is cooperative: the GUI's stop writes a control file and the loop finishes the current
   iteration and exits with the operator-stopped state, within one iteration.
 - Rehearse once in the GUI yourself before the day. Every rehearsal below ran the same program
   through the CLI, not the dock.
 
 ## 3. Measured on 2026-09-02 (code `0b02b98`)
+
+> **These rehearsals predate the EIG planner.** Everything below that names a survey pass, a
+> centred "core", an O36 eligibility gate or a scan-window decision describes the machinery retired
+> on 2026-09-02 (`design/eig.md` §8). It is kept as the timing and accuracy evidence it is; the
+> current behaviour is §1 and the 2026-09-03 live run.
 
 Short reference program, (2,0,0) to (2.3,0,0), three measurable points:
 
@@ -134,9 +148,9 @@ Completed workspaces under `test_workspaces/demo-rehearsal/` (gitignored): `D-ve
 ```
 isar score --workspace <ws> --truth-fn phonon_dft --json <ws>/score.json
 isar diagnose --workspace <ws>
-isar diagnose --workspace <ws> --eig
 ```
 
 `report/figures/campaign_dispersion_truth.png` is the dispersion against the analytic curve;
-`report/report.html` is the full report; the `--eig` table says, per q, why the window was or
+`report/report.html` is the full report; the `eig_plan` events in `report/session_log.jsonl` say,
+per iteration, which design won and what it beat
 was not narrowed.

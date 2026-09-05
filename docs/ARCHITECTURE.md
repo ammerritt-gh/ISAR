@@ -17,9 +17,10 @@ ledger of that era has since been retired into the owning design docs — origin
 the drive loop (Stage III) is built and has passed its first certification campaign against the
 **analytic synthetic tier** (`fn:phonon_dft`; see `campaigns/`). Deterministic TAVI backend
 validation ran on 2026-07-10; realistic-clock and McStas validation remain Planned backend-runtime
-and fidelity-validation rungs (§9, §15). EIG-4 is the current SVP; same-action scan-window scoring
-is Implemented and authoritative selection is default-on at compile time as of SCENE-4.4 (H22,
-2026-08-21; §15). Statuses in this document follow the discipline:
+and fidelity-validation rungs (§9, §15). The targeted lane's placement is the EIG planner: it
+chooses Q, energy window and exposure by expected information per neutron over a hypothesis map and
+an intensity map, and it is the only thing that places a scan (`design/eig.md`; §15). Statuses in
+this document follow the discipline:
 every capability is **Implemented**, **Partial**, or **Planned**, and nothing is described in the
 implemented voice unless it is.
 
@@ -311,13 +312,14 @@ windows recenter from the pooled spectrum rather than the last individual fit. *
 2026-07-19 — rulings O18/O20.)*
 
 **Branch-identity-aware acquisition** *(branch-hypothesis slice Implemented 2026-07-17;
-`level`/`continuum` plugins Partial — rulings O6–O12, MEASUREMENT_STEERING §4.5,
-`HYPOTHESES.md`)*: scan value is two-term (target-ω₀ EIG +
-λ × branch-assignment-entropy reduction); user-declared excitation hypotheses in
-`card.policy.toml` weight — never force — belief seeding, classification, opening moves, and
-energy windows (which stop unconditionally excluding the rival branch); the compiled path
-becomes first-guess (driver-inserted classification q, which never seat convergence); rivals
-are measured only to a looser differentiation tolerance; hypothesis mismatch is detected and
+`level`/`continuum` plugins Partial — rulings O6–O12, `design/steering.md` §4.5,
+`HYPOTHESES.md`; placement rewritten 2026-09-02, `design/eig.md`)*: scan value is one number —
+expected prize completions per neutron over a mutually exclusive target-energy posterior, so
+"which branch is this peak" and "how precisely do we know the target here" are priced together
+instead of mixed by a λ weight; user-declared excitation hypotheses in
+`card.policy.toml` weight — never force — belief seeding, classification, and the windows the
+planner generates (which stop unconditionally excluding the rival branch); rivals
+are measured only as far as excluding them needs; hypothesis mismatch is detected and
 flagged, and the resolved hypothesis is content-hashed into `card.state.json`.
 
 **Campaign outcomes.** `met` means every requested master certified. `incomplete` means a measurement
@@ -350,7 +352,7 @@ as the instrument would report it, so the wall-clock budget semantics (§8) are 
 meet a real night. TAVI will surprise in ways the analytic tier cannot (resolution tails,
 backgrounds, count-rate reality); better simulated than actual. *(Partial — the deterministic rung ran
 2026-07-10 as the S3 re-certification; the recert log is in git history. Realistic
-clocks and the McStas rung remain Planned.)* EIG-4, not TAVI/McStas, is the current SVP.
+clocks and the McStas rung remain Planned.)*
 
 **Backend-first integration.** Oracle use (simulate a proposed scan before spending beam) and
 dry runs are the same interface invoked off-path; getting the backend right gets them free.
@@ -439,14 +441,20 @@ rulings W1–W3.)*
 | Uniform `interval_reliable` convergence rule | Implemented (2026-07-10) |
 | Pooled-fit member provenance | Implemented (2026-07-10) |
 | Persisted content-addressed pooled spectra + master/member browser | Implemented (2026-07-19; additive v2 fallback for legacy curve-only masters) |
+| Pooled master displayed in its fit's exposure frame; plane and waterfall columns are the master per reference monitor | Implemented (2026-09-05; design/gui.md heatmap item) |
+| Campaign never stops on a survived failure; `campaign_alert` channel + GUI banner; retrying atomic swap for session writers | Implemented (2026-09-05; design/steering.md §7.10) |
+| Outward alert connectors on `campaign_alert` (WhatsApp, e-mail, desktop) | Planned (design/steering.md §7.10) |
+| Energy domain is the instrument's: card `max_energy_transfer_meV` above, elastic exclusion (optic) or zero below; no per-branch search ranges | Implemented (2026-09-05; design/steering.md §7.2, design/eig.md) |
 | Master-authoritative assessment, prior, branch tracking, and stopping | Implemented (2026-07-19) |
 | Pooled member homogeneity bootstrap | Implemented (2026-07-19; seeded exposure-scaled Poisson deviance, α=0.01) |
 | Full-parameter master-predictive artifacts + model-discriminating information ranking | Implemented (2026-07-19) |
 | γ-at-bound calibration v2; Γ prior | Planned |
 | `tas4d` convolution (TAVI-supplied ellipsoids) | Planned |
 | Stage III: per-point objective, EIG acquisition, stop-and-report | Implemented (analytic tier certified) |
-| Same-action scan-window EIG | **Implemented:** predictive `/2`, arbitrary-grid evaluation, candidate generation, executed-grid identity, target projection, pure candidate scoring, Slice 7 exact realized-request rescoring/provenance, the accepted retained Slice 8 tools-only gate, and the O41 authority path. Authoritative selection is **default-on at compile time** (SCENE-4.4, H22, 2026-08-21): every newly compiled targeted objective freezes an explicit `scan_window_eig_mode`, defaulting `"authoritative"`; an absent-mode historical program refuses by name with a recompile message (H1 — no read-time defaulting), and the runtime `.get(..., "off")` fallback stays untouched so no old frozen program silently changes windows. The `"shadow"` mode is **retired**: `SCAN_WINDOW_EIG_MODES` narrows to `(off, authoritative)`, a frozen program naming it refuses by name with a recompile message, and the shadow-only machinery was deleted by an import/call-site map — the surviving scoring engine (Slice 6/7 diagnostic scored-shadow inventories, realized comparison) runs under its old shadow-era names by design (rename churn was a poor trade) and now serves authoritative selection exclusively. The discovery path never consumed this mode: `DiscoverAndMapSpec` carries no `scan_window_eig_mode` field, pinned by test. The selection rule is a **symmetric per-neutron comparison** (O43) — the two candidates are compared on information per neutron and the winner is taken, with ties and partition-offset disagreements broken by cost rather than by retaining the survey. There is no polarity to switch: neither candidate is a default. The survey still wins the first pass across Q, but structurally, because an unmeasured q has no prediction to centre a core on and so offers no core candidate. On a cold-start campaign every scored decision after the first pass selected the centred core. Known limitation: the QoI partition (0.5 meV) is far coarser than the design prediction sigma (median 0.0182 meV), so once a fit exists the comparison is frequently a tie decided on cost rather than on information — accepted deliberately at EIG-4 close, see `design/eig.md`. Named gap: no test yet proves a real window swap under `target_core` (the D2 targeted-flip regression exercises only the conservative branch); a differentiated-information fixture is not built in this slice. EIG-4 is complete. |
-| Acoustic zone-centre exclusion | **Implemented** (O44, 2026-08-05): an acoustic branch has ω(q→0) → 0, so at the reduced-q origin the excitation is degenerate with the elastic line and is not a measurable target at any exposure. That q is not precision-coverage eligible from the first iteration, on the branch type and the tracker's published `reduced_q_origin_index` alone. Branch-conditional: an optic branch has a finite ω at the zone centre and stays eligible there. An acoustic campaign's "N measurable grid q converged" is therefore one lower than its path length. |
+| Same-action scan-window EIG (O36/O41/O43) | **Retired** 2026-09-02. The comparison scored a legislated survey window against a centred core *at a q that already had a confirmed fit*, so on a 21-point line the first 20 scans were surveys by construction — it answered which window to use for a placement something else had already made. Placement is now the EIG question outright. The package (`isar/eig/`), its policy compilation, authority records, offline corpus, the `--scan-window-eig-mode` knob and the card `scan_window_eig_policy_set` are deleted; git history is the archive (`design/eig.md` §8). |
+| EIG planner (targeted placement: Q, window, exposure) | **Implemented** 2026-09-02 (`isar/drive/acquisition/eig_planner.py`, `design/eig.md`). Ranks every candidate action by expected prize completions per neutron over the per-branch hypothesis map and the counts-read intensity map; Gauss–Hermite scenarios, no RNG, exact ties; the prize is judged on the published certified interval and `plan_next`'s `goal_met` is the only stop that means the objective was answered. Live on TAVI 2026-09-03: (2,0,0)→(3,0,0), 82 scans, 24.9 min, 20/20 prize points, terminal `met`. Named limitation, outside the planner: `isar score` on that run gives a median |Δω₀| of 0.028 meV inside the 0.05 meV bar it used but an interval coverage of 0.444 against a nominal 0.68 — the published intervals under-cover by ~1.9×, half of it a systematic centre pull no inflation can fix (`STATS_PRIMER.md`). Owner ruling 2026-09-03: the DHO convolution grid drops to 0.01 meV, which removes the share of the pull the grid itself caused, and the default per-point bar becomes **±0.1 meV**, which honestly covers the residual — whose physical cause is resolution focusing that ISAR's 1D energy-resolution fitter does not model (deconvolution deferred). |
+| Acoustic zone-centre exclusion | **Implemented** (O44, 2026-08-05): an acoustic branch has ω(q→0) → 0, so at the reduced-q origin the excitation is degenerate with the elastic line and is not a measurable target at any exposure. That q is not precision-coverage eligible from the first iteration, on the branch type and the tracker's published `reduced_q_origin_index` alone — pure geometry, and since 2026-09-02 the only route to the exemption (the tracker's earned `inferred_unresolved` endpoint state is deleted). Branch-conditional: an optic branch has a finite ω at the zone centre and stays eligible there. An acoustic campaign's "N measurable grid q converged" is therefore one lower than its path length. |
+| Tracked-branch placement (frontier, anchor, bridge, same-q ceilings, opening book, survey) | **Retired** 2026-09-02. Deleted, not routed around: the connected frontier and its `frontier_blocked` terminal (O15), `maximum_bridge_steps`, the acquisition-seed anchor, `maximum_production_batches_per_q` (O27), the targeted `GENERATOR_REGISTRY` exhaustion proof (O28), decline widening (O11), missed-window recentre-and-widen, and the `survey` flag that made every first visit to a q scan the whole search band. `track_state` reduces to `confirmed` / `ambiguous`, which is branch *identity* and not placement. `design/steering.md`, "Placement is the EIG planner". |
 | Exposure-aware pooling + tolerance-driven dynamic `ncount` | **Partial** (O13, 2026-07-18; raw counts/ΣN retained and deterministic interval scaling/brakes/replay Implemented, Fisher/sample-based dwell optimisation Planned) |
 | Bayesian optic cold-start + selector-driven provisional evidence | **Partial** (2026-07-18; posterior assignment, neighboring-q evidence and probabilistic rejection implemented, sampled Stage-C MI Planned) |
 | Separate measurement budget + cumulative analysis guardrail | Implemented (2026-07-19; durable ten-second checkpoints) |

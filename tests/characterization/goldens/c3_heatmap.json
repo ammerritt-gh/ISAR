@@ -1,5 +1,11 @@
 {
-  "annotations": [],
+  "annotations": [
+    {
+      "role": null,
+      "text": "colour scale set by |E| > 2 meV; the elastic line saturates",
+      "xy": null
+    }
+  ],
   "bands": [],
   "markers": [],
   "meta": {
@@ -452,6 +458,10 @@
     }
   ],
   "strip_colormap": "viridis",
+  "strip_levels": [
+    0.0,
+    2790.0
+  ],
   "strips": [
     {
       "meta": {

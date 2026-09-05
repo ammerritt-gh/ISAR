@@ -22,7 +22,6 @@ from isar.schema.campaign_program import (
     TARGETED_STEP_SCHEMA,
     retired_schema_error,
 )
-from isar.schema.eig_policy import ScanWindowEIGConfig
 from isar.schema.hypotheses import (
     SteeringPolicy,
     content_fingerprint,
@@ -34,7 +33,12 @@ from isar.schema.hypotheses import (
 # is TAVI's fast analytic engine (develop the loop); "mcstas" is the full Monte-Carlo (validate).
 TIERS = ("deterministic", "mcstas")
 TARGET_BRANCHES = ("acoustic", "optic")
-TARGET_SELECTORS = ("lowest_energy", "highest_energy", "nearest_energy", "tracked_branch")
+# The EIG planner places every targeted scan, and its prize is defined per DECLARED BRANCH
+# (``target_branch`` plus that branch's class prior and belief). The per-q feature selectors that
+# the retired tracker understood — lowest / highest / nearest energy — reach nothing that plans a
+# scan, so a campaign compiled with one has a prize the planner can never satisfy and runs until
+# its budget dies. Only the declared-branch selector is accepted.
+TARGET_SELECTORS = ("tracked_branch",)
 # The objective *content* below is unchanged science; only its contract identity moved. It is now
 # the payload of a ``targeted`` step inside an ``isar.campaign-program/1`` (ruling H1), so it
 # carries that step's schema string. ``isar.objective/2`` and its ``isar.objective-envelope/2``
@@ -58,6 +62,11 @@ log = logging.getLogger(__name__)
 DEFAULT_BUDGET_HOURS_BY_TIER: dict[str, float] = {"deterministic": 1.0, "mcstas": 8.0}
 #: The fallback for a tier not listed above — the conservative overnight figure.
 DEFAULT_BUDGET_HOURS = 8.0
+#: The instrument's kinematic ceiling (meV) when the card does not declare
+#: ``max_energy_transfer_meV``: the top of the energy domain every targeted campaign plans in. An
+#: instrument fact, not a phonon guess — there are no per-branch search ranges (owner ruling
+#: 2026-09-05). The TAVI template declares it; a bare objective or an older card gets this.
+DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV = 20.0
 #: No neutron budget by default. ``None`` means UNLIMITED, and every spend check treats it as
 #: unconstrained via an explicit ``is None`` guard (never as an infinite amount to compare against).
 DEFAULT_BUDGET_NEUTRONS: float | None = None
@@ -97,7 +106,6 @@ class ObjectiveSpec:
     target_branch: str = "acoustic"
     target_label: str = "acoustic"
     target_selector: str | None = None
-    target_energy_meV: float | None = None
     energy_search_meV: tuple[float, float] | None = None
     # Where the *identity* question may be asked, as opposed to where the target is expected.
     # ``energy_search_meV`` bounds target delivery and precision work; a rival mode that settles which
@@ -119,8 +127,6 @@ class ObjectiveSpec:
     hypothesis_source: str | None = None
     hypothesis_fingerprint: str | None = None
     steering: dict[str, Any] = field(default_factory=dict)
-    scan_window_eig: ScanWindowEIGConfig | Mapping[str, Any] = field(
-        default_factory=ScanWindowEIGConfig)
     analysis_limit_seconds: float | None | object = _DEFAULT_ANALYSIS_LIMIT
 
     def __post_init__(self) -> None:
@@ -128,20 +134,16 @@ class ObjectiveSpec:
             raise ValueError(f"tier {self.tier!r} not in {TIERS}")
         if self.target_branch not in TARGET_BRANCHES:
             raise ValueError(f"target_branch {self.target_branch!r} not in {TARGET_BRANCHES}")
-        if self.target_energy_meV is not None:
-            self.target_energy_meV = float(self.target_energy_meV)
-            if not math.isfinite(self.target_energy_meV):
-                raise ValueError("target_energy_meV must be finite")
         if self.target_selector is None:
-            self.target_selector = ("nearest_energy" if self.target_energy_meV is not None
-                                    else "lowest_energy")
+            self.target_selector = "tracked_branch"
         if self.target_selector not in TARGET_SELECTORS:
-            raise ValueError(f"target_selector {self.target_selector!r} not in {TARGET_SELECTORS}")
-        if self.target_selector == "nearest_energy" and self.target_energy_meV is None:
-            raise ValueError("nearest_energy target_selector requires target_energy_meV")
-        # A tracked selector follows one connected physical branch along the objective path.  Both
-        # shipped branch identities are supported; local lowest/highest/nearest selectors remain
-        # available when independent per-q feature selection is what the operator requested.
+            raise ValueError(
+                f"target_selector {self.target_selector!r} is not a target the planner can map: "
+                "the EIG planner maps the branch declared in target_branch, so 'tracked_branch' is "
+                "the only selector. An energy that merely IDENTIFIES which branch to map is a "
+                "zone-centre anchor and belongs in target_zc_energy_meV.")
+        # The tracked selector follows one connected physical branch along the objective path. Both
+        # shipped branch identities are supported.
         # Normalize path entries to plain float triples so round-trips are stable.
         norm: list[tuple[float, float, float]] = []
         for p in self.path:
@@ -190,7 +192,10 @@ class ObjectiveSpec:
             if not math.isfinite(self.target_temperature_K) or self.target_temperature_K <= 0.0:
                 raise ValueError("target_temperature_K must be a positive, finite temperature in K")
         if self.energy_search_meV is None:
-            self.energy_search_meV = (-2.0, 12.0) if self.target_branch == "optic" else (-2.0, 7.0)
+            # No per-branch search range (owner ruling 2026-09-05): the domain is the instrument's
+            # kinematic ceiling above and zero below, for every branch. The compiler sets it from
+            # the card's ``max_energy_transfer_meV``; a bare objective gets the shipped default.
+            self.energy_search_meV = (0.0, DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV)
         else:
             lo, hi = self.energy_search_meV
             self.energy_search_meV = (float(lo), float(hi))
@@ -206,32 +211,18 @@ class ObjectiveSpec:
             self.identity_search_meV = (float(lo), float(hi))
             if not self.identity_search_meV[0] < self.identity_search_meV[1]:
                 raise ValueError("identity_search_meV must be [low, high] with low < high")
+        # Who chose each band. The target domain is the instrument's since 2026-09-05: "instrument"
+        # when the card declared its ceiling, "instrument_default" when the shipped ceiling stood in.
+        # "operator"/"compiler" remain for the identity band and for frozen programs from before.
         for name in ("target_search_source", "identity_search_source"):
             value = getattr(self, name)
-            if value is not None and value not in ("operator", "compiler"):
-                raise ValueError(f"{name} must be 'operator', 'compiler', or None")
+            if value is not None and value not in ("operator", "compiler", "instrument",
+                                                   "instrument_default"):
+                raise ValueError(f"{name} must be 'operator', 'compiler', 'instrument', "
+                                 "'instrument_default', or None")
         self.target_label = str(self.target_label or self.target_branch)
         self.hypotheses = [dict(h) for h in self.hypotheses]
         self.steering = dict(self.steering)
-        if isinstance(self.scan_window_eig, Mapping):
-            self.scan_window_eig = ScanWindowEIGConfig.from_dict(self.scan_window_eig)
-        elif isinstance(self.scan_window_eig, ScanWindowEIGConfig):
-            self.scan_window_eig = ScanWindowEIGConfig.from_dict(self.scan_window_eig.to_dict())
-        else:
-            raise TypeError("scan_window_eig must be a frozen ScanWindowEIGConfig")
-        # A full frozen objective is a campaign-start contract, not merely a policy container.
-        # Validate every currently supported scientific policy before beamtime starts.  Unknown
-        # versioned policy kinds remain authenticated and are refused diagnostically at runtime.
-        policy_set = self.scan_window_eig.policy_set
-        if policy_set is not None:
-            from isar.eig.policy import compile_qoi_distinction_policy
-            for policy in policy_set.policies:
-                if policy.policy_kind == "isar.scalar_absolute_partitions/o36.5":
-                    for variant in policy.variants:
-                        compile_qoi_distinction_policy(policy, variant)
-        if self.steering.get("scan_window_eig_mode", "off") == "authoritative":
-            from isar.eig.o41_authority import validate_o41_authoritative_profile
-            validate_o41_authoritative_profile(self.scan_window_eig)
         if self.hypotheses:
             names: set[str] = set()
             for hypothesis in self.hypotheses:
@@ -244,15 +235,6 @@ class ObjectiveSpec:
             if not self.target_hypothesis or self.target_hypothesis not in names:
                 raise ValueError("target_hypothesis must name one of the frozen hypotheses")
             supplied_steering = dict(self.steering)
-            # SCENE-4 PR 4.4, D1: a frozen objective never acquires a read-time default for its
-            # scan-window EIG mode (H1). SteeringPolicy's own field default would silently read a
-            # historical dict missing the key as "off" — check the key's PRESENCE here, before
-            # that default has a chance to apply, and name the recompile rather than adapt.
-            if "scan_window_eig_mode" not in supplied_steering:
-                raise ValueError(
-                    f"{OBJECTIVE_SCHEMA} steering requires an explicit scan_window_eig_mode; a "
-                    "frozen objective never acquires read-time defaults (H1) — recompile the "
-                    "campaign with `isar drive --goal ... --compile-only`")
             SteeringPolicy(**supplied_steering)
             # A frozen objective's hash covers the exact steering dictionary written at compile time.
             # Validate that historical dictionary with current typed defaults, but do not expand it:
@@ -295,7 +277,7 @@ class ObjectiveSpec:
                 tier: str = "deterministic",
                 name: str = "", meta: dict[str, Any] | None = None,
                 target_branch: str = "acoustic", target_label: str = "acoustic",
-                target_selector: str | None = None, target_energy_meV: float | None = None,
+                target_selector: str | None = None,
                 energy_search_meV: tuple[float, float] | None = None,
                 identity_search_meV: tuple[float, float] | None = None,
                 target_search_source: str | None = None,
@@ -305,7 +287,6 @@ class ObjectiveSpec:
                 target_hypothesis: str | None = None, hypothesis_source: str | None = None,
                 hypothesis_fingerprint: str | None = None,
                 steering: dict[str, Any] | None = None,
-                scan_window_eig: ScanWindowEIGConfig | Mapping[str, Any] | None = None,
                 analysis_limit_seconds: float | None | object = _DEFAULT_ANALYSIS_LIMIT) -> "ObjectiveSpec":
         """A path that walks H from ``h_start`` to ``h_end`` in increments of ``step`` at fixed K, L.
 
@@ -322,7 +303,7 @@ class ObjectiveSpec:
                    budget=(dict(budget) if budget is not None else None),
                    tier=tier, name=name, meta=dict(meta or {}), target_branch=target_branch,
                    target_label=target_label, target_selector=target_selector,
-                   target_energy_meV=target_energy_meV, energy_search_meV=energy_search_meV,
+                   energy_search_meV=energy_search_meV,
                    identity_search_meV=identity_search_meV,
                    target_search_source=target_search_source,
                    identity_search_source=identity_search_source,
@@ -331,8 +312,6 @@ class ObjectiveSpec:
                    hypothesis_source=hypothesis_source,
                    hypothesis_fingerprint=hypothesis_fingerprint,
                    steering=dict(steering or {}),
-                   scan_window_eig=(ScanWindowEIGConfig() if scan_window_eig is None
-                                    else scan_window_eig),
                    analysis_limit_seconds=analysis_limit_seconds)
 
     @classmethod
@@ -340,7 +319,7 @@ class ObjectiveSpec:
                 budget: dict[str, Any] | None = None, tier: str = "deterministic", name: str = "",
                 meta: dict[str, Any] | None = None, target_branch: str = "acoustic",
                 target_label: str = "acoustic",
-                target_selector: str | None = None, target_energy_meV: float | None = None,
+                target_selector: str | None = None,
                 energy_search_meV: tuple[float, float] | None = None,
                 identity_search_meV: tuple[float, float] | None = None,
                 target_search_source: str | None = None,
@@ -350,7 +329,6 @@ class ObjectiveSpec:
                 target_hypothesis: str | None = None, hypothesis_source: str | None = None,
                 hypothesis_fingerprint: str | None = None,
                 steering: dict[str, Any] | None = None,
-                scan_window_eig: ScanWindowEIGConfig | Mapping[str, Any] | None = None,
                 analysis_limit_seconds: float | None | object = _DEFAULT_ANALYSIS_LIMIT) -> "ObjectiveSpec":
         """A straight reciprocal-space segment whose intervals never exceed ``step_rlu``.
 
@@ -373,7 +351,7 @@ class ObjectiveSpec:
                    budget=(dict(budget) if budget is not None else None), tier=tier,
                    name=name, meta=dict(meta or {}), target_branch=target_branch,
                    target_label=target_label, target_selector=target_selector,
-                   target_energy_meV=target_energy_meV, energy_search_meV=energy_search_meV,
+                   energy_search_meV=energy_search_meV,
                    identity_search_meV=identity_search_meV,
                    target_search_source=target_search_source,
                    identity_search_source=identity_search_source,
@@ -382,8 +360,6 @@ class ObjectiveSpec:
                    hypothesis_source=hypothesis_source,
                    hypothesis_fingerprint=hypothesis_fingerprint,
                    steering=dict(steering or {}),
-                   scan_window_eig=(ScanWindowEIGConfig() if scan_window_eig is None
-                                    else scan_window_eig),
                    analysis_limit_seconds=analysis_limit_seconds)
 
     # ---- (de)serialization -------------------------------------------------
@@ -400,7 +376,6 @@ class ObjectiveSpec:
             "target_branch": self.target_branch,
             "target_label": self.target_label,
             "target_selector": self.target_selector,
-            "target_energy_meV": self.target_energy_meV,
             "energy_search_meV": list(self.energy_search_meV),
             "identity_search_meV": (list(self.identity_search_meV)
                                     if self.identity_search_meV is not None else None),
@@ -412,7 +387,6 @@ class ObjectiveSpec:
             "hypothesis_source": self.hypothesis_source,
             "hypothesis_fingerprint": self.hypothesis_fingerprint,
             "steering": dict(self.steering),
-            "scan_window_eig": self.scan_window_eig.to_dict(),
         }
 
     @classmethod
@@ -435,7 +409,6 @@ class ObjectiveSpec:
             target_branch=d.get("target_branch", "acoustic"),
             target_label=d.get("target_label", d.get("target_branch", "acoustic")),
             target_selector=d.get("target_selector"),
-            target_energy_meV=d.get("target_energy_meV"),
             energy_search_meV=(tuple(d["energy_search_meV"])
                                if d.get("energy_search_meV") is not None else None),
             identity_search_meV=(tuple(d["identity_search_meV"])
@@ -448,12 +421,6 @@ class ObjectiveSpec:
             hypothesis_source=d.get("hypothesis_source"),
             hypothesis_fingerprint=d.get("hypothesis_fingerprint"),
             steering=dict(d.get("steering") or {}),
-            # ``scan_window_eig`` was added to objective/2 without minting a new objective schema.
-            # Old frozen objective/2 records therefore read as the frozen no-policy/default-scoring
-            # value.  New writers still materialize the block through ``to_dict``; an explicit null
-            # remains invalid and is deliberately not treated as omission.
-            scan_window_eig=(
-                ScanWindowEIGConfig() if "scan_window_eig" not in d else d["scan_window_eig"]),
             analysis_limit_seconds=(d["analysis_limit_seconds"]
                                     if "analysis_limit_seconds" in d else _DEFAULT_ANALYSIS_LIMIT),
         )
@@ -462,8 +429,8 @@ class ObjectiveSpec:
 def current_objective_comparison_scope(objective: ObjectiveSpec) -> Mapping[str, str]:
     """Adapt the scientific objective to the stable campaign-policy applicability identity.
 
-    Steering and ``scan_window_eig`` are deliberately excluded.  A policy can therefore bind to
-    this exact identity and then be embedded in the objective without a recursive fingerprint.
+    Steering is deliberately excluded, so a policy can bind to this exact scientific identity
+    without a recursive fingerprint.
     """
     from isar.schema.statistics import semantics_fingerprint
 
@@ -479,7 +446,6 @@ def current_objective_comparison_scope(objective: ObjectiveSpec) -> Mapping[str,
         "target_branch": raw["target_branch"],
         "target_label": raw["target_label"],
         "target_selector": raw["target_selector"],
-        "target_energy_meV": raw["target_energy_meV"],
         "energy_search_meV": raw["energy_search_meV"],
         "identity_search_meV": raw["identity_search_meV"],
         "target_temperature_K": raw["target_temperature_K"],
@@ -514,8 +480,7 @@ def resolve_hypothesis_snapshot(target_branch: str, energy_search_meV, *,
     The returned source names the declaration that won for the target.  Rivals from the card remain
     available to classification even when a goal override replaces only the target declaration.
     """
-    energy = tuple(energy_search_meV or (
-        (-2.0, 12.0) if target_branch == "optic" else (-2.0, 7.0)))
+    energy = tuple(energy_search_meV or (0.0, DEFAULT_INSTRUMENT_ENERGY_CEILING_MEV))
     declarations = {str(name): dict(value or {})
                     for name, value in dict(card_hypotheses or {}).items()}
     source = "card_policy" if target_branch in declarations else "shipped_preset"
@@ -531,19 +496,7 @@ def resolve_hypothesis_snapshot(target_branch: str, energy_search_meV, *,
     hypotheses = [resolve_hypothesis(
         name, declarations.get(name), energy_search_meV=energy).to_dict()
         for name in ordered_names]
-    # SCENE-4 PR 4.4, D1: every newly compiled targeted objective freezes an explicit
-    # scan_window_eig_mode. An operator ask (steering_override) still wins, including an explicit
-    # "off"; absent, the compiler now resolves the O42-retirement default "authoritative" rather
-    # than SteeringPolicy's own bare-field default. "shadow" is retired for a NEW compile — a
-    # historical frozen objective may still carry it (refused by name in a later commit); this is
-    # only where a fresh one gets minted.
-    steering_values = {"dynamic_ncount": True, "scan_window_eig_mode": "authoritative",
-                       **dict(steering_override or {})}
-    if steering_values["scan_window_eig_mode"] == "shadow":
-        raise ValueError(
-            "scan_window_eig_mode='shadow' is not accepted for a new compile; the shadow-only "
-            "diagnostic mode is retired for newly compiled objectives (SCENE-4 PR 4.4) — declare "
-            "'off' or 'authoritative', or omit the field for the authoritative default")
+    steering_values = {"dynamic_ncount": True, **dict(steering_override or {})}
     steering = SteeringPolicy(**steering_values).to_dict()
     return {"hypotheses": hypotheses, "target_hypothesis": target_branch,
             "hypothesis_source": source,

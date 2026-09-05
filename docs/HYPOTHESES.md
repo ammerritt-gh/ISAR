@@ -25,9 +25,9 @@ A hypothesis **weights** the driver's Bayesian machinery; it never **forces** it
 
 - it *seeds* per-branch beliefs before any data exists, so a declared optic branch can claim a
   6 meV zone-centre feature instead of the acoustic belief absorbing it;
-- it *shapes* the opening moves (an optic target starts at the zone centre at positive energy —
-  scanning the Bragg peak itself tells you nothing; an acoustic target starts at the smallest q
-  where its predicted energy is resolvable);
+- it *shapes* where the first scans go, but only through the prices: the planner opens where its
+  belief says the branch is both findable and worth finding, so a gapped target's zone-centre
+  feature and a gapless target's first resolvable q come out of the scoring rather than a rule;
 - it *informs* classification, as a prior over the branch labels — never as a veto.
 
 A hypothesis is **not** a fit model, and it is **not** a catalogue entry. The phenomenon
@@ -39,8 +39,10 @@ to look first and what the features it finds most plausibly are. If the data dis
 say so (see *When you're wrong*, below), not to fit your expectation anyway.
 
 For a tracked branch, a stated energy is an **anchor identity prior**, not an instruction
-to pick whichever peak lies nearest 6 meV at every q. The global-nearest behavior remains available
-only through the explicit `nearest_energy` selector. `tracked_branch` jointly assigns the optic,
+to pick whichever peak lies nearest 6 meV at every q. Picking a feature independently at every q is
+not something this driver measures: `tracked_branch` is the only selector, and a goal asking for the
+lowest, highest, or nearest-energy feature at every q is refused at compile time rather than
+compiled into a campaign whose prize the planner cannot map. `tracked_branch` jointly assigns the optic,
 acoustic rival, new, and missing states over the ordered path. Only modes from a published pooled
 master are authoritative track evidence; physical-fit modes remain inspectable diagnostics.
 Assignments may be revised when a neighboring pooled master arrives.
@@ -100,7 +102,9 @@ uninformative default):
 | `flatness` | `"low"` / `"high"` — shorthand that scales the slope-prior sigma. |
 | `confidence` | 0..1; scales the prior's precision. Treat it as "how much data would it take to talk me out of this." The prior's influence decays automatically as real data accumulates regardless. |
 
-Shipped presets: **`acoustic`** (gapless — zone-centre energy pinned to 0), **`optic`** (gapped;
+Shipped presets: **`acoustic`** (gapless — zone-centre energy pinned to 0, and a **zero-mean**
+slope prior whose sigma is derived from the objective's energy domain (`[0, instrument ceiling]`, the card's `max_energy_transfer_meV`; no per-branch search range exists since 2026-09-05): the shipped mean of
+12 meV/r.l.u. was baking in the answer and was removed on 2026-09-02), **`optic`** (gapped;
 if you give no `zc_energy` its mode is derived deterministically from the objective's energy
 search band), **`null`** (agnostic — near-zero precision everywhere; the escape hatch for
 exploratory work and the baseline the mismatch check compares against). Declaring
@@ -109,33 +113,34 @@ is a fully custom Tier-1 hypothesis.
 
 ## What the driver does with a hypothesis
 
-- **Opening book.** The first scans probe the hypothesis's most discriminating feature — for a
-  gapped target, the zone centre at the claimed gap ± 2σ (the *sanity-check opening move*, O11).
-  A grossly wrong prior is caught in the first scans, not at the end of the night.
-- **Connected frontier.** Once the target branch's resolvable anchor is identified, acquisition moves
-  one adjacent q at a time in both directions. An ambiguous point permits one provisional adjacent bridge, then may be revisited
-  with evidence from both sides. An unresolved frontier cannot seed the dispersion prior, certify a
-  farther point, or be crossed by a plotted branch line.
+- **The hypothesis map is the prior the planner scores against.** Every declared hypothesis becomes
+  a branch belief; the EIG planner reads that belief's predictive at every grid point and ranks
+  every `(Q, window, exposure)` by expected progress toward the prize per neutron
+  (`design/eig.md`). There is no opening book, no connected frontier and no per-q ceiling: a wide
+  window happens because the belief is wide, and the first scan is chosen from the prior alone.
+- **Predictive.** The belief predicts `(mean, sigma)` for its branch at any q, with the class prior
+  entering as parameter precision and weakening with distance from the fold, truncated to the
+  declared energy domain. A cold branch far from the fold therefore predicts "somewhere in the
+  band" rather than a confident wrong answer, and the planner's windows widen accordingly.
+- **Assignment.** Every fitted peak gets a soft distribution over the declared branches plus a flat
+  "something new" escape. A peak whose branch is decided (probability ≥ 0.85 and identity entropy
+  ≤ 0.2 nats) anchors that branch's belief; an undecided one is evidence, not an anchor.
 - **Evidence is not delivery.** Every current pooled master marks its q as measured and retains all
   fitted candidates, including a wrong-branch or near-equal-posterior result. Only a confirmed target
   fold publishes target `omega0`, enters the target prior, or certifies. The viewer shows ambiguous
   candidates as open markers without certifying whiskers or a connecting line.
-- **Bounded deadlock.** The per-q production ceiling changes strategy rather than declaring absence:
-  acquisition moves to an untried differentiation probe. Demonstrated exposure saturation plus an
-  exhausted bridge/revisit allowance ends automatically as honest `incomplete` branch ambiguity.
 - **Belief seeding.** Each declared hypothesis gets a branch belief carrying the hypothesis as a
   prior on the regression parameters (gap, slope) — *never* as fake data points (O8). With zero
   measurements the belief predicts from the prior with honest width; with data, the data wins.
-- **Scan value.** The acquisition simulates incremental Poisson counts from every retained plausible
-  master model and ranks mutual information about the joint target-energy/model/branch state. Expected
-  ω-width reduction and identity-entropy reduction are reported separately rather than mixed with an
-  arbitrary unit-conversion weight. That is what buys the cheap
-  "establish what the zone-centre feature is" scan, widens a window over a rival where branches
-  approach, and stops spending on a rival once it is confidently labeled not-the-target. Rivals
-  are only ever measured to a looser *differentiation tolerance* — enough to tell them apart
-  from the target, never publication error bars.
-- **Search bands.** Energy windows derive from the hypothesis's predicted energy and widen on a
-  deterministic schedule when the expected signal is absent (O11).
+- **Scan value.** The planner simulates the counts each candidate scan would produce under the
+  current beliefs and the measured intensity map, and scores the expected number of grid points it
+  would bring inside the bar, per neutron. Because the prize is one mutually exclusive posterior
+  over "which peak here is the target", a scan that cannot tell two branches apart is worth less
+  than one that can — which is what buys exposure where the branches approach, and buys rival
+  measurements only as far as excluding the rival needs. Nothing is legislated per phenomenon.
+- **Search bands.** The declared energy domain is a hard bound: the belief predictive is truncated
+  to it, and no window is generated outside it. Windows themselves come from the belief moments and
+  from each surviving lump of the reweighted scenario set — never from a widening schedule.
 
 ## When you're wrong (this is expected)
 
@@ -179,19 +184,6 @@ prior-vs-data-only check under `hypothesis_mismatch`, drive regression ingredien
 `label_probabilities`, `assignment_entropy`, and `p_is_target`; there is no ambiguous
 `target_probability` field.
 
-Scan-window distinction policy is frozen separately under the objective's top-level
-`scan_window_eig` block. Its authenticated policy-set and numerical-scoring fingerprints are
-deliberately excluded from `hypothesis_fingerprint` and from the stable current-objective comparison
-scope: changing a diagnostic partition or Monte Carlo count must not claim the excitation hypothesis
-changed, and a policy may bind to the current campaign without recursively hashing itself. The
-`scan_window_eig_mode` intent remains in the ordinary steering snapshot; card-only scope-binding
-markers and authoring records never survive into a frozen objective.
-
-The block is optional on read: a step payload that omits it materializes the authenticated
-no-policy/default-scoring value, while new serialization always writes it. That default does not
-merge current card intent into a frozen record — frozen payloads, programs, and resumes remain
-self-contained, and explicit null or authoring markers are invalid.
-
 Resolution precedence is deterministic: an energy/gap stated in the natural-language goal wins;
 otherwise a matching `[hypotheses.<target>]` card declaration wins; otherwise the shipped preset is
 frozen. `hypothesis_source` records which source won. A frozen objective is the payload of an
@@ -207,11 +199,11 @@ on; provisional or ambiguous identities receive stable `Branch N` labels. The ac
 solid and context/rival branches dashed. Viewer metadata tolerates no target role and then styles all
 branches equally.
 
-For an acoustic target, exact Γ may be persisted as `inferred_unresolved` when at least three
-connected, authoritative low-q assignments support a smooth positive-slope extrapolation compatible
-with zero. This is structural endpoint evidence, not a fitted mode: it never publishes target
-`omega0`, seeds the dispersion prior, or enters the precision denominator. A lone Γ feature—such as
-an unrelated finite-energy mode—cannot establish this status.
+For an acoustic target the exact zone centre carries no prize at all: ω(q→0) → 0 is degenerate with
+the elastic line, so that grid point is exempt from precision coverage on the geometry alone, from
+the first iteration (`GridQ.precision_coverage_eligible`). It never publishes target `omega0`, seeds
+the dispersion prior, or enters the precision denominator. An optic target has a finite energy there
+and is measured like any other q.
 
 This does not expand the current objective engine: arbitrary named targets continue to use the existing
 target semantics, while target-free “map every visible dispersion” acquisition remains Planned. The

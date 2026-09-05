@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from isar_gui.plotspec_pg import clear_render, render_into
-from isar_gui.viewmodels.campaign import (analysis_readout, authority_iter_text, budget_readout,
+from isar_gui.viewmodels.campaign import (analysis_readout, budget_readout,
                                           current_activity_text, terminal_status_text)
 
 log = logging.getLogger(__name__)
@@ -65,6 +65,17 @@ class CampaignMonitor(QWidget):
             "background-color: #b71c1c; color: white; font-weight: bold; padding: 4px;")
         self._fallback_banner.setVisible(False)
         outer.addWidget(self._fallback_banner)
+
+        # Campaign-alert banner (policy A, owner 2026-09-05): the campaign never stops on a failure
+        # it survived — it yells. Shown while an alert is active (no successful analysis since),
+        # cleared by CampaignViewModel.alert. Same red as the scoring banner: both mean "the beam
+        # is still working; a human is needed".
+        self._alert_banner = QLabel("", self)
+        self._alert_banner.setWordWrap(True)
+        self._alert_banner.setStyleSheet(
+            "background-color: #b71c1c; color: white; font-weight: bold; padding: 4px;")
+        self._alert_banner.setVisible(False)
+        outer.addWidget(self._alert_banner)
 
         self._current = QLabel("no scan yet", self)
         self._current.setWordWrap(True)
@@ -107,9 +118,11 @@ class CampaignMonitor(QWidget):
 
         campaign_vm.status_changed.connect(self._sync)
         campaign_vm.scoring_fallback_changed.connect(self._sync_fallback_banner)
+        campaign_vm.alert_changed.connect(self._sync_alert_banner)
         heatmap_vm.spec_changed.connect(self._render_plane)
         self._sync()
         self._sync_fallback_banner()
+        self._sync_alert_banner()
         self._render_plane()
 
     # ---- ticker ---------------------------------------------------------------
@@ -140,11 +153,6 @@ class CampaignMonitor(QWidget):
             text = "no campaign yet"
         if state.converged is not None and state.n_grid:
             text += f"   ({state.converged}/{state.n_grid} converged)"
-        authority = state.scan_design_authority or {}
-        if authority:
-            text += (f"   EIG: {authority.get('selected_role', '—')} "
-                     f"({authority.get('decision_outcome', '—')})"
-                     f"{authority_iter_text(authority)}")
         self._status.setText(text)
         permille, fmt = budget_readout(state)
         self._budget_bar.setVisible(state.budget_amount is not None)
@@ -167,6 +175,19 @@ class CampaignMonitor(QWidget):
             "Scene scoring failed — campaign continuing on basic placement; needs attention"
             f"<br><span style='font-size: 8pt; font-weight: normal;'>reason: {reason}</span>")
         self._fallback_banner.setVisible(True)
+
+    def _sync_alert_banner(self, *_a) -> None:
+        alert = self._vm.alert
+        if not alert:
+            self._alert_banner.setVisible(False)
+            self._alert_banner.setText("")
+            return
+        from isar_gui.log_render import campaign_alert_text
+        error = str(alert.get("error") or "")
+        detail = (f"<br><span style='font-size: 8pt; font-weight: normal;'>{error[:200]}</span>"
+                  if error else "")
+        self._alert_banner.setText(campaign_alert_text(alert) + detail)
+        self._alert_banner.setVisible(True)
 
     def _on_stop(self) -> None:
         self._operations.request_drive_stop()

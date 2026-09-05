@@ -311,6 +311,12 @@ class PlotSpec:
     projection: ProjectionLegend | None = None
     value_label: str | None = None   # colorbar meaning for strips, e.g. "counts/monitor"
     strip_colormap: str = "viridis"
+    #: The colour scale ``(vmin, vmax)`` every strip shares. ``None`` means the renderers span the
+    #: finite min..max of all strip values. The spec owns it (not the renderer) so both backends
+    #: and the colourbar agree, and so the producer can set it from the SIGNAL it wants visible: a
+    #: plane whose one Bragg-elastic cell is 2000x every phonon cell paints the phonons black on a
+    #: min..max scale. Cells above ``vmax`` saturate; they are never hidden.
+    strip_levels: tuple[float, float] | None = None
     meta: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -333,6 +339,8 @@ class PlotSpec:
             "projection": None if self.projection is None else self.projection.to_dict(),
             "value_label": self.value_label,
             "strip_colormap": self.strip_colormap,
+            "strip_levels": (None if self.strip_levels is None
+                             else [float(self.strip_levels[0]), float(self.strip_levels[1])]),
             "meta": self.meta,
         }
 

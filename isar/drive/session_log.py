@@ -18,7 +18,6 @@ Event ``kind``s (the documented vocabulary):
   and the promotion's result (``phase="outcome"``: ``seated`` / ``failed`` / ``superseded``).
 - ``branch_track_update`` — a pooled update caused a new joint path-assignment revision.
 - ``branch_reassignment`` — neighboring evidence changed a candidate's branch identity.
-- ``frontier_blocked`` — an unresolved identity gap currently prevents outward certification.
 - ``exception``    — a non-routine branch (missed window, flagged/held, budget, validation rejection).
 - ``stop``         — the terminal decision: met / incomplete / infeasible, with reasons.
 - ``timing``       — a profiling span: how long a named stage took (``stage``, ``iter``, ``seconds``, ``ok``).
@@ -35,13 +34,23 @@ from pathlib import Path
 from typing import Any
 
 EVENT_KINDS = ("propose", "validate", "run", "analyze", "decide", "escalate_fit",
-               "branch_track_update", "branch_reassignment", "frontier_blocked", "exception",
+               "branch_track_update", "branch_reassignment", "exception",
                "stop", "timing", "activity_start", "activity_progress", "activity_end",
                "analysis_clock", "physical_submission", "pooled_master_update", "candidate_update",
                "certification_crossing", "recovery_pending", "recovery_completed",
                "scan_design_realization", "scan_design_realized_comparison",
                "scan_design_authority_decision", "submission_intent", "eig_decision",
-               "feasibility_trim")
+               # The EIG planner's one decision record: what it chose, what it beat, and how much
+               # of the prize is inside the bar (isar.drive.loop._log_eig_plan).
+               "eig_plan",
+               "feasibility_trim",
+               # The scan is on disk and in the ledger before its fit starts (owner, 2026-09-03).
+               "scan_landed",
+               # The campaign's shout for help (owner ruling 2026-09-05, policy A): something went
+               # wrong that the loop survived — the campaign never stops on it, it yells. Payload:
+               # ``alert`` (what), ``consecutive`` (how many in a row), ``policy`` ("continue"),
+               # the error and traceback. Future connectors (WhatsApp, e-mail, …) subscribe here.
+               "campaign_alert")
 
 
 class AnalysisLimitExceeded(RuntimeError):
@@ -76,24 +85,69 @@ def log_event(path: str | Path, kind: str, payload: dict[str, Any], *, ts: float
     return record
 
 
+#: Parsed session logs, keyed by resolved path: ``(bytes consumed, records)``. The log is
+#: append-only, so a later read parses only what was appended since the last one.
+_PARSED: dict[str, tuple[int, list[dict[str, Any]]]] = {}
+#: How many distinct logs to remember. A campaign reads one; the cap exists so a long test session
+#: reading thousands of temporary workspaces cannot accumulate them.
+_PARSED_MAX = 8
+
+
 def read_log(path: str | Path) -> list[dict[str, Any]]:
     """Parse a JSONL session log into a list of event records. Missing file → ``[]``.
 
     Blank lines are skipped; a truncated final line (from a killed run) is tolerated and dropped.
+
+    Reads INCREMENTALLY. The log is append-only and it is read at least once per scan from nine
+    call sites, so re-parsing it whole made a campaign's per-iteration cost grow with its own
+    history: measured, a 113-scan campaign wrote a 115 MB log and spent its time re-parsing it,
+    while a 10-scan campaign finished in 98 s. Only the bytes appended since the last read are
+    parsed; the rest is returned from the parse that already happened.
+
+    Two properties make that safe. The file only ever grows, so a prefix already parsed cannot
+    change — and if the size ever *shrinks*, the file was replaced and the cache is dropped. And a
+    partial trailing line is left unconsumed rather than dropped, so the record it becomes when the
+    write completes is parsed on the next read; the old whole-file parse discarded it every time.
+
+    # ponytail: callers get a fresh list of the SAME record dicts, not deep copies. Every reader in
+    # the tree treats them as read-only; a caller that mutates one would now be seen by the next
+    # reader. Deep-copy here if that ever stops being true.
     """
     p = Path(path)
-    if not p.exists():
+    try:
+        size = p.stat().st_size
+    except OSError:
         return []
-    out: list[dict[str, Any]] = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except ValueError:
-            continue  # a partial trailing write from an interrupted run — drop it, keep the rest
-    return out
+    key = str(p.resolve())
+    consumed, records = _PARSED.get(key, (0, []))
+    if size < consumed:
+        # Truncated or replaced (a fresh workspace at the same path): the prefix is not ours.
+        consumed, records = 0, []
+    if size > consumed:
+        records = list(records)
+        with p.open("rb") as handle:
+            handle.seek(consumed)
+            chunk = handle.read()
+        # Stop at the last complete line: a partial trailing write stays unconsumed for next time.
+        end = chunk.rfind(b"\n") + 1
+        for line in chunk[:end].decode("utf-8", "replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except ValueError:
+                continue        # a corrupt line — drop it, keep the rest
+        consumed += end
+        _PARSED[key] = (consumed, records)
+        while len(_PARSED) > _PARSED_MAX:
+            _PARSED.pop(next(iter(_PARSED)))
+    return list(records)
+
+
+def forget_parsed_logs() -> None:
+    """Drop the parsed-log cache. For tests that rewrite a log in place at the same size."""
+    _PARSED.clear()
 
 
 @contextmanager

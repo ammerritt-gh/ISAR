@@ -259,7 +259,8 @@ def _draw_projection(ax, pj) -> None:
 def _render_onto(ax, spec: PlotSpec) -> None:
     """Draw ``spec`` onto an existing Axes (the render core; :func:`render_png` wraps it)."""
     if spec.strips:  # measured columns sit underneath everything (the plane background)
-        levels = _strip_levels(spec.strips)
+        levels = (tuple(float(v) for v in spec.strip_levels) if spec.strip_levels is not None
+                  else _strip_levels(spec.strips))
         for st in spec.strips:
             _draw_strip(ax, st, levels, spec.strip_colormap)
     for region in spec.regions:

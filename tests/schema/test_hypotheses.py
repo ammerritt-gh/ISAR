@@ -20,8 +20,8 @@ def test_hypothesis_is_weight_not_force_and_energy_is_nonnegative():
 
 
 def test_null_is_explicit_and_differs_from_absence():
-    assert preset("null").name == "null"
-    assert preset("null").confidence == 0.0
+    assert preset("null", (0.0, 20.0)).name == "null"
+    assert preset("null", (0.0, 20.0)).confidence == 0.0
 
 
 def test_unimplemented_dispersion_mechanics_are_rejected():
@@ -30,7 +30,7 @@ def test_unimplemented_dispersion_mechanics_are_rejected():
 
 
 def test_fingerprint_changes_with_preset_or_estimator_inputs():
-    h = [preset("optic").to_dict()]
+    h = [preset("optic", (0.0, 20.0)).to_dict()]
     a = content_fingerprint(h, SteeringPolicy().to_dict())
     changed = content_fingerprint(h, SteeringPolicy(classification_weight=0.5).to_dict())
     assert a != changed
@@ -61,20 +61,3 @@ def test_steering_policy_rejects_invalid_widening_and_boolean(kwargs):
         SteeringPolicy(**kwargs)
 
 
-def test_bridge_policy_defaults_to_one_step_and_rejects_negative_values():
-    assert SteeringPolicy().maximum_bridge_steps == 1
-    with pytest.raises(ValueError, match="maximum_bridge_steps"):
-        SteeringPolicy(maximum_bridge_steps=-1)
-
-
-def test_shadow_scan_window_eig_mode_refuses_by_name_with_a_recompile_message():
-    """SCENE-4 PR 4.4, D3: "shadow" is retired — a distinct branch names it and directs
-    recompilation, rather than falling through to the generic "must be one of" enum message."""
-    with pytest.raises(ValueError, match="retired in SCENE-4 PR 4.4"):
-        SteeringPolicy(scan_window_eig_mode="shadow")
-
-
-def test_unknown_scan_window_eig_mode_gets_the_generic_enum_message_not_the_named_one():
-    with pytest.raises(ValueError, match="must be one of") as raised:
-        SteeringPolicy(scan_window_eig_mode="bogus")
-    assert "retired" not in str(raised.value)

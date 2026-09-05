@@ -8,7 +8,7 @@ Three families, in original driver order:
   for the Qt-free drive and viewers;
 * branch identity — candidate materialisation, mode selection, the connected tracker
   (``_materialize_branch_candidates`` … ``_apply_tracked_branch``) and prior rebuilds
-  (``_rebuild_tracked_prior``, ``_rebuild_pooled_prior``);
+  (``_rebuild_tracked_prior``);
 * ``_resolve_target_projections`` — the post-triage ADR-019 target projection per pooled master.
 
 ``_master_prior_admissible`` is the SINGLE admission source for independent fit evidence
@@ -33,7 +33,7 @@ from isar.session import branch_assignment as BA
 from isar.session import branch_model, branch_tracking, predictive_artifact, session_prior
 from isar.session.master_delivery import _persist_content_addressed
 from isar.session.scan_delivery import (
-    FULL_TIERS, _campaign_hypotheses, _campaign_selector, _campaign_target, _dispersion_period,
+    FULL_TIERS, _campaign_hypotheses, _campaign_target, _dispersion_period,
     _refresh_interval_semantics, _refresh_probability_semantics,
 )
 from isar.session.state import ScanEntry, SessionState, canonical_hash
@@ -204,10 +204,6 @@ def _update_hypothesis_mismatch(state, t_round: float, *, period: float | None,
         "fingerprint": snapshot.get("fingerprint"),
         "message": (f"declared {target} hypothesis disagrees with data-only branch prediction"
                     if active else "declared hypothesis remains compatible with data-only prediction")}
-
-
-def _tracked_selector(card) -> bool:
-    return _campaign_selector(card)[0] == "tracked_branch"
 
 
 def _mode_candidates(scan_id: str, detector: str, outcome: dict) -> list[dict]:
@@ -416,11 +412,14 @@ def _tracked_authorities(session: SessionState, path: list[list[float]]) -> tupl
 
 def _tracked_authority_signature(
         observations: list[dict], *, target_branch: str, period: float | None,
-        hypotheses: list[dict], entropy_stop: float, maximum_bridge_steps: int,
-        energy_domain_meV=None,
+        hypotheses: list[dict], entropy_stop: float, energy_domain_meV=None,
         scorer_revision: int = branch_tracking.BRANCH_TRACKING_SCORER_REVISION,
 ) -> str:
-    """Stable identity input; derived probabilities are deliberately excluded."""
+    """Stable identity input; derived probabilities are deliberately excluded.
+
+    The beliefs the track is scored against are not part of the identity on purpose: their
+    anchors change only through ``_rebuild_tracked_prior``, i.e. only when the observations have,
+    so hashing them would re-score every repeat call on the track's own output."""
     authorities = []
     for observation in observations:
         candidates = []
@@ -445,11 +444,35 @@ def _tracked_authority_signature(
         "authorities": authorities, "target_branch": target_branch,
         "period": period, "hypotheses": hypotheses,
         "assignment_entropy_stop_nats": float(entropy_stop),
-        "maximum_bridge_steps": int(maximum_bridge_steps),
         "energy_domain_meV": [
             list(interval) for interval in branch_tracking.normalize_energy_domain(energy_domain_meV)],
         "scorer_revision": int(scorer_revision),
     })
+
+
+def _tracked_beliefs(card, refs: dict, *, period, hypotheses, t_round: float):
+    """The campaign's belief per branch for the tracker's emissions.
+
+    Built from ``card.state.dispersion_prior`` for the (sample, T bin) of the authorities being
+    tracked, exactly as ``_store_branch_beliefs`` persists them for the drive -- the planner and the
+    tracker then locate each branch from one belief. ``None`` when there is nothing to build on (no
+    period, no authority with a sample), in which case the tracker falls back to the bare class
+    prior as before. One revision behind by construction: the anchors come from the previous
+    track's rebuild, and each new observation re-runs the track on them.
+    """
+    if period is None:
+        return None
+    sample, temperature = None, None
+    for _key, (_entry, _detector, outcome) in refs.items():
+        if outcome.get("sample") is not None and outcome.get("T") is not None:
+            sample, temperature = str(outcome["sample"]), float(outcome["T"])
+            break
+    if sample is None:
+        return None
+    t_bin = round(temperature / t_round) * t_round if t_round else temperature
+    points = card.state.dispersion_prior or []
+    return BA.build_beliefs(points, sample=sample, t_bin=t_bin, period=float(period),
+                            t_round=t_round, hypotheses=hypotheses)
 
 
 def _materialize_branch_candidates(session: SessionState) -> None:
@@ -685,8 +708,6 @@ def _authorized_tracking_domain(target: dict, observations: list[dict]):
 
 
 def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dict | None:
-    if not _tracked_selector(card):
-        return None
     target = getattr(card.state, "campaign_target", None) or {}
     path = target.get("path") or []
     if not path:
@@ -700,12 +721,11 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
     period = _dispersion_period(card)
     hypotheses = _campaign_hypotheses(card)
     entropy_stop = float(policy.get("assignment_entropy_stop_nats", 0.2))
-    maximum_bridge_steps = int(policy.get("maximum_bridge_steps", 1))
     energy_domain = _authorized_tracking_domain(target, observations)
+    beliefs = _tracked_beliefs(card, refs, period=period, hypotheses=hypotheses, t_round=t_round)
     authority_signature = _tracked_authority_signature(
         observations, target_branch=target_branch, period=period, hypotheses=hypotheses,
-        entropy_stop=entropy_stop, maximum_bridge_steps=maximum_bridge_steps,
-        energy_domain_meV=energy_domain,
+        entropy_stop=entropy_stop, energy_domain_meV=energy_domain,
         scorer_revision=branch_tracking.BRANCH_TRACKING_SCORER_REVISION)
     if (previous.get("authoritative_evidence_signature") == authority_signature
             and previous.get("target_branch") == target_branch
@@ -716,8 +736,7 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
             path, observations, period=period, hypotheses=hypotheses,
             target_branch=target_branch, previous=previous,
             assignment_entropy_stop_nats=entropy_stop,
-            maximum_bridge_steps=maximum_bridge_steps,
-            energy_domain_meV=energy_domain)
+            energy_domain_meV=energy_domain, beliefs=beliefs)
         track["authoritative_evidence_signature"] = authority_signature
     revision = int(track["revision"])
     for assignment, observation in zip(track["assignments"], observations):
@@ -763,31 +782,6 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
     _rebuild_tracked_prior(card, session, track, observations, refs, t_round=t_round)
     card.state.branch_tracks = track
     return track
-
-
-def _rebuild_pooled_prior(card, session: SessionState, session_prior, *, t_round: float) -> None:
-    """Rebuild the non-tracked running dispersion prior from pooled masters only."""
-    if _tracked_selector(card):
-        return
-    source_ids = set(session.scans)
-    card.state.dispersion_prior = [
-        point for point in (card.state.dispersion_prior or [])
-        if str(point.get("scan_id", "")).split("#", 1)[0] not in source_ids]
-    for entry in sorted(session.scans.values(), key=lambda item: item.scan_number):
-        for outcome in entry.detectors.values():
-            if (not outcome.get("pooled") or outcome.get("modality") != "fold"
-                    or not _master_prior_admissible(entry, outcome)
-                    or outcome.get("pool_consistent") is False):
-                continue
-            session_prior.add_point(
-                card.state, scan_id=entry.scan_id, sample=outcome.get("sample"),
-                T=outcome.get("T"), q=outcome.get("q"), omega0=outcome.get("omega0"),
-                modality="fold", verdict=outcome.get("verdict"), gamma=outcome.get("gamma"),
-                intensity=outcome.get("intensity"), fit_kind=outcome.get("fit_kind"),
-                branch_id=outcome.get("branch_id"), weight=outcome.get("branch_weight"),
-                branch_posterior=outcome.get("branch_posterior"),
-                assignment_entropy=outcome.get("assignment_entropy"), t_round=t_round,
-                require_fold=True)
 
 
 def _master_prior_admissible(entry: ScanEntry, outcome: dict) -> bool:
