@@ -806,3 +806,12 @@ run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are no
     Not driven end to end: the anchor path's survival (the mock campaign's masters carry no
     `modality`, so it never escalates) — covered by inspection and the shared alert helper's test.
     Not re-run: a live TAVI campaign at this head.
+
+    **Post-merge (2026-09-05, SCENE preservation audit).** The clip above was unconditional, and
+    the discovery lane submits through `_carrier_objective`, whose target fields are inert
+    `ObjectiveSpec` defaults (`[0, 20]`, acoustic): a realized signed discovery window `[-2, 2]`
+    came out `[0, 2]`, and a purely anti-Stokes one was refused. `_finalize_proposal` now skips
+    the clip when the objective carries the `discover_and_map` marker; discovery windows stay
+    governed by their own realization and the instrument limits. Regression through the real
+    carrier and the real finalizer: `test_the_shared_finalizer_leaves_a_discovery_window_signed`
+    in `tests/drive/test_program_runner.py`.
