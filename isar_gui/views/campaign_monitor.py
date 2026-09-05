@@ -66,6 +66,17 @@ class CampaignMonitor(QWidget):
         self._fallback_banner.setVisible(False)
         outer.addWidget(self._fallback_banner)
 
+        # Campaign-alert banner (policy A, owner 2026-09-05): the campaign never stops on a failure
+        # it survived — it yells. Shown while an alert is active (no successful analysis since),
+        # cleared by CampaignViewModel.alert. Same red as the scoring banner: both mean "the beam
+        # is still working; a human is needed".
+        self._alert_banner = QLabel("", self)
+        self._alert_banner.setWordWrap(True)
+        self._alert_banner.setStyleSheet(
+            "background-color: #b71c1c; color: white; font-weight: bold; padding: 4px;")
+        self._alert_banner.setVisible(False)
+        outer.addWidget(self._alert_banner)
+
         self._current = QLabel("no scan yet", self)
         self._current.setWordWrap(True)
         outer.addWidget(self._current)
@@ -107,9 +118,11 @@ class CampaignMonitor(QWidget):
 
         campaign_vm.status_changed.connect(self._sync)
         campaign_vm.scoring_fallback_changed.connect(self._sync_fallback_banner)
+        campaign_vm.alert_changed.connect(self._sync_alert_banner)
         heatmap_vm.spec_changed.connect(self._render_plane)
         self._sync()
         self._sync_fallback_banner()
+        self._sync_alert_banner()
         self._render_plane()
 
     # ---- ticker ---------------------------------------------------------------
@@ -162,6 +175,19 @@ class CampaignMonitor(QWidget):
             "Scene scoring failed — campaign continuing on basic placement; needs attention"
             f"<br><span style='font-size: 8pt; font-weight: normal;'>reason: {reason}</span>")
         self._fallback_banner.setVisible(True)
+
+    def _sync_alert_banner(self, *_a) -> None:
+        alert = self._vm.alert
+        if not alert:
+            self._alert_banner.setVisible(False)
+            self._alert_banner.setText("")
+            return
+        from isar_gui.log_render import campaign_alert_text
+        error = str(alert.get("error") or "")
+        detail = (f"<br><span style='font-size: 8pt; font-weight: normal;'>{error[:200]}</span>"
+                  if error else "")
+        self._alert_banner.setText(campaign_alert_text(alert) + detail)
+        self._alert_banner.setVisible(True)
 
     def _on_stop(self) -> None:
         self._operations.request_drive_stop()

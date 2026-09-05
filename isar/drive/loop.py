@@ -2317,6 +2317,41 @@ def _workspace_zone_period(workspace: Path) -> float | None:
         return None
 
 
+def _consecutive_alerts(log_path, alert: str) -> int:
+    """How many ``campaign_alert`` events of this ``alert`` have been raised since the last
+    successful analysis (an ``analyze`` event) — the count the operator, and any connector, needs
+    to tell one transient collision from a broken worker. Counts the trailing run only."""
+    count = 0
+    for record in reversed(read_log(log_path)):
+        kind = record.get("kind")
+        if kind == "analyze":
+            break
+        if kind == "campaign_alert" and (record.get("payload") or {}).get("alert") == alert:
+            count += 1
+    return count
+
+
+def _raise_campaign_alert(log_path, alert: str, error: BaseException, *, it, job_id=None,
+                          hkl=None, **detail) -> dict:
+    """Yell for help without stopping: log one ``campaign_alert`` event (owner ruling 2026-09-05,
+    policy A). The campaign continues; the alert carries what failed, the traceback, and how many
+    have piled up in a row, so a banner or a connector can say "one glitch" or "every scan since
+    18:09". Returns the written record."""
+    import traceback
+    consecutive = _consecutive_alerts(log_path, alert) + 1
+    payload = {
+        "alert": alert, "policy": "continue", "consecutive": consecutive, "iter": it,
+        "job_id": job_id, "hkl": hkl,
+        "error": f"{type(error).__name__}: {error}"[:2000],
+        "traceback": "".join(traceback.format_exception(type(error), error,
+                                                        error.__traceback__))[-4000:],
+        **detail,
+    }
+    _LOG.error("campaign alert %s (%d in a row) at iteration %s: %s", alert, consecutive, it,
+               payload["error"])
+    return log_event(log_path, "campaign_alert", payload)
+
+
 def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
                                    submission_payload: dict, budget_state: dict,
                                    observations: list[dict], consumed: set, scan_kind: dict,
@@ -2384,22 +2419,37 @@ def _finalize_completed_submission(*, cfg: CampaignConfig, objective, proposal,
             "hkl": [proposal.h, proposal.k, proposal.l], "from_tier": "fast",
             "to_tier": tier, "reason": "untrusted_hesse_no_reliable_interval"})
     stage = "full_fit" if tier in ("full", "bayes") else "fast_fit"
-    with activity(cfg.log_path, stage, q=[proposal.h, proposal.k, proposal.l],
-                  job_id=job_id, fit_tier=tier, iteration=it):
-        with timed(cfg.log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
-            with analysis_operation(
-                    cfg.log_path, f"reduce:{proposal.acquisition_id}:{tier}:{attempt}",
-                    "pooled_reduction_and_fit",
-                    limit_seconds=objective.analysis_limit_seconds,
-                    allow_overrun_start=True, iteration=it, q=[proposal.h, proposal.k, proposal.l]):
-                allowance = _analysis_allowance_seconds(cfg, objective)
-                refresh_analysis(
-                    cfg.runner, cfg.workspace, [cfg.data_dir], errors_tier=tier,
-                    scan_errors_tier=scan_tier, master_errors_tier=tier, render=False,
-                    analysis_allowance_seconds=allowance,
-                    finish_initial_wave=(True if allowance is not None else None),
-                    enforce_completion=True,
-                    analysis_limit_seconds=objective.analysis_limit_seconds)
+    try:
+        with activity(cfg.log_path, stage, q=[proposal.h, proposal.k, proposal.l],
+                      job_id=job_id, fit_tier=tier, iteration=it):
+            with timed(cfg.log_path, "isar_run", iteration=it, errors_tier=tier, attempt=attempt):
+                with analysis_operation(
+                        cfg.log_path, f"reduce:{proposal.acquisition_id}:{tier}:{attempt}",
+                        "pooled_reduction_and_fit",
+                        limit_seconds=objective.analysis_limit_seconds,
+                        allow_overrun_start=True, iteration=it,
+                        q=[proposal.h, proposal.k, proposal.l]):
+                    allowance = _analysis_allowance_seconds(cfg, objective)
+                    refresh_analysis(
+                        cfg.runner, cfg.workspace, [cfg.data_dir], errors_tier=tier,
+                        scan_errors_tier=scan_tier, master_errors_tier=tier, render=False,
+                        analysis_allowance_seconds=allowance,
+                        finish_initial_wave=(True if allowance is not None else None),
+                        enforce_completion=True,
+                        analysis_limit_seconds=objective.analysis_limit_seconds)
+    except AnalysisLimitExceeded:
+        raise   # the campaign's own analysis ceiling is a stop condition, not a failure
+    except Exception as error:  # noqa: BLE001 — policy A (owner ruling 2026-09-05): never stop, shout
+        # The campaign does not stop on an analysis failure. The scan is on disk and in the ledger
+        # (early ingest above), and ``refresh_analysis`` re-runs over every record next iteration,
+        # so the un-analysed scan is picked up then; this iteration folds no new rows and the
+        # planner runs one scan stale, which is harmless once. What must not happen is silence: the
+        # failure is raised as a ``campaign_alert`` with its consecutive count, the channel every
+        # yell-for-help connector subscribes to. Measured 2026-09-05: a Windows file-lock race on
+        # results.csv (a reader held the file during the atomic swap) killed the worker and, with no
+        # handler here, the campaign — 174 iterations in, with beam time left.
+        _raise_campaign_alert(cfg.log_path, "analysis_failed", error, it=it, job_id=job_id,
+                              hkl=[proposal.h, proposal.k, proposal.l], tier=tier)
     tracks_after = _read_branch_tracks(cfg.workspace)
     if tracks_after and tracks_after.get("revision") != tracks_before.get("revision"):
         log_event(cfg.log_path, "branch_track_update", {

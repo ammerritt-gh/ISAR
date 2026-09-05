@@ -42,7 +42,7 @@ HIDDEN_KINDS = AUDIT_KINDS | PROFILING_KINDS
 
 #: Kinds that are always shown, always styled loud, and never removed by a feed filter: the two
 #: events that mean "a human may need to look at this".
-LOUD_KINDS = frozenset({"exception", "escalate_fit"})
+LOUD_KINDS = frozenset({"exception", "escalate_fit", "campaign_alert"})
 
 
 @dataclass(frozen=True)
@@ -481,9 +481,28 @@ def _render(kind: str, payload: dict) -> tuple[str, str]:
         return _render_feasibility_trim(payload, tail)
     if kind == "scan_landed":
         return _render_scan_landed(payload, tail)
+    if kind == "campaign_alert":
+        return _render_campaign_alert(payload, tail)
     # Unknown kinds surface rather than vanish: the log vocabulary grows upstream, and an operator
     # seeing "event: something_new" can still expand the row for the payload.
     return f"event: {kind}", "info"
+
+
+def campaign_alert_text(payload: dict) -> str:
+    """The one sentence a banner, the feed and any connector say for a ``campaign_alert``: what
+    failed, that the campaign is continuing, and how many have piled up in a row (policy A, owner
+    2026-09-05: never stop, yell for help). Shared so no two surfaces word the same alert
+    differently."""
+    what = _phrase(payload.get("alert"), "problem")
+    n = payload.get("consecutive")
+    streak = (f" — {int(n)} in a row" if isinstance(n, (int, float)) and int(n) > 1 else "")
+    return f"ALERT: {what}{streak} — campaign continuing; needs attention"
+
+
+def _render_campaign_alert(payload: dict, tail: str) -> tuple[str, str]:
+    reason = payload.get("error")
+    because = f" — {_clip(reason)}" if reason else ""
+    return f"{campaign_alert_text(payload)}{because}{tail}", "warn"
 
 
 def _render_scan_landed(payload: dict, tail: str) -> tuple[str, str]:

@@ -433,3 +433,18 @@ def test_scan_landed_reads_before_any_fit_line():
     assert row is not None and row.severity == "notice"
     assert row.text.startswith("Scan landed at ")
     assert "14 points" in row.text and "E -0.60…2.00 meV" in row.text
+
+
+def test_campaign_alert_is_loud_says_continuing_and_counts_the_streak():
+    """Policy A (owner 2026-09-05): the campaign never stops on a survived failure; it yells. The
+    line must say what failed, that the campaign is continuing, and how many in a row."""
+    assert "campaign_alert" in LOUD_KINDS
+    one = render_event({"ts": 1.0, "kind": "campaign_alert", "payload": {
+        "alert": "analysis_failed", "consecutive": 1, "policy": "continue", "iter": 174,
+        "error": "IsarRunError: `isar run` failed (exit 1)"}})
+    assert one.loud and one.severity == "warn"
+    assert one.text.startswith("ALERT: analysis failed — campaign continuing; needs attention")
+    assert "in a row" not in one.text and "isar run" in one.text
+    three = render_event({"ts": 2.0, "kind": "campaign_alert", "payload": {
+        "alert": "analysis_failed", "consecutive": 3, "policy": "continue", "iter": 176}})
+    assert "3 in a row" in three.text

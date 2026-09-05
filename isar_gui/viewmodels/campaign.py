@@ -346,6 +346,10 @@ class CampaignViewModel(ViewModel):
     #: Emitted only when the scoring-fallback block actually changes (set, cleared, or reason
     #: differs) — a banner listens to this rather than status_changed's noisier every-poll firing.
     scoring_fallback_changed = Signal()
+    #: Emitted when the active ``campaign_alert`` changes (raised, escalated, or cleared by the
+    #: next successful analysis). Policy A (owner 2026-09-05): the campaign never stops on a
+    #: failure it survived; it yells. This is the GUI's end of that yell.
+    alert_changed = Signal()
 
     def __init__(self, ws, parent=None):
         super().__init__(ws, parent)
@@ -354,6 +358,7 @@ class CampaignViewModel(ViewModel):
         self.state = CampaignState()
         self.scan_verdicts: dict[str, int] = {}
         self.scoring_fallback: dict | None = None
+        self.alert: dict | None = None
         self.on_workspace_changed({"events", "results"})   # initial read of whatever exists
 
     # ---- process liveness (coordinator-fed, never log-inferred) ------------
@@ -385,6 +390,7 @@ class CampaignViewModel(ViewModel):
             self._consume_events()
             self._join_certification_status()
             self._sync_scoring_fallback()
+            self._sync_alert()
         if not changed or "results" in changed:
             self._recount_verdicts()
         self.status_changed.emit()
@@ -407,6 +413,25 @@ class CampaignViewModel(ViewModel):
         if fallback != self.scoring_fallback:
             self.scoring_fallback = fallback
             self.scoring_fallback_changed.emit()
+
+    def _sync_alert(self) -> None:
+        """The ACTIVE alert: the latest ``campaign_alert`` not yet followed by a successful
+        analysis (an ``analyze`` event) or a new campaign start. Cleared, not merely aged out,
+        because a banner that outlives the recovery it announced teaches the operator to ignore
+        banners. Emits only on change."""
+        active = None
+        for record in reversed(list(self._ws.session_events())):
+            kind = record.get("kind")
+            payload = record.get("payload") or {}
+            if kind == "analyze" or (kind == "decide"
+                                     and payload.get("event") == "campaign_start"):
+                break
+            if kind == "campaign_alert":
+                active = dict(payload)
+                break
+        if active != self.alert:
+            self.alert = active
+            self.alert_changed.emit()
 
     def _join_certification_status(self) -> None:
         status = getattr(self._ws, "certification_status", None)

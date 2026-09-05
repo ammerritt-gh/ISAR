@@ -919,6 +919,49 @@ Standing repair from the same campaign: the TAVI idempotency key carries a per-w
 (`.run_nonce`), so a fresh campaign can never replay a previous run's poisoned instrument-side
 cache; a crash-resume of the same workspace reuses its nonce and still dedupes.
 
+### 7.10 Failure policy — the campaign never stops early; it yells (owner ruling 2026-09-05)
+
+**The rule.** A campaign stops for exactly three reasons: its objective is met, its declared
+budget is spent, or the operator stops it. Nothing else ends it — not a failed fit, not a dead
+analysis worker, not a file the GUI happened to be reading. A failure the loop survives is
+**recorded, counted, and shouted**, and the beam keeps working. The operator chose this over a
+"halt after N consecutive failures" fault (option B, rejected): on an instrument the cost of an
+unnecessary stop is beam time nobody gets back, while the cost of continuing on a stale belief is
+one scan placed slightly wrong, which the next successful analysis corrects. If the failure is
+persistent, a human is needed regardless, and the campaign's job is to make that impossible to
+miss, not to make the decision for them.
+
+**The incident that made it a rule.** 2026-09-05, live GUI campaign on the optic phonon,
+iteration 174: the analysis worker's atomic swap of `results.csv.tmp` over `results.csv` was
+refused with `PermissionError` (Windows share-mode lock — a reader, the GUI's refresh or an
+operator script, held the file for a few milliseconds), the worker exited 1, `refresh_analysis`
+raised, nothing between the iteration and the `isar drive` entry point caught it, and the campaign
+died as "campaign failed" with beam time left. The scan was on disk and in the ledger; the next
+analysis pass would have fitted it.
+
+**The mechanisms** (`isar/drive/loop.py`, `isar/session/atomic.py`, `isar/drive/session_log.py`):
+
+- *Tolerate.* The fit stage of `_finalize_completed_submission` catches every failure except the
+  campaign's own analysis ceiling (`AnalysisLimitExceeded`, a stop condition by design). The
+  iteration folds no new rows; `refresh_analysis` re-runs over every record next iteration, so the
+  un-analysed scan is picked up then. The planner runs one scan stale, once.
+- *Shout.* Every survived failure logs one `campaign_alert` event: `alert` (what failed, e.g.
+  `analysis_failed`), `policy: continue`, `consecutive` (alerts of that kind since the last
+  successful `analyze` event — the number that separates one glitch from a broken worker), the
+  error and its traceback. It is in `EVENT_KINDS`, loud in the GUI feed, and drives a red banner in
+  the campaign monitor that stays up until the next successful analysis clears it (a banner that
+  outlives its recovery teaches the operator to ignore banners).
+- *Remove the cause where it is mechanical.* All session writers swap through
+  `isar.session.atomic.replace_retrying`: a `PermissionError` on the swap is retried for well
+  under a second (any honest reader's hold is milliseconds), each retry logged, and a hold that
+  outlives the budget still fails loudly — into the alert above, not into a dead campaign.
+
+**Connectors (Planned).** `campaign_alert` is the one channel every outward notifier subscribes
+to: WhatsApp, e-mail, a desktop toast. A connector reads the session log (or the GUI's alert
+state), never the fitter; it may repeat, never suppress, and it never gains the authority to stop
+the campaign. Wording is shared with the GUI (`isar_gui.log_render.campaign_alert_text`) so the
+phone and the screen say the same sentence. Status is tracked in ARCHITECTURE §15.
+
 ---
 
 ## 8. Open questions and risks

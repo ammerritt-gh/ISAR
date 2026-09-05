@@ -43,7 +43,14 @@ EVENT_KINDS = ("propose", "validate", "run", "analyze", "decide", "escalate_fit"
                # The EIG planner's one decision record: what it chose, what it beat, and how much
                # of the prize is inside the bar (isar.drive.loop._log_eig_plan).
                "eig_plan",
-               "feasibility_trim")
+               "feasibility_trim",
+               # The scan is on disk and in the ledger before its fit starts (owner, 2026-09-03).
+               "scan_landed",
+               # The campaign's shout for help (owner ruling 2026-09-05, policy A): something went
+               # wrong that the loop survived — the campaign never stops on it, it yells. Payload:
+               # ``alert`` (what), ``consecutive`` (how many in a row), ``policy`` ("continue"),
+               # the error and traceback. Future connectors (WhatsApp, e-mail, …) subscribe here.
+               "campaign_alert")
 
 
 class AnalysisLimitExceeded(RuntimeError):

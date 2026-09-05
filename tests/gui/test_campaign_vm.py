@@ -355,3 +355,25 @@ def test_scan_verdict_counts_by_definition(make_ws):
     assert counts.get("held", 0) == 1
     assert counts.get("flagged", 0) == 1
     assert counts.get("ok", 0) >= 1
+
+
+def test_alert_is_active_until_the_next_good_analysis(make_ws, tmp_path):
+    """Policy A (owner 2026-09-05): a survived failure yells through ``campaign_alert``; the GUI
+    keeps the alert up until an analysis succeeds, then clears it — a banner that outlives its
+    recovery teaches the operator to ignore banners."""
+    root = make_ws(rows=[])
+    path = _log_path(root)
+    _start_event(path)
+    _run_event(path, 0)
+    ws = Workspace.open(root)
+    vm = CampaignViewModel(ws)
+    assert vm.alert is None
+    log_event(path, "campaign_alert", {"alert": "analysis_failed", "consecutive": 1,
+                                       "policy": "continue", "iter": 0, "error": "boom"})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    assert vm.alert is not None and vm.alert["consecutive"] == 1
+    log_event(path, "analyze", {"iter": 1, "n_rows": 1, "dispositions": ["resolved"]})
+    ws.refresh()
+    vm.on_workspace_changed({"events"})
+    assert vm.alert is None
