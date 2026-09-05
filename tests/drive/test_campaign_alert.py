@@ -56,3 +56,16 @@ def test_consecutive_count_tracks_the_trailing_run_since_the_last_good_analysis(
     third = _raise_campaign_alert(log_path, "analysis_failed", RuntimeError("three"), it=4)
     assert third["payload"]["consecutive"] == 1
     assert not third.get("kind_unknown")                              # registered vocabulary
+
+
+def test_planner_exposure_base_is_the_objectives_production_count():
+    """Owner, 2026-09-05: 2-4 counts per point per scan is not an experiment. The ladder's base is
+    the declared production count, never the quicklook constant; absent or junk -> the production
+    default."""
+    from types import SimpleNamespace
+    from isar.drive.loop import _production_ncount
+    from isar.drive.supervisor.stopping import PRODUCTION_NCOUNT, QUICKLOOK_NCOUNT
+    assert _production_ncount(SimpleNamespace(steering={"production_batch_ncount": 300_000_000})) == 300_000_000
+    assert _production_ncount(SimpleNamespace(steering={})) == PRODUCTION_NCOUNT
+    assert _production_ncount(SimpleNamespace(steering={"production_batch_ncount": "junk"})) == PRODUCTION_NCOUNT
+    assert _production_ncount(SimpleNamespace(steering=None)) > QUICKLOOK_NCOUNT

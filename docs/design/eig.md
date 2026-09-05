@@ -58,7 +58,12 @@ deterministic, I/O-free, no RNG, and it may not import `isar.session`.
    so an unanchored branch whose negative evidence has pushed its mass to the band's ends generates
    windows there, not at the band midpoint. Widths are `WINDOW_K_FACTORS` multiples of the
    predictive sigma; the step is `step_fraction` of the resolution FWHM; exposure is the
-   `ncount_ladder` (0.5× … 16× `base_ncount`). A grid point already within the bar is not offered
+   `ncount_ladder` (0.5× … 16× `base_ncount`, where `base_ncount` is the objective's declared
+   `steering.production_batch_ncount` — default 1e8 since 2026-09-05; it was the 1e7 quicklook
+   constant, and with pooling making a short look nearly as good as a long one the planner took the
+   bottom rung almost every time, 2–4 counts per point per scan at the optic peak — the operator
+   declares what one real scan counts to, the planner still chooses the rung, and this is not a
+   floor on its choice). A grid point already within the bar is not offered
    as a scan site (see §4).
 4. **Simulate the outcome.** `SCENARIO_ORDER`-node Gauss–Hermite scenarios over each branch's
    predictive replace Monte Carlo entirely: equal predictions produce byte-identical scenario sets

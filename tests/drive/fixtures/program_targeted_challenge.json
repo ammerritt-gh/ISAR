@@ -185,7 +185,7 @@
         ],
         "target_hypothesis": "acoustic",
         "hypothesis_source": "shipped_preset",
-        "hypothesis_fingerprint": "428b8b8385f5e4f173a5d3fd7ce4b37088c3881cb4f2cd14cb108a3b779490e8",
+        "hypothesis_fingerprint": "07db3dbd3d514bfa4dc16efc3373a9aeef4ebf07a1f18aae75f9d35f8581bea0",
         "steering": {
           "classification_weight": 1.0,
           "differentiation_tolerance_meV": null,
@@ -199,7 +199,7 @@
           "acquisition_estimator_version": "isar.branch-mi/gh32-component-v1",
           "mismatch_z_threshold": 3.0,
           "quicklook_ncount": 10000000,
-          "production_batch_ncount": 25000000,
+          "production_batch_ncount": 100000000,
           "maximum_production_batches_per_q": 12,
           "dynamic_ncount": true,
           "max_ncount_per_scan": 10000000000,

@@ -102,7 +102,11 @@ class SteeringPolicy:
     acquisition_estimator_version: str = ACQUISITION_ESTIMATOR_VERSION
     mismatch_z_threshold: float = 3.0
     quicklook_ncount: int = 10_000_000
-    production_batch_ncount: int = 25_000_000
+    # The exposure one real scan counts to, and the base of the EIG planner's ladder (0.5x..16x).
+    # 25e6 gave 2-4 counts per point per scan at the optic peak on TAVI (owner, 2026-09-05): not an
+    # experiment. 1e8 is ~12 counts per point at the peak on the middle rung; raise it in the
+    # objective when the sample is dimmer or a background is switched on.
+    production_batch_ncount: int = 100_000_000
     maximum_production_batches_per_q: int = 12
     dynamic_ncount: bool = False
     max_ncount_per_scan: int = MAX_NCOUNT_PER_SCAN

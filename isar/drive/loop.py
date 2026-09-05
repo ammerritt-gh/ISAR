@@ -4006,9 +4006,29 @@ def _build_planner_input(cfg, objective, master_rows: list[dict], observations: 
         scale=_planner_scale(cfg, observations, path, tuple(sorted(beliefs)),
                              temperature, fwhm),
         tolerance_meV=float(objective.tolerance_meV),
-        base_ncount=QUICKLOOK_NCOUNT,
+        base_ncount=_production_ncount(objective),
         max_points=int(_runtime_limits(cfg, objective)["max_points"]),
         abstained=_abstained_points(master_rows, path)), campaign_slice
+
+
+def _production_ncount(objective) -> int:
+    """The exposure the planner's ladder is built on: the objective's declared production count.
+
+    The ladder ran from half a QUICKLOOK upward (5e6 neutrons per point on TAVI), and with pooling
+    making a short look nearly as good as a long one the planner took the bottom rung almost every
+    time: 2-4 counts per point per scan at the optic peak, 46 single-scan nulls at one q, and a
+    master that needed eight scans to show a peak at all (owner, 2026-09-05: "not enough intensity
+    to do a real experiment"). The base is the operator's number — ``steering.production_batch_ncount``
+    in the compiled objective — so the operator declares what one real scan counts to; the planner
+    still chooses the rung. Not a floor on the planner's choice (that ruling stands, see
+    :func:`_finalize_proposal`): the whole design space scales.
+    """
+    policy = dict(getattr(objective, "steering", None) or {})
+    try:
+        value = int(policy.get("production_batch_ncount") or 0)
+    except (TypeError, ValueError):
+        value = 0
+    return value if value > 0 else PRODUCTION_NCOUNT
 
 
 def _certified_prize(*, cfg, objective, grid, budget_state: dict, observations: list[dict],
