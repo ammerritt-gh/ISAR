@@ -270,6 +270,10 @@ def _mode_candidates(scan_id: str, detector: str, outcome: dict) -> list[dict]:
             "bayes_interval": (list(outcome.get("bayes_interval"))
                                if is_primary and outcome.get("bayes_interval") else None),
             "reliable": bool(outcome.get("interval_reliable", True)),
+            # The mode's OWN HESSE trust (scan_delivery._mode_hesse_trusted); None on a fit that
+            # predates it, in which case the row's fit-level flag stands.
+            "hesse_trusted": (bool(mode["hesse_trusted"]) if mode.get("hesse_trusted") is not None
+                              else None),
             "pooled": bool(outcome.get("pooled")), "n_members": outcome.get("n_members"),
             "fit_kind": outcome.get("fit_kind"), "model": outcome.get("best_label"),
             "verdict": outcome.get("verdict"), "modality": outcome.get("modality"),
@@ -521,6 +525,11 @@ def _select_mode(outcome: dict, candidate: dict, candidate_index: int, assignmen
     outcome["hesse_interval"] = candidate.get("hesse_interval")
     outcome["bayes_interval"] = candidate.get("bayes_interval")
     outcome["interval_reliable"] = bool(candidate.get("reliable", False))
+    # The selected mode certifies on ITS OWN HESSE trust. The row's fit-level flag is the primary
+    # mode's, and railed on a rival's Γ at bound; carrying it here withheld a clear optic target
+    # behind a near-elastic second mode for eleven scans (h = 2.1, 2026-09-08).
+    if candidate.get("hesse_trusted") is not None:
+        outcome["hesse_trusted"] = bool(candidate["hesse_trusted"])
     probabilities = dict(candidate.get("probabilities") or {})
     outcome["branch_id"] = target_branch
     outcome["branch_posterior"] = probabilities

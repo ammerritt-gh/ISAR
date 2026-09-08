@@ -1144,8 +1144,13 @@ def _row_hesse_untrusted(row: dict) -> bool:
     candidates = row.get("branch_candidates") or []
     if not isinstance(candidates, list):
         return False
-    return any(isinstance(c, dict) and c.get("hesse_interval") is not None
-               and c.get("reliable") is False for c in candidates)
+    def untrusted(c: dict) -> bool:
+        if c.get("hesse_interval") is None:
+            return False
+        if c.get("hesse_trusted") is not None:      # the mode's own trust, when the fit carries it
+            return c.get("hesse_trusted") is False
+        return c.get("reliable") is False
+    return any(isinstance(c, dict) and untrusted(c) for c in candidates)
 
 
 def _unfolded_master(rows, hkl) -> str | None:
