@@ -563,6 +563,26 @@ def test_master_gamma_at_bound_certifies_when_model_robust_omega_is_identified()
     assert m["halfwidth"] == pytest.approx(0.02)
 
 
+def test_master_obs_tells_a_settled_model_apart_from_a_withdrawn_selection():
+    """A tracker-cleared row (``omega0`` None, the model itself robust) publishes ``model_robust``
+    False (selection-gated: nothing may certify) and ``model_settled`` True (the session's own
+    verdict on the model), with the sole candidate's chain as the diagnostic. Re-gating
+    ``model_settled`` on the selection silently returns the campaign to the h = 2.05 stall."""
+    m = _master_obs_from_row(
+        _urow(disposition="resolved", omega0=None, interval_lo=None, interval_hi=None,
+              interval_reliable=False, model_interval_lo=0.427, model_interval_med=0.428,
+              model_interval_hi=0.429, model_robust=True, modality="fold",
+              branch_candidates=[{"energy_meV": 0.428, "sigma_meV": 0.0013,
+                                  "interval": [0.427, 0.428, 0.429], "reliable": False}]),
+        _UNITY_CAL)
+    assert m["model_robust"] is False and m["certifiable"] is False and m["omega0"] is None
+    assert m["model_settled"] is True
+    assert m["diagnostic_halfwidth"] == pytest.approx(0.001) and m["interval_method"] == "bootstrap"
+    unsettled = _master_obs_from_row(_urow(disposition="resolved", omega0=None, model_robust=False),
+                                     _UNITY_CAL)
+    assert unsettled["model_settled"] is False
+
+
 def test_master_certifies_a_selected_secondary_mode_on_its_own_interval():
     """PR #37 review P1, measured at h=3.0 on the reference path: the model-averaged interval is
     the fit's PRIMARY mode (the optic, 7.95-8.00) while the tracker selected the acoustic at 5.99 as
