@@ -230,6 +230,27 @@ review's question 2 and stays open. Also from the same campaign: a plan is logge
 acted on; the anchor-escalation check runs first, so a plan set aside for an escalation no longer
 draws a phantom "planning a 58-point scan" line in the feed.
 
+**2026-09-08 — a point whose identity the tracker cannot decide locally is still measured.** At
+h = 2.05 on the acoustic reference path the full-exposure first look resolved the acoustic mode at
+0.447 meV to ~1e-3 meV, and the session's identity tracker scored that lone point 0.928 acoustic,
+0.248 nats above the 0.2 nats stop. That entropy is a floor set by the class-prior widths (the
+optic preset at 10 ± 5 meV, scaled to the 20 meV instrument ceiling) and no re-scan at that q can
+lower it — only a neighbour can, through the tracker's transition chain (one confirmed point at
+h = 2.1 takes both to 0.04 nats). The tracker rightly withdrew the scalar delivery
+(`_clear_tracked_selection`), but that blanked every column the drive's escalation predicates and
+diagnostic chain read, so the master never left the fast tier, the planner priced the peak as
+"detected, precision not established" (σ = 10 meV), and the campaign bought the same scan fifteen
+times. Three seams now read the mode's own chain in the `branch_candidates` table when the row's
+scalar delivery is withdrawn: `_q_needs_full_errors` / `_unfolded_master` (`_row_has_fit`,
+`_row_hesse_untrusted`) so the fast → full promotion and the belief-anchor escalation fire;
+`_diagnostic_interval` falls back to the SOLE candidate's bootstrap / profile / HESSE interval;
+and `_planner_candidates` prices a lone mode on a settled model (`model_settled`: the session's
+`model_robust`, told apart from the selection-gated `model_robust`) at that diagnostic width. The
+PR #37 P1 ruling stands unchanged: a non-settled model, a fork, an inconsistent pool, or a rival
+mode present keeps "precision not established", and the prize still needs the identity deficit
+met and the session's own selection. After the change the path leaves h = 2.05 after one
+belief-anchor escalation (`test_workspaces/demo-acoustic-2`).
+
 **2026-09-03 — the session's tracker reads the campaign's belief.** The session's identity
 tracker (`branch_tracking.track_path`) located each branch at each path point from the class prior
 alone — zone-centre energy plus slope × distance, sigma from the slope prior — which is flat away

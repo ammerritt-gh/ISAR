@@ -599,20 +599,43 @@ def _calibrated_hw(row: dict, calibration: Calibration, bucket: str) -> float | 
         return None
 
 
+def _finite_pair(lo, hi) -> bool:
+    try:
+        return math.isfinite(float(lo)) and math.isfinite(float(hi)) and float(hi) >= float(lo)
+    except (TypeError, ValueError):
+        return False
+
+
 def _diagnostic_interval(row: dict) -> tuple[Any, Any, str | None]:
-    """Best finite interval available before the certifiability gate, with method provenance."""
+    """Best finite interval available before the certifiability gate, with method provenance.
+
+    The row's own columns first. When the identity tracker has withdrawn the scalar delivery of an
+    *ambiguous* point (``_clear_tracked_selection`` blanks every interval column), the row's sole
+    fitted mode still carries its own chain in the ``branch_candidates`` table, and that is the
+    diagnostic: the mode's precision is established even while its identity is not. Read only
+    when the table holds ONE mode — with rivals present, nothing says which mode the diagnostic
+    describes, and binding a width to the wrong candidate is the PR #37 failure. Without this
+    fallback a cleared point reads as "detected, precision unknown", the planner prices another
+    scan there as informative, and buys it forever (h = 2.05, 2026-09-08).
+    """
     for lo_key, hi_key, method in (
             ("interval_lo", "interval_hi", "bootstrap"),
             ("omega0_profile_lo", "omega0_profile_hi", "profile"),
             ("hesse_lo", "hesse_hi", "hesse"),
             ("bayes_lo", "bayes_hi", "bayesian")):
         lo, hi = row.get(lo_key), row.get(hi_key)
-        if lo is not None and hi is not None:
-            try:
-                if math.isfinite(float(lo)) and math.isfinite(float(hi)) and float(hi) >= float(lo):
-                    return lo, hi, method
-            except (TypeError, ValueError):
-                continue
+        if lo is not None and hi is not None and _finite_pair(lo, hi):
+            return lo, hi, method
+    candidates = row.get("branch_candidates") or []
+    if row.get("omega0") is None and isinstance(candidates, list) and len(candidates) == 1 \
+            and isinstance(candidates[0], dict):
+        sole = candidates[0]
+        for key, method in (("interval", "bootstrap"), ("profile_interval", "profile"),
+                            ("hesse_interval", "hesse"), ("bayes_interval", "bayesian")):
+            value = sole.get(key)
+            if isinstance(value, (list, tuple)) and len(value) >= 2 \
+                    and _finite_pair(value[0], value[-1]):
+                return value[0], value[-1], method
     return None, None, None
 
 
@@ -818,6 +841,10 @@ def _master_obs_from_row(row: dict, calibration: Calibration) -> dict:
         "halfwidth": hw if certifiable else None,
         "reliable": certifiable, "certifiable": certifiable,
         "model_robust": model_robust, "model_entropy": row.get("model_entropy"),
+        # The session's own verdict on the MODEL, independent of whether a target selection exists:
+        # ``model_robust`` above is that verdict gated by the selection, and a tracker-cleared point
+        # (identity ambiguous, model settled) needs the two told apart by the planner.
+        "model_settled": bool(row.get("model_robust") is True),
         "model_interval": ([model_lo, model_med, model_hi] if model_robust else None),
         # ``usable`` is what model_points and the signal-seen check read, so a withheld delivery has
         # to clear it too or the ω(q) model would still be fitted through the auxiliary energy.
@@ -1087,13 +1114,38 @@ def _q_needs_full_errors(workspace, hkl) -> bool:
             continue
         if not r.get("pooled"):
             continue
-        if r.get("disposition") not in _USABLE or r.get("omega0") is None:
+        if r.get("disposition") not in _USABLE or not _row_has_fit(r):
             continue
         if _pick_interval(r)[2]:
             return False                              # already have a trustworthy interval → fast is fine
-        if r.get("hesse_lo") is not None and not r.get("hesse_trusted"):
+        if _row_hesse_untrusted(r):
             saw_untrusted = True
     return saw_untrusted
+
+
+def _row_has_fit(row: dict) -> bool:
+    """Whether a results row carries a fitted mode, delivered or not.
+
+    The identity tracker withdraws the scalar delivery of an *ambiguous* point — ``omega0`` and the
+    HESSE columns go blank while the ``branch_candidates`` table keeps the fit
+    (``evidence_update._clear_tracked_selection``). Reading ``omega0`` alone made every escalation
+    predicate blind to exactly those points: at h = 2.05 the lone acoustic mode sat 0.248 nats above
+    the identity stop (a floor set by the class-prior widths, which no re-scan at that q can lower),
+    the master was never promoted off the fast tier, the planner never got a certifying half-width,
+    and the campaign bought the same scan fifteen times (GUI campaign, 2026-09-08)."""
+    return row.get("omega0") is not None or bool(row.get("branch_candidates"))
+
+
+def _row_hesse_untrusted(row: dict) -> bool:
+    """Whether the row's fit rests on an UNtrusted HESSE interval — read from the row's own columns
+    when the delivery is published, else from the candidate table the tracker leaves intact."""
+    if row.get("hesse_lo") is not None:
+        return not row.get("hesse_trusted")
+    candidates = row.get("branch_candidates") or []
+    if not isinstance(candidates, list):
+        return False
+    return any(isinstance(c, dict) and c.get("hesse_interval") is not None
+               and c.get("reliable") is False for c in candidates)
 
 
 def _unfolded_master(rows, hkl) -> str | None:
@@ -1111,7 +1163,7 @@ def _unfolded_master(rows, hkl) -> str | None:
             continue
         if not r.get("pooled"):
             continue
-        if r.get("disposition") not in _USABLE or r.get("omega0") is None:
+        if r.get("disposition") not in _USABLE or not _row_has_fit(r):
             continue
         # Only ``unpooled`` — never pooled across structures, the fast tier's signature — can
         # become a fold by refitting. A ``fork`` is already the full tier's answer (two answers),
@@ -3777,9 +3829,31 @@ def _planner_candidates(master_rows: list[dict], path, energy_domain) -> dict[in
                 primary = nearest
         elif trusted and len(energies) == 1:
             primary = 0                   # a lone mode is the one the interval describes
+        # A lone mode whose delivery the tracker withdrew (identity ambiguous) on a SETTLED model
+        # is still measured to its own diagnostic half-width: precision established, identity not.
+        # The planner prices it at that precision so it stops buying the scan that cannot decide
+        # the identity — the neighbours do that — while the prize stays with the identity deficit
+        # and the session's own selection. A model that is not settled (non-robust, fork, pool
+        # inconsistent) keeps "precision not established": its diagnostic is not a precision
+        # (test_only_a_certifying_interval_is_a_candidates_precision, PR #37 P1).
+        diagnostic = None
+        if (primary is None and len(energies) == 1 and not trusted
+                and row.get("omega0") is None and row.get("model_settled") is True
+                and row.get("modality") != "fork" and row.get("pool_consistent") is not False):
+            try:
+                diagnostic = float(row.get("diagnostic_halfwidth"))
+            except (TypeError, ValueError):
+                diagnostic = None
+            if diagnostic is not None and (not math.isfinite(diagnostic) or diagnostic <= 0.0):
+                diagnostic = None
         candidates = []
         for j, (energy, candidate) in enumerate(energies):
-            sigma = halfwidth if j == primary else unknown_sigma
+            if j == primary:
+                sigma = halfwidth
+            elif diagnostic is not None:
+                sigma = diagnostic
+            else:
+                sigma = unknown_sigma
             candidates.append(Candidate(energy, max(sigma, 1e-9),
                                         dict(candidate.get("probabilities") or {})))
         out[index] = candidates

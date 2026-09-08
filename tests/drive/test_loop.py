@@ -27,6 +27,7 @@ from isar.drive.loop import (_campaign_config,
                              resolve_campaign_slice,
                              _pending_certification_indices, _record_certification_acceptance,
                              _pending_anchor_escalations, _unfolded_master,
+                             _q_needs_full_errors,
                              _planner_candidates, _candidate_probabilities, _slice_rows,
                              _master_obs_from_row, _observation_from_row, _pick_interval,
                              _proposal_from_submission,
@@ -1971,6 +1972,37 @@ def test_slice_rows_keep_only_the_campaign_condition():
     assert len(_slice_rows(one_sample, "Al_phonon_DFT", None, 1.0)) == 3
 
 
+def _tracker_cleared_master(hkl=(2.05, 0.0, 0.0)):
+    """A usable pooled master whose scalar delivery the identity tracker withdrew: ``omega0`` and
+    the HESSE columns blank, the candidate table still carrying the fast-tier fit."""
+    return {"h": hkl[0], "k": hkl[1], "l": hkl[2], "pooled": True, "disposition": "resolved",
+            "omega0": None, "hesse_lo": None, "hesse_hi": None, "hesse_trusted": False,
+            "interval_lo": None, "interval_hi": None, "interval_reliable": False,
+            "modality": "unpooled", "scan_id": "master:tavi_(41, 0, 0)_200.0",
+            "branch_candidates": [{"energy_meV": 0.447, "sigma_meV": 0.0015, "reliable": False,
+                                   "hesse_interval": [0.4457, 0.4487], "fit_kind": "branch_conditional"}]}
+
+
+def test_q_needs_full_errors_sees_a_tracker_cleared_master(tmp_path, monkeypatch):
+    """The 2026-09-08 stall: an ambiguous point's master has ``omega0`` blanked by the tracker, so
+    the escalation test skipped it and the master stayed on the fast tier for fifteen scans. The
+    untrusted HESSE fit lives on in the candidate table and must promote the q to the full tier."""
+    monkeypatch.setattr(loop_mod, "read_results_csv", lambda _ws: [_tracker_cleared_master()])
+    assert _q_needs_full_errors(tmp_path, (2.05, 0.0, 0.0)) is True
+    # A trusted HESSE on the same cleared row keeps the fast tier, as before.
+    trusted = _tracker_cleared_master()
+    trusted["branch_candidates"][0]["reliable"] = True
+    monkeypatch.setattr(loop_mod, "read_results_csv", lambda _ws: [trusted])
+    assert _q_needs_full_errors(tmp_path, (2.05, 0.0, 0.0)) is False
+
+
+def test_unfolded_master_names_a_tracker_cleared_master():
+    """The anchor escalation must not lose the same point: a fast-tier master whose delivery the
+    tracker withdrew is still an unfolded master."""
+    assert (_unfolded_master([_tracker_cleared_master()], (2.05, 0.0, 0.0))
+            == "master:tavi_(41, 0, 0)_200.0")
+
+
 def test_unfolded_master_ignores_individual_scan_rows():
     """An individual (unpooled) scan's own fit must not count — only the pooled master's fit decides
     whether a q's evidence is durable."""
@@ -3886,6 +3918,47 @@ def test_only_a_certifying_interval_is_a_candidates_precision():
         sigma = _planner_candidates([row], path, domain)[0][0].sigma_meV
         assert sigma == pytest.approx(unknown), spoiled
         assert sigma != pytest.approx(0.02), spoiled
+
+
+def test_tracker_cleared_lone_mode_on_a_settled_model_is_priced_at_its_own_width():
+    """The 2026-09-08 stall, planner side: the identity tracker withdrew the delivery at h = 2.05
+    (``omega0`` None) while the full-tier master was a settled fold with ONE mode measured to
+    ~1e-3 meV. Read as "precision not established" the planner bought the same scan forever; the
+    mode's own diagnostic width is a precision, and the identity deficit still keeps the prize."""
+    from isar.drive.loop import _planner_candidates
+
+    path = ((2.05, 0.0, 0.0),)
+    domain = (0.0, 20.0)
+    unknown = 0.5 * (domain[1] - max(domain[0], 0.0))
+    cleared = {"hkl": (2.05, 0.0, 0.0), "omega0": None, "certifiable": False, "halfwidth": None,
+               "diagnostic_halfwidth": 0.0012, "model_settled": True, "model_robust": False,
+               "modality": "fold", "pool_consistent": True,
+               "branch_candidates": [{"energy_meV": 0.447, "sigma_meV": 0.0013}]}
+    assert _planner_candidates([cleared], path, domain)[0][0].sigma_meV == pytest.approx(0.0012)
+    # Not a settled model, a fork, an inconsistent pool, or a rival present: still not a precision.
+    for spoiled in ({"model_settled": False}, {"modality": "fork"}, {"pool_consistent": False},
+                    {"branch_candidates": cleared["branch_candidates"]
+                     + [{"energy_meV": 3.0, "sigma_meV": 0.1}]}):
+        sigmas = [c.sigma_meV for c in _planner_candidates([{**cleared, **spoiled}], path, domain)[0]]
+        assert all(sig == pytest.approx(unknown) for sig in sigmas), spoiled
+
+
+def test_diagnostic_interval_reads_the_sole_candidate_when_the_tracker_cleared_the_row():
+    """A cleared row has every interval column blanked but its one mode keeps its chain; two
+    modes leave the diagnostic absent (nothing says which the width describes)."""
+    from isar.drive.loop import _diagnostic_interval
+
+    cleared = {"omega0": None, "interval_lo": None, "omega0_profile_lo": None, "hesse_lo": None,
+               "branch_candidates": [{"energy_meV": 0.43, "interval": [0.427, 0.4275, 0.429],
+                                      "profile_interval": [0.4269, 0.4287], "reliable": False}]}
+    assert _diagnostic_interval(cleared) == (0.427, 0.429, "bootstrap")
+    profile_only = dict(cleared, branch_candidates=[{"profile_interval": [0.4269, 0.4287]}])
+    assert _diagnostic_interval(profile_only) == (0.4269, 0.4287, "profile")
+    two = dict(cleared, branch_candidates=cleared["branch_candidates"] * 2)
+    assert _diagnostic_interval(two) == (None, None, None)
+    # A published row still reads its own columns first.
+    published = dict(cleared, omega0=0.43, hesse_lo=0.42, hesse_hi=0.44)
+    assert _diagnostic_interval(published) == (0.42, 0.44, "hesse")
 
 
 def test_a_non_model_robust_certification_cannot_produce_met(tmp_path):
