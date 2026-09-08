@@ -315,9 +315,39 @@ def goal_to_program(goal: str, *, dispatcher: Dispatcher | None = None,
                                     card_question_guidelines=card_question_guidelines,
                                     user_policy_ask=user_policy_ask)),),
             source_text=goal)
-    spec = _build_spec(data["targeted"], merged, card_hypotheses=card_hypotheses,
-                       energy_ceiling_meV=energy_ceiling_meV)
+    targeted = _drop_zero_filler(data["targeted"])
+    try:
+        spec = _build_spec(targeted, merged, card_hypotheses=card_hypotheses,
+                           energy_ceiling_meV=energy_ceiling_meV)
+    except GoalParseError as exc:
+        # The compile log otherwise records the refusal and not what was refused; the next
+        # filler pattern the model invents should be readable from the log, not reproduced.
+        raise GoalParseError(f"{exc}; supervisor reply: {json.dumps(data['targeted'])}") from exc
     return targeted_program(spec.to_dict(), source_text=goal)
+
+
+# Optional keys for which a zero is never a statement: 0 meV is the elastic line, 0 K is not a
+# temperature anyone measures at, and a zero uncertainty is not an uncertainty.
+_ZERO_IS_FILLER = ("target_energy_meV", "target_temperature_K",
+                   "target_zc_energy_meV", "target_zc_energy_sigma_meV")
+
+
+def _drop_zero_filler(targeted: dict) -> dict:
+    """The supervisor's targeted object with structured-output filler removed.
+
+    A local 35B model at temperature 0.1 pads every optional numeric key it has no value for with
+    0.0 (six of six compiles of "map the acoustic phonon branch from (2,0,0) to (3,0,0)",
+    2026-09-08). Taken literally that declares a zone-centre anchor at 0 +- 0 meV at 0 K and the
+    compile is refused twice over. The sentence said none of it, so it is dropped with one
+    warning. This runs at the LLM boundary only: an operator-written file spec keeps strict
+    validation, where a non-positive sigma is a typo to refuse.
+    """
+    filler = [k for k in _ZERO_IS_FILLER if targeted.get(k) == 0]
+    if not filler:
+        return targeted
+    log.warning("dropping zero-valued supervisor filler the goal never stated: %s",
+                ", ".join(filler))
+    return {k: v for k, v in targeted.items() if k not in filler}
 
 
 def _discover_spec(data: dict, *,

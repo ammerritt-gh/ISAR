@@ -353,6 +353,29 @@ def test_a_sigma_without_an_energy_is_dropped_not_refused(caplog):
     assert optic["zc_energy"]["sigma"] != 0.5
 
 
+def test_zero_valued_target_filler_is_dropped_at_the_llm_boundary(caplog):
+    """The local 35B model pads every optional numeric key with 0.0 when the sentence gives it
+    nothing (six of six compiles, 2026-09-08): a zone-centre anchor at 0 +- 0 meV at 0 K. Read
+    literally that is refused twice over (sigma, then temperature) and the sentence never said any
+    of it. It is dropped with one warning; the branch keeps its shipped prior and no temperature
+    is declared. A negative sigma is still refused: that is an operator typo, not filler."""
+    data = {"q_start": [2, 0, 0], "q_end": [3, 0, 0], "step_rlu": 0.05, "tolerance_meV": 0.1,
+            "target_branch": "acoustic", "target_label": "acoustic phonon branch",
+            "target_selector": "tracked_branch", "target_energy_meV": 0.0,
+            "target_temperature_K": 0.0, "target_zc_energy_meV": 0.0,
+            "target_zc_energy_sigma_meV": 0.0}
+    with caplog.at_level("WARNING"):
+        spec = _objective("map the acoustic phonon branch from (2,0,0) to (3,0,0)", data)
+    assert any("dropping zero-valued supervisor filler" in r.getMessage() for r in caplog.records)
+    assert spec.target_temperature_K is None
+    assert spec.hypothesis_source == "shipped_preset"
+    assert spec.meta["raw"].keys().isdisjoint(g2s._ZERO_IS_FILLER)
+
+    with pytest.raises(g2s.GoalParseError, match="must be positive.*supervisor reply"):
+        _objective("optic", {**data, "target_branch": "optic", "target_zc_energy_meV": 8.0,
+                             "target_zc_energy_sigma_meV": -0.5})
+
+
 def test_goal_layer_rejects_degenerate_segment():
     payload = {"q_start": [2, 0, 0], "q_end": [2, 0, 0], "step_rlu": 0.05,
                "tolerance_meV": 0.5, "budget_hours": 8}
