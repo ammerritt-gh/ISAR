@@ -184,7 +184,7 @@ class HeatmapViewModel(ViewModel):
         the active group restriction when one is set (plan Part 2A). Auto-clears a now-stale
         restriction (all ids gone on this refresh) so a stale banner never lingers over an empty plane."""
         cands, stale = projection.restrict_or_clear(
-            projection.candidates(self._ws.results), self._restriction)
+            projection.population(self._ws), self._restriction)
         if stale:
             self._restriction = None
             self._restriction_stale = True
@@ -214,7 +214,7 @@ class HeatmapViewModel(ViewModel):
         self._projection = self._spec.projection
 
     def _empty_spec(self) -> ps.PlotSpec:
-        return ps.PlotSpec(title="(q, E) plane — no fitted scans", xlabel="q (rlu)",
+        return ps.PlotSpec(title="(q, E) plane — no scans yet", xlabel="q (rlu)",
                            ylabel="energy transfer (meV)", value_label=self._value_label())
 
     # ---- the spec ---------------------------------------------------------

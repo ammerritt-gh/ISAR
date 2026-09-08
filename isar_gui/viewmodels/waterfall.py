@@ -199,13 +199,13 @@ class WaterfallViewModel(ViewModel):
     def _rebuild(self) -> None:
         step = self._hkl_round_step()
         cands, stale = projection.restrict_or_clear(
-            projection.candidates(self._ws.results),   # pooled masters included (delivered answer)
+            projection.population(self._ws),   # fitted results, masters included, plus landed scans
             self._restriction)
         if stale:
             self._restriction = None
             self._restriction_stale = True
         if not cands:
-            self._reset_empty("waterfall — no fitted scans")
+            self._reset_empty("waterfall — no scans yet")
             return
 
         varying, modal = projection.choose_axes(cands, step)

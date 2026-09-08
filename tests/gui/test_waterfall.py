@@ -300,3 +300,17 @@ def test_mvp16_waterfall_smoke():
     assert spec is not None
     assert vm.selected_q is not None
     assert len(spec.series) > 0
+
+
+def test_landed_scan_is_a_trace_before_its_fit(make_ws):
+    """Data first, fits as they land (owner ruling 2026-09-08): an ``ingested`` scan with counts on
+    disk and Q/T stamped is a waterfall trace with data and no curve until its fit lands."""
+    scans = {"tavi:7:det": {"scan_id": "tavi:7:det", "scan_number": 7, "scan_type": "measurement",
+                            "status": "ingested", "detectors": {},
+                            "provenance": {"q": [2.15, 0.0, 0.0], "T": 200.0}}}
+    root = make_ws(scans=scans, rows=[],
+                   data_files=[{"scan_number": 7, "energy": list(_X), "counts": _counts(3.0)}])
+    vm = WaterfallViewModel(Workspace.open(root))
+    traces = vm.spec.meta.get("traces") if vm.spec.meta else None
+    assert vm.q_values == [2.15]
+    assert "no scans yet" not in vm.spec.title

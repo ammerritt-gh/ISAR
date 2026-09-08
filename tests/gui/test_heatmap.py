@@ -412,3 +412,20 @@ def test_colour_scale_is_set_by_the_inelastic_signal_and_the_elastic_line_satura
     assert spec.strip_levels[1] == pytest.approx(inelastic_max)
     assert spec.strip_levels[1] < 1000.0                     # the elastic cell is above the scale
     assert any("elastic line saturates" in a.text for a in spec.annotations)
+
+
+def test_landed_scan_draws_before_its_fit(make_ws):
+    """Data first, fits as they land (owner ruling 2026-09-08): a scan the ledger holds at status
+    ``ingested`` — counts on disk, Q and T stamped, no fit yet — is a measured column on the plane
+    with no ω̂ glyph. Before this the first scan of a campaign was invisible until its fit landed."""
+    scans = {"tavi:7:det": {"scan_id": "tavi:7:det", "scan_number": 7, "scan_type": "measurement",
+                            "status": "ingested", "detectors": {},
+                            "provenance": {"q": [2.15, 0.0, 0.0], "T": 200.0}}}
+    root = make_ws(scans=scans, rows=[],
+                   data_files=[{"scan_number": 7, "energy": list(_X), "counts": _counts(3.0)}])
+    vm = HeatmapViewModel(Workspace.open(root))
+    assert len(vm.spec.strips) == 1
+    assert vm.spec.strips[0].meta["unit_id"] == "tavi:7:det"
+    assert vm.spec.title.startswith("(q, E) plane")
+    assert not any(s.role == Role.DATA for s in vm.spec.series)   # no ω̂ point: nothing fitted
+

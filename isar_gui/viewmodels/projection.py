@@ -48,6 +48,32 @@ def candidates(results) -> list:
     return out
 
 
+def population(ws) -> list:
+    """Everything the data views draw: every fitted result on the plane, plus every scan the
+    ledger holds that has no fit yet.
+
+    A landed scan is registered at status ``ingested`` with its counts on disk and its Q and T
+    stamped in provenance before its fit runs; until this rule the plane and waterfall read only
+    ``ws.results``, so the first scan of a campaign sat invisible for the whole of its fit and the
+    operator watched an empty plot (2026-09-08). Data is shown as it comes in, fits as they are
+    done: an unfitted scan is a data-only :class:`FitView` (Q, T, no ω₀, no verdict), so it draws a
+    measured column and no fit glyph, and the fitted view replaces it once the row lands.
+    """
+    from isar.workspace_api.views import FitView
+
+    fitted = candidates(ws.results)
+    seen = {fv.unit_id for fv in fitted if fv.unit_id}
+    out = list(fitted)
+    for sv in getattr(ws, "scans", ()) or ():
+        if sv.scan_id in seen or sv.detectors or sv.hkl is None or sv.T is None:
+            continue
+        detector = str(sv.scan_id).split(":")[-1] if ":" in str(sv.scan_id) else None
+        out.append(FitView.from_outcome(
+            {"q": list(sv.hkl), "T": sv.T, "detector_id": detector, "status": sv.status},
+            scan_number=sv.scan_number, unit_id=sv.scan_id))
+    return candidates(out)
+
+
 def restrict(cands, keys):
     """Keep only candidates a manual group covers (plan Part 2A). ``keys`` is a set of unit ids.
 
