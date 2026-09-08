@@ -561,6 +561,66 @@ def test_master_certification_subset_refits_only_dirty_q_and_preserves_clean_mas
     assert after.scans[masters[1].scan_id].provenance["analysis_tier"] == "full"
 
 
+def test_master_certification_survives_a_master_born_out_of_key_order(tmp_path, monkeypatch):
+    """A master keeps the synthetic scan number it was born with; a later master with a lower
+    collation key shifts every sorted position after it. The final certification compared the
+    ledger-derived group index with the run's sorted position and died on "group-index drift"
+    after the planner had met the goal (acoustic path measured h = 2.6 before 2.55, 2026-09-08).
+    The ledger number is the identity; the sorted position is an enumeration artefact."""
+    from isar.drive import loop as drive_loop
+
+    later_key = _in8_file(tmp_path, "OOA", 57500, 2.55)   # measured first, born as 9000000
+    earlier_key = _in8_file(tmp_path, "OOB", 57600, 2.15)  # measured second, sorts first
+    ws = Workspace.open(tmp_path / "order-ws")
+    ws.root.mkdir(parents=True)
+    ws.policy_path.write_text(Path(ill_in8._CARD_PATH).read_text(encoding="utf-8"),
+                              encoding="utf-8")
+    driver.run_batch(ws, [later_key], M=25, detectors="det0", formats=(), workers=1,
+                     errors_tier="fast")
+    driver.run_batch(ws, [later_key, earlier_key], M=25, detectors="det0", formats=(),
+                     workers=1, errors_tier="fast")
+    _card, before = ws.load()
+    masters = sorted(
+        (entry for entry in before.scans.values() if entry.scan_id.startswith("master:")),
+        key=lambda entry: next(iter(entry.detectors.values()))["q"][0])
+    assert len(masters) == 2
+    born_first = masters[1]                      # h = 2.55: sorted position 1, ledger number 9000000
+    assert born_first.scan_number == master_delivery._MASTER_SCAN_BASE
+    outcomes = [next(value for value in entry.detectors.values() if value.get("pooled"))
+                for entry in masters]
+    decision = types.SimpleNamespace(per_q=[{"hkl": list(outcome["q"])} for outcome in outcomes])
+    objective = types.SimpleNamespace(path=[tuple(outcome["q"]) for outcome in outcomes])
+    cfg = types.SimpleNamespace(
+        workspace=ws.root, log_path=ws.report_dir / "session_log.jsonl",
+        calibration=types.SimpleNamespace(inflation=1.0), floor=0.0)
+    request_path = drive_loop._certification_request(
+        cfg, objective, decision, "full", activity_id="test-order")
+    manifest_path = certification.create_master_certification_manifest(ws.root, request_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    units = {unit["master_id"]: unit for unit in manifest["worklist"]}
+    assert units[born_first.scan_id]["group_index"] == 0
+    seen = []
+
+    def fake_master_task(args):
+        seen.append((args[7], args[8]))
+        entry = copy.deepcopy(before.scans[args[7]])
+        entry.content_hash = args[9]
+        entry.provenance.update({
+            "analysis_tier": "full", "master_fit_contract": "isar.master_fit/2",
+            "master_fit_fingerprint": units[args[7]]["master_fit_fingerprint"],
+            "spectrum_digest": units[args[7]]["spectrum_digest"],
+        })
+        return entry
+
+    monkeypatch.setattr(master_delivery, "_fit_master_group_task", fake_master_task)
+    summary = driver.run_batch(
+        ws, [later_key, earlier_key], M=200, detectors="det0", formats=(), workers=1,
+        errors_tier="full", certification_manifest=manifest_path)
+    assert not summary.analysis_incomplete
+    # The certified entry is written under the master's ledger number, not its sorted position.
+    assert dict(seen)[born_first.scan_id] == master_delivery._MASTER_SCAN_BASE
+
+
 @pytest.mark.timeout(2700)
 @pytest.mark.slow
 def test_master_certification_drains_wave_and_checkpoints_success_after_worker_failure(
