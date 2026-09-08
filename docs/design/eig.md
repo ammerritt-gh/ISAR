@@ -251,6 +251,22 @@ mode present keeps "precision not established", and the prize still needs the id
 met and the session's own selection. After the change the path leaves h = 2.05 after one
 belief-anchor escalation (`test_workspaces/demo-acoustic-2`).
 
+**2026-09-08 — a fitted mode's HESSE trust is its own.** The selected-mode rule above copied the
+selected mode's HESSE *interval* onto the row but left the row's `hesse_trusted` as the fit's:
+the primary mode's verdict, whose Γ-at-bound test rails on ANY mode. On the optic reference path
+at h = 2.1 the first look found the optic at 6.3 meV (Γ = 0.1, σ = 0.02 meV, 40σ) beside a
+near-elastic second mode with Γ at the floor; the tracker selected the optic, its own interval
+was on the row, and the rival's distrust withheld certification for eleven scans while full-tier
+refits bootstrapped the primary (the rival) and the optic's own chain stayed HESSE-only. Every
+mode now carries `hesse_trusted` (`scan_delivery._mode_hesse_trusted`: the fit's covariance and
+counts gates, shared, plus the mode's own Γ off both bounds and σ finite), `_mode_candidates`
+carries it into the table and `_select_mode` copies the selected mode's onto the row. The drive's
+`_row_hesse_untrusted` reads the per-mode flag first. After the change the point certified on its
+third scan (the first two fits' covariance was not accurate, which is the shared gate doing its
+job) instead of its twelfth (`test_workspaces/demo-optic-2`). Still open: the full tier's
+bootstrap and profile belong to the primary mode only, so a selected secondary mode certifies on
+its trusted HESSE or not at all.
+
 **2026-09-03 — the session's tracker reads the campaign's belief.** The session's identity
 tracker (`branch_tracking.track_path`) located each branch at each path point from the class prior
 alone — zone-centre energy plus slope × distance, sigma from the slope prior — which is flat away
