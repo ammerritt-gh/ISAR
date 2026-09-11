@@ -24,7 +24,9 @@ area.
 - **GUI:** `run-isar-gui.bat` → `micromamba run -n isar python -m isar_gui`; falls back to env
   `tavi-dev` when `isar` isn't built yet.
 - **Tests:** markers `slow`, `live`, `golden`; `testpaths` = `isar/synth/tests`, `tests`
-  (`pyproject.toml`). `live` needs a running TAVI at `127.0.0.1:8642`. `tests/real_data/` needs
+  (`pyproject.toml`). `live` needs a running TAVI at `127.0.0.1:8642` and opts in through
+  `ISAR_LIVE_TAVI=1` (`ISAR_LIVE_LLMM=1` for the LLMM test); a live run must report **passed**,
+  not skipped — a skipped live test is a failure to investigate. `tests/real_data/` needs
   the gitignored local `test_data/`. `golden` (S12) = **sealed held-out real-data gates**: the
   repo carries only the generic runner; every expectation lives in gitignored
   `test_data/golden/<scenario>/scenario.json`, which is **never read, run, or consulted during
@@ -125,6 +127,7 @@ area.
 | The autonomous driver (`isar drive`) | `docs/design/steering.md` |
 | The EIG planner (targeted-lane placement — Q, energy window and exposure, Implemented; it is the only thing that places a targeted scan) and scene-EIG (discovery-lane placement, Implemented from birth since SCENE-5, H23 — status: ARCHITECTURE §15) | `docs/design/eig.md`, then `docs/design/steering.md` |
 | Declaring expected excitations (branch hypotheses Implemented; level/continuum Partial) | `docs/HYPOTHESES.md` |
+| What ISAR is for — the master objectives | `docs/DESIGN_GOALS.md`: user-owned, never AI-edited; read it at every planning session and surface a contradiction to the operator instead of resolving it; its Pause/Failure States section is the law for stopping a campaign (steering.md §7.10 implements it) |
 | The SCENE program — scene layer, catalogue, target-free discovery (status: ARCHITECTURE §15) | `docs/design/scene.md` |
 | Campaign diagnostic report | `docs/design/reporting.md` |
 | Why a decision was made | the owning design doc's dated rulings. Ruling IDs (O·, H·, S·, G·, ADR-NNN, …) are stable historical names — see GLOSSARY §Ruling IDs; the retired DECISIONS ledger is in git history |
@@ -279,3 +282,8 @@ review item.
 ---
 
 *Last updated: 2026-08-20. Canonical file is `AGENTS.md`; `CLAUDE.md` is the `@AGENTS.md` stub.*
+
+## Memory — promote or die
+- 2026-09-05 · a pooled master's f(E) is counts per reference monitor, not raw counts; rescale before comparing intensities across masters
+- 2026-09-05 · a new float column in report/results.csv must join _NUMERIC_COLUMNS in isar/drive/isar_io/readers.py or it reads back as text
+- 2026-09-11 · Adrian is a physics PhD and neutron-scattering expert: overexplain statistics, defer on physics, never escalate seat guesses about beamline practice
