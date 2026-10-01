@@ -29,8 +29,10 @@ CORE_FILES = {"sandbox_api": ISAR_DIR / "sandbox_api.py"}
 EXCLUDED = {ISAR_DIR / "plotspec" / "backends" / "mpl.py"}
 
 FORBIDDEN_QT = {"PySide6", "PyQt5", "PyQt6", "pyqtgraph"}
-# geometry is meant to be a leaf module with no analysis/heavy deps either.
-FORBIDDEN_GEOMETRY_EXTRA = {"scipy", "matplotlib", "tavi", "mcp"}
+# geometry is meant to be a leaf module with no analysis/heavy deps either. "instruments" is
+# TAVI's top-level package; ISAR's own geometry/instruments.py is imported relatively or as
+# isar.geometry.instruments (root "isar"), so it never matches.
+FORBIDDEN_GEOMETRY_EXTRA = {"scipy", "matplotlib", "tavi", "mcp", "instruments"}
 
 
 def _modules():
