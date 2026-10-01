@@ -1,13 +1,7 @@
 # Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\Science\TAVI),
 # original path tavi/ub_matrix.py.  License: GPL-3.0 (TAVI). ISAR is GPL-3.0, compatible.
-# Vendored 2026-07-11, adapted: (1) imports of reciprocal_basis_tas /
-# instrument_q_to_component_q / q_instrument_from_angles rewritten from tavi.* to the
-# vendored .sample_mount / .tas_geometry; (2) the "Training Mode" section (random-rotation
-# exercise generator + XOR/base64 hash encode/decode + check_training_quality) dropped — it
-# is a GUI teaching aid unused by the metric/UB layer; (3) 2026-07-12 `refine_lattice_from_peaks`
-# replaced the single global-scale fit with a per-system constrained linear least-squares on
-# |Q|^2 in the reciprocal metric (recovers anisotropic error for cubic/tetragonal/orthorhombic/
-# hexagonal), falling back to the old uniform scale when under-determined; adds a `method` key.
+# Vendored 2026-10-01 from TAVI 010cec6d (first vendored 2026-07-11). ISAR's adaptations
+# are listed in isar/geometry/VENDORED.md; re-apply them on every carry-over.
 """UB Matrix calculations for TAVI.
 
 Implements the Busing-Levy (1967) UB matrix formalism for crystal orientation
@@ -26,10 +20,17 @@ a* along x, b* in the horizontal xz-plane, c* vertical-ish along y.
 """
 import math
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 
+from .orientation import (
+    gonio_from_record,
+    hkl_text,
+    q_mount_from_legacy_angles,
+    q_mount_from_stage,
+    record_angles,
+)
 from .sample_mount import reciprocal_basis_tas
-from .tas_geometry import instrument_q_to_component_q, q_instrument_from_angles
 
 
 def compute_B_matrix(a, b, c, alpha, beta, gamma):
@@ -48,26 +49,6 @@ def compute_B_matrix(a, b, c, alpha, beta, gamma):
         np.ndarray: 3x3 B matrix.
     """
     return reciprocal_basis_tas(a, b, c, alpha, beta, gamma)
-
-
-def angles_to_q_lab(sth, saz, stt, ki, kf):
-    """Convert instrument angles to Q vector in lab frame.
-
-    Uses the same public Q convention as PUMA_instrument_definition, then
-    converts into mounted component coordinates for UB fitting.
-
-    Args:
-        sth: Sample theta (omega) in degrees.
-        saz: Sample azimuthal angle in degrees.
-        stt: Sample two-theta in degrees.
-        ki: Incident wavevector (inverse Angstroms).
-        kf: Scattered wavevector (inverse Angstroms).
-
-    Returns:
-        np.ndarray: [qx, qy, qz] in inverse Angstroms.
-    """
-    q_instrument = q_instrument_from_angles(sth, saz, stt, ki, kf)
-    return instrument_q_to_component_q(q_instrument)
 
 
 def validate_rotation_matrix(matrix: np.ndarray, atol: float = 1e-3) -> np.ndarray:
@@ -91,24 +72,64 @@ class ObservedPeak:
 
     Attributes:
         hkl: Miller indices (H, K, L).
-        angles: Instrument angles (omega/sth, chi/saz, stt) in degrees.
+        angles: Legacy sample triple (omega/sth, chi/saz, stt) in degrees;
+            stt is the signed readout.
         ki: Incident wavevector at observation (inverse Angstroms).
         kf: Scattered wavevector at observation (inverse Angstroms).
         locked: Whether this peak entry is locked from editing.
+        sense_sample: Sample scattering sense (+1/-1) the peak was taken on.
+            None resolves to the stage record's sense, else (a legacy save,
+            a TAS_MCP peak) to the sign of stt.
+        stage: Optional stage record (``tavi.orientation.stage_record``: the
+            axes, their readouts, and from Take Position the corrections in
+            force, ki, kf and the sense). When present, Q is read through the
+            full stage and only ``stt`` of ``angles`` is used (the UB dock
+            still writes the legacy triple of the same Q,
+            ``tavi.orientation.legacy_triple``, for readers that ignore the
+            record); None (a "legacy" peak) reads the legacy triple's meaning.
     """
     hkl: tuple = (0.0, 0.0, 0.0)
     angles: tuple = (0.0, 0.0, 0.0)  # (sth, saz, stt)
     ki: float = 0.0
     kf: float = 0.0
     locked: bool = False
+    sense_sample: Optional[int] = None
+    stage: Optional[dict] = None
+
+    def __post_init__(self):
+        if self.sense_sample is None and self.stage is not None:
+            self.sense_sample = self.stage.get("sense")
+        if self.sense_sample is None:
+            self.sense_sample = 1 if self.angles[2] > 0 else -1
 
     @property
-    def q_lab(self) -> np.ndarray:
-        """Compute Q in mounted sample frame from stored angles and wavevectors."""
+    def is_legacy(self) -> bool:
+        """No stage record: the angles are the legacy (sth, saz, stt) triple."""
+        return self.stage is None
+
+    def q_mount(self, corrections=None) -> np.ndarray:
+        """U @ B @ hkl measured at this peak, in the readout frame of
+        ``corrections`` (the corrections in force now, {axis: degrees}).
+
+        A stage peak enters at readout + (correction at record time -
+        correction now), so a correction changed after Take Position does not
+        move it; ``corrections`` None reads it as recorded. Hidden zero errors
+        are never part of a record. A legacy peak ignores ``corrections``.
+        """
         sth, saz, stt = self.angles
         if self.ki <= 0 or self.kf <= 0:
             return np.array([0.0, 0.0, 0.0])
-        return angles_to_q_lab(sth, saz, stt, self.ki, self.kf)
+        if self.stage is not None:
+            return q_mount_from_stage(gonio_from_record(self.stage),
+                                      record_angles(self.stage, corrections),
+                                      stt, self.ki, self.kf, self.sense_sample)
+        return q_mount_from_legacy_angles(sth, saz, stt, self.ki, self.kf, self.sense_sample)
+
+    @property
+    def q_lab(self) -> np.ndarray:
+        """U @ B @ hkl in the mounted sample frame, from the stored setting
+        (``q_mount`` as recorded)."""
+        return self.q_mount()
 
     @property
     def is_valid(self) -> bool:
@@ -129,6 +150,8 @@ class ObservedPeak:
             'ki': self.ki,
             'kf': self.kf,
             'locked': self.locked,
+            'sense_sample': self.sense_sample,
+            'stage': self.stage,
         }
 
     @classmethod
@@ -140,11 +163,13 @@ class ObservedPeak:
             ki=d.get('ki', 0.0),
             kf=d.get('kf', 0.0),
             locked=d.get('locked', False),
+            sense_sample=d.get('sense_sample'),
+            stage=d.get('stage'),
         )
 
 
 def calculate_U_two_peaks(peak1: ObservedPeak, peak2: ObservedPeak,
-                          B: np.ndarray) -> np.ndarray:
+                          B: np.ndarray, corrections=None) -> np.ndarray:
     """Calculate the U orientation matrix from two observed Bragg peaks.
 
     Uses the Busing-Levy (1967) method:
@@ -156,6 +181,8 @@ def calculate_U_two_peaks(peak1: ObservedPeak, peak2: ObservedPeak,
         peak1: First observed Bragg peak.
         peak2: Second observed Bragg peak.
         B: 3x3 B matrix.
+        corrections: The corrections in force now ({axis: degrees}); the fit
+            is in their readout frame (``ObservedPeak.q_mount``).
 
     Returns:
         np.ndarray: 3x3 U matrix (orthogonal, det ~ +1).
@@ -168,8 +195,8 @@ def calculate_U_two_peaks(peak1: ObservedPeak, peak2: ObservedPeak,
     q2_c = B @ np.array(peak2.hkl)
 
     # Lab-frame Q vectors
-    q1_l = peak1.q_lab
-    q2_l = peak2.q_lab
+    q1_l = peak1.q_mount(corrections)
+    q2_l = peak2.q_mount(corrections)
 
     # Validate
     for label, v in [("peak1 crystal", q1_c), ("peak2 crystal", q2_c),
@@ -177,23 +204,8 @@ def calculate_U_two_peaks(peak1: ObservedPeak, peak2: ObservedPeak,
         if np.linalg.norm(v) < 1e-8:
             raise ValueError(f"Zero-length Q vector for {label}.")
 
-    # Build orthonormal triad in crystal frame
-    t1_c = q1_c / np.linalg.norm(q1_c)
-    cross_c = np.cross(q1_c, q2_c)
-    if np.linalg.norm(cross_c) < 1e-8:
-        raise ValueError("Peaks are collinear in crystal frame — cannot determine U.")
-    t2_c = cross_c / np.linalg.norm(cross_c)
-    t3_c = np.cross(t1_c, t2_c)
-    T_crystal = np.column_stack([t1_c, t2_c, t3_c])
-
-    # Build orthonormal triad in lab frame
-    t1_l = q1_l / np.linalg.norm(q1_l)
-    cross_l = np.cross(q1_l, q2_l)
-    if np.linalg.norm(cross_l) < 1e-8:
-        raise ValueError("Peaks are collinear in lab frame — cannot determine U.")
-    t2_l = cross_l / np.linalg.norm(cross_l)
-    t3_l = np.cross(t1_l, t2_l)
-    T_lab = np.column_stack([t1_l, t2_l, t3_l])
+    T_crystal = _busing_levy_triad(q1_c, q2_c, "crystal")
+    T_lab = _busing_levy_triad(q1_l, q2_l, "lab")
 
     # U = T_lab @ T_crystal^(-1)
     # Since T_crystal is orthonormal, T_crystal^(-1) = T_crystal^T
@@ -202,7 +214,38 @@ def calculate_U_two_peaks(peak1: ObservedPeak, peak2: ObservedPeak,
     return U
 
 
-def refine_U_matrix(peaks: list, B: np.ndarray) -> np.ndarray:
+def _busing_levy_triad(v1, v2, frame):
+    """Orthonormal columns (v1, v1 x v2, v1 x (v1 x v2)), all normalised: the
+    Busing-Levy triad of two non-parallel vectors in ``frame``."""
+    t1 = v1 / np.linalg.norm(v1)
+    cross = np.cross(v1, v2)
+    if np.linalg.norm(cross) < 1e-8:
+        raise ValueError(f"Peaks are collinear in {frame} frame — cannot determine U.")
+    t2 = cross / np.linalg.norm(cross)
+    t3 = np.cross(t1, t2)
+    return np.column_stack([t1, t2, t3])
+
+
+def u_from_plane(B: np.ndarray, hkl_u, hkl_v) -> np.ndarray:
+    """The mount U of a crystal mounted with ``hkl_u`` along the mount x axis
+    and ``hkl_v`` in the horizontal plane (mount xz, y up), on the +z side.
+
+    ``B`` is the crystal's own B (the remount passes the sample's true B, never
+    the lattice fields). Raises ValueError naming the problem for a zero or a
+    parallel pair."""
+    q_u = B @ np.asarray(hkl_u, dtype=float)
+    q_v = B @ np.asarray(hkl_v, dtype=float)
+    for name, hkl, q in (("along x", hkl_u, q_u), ("in plane", hkl_v, q_v)):
+        if np.linalg.norm(q) < 1e-8:
+            raise ValueError(f"the vector {name}, {hkl_text(hkl)}, is zero")
+    if np.linalg.norm(np.cross(q_u, q_v)) < 1e-8 * np.linalg.norm(q_u) * np.linalg.norm(q_v):
+        raise ValueError(f"{hkl_text(hkl_u)} and {hkl_text(hkl_v)} are parallel, so they span no plane")
+    T_crystal = _busing_levy_triad(q_u, q_v, "crystal")
+    T_mount = _busing_levy_triad(np.array([1.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0]), "mount")
+    return T_mount @ T_crystal.T
+
+
+def refine_U_matrix(peaks: list, B: np.ndarray, corrections=None) -> np.ndarray:
     """Calculate U from multiple peaks using SVD-based Procrustes solution.
 
     Minimizes sum_i ||q_lab_i - U @ B @ hkl_i||^2 subject to U being orthogonal.
@@ -212,6 +255,7 @@ def refine_U_matrix(peaks: list, B: np.ndarray) -> np.ndarray:
     Args:
         peaks: List of ObservedPeak instances.
         B: 3x3 B matrix.
+        corrections: The corrections in force now (see calculate_U_two_peaks).
 
     Returns:
         np.ndarray: 3x3 U matrix (orthogonal, det ~ +1).
@@ -220,7 +264,7 @@ def refine_U_matrix(peaks: list, B: np.ndarray) -> np.ndarray:
     if len(valid_peaks) < 2:
         raise ValueError(f"Need at least 2 valid peaks, got {len(valid_peaks)}.")
     if len(valid_peaks) == 2:
-        return calculate_U_two_peaks(valid_peaks[0], valid_peaks[1], B)
+        return calculate_U_two_peaks(valid_peaks[0], valid_peaks[1], B, corrections)
 
     # Build paired point sets: q_crystal (P) and q_lab (Q)
     # We want U such that Q ~ U @ P
@@ -229,13 +273,15 @@ def refine_U_matrix(peaks: list, B: np.ndarray) -> np.ndarray:
 
     for i, peak in enumerate(valid_peaks):
         P[:, i] = B @ np.array(peak.hkl)
-        Q[:, i] = peak.q_lab
+        Q[:, i] = peak.q_mount(corrections)
 
     # Cross-covariance matrix
     H_mat = P @ Q.T  # Note: we want U s.t. Q = U @ P, so H = P @ Q^T
 
     # SVD
     Usvd, S, Vt = np.linalg.svd(H_mat)
+    if S[1] < 1e-8 * S[0]:
+        raise ValueError("Peaks are collinear — cannot determine U.")
 
     # Ensure proper rotation (det = +1, not reflection)
     d = np.linalg.det(Vt.T @ Usvd.T)
@@ -244,6 +290,85 @@ def refine_U_matrix(peaks: list, B: np.ndarray) -> np.ndarray:
     U = Vt.T @ D @ Usvd.T
 
     return U
+
+
+# Residual flags (programme 3.1; D7 and M5 of the Unit 3 plan): a pair whose
+# observed angle differs from its indexed angle by more than PAIR_FLAG_DEG, a
+# peak whose |Q| differs from |B hkl| by more than Q_FLAG_FRACTION. When at
+# least two peaks share one |Q| ratio to within Q_RATIO_SPREAD and that ratio
+# is off by more than Q_FLAG_FRACTION, the lattice fields are named instead
+# of the index.
+PAIR_FLAG_DEG = 0.5
+Q_FLAG_FRACTION = 0.02
+Q_RATIO_SPREAD = 0.005
+
+
+def _angle_deg(a, b):
+    return math.degrees(math.atan2(float(np.linalg.norm(np.cross(a, b))), float(a @ b)))
+
+
+def alignment_residuals(ub, peaks, corrections=None) -> dict:
+    """How the valid ``peaks`` agree with the operator's ``ub`` (U @ B, the
+    lattice fields' B) and with each other, in the readout frame of
+    ``corrections`` (the fit's frame, ``ObservedPeak.q_mount``).
+
+    Per peak: ``q_obs`` = |q|, ``q_calc`` = |UB hkl| (= |B hkl|),
+    ``q_mismatch`` = q_obs / q_calc - 1, ``angle_deg`` between q and UB hkl.
+    Per pair: ``observed_deg`` between the two observed q, ``indexed_deg``
+    between UB hkl_1 and UB hkl_2, ``difference_deg`` (observed - indexed).
+    A flagged row carries its words in ``flag`` (None otherwise). Returns
+    ``{"peaks", "pairs", "flags", "summary"}``; ``flags`` lists every
+    flag's words with its reflection(s), ``summary`` is one line for the
+    message center. Reads only the peaks and the UB, never the true mount.
+    """
+    ub = np.asarray(ub, dtype=float)
+    rows, vectors = [], []
+    for peak in peaks:
+        if not peak.is_valid:
+            continue
+        q = peak.q_mount(corrections)
+        q_ub = ub @ np.asarray(peak.hkl, dtype=float)
+        q_obs, q_calc = float(np.linalg.norm(q)), float(np.linalg.norm(q_ub))
+        rows.append({"hkl": tuple(peak.hkl), "q_obs": q_obs, "q_calc": q_calc,
+                     "q_mismatch": q_obs / q_calc - 1.0, "angle_deg": _angle_deg(q, q_ub),
+                     "flag": None})
+        vectors.append((q, q_ub))
+
+    ratios = [1.0 + row["q_mismatch"] for row in rows]
+    lattice_off = (len(rows) >= 2 and max(ratios) / min(ratios) - 1.0 <= Q_RATIO_SPREAD
+                   and abs(float(np.mean(ratios)) - 1.0) > Q_FLAG_FRACTION)
+    flags = []
+    for row in rows:
+        if abs(row["q_mismatch"]) <= Q_FLAG_FRACTION:
+            continue
+        # |Q| goes as 1/length: the fields' lengths are the true ones times the ratio.
+        cause = (f"lattice fields off by about {abs(float(np.mean(ratios)) - 1.0) * 100:.1f} %; "
+                 "try Refine Lattice" if lattice_off else "likely mis-indexed")
+        row["flag"] = f"|Q| is {row['q_mismatch'] * 100:+.1f} % from its indices: {cause}"
+        flags.append(f"{hkl_text(row['hkl'])}: {row['flag']}")
+
+    pairs = []
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            observed = _angle_deg(vectors[i][0], vectors[j][0])
+            indexed = _angle_deg(vectors[i][1], vectors[j][1])
+            pair = {"hkl1": rows[i]["hkl"], "hkl2": rows[j]["hkl"], "observed_deg": observed,
+                    "indexed_deg": indexed, "difference_deg": observed - indexed, "flag": None}
+            if abs(pair["difference_deg"]) > PAIR_FLAG_DEG:
+                pair["flag"] = (f"the angle between {hkl_text(pair['hkl1'])} and "
+                                f"{hkl_text(pair['hkl2'])} is {observed:.2f}° observed but "
+                                f"{indexed:.2f}° from their indices: one of them is likely "
+                                "mis-indexed")
+                flags.append(pair["flag"])
+            pairs.append(pair)
+
+    summary = f"UB residuals: {len(rows)} peaks"
+    if rows:
+        summary += f", worst {max(r['angle_deg'] for r in rows):.3f}° off the UB"
+    if pairs:
+        summary += f", worst pair {max(abs(p['difference_deg']) for p in pairs):.3f}° off its indices"
+    summary += "; flagged: " + "; ".join(flags) if flags else "; no flags"
+    return {"peaks": rows, "pairs": pairs, "flags": flags, "summary": summary}
 
 
 # Systems whose fixed angles make the reciprocal metric tensor known up to the free
@@ -435,6 +560,29 @@ def refine_lattice_from_peaks(peaks: list, initial_lattice: tuple,
     }
 
 
+def small_integer_indices(vec, basis, max_index=6, tol_deg=0.1):
+    """The smallest integer triple n (each |n_i| <= ``max_index``) whose
+    Cartesian ``basis @ n`` lies along the Cartesian ``vec`` (either sign)
+    within ``tol_deg``, or None. The angle is measured between Cartesian
+    vectors, so the lattice metric is honoured. Smallest: the least max |n_i|,
+    then the least sum |n_i|, then lexicographic; the first non-zero
+    component is positive. Deterministic: one exhaustive pass, no tie."""
+    vec = np.asarray(vec, dtype=float)
+    if not np.linalg.norm(vec) > 0:
+        return None
+    span = np.arange(-max_index, max_index + 1)
+    n = np.array(np.meshgrid(span, span, span, indexing="ij")).reshape(3, -1).T
+    lead = np.where(n[:, 0] != 0, n[:, 0], np.where(n[:, 1] != 0, n[:, 1], n[:, 2]))
+    n = n[lead > 0]
+    cart = n @ np.asarray(basis, dtype=float).T
+    angle = np.degrees(np.arctan2(np.linalg.norm(np.cross(cart, vec), axis=1),
+                                  np.abs(cart @ vec)))
+    matches = [tuple(int(x) for x in t) for t in n[angle <= tol_deg]]
+    if not matches:
+        return None
+    return min(matches, key=lambda t: (max(map(abs, t)), sum(map(abs, t)), t))
+
+
 def get_scattering_plane_info(U: np.ndarray, B: np.ndarray) -> dict:
     """Analyze the scattering plane defined by the current UB matrix.
 
@@ -446,7 +594,12 @@ def get_scattering_plane_info(U: np.ndarray, B: np.ndarray) -> dict:
         B: 3x3 B matrix.
 
     Returns:
-        dict with scattering plane analysis.
+        dict with scattering plane analysis: ``plane_normal_hkl`` (the
+        vertical as a raw reciprocal vector), ``in_plane_vector1_hkl`` and
+        ``in_plane_vector2_hkl`` (mount x and z, Miller coefficients),
+        ``chi_misalignment_deg`` (the c* elevation above the horizontal),
+        ``omega_offset_deg`` (the a* azimuth from mount x) and
+        ``zone_axis_uvw`` (the vertical as integer [u v w], or None).
     """
     UB = U @ B
 
@@ -460,6 +613,7 @@ def get_scattering_plane_info(U: np.ndarray, B: np.ndarray) -> dict:
             'in_plane_vector2_hkl': (0, 0, 0),
             'chi_misalignment_deg': 0.0,
             'omega_offset_deg': 0.0,
+            'zone_axis_uvw': None,
         }
 
     y_sample = np.array([0.0, 1.0, 0.0])
@@ -491,6 +645,9 @@ def get_scattering_plane_info(U: np.ndarray, B: np.ndarray) -> dict:
         'in_plane_vector2_hkl': tuple(in_plane_v2),
         'chi_misalignment_deg': chi_mis,
         'omega_offset_deg': omega_offset,
+        # The zone axis [u v w]: the direct-lattice direction along the
+        # vertical, against the direct basis 2 pi (UB)^-T (None: no small one).
+        'zone_axis_uvw': small_integer_indices(y_sample, 2 * math.pi * UB_inv.T),
     }
 
 
@@ -534,7 +691,7 @@ class UBMatrix:
 
     @property
     def is_identity(self) -> bool:
-        """True if U is the identity matrix (no orientation set)."""
+        """True if U is the identity matrix (TAVI's standard setting)."""
         return np.allclose(self._U, np.eye(3), atol=1e-6)
 
     def set_lattice(self, a, b, c, alpha, beta, gamma):
@@ -564,7 +721,7 @@ class UBMatrix:
         self._UB = UB.copy()
 
     def reset_U(self):
-        """Reset U to identity (no orientation)."""
+        """Set U to identity, TAVI's standard setting."""
         self._U = np.eye(3)
         self._UB = self._U @ self._B
 
@@ -595,9 +752,12 @@ class UBMatrix:
         q = np.array([float(qx), float(qy), float(qz)])
         hkl = np.linalg.solve(self._UB, q)
         return float(hkl[0]), float(hkl[1]), float(hkl[2])
-
-    def calculate_U_from_peaks(self) -> np.ndarray:
+    def calculate_U_from_peaks(self, corrections=None) -> np.ndarray:
         """Calculate U from stored peaks and apply it.
+
+        ``corrections`` are the corrections in force now ({axis: degrees});
+        the fitted UB lives in their readout frame. None reads every peak as
+        recorded.
 
         Returns:
             np.ndarray: The calculated U matrix.
@@ -607,20 +767,12 @@ class UBMatrix:
             raise ValueError(f"Need at least 2 valid peaks, have {len(valid)}.")
 
         if len(valid) == 2:
-            U = calculate_U_two_peaks(valid[0], valid[1], self._B)
+            U = calculate_U_two_peaks(valid[0], valid[1], self._B, corrections)
         else:
-            U = refine_U_matrix(valid, self._B)
+            U = refine_U_matrix(valid, self._B, corrections)
 
         self.set_U(U)
         return U
-
-    def refine_lattice(self, crystal_system: str = None) -> dict:
-        """Refine lattice parameters from stored peaks.
-
-        Returns:
-            dict with 'lattice', 'residuals', 'rms_error'.
-        """
-        return refine_lattice_from_peaks(self.peaks, self._lattice, crystal_system)
 
     def get_plane_info(self) -> dict:
         """Get scattering plane analysis."""

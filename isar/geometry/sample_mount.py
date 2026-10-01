@@ -1,8 +1,7 @@
 # Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\Science\TAVI),
 # original path tavi/sample_mount.py.  License: GPL-3.0 (TAVI). ISAR is GPL-3.0, compatible.
-# Vendored 2026-07-11, adapted: import of mccode_euler_from_matrix rewritten from
-# tavi.tas_geometry to the vendored .tas_geometry; 2026-07-12 `reciprocal_basis_tas`
-# validates a/b/c are finite and positive before building the cell.
+# Vendored 2026-10-01 from TAVI 010cec6d (first vendored 2026-07-11). ISAR's adaptations
+# are listed in isar/geometry/VENDORED.md; re-apply them on every carry-over.
 """Component-agnostic sample mounting and HKL conversion helpers."""
 from __future__ import annotations
 
@@ -10,8 +9,6 @@ from dataclasses import dataclass
 import math
 
 import numpy as np
-
-from .tas_geometry import mccode_euler_from_matrix
 
 
 def reciprocal_basis_tas(a, b, c, alpha, beta, gamma) -> np.ndarray:
@@ -83,11 +80,6 @@ class SampleMount:
     def mounted_basis(self) -> np.ndarray:
         """Return columns mapping HKL directly into mounted sample coordinates."""
         return self.R_mount @ self.B_component
-
-    @property
-    def mount_euler_deg(self) -> tuple[float, float, float]:
-        """Return McStas ROTATED=[x,y,z] angles for the static mount arm."""
-        return mccode_euler_from_matrix(self.R_mount)
 
     def hkl_to_q(self, H, K, L) -> tuple[float, float, float]:
         q = self.mounted_basis @ np.array([float(H), float(K), float(L)], dtype=float)

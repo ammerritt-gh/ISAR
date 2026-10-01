@@ -95,7 +95,8 @@ area.
    results never do, or the prior learns a phantom dispersion. (ARCHITECTURE §6–7, GLOSSARY.)
 
 6. **Layer boundaries are Qt-free.** `isar/workspace_api` (the read-only workspace facade),
-   `isar/geometry` (vendored from TAVI), and `isar/plotspec` must import no Qt. A Qt import leaking
+   `isar/geometry` (vendored from TAVI and TAS_MCP; sources and adaptations in
+   `isar/geometry/VENDORED.md`), and `isar/plotspec` must import no Qt. A Qt import leaking
    into the facade or geometry breaks the notebook/headless consumers. Correspondingly, **no LLM in
    the runtime path of a number** (P1): LLM output freezes into config before the deterministic
    fitter runs.

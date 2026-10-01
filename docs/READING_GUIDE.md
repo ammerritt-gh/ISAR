@@ -186,6 +186,7 @@ standing check that we are building a usable instrument, not a self-certifying l
 | Product overview + quickstart | [../README.md](../README.md) |
 | Term definitions (pull, fold/fork, cost/dof, verdicts, ruling IDs) | [GLOSSARY.md](GLOSSARY.md) |
 | The data/card schema across facilities | [SCHEMA_LANDSCAPE.md](SCHEMA_LANDSCAPE.md) |
+| Where the vendored geometry comes from (TAVI/TAS_MCP files, ISAR's adaptations, carry-over) | [../isar/geometry/VENDORED.md](../isar/geometry/VENDORED.md) |
 | Does it agree with a human on real data? | [assets/phase3_gold/FINDINGS.md](assets/phase3_gold/FINDINGS.md) (the gold report) |
 | Does the engine reproduce the trusted fitter? | [assets/phase3_step1/FINDINGS.md](assets/phase3_step1/FINDINGS.md) |
 | Does the same core work on triple-axis? | [assets/in8_phase1/FINDINGS.md](assets/in8_phase1/FINDINGS.md) |

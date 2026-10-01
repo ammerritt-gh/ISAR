@@ -1,7 +1,8 @@
 """isar.geometry — stateless metric / UB / feasibility layer (Qt-free, numpy-only).
 
 Vendored from two sibling repos (TAVI, GPL-3, and TAS_MCP, same author as ISAR) and adapted;
-see the provenance header on each module. This package imports ONLY stdlib + numpy — no Qt,
+``VENDORED.md`` beside this file lists every module's source, the TAVI revision and ISAR's
+adaptations, and how to carry over a newer TAVI. This package imports ONLY stdlib + numpy — no Qt,
 matplotlib, scipy, mcp, tavi, or isar.analyze/drive/session internals — so the GUI core and
 the planner can read it freely.
 

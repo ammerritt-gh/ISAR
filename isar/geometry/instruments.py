@@ -2,7 +2,9 @@
 # original path tas_mcp/instruments/puma.py.  Vendored 2026-07-11, adapted: flattened from the
 # tas_mcp/instruments/ package into a single module (stdlib only; no import changes);
 # 2026-07-12 `bragg_two_theta_deg` rejects any `which` other than "mono"/"analyzer"
-# (previously anything non-"mono" silently selected the analyzer).
+# (previously anything non-"mono" silently selected the analyzer). 2026-10-01: TAVI's
+# `tas_goniometer` (TAVI 010cec6d, instruments/descriptor.py) added over the vendored
+# `StageAxis`; see isar/geometry/VENDORED.md.
 """PUMA instrument profile.
 
 Phase 1 hardcodes a single PUMA profile. Operating defaults (crystals, default kf,
@@ -23,6 +25,26 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from typing import Optional
+
+from .orientation import StageAxis
+
+# Travel no source documents: enforced as unlimited (TAVI's
+# instruments.descriptor.UNDOCUMENTED).
+UNDOCUMENTED = math.inf
+
+
+def tas_goniometer(arc_travel: float = UNDOCUMENTED) -> tuple[StageAxis, ...]:
+    """A TAS sample stage as TAVI's ``instruments.descriptor.tas_goniometer``
+    declares it: turntable ``A3`` about y carrying a lower arc ``sgl`` about x
+    and an upper arc ``sgu`` about z, each arc within +/-``arc_travel``
+    degrees. The turntable turns freely. Carried over ``StageAxis``: TAVI's
+    operator corrections and hidden zero errors have no use in ISAR."""
+    return (
+        StageAxis("A3", (0.0, 1.0, 0.0)),
+        StageAxis("sgl", (1.0, 0.0, 0.0), -arc_travel, arc_travel),
+        StageAxis("sgu", (0.0, 0.0, 1.0), -arc_travel, arc_travel),
+    )
+
 
 # d-spacing of pyrolytic graphite (002), angstrom. Cross-checked: with k=2.6634,
 # sin(theta) = pi/(d*k) = 0.3516 -> 2*theta = 41.17 deg, matching mtt_var in

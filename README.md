@@ -96,6 +96,7 @@ isar/
   workspace_api/  # read-only facade over a workspace (fits, scans, ledger, evaluate_model,
                   #   watch) — the GUI's data layer and the notebook interface, Qt-free
   geometry/       # metric/UB + feasibility layer vendored from TAVI/TAS_MCP, Qt-free
+                  #   (sources and adaptations: isar/geometry/VENDORED.md)
   plotspec/       # shared plot-spec layer (matplotlib + pyqtgraph backends) so report figures
                   #   and GUI views share rendering semantics
 isar_gui/         # optional GUI package (`pip install -e .[gui]`, `isar view <workspace>`) —

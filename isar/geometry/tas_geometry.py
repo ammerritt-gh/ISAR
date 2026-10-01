@@ -1,20 +1,12 @@
 # Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\Science\TAVI),
 # original path tavi/tas_geometry.py.  License: GPL-3.0 (TAVI). ISAR is GPL-3.0, compatible.
-# Vendored 2026-07-11, adapted: 2026-07-12 `stt_from_q_norm`, `solve_sample_angles`, and
-# `solve_instrument_angles` reject any `sense_sample` other than -1 or +1 (previously any
-# nonzero value silently selected the flipped branch and 0 gave a zero-angle result).
+# Vendored 2026-10-01 from TAVI 010cec6d (first vendored 2026-07-11). ISAR's adaptations
+# are listed in isar/geometry/VENDORED.md; re-apply them on every carry-over.
 """Triple-axis spectrometer geometry helpers.
 
 The functions in this module work in the mounted sample/cradle frame used by
 McStas: x and z are horizontal, y is vertical.  Positive sample omega/A3 rotates
 sample +x toward lab -z, matching the PUMA sample cradle convention.
-
-This module carries BOTH frame conventions:
-    * mounted-component (McStas) frame — x, z horizontal; y vertical.
-    * legacy instrument/GUI frame — x, y horizontal (scattering plane); z vertical.
-``component_q_to_instrument_q`` / ``instrument_q_to_component_q`` bridge the two.
-The rest of ``isar.geometry`` works in the INSTRUMENT frame (z out-of-plane); see
-the package docstring in ``isar/geometry/__init__.py``.
 """
 import math
 from dataclasses import dataclass
@@ -76,17 +68,17 @@ def mccode_euler_from_matrix(matrix: np.ndarray) -> tuple[float, float, float]:
     if r.shape != (3, 3):
         raise ValueError("Rotation matrix must be 3x3.")
 
-    sy = float(np.clip(r[2, 0], -1.0, 1.0))
-    ry = math.asin(sy)
-    cy = math.cos(ry)
-
-    if abs(cy) > EPS:
-        rx = math.atan2(-r[2, 1], r[2, 2])
-        rz = math.atan2(-r[1, 0], r[0, 0])
-    else:
-        # Gimbal lock: choose rz=0 and keep a stable combined x rotation.
-        rz = 0.0
-        rx = math.atan2(r[0, 1], r[1, 1])
+    # The matrix is Z(rz) @ Y(ry) @ X(rx) with each factor
+    # mccode_rotation_matrix of one angle. ry from atan2 stays accurate at
+    # +/-90 deg, where asin loses half the digits.
+    cy = math.hypot(r[0, 0], r[1, 0])
+    ry = math.atan2(r[2, 0], cy)
+    # At the gimbal (cy = 0) only rx +/- rz is determined: take rz = 0.
+    rz = math.atan2(-r[1, 0], r[0, 0]) if cy > EPS else 0.0
+    # rx from what Z and Y leave behind: exact for any rz, so a poorly
+    # conditioned rz near the gimbal cannot leak into the rebuilt matrix.
+    x_part = mccode_rotation_matrix(0.0, math.degrees(ry), math.degrees(rz)).T @ r
+    rx = math.atan2(x_part[1, 2], x_part[1, 1])
 
     return math.degrees(rx), math.degrees(ry), math.degrees(rz)
 
@@ -189,10 +181,14 @@ def solve_instrument_angles(
 ) -> TASAngles:
     """Solve TAS sample angles for Q in the public instrument/GUI convention.
 
+    The legacy free-Q helper: a turntable plus a beam-fixed tilt ``saz``
+    beneath it, no travel. Kept for TAS_MCP (and ISAR's vendored copy); TAVI
+    itself solves the sample stage with ``tavi.orientation.solve_stage``.
+
     See solve_sample_angles for the ``sense_sample=+1`` (Friedel -Q / vTAS)
     convention. The inverse of a +1-branch solution recovers -Q through
-    ``q_instrument_from_angles``; instrument-level callers negate it back
-    (``TAS_Instrument.calculate_q_and_deltaE``).
+    ``q_instrument_from_angles``; callers negate it back
+    (``tavi.orientation.q_mount_from_legacy_angles``).
     """
     if sense_sample not in (-1, 1):
         raise ValueError("sense_sample must be -1 or +1.")
