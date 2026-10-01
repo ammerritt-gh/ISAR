@@ -8,6 +8,7 @@ TAVI and this copy cannot hide behind parity; ``test_parity_with_tavi_010cec6d``
 then recomputes TAVI's own answers (``tavi_parity_010cec6d.json``, written by
 ``make_tavi_parity.py``) on the same inputs.
 """
+import ast
 import json
 import math
 from pathlib import Path
@@ -15,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from isar.geometry import SampleState
+from isar.geometry import SampleState, ub_matrix
 from isar.geometry.feasibility import check_feasibility
 from isar.geometry.instruments import PUMA, tas_goniometer
 from isar.geometry.orientation import (
@@ -400,3 +401,16 @@ PARITY = {
 def test_parity_with_tavi_010cec6d(tavi, section):
     assert tavi["tavi_sha"].startswith("010cec6d")
     PARITY[section](tavi)
+
+
+def test_training_section_stays_dropped():
+    """ISAR grades no exercise: TAVI's Training section is not carried (VENDORED.md)."""
+    for name in ("generate_training_exercise", "encode_training", "decode_training",
+                 "grade_alignment"):
+        assert not hasattr(ub_matrix, name), f"ub_matrix.{name} is back"
+    tree = ast.parse(Path(ub_matrix.__file__).read_text(encoding="utf-8"))
+    imported = {alias.name.split(".")[0] for node in ast.walk(tree)
+                if isinstance(node, ast.Import) for alias in node.names}
+    imported |= {node.module.split(".")[0] for node in ast.walk(tree)
+                 if isinstance(node, ast.ImportFrom) and node.module and not node.level}
+    assert not imported & {"base64", "struct"}, "ub_matrix imports Training's base64/struct"
