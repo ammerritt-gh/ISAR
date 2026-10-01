@@ -1,11 +1,12 @@
 # Vendored from TAS_MCP (user's own repo, no LICENSE file; same author as ISAR),
 # original path tas_mcp/instruments/puma.py.  Vendored 2026-07-11, adapted: flattened from the
-# tas_mcp/instruments/ package into a single module (stdlib only; no import changes);
+# tas_mcp/instruments/ package into a single module (no import changes);
 # 2026-07-12 `bragg_two_theta_deg` rejects any `which` other than "mono"/"analyzer"
 # (previously anything non-"mono" silently selected the analyzer). 2026-10-01: TAVI's
 # `tas_goniometer` (TAVI 010cec6d, instruments/descriptor.py) added over the vendored
 # `StageAxis`, and `InstrumentProfile` gains TAVI's `sense_sample` and `goniometer`
-# (PUMA: -1, +/-20 deg arcs); see isar/geometry/VENDORED.md.
+# (PUMA: -1, +/-20 deg arcs), so the module now imports `.orientation` (numpy);
+# see isar/geometry/VENDORED.md.
 """PUMA instrument profile.
 
 Phase 1 hardcodes a single PUMA profile. Operating defaults (crystals, default kf,
@@ -13,13 +14,15 @@ collimations, fixed mode) are taken verbatim from TAVI/config/parameters.json an
 trusted. Hard MECHANICAL LIMITS (k range, A2/A4 ranges, max field) are NOT present in
 parameters.json; per the design decision they are deferred to a future limits config.
 Until confirmed they are left as ``None`` and treated as SOFT checks by the feasibility
-layer (a None limit produces a warning, never a hard infeasible verdict).
+layer (a None limit produces a warning, never a hard infeasible verdict). The one hard
+limit is the sample stage's arc travel (``goniometer``): feasibility refuses a reflection
+past it as ``stage_out_of_travel``.
 
 The profile is a plain dataclass so it can be serialized to / loaded from JSON when the
 multi-instrument limits config arrives, with no change to call sites.
 
 KNOWN GAP (do not "fix"): dark angles / mechanical limits have no numeric data anywhere,
-so every ``AngleLimit`` here stays None (soft).
+so every ``AngleLimit`` here stays None (soft). The arc travel is not an ``AngleLimit``.
 """
 from __future__ import annotations
 
