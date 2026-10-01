@@ -2,6 +2,8 @@
 read the prediction durably from card.state.json (crash-safe, no session-only object)."""
 from types import SimpleNamespace
 
+import pytest
+
 from isar.schema.card import CardState
 from isar.schema.hypotheses import resolve_hypothesis
 from isar.session import branch_model
@@ -101,8 +103,9 @@ def test_branch_belief_preserves_complete_posterior_and_legacy_fallback():
     _store_branch_beliefs(state, 5.0, period=2.0)
     by_scan = {row["scan_id"]: row for row in state.branch_belief}
     exact = by_scan[complete["scan_id"]]
-    assert exact["label_probabilities"] == complete["branch_posterior"]
-    assert exact["p_is_target"] == 0.7
+    # Normalised by its float sum (0.9999999999999999 here), so equal to rounding, not bit for bit.
+    assert exact["label_probabilities"] == pytest.approx(complete["branch_posterior"])
+    assert exact["p_is_target"] == pytest.approx(0.7)
     assert exact["assignment_entropy"] != 123.0  # derived from the normalized complete vector
     old = by_scan[legacy["scan_id"]]
     assert old["label_probabilities"] == {"optic": 0.75, "new": 0.25}
