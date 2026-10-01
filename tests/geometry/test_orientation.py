@@ -37,7 +37,12 @@ from isar.geometry.tas_geometry import (
     solve_instrument_angles,
     stt_from_q_norm,
 )
-from isar.geometry.ub_matrix import ObservedPeak, UBMatrix
+from isar.geometry.ub_matrix import (
+    ObservedPeak,
+    UBMatrix,
+    lattice_crystal_system,
+    refine_lattice_from_peaks,
+)
 
 FIXTURE = Path(__file__).with_name("tavi_parity_010cec6d.json")
 
@@ -335,10 +340,37 @@ def _parity_locked(tavi):
                                            plane=(hkl_u, hkl_v)), point["readouts"])
 
 
+class _QPeak:
+    """What refine_lattice_from_peaks reads: hkl, q_lab, is_valid."""
+    is_valid = True
+
+    def __init__(self, hkl, q):
+        self.hkl, self.q_lab = tuple(hkl), np.array(q)
+
+
+def _parity_refine(tavi):
+    for case in tavi["refine"]:
+        peaks = [_QPeak(p["hkl"], p["q"]) for p in case["peaks"]]
+        start = tuple(case["start"])
+        if "error" in case:
+            with pytest.raises(ValueError) as err:
+                refine_lattice_from_peaks(peaks, start, case["system"])
+            assert str(err.value) == case["error"]
+            continue
+        result = refine_lattice_from_peaks(peaks, start, case["system"])
+        assert result["crystal_system"] == case["crystal_system"]
+        _close(result["lattice"], case["lattice"])
+        _close(result["rms_error"], case["rms_error"])
+    starts = {entry["case"]: tuple(entry["start"]) for entry in tavi["refine"]}
+    assert {case: lattice_crystal_system(starts[case])
+            for case in tavi["crystal_systems"]} == tavi["crystal_systems"]
+
+
 PARITY = {
     "stages": _parity_stages,
     "stage_sets": _parity_stage_sets,
     "locked": _parity_locked,
+    "refine": _parity_refine,
 }
 
 
