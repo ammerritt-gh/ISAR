@@ -62,11 +62,24 @@ alternative); a change in TAVI is a one-line change in `instruments.py`.
 
 ## Carrying over a newer TAVI
 
-1. Diff each TAVI source in the table against the recorded SHA
-   (`git -C <TAVI> diff 010cec6d <new> -- tavi/orientation.py tavi/tas_geometry.py ...`) and
-   read what changed.
-2. Copy each changed TAVI file over its ISAR file, then re-apply that row's adaptations and the
-   provenance header (new date and SHA).
+1. Diff every TAVI source against the recorded SHA and read what changed. Each one, with the
+   ISAR file it is carried into:
+   - `tavi/orientation.py`, `tavi/tas_geometry.py`, `tavi/sample_mount.py`,
+     `tavi/reciprocal_space.py`, `tavi/ub_matrix.py` → the ISAR file of the same name;
+   - `instruments/tas_runtime.py` (`calculate_stage_angles`, lines 920-934 at `010cec6d`) →
+     step 4 of `check_feasibility` in `feasibility.py`;
+   - `instruments/descriptor.py` (`tas_goniometer`) → `tas_goniometer` in `instruments.py`;
+   - `instruments/puma/plugin.py`, `instruments/in8/plugin.py`, `instruments/in12/plugin.py`,
+     `instruments/panda/plugin.py` (sample sense and arc travel) → the PUMA profile in
+     `instruments.py`, `STAGES` in `tests/geometry/test_orientation.py` and the stage table
+     above.
+
+   ```
+   git -C <TAVI> diff 010cec6d <new> -- tavi/orientation.py tavi/tas_geometry.py tavi/sample_mount.py tavi/reciprocal_space.py tavi/ub_matrix.py instruments/tas_runtime.py instruments/descriptor.py instruments/puma/plugin.py instruments/in8/plugin.py instruments/in12/plugin.py instruments/panda/plugin.py
+   ```
+2. Copy each changed `tavi/` file over its ISAR file, then re-apply that row's adaptations and
+   the provenance header (new date and SHA); port a change in an `instruments/` source by hand
+   into the target step 1 names.
 3. Check the copy: a diff of each ISAR file against the new TAVI file shows only the header and
    the adaptations listed here.
 4. Update the SHA in this file, the generator's `SHA` and the fixture name, then rerun the
