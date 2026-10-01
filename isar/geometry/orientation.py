@@ -1,6 +1,6 @@
 # Vendored from TAVI (sibling checkout C:\Users\AMM\Documents\Github\Science\TAVI),
 # original path tavi/orientation.py.  License: GPL-3.0 (TAVI). ISAR is GPL-3.0, compatible.
-# Vendored 2026-10-01 from TAVI 010cec6d (first vendored 2026-07-11). ISAR's adaptations
+# First vendored 2026-10-01 from TAVI 010cec6d (new to ISAR then). ISAR's adaptations
 # are listed in isar/geometry/VENDORED.md; re-apply them on every carry-over.
 """Crystal orientation core: the sample stage, its solver, and angles <-> Q.
 
