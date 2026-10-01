@@ -20,9 +20,10 @@ these numbers. Cases (isar/geometry/VENDORED.md):
   of in-plane and out-of-plane reflections (or the refusals).
 * ``refine``: ``refine_lattice_from_peaks`` per crystal system, and the sets
   it cannot decide with their messages; ``lattice_crystal_system`` per lattice.
-* ``feasibility``: TAVI's per-point stage solve (``instruments/tas_runtime.py``
-  ``calculate_stage_angles``) on PUMA's stage for an in-plane, a 10 deg and a
-  25 deg out-of-plane reflection.
+* ``feasibility``: the per-point stage-solve excerpt of TAVI's
+  ``calculate_stage_angles`` (``instruments/tas_runtime.py`` 920-934), re-run
+  here with TAVI's own primitives rather than by calling that method, on
+  PUMA's stage for an in-plane, a 10 deg and a 25 deg out-of-plane reflection.
 """
 import argparse
 import json
@@ -37,7 +38,7 @@ SHA = "010cec6d"
 OUT = Path(__file__).with_name(f"tavi_parity_{SHA}.json")
 SOURCES = ["tavi/orientation.py", "tavi/tas_geometry.py", "tavi/sample_mount.py",
            "tavi/reciprocal_space.py", "tavi/ub_matrix.py", "instruments/descriptor.py",
-           "instruments/puma/plugin.py", "instruments/in8/plugin.py",
+           "instruments/tas_runtime.py", "instruments/puma/plugin.py", "instruments/in8/plugin.py",
            "instruments/in12/plugin.py", "instruments/panda/plugin.py"]
 INSTRUMENTS = ("puma", "in8", "in12", "panda")
 LATTICES = {
@@ -265,7 +266,7 @@ def main():
     crystal_systems = {case: lattice_crystal_system(start)
                        for case, (_, start, _) in REFINE_CASES.items()}
 
-    # --- TAVI's per-point stage solve on PUMA (instruments/tas_runtime.py 920-934) --
+    # --- tas_runtime.py 920-934, re-run with TAVI's primitives on PUMA's stage ---
     puma = descriptors["puma"]
     sense = int(puma.geometry.sense_sample)
     lattice = LATTICES["cubic"]

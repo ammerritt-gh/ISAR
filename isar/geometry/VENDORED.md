@@ -10,7 +10,9 @@ is where the next carry-over starts.
 - **TAVI revision vendored:** `010cec6d` (TAVI `main`, carried over 2026-10-01; first vendored
   2026-07-11).
 - **Parity fixture:** `tests/geometry/tavi_parity_010cec6d.json`, TAVI's own answers on seeded
-  inputs, checked by `tests/geometry/test_orientation.py::test_parity_with_tavi_010cec6d`.
+  inputs, checked by `tests/geometry/test_orientation.py::test_parity_with_tavi_010cec6d`. Its
+  feasibility cases are the per-point excerpt of `calculate_stage_angles`
+  (`instruments/tas_runtime.py` 920-934) re-run with TAVI's own primitives, not that method itself.
   Regenerate it by hand, never from the suite, in an environment that runs TAVI:
 
   ```

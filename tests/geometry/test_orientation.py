@@ -369,8 +369,9 @@ def _parity_refine(tavi):
 
 
 def _parity_feasibility(tavi):
-    """``check_feasibility`` on ISAR's PUMA profile against TAVI's per-point stage solve
-    (instruments/tas_runtime.py) for the same reflection, crystal and k."""
+    """``check_feasibility`` on ISAR's PUMA profile against TAVI's per-point stage-solve
+    excerpt (instruments/tas_runtime.py 920-934, re-run by the generator with TAVI's own
+    primitives, not ``calculate_stage_angles`` itself) for the same reflection, crystal and k."""
     for point in tavi["feasibility"]:
         assert point["stage"] == "puma" and point["sense"] == PUMA.sense_sample
         sample = SampleState(*point["lattice"], orientation_set=True)

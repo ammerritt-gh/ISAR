@@ -4,7 +4,9 @@ Adapted to the stateless ``isar.geometry`` API: ``check_feasibility`` / ``access
 take a ``SampleState`` plus explicit fixed-mode / fixed-k arguments (default = PUMA).
 
 Reach is the instrument's sample stage: on PUMA, TAVI's turntable plus two +/-20 deg arcs,
-checked against TAVI 010cec6d's own per-point stage solve (``tavi_parity_010cec6d.json``).
+checked against TAVI 010cec6d's per-point stage-solve excerpt (tas_runtime.py 920-934,
+re-run with TAVI's own primitives, not ``calculate_stage_angles`` itself;
+``tavi_parity_010cec6d.json``).
 """
 import json
 import math
