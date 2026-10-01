@@ -4,7 +4,8 @@
 # 2026-07-12 `bragg_two_theta_deg` rejects any `which` other than "mono"/"analyzer"
 # (previously anything non-"mono" silently selected the analyzer). 2026-10-01: TAVI's
 # `tas_goniometer` (TAVI 010cec6d, instruments/descriptor.py) added over the vendored
-# `StageAxis`; see isar/geometry/VENDORED.md.
+# `StageAxis`, and `InstrumentProfile` gains TAVI's `sense_sample` and `goniometer`
+# (PUMA: -1, +/-20 deg arcs); see isar/geometry/VENDORED.md.
 """PUMA instrument profile.
 
 Phase 1 hardcodes a single PUMA profile. Operating defaults (crystals, default kf,
@@ -99,6 +100,11 @@ class InstrumentProfile:
     sample_two_theta_limit: AngleLimit = field(default_factory=AngleLimit)
     max_field_tesla: Optional[float] = None
 
+    # The sample stage, as TAVI's descriptor declares it: the sample scattering sense
+    # (+1/-1, the sign of the sample two-theta readout) and the goniometer that reaches Q.
+    sense_sample: int = -1
+    goniometer: tuple = field(default_factory=tas_goniometer)
+
     def bragg_two_theta_deg(self, k_inv_angstrom: float, which: str) -> float:
         """Bragg 2-theta (deg) at a crystal for a beam of wavevector k.
 
@@ -133,4 +139,8 @@ PUMA = InstrumentProfile(
     default_fixed_k_inv_angstrom=2.6634,
     default_collimations_arcmin=(60.0, 60.0, 60.0, 60.0),
     # All mechanical limits intentionally unconfirmed in Phase 1 (soft).
+    # TAVI 010cec6d instruments/puma/plugin.py: Sense.RIGHT and tas_goniometer(20.0),
+    # +/-20 deg arcs (the MLZ page's standard goniometer; TAVI's choice, not confirmed).
+    sense_sample=-1,
+    goniometer=tas_goniometer(20.0),
 )

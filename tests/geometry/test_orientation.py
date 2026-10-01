@@ -15,7 +15,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from isar.geometry.instruments import tas_goniometer
+from isar.geometry import SampleState
+from isar.geometry.feasibility import check_feasibility
+from isar.geometry.instruments import PUMA, tas_goniometer
 from isar.geometry.orientation import (
     TRAVEL_TOLERANCE_DEG,
     StageAxis,
@@ -366,11 +368,30 @@ def _parity_refine(tavi):
             for case in tavi["crystal_systems"]} == tavi["crystal_systems"]
 
 
+def _parity_feasibility(tavi):
+    """``check_feasibility`` on ISAR's PUMA profile against TAVI's per-point stage solve
+    (instruments/tas_runtime.py) for the same reflection, crystal and k."""
+    for point in tavi["feasibility"]:
+        assert point["stage"] == "puma" and point["sense"] == PUMA.sense_sample
+        sample = SampleState(*point["lattice"], orientation_set=True)
+        sample.ub().set_U(np.array(point["u"]))
+        assert point["ki"] == point["kf"]
+        out = check_feasibility(sample, hkl=point["hkl"], e_transfer_meV=0.0, fixed_mode="kf",
+                                fixed_k_inv_angstrom=point["kf"], instrument=PUMA)
+        _close(out["stt_deg"], point["stt"])
+        if "error" in point:
+            assert (out["reason"], out["detail"]) == ("stage_out_of_travel", point["error"])
+        else:
+            _close([out["sth_deg"], out["sgl_deg"], out["sgu_deg"]],
+                   [point["sth"], point["sgl"], point["sgu"]])
+
+
 PARITY = {
     "stages": _parity_stages,
     "stage_sets": _parity_stage_sets,
     "locked": _parity_locked,
     "refine": _parity_refine,
+    "feasibility": _parity_feasibility,
 }
 
 

@@ -2,16 +2,84 @@
 
 Adapted to the stateless ``isar.geometry`` API: ``check_feasibility`` / ``accessible_range``
 take a ``SampleState`` plus explicit fixed-mode / fixed-k arguments (default = PUMA).
-"""
-import math
 
+Reach is the instrument's sample stage: on PUMA, TAVI's turntable plus two +/-20 deg arcs,
+checked against TAVI 010cec6d's own per-point stage solve (``tavi_parity_010cec6d.json``).
+"""
+import json
+import math
+from pathlib import Path
+
+import numpy as np
 import pytest
 
-from isar.geometry import SampleState, feasibility
+from isar.geometry import SampleState, compute_B_matrix, feasibility
+from isar.geometry.instruments import PUMA, tas_goniometer
+from isar.geometry.tas_geometry import component_q_to_instrument_q, solve_instrument_angles
+
+FIXTURE = Path(__file__).with_name("tavi_parity_010cec6d.json")
 
 
 def cubic_sample(a=4.0) -> SampleState:
     return SampleState(a, a, a, 90.0, 90.0, 90.0)
+
+
+def _tavi_point(tilt_deg):
+    """TAVI's stage solve on PUMA for (1 0 tan(tilt)) of a 4.05 A cubic crystal at U =
+    identity, where (h k 0) is horizontal and l vertical; elastic at kf = 2.6634."""
+    points = json.loads(FIXTURE.read_text(encoding="utf-8"))["feasibility"]
+    return next(p for p in points if p["tilt_deg"] == tilt_deg)
+
+
+def _check_tilted(point):
+    s = SampleState(*point["lattice"])
+    s.orientation_set = True                  # U = identity, as TAVI's case
+    assert np.allclose(s.ub().U, point["u"])
+    assert point["kf"] == PUMA.default_fixed_k_inv_angstrom == point["ki"]
+    return feasibility.check_feasibility(s, hkl=point["hkl"], e_transfer_meV=0.0)
+
+
+def test_puma_profile_carries_tavis_stage_and_sense():
+    assert PUMA.sense_sample == -1
+    assert PUMA.goniometer == tas_goniometer(20.0)
+
+
+def test_puma_reflection_tilted_10_deg_is_reached_as_tavi_solves_it():
+    point = _tavi_point(10.0)
+    out = _check_tilted(point)
+    assert out["feasible"] is True and out["in_plane"] is False
+    got = [out["stt_deg"], out["sth_deg"], out["sgl_deg"], out["sgu_deg"]]
+    want = [point["stt"], point["sth"], point["sgl"], point["sgu"]]
+    assert np.allclose(got, want, rtol=0.0, atol=1e-9), (got, want)
+    assert abs(out["sgu_deg"]) == pytest.approx(10.0, abs=1e-6)
+
+
+def test_puma_reflection_tilted_25_deg_is_refused_out_of_travel():
+    point = _tavi_point(25.0)
+    out = _check_tilted(point)
+    assert out["feasible"] is False
+    assert out["reason"] == "stage_out_of_travel"
+    assert out["detail"] == point["error"]
+    assert "sgu" in out["detail"] and "[-20, 20]" in out["detail"]
+    span = feasibility.accessible_range(SampleState(*point["lattice"], orientation_set=True),
+                                        hkl=point["hkl"], e_min_meV=0, e_max_meV=2,
+                                        e_step_meV=1)
+    assert span["n_feasible"] == 0
+    assert {p["reason"] for p in span["points"]} == {"stage_out_of_travel"}
+
+
+def test_in_plane_reflection_reports_zero_tilts_and_the_legacy_angles():
+    point = _tavi_point(0.0)
+    out = _check_tilted(point)
+    assert out["feasible"] is True and out["in_plane"] is True
+    assert (out["sgl_deg"], out["sgu_deg"]) == (0.0, 0.0)
+    # The angles the single-tilt solve gave before the stage: unchanged in plane.
+    q = component_q_to_instrument_q(compute_B_matrix(*point["lattice"]) @ np.array(point["hkl"]))
+    legacy = solve_instrument_angles(q, point["ki"], point["kf"])
+    assert np.allclose([out["stt_deg"], out["sth_deg"]], [legacy.stt, legacy.sth],
+                       rtol=0.0, atol=1e-9)
+    assert np.allclose([out["stt_deg"], out["sth_deg"]], [point["stt"], point["sth"]],
+                       rtol=0.0, atol=1e-9)
 
 
 def test_elastic_feasible_point():

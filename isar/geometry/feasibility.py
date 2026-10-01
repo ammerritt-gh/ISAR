@@ -7,13 +7,15 @@
 # `accessible_range` hardened — energy grid never overshoots e_max (and e_max<e_min raises),
 # scalar `q_inv_angstrom` serializes safely, and feasibility is reported as contiguous runs
 # (`feasible_bands_meV`; `feasible_band_meV` set only for a single run) instead of a min/max
-# span that merged disjoint runs across an infeasible gap.
+# span that merged disjoint runs across an infeasible gap; (4) 2026-10-01 the sample angles
+# are TAVI 010cec6d's per-point stage solve (instruments/tas_runtime.py,
+# `calculate_stage_angles`) on the instrument's goniometer; see isar/geometry/VENDORED.md.
 """Kinematic feasibility PREVIEW.
 
 check_feasibility answers: for a target (Q, E) in a given fixed-k mode, does the
-scattering triangle close, what are the instrument angles, do the monochromator/analyzer
-have a Bragg reflection, is the point in the scattering plane, and does anything violate a
-confirmed instrument limit?
+scattering triangle close, what are the instrument angles, can the sample stage bring Q
+into the scattering plane, do the monochromator/analyzer have a Bragg reflection, is the
+point in the scattering plane, and does anything violate a confirmed instrument limit?
 
 This is a PREVIEW only. TAVI's HTTP /validate endpoint remains authoritative for the drive
 loop; this layer exists so the GUI / planner can screen points cheaply without a round-trip.
@@ -21,13 +23,16 @@ loop; this layer exists so the GUI / planner can screen points cheaply without a
 Conventions:
     * Energy transfer ``e_transfer_meV`` > 0 means neutron ENERGY LOSS (ki > kf), i.e.
       an excitation is created in the sample (e.g. a phonon). E = 2.0717*(ki^2 - kf^2).
-    * Sample two-theta (stt / A4) follows tavi's sign convention (returned negative).
-    * |Q| and the triangle math need no orientation. The in-plane test needs a set
-      orientation (U); without it, in_plane is null.
+    * Sample two-theta (stt / A4) carries the instrument's sample sense (PUMA: -1, negative).
+    * |Q| and the triangle math need no orientation. The in-plane test and the stage
+      angles need a set orientation (U); without it, in_plane is null.
+    * The stage angles are TAVI's readouts: ``sth_deg`` the turntable A3, ``sgl_deg`` and
+      ``sgu_deg`` the lower and upper arcs, the smallest tilt that levels Q.
 
-The kinematic checks are HARD (triangle closure, Bragg reflection existence). Mechanical
-limits are SOFT in Phase 1: an unconfirmed (None) limit yields a warning, never an
-infeasible verdict (see instruments.py).
+The kinematic checks are HARD (triangle closure, Bragg reflection existence), and so is the
+stage's reach (``stage_out_of_travel``, TAVI's refusal text in ``detail``), as TAVI's
+/validate refuses it. The other mechanical limits are SOFT in Phase 1: an unconfirmed
+(None) limit yields a warning, never an infeasible verdict (see instruments.py).
 """
 from __future__ import annotations
 
@@ -37,7 +42,13 @@ from typing import Optional
 import numpy as np
 
 from .reciprocal_space import update_Q_from_HKL_direct
-from .tas_geometry import stt_from_q_norm, solve_instrument_angles, component_q_to_instrument_q
+from .tas_geometry import (
+    _normalize_deg,
+    component_q_to_instrument_q,
+    lab_q_from_stt,
+    stt_from_q_norm,
+)
+from .orientation import StageUnreachable, solve_stage
 from .instruments import InstrumentProfile, PUMA
 from .sample_state import SampleState
 from .units import HBAR2_OVER_2MN_MEV_A2
@@ -116,7 +127,7 @@ def check_feasibility(sample: Optional[SampleState], *, hkl=None, q_inv_angstrom
 
     # 2. Triangle closure + sample two-theta (HARD).
     try:
-        stt = stt_from_q_norm(qmag, ki, kf)
+        stt = stt_from_q_norm(qmag, ki, kf, inst.sense_sample)
     except ValueError:
         result["reason"] = "scattering_triangle_does_not_close"
         result["triangle_closes"] = False
@@ -137,19 +148,28 @@ def check_feasibility(sample: Optional[SampleState], *, hkl=None, q_inv_angstrom
     result["mono_two_theta_deg"] = mono_tt
     result["ana_two_theta_deg"] = ana_tt
 
-    # 4. In-plane test + sample angles (needs orientation; otherwise null).
+    # 4. In-plane test + the sample stage's angles (needs orientation; otherwise null):
+    #    TAVI 010cec6d's per-point stage solve (instruments/tas_runtime.py 920-934).
     if sample is not None and sample.oriented and hkl is not None:
-        qc = sample.ub().hkl_to_q(*hkl)
-        q_inst = component_q_to_instrument_q(np.asarray(qc, dtype=float))
-        angles = solve_instrument_angles(q_inst, ki, kf)
-        result["sth_deg"] = angles.sth
-        result["saz_deg"] = angles.saz
-        result["in_plane"] = abs(angles.saz) <= _IN_PLANE_TOL_DEG
-        if not result["in_plane"]:
-            warnings.append(
-                f"Target is out of the horizontal plane (saz={angles.saz:.2f} deg); "
-                "requires a sample tilt/goniometer or a remount."
-            )
+        q_mount = np.asarray(sample.ub().hkl_to_q(*hkl), dtype=float)
+        q_inst = component_q_to_instrument_q(q_mount)
+        elevation = math.degrees(math.atan2(q_inst[2], math.hypot(q_inst[0], q_inst[1])))
+        result["in_plane"] = abs(elevation) <= _IN_PLANE_TOL_DEG
+        # vTAS Friedel convention: the +1 branch aligns -U B hkl with Q_lab.
+        signed = -q_mount if inst.sense_sample > 0 else q_mount
+        try:
+            stage = solve_stage(inst.goniometer, signed, lab_q_from_stt(ki, kf, stt))
+        except StageUnreachable as exc:
+            # Every refusal of a two-arc stage is a travel limit (or no arc setting at all).
+            result["reason"] = "stage_out_of_travel"
+            result["detail"] = str(exc)
+            return result
+        sth = stage["A3"]
+        if inst.sense_sample > 0:
+            sth = _normalize_deg(sth)   # the legacy +1-branch readout
+        result["sth_deg"] = sth
+        result["sgl_deg"] = stage["sgl"]
+        result["sgu_deg"] = stage["sgu"]
     else:
         result["in_plane"] = None
         warnings.append(
