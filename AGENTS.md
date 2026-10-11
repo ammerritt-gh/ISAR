@@ -112,6 +112,12 @@ area.
    contributors to think launching or stopping a campaign broke the architecture; interpreting a
    number outside the fitter is what actually would.
 
+8. **A pooled master's f(E) is counts per reference monitor, not raw counts.** Rescale before
+   comparing intensities across masters; comparing them as they stand silently mixes scales.
+
+9. **A new float column in `report/results.csv` joins `_NUMERIC_COLUMNS`**
+   (`isar/drive/isar_io/readers.py`), or it silently reads back as text.
+
 ## Before You Touch X
 
 | Task area | Read first |
@@ -284,6 +290,3 @@ review item.
 *Last updated: 2026-08-20. Canonical file is `AGENTS.md`; `CLAUDE.md` is the `@AGENTS.md` stub.*
 
 ## Memory — promote or die
-- 2026-09-05 · a pooled master's f(E) is counts per reference monitor, not raw counts; rescale before comparing intensities across masters
-- 2026-09-05 · a new float column in report/results.csv must join _NUMERIC_COLUMNS in isar/drive/isar_io/readers.py or it reads back as text
-- 2026-09-11 · Adrian is a physics PhD and neutron-scattering expert: overexplain statistics, defer on physics, never escalate seat guesses about beamline practice
