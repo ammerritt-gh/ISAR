@@ -157,6 +157,15 @@ def test_input_fingerprint_change_aborts_before_promotion(
     assert _asset_snapshot(collector.ASSETS) == before
 
 
+def test_fingerprint_ignores_proof_expectations_but_not_inputs(collector):
+    before = collector.test_data_fingerprint()
+    (collector.TEST_DATA / "sub").mkdir()
+    (collector.TEST_DATA / "sub" / "x.expect.json").write_text("{}\n", encoding="utf-8")
+    assert collector.test_data_fingerprint() == before
+    (collector.TEST_DATA / "sub" / "x.dat").write_text("1\n", encoding="utf-8")
+    assert collector.test_data_fingerprint() != before
+
+
 def test_missing_real_data_aborts_before_generator(collector, monkeypatch: pytest.MonkeyPatch):
     (collector.TEST_DATA / "input.dat").unlink()
     collector.TEST_DATA.rmdir()

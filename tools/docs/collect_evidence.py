@@ -342,12 +342,13 @@ def _validate_plain_tree(root: Path, *, label: str) -> None:
 
 
 def test_data_fingerprint() -> dict[str, Any]:
-    """Digest names, sizes, and contents of all regular files in required ``real_data/``."""
+    """Digest names, sizes, and contents of regular files in required ``real_data/``, minus ``*.expect.json``."""
     if not TEST_DATA.exists():
         raise EvidenceError("real_data/ is required to generate the evidence bundle")
     _validate_plain_tree(TEST_DATA, label="real_data")
     entries: list[str] = []
-    for path in sorted((p for p in TEST_DATA.rglob("*") if p.is_file()), key=lambda p: p.as_posix()):
+    # proof expectation files are not inputs to the evidence; landing them must not move the digest
+    for path in sorted((p for p in TEST_DATA.rglob("*") if p.is_file() and not p.name.endswith(".expect.json")), key=lambda p: p.as_posix()):
         rel = path.relative_to(TEST_DATA).as_posix()
         _validate_relative(rel, label="real_data path")
         _require_regular(path, label="real_data file")

@@ -14,7 +14,7 @@ the claims and see none of the evidence behind them. This is that evidence, prom
 **Derived evidence only.** Every file is a fit result, a summary table of fitted parameters, or a
 rendered figure. **No raw facility data file is committed** — `real_data/` stays gitignored, and
 adding a raw file here would be a policy breach, not an improvement. `MANIFEST.json` records a
-single digest over the whole `real_data/` tree so a reader who holds that data can confirm they
+single digest over every file in `real_data/` except the proofs' `*.expect.json` files, so a reader who holds that data can confirm they
 have the same inputs, without this repository publishing an index of unpublished filenames.
 
 Be precise about what a figure is, though. A scan overlay **plots the measured points it fits** —
@@ -47,7 +47,7 @@ reproduces them.
 
 `MANIFEST.json` records schema version 2, the generating command and input fingerprint for every
 group, and the code revision and collection date for the bundle. Every group fingerprint must
-match the top-level `test_data_fingerprint` (the digest of `real_data/`; the key keeps its
+match the top-level `test_data_fingerprint` (the digest of `real_data/` without the `*.expect.json` files; the key keeps its
 old name). The documentation tests fail if manifest metadata
 drifts from the collector declaration, a committed file stops matching its size or hash, a listed
 file goes missing, or an undeclared file appears here.
