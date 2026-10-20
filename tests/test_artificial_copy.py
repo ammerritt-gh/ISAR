@@ -71,27 +71,33 @@ def _floatlike(line: bytes) -> bool:
     return bool(line.strip())
 
 
-def _data_lines(copy: Path, kind: str):
-    """The copy's data rows, found without the tool: what follows each label line."""
+def _scans_of(copy: Path, kind: str):
+    """The copy's scans, found without the tool: [label-line words, data rows] per scan, from the text."""
     out, state = [], "off"
     for ln in copy.read_bytes().splitlines():
         s = ln.strip()
         if kind == "in8":
-            if s.startswith(b"DATA_:"):
+            if len(s) >= 8 and set(s) == {ord("R")}:
+                out.append([None, []])
+                state = "off"
+            elif s.startswith(b"DATA_:"):
                 state = "label"
             elif state == "label" and s:
+                out[-1][0] = s.decode().split()
                 state = "rows"
             elif state == "rows":
                 if _floatlike(ln):
-                    out.append(ln)
+                    out[-1][1].append(ln)
                 elif s:
                     state = "off"
-        elif s.startswith(b"#L "):
-            state = "rows"
         elif s.startswith(b"#S "):
+            out.append([None, []])
             state = "off"
+        elif s.startswith(b"#L "):
+            out[-1][0] = s[3:].decode().split()
+            state = "rows"
         elif state == "rows" and s and not s.startswith(b"#"):
-            out.append(ln)
+            out[-1][1].append(ln)
     return out
 
 
@@ -134,21 +140,45 @@ def test_only_data_numbers_change_and_all_of_them(kind, sources, tmp_path):
 
 
 @pytest.mark.parametrize("kind", FORMATS)
-def test_truth_file_matches_the_copy(kind, sources, tmp_path):
+def test_truth_file_is_what_the_tool_wrote(kind, sources, tmp_path):
+    """Points, names and tokens come from the rows and label line in the copy's text, not the parser."""
     copy, truth = _make(sources[kind], tmp_path / "out", "99")
-    blocks = _blocks(copy, kind)
-    assert [s["points"] for s in truth["scans"]] == [len(b.data) for b in blocks]
-    assert [s["column_names"] for s in truth["scans"]] == [b.column_labels for b in blocks]
-    # the tokens the tool says it wrote are the copy's own text, scan by scan, column by column
-    want = [[col["tokens"][r] for col in s["data_columns"]]
-            for s in truth["scans"] for r in range(s["points"])]
-    got = [[t.decode() for t in ln.split()] for ln in _data_lines(copy, kind)]
-    assert got == want
+    scans = _scans_of(copy, kind)
+    assert len(scans) == truth["number_of_scans"] == len(truth["scans"])
+    for (label_words, rows), s in zip(scans, truth["scans"]):
+        assert s["points"] == len(rows) > 0
+        # raw S30 joins multi-word names with `_`: compare words, not the joining
+        assert " ".join(s["column_names"]).replace("_", " ").split() == \
+            " ".join(label_words).replace("_", " ").split()
+        assert all(len(col["tokens"]) == s["points"] for col in s["data_columns"])
+        # the tokens the tool says it wrote are the copy's own text, row by row
+        assert [[col["tokens"][r] for col in s["data_columns"]] for r in range(s["points"])] == \
+            [[t.decode() for t in ln.split()] for ln in rows]
     # header values are the file's text, not the parser's reading of it
     first = truth["scans"][0]["header_values"] if kind == "in8" else truth["file_header_values"]
     key, prefix = ("TITLE", b"TITLE:") if kind == "in8" else ("#C", b"#C ")
     line = next(ln for ln in copy.read_bytes().splitlines() if ln.startswith(prefix))
     assert first[key][0] == line[len(prefix):].decode().strip()
+
+
+@pytest.mark.parametrize("kind", FORMATS)
+def test_the_parsers_reading_of_the_copy_agrees_with_the_truth_file(kind, sources, tmp_path):
+    copy, truth = _make(sources[kind], tmp_path / "out", "99")
+    blocks = _blocks(copy, kind)
+    assert [s["points"] for s in truth["scans"]] == [len(b.data) for b in blocks]
+    assert [s["column_names"] for s in truth["scans"]] == [b.column_labels for b in blocks]
+
+
+def test_a_truncated_final_row_is_refused_not_recorded_as_a_point(sources, tmp_path):
+    """The parser drops a short final row, so only the tool's own row count can disagree with it."""
+    src = tmp_path / "ragged.dat"
+    lines = sources["s30"].read_bytes().splitlines(keepends=True)
+    last = max(i for i, ln in enumerate(lines) if ln.strip() and not ln.startswith(b"#"))
+    lines[last] = lines[last].rsplit(None, 1)[0] + b"\n"           # one token short
+    src.write_bytes(b"".join(lines))
+    with pytest.raises(ac.Refuse, match="data rows located"):
+        ac.make_copy(src, tmp_path / "out", "99")
+    assert not (tmp_path / "out").exists()
 
 
 def test_spec_is_trimmed_to_the_chosen_scans(sources, tmp_path):
@@ -183,9 +213,9 @@ def test_copy_that_does_not_parse_like_the_original_is_refused(
     real_build = ac.build_copy
     for n, (old, new) in enumerate(FORMATS[kind][2]):
         def corrupt(*a, _old=old, _new=new):
-            data, written, starts = real_build(*a)
+            data, written = real_build(*a)
             assert _old in data
-            return data.replace(_old, _new, 1), written, starts
+            return data.replace(_old, _new, 1), written
         monkeypatch.setattr(ac, "build_copy", corrupt)
         out = tmp_path / f"out{n}"
         rc = ac.main([str(sources[kind]), "--out", str(out)])

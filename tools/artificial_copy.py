@@ -17,8 +17,10 @@ Order of work (nothing is written until step 3 passes):
   2. assert the column characters on the replacements, then parse the real file and the in-memory copy
      with ISAR's own parser (the plugin `isar.parsers.registry` selects) and compare: identical file
      header; for every kept scan the same point count, header values and column names;
-  3. write the copy and `<copy name>.truth.json` (scans, points, column names, header values as text,
-     and each data column's replacement tokens as written) beside it.
+  3. write the copy and `<copy name>.truth.json` beside it: scans, points (the data rows the tool located),
+     column names (the label line it kept), header values as text, and each data column's replacement
+     tokens as written. The truth file is never taken from the parser's reading of the copy; the tool
+     refuses if a column's token count differs from the points.
 A failed check writes nothing and prints what differed. `--scans` only applies to SPEC files: `3` keeps
 the first three scans, `5,12` (or `5,`) keeps scans numbered 5 and 12; the default is the first three.
 The tool refuses an output folder inside `real_data` / `test_data` and never overwrites a file.
@@ -45,7 +47,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import isar.parsers  # noqa: E402,F401  (registers the plugins by name)
-from isar.parsers import numor_base, registry  # noqa: E402
+from isar.parsers import numor_base, registry, spec_base  # noqa: E402
 
 log = logging.getLogger("artificial_copy")
 
@@ -312,6 +314,7 @@ class Table:
     number: int | None          # SPEC scan number (None for a numor)
     start: int                  # first line index (the #S line / the RRRR banner)
     end: int = 0                # one past the last line
+    label: int | None = None    # line index of the column-label line (`#L` / the line after DATA_:)
     rows: list = dataclasses.field(default_factory=list)   # line indices of data rows
 
 
@@ -336,6 +339,7 @@ def locate_spec(lines: list[bytes]) -> list[Table]:
             collecting = False
         elif s.split(maxsplit=1)[0] == "#L" and cur is not None:
             collecting = True
+            cur.label = i
         elif not s.startswith("#") and collecting and cur is not None:
             cur.rows.append(i)
     if cur:
@@ -365,6 +369,7 @@ def locate_numor(lines: list[bytes]) -> list[Table]:
             state = "label"
         elif state == "label" and t.strip():
             ncol = len(t.split())
+            cur.label = i
             state = "rows"
         elif state == "rows":
             toks = t.split()
@@ -404,9 +409,8 @@ def _skeleton(raw: bytes) -> bytes:
 
 
 def build_copy(lines: list[bytes], kind: str, tables: list[Table], kept: list[Table],
-               rng: random.Random) -> tuple[bytes, dict, dict]:
-    """(copy bytes, {table.start: (column tokens as written, forced column indexes)},
-    {table.start: line index in the copy}).
+               rng: random.Random) -> tuple[bytes, dict]:
+    """(copy bytes, {table.start: (column tokens as written, forced column indexes)}).
 
     Only data-row numbers change; every other byte, line ending included, is copied as it was.
     """
@@ -438,18 +442,22 @@ def build_copy(lines: list[bytes], kind: str, tables: list[Table], kept: list[Ta
             new_lines[li] = bytes(ba) + eol
         written[tb.start] = (cols, forced_cols)
     if kind == "numor":                                   # a numor is kept whole
-        return b"".join(new_lines), written, {t.start: t.start for t in kept}
+        return b"".join(new_lines), written
     out = new_lines[:tables[0].start]                     # the file-level header
-    out_start = {}
     for tb in kept:
-        out_start[tb.start] = len(out)
         out += new_lines[tb.start:tb.end]
-    return b"".join(out), written, out_start
+    return b"".join(out), written
 
 
 # ---------------------------------------------------------------------------
 # Parse real and copy with ISAR's own parser and compare
 # ---------------------------------------------------------------------------
+def _multiword(name: str):
+    """The card's multi-word `#L` names the parser joins (raw S30 only), else None."""
+    return registry.plugin_by_name(name).card_template().policy.multiword_columns \
+        if name == "spec_s30_raw" else None
+
+
 def snapshot(path: Path, name: str) -> dict:
     """What the plugin's parser makes of a file: file header, per-scan blocks and records."""
     plugin = registry.plugin_by_name(name)
@@ -462,9 +470,7 @@ def snapshot(path: Path, name: str) -> dict:
                            rows=len(b.data)) for b in raw]
             starts = [b.line_range[0] for b in raw]
         else:
-            from isar.parsers import spec_base
-            mw = card.policy.multiword_columns if name == "spec_s30_raw" else None
-            hdr, raw = spec_base.read_spec(path, multiword_columns=mw)
+            hdr, raw = spec_base.read_spec(path, multiword_columns=_multiword(name))
             header = {k: v for k, v in dataclasses.asdict(hdr).items() if k != "raw"}
             blocks = [dict(scan_number=b.scan_number, command=b.command, D=b.D, T=b.T, G=b.G, Q=b.Q,
                            P_groups=b.P_groups, C=b.C, V_groups=b.V_groups, n_columns=b.n_columns,
@@ -531,26 +537,39 @@ def _header_values(lines: list[bytes], kind: str) -> dict:
     return out
 
 
+def _label_names(raw: bytes, kind: str, multiword) -> list[str]:
+    """The column names in a kept label line, split the way the parser splits it."""
+    if kind == "numor":
+        return _text(raw).split()
+    t = _text(raw).strip()
+    body = t[len(t.split(maxsplit=1)[0]):].strip()        # drop the `#L` tag
+    return spec_base._join_multiword(body, multiword) if multiword else body.split()
+
+
 def build_truth(name: str, kind: str, copy_name: str, seed: int, lines: list[bytes],
-                tables: list[Table], kept: list[Table], written: dict, out_start: dict,
-                copy_snap: dict) -> dict:
+                tables: list[Table], kept: list[Table], written: dict) -> dict:
+    """The truth file, from what the tool located and wrote: the data rows and label line it kept,
+    never the parser's reading of the copy. Refuses if a column's tokens do not number the rows."""
     scans = []
     for tb in kept:
-        key = out_start[tb.start] + 1 if kind == "spec" else tb.start   # block.line_range[0]
-        idx = copy_snap["starts"].index(key) if key in copy_snap["starts"] else None
-        blk = copy_snap["blocks"][idx] if idx is not None else None
-        labels = blk["column_labels"] if blk else []
+        hv = _header_values(lines[tb.start:tb.end], kind)
+        labels = _label_names(lines[tb.label], kind, _multiword(name)) if tb.label is not None else []
         cols, forced_cols = written[tb.start]
+        points = len(tb.rows)
+        for j, col in enumerate(cols):
+            if len(col) != points:
+                raise Refuse(f"scan {tb.number if tb.number is not None else tb.start}: {points} data "
+                             f"rows located but column {j} holds {len(col)} values (a ragged or "
+                             f"truncated row); pick other --scans")
+        name_of = lambda j: labels[j] if j < len(labels) else f"col{j}"
         scans.append(dict(
-            scan_number=tb.number if kind == "spec" else int(
-                (blk or {}).get("keywords", {}).get("FILE_", 0) or 0),
-            parsed=blk is not None,
-            points=blk["rows"] if blk else 0,
+            scan_number=tb.number if kind == "spec" else int((hv.get("FILE_") or ["0"])[0] or 0),
+            points=points,
             column_names=list(labels),
-            forced_columns=[labels[j] if j < len(labels) else f"col{j}" for j in forced_cols],
-            header_values=_header_values(lines[tb.start:tb.end], kind),
-            data_columns=[dict(name=labels[j] if j < len(labels) else f"col{j}",
-                               tokens=[t.decode("ascii") for t in cols[j]]) for j in range(len(cols))]))
+            forced_columns=[name_of(j) for j in forced_cols],
+            header_values=hv,
+            data_columns=[dict(name=name_of(j), tokens=[t.decode("ascii") for t in col])
+                          for j, col in enumerate(cols)]))
     return dict(tool="tools/artificial_copy.py", format=name, copy=copy_name, seed=seed,
                 number_of_scans=len(kept),
                 file_header_values=(_header_values(lines[:tables[0].start], kind)
@@ -588,7 +607,7 @@ def make_copy(src, out_dir, scans: str | None = None, seed: int = 1) -> tuple[Pa
     kept = choose_scans(tables, scans) if kind == "spec" else tables
     if not any(t.rows for t in kept):
         raise Refuse("the chosen scans hold no data rows")
-    copy, written, out_start = build_copy(lines, kind, tables, kept, random.Random(seed))
+    copy, written = build_copy(lines, kind, tables, kept, random.Random(seed))
 
     with tempfile.TemporaryDirectory(prefix="artificial_copy_") as tmp:    # never the output folder
         probe = Path(tmp) / src.name
@@ -599,7 +618,7 @@ def make_copy(src, out_dir, scans: str | None = None, seed: int = 1) -> tuple[Pa
     if problems:
         raise Refuse("the copy does not parse like the real file; nothing written:\n  "
                      + "\n  ".join(problems))
-    truth = build_truth(name, kind, src.name, seed, lines, tables, kept, written, out_start, copy_snap)
+    truth = build_truth(name, kind, src.name, seed, lines, tables, kept, written)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     target.write_bytes(copy)
