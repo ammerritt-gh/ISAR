@@ -8,6 +8,9 @@ seeded random values of the same textual shape: width, sign, decimals and expone
 so is each column's coarse character (a non-negative integer column stays one; a monotone column stays
 monotone in the same direction with the same equal-neighbour pattern; a constant column stays constant).
 No measured value survives, so the copy is safe to commit; headers are kept as the facility wrote them.
+The one exception is a monotone column whose distinct values fill every value their width allows (a
+point counter 0..9, or 10..99): its draw can only be itself, it is fixed by its length and carries no
+measured value, so those rows are kept and the column is listed in the truth file's `forced_columns`.
 
 Order of work (nothing is written until step 3 passes):
   1. build the copy in memory (SPEC files are trimmed to the chosen scans; a numor is kept whole);
@@ -49,7 +52,7 @@ log = logging.getLogger("artificial_copy")
 FORBIDDEN_DIRS = {"real_data", "test_data"}
 SUPPORTED = {"spec_s30": "spec", "spec_s30_raw": "spec", "ill_in8": "numor"}
 DEFAULT_SCANS = 3
-_ATTEMPTS = 300            # whole-column redraws before giving up on "every value changed"
+_ATTEMPTS = 2000           # redraws before giving up on "every value changed" (a near-full width has few valid draws)
 
 
 class Refuse(Exception):
@@ -114,7 +117,8 @@ def _fmt(sh: Shape, m_min: int, nd_min: int, e: int | None = None) -> bytes:
     `e` sets a new decimal exponent for a scientific token (same digit count and sign style);
     None keeps the exponent as written.
     """
-    digits = str(m_min * 10 ** (sh.nd - nd_min)).zfill(sh.ni + sh.nd)
+    d = sh.nd - nd_min                    # a token with fewer decimals than the lattice drops trailing zeros
+    digits = str(m_min * 10 ** d if d >= 0 else m_min // 10 ** -d).zfill(sh.ni + sh.nd)
     if len(digits) != sh.ni + sh.nd:
         raise Refuse("internal: replacement overflowed its token width")
     tail = sh.esign + sh.exp
@@ -160,8 +164,13 @@ def _draw_free(toks: list[bytes], rng: random.Random, int_like: bool) -> list[by
 
 
 def _draw_monotone(toks: list[bytes], rng: random.Random, int_like: bool,
-                   kind: str) -> list[bytes]:
-    """Replace by distinct-value runs so ordering and the equal-neighbour pattern are preserved."""
+                   kind: str) -> tuple[list[bytes], set[int]]:
+    """Replace by distinct-value runs so ordering and the equal-neighbour pattern are preserved.
+
+    Returns the new tokens and the rows kept as forced: a plain segment whose distinct values already
+    fill every value its width allows (a point counter 0..9, or 10..99) can only be redrawn as itself,
+    carries no measured value, and is kept unchanged.
+    """
     shapes = [parse_token(t) for t in toks]
     vals = [value_of(t) for t in toks]
     runs: list[tuple[int, int]] = []                     # [start, end) of equal neighbours
@@ -183,11 +192,14 @@ def _draw_monotone(toks: list[bytes], rng: random.Random, int_like: bool,
             key = k
         segs[-1].append(r)
     new = [b""] * len(toks)
+    forced: set[int] = set()
     for seg in segs:
         sh0 = shapes[seg[0][0]]
         members = [shapes[j] for a, b in seg for j in range(a, b)]
-        nd_min = min(s.nd for s in members)
         sci = bool(sh0.mark)
+        # Plain tokens: the finest decimals in the segment set the lattice, and a token written with
+        # fewer (SPEC drops trailing zeros: "-5" beside "-4.9") only takes values that fit its own.
+        nd_use = min(s.nd for s in members) if sci else max(s.nd for s in members)
         if sci:
             e_lo, e_hi = min(map(_exp10, members)), max(map(_exp10, members))
             if int_like or any(not s.esign for s in members):
@@ -199,41 +211,71 @@ def _draw_monotone(toks: list[bytes], rng: random.Random, int_like: bool,
         lats = []                                          # (e, lowest M, step, count) per exponent
         for e in range(e_lo, e_hi + 1):
             try:
-                lats.append((e, *_lattice(sh0.ni, nd_min, e if sci else _exp10(sh0), sci, int_like)))
+                lats.append((e, *_lattice(sh0.ni, nd_use, e if sci else _exp10(sh0), sci, int_like)))
             except Refuse:
                 pass
         total = sum(c for *_, c in lats)
         if total < len(seg):
             raise Refuse(f"{len(seg)} distinct values do not fit a width-{sh0.ni} range "
                          f"with {total} possible values")
-        ks = set()                                        # range() cannot hold 10**19 lattice points
-        while len(ks) < len(seg):
-            ks.add(rng.randrange(total))
-        ks = sorted(ks)
-        if sh0.sign == b"-":                              # larger value = smaller magnitude
-            ks.reverse()
-        if kind == "desc":
-            ks.reverse()
-        for (a, b), k in zip(seg, ks):
-            for e, lo, step, c in lats:
-                if k < c:
-                    break
-                k -= c
-            for j in range(a, b):
-                new[j] = _fmt(shapes[j], lo + k * step, nd_min, e if sci else None)
-    return new
+        if len(seg) == total and not sci:                 # saturated: every lattice value is in use
+            lo, step, _ = lats[0][1:]
+            if all(lo <= (m := int(abs(vals[a]).scaleb(nd_use))) < lo + total * step
+                   and (m - lo) % step == 0 for a, _ in seg):
+                for a, b in seg:
+                    new[a:b] = toks[a:b]
+                    forced.update(range(a, b))
+                continue
+        # Runs whose tokens have fewer decimals than the lattice must land on its coarser grid.
+        gs = [10 ** max(0, nd_use - min(shapes[j].nd for j in range(a, b))) for a, b in seg]
+        if (sh0.sign == b"-") != (kind == "desc"):        # magnitudes fall along the column: order gs low to high
+            gs.reverse()
+        for _ in range(_ATTEMPTS):                        # redraw this segment alone until all of it changed
+            ks = set()                                    # range() cannot hold 10**19 lattice points
+            while len(ks) < len(seg):
+                ks.add(rng.randrange(total))
+            ks = sorted(ks)
+            prev = -1
+            for i, g in enumerate(gs):
+                k = max(ks[i], prev + 1)
+                while g > 1 and (lats[0][1] + k * lats[0][2]) % g:
+                    k += 1
+                ks[i] = prev = k
+            if prev >= total:                             # a snapped draw overflowed the top
+                continue
+            if sh0.sign == b"-":                          # larger value = smaller magnitude
+                ks.reverse()
+            if kind == "desc":
+                ks.reverse()
+            cand = {}
+            for (a, b), k in zip(seg, ks):
+                for e, lo, step, c in lats:
+                    if k < c:
+                        break
+                    k -= c
+                for j in range(a, b):
+                    cand[j] = _fmt(shapes[j], lo + k * step, nd_use, e if sci else None)
+            if all(t != toks[j] for j, t in cand.items()):
+                break
+        else:
+            raise Refuse(f"could not change every value of a width-{sh0.ni} segment of {len(seg)} values")
+        for j, t in cand.items():
+            new[j] = t
+    return new, forced
 
 
 def _signs(vals: list[Decimal]) -> list[int]:
     return [(b > a) - (b < a) for a, b in zip(vals, vals[1:])]
 
 
-def verify_column(old: list[bytes], new: list[bytes], label: str = "column") -> None:
-    """Refuse unless `new` keeps `old`'s textual shape and coarse character and changes every value."""
+def verify_column(old: list[bytes], new: list[bytes], label: str = "column",
+                  forced: frozenset | set = frozenset()) -> None:
+    """Refuse unless `new` keeps `old`'s textual shape and coarse character and changes every value
+    (except the `forced` rows, which the draw kept because their width leaves no other choice)."""
     if len(old) != len(new):
         raise Refuse(f"{label}: replacement has {len(new)} values for {len(old)}")
     for i, (a, b) in enumerate(zip(old, new)):
-        if a == b:
+        if a == b and i not in forced:
             raise Refuse(f"{label}: row {i} was not changed")
         if _form(a) != _form(b):
             raise Refuse(f"{label}: row {i} changed shape: {a!r} -> {b!r}")
@@ -244,20 +286,22 @@ def verify_column(old: list[bytes], new: list[bytes], label: str = "column") -> 
         raise Refuse(f"{label}: non-negative integer column no longer integer")
 
 
-def replace_column(toks: list[bytes], rng: random.Random, label: str = "column") -> list[bytes]:
+def replace_column(toks: list[bytes], rng: random.Random,
+                   label: str = "column") -> tuple[list[bytes], set[int]]:
+    """(replacement tokens, rows kept as forced); every other row is changed."""
     if not toks:
-        return []
+        return [], set()
     int_like = _is_int_like(toks)
     kind = _kind([value_of(t) for t in toks])
     for _ in range(_ATTEMPTS):
-        new = (_draw_free(toks, rng, int_like) if kind == "free"
-               else _draw_monotone(toks, rng, int_like, kind))
-        if all(a != b for a, b in zip(toks, new)):
+        new, forced = ((_draw_free(toks, rng, int_like), set()) if kind == "free"
+                       else _draw_monotone(toks, rng, int_like, kind))
+        if all(a != b for i, (a, b) in enumerate(zip(toks, new)) if i not in forced):
             break
     else:
         raise Refuse(f"{label}: could not change every value of a {kind} column")
-    verify_column(toks, new, label)
-    return new
+    verify_column(toks, new, label, forced)
+    return new, forced
 
 
 # ---------------------------------------------------------------------------
@@ -361,12 +405,13 @@ def _skeleton(raw: bytes) -> bytes:
 
 def build_copy(lines: list[bytes], kind: str, tables: list[Table], kept: list[Table],
                rng: random.Random) -> tuple[bytes, dict, dict]:
-    """(copy bytes, {table.start: column tokens as written}, {table.start: line index in the copy}).
+    """(copy bytes, {table.start: (column tokens as written, forced column indexes)},
+    {table.start: line index in the copy}).
 
     Only data-row numbers change; every other byte, line ending included, is copied as it was.
     """
     new_lines = list(lines)
-    written: dict[int, list[list[bytes]]] = {}
+    written: dict[int, tuple[list[list[bytes]], list[int]]] = {}
     for tb in kept:
         rows = []
         for li in tb.rows:
@@ -374,10 +419,14 @@ def build_copy(lines: list[bytes], kind: str, tables: list[Table], kept: list[Ta
             rows.append((li, body, lines[li][len(body):], [m.span() for m in _WORD.finditer(body)]))
         width = max((len(r[3]) for r in rows), default=0)
         cols: list[list[bytes]] = []
+        forced_cols: list[int] = []
         for j in range(width):
             old = [body[sp[j][0]:sp[j][1]] for _, body, _, sp in rows if len(sp) > j]
-            cols.append(replace_column(old, rng, f"scan {tb.number if tb.number is not None else tb.start}"
-                                                 f" column {j}"))
+            new, forced = replace_column(old, rng, f"scan {tb.number if tb.number is not None else tb.start}"
+                                                   f" column {j}")
+            cols.append(new)
+            if forced:
+                forced_cols.append(j)
         pos = [0] * width
         for li, body, eol, spans in rows:
             ba = bytearray(body)
@@ -387,7 +436,7 @@ def build_copy(lines: list[bytes], kind: str, tables: list[Table], kept: list[Ta
             if _skeleton(bytes(ba)) != _skeleton(body):
                 raise Refuse(f"internal: a non-number byte changed on line {li + 1}")
             new_lines[li] = bytes(ba) + eol
-        written[tb.start] = cols
+        written[tb.start] = (cols, forced_cols)
     if kind == "numor":                                   # a numor is kept whole
         return b"".join(new_lines), written, {t.start: t.start for t in kept}
     out = new_lines[:tables[0].start]                     # the file-level header
@@ -491,13 +540,14 @@ def build_truth(name: str, kind: str, copy_name: str, seed: int, lines: list[byt
         idx = copy_snap["starts"].index(key) if key in copy_snap["starts"] else None
         blk = copy_snap["blocks"][idx] if idx is not None else None
         labels = blk["column_labels"] if blk else []
-        cols = written[tb.start]
+        cols, forced_cols = written[tb.start]
         scans.append(dict(
             scan_number=tb.number if kind == "spec" else int(
                 (blk or {}).get("keywords", {}).get("FILE_", 0) or 0),
             parsed=blk is not None,
             points=blk["rows"] if blk else 0,
             column_names=list(labels),
+            forced_columns=[labels[j] if j < len(labels) else f"col{j}" for j in forced_cols],
             header_values=_header_values(lines[tb.start:tb.end], kind),
             data_columns=[dict(name=labels[j] if j < len(labels) else f"col{j}",
                                tokens=[t.decode("ascii") for t in cols[j]]) for j in range(len(cols))]))

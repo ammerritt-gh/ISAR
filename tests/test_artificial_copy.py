@@ -95,6 +95,11 @@ def _data_lines(copy: Path, kind: str):
     return out
 
 
+def _forced_indexes(scan: dict, labels: list) -> set:
+    """Indexes of the columns this truth-file scan lists as forced (kept unchanged)."""
+    return {j for j, lab in enumerate(labels) if lab in scan["forced_columns"]}
+
+
 def test_import_root_is_this_checkout():
     assert Path(isar.__file__).resolve().parents[1] == REPO
     assert Path(ac.__file__).resolve().parents[1] == REPO
@@ -115,9 +120,11 @@ def test_only_data_numbers_change_and_all_of_them(kind, sources, tmp_path):
     assert len(old_blocks) == len(new_blocks) == truth["number_of_scans"]
     # the changed lines are exactly the data rows (no header line changed) ...
     assert len(changed) == sum(len(blk.data) for blk in old_blocks)
-    for o, n in zip(old_blocks, new_blocks):
+    for o, n, scan in zip(old_blocks, new_blocks, truth["scans"]):
         assert o.data.shape == n.data.shape and o.column_labels == n.column_labels
-        assert np.all(o.data != n.data)                   # ... and every number in them
+        forced = _forced_indexes(scan, o.column_labels)   # only columns fixed by their length stay
+        for j in range(o.data.shape[1]):                  # ... and every number in the others
+            assert j in forced or np.all(o.data[:, j] != n.data[:, j])
         for j in range(o.data.shape[1]):                  # coarse character of each column kept
             d = np.diff(o.data[:, j])
             if np.all(d >= 0) or np.all(d <= 0):          # monotone or constant: same pattern
@@ -211,11 +218,59 @@ def test_column_replacement_keeps_shape_and_character():
         [b"50", b"50", b"50"],                                           # constant integer
         [b"1.5e+02", b"0.0e+00", b"3.5e+01"],                            # free scientific
         [b"-1.0e+01", b"0.0e+00", b"2.5e-01", b"4.0e+00"],               # ascending through zero
+        # a scanned axis where SPEC dropped the trailing zero of the first value: width 1, mixed decimals
+        [b"-5"] + [b"-4.%d" % i for i in range(9, 0, -1)],
+        [b"0", b"0.5", b"1", b"1.5", b"2", b"2.5", b"3", b"3.5", b"4", b"4.5"],
     ]
     for old in cols:
-        new = ac.replace_column(old, rng)
+        new, forced = ac.replace_column(old, rng)
+        assert forced == set()
         assert all(a != b and len(a) == len(b) for a, b in zip(old, new))
         ac.verify_column(old, new)
+
+
+def test_a_counter_that_fills_its_width_is_forced_not_refused():
+    rng = random.Random(5)
+    tokens = lambda lo, hi: [str(i).encode() for i in range(lo, hi + 1)]
+    old = tokens(0, 9)                                    # every one-digit value: fixed by its length
+    new, forced = ac.replace_column(old, rng)
+    assert new == old and forced == set(range(10))
+    old = tokens(1, 99)                                   # one-digit part is replaceable, 10..99 is not
+    new, forced = ac.replace_column(old, rng)
+    assert forced == set(range(9, 99)) and new[9:] == old[9:]
+    assert all(a != b for a, b in zip(old[:9], new[:9]))
+    for hi in (40, 98):                                   # not saturated (98: one value short of full)
+        new, forced = ac.replace_column(tokens(1, hi), rng)
+        assert forced == set() and all(a != b for a, b in zip(tokens(1, hi), new))
+
+
+def _counter_numor(src: Path, first: int, last: int) -> bytes:
+    """The generated numor with its data rows rebuilt as a `first..last` point counter."""
+    lines = src.read_bytes().decode().splitlines()
+    i = lines.index("DATA_:") + 2
+    rows = [f"{p}  2.1500  0.0500  0.0000  {-10 + 0.25 * k:.6f}  100000  50  60.0000  {5 + k % 7}"
+            f"  291.000  290.000" for k, p in enumerate(range(first, last + 1))]
+    return ("\n".join(lines[:i] + rows) + "\n").encode()
+
+
+@pytest.mark.parametrize("first, last, forced_rows", [
+    (0, 9, set(range(10))),                               # a counter that is one whole width
+    (1, 99, set(range(9, 99))),                           # the two-digit width is full
+    (0, 99, set(range(100))),
+    (1, 120, set(range(9, 99))),                          # the three-digit part is replaceable
+])
+def test_a_point_counter_copies_and_is_reported_forced(first, last, forced_rows, sources, tmp_path):
+    src = tmp_path / "counter" / "055001"
+    src.parent.mkdir()
+    src.write_bytes(_counter_numor(sources["in8"], first, last))
+    copy, truth = _make(src, tmp_path / "out")
+    (scan,) = truth["scans"]
+    assert scan["forced_columns"] == ["PNT"]
+    o, n = numor_base.read_numor(src)[0], numor_base.read_numor(copy)[0]
+    assert o.column_labels == n.column_labels and len(o.data) == last - first + 1
+    changed = o.data != n.data
+    assert set(np.flatnonzero(~changed[:, 0])) == forced_rows   # the counter keeps only the forced rows
+    assert changed[:, 1:].all()                           # every other data number changed
 
 
 @pytest.mark.parametrize("old, bad", [
