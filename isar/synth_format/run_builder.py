@@ -12,9 +12,11 @@ the constant-Q-energy case.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
+from isar.analyze.lineshapes import Voigt
 from isar.synth import config, generate, noise
 
 # Nine analyzer H values spanning a constant-Q scan's analyzer fan (avoids the 2.0 zone center,
@@ -51,6 +53,7 @@ class RunScan:
     miniscan_monitor: np.ndarray | None = None    # [nP, n_mini]
     miniscan_time: np.ndarray | None = None        # [nP, n_mini]
     scanned_motor: str | None = None               # e.g. "micro_z" for an ascan; None → fscan/HerixE
+    slit: int | None = None                        # raw S30 only: written to #P17[4] when set
 
 
 @dataclass
@@ -242,3 +245,128 @@ def _build_raw_ascan(cfg, q_list, *, scan_number, motor, command, scan_type, see
         energy=positions, central_q=list(q_list[4]), detectors=detectors,
         monitor=np.full(nP, float(monitor_level)), time=np.full(nP, float(count_time)),
         temperature_setpoint=290.0, temperature_sensor=291.0, scanned_motor=motor)
+
+
+# ---------------------------------------------------------------------------
+# S30 calibration set: measurement run + companion raw SPEC of elastic scans + gold table
+# ---------------------------------------------------------------------------
+# slit -> (gauss FWHM, lorentz FWHM) injected on that slit's elastic lines. Inside `fit_elastic`'s
+# bounds (gauss 0.5..2.5, lorentz 0..1), and different enough that the by-slit path is visible.
+_CAL_SLIT_RESOLUTION = {95: (1.10, 0.30), 60: (0.80, 0.25)}
+
+
+@dataclass
+class InjectedElastic:
+    scan_number: int
+    slit: int
+    zero: float          # the injected elastic-line centre (meV)
+    gauss_fwhm: float
+    lorentz_fwhm: float
+
+
+@dataclass
+class S30CalibrationSet:
+    measurement_path: Path           # supplementary-format run (parsed by spec_s30)
+    companion_path: Path             # raw-format SPEC: herixE elastic ascans + the measurement fscans
+    gold_path: Path                  # CSV for isar.analyze.gold.load_gold
+    elastic: list[InjectedElastic]   # what was injected, one per elastic scan
+    measurement_scans: list[int]     # scan numbers in the measurement file
+    held_scans: list[int]            # measurement scans outside the elastic span (no zero by design)
+    measurement_slits: dict          # measurement scan number -> slit written to the companion
+    n_gold_matched: int              # gold rows whose scan is in the measurement file
+
+
+def _cal_elastic_scan(cfg, scan_number, slit, zero, rng, *, area=3000.0, bg=2.0) -> RunScan:
+    """One herixE ascan across the elastic line at `zero`; slit goes to #P17. Gauss/Lorentz widths
+    follow the slit. All nine analyzers carry an independent Poisson draw of the same line."""
+    gfw, lfw = _CAL_SLIT_RESOLUTION[slit]
+    x = np.round(np.arange(-3.0, 3.0 + 1e-9, 0.1), 6)
+    mean = Voigt(x, area, gfw, lfw, zero) + bg
+    q = [2.0, 0.0, 0.0]
+    nP = len(x)
+    return RunScan(
+        scan_number=scan_number, scan_type="calibration", command=f"ascan  herixE -3 3  {nP - 1} 1",
+        energy=x, central_q=list(q),
+        detectors=[RunDetector(detector_id=f"ana{i + 1}", q=list(q),
+                               counts=rng.poisson(mean).astype("float64")) for i in range(9)],
+        monitor=np.full(nP, 3.0e5), time=np.full(nP, 2.0),
+        temperature_setpoint=290.0, temperature_sensor=291.0, slit=slit)
+
+
+def build_s30_calibration_set(
+    out_dir,
+    *,
+    seed: int = 4000,
+    elastic_scans: tuple = (10, 20, 30, 40, 50, 60),
+    elastic_slits: tuple = (95, 95, 60, 60, 95, 95),
+    measurement_scans: tuple = (2, 15, 25, 35, 45, 55, 70),
+    measurement_slits: tuple = (95, 95, 95, 60, 60, 95, 95),
+    skip_gold: tuple = (45,),
+    cfg: config.RunConfig | None = None,
+) -> S30CalibrationSet:
+    """Write an S30 calibration set into `out_dir` (made if missing); fully determined by `seed`.
+
+    Elastic scans span scan numbers 10..60, so measurement scans 2 and 70 fall outside the span and
+    must be held (no zero); the others interpolate. The injected zeros drift by scan. The companion
+    also carries a stub fscan block per measurement scan, because that is where
+    `calibrations._slit_map_from_spec` reads each measurement scan's slit. `skip_gold` measurement
+    scans get no gold row.
+    """
+    from isar.parsers import spec_s30, spec_s30_raw
+
+    cfg = cfg or config.default_run_config()
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(seed)
+
+    zeros = rng.uniform(-0.4, 0.4, len(elastic_scans))
+    elastic = [InjectedElastic(sn, sl, round(float(z), 4), *_CAL_SLIT_RESOLUTION[sl])
+               for sn, sl, z in zip(elastic_scans, elastic_slits, zeros)]
+    companion_scans = [_cal_elastic_scan(cfg, e.scan_number, e.slit, e.zero, rng) for e in elastic]
+
+    h_fan = _DEFAULT_H_FAN
+    q_list = [[float(h), _DEFAULT_QK, _DEFAULT_QL] for h in h_fan]
+    meas: list[RunScan] = []
+    for k, (sn, slit) in enumerate(zip(measurement_scans, measurement_slits)):
+        gts = [generate.make_ground_truth(cfg, H=h, target_peak_counts=100.0,
+                                          seed=seed + 100 * (k + 1) + i)
+               for i, h in enumerate(h_fan)]
+        sc = build_scan_from_truths(gts, q_list, scan_number=sn)
+        meas.append(sc)
+        nP = len(sc.energy)
+        stub = RunScan(    # same scan as an n_mini=1 raw fscan; only its #P17 slit matters
+            scan_number=sn, scan_type="measurement", command=sc.command, energy=sc.energy,
+            central_q=sc.central_q,
+            detectors=[RunDetector(d.detector_id, d.q, d.counts, d.counts[:, None])
+                       for d in sc.detectors],
+            monitor=sc.monitor, time=sc.time, temperature_setpoint=sc.temperature_setpoint,
+            temperature_sensor=sc.temperature_sensor,
+            miniscan_monitor=np.ones((nP, 1)), miniscan_time=np.ones((nP, 1)), slit=slit)
+        companion_scans.append(stub)
+    companion_scans.sort(key=lambda s: s.scan_number)
+
+    exp = "SYNCAL"
+    measurement_path = out_dir / f"{exp}.spec_supplementary.dat"
+    companion_path = out_dir / f"{exp}.spec"
+    gold_path = out_dir / f"{exp}_fit_results.csv"
+    measurement_path.write_bytes(
+        spec_s30.emit_file(Run(experiment_id=exp, scans=meas), spec_s30.card_template()))
+    companion_path.write_bytes(
+        spec_s30_raw.emit_file(Run(experiment_id=exp, scans=companion_scans),
+                               spec_s30_raw.card_template()))
+
+    slit_of = dict(zip(measurement_scans, measurement_slits))
+    lo, hi = min(elastic_scans), max(elastic_scans)
+    gold_scans = [sn for sn in measurement_scans if sn not in skip_gold]
+    lines = ["Scan,Sample,T(K),K(rlu),phonon_energy,phonon_energy_err,damping,damping_err,"
+             "center,Chi2,Quality,Slit(mm),Analyzer,Label"]
+    for sn in gold_scans:
+        lines.append(f"{sn},1,290,{_DEFAULT_QK},{rng.uniform(4, 8):.3f},0.1,0.5,0.05,0,1.0,OK,"
+                     f"{slit_of[sn]},ana7,s{sn}")
+    gold_path.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8"))
+
+    return S30CalibrationSet(
+        measurement_path=measurement_path, companion_path=companion_path, gold_path=gold_path,
+        elastic=elastic, measurement_scans=list(measurement_scans),
+        held_scans=[sn for sn in measurement_scans if not lo <= sn <= hi],
+        measurement_slits=slit_of, n_gold_matched=len(gold_scans))

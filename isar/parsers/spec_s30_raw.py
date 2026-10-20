@@ -294,6 +294,20 @@ def _raw_row(abscissa, monitor, time, counts9, temperature) -> list[float]:
     return row
 
 
+def _pblock(slit) -> str:
+    """The constant #P template, with the Ana7 slit (#P17 index 4, what `bragg._slit` reads) set
+    when the scan carries one; `None` keeps the template as it is."""
+    from isar.parsers.spec_s30 import _S30_PBLOCK
+    if slit is None:
+        return _S30_PBLOCK
+    lines = _S30_PBLOCK.split("\n")
+    toks = lines[17].split(" ")           # ["#P17", v0, v1, ...]; value index 4 sits at toks[5]
+    assert toks[0] == "#P17", toks[0]
+    toks[5] = str(int(slit))
+    lines[17] = " ".join(toks)
+    return "\n".join(lines)
+
+
 def emit_file(run, card: Card) -> bytes:
     """Serialize a raw run to a raw S30 `.spec` (the inverse of `parse_file`).
 
@@ -319,7 +333,7 @@ def emit_file(run, card: Card) -> bytes:
         out.append(_S30_GEOM_BLOCK)
         qh, qk, ql = sc.central_q
         out.append(f"#Q {_num(qh)} {_num(qk)} {_num(ql)}")
-        out.append(_S30_PBLOCK)
+        out.append(_pblock(getattr(sc, "slit", None)))
         out.append(f"#C synthetic scan {sc.scan_number}")
         out.append(_S30_V_EXTRA[0]); out.append(_S30_V_EXTRA[1])
         out.append(f"#V2  {_num(sc.temperature_sensor)}  {_num(sc.temperature_setpoint)}")
