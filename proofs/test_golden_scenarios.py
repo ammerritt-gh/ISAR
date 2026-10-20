@@ -2,16 +2,18 @@
 
 This file is a GENERIC runner. Everything scenario-specific — the scan, the candidate
 specifications, the seeds, the declared priors, and every expected answer — lives in the
-gitignored local ``test_data/golden/<scenario>/scenario.json``. The repository deliberately
+gitignored local ``real_data/golden/<scenario>/scenario.json``. The repository deliberately
 carries no expectations: a golden gate is a validation instrument, not a tuning instrument,
 and nothing tracked here can leak an answer into development (S12's no-peeking rule).
 
 Sealing is mechanical, twice over: the tests SKIP unless ``ISAR_GOLDEN=1`` is set (so no
-ordinary lane, parallel or serial, ever executes them), and they SKIP when the local bundle
-is absent (worktrees without ``test_data/`` stay green). Set the variable only for an
-owner-named gate run:
+ordinary lane, parallel or serial, ever executes them), and, once the switch is set, they FAIL
+naming the folder when no local bundle is found (a named run that finds nothing must not read as
+a pass). Set the variable only for an owner-named gate run:
 
-    ISAR_GOLDEN=1 python -m pytest tests/real_data/test_golden_scenarios.py -m golden -s
+    ISAR_GOLDEN=1 python -m pytest proofs/test_golden_scenarios.py -m golden -s
+
+or double-click ``run-isar-proofs.bat golden``.
 """
 import json
 import os
@@ -30,7 +32,7 @@ from isar.schema.steering import ParamConstraints
 
 pytestmark = pytest.mark.golden
 
-GOLDEN_ROOT = Path(__file__).resolve().parents[2] / "test_data" / "golden"
+GOLDEN_ROOT = Path(__file__).resolve().parents[1] / "real_data" / "golden"
 
 if not os.environ.get("ISAR_GOLDEN"):
     pytest.skip("sealed golden gates run only when named (set ISAR_GOLDEN=1) — S12",
@@ -38,7 +40,8 @@ if not os.environ.get("ISAR_GOLDEN"):
 
 SCENARIOS = sorted(p for p in GOLDEN_ROOT.glob("*/scenario.json")) if GOLDEN_ROOT.is_dir() else []
 if not SCENARIOS:
-    pytest.skip("no local golden bundles under test_data/golden/", allow_module_level=True)
+    pytest.fail(f"ISAR_GOLDEN is set but no golden bundles were found under {GOLDEN_ROOT}",
+                pytrace=False)
 
 
 def _load_counts(path: Path):
