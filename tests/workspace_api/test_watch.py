@@ -43,6 +43,9 @@ def test_change_to_results_fires_with_results_name(make_ws):
 
 
 def test_two_rapid_changes_coalesce(make_ws):
+    # Wider than DEBOUNCE: under parallel load the poll thread can see the second write after a
+    # 150 ms window has closed, which splits the burst into two callbacks.
+    coalesce_ms = 400
     root = make_ws(rows=[{"scan": 1, "detector": "det"}])
     ws = Workspace.open(root)
     seen = []
@@ -52,7 +55,7 @@ def test_two_rapid_changes_coalesce(make_ws):
         seen.append(set(changed))
         fired.set()
 
-    with ws.watch(cb, debounce_ms=DEBOUNCE, poll_interval_s=POLL):
+    with ws.watch(cb, debounce_ms=coalesce_ms, poll_interval_s=POLL):
         _append(root / "report" / "results.csv", "2,det\n")
         # Sleep > poll_interval but < debounce so the backend delivers the two changes as TWO
         # separate add() calls that the debouncer must merge (exercises the timer re-arm path),
