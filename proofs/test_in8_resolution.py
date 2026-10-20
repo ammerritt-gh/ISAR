@@ -1,0 +1,27 @@
+"""PROOF (real data, run on purpose): Cooper-Nathans energy resolution (isar.synth.resolution) on real IN8 numors.
+
+The Phase-1 check (docs/in8_phase1_check.py) established that the elastic energy FWHM for
+this DIR-397 configuration is ~0.58 meV, computed from the numor header by a port of ResCal
+`rc_cnmat` (Cooper & Nathans 1967). Step 8 promotes that code to isar/synth/resolution; this
+test pins the promoted function to the Phase-1 value and exercises the no-triangle fallback.
+"""
+from isar.parsers import ill_in8
+from isar.synth import resolution
+
+FOLDER = "ILL IN8"
+
+
+def _record(real_file, numor):
+    card = ill_in8.card_template()
+    return ill_in8.parse_file(real_file(FOLDER, numor), card)[0]
+
+
+def test_cn_energy_fwhm_recovers_elastic_width_on_055182(real_file):
+    fwhm = resolution.cn_energy_fwhm(_record(real_file, "055182"), w=0.0)
+    assert 0.45 < fwhm < 0.75  # Phase-1: ~0.58 meV at the elastic line
+
+
+def test_cn_energy_fwhm_falls_back_when_triangle_cannot_close(real_file):
+    rec = _record(real_file, "055182")
+    rec.raw_header["params"]["KFIX"] = 0.001  # too small to close the triangle at this |Q|
+    assert resolution.cn_energy_fwhm(rec, w=0.0, fallback=1.23) == 1.23
