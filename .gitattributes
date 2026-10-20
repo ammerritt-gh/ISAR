@@ -11,3 +11,5 @@ docs/campaigns/2026-08-05_O44_ZONE_CENTRE_SOURCE_CLOSURE/** -text
 # The Slice-8 bundles deliberately keep no `-text` row: their frozen run-manifests mix
 # CRLF and LF hashes, so verification is EOL-tolerant (S11) and the manifests are never re-frozen.
 tests/gui/fixtures/** text eol=lf
+# Committed copies of facility files keep the facility line endings byte for byte.
+artificial_data/** -text
