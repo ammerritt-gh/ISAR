@@ -230,6 +230,43 @@ review's question 2 and stays open. Also from the same campaign: a plan is logge
 acted on; the anchor-escalation check runs first, so a plan set aside for an escalation no longer
 draws a phantom "planning a 58-point scan" line in the feed.
 
+**2026-09-08 — a point whose identity the tracker cannot decide locally is still measured.** At
+h = 2.05 on the acoustic reference path the full-exposure first look resolved the acoustic mode at
+0.447 meV to ~1e-3 meV, and the session's identity tracker scored that lone point 0.928 acoustic,
+0.248 nats above the 0.2 nats stop. That entropy is a floor set by the class-prior widths (the
+optic preset at 10 ± 5 meV, scaled to the 20 meV instrument ceiling) and no re-scan at that q can
+lower it — only a neighbour can, through the tracker's transition chain (one confirmed point at
+h = 2.1 takes both to 0.04 nats). The tracker rightly withdrew the scalar delivery
+(`_clear_tracked_selection`), but that blanked every column the drive's escalation predicates and
+diagnostic chain read, so the master never left the fast tier, the planner priced the peak as
+"detected, precision not established" (σ = 10 meV), and the campaign bought the same scan fifteen
+times. Three seams now read the mode's own chain in the `branch_candidates` table when the row's
+scalar delivery is withdrawn: `_q_needs_full_errors` / `_unfolded_master` (`_row_has_fit`,
+`_row_hesse_untrusted`) so the fast → full promotion and the belief-anchor escalation fire;
+`_diagnostic_interval` falls back to the SOLE candidate's bootstrap / profile / HESSE interval;
+and `_planner_candidates` prices a lone mode on a settled model (`model_settled`: the session's
+`model_robust`, told apart from the selection-gated `model_robust`) at that diagnostic width. The
+PR #37 P1 ruling stands unchanged: a non-settled model, a fork, an inconsistent pool, or a rival
+mode present keeps "precision not established", and the prize still needs the identity deficit
+met and the session's own selection. After the change the path leaves h = 2.05 after one
+belief-anchor escalation (`test_workspaces/demo-acoustic-2`).
+
+**2026-09-08 — a fitted mode's HESSE trust is its own.** The selected-mode rule above copied the
+selected mode's HESSE *interval* onto the row but left the row's `hesse_trusted` as the fit's:
+the primary mode's verdict, whose Γ-at-bound test rails on ANY mode. On the optic reference path
+at h = 2.1 the first look found the optic at 6.3 meV (Γ = 0.1, σ = 0.02 meV, 40σ) beside a
+near-elastic second mode with Γ at the floor; the tracker selected the optic, its own interval
+was on the row, and the rival's distrust withheld certification for eleven scans while full-tier
+refits bootstrapped the primary (the rival) and the optic's own chain stayed HESSE-only. Every
+mode now carries `hesse_trusted` (`scan_delivery._mode_hesse_trusted`: the fit's covariance and
+counts gates, shared, plus the mode's own Γ off both bounds and σ finite), `_mode_candidates`
+carries it into the table and `_select_mode` copies the selected mode's onto the row. The drive's
+`_row_hesse_untrusted` reads the per-mode flag first. After the change the point certified on its
+third scan (the first two fits' covariance was not accurate, which is the shared gate doing its
+job) instead of its twelfth (`test_workspaces/demo-optic-2`). Still open: the full tier's
+bootstrap and profile belong to the primary mode only, so a selected secondary mode certifies on
+its trusted HESSE or not at all.
+
 **2026-09-03 — the session's tracker reads the campaign's belief.** The session's identity
 tracker (`branch_tracking.track_path`) located each branch at each path point from the class prior
 alone — zone-centre energy plus slope × distance, sigma from the slope prior — which is flat away

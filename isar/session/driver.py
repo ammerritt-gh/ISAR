@@ -741,8 +741,17 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
             raise ValueError(f"certification member drift for {master_id}")
         if digest != unit.get("spectrum_digest"):
             raise ValueError(f"certification spectrum drift for {master_id}")
-        if int(unit.get("group_index", -1)) != group_index:
-            raise ValueError(f"certification group-index drift for {master_id}")
+        # The unit's ``group_index`` is the master's LEDGER identity (its persisted synthetic scan
+        # number minus the base), not its position in this run's sorted collation. The two agree
+        # only when q points were first measured in key order: a carried master keeps the number
+        # it was born with while a later, lower-keyed master shifts every sorted position after it
+        # (the acoustic path measured h = 2.6 before 2.55 and h = 2.9 before 2.7, 2026-09-08, and
+        # the final certification died on "group-index drift" after the planner had met the goal).
+        # Identity is already pinned above by master id, ordered members and spectrum digest; the
+        # certified entry is written under the ledger number so it replaces the same master.
+        ledger_index = int(unit.get("group_index", -1))
+        if ledger_index < 0:
+            raise ValueError(f"certification unit carries no ledger group index for {master_id}")
         spectrum_ref = str(unit.get("spectrum_ref") or "")
         spectrum_path = (workspace.root / spectrum_ref).resolve()
         root = workspace.root.resolve()
@@ -766,7 +775,7 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
             raise ValueError(f"certification fit fingerprint drift for {master_id}")
         chash = canonical_hash(members)
         prepared.append({
-            "unit": unit, "group": group, "merged": merged, "group_index": group_index,
+            "unit": unit, "group": group, "merged": merged, "group_index": ledger_index,
             "member_rec": member_rec, "member_det": member_det, "content_hash": chash,
             "spectrum_digest": digest, "fit_fingerprint": expected_fingerprint,
         })

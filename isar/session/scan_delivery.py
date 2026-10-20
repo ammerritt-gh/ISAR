@@ -132,6 +132,29 @@ def _in_window_counts(ctx) -> float:
         return 0.0
 
 
+def _mode_hesse_trusted(mode: dict, *, covariance_ok: bool, counts_ok: bool) -> bool:
+    """Whether ONE fitted mode's delta-method HESSE σ(ω₀) can be trusted.
+
+    The fit-level ``hesse_trusted`` (:func:`_hesse_interval_and_trust`) is the primary mode's
+    verdict, and its Γ-at-bound test rails on ANY mode. That is right for the primary and wrong
+    for every other mode: on the optic reference path at h = 2.1 the fit found the optic at
+    6.3 meV (Γ = 0.1, σ = 0.02 meV, 40σ) beside a near-elastic second mode whose Γ sat at the
+    floor, and the target — selected by the tracker, certified on its own HESSE chain — inherited
+    the rival's distrust for eleven scans (2026-09-08). A mode's trust is its own: the fit's
+    covariance and counts (shared), its own Γ off both bounds, its own σ finite and positive.
+    """
+    from isar.analyze.phonon import _gamma_at_bound
+
+    sig = mode.get("omega0_err")
+    gamma = mode.get("gamma")
+    try:
+        sig_ok = sig is not None and np.isfinite(float(sig)) and float(sig) > 0.0
+        gamma_ok = gamma is not None and np.isfinite(float(gamma)) and not _gamma_at_bound([gamma])
+    except (TypeError, ValueError):
+        return False
+    return bool(covariance_ok and counts_ok and sig_ok and gamma_ok)
+
+
 def _hesse_interval_and_trust(best, ctx) -> tuple:
     """(interval, trusted) for the fast tier.
 
@@ -2005,6 +2028,14 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
 
     n_modes = int(best.n_modes) if best is not None else 1
     modes = list(best.modes) if (best is not None and best.modes) else None
+    if modes:
+        # Every mode carries its own HESSE trust (see _mode_hesse_trusted); the tracker copies the
+        # SELECTED mode's onto the row, so a target certifies on its own chain, never a rival's.
+        shared_cov = bool(getattr(best, "covariance_ok", False))
+        shared_counts = _in_window_counts(ctx) >= _HESSE_MIN_COUNTS
+        modes = [{**dict(m), "hesse_trusted": _mode_hesse_trusted(
+                      dict(m), covariance_ok=shared_cov, counts_ok=shared_counts)}
+                 if isinstance(m, dict) else m for m in modes]
     # GUI Phase 0 (additive, no fitting/selection logic touched): the delivered fit's linear
     # amplitudes and the model-selection candidate table. Built from the FINAL selection (``sel``)
     # and the delivered ``best`` — so an escalated re-fit (its own fit_one call) carries its own.

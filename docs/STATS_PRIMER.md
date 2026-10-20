@@ -342,7 +342,11 @@ looks acceptable.
 This is why ISAR's trust signals are per-scan agreement checks, not ensemble statistics:
 `hesse_trusted` (does the HESSE band match the bootstrap on *this* scan) and
 `interval_reliable` (did *this* fit have an interior minimum). When the rungs agree, the cheap
-number was trustworthy; when they diverge, the row says so.
+number was trustworthy; when they diverge, the row says so. Since 2026-09-08 the HESSE trust is
+also *per mode*: the shared gates (covariance accurate, enough counts) apply to every mode, the
+Γ-at-bound test to each mode's own Γ, so a rival mode railed at the floor no longer distrusts a
+well-fitted target beside it (`scan_delivery._mode_hesse_trusted`; the fit-level flag remains the
+primary mode's).
 
 Verify (fast tier, ~2 min; ordering and the skewed-cell blow-up reproduce, with N = 40 noise):
 

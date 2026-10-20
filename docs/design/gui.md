@@ -530,7 +530,13 @@ a persistent legend like `plane (H, 1, 0) × E — integrating |L| < 0.02, |K−
   through its fit row, so a withheld or failed master fit still shows its data. Per-scan
   columns draw only at a q with no persisted master (separate collation, or a workspace
   predating the pooled-spectrum artifact); before this rule the member columns of one q stacked
-  at the same x and the most recent scan silently covered the rest. The same frame governs the
+  at the same x and the most recent scan silently covered the rest. **Data first, fits as they
+  land** (2026-09-08): the plane's and the waterfall's population is `projection.population(ws)`
+  — every fitted result plus every ledger scan still at status `ingested` (counts on disk, Q and
+  T stamped by the drive's early registration before its fit runs), the latter as a data-only view
+  with no ω̂ glyph. Before this both views read only `ws.results`, so the first scan of a campaign
+  was invisible for the whole of its fit and the feed said "scan landed" over an empty plot. The
+  same frame governs the
   waterfall trace and the inspector's pooled data: the master fit models ΣN_i as
   (ΣM_i / reference) × f(E_i) on the member-union grid, so the persisted curve f(E) is the
   expected count *per reference monitor*, and raw ΣN drawn against it is off by the local

@@ -141,6 +141,14 @@ is a fully custom Tier-1 hypothesis.
 - **Search bands.** The declared energy domain is a hard bound: the belief predictive is truncated
   to it, and no window is generated outside it. Windows themselves come from the belief moments and
   from each surviving lump of the reweighted scenario set — never from a widening schedule.
+- **Mode growth is permitted, never forced** (owner rulings 2026-08-09, recorded 2026-09-11).
+  Declaring an excitation lets the fitter grow a mode; it never obliges one. Three rails are
+  legitimate outcomes, not artifacts: an amplitude that goes to zero drops the mode; an `Ω_d` at the
+  window edge is a real fit; a `Γ` that goes to zero is admissible only under a prior with support
+  at zero. Seeding a new mode where the residual sits is endorsed; near-degenerate modes are
+  attempted honestly rather than refused; stopping is judged against a mode's neighbours, not in
+  isolation; and the marginal likelihood enforces Occam by itself — an extra mode pays an evidence
+  penalty the data must overcome, so no hard mode-count cap is needed.
 
 ## When you're wrong (this is expected)
 

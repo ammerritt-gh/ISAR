@@ -942,3 +942,48 @@ def test_anchored_beliefs_decide_identity_where_the_class_prior_cannot():
     p_believed = row["candidates"][0]["probabilities"]["acoustic"]
     assert p_believed > max(p_bare, 0.85), (p_bare, p_believed)
     assert row["acoustic_candidate_index"] == 0 and row["optic_candidate_index"] == 1
+
+
+def test_the_selected_mode_certifies_on_its_own_hesse_trust():
+    """h = 2.1 on the optic reference path (2026-09-08): the fit-level ``hesse_trusted`` is the
+    primary mode's and railed on a near-elastic rival's Γ at bound, so the tracker-selected optic
+    at 6.3 meV — 40σ, its own σ = 0.02 meV — inherited the rival's distrust for eleven scans. The
+    selected mode's own trust rides the candidate table onto the row; a mode without one (a fit
+    predating the field) leaves the row's flag alone."""
+    outcome = {
+        "detector_id": "det0", "q": [2.1, 0.0, 0.0], "T": 200.0,
+        "omega0": 0.6, "omega0_err": 0.17, "gamma": 0.03, "interval": [0.55, 0.69, 0.90],
+        "hesse_interval": [0.43, 0.77], "hesse_trusted": False, "interval_reliable": False,
+        "pooled": True, "n_members": 6, "fit_kind": "unconstrained", "best_label": "stokes2+bg",
+        "verdict": "resolved", "modality": "fold", "modes": [
+            {"omega0": 0.6, "omega0_err": 0.17, "gamma": 0.03, "hesse_trusted": False},
+            {"omega0": 6.3, "omega0_err": 0.027, "gamma": 0.1, "hesse_trusted": True},
+        ],
+    }
+    candidates = _mode_candidates("master:q", "det0", outcome)
+    assert [c["hesse_trusted"] for c in candidates] == [False, True]
+    outcome["branch_candidates"] = candidates
+    candidates[1]["probabilities"] = {"optic": 0.999, "acoustic": 0.0, "new": 0.001}
+    _select_mode(outcome, candidates[1], 1, {"track_state": "confirmed"}, revision=2)
+    assert outcome["omega0"] == 6.3 and outcome["hesse_trusted"] is True
+    assert outcome["hesse_interval"] == [6.273, 6.327]
+
+    legacy = dict(outcome, hesse_trusted=False, branch_candidates=None,
+                  modes=[{"omega0": 0.6, "omega0_err": 0.17, "gamma": 0.03},
+                         {"omega0": 6.3, "omega0_err": 0.027, "gamma": 0.1}])
+    legacy_candidates = _mode_candidates("master:q", "det0", legacy)
+    assert [c["hesse_trusted"] for c in legacy_candidates] == [None, None]
+    _select_mode(legacy, legacy_candidates[1], 1, {"track_state": "confirmed"}, revision=2)
+    assert legacy["hesse_trusted"] is False
+
+
+def test_mode_hesse_trust_is_the_modes_own():
+    from isar.session.scan_delivery import _mode_hesse_trusted
+
+    good = {"omega0": 6.3, "omega0_err": 0.027, "gamma": 0.1}
+    assert _mode_hesse_trusted(good, covariance_ok=True, counts_ok=True) is True
+    assert _mode_hesse_trusted(good, covariance_ok=False, counts_ok=True) is False
+    assert _mode_hesse_trusted(good, covariance_ok=True, counts_ok=False) is False
+    assert _mode_hesse_trusted({**good, "gamma": 1e-3}, covariance_ok=True, counts_ok=True) is False
+    assert _mode_hesse_trusted({**good, "omega0_err": 0.0}, covariance_ok=True, counts_ok=True) is False
+    assert _mode_hesse_trusted({**good, "omega0_err": None}, covariance_ok=True, counts_ok=True) is False
