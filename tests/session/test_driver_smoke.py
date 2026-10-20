@@ -10,11 +10,11 @@
 The full 83-scan S30 statistical comparison at M=200 is the heavyweight gate; it is deferred to a
 fast machine (see the retired unification build order §10.5, git history, and the command in the module docstring below):
 
-    isar init "test_data/APS S30/FeSe_1-xS_x_1.spec_supplementary.dat" --out ws_s30
+    isar init "real_data/APS S30/FeSe_1-xS_x_1.spec_supplementary.dat" --out ws_s30
     # set [fitting] detectors = ["ana7"]; [calibration] companion_glob = "FeSe_1-xS_x_1.spec"
-    isar run "test_data/APS S30/FeSe_1-xS_x_1.spec_supplementary.dat" \
-             "test_data/APS S30/FeSe_1-xS_x_1.spec" --workspace ws_s30 --M 200
-    isar score --workspace ws_s30 --gold "test_data/APS S30/FeSe_1_fit_results.csv"
+    isar run "real_data/APS S30/FeSe_1-xS_x_1.spec_supplementary.dat" \
+             "real_data/APS S30/FeSe_1-xS_x_1.spec" --workspace ws_s30 --M 200
+    isar score --workspace ws_s30 --gold "real_data/APS S30/FeSe_1_fit_results.csv"
 """
 import json
 from pathlib import Path
