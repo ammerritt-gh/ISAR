@@ -53,7 +53,7 @@ from isar.schema import axes                               # noqa: E402
 from isar.analyze.lineshapes import convolute_voigt_dho             # noqa: E402
 
 # --------------------------------------------------------------------------- config
-S30_FILE = REPO / "test_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"
+S30_FILE = REPO / "real_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"
 REF_CSV = REPO / "out" / "in8_phase1" / "results_s30.csv"
 OUT = REPO / "out" / "phase3_step1"
 FIGDIR = OUT / "figures"

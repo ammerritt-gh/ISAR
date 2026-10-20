@@ -15,7 +15,7 @@ Two properties are scored (isar.analyze.gold):
 Channel: each gold row is matched to the analyzer whose reported K equals the row's K(rlu) -> ana7 for
 FeSe_1 (the analyzer at nominal Q); configurable/multi-analyzer via isar.analyze.gold.select_analyzer.
 
-The raw .dat lives under the gitignored test_data/, so this is a local measurement script (house
+The raw .dat lives under the gitignored real_data/, so this is a local measurement script (house
 practice), not a CI pytest. The scoring *logic* is unit-tested in tests/analyze/test_gold.py.
 
 Run from the repo root:
@@ -59,9 +59,9 @@ from isar.report import audit, captions, findings          # noqa: E402
 from isar.schema import axes                               # noqa: E402
 
 # --------------------------------------------------------------------------- config
-S30_FILE = REPO / "test_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"   # IXS phonon fscans
-SPEC_FILE = REPO / "test_data" / "APS S30" / "FeSe_1-xS_x_1.spec"                    # raw SPEC: Bragg
-GOLD_CSV = REPO / "test_data" / "APS S30" / "FeSe_1_fit_results.csv"
+S30_FILE = REPO / "real_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"   # IXS phonon fscans
+SPEC_FILE = REPO / "real_data" / "APS S30" / "FeSe_1-xS_x_1.spec"                    # raw SPEC: Bragg
+GOLD_CSV = REPO / "real_data" / "APS S30" / "FeSe_1_fit_results.csv"
 OUT = REPO / "out" / "phase3_gold"
 FIGDIR = OUT / "figures"
 BOOT_M = 200

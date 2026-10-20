@@ -585,7 +585,7 @@ def test_manifest_records_the_provenance_each_group_needs():
     else:
         assert manifest["code_diff_sha256"] is None
     assert manifest["test_data_fingerprint"]["present"] is True, (
-        "the bundle was collected without test_data/ present, so nothing records which inputs "
+        "the bundle was collected without real_data/ present, so nothing records which inputs "
         "produced it"
     )
     for group in manifest["groups"]:

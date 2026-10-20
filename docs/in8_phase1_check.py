@@ -42,8 +42,8 @@ from isar.synth import fit                            # noqa: E402
 from isar.analyze.lineshapes import Voigt, convolute_voigt_dho  # noqa: E402
 
 # --------------------------------------------------------------------------- config
-IN8_DIR = REPO / "test_data" / "ILL IN8"
-S30_FILE = REPO / "test_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"
+IN8_DIR = REPO / "real_data" / "ILL IN8"
+S30_FILE = REPO / "real_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"
 OUT = REPO / "out" / "in8_phase1"
 FIGDIR = OUT / "figures"
 

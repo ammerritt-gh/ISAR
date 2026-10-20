@@ -22,8 +22,8 @@ def collector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     repo = tmp_path / "repo"
     (repo / "docs" / "assets").mkdir(parents=True)
     (repo / "out").mkdir()
-    (repo / "test_data").mkdir()
-    (repo / "test_data" / "input.dat").write_text("fixed input\n", encoding="utf-8")
+    (repo / "real_data").mkdir()
+    (repo / "real_data" / "input.dat").write_text("fixed input\n", encoding="utf-8")
     for script in ("gen_a.py", "gen_b.py"):
         (repo / "docs" / script).write_text("# test generator\n", encoding="utf-8")
     (repo / "docs" / "assets" / "README.md").write_text("index\n", encoding="utf-8")
@@ -50,7 +50,7 @@ def collector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(module, "OUT", repo / "out")
     monkeypatch.setattr(module, "ASSETS", repo / "docs" / "assets")
     monkeypatch.setattr(module, "MANIFEST", repo / "docs" / "assets" / "MANIFEST.json")
-    monkeypatch.setattr(module, "TEST_DATA", repo / "test_data")
+    monkeypatch.setattr(module, "TEST_DATA", repo / "real_data")
     monkeypatch.setattr(module, "BUNDLE", bundle)
     module._real_code_provenance = module.code_provenance
     monkeypatch.setattr(
@@ -157,7 +157,7 @@ def test_input_fingerprint_change_aborts_before_promotion(
     assert _asset_snapshot(collector.ASSETS) == before
 
 
-def test_missing_test_data_aborts_before_generator(collector, monkeypatch: pytest.MonkeyPatch):
+def test_missing_real_data_aborts_before_generator(collector, monkeypatch: pytest.MonkeyPatch):
     (collector.TEST_DATA / "input.dat").unlink()
     collector.TEST_DATA.rmdir()
     called = False

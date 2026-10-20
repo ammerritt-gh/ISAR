@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Generate and promote the declared validation evidence into ``docs/assets/``.
 
-The default command owns report generation. It requires the unpublished ``test_data/`` tree,
+The default command owns report generation. It requires the unpublished ``real_data/`` tree,
 fingerprints it around every generator invocation, stages the complete prospective bundle, and
 only then replaces the committed groups and manifest. Add ``--check`` to validate the committed
 bundle without generating or copying anything.
@@ -35,7 +35,7 @@ REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "out"
 ASSETS = REPO / "docs" / "assets"
 MANIFEST = ASSETS / "MANIFEST.json"
-TEST_DATA = REPO / "test_data"
+TEST_DATA = REPO / "real_data"
 
 SCHEMA_VERSION = 3
 # Schema 2 hashed every artifact as raw bytes, which made text evidence depend on the checkout's
@@ -342,15 +342,15 @@ def _validate_plain_tree(root: Path, *, label: str) -> None:
 
 
 def test_data_fingerprint() -> dict[str, Any]:
-    """Digest names, sizes, and contents of all regular files in required ``test_data/``."""
+    """Digest names, sizes, and contents of all regular files in required ``real_data/``."""
     if not TEST_DATA.exists():
-        raise EvidenceError("test_data/ is required to generate the evidence bundle")
-    _validate_plain_tree(TEST_DATA, label="test_data")
+        raise EvidenceError("real_data/ is required to generate the evidence bundle")
+    _validate_plain_tree(TEST_DATA, label="real_data")
     entries: list[str] = []
     for path in sorted((p for p in TEST_DATA.rglob("*") if p.is_file()), key=lambda p: p.as_posix()):
         rel = path.relative_to(TEST_DATA).as_posix()
-        _validate_relative(rel, label="test_data path")
-        _require_regular(path, label="test_data file")
+        _validate_relative(rel, label="real_data path")
+        _require_regular(path, label="real_data file")
         entries.append(f"{rel}\0{path.stat().st_size}\0{sha256_of(path)}")
     rolled = hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
     return {"present": True, "n_files": len(entries), "sha256": rolled}
@@ -439,7 +439,7 @@ def _run_generators(groups: list[dict[str, Any]], fingerprint: dict[str, Any]) -
     for group in groups:
         before = test_data_fingerprint()
         if before != fingerprint:
-            raise EvidenceError(f"test_data/ changed before {group['command']}")
+            raise EvidenceError(f"real_data/ changed before {group['command']}")
         source_root = _contained(OUT, group["source"], label="source directory")
         _remove_plain_tree(source_root, label=f"stale output {group['source']}")
         print(f"running {group['command']} …")
@@ -449,7 +449,7 @@ def _run_generators(groups: list[dict[str, Any]], fingerprint: dict[str, Any]) -
             raise EvidenceError(f"generator failed: {group['command']} ({exc})") from exc
         after = test_data_fingerprint()
         if after != fingerprint:
-            raise EvidenceError(f"test_data/ changed while running {group['command']}")
+            raise EvidenceError(f"real_data/ changed while running {group['command']}")
 
 
 def _source_records(groups: list[dict[str, Any]]) -> dict[str, list[tuple[str, Path]]]:
@@ -484,7 +484,7 @@ def _manifest(groups: list[dict[str, Any]], fingerprint: dict[str, Any]) -> dict
             "raw facility file is included; scan overlays expose measured points at plot accuracy."
         ),
         "reproducibility": (
-            "Regeneration requires local test_data/. The bundle is viewable from a clean checkout, "
+            "Regeneration requires local real_data/. The bundle is viewable from a clean checkout, "
             "not reproducible from one."
         ),
         "test_data_fingerprint": fingerprint,
@@ -613,7 +613,7 @@ def collect() -> int:
         fingerprint = test_data_fingerprint()
         _run_generators(groups, fingerprint)
         if test_data_fingerprint() != fingerprint:
-            raise EvidenceError("test_data/ changed after report generation")
+            raise EvidenceError("real_data/ changed after report generation")
         sources = _source_records(groups)
         _require_directory(ASSETS.parent, label="asset parent")
         stage = Path(tempfile.mkdtemp(prefix=".evidence-stage-", dir=ASSETS.parent))

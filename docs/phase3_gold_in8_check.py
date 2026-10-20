@@ -68,7 +68,7 @@ from isar.schema import axes                               # noqa: E402
 from isar.synth import resolution                          # noqa: E402
 
 # --------------------------------------------------------------------------- config
-IN8_DIR = REPO / "test_data" / "ILL IN8"
+IN8_DIR = REPO / "real_data" / "ILL IN8"
 GOLD_CSV = IN8_DIR / "IN8_fit_results.csv"
 OUT = REPO / "out" / "phase3_gold_in8"
 FIGDIR = OUT / "figures"

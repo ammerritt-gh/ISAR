@@ -20,9 +20,9 @@ from isar.schema import axes, scan
 from isar.synth_format import quirks, run_builder
 
 _REPO = Path(__file__).resolve().parents[2]
-_REAL_S30 = _REPO / "test_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"
-_REAL_S30_RAW = _REPO / "test_data" / "APS S30 raw" / "Fe2Mo3O8_trimmed.spec"
-_REAL_IN8 = _REPO / "test_data" / "ILL IN8"
+_REAL_S30 = _REPO / "real_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"
+_REAL_S30_RAW = _REPO / "real_data" / "APS S30 raw" / "Fe2Mo3O8_trimmed.spec"
+_REAL_IN8 = _REPO / "real_data" / "ILL IN8"
 _OUT = _REPO / "out" / "phase2_eyeball"
 
 
