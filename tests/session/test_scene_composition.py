@@ -18,8 +18,6 @@ the first is the load-bearing one:
 This supersedes ruling H14(d) ("the driver calls it, observe-only"); the docs record that in
 SCENE-4.3 C9.
 """
-import shutil
-
 import pytest
 
 from isar.cli.main import main as cli_main
@@ -30,7 +28,7 @@ from isar.scene import store
 from isar.session import driver
 from isar.synth_format import run_builder
 
-from .test_driver_smoke import IN8_DIR, _have_in8, _init_workspace
+from .test_driver_smoke import IN8_THIN_NUMOR, _init_workspace, write_in8_pair
 
 
 def _s30_batch(tmp_path):
@@ -185,23 +183,19 @@ def test_a_raising_scene_build_is_logged_and_skipped(tmp_path, monkeypatch):
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(not _have_in8, reason="IN8 test_data not present (gitignored)")
-def test_a_real_delivery_publishes_the_scans_it_delivered(tmp_path):
-    """The rich case, on the cheapest real-data fixture there is. The published revision verifies
+def test_a_rich_delivery_publishes_the_scans_it_delivered(tmp_path):
+    """The rich case, on the generated IN8 pair. The published revision verifies
     against its own digest and holds the arena the delivery actually produced — the composition
     reads the ledger the delivery just wrote, not a stale one.
 
     The SCORING arena is the POOLED MASTER, not the member scan: the master fitted the same
     neutrons (combine-before-divide), so the adapter's exactly-once rule supersedes the member row
-    (numor 55182 — no synthetic observation for it either).
+    (the main numor — no synthetic observation for it either).
 
-    SCENE-4 PR 4.0 (#26) re-baseline: numor 55183 is UNDERSAMPLED and used to vanish from the
+    SCENE-4 PR 4.0 (#26) re-baseline: the three-point numor is UNDERSAMPLED and used to vanish from the
     scene entirely. Its measurement-arena record now survives the gate, so the delivery honestly
     publishes it as a count-untrusted, candidate-less observation earning no coverage credit."""
-    data = tmp_path / "in8"
-    data.mkdir()
-    for numor in ("055182", "055183"):
-        shutil.copy(IN8_DIR / numor, data / numor)
+    data = write_in8_pair(tmp_path / "in8")
     ws = _init_workspace(tmp_path, ill_in8)
 
     assert cli_main(["run", str(data), "--workspace", str(ws.root), "--M", "30",
@@ -214,7 +208,7 @@ def test_a_real_delivery_publishes_the_scans_it_delivered(tmp_path):
     master_ref, = [r for r in by_ref if r.startswith("master:")]
     assert by_ref[master_ref]["candidates"], "the delivered arena carries no candidate table"
     attempted_ref, = [r for r in by_ref if not r.startswith("master:")]
-    assert attempted_ref.endswith(":55183:det0") or ":55183:" in attempted_ref, attempted_ref
+    assert f":{IN8_THIN_NUMOR}:" in attempted_ref, attempted_ref
     assert not by_ref[attempted_ref]["candidates"]
     assert [(a["scan_ref"], a["reason"]) for a in payload["non_scoring"]] == [
         (attempted_ref, "count_untrusted")]
