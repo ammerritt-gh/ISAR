@@ -202,6 +202,7 @@ def test_in8_driver_end_to_end(tmp_path):
     assert oc["calib"]["resolution_source"] == "cooper_nathans"
     # The three-point scan -> undersampled non-result (never a fit).
     assert e83.status == "non_result"
+    assert any("undersampled" in r for r in e83.reasons)  # not the fit-error path's non_result
 
     # Idempotency: an immediate re-run fits nothing new.
     s2 = driver.run_batch(ws, [data], M=30)
