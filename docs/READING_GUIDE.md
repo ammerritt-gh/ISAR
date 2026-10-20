@@ -143,7 +143,9 @@ Read in this order when returning after time away:
    repair gates, and the ChatGPT second-opinion review. Its remediation is
    [plans/campaign-authorization-repair.md](plans/campaign-authorization-repair.md) — read the plan
    first and the ledger as evidence.
-9. **Read first, before anything above:** [HANDOFF-eig.md](HANDOFF-eig.md) — the one objective
+9. While it exists: [HANDOFF-test-data.md](HANDOFF-test-data.md) — taking every test off real
+   data: the operator's rulings of 2026-10-20 and the open design questions.
+10. **Read first, before anything above:** [HANDOFF-eig.md](HANDOFF-eig.md) — the one objective
    (hypothesis map, intensity map, EIG; no survey, no legacy), what the code does instead today,
    and the measured facts of 2026-09-02/03.
 
