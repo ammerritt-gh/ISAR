@@ -24,14 +24,28 @@ area.
 - **GUI:** `run-isar-gui.bat` → `micromamba run -n isar python -m isar_gui`; falls back to env
   `tavi-dev` when `isar` isn't built yet.
 - **Tests:** markers `slow`, `live`, `golden`; `testpaths` = `isar/synth/tests`, `tests`
-  (`pyproject.toml`). `live` needs a running TAVI at `127.0.0.1:8642` and opts in through
-  `ISAR_LIVE_TAVI=1` (`ISAR_LIVE_LLMM=1` for the LLMM test); a live run must report **passed**,
-  not skipped — a skipped live test is a failure to investigate. `tests/real_data/` needs
-  the gitignored local `test_data/`. `golden` (S12) = **sealed held-out real-data gates**: the
-  repo carries only the generic runner; every expectation lives in gitignored
-  `test_data/golden/<scenario>/scenario.json`, which is **never read, run, or consulted during
-  development** — the gate runs only when the owner names it (`ISAR_GOLDEN=1`). `isar/synth/tests/` = Phase-1 synthetic core; `tests/` = Phase 2+. Parallel runs
-  need `pytest-xdist>=3.5` (in the `[test]` extra).
+  (`pyproject.toml`). **The routine suite needs nothing outside git** — no test reads `real_data/`
+  (hard rule 10), so it passes in any worktree or fresh checkout. `live` needs a running TAVI at
+  `127.0.0.1:8642` and opts in through `ISAR_LIVE_TAVI=1` (`ISAR_LIVE_LLMM=1` for the LLMM test);
+  a live run must report **passed**, not skipped — a skipped live test is a failure to investigate.
+  `isar/synth/tests/` = Phase-1 synthetic core; `tests/` = Phase 2+. Parallel runs need
+  `pytest-xdist>=3.5` (in the `[test]` extra).
+- **Proofs — checks against real data, run on purpose.** `proofs/` sits outside `testpaths`, so the
+  routine suite never collects it. Run it on the **main checkout**, where the real data lives:
+  `python -m pytest proofs`, or double-click `run-isar-proofs.bat`. A missing real file or
+  expectation file is an **error** naming it, never a skip. `setup-isar-env.bat` installs `.[gui]`
+  only, so pytest in the `isar` environment comes from `pip install -e ".[test]"`. The `golden`
+  marker (S12) = **sealed held-out real-data gates**, `proofs/test_golden_scenarios.py`: the repo
+  carries only the generic runner; every expectation lives in gitignored
+  `real_data/golden/<scenario>/scenario.json`, which is **never read, run, or consulted during
+  development** — the gate runs only when the owner names it (`ISAR_GOLDEN=1`, or
+  `run-isar-proofs.bat golden`).
+- **Data folders.** `real_data/` — gitignored, main checkout only: the real facility files, each
+  proof's measured expectations in `<proof stem>.expect.json` beside its data, and the sealed
+  golden bundles. `artificial_data/` — committed: copies of real facility files with every data
+  number replaced (headers kept), made once with `python tools/artificial_copy.py <real file> --out
+  <folder>`, each with a truth file beside it, never regenerated; the parser tests read them.
+  Behaviour tests that depend on the numbers use data generated at test time (`isar/synth_format/`).
 - **Running the suite — three commands, pick by intent:**
   1. *Targeted / debugging (serial):* `python -m pytest <path>::<test> -s`. Keep debugging serial —
      `-s`, `--pdb`, and the stall recipe `-o faulthandler_timeout=60` do not work meaningfully
@@ -118,6 +132,13 @@ area.
 
 9. **A new float column in `report/results.csv` joins `_NUMERIC_COLUMNS`**
    (`isar/drive/isar_io/readers.py`), or it silently reads back as text.
+10. **No test reads `real_data/`.** It is gitignored and exists only in the main checkout, so a
+    test that opens a file there fails with `FileNotFoundError` in every worktree and fresh
+    checkout — about forty did until 2026-10-20. A check against real files is a *proof*
+    (`proofs/`, run on purpose); a test uses `artificial_data/` or data generated at test time.
+    `tests/docs/test_no_real_data_in_tests.py` fails on any test that names `real_data` or
+    `test_data` as a path. Never commit a measured data value: an artificial copy replaces every
+    data number, and no truth file, test expectation or comment may carry one.
 
 ## Before You Touch X
 
@@ -198,8 +219,8 @@ formats — H1 classifies them as defects.
    - **At each slice boundary** (final candidate of a slice, before reporting it done): one
      parallel not-slow run and one parallel full run — once. Full **serial** `python -m pytest`
      only before merging to `main` or after test-infrastructure changes. Reproduce any failure
-     serially before debugging it. Real-data subset needs local `test_data/`; `live` needs TAVI at
-     `127.0.0.1:8642`.
+     serially before debugging it. Proofs (`proofs/`, real data) are run on purpose on the main
+     checkout, never as part of a slice boundary; `live` needs TAVI at `127.0.0.1:8642`.
    - **Dependency-aware invalidation:** retained artifacts form a chain — raw acquisition →
      analysis result → score evidence → eligibility evidence → gate classification →
      manifest/index. A repair invalidates only its *descendants*: a manifest-pointer change

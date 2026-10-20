@@ -106,11 +106,11 @@ Things that are wrong now, as opposed to things not yet built.
       **Acceptance:** the checks run on synthetic + real-data fixtures; a seeded violation
       (persisting a normalized array) fails loudly.
 
-- [ ] **VAL-1 — Restore the IN8 gold CSV.** `test_data/ILL IN8/IN8_fit_results.csv` is missing
+- [ ] **VAL-1 — Restore the IN8 gold CSV.** `real_data/ILL IN8/IN8_fit_results.csv` is missing
       from disk, gitignored, and cannot be restored from git; only `055182 ≈ 4.2 meV` and
       `055183-REJECT` are vetted rows. Blocks `docs/phase3_gold_in8_check.py`,
-      `tests/real_data/test_in8_gold_smoke.py`, and every IN8 gate.
-      **Acceptance:** the CSV is restored and `tests/real_data/test_in8_gold_smoke.py` passes.
+      `proofs/test_in8_gold.py`, and every IN8 gate.
+      **Acceptance:** the CSV is restored and `proofs/test_in8_gold.py` passes.
 
 - [ ] **VAL-2 — CLI/session equivalence gate at M=200.** End-to-end ω₀ comparison of the 83-scan
       S30 set against `results_gold.csv` **through the CLI/session path**; a multi-minute run

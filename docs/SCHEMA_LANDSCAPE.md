@@ -6,9 +6,9 @@
 
 **Status:** Research reference. Informs the Phase 2 schema (design rationale absorbed into the
 living docs; original §3, §5, §6 in git history).
-**Note:** two claims here were later **corrected by real files in `test_data/`** — BL43LXU writes SPEC (not
+**Note:** two claims here were later **corrected by real files in `real_data/`** — BL43LXU writes SPEC (not
 an undocumented custom format), and IN8 ships `.nxs` NeXus twins beside each numor. Corrections are marked
-inline with “**[test_data]**”. See git history (former `archive/PHASE_2_DESIGN.md` §6) for the consolidated, corrected instrument table.
+inline with “**[real_data]**”. See git history (former `archive/PHASE_2_DESIGN.md` §6) for the consolidated, corrected instrument table.
 **Purpose:** Survey scan types, per-scan metadata, sample environment, and file formats across IXS and
 TAS facilities so the ISAR normalized schema has its extension points in the right places — i.e. so the
 schema does **not** need a rewrite to support scan types and instruments beyond the current
@@ -150,12 +150,12 @@ be promoted to a scanned axis by reference from `scan_axes`.
   analyzer 2). ESRF-wide BLISS writes NeXus/HDF5, but **no public doc confirms ID28's IXS spectrometer
   has migrated** — assume SPEC ASCII for current and legacy data.
 - **SPring-8 BL43LXU (IXS):** ~~**Custom in-house acquisition software**; on-disk format not publicly
-  documented~~ — **[test_data] corrected:** the real file `specixs_22Nov05` (Nov 2022) is **plain SPEC**
+  documented~~ — **[real_data] corrected:** the real file `specixs_22Nov05` (Nov 2022) is **plain SPEC**
   (`#F/#E/#D/#O/#S/#G/#P/#Q` blocks), so BL43 is handled by the shared SPEC base reader with a per-card
   column map like S30/ID28, not a bespoke parser. Large analyzer array (described as 6×4 → now 28; a 2024
   experiment used 7×4 = 28 analyzers, 28 momentum transfers per scan), resolution ~0.75–6 meV.
 - **ILL IN8 (TAS):** ILL "numor" format (NUMber Of Run; 6-digit zero-padded filenames), historically
-  ASCII/TAPDAT-derived. **[test_data]:** the real files confirm the classic numor ASCII (header blocks
+  ASCII/TAPDAT-derived. **[real_data]:** the real files confirm the classic numor ASCII (header blocks
   `INSTR/EXPNO/COMND/POSQE/PARAM/VARIA/ZEROS`, then a `DATA_:` column table `PNT A3 M1 M2 TIME CNTS …`),
   **and each numor has a `.nxs` NeXus twin** — so IN8 already exhibits the format-versioning case (two
   on-disk formats for the same scan). Tools: LAMP, Steffens' MATLAB TAS routines, Rplot. Newer ILL
@@ -284,7 +284,7 @@ schema.
 
 ## 11. Caveats
 
-- ~~**BL43LXU's native file format is not publicly documented.**~~ **[test_data] corrected:** BL43LXU
+- ~~**BL43LXU's native file format is not publicly documented.**~~ **[real_data] corrected:** BL43LXU
   writes **SPEC** (`specixs_*`), handled by the shared SPEC base reader; the only per-facility unknown is
   the column/`#V` mapping, resolved by inspecting a real file. Still worth confirming with staff if a new
   beamtime changes the acquisition setup.

@@ -104,8 +104,10 @@ isar_gui/         # optional GUI package (`pip install -e .[gui]`, `isar view <w
                   #   controls campaigns by owning subprocesses + control files
 docs/             # design docs, guides, and the *_check.py validation drivers
 docs/assets/      # the committed validation evidence the docs cite (derived only — see its README)
-test_data/        # real facility files (S30, IN8, ID28, BL43LXU) — LOCAL-ONLY, gitignored
-tests/            # unit + real-data smoke tests (real-data tests need the local test_data/)
+real_data/        # real facility files (S30, IN8, ID28, BL43LXU) — LOCAL-ONLY, gitignored, main checkout only
+artificial_data/  # committed copies of facility files with every data number replaced (parser tests)
+proofs/           # checks that read real_data/, run on purpose (`python -m pytest proofs`); not tests
+tests/            # the routine suite — needs nothing outside git, no test reads real_data/
 out/              # working output (gitignored; run a docs/*_check.py to produce a report)
 ```
 
@@ -122,14 +124,15 @@ usable energy delivered for 62 of the 79 scans the expert accepted — and
 drives the analysis modules directly; the matching **CLI/session equivalence gate at M=200**, which
 runs the same 83 scans end-to-end through `isar run`, is still open (`VAL-2` in [TODO.md](TODO.md)).
 The bundle is derived evidence only — fit results, summary tables, and figures. Regenerating it
-needs the `docs/*_check.py` scripts and the local-only `test_data/`, which is **not** committed, so
+needs the `docs/*_check.py` scripts and the local-only `real_data/`, which is **not** committed, so
 a clean checkout can *see* this evidence but cannot reproduce it.
 
 ## Setup
 
 Python ≥ 3.11. `pip install -e .` (test extras: `pip install -e .[test]`; run `python -m pytest -m
-"not slow" -n 16 --dist worksteal` — about a minute, and the `tests/real_data/` subset requires the
-local-only `test_data/`; `-n 16` is tuned for an idle 32-core box — on a smaller machine use
+"not slow" -n 16 --dist worksteal` — about a minute, and it needs nothing outside git, so it runs in any
+checkout or worktree (the real-data checks are `proofs/`, run on purpose on the main checkout with
+`python -m pytest proofs` or `run-isar-proofs.bat`); `-n 16` is tuned for an idle 32-core box — on a smaller machine use
 `-n auto`; drop `-n 16 --dist worksteal` to run serially when debugging). To also run
 the GUI tests under `tests/gui/`, install `pip install -e .[test,test-gui,gui]` (the `test-gui` extra is
 `pytest-qt`, kept out of the base `test` extra so it doesn't require a Qt binding). LLM features are

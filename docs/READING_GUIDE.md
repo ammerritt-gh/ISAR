@@ -197,7 +197,7 @@ standing check that we are building a usable instrument, not a self-certifying l
 
 Those three reports are **committed** under [assets/](assets/) — a clean checkout can read them and
 look at their figures. What a clean checkout cannot do is *regenerate* them: the `docs/*_check.py`
-scripts that produce them read the local, gitignored `test_data/`, and they write to the disposable
+scripts that produce them read the local, gitignored `real_data/`, and they write to the disposable
 `out/` tree. [assets/README.md](assets/README.md) says exactly what was promoted, from which code
 revision, and by which command. Every figure carries its own caption (drawn on the image and written
 as a `<figure>.caption.md` sidecar), so a figure is understandable on its own.

@@ -12,9 +12,9 @@ the claims and see none of the evidence behind them. This is that evidence, prom
 ## What is here, and what is deliberately not
 
 **Derived evidence only.** Every file is a fit result, a summary table of fitted parameters, or a
-rendered figure. **No raw facility data file is committed** — `test_data/` stays gitignored, and
+rendered figure. **No raw facility data file is committed** — `real_data/` stays gitignored, and
 adding a raw file here would be a policy breach, not an improvement. `MANIFEST.json` records a
-single digest over the whole `test_data/` tree so a reader who holds that data can confirm they
+single digest over the whole `real_data/` tree so a reader who holds that data can confirm they
 have the same inputs, without this repository publishing an index of unpublished filenames.
 
 Be precise about what a figure is, though. A scan overlay **plots the measured points it fits** —
@@ -22,7 +22,7 @@ counts against energy transfer, with Poisson error bars, labelled with the scan 
 instrument command. That is not incidental, it is the point: `../READING_GUIDE.md` promises you can
 judge every call with your own eyes, and you cannot do that without seeing the data. So roughly
 eight scans are visible here at plot-reading accuracy. What stays unpublished is the machine-readable
-facility files — every scan, every detector, full metadata — which is what `test_data/` holds and
+facility files — every scan, every detector, full metadata — which is what `real_data/` holds and
 what these figures are not a substitute for. If that trade is ever wrong for a particular dataset,
 the fix is to drop the figure from the bundle in `tools/docs/collect_evidence.py`, not to reword
 this paragraph.
@@ -41,26 +41,27 @@ so a figure is readable without the report around it.
 ## Viewable is not reproducible
 
 This bundle makes the evidence **viewable** from a clean checkout. It does **not** make it
-reproducible from one: regenerating any group needs the local `test_data/`, which is not
+reproducible from one: regenerating any group needs the local `real_data/`, which is not
 distributed here. Do not read the presence of these files as a claim that `git clone && pytest`
 reproduces them.
 
 `MANIFEST.json` records schema version 2, the generating command and input fingerprint for every
 group, and the code revision and collection date for the bundle. Every group fingerprint must
-match the top-level `test_data/` fingerprint. The documentation tests fail if manifest metadata
+match the top-level `test_data_fingerprint` (the digest of `real_data/`; the key keeps its
+old name). The documentation tests fail if manifest metadata
 drifts from the collector declaration, a committed file stops matching its size or hash, a listed
 file goes missing, or an undeclared file appears here.
 
 ## Regenerating
 
-From the repo root, with `test_data/` present:
+From the repo root, with `real_data/` present:
 
 ```
 python tools/docs/collect_evidence.py
 ```
 
 The collector clears only its declared `out/<source>` directories, runs each declared generator
-synchronously with the active Python interpreter, and checks that `test_data/` is unchanged before
+synchronously with the active Python interpreter, and checks that `real_data/` is unchanged before
 and after every generator. It validates all source artifacts and required PNG caption sidecars,
 builds the complete prospective bundle in staging, and only then promotes it with rollback on
 failure.
