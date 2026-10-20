@@ -1,26 +1,15 @@
 """Step-3 gates (the retired unification build order §10.3, git history): the calibration layer reproduces the gold-check recipe.
 
-Fast unit tests cover the version-dedup logic and the state round-trip; the real-data gate
-(skipped when test_data/ is absent — it is gitignored) proves `resolve()` reproduces the gold
-check's per-scan (center, resolution) for all 83 S30 scans and the IN8 Cooper-Nathans width.
+Fast unit tests cover the version-dedup logic and the state round-trip. The S30 gate runs on a
+calibration set generated at test time (elastic herixE scans, companion SPEC, gold table); the IN8
+gate runs on the committed IN8 copy's header. Neither reads real data.
 """
-from pathlib import Path
-
-import numpy as np
 import pytest
 
+from artificial import IN8_ANCHOR
 from isar.schema import card as card_mod
 from isar.session import calibrations
 from isar.session.state import SessionState
-
-REPO = Path(__file__).resolve().parents[2]
-S30_SUPP = REPO / "test_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"
-S30_SPEC = REPO / "test_data" / "APS S30" / "FeSe_1-xS_x_1.spec"
-S30_GOLD = REPO / "test_data" / "APS S30" / "FeSe_1_fit_results.csv"
-IN8_NUMOR = REPO / "test_data" / "ILL IN8" / "055182"
-
-_have_s30 = S30_SUPP.exists() and S30_SPEC.exists() and S30_GOLD.exists()
-_have_in8 = IN8_NUMOR.exists()
 
 
 # --------------------------------------------------------------------------- fast unit tests
@@ -66,47 +55,51 @@ def test_missing_zero_is_held_never_zero():
     assert cr.held and cr.center is None
 
 
-# --------------------------------------------------------------------------- real-data gate
-@pytest.mark.skipif(not _have_s30, reason="S30 test_data not present (gitignored)")
-def test_s30_resolve_matches_gold_check_recipe():
-    from isar.parsers import spec_s30
+# --------------------------------------------------------------------------- generated-data gates
+def test_s30_resolve_matches_gold_check_recipe(tmp_path):
     from isar.analyze import gold
     from isar.calibrate import bragg
     from isar.calibrate.energy_zero import build_energy_calibration
+    from isar.parsers import spec_s30
+    from isar.synth_format import run_builder
 
+    cs = run_builder.build_s30_calibration_set(tmp_path)
     card = spec_s30.card_template()
-    by_scan = {r.scan_number: r for r in spec_s30.parse_file(S30_SUPP, card)}
-    sess = SessionState()
-    calibrations.refresh(card, sess, companion_files=[S30_SPEC])
+    by_scan = {r.scan_number: r for r in spec_s30.parse_file(cs.measurement_path, card)}
+    calibrations.refresh(card, SessionState(), companion_files=[cs.companion_path])
     rc = calibrations.calibration_view(card)
 
-    ref = build_energy_calibration(bragg.read_elastic_scans(S30_SPEC))
-    rows = gold.load_gold(S30_GOLD)
-    n = 0
-    for row in rows:
+    ref = build_energy_calibration(bragg.read_elastic_scans(cs.companion_path))
+    for e in cs.elastic:    # the recipe reads each elastic line back where it was injected
+        assert ref.zero(e.scan_number) == pytest.approx(e.zero, abs=0.02)
+
+    n = held = 0
+    for row in gold.load_gold(cs.gold_path):
         rec = by_scan.get(row.scan)
         if rec is None:
             continue
         n += 1
         cr = calibrations.resolve(rec, "ana7", card, rc)
         ref_zero = ref.zero(row.scan)
+        assert (ref_zero is None) == (row.scan in cs.held_scans)
         if ref_zero is None:
             assert cr.held
+            held += 1
             continue
         rgfw, rlfw = ref.resolution(row.slit)
         assert cr.center == pytest.approx(ref_zero)
         assert cr.gauss_fwhm == pytest.approx(rgfw)
         assert cr.lorentz_fwhm == pytest.approx(rlfw)
-    assert n == 83
+    assert n == cs.n_gold_matched
+    assert 0 < held < n     # both branches ran: some scans held, some resolved
 
 
-@pytest.mark.skipif(not _have_in8, reason="IN8 test_data not present (gitignored)")
 def test_in8_cooper_nathans_center_zero():
     from isar.parsers import ill_in8
     from isar.calibrate import tas
 
     card = ill_in8.card_template()
-    rec = ill_in8.parse_file(IN8_NUMOR, card)[0]
+    rec = ill_in8.parse_file(IN8_ANCHOR, card)[0]
     calibrations.refresh(card, SessionState())
     rc = calibrations.calibration_view(card)
     cr = calibrations.resolve(rec, "det0", card, rc)

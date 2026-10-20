@@ -3,17 +3,14 @@
 ISAR replicates the beamline's miniscan rejection itself — tracked and reversible — and adds a
 Poisson-aware rule that refuses to nuke the legitimate low-count fluctuations the blind 3-sigma clip
 discards. These unit tests pin both rules and the combine arithmetic (sum kept counts AND kept
-monitors, THEN divide; honest zero variance, no floor).
+monitors, THEN divide; honest zero variance, no floor). The reduce_record tests run on a raw S30
+run generated at test time; they never read real data.
 """
-from pathlib import Path
 import json
 
 import numpy as np
 
 from isar.reduce import combine
-
-REPO = Path(__file__).resolve().parents[2]
-RAW = REPO / "test_data" / "APS S30 raw" / "Fe2Mo3O8_trimmed.spec"
 
 
 # ---------------------------------------------------------------------------
@@ -116,12 +113,23 @@ def test_combine_spectrum_nan_padding_excluded():
 # ---------------------------------------------------------------------------
 # reduce_record — wire a parsed raw record through the chosen rule
 # ---------------------------------------------------------------------------
-def test_reduce_record_fills_combined_signal_and_reject_mask():
+def _generated_raw_measurement(tmp_path, card):
+    """Emit a generated raw S30 run to a file, parse it back, and return its measurement record."""
+    from isar.parsers import spec_s30_raw
+    from isar.synth_format import run_builder
+
+    run = run_builder.build_s30_raw_run("COMBINE", n_scans=1, seed0=7000, include_ascans=False)
+    path = tmp_path / "COMBINE.spec"
+    path.write_bytes(spec_s30_raw.emit_file(run, card))
+    return next(r for r in spec_s30_raw.parse_file(path, card) if r.scan_type == "measurement")
+
+
+def test_reduce_record_fills_combined_signal_and_reject_mask(tmp_path):
     from isar.parsers import spec_s30_raw
     from isar.schema import scan
 
     card = spec_s30_raw.card_template()
-    rec = next(r for r in spec_s30_raw.parse_file(RAW, card) if r.scan_type == "measurement")
+    rec = _generated_raw_measurement(tmp_path, card)
     assert all(np.all(sp.intensity == 0.0) for sp in rec.spectra.values())   # unreduced pre
 
     combine.reduce_record(rec, card)
@@ -140,11 +148,11 @@ def test_reduce_record_fills_combined_signal_and_reject_mask():
     assert scan.records_close(rec, restored)
 
 
-def test_reduce_record_sigma_clip_rule_selectable():
+def test_reduce_record_sigma_clip_rule_selectable(tmp_path):
     from isar.parsers import spec_s30_raw
 
     card = spec_s30_raw.card_template()
     card.policy.reduction = {"rule": "sigma_clip", "sigma_n": 3.0}
-    rec = next(r for r in spec_s30_raw.parse_file(RAW, card) if r.scan_type == "measurement")
+    rec = _generated_raw_measurement(tmp_path, card)
     combine.reduce_record(rec, card)
     assert rec.spectra["ana1"].miniscan_reject_source == "sigma_clip"
