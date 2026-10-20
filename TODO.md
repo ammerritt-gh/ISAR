@@ -78,6 +78,19 @@ Things that are wrong now, as opposed to things not yet built.
       **Acceptance:** an out-of-window garbage fit triggers recenter/widen rather than consuming
       the decline budget.
 
+- [ ] **DEFECT-7 — Parallel and serial master fits disagree.**
+      `tests/session/test_master_fit.py::test_parallel_masters_match_serial_end_to_end` fails on
+      `main` (reproduced at `be0c907`, 2026-10-20): the pooled master's detector outcome differs
+      between the parallel and serial paths. Slow-marked, so only the full lanes see it.
+      **Acceptance:** the test passes in both the full parallel and full serial lanes.
+
+- [ ] **DEFECT-8 — Tests still need gitignored `test_workspaces/`.**
+      Three routine tests read `test_workspaces/AP7_Failed` and `AP8_Failed`, which exist only in
+      the main checkout; they skip in every worktree. Same problem the `real_data/` move fixed
+      (AGENTS.md hard rule 10): give them committed artificial inputs or move them to `proofs/`.
+      **Acceptance:** no test reads `test_workspaces/`, and the routine lane's skip count in a
+      fresh worktree drops by three.
+
 ---
 
 ## Validation gates
@@ -106,11 +119,24 @@ Things that are wrong now, as opposed to things not yet built.
       **Acceptance:** the checks run on synthetic + real-data fixtures; a seeded violation
       (persisting a normalized array) fails loudly.
 
-- [ ] **VAL-1 — Restore the IN8 gold CSV.** `real_data/ILL IN8/IN8_fit_results.csv` is missing
-      from disk, gitignored, and cannot be restored from git; only `055182 ≈ 4.2 meV` and
-      `055183-REJECT` are vetted rows. Blocks `docs/phase3_gold_in8_check.py`,
-      `proofs/test_in8_gold.py`, and every IN8 gate.
-      **Acceptance:** the CSV is restored and `proofs/test_in8_gold.py` passes.
+- [ ] **VAL-5 — Cosmic-ray thresholds set by measured error rates.**
+      Operator ruling (2026-10-20): the obvious ray (hundreds of counts, then tens of thousands)
+      is easy; the hard case is a pass only a little high, and good data must not be thrown away.
+      Draw rays at random magnitudes and positions into simulated data, count true/false
+      positives and negatives for each rule, and tune the thresholds conservatively, with
+      options for the user. The beamline's analyzer-4 3σ divergence (`proofs/`) is a question
+      for the beamline scientist.
+      **Acceptance:** a committed study reports the error rates per rule and threshold, and the
+      card defaults cite it.
+
+- [ ] **VAL-6 — Review committed real-data material before going public.**
+      Operator ruling (2026-10-20): the repo will be public; headers may stay, measured data
+      must not leak. Already committed: `docs/assets/` (19 figures, 3 CSVs from real data),
+      `docs/campaigns/` evidence, the four `docs/*_check.py` scripts' values, and git history of
+      the old `tests/real_data/` expectations. The evidence manifest's data fingerprint is also
+      stale (records 234 files; `real_data/` now holds 870), though `--check` passes.
+      **Acceptance:** each item is kept, replaced or removed by an operator decision, recorded
+      here, before the repository is made public.
 
 - [ ] **VAL-2 — CLI/session equivalence gate at M=200.** End-to-end ω₀ comparison of the 83-scan
       S30 set against `results_gold.csv` **through the CLI/session path**; a multi-minute run
