@@ -2,15 +2,10 @@
 header/date, dispatch the matching plugin. A drifted format is a new registry entry keyed to its
 date range, never an edit to a working parser.
 """
-from pathlib import Path
-
 import pytest
 
+from artificial import IN8_MEAS as IN8_FILE, S30 as S30_FILE
 from isar.parsers import registry
-
-REPO = Path(__file__).resolve().parents[1]
-S30_FILE = REPO / "test_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"
-IN8_FILE = REPO / "test_data" / "ILL IN8" / "055177"
 
 
 @pytest.fixture(autouse=True)
@@ -26,17 +21,22 @@ class _DummyPlugin:
     version = "0.0.0"
 
 
-def test_detect_classifies_real_s30_file():
+def test_detect_classifies_s30_file():
     assert registry.detect(S30_FILE) == ("APS", "S30", "2025")
 
 
-def test_detect_classifies_real_in8_file():
+def test_detect_classifies_in8_file():
     assert registry.detect(IN8_FILE) == ("ILL", "IN8", "2025")
 
 
 def test_detect_distinguishes_spec_from_numor():
-    # The two real formats must not collide — different facility/instrument tuples.
+    # The two formats must not collide — different facility/instrument tuples.
     assert registry.detect(S30_FILE)[:2] != registry.detect(IN8_FILE)[:2]
+
+
+def test_default_plugin_dispatches_each_copy_to_its_parser():
+    assert registry.default_plugin_name(*registry.detect(S30_FILE)) == "spec_s30"
+    assert registry.default_plugin_name(*registry.detect(IN8_FILE)) == "ill_in8"
 
 
 def test_register_and_get_round_trip():

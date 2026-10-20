@@ -1,17 +1,18 @@
 """Shared SPEC reader (§6): the instrument-agnostic block parser the IXS facilities share.
 
-This is a *structural* test against the real S30 file — it asserts the reader carves the SPEC
-blocks faithfully (header groups, scan blocks, the #V↔#H mapping, the full column table) without
-yet building any ScanRecord. ID28 and BL43 later reuse this same reader as more cards over it.
+This is a *structural* test against the committed artificial copy of an S30 file
+(`artificial_data/`, every data number replaced, layout kept) — it asserts the reader carves the
+SPEC blocks faithfully (header groups, scan blocks, the #V↔#H mapping, the full column table)
+without yet building any ScanRecord. Counts, labels and data values are asserted against the copy's
+truth file, which records what the copy tool wrote. ID28 and BL43 later reuse this same reader as
+more cards over it.
 """
-from pathlib import Path
-
 import numpy as np
 
+from artificial import S30 as S30_FILE, truth, values
 from isar.parsers import spec_base
 
-REPO = Path(__file__).resolve().parents[1]
-S30_FILE = REPO / "test_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"
+TRUTH = truth(S30_FILE)
 
 
 def test_reads_global_header():
@@ -26,9 +27,22 @@ def test_reads_global_header():
     assert header.O_groups[0][0] == "HerixTTH"
 
 
-def test_reads_all_ninety_scan_blocks():
+def test_reads_every_scan_block_the_truth_lists():
     _, blocks = spec_base.read_spec(S30_FILE)
-    assert len(blocks) == 90
+    assert len(blocks) == TRUTH["number_of_scans"] == 4
+    assert [b.scan_number for b in blocks] == [s["scan_number"] for s in TRUTH["scans"]]
+    assert [b.data.shape[0] for b in blocks] == [s["points"] for s in TRUTH["scans"]]
+
+
+def test_every_block_column_matches_the_truth_by_position():
+    """A mis-split block or a shifted column index puts another column's numbers here."""
+    _, blocks = spec_base.read_spec(S30_FILE)
+    for b, s in zip(blocks, TRUTH["scans"]):
+        assert b.column_labels == s["column_names"]
+        assert b.data.shape == (s["points"], len(s["column_names"]))
+        for j, c in enumerate(s["data_columns"]):
+            assert c["name"] == b.column_labels[j]
+            assert np.allclose(b.data[:, j], [float(t) for t in c["tokens"]], rtol=1e-12, atol=0)
 
 
 def test_first_block_structure():
@@ -45,8 +59,8 @@ def test_first_block_structure():
     assert b.column_labels[-2] == "ICO-C"
     assert b.column_labels[-1] == "Seconds"
     assert b.data.shape[1] == 30
-    assert b.data.shape[0] > 10            # a real energy scan has tens of points
-    # #G is sparse (no #G2 in the real file) — store it gap-tolerantly.
+    assert b.data.shape[0] > 10            # an energy scan has tens of points
+    # #G is sparse (no #G2 in the file) — store it gap-tolerantly.
     assert 2 not in b.G and 0 in b.G and 1 in b.G
 
 
@@ -57,16 +71,19 @@ def test_v_h_mapping_and_central_analyzer():
     assert np.allclose(b.V_groups[2], [300.016, 290.002])
     # The #V↔#H map by index: Analyzer3 ↔ #V6.
     assert np.allclose(spec_base.v_group(b, header, "Analyzer3"), [1.76439, 0.0432437, -0.0423059])
-    # ana5 ↔ #V8 is the central analyzer == #Q (the D2 mapping, confirmed on the real file).
+    # ana5 ↔ #V8 is the central analyzer == #Q (the D2 mapping, confirmed on the file).
     assert np.allclose(b.V_groups[8], b.Q)
 
 
-def test_column_index_resolves_by_name():
+def test_column_index_resolves_by_name_and_reads_that_column():
     _, blocks = spec_base.read_spec(S30_FILE)
     b = blocks[0]
     assert spec_base.column_index(b, "HerixE") == 0
     assert spec_base.column_index(b, "ICO-C") == 28
     assert spec_base.column_index(b, "Ana5_3std") == 14
+    for name in ("HerixE", "ICO-C", "Ana5_3std"):
+        assert np.allclose(b.data[:, spec_base.column_index(b, name)],
+                           values(TRUTH["scans"][0], name), rtol=1e-12, atol=0)
 
 
 # ---------------------------------------------------------------------------

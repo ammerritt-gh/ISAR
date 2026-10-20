@@ -1,20 +1,23 @@
-"""Gate B — the real-file smoke test (§4.1): byte-level fidelity against genuine S30 output.
+"""Gate B — the file smoke test (§4.1): fidelity against the layout of genuine S30 output.
 
 The synthetic round-trip (Gate A) proves the emitter and parser are consistent *inverses*; it
-cannot prove either matches reality. This test parses one real facility file and asserts the
-record is sane — the inverse-crime guard. It checks *sanity*, not exact truth: right detector
-count, monotonic energy axis, monitor/time populated, Q reported per analyzer, scan_type correct,
-no exception across all 90 scans.
+cannot prove either matches the facility's format. This test parses the committed artificial copy of
+a real S30 file (`artificial_data/`: the facility's own header, comments, column names, spacing and
+line endings, every data-row number replaced) — the inverse-crime guard. It checks *sanity* and
+column mapping: right detector count, monotonic energy axis, monitor/time populated, Q reported per
+analyzer, scan_type correct, no exception across all kept scans, and every value the parser takes
+from a data column equals what the copy tool wrote there (its truth file). Statistics of measured
+counts are not asserted here; the real-file check lives in `proofs/`.
 """
-from pathlib import Path
+import json
 
 import numpy as np
 
+from artificial import S30 as S30_FILE, truth, values
 from isar.parsers import registry, spec_s30
-from isar.schema import axes
+from isar.schema import axes, scan
 
-REPO = Path(__file__).resolve().parents[2]
-S30_FILE = REPO / "test_data" / "APS S30" / "FeSe_1-xS_x_1.spec_supplementary.dat"
+TRUTH = truth(S30_FILE)
 
 
 def _strictly_monotonic(a) -> bool:
@@ -30,7 +33,8 @@ def test_parses_every_scan_into_a_nine_spectrum_record():
     card = spec_s30.card_template()
     records = spec_s30.parse_file(S30_FILE, card)
 
-    assert len(records) == 90
+    assert [r.scan_number for r in records] == [s["scan_number"] for s in TRUTH["scans"]]
+    assert len(records) == TRUTH["number_of_scans"]
     for rec in records:
         # One physical scan → one record holding nine analyzer spectra (§3).
         assert len(rec.spectra) == 9
@@ -43,11 +47,10 @@ def test_parses_every_scan_into_a_nine_spectrum_record():
         energy = axes.scanned_axes(rec)[0].values
         assert _strictly_monotonic(energy)
 
-        # Both monitor and time are stored and sane (§5.3).
+        # Both monitor and time are stored and finite (§5.3).
         norm = rec.normalization
         assert norm.monitor.shape == energy.shape
-        assert np.all(np.isfinite(norm.monitor)) and np.median(norm.monitor) > 0
-        assert np.all(norm.time > 0)
+        assert np.all(np.isfinite(norm.monitor)) and np.all(np.isfinite(norm.time))
 
         # Provenance stamped.
         assert rec.source.plugin == "spec_s30"
@@ -64,8 +67,24 @@ def test_parses_every_scan_into_a_nine_spectrum_record():
             assert sp.mask.dtype == np.bool_
 
 
+def test_every_value_taken_from_a_data_column_is_the_one_written_there():
+    """The card's column map is right iff each parsed array equals its truth column: a wrong
+    energy/monitor/time/signal column name (or a shifted index) reads another column's numbers."""
+    card = spec_s30.card_template()
+    for rec, s in zip(spec_s30.parse_file(S30_FILE, card), TRUTH["scans"]):
+        assert rec.scan_number == s["scan_number"]
+        assert np.allclose(axes.scanned_axes(rec)[0].values, values(s, card.policy.energy_column))
+        assert np.allclose(rec.normalization.monitor, values(s, card.policy.monitor_column))
+        assert np.allclose(rec.normalization.time, values(s, card.policy.time_column))
+        for det in card.policy.detectors:
+            counts = values(s, det.signal_column)
+            assert len(counts) == s["points"]
+            assert np.allclose(rec.spectra[det.detector_id].intensity, counts)
+            assert np.allclose(rec.spectra[det.detector_id].variance, counts)   # D3: σ² = N, no floor
+
+
 def test_central_analyzer_carries_the_scan_Q():
-    # ana5 ↔ #V8 == #Q (the D2 mapping check on real bytes).
+    # ana5 ↔ #V8 == #Q (the D2 mapping check on the facility's layout).
     card = spec_s30.card_template()
     rec = spec_s30.parse_file(S30_FILE, card)[0]
     q_consts = {a.name: a.values[0] for a in rec.scan_axes if a.role == "constant"}
@@ -76,10 +95,7 @@ def test_central_analyzer_carries_the_scan_Q():
 
 
 def test_record_survives_json_round_trip():
-    # A parsed real record must serialize to the canonical JSON store and back unchanged.
-    import json
-    from isar.schema import scan
-
+    # A parsed record must serialize to the canonical JSON store and back unchanged.
     card = spec_s30.card_template()
     rec = spec_s30.parse_file(S30_FILE, card)[0]
     restored = scan.ScanRecord.from_dict(json.loads(json.dumps(rec.to_dict())))

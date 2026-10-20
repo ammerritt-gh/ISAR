@@ -1,25 +1,28 @@
-"""Gate B — real-file smoke for the IN8 numor parser (§4.1).
+"""Gate B — file smoke for the IN8 numor parser (§4.1).
 
-Parses the committed real numors and asserts the records are sane (single det0, raw counts, fixed-kf
-geometry, identity keyed on EXPNO so scans group across files):
+Parses the committed artificial copies of real numors (`artificial_data/`: the facility's own header
+and layout, every data-row number replaced) and asserts the records are sane (single det0, raw
+counts, fixed-kf geometry, identity keyed on EXPNO so scans group across files):
 
   * a `bs qh` numor → one `det0` *measurement* with a scanned energy axis + constant Q from COMND;
   * a `sc a3` numor → an *alignment* with an angle axis and no constant-Q assertion;
   * raw CNTS are the signal (monitor stored, not divided), temperature setpoint = header RT, sensor = TT;
   * the record survives the canonical JSON store.
+
+Values the parser takes from a data column (energy, counts, monitor, the TT sensor, the scanned
+motor) are asserted against the copy's truth file, i.e. what the copy tool wrote there; header
+values (RT, KFIX, EXPNO, COMND) are the facility's own and stay literal.
 """
-from pathlib import Path
 import json
 
 import numpy as np
 
+from artificial import IN8_ALIGN as ALIGN, IN8_MEAS as MEAS, scan_truth, values
 from isar.parsers import ill_in8
 from isar.schema import axes, scan
 
-REPO = Path(__file__).resolve().parents[2]
-IN8 = REPO / "test_data" / "ILL IN8"
-MEAS = IN8 / "055181"        # bs qh 4 -0.2 0 1 ... np 41 mn 100000
-ALIGN = IN8 / "055177"       # sc a3 0 da3 2 np 31 ti 10  (disconnected sensor: header TT=0, RT=221.57)
+MEAS_TRUTH = scan_truth(MEAS, 55181)
+ALIGN_TRUTH = scan_truth(ALIGN, 55177)
 
 
 def test_bs_qh_numor_is_a_single_detector_measurement():
@@ -34,11 +37,13 @@ def test_bs_qh_numor_is_a_single_detector_measurement():
 
     axes.assert_constant_q_energy(rec)
     energy = axes.scanned_axes(rec)[0].values
-    assert len(energy) == 41 and energy[0] < energy[-1]
+    assert len(energy) == MEAS_TRUTH["points"] == 41 and energy[0] < energy[-1]
+    assert np.allclose(energy, values(MEAS_TRUTH, "EN"))
 
     sp = rec.spectra["det0"]
-    assert np.allclose(sp.q, [4.0, -0.2, 0.0])       # constant Q from `bs qh 4 -0.2 0`
+    assert np.allclose(sp.q, [4.0, -0.2, 0.0])       # constant Q from `bs qh 4 -0.2 0` (the header)
     assert np.all(sp.intensity >= 0)
+    assert np.allclose(sp.intensity, values(MEAS_TRUTH, "CNTS"))   # raw counts are the signal
     assert np.allclose(sp.variance, sp.intensity)    # raw counts: variance = N (Poisson √N)
     assert np.all(sp.intensity == sp.intensity.astype(int))   # integer counts, not normalized rates
 
@@ -57,17 +62,19 @@ def test_normalization_keeps_monitor_and_counting_mode():
     rec = ill_in8.parse_file(MEAS, card)[0]
     norm = rec.normalization
     assert norm.counting_mode == "monitor"           # bs qh ... mn 100000
-    assert np.all(norm.monitor > 0)                   # M1 stored
     assert len(norm.monitor) == 41
+    assert np.allclose(norm.monitor, values(MEAS_TRUTH, "M1"))      # M1 stored
+    assert np.allclose(norm.time, values(MEAS_TRUTH, "TIME"))
 
 
 def test_temperature_setpoint_from_header_rt_sensor_from_tt():
-    # 055181: header RT≈300, sample TT≈298.8 (connected). The disconnected case (055177) is below.
+    # 055181: setpoint RT from the header (≈300); the TT sensor is a DATA COLUMN, so it is asserted
+    # against what the copy tool wrote there. The disconnected case (055177) is below.
     card = ill_in8.card_template()
     rec = ill_in8.parse_file(MEAS, card)[0]
     assert np.isclose(rec.temperature.setpoint[0], 300.03, atol=0.5)
     assert "TT" in rec.temperature.sensors
-    assert np.isclose(rec.temperature.sensors["TT"].values[0], 298.772, atol=0.1)
+    assert np.allclose(rec.temperature.sensors["TT"].values, values(MEAS_TRUTH, "TT"))
 
 
 def test_sc_a3_numor_is_alignment_with_angle_axis():
@@ -78,9 +85,10 @@ def test_sc_a3_numor_is_alignment_with_angle_axis():
     scanned = axes.scanned_axes(rec)
     assert len(scanned) == 1 and scanned[0].kind == "angle"
     assert scanned[0].name == "A3"
-    # disconnected sensor: header setpoint RT=221.57 vs sample TT≈298.8 — captured for QC to flag.
+    assert np.allclose(scanned[0].values, values(ALIGN_TRUTH, "A3"))   # first A3 = the scanned motor
+    # disconnected sensor: header setpoint RT=221.57 (the header) vs the TT data column.
     assert np.isclose(rec.temperature.setpoint[0], 221.57, atol=0.5)
-    assert np.isclose(rec.temperature.sensors["TT"].values[0], 298.772, atol=0.1)
+    assert np.allclose(rec.temperature.sensors["TT"].values, values(ALIGN_TRUTH, "TT"))
 
 
 def test_in8_record_survives_json_round_trip():
