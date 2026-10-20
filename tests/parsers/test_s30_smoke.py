@@ -83,6 +83,15 @@ def test_every_value_taken_from_a_data_column_is_the_one_written_there():
             assert np.allclose(rec.spectra[det.detector_id].variance, counts)   # D3: σ² = N, no floor
 
 
+def test_default_card_names_the_3sigma_facility_columns():
+    """The column map above reads whatever the card names, so a card pointing a detector at another
+    existing column (Ana5_3std -> Ana5_5std) would pass it. Pinned here as literals instead."""
+    pol = spec_s30.card_template().policy
+    assert (pol.energy_column, pol.monitor_column, pol.time_column) == ("HerixE", "ICO-C", "Seconds")
+    assert {d.detector_id: d.signal_column for d in pol.detectors} == {
+        f"ana{i}": f"Ana{i}_3std" for i in range(1, 10)}
+
+
 def test_central_analyzer_carries_the_scan_Q():
     # ana5 ↔ #V8 == #Q (the D2 mapping check on the facility's layout).
     card = spec_s30.card_template()

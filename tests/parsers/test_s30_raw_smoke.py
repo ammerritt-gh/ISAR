@@ -107,6 +107,14 @@ def test_every_miniscan_value_is_the_one_written_in_its_column():
                                _stack(tokens(s, det.signal_column), runs))
 
 
+def test_default_card_names_the_raw_facility_columns():
+    """Pinned as literals: the column-map test above reads whatever the card names."""
+    pol = spec_s30_raw.card_template().policy
+    assert (pol.energy_column, pol.monitor_column, pol.time_column) == ("HerixE", "ICO-C", "Seconds")
+    assert {d.detector_id: d.signal_column for d in pol.detectors} == {
+        f"ana{i}": f"Ana{i}" for i in range(1, 10)}
+
+
 def test_ascans_classified_with_their_scanned_motor():
     card = spec_s30_raw.card_template()
     by_no = {r.scan_number: r for r in spec_s30_raw.parse_file(RAW, card)}
