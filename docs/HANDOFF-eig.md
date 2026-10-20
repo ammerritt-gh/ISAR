@@ -133,7 +133,7 @@ Commits are on `main`.
 | Fact | Value | Where |
 |---|---|---|
 | First scan after go | 0.3–0.6 s, every run | rehearsal logs |
-| One quicklook's fit, 2026-09-03 morning | 85 s; 136 of 140 s in nested sampling, 8 dynesty runs (4 per fit, scan fit + single-member master refit), 268k likelihood evaluations | cProfile, `HANDOFF-demo-2026-09.md` §4 |
+| One quicklook's fit, 2026-09-03 morning | 85 s; 136 of 140 s in nested sampling, 8 dynesty runs (4 per fit, scan fit + single-member master refit), 268k likelihood evaluations | cProfile, the deleted demo run-sheet §4 (`git log --diff-filter=D -- docs/HANDOFF-demo-2026-09.md`) |
 | Same quicklook after the day's work | 23 s (scan 11.6, master 10.8) | `4187374` |
 | Sampler default | 32 live points (was 128; 5 min/fit) | `02cc2cc`, `STATS_PRIMER.md` |
 | Convolution | kernel and elastic profile cached, np.interp; 2.5× per evaluation, bit-identical | `3d63cdc` |
@@ -195,8 +195,8 @@ beliefs and anchors, `session.json` master provenance and candidate tables, and 
 trace per point — never the run summaries. The three defects of §7.30, §7.33 and §7.34 were each
 found in under an hour that way after longer detours without it.
 
-The campaign-authorization repair plan (`plans/campaign-authorization-repair.md`) and the demo
-run-sheet (`HANDOFF-demo-2026-09.md`) are evidence and measurements; they are not the work.
+The campaign-authorization repair plan (`plans/campaign-authorization-repair.md`) is evidence
+and measurement; it is not the work.
 
 ## 7. Decisions of 2026-09-02 (owner-ruled in conversation; recorded here until the design docs absorb them)
 
