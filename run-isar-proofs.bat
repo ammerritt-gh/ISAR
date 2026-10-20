@@ -22,6 +22,8 @@ if not defined ISAR_ENV (
 if /i "%~1"=="golden" goto golden
 
 echo Running the proofs against real_data\ ...
+rem Clear ISAR_GOLDEN so a switch inherited from an earlier gate cannot run the sealed scenarios.
+set "ISAR_GOLDEN="
 "%MM%" run -n %ISAR_ENV% python -m pytest proofs -q
 goto done
 
