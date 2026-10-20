@@ -19,6 +19,10 @@ if not defined ISAR_ENV (
     if exist "%MAMBA_ROOT_PREFIX%\envs\isar\python.exe" (set "ISAR_ENV=isar") else (set "ISAR_ENV=tavi-dev")
 )
 
+rem Fail with the fix named, not with "No module named pytest" in a window that closes.
+"%MM%" run -n %ISAR_ENV% python -c "import pytest" >nul 2>&1
+if errorlevel 1 goto nopytest
+
 if /i "%~1"=="golden" goto golden
 
 echo Running the proofs against real_data\ ...
@@ -38,3 +42,11 @@ echo.
 if "%RC%"=="0" (echo RESULT: all selected proofs passed.) else (echo RESULT: FAILED or errored - see the output above. Exit code %RC%.)
 pause
 exit /b %RC%
+
+:nopytest
+echo.
+echo ISAR's proofs need pytest, and environment "%ISAR_ENV%" does not have it.
+echo To add it, run this from the repository folder, then double-click this file again:
+echo     "%MM%" run -n %ISAR_ENV% python -m pip install -e ".[test]"
+pause
+exit /b 1
