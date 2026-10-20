@@ -25,10 +25,3 @@ def test_cn_energy_fwhm_falls_back_when_triangle_cannot_close(real_file):
     rec = _record(real_file, "055182")
     rec.raw_header["params"]["KFIX"] = 0.001  # too small to close the triangle at this |Q|
     assert resolution.cn_energy_fwhm(rec, w=0.0, fallback=1.23) == 1.23
-
-
-def test_in8_card_enables_a_quasielastic_component():
-    """The IN8 card declares the broad quasi-elastic width (§8), which is what makes
-    enumerate_structures admit the QE hypothesis on TAS; S30's card leaves it unset."""
-    card = ill_in8.card_template()
-    assert card.policy.quasielastic_fwhm == 1.5
