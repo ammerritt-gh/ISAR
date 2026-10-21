@@ -145,6 +145,20 @@ def test_i_family_non_integer_flag_is_a_warning_above_ten_percent_of_bins(tmp_pa
         assert [f.severity for f in flag] == [severity] and f"{n_off} of 20" in flag[0].reason
 
 
+def test_negative_intensity_bin_is_masked_and_flagged_never_a_positive_count(tmp_path):
+    path = write_member(tmp_path, "a03", lattice(0, 10), np.full(10, 40.0), 1e6)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    cells = lines[4].split()
+    cells[14] = "-4.0000000E-05"                                 # y_i of the fourth bin, error unchanged
+    lines[4] = " ".join(cells)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    sp = parse(tmp_path).spectra["a03"]
+    assert not sp.mask[3] and sp.mask.sum() == 9 and len(sp.intensity) == 10      # masked, not dropped
+    assert sp.intensity[3] == 0 and sp.variance[3] == 0
+    assert [p.index for p in sp.point_flags if p.type == "invalid_point"] == [3]
+    assert np.all(sp.intensity[np.arange(10) != 3] == 40)
+
+
 def test_unknown_intensity_family_is_refused(tmp_path):
     write_member(tmp_path, "a03", lattice(0, 5), np.ones(5), 1e6)
     with pytest.raises(ValueError, match="intensity_family"):

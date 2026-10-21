@@ -103,7 +103,7 @@ def _decode(token: str):
 class CountRecovery:
     counts: np.ndarray      # N = (y/e)^2 per bin, rounded when integer; NaN where invalid
     not_integer: np.ndarray  # valid bins to report (integer: beyond the printed digits; else any N != round(N))
-    invalid: np.ndarray     # e == 0 with y != 0, or non-finite; the caller masks these, never drops
+    invalid: np.ndarray     # e == 0 with y != 0, y < 0, or non-finite; the caller masks these, never drops
     max_deviation: float    # largest |N - round(N)| over valid bins (0.0 when there are none)
 
 
@@ -114,14 +114,15 @@ def recover_counts(y_text: Sequence[str], e_text: Sequence[str], integer: bool) 
     from an integer. With `integer`, N is rounded to the nearest integer and a bin is reported when
     N strays beyond max(0.25, 4*10^(1-s)*N), s the fewer significant digits printed in that bin's
     y and e. Without it, N stays unrounded and every bin with N != round(N) is reported.
-    Zero counts give N = 0 with variance 0 (the caller's sigma^2 = N); no floor is added.
+    Zero counts give N = 0 with variance 0 (the caller's sigma^2 = N); no floor is added. A negative
+    intensity cannot be a count (the square would lose its sign): that bin is invalid.
     """
     if len(y_text) != len(e_text):
         raise ValueError(f"recover_counts: {len(y_text)} intensities but {len(e_text)} errors")
     y = np.array([float(t) for t in y_text], dtype=float)
     e = np.array([float(t) for t in e_text], dtype=float)
     sig = np.array([min(_sig_digits(a), _sig_digits(b)) for a, b in zip(y_text, e_text)])
-    invalid = ~(np.isfinite(y) & np.isfinite(e)) | ((e == 0) & (y != 0))
+    invalid = ~(np.isfinite(y) & np.isfinite(e)) | ((e == 0) & (y != 0)) | (y < 0)   # squaring would hide a sign
     # y == 0 gives N = 0 whatever e is, so the division is only ever taken with e != 0 where it matters.
     n = (np.where(y == 0, 0.0, y) / np.where(e == 0, 1.0, e)) ** 2
     n = np.where(invalid, 0.0, n)

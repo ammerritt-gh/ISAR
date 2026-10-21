@@ -480,7 +480,7 @@ def _spectrum(m: Member, k: np.ndarray, all_keys: np.ndarray, fname_facts: dict,
     point_flags = [scan.PointFlag(int(i), "bin_absent", f"{det} has no bin here")
                    for i in np.nonzero(~present)[0]]
     point_flags += [scan.PointFlag(int(pos[i]), "invalid_point",
-                                   "intensity and error give no count (error 0 with intensity, or not finite)")
+                                   "intensity and error give no count (error 0 with intensity, negative, or not finite)")
                     for i in np.nonzero(rec.invalid)[0]]
     if m.monitor is None:                               # exposure missing: unknown, not zero
         monitor, time = np.full(n, np.nan), np.full(n, np.nan)

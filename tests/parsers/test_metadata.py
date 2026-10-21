@@ -45,6 +45,14 @@ def test_count_recovery_zero_and_zero_error_bins_and_invalid_bin():
     assert not rec.not_integer.any()
 
 
+def test_count_recovery_negative_intensity_is_an_invalid_bin_not_a_positive_count():
+    for integer in (True, False):
+        rec = md.recover_counts(["-3", "3"], ["1.7320508", "1.7320508"], integer=integer)
+        assert list(rec.invalid) == [True, False] and np.isnan(rec.counts[0])
+        assert rec.counts[1] == pytest.approx(3, abs=1e-6)
+        assert not rec.not_integer[0]                 # invalid bins are not also "reported"
+
+
 def test_count_recovery_flags_non_integer_and_keeps_unrounded_when_not_integer():
     # N = 1.5492^2 = 2.40002: five printed digits leave a tolerance of 0.25, so it is reported.
     rec = md.recover_counts(["1.5492"], ["1.0000"], integer=False)

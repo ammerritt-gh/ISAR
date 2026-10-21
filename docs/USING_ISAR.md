@@ -331,7 +331,9 @@ before any fit.
 
 Counts are raw in both layouts: N = (intensity/error)² is recovered from the printed numbers, the
 variance is N, and a zero count stays zero with σ = 0 (no floor). The monitor and counting time of each
-analyzer are stored beside its counts, never divided in. Analyzers with different bins share one energy
+analyzer are stored beside its counts, never divided in. A bin whose intensity is negative (it cannot be
+a count), or whose error is 0 with a non-zero intensity, is masked and flagged `invalid_point`, never
+dropped. Analyzers with different bins share one energy
 axis; a bin that an analyzer lacks is masked and flagged `bin_absent`.
 
 ### What the card's tables do
