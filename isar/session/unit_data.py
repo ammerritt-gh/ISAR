@@ -251,18 +251,16 @@ def _provenance_extras(rec, det=None) -> dict:
     """
     extras: dict = {}
     # Facts are {"value", "source"[, "conflicts"]}: the inspector shows each value with its source.
-    if getattr(rec, "facts", None):
-        extras["scan_facts"] = rec.facts
-    if getattr(rec, "scan_flags", None):
-        extras["scan_flags"] = _flag_rows(rec.scan_flags)
+    # Facts and flags are stamped even when empty: the ledger merge overwrites by key, so an omitted
+    # key would keep what a re-ingest no longer raises.
+    extras["scan_facts"] = dict(getattr(rec, "facts", None) or {})
+    extras["scan_flags"] = _flag_rows(getattr(rec, "scan_flags", None) or [])
     sp = rec.spectra.get(det) if det is not None else None
     if sp is not None:
-        if sp.facts:
-            extras["analyzer_facts"] = sp.facts
+        extras["analyzer_facts"] = dict(sp.facts or {})
         extras["q_source"] = sp.q_source
         extras["q_rung"] = Q_SOURCE_RUNG.get(sp.q_source)
-        if sp.spectrum_flags:
-            extras["spectrum_flags"] = _flag_rows(sp.spectrum_flags)
+        extras["spectrum_flags"] = _flag_rows(sp.spectrum_flags or [])
     rh = getattr(rec, "raw_header", None)
     rh = rh if isinstance(rh, dict) else {}
 

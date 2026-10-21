@@ -159,3 +159,25 @@ def test_provenance_extras_b_when_field_present():
         name="B", setpoint=np.full(n, 6.0), sensors={}, valid_mask=np.ones(n, bool))
     extras = unit_data._provenance_extras(rec)
     assert extras["B"] == 6.0
+
+
+def test_reingest_clears_flags_and_facts_no_longer_raised():
+    """Ledger upserts merge provenance shallowly, so a re-ingest must overwrite each flag and fact key
+    even when it has none now; otherwise a `missing_analyzer` flag outlives the file that cleared it."""
+    from isar.session import ingest
+    from isar.session.state import SessionState
+    rec = _s30_record()
+    rec.scan_flags = [scan_mod.Flag("missing_analyzer", "warning", "ana2 absent")]
+    rec.facts = {"slit": {"value": "60x60", "source": "header"}}
+    rec.spectra["ana1"].facts = {"dq": {"value": 0.02, "source": "header"}}
+    rec.spectra["ana1"].spectrum_flags = [scan_mod.Flag("bin_absent", "info", "ana1: 2 bins absent")]
+    session = SessionState()
+    ingest.upsert_ingested_entry(session, rec, "ana1", chash="a",
+                                 prov=unit_data._provenance_extras(rec, "ana1"))
+    rec.scan_flags, rec.facts = [], {}
+    rec.spectra["ana1"].facts, rec.spectra["ana1"].spectrum_flags = {}, []
+    ingest.upsert_ingested_entry(session, rec, "ana1", chash="b",
+                                 prov=unit_data._provenance_extras(rec, "ana1"))
+    prov = session.get(f"{rec.experiment_id}:{rec.scan_number}:ana1").provenance
+    assert prov["scan_flags"] == [] and prov["spectrum_flags"] == []
+    assert prov["scan_facts"] == {} and prov["analyzer_facts"] == {}
