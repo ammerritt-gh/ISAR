@@ -45,9 +45,12 @@ def plugin_by_name(name: str):
 def default_plugin_name(facility: str, instrument: str, format_version: str) -> str | None:
     """The parser to scaffold a card from, given a detected format tuple (used by `isar init`).
 
-    Returns None for a recognized-but-unsupported instrument (e.g. ID28/BL43LXU, whose SPEC readers
-    exist but whose card templates are not yet shipped).
+    Returns None for a recognized-but-unsupported instrument (e.g. ID28, or BL43LXU's raw SPEC files,
+    whose readers exist but whose card templates are not shipped). BL43LXU's processed per-analyzer
+    files (CsV3Sb5 and Ba122 layouts) have the `sp8_bl43` plugin and card template.
     """
+    if (facility, instrument, format_version) == ("SP8", "BL43LXU", "processed"):
+        return "sp8_bl43"
     if (facility, instrument) == ("APS", "S30"):
         return "spec_s30_raw" if format_version.endswith("-raw") else "spec_s30"
     if (facility, instrument) == ("ILL", "IN8"):
@@ -108,8 +111,21 @@ def _numor_year(text: str) -> str:
     return f"20{m.group(1)}" if m else "unknown"
 
 
+_BL43_PROCESSED = ("SP8", "BL43LXU", "processed")
+# The Ba122 export carries no header at all: scan, temperature, analyzer and HKL live in the name.
+_BA122_NAME = re.compile(r".+_scan_\d+(?:_\d+)*_A\d+_Q_.+_inel\.dat")
+
+
+def _is_bl43_label(line: str) -> bool:
+    """The column-label line of a BL43LXU per-analyzer file: `#  meV  meV_sft ...  norm_i ...`."""
+    words = line.lstrip("#").split()
+    return line.startswith("#") and words[:1] == ["meV"] and ("norm_i" in words or "norm_lr" in words)
+
+
 def detect(path: str | Path) -> tuple[str, str, str]:
     """Resolve (facility, instrument, format_version) from a file's header."""
+    if _BA122_NAME.fullmatch(Path(path).name):
+        return _BL43_PROCESSED
     head = _header_lines(path)
     text = "\n".join(head)
 
@@ -130,6 +146,10 @@ def detect(path: str | Path) -> tuple[str, str, str]:
         else:
             facility, instrument = "UNKNOWN", "SPEC"
         return (facility, instrument, _spec_year(text))
+
+    # BL43LXU processed per-analyzer file (CsV3Sb5 layout) — recognised by its column-label line.
+    if any(_is_bl43_label(l) for l in head):
+        return _BL43_PROCESSED
 
     # ILL numor family — keyword header with "INSTR: <name>".
     instr = next((l.split(":", 1)[1].strip() for l in head if l.startswith("INSTR:")), None)
