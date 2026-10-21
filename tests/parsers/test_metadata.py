@@ -31,6 +31,13 @@ def test_filename_decodes_p_decimal_m_minus_and_hkl_groups():
     assert md.match_filename("nothing", [r"scan_(?P<n>\d+)"]) == {}
 
 
+def test_filename_group_with_a_text_part_stays_one_string():
+    # A file-set stem is one string key; a group of numbers alone still splits into its parts.
+    got = md.match_filename("Sample_302K_0p5_0p5_3_sum", [r"(?P<stem>.+_sum)"])
+    assert got == {"stem": "Sample_302K_0p5_0p5_3_sum"}
+    assert md.match_filename("scan_58_59_x", [r"scan_(?P<scans>\d+_\d+)_x"]) == {"scans": [58, 59]}
+
+
 def test_count_recovery_zero_and_zero_error_bins_and_invalid_bin():
     rec = md.recover_counts(["3", "0", "4", "0"], ["1.7320508", "0", "0", "2"], integer=True)
     assert rec.counts[0] == 3 and rec.counts[1] == 0.0 and rec.counts[3] == 0.0   # 0/0 is N=0, sigma 0

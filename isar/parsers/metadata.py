@@ -69,8 +69,9 @@ def match_filename(name: str, patterns: Iterable[str]) -> dict:
     """Named groups of the first card pattern that matches all of `name`, decoded.
 
     `p` is the decimal point and a leading `m` is minus (`m0p0079` -> -0.0079); digits become int,
-    other numbers float; a group containing `_` becomes the list of its decoded parts
-    (`0p5_0p5_3` -> [0.5, 0.5, 3]). Returns {} when no pattern matches.
+    other numbers float. A group whose `_`-separated parts are all numbers becomes the list of
+    those (`0p5_0p5_3` -> [0.5, 0.5, 3]); any other group stays the original text, so a file-set
+    stem such as `Sample_302K_0p5_0p5_3_sum` is one string. Returns {} when no pattern matches.
     """
     for pattern in patterns:
         m = re.fullmatch(pattern, name)
@@ -81,7 +82,10 @@ def match_filename(name: str, patterns: Iterable[str]) -> dict:
 
 def _decode_group(text: str):
     if "_" in text:
-        return [_decode(p) for p in text.split("_")]
+        parts = text.split("_")
+        if all(_NUMBER.fullmatch(p) for p in parts):
+            return [_decode(p) for p in parts]
+        return text
     return _decode(text)
 
 
