@@ -416,6 +416,36 @@ def test_fitted_inspector_withholds_energy_fit_for_raw_unit_axis(make_ws, monkey
     assert any("calibration pending" in a.text for a in st.main_spec.annotations)
 
 
+@pytest.mark.parametrize("status,zero_source,withheld", [
+    ("needs_zero", "elastic_fit", False), ("needs_zero", "pipeline_zero", False),
+    ("needs_zero", None, True), ("needs_conversion_and_zero", "elastic_fit", True)])
+def test_raw_unit_shows_its_model_only_with_a_supplied_zero_and_no_conversion(
+        make_ws, status, zero_source, withheld):
+    """Hard rule 4 holds: a raw axis with no energy zero withholds its model; a zero the calibration
+    supplied (fitted, or the labelled pipeline zero) makes a needs_zero axis fit-ready, but an axis
+    that also needs a conversion never is."""
+    axis = {"name": "deltaE", "kind": "energy", "units": "meV",
+            "raw_abscissa_kind": "energy", "calibration_status": status}
+    calib = {"center": 0.3, "gauss_fwhm": 1.2, "lorentz_fwhm": 0.0}
+    if zero_source is not None:
+        calib["zero_source"] = zero_source
+    scans = {"s30:12:ana3": {"scan_id": "s30:12:ana3", "scan_number": 12,
+                              "scan_type": "measurement", "status": "fitted",
+                              "detectors": {"ana3": _outcome(detector_id="ana3", calib=calib)},
+                              "provenance": {"M": 200}}}
+    ws = Workspace.open(make_ws(
+        scans=scans,
+        unit_files=[{"exp": "s30", "scan_number": 12, "det": "ana3", "x": _UNIT_X,
+                     "counts": _UNIT_COUNTS, "mask": [True, True, True, True], "axis": axis}],
+    ))
+    vm = InspectorViewModel(ws)
+    vm.set_fit(ws.scans[0].detectors["ana3"])
+    st = vm.state
+    assert any("calibration pending" in a.text for a in st.main_spec.annotations) is withheld
+    assert any(s.role.value == "fit" for s in st.main_spec.series) is not withheld
+    assert (st.curve_error is not None) is withheld
+
+
 def test_fitted_inspector_keeps_raw_counts_when_model_evaluation_fails(make_ws, monkeypatch):
     """A broken/stale fit must not make usable measured counts disappear from the inspector."""
     from isar.plotspec.spec import Role

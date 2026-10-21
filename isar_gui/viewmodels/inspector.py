@@ -390,11 +390,15 @@ class InspectorViewModel(ViewModel):
                     # TAVI energies, so retain the existing scan-number fallback only in this case.
                     energy, counts, yerr = ws.scan_data(fit.scan_number)
                     mask, axis = None, None
-            # The delivered model is in calibrated energy-transfer coordinates. A raw scan axis
-            # (including the explicit 3-state "needs zero" forms) must never be used as its input:
+            # The delivered model is in energy-transfer coordinates about the energy zero. A raw scan axis
+            # with no zero supplied (the 3-state "needs zero" and conversion forms) must never be its input:
             # it would produce a plausible-looking but physically false curve. Keep the measured
             # points visible, including QC-masked ones, and state why the overlay is withheld.
-            if axis is not None and axis.get("calibration_status") != "absolute":
+            # Rule 4: a raw axis needs its energy zero; a zero the calibration supplied (fitted, or the
+            # labelled pipeline zero) makes a needs_zero axis fit-ready, a conversion never does.
+            status = (axis or {}).get("calibration_status")
+            zero_given = (fit.calib or {}).get("zero_source") in ("elastic_fit", "pipeline_zero")
+            if axis is not None and status != "absolute" and not (status == "needs_zero" and zero_given):
                 try:
                     st.main_spec = builders.fit_overlay_spec(
                         x=energy, counts=counts, yerr=yerr, mask=mask,
