@@ -50,6 +50,29 @@ def _fmt_q(hkl) -> str:
         return ""
 
 
+# Provenance fact tables (stamped at ingest, session/unit_data.py) and the facts shown from each.
+_FACT_ROWS = (("scan_facts", ("scan_label", "T_K", "hkl_nominal", "slit")),
+              ("analyzer_facts", ("dq", "efficiency")))
+
+
+def _fmt_fact(fact: dict) -> str:
+    """One fact as ``value (source)``; a missing value says so, and a source disagreement is listed."""
+    value = fact.get("value")
+    if value is None:
+        text = "not available"
+    elif isinstance(value, (list, tuple)):
+        text = _fmt_q(value) or str(value)
+    elif isinstance(value, float):
+        text = f"{value:.4g}"
+    else:
+        text = str(value)
+    text += f" ({fact.get('source')})"
+    conflicts = [c for c in (fact.get("conflicts") or []) if isinstance(c, dict)]
+    if conflicts:
+        text += "; conflicts: " + ", ".join(f"{c.get('value')} ({c.get('source')})" for c in conflicts)
+    return text
+
+
 @dataclass
 class CandidateRow:
     label: str
@@ -281,6 +304,18 @@ class InspectorViewModel(ViewModel):
                 md["B"] = f"{float(b):g} T"
             except (TypeError, ValueError):
                 pass
+        if prov.get("q_rung") is not None:
+            md["Q rung"] = f"{prov['q_rung']} ({prov.get('q_source')})"
+        for key, names in _FACT_ROWS:
+            facts = prov.get(key)
+            for name in names if isinstance(facts, dict) else ():
+                if isinstance(facts.get(name), dict):
+                    md[name] = _fmt_fact(facts[name])
+        for key, label in (("scan_flags", "scan flags"), ("spectrum_flags", "spectrum flags")):
+            rows = [f for f in (prov.get(key) or []) if isinstance(f, dict)]
+            if rows:
+                md[label] = "; ".join(f"{f.get('type')} ({f.get('severity')}): {f.get('reason')}"
+                                      for f in rows)
         src = getattr(sv, "source_file", None)
         if src:
             md["file"] = Path(src).name

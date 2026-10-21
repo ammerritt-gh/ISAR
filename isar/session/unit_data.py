@@ -238,18 +238,31 @@ def scan_temperature(rec) -> float | None:
     return t if math.isfinite(t) else None
 
 
+def _flag_rows(flags) -> list:
+    return [{"type": f.type, "severity": f.severity, "reason": f.reason} for f in flags]
+
+
 def _provenance_extras(rec, det=None) -> dict:
     """Additive, strictly-tolerant provenance keys stamped onto a ledger entry at ingest.
 
     Every key is best-effort: a missing/oddly-shaped source silently omits that key (never raises,
     never a placeholder). Existing ingest provenance (source_file, T, q, ingested_at) is unaffected.
-    With ``det`` the analyzer's own keys are added too: its Q source and rung.
+    With ``det`` the analyzer's own keys are added too: its facts, its Q source and rung, its flags.
     """
     extras: dict = {}
+    # Facts are {"value", "source"[, "conflicts"]}: the inspector shows each value with its source.
+    if getattr(rec, "facts", None):
+        extras["scan_facts"] = rec.facts
+    if getattr(rec, "scan_flags", None):
+        extras["scan_flags"] = _flag_rows(rec.scan_flags)
     sp = rec.spectra.get(det) if det is not None else None
     if sp is not None:
+        if sp.facts:
+            extras["analyzer_facts"] = sp.facts
         extras["q_source"] = sp.q_source
         extras["q_rung"] = Q_SOURCE_RUNG.get(sp.q_source)
+        if sp.spectrum_flags:
+            extras["spectrum_flags"] = _flag_rows(sp.spectrum_flags)
     rh = getattr(rec, "raw_header", None)
     rh = rh if isinstance(rh, dict) else {}
 
