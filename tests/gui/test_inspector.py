@@ -446,6 +446,33 @@ def test_raw_unit_shows_its_model_only_with_a_supplied_zero_and_no_conversion(
     assert (st.curve_error is not None) is withheld
 
 
+@pytest.mark.parametrize("zero_source,xlabel", [
+    ("elastic_fit", "raw energy (meV) — zero: elastic fit"),
+    ("pipeline_zero", "raw energy (meV) — zero: pipeline zero"),
+    (None, "raw energy (meV) — uncalibrated: elastic zero pending")])
+def test_fitted_raw_unit_axis_names_the_zero_source(make_ws, zero_source, xlabel):
+    """A zero the calibration supplied is named on the fitted unit's axis, never 'pending'; a unit with
+    no zero still says it is pending. The x values stay the raw abscissa, so the label does not say
+    'energy transfer'."""
+    axis = {"name": "deltaE", "kind": "energy", "units": "meV",
+            "raw_abscissa_kind": "energy", "calibration_status": "needs_zero"}
+    calib = {"center": 0.3, "gauss_fwhm": 1.2, "lorentz_fwhm": 0.0}
+    if zero_source is not None:
+        calib["zero_source"] = zero_source
+    scans = {"s30:12:ana3": {"scan_id": "s30:12:ana3", "scan_number": 12,
+                              "scan_type": "measurement", "status": "fitted",
+                              "detectors": {"ana3": _outcome(detector_id="ana3", calib=calib)},
+                              "provenance": {"M": 200}}}
+    ws = Workspace.open(make_ws(
+        scans=scans,
+        unit_files=[{"exp": "s30", "scan_number": 12, "det": "ana3", "x": _UNIT_X,
+                     "counts": _UNIT_COUNTS, "mask": [True, True, True, True], "axis": axis}],
+    ))
+    vm = InspectorViewModel(ws)
+    vm.set_fit(ws.scans[0].detectors["ana3"])
+    assert vm.state.main_spec.xlabel == xlabel
+
+
 def test_fitted_inspector_keeps_raw_counts_when_model_evaluation_fails(make_ws, monkeypatch):
     """A broken/stale fit must not make usable measured counts disappear from the inspector."""
     from isar.plotspec.spec import Role

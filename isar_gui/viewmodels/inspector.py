@@ -274,16 +274,19 @@ class InspectorViewModel(ViewModel):
         return f"{base}  (parsed, not fitted)"
 
     @staticmethod
-    def _axis_label(axis) -> str:
+    def _axis_label(axis, zero_source=None) -> str:
         """Rule-4-honest x-axis label for a raw unit. The x values are the RAW scanned abscissa (never
         energy-zero-shifted), so a non-``absolute`` calibration is NEVER labeled "energy transfer" and
-        NEVER implies E0=0 — the label says out loud that the zero is pending / conversion is needed."""
+        NEVER implies E0=0 — the label says out loud that the zero is pending / conversion is needed.
+        A zero the calibration supplied is named as its source instead of reported as pending."""
         axis = axis or {}
         status = axis.get("calibration_status")
         units = axis.get("units") or "meV"
         kind = axis.get("raw_abscissa_kind") or axis.get("kind") or "scan axis"
         if status == "absolute":
             return f"energy transfer ({units})"
+        if status == "needs_zero" and zero_source in ("elastic_fit", "pipeline_zero"):
+            return f"raw energy ({units}) — zero: {zero_source.replace('_', ' ')}"
         if status == "needs_zero":
             return f"raw energy ({units}) — uncalibrated: elastic zero pending"
         if status == "needs_conversion_and_zero":
@@ -397,14 +400,15 @@ class InspectorViewModel(ViewModel):
             # Rule 4: a raw axis needs its energy zero; a zero the calibration supplied (fitted, or the
             # labelled pipeline zero) makes a needs_zero axis fit-ready, a conversion never does.
             status = (axis or {}).get("calibration_status")
-            zero_given = (fit.calib or {}).get("zero_source") in ("elastic_fit", "pipeline_zero")
+            zero_source = (fit.calib or {}).get("zero_source")
+            zero_given = zero_source in ("elastic_fit", "pipeline_zero")
             if axis is not None and status != "absolute" and not (status == "needs_zero" and zero_given):
                 try:
                     st.main_spec = builders.fit_overlay_spec(
                         x=energy, counts=counts, yerr=yerr, mask=mask,
                         x_fit=None, total=None, components=None,
                         scan_number=fit.scan_number, det_id=fit.detector_id, q=fit.q,
-                        xlabel=self._axis_label(axis))
+                        xlabel=self._axis_label(axis, zero_source))
                     st.main_spec.annotations.append(ps.Annotation(
                         text="fit curve withheld — calibration pending; raw counts shown", xy=None,
                         role=ps.State.UNRELIABLE))
@@ -424,7 +428,7 @@ class InspectorViewModel(ViewModel):
                         x=energy, counts=counts, yerr=yerr, mask=mask,
                         x_fit=None, total=None, components=None,
                         scan_number=fit.scan_number, det_id=fit.detector_id, q=fit.q,
-                        xlabel=self._axis_label(axis) if axis else "energy transfer (meV)")
+                        xlabel=self._axis_label(axis, zero_source) if axis else "energy transfer (meV)")
                     st.main_spec.annotations.append(ps.Annotation(
                         text="model curve unavailable — raw counts shown", xy=None,
                         role=ps.State.UNRELIABLE))
@@ -448,7 +452,7 @@ class InspectorViewModel(ViewModel):
 
         # Legacy pooled fits remain curve-only; new fits use the exact persisted merged spectrum.
         data_x, data_counts, data_yerr, data_mask = energy, counts, yerr, mask
-        xlabel = self._axis_label(axis) if axis else "energy transfer (meV)"
+        xlabel = self._axis_label(axis, zero_source) if axis else "energy transfer (meV)"
         try:
             st.main_spec = builders.fit_overlay_spec(
                 x=data_x, counts=data_counts, yerr=data_yerr, mask=data_mask,
