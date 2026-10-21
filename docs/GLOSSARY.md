@@ -35,9 +35,17 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **elastic line** — the peak at zero energy transfer (no energy exchanged).
 - **energy zero** — where the elastic line sits on the energy axis; defines 0 meV. ISAR self-calibrates
   it from dedicated elastic/Bragg scans.
+- **pipeline zero** — the energy zero taken as the beamline's own file axis, used for an analyzer
+  whose elastic line is not significant. It is labelled `pipeline_zero` in the alerts; ISAR never
+  assumes a zero of 0.0 on an uncalibrated axis.
+- **setting ladder** — how ISAR picks a scan's analyzer-slit setting, and so its resolution curve. A
+  slit the card or header declares is kept (a clearly better slit only raises `slit_mismatch`). With
+  none, the slit whose curves best fit the elastic lines is used (`slit_inferred`), and
+  `slit_ambiguous` says the runner-up is nearly as good.
 - **Voigt** — a Gaussian convolved with a Lorentzian; ISAR's instrument-resolution shape.
 - **resolution** — the instrumental width the data is smeared by (a Gaussian width and a Lorentzian
-  width); ISAR measures it from elastic/Bragg scans.
+  width); ISAR measures it from elastic/Bragg scans. For BL43LXU it is the beamline's measured curve
+  for each analyzer and slit, used in place of the Voigt.
 - **quasi-elastic** — a broad component sitting near zero energy transfer (real signal, not
   resolution). Since SCENE-1 it is its own catalogue phenomenon — a measurement target in its own
   right (linewidth ⇒ relaxation rate), distinct from *diffuse* scattering (broad in Q, elastic in
@@ -174,6 +182,15 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **held** — a scan ISAR is not ready to fit (most often `held_for_calibration`: no energy zero
   measured yet). Held scans are re-examined automatically on every later run; ISAR never guesses
   the missing piece.
+- **fact source** — where a scan's or spectrum's value came from: `header` (a `# key value` line in the
+  file, or its trailing `#Q=`/`#T=` line when no leading header gives it), `trailer` (a trailing line
+  that disagrees with the leading header, kept as a conflict), `sidecar` (a beamline file beside the
+  data, such as `.var`), `filename`, `card` (your `[facts]`), `inferred` (ISAR derived it) or `missing`.
+  The first found wins in that order; a disagreement is flagged `fact_conflict`.
+- **Q rung** — how a spectrum's momentum transfer Q was obtained, best first: rung 1, the analyzer's
+  own HKL from the file; rung 2, computed from the sample angles and orientation (planned); rung 3,
+  computed from the arm-centre HKL and labelled approximate (planned); rung 4, no Q (`q = None`). The
+  spectrum is still identified by its scan and analyzer, with or without Q.
 - **dispersion prior** — the running ω(Q) expectation ISAR builds from its own resolved fits
   (same sample and temperature), used to seed initial conditions and sanity-check new fits. Only
   clean, single-answer (*fold*) results enter it; ambiguous (*fork*) results never do.

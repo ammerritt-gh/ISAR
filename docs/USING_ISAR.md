@@ -299,9 +299,9 @@ is genuinely data- or budget-limited, and resuming without changing something wi
 
 ## Parsing SPring-8 BL43LXU (IXS) folders
 
-BL43LXU is supported for **parsing**: `isar init`, `isar ingest` and the inspector read its processed
-per-analyzer files. Fitting waits on the resolution stage (see the limits at the end of this section).
-Two processed layouts are read. The raw SPEC files the beamline writes (`specixs_*`, `spects_*`) are
+BL43LXU is supported for **parsing** (`isar init`, `isar ingest` and the inspector read its processed
+per-analyzer files) and for **fitting** with the beamline's measured resolution curves, once the card
+names its resolution folder (see *Resolution, slit and zero* below). Two processed layouts are read. The raw SPEC files the beamline writes (`specixs_*`, `spects_*`) are
 not: `isar init` on one stops with "has no shipped card template yet".
 
 Point ISAR at the folder, as for any instrument:
@@ -313,10 +313,9 @@ isar ingest "D:\beamtime\leTacon_SP8_CsV3Sb5" --workspace my_bl43
 
 `isar init` detects the instrument from the first per-analyzer file and writes
 `my_bl43\card.policy.toml` from the shipped template. `isar ingest` makes one scan per set of files,
-with one spectrum per analyzer, and ledgers each analyzer as its own `(scan, analyzer)` entry. An
-`isar run` on these scans holds each one (`held_for_calibration`, "no energy zero in calibration
-coverage"). Ingest is the useful step for now: every analyzer's counts and facts can be inspected
-before any fit.
+with one spectrum per analyzer, and ledgers each analyzer as its own `(scan, analyzer)` entry. `isar run`
+then sets each scan's slit and each analyzer's energy zero. An analyzer that cannot be fitted is held on
+its own, with the reason named; the other analyzers of the scan still fit.
 
 ### The two layouts
 
@@ -349,9 +348,12 @@ merged: the second is not ingested and the ingest report names both.
 
 ISAR does its own combining, so it does not want scans that were already summed. A set whose file name
 lists several scans (`..._scan_58_59_...`) is **passed over**, and named under `passed_over` in the ingest
-report, when every scan it lists is in the same batch as its own set of the same SPEC file. When they are
-not (or the set lists no scans, as in the CsV3Sb5 layout), it is read and flagged `pre_combined_input`,
-and so is any set whose `.var` reports more than one merged scan. The files are never touched.
+report, when every scan it lists is in the same batch as its own set of the same SPEC file, or already in
+the workspace as one. When they are not (or the set lists no scans, as in the CsV3Sb5 layout), it is read
+and flagged `pre_combined_input`, and so is any set whose `.var` reports more than one merged scan. If such
+a set was read first and its individual scans arrive later (in any folder), the next `isar ingest` or
+`isar run` marks its ledger entries `excluded`, with a reason naming the set and the scans; they are not
+fitted again and stay listed under "Held / declined". The files are never touched.
 
 ### What the card's tables do
 
@@ -360,19 +362,20 @@ and so is any set whose `.var` reports more than one merged scan. The files are 
   `specfile`, `scan_numbers`, `hkl`) become filename facts. `sidecar` is `{set}.var`. `ignore` lists
   globs that are never read as data. Subfolders are walked, and a set is the files of one folder: the
   same stem in two folders is two sets (the second is refused by name if it lands on the first's
-  identity, see below). The `rf/` folder of SARF resolution files is classified unrecognized and not read
-  until the resolution stage.
+  identity, see below). The `rf/` folder of SARF resolution files is classified unrecognized and never
+  read as data; `[calibration]` reads it as the resolution library.
 - `[reader]`: `intensity_family` is `"_i"` (the default: integer counts, raw) or `"_lr"`. The `_lr`
   counts split some counts between neighbouring bins, so they are **not raw**. They are kept unrounded and
-  every `_lr` spectrum is flagged `counts_not_integer` (a warning, whatever its bins recover to). Do not
-  fit `_lr` counts as raw counts; the fit-side hold lands with the resolution stage. For `_i`, a few bins
-  that do not recover to an integer (print rounding) raise the same flag as a notice; when more than 10%
-  of the valid bins do, it is a warning, because the columns are then probably not counts.
+  every `_lr` spectrum is flagged `counts_not_integer` (a warning, whatever its bins recover to). For `_i`,
+  a few bins that do not recover to an integer (print rounding) raise the same flag as a notice; when more
+  than 10% of the valid bins do, it is a warning, because the columns are then probably not counts. The
+  calibration holds a spectrum carrying this flag, notice or warning, and never fits it. Its hold reason
+  still reads "non-raw counts (_lr)" even for an `_i` notice; that is an open defect (`ARCHITECTURE.md` §15).
 - `[facts]`: values you declare, for example `slit = "60x60"` or `lattice = [...]`. They rank lowest: a
   header, trailer, sidecar or filename value wins, and a disagreement raises `fact_conflict`.
-- `[calibration]`: the `tabulated_elastic` method (energy zero and resolution curve from the SARF files)
-  is written in the template now and is **not implemented yet**. Until it is, the code does not know the
-  method, and the scans are held as above.
+- `[calibration]`: `method = "tabulated_elastic"` (see *Resolution, slit and zero*). `resolution_folder`
+  is the folder of SARF files, relative to the card's folder unless absolute; `resolution_pattern` matches
+  their file names and picks out the analyzer and the slit.
 - `[[detectors]]`: `enabled = false` leaves an analyzer out of every scan. `value_index` and
   `signal_column` are not used for this instrument.
 
@@ -418,11 +421,40 @@ A spectrum's `q_source` says which rung gave its Q. `header` or `filename` is ru
 HKL). `none` is rung 4: no Q, `q = None`. Rungs 2 and 3 are planned, not built. For CsV3Sb5 every analyzer
 is rung 4, and the scan's `hkl_nominal` is the only HKL in the record.
 
+### Resolution, slit and zero
+
+A scan's slit sets which resolution curve each analyzer uses, and each analyzer's energy zero is fitted
+on its elastic line with that curve. To set this up:
+
+1. Keep the `rf/` folder of SARF files beside the card (the template's `resolution_folder = "rf"`), or
+   give its full path as `resolution_folder`.
+2. Declare the slit if you know it: the header lines `agaph_mm` and `agapv_mm`, or `slit = "60x60"`
+   under `[facts]`. A declared slit is always used.
+3. `isar run` builds the calibration. The inspector shows each scan's slit, its candidate deviances and
+   the alerts; the numbers are kept under `tabulated_calibration` in `card.state.json`, and the policy is
+   never written.
+
+With no slit declared, ISAR picks the slit whose curves best fit the scan's elastic lines and says so.
+Alerts on that choice and on the zeros:
+
+| Alert | Meaning | What to do |
+|---|---|---|
+| `slit_inferred` | No slit was declared; ISAR chose one from the elastic lines. | Declare the slit if you know it. |
+| `slit_ambiguous` | The runner-up slit fits within 10 in summed deviance, so the data do not pick one. | Check the slit and declare it. |
+| `slit_mismatch` | The declared slit is kept, but another fits the elastic lines clearly better. | Check the declared slit and the curve files. |
+| `pipeline_zero` | The analyzer has no significant elastic line. Its zero is the file's own axis, labelled. | Compare that analyzer's ω₀ with its neighbours before trusting it. |
+| `missing_resolution` | No curve for that analyzer at that slit, or no folder: the analyzer is held and not fitted. | Add the curve to `rf/`, or correct `resolution_pattern`. |
+| `resolution_range_exceeded` | The fit range runs past the measured curve; the curve is used as given. | Read the fit with that in mind. |
+
+Held analyzers and scans are listed under "Held / declined" in the report, with their reason.
+
 ### Limits for BL43LXU
 
-- Fitting waits on the resolution stage. Until it lands, every BL43LXU scan is held for want of an energy
-  zero. ISAR never defaults E₀ to 0.0: the card's `needs_zero` status keeps the zero out of the fit.
-- `_lr` counts are not raw (see `[reader]`).
+- An analyzer's zero is its fitted elastic line, or the labelled pipeline zero. ISAR never defaults an
+  energy zero to 0.0 on an uncalibrated axis.
+- The in-plane momentum spread of the resolution is not modelled. Q rungs 2 and 3 are not built, so an
+  analyzer's Q stays absent unless its file gives an HKL.
+- `_lr` counts are parsed and shown, never fitted (see `[reader]`).
 - The raw SPEC files are not read.
 - The Ba122 layout has no monitor, and ISAR does not deduce one.
 

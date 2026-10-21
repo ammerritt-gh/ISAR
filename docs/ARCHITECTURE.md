@@ -181,6 +181,17 @@ references, path conventions) is a card policy, not code.
 `merge` uses the combine-before-divide primitive — sum kept counts AND kept monitors, then divide
 downstream if chosen, never average already-normalized rates, no zero-count floor.
 
+**Facts, Q and exposure.** A `ScanRecord` and each `Spectrum` carry `facts`: `{name: {"value",
+"source"}}`, the source one of `header`, `trailer`, `sidecar`, `filename`, `card`, `inferred`,
+`missing`. The first found wins in that order; a disagreeing value is kept under `conflicts` and
+raises `fact_conflict`. The slit is the one generic fact `slit`, spelt `<h>x<v>` in mm. A spectrum is
+identified by (experiment, scan number, detector); its Q is attached afterwards and records its rung:
+`Q_SOURCE_RUNG` maps each `q_source` to rung 1 (`header`, `filename`, `reported`), rung 3
+(`card_offset`) or rung 4 (`none`, `q = None`). A spectrum may carry its own `monitor` and `time`;
+`scan.exposure_for(record, detector_id)` is the only place that applies them. A record whose spectra
+carry their own exposure stores NaN at record level, so a consumer that missed the override gets no
+number rather than a wrong one. *(Implemented.)*
+
 ## 6. Stage I — Parse
 
 **Ingestion.** The unit is "a scan with a stable id." Sequence/gap detection (a hole in the
@@ -213,6 +224,23 @@ destroying data," and it is enforced in code, not aspirational:
   a flagged non-result. **Resolution** is versioned, this-beamtime's-values, never archival
   constants — Γ is the linewidth we report and a wrong resolution biases it directly.
 *(Implemented; module docstrings in `isar/reduce/` carry the details.)*
+
+**Tabulated elastic calibration (`tabulated_elastic`; a card switches it on).** The card names a
+folder of measured resolution curves, one per analyzer and slit. `calibrations.refresh_tabulated`
+runs in `isar run` after routing and writes `card.state.tabulated_calibration["exp:scan"]`, never
+the policy. Per scan it chooses the slit: a declared `slit` fact is kept, and another slit that fits
+the elastic lines clearly better (summed Poisson deviance ahead by 10 or more) only raises
+`slit_mismatch`. With none declared, the slit with the least summed deviance over the analyzers that
+have a significant elastic line and a curve at every candidate is used, flagged `slit_inferred`, and
+`slit_ambiguous` when the runner-up is within 10. Per analyzer, its curve at that slit is fitted to
+the raw counts over ±3 meV of the elastic peak (located within ±2.5 meV of 0) by Baker–Cousins
+deviance, with no zero-count floor; the fitted centre is the energy zero (`elastic_fit`). An analyzer
+with no significant elastic line takes the file's own axis, labelled `pipeline_zero`: an uncalibrated
+axis is never assumed to be zero. An analyzer with no curve at the chosen slit, or whose spectrum
+carries a `counts_not_integer` flag, is held with its reason and is not fitted. In the fit the curve
+replaces the Voigt for the DHO convolution and the elastic line, its FWHM is the Gaussian width, and a
+fit range beyond the table raises `resolution_range_exceeded`. The in-plane momentum spread is not
+modelled. *(Implemented.)*
 
 **Flag adjudication (LLM, off the critical path).** The deterministic layer flags; the LLM
 adjudicator *decides* each flag (mask / keep / drop_detector / hold_for_human) with a reason and
@@ -434,7 +462,14 @@ rulings W1–W3.)*
 
 | Capability | Status |
 |---|---|
-| Stage I: parsers (S30, IN8), reduce, calibration state, card | Implemented |
+| Stage I: parsers (S30, IN8, SPring-8 BL43LXU processed per-analyzer files in both layouts), reduce, calibration state, card | Implemented |
+| BL43LXU file sets at ingest (one scan per set, `parse_set`), facts with sources, per-analyzer exposure, count recovery to raw counts | Implemented |
+| Q by rung: rung 1 (the analyzer's own HKL from a header or filename) and rung 4 (no Q) | Implemented |
+| Q by rung: rung 2 (from the sample motor angles) and rung 3 (from the arm-centre HKL, approximate) | Planned (waits for the SIXCIRCLE geometry) |
+| Tabulated per-analyzer resolution (SARF curve per analyzer and slit) in the fit, in place of the Voigt | Implemented |
+| Slit ladder: declared slit, else inferred from the elastic lines; `slit_mismatch`, `slit_inferred`, `slit_ambiguous` alerts | Implemented |
+| Per-analyzer elastic zero (`tabulated_elastic`) with labelled `pipeline_zero` fallback. Its real-data proof (`proofs/test_bl43_resolution.py`) does not yet pass: an info-level `counts_not_integer` notice holds analyzers, and some fitted zeros lie outside ±0.3 meV of the file axis | Implemented (proof open) |
+| Momentum (in-plane) resolution spread modelled inside the fit | Planned (after the SIXCIRCLE geometry) |
 | Adjudication (decide–record–defer) | Implemented (opt-in) |
 | Stage II: Baker–Cousins fit, evidence selection (H4; Akaike diagnostics retained), branch posterior, verdicts | Implemented |
 | Interval ladder through bootstrap; `interval_reliable` flag | Implemented |
