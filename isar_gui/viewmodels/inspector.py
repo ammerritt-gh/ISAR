@@ -50,6 +50,38 @@ def _fmt_q(hkl) -> str:
         return ""
 
 
+def _calibration_rows(block) -> dict:
+    """Display rows for a tabulated-calibration block (label -> text): the slit used and how it was
+    chosen, the candidates' summed deviances, the energy zero and its source, the elastic-fit numbers,
+    and the calibration's flags. Empty for any other calibration method."""
+    if not isinstance(block, dict) or not block.get("setting_source"):
+        return {}
+    rows: dict = {"resolution slit": f"{block.get('setting') or 'unknown'} ({block['setting_source']})"}
+    dev = block.get("deviances") or {}
+    if dev:
+        used = ", ".join(block.get("comparison_set") or [])
+        rows["slit candidates"] = ("summed deviance " + ", ".join(f"{s}: {v:.1f}" for s, v in dev.items())
+                                   + (f" over {used}" if used else ""))
+    if block.get("zero") is not None:
+        rows["energy zero"] = f"{float(block['zero']):.4g} meV ({block.get('zero_source')})"
+    elif block.get("held_reason"):
+        rows["energy zero"] = f"none ({block['held_reason']})"
+    fit = block.get("elastic_fit")
+    if isinstance(fit, dict):
+        def g(key, fmt):
+            v = fit.get(key)
+            return "n/a" if v is None else format(float(v), fmt)
+        rows["elastic fit"] = (f"centre {g('centre', '.4g')} meV, amplitude {g('amplitude', '.4g')}, "
+                               f"background {g('background', '.4g')}, deviance/point "
+                               f"{g('deviance_per_point', '.3g')} over {fit.get('n_points')} points, "
+                               f"{'significant' if fit.get('significant') else 'not significant'}")
+    flags = [f for f in (block.get("flags") or []) if isinstance(f, dict)]
+    if flags:
+        rows["calibration flags"] = "; ".join(f"{f.get('type')} ({f.get('severity')}): {f.get('reason')}"
+                                              for f in flags)
+    return rows
+
+
 # Facts shown first, in this order; every other parsed fact follows, sorted by name.
 _FACT_FIRST = ("scan_label", "T_K", "hkl_nominal", "slit", "dq", "efficiency")
 
@@ -318,6 +350,7 @@ class InspectorViewModel(ViewModel):
             if rows:
                 md[label] = "; ".join(f"{f.get('type')} ({f.get('severity')}): {f.get('reason')}"
                                       for f in rows)
+        md.update(_calibration_rows(prov.get("calibration")))
         src = getattr(sv, "source_file", None)
         if src:
             md["file"] = Path(src).name
@@ -497,6 +530,7 @@ class InspectorViewModel(ViewModel):
                     parts.append(f"{k}={float(calib[k]):.3g}")
             if parts:
                 d["calib"] = ", ".join(parts)
+            d.update(_calibration_rows(calib.get("calibration")))
         if fit.pooled:
             if fit.disposition == "rejected":
                 d["pooled"] = "pooled master — uncertifiable"

@@ -87,6 +87,47 @@ def test_every_parsed_fact_is_shown_with_its_source(make_ws):
         ["Q_nm", "elastic_centroid_meV", "energy_keV"]          # the rest sorted
 
 
+def _calibration_block(**over) -> dict:
+    block = {"setting": "40x40", "setting_source": "inferred",
+             "deviances": {"60x60": 310.5, "40x40": 120.25}, "comparison_set": ["a03", "a04"],
+             "zero": 0.1234, "zero_source": "elastic_fit",
+             "elastic_fit": {"centre": 0.1234, "amplitude": 905.0, "background": 1.02,
+                             "deviance_per_point": 1.04, "n_points": 31, "significant": True},
+             "held_reason": None,
+             "flags": [{"type": "slit_inferred", "severity": "warning", "reason": "no slit declared"}]}
+    block.update(over)
+    return block
+
+
+def test_tabulated_calibration_rows_show_slit_zero_fit_and_flags(make_ws):
+    md = _unit_vm(make_ws, _qless_prov(calibration=_calibration_block())).state.metadata
+    assert md["resolution slit"] == "40x40 (inferred)"
+    assert md["slit candidates"] == "summed deviance 60x60: 310.5, 40x40: 120.2 over a03, a04"
+    assert md["energy zero"] == "0.1234 meV (elastic_fit)"
+    assert md["elastic fit"] == ("centre 0.1234 meV, amplitude 905, background 1.02, deviance/point 1.04 "
+                                 "over 31 points, significant")
+    assert md["calibration flags"] == "slit_inferred (warning): no slit declared"
+
+
+def test_held_unit_calibration_says_why_and_a_weak_fit_says_so(make_ws):
+    block = _calibration_block(zero=None, zero_source=None, held_reason="a03: no resolution curve for a03 at slit 40x40",
+                               elastic_fit=None, flags=[])
+    md = _unit_vm(make_ws, _qless_prov(calibration=block)).state.metadata
+    assert md["energy zero"] == "none (a03: no resolution curve for a03 at slit 40x40)"
+    assert "elastic fit" not in md and "calibration flags" not in md
+    weak = _calibration_block(zero=0.0, zero_source="pipeline_zero",
+                              elastic_fit={"centre": None, "amplitude": None, "background": None,
+                                           "deviance_per_point": None, "n_points": 3, "significant": False})
+    md = _unit_vm(make_ws, _qless_prov(calibration=weak)).state.metadata
+    assert md["energy zero"] == "0 meV (pipeline_zero)" and "not significant" in md["elastic fit"]
+    assert "n/a" in md["elastic fit"]
+
+
+def test_unit_without_a_tabulated_calibration_shows_no_calibration_rows(make_ws):
+    md = _unit_vm(make_ws, _qless_prov()).state.metadata
+    assert not {"resolution slit", "slit candidates", "energy zero", "elastic fit", "calibration flags"} & set(md)
+
+
 def test_unit_without_facts_shows_no_new_rows(make_ws):
     # An S30-style ledger entry (no facts, no Q rung stamped) renders exactly as before.
     prov = {"source_file": r"C:\data\x.dat", "T": 300.0, "q": [1.5, 0.0, 0.0], "n_points": 4}

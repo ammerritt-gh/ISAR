@@ -568,9 +568,16 @@ class FitView:
         T = self.T
         if center is None or gauss is None:
             return None
-        return {"center": center, "gauss_fwhm": gauss,
-                "lorentz_fwhm": lorentz if lorentz is not None else 0.0,
-                "T": T if T is not None else 0.0}
+        out = {"center": center, "gauss_fwhm": gauss,
+               "lorentz_fwhm": lorentz if lorentz is not None else 0.0,
+               "T": T if T is not None else 0.0}
+        ref = calib.get("tabulated")
+        if isinstance(ref, dict):
+            # The fit convolved with a measured curve, not the Voigt of the widths above: rebuild that
+            # curve from where it came from (ValueError when the files changed since the fit).
+            from isar.parsers import sarf
+            out["resolution_curve"] = sarf.curve_from_reference(ref)
+        return out
 
     def __repr__(self) -> str:
         return (f"FitView(unit={self.unit_id!r}, scan={self.scan_number}, det={self.detector_id!r}, "

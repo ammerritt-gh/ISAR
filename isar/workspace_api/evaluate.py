@@ -202,6 +202,9 @@ def evaluate_model(fit, data_dir, *, quasielastic_fwhm=None, x_eval=None):
         raise ValueError(
             f"cannot evaluate scan {fit.scan_number}/{fit.detector_id}: "
             "no stored amplitudes and no re-parseable counts + resolution context")
+    if "resolution_curve" in res:   # the fallback rebuilds a Voigt: it would show a model that was not fitted
+        raise ValueError(f"cannot evaluate scan {fit.scan_number}/{fit.detector_id}: "
+                         "a tabulated-resolution fit needs its stored amplitudes")
     from isar.report.audit import reconstruct_curve  # lazy: pulls scipy only on the fallback
     rc = reconstruct_curve(energy, counts, omega0=omega0, gamma=gamma,
                            center=res["center"], gauss_fwhm=res["gauss_fwhm"],
