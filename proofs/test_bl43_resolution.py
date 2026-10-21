@@ -83,15 +83,16 @@ def test_every_analyzer_zero_is_fitted_within_tolerance_or_a_labelled_pipeline_z
     assert not problems, f"{len(problems)} analyzer zero problem(s):\n" + "\n".join(problems)
 
 
-def test_operator_summary(calibrated):
-    """Prints the inferred slit and its evidence for the operator (run with -s); asserts nothing here."""
-    for t in sorted(calibrated, reverse=True):
-        entry, _rec = calibrated[t]
-        print(f"\n{SCANS[t]}: slit {entry['setting']} ({entry['setting_source']})")
-        print("  summed deviance per candidate: " + ", ".join(
-            f"{s} {v:.1f}" for s, v in sorted(entry["deviances"].items())))
-        print("  flags: " + (", ".join(f["type"] for f in entry["flags"]) or "none"))
-        fallbacks = [det for det, d in entry["detectors"].items() if d.get("zero_source") == "pipeline_zero"]
-        held = [det for det, d in entry["detectors"].items() if "held_reason" in d]
-        print(f"  pipeline-zero fallbacks: {len(fallbacks)} ({', '.join(fallbacks) or 'none'})")
-        print(f"  held analyzers: {len(held)} ({', '.join(held) or 'none'})")
+def test_operator_summary(calibrated, capsys):
+    """Prints the inferred slit and its evidence for the operator, uncaptured; asserts nothing here."""
+    with capsys.disabled():
+        for t in sorted(calibrated, reverse=True):
+            entry, _rec = calibrated[t]
+            print(f"\n{SCANS[t]}: slit {entry['setting']} ({entry['setting_source']})")
+            print("  summed deviance per candidate: " + ", ".join(
+                f"{s} {v:.1f}" for s, v in sorted(entry["deviances"].items())))
+            print("  flags: " + (", ".join(f["type"] for f in entry["flags"]) or "none"))
+            fallbacks = [det for det, d in entry["detectors"].items() if d.get("zero_source") == "pipeline_zero"]
+            held = [det for det, d in entry["detectors"].items() if "held_reason" in d]
+            print(f"  pipeline-zero fallbacks: {len(fallbacks)} ({', '.join(fallbacks) or 'none'})")
+            print(f"  held analyzers: {len(held)} ({', '.join(held) or 'none'})")
