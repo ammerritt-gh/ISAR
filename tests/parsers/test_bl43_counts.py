@@ -31,7 +31,7 @@ def lattice(lo: int, hi: int, step: float = 0.2) -> np.ndarray:
 
 def write_member(folder: Path, det: str, energy, counts, monitor, *, secs=10.0, header=(), lr=None,
                  stem: str = STEM, fmt: str = "%.6E", label: str | None = None,
-                 q_nm: float | None = 18.815, t_k: float | None = None) -> Path:
+                 q_nm: float | None = 11.250, t_k: float | None = None) -> Path:
     """One CsV3Sb5-layout analyzer file in the beamline's 16 columns. `_i`: y = N/norm, e = sqrt(N)/norm
     (0 over 0 for N = 0). `lr` (non-integer counts) fills the `_lr` family, whose time is lrn x 0.25 s."""
     energy, counts = np.asarray(energy, float), np.asarray(counts, float)
@@ -181,11 +181,11 @@ def test_header_hkl_is_rung_one_and_the_filename_hkl_is_never_a_spectrum_q(tmp_p
 
 
 def test_trailing_q_and_t_lines_are_header_facts_and_q_is_never_a_spectrum_q(tmp_path):
-    write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6, q_nm=18.815, t_k=100.0)
-    write_member(tmp_path, "a04", lattice(0, 10), np.ones(10), 1e6, q_nm=20.282, t_k=100.0)
+    write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6, q_nm=11.250, t_k=100.0)
+    write_member(tmp_path, "a04", lattice(0, 10), np.ones(10), 1e6, q_nm=12.500, t_k=100.0)
     rec = parse(tmp_path)
-    assert rec.spectra["a03"].facts["Q_nm"] == {"value": 18.815, "source": "header"}
-    assert rec.spectra["a04"].facts["Q_nm"] == {"value": 20.282, "source": "header"}
+    assert rec.spectra["a03"].facts["Q_nm"] == {"value": 11.250, "source": "header"}
+    assert rec.spectra["a04"].facts["Q_nm"] == {"value": 12.500, "source": "header"}
     assert [(s.q, s.q_source) for s in rec.spectra.values()] == [(None, "none"), (None, "none")]
     assert rec.facts["T_K"] == {"value": 100.0, "source": "header"}      # agrees with the name: no conflict
     assert not flags(rec, "fact_conflict")
@@ -211,7 +211,7 @@ def test_analyzers_disagreeing_on_t_raise_fact_conflict(tmp_path):
 
 def test_leading_and_trailing_q_that_disagree_leave_the_analyzer_out_and_named(tmp_path):
     write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6)
-    write_member(tmp_path, "a04", lattice(0, 10), np.ones(10), 1e6, header=["# Q_nm 19.5"], q_nm=18.815)
+    write_member(tmp_path, "a04", lattice(0, 10), np.ones(10), 1e6, header=["# Q_nm 19.5"], q_nm=11.250)
     rec = parse(tmp_path)
     assert sorted(rec.spectra) == ["a03"]
     reason = flags(rec, "missing_analyzer")[0].reason
@@ -319,5 +319,5 @@ def test_emit_file_round_trips_whole_aligned_analyzers(tmp_path):
         assert np.allclose(back.spectra[det].time, rec.spectra[det].time)
     assert back.facts["T_K"] == {"value": 100.0, "source": "header"}     # emit writes the #T= line
     for det in ("a03", "a06"):
-        assert back.spectra[det].facts["Q_nm"] == {"value": 18.815, "source": "header"}
+        assert back.spectra[det].facts["Q_nm"] == {"value": 11.250, "source": "header"}
     assert not [f for f in back.scan_flags if f.type in ("missing_analyzer", "missing_sidecar")]

@@ -327,7 +327,7 @@ def _bl43_member(tmp_path: Path) -> Path:
              f"{3.1e-4 + 1e-5 * k:15.5E} {2.2e-5 + 1e-6 * k:15.5E}" for k, e in enumerate(energy)]
     path = tmp_path / "in" / "Smp_100K_1_0p5_m2_run_a03"
     path.parent.mkdir()
-    path.write_text("\n".join(rows + ["#Q=   18.815 /nm"]) + "\n", encoding="utf-8", newline="\n")
+    path.write_text("\n".join(rows + ["#Q=   11.250 /nm"]) + "\n", encoding="utf-8", newline="\n")
     return path
 
 
@@ -336,7 +336,8 @@ def test_a_table_copy_shifts_the_bin_lattice_and_keeps_every_other_byte(tmp_path
     src = _bl43_member(tmp_path)
     copy, truth = _make(src, tmp_path / "out")
     a, b = src.read_text(encoding="utf-8").splitlines(), copy.read_text(encoding="utf-8").splitlines()
-    assert len(a) == len(b) and a[0] == b[0] and a[-1] == b[-1] == "#Q=   18.815 /nm"
+    assert len(a) == len(b) and a[0] == b[0] and a[-1] != b[-1]          # the trailer's |Q| is replaced too
+    assert re.fullmatch(r"#Q=   \d\d\.\d{3} /nm", b[-1])
     for x, y in zip(a[1:-1], b[1:-1]):
         assert len(x) == len(y) and re.sub(r"\S+", "#", x).split() == re.sub(r"\S+", "#", y).split()
         assert all(p != q for p, q in zip(x.split(), y.split()))     # every data number changed
@@ -347,6 +348,22 @@ def test_a_table_copy_shifts_the_bin_lattice_and_keeps_every_other_byte(tmp_path
     (scan,) = truth["scans"]
     assert scan["column_names"][0] == "meV" and scan["points"] == 12
     assert scan["data_columns"][0]["tokens"] == [ln.split()[0] for ln in b[1:-1]]
+
+
+def test_measured_numbers_in_table_comments_do_not_survive_a_copy(tmp_path):
+    """The `#Q=` / `#T=` trailers and a SARF curve's fitted eshift are measured numbers in comment lines."""
+    src = _bl43_member(tmp_path)
+    src.write_text(src.read_text(encoding="utf-8") + "#T=  250.000 K\n", encoding="utf-8", newline="\n")
+    sarf = tmp_path / "in" / "sarf_24Nov10_s48_60_60_a03"
+    rows = [f"{k * 0.1 - 1:.2f} {0.5 + 0.01 * k:.4f}" for k in range(21)]
+    sarf.write_text("\n".join(["# SARF created", "# Center of FWHM at zero energy (eshift=  0.37)",
+                               "#E_meV SARF fit_to_resolution"] + rows) + "\n", encoding="utf-8", newline="\n")
+    lines = _make(src, tmp_path / "out")[0].read_text(encoding="utf-8").splitlines()
+    assert re.fullmatch(r"#Q=   \d\d\.\d{3} /nm", lines[-2]) and lines[-2] != "#Q=   11.250 /nm"
+    assert re.fullmatch(r"#T=  \d{3}\.000 K", lines[-1]) and lines[-1] != "#T=  250.000 K"
+    head = _make(sarf, tmp_path / "out")[0].read_text(encoding="utf-8").splitlines()[1]
+    assert re.fullmatch(r"# Center of FWHM at zero energy \(eshift=  0\.\d\d\)", head)
+    assert head != "# Center of FWHM at zero energy (eshift=  0.37)"
 
 
 def test_a_shifted_progression_refuses_a_field_it_cannot_fit():

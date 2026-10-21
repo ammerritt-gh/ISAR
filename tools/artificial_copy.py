@@ -27,8 +27,10 @@ The tool refuses an output folder inside `real_data` / `test_data` and never ove
 
 BL43LXU (SPring-8) files are whole-file tables: the per-analyzer text file of the CsV3Sb5 layout, the
 Ba122 three-column export, and the SARF resolution curve (`sarf_*`, no extension) are read as one table
-of numeric rows under `#` comment lines (comments are kept as written). Their `.var` sidecar and the
-SARF `.gpi` summary are `name = value` files: every number is replaced except the structural ones
+of numeric rows under `#` comment lines (comments are kept as written, except the measured numbers in
+them: the trailing `#Q=` / `#T=` values and a SARF curve's `eshift=`, replaced at their width). Their
+`.var` sidecar and the SARF `.gpi` summary are `name = value` files: every number is replaced except the
+structural ones
 (`.var`: the analyzer numbers `ano[i]` and the three settings the reader uses; `.gpi`: `n_lines`).
 Two things differ from the SPEC/numor rules above:
   * a BL43LXU energy axis is a bin lattice the parser checks, so a table column that is an exact
@@ -72,6 +74,9 @@ SUPPORTED = {"spec_s30": "spec", "spec_s30_raw": "spec", "ill_in8": "numor", "sp
 # `name = value` files: extension -> names whose value is structural and kept (the rest are replaced).
 # `.var`: the analyzer numbers and the three settings sp8_bl43 reads. `.gpi`: the SARF line count.
 KEYVAL = {".var": {"ano", "silicon_order", "meV_bin_size", "nscans"}, ".gpi": {"n_lines"}}
+# Measured numbers on a table's comment lines, replaced at their width: the analyzer files' trailing
+# `#Q=` / `#T=` values and a SARF curve's fitted `eshift=`. Group 2 is the number.
+_COMMENT_NUMBER = (re.compile(rb"^(#[QT]=\s*)(\S+)(?=\s)"), re.compile(rb"(\beshift=\s*)(\S+?)(?=\))"))
 DEFAULT_SCANS = 3
 _GRID_SHIFTS = 50          # a progression moves by up to this many whole steps either way
 _ATTEMPTS = 2000           # redraws before giving up on "every value changed" (a near-full width has few valid draws)
@@ -521,6 +526,19 @@ def _skeleton(raw: bytes) -> bytes:
     return _WORD.sub(b"#", raw)
 
 
+def _comment_spans(lines: list[bytes], start: int, end: int) -> list[tuple[int, int, int]]:
+    """(line, first byte, end byte) of the measured number on each comment line; at most one per line."""
+    spans = []
+    for i in range(start, end):
+        body = lines[i].rstrip(b"\r\n")
+        for pat in _COMMENT_NUMBER:
+            m = pat.search(body)
+            if m:
+                spans.append((i, m.start(2), m.end(2)))
+                break
+    return spans
+
+
 def build_copy(lines: list[bytes], kind: str, tables: list[Table], kept: list[Table],
                rng: random.Random, free_phase: bool = False) -> tuple[bytes, dict]:
     """(copy bytes, {table.start: (column tokens as written, forced column indexes)}).
@@ -565,6 +583,11 @@ def build_copy(lines: list[bytes], kind: str, tables: list[Table], kept: list[Ta
             if same(bytes(ba)) != same(body) or len(ba) != len(body):
                 raise Refuse(f"internal: a non-number byte changed on line {li + 1}")
             new_lines[li] = bytes(ba) + eol
+        if kind == "table":                               # after the data, so the data draws keep their order
+            for i, a, b in _comment_spans(lines, tb.start, tb.end):
+                body = lines[i].rstrip(b"\r\n")
+                (tok,), _ = replace_column([body[a:b]], rng, f"line {i + 1} comment number")
+                new_lines[i] = body[:a] + tok + body[b:] + lines[i][len(body):]
         written[tb.start] = (cols, forced_cols)
     if kind in ("numor", "table"):                        # a numor or a table is kept whole
         return b"".join(new_lines), written
@@ -626,6 +649,13 @@ def snapshot(path: Path, name: str) -> dict:
     return dict(header=header, blocks=blocks, starts=starts, records=records)
 
 
+def _masked_comment(raw: bytes) -> str:
+    """A comment line with its measured number masked: where it sits is compared, its value is not."""
+    for pat in _COMMENT_NUMBER:
+        raw = pat.sub(rb"\1#", raw)
+    return _text(raw)
+
+
 def snapshot_table(path: Path, name: str | None) -> dict:
     """A whole-file table as ISAR reads it: the BL43LXU plugin's own file reader for its analyzer and
     Ba122 files; for a SARF curve (no reader yet) the comment lines, row count and width."""
@@ -633,12 +663,14 @@ def snapshot_table(path: Path, name: str | None) -> dict:
         if name == "sp8_bl43":
             from isar.parsers import sp8_bl43
             m = sp8_bl43.read_member(path)
-            return dict(header=None, records=[dict(header=m.header)], blocks=[dict(
+            # the trailer numbers are replaced by a copy: their presence and type are compared, not their value
+            header = {k: type(v).__name__ if k in ("Q_nm", "T_K") else v for k, v in m.header.items()}
+            return dict(header=None, records=[dict(header=header)], blocks=[dict(
                 labelled=m.labelled, rows=len(m.energy), has_exposure=m.monitor is not None,
                 has_npts=m.npts is not None)])
         lines = path.read_bytes().splitlines(keepends=True)
         tb = locate_table(lines)
-        comments = [_text(x).rstrip("\r\n") for x in lines if _text(x).lstrip().startswith("#")]
+        comments = [_masked_comment(x.rstrip(b"\r\n")) for x in lines if x.lstrip().startswith(b"#")]
         return dict(header=None, records=[], blocks=[dict(
             rows=len(tb.rows), width=len(_text(lines[tb.rows[0]]).split()) if tb.rows else 0,
             comments=comments)])
@@ -851,8 +883,9 @@ def make_copy(src, out_dir, scans: str | None = None, seed: int = 1) -> tuple[Pa
                      + "\n  ".join(problems))
     if kind == "keyval":
         truth = build_truth_keyval(f"keyval{src.suffix.lower()}", src.name, seed, found, written)
-    else:
-        truth = build_truth(name or "sarf_curve", kind, src.name, seed, lines, tables, kept, written)
+    else:                                                 # a table's comment numbers are replaced: read the copy
+        shown = copy.splitlines(keepends=True) if kind == "table" else lines
+        truth = build_truth(name or "sarf_curve", kind, src.name, seed, shown, tables, kept, written)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     target.write_bytes(copy)

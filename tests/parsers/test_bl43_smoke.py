@@ -108,7 +108,10 @@ def _scatter(present, vals):
 def test_csv3sb5_facts_carry_their_sources_and_the_nominal_hkl_is_no_spectrums_q(sets):
     rec = sets[0][BL43_STEM]
     f = rec.facts
-    assert f["T_K"] == {"value": 302.0, "source": "header"}              # the #T= line agrees; header wins
+    # The copies' #T= numbers are replaced, so the header (first analyzer's) disagrees with the 302K in the
+    # name: the header wins and the name's value is kept as a conflict.
+    assert f["T_K"] == {"value": float(A03["header_values"]["#T="][0].split()[0]), "source": "header",
+                        "conflicts": [{"source": "filename", "value": 302.0}]}
     assert f["hkl_nominal"] == {"value": [0.5, 0.5, 3.0], "source": "filename"}
     assert f["scan_label"] == {"value": BL43_STEM, "source": "filename"}
     assert f["si_order"] == {"value": 12, "source": "sidecar"}
