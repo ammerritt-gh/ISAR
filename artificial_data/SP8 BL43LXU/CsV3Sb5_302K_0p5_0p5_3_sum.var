@@ -1,0 +1,336 @@
+ file_name_prefix = "CsV3Sb5_302K_0p5_0p5_3_sum"
+ silicon_order =    12
+ cal_factor =   1.7612
+ meV_bin_size =     0.20
+ nscans =     2
+ iresflag =     9
+ mk_per_khz =  8.88599
+ khz0 =   182.71
+ lag_time_seconds =      4.0
+ normmin =   2.20E+05
+ hlmin_khz =    607.0
+ hldeadtime_s =     67.0
+ elpk_cxmin =   -7.738
+ elpk_cxmax =    6.220
+
+# set gnuplot arrays
+array ano[28]
+array elpk_mk[28]
+array cpm_max[28]
+array asf[28]
+array analeff[28]
+array anal_polfactor[28]
+array apk_pk_meV[28]
+array apk_fwhm_meV[28]
+array elpk_centroid_meV[28]
+array elpk_area_meV[28]
+
+# Pk is From First Scan
+ano[1] = 3
+elpk_mk[1] =    -375.19
+cpm_max[1] =     7.0000
+asf[1] =     7.2465
+analeff[1] =       3.11
+anal_polfactor[1] =     4.9114
+apk_pk_meV[1] =     7.0729
+apk_fwhm_meV[1] =     7.2667
+elpk_centroid_meV[1] =     0.9235
+elpk_area_meV[1] =   5.2205E-03
+
+ano[2] = 4
+elpk_mk[2] =     -25.37
+cpm_max[2] =     7.0000
+asf[2] =     3.0551
+analeff[2] =       2.91
+anal_polfactor[2] =     1.1334
+apk_pk_meV[2] =     7.1872
+apk_fwhm_meV[2] =     2.6194
+elpk_centroid_meV[2] =     1.0910
+elpk_area_meV[2] =   7.5076E-03
+
+ano[3] = 5
+elpk_mk[3] =     -89.93
+cpm_max[3] =     7.0000
+asf[3] =     4.5312
+analeff[3] =       6.02
+anal_polfactor[3] =     5.7536
+apk_pk_meV[3] =     3.0432
+apk_fwhm_meV[3] =     6.6155
+elpk_centroid_meV[3] =     0.2188
+elpk_area_meV[3] =   7.2098E-03
+
+ano[4] = 6
+elpk_mk[4] =     -14.64
+cpm_max[4] =     7.0000
+asf[4] =     3.0261
+analeff[4] =       9.97
+anal_polfactor[4] =     8.7001
+apk_pk_meV[4] =     5.3013
+apk_fwhm_meV[4] =     5.4186
+elpk_centroid_meV[4] =     5.9376
+elpk_area_meV[4] =   2.4967E-03
+
+ano[5] = 7
+elpk_mk[5] =     -73.86
+cpm_max[5] =     7.0000
+asf[5] =     8.8716
+analeff[5] =       9.04
+anal_polfactor[5] =     6.6641
+apk_pk_meV[5] =    63.8728
+apk_fwhm_meV[5] =     6.3561
+elpk_centroid_meV[5] =     0.1909
+elpk_area_meV[5] =   1.3097E-03
+
+ano[6] = 8
+elpk_mk[6] =     -80.90
+cpm_max[6] =     7.0000
+asf[6] =     2.8677
+analeff[6] =       5.12
+anal_polfactor[6] =     1.4147
+apk_pk_meV[6] =    46.0527
+apk_fwhm_meV[6] =     4.6766
+elpk_centroid_meV[6] =    -9.8848
+elpk_area_meV[6] =   5.0895E-03
+
+ano[7] = 9
+elpk_mk[7] =     -10.34
+cpm_max[7] =     7.0000
+asf[7] =     9.9739
+analeff[7] =       8.67
+anal_polfactor[7] =     2.1457
+apk_pk_meV[7] =     7.5733
+apk_fwhm_meV[7] =     5.4320
+elpk_centroid_meV[7] =     9.9037
+elpk_area_meV[7] =   6.0666E-03
+
+ano[8] = 14
+elpk_mk[8] =     -82.97
+cpm_max[8] =     7.0000
+asf[8] =     6.0242
+analeff[8] =       9.64
+anal_polfactor[8] =     6.8281
+apk_pk_meV[8] =     4.6305
+apk_fwhm_meV[8] =     4.5362
+elpk_centroid_meV[8] =     3.6858
+elpk_area_meV[8] =   5.5002E-03
+
+ano[9] = 15
+elpk_mk[9] =     -53.63
+cpm_max[9] =     7.0000
+asf[9] =     3.7983
+analeff[9] =       5.18
+anal_polfactor[9] =     5.1545
+apk_pk_meV[9] =     6.0180
+apk_fwhm_meV[9] =     0.0208
+elpk_centroid_meV[9] =     3.2711
+elpk_area_meV[9] =   6.5170E-03
+
+ano[10] = 16
+elpk_mk[10] =       7.39
+cpm_max[10] =     7.0000
+asf[10] =     0.2817
+analeff[10] =       4.03
+anal_polfactor[10] =     4.8566
+apk_pk_meV[10] =     3.5295
+apk_fwhm_meV[10] =     7.0580
+elpk_centroid_meV[10] =     3.5212
+elpk_area_meV[10] =   3.4646E-03
+
+ano[11] = 17
+elpk_mk[11] =       8.22
+cpm_max[11] =     7.0000
+asf[11] =     5.4550
+analeff[11] =       6.04
+anal_polfactor[11] =     6.4186
+apk_pk_meV[11] =     8.6405
+apk_fwhm_meV[11] =     7.0794
+elpk_centroid_meV[11] =     1.4351
+elpk_area_meV[11] =   4.3871E-03
+
+ano[12] = 18
+elpk_mk[12] =     -47.48
+cpm_max[12] =     7.0000
+asf[12] =     7.2936
+analeff[12] =       8.74
+anal_polfactor[12] =     9.6046
+apk_pk_meV[12] =    67.4615
+apk_fwhm_meV[12] =     8.1723
+elpk_centroid_meV[12] =     8.1895
+elpk_area_meV[12] =   2.4255E-03
+
+ano[13] = 19
+elpk_mk[13] =       6.06
+cpm_max[13] =     7.0000
+asf[13] =     8.4187
+analeff[13] =       0.36
+anal_polfactor[13] =     0.3877
+apk_pk_meV[13] =    73.8524
+apk_fwhm_meV[13] =     8.0276
+elpk_centroid_meV[13] =    -2.4198
+elpk_area_meV[13] =   4.3221E-03
+
+ano[14] = 20
+elpk_mk[14] =     -26.74
+cpm_max[14] =     7.0000
+asf[14] =     1.3108
+analeff[14] =       4.92
+anal_polfactor[14] =     6.1515
+apk_pk_meV[14] =     9.5604
+apk_fwhm_meV[14] =     4.3403
+elpk_centroid_meV[14] =    -4.5145
+elpk_area_meV[14] =   7.6861E-03
+
+ano[15] = 25
+elpk_mk[15] =     -62.00
+cpm_max[15] =     7.0000
+asf[15] =     2.4368
+analeff[15] =       2.49
+anal_polfactor[15] =     0.5700
+apk_pk_meV[15] =     0.0749
+apk_fwhm_meV[15] =     6.0051
+elpk_centroid_meV[15] =     3.8049
+elpk_area_meV[15] =   3.7405E-03
+
+ano[16] = 26
+elpk_mk[16] =     -15.01
+cpm_max[16] =     7.0000
+asf[16] =     8.2491
+analeff[16] =       7.62
+anal_polfactor[16] =     4.0440
+apk_pk_meV[16] =     5.0291
+apk_fwhm_meV[16] =     7.8625
+elpk_centroid_meV[16] =    -0.9112
+elpk_area_meV[16] =   8.9383E-03
+
+ano[17] = 27
+elpk_mk[17] =     -13.65
+cpm_max[17] =     7.0000
+asf[17] =     9.4849
+analeff[17] =       8.17
+anal_polfactor[17] =     9.2194
+apk_pk_meV[17] =     9.7060
+apk_fwhm_meV[17] =     0.3667
+elpk_centroid_meV[17] =    -2.1951
+elpk_area_meV[17] =   6.6577E-03
+
+ano[18] = 28
+elpk_mk[18] =     -14.16
+cpm_max[18] =     7.0000
+asf[18] =     3.8849
+analeff[18] =       4.14
+anal_polfactor[18] =     8.0585
+apk_pk_meV[18] =    63.7395
+apk_fwhm_meV[18] =     3.0095
+elpk_centroid_meV[18] =     2.0923
+elpk_area_meV[18] =   1.2728E-03
+
+ano[19] = 29
+elpk_mk[19] =     -98.70
+cpm_max[19] =     7.0000
+asf[19] =     1.5846
+analeff[19] =       4.25
+anal_polfactor[19] =     7.7750
+apk_pk_meV[19] =    94.8444
+apk_fwhm_meV[19] =     8.3280
+elpk_centroid_meV[19] =     3.3452
+elpk_area_meV[19] =   3.9540E-03
+
+ano[20] = 30
+elpk_mk[20] =    -112.06
+cpm_max[20] =     7.0000
+asf[20] =     9.7406
+analeff[20] =       6.81
+anal_polfactor[20] =     7.5783
+apk_pk_meV[20] =    23.5527
+apk_fwhm_meV[20] =     2.3228
+elpk_centroid_meV[20] =     6.9125
+elpk_area_meV[20] =   1.2341E-03
+
+ano[21] = 31
+elpk_mk[21] =     -72.45
+cpm_max[21] =     7.0000
+asf[21] =     4.3608
+analeff[21] =       1.78
+anal_polfactor[21] =     5.1590
+apk_pk_meV[21] =     6.7985
+apk_fwhm_meV[21] =     7.2189
+elpk_centroid_meV[21] =     2.2040
+elpk_area_meV[21] =   6.2076E-03
+
+ano[22] = 35
+elpk_mk[22] =     -45.48
+cpm_max[22] =     7.0000
+asf[22] =     9.4567
+analeff[22] =       3.76
+anal_polfactor[22] =     8.4825
+apk_pk_meV[22] =     7.3579
+apk_fwhm_meV[22] =     7.6607
+elpk_centroid_meV[22] =     8.6070
+elpk_area_meV[22] =   2.9197E-02
+
+ano[23] = 36
+elpk_mk[23] =     -79.15
+cpm_max[23] =     7.0000
+asf[23] =     9.3218
+analeff[23] =       5.62
+anal_polfactor[23] =     2.2329
+apk_pk_meV[23] =     2.6934
+apk_fwhm_meV[23] =     2.3696
+elpk_centroid_meV[23] =     3.5772
+elpk_area_meV[23] =   1.4630E-02
+
+ano[24] = 37
+elpk_mk[24] =     -14.75
+cpm_max[24] =     7.0000
+asf[24] =     6.5641
+analeff[24] =       9.04
+anal_polfactor[24] =     2.2098
+apk_pk_meV[24] =     5.5849
+apk_fwhm_meV[24] =     1.2007
+elpk_centroid_meV[24] =    -8.4962
+elpk_area_meV[24] =   3.1001E-03
+
+ano[25] = 38
+elpk_mk[25] =      -5.41
+cpm_max[25] =     7.0000
+asf[25] =     5.5327
+analeff[25] =       7.20
+anal_polfactor[25] =     6.5830
+apk_pk_meV[25] =     0.7357
+apk_fwhm_meV[25] =     7.2225
+elpk_centroid_meV[25] =    -9.3270
+elpk_area_meV[25] =   6.8414E-03
+
+ano[26] = 39
+elpk_mk[26] =      46.32
+cpm_max[26] =     7.0000
+asf[26] =     6.6548
+analeff[26] =       7.95
+anal_polfactor[26] =     2.9746
+apk_pk_meV[26] =    60.4471
+apk_fwhm_meV[26] =     3.3462
+elpk_centroid_meV[26] =    -3.8600
+elpk_area_meV[26] =   7.6362E-03
+
+ano[27] = 40
+elpk_mk[27] =       7.83
+cpm_max[27] =     7.0000
+asf[27] =     8.7859
+analeff[27] =       6.91
+anal_polfactor[27] =     0.1613
+apk_pk_meV[27] =    48.2453
+apk_fwhm_meV[27] =     0.4255
+elpk_centroid_meV[27] =    -5.9599
+elpk_area_meV[27] =   9.8889E-03
+
+ano[28] = 41
+elpk_mk[28] =     -81.74
+cpm_max[28] =     7.0000
+asf[28] =     2.4884
+analeff[28] =       7.56
+anal_polfactor[28] =     2.6152
+apk_pk_meV[28] =     7.4711
+apk_fwhm_meV[28] =     8.8227
+elpk_centroid_meV[28] =    -9.2095
+elpk_area_meV[28] =   6.5923E-03
+
