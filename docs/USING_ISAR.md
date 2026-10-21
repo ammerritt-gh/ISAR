@@ -343,8 +343,10 @@ axis; a bin that an analyzer lacks is masked and flagged `bin_absent`.
   unrecognized and not read until the resolution stage.
 - `[reader]`: `intensity_family` is `"_i"` (the default: integer counts, raw) or `"_lr"`. The `_lr`
   counts split some counts between neighbouring bins, so they are **not raw**. They are kept unrounded and
-  the spectrum is flagged `counts_not_integer`. Do not fit `_lr` counts as raw counts; the
-  fit-side hold lands with the resolution stage.
+  every `_lr` spectrum is flagged `counts_not_integer` (a warning, whatever its bins recover to). Do not
+  fit `_lr` counts as raw counts; the fit-side hold lands with the resolution stage. For `_i`, a few bins
+  that do not recover to an integer (print rounding) raise the same flag as a notice; when more than 10%
+  of the valid bins do, it is a warning, because the columns are then probably not counts.
 - `[facts]`: values you declare, for example `slit = "60x60"` or `lattice = [...]`. They rank lowest: a
   header, trailer, sidecar or filename value wins, and a disagreement raises `fact_conflict`.
 - `[calibration]`: the `tabulated_elastic` method (energy zero and resolution curve from the SARF files)

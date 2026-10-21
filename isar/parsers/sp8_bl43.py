@@ -57,6 +57,7 @@ _FAMILIES = {
 _QUANT = 1e-3                  # meV: bins closer than this are the same bin / a bin is on the lattice
 _KEV_PER_ORDER = 1.977         # incident energy per silicon reflection order (keV)
 _HASHED_BASE = 1_000_000_000   # hashed scan numbers sit above any real scan number
+_OFF_SHARE_WARN = 0.10         # more reported non-integer bins than this share of the valid ones: a warning
 
 # .var names -> fact names
 _VAR_SCAN = {"silicon_order": ("si_order", int), "meV_bin_size": ("bin_meV", float),
@@ -494,11 +495,12 @@ def _spectrum(m: Member, k: np.ndarray, all_keys: np.ndarray, fname_facts: dict,
     if family == "_lr" or rec.not_integer.any():       # `_lr` is never raw, whatever its bins recover to
         what = ("_lr counts are not raw (they split counts between bins)" if family == "_lr"
                 else "bins beyond the printed digits")
-        # Under half a count the nearest integer is still unambiguous, so only a notice; `_lr` is never raw.
-        severity = "warning" if family == "_lr" or rec.max_deviation >= 0.5 else "info"
+        # A few reported bins are print rounding (a notice); many mean the columns are not counts at all.
+        n_off, n_valid = int(rec.not_integer.sum()), int((~rec.invalid).sum())
+        severity = "warning" if family == "_lr" or n_off > _OFF_SHARE_WARN * n_valid else "info"
         spectrum_flags.append(scan.Flag(
             "counts_not_integer", severity,
-            f"{det}: {int(rec.not_integer.sum())} of {len(k)} bins have non-integer counts, {what}; "
+            f"{det}: {n_off} of {len(k)} bins have non-integer counts, {what}; "
             f"largest deviation {rec.max_deviation:.3g}"))
 
     header = {fact: m.header[key] for key, fact in (("hkl", "hkl"), ("dq", "dq"), ("Q_nm", "Q_nm"))

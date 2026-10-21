@@ -133,6 +133,18 @@ def test_lr_spectrum_is_marked_not_raw_even_when_every_bin_recovers_near_integer
     assert flag.severity == "warning" and "_lr" in flag.reason and "not raw" in flag.reason
 
 
+@pytest.mark.parametrize("n_off, severity", [(0, None), (2, "info"), (3, "warning")])
+def test_i_family_non_integer_flag_is_a_warning_above_ten_percent_of_bins(tmp_path, n_off, severity):
+    counts = np.full(20, 40.0)
+    counts[:n_off] = 40.5                                  # N half-way between integers: reported
+    write_member(tmp_path, "a03", lattice(0, 20), counts, 1e6)
+    flag = [f for f in parse(tmp_path).spectra["a03"].spectrum_flags if f.type == "counts_not_integer"]
+    if severity is None:
+        assert flag == []
+    else:
+        assert [f.severity for f in flag] == [severity] and f"{n_off} of 20" in flag[0].reason
+
+
 def test_unknown_intensity_family_is_refused(tmp_path):
     write_member(tmp_path, "a03", lattice(0, 5), np.ones(5), 1e6)
     with pytest.raises(ValueError, match="intensity_family"):
