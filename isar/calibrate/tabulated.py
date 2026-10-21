@@ -90,10 +90,12 @@ def _prepare(x, counts, exposure):
 
 
 def _centre(x, c, w) -> float:
-    """The elastic peak, located from the data alone (the highest rate near the nominal zero)."""
+    """The elastic peak, located from the data alone (the highest rate near the nominal zero). NaN when no
+    bin lies within the search: then there is no elastic line, and the whole spectrum is not searched."""
     rate = c / w
-    near = np.abs(x) < SEARCH_HALF_WIDTH
-    pool = np.nonzero(near)[0] if near.any() else np.arange(x.size)
+    pool = np.nonzero(np.abs(x) < SEARCH_HALF_WIDTH)[0]
+    if pool.size == 0:
+        return float("nan")
     return float(x[pool[int(np.argmax(rate[pool]))]])
 
 

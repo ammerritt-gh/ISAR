@@ -276,3 +276,15 @@ def test_a_peak_at_the_search_edge_is_not_an_elastic_zero():
     # The same line moved inside the search is located and fitted as before.
     inside = rng.poisson(AREA * lib.get("d2", "tail").profile(X - 0.4) + BG).astype(float)
     assert T.zero_for(X, _spectrum("d2", inside), lib.get("d2", "tail")).source == "elastic_fit"
+
+
+def test_no_bin_near_the_zero_is_no_elastic_line():
+    # An inelastic-only window (3 to 15 meV) with a strong line at 6 meV: nothing sits near the zero,
+    # so the line must not be fitted as the elastic line.
+    lib = _library()
+    xi = np.round(np.arange(3.0, 15.0 + 1e-9, 0.2), 10)
+    c = np.random.default_rng(82).poisson(600.0 * np.exp(-0.5 * ((xi - 6.0) / 0.5) ** 2) + BG).astype(float)
+    assert not T.elastic_significant(xi, c, None)
+    z = T.zero_for(xi, _spectrum("d2", c), lib.get("d2", "tail"))
+    assert z.source == "pipeline_zero" and z.centre == 0.0
+    assert [f.type for f in z.flags] == ["pipeline_zero"]
