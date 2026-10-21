@@ -12,7 +12,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from isar.analyze.resolution import TabulatedResolution
 from isar.schema import axes
+from isar.schema.scan import exposure_for
 from isar.schema.steering import ParamConstraints
 
 
@@ -139,6 +141,14 @@ class ScanContext:
     # the amplitude basis a predictive artifact must publish.  It is carried, never recomputed: the
     # median is a rank statistic, so recomputing it on a different kept set can shift the declared
     # basis (EIG-0 §4.5).  None wherever ``exposure_scale`` is None.
+    resolution_curve: TabulatedResolution | None = None  # measured resolution; when set it
+    # replaces the Voigt in the components, and __post_init__ makes gauss_fwhm its FWHM and
+    # lorentz_fwhm 0 so width-only consumers need no change.
+
+    def __post_init__(self):
+        if self.resolution_curve is not None:
+            object.__setattr__(self, "gauss_fwhm", float(self.resolution_curve.fwhm))
+            object.__setattr__(self, "lorentz_fwhm", 0.0)
 
     @property
     def x_used(self) -> np.ndarray:
@@ -184,16 +194,21 @@ class ScanContext:
 
     @classmethod
     def from_scan(cls, record, detector_id, card, *, center, gauss_fwhm, lorentz_fwhm,
-                  prior_omega=None) -> "ScanContext":
+                  prior_omega=None, resolution_curve=None) -> "ScanContext":
         """Extract a context from a ScanRecord's detector spectrum + the card.
 
         ``center``/``gauss_fwhm``/``lorentz_fwhm`` are the per-scan resolution (measured
-        from the elastic line for IXS; Cooper-Nathans for TAS) supplied by the caller.
+        from the elastic line for IXS; Cooper-Nathans for TAS) supplied by the caller; a
+        ``resolution_curve`` (tabulated, per detector) overrides the two widths. Exposure is the
+        spectrum's own monitor/time where it carries them (:func:`isar.schema.scan.exposure_for`).
         """
         energy = axes.scanned_axes(record)[0].values
         sp = record.spectra[detector_id]
         exposure_scale = None
         norm = getattr(record, "normalization", None)
+        # Without its own exposure a spectrum uses the record's; stub spectra lack the fields.
+        if getattr(sp, "monitor", None) is not None or getattr(sp, "time", None) is not None:
+            norm = exposure_for(record, detector_id)
         # Detector expectation follows incident exposure.  Prefer a usable recorded monitor even on
         # time-counted instruments (where it captures flux drift); seconds are the deterministic
         # fallback when monitor is absent or malformed.
@@ -215,4 +230,5 @@ class ScanContext:
             quasielastic_fwhm=card.policy.quasielastic_fwhm,
             exposure_scale=exposure_scale,
             exposure_reference=selected.reference,
+            resolution_curve=resolution_curve,
         )

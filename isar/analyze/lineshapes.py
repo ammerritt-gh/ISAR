@@ -8,6 +8,7 @@ Provides:
   - Pseudo-Voigt (for elastic-line / K=0 energy-zero calibration)
   - DHO (Damped Harmonic Oscillator) Stokes / anti-Stokes lineshapes
   - Voigt ⊗ DHO convolution model with elastic Voigt peak + flat background
+  - The same model with a tabulated (measured) resolution curve in place of the Voigt
   - Helper: voigt_area_for_height
 
 Constants
@@ -133,11 +134,74 @@ def _elastic_unit_voigt(x_target_bytes, x_target_shape, gauss_fwhm, lorentz_fwhm
     return profile
 
 
+@lru_cache(maxsize=64)
+def _tabulated_grid_and_kernel(n_half, dx, curve):
+    """Cached node grid ``k*dx`` (k = -n_half..n_half, so 0 is a node) and the curve's kernel
+    with its centre index. Keyed on the curve object (identity-hashed), never on DHO params."""
+    x_nodes = np.arange(-n_half, n_half + 1) * dx
+    x_nodes.flags.writeable = False
+    kern, centre = curve.kernel(dx)
+    return x_nodes, kern, centre
+
+
+def convolve_tabulated(x_target, center, curve, signal):
+    """``signal`` (a function of energy, evaluated on nodes ``k*dx``) convolved with a tabulated
+    resolution curve, evaluated at ``x_target - center``.
+
+    The convolution is aligned on the kernel's ``k = 0`` node, so the result carries no
+    window-dependent centring offset (unlike the Voigt path's retained defect below). The grid
+    spans the data window plus the same 20 meV pad as the Voigt path.
+    shortcut: a signal with tails beyond that pad (a broad Lorentzian) loses its far-tail area;
+    widen the pad if a quasi-elastic width ever approaches it.
+    """
+    x_target = np.asarray(x_target, dtype=float)
+    dx = CONVOLUTION_DX
+    x_span = max(abs(x_target.min()), abs(x_target.max())) + 20
+    x_nodes, kern, centre = _tabulated_grid_and_kernel(int(np.ceil(x_span / dx)), dx, curve)
+    full = fftconvolve(signal(x_nodes), kern, mode='full') * dx
+    # full[p] sits at node index p - centre relative to x_nodes[0].
+    x_full = x_nodes[0] + (np.arange(full.size) - centre) * dx
+    return np.interp(x_target - center, x_full, full, left=0.0, right=0.0)
+
+
+def _tabulated_dho(x_target, phonon_energy, center, damping, phonon_amplitude,
+                   elastic_amplitude, BG, T, peak, curve):
+    """The tabulated-resolution branch of :func:`convolute_voigt_dho` (same physics, same
+    detailed-balance tie; the elastic line is the curve itself at ``center``)."""
+    x_target = np.asarray(x_target, dtype=float)
+    peak_lower = peak.lower()
+    peak_parts = ['stokes', 'astokes', 'elastic'] if peak_lower == 'all' else peak_lower.split('+')
+
+    def signal(x_nodes):
+        s = np.zeros_like(x_nodes)
+        if 'stokes' in peak_parts:
+            s += Stokes_DHO(x_nodes, amplitude=phonon_amplitude, damping=damping,
+                            center=phonon_energy)
+        if 'astokes' in peak_parts and T > 0:
+            astokes_amp = phonon_amplitude / np.exp(phonon_energy / (KB * T))
+            s += antiStokes_DHO(x_nodes, amplitude=astokes_amp, damping=damping,
+                                center=phonon_energy)
+        return s
+
+    if 'stokes' in peak_parts or 'astokes' in peak_parts:
+        y = convolve_tabulated(x_target, center, curve, signal)
+    else:
+        y = np.zeros_like(x_target)
+    if 'elastic' in peak_parts:
+        y += elastic_amplitude * curve.profile(x_target - center)
+    y += BG
+    return y
+
+
 def convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, lorentz_fwhm,
                         damping, phonon_amplitude, elastic_amplitude, BG, T,
-                        peak='all'):
+                        peak='all', resolution_curve=None):
     """
     Voigt-convolved DHO model + elastic Voigt peak + flat background.
+
+    With ``resolution_curve`` (an :class:`isar.analyze.resolution.TabulatedResolution`) the
+    tabulated curve replaces the Voigt for both the DHO convolution and the elastic line, and
+    ``gauss_fwhm``/``lorentz_fwhm`` are ignored. Without it the Voigt path below is unchanged.
 
     Parameters
     ----------
@@ -158,6 +222,9 @@ def convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, lorentz_fwh
     -------
     y : ndarray — model intensity at x_target
     """
+    if resolution_curve is not None:
+        return _tabulated_dho(x_target, phonon_energy, center, damping, phonon_amplitude,
+                              elastic_amplitude, BG, T, peak, resolution_curve)
     x_target = np.asarray(x_target, dtype=float)
     # The convolution grid (CONVOLUTION_DX). DO NOT make this finer without a live campaign to
     # show for it: 0.01 and 0.02 were both tried on 2026-09-03, on the same six-point path

@@ -21,8 +21,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from isar.analyze.lineshapes import Voigt, convolute_voigt_dho
+from isar.analyze.lineshapes import Lorentzian, Voigt, convolve_tabulated, convolute_voigt_dho
 from isar.analyze.phonon import bose_occupation, omega0_from, omega0_value_error
+
+
+def _curve(ctx):
+    """The context's tabulated resolution curve, or ``None`` (duck-typed contexts have none)."""
+    return getattr(ctx, "resolution_curve", None)
 
 
 @dataclass(frozen=True)
@@ -40,6 +45,8 @@ class Component:
     Subclasses set ``prefix`` and ``params`` and implement :meth:`evaluate` and
     :meth:`unit_columns`. ``ctx`` is any object exposing ``gauss_fwhm``,
     ``lorentz_fwhm``, ``center`` and ``T`` (e.g. :class:`isar.analyze.context.ScanContext`).
+    A context whose ``resolution_curve`` is set convolves with that tabulated curve instead of
+    the Voigt (DHO, elastic and quasi-elastic alike).
     """
 
     prefix: str = "component"
@@ -107,7 +114,7 @@ class PhononDHO(Component):
         measured = local["A"] * bose_occupation(omega0, ctx.T)   # intrinsic × (n+1), H4
         return convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
                                    local["Gamma"], measured, 0.0, 0.0, ctx.T,
-                                   peak=self.peak)
+                                   peak=self.peak, resolution_curve=_curve(ctx))
 
     def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
         unit = {"Omega_d": nonlinear["Omega_d"], "Gamma": nonlinear["Gamma"], "A": 1.0}
@@ -125,6 +132,9 @@ class Elastic(Component):
     params = (Parameter("E", "linear"),)
 
     def evaluate(self, x, local: dict, ctx) -> np.ndarray:
+        curve = _curve(ctx)
+        if curve is not None:
+            return local["E"] * curve.profile(np.asarray(x, dtype=float) - ctx.center)
         return Voigt(np.asarray(x, dtype=float), local["E"],
                      ctx.gauss_fwhm, ctx.lorentz_fwhm, ctx.center)
 
@@ -149,6 +159,11 @@ class QuasiElastic(Component):
     params = (Parameter("QE", "linear"),)
 
     def evaluate(self, x, local: dict, ctx) -> np.ndarray:
+        curve = _curve(ctx)
+        if curve is not None:
+            width = ctx.quasielastic_fwhm
+            return convolve_tabulated(x, ctx.center, curve,
+                                      lambda e: Lorentzian(e, local["QE"], width, 0.0))
         return Voigt(np.asarray(x, dtype=float), local["QE"],
                      ctx.gauss_fwhm, ctx.quasielastic_fwhm, ctx.center)
 
