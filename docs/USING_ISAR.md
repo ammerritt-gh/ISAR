@@ -296,10 +296,116 @@ is genuinely data- or budget-limited, and resuming without changing something wi
 - ISAR is a **triage** pass, not your final analysis — verdicts tell you where to spend manual
   effort, and nothing is ever deleted on your behalf.
 
+## Parsing SPring-8 BL43LXU (IXS) folders
+
+BL43LXU is supported for **parsing**: `isar init`, `isar ingest` and the inspector read its processed
+per-analyzer files. Fitting waits on the resolution stage (see the limits at the end of this section).
+Two processed layouts are read. The raw SPEC files the beamline writes (`specixs_*`, `spects_*`) are
+not: `isar init` on one stops with "has no shipped card template yet".
+
+Point ISAR at the folder, as for any instrument:
+
+```
+isar init "D:\beamtime\leTacon_SP8_CsV3Sb5" --out my_bl43
+isar ingest "D:\beamtime\leTacon_SP8_CsV3Sb5" --workspace my_bl43
+```
+
+`isar init` detects the instrument from the first per-analyzer file and writes
+`my_bl43\card.policy.toml` from the shipped template. `isar ingest` makes one scan per set of files,
+with one spectrum per analyzer, and ledgers each analyzer as its own `(scan, analyzer)` entry. An
+`isar run` on these scans holds each one (`held_for_calibration`, "no energy zero in calibration
+coverage"). Ingest is the useful step for now: every analyzer's counts and facts can be inspected
+before any fit.
+
+### The two layouts
+
+- **CsV3Sb5 layout** (the beamline's processed output): one file per analyzer, named
+  `<sample>_<T>K_<h>_<k>_<l>[_<tag>]_aNN` (NN is the analyzer number: 28 analyzers, a03 to a41), with a
+  `<stem>.var` sidecar beside them. The HKL in the stem is the scan's **nominal arm-centre HKL**: it
+  becomes the scan fact `hkl_nominal`, never an analyzer's Q. The bare `<stem>` summed file and the
+  `<stem>.pkpos` peak lists are ignored, not parsed.
+- **Ba122 layout** (the group's export macro): one three-column file per analyzer,
+  `spec1_T<T>K__scan_<n>_A<a>_Q_<h>_<k>_<l>_inel.dat`. The scan, temperature, analyzer and that
+  analyzer's own HKL are all in the name. It carries **no monitor**, so its exposure is recorded as
+  missing; ISAR does not deduce a monitor from the intensity/count ratio.
+
+Counts are raw in both layouts: N = (intensity/error)² is recovered from the printed numbers, the
+variance is N, and a zero count stays zero with σ = 0 (no floor). The monitor and counting time of each
+analyzer are stored beside its counts, never divided in. Analyzers with different bins share one energy
+axis; a bin that an analyzer lacks is masked and flagged `bin_absent`.
+
+### What the card's tables do
+
+- `[files]`: `measurement` holds regexes with named groups. Each must name `set` (the scan's key,
+  shared by its analyzer files) and `analyzer`; the other groups (sample, `T_K`, `hkl_nominal`,
+  `scan_numbers`, `hkl`) become filename facts. `sidecar` is `{set}.var`. `ignore` lists globs that are
+  never read as data. Subfolders are walked: the `rf/` folder of SARF resolution files is classified
+  unrecognized and not read until the resolution stage.
+- `[reader]`: `intensity_family` is `"_i"` (the default: integer counts, raw) or `"_lr"`. The `_lr`
+  counts split some counts between neighbouring bins, so they are **not raw**. They are kept unrounded and
+  the spectrum is flagged `counts_not_integer`. Do not fit `_lr` counts as raw counts; the
+  fit-side hold lands with the resolution stage.
+- `[facts]`: values you declare, for example `slit = "60x60"` or `lattice = [...]`. They rank lowest: a
+  header, trailer, sidecar or filename value wins, and a disagreement raises `fact_conflict`.
+- `[calibration]`: the `tabulated_elastic` method (energy zero and resolution curve from the SARF files)
+  is written in the template now and is **not implemented yet**. Until it is, the code does not know the
+  method, and the scans are held as above.
+- `[[detectors]]`: `enabled = false` leaves an analyzer out of every scan. `value_index` and
+  `signal_column` are not used for this instrument.
+
+### Header lines the group's macro can write
+
+A `# key value` line before the data (the column-label line is skipped) gives the same fact that the file
+name or the card would, and it wins over them. The reader takes:
+
+- scan level: `scan` (scan number or numbers), `T_K`, `si_order`, `energy_keV`, `agaph_mm` and `agapv_mm`
+  (the analyzer slit, combined into the generic fact `slit` as `<h>x<v>`), `lattice` (a, b, c, α, β, γ)
+  and `time`;
+- analyzer level: `hkl` (the analyzer's own HKL, which gives its Q: rung 1), `dq`, and `Q_nm` (|Q| in
+  1/nm: a magnitude only, never a Q).
+
+The analyzer itself is named by its file name, not by a header line. The CsV3Sb5 analyzer files already
+end with `#Q=` (|Q|) and `#T=` (temperature) lines; they are read as `Q_nm` and `T_K` where no leading
+header line gives them. If a trailing value disagrees with the file's own leading header, the header
+value is kept and the trailing value is listed as a conflict under source `trailer`, with a
+`fact_conflict` flag.
+
+The `.var` sidecar supplies `si_order`, `bin_meV` (the bin size) and `n_merged_scans`, and for each
+analyzer `efficiency`, `polarisation_factor`, `elastic_centroid_meV` and `elastic_area`. A `.var` that
+is missing or unreadable raises `missing_sidecar`.
+
+### Reading a fact's source label
+
+The inspector shows every fact with its source:
+
+| label | meaning |
+|---|---|
+| `header` | a `# key value` line, or a trailing `#Q=` / `#T=` line, in the file itself |
+| `trailer` | a trailing line that disagrees with the leading header (kept as a conflict) |
+| `sidecar` | the `.var` file beside the analyzer files |
+| `filename` | the file-name pattern (the card's `[files]` groups) |
+| `card` | a value you declared in `[facts]` |
+| `inferred` | derived by ISAR: `energy_keV` from `si_order` (1.977 keV per silicon order) when nothing else gives it, and the count-recovery deviation |
+| `missing` | nothing supplied it. The value is empty, and nothing downstream may invent one |
+
+The precedence is header, then trailer, sidecar, filename, card; the first found wins.
+
+A spectrum's `q_source` says which rung gave its Q. `header` or `filename` is rung 1 (the analyzer's own
+HKL). `none` is rung 4: no Q, `q = None`. Rungs 2 and 3 are planned, not built. For CsV3Sb5 every analyzer
+is rung 4, and the scan's `hkl_nominal` is the only HKL in the record.
+
+### Limits for BL43LXU
+
+- Fitting waits on the resolution stage. Until it lands, every BL43LXU scan is held for want of an energy
+  zero. ISAR never defaults E₀ to 0.0: the card's `needs_zero` status keeps the zero out of the fit.
+- `_lr` counts are not raw (see `[reader]`).
+- The raw SPEC files are not read.
+- The Ba122 layout has no monitor, and ISAR does not deduce one.
+
 ## New instrument, no parser?
 
 `isar init` recognizes the instruments with registered parsers (currently Sector-30 HERIX SPEC —
-supplementary and raw — and ILL IN8 numor ASCII; the shared SPEC/numor readers are built for ID28
-and BL43LXU to slot in as cards + thin plugins). If your format isn't recognized, a parser plugin
+supplementary and raw —, ILL IN8 numor ASCII and SPring-8 BL43LXU processed per-analyzer files, above;
+the shared SPEC/numor readers are built for ID28 to slot in as cards + thin plugins). If your format isn't recognized, a parser plugin
 plus a card template is what's needed — see `ARCHITECTURE.md` §6 and `isar/parsers/base.py`; the schema
 (`ScanRecord`) is fixed, only the reader varies.

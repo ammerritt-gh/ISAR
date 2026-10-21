@@ -151,8 +151,9 @@ be promoted to a scanned axis by reference from `scan_axes`.
   has migrated** — assume SPEC ASCII for current and legacy data.
 - **SPring-8 BL43LXU (IXS):** ~~**Custom in-house acquisition software**; on-disk format not publicly
   documented~~ — **[real_data] corrected:** the real file `specixs_22Nov05` (Nov 2022) is **plain SPEC**
-  (`#F/#E/#D/#O/#S/#G/#P/#Q` blocks), so BL43 is handled by the shared SPEC base reader with a per-card
-  column map like S30/ID28, not a bespoke parser. Large analyzer array (described as 6×4 → now 28; a 2024
+  (`#F/#E/#D/#O/#S/#G/#P/#Q` blocks), and ISAR does not read those raw files. It reads the beamline's
+  processed per-analyzer layouts instead, through the `sp8_bl43` reader: the CsV3Sb5 layout (one file per
+  analyzer beside a `.var` sidecar) and the Ba122 three-column export. Large analyzer array (described as 6×4 → now 28; a 2024
   experiment used 7×4 = 28 analyzers, 28 momentum transfers per scan), resolution ~0.75–6 meV.
 - **ILL IN8 (TAS):** ILL "numor" format (NUMber Of Run; 6-digit zero-padded filenames), historically
   ASCII/TAPDAT-derived. **[real_data]:** the real files confirm the classic numor ASCII (header blocks
@@ -285,8 +286,8 @@ schema.
 ## 11. Caveats
 
 - ~~**BL43LXU's native file format is not publicly documented.**~~ **[real_data] corrected:** BL43LXU
-  writes **SPEC** (`specixs_*`), handled by the shared SPEC base reader; the only per-facility unknown is
-  the column/`#V` mapping, resolved by inspecting a real file. Still worth confirming with staff if a new
+  writes **SPEC** (`specixs_*`); ISAR reads only the processed per-analyzer layouts (CsV3Sb5 and
+  Ba122), not the raw SPEC files. Still worth confirming with staff if a new
   beamtime changes the acquisition setup.
 - **ID28's migration to BLISS/HDF5 is unconfirmed in public sources.** Assume SPEC ASCII; design the
   registry so an HDF5 ID28 variant can be added.

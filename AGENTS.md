@@ -40,10 +40,11 @@ area.
   `real_data/golden/<scenario>/scenario.json`, which is **never read, run, or consulted during
   development** — the gate runs only when the owner names it (`ISAR_GOLDEN=1`, or
   `run-isar-proofs.bat golden`).
+  A job worktree runs a proof on the main checkout's data with `ISAR_REAL_DATA=<main checkout>\real_data` (read only).
 - **Data folders.** `real_data/` — gitignored, main checkout only: the real facility files, each
   proof's measured expectations in `<proof stem>.expect.json` beside its data, and the sealed
   golden bundles. `artificial_data/` — committed: copies of real facility files with every data
-  number replaced (headers kept), made once with `python tools/artificial_copy.py <real file> --out
+  number replaced (headers kept, but a measured number in a header or trailer comment line is replaced too, e.g. the BL43LXU analyzer files' trailing `#Q=` / `#T=` and the SARF eshift), made once with `python tools/artificial_copy.py <real file> --out
   <folder>`, each with a truth file beside it, never regenerated; the parser tests read them.
   Behaviour tests that depend on the numbers use data generated at test time (`isar/synth_format/`).
 - **Running the suite — three commands, pick by intent:**
