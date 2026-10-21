@@ -219,6 +219,19 @@ def test_weak_elastic_line_falls_back_to_the_pipeline_zero_labelled(tmp_path):
     assert not calres.held and calres.zero_source == "pipeline_zero" and calres.curve is not None
 
 
+def test_print_rounding_notice_is_fitted_not_held(tmp_path):
+    ws = _workspace(tmp_path)
+    _write_library(ws.root / "rf")
+    _write_scan(tmp_path / "data", analyzers=ANALYZERS)
+    card, _session = ws.load()
+    recs = _records(card, tmp_path / "data")
+    recs[0].spectra["a04"].spectrum_flags.append(Flag("counts_not_integer", "info", "print rounding"))
+    calibrations.refresh_tabulated(card, recs, base_dir=ws.root)
+    (entry,) = card.state.tabulated_calibration.values()
+    assert not entry["detectors"]["a04"].get("held_reason")
+    assert "a04" in entry["comparison_set"]
+
+
 def test_lr_spectrum_is_held_never_fitted_and_not_scored(tmp_path):
     _ws, card, recs, entry = _calibrated(tmp_path, lr=("a04",))
     assert entry["detectors"]["a04"]["held_reason"] == "non-raw counts (_lr) are not fitted"

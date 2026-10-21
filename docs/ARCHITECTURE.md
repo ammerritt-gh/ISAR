@@ -233,11 +233,13 @@ the elastic lines clearly better (summed Poisson deviance ahead by 10 or more) o
 `slit_mismatch`. With none declared, the slit with the least summed deviance over the analyzers that
 have a significant elastic line and a curve at every candidate is used, flagged `slit_inferred`, and
 `slit_ambiguous` when the runner-up is within 10. Per analyzer, its curve at that slit is fitted to
-the raw counts over ±3 meV of the elastic peak (located within ±2.5 meV of 0) by Baker–Cousins
-deviance, with no zero-count floor; the fitted centre is the energy zero (`elastic_fit`). An analyzer
-with no significant elastic line takes the file's own axis, labelled `pipeline_zero`: an uncalibrated
-axis is never assumed to be zero. An analyzer with no curve at the chosen slit, or whose spectrum
-carries a `counts_not_integer` flag, is held with its reason and is not fitted. In the fit the curve
+the raw counts over ±3 meV of the elastic peak (located within ±1.5 meV of 0, the file's own zero) by
+Baker–Cousins deviance, with no zero-count floor; the fitted centre is the energy zero (`elastic_fit`).
+An analyzer with no significant elastic line (a peak at the edge of the search, a peak not 5 σ above
+the median, or a fit pinned at its centre bound) takes the file's own axis, labelled `pipeline_zero`:
+an uncalibrated axis is never assumed to be zero. An analyzer with no curve at the chosen slit, or
+whose spectrum carries a `counts_not_integer` warning (every `_lr` spectrum), is held with its reason
+and is not fitted. In the fit the curve
 replaces the Voigt for the DHO convolution and the elastic line, its FWHM is the Gaussian width, and a
 fit range beyond the table raises `resolution_range_exceeded`. The in-plane momentum spread is not
 modelled. *(Implemented.)*
@@ -468,7 +470,7 @@ rulings W1–W3.)*
 | Q by rung: rung 2 (from the sample motor angles) and rung 3 (from the arm-centre HKL, approximate) | Planned (waits for the SIXCIRCLE geometry) |
 | Tabulated per-analyzer resolution (SARF curve per analyzer and slit) in the fit, in place of the Voigt | Implemented |
 | Slit ladder: declared slit, else inferred from the elastic lines; `slit_mismatch`, `slit_inferred`, `slit_ambiguous` alerts | Implemented |
-| Per-analyzer elastic zero (`tabulated_elastic`) with labelled `pipeline_zero` fallback. Its real-data proof (`proofs/test_bl43_resolution.py`) does not yet pass: an info-level `counts_not_integer` notice holds analyzers, and some fitted zeros lie outside ±0.3 meV of the file axis | Implemented (proof open) |
+| Per-analyzer elastic zero (`tabulated_elastic`) with labelled `pipeline_zero` fallback; real-data proof `proofs/test_bl43_resolution.py` | Implemented |
 | Momentum (in-plane) resolution spread modelled inside the fit | Planned (after the SIXCIRCLE geometry) |
 | Adjudication (decide–record–defer) | Implemented (opt-in) |
 | Stage II: Baker–Cousins fit, evidence selection (H4; Akaike diagnostics retained), branch posterior, verdicts | Implemented |

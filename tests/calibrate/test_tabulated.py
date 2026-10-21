@@ -252,3 +252,27 @@ def test_all_masked_analyzer_is_left_out_of_the_comparison_set():
     choice = T.choose_setting(X, spectra, lib, None)
     assert choice.comparison_set == ["d1", "d3"] and choice.setting == "tail"
     assert _flags(choice) == ["slit_inferred"]
+
+
+def test_print_rounding_notice_is_scored_and_a_warning_is_not():
+    lib = _library()
+    spectra = _scan(lib, "tail", seed=60)
+    spectra["d1"].spectrum_flags.append(scan.Flag("counts_not_integer", "info", "d1: print rounding"))
+    spectra["d2"].spectrum_flags.append(scan.Flag("counts_not_integer", "warning", "d2: _lr"))
+    choice = T.choose_setting(X, spectra, lib, None)
+    assert choice.comparison_set == ["d1", "d3"] and choice.setting == "tail"
+
+
+def test_a_peak_at_the_search_edge_is_not_an_elastic_zero():
+    # No elastic line; an inelastic line just beyond the search half-width, whose rising tail makes
+    # the outermost searched bin the highest. It must fall back to the labelled pipeline zero.
+    lib = _library()
+    rng = np.random.default_rng(81)
+    mu = 600.0 * np.exp(-0.5 * ((X - 3.2) / 0.5) ** 2) + BG
+    c = rng.poisson(mu).astype(float)
+    assert not T.elastic_significant(X, c, None)
+    z = T.zero_for(X, _spectrum("d2", c), lib.get("d2", "tail"))
+    assert z.source == "pipeline_zero" and [f.type for f in z.flags] == ["pipeline_zero"]
+    # The same line moved inside the search is located and fitted as before.
+    inside = rng.poisson(AREA * lib.get("d2", "tail").profile(X - 0.4) + BG).astype(float)
+    assert T.zero_for(X, _spectrum("d2", inside), lib.get("d2", "tail")).source == "elastic_fit"

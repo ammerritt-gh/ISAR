@@ -209,7 +209,7 @@ def _load_library(folder, pattern) -> tuple[ResolutionLibrary, str | None, str |
 
 def _calibrate_detector(x, det, spectrum, library, setting, problem) -> dict:
     """One detector's entry of the state map: its zero and elastic fit, or why it is held."""
-    if any(f.type == "counts_not_integer" for f in spectrum.spectrum_flags):
+    if tabulated._not_raw(spectrum):                     # the info notice is print rounding: raw, fitted
         return {"held_reason": NON_RAW_REASON, "flags": []}      # parsed and shown, never fitted
     curve = library.get(det, setting) if setting is not None else None
     if curve is None:

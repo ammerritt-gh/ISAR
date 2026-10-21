@@ -29,11 +29,13 @@ CLEARLY_BETTER = 10.0
 # Fit half-window around the located elastic peak: wide enough to pin the background and the
 # tabulated tail, tight enough that an off-zero phonon is not fitted as elastic.
 FIT_HALF_WINDOW = 3.0
-# Significance half-window and k, as in isar.calibrate.elastic.fit_elastic; the peak is searched
-# for within SEARCH_HALF_WIDTH of the nominal zero, as there.
+# Significance half-window and k, as in isar.calibrate.elastic.fit_elastic.
 SIGNIFICANCE_HALF_WINDOW = 1.5
 SIGNIFICANCE_K = 5.0
-SEARCH_HALF_WIDTH = 2.5
+# The peak is searched for within this of the file's own zero, narrower than fit_elastic's 2.5 meV: the
+# axis is already the beamline's (R7 verifies it), and a wider search takes a low-energy inelastic line
+# for the elastic one.
+SEARCH_HALF_WIDTH = 1.5
 CENTRE_BOUND = 1.5    # the fitted centre stays within this of the located peak
 _MIN_POINTS = 5      # a 3-parameter fit needs more than 3 bins to mean anything
 
@@ -95,12 +97,27 @@ def _centre(x, c, w) -> float:
     return float(x[pool[int(np.argmax(rate[pool]))]])
 
 
+def _not_raw(spectrum) -> bool:
+    """A spectrum whose counts are not raw (the reader's ``counts_not_integer`` warning: every ``_lr``
+    spectrum, or columns that are not counts). The ``info`` notice is print rounding of raw counts."""
+    return any(f.type == "counts_not_integer" and f.severity == "warning" for f in spectrum.spectrum_flags)
+
+
+def _at_search_edge(x, c0) -> bool:
+    """Whether the located peak is the outermost bin searched: the highest rate there is a rising
+    tail (an inelastic line beyond the search), not a line with the search on both sides of it."""
+    near = np.abs(x) < SEARCH_HALF_WIDTH
+    return bool(near.any() and (c0 <= x[near].min() or c0 >= x[near].max()))
+
+
 def _significant(x, c, w, c0) -> bool:
+    if _at_search_edge(x, c0):
+        return False
     win = np.abs(x - c0) <= SIGNIFICANCE_HALF_WINDOW
     if win.sum() < 3:
         return False
     rate = c[win] / w[win]
-    p = int(np.argmax(rate))
+    p = int(np.argmin(np.abs(x[win] - c0)))   # the located peak itself, not a stronger line beside it
     med = float(np.median(rate))
     # Poisson sigma of the peak bin's own rate if it held the background level: sqrt(med*w)/w,
     # floored at one count as in fit_elastic (w = 1 reproduces it). A short-exposure bin is
@@ -154,6 +171,8 @@ def _fit(x, c, w, curve) -> ElasticFit:
         return ElasticFit(np.nan, np.nan, np.nan, np.nan, np.nan, int(win.sum()), False)
     centre, a, b, d = _fit_window(x[win], c[win], w[win], curve, c0)
     n = int(win.sum())
+    if abs(centre - c0) >= CENTRE_BOUND - 1e-3:          # pinned at its bound: no line was found there
+        sig = False
     return ElasticFit(centre, a, b, d, d / n, n, sig)
 
 
@@ -198,7 +217,7 @@ def choose_setting(x, spectra, library, declared) -> SettingChoice:
     ``x``, ``declared`` the generic ``slit`` fact's value (header, else card) or None.
 
     The comparison set is fixed before any candidate is scored: detectors that pass
-    ``elastic_significant``, are not ``counts_not_integer`` (``_lr`` is never fitted) and have a
+    ``elastic_significant``, carry no ``counts_not_integer`` warning (``_lr`` is never fitted) and have a
     curve at every candidate setting. Each candidate is scored by the summed deviance over that
     set, every detector on its own located window and bins. A declared slit is kept even when
     another candidate is better by ``CLEARLY_BETTER`` (``slit_mismatch``); with none declared the
@@ -208,7 +227,7 @@ def choose_setting(x, spectra, library, declared) -> SettingChoice:
     candidates = [s for s in library.settings() if s is not None]
     prepared = {}
     for det, sp in spectra.items():
-        if any(f.type == "counts_not_integer" for f in sp.spectrum_flags):
+        if _not_raw(sp):
             continue
         if any(library.get(det, s) is None for s in candidates):
             continue
