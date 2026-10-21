@@ -372,7 +372,8 @@ value is kept and the trailing value is listed as a conflict under source `trail
 
 The `.var` sidecar supplies `si_order`, `bin_meV` (the bin size) and `n_merged_scans`, and for each
 analyzer `efficiency`, `polarisation_factor`, `elastic_centroid_meV` and `elastic_area`. A `.var` that
-is missing or unreadable raises `missing_sidecar`.
+is missing or unreadable raises `missing_sidecar`; one that is empty or has no analyzer list (for
+example still being copied) counts as unreadable, and re-ingesting once it is whole completes the scan.
 
 ### Reading a fact's source label
 

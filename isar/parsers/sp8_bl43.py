@@ -316,7 +316,10 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
     if var_path is not None:
         try:
             var_scan, var_per, expected = _var_facts(read_var(var_path))
-        except (OSError, UnicodeDecodeError) as exc:
+            if not (var_scan and expected):    # empty or cut short (still being copied): same as unreadable
+                raise ValueError("holds no analyzer list or no scan facts")
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            var_scan, var_per, expected = {}, {}, []
             log.warning("%s: cannot read sidecar %s (%s)", file_set.key, Path(var_path).name, exc)
             sidecar_flag = scan.Flag("missing_sidecar", "warning",
                                      f"{Path(var_path).name} cannot be read ({exc}); its facts are missing")

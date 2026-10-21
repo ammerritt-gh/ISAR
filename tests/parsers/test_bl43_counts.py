@@ -327,6 +327,19 @@ def test_sidecar_gives_bin_size_and_analyzer_facts_and_a_missing_one_is_flagged(
     assert not flags(rec, "missing_sidecar") and not flags(rec, "missing_analyzer")
 
 
+@pytest.mark.parametrize("keep", [0, 3], ids=["empty", "truncated-before-the-analyzer-list"])
+def test_empty_or_truncated_var_is_unreadable_not_a_complete_scan(tmp_path, keep):
+    write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6)
+    var = write_var(tmp_path, [3, 4])
+    var.write_text("\n".join(var.read_text(encoding="utf-8").splitlines()[:keep]), encoding="utf-8")
+    rec = parse(tmp_path)                      # a file still being copied reads as nothing, not as zero analyzers
+    (flag,) = flags(rec, "missing_sidecar")
+    assert flag.severity == "warning" and ".var" in flag.reason
+    assert rec.facts["bin_meV"] == {"value": None, "source": "missing"}
+    assert rec.spectra["a03"].facts["efficiency"] == {"value": None, "source": "missing"}
+    assert not flags(rec, "missing_analyzer")             # no expected set: the list never arrived
+
+
 # ---------------------------------------------------------------------------
 # emit_file inverts the reader for whole, aligned analyzers
 # ---------------------------------------------------------------------------
