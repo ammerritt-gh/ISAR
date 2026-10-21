@@ -1,0 +1,250 @@
+# BL43LXU (SPring-8) - meV-resolution IXS, processed per-analyzer files.
+# Human-authored policy half of the experiment card (D8): the machine READS this, never writes it.
+#
+# One scan is a SET of files, one per analyzer (28 analyzers: a03-a09, a14-a20, a25-a31, a35-a41).
+# ISAR turns each set into one scan with one spectrum per analyzer. Two layouts are read:
+#   * CsV3Sb5 layout: <stem>_aNN beside <stem>.var (the beamline's processed output). The file name
+#     carries the sample, the temperature and the NOMINAL arm-centre HKL of the scan; no analyzer's
+#     own HKL, no scan number.
+#   * Ba122 layout: spec1_T<T>K__scan_<n>_A<a>_Q_<h>_<k>_<l>_inel.dat (the group's export macro):
+#     three columns, no monitor, and the scan, temperature, analyzer and that analyzer's HKL in the name.
+# A header written at the top of an analyzer file (`# hkl 0.5 0.5 3`, `# T_K 302`, `# agaph_mm 60`,
+# `# agapv_mm 60`, `# scan 12`, ...) overrides the same fact from the file name or from [facts] below.
+#
+# Counts are RAW: N = (intensity / error)^2, recovered from the printed numbers. The monitor and the
+# counting time of each analyzer are stored beside its counts, never divided in.
+
+facility = "SP8"
+instrument = "BL43LXU"
+format_version = "processed"
+plugin = "sp8_bl43"
+
+energy_column = "meV"           # the bin centre, energy transfer in meV on the beamline's own axis
+monitor_column = "norm_i"       # the monitor of the chosen column family (norm_lr for _lr)
+time_column = "secs"            # counting time per bin (lrn x 0.25 s for _lr)
+counting_mode = "monitor"
+normalize_by = "monitor"        # a bin whose monitor is 0 is masked and flagged; the counts stay raw
+raw_abscissa_kind = "energy"    # the axis is already in meV...
+energy_status = "needs_zero"    # ...but its zero is not trusted: scans are HELD until a zero exists
+variance_convention = "none"    # D3: variance = counts, NO zero-count floor
+min_points = 5
+hkl_round_step = 0.05
+measurement_pattern = "processed"   # unused: processed files carry no scan command
+alignment_pattern = "none"          # unused: every scan in these files is a measurement
+exclusions_seed = []
+
+[temperature_rule]              # no sensor in the files; the setpoint is the T_K fact (header, name or [facts])
+
+[collation]
+key = ["sample", "q", "T"]
+merge = "separate"              # no pooling of repeat scans until per-analyzer exposure is pooled safely
+
+[files]
+# Each measurement pattern is matched against the whole file name and must name `set` (the scan's
+# key, shared by every analyzer file of the scan) and `analyzer`. `sample`, `T_K`, `hkl_nominal`,
+# `hkl` and `scan_numbers` groups become facts (a number is written `0p5` for 0.5 and `m0p5` for -0.5).
+measurement = [
+    '(?P<set>(?P<sample>.+?)_(?P<T_K>\d+(?:p\d+)?)K_(?P<hkl_nominal>m?\d+(?:p\d+)?_m?\d+(?:p\d+)?_m?\d+(?:p\d+)?)(?:_[A-Za-z0-9]+)*)_a(?P<analyzer>\d{2})',
+    '(?P<set>spec\d+_T(?P<T_K>\d+(?:p\d+)?)K__scan_(?P<scan_numbers>\d+(?:_\d+)*))_A(?P<analyzer>\d{1,2})_Q_(?P<hkl>m?\d+(?:p\d+)?_m?\d+(?:p\d+)?_m?\d+(?:p\d+)?)_inel\.dat',
+]
+sidecar = ["{set}.var"]         # beside the analyzer files: bin size, silicon order, per-analyzer efficiency
+# Never measurements: peak-position lists, and the summed file (the bare stem). `*_sum` assumes that
+# stem ends in `_sum`; for another name, add its file name here, e.g. "Smp_tot".
+ignore = ["*.pkpos", "*_sum"]
+
+[reader]
+# The column family the counts are read from. "_i" gives integer counts: raw, and the right choice.
+# "_lr" splits some counts between neighbouring bins, so its counts are NOT raw: they are kept unrounded
+# and every non-integer bin is flagged counts_not_integer.
+intensity_family = "_i"
+
+[facts]
+# Card-declared facts rank below every header and file name; a header that disagrees raises a warning.
+# The analyzer slit is not in the files. Write it here as <horizontal>x<vertical> mm if you know it:
+# slit = "60x60"
+# lattice = [5.4, 5.4, 9.3, 90, 90, 120]    # a, b, c (Angstrom), alpha, beta, gamma (deg)
+
+# [sample]
+# name = "CsV3Sb5"              # names the experiment in the ledger (default "bl43lxu")
+
+[calibration]
+# Consumed by the resolution stage (a later ISAR release); until it lands the method below is unknown
+# to the code and every BL43LXU scan is held for want of an energy zero, with the usual reason.
+method = "tabulated_elastic"            # consumed by the resolution stage: zero + curve from the beamline's SARF files
+resolution_folder = "rf"                # consumed by the resolution stage: folder of sarf_* files (relative to the data)
+resolution_pattern = "sarf_*_s*_{slit_h}_{slit_v}_{detector}"   # consumed by the resolution stage: one curve per slit and analyzer
+zero_fallback = "file_axis"             # consumed by the resolution stage: where no elastic line is measured, use the file's own axis
+
+[fitting]
+min_fit_points = 6              # fewer usable points than this -> non-result (undersampled)
+# detectors = ["a06"]           # which analyzers to fit (default: all enabled)
+
+# The analyzers. `value_index` and `signal_column` are unused for this instrument (the reader finds its
+# columns by name, from [reader]); `enabled = false` leaves an analyzer out of every scan.
+[[detectors]]
+detector_id = "a03"
+value_index = 0
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a04"
+value_index = 1
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a05"
+value_index = 2
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a06"
+value_index = 3
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a07"
+value_index = 4
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a08"
+value_index = 5
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a09"
+value_index = 6
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a14"
+value_index = 7
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a15"
+value_index = 8
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a16"
+value_index = 9
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a17"
+value_index = 10
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a18"
+value_index = 11
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a19"
+value_index = 12
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a20"
+value_index = 13
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a25"
+value_index = 14
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a26"
+value_index = 15
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a27"
+value_index = 16
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a28"
+value_index = 17
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a29"
+value_index = 18
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a30"
+value_index = 19
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a31"
+value_index = 20
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a35"
+value_index = 21
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a36"
+value_index = 22
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a37"
+value_index = 23
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a38"
+value_index = 24
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a39"
+value_index = 25
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a40"
+value_index = 26
+signal_column = "y_i"
+enabled = true
+
+[[detectors]]
+detector_id = "a41"
+value_index = 27
+signal_column = "y_i"
+enabled = true

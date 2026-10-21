@@ -1,4 +1,4 @@
-"""Make an artificial copy of a real facility file (SPEC .dat/.spec, ILL numor) for parser tests.
+"""Make an artificial copy of a real facility file (SPEC .dat/.spec, ILL numor, BL43LXU text) for parser tests.
 
     python tools/artificial_copy.py <real file> --out <artificial_data subfolder> [--scans N | 5,12]
 
@@ -24,6 +24,24 @@ Order of work (nothing is written until step 3 passes):
 A failed check writes nothing and prints what differed. `--scans` only applies to SPEC files: `3` keeps
 the first three scans, `5,12` (or `5,`) keeps scans numbered 5 and 12; the default is the first three.
 The tool refuses an output folder inside `real_data` / `test_data` and never overwrites a file.
+
+BL43LXU (SPring-8) files are whole-file tables: the per-analyzer text file of the CsV3Sb5 layout, the
+Ba122 three-column export, and the SARF resolution curve (`sarf_*`, no extension) are read as one table
+of numeric rows under `#` comment lines (comments are kept as written, except the measured numbers in
+them: the trailing `#Q=` / `#T=` values and a SARF curve's `eshift=`, replaced at their width). Their
+`.var` sidecar and the SARF `.gpi` summary are `name = value` files: every number is replaced except the
+structural ones
+(`.var`: the analyzer numbers `ano[i]` and the three settings the reader uses; `.gpi`: `n_lines`).
+Two things differ from the SPEC/numor rules above:
+  * a BL43LXU energy axis is a bin lattice the parser checks, so a table column that is an exact
+    arithmetic progression (one fixed step, at least three rows, decimals) is replaced by the same
+    progression shifted by a whole number of steps: the step and the lattice survive and every value
+    changes (a file no lattice-checking reader consumes, like a SARF curve, also moves by a fraction of
+    a step, so a grid offset a fit may have set does not survive). Its tokens may then change sign or
+    digit count, and are right-aligned in the same field so no other byte moves;
+  * the check against ISAR's parser is the plugin's own readers (`sp8_bl43.read_member`, `read_var`)
+    for the analyzer, Ba122 and `.var` files, and a structural comparison (same lines, same token
+    shapes) for the SARF curve and `.gpi`, whose reader arrives in a later slice.
 """
 from __future__ import annotations
 
@@ -52,8 +70,15 @@ from isar.parsers import numor_base, registry, spec_base  # noqa: E402
 log = logging.getLogger("artificial_copy")
 
 FORBIDDEN_DIRS = {"real_data", "test_data"}
-SUPPORTED = {"spec_s30": "spec", "spec_s30_raw": "spec", "ill_in8": "numor"}
+SUPPORTED = {"spec_s30": "spec", "spec_s30_raw": "spec", "ill_in8": "numor", "sp8_bl43": "table"}
+# `name = value` files: extension -> names whose value is structural and kept (the rest are replaced).
+# `.var`: the analyzer numbers and the three settings sp8_bl43 reads. `.gpi`: the SARF line count.
+KEYVAL = {".var": {"ano", "silicon_order", "meV_bin_size", "nscans"}, ".gpi": {"n_lines"}}
+# Measured numbers on a table's comment lines, replaced at their width: the analyzer files' trailing
+# `#Q=` / `#T=` values and a SARF curve's fitted `eshift=`. Group 2 is the number.
+_COMMENT_NUMBER = (re.compile(rb"^(#[QT]=\s*)(\S+)(?=\s)"), re.compile(rb"(\beshift=\s*)(\S+?)(?=\))"))
 DEFAULT_SCANS = 3
+_GRID_SHIFTS = 50          # a progression moves by up to this many whole steps either way
 _ATTEMPTS = 2000           # redraws before giving up on "every value changed" (a near-full width has few valid draws)
 
 
@@ -288,11 +313,51 @@ def verify_column(old: list[bytes], new: list[bytes], label: str = "column",
         raise Refuse(f"{label}: non-negative integer column no longer integer")
 
 
-def replace_column(toks: list[bytes], rng: random.Random,
-                   label: str = "column") -> tuple[list[bytes], set[int]]:
-    """(replacement tokens, rows kept as forced); every other row is changed."""
+def grid_step(toks: list[bytes]) -> Decimal | None:
+    """The one fixed step of an exact arithmetic progression of plain decimals (>= 3 rows), else None."""
+    if len(toks) < 3:
+        return None
+    shapes = [parse_token(t) for t in toks]
+    if any(s.mark or s.sign == b"+" or s.nd == 0 or s.nd != shapes[0].nd for s in shapes):
+        return None
+    vals = [value_of(t) for t in toks]
+    steps = {b - a for a, b in zip(vals, vals[1:])}
+    return steps.pop() if len(steps) == 1 and 0 not in steps else None
+
+
+def _draw_grid(toks: list[bytes], step: Decimal, rng: random.Random, rooms: list[int],
+               free_phase: bool = False) -> list[bytes]:
+    """The progression moved by a random non-zero whole number of steps (so a bin lattice keeps its
+    phase and every value changes), each token right-aligned to fit the field it came from. With
+    `free_phase` (a file no lattice-checking reader consumes) it also moves by a fraction of a step,
+    so the grid's offset, which a fit may have set, does not survive."""
+    nd = parse_token(toks[0]).nd
+    vals = [value_of(t) for t in toks]
+    unit = Decimal(1).scaleb(-nd)
+    for _ in range(_ATTEMPTS):
+        move = rng.randrange(1, _GRID_SHIFTS + 1) * rng.choice((-1, 1)) * step
+        if free_phase and step > unit:
+            move += rng.randrange(1, int(step / unit)) * unit
+        new = [f"{abs(v + move) if v + move == 0 else v + move:.{nd}f}".encode("ascii") for v in vals]
+        if all(len(t) <= room for t, room in zip(new, rooms)):
+            return new
+    raise Refuse(f"could not shift a {len(toks)}-row progression of step {step} inside its fields")
+
+
+def replace_column(toks: list[bytes], rng: random.Random, label: str = "column",
+                   rooms: list[int] | None = None, free_phase: bool = False) -> tuple[list[bytes], set[int]]:
+    """(replacement tokens, rows kept as forced); every other row is changed.
+
+    `rooms` (table files only) is the longest token each row's field can hold; with it, an exact
+    arithmetic progression is shifted along itself instead of redrawn (see the module docstring)."""
     if not toks:
         return [], set()
+    step = grid_step(toks) if rooms is not None else None
+    if step is not None:
+        new = _draw_grid(toks, step, rng, rooms, free_phase)
+        if any(a == b for a, b in zip(toks, new)):
+            raise Refuse(f"{label}: a shifted progression kept a value")
+        return new, set()
     int_like = _is_int_like(toks)
     kind = _kind([value_of(t) for t in toks])
     for _ in range(_ATTEMPTS):
@@ -316,6 +381,7 @@ class Table:
     end: int = 0                # one past the last line
     label: int | None = None    # line index of the column-label line (`#L` / the line after DATA_:)
     rows: list = dataclasses.field(default_factory=list)   # line indices of data rows
+    names: list | None = None   # table files: the column names, when the label line gives them
 
 
 def _text(raw: bytes) -> str:
@@ -387,6 +453,58 @@ def locate_numor(lines: list[bytes]) -> list[Table]:
     return tables
 
 
+def _is_number_row(s: str) -> bool:
+    try:
+        [float(x) for x in s.split()]
+    except ValueError:
+        return False
+    return bool(s.strip())
+
+
+def locate_table(lines: list[bytes]) -> Table:
+    """A whole-file table: every non-blank line that is not a `#` comment and is all numbers is a data
+    row (a comment after the rows, like BL43LXU's trailing `#T=` line, stays a comment). The label line
+    is the last comment above the first row that names exactly one word per column."""
+    tb = Table(number=None, start=0, end=len(lines))
+    for i, raw in enumerate(lines):
+        s = _text(raw).strip()
+        if s and not s.startswith("#") and _is_number_row(s):
+            tb.rows.append(i)
+        elif s and not s.startswith("#"):
+            raise Refuse(f"line {i + 1} is neither a comment nor a row of numbers: {s[:40]!r}")
+    if not tb.rows:
+        return tb
+    ncol = len(_text(lines[tb.rows[0]]).split())
+    for i in range(tb.rows[0] - 1, -1, -1):
+        s = _text(lines[i]).strip()
+        if s.startswith("#") and len(s[1:].split()) == ncol:
+            tb.label, tb.names = i, s[1:].split()
+            break
+    return tb
+
+
+_KEYVAL_LINE = re.compile(rb"^(\s*)([A-Za-z_][\w/]*)(?:\[(\d+)\])?(\s*=\s*)(\S+)(\s*)\Z")
+
+
+def locate_keyval(lines: list[bytes], ext: str) -> tuple[Table, list]:
+    """The `name = number` lines of a `.var` / `.gpi` whose value is replaced: (Table whose rows are
+    those line indices, [(line index, stem, token)]). Indexed lines (`name[i] = v`) group by stem."""
+    keep = KEYVAL[ext]
+    tb = Table(number=None, start=0, end=len(lines))
+    found = []
+    for i, raw in enumerate(lines):
+        m = _KEYVAL_LINE.match(raw.rstrip(b"\r\n"))
+        if not m or m[2].decode() in keep:
+            continue
+        try:
+            parse_token(m[5])
+        except Refuse:
+            continue                                   # a quoted or text value is not a number
+        tb.rows.append(i)
+        found.append((i, m[2].decode() + ("[]" if m[3] is not None else ""), m[5]))
+    return tb, found
+
+
 # ---------------------------------------------------------------------------
 # Build the copy in memory
 # ---------------------------------------------------------------------------
@@ -408,11 +526,26 @@ def _skeleton(raw: bytes) -> bytes:
     return _WORD.sub(b"#", raw)
 
 
+def _comment_spans(lines: list[bytes], start: int, end: int) -> list[tuple[int, int, int]]:
+    """(line, first byte, end byte) of the measured number on each comment line; at most one per line."""
+    spans = []
+    for i in range(start, end):
+        body = lines[i].rstrip(b"\r\n")
+        for pat in _COMMENT_NUMBER:
+            m = pat.search(body)
+            if m:
+                spans.append((i, m.start(2), m.end(2)))
+                break
+    return spans
+
+
 def build_copy(lines: list[bytes], kind: str, tables: list[Table], kept: list[Table],
-               rng: random.Random) -> tuple[bytes, dict]:
+               rng: random.Random, free_phase: bool = False) -> tuple[bytes, dict]:
     """(copy bytes, {table.start: (column tokens as written, forced column indexes)}).
 
     Only data-row numbers change; every other byte, line ending included, is copied as it was.
+    `free_phase`: a table whose reader does not check a bin lattice also moves a progression by a
+    fraction of its step (see `_draw_grid`).
     """
     new_lines = list(lines)
     written: dict[int, tuple[list[list[bytes]], list[int]]] = {}
@@ -425,9 +558,13 @@ def build_copy(lines: list[bytes], kind: str, tables: list[Table], kept: list[Ta
         cols: list[list[bytes]] = []
         forced_cols: list[int] = []
         for j in range(width):
+            sel = [sp for _, _, _, sp in rows if len(sp) > j]
             old = [body[sp[j][0]:sp[j][1]] for _, body, _, sp in rows if len(sp) > j]
+            # A table token may grow into the blank space left of it (never into the previous word).
+            rooms = ([sp[j][1] - (sp[j - 1][1] if j else 0) - (1 if j else 0) for sp in sel]
+                     if kind == "table" else None)
             new, forced = replace_column(old, rng, f"scan {tb.number if tb.number is not None else tb.start}"
-                                                   f" column {j}")
+                                                   f" column {j}", rooms, free_phase)
             cols.append(new)
             if forced:
                 forced_cols.append(j)
@@ -435,18 +572,47 @@ def build_copy(lines: list[bytes], kind: str, tables: list[Table], kept: list[Ta
         for li, body, eol, spans in rows:
             ba = bytearray(body)
             for j, (a, b) in enumerate(spans):
-                ba[a:b] = cols[j][pos[j]]
+                tok = cols[j][pos[j]]
+                if len(tok) == b - a:
+                    ba[a:b] = tok
+                else:                                        # a shifted progression: same field, right-aligned
+                    left = spans[j - 1][1] if j else 0
+                    ba[left:b] = tok.rjust(b - left)
                 pos[j] += 1
-            if _skeleton(bytes(ba)) != _skeleton(body):
+            same = (lambda x: b" ".join(_skeleton(x).split())) if kind == "table" else _skeleton
+            if same(bytes(ba)) != same(body) or len(ba) != len(body):
                 raise Refuse(f"internal: a non-number byte changed on line {li + 1}")
             new_lines[li] = bytes(ba) + eol
+        if kind == "table":                               # after the data, so the data draws keep their order
+            for i, a, b in _comment_spans(lines, tb.start, tb.end):
+                body = lines[i].rstrip(b"\r\n")
+                (tok,), _ = replace_column([body[a:b]], rng, f"line {i + 1} comment number")
+                new_lines[i] = body[:a] + tok + body[b:] + lines[i][len(body):]
         written[tb.start] = (cols, forced_cols)
-    if kind == "numor":                                   # a numor is kept whole
+    if kind in ("numor", "table"):                        # a numor or a table is kept whole
         return b"".join(new_lines), written
     out = new_lines[:tables[0].start]                     # the file-level header
     for tb in kept:
         out += new_lines[tb.start:tb.end]
     return b"".join(out), written
+
+
+def build_keyval(lines: list[bytes], found: list, rng: random.Random) -> tuple[bytes, list]:
+    """(copy bytes, [(stem, new tokens, forced)]): each stem's values (`analeff[1..28]`, or the one
+    scalar) are replaced as one column, in place at the same width; every other byte is copied."""
+    by_stem: dict[str, list] = {}
+    for i, stem, tok in found:
+        by_stem.setdefault(stem, []).append((i, tok))
+    new_lines = list(lines)
+    written = []
+    for stem, items in by_stem.items():
+        new, forced = replace_column([t for _, t in items], rng, stem)
+        for (i, old), tok in zip(items, new):
+            body = lines[i].rstrip(b"\r\n")
+            m = _KEYVAL_LINE.match(body)
+            new_lines[i] = body[:m.start(5)] + tok + body[m.end(5):] + lines[i][len(body):]
+        written.append((stem, new, bool(forced)))
+    return b"".join(new_lines), written
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +647,57 @@ def snapshot(path: Path, name: str) -> dict:
     except Exception as exc:
         raise Refuse(f"ISAR's parser could not read {path.name}: {type(exc).__name__}: {exc}") from exc
     return dict(header=header, blocks=blocks, starts=starts, records=records)
+
+
+def _masked_comment(raw: bytes) -> str:
+    """A comment line with its measured number masked: where it sits is compared, its value is not."""
+    for pat in _COMMENT_NUMBER:
+        raw = pat.sub(rb"\1#", raw)
+    return _text(raw)
+
+
+def snapshot_table(path: Path, name: str | None) -> dict:
+    """A whole-file table as ISAR reads it: the BL43LXU plugin's own file reader for its analyzer and
+    Ba122 files; for a SARF curve (no reader yet) the comment lines, row count and width."""
+    try:
+        if name == "sp8_bl43":
+            from isar.parsers import sp8_bl43
+            m = sp8_bl43.read_member(path)
+            # the trailer numbers are replaced by a copy: their presence and type are compared, not their value
+            header = {k: type(v).__name__ if k in ("Q_nm", "T_K") else v for k, v in m.header.items()}
+            return dict(header=None, records=[dict(header=header)], blocks=[dict(
+                labelled=m.labelled, rows=len(m.energy), has_exposure=m.monitor is not None,
+                has_npts=m.npts is not None)])
+        lines = path.read_bytes().splitlines(keepends=True)
+        tb = locate_table(lines)
+        comments = [_masked_comment(x.rstrip(b"\r\n")) for x in lines if x.lstrip().startswith(b"#")]
+        return dict(header=None, records=[], blocks=[dict(
+            rows=len(tb.rows), width=len(_text(lines[tb.rows[0]]).split()) if tb.rows else 0,
+            comments=comments)])
+    except Exception as exc:
+        raise Refuse(f"ISAR's reader could not read {path.name}: {type(exc).__name__}: {exc}") from exc
+
+
+def snapshot_keyval(path: Path) -> dict:
+    """A `name = value` file with its replaced values masked, so only structure is compared; a `.var`
+    is also read by the plugin's own reader (the analyzer numbers and settings it kept must agree)."""
+    ext = path.suffix.lower()
+    lines = path.read_bytes().splitlines(keepends=True)
+    _, found = locate_keyval(lines, ext)
+    masked = {i for i, _, _ in found}
+    text = [_KEYVAL_LINE.sub(rb"\1\2\4#\6", l.rstrip(b"\r\n")).decode("utf-8", "replace") if i in masked
+            else l.rstrip(b"\r\n").decode("utf-8", "replace") for i, l in enumerate(lines)]
+    records = []
+    if ext == ".var":
+        try:
+            from isar.parsers import sp8_bl43
+            var = sp8_bl43.read_var(path)
+        except Exception as exc:
+            raise Refuse(f"ISAR's reader could not read {path.name}: {type(exc).__name__}: {exc}") from exc
+        records = [dict(scalars=sorted(var["scalars"]),
+                        arrays={k: sorted(v) for k, v in var["arrays"].items()},
+                        analyzers=var["arrays"].get("ano"))]
+    return dict(header=None, records=records, blocks=[dict(lines=text)])
 
 
 def _diff(a, b, path: str, out: list) -> None:
@@ -553,7 +770,8 @@ def build_truth(name: str, kind: str, copy_name: str, seed: int, lines: list[byt
     scans = []
     for tb in kept:
         hv = _header_values(lines[tb.start:tb.end], kind)
-        labels = _label_names(lines[tb.label], kind, _multiword(name)) if tb.label is not None else []
+        labels = (tb.names or [] if kind == "table" else
+                  _label_names(lines[tb.label], kind, _multiword(name)) if tb.label is not None else [])
         cols, forced_cols = written[tb.start]
         points = len(tb.rows)
         for j, col in enumerate(cols):
@@ -563,7 +781,8 @@ def build_truth(name: str, kind: str, copy_name: str, seed: int, lines: list[byt
                              f"truncated row); pick other --scans")
         name_of = lambda j: labels[j] if j < len(labels) else f"col{j}"
         scans.append(dict(
-            scan_number=tb.number if kind == "spec" else int((hv.get("FILE_") or ["0"])[0] or 0),
+            scan_number=(tb.number if kind == "spec" else 0 if kind == "table"
+                         else int((hv.get("FILE_") or ["0"])[0] or 0)),
             points=points,
             column_names=list(labels),
             forced_columns=[name_of(j) for j in forced_cols],
@@ -575,6 +794,37 @@ def build_truth(name: str, kind: str, copy_name: str, seed: int, lines: list[byt
                 file_header_values=(_header_values(lines[:tables[0].start], kind)
                                     if kind == "spec" else {}),
                 scans=scans)
+
+
+def build_truth_keyval(format_name: str, copy_name: str, seed: int, found: list, written: list) -> dict:
+    """The truth file of a `name = value` file: each replaced stem with the tokens as written (an
+    indexed stem lists one token per index, in file order). Refuses if the counts disagree."""
+    for stem, new, _ in written:
+        n = sum(1 for _, s, _ in found if s == stem)
+        if len(new) != n:
+            raise Refuse(f"{stem}: {n} lines located but {len(new)} values written")
+    return dict(tool="tools/artificial_copy.py", format=format_name, copy=copy_name, seed=seed,
+                number_of_scans=1, file_header_values={}, scans=[dict(
+                    scan_number=0, points=len(found), column_names=[s for s, _, _ in written],
+                    forced_columns=[s for s, _, f in written if f], header_values={},
+                    data_columns=[dict(name=s, tokens=[t.decode("ascii") for t in new])
+                                  for s, new, _ in written])])
+
+
+def classify(src: Path) -> tuple[str | None, str]:
+    """(plugin name or None, kind). Sidecars and SARF files are told by name (no header to detect);
+    everything else by the registry, like the parsers themselves."""
+    if src.suffix.lower() in KEYVAL:
+        return None, "keyval"
+    if src.name.lower().startswith("sarf_") and not src.suffix:
+        return None, "table"
+    try:
+        name = registry.default_plugin_name(*registry.detect(src))
+    except (ValueError, OSError) as exc:
+        raise Refuse(f"unrecognised file format: {exc}") from exc
+    if name not in SUPPORTED:
+        raise Refuse(f"no copy support for parser {name!r} (supported: {sorted(SUPPORTED)})")
+    return name, SUPPORTED[name]
 
 
 # ---------------------------------------------------------------------------
@@ -590,35 +840,52 @@ def make_copy(src, out_dir, scans: str | None = None, seed: int = 1) -> tuple[Pa
     target, truth_path = out_dir / src.name, out_dir / (src.name + ".truth.json")
     if target == src or target.exists() or truth_path.exists():
         raise Refuse(f"{target} (or its truth file) already exists; the tool never overwrites")
-    try:
-        name = registry.default_plugin_name(*registry.detect(src))
-    except (ValueError, OSError) as exc:
-        raise Refuse(f"unrecognised file format: {exc}") from exc
-    if name not in SUPPORTED:
-        raise Refuse(f"no copy support for parser {name!r} (supported: {sorted(SUPPORTED)})")
-    kind = SUPPORTED[name]
-    if kind == "numor" and scans:
-        log.warning("--scans ignored: a numor is kept whole")
+    name, kind = classify(src)
+    if kind in ("numor", "table", "keyval") and scans:
+        log.warning("--scans ignored: a %s is kept whole", kind)
 
     lines = src.read_bytes().splitlines(keepends=True)
-    tables = locate_spec(lines) if kind == "spec" else locate_numor(lines)
+    found: list = []
+    if kind == "keyval":
+        tb, found = locate_keyval(lines, src.suffix.lower())
+        tables = kept = [tb]
+    elif kind == "table":
+        tables = kept = [locate_table(lines)]
+    else:
+        tables = locate_spec(lines) if kind == "spec" else locate_numor(lines)
     if not any(t.rows for t in tables):
         raise Refuse("no data rows found by the parser's structure markers")
-    kept = choose_scans(tables, scans) if kind == "spec" else tables
+    if kind == "spec":
+        kept = choose_scans(tables, scans)
+    elif kind == "numor":
+        kept = tables
     if not any(t.rows for t in kept):
         raise Refuse("the chosen scans hold no data rows")
-    copy, written = build_copy(lines, kind, tables, kept, random.Random(seed))
+    rng = random.Random(seed)
+    if kind == "keyval":
+        copy, written = build_keyval(lines, found, rng)
+    else:
+        copy, written = build_copy(lines, kind, tables, kept, rng, name is None)
 
     with tempfile.TemporaryDirectory(prefix="artificial_copy_") as tmp:    # never the output folder
         probe = Path(tmp) / src.name
         probe.write_bytes(copy)
-        real_snap, copy_snap = snapshot(src, name), snapshot(probe, name)
+        if kind == "keyval":
+            real_snap, copy_snap = snapshot_keyval(src), snapshot_keyval(probe)
+        elif kind == "table":
+            real_snap, copy_snap = snapshot_table(src, name), snapshot_table(probe, name)
+        else:
+            real_snap, copy_snap = snapshot(src, name), snapshot(probe, name)
     numbers = {t.number for t in kept} if kind == "spec" else None
     problems = compare(real_snap, copy_snap, name, numbers)
     if problems:
         raise Refuse("the copy does not parse like the real file; nothing written:\n  "
                      + "\n  ".join(problems))
-    truth = build_truth(name, kind, src.name, seed, lines, tables, kept, written)
+    if kind == "keyval":
+        truth = build_truth_keyval(f"keyval{src.suffix.lower()}", src.name, seed, found, written)
+    else:                                                 # a table's comment numbers are replaced: read the copy
+        shown = copy.splitlines(keepends=True) if kind == "table" else lines
+        truth = build_truth(name or "sarf_curve", kind, src.name, seed, shown, tables, kept, written)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     target.write_bytes(copy)

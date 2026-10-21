@@ -5,16 +5,22 @@ Files are the source of truth (U4/§0.5). `discover` walks the data paths, class
 measurement files with the card-pinned plugin, dedups by `(experiment_id, scan_number)` keeping the
 last occurrence (growing-file resend), and orders by scan number. `file_gaps` reports holes in the
 scan-number sequence — the file-level gap detection `collate.detect_gaps` (value space) does not do.
+
+A card with a `[files]` table (opt-in) also groups the matching files into `FileSet`s — one scan,
+many per-detector files, keyed by the regex `set` group — and a plugin with `parse_set` parses each
+set once; everything else is the one-file-one-parse path described above.
 """
 from __future__ import annotations
 
 import fnmatch
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from isar.parsers import registry
+from isar.parsers.base import FileSet
 from isar.schema.card import Card
 
 log = logging.getLogger(__name__)
@@ -36,6 +42,11 @@ class IngestPlan:
     companion_files: list[Path] = field(default_factory=list)   # calibration sources (§3)
     foreign: list[Path] = field(default_factory=list)           # recognized, different instrument
     unrecognized: list[Path] = field(default_factory=list)      # detect() could not classify
+    # Card `[files]` only. Set members are ALSO in `measurement_files` (the manifest and the
+    # driver's source map read that list); `parse_all`/`ingest_batch` parse them as sets.
+    file_sets: list[FileSet] = field(default_factory=list)
+    sidecar_files: list[Path] = field(default_factory=list)     # named by `[files] sidecar`, never parsed
+    ignored_files: list[Path] = field(default_factory=list)     # matched `[files] ignore`
 
 
 def _iter_files(data_paths) -> list[Path]:
@@ -64,8 +75,37 @@ def discover(data_paths, card: Card) -> IngestPlan:
     pol = card.policy
     companion_glob = (pol.calibration or {}).get("companion_glob")
     plan = IngestPlan()
+    files_cfg = pol.files or {}
+    meas_res = [re.compile(p) for p in files_cfg.get("measurement", [])]
+    ignore_globs = files_cfg.get("ignore", [])
+    sets: dict[str, FileSet] = {}
+    rest: list[Path] = []                      # files the `[files]` name rules did not claim
     for f in _iter_files(data_paths):
         if _skip(f):
+            continue
+        # `[files]` classifies by NAME before anything else, so a processed file with no signature
+        # (BL43LXU per-analyzer text) never reaches `registry.detect`. `re.fullmatch` on the name.
+        if any(fnmatch.fnmatch(f.name, g) for g in ignore_globs):
+            plan.ignored_files.append(f)
+            continue
+        m = next((m for m in (r.fullmatch(f.name) for r in meas_res) if m), None)
+        if m is not None:
+            plan.measurement_files.append(f)
+            fs = sets.setdefault(m.group("set"), FileSet(key=m.group("set")))
+            fs.measurements.append((f, m.groupdict()))
+            continue
+        rest.append(f)
+    plan.file_sets = list(sets.values())
+    # Sidecars are the `{set}`-templated names of the sets found; each is remembered for its set.
+    sidecar_owner: dict[str, FileSet] = {}
+    for fs in plan.file_sets:
+        for template in files_cfg.get("sidecar", []):
+            sidecar_owner.setdefault(template.replace("{set}", fs.key), fs)
+    for f in rest:
+        owner = sidecar_owner.get(f.name)
+        if owner is not None:
+            owner.sidecars.append(f)
+            plan.sidecar_files.append(f)
             continue
         # Companion calibration files are classified by NAME before detection — the S30 companion
         # raw .spec detects as ("APS","S30",...) too, but must never be parsed as measurements (R2).
@@ -90,12 +130,135 @@ def parse_all(plan: IngestPlan, card: Card) -> list:
     Dedup key is `(experiment_id, scan_number)`; the LAST occurrence wins (a resent growing file
     supersedes an earlier copy). Records are returned sorted by `(experiment_id, scan_number)`.
     """
+    got = _collect(plan, card, isolate=False)
+    return [got.by_key[k] for k in sorted(got.by_key, key=lambda k: (str(k[0]), k[1]))]
+
+
+@dataclass
+class _Collected:
+    by_key: dict = field(default_factory=dict)           # (exp, scan) -> record (last wins)
+    sources: dict = field(default_factory=dict)          # (exp, scan) -> ordered distinct source paths
+    file_scan_keys: dict = field(default_factory=dict)   # resolved path -> [(exp, scan), ...]
+    file_errors: dict = field(default_factory=dict)      # resolved path -> "ExcType: msg" / refusal
+    set_of: dict = field(default_factory=dict)           # (exp, scan) -> set key, for set-sourced scans
+    refused: list = field(default_factory=list)          # {"scan","sets":[earlier, later],"reason"}
+
+
+def _scan_label(rec) -> str | None:
+    """The record's `scan_label` fact, read defensively (the `facts` field arrives with the
+    schema's fact-source work; a record without it simply has no label)."""
+    entry = (getattr(rec, "facts", None) or {}).get("scan_label")
+    val = entry.get("value") if isinstance(entry, dict) else entry
+    return None if val is None else str(val)
+
+
+def _ledger_labels(session) -> dict:
+    """(exp, scan) -> (scan_label, file_set) for ledger scans that were ingested from a set.
+
+    The ledger keeps no scan-level row, so the label lives where ingest already stamps scan facts:
+    each entry's provenance (``scan_label`` / ``file_set``, written by `ingest_batch`). A set with
+    no scan_label is still recorded by its file_set."""
+    out: dict = {}
+    for entry in session.scans.values():
+        prov = entry.provenance or {}
+        if prov.get("scan_label") is not None or prov.get("file_set") is not None:
+            exp = entry.scan_id.rsplit(":", 2)[0]
+            out[(exp, entry.scan_number)] = (prov.get("scan_label"), prov.get("file_set"))
+    return out
+
+
+def _collision(set_key, parsed, got: _Collected, ledger_labels) -> dict | None:
+    """Why a freshly parsed set must not be ingested, or None. Two different sets may not share a
+    (experiment, scan) identity in a batch, nor may a set's `scan_label` differ from the one the
+    ledger already holds for that identity, nor may the ledger hold another set's file_set there."""
+    for rec in parsed:
+        key = (rec.experiment_id, rec.scan_number)
+        scan = f"{key[0]}:{key[1]}"
+        earlier = got.set_of.get(key)
+        if earlier is not None and earlier != set_key:
+            return {"scan": scan, "sets": [earlier, set_key],
+                    "reason": f"sets {earlier!r} and {set_key!r} both yield scan {scan}; "
+                              f"{set_key!r} not ingested"}
+        label, held = _scan_label(rec), ledger_labels.get(key)
+        if held is not None and held[0] is not None and label is not None and held[0] != label:
+            prior = held[1] if held[1] is not None else held[0]
+            return {"scan": scan, "sets": [prior, set_key],
+                    "reason": f"set {set_key!r} (scan_label {label!r}) collides with the ledger's "
+                              f"{prior!r} (scan_label {held[0]!r}) on scan {scan}; "
+                              f"{set_key!r} not ingested"}
+        if held is not None and held[1] is not None and held[1] != set_key:
+            return {"scan": scan, "sets": [held[1], set_key],
+                    "reason": f"set {set_key!r} collides with the ledger's set {held[1]!r} on scan "
+                              f"{scan}; {set_key!r} not ingested"}
+    return None
+
+
+def _collect(plan: IngestPlan, card: Card, *, isolate: bool, session=None) -> _Collected:
+    """Parse the plan's measurement files — the one place file sets are grouped into parse units.
+
+    A plugin with ``parse_set`` gets one call per `FileSet`; every other measurement file is one
+    ``parse_file`` call, as ever. The last occurrence of an identity wins, except that a second
+    *set* on an identity another set already holds is refused (nothing merged, nothing overwritten).
+    ``isolate`` keeps one failing unit from aborting the batch (``ingest_batch``); ``parse_all``
+    lets the exception out as before.
+    """
     plugin = registry.plugin_by_name(card.policy.plugin)
-    by_key: dict[tuple, object] = {}
+    parse_set = getattr(plugin, "parse_set", None)
+    set_of_path = ({p: fs for fs in plan.file_sets for p, _g in fs.measurements}
+                   if parse_set is not None else {})
+    ledger_labels = _ledger_labels(session) if session is not None else {}
+    got = _Collected()
+    done_sets: set[str] = set()
     for f in plan.measurement_files:
-        for rec in plugin.parse_file(f, card):
-            by_key[(rec.experiment_id, rec.scan_number)] = rec   # last wins
-    return [by_key[k] for k in sorted(by_key, key=lambda k: (str(k[0]), k[1]))]
+        fs = set_of_path.get(f)
+        if fs is not None:
+            if fs.key in done_sets:
+                continue
+            done_sets.add(fs.key)
+            set_key, paths = fs.key, [p for p, _g in fs.measurements]
+            parse = lambda fs=fs: parse_set(fs, card)  # noqa: E731
+        else:
+            set_key, paths = None, [f]
+            parse = lambda f=f: plugin.parse_file(f, card)  # noqa: E731
+        rps = [str(Path(p).resolve()) for p in paths]
+        try:
+            parsed = parse()
+        except Exception as exc:
+            if not isolate:
+                raise
+            # One unparseable file/set must never abort the batch (or the operator loses every good
+            # file behind it). Isolate it: log, stamp the manifest rows with the cause, continue.
+            for rp in rps:
+                got.file_errors[rp] = f"{type(exc).__name__}: {exc}"
+            log.warning("ingest: failed to parse %s (%s); skipped, batch continues",
+                        set_key if set_key is not None else f, got.file_errors[rps[0]])
+            continue
+        if set_key is not None:
+            clash = _collision(set_key, parsed, got, ledger_labels)
+            if clash is not None:
+                got.refused.append(clash)
+                for rp in rps:
+                    got.file_errors[rp] = "refused: " + clash["reason"]
+                log.warning("ingest: %s", clash["reason"])
+                continue
+        # A set is ONE source for dedup (its first member), so dedup alerts are per set, not per file.
+        src = rps[0]
+        seen_here: set[tuple] = set()
+        for rec in parsed:
+            key = (rec.experiment_id, rec.scan_number)
+            got.by_key[key] = rec                    # last occurrence wins (growing-file resend)
+            if set_key is not None:
+                got.set_of[key] = set_key
+            else:
+                got.set_of.pop(key, None)
+            paths_for_key = got.sources.setdefault(key, [])
+            if src not in paths_for_key:
+                paths_for_key.append(src)
+            if key not in seen_here:
+                seen_here.add(key)
+                for rp in rps:
+                    got.file_scan_keys.setdefault(rp, []).append(key)
+    return got
 
 
 @dataclass
@@ -113,6 +276,7 @@ class IngestReport:
     updated: list = field(default_factory=list)      # existing entries whose content_hash drifted
     unchanged: list = field(default_factory=list)    # re-ingest no-ops
     deduped: list = field(default_factory=list)      # {"scan","kept","superseded":[...]}
+    refused: list = field(default_factory=list)      # {"scan","sets":[held, refused],"reason"}: identity collisions
     gaps: list = field(default_factory=list)         # file_gaps output
     last_ingest: dict = field(default_factory=dict)  # persisted, additive operator summary
     dirty: bool = False
@@ -122,6 +286,7 @@ class IngestReport:
                 "added": list(self.added), "updated": list(self.updated),
                 "unchanged": list(self.unchanged),
                 "deduped": [dict(d) for d in self.deduped],
+                "refused": [dict(r) for r in self.refused],
                 "gaps": [list(g) for g in self.gaps],
                 "last_ingest": dict(self.last_ingest)}
 
@@ -199,33 +364,11 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
     report = IngestReport()
     plan = discover(data_paths, card)
 
-    # --- parse measurement files, tracking record -> source file(s) for dedup reporting ---
-    plugin = registry.plugin_by_name(card.policy.plugin)
-    by_key: dict[tuple, object] = {}                 # (exp, scan) -> record (last wins)
-    sources: dict[tuple, list[str]] = {}             # (exp, scan) -> ordered distinct source paths
-    file_scan_keys: dict[str, list[tuple]] = {}      # resolved measurement path -> [(exp, scan), ...]
-    file_errors: dict[str, str] = {}                 # resolved path -> "ExcType: msg" for a bad file
-    for f in plan.measurement_files:
-        rp = str(Path(f).resolve())
-        seen_here: set[tuple] = set()
-        try:
-            parsed = plugin.parse_file(f, card)
-        except Exception as exc:
-            # One unparseable file must never abort the batch (or the operator loses every good file
-            # behind it). Isolate it: log, stamp the manifest row with the cause (fix below), continue.
-            file_errors[rp] = f"{type(exc).__name__}: {exc}"
-            log.warning("ingest: failed to parse %s (%s); file skipped, batch continues",
-                        f, file_errors[rp])
-            continue
-        for rec in parsed:
-            key = (rec.experiment_id, rec.scan_number)
-            by_key[key] = rec                        # last occurrence wins (growing-file resend)
-            paths = sources.setdefault(key, [])
-            if rp not in paths:
-                paths.append(rp)
-            if key not in seen_here:
-                seen_here.add(key)
-                file_scan_keys.setdefault(rp, []).append(key)
+    # --- parse measurement files/sets, tracking record -> source file(s) for dedup reporting ---
+    got = _collect(plan, card, isolate=True, session=session)
+    by_key, sources, file_scan_keys = got.by_key, got.sources, got.file_scan_keys
+    file_errors = got.file_errors                    # resolved path -> "ExcType: msg" / refusal
+    report.refused = got.refused
 
     records = [by_key[k] for k in sorted(by_key, key=lambda k: (str(k[0]), k[1]))]
 
@@ -245,7 +388,6 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
 
     # --- upsert one ledger entry per (exp, scan, det), MEASUREMENTS ONLY ---
     now_iso = datetime.now(timezone.utc).isoformat()
-    _RANK = {"unchanged": 0, "updated": 1, "added": 2}
     ledgered_keys: set[tuple] = set()                # measurement scans that produced ≥1 entry
     analyzer_unit_count = 0                           # atomic scan × analyzer units in this ingest
     for rec in routed.measurements:
@@ -259,23 +401,38 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
         chash = content_hash(rec)
         T = unit_data.scan_temperature(rec)
         src = sources[(rec.experiment_id, rec.scan_number)][-1]   # the kept (last-wins) source file
-        scan_rank = 0                                             # collapse per-detector states
+        label = _scan_label(rec)                                  # identity guard for the next set
+        set_key = got.set_of.get((rec.experiment_id, rec.scan_number))
+        scan_extras = {}                                          # same for every detector of the scan
+        if label is not None:
+            scan_extras["scan_label"] = label
+        if set_key is not None:
+            scan_extras["file_set"] = set_key
+        det_states: list[str] = []                                # per-detector upsert outcomes
         touched = False                                          # any detector entry produced?
         for det, sp in rec.spectra.items():
             touched = True
             analyzer_unit_count += 1
             q = [float(v) for v in sp.q] if sp.q is not None else None
             extras = unit_data._provenance_extras(rec, det)       # scan + analyzer, additive + tolerant
+            extras = {**extras, **scan_extras}
             prov_add = {"source_file": src, "T": T, "q": q, "ingested_at": now_iso, **extras}
             det_state = upsert_ingested_entry(session, rec, det, chash=chash, prov=prov_add)
             if det_state != "unchanged":
                 report.dirty = True
             _write_unit(rec, det, det_state)
-            scan_rank = max(scan_rank, _RANK[det_state])
+            det_states.append(det_state)
         if touched:
             # A no-spectra measurement produces no ledger entry — keep it out of all three lists.
             ledgered_keys.add((rec.experiment_id, rec.scan_number))
-            {2: report.added, 1: report.updated, 0: report.unchanged}[scan_rank].append(scan_short)
+            # Collapse per-detector states: "added" only when every detector entry is new; any other
+            # change to a known scan (a late set member's new detector, or a drifted entry) is "updated".
+            if all(s == "added" for s in det_states):
+                report.added.append(scan_short)
+            elif any(s != "unchanged" for s in det_states):
+                report.updated.append(scan_short)
+            else:
+                report.unchanged.append(scan_short)
 
     # --- file manifest for ALL classified files (merge, never replace) ---
     # For a measurement-class FILE, its scans still split into measurement scans (ledgered, listed

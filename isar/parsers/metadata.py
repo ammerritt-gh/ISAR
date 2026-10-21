@@ -18,7 +18,8 @@ from isar.schema.scan import Flag
 log = logging.getLogger(__name__)
 
 # Fact precedence, first found wins (the design's ladder); `inferred` and `missing` are not sources.
-PRECEDENCE = ("header", "sidecar", "filename", "card")
+# "trailer" is a file's trailing `#` lines, ranked just after its own header.
+PRECEDENCE = ("header", "trailer", "sidecar", "filename", "card")
 
 # Header keys whose values are numbers; every other key is kept as text.
 _HEADER_KINDS = {
@@ -146,7 +147,7 @@ def merge_facts(sources: Mapping[str, Mapping[str, object]], expected: Iterable[
                 scope: str = "") -> tuple[dict, list[Flag]]:
     """Merge per-source fact dicts into one facts block with the design's precedence.
 
-    `sources` maps a source label (header, sidecar, filename, card) to its {name: value}. The first
+    `sources` maps a source label (header, trailer, sidecar, filename, card) to its {name: value}. The first
     source in PRECEDENCE that has a fact wins; a later source that disagrees is listed under
     `conflicts` and raises a `fact_conflict` flag. A name in `expected` that no source supplies is
     recorded with source `missing`. `scope` prefixes the flag reason (e.g. the analyzer's name).

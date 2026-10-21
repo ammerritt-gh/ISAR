@@ -11,6 +11,7 @@ import json
 import random
 import re
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
@@ -313,3 +314,89 @@ def test_a_point_counter_copies_and_is_reported_forced(first, last, forced_rows,
 def test_a_bad_replacement_is_refused(old, bad):
     with pytest.raises(ac.Refuse):
         ac.verify_column(old, bad)
+
+
+# ---------------------------------------------------------------------------
+# BL43LXU tables and `name = value` files (the energy axis is a bin lattice)
+# ---------------------------------------------------------------------------
+def _bl43_member(tmp_path: Path) -> Path:
+    """An analyzer file in the beamline's layout: bins on a 0.2 meV lattice through zero, a trailing comment."""
+    energy = [-0.6 + 0.2 * k for k in range(12)]
+    rows = ["#      meV      secs   npts          norm_i             y_i            ye_i"]
+    rows += [f"{e:10.2f} {10.0 * (k % 3 + 1):9.1f} {k % 3 + 1:6d} {1.2e6 + 9e4 * k:15.5E} "
+             f"{3.1e-4 + 1e-5 * k:15.5E} {2.2e-5 + 1e-6 * k:15.5E}" for k, e in enumerate(energy)]
+    path = tmp_path / "in" / "Smp_100K_1_0p5_m2_run_a03"
+    path.parent.mkdir()
+    path.write_text("\n".join(rows + ["#Q=   11.250 /nm"]) + "\n", encoding="utf-8", newline="\n")
+    return path
+
+
+def test_a_table_copy_shifts_the_bin_lattice_and_keeps_every_other_byte(tmp_path):
+    from isar.parsers import sp8_bl43
+    src = _bl43_member(tmp_path)
+    copy, truth = _make(src, tmp_path / "out")
+    a, b = src.read_text(encoding="utf-8").splitlines(), copy.read_text(encoding="utf-8").splitlines()
+    assert len(a) == len(b) and a[0] == b[0] and a[-1] != b[-1]          # the trailer's |Q| is replaced too
+    assert re.fullmatch(r"#Q=   \d\d\.\d{3} /nm", b[-1])
+    for x, y in zip(a[1:-1], b[1:-1]):
+        assert len(x) == len(y) and re.sub(r"\S+", "#", x).split() == re.sub(r"\S+", "#", y).split()
+        assert all(p != q for p, q in zip(x.split(), y.split()))     # every data number changed
+    old, new = sp8_bl43.read_member(src), sp8_bl43.read_member(copy)
+    steps = np.round(np.diff(new.energy), 4)
+    assert np.all(steps == 0.2) and np.all(new.energy != old.energy)   # same step, moved along itself
+    assert np.allclose(new.energy / 0.2, np.round(new.energy / 0.2))   # and still on the lattice through zero
+    (scan,) = truth["scans"]
+    assert scan["column_names"][0] == "meV" and scan["points"] == 12
+    assert scan["data_columns"][0]["tokens"] == [ln.split()[0] for ln in b[1:-1]]
+
+
+def test_measured_numbers_in_table_comments_do_not_survive_a_copy(tmp_path):
+    """The `#Q=` / `#T=` trailers and a SARF curve's fitted eshift are measured numbers in comment lines."""
+    src = _bl43_member(tmp_path)
+    src.write_text(src.read_text(encoding="utf-8") + "#T=  250.000 K\n", encoding="utf-8", newline="\n")
+    sarf = tmp_path / "in" / "sarf_24Nov10_s48_60_60_a03"
+    rows = [f"{k * 0.1 - 1:.2f} {0.5 + 0.01 * k:.4f}" for k in range(21)]
+    sarf.write_text("\n".join(["# SARF created", "# Center of FWHM at zero energy (eshift=  0.37)",
+                               "#E_meV SARF fit_to_resolution"] + rows) + "\n", encoding="utf-8", newline="\n")
+    lines = _make(src, tmp_path / "out")[0].read_text(encoding="utf-8").splitlines()
+    assert re.fullmatch(r"#Q=   \d\d\.\d{3} /nm", lines[-2]) and lines[-2] != "#Q=   11.250 /nm"
+    assert re.fullmatch(r"#T=  \d{3}\.000 K", lines[-1]) and lines[-1] != "#T=  250.000 K"
+    head = _make(sarf, tmp_path / "out")[0].read_text(encoding="utf-8").splitlines()[1]
+    assert re.fullmatch(r"# Center of FWHM at zero energy \(eshift=  0\.\d\d\)", head)
+    assert head != "# Center of FWHM at zero energy (eshift=  0.37)"
+
+
+def test_a_shifted_progression_refuses_a_field_it_cannot_fit():
+    toks = [b"-0.20", b"0.00", b"0.20", b"0.40"]
+    new, forced = ac.replace_column(toks, random.Random(1), rooms=[8] * 4)
+    assert forced == set() and all(a != b for a, b in zip(toks, new))
+    assert [float(b) - float(a) for a, b in zip(new, new[1:])] == pytest.approx([0.2] * 3)
+    with pytest.raises(ac.Refuse, match="inside its fields"):
+        ac.replace_column(toks, random.Random(1), rooms=[1] * 4)      # no room for a shifted token
+    new, _ = ac.replace_column(toks, random.Random(1), rooms=[8] * 4, free_phase=True)
+    off_lattice = [(Decimal(t.decode()) / Decimal("0.2")) % 1 for t in new]
+    assert all(r != 0 for r in off_lattice)                           # the offset moved by a fraction of a step
+    # without `rooms` (SPEC, numor) a progression is an ordinary monotone column, as before
+    assert ac.grid_step(toks) is not None
+    new, _ = ac.replace_column(toks, random.Random(1))
+    assert all(len(a) == len(b) for a, b in zip(toks, new))
+
+
+def test_a_name_value_file_replaces_its_numbers_but_not_its_structure(tmp_path):
+    from isar.parsers import sp8_bl43
+    src = tmp_path / "Smp_100K_1_0p5_m2_run.var"
+    src.write_text('\n'.join([
+        ' file_name_prefix = "Smp_100K_1_0p5_m2_run"', ' silicon_order =    12', ' cal_factor =   1.0390',
+        ' meV_bin_size =     0.20', ' nscans =     2', '', 'array ano[3]', 'array analeff[3]', '',
+        'ano[1] = 3', 'analeff[1] =       1.00', '', 'ano[2] = 4', 'analeff[2] =       0.73', '',
+        'ano[3] = 5', 'analeff[3] =       0.98', '']), encoding="utf-8", newline="\n")
+    copy, truth = _make(src, tmp_path / "out")
+    a, b = src.read_text(encoding="utf-8").splitlines(), copy.read_text(encoding="utf-8").splitlines()
+    changed = {i for i, (x, y) in enumerate(zip(a, b)) if x != y}
+    assert len(a) == len(b) and {a[i].split()[0] for i in changed} == {"cal_factor", "analeff[1]", "analeff[2]", "analeff[3]"}
+    var = sp8_bl43.read_var(copy)
+    assert var["arrays"]["ano"] == {1: 3.0, 2: 4.0, 3: 5.0}            # structural numbers kept
+    assert var["scalars"]["silicon_order"] == 12.0 and var["scalars"]["meV_bin_size"] == 0.2
+    cols = {c["name"]: c["tokens"] for c in truth["scans"][0]["data_columns"]}
+    assert cols["analeff[]"] == [b[i].split()[-1] for i in sorted(changed) if b[i].startswith("analeff")]
+    assert "cal_factor" in cols and "ano[]" not in cols
