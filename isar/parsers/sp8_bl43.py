@@ -284,7 +284,7 @@ def _scan_header_facts(members: list[Member]) -> tuple[dict, list[scan.Flag], di
                                    f"its trailing line gives {m.clash['T_K']!r}"))
     h, v = out.get("agaph_mm"), out.get("agapv_mm")
     if all(isinstance(x, float) for x in (h, v)):
-        out["slit"] = f"{h:g}x{v:g}"
+        out["slit"] = metadata.slit_label(h, v)
     return out, flags, clashes
 
 

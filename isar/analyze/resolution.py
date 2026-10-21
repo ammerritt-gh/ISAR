@@ -30,6 +30,7 @@ class TabulatedResolution:
     detector_id: str
     setting: str | None = None
     source: str = ""
+    facts: dict = field(default_factory=dict, repr=False)   # what the instrument's own files say of it
     fwhm: float = field(init=False)
 
     def __post_init__(self):

@@ -175,3 +175,22 @@ def merge_facts(sources: Mapping[str, Mapping[str, object]], expected: Iterable[
                               + ", ".join(f"{c['source']} gives {c['value']!r}" for c in clashes)))
         facts[name] = entry
     return facts, flags
+
+
+_SLIT_NUMBER = re.compile(r"\d+(?:[.p]\d+)?")
+
+
+def slit_label(h, v) -> str:
+    """The one spelling of an opening of ``h`` by ``v`` (mm): ``60x60``, ``0.5x0.5``. Every slit
+    fact and every resolution-curve setting is made here, so the exact-string comparison of a
+    declared slit with a library setting cannot miss on formatting."""
+    return f"{float(h):g}x{float(v):g}"
+
+
+def normalise_slit(text) -> str | None:
+    """A slit written as text (``60x60``, ``60_60``, ``0.50 x 0.5``, ``0p5_0p5``) in `slit_label` form,
+    or None when it does not hold exactly two numbers."""
+    nums = _SLIT_NUMBER.findall(str(text))
+    if len(nums) != 2 or _SLIT_NUMBER.sub("", str(text)).strip(" _xX*-/,"):
+        return None
+    return slit_label(*(float(n.replace("p", ".")) for n in nums))

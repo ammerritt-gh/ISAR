@@ -1,0 +1,132 @@
+"""BL43LXU SARF resolution files: the catalogue entry's reader for the beamline's measured curves.
+
+A SARF file holds one analyzer's measured resolution at one analyzer-slit setting: comment lines
+(`#`), then energy (meV) and the smooth SARF curve, then the fit to the measurement, which is
+ignored. A `.gpi` file beside it summarises the measurement (widths at half, tenth and hundredth
+maximum); its values ride on the curve as facts. The `.lines` file is never read.
+
+`load_library(folder, pattern)` builds the shared `ResolutionLibrary` (keyed by detector and
+setting) from every file whose whole name matches the card's `resolution_pattern`, a regular
+expression with the groups `analyzer` and, for a setting-dependent resolution, `setting`. A setting
+is labelled by `metadata.slit_label`, the same spelling the reader gives the `slit` fact, so a
+declared slit and a curve file of the same opening always meet. An unreadable file is logged and
+left out; it never stops the library.
+"""
+from __future__ import annotations
+
+import hashlib
+import logging
+import re
+from pathlib import Path
+
+import numpy as np
+
+from isar.analyze.resolution import ResolutionLibrary, TabulatedResolution
+from isar.parsers import metadata
+from isar.parsers.sp8_bl43 import detector_id
+
+log = logging.getLogger(__name__)
+
+GPI_KEYS = ("res_fwhm", "res_fwtm", "res_fwm100")
+_GPI_LINE = re.compile(r"^\s*(\w+)\s*=\s*([-+0-9.eE]+)\s*$")
+# One library per (folder, pattern) per process; refreshed when the files' fingerprint differs.
+_LIBRARIES: dict = {}
+
+
+def _matches(folder: Path, pattern: str) -> list[tuple[Path, str, str | None]]:
+    """``(path, detector_id, setting)`` for every file of `folder` the pattern matches in full."""
+    rx = re.compile(pattern)
+    if "analyzer" not in rx.groupindex:
+        raise ValueError(f"resolution_pattern {pattern!r} must name an (?P<analyzer>...) group")
+    out = []
+    for path in sorted(p for p in folder.iterdir() if p.is_file()):
+        m = rx.fullmatch(path.name)
+        if m is None:
+            continue
+        setting = m.groupdict().get("setting")
+        if setting is not None:
+            setting = metadata.normalise_slit(setting)
+            if setting is None:
+                log.warning("sarf: %s: setting is not an opening of two numbers; left out", path.name)
+                continue
+        digits = re.sub(r"\D", "", m.group("analyzer"))
+        if not digits:
+            log.warning("sarf: %s: no analyzer number in %r; left out", path.name, m.group("analyzer"))
+            continue
+        out.append((path, detector_id(int(digits)), setting))
+    return out
+
+
+def fingerprint(folder, pattern: str) -> str:
+    """A short hash of the matched files' names, sizes and modification times (and their `.gpi`)."""
+    folder = Path(folder)
+    rows = []
+    for path, _det, _setting in _matches(folder, pattern):
+        for p in (path, path.with_name(path.name + ".gpi")):
+            if p.is_file():
+                st = p.stat()
+                rows.append((p.name, st.st_size, st.st_mtime_ns))
+    return hashlib.sha256(repr(sorted(rows)).encode("utf-8")).hexdigest()[:16]
+
+
+def _gpi_facts(path: Path) -> dict:
+    gpi = path.with_name(path.name + ".gpi")
+    if not gpi.is_file():
+        return {}
+    facts = {}
+    for line in gpi.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = _GPI_LINE.match(line)
+        if m and m.group(1) in GPI_KEYS:
+            facts[m.group(1)] = {"value": float(m.group(2)), "source": "sidecar"}
+    return facts
+
+
+def read_curve(path, detector: str, setting: str | None) -> TabulatedResolution:
+    """One SARF file as a `TabulatedResolution`; ValueError/OSError when it cannot be read."""
+    path = Path(path)
+    table = np.loadtxt(path, comments="#", usecols=(0, 1), encoding="utf-8", ndmin=2)
+    return TabulatedResolution(table[:, 0], table[:, 1], detector, setting,
+                               source=path.name, facts=_gpi_facts(path))
+
+
+def load_library(folder, pattern: str) -> ResolutionLibrary:
+    """Every readable curve of `folder` matching `pattern`. FileNotFoundError when there is no folder."""
+    folder = Path(folder)
+    if not folder.is_dir():
+        raise FileNotFoundError(f"resolution folder {folder} not found")
+    curves, seen = [], {}
+    for path, det, setting in _matches(folder, pattern):
+        if (det, setting) in seen:
+            log.warning("sarf: %s and %s both give %s at %s; the first is used", seen[(det, setting)],
+                        path.name, det, setting)
+            continue
+        try:
+            curves.append(read_curve(path, det, setting))
+        except (OSError, ValueError) as exc:
+            log.warning("sarf: %s unreadable (%s); left out of the library", path.name, exc)
+            continue
+        seen[(det, setting)] = path.name
+    return ResolutionLibrary(curves)
+
+
+def library_for(folder, pattern: str, expected: str | None = None) -> ResolutionLibrary:
+    """The library of `folder`, loaded once per process. With `expected` (the fingerprint a calibration
+    or a fit was made under), ValueError when the files have changed since: a different curve would
+    silently turn a recorded result into a different one."""
+    key = (str(Path(folder)), pattern)
+    hit = _LIBRARIES.get(key)
+    if hit is None or (expected is not None and hit[0] != expected):
+        _LIBRARIES[key] = hit = (fingerprint(folder, pattern), load_library(folder, pattern))
+    if expected is not None and hit[0] != expected:
+        raise ValueError(f"the resolution files in {folder} changed since they were last read")
+    return hit[1]
+
+
+def curve_from_reference(ref: dict) -> TabulatedResolution:
+    """The curve a fit was made with, from its recorded reference (folder, pattern, fingerprint,
+    detector, setting). ValueError when the files changed or the curve is gone."""
+    lib = library_for(ref["folder"], ref["pattern"], ref.get("fingerprint"))
+    curve = lib.get(ref["detector"], ref["setting"])
+    if curve is None:
+        raise ValueError(f"no resolution curve for {ref['detector']} at {ref['setting']} in {ref['folder']}")
+    return curve
