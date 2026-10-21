@@ -53,6 +53,13 @@ def test_count_recovery_large_n_within_printed_precision_is_not_flagged():
     assert rec.max_deviation == 0.25
 
 
+def test_count_recovery_unrounded_reports_every_non_integer_bin():
+    # With integer=False the printed-digit tolerance must not hide a bin recovering to about 2.1.
+    rec = md.recover_counts(["1.4491377", "4", "0"], ["1", "2", "0"], integer=False)
+    assert list(rec.not_integer) == [True, False, False]
+    assert rec.counts[0] == pytest.approx(2.1, abs=1e-6)
+
+
 def test_count_recovery_rejects_mismatched_lengths():
     with pytest.raises(ValueError):
         md.recover_counts(["1", "2"], ["1"], integer=True)

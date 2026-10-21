@@ -97,7 +97,7 @@ def _decode(token: str):
 @dataclass
 class CountRecovery:
     counts: np.ndarray      # N = (y/e)^2 per bin, rounded when integer; NaN where invalid
-    not_integer: np.ndarray  # bins whose N lies further from an integer than the printed digits allow
+    not_integer: np.ndarray  # valid bins to report (integer: beyond the printed digits; else any N != round(N))
     invalid: np.ndarray     # e == 0 with y != 0, or non-finite; the caller masks these, never drops
     max_deviation: float    # largest |N - round(N)| over valid bins (0.0 when there are none)
 
@@ -106,8 +106,9 @@ def recover_counts(y_text: Sequence[str], e_text: Sequence[str], integer: bool) 
     """Raw counts from a processed file's printed intensity y and error e, per bin.
 
     Takes the printed strings, not floats: the digits printed in a bin set how far N may stray
-    from an integer. With `integer`, N is rounded to the nearest integer; the tolerance is
-    max(0.25, 4*10^(1-s)*N), s the fewer significant digits printed in that bin's y and e.
+    from an integer. With `integer`, N is rounded to the nearest integer and a bin is reported when
+    N strays beyond max(0.25, 4*10^(1-s)*N), s the fewer significant digits printed in that bin's
+    y and e. Without it, N stays unrounded and every bin with N != round(N) is reported.
     Zero counts give N = 0 with variance 0 (the caller's sigma^2 = N); no floor is added.
     """
     if len(y_text) != len(e_text):
@@ -121,7 +122,7 @@ def recover_counts(y_text: Sequence[str], e_text: Sequence[str], integer: bool) 
     n = np.where(invalid, 0.0, n)
     rounded = np.round(n)
     dev = np.abs(n - rounded)
-    tol = np.maximum(0.25, 4 * 10.0 ** (1 - sig) * n)
+    tol = np.maximum(0.25, 4 * 10.0 ** (1 - sig) * n) if integer else 0.0
     valid = ~invalid
     return CountRecovery(
         counts=np.where(invalid, np.nan, rounded if integer else n),
