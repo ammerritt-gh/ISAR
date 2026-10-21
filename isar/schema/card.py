@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tomllib
 import uuid
 from dataclasses import dataclass, field, fields
@@ -87,6 +88,13 @@ class CardPolicy:
     fitting: dict = field(default_factory=dict)              # [fitting] — user guidelines (§6)
     sample: dict = field(default_factory=dict)               # [sample] — name override, require_alignment
     hypotheses: dict = field(default_factory=dict)           # [hypotheses.*] — human physics intent
+    # Per-detector file sets (opt-in; absent ⇒ ingest is one file, one parse). Opaque tables read by
+    # their consumer; only [files] is checked here.
+    #   [files]  measurement = regexes (re.fullmatch on the file NAME) with named groups `set` (the
+    #            scan's key) and `analyzer`; sidecar = names with a `{set}` placeholder; ignore = globs.
+    files: dict = field(default_factory=dict)
+    facts: dict = field(default_factory=dict)                # [facts] — card-declared fact values (lowest precedence)
+    reader: dict = field(default_factory=dict)               # [reader] — plugin options
     # Inline human-authored distinction policies.  Authoring markers are materialized into exact
     # campaign scope fingerprints when an objective is frozen; code never writes this table.
 
@@ -138,6 +146,38 @@ def validate_policy_text(text: str) -> PolicyValidation:
     except Exception as exc:  # a malformed policy must be a visible validation error, never a GUI crash
         return PolicyValidation(policy, (f"card validation error: {exc}",), warnings)
     return PolicyValidation(policy, errors, warnings)
+
+
+def _files_errors(files) -> list[str]:
+    """Static checks of the `[files]` table: every measurement regex compiles and names the
+    `analyzer` and `set` groups ingest groups by; sidecar templates carry `{set}`."""
+    if not isinstance(files, dict):
+        return ["files must be a table"]
+    errs: list[str] = []
+    for key in ("measurement", "sidecar", "ignore"):
+        val = files.get(key, [])
+        if not isinstance(val, list) or not all(isinstance(v, str) for v in val):
+            errs.append(f"files.{key} must be a list of strings")
+    for key in sorted(set(files) - {"measurement", "sidecar", "ignore"}):
+        errs.append(f"files.{key}: unknown key (expected measurement, sidecar, ignore)")
+    if errs:
+        return errs
+    measurement = files.get("measurement", [])
+    if not measurement and (files.get("sidecar") or files.get("ignore")):
+        errs.append("files.measurement is required when sidecar or ignore is given")
+    for pattern in measurement:
+        try:
+            groups = re.compile(pattern).groupindex
+        except re.error as exc:
+            errs.append(f"files.measurement {pattern!r} does not compile: {exc}")
+            continue
+        for needed in ("analyzer", "set"):
+            if needed not in groups:
+                errs.append(f"files.measurement {pattern!r} must name a (?P<{needed}>...) group")
+    for template in files.get("sidecar", []):
+        if "{set}" not in template:
+            errs.append(f"files.sidecar {template!r} must contain the {{set}} placeholder")
+    return errs
 
 
 @dataclass
@@ -267,6 +307,11 @@ class Card:
 
             if not isinstance(det.signal_column, str) or not det.signal_column:
                 errs.append(f"detector {detector_id!r} has a non-string or empty signal_column")
+        if pol.files:
+            errs.extend(_files_errors(pol.files))
+        for table in ("facts", "reader"):
+            if not isinstance(getattr(pol, table), dict):
+                errs.append(f"{table} must be a table")
         if not isinstance(pol.hypotheses, dict):
             errs.append("hypotheses must be a table of named hypothesis tables")
         else:
