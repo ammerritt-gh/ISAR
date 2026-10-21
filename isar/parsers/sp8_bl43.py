@@ -491,7 +491,7 @@ def _spectrum(m: Member, k: np.ndarray, all_keys: np.ndarray, fname_facts: dict,
         point_flags += [scan.PointFlag(int(pos[i]), "monitor_dropout", "monitor==0")
                         for i in np.nonzero(dropped)[0]]
     spectrum_flags = []
-    if rec.not_integer.any():
+    if family == "_lr" or rec.not_integer.any():       # `_lr` is never raw, whatever its bins recover to
         what = ("_lr counts are not raw (they split counts between bins)" if family == "_lr"
                 else "bins beyond the printed digits")
         # Under half a count the nearest integer is still unambiguous, so only a notice; `_lr` is never raw.

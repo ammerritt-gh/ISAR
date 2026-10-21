@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from isar.parsers import sp8_bl43
+from isar.parsers import metadata, sp8_bl43
 from isar.schema import axes, scan
 from isar.session import ingest
 
@@ -121,6 +121,16 @@ def test_lr_family_is_unrounded_flagged_and_timed_by_lrn(tmp_path):
     flag = [f for f in sp.spectrum_flags if f.type == "counts_not_integer"]
     assert len(flag) == 1 and flag[0].severity == "warning" and "a03" in flag[0].reason
     assert np.all(sp.time == 40.0 * 4 * 0.25)                              # lrn x 0.25 s
+
+
+def test_lr_spectrum_is_marked_not_raw_even_when_every_bin_recovers_near_integer(tmp_path):
+    squares = (np.arange(10) + 1.0) ** 2                  # monitor 1: y = N, e = sqrt(N), N recovers exactly
+    path = write_member(tmp_path, "a03", lattice(0, 10), squares, np.ones(10))
+    m = sp8_bl43.read_member(path, "_lr")
+    assert not metadata.recover_counts(m.y_text, m.e_text, integer=False).not_integer.any()
+    sp = parse(tmp_path, reader={"intensity_family": "_lr"}).spectra["a03"]
+    (flag,) = [f for f in sp.spectrum_flags if f.type == "counts_not_integer"]
+    assert flag.severity == "warning" and "_lr" in flag.reason and "not raw" in flag.reason
 
 
 def test_unknown_intensity_family_is_refused(tmp_path):

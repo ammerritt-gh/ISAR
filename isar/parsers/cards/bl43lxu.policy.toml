@@ -55,7 +55,7 @@ ignore = ["*.pkpos", "*_sum"]
 [reader]
 # The column family the counts are read from. "_i" gives integer counts: raw, and the right choice.
 # "_lr" splits some counts between neighbouring bins, so its counts are NOT raw: they are kept unrounded
-# and every non-integer bin is flagged counts_not_integer.
+# and every _lr spectrum carries a counts_not_integer warning, whatever its bins recover to.
 intensity_family = "_i"
 
 [facts]
