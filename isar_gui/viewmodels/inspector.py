@@ -50,9 +50,8 @@ def _fmt_q(hkl) -> str:
         return ""
 
 
-# Provenance fact tables (stamped at ingest, session/unit_data.py) and the facts shown from each.
-_FACT_ROWS = (("scan_facts", ("scan_label", "T_K", "hkl_nominal", "slit")),
-              ("analyzer_facts", ("dq", "efficiency")))
+# Facts shown first, in this order; every other parsed fact follows, sorted by name.
+_FACT_FIRST = ("scan_label", "T_K", "hkl_nominal", "slit", "dq", "efficiency")
 
 
 def _fmt_fact(fact: dict) -> str:
@@ -306,11 +305,14 @@ class InspectorViewModel(ViewModel):
                 pass
         if prov.get("q_rung") is not None:
             md["Q rung"] = f"{prov['q_rung']} ({prov.get('q_source')})"
-        for key, names in _FACT_ROWS:
-            facts = prov.get(key)
-            for name in names if isinstance(facts, dict) else ():
-                if isinstance(facts.get(name), dict):
-                    md[name] = _fmt_fact(facts[name])
+        # Scan facts, then analyzer facts: every name the provenance holds, known names first.
+        facts = [(name, fact) for key in ("scan_facts", "analyzer_facts")
+                 if isinstance(prov.get(key), dict)
+                 for name, fact in prov[key].items() if isinstance(fact, dict)]
+        facts.sort(key=lambda nf: (_FACT_FIRST.index(nf[0]) if nf[0] in _FACT_FIRST else len(_FACT_FIRST),
+                                   nf[0]))
+        for name, fact in facts:
+            md[name] = _fmt_fact(fact)
         for key, label in (("scan_flags", "scan flags"), ("spectrum_flags", "spectrum flags")):
             rows = [f for f in (prov.get(key) or []) if isinstance(f, dict)]
             if rows:

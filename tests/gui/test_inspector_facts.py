@@ -71,6 +71,22 @@ def test_slit_from_the_card_and_a_source_conflict(make_ws):
     assert md["T_K"] == "302 (header); conflicts: 97.0 (filename)"
 
 
+def test_every_parsed_fact_is_shown_with_its_source(make_ws):
+    # Facts outside the first fixed list (the analyzer's elastic centroid and Q, the scan's energy) show too.
+    prov = _qless_prov()
+    prov["analyzer_facts"]["elastic_centroid_meV"] = _fact(0.12, "header")
+    prov["analyzer_facts"]["Q_nm"] = _fact(1.74, "header")
+    prov["scan_facts"]["energy_keV"] = _fact(23.7, "header")
+    md = _unit_vm(make_ws, prov).state.metadata
+    assert md["elastic_centroid_meV"] == "0.12 (header)"
+    assert md["Q_nm"] == "1.74 (header)"
+    assert md["energy_keV"] == "23.7 (header)"
+    keys = list(md)
+    assert keys.index("scan_label") < keys.index("Q_nm")       # the known rows keep their place first
+    assert [k for k in keys if k in ("Q_nm", "elastic_centroid_meV", "energy_keV")] == \
+        ["Q_nm", "elastic_centroid_meV", "energy_keV"]          # the rest sorted
+
+
 def test_unit_without_facts_shows_no_new_rows(make_ws):
     # An S30-style ledger entry (no facts, no Q rung stamped) renders exactly as before.
     prov = {"source_file": r"C:\data\x.dat", "T": 300.0, "q": [1.5, 0.0, 0.0], "n_points": 4}
