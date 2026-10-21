@@ -264,6 +264,18 @@ def test_set_without_scan_label_still_refuses_a_different_set_on_its_identity(tm
     assert {k: (e.content_hash, dict(e.provenance)) for k, e in session.scans.items()} == before
 
 
+def test_known_scan_gaining_a_detector_is_updated_though_its_entries_are_unchanged(tmp_path, plugin):
+    _members(tmp_path, "s10_x")
+    card, session = _card(), SessionState()
+    ingest.ingest_batch(card, session, [tmp_path])
+    del session.scans["E:10:a05"]              # a03/a04 keep the record's hash; a05 was never registered
+
+    report = ingest.ingest_batch(card, session, [tmp_path])
+
+    assert report.updated == ["E:10"] and report.added == [] and report.unchanged == []
+    assert session.scans["E:10:a05"].status == "ingested" and report.dirty
+
+
 # --- opt-in: nothing changes without [files] / parse_set ---------------------------------------
 def test_card_without_files_table_never_forms_sets(tmp_path, plugin):
     _members(tmp_path, "s10_x")

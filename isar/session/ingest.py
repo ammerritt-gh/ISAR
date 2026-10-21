@@ -389,7 +389,6 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
     # --- upsert one ledger entry per (exp, scan, det), MEASUREMENTS ONLY ---
     import numpy as np
     now_iso = datetime.now(timezone.utc).isoformat()
-    _RANK = {"unchanged": 0, "updated": 1, "added": 2}
     ledgered_keys: set[tuple] = set()                # measurement scans that produced ≥1 entry
     analyzer_unit_count = 0                           # atomic scan × analyzer units in this ingest
     for rec in routed.measurements:
@@ -425,11 +424,14 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
         if touched:
             # A no-spectra measurement produces no ledger entry — keep it out of all three lists.
             ledgered_keys.add((rec.experiment_id, rec.scan_number))
-            # Collapse per-detector states: "added" only when every detector entry is new; a known
-            # scan that gained a detector (a late set member) is "updated", the new entry still "added".
-            known = [s for s in det_states if s != "added"]
-            scan_rank = _RANK[max(known, key=_RANK.get)] if known else 2
-            {2: report.added, 1: report.updated, 0: report.unchanged}[scan_rank].append(scan_short)
+            # Collapse per-detector states: "added" only when every detector entry is new; any other
+            # change to a known scan (a late set member's new detector, or a drifted entry) is "updated".
+            if all(s == "added" for s in det_states):
+                report.added.append(scan_short)
+            elif any(s != "unchanged" for s in det_states):
+                report.updated.append(scan_short)
+            else:
+                report.unchanged.append(scan_short)
 
     # --- file manifest for ALL classified files (merge, never replace) ---
     # For a measurement-class FILE, its scans still split into measurement scans (ledgered, listed
