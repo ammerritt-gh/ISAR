@@ -36,7 +36,7 @@ def compact_view(record) -> dict:
 def _detector_view(sp) -> dict:
     inten = np.asarray(sp.intensity, dtype=float)
     return {
-        "q": [round(float(v), 5) for v in sp.q],
+        "q": None if sp.q is None else [round(float(v), 5) for v in sp.q],
         "intensity": _downsample(inten),
         "summary": {
             "max": float(np.max(inten)) if inten.size else None,
