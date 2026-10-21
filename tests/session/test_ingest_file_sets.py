@@ -229,6 +229,34 @@ def test_two_sets_on_one_identity_are_refused_by_name_and_never_merged(tmp_path,
     assert session.scans["E:10:a03"].provenance["file_set"] == "s10_a"
 
 
+def test_same_stem_in_two_folders_is_two_sets_and_the_second_is_refused_by_name(tmp_path, plugin):
+    one, two = tmp_path / "one", tmp_path / "two"
+    for folder in (one, two):
+        folder.mkdir()
+        _members(folder, "s10_x")
+        _write(folder, "s10_x.var")
+    card, session = _card(), SessionState()
+
+    plan = ingest.discover([tmp_path], card)
+    assert [len(fs.measurements) for fs in plan.file_sets] == [3, 3]       # each set whole, none merged
+    assert [fs.key for fs in plan.file_sets] == ["s10_x", "s10_x"]         # the reader still sees the stem
+    assert [fs.sidecars for fs in plan.file_sets] == [[one / "s10_x.var"], [two / "s10_x.var"]]
+
+    report = ingest.ingest_batch(card, session, [tmp_path])
+
+    assert report.added == ["E:10"] and sorted(session.scans) == ["E:10:a03", "E:10:a04", "E:10:a05"]
+    assert report.deduped == []                                            # no analyzer dropped as a duplicate
+    (r,) = report.refused
+    assert r["scan"] == "E:10" and str(one) in r["sets"][0] and str(two) in r["sets"][1]
+    assert "s10_x" in r["reason"] and "two]" in r["reason"] and "not ingested" in r["reason"]
+    assert session.scans["E:10:a03"].provenance["file_set"] == "s10_x"
+    assert all(Path(f["path"]).parent == two for f in report.files if "error" in f)
+
+    # A re-ingest of the one folder that was taken matches its own ledger entries: no refusal.
+    again = ingest.ingest_batch(card, session, [one])
+    assert again.refused == [] and again.unchanged == ["E:10"] and again.added == again.updated == []
+
+
 def test_set_whose_label_differs_from_the_ledgers_is_refused(tmp_path, plugin):
     _members(tmp_path, "s10_a", ("a03", "a04"))
     card, session = _card(), SessionState()

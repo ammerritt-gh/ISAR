@@ -30,11 +30,13 @@ class FileSet:
     `key` is the value of the `set` regex group shared by every member. `measurements` pairs each
     member path with its regex groups (`{"set": ..., "analyzer": ..., ...}`), sorted by path.
     `sidecars` are the files beside the measurement (the card's `sidecar` templates filled with
-    `key`) that exist; they are never parsed as measurements.
+    `key`) that exist; they are never parsed as measurements. A set is the members of one folder:
+    the same `key` in two folders is two sets (`folder` tells them apart), never one.
     """
     key: str
     measurements: list[tuple[Path, dict]] = field(default_factory=list)
     sidecars: list[Path] = field(default_factory=list)
+    folder: Path | None = None
 
 
 @runtime_checkable

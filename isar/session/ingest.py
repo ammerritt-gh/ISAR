@@ -7,14 +7,15 @@ last occurrence (growing-file resend), and orders by scan number. `file_gaps` re
 scan-number sequence — the file-level gap detection `collate.detect_gaps` (value space) does not do.
 
 A card with a `[files]` table (opt-in) also groups the matching files into `FileSet`s — one scan,
-many per-detector files, keyed by the regex `set` group — and a plugin with `parse_set` parses each
-set once; everything else is the one-file-one-parse path described above.
+many per-detector files, keyed by the regex `set` group within one folder — and a plugin with
+`parse_set` parses each set once; everything else is the one-file-one-parse path described above.
 """
 from __future__ import annotations
 
 import fnmatch
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,7 +79,7 @@ def discover(data_paths, card: Card) -> IngestPlan:
     files_cfg = pol.files or {}
     meas_res = [re.compile(p) for p in files_cfg.get("measurement", [])]
     ignore_globs = files_cfg.get("ignore", [])
-    sets: dict[str, FileSet] = {}
+    sets: dict[tuple, FileSet] = {}            # (folder, `set` group): one folder's files, one set
     rest: list[Path] = []                      # files the `[files]` name rules did not claim
     for f in _iter_files(data_paths):
         if _skip(f):
@@ -91,18 +92,19 @@ def discover(data_paths, card: Card) -> IngestPlan:
         m = next((m for m in (r.fullmatch(f.name) for r in meas_res) if m), None)
         if m is not None:
             plan.measurement_files.append(f)
-            fs = sets.setdefault(m.group("set"), FileSet(key=m.group("set")))
+            fs = sets.setdefault((f.parent, m.group("set")),
+                                 FileSet(key=m.group("set"), folder=f.parent))
             fs.measurements.append((f, m.groupdict()))
             continue
         rest.append(f)
     plan.file_sets = list(sets.values())
-    # Sidecars are the `{set}`-templated names of the sets found; each is remembered for its set.
-    sidecar_owner: dict[str, FileSet] = {}
+    # Sidecars are the `{set}`-templated names of the sets found, beside the set's own folder.
+    sidecar_owner: dict[tuple, FileSet] = {}
     for fs in plan.file_sets:
         for template in files_cfg.get("sidecar", []):
-            sidecar_owner.setdefault(template.replace("{set}", fs.key), fs)
+            sidecar_owner.setdefault((fs.folder, template.replace("{set}", fs.key)), fs)
     for f in rest:
-        owner = sidecar_owner.get(f.name)
+        owner = sidecar_owner.get((f.parent, f.name))
         if owner is not None:
             owner.sidecars.append(f)
             plan.sidecar_files.append(f)
@@ -140,7 +142,7 @@ class _Collected:
     sources: dict = field(default_factory=dict)          # (exp, scan) -> ordered distinct source paths
     file_scan_keys: dict = field(default_factory=dict)   # resolved path -> [(exp, scan), ...]
     file_errors: dict = field(default_factory=dict)      # resolved path -> "ExcType: msg" / refusal
-    set_of: dict = field(default_factory=dict)           # (exp, scan) -> set key, for set-sourced scans
+    set_of: dict = field(default_factory=dict)           # (exp, scan) -> FileSet, for set-sourced scans
     refused: list = field(default_factory=list)          # {"scan","sets":[earlier, later],"reason"}
 
 
@@ -167,29 +169,31 @@ def _ledger_labels(session) -> dict:
     return out
 
 
-def _collision(set_key, parsed, got: _Collected, ledger_labels) -> dict | None:
-    """Why a freshly parsed set must not be ingested, or None. Two different sets may not share a
-    (experiment, scan) identity in a batch, nor may a set's `scan_label` differ from the one the
-    ledger already holds for that identity, nor may the ledger hold another set's file_set there."""
+def _collision(fs: FileSet, name: str, parsed, got: _Collected, ledger_labels, names) -> dict | None:
+    """Why a freshly parsed set must not be ingested, or None. Two different sets (the same stem in
+    two folders is two) may not share a (experiment, scan) identity in a batch, nor may a set's
+    `scan_label` differ from the one the ledger already holds for that identity, nor may the ledger
+    hold another set's file_set (the stem) there. `name` is how the set is shown to a person."""
     for rec in parsed:
         key = (rec.experiment_id, rec.scan_number)
         scan = f"{key[0]}:{key[1]}"
         earlier = got.set_of.get(key)
-        if earlier is not None and earlier != set_key:
-            return {"scan": scan, "sets": [earlier, set_key],
-                    "reason": f"sets {earlier!r} and {set_key!r} both yield scan {scan}; "
-                              f"{set_key!r} not ingested"}
+        if earlier is not None and earlier is not fs:
+            first = names[id(earlier)]
+            return {"scan": scan, "sets": [first, name],
+                    "reason": f"sets {first!r} and {name!r} both yield scan {scan}; "
+                              f"{name!r} not ingested"}
         label, held = _scan_label(rec), ledger_labels.get(key)
         if held is not None and held[0] is not None and label is not None and held[0] != label:
             prior = held[1] if held[1] is not None else held[0]
-            return {"scan": scan, "sets": [prior, set_key],
-                    "reason": f"set {set_key!r} (scan_label {label!r}) collides with the ledger's "
+            return {"scan": scan, "sets": [prior, name],
+                    "reason": f"set {name!r} (scan_label {label!r}) collides with the ledger's "
                               f"{prior!r} (scan_label {held[0]!r}) on scan {scan}; "
-                              f"{set_key!r} not ingested"}
-        if held is not None and held[1] is not None and held[1] != set_key:
-            return {"scan": scan, "sets": [held[1], set_key],
-                    "reason": f"set {set_key!r} collides with the ledger's set {held[1]!r} on scan "
-                              f"{scan}; {set_key!r} not ingested"}
+                              f"{name!r} not ingested"}
+        if held is not None and held[1] is not None and held[1] != fs.key:
+            return {"scan": scan, "sets": [held[1], name],
+                    "reason": f"set {name!r} collides with the ledger's set {held[1]!r} on scan "
+                              f"{scan}; {name!r} not ingested"}
     return None
 
 
@@ -207,15 +211,19 @@ def _collect(plan: IngestPlan, card: Card, *, isolate: bool, session=None) -> _C
     set_of_path = ({p: fs for fs in plan.file_sets for p, _g in fs.measurements}
                    if parse_set is not None else {})
     ledger_labels = _ledger_labels(session) if session is not None else {}
+    # A stem shown to a person carries its folder only when another set shares the stem.
+    stems = Counter(fs.key for fs in plan.file_sets)
+    names = {id(fs): fs.key if stems[fs.key] == 1 else f"{fs.key} [{fs.folder}]"
+             for fs in plan.file_sets}
     got = _Collected()
-    done_sets: set[str] = set()
+    done_sets: set[int] = set()
     for f in plan.measurement_files:
         fs = set_of_path.get(f)
         if fs is not None:
-            if fs.key in done_sets:
+            if id(fs) in done_sets:
                 continue
-            done_sets.add(fs.key)
-            set_key, paths = fs.key, [p for p, _g in fs.measurements]
+            done_sets.add(id(fs))
+            set_key, paths = names[id(fs)], [p for p, _g in fs.measurements]
             parse = lambda fs=fs: parse_set(fs, card)  # noqa: E731
         else:
             set_key, paths = None, [f]
@@ -234,7 +242,7 @@ def _collect(plan: IngestPlan, card: Card, *, isolate: bool, session=None) -> _C
                         set_key if set_key is not None else f, got.file_errors[rps[0]])
             continue
         if set_key is not None:
-            clash = _collision(set_key, parsed, got, ledger_labels)
+            clash = _collision(fs, set_key, parsed, got, ledger_labels, names)
             if clash is not None:
                 got.refused.append(clash)
                 for rp in rps:
@@ -248,7 +256,7 @@ def _collect(plan: IngestPlan, card: Card, *, isolate: bool, session=None) -> _C
             key = (rec.experiment_id, rec.scan_number)
             got.by_key[key] = rec                    # last occurrence wins (growing-file resend)
             if set_key is not None:
-                got.set_of[key] = set_key
+                got.set_of[key] = fs
             else:
                 got.set_of.pop(key, None)
             paths_for_key = got.sources.setdefault(key, [])
@@ -402,12 +410,12 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
         T = unit_data.scan_temperature(rec)
         src = sources[(rec.experiment_id, rec.scan_number)][-1]   # the kept (last-wins) source file
         label = _scan_label(rec)                                  # identity guard for the next set
-        set_key = got.set_of.get((rec.experiment_id, rec.scan_number))
+        from_set = got.set_of.get((rec.experiment_id, rec.scan_number))
         scan_extras = {}                                          # same for every detector of the scan
         if label is not None:
             scan_extras["scan_label"] = label
-        if set_key is not None:
-            scan_extras["file_set"] = set_key
+        if from_set is not None:
+            scan_extras["file_set"] = from_set.key                # the stem: a moved folder still matches
         det_states: list[str] = []                                # per-detector upsert outcomes
         touched = False                                          # any detector entry produced?
         for det, sp in rec.spectra.items():
