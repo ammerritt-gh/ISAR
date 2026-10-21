@@ -12,11 +12,13 @@ the quantity — and loads them through the ``expect`` fixture. There are no def
 Facts that come from headers or instrument parameters may stay in a proof's code.
 """
 import json
+import os
 from pathlib import Path
 
 import pytest
 
-REAL_DATA = Path(__file__).resolve().parents[1] / "real_data"
+# A job worktree reads the main checkout's real data through ISAR_REAL_DATA (read only).
+REAL_DATA = Path(os.environ.get("ISAR_REAL_DATA") or Path(__file__).resolve().parents[1] / "real_data")
 
 
 @pytest.fixture
