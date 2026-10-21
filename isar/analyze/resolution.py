@@ -44,7 +44,7 @@ class TabulatedResolution:
             raise ValueError(f"resolution table for {self.detector_id!r} has non-finite entries")
         if np.any(np.diff(e) <= 0):
             raise ValueError(f"resolution table for {self.detector_id!r} energy is not ascending")
-        area = float(np.trapezoid(v, e))
+        area = float(np.sum(0.5 * (v[1:] + v[:-1]) * np.diff(e)))   # trapezoid rule; NumPy 1.x has no np.trapezoid
         if not area > 0:
             raise ValueError(f"resolution table for {self.detector_id!r} has no positive area")
         v = v / area

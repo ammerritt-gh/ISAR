@@ -96,6 +96,14 @@ def test_malformed_tables_are_refused():
         TabulatedResolution(e + 5.0, np.exp(-e ** 2), "d1").kernel(DX)
 
 
+def test_unit_area_needs_no_numpy_two(monkeypatch):
+    # pyproject allows NumPy 1.26, which has no np.trapezoid: the curve must normalise without it.
+    monkeypatch.delattr(np, "trapezoid")
+    curve = TabulatedResolution(np.array([-1.0, 0.0, 1.0]), np.array([0.0, 2.0, 0.0]), "d1")  # triangle, area 2
+    assert curve.values[1] == pytest.approx(1.0) and curve.values.sum() == pytest.approx(1.0)
+    assert curve.fwhm == pytest.approx(1.0)
+
+
 def test_library_keys_by_detector_and_setting_and_refuses_duplicates():
     a, b = _asym_curve("a03", "60x60"), _asym_curve("a03", "20x20")
     lib = ResolutionLibrary([a, b, _asym_curve("a04", "60x60")])
