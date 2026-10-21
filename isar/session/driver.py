@@ -251,6 +251,12 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
         ctx_lines = ([] if master_certification else router.apply_context_updates(
             routed, card, session, companion_files=plan.companion_files))
 
+        # tabulated_elastic: the slit ladder and per-detector elastic zero, from the measurements
+        # themselves (state-only; the policy file is never touched). Other methods: no lines.
+        if not master_certification:
+            ctx_lines += calibrations.refresh_tabulated(
+                card, routed.measurements, base_dir=Path(workspace.policy_path).parent)
+
         # Optional LLM adjudication (off critical path; degrade, never stall).
         if not master_certification and (llm or (card.policy.adjudication or {}).get("enabled")):
             ctx_lines += _maybe_adjudicate(routed.measurements, card)
@@ -291,8 +297,10 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                 for det in fit_dets:
                     if det not in rec.spectra:
                         continue
+                    _block = calibrations.calibration_block(runcal, rec, det)
                     _prov = {**_core_provenance(rec, det, source_by_name), "ingested_at": _now_iso,
-                             **ingest.set_provenance(rec, set_of.get((rec.experiment_id, rec.scan_number)))}
+                             **ingest.set_provenance(rec, set_of.get((rec.experiment_id, rec.scan_number))),
+                             **({"calibration": _block} if _block else {})}
                     if ingest.upsert_ingested_entry(
                             session, rec, det, chash=_chash, prov=_prov) != "unchanged":
                         _dirty = True
@@ -335,9 +343,13 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             ghash = canonical_hash(gsig)
 
             prev = session.get(scan_id)
+            # tabulated_elastic: a changed library, slit or zero refits this unit (None otherwise).
+            calfp = calibrations.calibration_fingerprint(runcal, rec, det)
             fresh = (prev is None or prev.content_hash != chash
                      or prev.guidelines_hash != ghash or prev.status.startswith("held")
-                     or prev.status == "ingested" or force)
+                     or prev.status == "ingested" or force
+                     or (calfp is not None and prev.status != "excluded"   # an excluded set stays so
+                         and (prev.provenance or {}).get("calibration_fingerprint") != calfp))
             if not fresh:
                 # Unchanged & already resolved: keep the ledger entry, re-list its outcome for the report.
                 if prev.detectors.get(det):

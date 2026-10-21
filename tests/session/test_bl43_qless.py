@@ -190,14 +190,15 @@ def _bl43_ws(tmp_path):
     return ws
 
 
-def test_run_holds_qless_scan_for_want_of_a_zero(tmp_path):
+def test_run_holds_qless_scan_for_want_of_a_resolution_curve(tmp_path):
+    # The shipped card names a resolution folder (`rf`) this workspace does not have: nothing is fitted.
     ws = _bl43_ws(tmp_path)
     summary = driver.run_batch(ws, [_bl43_folder(tmp_path)], M=10)
     _card, session = ws.load()
     assert len(session.scans) == 4                               # 2 scans x 2 analyzers
     for entry in session.scans.values():
         assert entry.status == "held_for_calibration"
-        assert entry.reasons and "no energy zero" in entry.reasons[0].lower()
+        assert entry.reasons and "resolution library unavailable" in entry.reasons[0]
         assert entry.provenance["q"] is None                    # never a fake Q
         assert entry.provenance["q_source"] == "none" and entry.provenance["q_rung"] == 4
     assert summary.collation is not None                         # collation did not fail either

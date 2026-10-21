@@ -189,6 +189,9 @@ class CardState:
     # loads unchanged.
     resolution_versions: list = field(default_factory=list)  # [{version, method, source, created, ...}]
     energy_zero_series: list = field(default_factory=list)   # [{key, e0, source_scan}]
+    tabulated_calibration: dict = field(default_factory=dict)  # "exp:scan" -> {setting, source, deviances,
+    #   flags, detectors: {det: {zero, zero_source, fit, flags, held_reason}}}; method tabulated_elastic
+    #   (isar.session.calibrations). Updated in place per new or changed scan, so it grows linearly.
     dispersion_prior: list = field(default_factory=list)     # PriorPoint dicts (§5)
     sample_map: list = field(default_factory=list)           # [{from_scan, sample, source}]
     branch_models: list = field(default_factory=list)        # BranchModel dicts (steering, Phase 2+)

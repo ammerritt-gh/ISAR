@@ -71,12 +71,17 @@ intensity_family = "_i"
 # name = "CsV3Sb5"              # names the experiment in the ledger (default: the SPEC file name, else the file stem)
 
 [calibration]
-# Consumed by the resolution stage (a later ISAR release); until it lands the method below is unknown
-# to the code and every BL43LXU scan is held for want of an energy zero, with the usual reason.
-method = "tabulated_elastic"            # consumed by the resolution stage: zero + curve from the beamline's SARF files
-resolution_folder = "rf"                # consumed by the resolution stage: folder of sarf_* files (relative to the data)
-resolution_pattern = "sarf_*_s*_{slit_h}_{slit_v}_{detector}"   # consumed by the resolution stage: one curve per slit and analyzer
-zero_fallback = "file_axis"             # consumed by the resolution stage: where no elastic line is measured, use the file's own axis
+# Each analyzer is fitted with the beamline's own measured resolution curve (SARF) for the scan's slit, and
+# its energy zero is the fitted elastic line. Without a curve (no folder, or none for that analyzer at that
+# slit) the analyzer is parsed and shown but held, with a missing_resolution flag naming it. The slit is
+# the `slit` fact (header, file name or [facts]); with none given, ISAR infers it from the elastic lines
+# and says so (slit_inferred); a given slit is never overridden (slit_mismatch only warns).
+method = "tabulated_elastic"            # zero + curve from the beamline's SARF files
+resolution_folder = "rf"                # folder of the sarf_* files; relative to this card's folder unless absolute
+# A regular expression matching a whole file name; (?P<analyzer>) and (?P<setting>) pick the analyzer
+# and the slit (height_width in mm) out of it. The .gpi files beside the curves are not matched.
+resolution_pattern = 'sarf_.+_s\d+_(?P<setting>\d+_\d+)_(?P<analyzer>a\d{2})'
+zero_fallback = "file_axis"             # no significant elastic line: use the file's own axis, labelled pipeline_zero
 
 [fitting]
 min_fit_points = 6              # fewer usable points than this -> non-result (undersampled)
