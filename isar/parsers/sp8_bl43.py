@@ -519,7 +519,7 @@ def _spectrum(m: Member, k: np.ndarray, all_keys: np.ndarray, fname_facts: dict,
     if m.npts is not None:
         ppb = np.zeros(n)
         ppb[pos] = m.npts
-        facts["points_per_bin"] = {"value": ppb.astype(int).tolist(), "source": "header"}
+        facts["points_per_bin"] = {"value": ppb.astype(int).tolist(), "source": "inferred"}   # the npts data column
     facts["count_recovery_max_deviation"] = {"value": rec.max_deviation, "source": "inferred"}
 
     hkl = facts["hkl"]["value"]

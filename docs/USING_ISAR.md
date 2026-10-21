@@ -390,7 +390,7 @@ The inspector shows every fact with its source:
 | `sidecar` | the `.var` file beside the analyzer files |
 | `filename` | the file-name pattern (the card's `[files]` groups) |
 | `card` | a value you declared in `[facts]` |
-| `inferred` | derived by ISAR: `energy_keV` from `si_order` (1.977 keV per silicon order) when nothing else gives it, and the count-recovery deviation |
+| `inferred` | derived by ISAR: `energy_keV` from `si_order` (1.977 keV per silicon order) when nothing else gives it, the count-recovery deviation, and `points_per_bin` (read from the `npts` data column) |
 | `missing` | nothing supplied it. The value is empty, and nothing downstream may invent one |
 
 The precedence is header, then trailer, sidecar, filename, card; the first found wins.

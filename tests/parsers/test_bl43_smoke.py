@@ -93,6 +93,7 @@ def test_csv3sb5_set_is_one_record_with_a_spectrum_per_analyzer(sets):
         n = (np.array(values(t, "y_i")) / np.array(values(t, "ye_i"))) ** 2
         assert np.array_equal(sp.intensity[present], np.round(n)[order])      # raw counts, rounded for `_i`
         assert np.array_equal(sp.variance, sp.intensity)                       # sigma^2 = N, no floor
+        assert sp.facts["points_per_bin"]["source"] == "inferred"      # from the npts data column, not a header
         assert sp.facts["points_per_bin"]["value"] == [0 if not p else int(round(v)) for p, v in zip(
             present, _scatter(present, np.array(values(t, "npts"))[order]))]
     assert np.isnan(rec.normalization.monitor).all() and np.isnan(rec.normalization.time).all()
