@@ -35,6 +35,8 @@ EXEMPT_PREFIXES = (
     "docs/stats/figures/",       # caption sidecars, written by docs/stats/make_figures.py
     "docs/assets/",              # promoted report output, written by the docs/*_check.py scripts
     "tests/data/golden/",        # byte-compared fixtures; a banner would break the comparison
+    "docs/feedback/",            # session debrief records, written by tooling and deleted at harvest
+    "docs/transcripts/",         # session transcripts, written by tooling
 )
 EXEMPT_FILES = (
     "CLAUDE.md",                 # a 12-byte `@AGENTS.md` stub
