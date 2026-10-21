@@ -144,6 +144,25 @@ class _Collected:
     file_errors: dict = field(default_factory=dict)      # resolved path -> "ExcType: msg" / refusal
     set_of: dict = field(default_factory=dict)           # (exp, scan) -> FileSet, for set-sourced scans
     refused: list = field(default_factory=list)          # {"scan","sets":[earlier, later],"reason"}
+    passed_over: list = field(default_factory=list)      # {"set","scans","reason"}: summed sets not read
+
+
+def _listed_scans(fs: FileSet) -> list[int]:
+    """The scan numbers a set's file names list, from the card's `scan_numbers` regex group."""
+    raw = next((g["scan_numbers"] for _p, g in fs.measurements if g.get("scan_numbers")), "")
+    return [int(n) for n in re.findall(r"\d+", raw)]
+
+
+def _summed_sets(plan: IngestPlan) -> dict[int, list[int]]:
+    """id(set) -> its scans, for each set listing several scans when every one of them is present as
+    its own set of the same experiment (the `specfile` group; none means one experiment) in the batch.
+    Their counts are in those sets already; reading the sum too would use them twice (design R10)."""
+    def experiment(fs):
+        return next((g["specfile"] for _p, g in fs.measurements if g.get("specfile")), None)
+
+    single = {(experiment(fs), n[0]) for fs in plan.file_sets if len(n := _listed_scans(fs)) == 1}
+    return {id(fs): n for fs in plan.file_sets
+            if len(n := _listed_scans(fs)) > 1 and all((experiment(fs), s) in single for s in n)}
 
 
 def _scan_label(rec) -> str | None:
@@ -216,6 +235,7 @@ def _collect(plan: IngestPlan, card: Card, *, isolate: bool, session=None) -> _C
     names = {id(fs): fs.key if stems[fs.key] == 1 else f"{fs.key} [{fs.folder}]"
              for fs in plan.file_sets}
     got = _Collected()
+    summed = _summed_sets(plan) if parse_set is not None else {}
     done_sets: set[int] = set()
     for f in plan.measurement_files:
         fs = set_of_path.get(f)
@@ -223,6 +243,13 @@ def _collect(plan: IngestPlan, card: Card, *, isolate: bool, session=None) -> _C
             if id(fs) in done_sets:
                 continue
             done_sets.add(id(fs))
+            if id(fs) in summed:
+                scans = summed[id(fs)]
+                reason = (f"set {names[id(fs)]!r} sums scans {', '.join(map(str, scans))}, which are in this "
+                          "batch as their own sets; not read, so no count is used twice")
+                got.passed_over.append({"set": names[id(fs)], "scans": scans, "reason": reason})
+                log.info("ingest: %s", reason)
+                continue
             set_key, paths = names[id(fs)], [p for p, _g in fs.measurements]
             parse = lambda fs=fs: parse_set(fs, card)  # noqa: E731
         else:
@@ -285,6 +312,7 @@ class IngestReport:
     unchanged: list = field(default_factory=list)    # re-ingest no-ops
     deduped: list = field(default_factory=list)      # {"scan","kept","superseded":[...]}
     refused: list = field(default_factory=list)      # {"scan","sets":[held, refused],"reason"}: identity collisions
+    passed_over: list = field(default_factory=list)  # {"set","scans","reason"}: summed sets whose scans are present
     gaps: list = field(default_factory=list)         # file_gaps output
     last_ingest: dict = field(default_factory=dict)  # persisted, additive operator summary
     dirty: bool = False
@@ -295,6 +323,7 @@ class IngestReport:
                 "unchanged": list(self.unchanged),
                 "deduped": [dict(d) for d in self.deduped],
                 "refused": [dict(r) for r in self.refused],
+                "passed_over": [dict(p) for p in self.passed_over],
                 "gaps": [list(g) for g in self.gaps],
                 "last_ingest": dict(self.last_ingest)}
 
@@ -377,6 +406,7 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
     by_key, sources, file_scan_keys = got.by_key, got.sources, got.file_scan_keys
     file_errors = got.file_errors                    # resolved path -> "ExcType: msg" / refusal
     report.refused = got.refused
+    report.passed_over = got.passed_over
 
     records = [by_key[k] for k in sorted(by_key, key=lambda k: (str(k[0]), k[1]))]
 

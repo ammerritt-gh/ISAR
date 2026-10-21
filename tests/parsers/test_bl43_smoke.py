@@ -69,7 +69,7 @@ def test_ingest_groups_each_layout_into_one_set_and_attaches_the_sidecar(sets):
 
 def test_csv3sb5_set_is_one_record_with_a_spectrum_per_analyzer(sets):
     rec = sets[0][BL43_STEM]
-    assert (rec.scan_type, rec.experiment_id) == ("measurement", "bl43lxu")
+    assert (rec.scan_type, rec.experiment_id) == ("measurement", BL43_STEM)   # no SPEC file, no card label: the stem
     assert sorted(rec.spectra) == ["a03", "a04"]
     assert rec.scan_number >= 1_000_000_000                       # hashed: the layout has no scan number
     assert rec.source.plugin == "sp8_bl43" and rec.source.file == BL43_STEM
@@ -137,6 +137,7 @@ def test_csv3sb5_facts_carry_their_sources_and_the_nominal_hkl_is_no_spectrums_q
 
 def test_ba122_export_is_rung_one_with_missing_exposure(sets):
     rec = sets[0]["spec1_T26K__scan_58"]
+    assert rec.experiment_id == "spec1"                            # the SPEC file name in the file name
     assert sorted(rec.spectra) == ["a06"]                          # `A6` in the name
     sp = rec.spectra["a06"]
     assert (sp.q, sp.q_source) == ([4.0, 0.075, 0.0], "filename")  # `Q_4_0p075_0` in the name

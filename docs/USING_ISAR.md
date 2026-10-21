@@ -104,6 +104,7 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
     ],
     "scans": {"added": ["exp:1"], "updated": [], "unchanged": []},  // scan-level "exp:scan" ids
     "deduped": [{"scan": "exp:7", "kept": "...", "superseded": ["..."]}],  // growing-file resends
+    "passed_over": [{"set": "...", "scans": [58, 59], "reason": "..."}],  // summed sets whose scans are present
     "gaps": [["exp", 4, 7]]            // (experiment, after, before) scan-number gaps
   }
   ```
@@ -336,13 +337,31 @@ a count), or whose error is 0 with a non-zero intensity, is masked and flagged `
 dropped. Analyzers with different bins share one energy
 axis; a bin that an analyzer lacks is masked and flagged `bin_absent`.
 
+### Which scan is which
+
+A scan's identity is **(experiment, scan number, analyzer)**. The experiment is the SPEC file name when a
+header line `specfile` or the file name carries it (the Ba122 `spec1_...` files give `spec1`, so `spec1`
+and `spec2`, which both count scans from 1, stay apart), otherwise the `[sample]` name or `experiment_id`
+you give in the card, otherwise the file stem (the CsV3Sb5 layout). The scan number is the one the set
+lists; a set that lists several, or none, gets a large hashed number and keeps the list in the
+`scan_numbers` fact, with the stem in `scan_label`. Two sets that land on the same identity are never
+merged: the second is not ingested and the ingest report names both.
+
+ISAR does its own combining, so it does not want scans that were already summed. A set whose file name
+lists several scans (`..._scan_58_59_...`) is **passed over**, and named under `passed_over` in the ingest
+report, when every scan it lists is in the same batch as its own set of the same SPEC file. When they are
+not (or the set lists no scans, as in the CsV3Sb5 layout), it is read and flagged `pre_combined_input`,
+and so is any set whose `.var` reports more than one merged scan. The files are never touched.
+
 ### What the card's tables do
 
 - `[files]`: `measurement` holds regexes with named groups. Each must name `set` (the scan's key,
   shared by its analyzer files) and `analyzer`; the other groups (sample, `T_K`, `hkl_nominal`,
-  `scan_numbers`, `hkl`) become filename facts. `sidecar` is `{set}.var`. `ignore` lists globs that are
-  never read as data. Subfolders are walked: the `rf/` folder of SARF resolution files is classified
-  unrecognized and not read until the resolution stage.
+  `specfile`, `scan_numbers`, `hkl`) become filename facts. `sidecar` is `{set}.var`. `ignore` lists
+  globs that are never read as data. Subfolders are walked, and a set is the files of one folder: the
+  same stem in two folders is two sets (the second is refused by name if it lands on the first's
+  identity, see below). The `rf/` folder of SARF resolution files is classified unrecognized and not read
+  until the resolution stage.
 - `[reader]`: `intensity_family` is `"_i"` (the default: integer counts, raw) or `"_lr"`. The `_lr`
   counts split some counts between neighbouring bins, so they are **not raw**. They are kept unrounded and
   every `_lr` spectrum is flagged `counts_not_integer` (a warning, whatever its bins recover to). Do not
@@ -362,7 +381,7 @@ axis; a bin that an analyzer lacks is masked and flagged `bin_absent`.
 A `# key value` line before the data (the column-label line is skipped) gives the same fact that the file
 name or the card would, and it wins over them. The reader takes:
 
-- scan level: `scan` (scan number or numbers), `T_K`, `si_order`, `energy_keV`, `agaph_mm` and `agapv_mm`
+- scan level: `specfile` (the SPEC file name), `scan` (scan number or numbers), `T_K`, `si_order`, `energy_keV`, `agaph_mm` and `agapv_mm`
   (the analyzer slit, combined into the generic fact `slit` as `<h>x<v>`), `lattice` (a, b, c, α, β, γ)
   and `time`;
 - analyzer level: `hkl` (the analyzer's own HKL, which gives its Q: rung 1), `dq`, and `Q_nm` (|Q| in

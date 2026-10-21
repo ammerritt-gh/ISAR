@@ -286,18 +286,6 @@ def test_lattice_and_time_header_lines_are_scan_facts_with_source_header(tmp_pat
     assert rec.facts["time"] == {"value": "2024-11-12 10:00", "source": "header"}
 
 
-def test_identity_is_the_scan_number_when_known_else_a_hash_of_the_stem(tmp_path):
-    write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6)
-    rec = parse(tmp_path)
-    assert rec.scan_number == 1_000_000_000 + zlib.crc32(STEM.encode()) % 1_000_000_000
-    assert rec.facts["scan_label"] == {"value": STEM, "source": "filename"}
-    assert rec.experiment_id == "bl43lxu"
-    (tmp_path / f"{STEM}_a03").write_text(
-        "# scan 12 13\n" + (tmp_path / f"{STEM}_a03").read_text(encoding="utf-8"), encoding="utf-8")
-    rec = parse(tmp_path)
-    assert rec.scan_number == 12 and rec.facts["scan_numbers"] == {"value": [12, 13], "source": "header"}
-
-
 # ---------------------------------------------------------------------------
 # Union axis, absent bins, members left out
 # ---------------------------------------------------------------------------

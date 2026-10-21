@@ -56,6 +56,7 @@ def run(args) -> int:
             "scans": {"added": report.added, "updated": report.updated,
                       "unchanged": report.unchanged},
             "deduped": report.to_jsonable()["deduped"],
+            "passed_over": report.to_jsonable()["passed_over"],
             "gaps": report.to_jsonable()["gaps"],
             "last_ingest": report.to_jsonable()["last_ingest"]}))
         return 0
@@ -74,6 +75,8 @@ def run(args) -> int:
     for d in report.deduped:
         print(f"  dedup: {d['scan']} kept {d['kept']} "
               f"(superseded {', '.join(d['superseded'])})")
+    for p in report.passed_over:
+        print(f"  passed over: {p['reason']}")
     if report.gaps:
         print(f"  scan-number gaps: {len(report.gaps)} "
               f"({', '.join(f'{a}->{b}' for _e, a, b in report.gaps[:6])})")

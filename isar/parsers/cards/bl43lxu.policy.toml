@@ -42,10 +42,13 @@ merge = "separate"              # no pooling of repeat scans until per-analyzer 
 [files]
 # Each measurement pattern is matched against the whole file name and must name `set` (the scan's
 # key, shared by every analyzer file of the scan) and `analyzer`. `sample`, `T_K`, `hkl_nominal`,
-# `hkl` and `scan_numbers` groups become facts (a number is written `0p5` for 0.5 and `m0p5` for -0.5).
+# `hkl`, `specfile` and `scan_numbers` groups become facts (a number is written `0p5` for 0.5 and `m0p5`
+# for -0.5). `specfile` (the SPEC file name, e.g. spec1) names the experiment a scan came from, and
+# `scan_numbers` lists the scans a file holds: one number is a single scan, several a file the
+# beamline already summed (passed over when its individual scans are in the same folder).
 measurement = [
     '(?P<set>(?P<sample>.+?)_(?P<T_K>\d+(?:p\d+)?)K_(?P<hkl_nominal>m?\d+(?:p\d+)?_m?\d+(?:p\d+)?_m?\d+(?:p\d+)?)(?:_[A-Za-z0-9]+)*)_a(?P<analyzer>\d{2})',
-    '(?P<set>spec\d+_T(?P<T_K>\d+(?:p\d+)?)K__scan_(?P<scan_numbers>\d+(?:_\d+)*))_A(?P<analyzer>\d{1,2})_Q_(?P<hkl>m?\d+(?:p\d+)?_m?\d+(?:p\d+)?_m?\d+(?:p\d+)?)_inel\.dat',
+    '(?P<set>(?P<specfile>spec\d+)_T(?P<T_K>\d+(?:p\d+)?)K__scan_(?P<scan_numbers>\d+(?:_\d+)*))_A(?P<analyzer>\d{1,2})_Q_(?P<hkl>m?\d+(?:p\d+)?_m?\d+(?:p\d+)?_m?\d+(?:p\d+)?)_inel\.dat',
 ]
 sidecar = ["{set}.var"]         # beside the analyzer files: bin size, silicon order, per-analyzer efficiency
 # Never measurements: peak-position lists, and the summed file (the bare stem). `*_sum` assumes that
@@ -65,7 +68,7 @@ intensity_family = "_i"
 # lattice = [5.4, 5.4, 9.3, 90, 90, 120]    # a, b, c (Angstrom), alpha, beta, gamma (deg)
 
 # [sample]
-# name = "CsV3Sb5"              # names the experiment in the ledger (default "bl43lxu")
+# name = "CsV3Sb5"              # names the experiment in the ledger (default: the SPEC file name, else the file stem)
 
 [calibration]
 # Consumed by the resolution stage (a later ISAR release); until it lands the method below is unknown

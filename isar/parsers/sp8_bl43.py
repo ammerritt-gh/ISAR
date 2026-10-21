@@ -14,8 +14,11 @@ scan, temperature and HKL in its name. `parse_set` turns a set (grouped by inges
     Nothing is resampled or dropped. The CsV3Sb5 layout's bins sit on one lattice (`bin_meV`), and a
     member off it is left out and named; the Ba122 layout has irregular, per-analyzer energy axes, so
     its bins are matched to 1 micro-eV instead.
-  * identity is (scan, detector): detector_id = `a` + two-digit analyzer number. A scan's number is its
-    scan number(s) when known, else a hash of the set key above 1e9 (the stem rides in `scan_label`).
+  * identity is (experiment, scan, detector): detector_id = `a` + two-digit analyzer number. The experiment
+    is the SPEC file name (header `specfile` or the file name), else the card's label, else the stem. A scan's
+    number is its scan number when the set lists exactly one, else a hash of the set key above 1e9 (the stem
+    rides in `scan_label`, the list in `scan_numbers`). A set already combined (several scan numbers, or a
+    `.var` reporting several merged scans) carries a `pre_combined_input` flag.
   * every fact carries its source. Q is attached by rung: a header or filename HKL on an analyzer is rung 1;
     the CsV3Sb5 filename HKL is only the scan's nominal arm-centre `hkl_nominal`, never a spectrum's Q;
     otherwise `q = None` (rung 4).
@@ -259,7 +262,7 @@ def _scan_header_facts(members: list[Member]) -> tuple[dict, list[scan.Flag], di
     raises `fact_conflict`. A member whose trailing `#T=` disagrees with its own `T_K` header keeps the
     header, and the trailer value is returned as {fact: conflicts} for the caller to attach. The one place
     header slit keys are known (R8): they become `slit`."""
-    keys = {"scan": "scan_numbers", "T_K": "T_K", "si_order": "si_order", "energy_keV": "energy_keV",
+    keys = {"specfile": "specfile", "scan": "scan_numbers", "T_K": "T_K", "si_order": "si_order", "energy_keV": "energy_keV",
             "agaph_mm": "agaph_mm", "agapv_mm": "agapv_mm", "lattice": "lattice", "time": "time"}
     out: dict = {}
     flags: list[scan.Flag] = []
@@ -289,12 +292,25 @@ def _number(v):
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
-def _scan_number(facts: dict, key: str) -> int:
-    """First scan number when known, else a hash of the set key above any real scan number."""
+def _scan_numbers(facts: dict) -> list[int]:
+    """The scan numbers the set lists (empty when it lists none or they are not all integers)."""
     numbers = facts.get("scan_numbers", {}).get("value")
-    if isinstance(numbers, list) and numbers and all(isinstance(n, int) for n in numbers):
-        return int(numbers[0])
+    return list(numbers) if isinstance(numbers, list) and all(isinstance(n, int) for n in numbers) else []
+
+
+def _scan_number(facts: dict, key: str) -> int:
+    """The scan number when the set lists exactly one, else a hash of the set key above any real
+    scan number (a summed file lists several; the list stays the `scan_numbers` fact)."""
+    numbers = _scan_numbers(facts)
+    if len(numbers) == 1:
+        return numbers[0]
     return _HASHED_BASE + zlib.crc32(key.encode("utf-8")) % _HASHED_BASE
+
+
+def _experiment(facts: dict, sample: dict, key: str) -> str:
+    """Where the scan came from: the SPEC file name, else the card's label, else the file stem."""
+    spec = facts.get("specfile", {}).get("value")
+    return str(spec or sample.get("experiment_id") or sample.get("name") or key)
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +418,9 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
     if "scan_numbers" in fn:
         sn = fn["scan_numbers"]
         from_name["scan_numbers"] = [int(x) for x in (sn if isinstance(sn, list) else [sn])]
-    expect = ["scan_numbers", "T_K", "slit", "energy_keV", "lattice", "time"]
+    if isinstance(fn.get("specfile"), str):
+        from_name["specfile"] = fn["specfile"]
+    expect = ["specfile", "scan_numbers", "T_K", "slit", "energy_keV", "lattice", "time"]
     if labelled:
         expect += ["hkl_nominal", "si_order", "bin_meV", "n_merged_scans"]
     facts, flags = metadata.merge_facts(
@@ -414,6 +432,14 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
     order = _number(facts.get("si_order", {}).get("value"))
     if facts["energy_keV"]["source"] == "missing" and order is not None:
         facts["energy_keV"] = {"value": order * _KEV_PER_ORDER, "source": "inferred"}
+    listed = _scan_numbers(facts)
+    merged = _number(facts.get("n_merged_scans", {}).get("value"))
+    combined = ([f"it lists scans {', '.join(map(str, listed))}"] if len(listed) > 1 else []) \
+        + ([f"its .var reports {int(merged)} merged scans"] if merged is not None and merged > 1 else [])
+    if combined:                                      # R10: ISAR combines scans itself; say this one arrived combined
+        scan_flags.append(scan.Flag("pre_combined_input", "warning",
+                                    f"{file_set.key} was combined before ISAR read it ({'; '.join(combined)}); "
+                                    "no individual scans of it are in this batch"))
     if sidecar_flag is not None:
         scan_flags.append(sidecar_flag)
     elif labelled and var_path is None:
@@ -439,7 +465,7 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
     sample = pol.sample or {}
     nan = np.full(n, np.nan)
     return [scan.ScanRecord(
-        experiment_id=str(sample.get("experiment_id") or sample.get("name") or "bl43lxu"),
+        experiment_id=_experiment(facts, sample, file_set.key),
         scan_number=_scan_number(facts, file_set.key),
         scan_type="measurement", scan_type_source="inferred",
         scan_axes=[axes.energy_axis(energy)],
