@@ -126,13 +126,18 @@ def discover(data_paths, card: Card) -> IngestPlan:
     return plan
 
 
-def parse_all(plan: IngestPlan, card: Card) -> list:
+def parse_all(plan: IngestPlan, card: Card, session=None, set_of: dict | None = None) -> list:
     """Parse the measurement files with the card-pinned plugin; dedup + order.
 
     Dedup key is `(experiment_id, scan_number)`; the LAST occurrence wins (a resent growing file
     supersedes an earlier copy). Records are returned sorted by `(experiment_id, scan_number)`.
+    ``session`` (the run path) lets a summed set be passed over for individual scans already in the
+    ledger, as `ingest_batch` does; nothing else of the ledger is consulted. ``set_of`` receives
+    (experiment, scan) -> FileSet for the scans read from a set, for `set_provenance`.
     """
-    got = _collect(plan, card, isolate=False)
+    got = _collect(plan, card, isolate=False, ledger=session)
+    if set_of is not None:
+        set_of.update(got.set_of)
     return [got.by_key[k] for k in sorted(got.by_key, key=lambda k: (str(k[0]), k[1]))]
 
 
@@ -153,14 +158,34 @@ def _listed_scans(fs: FileSet) -> list[int]:
     return [int(n) for n in re.findall(r"\d+", raw)]
 
 
-def _summed_sets(plan: IngestPlan) -> dict[int, list[int]]:
+def _ledger_sets(session) -> dict[str, tuple[str, list[int]]]:
+    """file_set stem -> (experiment, scan numbers the set lists), for every set the ledger holds.
+
+    A set's listed scans are its `scan_numbers` fact (stamped at ingest); a set that lists none is
+    taken to hold its own scan number. Sets are told apart by the stem, never by scan number."""
+    out: dict = {}
+    for entry in session.scans.values():
+        prov = entry.provenance or {}
+        if prov.get("file_set") is None:
+            continue
+        listed = ((prov.get("scan_facts") or {}).get("scan_numbers") or {}).get("value")
+        ok = isinstance(listed, list) and listed and all(isinstance(n, int) for n in listed)
+        out[prov["file_set"]] = (entry.scan_id.rsplit(":", 2)[0],
+                                 list(listed) if ok else [entry.scan_number])
+    return out
+
+
+def _summed_sets(plan: IngestPlan, ledger=None) -> dict[int, list[int]]:
     """id(set) -> its scans, for each set listing several scans when every one of them is present as
-    its own set of the same experiment (the `specfile` group; none means one experiment) in the batch.
+    its own set of the same experiment (the `specfile` group; none means one experiment) in the batch
+    or, given ``ledger``, already in that session's ledger.
     Their counts are in those sets already; reading the sum too would use them twice (design R10)."""
     def experiment(fs):
         return next((g["specfile"] for _p, g in fs.measurements if g.get("specfile")), None)
 
     single = {(experiment(fs), n[0]) for fs in plan.file_sets if len(n := _listed_scans(fs)) == 1}
+    if ledger is not None:
+        single |= {(exp, n[0]) for exp, n in _ledger_sets(ledger).values() if len(n) == 1}
     return {id(fs): n for fs in plan.file_sets
             if len(n := _listed_scans(fs)) > 1 and all((experiment(fs), s) in single for s in n)}
 
@@ -171,6 +196,19 @@ def _scan_label(rec) -> str | None:
     entry = (getattr(rec, "facts", None) or {}).get("scan_label")
     val = entry.get("value") if isinstance(entry, dict) else entry
     return None if val is None else str(val)
+
+
+def set_provenance(rec, file_set) -> dict:
+    """The ledger provenance a scan read from a set carries, the same for each of its detectors: its
+    `scan_label` (identity guard for the next set) and the set's stem as `file_set` (a moved folder
+    still matches; `supersede_summed` finds a summed set by it)."""
+    extras = {}
+    label = _scan_label(rec)
+    if label is not None:
+        extras["scan_label"] = label
+    if file_set is not None:
+        extras["file_set"] = file_set.key
+    return extras
 
 
 def _ledger_labels(session) -> dict:
@@ -216,14 +254,15 @@ def _collision(fs: FileSet, name: str, parsed, got: _Collected, ledger_labels, n
     return None
 
 
-def _collect(plan: IngestPlan, card: Card, *, isolate: bool, session=None) -> _Collected:
+def _collect(plan: IngestPlan, card: Card, *, isolate: bool, session=None, ledger=None) -> _Collected:
     """Parse the plan's measurement files — the one place file sets are grouped into parse units.
 
     A plugin with ``parse_set`` gets one call per `FileSet`; every other measurement file is one
     ``parse_file`` call, as ever. The last occurrence of an identity wins, except that a second
     *set* on an identity another set already holds is refused (nothing merged, nothing overwritten).
     ``isolate`` keeps one failing unit from aborting the batch (``ingest_batch``); ``parse_all``
-    lets the exception out as before.
+    lets the exception out as before. ``session`` adds the ledger's identity guard; ``ledger`` only lets
+    a summed set be passed over for scans the ledger already holds.
     """
     plugin = registry.plugin_by_name(card.policy.plugin)
     parse_set = getattr(plugin, "parse_set", None)
@@ -235,7 +274,7 @@ def _collect(plan: IngestPlan, card: Card, *, isolate: bool, session=None) -> _C
     names = {id(fs): fs.key if stems[fs.key] == 1 else f"{fs.key} [{fs.folder}]"
              for fs in plan.file_sets}
     got = _Collected()
-    summed = _summed_sets(plan) if parse_set is not None else {}
+    summed = _summed_sets(plan, ledger) if parse_set is not None else {}
     done_sets: set[int] = set()
     for f in plan.measurement_files:
         fs = set_of_path.get(f)
@@ -245,8 +284,8 @@ def _collect(plan: IngestPlan, card: Card, *, isolate: bool, session=None) -> _C
             done_sets.add(id(fs))
             if id(fs) in summed:
                 scans = summed[id(fs)]
-                reason = (f"set {names[id(fs)]!r} sums scans {', '.join(map(str, scans))}, which are in this "
-                          "batch as their own sets; not read, so no count is used twice")
+                reason = (f"set {names[id(fs)]!r} sums scans {', '.join(map(str, scans))}, which are present "
+                          "as their own sets; not read, so no count is used twice")
                 got.passed_over.append({"set": names[id(fs)], "scans": scans, "reason": reason})
                 log.info("ingest: %s", reason)
                 continue
@@ -356,6 +395,32 @@ def upsert_ingested_entry(session, rec, det, *, chash, prov) -> str:
     return "updated"
 
 
+def supersede_summed(session) -> bool:
+    """Mark `excluded` every ledger entry of a summed set whose individual scans are all in the ledger.
+
+    R10: ISAR combines scans itself, so once the individual scans of a set the beamline already summed
+    are present as their own sets of the same experiment, the sum is a second copy of the same counts.
+    A set is told by its stem (`file_set`), never by scan number; one with only some of its scans present
+    stays active. Nothing is deleted: the entry, its provenance and its unit data stay. The fit outcome is
+    cleared, as for any entry the exclusion gate re-gates, so no table or report counts it again. Returns
+    whether anything changed; a second call changes nothing."""
+    sets = _ledger_sets(session)
+    singles = {(exp, n[0]) for exp, n in sets.values() if len(n) == 1}
+    changed = False
+    for stem, (exp, scans) in sets.items():
+        if len(scans) < 2 or not all((exp, s) in singles for s in scans):
+            continue
+        reason = (f"summed set {stem!r} lists {exp} scans {', '.join(map(str, scans))}, which are in the "
+                  "ledger as their own sets; excluded so no count is used twice")
+        for entry in session.scans.values():
+            if (entry.provenance or {}).get("file_set") != stem or reason in entry.reasons:
+                continue
+            entry.reasons = [*entry.reasons, reason] if entry.status == "excluded" else [reason]
+            entry.status, entry.detectors, changed = "excluded", {}, True
+            log.info("ingest: %s: %s", entry.scan_id, reason)
+    return changed
+
+
 def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestReport:
     """Parse ``data_paths`` into the session ledger WITHOUT fitting (the retired unification plan §2.3, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 
@@ -402,7 +467,7 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
     plan = discover(data_paths, card)
 
     # --- parse measurement files/sets, tracking record -> source file(s) for dedup reporting ---
-    got = _collect(plan, card, isolate=True, session=session)
+    got = _collect(plan, card, isolate=True, session=session, ledger=session)
     by_key, sources, file_scan_keys = got.by_key, got.sources, got.file_scan_keys
     file_errors = got.file_errors                    # resolved path -> "ExcType: msg" / refusal
     report.refused = got.refused
@@ -439,13 +504,7 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
         chash = content_hash(rec)
         T = unit_data.scan_temperature(rec)
         src = sources[(rec.experiment_id, rec.scan_number)][-1]   # the kept (last-wins) source file
-        label = _scan_label(rec)                                  # identity guard for the next set
-        from_set = got.set_of.get((rec.experiment_id, rec.scan_number))
-        scan_extras = {}                                          # same for every detector of the scan
-        if label is not None:
-            scan_extras["scan_label"] = label
-        if from_set is not None:
-            scan_extras["file_set"] = from_set.key                # the stem: a moved folder still matches
+        scan_extras = set_provenance(rec, got.set_of.get((rec.experiment_id, rec.scan_number)))
         det_states: list[str] = []                                # per-detector upsert outcomes
         touched = False                                          # any detector entry produced?
         for det, sp in rec.spectra.items():
@@ -471,6 +530,10 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
                 report.updated.append(scan_short)
             else:
                 report.unchanged.append(scan_short)
+
+    # Summed sets from earlier batches whose individual scans are now in the ledger (this batch's included).
+    if supersede_summed(session):
+        report.dirty = True
 
     # --- file manifest for ALL classified files (merge, never replace) ---
     # For a measurement-class FILE, its scans still split into measurement scans (ledgered, listed

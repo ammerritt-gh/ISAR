@@ -218,7 +218,9 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
 
     with timer.stage("ingest_parse") as _m_ingest:
         plan = ingest.discover(data_paths, card)
-        records = ingest.parse_all(plan, card)
+        set_of: dict = {}
+        records = ingest.parse_all(plan, card, session=None if master_certification else session,
+                                   set_of=set_of)
         _m_ingest["n_records"] = len(records)
     # Basename -> resolved absolute source path, so run's provenance source_file matches ingest's.
     source_by_name = {Path(f).name: str(Path(f).resolve()) for f in plan.measurement_files}
@@ -289,10 +291,13 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                 for det in fit_dets:
                     if det not in rec.spectra:
                         continue
-                    _prov = {**_core_provenance(rec, det, source_by_name), "ingested_at": _now_iso}
+                    _prov = {**_core_provenance(rec, det, source_by_name), "ingested_at": _now_iso,
+                             **ingest.set_provenance(rec, set_of.get((rec.experiment_id, rec.scan_number)))}
                     if ingest.upsert_ingested_entry(
                             session, rec, det, chash=_chash, prov=_prov) != "unchanged":
                         _dirty = True
+            # After the registration, so this run's own individual scans count as present (R10).
+            _dirty = ingest.supersede_summed(session) or _dirty
             _m_save["dirty"] = _dirty
             if _dirty:
                 workspace.save(card, session)
