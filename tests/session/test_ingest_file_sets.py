@@ -54,6 +54,7 @@ class _SetPlugin:
     unreadable members); a member containing RAISE makes the whole set fail."""
     name = "stub_sets"
     version = "0"
+    labelled = True                     # False: the set's scan carries no scan_label fact
     parse_set_calls: list
     parse_file_calls: list
 
@@ -70,7 +71,7 @@ class _SetPlugin:
             if "BAD" not in text:
                 analyzers.append(groups["analyzer"])
         number = int(re.match(r"s(\d+)", file_set.key).group(1))
-        return [_record(number, analyzers, label=file_set.key)]
+        return [_record(number, analyzers, label=file_set.key if self.labelled else None)]
 
     def parse_file(self, path, card):
         self.parse_file_calls.append(Path(path))
@@ -243,6 +244,24 @@ def test_set_whose_label_differs_from_the_ledgers_is_refused(tmp_path, plugin):
     assert report.added == [] and report.updated == []
     assert {k: (e.content_hash, dict(e.provenance)) for k, e in session.scans.items()} == before
     assert sorted(session.scans) == ["E:10:a03", "E:10:a04"]
+
+
+def test_set_without_scan_label_still_refuses_a_different_set_on_its_identity(tmp_path, plugin):
+    plugin.labelled = False                     # the ledger holds only the file_set stamp
+    _members(tmp_path, "s10_a", ("a03", "a04"))
+    card, session = _card(), SessionState()
+    ingest.ingest_batch(card, session, [tmp_path])
+    before = {k: (e.content_hash, dict(e.provenance)) for k, e in session.scans.items()}
+
+    later = tmp_path / "later"
+    later.mkdir()
+    _members(later, "s10_b", ("a05",))
+    report = ingest.ingest_batch(card, session, [later])
+
+    assert report.refused and report.refused[0]["sets"] == ["s10_a", "s10_b"]
+    assert "s10_a" in report.refused[0]["reason"] and "s10_b" in report.refused[0]["reason"]
+    assert report.added == [] and report.updated == []
+    assert {k: (e.content_hash, dict(e.provenance)) for k, e in session.scans.items()} == before
 
 
 # --- opt-in: nothing changes without [files] / parse_set ---------------------------------------

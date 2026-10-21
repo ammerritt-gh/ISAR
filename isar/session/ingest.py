@@ -156,20 +156,21 @@ def _ledger_labels(session) -> dict:
     """(exp, scan) -> (scan_label, file_set) for ledger scans that were ingested from a set.
 
     The ledger keeps no scan-level row, so the label lives where ingest already stamps scan facts:
-    each entry's provenance (``scan_label`` / ``file_set``, written by `ingest_batch`)."""
+    each entry's provenance (``scan_label`` / ``file_set``, written by `ingest_batch`). A set with
+    no scan_label is still recorded by its file_set."""
     out: dict = {}
     for entry in session.scans.values():
         prov = entry.provenance or {}
-        if prov.get("scan_label") is not None:
+        if prov.get("scan_label") is not None or prov.get("file_set") is not None:
             exp = entry.scan_id.rsplit(":", 2)[0]
-            out[(exp, entry.scan_number)] = (prov["scan_label"], prov.get("file_set"))
+            out[(exp, entry.scan_number)] = (prov.get("scan_label"), prov.get("file_set"))
     return out
 
 
 def _collision(set_key, parsed, got: _Collected, ledger_labels) -> dict | None:
     """Why a freshly parsed set must not be ingested, or None. Two different sets may not share a
     (experiment, scan) identity in a batch, nor may a set's `scan_label` differ from the one the
-    ledger already holds for that identity."""
+    ledger already holds for that identity, nor may the ledger hold another set's file_set there."""
     for rec in parsed:
         key = (rec.experiment_id, rec.scan_number)
         scan = f"{key[0]}:{key[1]}"
@@ -179,12 +180,16 @@ def _collision(set_key, parsed, got: _Collected, ledger_labels) -> dict | None:
                     "reason": f"sets {earlier!r} and {set_key!r} both yield scan {scan}; "
                               f"{set_key!r} not ingested"}
         label, held = _scan_label(rec), ledger_labels.get(key)
-        if held is not None and label is not None and held[0] != label:
+        if held is not None and held[0] is not None and label is not None and held[0] != label:
             prior = held[1] if held[1] is not None else held[0]
             return {"scan": scan, "sets": [prior, set_key],
                     "reason": f"set {set_key!r} (scan_label {label!r}) collides with the ledger's "
                               f"{prior!r} (scan_label {held[0]!r}) on scan {scan}; "
                               f"{set_key!r} not ingested"}
+        if held is not None and held[1] is not None and held[1] != set_key:
+            return {"scan": scan, "sets": [held[1], set_key],
+                    "reason": f"set {set_key!r} collides with the ledger's set {held[1]!r} on scan "
+                              f"{scan}; {set_key!r} not ingested"}
     return None
 
 
