@@ -17,6 +17,12 @@ from isar.analyze.lineshapes import CONVOLUTION_DX, Voigt, convolute_voigt_dho
 from isar.analyze.resolution import ResolutionLibrary, TabulatedResolution
 from isar.schema import axes
 
+
+def _trapz(y, x):
+    """Trapezoid area without np.trapezoid, which NumPy 1.x (allowed by pyproject) lacks."""
+    y, x = np.asarray(y, dtype=float), np.asarray(x, dtype=float)
+    return float(np.sum((y[1:] + y[:-1]) * np.diff(x)) / 2.0)
+
 DX = CONVOLUTION_DX
 SIGMA_L, SIGMA_R = 0.4, 0.7
 
@@ -53,7 +59,7 @@ def _half_max(x, y):
 
 def test_curve_is_unit_area_and_fwhm_matches_the_continuous_shape():
     curve = _asym_curve()
-    assert np.trapezoid(curve.values, curve.energy) == pytest.approx(1.0, abs=1e-12)
+    assert _trapz(curve.values, curve.energy) == pytest.approx(1.0, abs=1e-12)
     # Independent half-maximum crossings of the generating function (peak at 0 by construction).
     half = 0.5 * _asym(0.0)
     left = brentq(lambda e: _asym(e) - half, -3.0, 0.0)
@@ -98,7 +104,7 @@ def test_malformed_tables_are_refused():
 
 def test_unit_area_needs_no_numpy_two(monkeypatch):
     # pyproject allows NumPy 1.26, which has no np.trapezoid: the curve must normalise without it.
-    monkeypatch.delattr(np, "trapezoid")
+    monkeypatch.delattr(np, "trapezoid", raising=False)
     curve = TabulatedResolution(np.array([-1.0, 0.0, 1.0]), np.array([0.0, 2.0, 0.0]), "d1")  # triangle, area 2
     assert curve.values[1] == pytest.approx(1.0) and curve.values.sum() == pytest.approx(1.0)
     assert curve.fwhm == pytest.approx(1.0)
@@ -130,7 +136,7 @@ def test_near_delta_dho_recovers_the_curve(window, center):
                             0.0, 0.0, 10.0, peak="stokes", resolution_curve=curve)
     weight = DX / gamma ** 2   # the on-node sample times dx: the discrete delta's area
     # Off-node Lorentzian samples add sum_k gamma^2/(k dx)^2 ~ 3e-4 of the weight.
-    assert np.trapezoid(y, x) / weight == pytest.approx(1.0, abs=1e-3)
+    assert _trapz(y, x) / weight == pytest.approx(1.0, abs=1e-3)
     c_left, c_right = _half_max(curve.energy, curve.values)
     y_left, y_right = _half_max(x, y)
     assert (y_left + y_right) / 2 - omega_d - center == pytest.approx(
@@ -174,7 +180,7 @@ def test_asymmetric_elastic_line_is_the_curve_at_the_zero():
     assert right - left == pytest.approx(curve.fwhm, abs=1e-3)
     peak = x[np.argmax(y)]
     assert right - peak > peak - left   # the broad side stays on the energy-loss side
-    assert np.trapezoid(y, x) == pytest.approx(250.0, rel=1e-3)
+    assert _trapz(y, x) == pytest.approx(250.0, rel=1e-3)
 
 
 def test_composite_model_fits_the_curve_shape_through_the_nnls_basis():

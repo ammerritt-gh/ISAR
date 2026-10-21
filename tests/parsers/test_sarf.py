@@ -17,6 +17,12 @@ import pytest
 from isar.analyze.resolution import TabulatedResolution
 from isar.parsers import metadata, sarf
 
+
+def _trapz(y, x):
+    """Trapezoid area without np.trapezoid, which NumPy 1.x (allowed by pyproject) lacks."""
+    y, x = np.asarray(y, dtype=float), np.asarray(x, dtype=float)
+    return float(np.sum((y[1:] + y[:-1]) * np.diff(x)) / 2.0)
+
 ART = Path(__file__).resolve().parents[2] / "artificial_data" / "SP8 BL43LXU"
 PATTERN = r"sarf_.+_s\d+_(?P<setting>\d+_\d+)_(?P<analyzer>a\d{2})"
 CURVES = ("sarf_24Nov10_s48_60_60_a03", "sarf_24Nov10_s52_20_20_a03")
@@ -45,8 +51,8 @@ def test_curve_grid_is_the_files_and_area_is_one(folder):
     curve = sarf.load_library(folder, PATTERN).get("a03", "60x60")
     table = np.loadtxt(folder / "sarf_24Nov10_s48_60_60_a03", comments="#", usecols=(0, 1))
     assert np.array_equal(curve.energy, table[:, 0])        # the grid is the file's, not resampled
-    assert np.trapezoid(curve.values, curve.energy) == pytest.approx(1.0, rel=1e-12)
-    assert np.allclose(curve.values * np.trapezoid(table[:, 1], table[:, 0]), table[:, 1])
+    assert _trapz(curve.values, curve.energy) == pytest.approx(1.0, rel=1e-12)
+    assert np.allclose(curve.values * _trapz(table[:, 1], table[:, 0]), table[:, 1])
     assert curve.fwhm > 0 and curve.covers(0.0, 0.0)
 
 
