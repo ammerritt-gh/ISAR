@@ -66,6 +66,16 @@ def test_compact_view_basic_shape_and_flag_context():
     assert 8000.0 in fp["neighbors"]            # the model can *see* the spike + its surroundings
 
 
+def test_compact_view_renders_qless_spectrum_with_q_absent():
+    # A Q-less analyzer (rung 4) reaches the adjudicator when flags are on: its Q is absent, not iterated.
+    sf = scan.Flag(type="bin_absent", severity="info", reason="ana1: 2 bins absent")
+    sp = _spec("ana1", [40, 52, 60, 8000], spectrum_flags=[sf])
+    sp.q, sp.q_source = None, "none"
+    d = compact_view.compact_view(_record({"ana1": sp}))["detectors"]["ana1"]
+    assert d["q"] is None
+    assert d["spectrum_flags"] == [{"type": "bin_absent", "severity": "info", "reason": "ana1: 2 bins absent"}]
+
+
 def test_compact_view_downsamples_long_intensity_but_keeps_flag_neighborhood():
     n = 200
     intensity = list(np.linspace(10.0, 50.0, n))

@@ -50,6 +50,28 @@ def _fmt_q(hkl) -> str:
         return ""
 
 
+# Facts shown first, in this order; every other parsed fact follows, sorted by name.
+_FACT_FIRST = ("scan_label", "T_K", "hkl_nominal", "slit", "dq", "efficiency")
+
+
+def _fmt_fact(fact: dict) -> str:
+    """One fact as ``value (source)``; a missing value says so, and a source disagreement is listed."""
+    value = fact.get("value")
+    if value is None:
+        text = "not available"
+    elif isinstance(value, (list, tuple)):
+        text = _fmt_q(value) or str(value)
+    elif isinstance(value, float):
+        text = f"{value:.4g}"
+    else:
+        text = str(value)
+    text += f" ({fact.get('source')})"
+    conflicts = [c for c in (fact.get("conflicts") or []) if isinstance(c, dict)]
+    if conflicts:
+        text += "; conflicts: " + ", ".join(f"{c.get('value')} ({c.get('source')})" for c in conflicts)
+    return text
+
+
 @dataclass
 class CandidateRow:
     label: str
@@ -281,6 +303,21 @@ class InspectorViewModel(ViewModel):
                 md["B"] = f"{float(b):g} T"
             except (TypeError, ValueError):
                 pass
+        if prov.get("q_rung") is not None:
+            md["Q rung"] = f"{prov['q_rung']} ({prov.get('q_source')})"
+        # Scan facts, then analyzer facts: every name the provenance holds, known names first.
+        facts = [(name, fact) for key in ("scan_facts", "analyzer_facts")
+                 if isinstance(prov.get(key), dict)
+                 for name, fact in prov[key].items() if isinstance(fact, dict)]
+        facts.sort(key=lambda nf: (_FACT_FIRST.index(nf[0]) if nf[0] in _FACT_FIRST else len(_FACT_FIRST),
+                                   nf[0]))
+        for name, fact in facts:
+            md[name] = _fmt_fact(fact)
+        for key, label in (("scan_flags", "scan flags"), ("spectrum_flags", "spectrum flags")):
+            rows = [f for f in (prov.get(key) or []) if isinstance(f, dict)]
+            if rows:
+                md[label] = "; ".join(f"{f.get('type')} ({f.get('severity')}): {f.get('reason')}"
+                                      for f in rows)
         src = getattr(sv, "source_file", None)
         if src:
             md["file"] = Path(src).name

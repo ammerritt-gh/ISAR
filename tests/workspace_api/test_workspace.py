@@ -454,7 +454,7 @@ def test_groups_membership_equals_real_collate(make_ws):
     # group, not a member — collate groups measurement spectra, exactly what the facade excludes).
     def _rec(scan, h):
         sp = SimpleNamespace(q=[h, 0.0, 0.0], point_flags=[], spectrum_flags=[],
-                             miniscan_reject=None, miniscan_counts=None)
+                             miniscan_reject=None, miniscan_counts=None, monitor=None, time=None)
         return SimpleNamespace(experiment_id="tavi", scan_number=scan, scan_type="measurement",
                                scan_axes=[], spectra={"det": sp},
                                temperature=SimpleNamespace(setpoint=[200.0]),
