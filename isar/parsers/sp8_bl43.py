@@ -251,7 +251,7 @@ def _scan_header_facts(members: list[Member]) -> tuple[dict, list[scan.Flag]]:
     """Scan-level facts from the members' headers: first member wins, a later member that disagrees
     raises `fact_conflict`. The one place header slit keys are known (R8): they become `slit`."""
     keys = {"scan": "scan_numbers", "T_K": "T_K", "si_order": "si_order", "energy_keV": "energy_keV",
-            "agaph_mm": "agaph_mm", "agapv_mm": "agapv_mm"}
+            "agaph_mm": "agaph_mm", "agapv_mm": "agapv_mm", "lattice": "lattice", "time": "time"}
     out: dict = {}
     flags: list[scan.Flag] = []
     for m in members:

@@ -218,6 +218,14 @@ def test_leading_and_trailing_q_that_disagree_leave_the_analyzer_out_and_named(t
     assert "a04: " in reason and "Q_nm" in reason and "disagree" in reason
 
 
+def test_lattice_and_time_header_lines_are_scan_facts_with_source_header(tmp_path):
+    write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6,
+                 header=["# lattice 5.43 5.43 5.43 90 90 90", "# time 2024-11-12 10:00"])
+    rec = parse(tmp_path)
+    assert rec.facts["lattice"] == {"value": "5.43 5.43 5.43 90 90 90", "source": "header"}
+    assert rec.facts["time"] == {"value": "2024-11-12 10:00", "source": "header"}
+
+
 def test_identity_is_the_scan_number_when_known_else_a_hash_of_the_stem(tmp_path):
     write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6)
     rec = parse(tmp_path)
