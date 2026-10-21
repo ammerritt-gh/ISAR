@@ -27,6 +27,9 @@ SCAN_TYPE_SOURCES = ("declared", "inferred")
 COUNTING_MODES = ("monitor", "time")
 ENERGY_STATUSES = ("absolute", "needs_zero", "needs_conversion_and_zero")
 RAW_ABSCISSA_KINDS = ("energy", "temperature", "angle")
+# Which rung of the Q ladder (design R3) produced a spectrum's Q; rung 4 means no Q (q is None).
+# card_offset is a nominal card value, not a measurement, so it sits with the approximate rung 3.
+Q_SOURCE_RUNG = {"header": 1, "filename": 1, "reported": 1, "card_offset": 3, "none": 4}
 
 
 # ---------------------------------------------------------------------------
@@ -73,8 +76,8 @@ class Adjudication:
 @dataclass
 class Spectrum:
     detector_id: str
-    q: list[float]                     # this spectrum's actual Q (D2: from #V4-#V12 where logged)
-    q_source: str                      # "reported" | "card_offset"
+    q: list[float] | None              # this spectrum's actual Q (D2: #V4-#V12 where logged); None = rung 4
+    q_source: str                      # a key of Q_SOURCE_RUNG
     intensity: np.ndarray              # the signal: RAW COUNTS (combined, post-rejection); monitor
                                        # is stored, not divided in — normalize downstream if you wish
     variance: np.ndarray               # honest Poisson variance = counts (σ=√N), 0 for 0 counts (D3)
@@ -87,10 +90,17 @@ class Spectrum:
     miniscan_counts: np.ndarray | None = None      # [nP, n_mini] per-pass raw counts
     miniscan_reject: np.ndarray | None = None      # [nP, n_mini] bool, True=rejected pass
     miniscan_reject_source: str | None = None      # "sigma_clip" | "poisson"
+    # Per-detector exposure (BL43LXU: each analyzer has its own bins and monitor); NaN = missing.
+    # Read only through exposure_for, which replaces the record's normalization for this spectrum.
+    monitor: np.ndarray | None = None
+    time: np.ndarray | None = None
+    # Fact dict with sources (see ScanRecord.facts): analyzer-level facts such as hkl, dq, efficiency.
+    facts: dict = dc_field(default_factory=dict)
 
     _ARRAY_FIELDS = {
         "intensity": "float64", "variance": "float64", "mask": "bool",
         "miniscan_counts": "float64", "miniscan_reject": "bool",
+        "monitor": "float64", "time": "float64",
     }
 
 
@@ -213,6 +223,9 @@ class ScanRecord:
     raw_header: dict
     source: Source
     adjudication: Adjudication | None = None   # §7.3 LLM decisions; None until the stage runs
+    # Scan-level facts: {name: {"value": v, "source": header|sidecar|filename|card|inferred|missing}},
+    # plus "conflicts" [{source, value}] when sources disagree. Empty for records written before this.
+    facts: dict = dc_field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return _json.to_jsonable(self)
@@ -224,6 +237,22 @@ class ScanRecord:
     def spectrum_key(self, detector_id: str) -> tuple[str, int, str]:
         """The §3 composite identity key selecting one spectrum out of this record."""
         return (self.experiment_id, self.scan_number, detector_id)
+
+
+def exposure_for(record: ScanRecord, detector_id: str) -> Normalization:
+    """The monitor and time that normalise one spectrum: its own arrays where it carries them,
+    else the record's. The only place the per-spectrum override is applied (every consumer calls this)."""
+    norm = record.normalization
+    sp = record.spectra[detector_id]
+    if sp.monitor is None and sp.time is None:
+        return norm
+    # The record's miniscan arrays are shared across detectors, so they do not describe this spectrum.
+    return Normalization(
+        counting_mode=norm.counting_mode,
+        monitor=norm.monitor if sp.monitor is None else sp.monitor,
+        time=norm.time if sp.time is None else sp.time,
+        preset=norm.preset, monitor_correction=norm.monitor_correction,
+    )
 
 
 def records_close(a: ScanRecord, b: ScanRecord, *, rtol: float = 1e-7, atol: float = 1e-9) -> bool:
