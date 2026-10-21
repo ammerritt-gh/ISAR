@@ -22,7 +22,8 @@ scan, temperature and HKL in its name. `parse_set` turns a set (grouped by inges
   * the energy zero is not known here: `status = "needs_zero"` comes from the card, never a defaulted 0.0.
 
 The trailing `#Q=` / `#T=` lines of the real analyzer files are header facts (`Q_nm` per analyzer,
-`T_K` for the scan); other trailing comments are skipped.
+`T_K` for the scan); a leading header value wins over a disagreeing trailer, which is kept as a conflict.
+Other trailing comments are skipped.
 """
 from __future__ import annotations
 
@@ -102,6 +103,8 @@ class Member:
     npts: np.ndarray | None
     header: dict
     labelled: bool                 # named columns (CsV3Sb5 layout) vs bare energy/intensity/error
+    clash: dict                    # trailer values that disagree with the leading header (kept as conflicts)
+    bad_trailer: list[str]         # trailing `#Q=`/`#T=` lines whose number does not parse
 
 
 def _column(labels: list[str], spec) -> int | None:
@@ -111,18 +114,19 @@ def _column(labels: list[str], spec) -> int | None:
     return None
 
 
-def _trailer(lines: list[str]) -> dict:
-    """`#Q=` and `#T=` lines after a file's data (`#Q=   18.815 /nm`, `#T=  302.000 K`) as header facts.
-    Other trailing comments are skipped."""
+def _trailer(lines: list[str]) -> tuple[dict, list[str]]:
+    """`#Q=` and `#T=` lines after a file's data (`#Q=   11.250 /nm`, `#T=  250.000 K`) as header facts,
+    and the lines whose number does not parse. Other trailing comments are skipped."""
     out: dict = {}
+    bad: list[str] = []
     for s in lines:
         m = _TRAILER.match(s)
         if m:
             try:
                 out[_TRAILER_KEYS[m.group(1)]] = float(m.group(2))
-            except ValueError as exc:
-                raise MemberError(f"trailing line {s!r} does not parse") from exc
-    return out
+            except ValueError:
+                bad.append(s)
+    return out, bad
 
 
 def _floats(rows: list[list[str]], col: int, what: str) -> np.ndarray:
@@ -165,11 +169,13 @@ def read_member(path: str | Path, family: str = "_i") -> Member:
         if len(r) != width:
             raise MemberError(f"data row {i + 1} has {len(r)} columns, expected {width}")
     header = metadata.read_header(lead)
-    trailer = _trailer(trail)
-    for key, value in trailer.items():
-        if key in header and header[key] != value:
-            raise MemberError(f"header {key} {header[key]!r} and trailing {key} {value!r} disagree")
-    header.update(trailer)
+    trailer, bad = _trailer(trail)
+    clash = {}                                             # a trailer that disagrees with the header: kept aside
+    for key, value in trailer.items():                     # ...and a trailer fills only a gap
+        if key not in header:
+            header[key] = value
+        elif header[key] != value:
+            clash[key] = value
     if labels is None:                                     # bare energy, intensity, error
         if width < 3:
             raise MemberError(f"has {width} columns, expected energy, intensity, error")
@@ -195,7 +201,7 @@ def read_member(path: str | Path, family: str = "_i") -> Member:
     for key, what in (("y", "intensity"), ("e", "error")):
         _floats(rows, cols[key], what)                     # fail early, naming the column
     return Member("", energy, [r[cols["y"]] for r in rows], [r[cols["e"]] for r in rows],
-                  monitor, time, npts, header, labels is not None)
+                  monitor, time, npts, header, labels is not None, clash, bad)
 
 
 def read_var(path: str | Path) -> dict:
@@ -247,13 +253,16 @@ def _as_floats(v):
     return [float(x) for x in v] if isinstance(v, list) else v
 
 
-def _scan_header_facts(members: list[Member]) -> tuple[dict, list[scan.Flag]]:
+def _scan_header_facts(members: list[Member]) -> tuple[dict, list[scan.Flag], dict]:
     """Scan-level facts from the members' headers: first member wins, a later member that disagrees
-    raises `fact_conflict`. The one place header slit keys are known (R8): they become `slit`."""
+    raises `fact_conflict`. A member whose trailing `#T=` disagrees with its own `T_K` header keeps the
+    header, and the trailer value is returned as {fact: conflicts} for the caller to attach. The one place
+    header slit keys are known (R8): they become `slit`."""
     keys = {"scan": "scan_numbers", "T_K": "T_K", "si_order": "si_order", "energy_keV": "energy_keV",
             "agaph_mm": "agaph_mm", "agapv_mm": "agapv_mm", "lattice": "lattice", "time": "time"}
     out: dict = {}
     flags: list[scan.Flag] = []
+    clashes: dict = {}
     for m in members:
         for key, fact in keys.items():
             if key not in m.header:
@@ -264,10 +273,15 @@ def _scan_header_facts(members: list[Member]) -> tuple[dict, list[scan.Flag]]:
                 flags.append(scan.Flag("fact_conflict", "warning",
                                        f"{fact}: header of {m.detector} gives {m.header[key]!r}, "
                                        f"an earlier analyzer gives {out[fact]!r}"))
+        if "T_K" in m.clash:
+            clashes.setdefault("T_K", []).append({"source": "trailer", "value": m.clash["T_K"]})
+            flags.append(scan.Flag("fact_conflict", "warning",
+                                   f"{m.detector}: T_K header gives {m.header['T_K']!r}, "
+                                   f"its trailing line gives {m.clash['T_K']!r}"))
     h, v = out.get("agaph_mm"), out.get("agapv_mm")
     if all(isinstance(x, float) for x in (h, v)):
         out["slit"] = f"{h:g}x{v:g}"
-    return out, flags
+    return out, flags, clashes
 
 
 def _number(v):
@@ -374,7 +388,7 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
     first_name = Path(sorted(file_set.measurements, key=lambda pg: Path(pg[0]).name)[0][0]).name
     fn = metadata.match_filename(first_name, patterns)
     scan_flags: list[scan.Flag] = []
-    header_facts, conflict_flags = _scan_header_facts([members[d] for d in sorted(members)])
+    header_facts, conflict_flags, header_clashes = _scan_header_facts([members[d] for d in sorted(members)])
     scan_flags += conflict_flags
     from_name: dict = {"scan_label": file_set.key}
     if "T_K" in fn and _number(fn["T_K"]) is not None:
@@ -391,6 +405,8 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
         {"header": header_facts, "sidecar": var_scan, "filename": from_name, "card": dict(pol.facts or {})},
         expected=expect)
     scan_flags += flags
+    for fact, entries in header_clashes.items():
+        facts[fact].setdefault("conflicts", []).extend(entries)
     order = _number(facts.get("si_order", {}).get("value"))
     if facts["energy_keV"]["source"] == "missing" and order is not None:
         facts["energy_keV"] = {"value": order * _KEV_PER_ORDER, "source": "inferred"}
@@ -488,9 +504,13 @@ def _spectrum(m: Member, k: np.ndarray, all_keys: np.ndarray, fname_facts: dict,
     expect = ["hkl", "dq", "Q_nm"] + (list(_VAR_ANALYZER.values()) if labelled else [])
     if m.monitor is None:
         expect += ["monitor", "time"]
-    facts, flags = metadata.merge_facts({"header": header, "sidecar": sidecar, "filename": from_name},
-                                        expected=expect, scope=f"{det}: ")
+    trailer = {key: v for key, v in m.clash.items() if key == "Q_nm"}
+    facts, flags = metadata.merge_facts({"header": header, "trailer": trailer, "sidecar": sidecar,
+                                         "filename": from_name}, expected=expect, scope=f"{det}: ")
     spectrum_flags += flags
+    spectrum_flags += [scan.Flag("trailer_unparsed", "warning",
+                                 f"{det}: trailing line {s!r} does not parse; its value is left out")
+                       for s in m.bad_trailer]
     if m.npts is not None:
         ppb = np.zeros(n)
         ppb[pos] = m.npts

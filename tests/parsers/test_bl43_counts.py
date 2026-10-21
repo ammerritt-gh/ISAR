@@ -209,13 +209,37 @@ def test_analyzers_disagreeing_on_t_raise_fact_conflict(tmp_path):
     assert len(flags(rec, "fact_conflict")) == 1 and "T_K" in flags(rec, "fact_conflict")[0].reason
 
 
-def test_leading_and_trailing_q_that_disagree_leave_the_analyzer_out_and_named(tmp_path):
+def test_leading_and_trailing_q_that_disagree_keep_the_analyzer_and_flag_the_conflict(tmp_path):
     write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6)
     write_member(tmp_path, "a04", lattice(0, 10), np.ones(10), 1e6, header=["# Q_nm 19.5"], q_nm=11.250)
     rec = parse(tmp_path)
+    assert sorted(rec.spectra) == ["a03", "a04"] and not flags(rec, "missing_analyzer")
+    q = rec.spectra["a04"].facts["Q_nm"]
+    assert (q["value"], q["source"]) == (19.5, "header")                 # the leading header stays
+    assert q["conflicts"] == [{"source": "trailer", "value": 11.250}]
+    assert np.all(rec.spectra["a04"].intensity[:10] == 1)                 # its counts are kept
+    (f,) = [f for f in rec.spectra["a04"].spectrum_flags if f.type == "fact_conflict"]
+    assert f.reason.startswith("a04: Q_nm")
+
+
+def test_leading_and_trailing_t_that_disagree_record_the_trailer_as_a_conflict(tmp_path):
+    write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6, header=["# T_K 250"], t_k=260.0)
+    rec = parse(tmp_path)
+    t = rec.facts["T_K"]
+    assert (t["value"], t["source"]) == (250.0, "header")
+    assert {"source": "trailer", "value": 260.0} in t["conflicts"]
+    assert any(f.reason.startswith("a03: T_K") for f in flags(rec, "fact_conflict"))
     assert sorted(rec.spectra) == ["a03"]
-    reason = flags(rec, "missing_analyzer")[0].reason
-    assert "a04: " in reason and "Q_nm" in reason and "disagree" in reason
+
+
+def test_unparsable_trailer_line_is_flagged_on_a_kept_analyzer(tmp_path):
+    write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6, q_nm=None)
+    path = tmp_path / f"{STEM}_a03"
+    path.write_text(path.read_text(encoding="utf-8") + "#Q=   x.x /nm\n", encoding="utf-8", newline="\n")
+    rec = parse(tmp_path)
+    assert sorted(rec.spectra) == ["a03"] and not flags(rec, "missing_analyzer")
+    (f,) = [f for f in rec.spectra["a03"].spectrum_flags if f.type == "trailer_unparsed"]
+    assert f.reason.startswith("a03: ") and "#Q=   x.x /nm" in f.reason
 
 
 def test_lattice_and_time_header_lines_are_scan_facts_with_source_header(tmp_path):
