@@ -129,6 +129,12 @@ def test_fingerprint_follows_the_files_and_a_stale_expectation_is_refused(folder
     assert sarf.library_for(folder, PATTERN, fp2) is not lib
 
 
+def test_fingerprint_follows_the_pattern_as_well_as_the_files(folder):
+    # A corrected pattern that still matches the same files can capture other groups: a different library.
+    corrected = r"sarf_.+_s\d+_(?P<setting>\d+_\d+)_(?P<analyzer>a\d+)"
+    assert sarf.fingerprint(folder, PATTERN) != sarf.fingerprint(folder, corrected)
+
+
 def test_curve_is_rebuilt_from_its_reference_only_while_the_files_are_unchanged(folder):
     fp = sarf.fingerprint(folder, PATTERN)
     ref = {"folder": str(folder), "pattern": PATTERN, "fingerprint": fp, "detector": "a03", "setting": "20x20"}
