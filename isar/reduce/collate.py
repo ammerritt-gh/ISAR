@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import tempfile
 from dataclasses import dataclass, field
@@ -37,6 +38,9 @@ _COMPONENTS = ("h", "k", "l")
 NO_BACKGROUND = "absent"
 UNKNOWN_BACKGROUND = "unknown"
 BACKGROUND_MISMATCH = "background_fingerprint_mismatch"
+# A spectrum with no Q (rung 4) has no state to pool on, and the master-fit seam derives its Q from
+# the group key, so such a group gets no master (its spectrum is still fit on its own).
+NO_Q = "no_q"
 
 
 # ---------------------------------------------------------------------------
@@ -49,10 +53,10 @@ class SpectrumRef:
     scan_number: int
     detector_id: str
     scan_type: str
-    q: list                      # [h, k, l]
-    q_key: tuple                 # integer grid key (stable for grouping)
+    q: list | None               # [h, k, l]; None = no Q (rung 4)
+    q_key: tuple                 # integer grid key (stable for grouping); unique per spectrum if no Q
     temperature: float
-    t_key: float
+    t_key: float | tuple         # a tuple unique to the scan when the temperature is NaN
     spectrum: object = None      # the schema.scan.Spectrum (arrays; not serialized in the catalogue)
     energy: object = None        # the scanned-axis values (ndarray)
     normalization: object = None # this spectrum's Normalization, via exposure_for (monitor / miniscan_monitor)
@@ -237,10 +241,18 @@ def _spectrum_refs(record, step: float, t_round: float) -> list:
     background_key = background_pool_key(getattr(record, "raw_header", None))
     refs = []
     for det_id, sp in record.spectra.items():
+        # No Q (rung 4) or no temperature is no evidence of sharing a state with any other scan, so
+        # that key component is unique to this scan (and analyzer, for Q): never pooled across scans.
+        if sp.q is None:
+            q, q_key = None, ("noq", record.experiment_id, record.scan_number, det_id)
+        else:
+            q, q_key = list(sp.q), _q_key(sp.q, step)
+        t_key = (("not", record.experiment_id, record.scan_number) if math.isnan(t)
+                 else _t_key(t, t_round))
         refs.append(SpectrumRef(
             experiment_id=record.experiment_id, scan_number=record.scan_number,
-            detector_id=det_id, scan_type=record.scan_type, q=list(sp.q),
-            q_key=_q_key(sp.q, step), temperature=t, t_key=_t_key(t, t_round),
+            detector_id=det_id, scan_type=record.scan_type, q=q,
+            q_key=q_key, temperature=t, t_key=t_key,
             spectrum=sp, energy=energy, normalization=exposure_for(record, det_id),
             background_key=background_key))
     return refs
@@ -361,9 +373,9 @@ def _group_component(name: str, ref: SpectrumRef):
     if name in ("sample",):
         return ref.experiment_id, ref.experiment_id
     if name in ("q", "Q"):
-        return ref.q_key, [round(v, 4) for v in ref.q]
+        return ref.q_key, (None if ref.q is None else [round(v, 4) for v in ref.q])
     if name in ("T", "temperature"):
-        return ref.t_key, ref.t_key
+        return ref.t_key, (None if isinstance(ref.t_key, tuple) else ref.t_key)
     return None, None
 
 
@@ -406,6 +418,9 @@ def collate(records, card) -> Collation:
     rollup = _rollup(measurements)
     if merge == "merge":
         for g in groups.values():
+            if any(ref.q is None for ref in g.members):
+                g.pool_refusal = NO_Q
+                continue
             # A group whose members were measured under different background truth is NOT pooled:
             # summing them would put counts nobody's exposure accounts for into ΣN. Nothing is
             # deleted — the members stay catalogued, fit and reported individually, and the group
@@ -455,6 +470,7 @@ def detect_gaps(values, *, factor: float = 1.8) -> list:
 
 
 def _coverage(refs) -> Coverage:
+    refs = [r for r in refs if r.q is not None]     # a Q-less spectrum maps no Q
     if not refs:
         return Coverage(component="h", values=[], gaps=[])
     arr = np.array([r.q for r in refs], dtype="float64")       # [n, 3]

@@ -244,7 +244,6 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
                                    "kept": paths[-1], "superseded": paths[:-1]})
 
     # --- upsert one ledger entry per (exp, scan, det), MEASUREMENTS ONLY ---
-    import numpy as np
     now_iso = datetime.now(timezone.utc).isoformat()
     _RANK = {"unchanged": 0, "updated": 1, "added": 2}
     ledgered_keys: set[tuple] = set()                # measurement scans that produced ≥1 entry
@@ -258,15 +257,15 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
         combine.reduce_record(rec, card)
         qc.qc_record(rec, card)
         chash = content_hash(rec)
-        T = float(np.median(np.asarray(rec.temperature.setpoint, dtype=float)))
+        T = unit_data.scan_temperature(rec)
         src = sources[(rec.experiment_id, rec.scan_number)][-1]   # the kept (last-wins) source file
-        extras = unit_data._provenance_extras(rec)               # scan-level, additive + tolerant
         scan_rank = 0                                             # collapse per-detector states
         touched = False                                          # any detector entry produced?
         for det, sp in rec.spectra.items():
             touched = True
             analyzer_unit_count += 1
             q = [float(v) for v in sp.q] if sp.q is not None else None
+            extras = unit_data._provenance_extras(rec, det)       # scan + analyzer, additive + tolerant
             prov_add = {"source_file": src, "T": T, "q": q, "ingested_at": now_iso, **extras}
             det_state = upsert_ingested_entry(session, rec, det, chash=chash, prov=prov_add)
             if det_state != "unchanged":

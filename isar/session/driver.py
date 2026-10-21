@@ -21,8 +21,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
-
 from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
 from isar.predictive import json_fingerprint as _json_fingerprint
@@ -321,8 +319,10 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             if det not in rec.spectra:
                 continue
             sp = rec.spectra[det]
-            q = [float(v) for v in (sp.q if sp.q is not None else [0.0, 0.0, 0.0])]
-            T = float(np.median(np.asarray(rec.temperature.setpoint, dtype=float)))
+            # No Q (rung 4) and no temperature stay None downstream; neither is ever replaced by a
+            # stand-in value that a guideline, a prior or a pool could then match.
+            q = [float(v) for v in sp.q] if sp.q is not None else None
+            T = unit_data.scan_temperature(rec)
             sample = _sample_of(rec, card)
             scan_id = f"{rec.experiment_id}:{scan}:{det}"
 
@@ -542,8 +542,8 @@ def _core_provenance(rec, det, source_by_name=None) -> dict:
     source_file matches ingest's absolute form); missing → the parser's recorded name."""
     sp = rec.spectra.get(det)
     q = [float(v) for v in sp.q] if sp is not None and sp.q is not None else None
-    T = float(np.median(np.asarray(rec.temperature.setpoint, dtype=float)))
-    core = {"T": T, "q": q, **unit_data._provenance_extras(rec)}
+    T = unit_data.scan_temperature(rec)
+    core = {"T": T, "q": q, **unit_data._provenance_extras(rec, det)}
     fname = getattr(getattr(rec, "source", None), "file", None)
     src = None
     if source_by_name and fname:

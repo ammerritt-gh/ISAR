@@ -23,6 +23,8 @@ from pathlib import Path
 
 import numpy as np
 
+from isar.schema.scan import Q_SOURCE_RUNG
+
 log = logging.getLogger(__name__)
 
 SCHEMA = "isar.unit_data/1"
@@ -226,13 +228,28 @@ def unit_data_artifact_exists(data_dir, exp, scan, det) -> bool:
     return any(path.is_file() for path in unit_data_paths_for_read(data_dir, exp, scan, det))
 
 
-def _provenance_extras(rec) -> dict:
+def scan_temperature(rec) -> float | None:
+    """The scan's median setpoint temperature, or ``None`` when it is not a finite number (a scan
+    whose temperature is missing carries NaN; it must not be stamped, matched or pooled as a value)."""
+    arr = np.asarray(rec.temperature.setpoint, dtype=float)
+    if not arr.size:
+        return None
+    t = float(np.median(arr))
+    return t if math.isfinite(t) else None
+
+
+def _provenance_extras(rec, det=None) -> dict:
     """Additive, strictly-tolerant provenance keys stamped onto a ledger entry at ingest.
 
     Every key is best-effort: a missing/oddly-shaped source silently omits that key (never raises,
     never a placeholder). Existing ingest provenance (source_file, T, q, ingested_at) is unaffected.
+    With ``det`` the analyzer's own keys are added too: its Q source and rung.
     """
     extras: dict = {}
+    sp = rec.spectra.get(det) if det is not None else None
+    if sp is not None:
+        extras["q_source"] = sp.q_source
+        extras["q_rung"] = Q_SOURCE_RUNG.get(sp.q_source)
     rh = getattr(rec, "raw_header", None)
     rh = rh if isinstance(rh, dict) else {}
 
