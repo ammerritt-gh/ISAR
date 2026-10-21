@@ -48,8 +48,8 @@ measurement = [
     '(?P<set>spec\d+_T(?P<T_K>\d+(?:p\d+)?)K__scan_(?P<scan_numbers>\d+(?:_\d+)*))_A(?P<analyzer>\d{1,2})_Q_(?P<hkl>m?\d+(?:p\d+)?_m?\d+(?:p\d+)?_m?\d+(?:p\d+)?)_inel\.dat',
 ]
 sidecar = ["{set}.var"]         # beside the analyzer files: bin size, silicon order, per-analyzer efficiency
-# Never measurements: peak-position lists, and the sum over analyzers (<stem> and <stem>_sum when the
-# stem ends in _sum). If your stems do not end in _sum, add the stem itself here.
+# Never measurements: peak-position lists, and the summed file (the bare stem). `*_sum` assumes that
+# stem ends in `_sum`; for another name, add its file name here, e.g. "Smp_tot".
 ignore = ["*.pkpos", "*_sum"]
 
 [reader]

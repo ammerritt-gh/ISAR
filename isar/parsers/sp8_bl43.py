@@ -21,7 +21,8 @@ scan, temperature and HKL in its name. `parse_set` turns a set (grouped by inges
     otherwise `q = None` (rung 4).
   * the energy zero is not known here: `status = "needs_zero"` comes from the card, never a defaulted 0.0.
 
-Trailing `#Q=` / `#T=` comment lines in the real analyzer files are skipped like any comment.
+The trailing `#Q=` / `#T=` lines of the real analyzer files are header facts (`Q_nm` per analyzer,
+`T_K` for the scan); other trailing comments are skipped.
 """
 from __future__ import annotations
 
@@ -62,6 +63,8 @@ _VAR_SCAN = {"silicon_order": ("si_order", int), "meV_bin_size": ("bin_meV", flo
 _VAR_ANALYZER = {"analeff": "efficiency", "anal_polfactor": "polarisation_factor",
                  "elpk_centroid_meV": "elastic_centroid_meV", "elpk_area_meV": "elastic_area"}
 _VAR_LINE = re.compile(r"^([A-Za-z_]\w*)(?:\[(\d+)\])?\s*=\s*(.+?)\s*$")
+_TRAILER = re.compile(r"#([QT])=\s*(\S+)")     # the analyzer files' own |Q| and the scan's temperature
+_TRAILER_KEYS = {"Q": "Q_nm", "T": "T_K"}
 
 
 def card_template() -> Card:
@@ -108,6 +111,20 @@ def _column(labels: list[str], spec) -> int | None:
     return None
 
 
+def _trailer(lines: list[str]) -> dict:
+    """`#Q=` and `#T=` lines after a file's data (`#Q=   18.815 /nm`, `#T=  302.000 K`) as header facts.
+    Other trailing comments are skipped."""
+    out: dict = {}
+    for s in lines:
+        m = _TRAILER.match(s)
+        if m:
+            try:
+                out[_TRAILER_KEYS[m.group(1)]] = float(m.group(2))
+            except ValueError as exc:
+                raise MemberError(f"trailing line {s!r} does not parse") from exc
+    return out
+
+
 def _floats(rows: list[list[str]], col: int, what: str) -> np.ndarray:
     try:
         return np.array([float(r[col]) for r in rows], dtype=float)
@@ -125,6 +142,7 @@ def read_member(path: str | Path, family: str = "_i") -> Member:
         raise MemberError(f"cannot be read ({type(exc).__name__}: {exc})") from exc
     labels: list[str] | None = None
     lead: list[str] = []
+    trail: list[str] = []
     rows: list[list[str]] = []
     for line in text.splitlines():
         s = line.strip()
@@ -132,12 +150,14 @@ def read_member(path: str | Path, family: str = "_i") -> Member:
             continue
         if not s.startswith("#"):
             rows.append(s.split())
-        elif not rows:                                     # trailing comments are skipped
+        elif not rows:
             words = s[1:].split()
             if labels is None and words and words[0] == "meV":
                 labels = words
             else:
                 lead.append(s)
+        else:
+            trail.append(s)
     if not rows:
         raise MemberError("holds no data rows")
     width = len(rows[0])
@@ -145,6 +165,11 @@ def read_member(path: str | Path, family: str = "_i") -> Member:
         if len(r) != width:
             raise MemberError(f"data row {i + 1} has {len(r)} columns, expected {width}")
     header = metadata.read_header(lead)
+    trailer = _trailer(trail)
+    for key, value in trailer.items():
+        if key in header and header[key] != value:
+            raise MemberError(f"header {key} {header[key]!r} and trailing {key} {value!r} disagree")
+    header.update(trailer)
     if labels is None:                                     # bare energy, intensity, error
         if width < 3:
             raise MemberError(f"has {width} columns, expected energy, intensity, error")
@@ -496,8 +521,8 @@ def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
 
 def emit_file(record: scan.ScanRecord, card: Card, out_dir: str | Path | None = None) -> Path:
     """Write a record in the CsV3Sb5 layout: `<stem>_aNN` per analyzer (the `_i` family: bin centre,
-    seconds, points, monitor, normalised intensity and error) plus a minimal `<stem>.var`. Returns the
-    folder. Absent bins are not written; a bin of zero counts is written as zero over zero.
+    seconds, points, monitor, normalised intensity and error, then the `#Q=`/`#T=` lines) plus a minimal
+    `<stem>.var`. Returns the folder. Absent bins are not written; a zero-count bin is written as zero over zero.
     """
     out = Path(out_dir) if out_dir is not None else Path(tempfile.mkdtemp(prefix="bl43_emit_"))
     out.mkdir(parents=True, exist_ok=True)
@@ -505,6 +530,7 @@ def emit_file(record: scan.ScanRecord, card: Card, out_dir: str | Path | None = 
     stem = str(label) if label else f"scan{record.scan_number}"
     energy = axes.scanned_axes(record)[0].values
     dets = sorted(record.spectra)
+    t_k = (record.facts.get("T_K") or {}).get("value")
     for det in dets:
         sp, ex = record.spectra[det], scan.exposure_for(record, det)
         absent = {p.index for p in sp.point_flags if p.type == "bin_absent"}
@@ -517,6 +543,11 @@ def emit_file(record: scan.ScanRecord, card: Card, out_dir: str | Path | None = 
             e = counts ** 0.5 / mon if mon else 0.0
             rows.append(f"{energy[i]:10.4f} {secs:9.1f} {int(round(secs / 10)):6d} "
                         f"{mon:15.7E} {y:15.7E} {e:15.7E}")
+        q_nm = (sp.facts.get("Q_nm") or {}).get("value")
+        if q_nm is not None:
+            rows.append(f"#Q=   {q_nm:.3f} /nm")
+        if t_k is not None:
+            rows.append(f"#T=  {t_k:.3f} K")
         (out / f"{stem}_{det}").write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
     fact = lambda k, default: (record.facts.get(k) or {}).get("value") or default  # noqa: E731
     var = [f' file_name_prefix = "{stem}"', f" silicon_order = {int(fact('si_order', 12))}",

@@ -108,7 +108,7 @@ def _scatter(present, vals):
 def test_csv3sb5_facts_carry_their_sources_and_the_nominal_hkl_is_no_spectrums_q(sets):
     rec = sets[0][BL43_STEM]
     f = rec.facts
-    assert f["T_K"] == {"value": 302.0, "source": "filename"}
+    assert f["T_K"] == {"value": 302.0, "source": "header"}              # the #T= line agrees; header wins
     assert f["hkl_nominal"] == {"value": [0.5, 0.5, 3.0], "source": "filename"}
     assert f["scan_label"] == {"value": BL43_STEM, "source": "filename"}
     assert f["si_order"] == {"value": 12, "source": "sidecar"}
@@ -119,6 +119,8 @@ def test_csv3sb5_facts_carry_their_sources_and_the_nominal_hkl_is_no_spectrums_q
         assert f[missing] == {"value": None, "source": "missing"}
     for sp in rec.spectra.values():
         assert (sp.q, sp.q_source) == (None, "none") and scan.Q_SOURCE_RUNG[sp.q_source] == 4
+        q_nm = float(scan_truth(BL43 / f"{BL43_STEM}_{sp.detector_id}", 0)["header_values"]["#Q="][0].split()[0])
+        assert sp.facts["Q_nm"] == {"value": q_nm, "source": "header"}     # its own |Q|, never its q
         assert "hkl_nominal" not in sp.facts and sp.facts["hkl"]["source"] == "missing"
         assert sp.facts["efficiency"]["source"] == sp.facts["elastic_area"]["source"] == "sidecar"
     # the .var lists all 28 analyzers; only two have files, and the flag says which are gone

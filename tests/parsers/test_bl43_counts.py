@@ -30,7 +30,8 @@ def lattice(lo: int, hi: int, step: float = 0.2) -> np.ndarray:
 
 
 def write_member(folder: Path, det: str, energy, counts, monitor, *, secs=10.0, header=(), lr=None,
-                 stem: str = STEM, fmt: str = "%.6E", label: str | None = None) -> Path:
+                 stem: str = STEM, fmt: str = "%.6E", label: str | None = None,
+                 q_nm: float | None = 18.815, t_k: float | None = None) -> Path:
     """One CsV3Sb5-layout analyzer file in the beamline's 16 columns. `_i`: y = N/norm, e = sqrt(N)/norm
     (0 over 0 for N = 0). `lr` (non-integer counts) fills the `_lr` family, whose time is lrn x 0.25 s."""
     energy, counts = np.asarray(energy, float), np.asarray(counts, float)
@@ -45,7 +46,10 @@ def write_member(folder: Path, det: str, energy, counts, monitor, *, secs=10.0, 
                f(0.0), f(0.0), f(0.0), f(0.0), f"{int(round(secs[i] / 10)):7d}", f(monitor[i]),
                f(counts[i] / monitor[i]), f(counts[i] ** 0.5 / monitor[i])]
         lines.append(" ".join(row))
-    lines += ["#Q=   18.815 /nm", "#T=  100.000 K"]                      # trailing comments are skipped
+    if q_nm is not None:                                               # the beamline's trailing comments
+        lines.append(f"#Q=   {q_nm:.3f} /nm")
+    if t_k is not None:
+        lines.append(f"#T=  {t_k:.3f} K")
     path = folder / f"{stem}_{det}"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     return path
@@ -161,7 +165,7 @@ def test_card_slit_is_used_when_no_header_gives_one(tmp_path):
 
 def test_header_hkl_is_rung_one_and_the_filename_hkl_is_never_a_spectrum_q(tmp_path):
     write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6,
-                 header=["# hkl 0.4 0.6 3.1", "# dq 0.02", "# Q_nm 19.5"])
+                 header=["# hkl 0.4 0.6 3.1", "# dq 0.02", "# Q_nm 19.5"], q_nm=None)
     write_member(tmp_path, "a04", lattice(0, 10), np.ones(10), 1e6)
     rec = parse(tmp_path)
     a03, a04 = rec.spectra["a03"], rec.spectra["a04"]
@@ -174,6 +178,44 @@ def test_header_hkl_is_rung_one_and_the_filename_hkl_is_never_a_spectrum_q(tmp_p
     assert a04.facts["hkl"] == {"value": None, "source": "missing"}
     assert "hkl_nominal" not in a03.facts and "hkl_nominal" not in a04.facts
     assert rec.facts["hkl_nominal"]["value"] == [1.0, 0.5, -2.0]
+
+
+def test_trailing_q_and_t_lines_are_header_facts_and_q_is_never_a_spectrum_q(tmp_path):
+    write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6, q_nm=18.815, t_k=100.0)
+    write_member(tmp_path, "a04", lattice(0, 10), np.ones(10), 1e6, q_nm=20.282, t_k=100.0)
+    rec = parse(tmp_path)
+    assert rec.spectra["a03"].facts["Q_nm"] == {"value": 18.815, "source": "header"}
+    assert rec.spectra["a04"].facts["Q_nm"] == {"value": 20.282, "source": "header"}
+    assert [(s.q, s.q_source) for s in rec.spectra.values()] == [(None, "none"), (None, "none")]
+    assert rec.facts["T_K"] == {"value": 100.0, "source": "header"}      # agrees with the name: no conflict
+    assert not flags(rec, "fact_conflict")
+
+
+def test_header_t_disagreeing_with_filename_t_raises_fact_conflict(tmp_path):
+    write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6, t_k=250.0)   # the name says 100 K
+    rec = parse(tmp_path)
+    t = rec.facts["T_K"]
+    assert (t["value"], t["source"]) == (250.0, "header")
+    assert t["conflicts"] == [{"source": "filename", "value": 100.0}]
+    assert [f.severity for f in flags(rec, "fact_conflict")] == ["warning"]
+    assert np.all(rec.temperature.setpoint == 250.0)
+
+
+def test_analyzers_disagreeing_on_t_raise_fact_conflict(tmp_path):
+    write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6, t_k=100.0)
+    write_member(tmp_path, "a04", lattice(0, 10), np.ones(10), 1e6, t_k=101.0)
+    rec = parse(tmp_path)
+    assert (rec.facts["T_K"]["value"], rec.facts["T_K"]["source"]) == (100.0, "header")
+    assert len(flags(rec, "fact_conflict")) == 1 and "T_K" in flags(rec, "fact_conflict")[0].reason
+
+
+def test_leading_and_trailing_q_that_disagree_leave_the_analyzer_out_and_named(tmp_path):
+    write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6)
+    write_member(tmp_path, "a04", lattice(0, 10), np.ones(10), 1e6, header=["# Q_nm 19.5"], q_nm=18.815)
+    rec = parse(tmp_path)
+    assert sorted(rec.spectra) == ["a03"]
+    reason = flags(rec, "missing_analyzer")[0].reason
+    assert "a04: " in reason and "Q_nm" in reason and "disagree" in reason
 
 
 def test_identity_is_the_scan_number_when_known_else_a_hash_of_the_stem(tmp_path):
@@ -275,4 +317,7 @@ def test_emit_file_round_trips_whole_aligned_analyzers(tmp_path):
         assert np.array_equal(back.spectra[det].intensity, rec.spectra[det].intensity)
         assert np.allclose(back.spectra[det].monitor, rec.spectra[det].monitor, rtol=1e-6)
         assert np.allclose(back.spectra[det].time, rec.spectra[det].time)
+    assert back.facts["T_K"] == {"value": 100.0, "source": "header"}     # emit writes the #T= line
+    for det in ("a03", "a06"):
+        assert back.spectra[det].facts["Q_nm"] == {"value": 18.815, "source": "header"}
     assert not [f for f in back.scan_flags if f.type in ("missing_analyzer", "missing_sidecar")]
