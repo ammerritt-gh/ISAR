@@ -369,9 +369,29 @@ None of these change a reported number; all are cost or hygiene.
 - [ ] **PLAT-3 — Per-analyzer S30 resolution** (risk R1). Measured widths exist only for Ana7;
       others fall back to `default_resolution` with a provenance flag.
       **Acceptance:** per-analyzer widths are measured and used, with provenance recorded.
-- [ ] **PLAT-4 — New instrument cards: ID28, BL43LXU.** Registry slots exist; authoring the cards
-      is a small later task.
-      **Acceptance:** both parse a real file end-to-end.
+- [ ] **PLAT-4 — New instrument card: ID28.** Registry slot exists; authoring the card is a small
+      later task. (BL43LXU landed 2026-10-21, PRs #44 and #45.)
+      **Acceptance:** it parses a real file end-to-end.
+- [ ] **BL43-1 — SIXCIRCLE geometry: HKL rungs 2 and 3.** Per-analyzer HKL computed from sample
+      motor angles plus orientation (rung 2) and from the arm-centre HKL plus array geometry (rung 3),
+      following the beamline's SIXCIRCLE code once the operator has it. The 2017 FeSe `pca6`
+      printout (OneDrive `2017_05_FeSe_SP8\Lab Notebook\DSC00174.JPG`) is its test case.
+      **Acceptance:** the 24 HKLs of that printout are reproduced from its angles.
+- [ ] **BL43-2 — Momentum resolution in the fit.** Slit and `dq` are recorded today; fold the
+      per-analyzer Q spread into the fit after BL43-1.
+      **Acceptance:** a steep branch's fitted width accounts for slope × `dq`.
+- [ ] **BL43-3 — Pooled masters with the tabulated resolution.** Individual analyzers fit today;
+      a pooled master needs one curve and zero valid for every member.
+      **Acceptance:** a BL43 master fits with a member-consistent curve and zero.
+- [ ] **BL43-4 — Shared parts adopted by other instruments.** S30, IN8 and TAVI opt into the
+      resolution library, fact sources and count recovery (operator, pinned 2026-10-21).
+      **Acceptance:** an S30 card uses the resolution library with no code change.
+- [ ] **PLAT-7 — Scan identity and deduplication across instruments.** Project → experiment →
+      scan hierarchy with the experiment given per batch by the operator; duplicates checked as
+      bit-identical files, then identical values; ISAR combines individual scans itself (operator,
+      2026-10-21). Must keep the growing-file resend case that ingest's last-wins rule serves today.
+      **Acceptance:** the same scan arriving by two paths is recognised, and a collision is never
+      silently merged or superseded.
 - [ ] **PLAT-5 — Batch re-analysis driver.** Re-run everything post-beamtime from frozen config at
       better resolution (`docs/ARCHITECTURE.md` §14 item 8).
       **Acceptance:** a frozen campaign re-runs and produces a comparable report.
@@ -420,9 +440,27 @@ conditions — these are wants, not commitments.
 
 ---
 
+## Known better shapes
+
+- `isar/session/calibrations.py:42` — the shared `tabulated_elastic` method calls the BL43 SARF
+  reader directly and fit references carry two shapes; move the generic library code into
+  `isar/analyze/resolution.py`. Revisit when the first non-BL43 card sets `tabulated_elastic`.
+- `isar/session/calibrations.py:284` — slit and zero alerts appear only in the inspector; print one
+  context line per calibrated scan in `isar run`. Revisit on the next calibration-output edit.
+- `isar/calibrate/tabulated.py:188` — the elastic-zero fit and slit ladder read spectrum exposure
+  directly instead of `exposure_for`. Revisit when another instrument enables the method.
+- `isar/session/ingest.py:188` — the summed-set rule has two implementations with different
+  experiment keys; leave ledger-held singles to `supersede_summed`. Revisit with PLAT-7.
+- `isar/parsers/sp8_bl43.py:174` — trailing `#Q=`/`#T=` values are folded into `header`; return
+  them as their own `trailer` source. Revisit when the macro first writes leading `# T_K`/`# Q_nm`.
+- `isar/parsers/sp8_bl43.py:517` — `points_per_bin` is stored as a per-bin fact in every ledger
+  entry; carry it beside the counts. Revisit if a BL43 session.json passes a few MB.
+
+---
+
 ## Notes
 
-routine suite 2.5 min, over its 1-min budget
+routine suite 2.0 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
