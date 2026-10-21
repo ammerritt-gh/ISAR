@@ -7,6 +7,7 @@ driven directly (fast); the end-to-end `isar run` cases fit with the tabulated c
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -313,6 +314,21 @@ def test_driver_freshness_follows_the_calibration_fingerprint(tmp_path):
     cooper = calibrations.RunCalibration(method="cooper_nathans", zeros=None, resolution_by_slit={},
                                          slit_by_scan={}, default_resolution=(1, 1), tabulated=runcal2.tabulated)
     assert calibrations.calibration_fingerprint(cooper, recs[0], "a03") is None      # other methods: no fingerprint
+
+
+def test_repointing_at_a_moved_library_refits_from_the_new_folder(tmp_path):
+    # A moved folder keeps every file's name, size and mtime, so only its path tells the curves apart.
+    ws, card, recs, _entry = _calibrated(tmp_path)
+    old_fp = calibrations.calibration_fingerprint(calibrations.calibration_view(card), recs[0], "a03")
+    shutil.copytree(ws.root / "rf", ws.root / "rf_moved", copy_function=shutil.copy2)
+    shutil.rmtree(ws.root / "rf")
+    card.policy.calibration["resolution_folder"] = "rf_moved"
+    calibrations.refresh_tabulated(card, recs, base_dir=ws.root)
+    sarf._LIBRARIES.clear()                                      # what a fresh `isar run` starts with
+    runcal = calibrations.calibration_view(card)
+    calres = calibrations.resolve(recs[0], "a03", card, runcal)
+    assert not calres.held and calres.reference["folder"] == str(ws.root / "rf_moved")
+    assert calibrations.calibration_fingerprint(runcal, recs[0], "a03") != old_fp    # the driver refits
 
 
 # ---------------------------------------------------------------------------

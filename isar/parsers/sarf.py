@@ -58,7 +58,9 @@ def _matches(folder: Path, pattern: str) -> list[tuple[Path, str, str | None]]:
 
 
 def fingerprint(folder, pattern: str) -> str:
-    """A short hash of the matched files' names, sizes and modification times (and their `.gpi`)."""
+    """A short hash of the folder's absolute path and the matched files' names, sizes and modification
+    times (and their `.gpi`): a moved folder with identical files is a different library to every
+    calibration and fit that recorded its folder."""
     folder = Path(folder)
     rows = []
     for path, _det, _setting in _matches(folder, pattern):
@@ -66,7 +68,7 @@ def fingerprint(folder, pattern: str) -> str:
             if p.is_file():
                 st = p.stat()
                 rows.append((p.name, st.st_size, st.st_mtime_ns))
-    return hashlib.sha256(repr(sorted(rows)).encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(repr((str(folder.resolve()), sorted(rows))).encode("utf-8")).hexdigest()[:16]
 
 
 def _gpi_facts(path: Path) -> dict:
