@@ -1,26 +1,27 @@
 """Q-less, per-analyzer-exposure spectra (BL43LXU shape) through collation and `isar run`.
 
-The BL43LXU reader is a separate unit, so the records here are built from a generated S30 scan by
-dropping each spectrum's Q (rung 4), giving it its own monitor/time, and storing NaN at record level
--- exactly what that reader promises. Nothing here reads `real_data/`.
+The collation tests use records built from a generated S30 scan by dropping each spectrum's Q (rung 4),
+giving it its own monitor/time, and storing NaN at record level -- exactly what the BL43LXU reader
+promises. The run tests go through the real reader: files written at test time with
+`sp8_bl43.emit_file`, the shipped `bl43lxu.policy.toml`, real discovery and grouping.
+Nothing here reads `real_data/`.
 """
 from __future__ import annotations
 
-import copy
 from pathlib import Path
 
 import numpy as np
 
 import isar
-from isar.parsers import spec_s30
+from isar.parsers import sp8_bl43, spec_s30
 from isar.reduce import collate
-from isar.schema import scan
-from isar.session import driver, ingest
+from isar.schema import axes, scan
+from isar.session import driver
 from isar.session.workspace import Workspace
 from isar.synth_format import run_builder
 
-# Stands in for the shipped bl43lxu.policy.toml (written by the reader unit): the same calibration
-# table, on the one registered plugin whose card machinery these records can reuse.
+# Stand-in policy for the collation tests only: S30 records carry the BL43 shape, so collate can be
+# driven without files. The run tests below use the shipped template instead.
 _POLICY = """\
 facility = "SPring-8"
 instrument = "BL43LXU"
@@ -167,14 +168,33 @@ def test_exposure_for_is_what_collate_reads(tmp_path):
         assert ref.q is None
 
 
-def test_run_holds_qless_scan_for_want_of_a_zero(tmp_path, monkeypatch):
-    recs = [_qless(r, nan_temperature=(i == 1)) for i, r in enumerate(_base_records(tmp_path))]
-    ws = _card_for(tmp_path, merge="merge")
-    monkeypatch.setattr(ingest, "discover", lambda paths, card: ingest.IngestPlan())
-    monkeypatch.setattr(ingest, "parse_all", lambda plan, card: copy.deepcopy(recs))
-    summary = driver.run_batch(ws, [tmp_path], M=10)
+def _bl43_folder(tmp_path, n_scans=2):
+    """Write whole, aligned BL43LXU analyzers (a03, a04) per scan with `emit_file`; return the folder."""
+    data = tmp_path / "data"
+    for i, rec in enumerate(_qless(r) for r in _base_records(tmp_path, n_scans)):
+        rec.spectra = {"a03": rec.spectra["ana1"], "a04": rec.spectra["ana2"]}
+        ax = axes.scanned_axes(rec)[0]
+        ax.values = np.round(np.arange(len(ax.values)) * 0.2 - 2.0, 4)   # the reader wants the 0.2 meV bin lattice
+        rec.facts = {"scan_label": {"value": f"Smp_100K_1_0p5_m2_run{'AB'[i]}", "source": "filename"},
+                     "T_K": {"value": 100.0, "source": "filename"}}
+        sp8_bl43.emit_file(rec, sp8_bl43.card_template(), data)
+    return data
+
+
+def _bl43_ws(tmp_path):
+    ws = Workspace.open(tmp_path / "ws")
+    ws.root.mkdir(parents=True, exist_ok=True)
+    ws.policy_path.write_text(
+        (Path(sp8_bl43.__file__).parent / "cards" / "bl43lxu.policy.toml").read_text(encoding="utf-8"),
+        encoding="utf-8")
+    return ws
+
+
+def test_run_holds_qless_scan_for_want_of_a_zero(tmp_path):
+    ws = _bl43_ws(tmp_path)
+    summary = driver.run_batch(ws, [_bl43_folder(tmp_path)], M=10)
     _card, session = ws.load()
-    assert len(session.scans) == 4
+    assert len(session.scans) == 4                               # 2 scans x 2 analyzers
     for entry in session.scans.values():
         assert entry.status == "held_for_calibration"
         assert entry.reasons and "no energy zero" in entry.reasons[0].lower()
@@ -184,26 +204,21 @@ def test_run_holds_qless_scan_for_want_of_a_zero(tmp_path, monkeypatch):
     assert not any("collation skipped" in line for line in summary.context_lines)
 
 
-def test_second_run_is_idempotent_for_held_qless_scans(tmp_path, monkeypatch):
-    recs = [_qless(r) for r in _base_records(tmp_path, n_scans=1)]
-    ws = _card_for(tmp_path)
-    monkeypatch.setattr(ingest, "discover", lambda paths, card: ingest.IngestPlan())
-    monkeypatch.setattr(ingest, "parse_all", lambda plan, card: copy.deepcopy(recs))
-    driver.run_batch(ws, [tmp_path], M=10)
-    driver.run_batch(ws, [tmp_path], M=10)
+def test_second_run_is_idempotent_for_held_qless_scans(tmp_path):
+    ws = _bl43_ws(tmp_path)
+    data = _bl43_folder(tmp_path, n_scans=1)
+    driver.run_batch(ws, [data], M=10)
+    driver.run_batch(ws, [data], M=10)
     _card, session = ws.load()
     assert {e.status for e in session.scans.values()} == {"held_for_calibration"}
 
 
-def test_report_and_scene_after_a_qless_run(tmp_path, monkeypatch):
+def test_report_and_scene_after_a_qless_run(tmp_path):
     # What `isar run` does after run_batch: the human report and the scene build must not fail.
     from isar.report import run_report
     from isar.session import scene_hook
-    recs = [_qless(r) for r in _base_records(tmp_path, n_scans=1)]
-    ws = _card_for(tmp_path)
-    monkeypatch.setattr(ingest, "discover", lambda paths, card: ingest.IngestPlan())
-    monkeypatch.setattr(ingest, "parse_all", lambda plan, card: copy.deepcopy(recs))
-    driver.run_batch(ws, [tmp_path], M=10)
+    ws = _bl43_ws(tmp_path)
+    driver.run_batch(ws, [_bl43_folder(tmp_path, n_scans=1)], M=10)
     card, session = ws.load()
     run_report.write_run_report(session, card, ws, formats=("markdown",))
     scene_hook.build_and_store(ws.root)
