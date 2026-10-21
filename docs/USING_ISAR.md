@@ -349,12 +349,9 @@ merged: the second is not ingested and the ingest report names both.
 
 ISAR does its own combining, so it does not want scans that were already summed. A set whose file name
 lists several scans (`..._scan_58_59_...`) is **passed over**, and named under `passed_over` in the ingest
-report, when every scan it lists is in the same batch as its own set of the same SPEC file, or already in
-the workspace as one. When they are not (or the set lists no scans, as in the CsV3Sb5 layout), it is read
-and flagged `pre_combined_input`, and so is any set whose `.var` reports more than one merged scan. If such
-a set was read first and its individual scans arrive later (in any folder), the next `isar ingest` or
-`isar run` marks its ledger entries `excluded`, with a reason naming the set and the scans; they are not
-fitted again and stay listed under "Held / declined". The files are never touched.
+report, when every scan it lists is in the same batch as its own set of the same SPEC file. When they are
+not (or the set lists no scans, as in the CsV3Sb5 layout), it is read and flagged `pre_combined_input`,
+and so is any set whose `.var` reports more than one merged scan. The files are never touched.
 
 ### What the card's tables do
 
