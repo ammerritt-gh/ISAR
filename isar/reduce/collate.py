@@ -28,6 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
+from isar.schema.scan import exposure_for
 from isar.schema.steering import CANONICAL_MASTER, evidence_sink_for
 
 _COMPONENTS = ("h", "k", "l")
@@ -54,7 +55,7 @@ class SpectrumRef:
     t_key: float
     spectrum: object = None      # the schema.scan.Spectrum (arrays; not serialized in the catalogue)
     energy: object = None        # the scanned-axis values (ndarray)
-    normalization: object = None # the record's Normalization (for monitor / miniscan_monitor)
+    normalization: object = None # this spectrum's Normalization, via exposure_for (monitor / miniscan_monitor)
     background_key: str = NO_BACKGROUND   # background-truth pooling class (`background_pool_key`)
 
 
@@ -240,7 +241,7 @@ def _spectrum_refs(record, step: float, t_round: float) -> list:
             experiment_id=record.experiment_id, scan_number=record.scan_number,
             detector_id=det_id, scan_type=record.scan_type, q=list(sp.q),
             q_key=_q_key(sp.q, step), temperature=t, t_key=_t_key(t, t_round),
-            spectrum=sp, energy=energy, normalization=record.normalization,
+            spectrum=sp, energy=energy, normalization=exposure_for(record, det_id),
             background_key=background_key))
     return refs
 
