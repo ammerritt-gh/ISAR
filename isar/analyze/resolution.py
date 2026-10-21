@@ -13,6 +13,7 @@ caller whether a needed range lies inside the table. Qt-free, scipy-free.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -138,3 +139,35 @@ class ResolutionLibrary:
     def get(self, detector_id: str, setting: str | None) -> TabulatedResolution | None:
         """The curve for this detector at this setting, or ``None`` when the library has none."""
         return self._curves.get((detector_id, setting))
+
+
+def read_table(path, detector_id: str, setting: str | None = None, facts=None) -> TabulatedResolution:
+    """A curve from a whitespace table: ``#`` comments, then energy (meV) and value columns; any further
+    column is ignored. ValueError/OSError when it cannot be read."""
+    path = Path(path)
+    table = np.loadtxt(path, comments="#", usecols=(0, 1), encoding="utf-8", ndmin=2)
+    return TabulatedResolution(table[:, 0], table[:, 1], detector_id, setting,
+                               source=path.name, facts=dict(facts or {}))
+
+
+def file_stamp(path) -> list[int]:
+    """``[size, mtime_ns]`` of a curve file: recorded with a fit so a changed file is never read as its curve."""
+    st = Path(path).stat()
+    return [st.st_size, st.st_mtime_ns]
+
+
+def curve_from_record(ref: dict) -> TabulatedResolution:
+    """The curve a fit was made with, from the reference it recorded (``folder``, ``file``, ``stamp``,
+    ``detector``, ``setting``). ValueError when the file is gone or changed since the fit."""
+    try:
+        path = Path(ref["folder"]) / ref["file"]
+        stamp = list(ref["stamp"])
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"the fit's resolution reference names no curve file ({exc})") from exc
+    try:
+        now = file_stamp(path)
+    except OSError as exc:
+        raise ValueError(f"resolution curve {path} unreadable ({exc})") from exc
+    if now != stamp:
+        raise ValueError(f"resolution curve {path} changed since the fit")
+    return read_table(path, ref["detector"], ref.get("setting"))

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from isar.analyze.resolution import ResolutionLibrary, TabulatedResolution
+from isar.analyze.resolution import ResolutionLibrary, TabulatedResolution, read_table
 from isar.parsers import metadata
 from isar.parsers.sp8_bl43 import detector_id
 
@@ -85,10 +85,7 @@ def _gpi_facts(path: Path) -> dict:
 
 def read_curve(path, detector: str, setting: str | None) -> TabulatedResolution:
     """One SARF file as a `TabulatedResolution`; ValueError/OSError when it cannot be read."""
-    path = Path(path)
-    table = np.loadtxt(path, comments="#", usecols=(0, 1), encoding="utf-8", ndmin=2)
-    return TabulatedResolution(table[:, 0], table[:, 1], detector, setting,
-                               source=path.name, facts=_gpi_facts(path))
+    return read_table(path, detector, setting, facts=_gpi_facts(Path(path)))
 
 
 def load_library(folder, pattern: str) -> ResolutionLibrary:

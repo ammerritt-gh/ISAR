@@ -575,8 +575,8 @@ class FitView:
         if isinstance(ref, dict):
             # The fit convolved with a measured curve, not the Voigt of the widths above: rebuild that
             # curve from where it came from (ValueError when the files changed since the fit).
-            from isar.parsers import sarf
-            out["resolution_curve"] = sarf.curve_from_reference(ref)
+            from isar.analyze.resolution import curve_from_record
+            out["resolution_curve"] = curve_from_record(ref)
         return out
 
     def __repr__(self) -> str:

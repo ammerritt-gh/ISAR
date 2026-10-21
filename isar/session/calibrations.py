@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
-from isar.analyze.resolution import ResolutionLibrary, TabulatedResolution
+from isar.analyze.resolution import ResolutionLibrary, TabulatedResolution, file_stamp
 from isar.calibrate import bragg
 from isar.calibrate import tabulated
 from isar.calibrate import tas
@@ -445,6 +445,8 @@ def _resolve_tabulated(record, detector_id, runcal: RunCalibration, version: str
            "fingerprint": scan_state["library"], "detector": detector_id, "setting": scan_state["setting"]}
     try:
         curve = sarf.curve_from_reference(ref)
+        # the curve's own file and stamp: what the read-only facade rebuilds it from (G16, no parser)
+        ref = {**ref, "file": curve.source, "stamp": file_stamp(Path(ref["folder"]) / curve.source)}
     except (OSError, ValueError, KeyError, re.error) as exc:
         log.warning("calibration(tabulated_elastic): %s: %s", detector_id, exc)
         return held(f"{detector_id}: {exc}")

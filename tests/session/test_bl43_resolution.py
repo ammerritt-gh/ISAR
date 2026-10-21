@@ -432,3 +432,30 @@ def test_pooled_master_is_held_under_tabulated_calibration_and_the_member_fits_s
     assert len(masters) == 1 and masters[0].status == "held_for_calibration"
     assert masters[0].reasons == [f"{masters[0].scan_id}: pooling across tabulated calibrations not supported"]
     assert masters[0].detectors == {}
+
+
+def test_the_facade_rebuilds_a_fitted_curve_from_its_file_and_refuses_a_changed_one(tmp_path):
+    """A fit records its curve's file and stamp; the read facade rebuilds the same curve from them
+    through the shared resolution module (no parser), and refuses a file changed since the fit."""
+    import os
+
+    from isar.analyze.resolution import curve_from_record, file_stamp, read_table
+    e = np.round(np.arange(-5.0, 5.0001, 0.1), 4)
+    f = tmp_path / "curve_a03"
+    f.write_text("# energy value fit\n# second comment\n"
+                 + "".join(f"{x:.4f} {y:.6g} 0\n" for x, y in zip(e, _curve_values(e, 1.0))),
+                 encoding="utf-8", newline="\n")
+    ref = {"folder": str(tmp_path), "file": f.name, "stamp": file_stamp(f),
+           "detector": "a03", "setting": "40x40"}
+    rebuilt, direct = curve_from_record(ref), read_table(f, "a03", "40x40")
+    assert np.array_equal(rebuilt.energy, direct.energy) and np.array_equal(rebuilt.values, direct.values)
+    assert rebuilt.fwhm == pytest.approx(direct.fwhm)
+    with pytest.raises(ValueError, match="names no curve file"):
+        curve_from_record({k: v for k, v in ref.items() if k != "file"})
+    st = f.stat()
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+    with pytest.raises(ValueError, match="changed since the fit"):
+        curve_from_record(ref)
+    f.unlink()
+    with pytest.raises(ValueError, match="unreadable"):
+        curve_from_record(ref)

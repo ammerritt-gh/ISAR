@@ -60,6 +60,10 @@ WORKSPACE_API_ALLOWED = {
     # every display draws the master in the frame the fitter used; a second median rule here would
     # be exactly the drift that put the drawn curve 3.3× under the data. numpy + schema only.
     "isar.analyze.context",
+    # The shared tabulated-resolution curve (numpy only): a fit made with a measured curve records its
+    # file and stamp, and the facade rebuilds that curve here to draw the fitted model, never through
+    # an instrument's parser.
+    "isar.analyze.resolution",
     # The ONE strict predictive-artifact validator (ADR-020). The facade must run exactly the same
     # checks as the arbitrary-grid evaluator and the drive loop, so it imports the validator rather
     # than maintaining its own subset — which is precisely how the three readers drifted apart.
