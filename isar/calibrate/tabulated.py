@@ -145,6 +145,8 @@ def _fit_window(xw, cw, ww, curve, c0):
 
 
 def _fit(x, c, w, curve) -> ElasticFit:
+    if x.size < _MIN_POINTS:                             # no usable bins (all masked): nothing to locate
+        return ElasticFit(np.nan, np.nan, np.nan, np.nan, np.nan, int(x.size), False)
     c0 = _centre(x, c, w)
     sig = _significant(x, c, w, c0)
     win = np.abs(x - c0) <= FIT_HALF_WINDOW

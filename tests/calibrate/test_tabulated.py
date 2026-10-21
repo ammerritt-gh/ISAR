@@ -220,3 +220,35 @@ def test_empty_comparison_set_never_refuses():
     assert "no significant elastic line; chosen by rule, not by evidence" in ruled.flags[0].reason
     empty = T.choose_setting(X, weak, ResolutionLibrary(), None)         # nothing to choose from
     assert empty.setting is None and _flags(empty) == ["slit_ambiguous"]
+
+
+# -- an analyzer whose every bin is masked (invalid counts, dead analyzer) ------------------------
+def _all_masked(lib, det, setting, seed):
+    sp = _spectrum(det, _draw(lib, det, setting, seed))
+    sp.mask[:] = False
+    return sp
+
+
+def test_all_masked_analyzer_gets_the_labelled_pipeline_zero():
+    lib = _library()
+    curve = lib.get("d1", "tail")
+    sp = _all_masked(lib, "d1", "tail", 80)
+    z = T.zero_for(X, sp, curve)
+    assert z.source == "pipeline_zero" and z.centre == 0.0
+    assert [f.type for f in z.flags] == ["pipeline_zero"] and "d1" in z.flags[0].reason
+    assert np.isnan(z.fit.centre) and np.isnan(z.fit.deviance) and not z.fit.significant
+    fit = T.fit_elastic_tabulated(X, np.full(X.size, np.nan), None, curve)
+    assert np.isnan(fit.centre) and not fit.significant
+
+
+def test_all_nan_counts_are_not_significant():
+    assert not T.elastic_significant(X, np.full(X.size, np.nan), None)
+
+
+def test_all_masked_analyzer_is_left_out_of_the_comparison_set():
+    lib = _library()
+    spectra = _scan(lib, "tail", seed=90)
+    spectra["d2"].mask[:] = False
+    choice = T.choose_setting(X, spectra, lib, None)
+    assert choice.comparison_set == ["d1", "d3"] and choice.setting == "tail"
+    assert _flags(choice) == ["slit_inferred"]
