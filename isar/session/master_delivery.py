@@ -558,6 +558,14 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                       reasons=[f"{master_id}: no member record for resolution"], **base),
             errors_tier=errors_tier, fit_fingerprint=None,
             spectrum_digest=spectrum_digest)
+    if (getattr(card.policy, "calibration", None) or {}).get("method") == "tabulated_elastic":
+        # Members carry their own curve and zero; one member's applied to the pooled counts would be
+        # wrong, so no pooled master is fitted (the members' own fits stand).
+        return _stamp_master_analysis(
+            ScanEntry(status="held_for_calibration",
+                      reasons=[f"{master_id}: pooling across tabulated calibrations not supported"], **base),
+            errors_tier=errors_tier, fit_fingerprint=None,
+            spectrum_digest=spectrum_digest)
     try:
         calres = calibrations.resolve(member_rec, member_det, card, runcal)
     except Exception as exc:  # noqa: BLE001

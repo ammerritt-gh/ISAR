@@ -55,6 +55,9 @@ class _CalRes:
     def summary(self) -> dict:
         return {"resolution_version": self.resolution_version}
 
+    def provenance(self) -> dict:
+        return {"resolution_version": self.resolution_version}
+
 
 def _rec(scan_number=1):
     """A minimal stand-in with only the attributes the producer touches for a gated/undersampled

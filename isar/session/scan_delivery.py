@@ -24,6 +24,7 @@ from isar.analyze.context import ScanContext, effective_exposure, select_exposur
 from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 from isar.schema.card import Card
+from isar.schema.scan import Flag, exposure_for
 from isar.schema.measurement import (MeasurementArena, campaign_provenance,
                                      current_lattice_epoch)
 from isar.schema.statistics import (
@@ -78,9 +79,10 @@ def build_context(record, detector_id, card: Card, calres, prior, g: guide_mod.G
     ctx = ScanContext.from_scan(
         record, detector_id, card, center=calres.center,
         gauss_fwhm=calres.gauss_fwhm, lorentz_fwhm=calres.lorentz_fwhm,
-        prior_omega=(prior.omega0 if prior else None))
+        prior_omega=(prior.omega0 if prior else None),
+        resolution_curve=getattr(calres, "curve", None))
     mask = np.asarray(ctx.mask, dtype=bool)
-    norm = record.normalization
+    norm = _norm_of(record, detector_id)
     if norm.counting_mode == "monitor" and float(norm.preset) > 0:
         mon = np.asarray(norm.monitor, dtype=float)
         mask = mask & (mon >= g.monitor_frac * float(norm.preset))
@@ -109,7 +111,28 @@ def build_context(record, detector_id, card: Card, calres, prior, g: guide_mod.G
     n_used = int(mask.sum())
     if n_used < g.min_fit_points:
         return None, n_used, region_reasons
+    curve = ctx.resolution_curve
+    if curve is not None:
+        # The table is used as given (zero beyond it): a fit range that needs more is flagged, not extended.
+        xu = ctx.x_used
+        lo, hi = float(xu.min()) - ctx.center, float(xu.max()) - ctx.center
+        if not curve.covers(lo, hi):
+            msg = (f"resolution_range_exceeded: {detector_id}: the fit range [{lo:.1f}, {hi:.1f}] meV about "
+                   f"the zero leaves the resolution table [{curve.range[0]:.1f}, {curve.range[1]:.1f}] meV; "
+                   f"the table is used as given")
+            region_reasons.append(msg)
+            if hasattr(calres, "add_flag"):
+                calres.add_flag(Flag("resolution_range_exceeded", "warning", msg))
     return ctx, n_used, region_reasons
+
+
+def _norm_of(rec, det=None):
+    """The normalization that applies to one spectrum: its own exposure where it carries it
+    (``exposure_for``), else the record's. Stub records without spectra fall back to the record's."""
+    sp = (getattr(rec, "spectra", None) or {}).get(det)
+    if sp is not None and (getattr(sp, "monitor", None) is not None or getattr(sp, "time", None) is not None):
+        return exposure_for(rec, det)
+    return getattr(rec, "normalization", None)
 
 
 # In-window detector counts floor for trusting the delta-method HESSE ω₀ interval. Calibrated on
@@ -174,13 +197,13 @@ def _hesse_interval_and_trust(best, ctx) -> tuple:
     return interval, trusted
 
 
-def _exposure_per_point(rec, ctx) -> tuple[float, str]:
+def _exposure_per_point(rec, ctx, det=None) -> tuple[float, str]:
     """Median per-point counting exposure over the kept points, and the counting mode.
 
     The portable normaliser for the fitted amplitude (steering contract 2): monitor counts (or
     seconds) per point over the fit window (``ctx.mask``). NaN when unavailable → no IntensityMeasure.
     """
-    norm = getattr(rec, "normalization", None)
+    norm = _norm_of(rec, det)
     if norm is None:
         return float("nan"), ""
     # The mask is the fit-window shape authority and remains available on lightweight consumers
@@ -220,13 +243,13 @@ def _primary_amplitude(fit) -> float | None:
     return float(a) if a is not None else None
 
 
-def _intensity_measure(rec, ctx, fit) -> dict | None:
+def _intensity_measure(rec, ctx, fit, det=None) -> dict | None:
     """Portable :class:`IntensityMeasure` dict for the primary phonon (intrinsic amplitude per
     exposure, H4), or None when not computable."""
     amp = _primary_amplitude(fit)
     if amp is None:
         return None
-    exposure, mode = _exposure_per_point(rec, ctx)
+    exposure, mode = _exposure_per_point(rec, ctx, det)
     if not np.isfinite(exposure) or exposure <= 0:
         return None
     return IntensityMeasure(
@@ -238,7 +261,7 @@ def _intensity_measure(rec, ctx, fit) -> dict | None:
 def _effective_exposure_for(rec, ctx, fit, *, absolute_exposure=None,
                             absolute_exposure_source=None, target_center=None,
                             acquisition_target_energy=None,
-                            submitted_ncount: int | None = None) -> dict:
+                            submitted_ncount: int | None = None, det=None) -> dict:
     """One exposure definition for single scans and pooled masters."""
     target = target_center
     if target is None or not np.isfinite(target):
@@ -254,7 +277,7 @@ def _effective_exposure_for(rec, ctx, fit, *, absolute_exposure=None,
     exposure = absolute_exposure
     normalization_source = absolute_exposure_source
     if exposure is None and rec is not None:
-        norm = getattr(rec, "normalization", None)
+        norm = _norm_of(rec, det)
         selected = select_exposure(norm, np.asarray(ctx.x).shape, ctx.mask)
         exposure = selected.absolute
         normalization_source = selected.source
@@ -2407,12 +2430,12 @@ def _gate_scan(rec, det, card, g, runcal, exclusions, base) -> tuple:
     calres = calibrations.resolve(rec, det, card, runcal)
     if calres.held:
         return (ScanEntry(status="held_for_calibration", reasons=[calres.held_reason],
-                          provenance={"resolution_version": calres.resolution_version}, **base),
+                          provenance=calres.provenance(), **base),
                 calres)
     return None, calres
 
 
-def _apply_low_q_rescue(ctx, prior, card, sample, T, rec, near_gamma, region_reasons):
+def _apply_low_q_rescue(ctx, prior, card, sample, T, rec, near_gamma, region_reasons, det=None):
     """Steering Phase 2c — LOW-q rescue: near the zone centre the acoustic peak merges with the
     elastic line and Γ/A go unidentifiable. If the dispersion prior predicts a phonon within
     LOW_Q_FWHM_FACTOR·resolution of the elastic line AND a branch model exists, softly pin Γ and A
@@ -2425,7 +2448,7 @@ def _apply_low_q_rescue(ctx, prior, card, sample, T, rec, near_gamma, region_rea
             and prior.omega0 < LOW_Q_FWHM_FACTOR * ctx.gauss_fwhm:
         pred = branch_model.branch_for(card.state, sample=sample, T=T, omega0=float(prior.omega0))
         if pred is not None:
-            exposure, _mode = _exposure_per_point(rec, ctx)
+            exposure, _mode = _exposure_per_point(rec, ctx, det)
             exp = exposure if np.isfinite(exposure) else 0.0
             # Near Γ AND in-anchor: the CONSTRAINED recipe (hard Γ+A → the blob's Bose-weighted
             # brightness pins ω₀ where its position, 0.34 FWHM from the origin, cannot). Elsewhere the
@@ -2474,7 +2497,7 @@ def _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres,
     if ctx is None:
         rs = [f"undersampled: {n_used} < {g.min_fit_points} kept points"] + region_reasons
         return ScanEntry(status="non_result", reasons=rs,
-                         provenance={"resolution_version": calres.resolution_version}, **base)
+                         provenance=calres.provenance(), **base)
 
     # Phase A: hand the fit the branch-assignment acoustic ω₀(q) prediction so a multi-mode fit reports
     # the ACOUSTIC mode as primary (not nearest-any-prior / largest-amplitude). Narrow the IC grid with
@@ -2493,7 +2516,7 @@ def _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres,
     near_gamma = (target_branch == "acoustic" and prior is not None and np.isfinite(prior.omega0)
                   and prior.omega0 < BA.RESOLVABLE_FWHM_FACTOR * ctx.gauss_fwhm)
     if target_branch == "acoustic":
-        ctx = _apply_low_q_rescue(ctx, prior, card, sample, T, rec, near_gamma, region_reasons)
+        ctx = _apply_low_q_rescue(ctx, prior, card, sample, T, rec, near_gamma, region_reasons, det)
 
     # L0 descriptor: built once here (mask/counts are now fixed) and reused for the verdict's
     # under-model falsification (Phase 4a) AND storage — including through the hard-fix retry below.
@@ -2588,7 +2611,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
     submitted_ncount = (acquisition or {}).get("submitted_ncount")
     exposure_info = _effective_exposure_for(
         rec, ctx, fit, target_center=selected_energy,
-        acquisition_target_energy=acquisition_target, submitted_ncount=submitted_ncount)
+        acquisition_target_energy=acquisition_target, submitted_ncount=submitted_ncount, det=det)
     outcome = FitOutcome(
         detector_id=det, verdict=fit["verdict"], disposition=disposition,
         confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
@@ -2602,7 +2625,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         interval_reliable=fit.get("interval_reliable", True),
         omega0_profile=fit.get("omega0_profile"),
         hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
-        intensity=_intensity_measure(rec, ctx, fit),
+        intensity=_intensity_measure(rec, ctx, fit, det),
         descriptor=(descriptor.to_dict() if descriptor is not None else None),
         fit_kind=fit.get("fit_kind", "unconstrained"),
         branch_id=branch_id, assignment_entropy=assignment_entropy,
@@ -2638,7 +2661,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
     # bit-identical to a serial one. This worker never mutates shared card/session state.
     return ScanEntry(status="fitted", reasons=outcome.reasons,
                      detectors={det: outcome.to_dict()},
-                     provenance={"resolution_version": calres.resolution_version,
+                     provenance={**calres.provenance(),
                                  "M": M, "seed": seed, "prior_source": prior_source,
                                  "fit_seconds": round(time.perf_counter() - t_fit0, 4),
                                  "two_stage_seconds": fit.get("two_stage_seconds"),
@@ -2689,12 +2712,12 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         return ScanEntry(status="non_result",
                          reasons=[f"energy window error ({type(exc).__name__}): {exc}"]
                                  + region_reasons,
-                         provenance={"resolution_version": calres.resolution_version}, **base,
+                         provenance=calres.provenance(), **base,
                          measurement_record=measurement_record)
     _acq_id, _acq = _acquisition_provenance_for(rec, card, scan_id)
     _exposure_info = _effective_exposure_for(
         rec, ctx, {}, acquisition_target_energy=(_acq or {}).get("acquisition_target_energy"),
-        submitted_ncount=(_acq or {}).get("submitted_ncount"))
+        submitted_ncount=(_acq or {}).get("submitted_ncount"), det=det)
     measurement_record = _measurement_record(
         rec, det, q, T, sample, scan_id, card, chash, count_trust="trusted",
         reasons=region_reasons,
@@ -2709,7 +2732,7 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
     except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
         return ScanEntry(status="non_result",
                          reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,
-                         provenance={"resolution_version": calres.resolution_version}, **base,
+                         provenance=calres.provenance(), **base,
                          measurement_record=measurement_record)
 
     fit = _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descriptor,
