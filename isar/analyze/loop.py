@@ -239,7 +239,6 @@ def _data_likelihood_payload(ctx) -> dict:
             "exposure_reference": _fingerprint_number(
                 getattr(ctx, "exposure_reference", None)
             ),
-            "exposure_source": getattr(ctx, "exposure_source", None),
         },
         "fixed_likelihood_context": {
             "temperature": _fingerprint_number(getattr(ctx, "T", None)),
