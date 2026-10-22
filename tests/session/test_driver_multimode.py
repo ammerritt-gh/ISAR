@@ -150,6 +150,35 @@ def _two_peak_ctx(o1=4.0, a1=500.0, o2=10.0, a2=350.0, g=0.35, bg=8.0, n=121):
                        energy_status="needs_zero")
 
 
+def test_fit_one_attaches_expensive_errors_to_the_selected_model_only(monkeypatch):
+    """A one-peak spectrum with a weak elastic line: the elastic and no-elastic models both keep a
+    selection weight above the survivor floor, and only the selected one receives the bootstrap
+    and profile (count ladder: errors for the selected model, not for every count tried)."""
+    monkeypatch.setenv("ISAR_MODE_CEILING", "1")       # the count is not what this test is about
+    x = np.linspace(-8.0, 16.0, 81)
+    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 20.0, 8.0, 50.0, peak="all")
+    counts = np.random.default_rng(1).poisson(np.clip(lam, 0.0, None)).astype(float)
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                      center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    selections, attached = [], []
+    original = scan_delivery.select.select_models
+
+    def capture(*args, **kwargs):
+        selections.append(original(*args, **kwargs))
+        return selections[-1]
+
+    monkeypatch.setattr(scan_delivery.select, "select_models", capture)
+    monkeypatch.setattr(scan_delivery.errors, "attach_batch",
+                        lambda items, **kwargs: attached.append([i[0].label for i in items]))
+    fit = scan_delivery.fit_one(ctx, _card_with_fitting({}), prior=None, M=20, seed=1,
+                                errors_tier="full")
+
+    prelim = selections[0]
+    assert sum(score.weight >= 0.01 for score in prelim.scores) >= 2   # a real runner-up
+    assert attached == [[fit["best_label"]]]
+
+
 def test_fit_one_multimode_route_is_declaration_relaxed_not_peaks_presence():
     """`fit_one`'s persisted ``multimode_route`` is re-derived from the actual gate outcome
     (2026-08-09 ruling), never guessed from ``peaks`` presence: a declared scan whose residual

@@ -152,9 +152,9 @@ class Pooled:
 @dataclass
 class Selection:
     """Scan-level model-selection outcome: per-structure ``scores``, the max-posterior
-    ``best`` (min-AIC only in the recorded fallback), the surviving labels, and the pooled
-    across-model ``Pooled`` (or ``None`` when nothing converged / no survivor carried
-    bootstrap samples). ``evidence`` is the per-candidate
+    ``best`` (min-AIC only in the recorded fallback), ``survivors`` (the labels that receive the
+    expensive errors: ``best`` alone), and the pooled ``Pooled`` of their bootstrap samples (or
+    ``None`` when nothing converged / the winner carried none). ``evidence`` is the per-candidate
     :class:`~isar.analyze.evidence.EvidenceSet` (reusable across the prelim/final calls of one
     fit); ``selection_fallback`` is ``None`` on the evidence path, else the recorded reason
     selection had to fall back to AIC."""
@@ -300,9 +300,9 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
     :class:`~isar.analyze.evidence.EvidenceSet` (the prelim/final pair of one fit computes it
     once). Without evidence inputs the selection is the **recorded** AIC fallback — honest
     for hand-built diagnostics, never the production path. With ``stamp`` (default), writes
-    the per-scan deliverable onto each result's ``across_model``. Survivors lacking bootstrap
-    samples are dropped from the pool (run ``fit_admissible_structures(errors=True)`` first so
-    every converged fit carries them). ``executor`` (default ``None``) is forwarded to a freshly
+    the per-scan deliverable onto each result's ``across_model``. The survivor is the winner
+    alone (the one model that receives the expensive errors); without bootstrap samples it is
+    left out of the pool. ``executor`` (default ``None``) is forwarded to a freshly
     computed evidence set (ignored when ``evidence`` is supplied, since nothing is escalated in
     that case) — see :func:`~isar.analyze.evidence.candidate_set_evidence`."""
     scores = score_models(results, weight_floor=weight_floor)
@@ -373,7 +373,10 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
     else:
         # Recorded degraded mode: scores keep their score_models Akaike weights/survivors.
         best = min(scores, key=lambda s: s.aic).label
-    survivors = [s for s in scores if s.survives]
+    # The expensive errors (bootstrap, profile) go to the selected model only, not to every count
+    # tried (count ladder, design 2026-10-22): the delivery attaches them to ``survivors``, so that
+    # is the winner alone. Each score's ``survives`` still records weight >= floor.
+    survivors = [s for s in scores if s.label == best]
     pool_inputs = []
     for s in survivors:
         samp = (conv[s.label].within_model or {}).get("omega0_samples")
