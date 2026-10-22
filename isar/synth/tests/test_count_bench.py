@@ -125,6 +125,22 @@ def test_classifier_labels_and_indeterminate_draws_count_against(monkeypatch):
     assert cb.classify_resolvability(_truth(modes=()), 1, budget).label == "not_applicable"
 
 
+def test_laplace_reference_is_the_default_and_never_samples(monkeypatch):
+    from isar.analyze.errors import bayes
+    def no_sampler(*args, **kwargs):
+        raise AssertionError("the Laplace reference must not run nested sampling")
+    monkeypatch.setattr(bayes, "bayesian_posterior", no_sampler)
+    truth = _truth(modes=(cb.ModeTruth(8.0, 0.3, 600.0),), elastic_height=500.0)
+    obs = cb.draw_observation(truth, cb.rng_for(3, cb.STREAM_DRAW_REFERENCE, 0))
+    b = cb.ReferenceBudget(random_starts=1)
+    assert b.evidence == "laplace"
+    z1 = cb.reference_ln_evidence(obs, 1, [(8.0, 0.3)], b, cb.rng_for(3, cb.STREAM_REF_SEARCH))
+    z0 = cb.reference_ln_evidence(obs, 0, [(8.0, 0.3)], b, cb.rng_for(3, cb.STREAM_REF_SEARCH))
+    assert z1 is not None and z0 is not None and z1 - z0 > 50          # an obvious extra mode
+    with pytest.raises(ValueError):
+        cb.ReferenceBudget(evidence="trans-dimensional")
+
+
 # --------------------------------------------------------------------------- A/B and figures
 def test_ab_accuracy_is_a_coin_flip_for_identical_curves_and_certain_for_different_ones():
     lam = cb.truth_lambda(_truth())
@@ -210,7 +226,7 @@ def test_tiny_run_goes_through_fit_one_and_writes_figures_and_cases(monkeypatch,
 def test_real_reference_prefers_the_true_count():
     truth = _truth(modes=(cb.ModeTruth(8.0, 0.3, 600.0),), elastic_height=500.0)
     obs = cb.draw_observation(truth, cb.rng_for(3, cb.STREAM_DRAW_REFERENCE, 0))
-    b = cb.ReferenceBudget(n_live=100, random_starts=1, max_iter=40000)  # the sampler gate wants ESS >= 100
+    b = cb.ReferenceBudget(evidence="nested", n_live=100, random_starts=1, max_iter=40000)  # the sampler gate wants ESS >= 100
     rng = cb.rng_for(3, cb.STREAM_REF_SEARCH)
     z1 = cb.reference_ln_evidence(obs, 1, [(8.0, 0.3)], b, rng)
     z0 = cb.reference_ln_evidence(obs, 0, [(8.0, 0.3)], b, rng)
@@ -228,7 +244,7 @@ def test_the_worker_pool_runs_cases_with_explicit_workers():
 def test_a_run_past_the_deadline_kills_workers_and_reports(monkeypatch):
     monkeypatch.setattr(cb, "HARD_KILL_GRACE_S", 0.0)
     truths = [cb.generate_case(1, cb.STREAM_CASE_EVAL, 0, 3)] * 2          # minutes of sampling each
-    big = cb.ReferenceBudget(draws=3, null_draws=3, n_live=100)
+    big = cb.ReferenceBudget(draws=3, null_draws=3, evidence="nested", n_live=100)
     results, info = cb.run_benchmark(truths, base_seed=1, n_workers=2, budget=big, deadline_s=2.0)
     assert info.stopped_by_deadline and info.killed_in_flight == 2 and results == []
     assert info.wall_clock_s < 60

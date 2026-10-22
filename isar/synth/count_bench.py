@@ -95,6 +95,7 @@ REF_LN_BAYES_MIN = 0.0
 REF_AMPLITUDE_FACTOR = 100.0     # intrinsic phonon amplitude A in [0, factor * max counts]
 REF_ELASTIC_FACTOR = 20.0        # elastic area E in [0, factor * max counts]
 REF_MAX_SUBSET_STARTS = 8        # cap on truth-position starts for an N-1 sub-model
+REF_EVIDENCE_KINDS = ("laplace", "nested")   # laplace: production Gaussian rungs, no sampler
 
 # Generator: the instrument window is the BL43LXU-like one (about -16..+20 meV); the resolution is
 # a generic Voigt of a few tenths-to-two meV, not any measured curve.
@@ -358,10 +359,15 @@ class ReferenceBudget:
 
     draws: int = RESOLVE_DRAWS          # draws of the truth
     null_draws: int = RESOLVE_DRAWS     # draws of the truth minus its weakest mode
-    random_starts: int = 6              # random-start fits per model, beside the truth-placed ones
-    n_live: int = 100                   # nested-sampling live points
+    evidence: str = "laplace"           # "laplace" (production Gaussian rungs) | "nested" (sampler)
+    random_starts: int = 8              # random-start fits per model, beside the truth-placed ones
+    n_live: int = 100                   # nested-sampling live points (evidence="nested" only)
     dlogz: float = 0.5
     max_iter: int | None = 40_000
+
+    def __post_init__(self):
+        if self.evidence not in REF_EVIDENCE_KINDS:
+            raise ValueError(f"reference evidence must be one of {REF_EVIDENCE_KINDS}, got {self.evidence!r}")
 
 
 def _reference_hypothesis(m: int):
@@ -402,10 +408,9 @@ def reference_ln_evidence(obs: Observation, m: int, positions, budget: Reference
 
     ``positions`` are the true mode (omega0, gamma) pairs: starts are placed at them (every
     m-subset, capped), which only the reference may do. The best converged start defines the
-    problem for the sampler; the sampler itself explores the whole prior box. A failed sampler is
-    None, never a low evidence."""
+    problem for the evidence; with ``evidence="nested"`` the sampler explores the whole prior box.
+    A failed calculation is None, never a low evidence."""
     from isar.analyze import loop
-    from isar.analyze.errors.bayes import bayesian_posterior
 
     ctx, hyp = context_of(obs), _reference_hypothesis(m)
     comp = hyp.build()
@@ -427,6 +432,12 @@ def reference_ln_evidence(obs: Observation, m: int, positions, budget: Reference
     if best is None:
         return None
     bundle = _reference_bundle(comp.param_names(), max(float(np.max(obs.counts)), 1.0))
+    if budget.evidence == "laplace":
+        # escalation="defer": the Gaussian rungs only. An invalid rung is NaN, i.e. None here.
+        from isar.analyze.evidence import structure_evidence
+        ln_z = structure_evidence(hyp, ctx, best, bundle, escalation="defer").log_evidence
+        return float(ln_z) if np.isfinite(ln_z) else None
+    from isar.analyze.errors.bayes import bayesian_posterior
     bz = bayesian_posterior(hyp, ctx, best, prior_bundle=bundle, seed=int(rng.integers(2 ** 31)),
                             n_live=budget.n_live, dlogz=budget.dlogz, max_iter=budget.max_iter)
     return float(bz.log_evidence) if bz.converged and np.isfinite(bz.log_evidence) else None
@@ -751,6 +762,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--null-draws", type=int, default=None,
                    help="reference draws of the weakest-removed truth (default: = --draws)")
     p.add_argument("--ab-draws", type=int, default=AB_DRAWS, help="A/B draws per source")
+    p.add_argument("--ref-evidence", choices=REF_EVIDENCE_KINDS, default=ReferenceBudget.evidence,
+                   help="reference evidence: laplace (default, no sampler) or nested (slow, spot checks)")
     p.add_argument("--ref-n-live", type=int, default=ReferenceBudget.n_live)
     p.add_argument("--ref-random-starts", type=int, default=ReferenceBudget.random_starts)
     p.add_argument("--errors-tier", default="cheap", choices=("cheap", "fast", "auto", "full"))
@@ -777,9 +790,11 @@ def main(argv=None) -> int:
     ceiling = mode_ceiling(args.ceiling)
     stream = STREAM_CASE_TUNING if args.mode == "tuning" else STREAM_CASE_EVAL
     budget = ReferenceBudget(draws=args.draws, null_draws=args.null_draws or args.draws,
-                             n_live=args.ref_n_live, random_starts=args.ref_random_starts)
+                             evidence=args.ref_evidence, n_live=args.ref_n_live,
+                             random_starts=args.ref_random_starts)
     print(f"count_bench: {n_cases} {args.mode} cases, ceiling {ceiling}, {n_workers} workers, "
-          f"reference {budget.draws}/{budget.null_draws} draws, A/B {args.ab_draws} draws")
+          f"reference {budget.draws}/{budget.null_draws} draws ({budget.evidence} evidence), "
+          f"A/B {args.ab_draws} draws")
     truths = [generate_case(args.seed, stream, i, ceiling) for i in range(n_cases)]
     results, info = run_benchmark(truths, base_seed=args.seed, n_workers=n_workers, budget=budget,
                                   n_ab_draws=args.ab_draws, errors_tier=args.errors_tier,
