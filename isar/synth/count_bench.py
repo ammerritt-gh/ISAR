@@ -256,13 +256,19 @@ class Observation:
     T: float
     gauss_fwhm: float
     lorentz_fwhm: float
+    exposure: float      # the declared exposure (a monitor, as a real scan records it)
 
 
 def context_of(obs: Observation):
     from isar.analyze.context import ScanContext
+    # A monitor-normalised spectrum: relative scale 1 everywhere, reference the declared exposure.
+    # exposure_source is a sibling unit's field; set only where this base has it.
+    extra = {"exposure_source": "monitor"} if "exposure_source" in {f.name for f in fields(ScanContext)} else {}
     return ScanContext(x=obs.x, counts=obs.counts, mask=np.ones_like(obs.x, dtype=bool), T=obs.T,
                        center=0.0, gauss_fwhm=obs.gauss_fwhm, lorentz_fwhm=obs.lorentz_fwhm,
-                       instrument="COUNT_BENCH", energy_status="absolute")
+                       instrument="COUNT_BENCH", energy_status="absolute",
+                       exposure_scale=np.ones_like(obs.x, dtype=float), exposure_reference=obs.exposure,
+                       **extra)
 
 
 def _prefix(i: int) -> str:
@@ -277,7 +283,8 @@ def _truth_model(truth: CaseTruth):
     from isar.analyze.phonon import omega_d_from
 
     x = energy_axis()
-    ctx = context_of(Observation(x, np.zeros_like(x), truth.T, truth.gauss_fwhm, truth.lorentz_fwhm))
+    ctx = context_of(Observation(x, np.zeros_like(x), truth.T, truth.gauss_fwhm, truth.lorentz_fwhm,
+                                truth.exposure))
     phonons = [PhononDHO(prefix=_prefix(i)) for i in range(truth.n_modes)]
     xf = np.arange(X_MIN, X_MAX + 1e-9, 0.05)
     theta = []
@@ -299,7 +306,8 @@ def truth_lambda(truth: CaseTruth) -> np.ndarray:
 def draw_observation(truth: CaseTruth, rng: np.random.Generator) -> Observation:
     """One Poisson realisation (sigma = sqrt(N), 0 at zero counts: no floor is applied anywhere)."""
     return Observation(x=energy_axis(), counts=rng.poisson(truth_lambda(truth)).astype(float),
-                       T=truth.T, gauss_fwhm=truth.gauss_fwhm, lorentz_fwhm=truth.lorentz_fwhm)
+                       T=truth.T, gauss_fwhm=truth.gauss_fwhm, lorentz_fwhm=truth.lorentz_fwhm,
+                       exposure=truth.exposure)
 
 
 # --------------------------------------------------------------------------- the fitter under test
