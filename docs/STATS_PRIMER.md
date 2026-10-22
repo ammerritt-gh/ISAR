@@ -250,7 +250,7 @@ How many peaks a spectrum holds is a model-selection question, so it is decided 
 everything: by evidence, with the Occam penalty paid out of the priors. That penalty is only as
 honest as the priors, and a prior built from the spectrum's own counts is not honest: a brighter
 spectrum would get a wider amplitude prior and pay a bigger penalty for the same extra peak. The
-**mode prior recipe** (`isar/analyze/prior.py`, version `isar.mode-prior-recipe/1`) fixes that. It is
+**mode prior recipe** (`isar/analyze/prior.py`, version `isar.mode-prior-recipe/2`) fixes that. It is
 one rule, set before fitting and identical for every spectrum, built only from quantities the
 experiment *declares*: the fit window, the resolution width and the exposure. Starting values may
 still come from the data (a seed is not a prior); bounds and priors may not.
@@ -259,18 +259,21 @@ still come from the data (a seed is not a prior); bounds and priors may not.
 |---|---|---|
 | mode energy Ω_d | `(1e-3, highest fitted energy)` meV | the fit window |
 | mode width Γ | `(min(1e-3 meV, 0.01 x resolution FWHM), 5 meV)` | the resolution width, a declared maximum |
-| mode / elastic / quasi-elastic area | `(0, AMPLITUDE_SCALE x exposure x resolution FWHM)` | the exposure, the resolution width |
-| flat background (counts per point) | `(0, AMPLITUDE_SCALE x exposure)` | the exposure |
+| mode / elastic / quasi-elastic area | `(0, scale x exposure x resolution FWHM)` | the exposure, the resolution width |
+| flat background (counts per point) | `(0, scale x exposure)` | the exposure |
 
 The exposure is the spectrum's own declared one (`exposure_reference`: the median kept monitor, or
-the counting time where a spectrum has no monitor); a spectrum that declares none is given the
+the counting time where a spectrum has no monitor), and `scale` depends on which of the two it is
+(`exposure_source`, below); a spectrum that declares none is given the
 nominal `1e6`, never a number taken from its counts. A spectrum with no usable resolution is held
 before it gets here. The anti-Stokes partner is still derived from its Stokes mode, never given a
 prior (§2, hard rule 2).
 
-**The amplitude constant.** `AMPLITUDE_SCALE = 1.0` counts per unit exposure per resolution width: a
-resolution-limited line may reach one count per point for every monitor count. It is a ceiling,
-not an expectation, and it is **agent-proposed** from order-of-magnitude public instrument figures
+**The amplitude constants.** `scale` is `AMPLITUDE_SCALE_PER_MONITOR = 1.0` for a monitor-normalised
+spectrum, and `AMPLITUDE_SCALE_PER_SECOND = 1.0e5` for one normalised by counting time alone (the
+recipe provenance of each fit records which was used). The monitor constant: a resolution-limited
+line may reach one count per point for every monitor count. It is a ceiling, not an expectation,
+and it is **agent-proposed** from order-of-magnitude public instrument figures
 (no measured value is used or committed): an inelastic X-ray analyzer detector counts at most some
 1e4 to 1e5 events per second before it saturates, the strongest elastic lines sit one to two
 decades below that, and the beam monitor integrates of order 1e4 to 1e5 counts per second, so the
@@ -283,11 +286,18 @@ is part of the versioned recipe. The recipe is run on the example set against on
 prior width (the S6 sensitivity check); if any selected count moves, the affected spectra are
 reported and the constant goes to the operator before the beamtime.
 
-**Known limit.** The constant is calibrated for monitor-normalised spectra, which is every
-facility ISAR reads today. `ScanContext` does not record whether `exposure_reference` is monitor
-counts or seconds, so a spectrum normalised by counting time alone would get a ceiling about four
-decades too tight; the context needs to carry the exposure source before such a spectrum is fitted
-with this recipe.
+The seconds constant is the same kind of ceiling in counts per second: the top of the 1e4 to 1e5
+events per second an analyzer detector saturates at, so a count-time ceiling never clips a real
+line. A 30 s scan at 0.4 meV resolution therefore admits a mode area of 1.2e6 counts·meV, where the
+monitor constant applied to seconds would have given 12 and clipped a strong line. It has the same
+status as the monitor constant: agent-proposed, versioned, and to the operator through the S6 check.
+
+**The exposure source.** `exposure_source` (`monitor` or `time`) travels from the normalization
+selection into the fit context. A context that declares an exposure reference with no source is
+refused, never given a default scale. The synthetic stat2b world's exposure is a flux profile and is
+labelled `monitor`, so its bounds are unchanged. The pooled-master path normalises by monitor only:
+a master with no monitor takes the nominal exposure on the monitor scale, not seconds. That gap is
+the pooled path's own, and this recipe does not change it.
 
 **Mode identities.** The modes of one structure are exchangeable: swapping two labels gives the same
 curve, so every solution appears N! times in the likelihood. A flat prior per label then makes the

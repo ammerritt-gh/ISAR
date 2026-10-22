@@ -43,15 +43,18 @@ class PhononPrior:
 # ----------------------------------------------------------------------------
 # Bump the version whenever a constant or a rule below changes: it is hashed into the guidelines
 # signature (so the affected spectra refit) and recorded with every fit.
-PRIOR_RECIPE_VERSION = "isar.mode-prior-recipe/1"
+PRIOR_RECIPE_VERSION = "isar.mode-prior-recipe/2"
 
-# Amplitude ceiling, in counts per unit exposure per resolution width: a fitted area A (counts at
-# the reference exposure, integrated over meV) is bounded by AMPLITUDE_SCALE x exposure x width, i.e.
-# the peak of a resolution-limited line may reach AMPLITUDE_SCALE counts per point per unit exposure.
-# The exposure is the spectrum's declared one (monitor counts), so 1.0 means "as bright as the
-# monitor itself". Agent-proposed from order-of-magnitude instrument figures, no measured value:
-# docs/STATS_PRIMER.md. No card override; the S6 sensitivity check is how it reaches the operator.
-AMPLITUDE_SCALE = 1.0
+# Amplitude ceiling: a fitted area A (counts at the reference exposure, integrated over meV) is
+# bounded by scale x exposure x width, i.e. a resolution-limited peak may reach `scale x exposure`
+# counts per point. The scale depends on what the exposure counts: monitor counts (one count per
+# monitor count) or seconds (a count rate per second). Agent-proposed from order-of-magnitude
+# instrument figures, no measured value: docs/STATS_PRIMER.md. No card override; the S6 sensitivity
+# check is how the values reach the operator.
+AMPLITUDE_SCALE_PER_MONITOR = 1.0
+# Counts per second: the top of the 1e4-1e5 counts/s an analyzer detector saturates at (the primer's
+# figure), so a seconds-normalised ceiling never clips a real line.
+AMPLITUDE_SCALE_PER_SECOND = 1.0e5
 
 # Exposure assumed for a spectrum that declares none (the legacy uniform-exposure path): a declared
 # nominal figure, never a function of the counts.
@@ -86,6 +89,20 @@ def resolution_fwhm(ctx) -> float:
     return w
 
 
+def amplitude_scale(ctx) -> float:
+    """The amplitude ceiling's scale for this spectrum, by the source its exposure was counted in.
+    A spectrum with no declared exposure keeps the monitor scale on the nominal exposure."""
+    if getattr(ctx, "exposure_reference", None) is None:
+        return AMPLITUDE_SCALE_PER_MONITOR
+    source = getattr(ctx, "exposure_source", None)
+    if source == "monitor":
+        return AMPLITUDE_SCALE_PER_MONITOR
+    if source == "time":
+        return AMPLITUDE_SCALE_PER_SECOND
+    raise ValueError(f"exposure reference {ctx.exposure_reference!r} has no declared source "
+                     f"('monitor' or 'time'), got {source!r}: the amplitude scale cannot be chosen")
+
+
 def mode_bounds(names, ctx) -> list[tuple[float, float]]:
     """(lo, hi) for each global parameter name, in order: the recipe's bounds and, since every
     parameter's prior is flat over them, its priors.
@@ -93,13 +110,14 @@ def mode_bounds(names, ctx) -> list[tuple[float, float]]:
     * ``.Omega_d`` (energy): uniform over the fit window, ``(EPS_OMEGA_D, max fitted energy)``.
     * ``.Gamma`` (width): from ``WIDTH_FLOOR_FRACTION`` of the resolution width (never above the
       absolute ``GAMMA_FLOOR``) to ``GAMMA_MAX``.
-    * ``.A`` / ``.E`` / ``.QE`` (areas): ``(0, AMPLITUDE_SCALE x exposure x resolution width)``.
-    * ``.BG`` (flat background, counts per point): ``(0, AMPLITUDE_SCALE x exposure)``.
+    * ``.A`` / ``.E`` / ``.QE`` (areas): ``(0, amplitude_scale x exposure x resolution width)``.
+    * ``.BG`` (flat background, counts per point): ``(0, amplitude_scale x exposure)``.
     """
     x_max = float(np.max(ctx.x_used))
     exposure = recipe_exposure(ctx)
     width = resolution_fwhm(ctx)
-    area_hi = AMPLITUDE_SCALE * exposure * width
+    scale = amplitude_scale(ctx)
+    area_hi = scale * exposure * width
     out = []
     for name in names:
         if name.endswith(".Omega_d"):
@@ -109,7 +127,7 @@ def mode_bounds(names, ctx) -> list[tuple[float, float]]:
         elif name.endswith((".A", ".E", ".QE")):
             out.append((0.0, area_hi))
         elif name.endswith(".BG"):
-            out.append((0.0, AMPLITUDE_SCALE * exposure))
+            out.append((0.0, scale * exposure))
         else:
             raise ValueError(f"mode prior recipe has no bound for parameter {name!r}")
     return out
@@ -118,7 +136,8 @@ def mode_bounds(names, ctx) -> list[tuple[float, float]]:
 def recipe_provenance(ctx) -> dict:
     """What a fit records about the recipe it was bounded by: the version and the declared
     quantities it resolved to for this spectrum (JSON-able)."""
-    return {"version": PRIOR_RECIPE_VERSION, "amplitude_scale": AMPLITUDE_SCALE,
+    return {"version": PRIOR_RECIPE_VERSION, "amplitude_scale": amplitude_scale(ctx),
+            "exposure_source": getattr(ctx, "exposure_source", None),
             "exposure": recipe_exposure(ctx), "resolution_fwhm": resolution_fwhm(ctx),
             "width_floor_fraction": WIDTH_FLOOR_FRACTION}
 

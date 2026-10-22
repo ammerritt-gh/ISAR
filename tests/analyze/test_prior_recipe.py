@@ -28,17 +28,17 @@ NAMES = ["phonon.Omega_d", "phonon.Gamma", "phonon.A", "phonon2.Omega_d", "phono
 
 # --------------------------------------------------------------------------- the recipe's bounds
 def test_bounds_ignore_observed_counts():
-    base = _ctx(exposure_scale=np.ones(81), exposure_reference=3.0e5)
+    base = _ctx(exposure_scale=np.ones(81), exposure_reference=3.0e5, exposure_source="monitor")
     loud = dataclasses.replace(base, counts=base.counts * 1.0e4 + 7.0)
     assert prior.mode_bounds(NAMES, base) == prior.mode_bounds(NAMES, loud)
 
 
 def test_bounds_follow_declared_exposure_and_resolution():
-    a = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5)
+    a = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor")
     b = dataclasses.replace(a, exposure_reference=2.0e5)
     c = dataclasses.replace(a, gauss_fwhm=2.0)
     amp = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))["phonon.A"][1]
-    assert amp(a) == pytest.approx(prior.AMPLITUDE_SCALE * 1.0e5 * 1.0)
+    assert amp(a) == pytest.approx(prior.AMPLITUDE_SCALE_PER_MONITOR * 1.0e5 * 1.0)
     assert amp(b) == pytest.approx(2.0 * amp(a))
     assert amp(c) == pytest.approx(2.0 * amp(a))
     bg = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))["bg.BG"][1]
@@ -46,7 +46,7 @@ def test_bounds_follow_declared_exposure_and_resolution():
 
 
 def test_bounds_energy_width_amplitude_shapes():
-    ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5)
+    ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor")
     got = dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))
     assert got["phonon.Omega_d"] == got["phonon2.Omega_d"] == (EPS_OMEGA_D, 10.0)  # fit window
     assert got["phonon.Gamma"] == (GAMMA_FLOOR, GAMMA_MAX)       # resolution 1.0 meV: floor wins
@@ -69,6 +69,24 @@ def test_no_declared_exposure_uses_the_nominal_one_not_the_counts():
     assert prior.mode_bounds(NAMES, a) == prior.mode_bounds(NAMES, b)
 
 
+def test_time_and_monitor_exposures_get_their_own_amplitude_scale():
+    # Equal numeric exposure, different source: seconds are a count rate times time, not monitor
+    # counts, so the two ceilings must differ.
+    mon = _ctx(exposure_scale=np.ones(81), exposure_reference=30.0, exposure_source="monitor")
+    tim = dataclasses.replace(mon, exposure_source="time")
+    width = prior.resolution_fwhm(mon)
+    bounds = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))
+    assert bounds(mon)["phonon.A"][1] == pytest.approx(prior.AMPLITUDE_SCALE_PER_MONITOR * 30.0 * width)
+    assert bounds(tim)["phonon.A"][1] == pytest.approx(prior.AMPLITUDE_SCALE_PER_SECOND * 30.0 * width)
+    assert bounds(tim)["bg.BG"][1] == pytest.approx(prior.AMPLITUDE_SCALE_PER_SECOND * 30.0)
+
+
+def test_a_declared_exposure_with_no_source_is_refused():
+    ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=4.0e5)
+    with pytest.raises(ValueError, match="declared source"):
+        prior.mode_bounds(NAMES, ctx)
+
+
 def test_unusable_resolution_is_refused_not_defaulted():
     with pytest.raises(ValueError):
         prior.mode_bounds(NAMES, _ctx(gauss_fwhm=0.0, lorentz_fwhm=0.0))
@@ -80,9 +98,11 @@ def test_unknown_parameter_is_refused():
 
 
 def test_provenance_names_the_version_and_the_declared_quantities():
-    p = prior.recipe_provenance(_ctx(exposure_scale=np.ones(81), exposure_reference=2.0e5))
+    p = prior.recipe_provenance(_ctx(exposure_scale=np.ones(81), exposure_reference=2.0e5,
+                                     exposure_source="time"))
     assert p["version"] == prior.PRIOR_RECIPE_VERSION
-    assert p["exposure"] == 2.0e5 and p["amplitude_scale"] == prior.AMPLITUDE_SCALE
+    assert p["exposure"] == 2.0e5 and p["exposure_source"] == "time"
+    assert p["amplitude_scale"] == prior.AMPLITUDE_SCALE_PER_SECOND
 
 
 # --------------------------------------------------------------------------- ordered energies
@@ -164,7 +184,7 @@ def test_mode_order_puts_the_lower_energy_first_and_keeps_the_curve():
 def _two_mode_bundle():
     from isar.analyze import catalogue
     comp = CompositeModel([PhononDHO(), PhononDHO(prefix="phonon2"), ConstantBackground()])
-    ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5)
+    ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor")
     names = comp.param_names()
     return names, catalogue.resolve_priors(comp, ctx, prior.mode_bounds(names, ctx))
 
@@ -199,7 +219,7 @@ def test_bundle_leaves_an_informative_energy_prior_alone():
     from isar.analyze import catalogue
     from isar.schema.steering import ParamConstraints
     comp = CompositeModel([PhononDHO(), PhononDHO(prefix="phonon2"), ConstantBackground()])
-    ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5,
+    ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor",
                constraints=ParamConstraints(soft={"phonon.Omega_d": (3.0, 0.5)},
                                             origins={"phonon.Omega_d": "transport"}))
     names = comp.param_names()

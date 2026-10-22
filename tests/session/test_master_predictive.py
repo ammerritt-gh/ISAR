@@ -247,7 +247,7 @@ def _pool_context(monitor, *, n_points=None, T=100.0):
     return ScanContext(x=x, counts=np.zeros(monitor.size), mask=np.ones(monitor.size, bool),
                        T=T, center=0.0, gauss_fwhm=0.4, lorentz_fwhm=0.1, instrument="IN8",
                        energy_status="absolute", exposure_scale=monitor / reference,
-                       exposure_reference=reference), reference
+                       exposure_reference=reference, exposure_source="monitor"), reference
 
 
 def _stub_models(monkeypatch, manifests, draws, names=_NAMES):

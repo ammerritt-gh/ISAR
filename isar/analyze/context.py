@@ -141,6 +141,8 @@ class ScanContext:
     # the amplitude basis a predictive artifact must publish.  It is carried, never recomputed: the
     # median is a rank statistic, so recomputing it on a different kept set can shift the declared
     # basis (EIG-0 §4.5).  None wherever ``exposure_scale`` is None.
+    exposure_source: str | None = None  # what ``exposure_reference`` counts: "monitor" or "time"
+    # (:func:`select_exposure`'s source). The mode prior recipe reads it to choose the amplitude scale.
     resolution_curve: TabulatedResolution | None = None  # measured resolution; when set it
     # replaces the Voigt in the components, and __post_init__ makes gauss_fwhm its FWHM and
     # lorentz_fwhm 0 so width-only consumers need no change.
@@ -230,5 +232,6 @@ class ScanContext:
             quasielastic_fwhm=card.policy.quasielastic_fwhm,
             exposure_scale=exposure_scale,
             exposure_reference=selected.reference,
+            exposure_source=selected.source,
             resolution_curve=resolution_curve,
         )

@@ -621,7 +621,8 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                       instrument=card.policy.instrument, energy_status=card.policy.energy_status,
                       prior_omega=ic_ao, quasielastic_fwhm=card.policy.quasielastic_fwhm,
                       acoustic_omega=ao, exposure_scale=exposure_scale,
-                      exposure_reference=reference_exposure)
+                      exposure_reference=reference_exposure,
+                      exposure_source=None if reference_exposure is None else "monitor")
     near_gamma = (target_branch == "acoustic" and ao is not None
                   and ao < BA.RESOLVABLE_FWHM_FACTOR * calres.gauss_fwhm)
     descriptor = scan_delivery._build_descriptor(ctx)

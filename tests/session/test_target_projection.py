@@ -44,7 +44,8 @@ def _pool_context(n_points=5):
     return ScanContext(x=np.linspace(-2.0, 8.0, n_points), counts=np.zeros(n_points),
                        mask=np.ones(n_points, bool), T=100.0, center=0.0, gauss_fwhm=0.4,
                        lorentz_fwhm=0.1, instrument="IN8", energy_status="absolute",
-                       exposure_scale=monitor / reference, exposure_reference=reference)
+                       exposure_scale=monitor / reference, exposure_reference=reference,
+                       exposure_source="monitor")
 
 
 def _two_mode_artifact(monkeypatch, *, local_best: float):
