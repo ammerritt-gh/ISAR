@@ -604,7 +604,7 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=()) -> PriorBu
             # better-fitting model loses with no flag. Fail at construction, loudly.
             raise ValueError(f"free parameter {name!r} has non-finite optimizer bounds "
                              f"({lo!r}, {hi!r}); evidence needs a proper prior — bound the "
-                             f"parameter in loop._bound or declare a ParamPrior for it")
+                             f"parameter in prior.mode_bounds or declare a ParamPrior for it")
         suffix = name.split(".", 1)[-1]
         if name in soft:
             mu, sigma = float(soft[name][0]), float(soft[name][1])

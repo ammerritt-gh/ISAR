@@ -21,10 +21,11 @@ log = logging.getLogger(__name__)
 from isar.analyze import backends, estimators
 from isar.analyze.backends import BackendResult
 from isar.analyze.phonon import (
-    EPS_OMEGA_D, GATE_COST, _bound, _gamma_at_bound, assess_success,
+    EPS_OMEGA_D, GATE_COST, _gamma_at_bound, assess_success,
     enumerate_phonon_multimode, enumerate_phonon_structures, greedy_multimode_ic,
     omega0_value_error, phonon_structure_ic,
 )
+from isar.analyze.prior import mode_bounds, recipe_provenance
 # Re-imported for their module attributes, not for use here: scan_delivery.py and the
 # analyze tests read ``loop.GAMMA_FLOOR`` / ``loop.GAMMA_MAX``.
 from isar.analyze.phonon import GAMMA_FLOOR, GAMMA_MAX  # noqa: F401
@@ -239,6 +240,7 @@ def _data_likelihood_payload(ctx) -> dict:
             "exposure_reference": _fingerprint_number(
                 getattr(ctx, "exposure_reference", None)
             ),
+            "exposure_source": getattr(ctx, "exposure_source", None),
         },
         "fixed_likelihood_context": {
             "temperature": _fingerprint_number(getattr(ctx, "T", None)),
@@ -475,6 +477,8 @@ def _fit_semantics_for(prob: Problem, ctx, fit_kind: str) -> dict:
         # Additive compatibility alias.  Since STAT-1.5 it names the complete comparison context,
         # never merely the constraint payload.
         "conditioning_fingerprint": comparison_context_fingerprint,
+        # The mode prior recipe that bounded this fit (and so set its flat priors).
+        "prior_recipe": recipe_provenance(ctx),
         "authority_scopes": authority_scopes(
             single_fit_delivery="active",
             user_diagnostic="active",
@@ -506,8 +510,6 @@ def build_problem(hyp, ctx, *, x0=None) -> Problem:
     composite = hyp.build()
     x = ctx.x_used
     counts = ctx.counts_used
-    x_max = float(np.max(x))
-    cmax = max(float(np.max(counts)), 1.0)
 
     names = composite.param_names()
     if x0 is None:
@@ -516,8 +518,8 @@ def build_problem(hyp, ctx, *, x0=None) -> Problem:
         x0 = np.array([x0[n] for n in names], dtype=float)
     else:
         x0 = np.asarray(x0, dtype=float)
-    bounds = [_bound(n, x_max, cmax) for n in names]
-    est = estimators.get_estimator("baker_cousins")
+    bounds = mode_bounds(names, ctx)   # the prior recipe: declared quantities, never the counts
+    est =estimators.get_estimator("baker_cousins")
 
     def costv(theta):
         return est.cost(counts, composite.evaluate(x, theta, ctx))

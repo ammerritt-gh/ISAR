@@ -41,6 +41,21 @@ def test_build_problem_per_hypothesis_k_and_ndof():
     assert p_full.k == 5 and p_full.ndof == 41 - 5
 
 
+def test_bounds_come_from_the_prior_recipe_never_the_counts():
+    """Every fitted parameter's bound (and so its flat prior) is the recipe's: scaling the counts
+    leaves the problem's bounds alone, and the fit records the recipe it was bounded by."""
+    from isar.analyze import prior
+
+    ctx = _spectrum_ctx(n=41)
+    hyp = _by_label(ctx)["elastic+stokes+bg"]
+    prob = loop.build_problem(hyp, ctx)
+    assert prob.bounds == prior.mode_bounds(prob.free_names, ctx)
+    brighter = replace(ctx, counts=ctx.counts * 50.0)
+    assert loop.build_problem(hyp, brighter).bounds == prob.bounds
+    res = loop.fit_hypothesis(hyp, ctx, minos=False)
+    assert res.fit_semantics["prior_recipe"] == prior.recipe_provenance(ctx)
+
+
 def test_fit_hypothesis_matches_synth_fit_full_model():
     ctx = _spectrum_ctx()
     hyp = _by_label(ctx)["elastic+stokes+bg"]

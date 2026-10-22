@@ -3,7 +3,8 @@
 excitation-agnostic.
 
 Owns the (Ω_d,Γ) ↔ ω₀ conversions and their error propagation, fit-success assessment,
-the parameter bounds and Γ-bound diagnostics, the grid+NNLS initial conditions (§3), and
+the Γ-bound diagnostics (the bounds themselves are the prior recipe,
+:func:`isar.analyze.prior.mode_bounds`), the grid+NNLS initial conditions (§3), and
 the physics-gated enumeration of admissible peak structures (§2).
 
 Import direction: :mod:`isar.analyze.components` imports this module at module level, so
@@ -127,7 +128,7 @@ GAMMA_BOUND_TOL = 5.0 * GAMMA_FLOOR
 GATE_COST = 2.0
 
 # ----------------------------------------------------------------------------
-# Bounds and Γ-bound diagnostics
+# Γ-bound diagnostics
 # ----------------------------------------------------------------------------
 def _gamma_at_bound(gammas) -> bool:
     """True if any phonon Γ has railed out — pinned near GAMMA_FLOOR (resolution-limited spike)
@@ -137,23 +138,6 @@ def _gamma_at_bound(gammas) -> bool:
         if g <= GAMMA_BOUND_TOL or g >= GAMMA_MAX * (1.0 - 1e-3):
             return True
     return False
-
-
-def _bound(name: str, x_max: float, cmax: float) -> tuple[float, float]:
-    """Per-parameter bounds, mirroring ``synth.fit._build_problem`` exactly."""
-    if name.endswith(".Omega_d"):
-        return (EPS_OMEGA_D, x_max)
-    if name.endswith(".Gamma"):
-        return (GAMMA_FLOOR, GAMMA_MAX)
-    if name.endswith(".A") or name.endswith(".E") or name.endswith(".QE"):
-        # .QE joined 2026-08-08: the quasielastic amplitude was the one unbounded amplitude,
-        # which iminuit tolerated but the evidence lane cannot — a normalized flat prior over
-        # (-inf, inf) does not exist, so an unbounded QE silently zeroed every qe-bearing
-        # candidate's lnZ (found by real IN8 data, first scan).
-        return (0.0, 1e4 * cmax)
-    if name.endswith(".BG"):
-        return (0.0, 5.0 * cmax + 10.0)
-    return (-np.inf, np.inf)
 
 # ----------------------------------------------------------------------------
 # Grid+NNLS initial conditions (§3)
