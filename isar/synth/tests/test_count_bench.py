@@ -182,6 +182,22 @@ def test_summarize_keeps_abstentions_and_failures_in_the_denominators():
     assert 0 < lo < 0.4 < hi < 1
 
 
+def test_reference_agreement_per_case_is_not_hidden_by_pooled_draws():
+    R = cb.CaseResult
+    # One hard truth the reference gets wrong on every computed draw, three easy ones it gets right.
+    rows = [R(case_id="h", n_true=2, resolvability="borderline", detect_draws=40, detect_found=0,
+              split_draws=0, split_found=0),
+            R(case_id="u", n_true=1, resolvability="borderline", detect_draws=0)]  # nothing computed
+    rows += [R(case_id=f"e{i}", n_true=1, resolvability="resolvable", detect_draws=200,
+               detect_found=200, split_draws=200, split_found=0) for i in range(3)]
+    s = cb.summarize(rows)
+    pooled = s["reference_agreement_pooled_draws"]
+    assert (pooled["numerator"], pooled["denominator"]) == (1200, 1240)   # draws: the hard case is 40 of them
+    per_case = s["reference_agreement_per_case"]
+    assert (per_case["numerator"], per_case["denominator"], per_case["unscored"]) == (3, 4, 1)
+    assert per_case["value"] == pytest.approx(0.75) and pooled["value"] > 0.95
+
+
 def test_count_answer_reads_posterior_by_count_and_prefers_a_published_flag():
     fit = {"best_label": "x", "n_modes": 2, "candidates": [
         {"n_modes": 2, "posterior_probability": 0.6, "akaike_weight": 0.5},

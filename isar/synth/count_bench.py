@@ -625,6 +625,26 @@ def _figure(name: str, num: int, den: int, target: float | None, *, higher_is_be
             "note": note}
 
 
+def _majority(found: int, computed: int) -> bool | None:
+    """Whether a strict majority of the computed draws says yes; None without computed draws."""
+    return None if computed <= 0 else 2 * found > computed
+
+
+def _reference_matches_truth(r) -> bool | None:
+    """Does the reference's majority count for one truth equal the truth count? Its N is the
+    majority of the truth draws preferring N; the weakest-removed draws must not majority-prefer N
+    (a false split). None when a side has no computed draws. A tie is not a majority."""
+    if r.n_true == 0:
+        return None
+    says_n = _majority(r.detect_found, r.detect_draws - r.detect_indeterminate)
+    if says_n is None:
+        return None
+    if not says_n:
+        return False
+    split = _majority(r.split_found - r.split_indeterminate, r.split_draws - r.split_indeterminate)
+    return None if split is None else not split
+
+
 def summarize(results) -> dict:
     """The three figures and the counts behind them. Targets are reported, never enforced."""
     res = list(results)
@@ -633,6 +653,8 @@ def summarize(results) -> dict:
     agree = sum(r.detect_found for r in res) + sum(r.split_draws - r.split_found for r in res)
     agree_den = sum(r.detect_draws - r.detect_indeterminate for r in res) \
         + sum(r.split_draws - r.split_indeterminate for r in res)
+    per_case = [_reference_matches_truth(r) for r in res]
+    per_case_scored = [m for m in per_case if m is not None]
     n_abstain = sum(r.outcome == "abstain" for r in resolvable)
     figures = [
         _figure("correct_counts_on_resolvable", sum(r.outcome == "correct" for r in resolvable),
@@ -658,10 +680,19 @@ def summarize(results) -> dict:
         "n_failed_fits": sum(r.status != "ok" for r in res),
         "n_reference_errors": sum(r.status == "error" for r in res),
         "mean_ab_accuracy": float(np.mean(ab)) if ab else None,
-        "reference_agreement": {"numerator": int(agree), "denominator": int(agree_den),
-                                "value": agree / agree_den if agree_den else None,
-                                "note": "reference picks N on truth draws and N-1 on weakest-removed "
-                                        "draws, over draws with a computed evidence"},
+        # Pooled over draws: a truth with many draws outweighs one with few, so it can look high
+        # while the reference fails on many truths. The per-case share gives each truth one vote.
+        "reference_agreement_pooled_draws": {
+            "numerator": int(agree), "denominator": int(agree_den),
+            "value": agree / agree_den if agree_den else None,
+            "note": "reference picks N on truth draws and N-1 on weakest-removed draws, pooled over "
+                    "every draw with a computed evidence"},
+        "reference_agreement_per_case": {
+            "numerator": sum(per_case_scored), "denominator": len(per_case_scored),
+            "unscored": sum(1 for r, m in zip(res, per_case) if m is None and r.n_true > 0),
+            "value": (sum(per_case_scored) / len(per_case_scored)) if per_case_scored else None,
+            "note": "share of generated truths (n >= 1) whose majority reference count equals the "
+                    "truth count; unscored truths (no computed draws on a side) are not counted"},
         "reference_indeterminate_draws": int(sum(r.detect_indeterminate + r.split_indeterminate
                                                  for r in res)),
     }
@@ -812,6 +843,11 @@ def main(argv=None) -> int:
                      else (f"{fig['value']:.3f}", f"{fig['mc_se']:.3f}"))
         print(f"  {fig['name']}: {fig['numerator']}/{fig['denominator']} = {value} "
               f"(+/- {se}; target {fig['target'] if fig['target'] is not None else 'per case <= 0.60'})")
+    for key, label in (("reference_agreement_per_case", "per case"),
+                       ("reference_agreement_pooled_draws", "pooled over draws")):
+        agr = summary[key]
+        value = "n/a" if agr["value"] is None else f"{agr['value']:.3f}"
+        print(f"  reference agreement, {label}: {agr['numerator']}/{agr['denominator']} = {value}")
     print(f"  resolvable {summary['n_resolvable']}, borderline {summary['n_borderline']}, "
           f"no-N-1 {summary['n_not_applicable']}, failed fits {summary['n_failed_fits']}")
     print(f"Output folder: {folder}")
