@@ -226,3 +226,18 @@ def test_bundle_leaves_an_informative_energy_prior_alone():
     bundle = catalogue.resolve_priors(comp, ctx, prior.mode_bounds(names, ctx))
     theta = dict(zip(names, [3.0, 0.3, 50.0, 6.0, 0.4, 30.0, 5.0]))
     assert bundle.logpdf_ordered(theta) == pytest.approx(bundle.logpdf(theta))
+
+
+def test_a_mode_with_its_own_amplitude_or_width_prior_is_not_ordered():
+    # The N! count needs exchangeable modes: a prior that singles out one mode's A or Gamma makes
+    # the labels distinguishable, so the energies must stay unordered.
+    from isar.analyze import catalogue
+    from isar.schema.steering import ParamConstraints
+    comp = CompositeModel([PhononDHO(), PhononDHO(prefix="phonon2"), ConstantBackground()])
+    names = comp.param_names()
+    theta = dict(zip(names, [2.0, 0.3, 50.0, 6.0, 0.4, 30.0, 5.0]))
+    for name, (mu, sigma) in (("phonon.A", (50.0, 20.0)), ("phonon.Gamma", (0.3, 0.1))):
+        ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor",
+                   constraints=ParamConstraints(soft={name: (mu, sigma)}, origins={name: "test"}))
+        bundle = catalogue.resolve_priors(comp, ctx, prior.mode_bounds(names, ctx))
+        assert bundle.logpdf_ordered(theta) == pytest.approx(bundle.logpdf(theta)), name

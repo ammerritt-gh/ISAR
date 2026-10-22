@@ -488,16 +488,26 @@ class PriorBundle:
         return [p.spec() for p in self.params]
 
     def _energy_group(self) -> list[int]:
-        """Positions of the mode energies (``*.Omega_d``) that share one plain flat prior over one
-        window: the modes the ordered-energy prior can order. Fewer than two, or any informative
-        (transported / declared) energy prior, and nothing is ordered."""
+        """Positions of the mode energies (``*.Omega_d``) the ordered-energy prior can order: the
+        modes must be exchangeable. Each carries one plain flat energy prior over one window, and
+        every one of its parameters carries the same prior as the others (a prior on one mode's A
+        or Gamma alone singles it out). Fewer than two, or any difference, and nothing is ordered."""
         idx = [i for i, p in enumerate(self.params) if p.name.endswith(".Omega_d")]
         if len(idx) < 2:
             return []
         first = self.params[idx[0]]
         same = all(self.params[i].kind == "flat" and (self.params[i].lo, self.params[i].hi)
                    == (first.lo, first.hi) for i in idx)
-        return idx if same else []
+        if not same or len({self._mode_priors(i) for i in idx}) != 1:
+            return []
+        return idx
+
+    def _mode_priors(self, energy_index: int) -> tuple:
+        """The density of every parameter prior of the mode whose energy is at ``energy_index``,
+        with the mode prefix stripped, so two modes compare equal when their priors are the same."""
+        prefix = self.params[energy_index].name.split(".", 1)[0]
+        return tuple((p.name.split(".", 1)[1], p.kind, p.mu, p.sigma, p.lo, p.hi)
+                     for p in self.params if p.name.split(".", 1)[0] == prefix)
 
     def logpdf_ordered(self, named_values: dict) -> float:
         """:meth:`logpdf` with the group of mode energies under the normalised ordered-energy prior

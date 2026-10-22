@@ -308,7 +308,10 @@ Laplace evidence reads it as a function of the set of energies (`ordered_energy_
 nested sampling draws it as the order statistics of uniforms (`ordered_energy_transform`); the
 catalogue's prior bundle carries both (`logpdf_ordered`, `transform_ordered`). Each lane gets the
 N! exactly once and the two agree. The ordering is on Ω_d, the sampled coordinate, where that
-normalisation is exact; reported modes are still listed by derived ω₀.
+normalisation is exact; reported modes are still listed by derived ω₀. It applies only to exchangeable
+modes: every parameter of each mode (Ω_d, Γ, A) must carry the same prior density as the others. A
+prior that singles out one mode's amplitude or width leaves the energies unordered, and the labelled
+prior is used in both lanes.
 
 **Status [Partial].** The recipe, the ordered prior, the ceiling and the signature are implemented and
 tested. The fitter's bounds (`loop.build_problem`) and the two evidence lanes (`evidence.py`,
