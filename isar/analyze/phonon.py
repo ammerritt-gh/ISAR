@@ -121,11 +121,19 @@ AS_MIN_COUNTS = 2.0      # …and this absolute floor (a fraction of a count is 
 # wide margin, and is a flag, never a value edit.
 GAMMA_BOUND_TOL = 5.0 * GAMMA_FLOOR
 
-# cost/dof of the best converged 1-mode fit above which the two-stage loop offers the 2-mode
-# hypothesis set. A documented default (Baker–Cousins -2lnL/dof; a good fit sits near 1),
-# deliberately loose — the runs-test structured-residual clause catches the wide-window trap
-# where cost/dof looks acceptable — and NOT tuned to any single toy spectrum.
+# cost/dof above which a hinted structure is judged not enough on its own (the structure-hint
+# shortcut, isar.analyze.loop._hint_insufficient; no count is ever gated on it). A documented
+# default (Baker–Cousins -2lnL/dof; a good fit sits near 1), deliberately loose — the runs-test
+# structured-residual clause catches the wide-window trap where cost/dof looks acceptable — and
+# NOT tuned to any single toy spectrum.
 GATE_COST = 2.0
+
+# Split seeds of the count ladder: every fitted mode of the (n-1)-mode fit is tried as two modes
+# this many resolution FWHMs apart, "a small set spanning below and around one resolution width"
+# (design 2026-10-22), with unequal heights (SPLIT_HEIGHT_RATIO : 1), the heavier member
+# alternating side from one separation to the next.
+SPLIT_SEPARATIONS = (0.5, 1.0)
+SPLIT_HEIGHT_RATIO = 2.0
 
 # ----------------------------------------------------------------------------
 # Γ-bound diagnostics
@@ -215,94 +223,178 @@ def _peak_omega0(peak):
         return None
 
 
-def greedy_multimode_ic(composite, ctx, one_mode_result, peaks=None, *, gamma0=GAMMA0,
-                        estimator="baker_cousins") -> dict:
-    """Greedy seed for a multi-mode composite: freeze mode-1 nonlinears at the 1-mode best fit
-    (§ mode-1 fixed), then grid-scan mode-2's Ω_d over the residual, solving ALL linear
-    amplitudes jointly by NNLS at each candidate and keeping the lowest Baker–Cousins cost.
+def _mode_prefixes(composite) -> list[str]:
+    """The prefix of every phonon mode of ``composite``, in component order."""
+    return [n.rsplit(".", 1)[0] for n in composite.nonlinear_names() if n.endswith(".Omega_d")]
 
-    Mode-1 nonlinears come from ``one_mode_result`` (its fitted ``phonon.Omega_d/Gamma``); when
-    it is ``None`` they are seeded internally by :func:`phonon_structure_ic` on a single-phonon+bg
-    composite. ``peaks`` (declared expectations, ordered — ``peaks[0]`` is mode 1) narrows the
-    mode-2 scan to ±``PRIOR_HALF_WIDTH`` meV around ``peaks[1]``'s ω₀ hint. Candidates within
-    one resolution FWHM of mode-1 are skipped (identifiability). Returns a full seed dict keyed
-    by ``composite.param_names()`` (Γ's at ``gamma0``)."""
+
+def _fitted_modes(result, prefixes) -> dict:
+    """``{prefix: (Ω_d, Γ)}`` for each of ``prefixes`` the fitted ``result`` carries. A null
+    (background-only) result carries none."""
+    params = getattr(result, "params", None) or {}
+    return {p: (float(params[f"{p}.Omega_d"]), float(params[f"{p}.Gamma"]))
+            for p in prefixes if f"{p}.Omega_d" in params and f"{p}.Gamma" in params}
+
+
+def _sub_composite(composite, keep):
+    """``composite`` with only the phonon modes whose prefix is in ``keep``; every other
+    component (elastic, quasi-elastic, background) stays."""
+    from isar.analyze.components import CompositeModel, PhononDHO  # components.py -> phonon.py cycle
+
+    return CompositeModel([c for c in composite.components
+                           if not isinstance(c, PhononDHO) or c.prefix in keep])
+
+
+def _seed_dict(composite, modes: dict, linear: dict) -> dict:
+    """A full seed keyed by ``composite.param_names()``: each mode's ``(Ω_d, Γ)`` from ``modes``,
+    each linear amplitude from ``linear`` (absent or negative → 0)."""
+    linear_set = set(composite.linear_names())
+    out = {}
+    for name in composite.param_names():
+        if name in linear_set:
+            out[name] = max(float(linear.get(name, 0.0)), 0.0)
+        else:
+            prefix, par = name.rsplit(".", 1)
+            od, g = modes[prefix]
+            out[name] = od if par == "Omega_d" else g
+    return out
+
+
+def _nnls_linear(composite, ctx, modes: dict) -> dict:
+    """Every linear amplitude of ``composite`` by NNLS with the modes' nonlinears held."""
+    nl = {}
+    for p, (od, g) in modes.items():
+        nl[f"{p}.Omega_d"], nl[f"{p}.Gamma"] = od, g
+    phi, lin_names = composite.nnls_basis(ctx.x_used, nl, ctx)
+    coef, _ = nnls(phi, ctx.counts_used)
+    return dict(zip(lin_names, coef))
+
+
+def _scan_new_mode(composite, ctx, fixed: dict, new: str, hint, *, gamma0, estimator):
+    """Grid-scan mode ``new``'s Ω_d over the residual of the held ``fixed`` modes
+    (``{prefix: (Ω_d, Γ)}``), solving every linear amplitude jointly by NNLS at each candidate and
+    keeping the lowest Baker–Cousins cost. ``hint`` (a declared ω₀) narrows the grid to
+    ±``PRIOR_HALF_WIDTH``. Candidates within one resolution FWHM of a held mode are skipped
+    (identifiability) unless that leaves none. ``composite`` must hold exactly the ``fixed`` modes
+    and ``new``. Returns ``(Ω_d, {linear name: amplitude})``."""
     x = ctx.x_used
     counts = ctx.counts_used
     x_max = float(np.max(x))
     est = estimators.get_estimator(estimator)
-    linear_set = set(composite.linear_names())
-
-    od_names = [n for n in composite.nonlinear_names() if n.endswith(".Omega_d")]
-    prefixes = [n.rsplit(".", 1)[0] for n in od_names]
-    mode1, mode2 = prefixes[0], prefixes[1]
-
-    # -- mode-1 nonlinears: from the 1-mode fit, or seeded internally when absent -----------
-    # A background-only ``one_mode_result`` (the 0-phonon "bg" structure, e.g. the best 1-mode-
-    # or-fewer candidate at a node with no detectable signal) has ``params`` but no ``.Omega_d``
-    # key at all -- falling into the branch below on truthy ``params`` alone raised
-    # ``StopIteration`` from the ``next(...)`` call. Require the key to actually be present.
-    has_mode1_fit = (one_mode_result is not None and getattr(one_mode_result, "params", None)
-                     and any(k.endswith(".Omega_d") for k in one_mode_result.params))
-    if has_mode1_fit:
-        params = one_mode_result.params
-        od1 = float(next(v for k, v in params.items() if k.endswith(".Omega_d")))
-        g1 = float(next(v for k, v in params.items() if k.endswith(".Gamma")))
-    else:
-        from isar.analyze.components import CompositeModel, ConstantBackground, PhononDHO
-        tmp = CompositeModel([PhononDHO(prefix=mode1), ConstantBackground()])
-        seed = phonon_structure_ic(tmp, ctx, gamma0=gamma0, estimator=estimator)
-        tnames = tmp.param_names()
-        od1 = float(seed[tnames.index(f"{mode1}.Omega_d")])
-        g1 = float(seed[tnames.index(f"{mode1}.Gamma")])
-    w1 = omega0_from(od1, g1)
-
-    # -- mode-2 grid: full model-free scan, narrowed around a declared peak hint ------------
-    prior2 = _peak_omega0(peaks[1]) if peaks is not None and len(peaks) >= 2 else None
-    grid = omega_d_grid(x, x_max, prior2, eps=EPS_OMEGA_D)
+    grid = omega_d_grid(x, x_max, hint, eps=EPS_OMEGA_D)
     res_fwhm = float(getattr(ctx, "gauss_fwhm", 0.0) or 0.0)
+    held_w = [omega0_from(od, g) for od, g in fixed.values()]
+    base = {}
+    for p, (od, g) in fixed.items():
+        base[f"{p}.Omega_d"], base[f"{p}.Gamma"] = od, g
 
     def _scan(skip_identifiable):
-        best_cost, best_od2, best_lin = np.inf, None, None
-        for od2 in grid:
-            if skip_identifiable and abs(omega0_from(od2, gamma0) - w1) < res_fwhm:
+        best_cost, best_od, best_lin = np.inf, None, None
+        for od in grid:
+            if skip_identifiable and any(abs(omega0_from(od, gamma0) - w) < res_fwhm
+                                         for w in held_w):
                 continue
-            nl = {}
-            for name in composite.nonlinear_names():
-                if name == f"{mode1}.Omega_d":
-                    nl[name] = od1
-                elif name == f"{mode2}.Omega_d":
-                    nl[name] = float(od2)
-                else:  # every Γ (mode-1 and mode-2) fixed at gamma0 during IC
-                    nl[name] = gamma0
-            nl[f"{mode1}.Gamma"] = g1
+            nl = {**base, f"{new}.Omega_d": float(od), f"{new}.Gamma": gamma0}
             phi, lin_names = composite.nnls_basis(x, nl, ctx)
             coef, _ = nnls(phi, counts)
             cost = est.cost(counts, phi @ coef)
             if cost < best_cost:
-                best_cost, best_od2 = cost, float(od2)
-                best_lin = dict(zip(lin_names, coef))
-        return best_od2, best_lin
+                best_cost, best_od, best_lin = cost, float(od), dict(zip(lin_names, coef))
+        return best_od, best_lin
 
-    best_od2, best_lin = _scan(skip_identifiable=True)
-    if best_od2 is None:                    # whole grid sat under mode-1: relax the guard
-        best_od2, best_lin = _scan(skip_identifiable=False)
-    if best_od2 is None:                    # empty grid (degenerate) — nominal offset
-        best_od2, best_lin = min(float(x_max), w1 + max(res_fwhm, STEP)), {}
+    od, lin = _scan(skip_identifiable=True)
+    if od is None:                          # the whole grid sat under held modes: relax the guard
+        od, lin = _scan(skip_identifiable=False)
+    if od is None:                          # empty grid (degenerate) — nominal offset
+        od, lin = min(x_max, max(held_w, default=0.0) + max(res_fwhm, STEP)), {}
+    return od, lin
 
-    out = {}
-    for name in composite.param_names():
-        if name in linear_set:
-            out[name] = max(float(best_lin.get(name, 0.0)), 0.0)
-        elif name == f"{mode1}.Omega_d":
-            out[name] = od1
-        elif name == f"{mode1}.Gamma":
-            out[name] = g1
-        elif name == f"{mode2}.Omega_d":
-            out[name] = best_od2
-        else:  # mode-2 Γ (and any other nonlinear) at gamma0
-            out[name] = gamma0
-    return out
+
+def _peak_hint(peaks, i):
+    return _peak_omega0(peaks[i]) if peaks is not None and len(peaks) > i else None
+
+
+def greedy_multimode_ic(composite, ctx, previous_result, peaks=None, *, gamma0=GAMMA0,
+                        estimator="baker_cousins") -> dict:
+    """The residual seed of an n-mode composite (n ≥ 2): hold the modes of ``previous_result``
+    (the (n-1)-mode fit, matched by prefix; ``phonon``, ``phonon2``, ...), then grid-scan the last
+    mode's Ω_d over their residual (:func:`_scan_new_mode`), solving ALL linear amplitudes jointly
+    by NNLS at each candidate.
+
+    Leading modes ``previous_result`` does not carry (``None``, or a null fit) are seeded first,
+    one at a time: the first by :func:`phonon_structure_ic` on a single-phonon+bg composite, each
+    later one by the same residual scan. ``peaks`` (declared expectations, ordered — ``peaks[i]``
+    is mode ``i+1``) narrows each scanned mode's grid around its declared ω₀. Returns a full seed
+    dict keyed by ``composite.param_names()`` (scanned modes' Γ at ``gamma0``)."""
+    from isar.analyze.components import CompositeModel, ConstantBackground, PhononDHO  # cycle
+
+    prefixes = _mode_prefixes(composite)
+    fixed = _fitted_modes(previous_result, prefixes[:-1])
+    for i, p in enumerate(prefixes[:-1]):
+        if p in fixed:
+            continue
+        if not fixed:
+            tmp = CompositeModel([PhononDHO(prefix=p), ConstantBackground()])
+            seed = phonon_structure_ic(tmp, ctx, gamma0=gamma0, estimator=estimator)
+            names = tmp.param_names()
+            fixed[p] = (float(seed[names.index(f"{p}.Omega_d")]),
+                        float(seed[names.index(f"{p}.Gamma")]))
+            continue
+        od, _ = _scan_new_mode(_sub_composite(composite, {*fixed, p}), ctx, fixed, p,
+                               _peak_hint(peaks, i), gamma0=gamma0, estimator=estimator)
+        fixed[p] = (od, gamma0)
+    last = prefixes[-1]
+    od, lin = _scan_new_mode(composite, ctx, fixed, last, _peak_hint(peaks, len(prefixes) - 1),
+                             gamma0=gamma0, estimator=estimator)
+    return _seed_dict(composite, {**fixed, last: (od, gamma0)}, lin)
+
+
+def placed_modes_ic(composite, ctx, omega0s, *, gamma0=GAMMA0,
+                    estimator="baker_cousins") -> dict:
+    """A seed with the modes placed at ``omega0s`` (ω₀ in meV, ascending, one per mode in prefix
+    order, Γ at ``gamma0``): the model-free descriptor's features or the card's declared peaks.
+    Modes beyond ``len(omega0s)`` are then scanned one at a time over the residual; every linear
+    amplitude by NNLS with all modes held."""
+    prefixes = _mode_prefixes(composite)
+    x_max = float(np.max(ctx.x_used))
+    fixed = {}
+    for p, w in zip(prefixes, sorted(float(w) for w in omega0s)):
+        fixed[p] = (min(max(omega_d_from(w, gamma0), 2.0 * EPS_OMEGA_D), x_max), gamma0)
+    for p in prefixes[len(fixed):]:
+        od, _ = _scan_new_mode(_sub_composite(composite, {*fixed, p}), ctx, fixed, p, None,
+                               gamma0=gamma0, estimator=estimator)
+        fixed[p] = (od, gamma0)
+    return _seed_dict(composite, fixed, _nnls_linear(composite, ctx, fixed))
+
+
+def split_mode_ic(composite, ctx, previous_result, parent: str, separation: float, *,
+                  heavier: str, ratio: float = SPLIT_HEIGHT_RATIO) -> dict | None:
+    """A split seed of an n-mode composite: the (n-1)-mode fit ``previous_result`` with its mode
+    ``parent`` replaced by two modes ``separation`` meV apart in ω₀, centred on the parent's ω₀,
+    at half the parent's Γ, sharing the parent's amplitude ``ratio`` : 1 (``heavier`` is
+    ``"low"`` or ``"high"``). The lower member keeps the parent's prefix and the upper takes the
+    composite's last one; every other parameter is the previous fit's. ``None`` when the previous
+    fit does not carry the composite's first n-1 modes."""
+    prefixes = _mode_prefixes(composite)
+    held = _fitted_modes(previous_result, prefixes[:-1])
+    if parent not in held or len(held) != len(prefixes) - 1:
+        return None
+    x_max = float(np.max(ctx.x_used))
+    od_p, g_p = held[parent]
+    w = omega0_from(od_p, g_p)
+    g = max(0.5 * g_p, GAMMA_FLOOR)
+
+    def _od(w_child):
+        return min(max(omega_d_from(w_child, g), 2.0 * EPS_OMEGA_D), x_max)
+
+    amp = float(previous_result.params.get(f"{parent}.A", 0.0))
+    heavy, light = amp * ratio / (1.0 + ratio), amp / (1.0 + ratio)
+    a_lo, a_hi = (heavy, light) if heavier == "low" else (light, heavy)
+    new = prefixes[-1]
+    modes = {**held, parent: (_od(w - 0.5 * separation), g), new: (_od(w + 0.5 * separation), g)}
+    linear = {n: v for n, v in previous_result.params.items() if n in set(composite.linear_names())}
+    linear[f"{parent}.A"], linear[f"{new}.A"] = a_lo, a_hi
+    return _seed_dict(composite, modes, linear)
 
 # ----------------------------------------------------------------------------
 # Admissibility gates and structure enumeration (§2)
@@ -418,22 +510,25 @@ def _phonon_for(ctx, prefix: str | None = None):
     return PhononDHO(prefix=prefix) if prefix else PhononDHO
 
 
-def enumerate_phonon_multimode(ctx, n_max: int = 2) -> list[Hypothesis]:
-    """The two-mode (2-phonon) structure hypotheses for this scan context — the escalation set
-    the two-stage loop (:mod:`isar.analyze.loop`) offers when the 1-mode winner's fit is poor
-    or its residual is structured (§ multiplicity is data-gated, never a free knob).
+def default_mode_ceiling() -> int:
+    """The mode ceiling when a caller names none: :func:`isar.session.guidelines.mode_ceiling` on an
+    empty ``[fitting]`` policy, i.e. the ``ISAR_MODE_CEILING`` environment variable, else 6. A caller
+    holding the card passes its own ceiling (``[fitting] max_modes``) explicitly."""
+    from isar.session.guidelines import Guidelines, mode_ceiling  # session sits above analyze
 
-    Mirrors :func:`enumerate_phonon_structures` under the identical elastic/quasi-elastic gates, but
-    with a second phonon. Mode 1 keeps the default ``phonon`` prefix so each 1-mode hypothesis
-    is *strictly nested* in its 2-mode counterpart (the LRT/AIC comparison in §4 is then exact);
-    mode 2 gets the ``phonon2`` namespace. Capped at N=2 this round (``n_max`` is accepted for
-    the later N=3 extension; values >2 are treated as 2).
+    return mode_ceiling(Guidelines())
 
-    Catalogue-driven since SCENE-1 PR-b (multiplicity is the catalogue's concept: a second
-    instance of the same phenomenon in the ``phonon2`` namespace); output pinned bit-identical
-    to the legacy hand enumeration by ``tests/analyze/test_catalogue.py``."""
+
+def enumerate_phonon_multimode(ctx, n_max: int | None = None) -> list[Hypothesis]:
+    """Every structure hypothesis holding 2..``n_max`` modes for this scan context (``None``: the
+    :func:`default_mode_ceiling`), count by count, under the same elastic/quasi-elastic gates as
+    :func:`enumerate_phonon_structures`. Mode ``i`` takes the ``phonon<i>`` namespace (mode 1 keeps
+    ``phonon``), so each structure is *strictly nested* in the next count's.
+
+    Catalogue-driven (:func:`isar.analyze.catalogue.enumerate_count_structures`); the two-mode
+    output is pinned to the legacy hand enumeration by ``tests/analyze/test_catalogue.py``."""
     # local import: catalogue imports components, which imports this module, so it cannot come
     # in at module level (components.py -> phonon.py cycle).
     from isar.analyze.catalogue import enumerate_multimode_structures
 
-    return enumerate_multimode_structures(ctx, n_max)
+    return enumerate_multimode_structures(ctx, default_mode_ceiling() if n_max is None else n_max)

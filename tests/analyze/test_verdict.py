@@ -285,7 +285,7 @@ def test_null_structures_fit_end_to_end():
         assert r.optimizer_converged
         assert r.n_modes == 0 and r.modes == []
         assert np.isnan(r.omega0) and np.isnan(r.gamma)   # NaN, never a fake 0.0
-    full = loop.fit_structures_two_stage(ctx)
+    full = loop.fit_structures_two_stage(ctx, mode_ceiling=2)
     sel = select.select_models(full)
     assert sel.best == "elastic+bg"                       # the null wins on pure-elastic data
     v = verdict.classify(full, ctx, sel)

@@ -179,12 +179,11 @@ def test_fit_one_attaches_expensive_errors_to_the_selected_model_only(monkeypatc
     assert attached == [[fit["best_label"]]]
 
 
-def test_fit_one_multimode_route_is_declaration_relaxed_not_peaks_presence():
-    """`fit_one`'s persisted ``multimode_route`` is re-derived from the actual gate outcome
-    (2026-08-09 ruling), never guessed from ``peaks`` presence: a declared scan whose residual
-    structure clears the relaxed thresholds but not the global ones persists
-    ``"declaration_relaxed"``, and the identical undeclared scan offers no 2-mode candidate at
-    all. The aliased shadow-selection route agrees."""
+@pytest.mark.slow
+def test_fit_one_runs_the_count_ladder_and_records_its_route():
+    """`fit_one` fits through the count ladder: every count to the ceiling is offered (no gate;
+    a declared count only seeds), and the persisted ``multimode_route`` says so. The aliased
+    shadow-selection route agrees. Slow: one full ladder with its evidence escalations."""
     x = np.linspace(-6.0, 20.0, 121)
     p1 = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
                              peak="stokes+astokes")
@@ -197,16 +196,15 @@ def test_fit_one_multimode_route_is_declaration_relaxed_not_peaks_presence():
     card = _card_with_fitting({})
     peaks = ({"omega0": 5.0}, {"omega0": 11.0})
 
-    undeclared = scan_delivery.fit_one(ctx, card, prior=None, M=1, seed=1, errors_tier="cheap")
-    assert undeclared["n_modes"] != 2
-
     fit = scan_delivery.fit_one(
         ctx, card, prior=None, M=1, seed=1, peaks=peaks, errors_tier="cheap")
     route = fit["fit_selection_semantics"]["candidate_generation_route"]
-    assert route["multimode_route"] == "declaration_relaxed"
+    assert route["multimode_route"] == "count_ladder"
+    ceiling = G.mode_ceiling(card)
+    assert {f"stokes{n}+bg" for n in range(2, ceiling + 1)} <= set(route["offered_labels"])
     shadow_route = fit["shadow_model_selection"].get("candidate_generation_route")
     if shadow_route is not None:
-        assert shadow_route.get("multimode_route") == "declaration_relaxed"
+        assert shadow_route.get("multimode_route") == "count_ladder"
 
 
 @pytest.mark.slow

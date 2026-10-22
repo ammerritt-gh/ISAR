@@ -146,22 +146,12 @@ def _one_peak_ctx(o1=5.0, a1=500.0, g=0.4, bg=8.0, n=81, seed=3):
                        energy_status="needs_zero")
 
 
-def test_gate_fires_on_two_peak_residual_not_on_clean_single():
-    two = _two_peak_ctx()
-    one_results = loop.fit_admissible_structures(two, minos=False)
-    assert loop._offer_multimode(one_results, two) is True     # one DHO can't fit two peaks
-
-    single = _one_peak_ctx()
-    ok_results = loop.fit_admissible_structures(single, minos=False)
-    assert loop._offer_multimode(ok_results, single) is False  # a single DHO fits fine
-
-
-def test_two_stage_adds_multimode_when_gate_fires():
+def test_ladder_fits_two_modes_on_a_double_peak():
     ctx = _two_peak_ctx()
-    results = loop.fit_structures_two_stage(ctx, minos=False)
+    results = loop.fit_structures_two_stage(ctx, minos=False, mode_ceiling=2)
     labels = {r.label for r in results}
     assert "stokes+bg" in labels                                # 1-mode set always present
-    assert "stokes2+bg" in labels                               # escalated on the gate
+    assert "stokes2+bg" in labels
     two = {r.label: r for r in results}["stokes2+bg"]
     assert two.n_modes == 2 and len(two.modes) == 2
     # modes canonicalized ascending by ω₀ and bracket the two true peaks (~4 and ~10 meV)
@@ -170,51 +160,27 @@ def test_two_stage_adds_multimode_when_gate_fires():
     assert abs(o[0] - 4.0) < 1.0 and abs(o[1] - 10.0) < 1.0
 
 
-def test_two_stage_single_peak_stays_one_mode():
-    ctx = _one_peak_ctx()
-    results = loop.fit_structures_two_stage(ctx, minos=False)
-    # gate did not fire → no 2-mode ("stokes2…") hypothesis was offered
-    assert not any("stokes2" in r.label for r in results)
-    assert all(r.n_modes <= 1 for r in results)      # phonon-bearing: 1 mode; nulls: 0
-
-
-def _between_threshold_ctx(a2=2.0, seed=2):
-    """A weak second peak whose residual structure sits strictly BETWEEN the relaxed
-    (``GATE_COST_DECLARED``/``RUNS_ALPHA_DECLARED``) and global (``GATE_COST``/``RUNS_Z``)
-    thresholds: cost/dof ≈ 1.37 clears the relaxed 1.3 but not the global 2.0. Picked by search
-    against the fixed seed; not physically special."""
-    x = np.linspace(-6.0, 20.0, 121)
-    p1 = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
-                             peak="stokes+astokes")
-    p2 = convolute_voigt_dho(x, 11.0, 0.0, 1.0, 0.0, 0.4, a2, 0.0, 0.0, 50.0,
-                             peak="stokes+astokes")
-    counts = np.random.default_rng(seed).poisson(np.clip(p1 + p2 + 8.0, 0.0, None)).astype(float)
-    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
-                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
-                       energy_status="needs_zero")
-
-
-def test_declared_scan_between_thresholds_is_offered_identical_undeclared_is_not():
-    """Ruling H8(a), 2026-08-09: a declaration RELAXES the offering diagnostic, it
-    never bypasses it. A scan whose one-mode residual structure clears the relaxed thresholds but
-    not the global ones is offered the 2-mode set only when a ≥2-peak count is declared."""
-    ctx = _between_threshold_ctx()
+def test_declared_peaks_seed_every_count_and_decide_nothing():
+    """Ruling H8(a)'s declared count is a seed source of the count ladder: the declared positions
+    start every count's fit ("declared" starts), and the undeclared run fits the same models
+    without them. The route is the ladder's either way."""
+    ctx = _one_peak_ctx(n=41)
     peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
+    route, declared_out, plain_out = {}, {}, {}
+    declared = loop.fit_structures_two_stage(ctx, minos=False, peaks=peaks, mode_ceiling=2,
+                                             route_out=route, rung1_out=declared_out)
+    plain = loop.fit_structures_two_stage(ctx, minos=False, mode_ceiling=2, rung1_out=plain_out)
+    assert route["multimode_route"] == "count_ladder"
+    assert [r.label for r in declared] == [r.label for r in plain]
+    for model in declared_out["rung1"].models:
+        assert ("declared" in model.seeds_by_source) == (model.count >= 1 and model.variant is None)
+    assert not any("declared" in m.seeds_by_source for m in plain_out["rung1"].models)
 
-    undeclared = loop.fit_structures_two_stage(ctx, minos=False)
-    assert "stokes2+bg" not in {r.label for r in undeclared}
 
-    route_out = {}
-    declared = loop.fit_structures_two_stage(
-        ctx, minos=False, peaks=peaks, route_out=route_out)
-    assert "stokes2+bg" in {r.label for r in declared}
-    assert route_out["multimode_route"] == "declaration_relaxed"
-
-
-def test_declared_scan_offered_by_relaxation_still_loses_to_one_mode_on_evidence():
-    """The relaxed offer is not a forced win: a single-peak scan whose noise happens to clear the
-    relaxed cost/dof threshold (but not the global one) still has its offered 2-mode candidate
-    lose to the 1-mode structure on AIC — evidence, not the declaration, decides."""
+def test_declared_two_modes_still_lose_to_one_mode_on_evidence():
+    """The declaration is not a forced win: a single-peak scan declared with two peaks has its
+    two-mode candidate fitted from the declared positions, and it still loses to the one-mode
+    structure on AIC — evidence, not the declaration, decides."""
     x = np.linspace(-8.0, 16.0, 81)
     counts = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
                                  peak="stokes+astokes") + 8.0
@@ -223,14 +189,7 @@ def test_declared_scan_offered_by_relaxation_still_loses_to_one_mode_on_evidence
                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
                       energy_status="needs_zero")
     peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
-
-    undeclared = loop.fit_structures_two_stage(ctx, minos=False)
-    assert "stokes2+bg" not in {r.label for r in undeclared}   # global gate does not fire
-
-    route_out = {}
-    results = loop.fit_structures_two_stage(
-        ctx, minos=False, peaks=peaks, route_out=route_out)
-    assert route_out["multimode_route"] == "declaration_relaxed"
+    results = loop.fit_structures_two_stage(ctx, minos=False, peaks=peaks, mode_ceiling=2)
     by_label = {r.label: r for r in results}
     one = by_label["stokes+bg"]
     two = by_label["stokes2+bg"]
@@ -238,45 +197,16 @@ def test_declared_scan_offered_by_relaxation_still_loses_to_one_mode_on_evidence
     assert (one.cost + 2.0 * one.k) < (two.cost + 2.0 * two.k)   # one-mode AIC-preferred
 
 
-def test_declared_clean_one_mode_scan_is_not_offered():
-    """Natural abstention: a declared scan whose one-mode fit is clean under BOTH relaxed
-    diagnostics is still not offered — the declaration permits, it does not force."""
-    ctx = _one_peak_ctx()
-    peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
-    route_out = {}
-    results = loop.fit_structures_two_stage(
-        ctx, minos=False, peaks=peaks, route_out=route_out)
-    assert "stokes2+bg" not in {r.label for r in results}
-    assert route_out["multimode_route"] == "not_offered"
-
-
-def test_declared_scan_offered_by_global_triggers_keeps_ordinary_route():
-    """A declared scan the GLOBAL thresholds would already have offered persists the ordinary
-    ``residual_triggered`` route, not ``declaration_relaxed`` — the route is re-derived from the
-    gate outcome, never from ``peaks`` presence."""
-    ctx = _two_peak_ctx()
-    peaks = [{"omega0": 4.0}, {"omega0": 10.0}]
-    route_out = {}
-    results = loop.fit_structures_two_stage(
-        ctx, minos=False, peaks=peaks, route_out=route_out)
-    assert "stokes2+bg" in {r.label for r in results}
-    assert route_out["multimode_route"] == "residual_triggered"
-
-
-def test_fit_shadow_candidates_reports_same_route_vocabulary():
-    """`fit_shadow_candidates` (the STAT-2a shadow route) applies the identical declared-count
-    relaxation and route provenance as the production two-stage path — the diagnostic is one
-    function regardless of which caller runs it."""
-    ctx = _between_threshold_ctx()
-    peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
-
-    undeclared_bundle = loop.fit_shadow_candidates(ctx)
-    assert undeclared_bundle.multimode_route == "not_offered"
-    assert "stokes2+bg" not in set(undeclared_bundle.offered_labels)
-
-    declared_bundle = loop.fit_shadow_candidates(ctx, peaks=peaks)
-    assert declared_bundle.multimode_route == "declaration_relaxed"
-    assert "stokes2+bg" in set(declared_bundle.offered_labels)
+def test_fit_shadow_candidates_runs_the_same_ladder():
+    """The STAT-2a shadow route is the same count ladder: same models, same route, and with
+    nothing to reuse every one is freshly fitted."""
+    ctx = _one_peak_ctx(n=41)
+    bundle = loop.fit_shadow_candidates(ctx, mode_ceiling=2)
+    delivered = loop.fit_structures_two_stage(ctx, minos=False, mode_ceiling=2)
+    assert bundle.multimode_route == "count_ladder"
+    assert bundle.offered_labels == [r.label for r in delivered if r.variant is None]
+    assert bundle.reused_labels == []
+    assert bundle.freshly_fitted_labels == bundle.attempted_labels
 
 
 def _scientific_signature(results):
@@ -288,10 +218,11 @@ def _scientific_signature(results):
 def test_two_stage_parallel_candidates_are_ordered_and_identical():
     from concurrent.futures import ProcessPoolExecutor
 
-    ctx = _one_peak_ctx()
-    serial = loop.fit_structures_two_stage(ctx, minos=False)
+    ctx = _one_peak_ctx(n=41)
+    serial = loop.fit_structures_two_stage(ctx, minos=False, mode_ceiling=2)
     with ProcessPoolExecutor(max_workers=2) as executor:
-        parallel = loop.fit_structures_two_stage(ctx, minos=False, executor=executor)
+        parallel = loop.fit_structures_two_stage(ctx, minos=False, executor=executor,
+                                                 mode_ceiling=2)
     assert _scientific_signature(parallel) == _scientific_signature(serial)
 
 
@@ -300,14 +231,15 @@ def test_candidate_pool_failure_logs_and_retries_serially(caplog):
         def map(self, *_args, **_kwargs):
             raise RuntimeError("worker vanished")
 
-    ctx = _one_peak_ctx()
-    expected = loop.fit_structures_two_stage(ctx, minos=False)
-    actual = loop.fit_structures_two_stage(ctx, minos=False, executor=BrokenExecutor())
+    ctx = _one_peak_ctx(n=41)
+    expected = loop.fit_structures_two_stage(ctx, minos=False, mode_ceiling=2)
+    actual = loop.fit_structures_two_stage(ctx, minos=False, executor=BrokenExecutor(),
+                                           mode_ceiling=2)
     assert _scientific_signature(actual) == _scientific_signature(expected)
     assert "retrying serially" in caplog.text
 
 
-def test_error_paths_reuse_candidate_executor_and_preserve_pairing(monkeypatch):
+def test_admissible_error_path_reuses_candidate_executor_and_preserves_pairing(monkeypatch):
     from isar.analyze import errors
 
     class InlineExecutor:
@@ -323,15 +255,14 @@ def test_error_paths_reuse_candidate_executor_and_preserve_pairing(monkeypatch):
     monkeypatch.setattr(errors, "attach_batch", _capture)
     admissible = loop.fit_admissible_structures(
         _one_peak_ctx(), errors=True, M=12, seed=4, executor=executor)
-    two_stage = loop.fit_structures_two_stage(
-        _one_peak_ctx(), with_errors=True, M=12, seed=4, executor=executor)
 
-    assert len(calls) == 2
-    for results, (items, kwargs) in zip((admissible, two_stage), calls):
-        assert [result for result, _hyp, _ctx in items] == results
-        assert [result.label for result, hyp, _ctx in items] == [hyp.label for _, hyp, _ in items]
-        assert kwargs["executor"] is executor
-        assert kwargs["boot_workers"] >= 2
+    # The count ladder attaches no errors itself (the delivery gives them to the winner alone).
+    assert len(calls) == 1
+    items, kwargs = calls[0]
+    assert [result for result, _hyp, _ctx in items] == admissible
+    assert [result.label for result, hyp, _ctx in items] == [hyp.label for _, hyp, _ in items]
+    assert kwargs["executor"] is executor
+    assert kwargs["boot_workers"] >= 2
 
 
 # --- FIX 1: greedy-IC "seed robustness" was really a MIGRAD call-budget starvation ----------
@@ -389,16 +320,18 @@ def test_call_budget_starvation_drops_two_mode_that_raised_budget_certifies(monk
     assert fixed.cost < starved.cost                       # the certified minimum is the better one
 
     # end-to-end: selection now picks a two-mode structure.
-    sel = select.select_models(loop.fit_structures_two_stage(ctx, minos=False))
+    sel = select.select_models(loop.fit_structures_two_stage(ctx, minos=False, mode_ceiling=2))
     assert sel.best is not None and "stokes2" in sel.best
 
 
 def test_sparse_two_peak_selects_two_mode_and_single_peak_stays_one_mode():
     """No overfitting regression: the fix does not turn a genuine single peak into two modes."""
     from isar.analyze import select
-    two = select.select_models(loop.fit_structures_two_stage(_sparse_two_peak_ctx(), minos=False))
+    two = select.select_models(loop.fit_structures_two_stage(_sparse_two_peak_ctx(), minos=False,
+                                                             mode_ceiling=2))
     assert "stokes2" in (two.best or "")
-    single = select.select_models(loop.fit_structures_two_stage(_one_peak_ctx(), minos=False))
+    single = select.select_models(loop.fit_structures_two_stage(_one_peak_ctx(), minos=False,
+                                                                mode_ceiling=2))
     assert single.best is not None and "stokes2" not in single.best
 
 
@@ -446,7 +379,8 @@ def test_near_degenerate_variant_is_offered_as_an_additional_twin():
     from isar.analyze.phonon import GAMMA_FLOOR
 
     ctx = _near_degenerate_ctx()
-    results = {r.label: r for r in loop.fit_structures_two_stage(ctx, minos=False)}
+    results = {r.label: r for r in loop.fit_structures_two_stage(ctx, minos=False,
+                                                                  mode_ceiling=1)}
     assert "stokes+bg" in results
     twin = results["stokes+bg_neardeg"]
 
@@ -462,7 +396,7 @@ def test_no_variant_offered_when_the_mode_is_resolved():
     """ω₀ well above the resolution width: the near-degenerate special case is not a rival, so
     nothing is offered and the candidate set is unchanged."""
     ctx = _spectrum_ctx()                                   # ω₀ = 5 meV, gauss_fwhm = 1.1
-    results = loop.fit_structures_two_stage(ctx, minos=False)
+    results = loop.fit_structures_two_stage(ctx, minos=False, mode_ceiling=1)
     assert not any(r.label.endswith("_neardeg") for r in results)
     assert all(r.variant is None for r in results)
 
@@ -474,7 +408,8 @@ def test_variant_semantics_are_ineligible_and_writable():
     from isar.schema.statistics import FIT_SELECTION_SCHEMA, validate_for_write
 
     ctx = _near_degenerate_ctx()
-    results = {r.label: r for r in loop.fit_structures_two_stage(ctx, minos=False)}
+    results = {r.label: r for r in loop.fit_structures_two_stage(ctx, minos=False,
+                                                                  mode_ceiling=1)}
     semantics = results["stokes+bg_neardeg"].fit_semantics
 
     assert semantics is not None
@@ -495,7 +430,7 @@ def test_variant_skipped_when_the_context_already_constrains_the_parameter(caplo
     ctx = replace(base, constraints=ParamConstraints(
         hard={"phonon.Gamma": 0.25}, origins={"phonon.Gamma": "user_declared"}))
     with caplog.at_level(logging.INFO, logger="isar.analyze.loop"):
-        results = loop.fit_structures_two_stage(ctx, minos=False)
+        results = loop.fit_structures_two_stage(ctx, minos=False, mode_ceiling=1)
 
     assert not any(r.label.endswith("_neardeg") for r in results)
     assert "already constrains phonon.Gamma" in caplog.text
