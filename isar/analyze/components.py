@@ -285,6 +285,22 @@ class CompositeModel:
         """Global Omega_d index of every PhononDHO, in component order."""
         return [i for i, _ in self._phonon_slots()]
 
+    def mode_order(self, theta) -> np.ndarray:
+        """Index permutation ``perm`` of the flat parameter vector that puts the phonon blocks
+        ``(Omega_d, Gamma, A)`` in ascending ``Omega_d``: ``theta[perm]`` is the canonical labelling
+        (and ``cov[np.ix_(perm, perm)]`` its covariance). Swapped labels are one solution; the
+        ordered-energy prior (:mod:`isar.analyze.prior`) is defined on the ordered one, so a fit
+        that converged with swapped labels is canonicalised through this before its prior is read.
+        Ordered on ``Omega_d``, the sampled coordinate, where the prior's normalisation is exact;
+        ``omega0_all`` still reports modes by derived omega0."""
+        theta = np.asarray(theta, dtype=float)
+        starts = self.phonon_indices()
+        width = len(PhononDHO.params)
+        perm = np.arange(self.n_params)
+        for dst, src in zip(starts, sorted(starts, key=lambda i: theta[i])):
+            perm[dst:dst + width] = np.arange(src, src + width)
+        return perm
+
     def is_stokes_only(self) -> bool:
         """True iff the composite has ≥1 phonon and *every* phonon is Stokes-only
         (``peak`` has no anti-Stokes side) — the Bose-dead high-q rescue (Phase 3a).

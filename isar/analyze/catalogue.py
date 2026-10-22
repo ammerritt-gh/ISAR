@@ -487,6 +487,48 @@ class PriorBundle:
     def spec(self) -> list[dict]:
         return [p.spec() for p in self.params]
 
+    def _energy_group(self) -> list[int]:
+        """Positions of the mode energies (``*.Omega_d``) that share one plain flat prior over one
+        window: the modes the ordered-energy prior can order. Fewer than two, or any informative
+        (transported / declared) energy prior, and nothing is ordered."""
+        idx = [i for i, p in enumerate(self.params) if p.name.endswith(".Omega_d")]
+        if len(idx) < 2:
+            return []
+        first = self.params[idx[0]]
+        same = all(self.params[i].kind == "flat" and (self.params[i].lo, self.params[i].hi)
+                   == (first.lo, first.hi) for i in idx)
+        return idx if same else []
+
+    def logpdf_ordered(self, named_values: dict) -> float:
+        """:meth:`logpdf` with the group of mode energies under the normalised ordered-energy prior
+        (``N!/W^N``, :func:`isar.analyze.prior.ordered_energy_log_prior`) instead of one flat factor
+        per label. The Laplace lane of the ordered prior; :meth:`transform_ordered` is its sampler."""
+        from isar.analyze.prior import ordered_energy_log_prior
+
+        group = set(self._energy_group())
+        total = float(sum(p.logpdf(named_values[p.name])
+                          for i, p in enumerate(self.params) if i not in group))
+        if group:
+            first = self.params[min(group)]
+            total += ordered_energy_log_prior(
+                [named_values[self.params[i].name] for i in sorted(group)], first.lo, first.hi)
+        return total
+
+    def transform_ordered(self, u) -> np.ndarray:
+        """Nested-sampling prior transform, ``u`` in ``params`` order: each parameter's own ``ppf``,
+        except the group of mode energies, which are the ascending order statistics of uniforms
+        (:func:`isar.analyze.prior.ordered_energy_transform`), assigned to the modes in component
+        order. Samples :meth:`logpdf_ordered`."""
+        from isar.analyze.prior import ordered_energy_transform
+
+        u = np.asarray(u, dtype=float)
+        out = np.array([p.ppf(v) for p, v in zip(self.params, u)], dtype=float)
+        group = self._energy_group()
+        if group:
+            first = self.params[group[0]]
+            out[group] = ordered_energy_transform(u[group], first.lo, first.hi)
+        return out
+
     @property
     def nontrivial(self) -> tuple[ResolvedPrior, ...]:
         """The informative (non-flat) priors — what the curvature check inspects."""

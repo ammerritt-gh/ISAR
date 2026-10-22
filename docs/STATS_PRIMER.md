@@ -244,6 +244,88 @@ Verify:
 python docs/stats/make_figures.py --only akaike --workspace <path-to-mvp_zone_test16>
 ```
 
+### 2.1 The mode prior recipe, and counting peaks
+
+How many peaks a spectrum holds is a model-selection question, so it is decided the way §2 decides
+everything: by evidence, with the Occam penalty paid out of the priors. That penalty is only as
+honest as the priors, and a prior built from the spectrum's own counts is not honest: a brighter
+spectrum would get a wider amplitude prior and pay a bigger penalty for the same extra peak. The
+**mode prior recipe** (`isar/analyze/prior.py`, version `isar.mode-prior-recipe/1`) fixes that. It is
+one rule, set before fitting and identical for every spectrum, built only from quantities the
+experiment *declares*: the fit window, the resolution width and the exposure. Starting values may
+still come from the data (a seed is not a prior); bounds and priors may not.
+
+| Parameter | Prior (flat over) | Built from |
+|---|---|---|
+| mode energy Ω_d | `(1e-3, highest fitted energy)` meV | the fit window |
+| mode width Γ | `(min(1e-3 meV, 0.01 x resolution FWHM), 5 meV)` | the resolution width, a declared maximum |
+| mode / elastic / quasi-elastic area | `(0, AMPLITUDE_SCALE x exposure x resolution FWHM)` | the exposure, the resolution width |
+| flat background (counts per point) | `(0, AMPLITUDE_SCALE x exposure)` | the exposure |
+
+The exposure is the spectrum's own declared one (`exposure_reference`: the median kept monitor, or
+the counting time where a spectrum has no monitor); a spectrum that declares none is given the
+nominal `1e6`, never a number taken from its counts. A spectrum with no usable resolution is held
+before it gets here. The anti-Stokes partner is still derived from its Stokes mode, never given a
+prior (§2, hard rule 2).
+
+**The amplitude constant.** `AMPLITUDE_SCALE = 1.0` counts per unit exposure per resolution width: a
+resolution-limited line may reach one count per point for every monitor count. It is a ceiling,
+not an expectation, and it is **agent-proposed** from order-of-magnitude public instrument figures
+(no measured value is used or committed): an inelastic X-ray analyzer detector counts at most some
+1e4 to 1e5 events per second before it saturates, the strongest elastic lines sit one to two
+decades below that, and the beam monitor integrates of order 1e4 to 1e5 counts per second, so the
+scattered peak rate per monitor count stays below one even for the strongest line, and phonons
+sit three decades or more below it. Taking that ceiling as the prior edge leaves one to two decades
+of headroom over the strongest line, which costs about 2.3 nats per decade of headroom per
+amplitude in the Occam factor, and keeps the area prior within the range the older count-scaled
+bound (1e4 x the maximum count) gave on typical spectra. There is no card override: the constant
+is part of the versioned recipe. The recipe is run on the example set against one alternative
+prior width (the S6 sensitivity check); if any selected count moves, the affected spectra are
+reported and the constant goes to the operator before the beamtime.
+
+**Known limit.** The constant is calibrated for monitor-normalised spectra, which is every
+facility ISAR reads today. `ScanContext` does not record whether `exposure_reference` is monitor
+counts or seconds, so a spectrum normalised by counting time alone would get a ceiling about four
+decades too tight; the context needs to carry the exposure source before such a spectrum is fitted
+with this recipe.
+
+**Mode identities.** The modes of one structure are exchangeable: swapping two labels gives the same
+curve, so every solution appears N! times in the likelihood. A flat prior per label then makes the
+two evidence lanes disagree by ln N! (6.6 nats at six modes): nested sampling finds all N! copies,
+while a Laplace expansion at one fitted point sees one. The recipe orders the energies and puts one
+normalised joint density on the ordered region, N!/W^N for N modes in a window of width W. The
+Laplace evidence reads it as a function of the set of energies (`ordered_energy_log_prior`) and
+nested sampling draws it as the order statistics of uniforms (`ordered_energy_transform`); the
+catalogue's prior bundle carries both (`logpdf_ordered`, `transform_ordered`). Each lane gets the
+N! exactly once and the two agree. The ordering is on Ω_d, the sampled coordinate, where that
+normalisation is exact; reported modes are still listed by derived ω₀.
+
+**Status [Partial].** The recipe, the ordered prior, the ceiling and the signature are implemented and
+tested. The fitter's bounds (`loop.build_problem`) and the two evidence lanes (`evidence.py`,
+`errors/bayes.py`) switch to them with the open-ended peak-count ladder; until then the older
+count-scaled bounds and the per-label flat energy prior still run.
+
+**The mode ceiling.** A spectrum may hold up to a configurable number of modes: card
+`[fitting] max_modes`, else the environment variable `ISAR_MODE_CEILING`, else 6
+(`isar.session.guidelines.mode_ceiling`). A best count at the ceiling is reported as "search limited",
+never as a settled answer. The ceiling and the recipe version are part of the guidelines signature,
+so changing either refits the spectra it affects instead of carrying old results forward.
+
+**References.** The method and its relatives, pinned here for later use:
+
+- D. S. Sivia, C. J. Carlile, W. S. Howells, S. König, *Bayesian analysis of quasielastic neutron
+  scattering data*, Physica B 182 (1992); implemented in Mantid's `quasielasticbayes` and
+  `quickBayes`. Laplace evidence per component count: the method of the cheap rung.
+- A. De Francesco, E. Guarini, U. Bafile, F. Formisano, L. Scaccia, *Bayesian approach to the analysis
+  of neutron Brillouin scattering data on liquid metals*, Phys. Rev. E 94, 023305 (2016):
+  reversible-jump Monte Carlo with an unknown number of excitations.
+- V. Sokolov, J. E. Pineda, J. Buchner, P. Caselli, *Probabilistic detection of spectral line
+  components*, ApJ Letters (2020), arXiv:2003.07644; NestFit (AAS 2021): nested sampling per
+  component count. The method of the expensive rung.
+- B. J. Brewer, *Inference for trans-dimensional Bayesian models with diffusive nested sampling*,
+  arXiv:1411.3921; A. Jasra, C. C. Holmes, D. A. Stephens, label switching in mixture models,
+  Statistical Science (2005).
+
 ## 3. Certify: the interval ladder, with its coverage measured
 
 The fast error bar every tool quotes is the Hessian ("HESSE"): invert the curvature of the cost
