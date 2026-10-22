@@ -7,6 +7,7 @@ the slow tests.
 """
 import csv
 import json
+import time
 
 import numpy as np
 import pytest
@@ -221,6 +222,17 @@ def test_count_answer_reads_posterior_by_count_and_prefers_a_published_flag():
     assert cb.count_answer({"best_label": None}).n_modes is None
 
 
+def test_serial_run_stops_launching_before_the_cap_minus_the_grace(monkeypatch):
+    def slow_case(task):
+        time.sleep(0.25)
+        return cb.CaseResult(case_id=task[0].case_id)
+    monkeypatch.setattr(cb, "run_case", slow_case)
+    truths = [_truth(index=i, modes=(), kind="empty") for i in range(6)]
+    # Cap 2 s, grace min(300, 1) = 1 s: no case starts at or after 1 s, so four 0.25 s cases at most.
+    results, info = cb.run_benchmark(truths, base_seed=1, n_workers=1, budget=TINY, deadline_s=2.0)
+    assert info.stopped_by_deadline and 3 <= info.n_completed <= 4
+
+
 def test_benchmark_stops_at_the_deadline_and_says_so():
     results, info = cb.run_benchmark([_truth()], base_seed=1, n_workers=1, budget=TINY,
                                      deadline_s=0.0)
@@ -266,6 +278,16 @@ def test_the_worker_pool_runs_cases_with_explicit_workers():
     empties = [_truth(modes=(), kind="empty", index=i) for i in range(2)]
     results, info = cb.run_benchmark(empties, base_seed=3, n_workers=2, budget=TINY, n_ab_draws=20)
     assert info.n_completed == 2 and [r.index for r in results] == [0, 1]
+
+
+@pytest.mark.slow
+def test_the_pool_kills_in_flight_work_at_the_cap_not_after_it(monkeypatch):
+    monkeypatch.setattr(cb, "HARD_KILL_GRACE_S", 1.0)
+    truths = [cb.generate_case(1, cb.STREAM_CASE_EVAL, 0, 3)] * 2          # minutes of sampling each
+    big = cb.ReferenceBudget(draws=3, null_draws=3, evidence="nested", n_live=100)
+    results, info = cb.run_benchmark(truths, base_seed=1, n_workers=2, budget=big, deadline_s=2.0)
+    assert info.killed_in_flight == 2 and results == []
+    assert info.wall_clock_s < 2.6                                          # the cap, not cap + grace
 
 
 @pytest.mark.slow

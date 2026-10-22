@@ -81,7 +81,7 @@ TARGET_AB = 0.60             # the best test may pick the source right at most t
 TUNING_MAX_CASES = 60
 TUNING_MAX_SECONDS = 30 * 60
 TUNING_WORKERS = 16
-HARD_KILL_GRACE_S = 300.0    # in-flight cases get this long past the deadline, then are killed
+HARD_KILL_GRACE_S = 300.0    # no case starts in the last this many seconds before the wall-clock cap
 
 # A fit answer is "ambiguous" when its runner-up count carries at least this posterior share. A
 # stand-in for the flag the fitter will publish: a ``count_ambiguous`` key in the fit wins.
@@ -719,20 +719,23 @@ class RunInfo:
 def run_benchmark(truths, *, base_seed: int, n_workers: int, budget: ReferenceBudget,
                   n_ab_draws: int = AB_DRAWS, errors_tier: str = "cheap",
                   deadline_s: float | None = None) -> tuple:
-    """Run the cases on ``n_workers`` processes (1 = in this process). Past ``deadline_s`` no new
-    case starts; in-flight cases get :data:`HARD_KILL_GRACE_S`, then the workers are killed and the
-    cases that finished are reported. Returns (results sorted by case, RunInfo)."""
+    """Run the cases on ``n_workers`` processes (1 = in this process). ``deadline_s`` is the wall-clock
+    cap: no case starts in its last grace seconds (:data:`HARD_KILL_GRACE_S`, at most half the cap),
+    and workers still running are killed at the cap; the cases that finished are reported. The
+    in-process path can only check between cases. Returns (results sorted by case, RunInfo)."""
     if n_workers < 1:
         raise ValueError("n_workers must be >= 1")
     t0 = time.monotonic()
     info = RunInfo(n_requested=len(truths))
     tasks = [(t, base_seed, budget, n_ab_draws, errors_tier) for t in truths]
-    over = lambda: deadline_s is not None and time.monotonic() - t0 >= deadline_s   # noqa: E731
+    # shortcut: a cap under two grace periods gets half the cap as grace, so it still starts cases
+    grace = 0.0 if deadline_s is None else min(HARD_KILL_GRACE_S, deadline_s / 2)
+    elapsed = lambda: time.monotonic() - t0   # noqa: E731
+    closed = lambda: deadline_s is not None and elapsed() >= deadline_s - grace   # noqa: E731
     results: list = []
     if n_workers == 1:
         for task in tasks:
-            if over():
-                info.stopped_by_deadline = True
+            if closed():
                 break
             results.append(run_case(task))
     else:
@@ -740,7 +743,7 @@ def run_benchmark(truths, *, base_seed: int, n_workers: int, budget: ReferenceBu
         pending, queue = set(), iter(tasks)
         try:
             while True:
-                while len(pending) < n_workers and not over():
+                while len(pending) < n_workers and not closed():
                     task = next(queue, None)
                     if task is None:
                         break
@@ -749,16 +752,15 @@ def run_benchmark(truths, *, base_seed: int, n_workers: int, budget: ReferenceBu
                     break
                 done, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
                 results += [f.result() for f in done]
-                if over():
-                    info.stopped_by_deadline = info.stopped_by_deadline or len(results) < len(tasks)
-                    if time.monotonic() - t0 >= deadline_s + HARD_KILL_GRACE_S:
-                        info.killed_in_flight = len(pending)
-                        for proc in list(getattr(ex, "_processes", {}).values()):
-                            proc.terminate()
-                        break
+                if deadline_s is not None and elapsed() >= deadline_s:
+                    info.killed_in_flight = len(pending)
+                    for proc in list(getattr(ex, "_processes", {}).values()):
+                        proc.terminate()
+                    break
         finally:
             ex.shutdown(wait=False, cancel_futures=True)
-    info.n_completed, info.wall_clock_s = len(results), time.monotonic() - t0
+    info.stopped_by_deadline = len(results) < len(tasks)
+    info.n_completed, info.wall_clock_s = len(results), elapsed()
     results.sort(key=lambda r: (r.stream, r.index))
     return results, info
 
@@ -807,8 +809,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--ref-random-starts", type=int, default=ReferenceBudget.random_starts)
     p.add_argument("--errors-tier", default="cheap", choices=("cheap", "fast", "auto", "full"))
     p.add_argument("--max-seconds", type=float, default=None,
-                   help="no new case starts after this; workers are killed "
-                        f"{int(HARD_KILL_GRACE_S)} s later")
+                   help="wall-clock cap: no case starts in its last "
+                        f"{int(HARD_KILL_GRACE_S)} s, and workers still running are killed at the cap")
     return p
 
 
