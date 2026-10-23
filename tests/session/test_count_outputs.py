@@ -366,3 +366,28 @@ def test_a_count_priced_by_rung_1_alone_keeps_its_probability_and_says_rung_1():
     rows = _record_of(ladder, models)["candidate_counts"]
     assert [(r["count"], r["probability"], r["log_evidence"], r["evidence_state"])
             for r in rows] == [(1, 0.25, -11.0, "rung 1 lnZ"), (2, 0.75, -9.0, "rung 1 lnZ")]
+
+
+# --------------------------------------------------------------------------- scans with no fit
+def _unfitted_row(root, status, reasons):
+    ws = _workspace(root)
+    st = SessionState()
+    st.put(ScanEntry(scan_id="E:8:ana7", scan_number=8, scan_type="measurement", status=status,
+                     reasons=reasons))
+    driver._write_results_csv(ws, st)
+    row, = readers.read_results_csv(ws.root)
+    return row
+
+
+def test_a_scan_held_for_calibration_reads_held_with_its_reason(tmp_path):
+    row = _unfitted_row(tmp_path, "held_for_calibration", ["ana7: no energy zero"])
+    assert row["count_state"] == count_ladder.HELD and row["count_state_reason"] == "ana7: no energy zero"
+
+
+def test_a_scan_with_no_fit_reads_a_stated_state_not_a_blank(tmp_path):
+    """An excluded scan is not fitted; an ingested scan is still waiting for its fit."""
+    excluded = _unfitted_row(tmp_path / "x", "excluded", ["excluded (card exclusions_seed / state)"])
+    assert excluded["count_state"] == "not fitted"
+    assert excluded["count_state_reason"] == "excluded (card exclusions_seed / state)"
+    ingested = _unfitted_row(tmp_path / "y", "ingested", [])
+    assert ingested["count_state"] == count_ladder.FITTING and ingested["count_state_reason"] == "ingested"

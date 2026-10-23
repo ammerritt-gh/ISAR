@@ -398,6 +398,24 @@ def _count_ladder(oc: dict) -> dict:
     return (oc.get("fit_selection_semantics") or {}).get("count_ladder") or {}
 
 
+# count_state of a row with no count-ladder record. The two ladder names are isar.analyze.count_ladder's
+# FITTING and HELD, spelled here so this read path does not import the fitting stack (a test pins them).
+NOT_FITTED = "not fitted"       # excluded, undersampled, or otherwise no fit
+NOT_RECORDED = "not recorded"   # a detector outcome written before the count ladder existed
+
+
+def _unfitted_count(e: ScanEntry) -> dict:
+    """The count columns of a scan with no detector outcome: a held scan is ``held`` with its hold
+    reason, an ingested scan is still ``fitting`` (no result yet), any other is ``not fitted``."""
+    if e.status.startswith("held"):
+        state = "held"
+    elif e.status == "ingested":
+        state = "fitting"
+    else:
+        state = NOT_FITTED
+    return {"count_state": state, "count_state_reason": "; ".join(e.reasons) or e.status}
+
+
 def _finite(value):
     """A number as written: a non-finite one is missing, never a ``nan`` cell."""
     if isinstance(value, float) and not math.isfinite(value):
@@ -417,7 +435,8 @@ def _mode_rows(e: ScanEntry, det: str, oc: dict) -> list:
         rows.append({
             "scan_id": e.scan_id, "scan": e.scan_number, "detector": det,
             "sample": oc.get("sample"), "T": oc.get("T"), "h": q[0], "k": q[1], "l": q[2],
-            "count_state": _count_ladder(oc).get("state"), "best_model": oc.get("best_label"),
+            "count_state": _count_ladder(oc).get("state") or NOT_RECORDED,
+            "best_model": oc.get("best_label"),
             "n_modes": len(modes), "mode_index": index,
             "omega0": mode.get("omega0"), "omega0_err": err,
             "peak_position": _finite(mode.get("peak_position")),
@@ -453,7 +472,8 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
     for e in sorted(session.scans.values(), key=lambda e: e.scan_number):
         if not e.detectors:
             rows.append({"scan_id": e.scan_id, "scan": e.scan_number, "status": e.status,
-                         "reasons": "; ".join(e.reasons), "content_hash": e.content_hash})
+                         "reasons": "; ".join(e.reasons), "content_hash": e.content_hash,
+                         **_unfitted_count(e)})
             continue
         for det, oc in e.detectors.items():
             q = oc.get("q") or [None, None, None]
@@ -616,8 +636,9 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "energy_lo": (ew[0] if ew else None), "energy_hi": (ew[-1] if ew else None),
                 "energy_bands": (json.dumps(oc.get("energy_bands"), sort_keys=True)
                                  if oc.get("energy_bands") is not None else None),
-                "count_state": count.get("state"),
-                "count_state_reason": "; ".join(count.get("reasons") or []) or None,
+                "count_state": count.get("state") or NOT_RECORDED,
+                "count_state_reason": ("; ".join(count.get("reasons") or []) or None
+                                       if count else "no count-ladder record"),
                 "deciding_rung": count.get("deciding_rung"),
                 "count_probability": count.get("count_probability"),
                 "runner_up_count": count.get("runner_up_count"),
