@@ -15,9 +15,12 @@ are scored against the generator's truth, which the harness holds and never pass
 *Resolvable* ("a human could fit it"): over repeated Poisson draws of one truth, a high-budget
 reference tells N modes from N-1 in >=90% of draws, while wrongly splitting the truth with its
 weakest mode removed in <=5% of draws. The reference is its own fixed configuration (many starts,
-some placed at the true mode positions, which the fitter under test never sees; nested sampling on
-the N and N-1 models through :func:`isar.analyze.errors.bayes.bayesian_posterior`, the lane the
-evidence ladder escalates to), independent of any escalation threshold of the fitter.
+some placed at the true mode positions, which the fitter under test never sees), independent of any
+escalation threshold of the fitter. Its evidence on the N and N-1 models is Laplace by default, the
+same Gaussian rungs as the fitter's rung 1 (so the two can share a blind spot; the
+reference-against-truth agreement figure exposes it); ``--ref-evidence nested`` switches it to
+nested sampling through :func:`isar.analyze.errors.bayes.bayesian_posterior` for spot checks, at
+about three hours per resolvable two-mode case at 200 draws.
 
 Every figure is a *target*, never a gate (rulings R14/R15): the figures file reports what was
 reached, with its denominator and Monte Carlo uncertainty.
@@ -81,10 +84,6 @@ TUNING_MAX_CASES = 60
 TUNING_MAX_SECONDS = 30 * 60
 TUNING_WORKERS = 16
 HARD_KILL_GRACE_S = 300.0    # no case starts in the last this many seconds before the wall-clock cap
-
-# A fit answer is "ambiguous" when its runner-up count carries at least this posterior share. A
-# stand-in for the flag the fitter will publish: a ``count_ambiguous`` key in the fit wins.
-AMBIGUOUS_RUNNER_UP_P = 0.20
 
 # The reference: N modes beat N-1 when ln Z_N - ln Z_{N-1} exceeds this (equal prior weight on the
 # two counts, as the fitter's ladder uses). Its own flat prior box, fixed and declared here, so the
@@ -338,27 +337,18 @@ def fit_observation(obs: Observation, *, seed: int, errors_tier: str = "cheap",
 
 def count_answer(fit: dict) -> CountAnswer:
     """The count a fit result states, and whether it says the answer is ambiguous: the count
-    ladder's published outcome when the fit carries one (its deciding rung's probabilities), else
-    the candidates' posterior by count against the benchmark's stand-in threshold."""
+    ladder's published outcome (``fit_selection_semantics["count_ladder"]``, its deciding rung's
+    probabilities and :data:`isar.analyze.count_ladder.AMBIGUITY_RUNNER_UP_P`). Every
+    :func:`~isar.session.scan_delivery.fit_one` result carries one; a fit without it raises rather
+    than being judged against a second threshold."""
     if not fit.get("best_label"):
         return CountAnswer(None, False, None)
-    ladder = (fit.get("fit_selection_semantics") or {}).get("count_ladder") or fit.get("count_ladder")
-    if ladder:
-        runner = ladder.get("runner_up_probability")
-        return CountAnswer(int(fit["n_modes"]), ladder.get("ambiguity") is not None,
-                           float(runner) if runner is not None else 0.0)
-    share: dict = {}
-    for row in fit.get("candidates") or ():
-        p = row.get("posterior_probability")
-        p = row.get("akaike_weight") if p is None else p
-        if p is not None and np.isfinite(p):
-            share[int(row["n_modes"])] = share.get(int(row["n_modes"]), 0.0) + float(p)
-    total = sum(share.values())
-    others = sorted((p / total for n, p in share.items() if n != int(fit["n_modes"])),
-                    reverse=True) if total > 0 else []
-    runner = others[0] if others else 0.0
-    ambiguous = bool(fit.get("count_ambiguous", runner >= AMBIGUOUS_RUNNER_UP_P))
-    return CountAnswer(int(fit["n_modes"]), ambiguous, float(runner))
+    ladder = (fit.get("fit_selection_semantics") or {}).get("count_ladder")
+    if not ladder:
+        raise ValueError(f"fit {fit['best_label']!r} carries no count_ladder record")
+    runner = ladder.get("runner_up_probability")
+    return CountAnswer(int(fit["n_modes"]), ladder.get("ambiguity") is not None,
+                       float(runner) if runner is not None else 0.0)
 
 
 def fitted_lambda(fit: dict, obs: Observation) -> np.ndarray | None:
@@ -423,7 +413,8 @@ def _reference_bundle(names, cmax: float):
 
 def reference_ln_evidence(obs: Observation, m: int, positions, budget: ReferenceBudget,
                           rng: np.random.Generator) -> float | None:
-    """ln Z of the m-mode model by nested sampling, or None when it could not be computed.
+    """ln Z of the m-mode model (Laplace by default, ``budget.evidence == "nested"``: nested
+    sampling), or None when it could not be computed.
 
     ``positions`` are the true mode (omega0, gamma) pairs: starts are placed at them (every
     m-subset, capped), which only the reference may do. The best converged start defines the

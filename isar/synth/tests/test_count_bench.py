@@ -85,7 +85,8 @@ def test_the_fitter_sees_an_observation_never_a_truth(monkeypatch):
 
     def spy(obs, *, seed, errors_tier, ceiling):
         seen.append(obs)
-        return {"best_label": "bg", "n_modes": 0, "candidates": [], "model_manifest": None}
+        return {"best_label": "bg", "n_modes": 0, "candidates": [], "model_manifest": None,
+                "fit_selection_semantics": {"count_ladder": {"ambiguity": None}}}
 
     monkeypatch.setattr(cb, "fit_observation", spy)
     cb.run_case((_truth(modes=(), kind="empty"), 1, TINY, 10, "cheap"))
@@ -208,16 +209,20 @@ def test_reference_agreement_per_case_is_not_hidden_by_pooled_draws():
     assert per_case["value"] == pytest.approx(0.75) and pooled["value"] > 0.95
 
 
-def test_count_answer_reads_posterior_by_count_and_prefers_the_count_ladders_answer():
+def test_count_answer_reads_the_count_ladders_answer_and_nothing_else():
+    """One ambiguity threshold: the count ladder's. A fit without its record is an error, never
+    judged against a benchmark stand-in."""
     fit = {"best_label": "x", "n_modes": 2, "candidates": [
-        {"n_modes": 2, "posterior_probability": 0.6, "akaike_weight": 0.5},
-        {"n_modes": 2, "posterior_probability": 0.1, "akaike_weight": 0.2},
         {"n_modes": 3, "posterior_probability": 0.3, "akaike_weight": 0.3}]}
-    a = cb.count_answer(fit)
-    assert a.n_modes == 2 and a.ambiguous and a.runner_up_p == pytest.approx(0.3 / 1.0)
     clear = {"count_ladder": {"ambiguity": None, "runner_up_probability": 0.3}}
-    assert not cb.count_answer({**fit, "fit_selection_semantics": clear}).ambiguous
+    a = cb.count_answer({**fit, "fit_selection_semantics": clear})
+    assert a.n_modes == 2 and not a.ambiguous and a.runner_up_p == pytest.approx(0.3)
+    close = {"count_ladder": {"ambiguity": {"count": 2}, "runner_up_probability": 0.3}}
+    assert cb.count_answer({**fit, "fit_selection_semantics": close}).ambiguous
+    with pytest.raises(ValueError, match="no count_ladder record"):
+        cb.count_answer(fit)
     assert cb.count_answer({"best_label": None}).n_modes is None
+    assert not hasattr(cb, "AMBIGUOUS_RUNNER_UP_P")
 
 
 def test_serial_run_stops_launching_before_the_cap_minus_the_grace(monkeypatch):

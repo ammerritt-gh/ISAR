@@ -59,7 +59,7 @@ START_DISAGREEMENT_MARGIN = 3.0  # nats. Fired on 0/57; at 10 on 6/57 (catching 
 MERGED_FWHM_FRACTION = 0.5       # x resolution FWHM, the split seeds' separation. No selected model
 #                                  had two modes closer than 1.0 FWHM, so 0.25-1.0 all fired on 0/57
 AMBIGUITY_RUNNER_UP_P = 0.20     # Runner-up probabilities were <= 0.06 or >= 0.21 on every case, so
-#                                  0.05-0.30 classify alike; kept equal to the benchmark's stand-in
+#                                  0.05-0.30 classify alike; the benchmark reads this one too
 # Live points for rung 2's count decisions. ESCALATION_N_LIVE (32) was sized for one- and two-mode
 # Occam gaps; measured 2026-10-23 on case T0040 (2 and 3 modes, 8 and 11 free parameters) its lnZ
 # sat 39 and 29 nats below the 400-point value with a reported logzerr of 1.7 and 2.0, flipping the
