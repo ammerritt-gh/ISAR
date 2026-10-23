@@ -318,6 +318,30 @@ def test_close_counts_carry_the_ambiguity_marker(one_peak):
     assert amb["probability"] == pytest.approx(0.7) and amb["runner_up_probability"] == pytest.approx(0.3)
 
 
+def test_a_contender_that_cannot_be_sampled_leaves_the_spectrum_unresolved(one_peak, monkeypatch):
+    """Rung 2 could not start for a contender that rung 1 did price: a failed calculation, never a
+    comparison made on its rung-1 Laplace value. The spectrum is unresolved, rung 1 stays shown."""
+    from isar.analyze.errors import bayes
+
+    ctx, record = one_peak
+
+    def refuse(*args, **kwargs):
+        raise ValueError("the sampler cannot start (test)")
+
+    monkeypatch.setattr(bayes, "bayesian_posterior", refuse)
+    model = record.by_label()["stokes2+bg"]
+    assert CL._has_evidence(model)                                       # rung 1 priced it
+    out = CL.sample_model(model, ctx, n_live=16)
+    assert out.log_evidence is None and out.method == "failed"
+    assert "cannot start" in out.reason
+    plan = _escalated(record)
+    sampled = {label: _stub(record, label, -50.0) for label in plan.contending}
+    sampled["stokes2+bg"] = out
+    res = CL.conclude(record, ctx, plan, sampled, budget_s=100.0)
+    assert res.state == CL.UNRESOLVED and res.shown == "rung1"
+    assert any("stokes2+bg could not be computed" in r for r in res.reasons)
+
+
 def test_held_names_its_reason():
     res = CL.held("no energy zero")
     assert res.state == CL.HELD and res.reasons == ["no energy zero"] and res.shown == "none"

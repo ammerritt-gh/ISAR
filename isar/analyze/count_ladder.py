@@ -121,7 +121,7 @@ class Rung2Model:
     count: int
     log_evidence: float | None
     log_evidence_err: float | None
-    method: str                  # "nested" | "laplace_kept" (could not be sampled) | "failed"
+    method: str                  # "nested" | "failed" (sampling failed or could not start)
     reason: str | None
     result: object
     result_source: str           # "nested_refit" | "rung1"
@@ -367,8 +367,9 @@ def plan(record, ctx) -> Rung2Plan:
 def sample_model(model, ctx, *, seed: int = 12345, n_live: int | None = None) -> Rung2Model:
     """Nested sampling of one contending model, then an optimizer refit from the sampler's
     maximum-likelihood sample; the better of the refit and the rung-1 representative is published.
-    A model whose sampling cannot start keeps a usable rung-1 Laplace evidence; with none, its
-    evidence is missing, never low. ``n_live`` ``None`` is :func:`rung2_n_live`."""
+    A model whose sampling fails or cannot start has no rung-2 evidence (``"failed"``): its rung-1
+    Laplace value is never carried into the comparison, so the spectrum is left unresolved, never
+    settled on a comparison that did not run. ``n_live`` ``None`` is :func:`rung2_n_live`."""
     started = time.monotonic()
     hyp = model.hypothesis
     rep = model.representative
@@ -382,9 +383,6 @@ def sample_model(model, ctx, *, seed: int = 12345, n_live: int | None = None) ->
             result, source = refit, "nested_refit"
     if rec.evidence_method == "dynesty":
         ln_z, err, method, reason = rec.log_evidence, rec.log_evidence_err, "nested", None
-    elif bz is None and _has_evidence(model):
-        ln_z, err, method = model.log_evidence, None, "laplace_kept"
-        reason = f"not sampleable ({rec.validity['dynesty']['reason']}); rung-1 Laplace kept"
     else:
         dyn = rec.validity.get("dynesty", {})
         ln_z, err, method = None, None, "failed"
