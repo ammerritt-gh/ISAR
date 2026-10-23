@@ -496,6 +496,33 @@ def test_the_published_fit_is_the_refit_from_the_nested_maximum_likelihood_sampl
     assert abs(out.result.params["phonon.Omega_d"] - 5.0) < 0.5
 
 
+def test_a_converged_refit_beats_a_lower_cost_unconverged_representative(one_peak):
+    """Rung 2 publishes the fit nested sampling recovered: a converged refit is never displaced by
+    an unconverged rung-1 fit, however low its cost."""
+    ctx, record = one_peak
+    model = record.by_label()["stokes+bg"]
+    low = replace(model.representative, optimizer_converged=False,
+                  cost=model.representative.cost - 10.0, posterior_cost=None)
+    stuck = replace(model, starts=[replace(model.starts[0], result=low)], representative_start=0)
+    out = CL.sample_model(stuck, ctx, n_live=16)
+    assert out.result_source == "nested_refit" and out.result.optimizer_converged
+
+
+def test_the_published_fit_prefers_converged_then_the_lower_objective(one_peak):
+    """Both directions of the rule: converged wins whichever side it is on; between two of the
+    same status the lower objective wins."""
+    _ctx_, record = one_peak
+    rep = record.by_label()["stokes+bg"].representative
+    lower_unconverged = replace(rep, optimizer_converged=False, cost=rep.cost - 5.0,
+                                posterior_cost=None)
+    higher = replace(rep, cost=rep.cost + 5.0, posterior_cost=None)
+    assert CL.published_fit(rep, lower_unconverged) == (rep, "rung1")
+    assert CL.published_fit(lower_unconverged, higher) == (higher, "nested_refit")
+    lower = replace(rep, cost=rep.cost - 5.0, posterior_cost=None)
+    assert CL.published_fit(higher, lower) == (lower, "nested_refit")
+    assert CL.published_fit(lower, higher) == (lower, "rung1")
+
+
 def test_rung_two_samples_at_its_own_live_points_unless_the_environment_caps_them(monkeypatch):
     """Count decisions need more live points than the old escalation lane's 32 (measured: 30-40
     nats off on two- and three-mode models); the suite's environment cap still wins."""

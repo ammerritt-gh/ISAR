@@ -377,9 +377,21 @@ def plan(record, ctx) -> Rung2Plan:
 
 
 # --- rung 2 ---------------------------------------------------------------------------------------
+def published_fit(rep, refit) -> tuple:
+    """``(result, source)``: what rung 2 publishes for a model, its rung-1 representative or the
+    refit from the nested maximum-likelihood sample. A converged fit always beats an unconverged
+    one; between two of the same status the lower objective wins (ties keep rung 1)."""
+    if refit.optimizer_converged != rep.optimizer_converged:
+        better = bool(refit.optimizer_converged)
+    else:
+        better = loop._objective(refit) < loop._objective(rep)
+    return (refit, "nested_refit") if better else (rep, "rung1")
+
+
 def sample_model(model, ctx, *, seed: int = 12345, n_live: int | None = None) -> Rung2Model:
     """Nested sampling of one contending model, then an optimizer refit from the sampler's
-    maximum-likelihood sample; the better of the refit and the rung-1 representative is published.
+    maximum-likelihood sample; the better of the refit and the rung-1 representative
+    (:func:`published_fit`) is published.
     A model whose sampling fails or cannot start has no rung-2 evidence (``"failed"``): its rung-1
     Laplace value is never carried into the comparison, so the spectrum is left unresolved, never
     settled on a comparison that did not run. ``n_live`` ``None`` is :func:`rung2_n_live`."""
@@ -391,9 +403,8 @@ def sample_model(model, ctx, *, seed: int = 12345, n_live: int | None = None) ->
     result, source = rep, "rung1"
     ml = getattr(bz, "max_likelihood_sample", None)
     if ml:
-        refit = loop.fit_hypothesis(hyp, loop.candidate_context(hyp, ctx), x0=ml)
-        if loop._objective(refit) < loop._objective(rep):
-            result, source = refit, "nested_refit"
+        result, source = published_fit(rep, loop.fit_hypothesis(
+            hyp, loop.candidate_context(hyp, ctx), x0=ml))
     if rec.evidence_method == "dynesty":
         ln_z, err, method, reason = rec.log_evidence, rec.log_evidence_err, "nested", None
     else:

@@ -1817,11 +1817,9 @@ def _resumed_rung2(stored, record, ctx) -> dict:
             continue
         result, source = model.representative, "rung1"
         if kept.get("params"):
-            refit = loop.fit_hypothesis(model.hypothesis,
-                                        loop.candidate_context(model.hypothesis, ctx),
-                                        x0=kept["params"])
-            if loop._objective(refit) < loop._objective(result):
-                result, source = refit, "nested_refit"
+            result, source = count_ladder.published_fit(result, loop.fit_hypothesis(
+                model.hypothesis, loop.candidate_context(model.hypothesis, ctx),
+                x0=kept["params"]))
         out[label] = count_ladder.Rung2Model(
             label=label, count=model.count, log_evidence=kept.get("log_evidence"),
             log_evidence_err=kept.get("log_evidence_err"), method=kept.get("method", "failed"),
