@@ -9,6 +9,7 @@ Provides:
   - DHO (Damped Harmonic Oscillator) Stokes / anti-Stokes lineshapes
   - Voigt ⊗ DHO convolution model with elastic Voigt peak + flat background
   - The same model with a tabulated (measured) resolution curve in place of the Voigt
+  - ResolutionConvolver: the per-fit resolution convolution, kernel transformed once
   - Helper: voigt_area_for_height
 
 Constants
@@ -16,11 +17,12 @@ Constants
   KB  : Boltzmann constant in meV/K
 """
 
+from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
+from scipy import fft as sp_fft
 from scipy.special import wofz
-from scipy.signal import fftconvolve
 
 # ============================================================
 # Constants
@@ -30,6 +32,8 @@ KB = 0.086173324   # Boltzmann constant (meV / K)
 #: Internal convolution grid step (meV) for :func:`convolute_voigt_dho`. Tests that rebuild the
 #: grid must read it from here, never re-declare the number.
 CONVOLUTION_DX = 0.05
+#: Pad (meV) the convolution grid adds beyond the data window on each side.
+CONVOLUTION_PAD = 20
 kB = KB            # alias
 
 
@@ -144,6 +148,96 @@ def _tabulated_grid_and_kernel(n_half, dx, curve):
     return x_nodes, kern, centre
 
 
+@dataclass(frozen=True, eq=False)
+class ResolutionConvolver:
+    """One fit's resolution convolution, with the kernel's FFT computed once and reused.
+
+    A signal is sampled on ``grid``; calling the convolver with it (one row, or a stack of rows,
+    convolved in one batched transform) returns the convolution at energies ``q``, linearly
+    interpolated and zero outside the kept output. The arithmetic is ``scipy.signal.fftconvolve``'s
+    (same transform length, same product, same slice) with the kernel's transform hoisted out, so a
+    call transforms only its signal. Built and cached by :func:`resolution_convolver`.
+    """
+
+    grid: np.ndarray        # signal nodes
+    kernel_fft: np.ndarray  # rfft of the kernel at length n_fft
+    n_fft: int
+    first: int              # index in the linear convolution of the first kept output node
+    x_out: np.ndarray       # energies of the kept output nodes
+    dx: float
+
+    def __call__(self, signal, q):
+        spectrum = sp_fft.rfft(signal, self.n_fft, axis=-1) * self.kernel_fft
+        kept = sp_fft.irfft(spectrum, self.n_fft, axis=-1)[..., self.first:self.first + self.x_out.size]
+        conv = kept * self.dx
+        if conv.ndim == 1:
+            return np.interp(q, self.x_out, conv, left=0.0, right=0.0)
+        return np.stack([np.interp(q, self.x_out, row, left=0.0, right=0.0) for row in conv])
+
+
+def _frozen(a):
+    a.flags.writeable = False
+    return a
+
+
+@lru_cache(maxsize=64)
+def _voigt_convolver(x_span, dx, gauss_fwhm, lorentz_fwhm):
+    """The Voigt path's convolver: ``fftconvolve(signal, kernel, mode='same')`` on the
+    ``arange(-x_span, x_span, dx)`` grid, which keeps the centred ``N`` of the ``2N - 1`` points."""
+    x_uniform, voigt_kernel = _grid_and_kernel(x_span, dx, gauss_fwhm, lorentz_fwhm)
+    n = x_uniform.size
+    n_fft = sp_fft.next_fast_len(2 * n - 1, True)
+    return ResolutionConvolver(x_uniform, _frozen(sp_fft.rfft(voigt_kernel, n_fft)), n_fft,
+                               (n - 1) // 2, x_uniform, dx)
+
+
+@lru_cache(maxsize=64)
+def _tabulated_convolver(n_half, dx, curve):
+    """The tabulated path's convolver: ``fftconvolve(signal, kern, mode='full')``, whose point
+    ``p`` sits at node index ``p - centre`` relative to the grid's first node."""
+    x_nodes, kern, centre = _tabulated_grid_and_kernel(n_half, dx, curve)
+    n_full = x_nodes.size + kern.size - 1
+    n_fft = sp_fft.next_fast_len(n_full, True)
+    x_full = _frozen(x_nodes[0] + (np.arange(n_full) - centre) * dx)
+    return ResolutionConvolver(x_nodes, _frozen(sp_fft.rfft(kern, n_fft)), n_fft, 0, x_full, dx)
+
+
+def resolution_convolver(x_target, gauss_fwhm, lorentz_fwhm, resolution_curve=None):
+    """The cached :class:`ResolutionConvolver` for a model evaluated at ``x_target``: the tabulated
+    curve's when ``resolution_curve`` is set (the widths are then ignored), else the Voigt's. The
+    grid spans the data window plus :data:`CONVOLUTION_PAD`; the cache is keyed on the grid and the
+    resolution, never on a lineshape parameter."""
+    x_target = np.asarray(x_target, dtype=float)
+    dx = CONVOLUTION_DX
+    x_span = max(abs(x_target.min()), abs(x_target.max())) + CONVOLUTION_PAD
+    if resolution_curve is not None:
+        return _tabulated_convolver(int(np.ceil(x_span / dx)), dx, resolution_curve)
+    return _voigt_convolver(float(x_span), dx, float(gauss_fwhm), float(lorentz_fwhm))
+
+
+def _peak_parts(peak):
+    peak_lower = peak.lower()
+    return ['stokes', 'astokes', 'elastic'] if peak_lower == 'all' else peak_lower.split('+')
+
+
+def dho_signal(grid, phonon_energy, damping, phonon_amplitude, T, peak='stokes+astokes'):
+    """The unconvolved DHO on ``grid``: the Stokes side and, for ``T > 0``, its anti-Stokes partner
+    at the detailed-balance amplitude (never a free one). ``peak`` selects the sides as in
+    :func:`convolute_voigt_dho`; an ``elastic`` part is not part of this signal."""
+    peak_parts = _peak_parts(peak)
+    signal = np.zeros_like(grid)
+    if 'stokes' in peak_parts:
+        signal += Stokes_DHO(grid, amplitude=phonon_amplitude, damping=damping,
+                             center=phonon_energy)
+    if 'astokes' in peak_parts and T > 0:
+        # Detailed balance is only defined for T > 0: at T = 0 the anti-Stokes side is exactly
+        # empty (no phonons to annihilate), and a negative T would invert the Bose weight.
+        astokes_amp = phonon_amplitude / np.exp(phonon_energy / (KB * T))
+        signal += antiStokes_DHO(grid, amplitude=astokes_amp, damping=damping,
+                                 center=phonon_energy)
+    return signal
+
+
 def convolve_tabulated(x_target, center, curve, signal):
     """``signal`` (a function of energy, evaluated on nodes ``k*dx``) convolved with a tabulated
     resolution curve, evaluated at ``x_target - center``.
@@ -155,13 +249,8 @@ def convolve_tabulated(x_target, center, curve, signal):
     widen the pad if a quasi-elastic width ever approaches it.
     """
     x_target = np.asarray(x_target, dtype=float)
-    dx = CONVOLUTION_DX
-    x_span = max(abs(x_target.min()), abs(x_target.max())) + 20
-    x_nodes, kern, centre = _tabulated_grid_and_kernel(int(np.ceil(x_span / dx)), dx, curve)
-    full = fftconvolve(signal(x_nodes), kern, mode='full') * dx
-    # full[p] sits at node index p - centre relative to x_nodes[0].
-    x_full = x_nodes[0] + (np.arange(full.size) - centre) * dx
-    return np.interp(x_target - center, x_full, full, left=0.0, right=0.0)
+    conv = resolution_convolver(x_target, 0.0, 0.0, curve)
+    return conv(signal(conv.grid), x_target - center)
 
 
 def _tabulated_dho(x_target, phonon_energy, center, damping, phonon_amplitude,
@@ -169,22 +258,12 @@ def _tabulated_dho(x_target, phonon_energy, center, damping, phonon_amplitude,
     """The tabulated-resolution branch of :func:`convolute_voigt_dho` (same physics, same
     detailed-balance tie; the elastic line is the curve itself at ``center``)."""
     x_target = np.asarray(x_target, dtype=float)
-    peak_lower = peak.lower()
-    peak_parts = ['stokes', 'astokes', 'elastic'] if peak_lower == 'all' else peak_lower.split('+')
-
-    def signal(x_nodes):
-        s = np.zeros_like(x_nodes)
-        if 'stokes' in peak_parts:
-            s += Stokes_DHO(x_nodes, amplitude=phonon_amplitude, damping=damping,
-                            center=phonon_energy)
-        if 'astokes' in peak_parts and T > 0:
-            astokes_amp = phonon_amplitude / np.exp(phonon_energy / (KB * T))
-            s += antiStokes_DHO(x_nodes, amplitude=astokes_amp, damping=damping,
-                                center=phonon_energy)
-        return s
+    peak_parts = _peak_parts(peak)
 
     if 'stokes' in peak_parts or 'astokes' in peak_parts:
-        y = convolve_tabulated(x_target, center, curve, signal)
+        y = convolve_tabulated(x_target, center, curve,
+                               lambda grid: dho_signal(grid, phonon_energy, damping,
+                                                       phonon_amplitude, T, peak))
     else:
         y = np.zeros_like(x_target)
     if 'elastic' in peak_parts:
@@ -237,10 +316,6 @@ def convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, lorentz_fwh
     # degrade model selection, not just arithmetic. The offline accuracy case for 0.01/0.02 (a
     # refit of 82 scans, median error 0.021 -> 0.012 meV at 0.02) does not survive contact with a
     # live campaign, and the 0.1 meV per-point bar already covers the residual error.
-    dx = CONVOLUTION_DX
-    pad_range = 20
-
-    x_span = max(abs(x_target.min()), abs(x_target.max())) + pad_range
     # KNOWN DEFECT, deliberately retained (PR #10 review, deferred): this grid contains exact 0
     # only when x_span is a dx multiple, so fftconvolve(mode='same') carries a sub-dx (<= dx/2),
     # window-dependent centring offset. The symmetric odd-grid fix (arange(-n, n+1)*dx) is correct
@@ -249,28 +324,10 @@ def convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, lorentz_fwh
     # reports `unavailable` (an EIG-eligibility blocker), and the frozen Slice-8 replacement
     # candidate no longer reproduces. Fixing it needs its own owner-sequenced slice (fit-robustness
     # + candidate renewal). tests/analyze/test_lineshapes.py pins the defect as strict xfails.
-    x_uniform, voigt_kernel = _grid_and_kernel(float(x_span), dx, float(gauss_fwhm), float(lorentz_fwhm))
-
-    peak_lower = peak.lower()
-    if peak_lower == 'all':
-        peak_parts = ['stokes', 'astokes', 'elastic']
-    else:
-        peak_parts = peak_lower.split('+')
-
-    signal = np.zeros_like(x_uniform)
-    if 'stokes' in peak_parts:
-        signal += Stokes_DHO(x_uniform, amplitude=phonon_amplitude,
-                             damping=damping, center=phonon_energy)
-    if 'astokes' in peak_parts and T > 0:
-        # Detailed balance is only defined for T > 0: at T = 0 the anti-Stokes side is exactly
-        # empty (no phonons to annihilate), and a negative T would invert the Bose weight.
-        astokes_amp = phonon_amplitude / np.exp(phonon_energy / (KB * T))
-        signal += antiStokes_DHO(x_uniform, amplitude=astokes_amp,
-                                 damping=damping, center=phonon_energy)
-
-    convolved = fftconvolve(signal, voigt_kernel, mode='same') * dx
-
-    y = np.interp(x_target - center, x_uniform, convolved, left=0.0, right=0.0)
+    conv = resolution_convolver(x_target, gauss_fwhm, lorentz_fwhm)
+    peak_parts = _peak_parts(peak)
+    signal = dho_signal(conv.grid, phonon_energy, damping, phonon_amplitude, T, peak)
+    y = conv(signal, x_target - center)
 
     if 'elastic' in peak_parts:
         unit_profile = _elastic_unit_voigt(x_target.tobytes(), x_target.shape,

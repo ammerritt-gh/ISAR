@@ -21,13 +21,19 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from isar.analyze.lineshapes import Lorentzian, Voigt, convolve_tabulated, convolute_voigt_dho
+from isar.analyze.lineshapes import (Lorentzian, Voigt, convolve_tabulated, convolute_voigt_dho,
+                                     dho_signal, resolution_convolver)
 from isar.analyze.phonon import bose_occupation, omega0_from, omega0_value_error
 
 
 def _curve(ctx):
     """The context's tabulated resolution curve, or ``None`` (duck-typed contexts have none)."""
     return getattr(ctx, "resolution_curve", None)
+
+
+def _convolver(x, ctx):
+    """The context's cached resolution convolution for a model evaluated at ``x``."""
+    return resolution_convolver(x, ctx.gauss_fwhm, ctx.lorentz_fwhm, _curve(ctx))
 
 
 @dataclass(frozen=True)
@@ -115,6 +121,13 @@ class PhononDHO(Component):
         return convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
                                    local["Gamma"], measured, 0.0, 0.0, ctx.T,
                                    peak=self.peak, resolution_curve=_curve(ctx))
+
+    def grid_signal(self, grid, local: dict, ctx) -> np.ndarray:
+        """This mode before convolution, on the convolver's ``grid``: what :meth:`evaluate`
+        convolves, so the modes of one composite can share one convolution."""
+        omega0 = omega0_from(local["Omega_d"], local["Gamma"])
+        measured = local["A"] * bose_occupation(omega0, ctx.T)   # intrinsic × (n+1), H4
+        return dho_signal(grid, omega0, local["Gamma"], measured, ctx.T, self.peak)
 
     def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
         unit = {"Omega_d": nonlinear["Omega_d"], "Gamma": nonlinear["Gamma"], "A": 1.0}
@@ -224,10 +237,21 @@ class CompositeModel:
         return out
 
     def evaluate(self, x, theta, ctx) -> np.ndarray:
+        """The model mean at ``x``. The phonon modes are summed before convolution, so all of them
+        cost one convolution (linearity; each mode's own :meth:`PhononDHO.evaluate` is the same
+        curve)."""
         x = np.asarray(x, dtype=float)
         total = np.zeros_like(x)
+        conv, phonons = None, None
         for comp, local in zip(self.components, self._split(theta)):
-            total = total + comp.evaluate(x, local, ctx)
+            if isinstance(comp, PhononDHO):
+                conv = conv or _convolver(x, ctx)
+                signal = comp.grid_signal(conv.grid, local, ctx)
+                phonons = signal if phonons is None else phonons + signal
+            else:
+                total = total + comp.evaluate(x, local, ctx)
+        if phonons is not None:
+            total = total + conv(phonons, x - ctx.center)
         exposure = getattr(ctx, "exposure_for", lambda _x: None)(x)
         if exposure is not None:
             total = total * exposure
