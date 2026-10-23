@@ -239,16 +239,19 @@ def test_force_masters_accepts_a_bare_string_as_one_id(tmp_path, monkeypatch):
     ws.root.mkdir(parents=True, exist_ok=True)
     ws.policy_path.write_text(Path(ill_in8._CARD_PATH).read_text(encoding="utf-8"),
                               encoding="utf-8")
-    captured = {}
+    captured = []
 
     def fake_fit_masters(*a, **kw):
-        captured["force_masters"] = kw.get("force_masters")
+        captured.append(kw.get("force_masters"))
         return 0
 
     monkeypatch.setattr(master_delivery, "_fit_masters", fake_fit_masters)
     driver.run_batch(ws, [data], force_masters="master:tavi_(43, 0, 0)_200.0",
                      detectors="det0", formats=(), workers=1, errors_tier="cheap")
-    assert captured["force_masters"] == frozenset({"master:tavi_(43, 0, 0)_200.0"})
+    # The first pass carries the forced set; a second pass, which only resumes spectra waiting on
+    # rung 2 of the count ladder (driver.run_batch), forces nothing again.
+    assert captured[0] == frozenset({"master:tavi_(43, 0, 0)_200.0"})
+    assert all(not forced for forced in captured[1:])
 
 
 def test_force_masters_without_merged_collation_fails_loud(monkeypatch):
