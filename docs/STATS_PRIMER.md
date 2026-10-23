@@ -410,10 +410,15 @@ The delivery (`scan_delivery.fit_one`) passes the card's `max_modes` to the fit 
 
 **The delivery [Implemented].** Every spectrum is in one state (`isar.analyze.count_ladder`):
 `settled`, `provisional` (rung 2 still to run), `search limited`, `unresolved` or `held`, with its
-reasons, the rung that decided it, the probability of every count tried and the ambiguity marker,
-recorded as `fit_selection_semantics["count_ladder"]` and projected onto `results.csv`
+reasons, the rung that decided it, the probability of each count the deciding rung priced and the
+ambiguity marker, recorded as `fit_selection_semantics["count_ladder"]` and projected onto `results.csv`
 (`count_state`, `count_state_reason`, `deciding_rung`, `count_probability`, `runner_up_count`,
-`runner_up_probability`, `count_ambiguous`, `count_flags`; the selected count is `n_modes`). Each
+`runner_up_probability`, `count_ambiguous`, `count_flags`; the selected count is `n_modes`). The record
+lists every count rung 1 tried, each with its evidence (rung 2's nested lnZ, else rung 1's Laplace lnZ)
+or the reason it has none: `unconverged`, `resolved to <twin>`, `not sampled at rung 2`, or
+`sampling failed: <reason>`. A scan with no fit reads `held` (with its hold reason), `fitting`
+(ingested, not yet fitted) or `not fitted` (excluded or undersampled); a detector row written before
+the ladder existed reads `not recorded`. Each
 mode of the selected count is a row of `report/modes.csv`: intrinsic ω₀ and the displayed peak
 position Ω_d, Γ, amplitude, their HESSE errors (a missing one stays empty). A settled rung 2
 replaces rung 1's selection, priced on the contending models' nested-sampling evidence alone. An
