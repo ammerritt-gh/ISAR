@@ -274,19 +274,43 @@ class CompositeModel:
 
         ``nonlinear_global`` maps global nonlinear names (e.g. ``"phonon.Omega_d"``) to
         the values at which the basis is evaluated (the IC grid candidate)."""
-        cols, names = [], []
-        for comp in self.components:
-            local_nl = {n: nonlinear_global[self._global(comp, n)]
-                        for n in comp.nonlinear_params()}
-            unit = comp.unit_columns(x, local_nl, ctx)
-            for n in comp.linear_params():
-                names.append(self._global(comp, n))
-                cols.append(np.asarray(unit[n], dtype=float))
-        phi = np.column_stack(cols) if cols else np.empty((np.size(x), 0))
-        exposure = getattr(ctx, "exposure_for", lambda _x: None)(np.asarray(x, dtype=float))
+        nonlinear = set(self.nonlinear_names())
+        theta = [float(nonlinear_global[n]) if n in nonlinear else 0.0 for n in self.param_names()]
+        return self.basis(x, theta, ctx), self.linear_names()
+
+    def static_columns(self, x, ctx) -> dict:
+        """The unit columns that depend on no parameter (components with no nonlinear parameter:
+        elastic, quasi-elastic, background), keyed by component index, for :meth:`basis` to reuse
+        across the evaluations of one fit."""
+        return {i: comp.unit_columns(x, {}, ctx) for i, comp in enumerate(self.components)
+                if not comp.nonlinear_params()}
+
+    def basis(self, x, theta, ctx, *, static=None) -> np.ndarray:
+        """One column per :meth:`linear_names` entry: that amplitude's unit response at
+        ``theta``'s nonlinear values, exposure applied, so the model mean is ``basis @
+        amplitudes`` (``theta``'s linear entries are not read). The phonon columns share one
+        batched convolution; ``static`` (from :meth:`static_columns`) supplies the columns that
+        depend on no parameter."""
+        x = np.asarray(x, dtype=float)
+        cols, phonon_at, signals = [], [], []
+        conv = None
+        for i, (comp, local) in enumerate(zip(self.components, self._split(theta))):
+            if isinstance(comp, PhononDHO):
+                conv = conv or _convolver(x, ctx)
+                phonon_at.append(len(cols))
+                cols.append(None)
+                signals.append(comp.grid_signal(conv.grid, {**local, "A": 1.0}, ctx))
+                continue
+            unit = static[i] if static is not None and i in static else comp.unit_columns(x, local, ctx)
+            cols.extend(np.asarray(unit[n], dtype=float) for n in comp.linear_params())
+        if signals:
+            for at, col in zip(phonon_at, conv(np.stack(signals), x - ctx.center)):
+                cols[at] = col
+        phi = np.column_stack(cols) if cols else np.empty((x.size, 0))
+        exposure = getattr(ctx, "exposure_for", lambda _x: None)(x)
         if exposure is not None:
             phi = phi * exposure[:, None]
-        return phi, names
+        return phi
 
     # -- derived quantities --------------------------------------------------
     def _phonon_slots(self):

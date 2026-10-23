@@ -11,12 +11,17 @@ covariance is `2·H⁻¹` and matches `curve_fit(absolute_sigma=True)`.
   positive-definite guard; no MINOS.
 - lmfit (comparison): scalar minimizer on the same cost; covariance where available.
   Optional — imported lazily, ships in the ``[test]`` extra.
+
+:func:`poisson_nnls` solves the linear amplitudes of a Poisson fit at fixed nonlinear parameters.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -123,6 +128,140 @@ def iminuit_minimize(costv, x0, bounds, names, *, minos=False, ncall=None) -> Ba
     x = np.array([m.values[nm] for nm in names], dtype=float)
     return BackendResult(x, success, str(m.fmin.is_valid), int(m.nfcn),
                          covariance, covariance_ok, _at_limit_map(x, bounds, names), merrors)
+
+
+# ----------------------------------------------------------------------------
+# Poisson NNLS: the profiled linear amplitudes
+# ----------------------------------------------------------------------------
+def _box_qp(h, g, lo, hi):
+    """``argmin g.d + d.h.d/2`` over ``lo <= d <= hi`` (``lo <= 0 <= hi``, ``h`` positive
+    definite): a primal active-set method from ``d = 0``. Each pass solves the free coordinates
+    with the held ones on their bounds, walks towards that solution as far as the first bound it
+    meets (and holds it), or, once it is reached, releases the held coordinate whose multiplier has
+    the wrong sign; a strictly convex QP ends in finitely many passes."""
+    n = g.size
+    d = np.zeros(n)
+    held = np.zeros(n, dtype=np.int8)           # -1 on lo, +1 on hi, 0 free
+    held[(lo >= 0) & (g > 0)] = -1
+    held[(hi <= 0) & (g < 0)] = 1
+    for _ in range(4 * n + 10):
+        free = np.flatnonzero(held == 0)
+        if free.size:
+            grad = g + h @ d
+            step = np.linalg.solve(h[np.ix_(free, free)], -grad[free])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                room = np.where(step > 0, (hi[free] - d[free]) / step,
+                                np.where(step < 0, (lo[free] - d[free]) / step, np.inf))
+            j = int(np.argmin(room))
+            if room[j] < 1.0:
+                d[free] += room[j] * step
+                k = free[j]
+                d[k], held[k] = (hi[k], 1) if step[j] > 0 else (lo[k], -1)
+                continue
+            d[free] += step
+        grad = g + h @ d
+        wrong = np.where(held == -1, -grad, np.where(held == 1, grad, 0.0))
+        j = int(np.argmax(wrong))
+        if wrong[j] <= 0.0:
+            break
+        held[j] = 0
+    return d, held
+
+
+def poisson_nnls(phi, y, a0, lo, hi, *, offset=None, max_iter=50):
+    """The amplitudes ``a`` in ``[lo, hi]`` that minimise the Baker-Cousins cost of the mean
+    ``offset + phi @ a`` against the counts ``y``.
+
+    The cost is convex in ``a`` (the mean is linear in it), so Newton's method with the box kept
+    exactly converges to its one minimum, quadratically once the bound amplitudes are known: each
+    step is the minimum of the cost's quadratic model inside the box (:func:`_box_qp`), backtracked
+    until the cost falls (Armijo). ``a0`` warm-starts it. It stops when the step's predicted
+    decrease is at the cost's round-off, when no step lowers the cost, or after ``max_iter`` steps.
+    A zero-count point contributes its mean only (no floor, convention D3)."""
+    phi = np.asarray(phi, dtype=float)
+    y = np.asarray(y, dtype=float)
+    lo = np.asarray(lo, dtype=float)
+    hi = np.asarray(hi, dtype=float)
+    c = np.zeros(y.size) if offset is None else np.asarray(offset, dtype=float)
+    if not (np.all(np.isfinite(phi)) and np.all(np.isfinite(c))):
+        return np.clip(np.asarray(a0, dtype=float), lo, hi)   # the caller's cost reads non-finite
+    pos = y > 0
+    yp = y[pos]
+
+    def half_cost(mu):
+        # cost/2 up to a constant; infinite where a counted point has no mean
+        if np.any(mu < 0) or np.any(mu[pos] <= 0):
+            return np.inf
+        return float(np.sum(mu) - yp @ np.log(mu[pos]))
+
+    a = np.clip(np.asarray(a0, dtype=float), lo, hi)
+    mu = c + phi @ a
+    f = half_cost(mu)
+    # A second start, the variance-weighted least-squares fit, for a warm start the optimiser's
+    # last jump left far away: from a mean near zero Newton's step only doubles it.
+    from scipy.optimize import nnls
+
+    s = 1.0 / np.sqrt(np.maximum(y, 1.0))
+    try:
+        ls = np.clip(nnls(phi * s[:, None], (y - c) * s)[0], lo, hi)
+        mu_ls = c + phi @ ls
+        f_ls = half_cost(mu_ls)
+        if f_ls < f:
+            a, mu, f = ls, mu_ls, f_ls
+    except RuntimeError as exc:     # scipy's iteration cap; the warm start stands
+        log.debug("least-squares start unavailable: %s", exc)
+    if not np.isfinite(f):
+        # Start inside: give every column an equal share of the counts.
+        col = phi.sum(axis=0)
+        share = np.divide(y.sum() / max(phi.shape[1], 1), col, out=np.zeros_like(col),
+                          where=col > 0)
+        a = np.clip(np.maximum(a, share), lo, hi)
+        mu = c + phi @ a
+        f = half_cost(mu)
+        if not np.isfinite(f):
+            return a
+    r = np.zeros_like(y)
+    w = np.zeros_like(y)
+    for _ in range(max_iter):
+        r[pos] = yp / mu[pos]
+        w[pos] = r[pos] / mu[pos]
+        g = phi.T @ (1.0 - r)
+        h = phi.T @ (phi * w[:, None])
+        # A relative ridge per column (the columns' scales differ by many decades: a width at its
+        # floor makes a tall narrow one); a column with no counts under it gets a tiny absolute one.
+        diag = np.diag(h)
+        h = h + np.diag(np.where(diag > 0, 1e-12 * diag, 1e-24 * max(float(np.max(diag)), 1.0)))
+        try:
+            d, held = _box_qp(h, g, lo - a, hi - a)
+        except np.linalg.LinAlgError:
+            break
+        slope = float(g @ d)
+        if not -slope > 1e-14 * max(1.0, abs(f)):
+            # Converged; still take the last step if it costs nothing, so a bound amplitude ends
+            # exactly on its bound rather than a round-off above it.
+            trial = np.clip(a + d, lo, hi)
+            trial[held == -1] = lo[held == -1]
+            trial[held == 1] = hi[held == 1]
+            f_t = half_cost(c + phi @ trial)
+            if f_t <= f + 1e-12 * max(1.0, abs(f)):
+                a = trial
+            break
+        t, moved = 1.0, False
+        for _ in range(50):
+            trial = np.clip(a + t * d, lo, hi)
+            if t == 1.0:    # the QP's bound amplitudes sit exactly on their bounds
+                trial[held == -1] = lo[held == -1]
+                trial[held == 1] = hi[held == 1]
+            mu_t = c + phi @ trial
+            f_t = half_cost(mu_t)
+            if f_t <= f + 1e-4 * t * slope:
+                moved = True
+                break
+            t *= 0.5
+        if not moved:
+            break
+        a, mu, f = trial, mu_t, f_t
+    return a
 
 
 # ----------------------------------------------------------------------------

@@ -1,5 +1,6 @@
-"""Fit-core speed (S1U7): the resolution kernel is transformed once per fit, and the new evaluation
-matches the pre-change arithmetic.
+"""Fit-core speed (S1U7): the resolution kernel is transformed once per fit, the new evaluation
+matches the pre-change arithmetic, and the Poisson NNLS that profiles the amplitudes out finds the
+bounded minimum.
 
 The reference below is the pre-change model, written out with ``scipy.signal.fftconvolve`` per mode
 and per call, exactly as ``convolute_voigt_dho`` and ``convolve_tabulated`` computed it. Agreement
@@ -181,3 +182,63 @@ def _case(case):
 def test_composite_evaluate_matches_the_old_evaluation(case):
     ctx, comp, theta = _case(case)
     _close(comp.evaluate(X, theta, ctx), _old_composite(comp, X, theta, ctx))
+
+
+# ------------------------------------------------------------------ amplitude profiling
+@pytest.mark.parametrize("case", CASES)
+def test_the_basis_is_the_old_model_linear_in_the_amplitudes(case):
+    ctx, comp, theta = _case(case)
+    lin = [comp.param_names().index(nm) for nm in comp.linear_names()]
+    phi = comp.basis(X, theta, ctx, static=comp.static_columns(X, ctx))
+    _close(phi @ theta[lin], _old_composite(comp, X, theta, ctx))
+    for k, i in enumerate(lin):    # each column is that amplitude's unit response
+        unit = theta.copy()
+        unit[lin] = 0.0
+        unit[i] = 1.0
+        _close(phi[:, k], _old_composite(comp, X, unit, ctx))
+    phi_nnls, names = comp.nnls_basis(X, {nm: theta[comp.param_names().index(nm)]
+                                          for nm in comp.nonlinear_names()}, ctx)
+    assert names == comp.linear_names()
+    np.testing.assert_array_equal(phi_nnls, phi)
+
+
+def _poisson_problem():
+    """Five columns: two nearly collinear peaks, a peak under zero counts only, a tall narrow one
+    (many decades above the rest) and a flat background."""
+    x = np.linspace(-5.0, 15.0, 90)
+    cols = [np.exp(-0.5 * ((x - c) / w) ** 2) for c, w in [(3.0, 0.8), (3.3, 0.9), (12.0, 0.5)]]
+    cols.append(1e4 / ((x - 7.0) ** 2 + 1e-4))
+    cols.append(np.ones_like(x))
+    phi = np.column_stack(cols)
+    lam = phi @ np.array([40.0, 25.0, 0.0, 1e-3, 1.5])
+    y = np.random.default_rng(7).poisson(lam).astype(float)
+    y[np.abs(x - 12.0) < 2.0] = 0.0          # zero counts where the third peak would sit
+    return phi, y
+
+
+def test_poisson_nnls_is_the_bounded_minimum_of_the_poisson_cost():
+    from scipy.optimize import minimize
+
+    from isar.analyze import backends
+    from isar.analyze.estimators import baker_cousins_cost
+
+    phi, y = _poisson_problem()
+    lo, hi = np.zeros(5), np.full(5, 1e6)
+    hi[4] = 0.5                               # the background wants more than its ceiling
+    a = backends.poisson_nnls(phi, y, np.ones(5), lo, hi)
+    again = backends.poisson_nnls(phi, y, np.array([100.0, 0.0, 5.0, 0.1, 0.5]), lo, hi)
+    np.testing.assert_allclose(again, a, rtol=1e-6, atol=1e-9)    # one minimum, from any start
+    assert a[2] == 0.0 and a[4] == 0.5        # on their bounds, exactly
+    mu = phi @ a
+    g = phi.T @ (1.0 - y / mu)                # KKT of the Poisson cost
+    free = (a > lo) & (a < hi)
+    scale = np.abs(phi).sum(axis=0)
+    assert np.all(np.abs(g[free]) <= 1e-6 * scale[free])
+    assert g[2] > 0 and g[4] < 0
+    cost = baker_cousins_cost(y, mu)
+    rng = np.random.default_rng(1)
+    for start in [np.ones(5), rng.uniform(0, 50, 5), rng.uniform(0, 1, 5)]:
+        start[3] *= 1e-3
+        other = minimize(lambda b: baker_cousins_cost(y, phi @ b), start, method="L-BFGS-B",
+                         bounds=list(zip(lo, hi)))
+        assert cost <= other.fun + 1e-6
