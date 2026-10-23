@@ -191,17 +191,20 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
         if missing:
             raise ValueError(f"prior_bundle has no prior for sampled parameter(s) {missing}; "
                              f"every free parameter must carry exactly one prior factor")
-        ppfs = [by_name[n].ppf for n in names]
+        if [p.name for p in prior_bundle.params] != list(names):
+            raise ValueError("prior_bundle parameters are not in the sampled parameter order; "
+                             "the ordered transform assigns by position")
         prior_specification = {
             "prior_kind": "catalogue_prior_bundle",
             "parameter_prior": "per_parameter_truncated_ppf",
             "parameters": [by_name[n].spec() for n in names],
+            # Exchangeable mode energies are sampled as ordered statistics (N!/W^N, the Laplace
+            # lane's logpdf_ordered), so N swapped labellings are one solution, not N!.
+            "mode_energy_order": [names[i] for i in prior_bundle._energy_group()],
             "omega_loglike_term": None,
         }
-        semantics_id = "isar.catalogue_prior_bundle_nested_prior/1"
-
-        def ptform(u):
-            return np.array([f(v) for f, v in zip(ppfs, np.asarray(u, dtype=float))])
+        semantics_id = "isar.catalogue_prior_bundle_nested_prior/2"
+        ptform = prior_bundle.transform_ordered
     else:
         prior_specification = {
             "prior_kind": "optimizer_bound_data_dependent",

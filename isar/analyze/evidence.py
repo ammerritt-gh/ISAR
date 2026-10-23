@@ -30,7 +30,8 @@ record from a different arena (:class:`ArenaMismatchError`) instead of quietly c
 incommensurable numbers.
 
 Prior counting is the H3/H4 exactly-once rule throughout: ``lnZ`` reads the DATA-only cost and
-adds ``PriorBundle.logpdf`` once — a transported soft constraint IS the prior for its parameter
+adds ``PriorBundle.logpdf_ordered`` once (the per-parameter priors, with exchangeable mode energies
+under the ordered-energy prior, so swapped labels are one solution) — a transported soft constraint IS the prior for its parameter
 (never the penalty on top of the prior), and hard-fixed parameters contribute nothing (their k
 is already reduced and :func:`~isar.analyze.catalogue.resolve_priors` excluded them).
 
@@ -434,7 +435,9 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
               and _effective_sigma(p) < CURVATURE_RATIO * sig_post[free_names.index(p.name)]]
     validity["unseen_informative"] = narrow
     if not narrow:
-        ln_prior = bundle.logpdf(fit_result.params)
+        # Ordered mode energies (N!/W^N): the Gaussian at θ̂ covers one labelling, so the prior is
+        # the ordered one, or lnZ undercounts every N-mode model by ln N! against the sampler.
+        ln_prior = bundle.logpdf_ordered(fit_result.params)
         try:
             ln_z = laplace_ln_z(fit_result.cost, ln_prior, sigma_free)
         except np.linalg.LinAlgError as exc:
@@ -484,7 +487,7 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
         theta_map = {n: float(v) for n, v in zip(prob_names, br.x)}
         if _is_pd(sigma_map):
             cost_map = float(prob.costv(np.asarray(br.x, dtype=float)))
-            return _record(laplace_ln_z(cost_map, bundle.logpdf(theta_map), sigma_map),
+            return _record(laplace_ln_z(cost_map, bundle.logpdf_ordered(theta_map), sigma_map),
                            None, "laplace_map")
     return _escalate("map_refit_invalid")
 

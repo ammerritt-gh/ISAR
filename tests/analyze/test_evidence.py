@@ -1163,3 +1163,52 @@ def test_fit_persists_per_param_at_limit(clean):
     assert isinstance(fit.at_limit, dict)
     assert set(fit.at_limit) == set(fit.params)           # real dotted names, every param
     assert all(isinstance(v, bool) for v in fit.at_limit.values())
+
+
+# ------------------------------------------------------------------ ordered mode energies
+def _two_mode_ctx():
+    x = np.linspace(-10.0, 12.0, 111)
+    lam = (convolute_voigt_dho(x, 3.0, 0.0, 1.0, 0.0, 0.4, 300.0, 80.0, 0.0, 100.0, peak="all")
+           + convolute_voigt_dho(x, 8.0, 0.0, 1.0, 0.0, 0.4, 200.0, 0.0, 15.0, 100.0, peak="all"))
+    counts = np.random.default_rng(1).poisson(np.clip(lam, 0.0, None)).astype(float)
+    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
+                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                       energy_status="needs_zero")
+
+
+@pytest.fixture(scope="module")
+def two_mode():
+    from isar.analyze.phonon import placed_modes_ic
+
+    ctx = _two_mode_ctx()
+    hyp = {h.label: h for h in C.enumerate_count_structures(ctx, 2)}["elastic+stokes2+bg"]
+    x0 = placed_modes_ic(hyp.build(), ctx, [3.0, 8.0])
+    return ctx, hyp, loop.fit_hypothesis(hyp, ctx, x0=x0)
+
+
+def test_laplace_lane_prices_two_modes_under_the_ordered_prior(two_mode):
+    """Laplace covers one labelling of the modes, so its prior is the ordered one: ln 2! above the
+    per-label flat product for two exchangeable modes, exactly once."""
+    ctx, hyp, fit = two_mode
+    assert fit.optimizer_converged and fit.covariance_ok
+    bundle = _bundle(hyp, ctx)
+    rec = E.structure_evidence(hyp, ctx, fit, bundle)
+    assert rec.evidence_method == "laplace"
+    sigma = E._free_submatrix(fit.parameter_covariance, list(fit.params),
+                              [p.name for p in bundle.params])
+    flat = E.laplace_ln_z(fit.cost, bundle.logpdf(fit.params), sigma)
+    assert rec.log_evidence - flat == pytest.approx(math.log(2.0), abs=1e-9)
+
+
+def test_nested_lane_samples_ordered_mode_energies(two_mode):
+    """The sampler draws the mode energies as ordered statistics (every draw ascending) and the
+    prior specification records which energies are ordered."""
+    ctx, hyp, fit = two_mode
+    bz = BZ.bayesian_posterior(hyp, ctx, fit, prior_bundle=_bundle(hyp, ctx), n_live=40,
+                               dlogz=5.0, sample="unif", seed=3, max_iter=400)
+    names = list(bz.parameter_names)
+    first, second = names.index("phonon.Omega_d"), names.index("phonon2.Omega_d")
+    draws = bz.parameter_samples
+    assert draws.shape[0] > 0
+    assert np.all(draws[:, first] <= draws[:, second])
+    assert bz.prior_specification["mode_energy_order"] == ["phonon.Omega_d", "phonon2.Omega_d"]
