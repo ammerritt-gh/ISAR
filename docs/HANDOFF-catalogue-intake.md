@@ -16,12 +16,11 @@ and is closed.
 - Verified: nothing on main.
 
 ## Next
-The operator decides whether the plan's per-packet `files` lists may be widened. The proposal is in the
-S1 coordinator's hand-back: give each S1 packet the areas it touches, tests and docs included. The
-auto-mode permission classifier refused that revision from the coordinator's seat as loosening a gate,
-so it needs the operator's word, or the operator's typed `/waiver` if the classifier refuses it again.
-Then register the revised plan (`acs-job plan --file ... --reason`), re-claim S1U1P1 as `next` names
-it, and launch the S1 slice coordinator with the packet `next` prints.
+No plan revision is needed any more. By operator ruling on 2026-10-23, the ACS packet `files` check is
+advisory (Workflow 58ff2ff55b, PR #162): a packet whose check exits 0 is green, and files outside its
+list are only shown to reviewers. Bind the handoff, re-claim S1U1P1 on the existing work
+(`acs-job claim --seat executor --packet S1U1P1 --job jc54d8ce88c0c`) so its old red record is
+rechecked, then launch the S1 slice coordinator with the packet `next` prints.
 
 ## Where
 - Job: jc54d8ce88c0c (t3), handoff e05139875e70cbad0a5c5c549ba690463a95190409741314c47c1937544ced81,
