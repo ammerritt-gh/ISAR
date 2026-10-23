@@ -46,6 +46,7 @@ isar run "D:\beamtime\numors" --workspace my_experiment
 # 4. Read the report
 #    my_experiment\report\report.html   (or report.md)
 #    my_experiment\report\results.csv   (machine-readable, one row per scan x detector)
+#    my_experiment\report\modes.csv     (one row per fitted mode, ordered by energy)
 
 # ...more scans arrive during the night...
 isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only new scans are fitted
@@ -62,7 +63,7 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
 | `card.policy.toml` | **You** (ISAR scaffolds it once, then never touches it) | Every per-experiment decision: detectors, column names, collation rules, calibration method, fitting guidelines, and declared branch hypotheses for autonomous campaigns ([HYPOTHESES.md](HYPOTHESES.md)). Commented — the comments are the documentation. |
 | `card.state.json` | ISAR | Accumulated experiment state: energy-zero series, resolution versions, the running dispersion prior, resolved hypothesis snapshot and mismatch evidence, sample map, exclusions, corrections audit trail. Don't hand-edit; don't delete. |
 | `session.json` | ISAR | Bookkeeping: which files were seen, which scans were processed and how. Safe to delete — a re-run rebuilds it (refitting everything once). |
-| `report/` | ISAR | The product: `report.html`/`.md`, `results.csv`, figures, plus `reduction.*` (the QC-level detail report). |
+| `report/` | ISAR | The product: `report.html`/`.md`, `results.csv` (one summary row per spectrum, with its peak-count state), `modes.csv` (every fitted mode of the selected count, ordered by energy), figures, plus `reduction.*` (the QC-level detail report). |
 
 ## The commands
 

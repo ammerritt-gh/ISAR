@@ -7,6 +7,7 @@ them with the stdlib only and never import ISAR internals:
   acquisition engine and stopping criterion need (``omega0``, ``interval_lo``/``interval_hi``,
   ``confidence``, ``omega0_err``, the Q components) are coerced to floats; everything else stays a
   string. The columns are ISAR's ``session.outcome._CSV_COLUMNS``.
+- :func:`read_modes_csv` — ``report/modes.csv``, the linked mode-per-row table (same coercion).
 - :func:`read_report_json` — ``report/report.json`` (a light run summary, cheap to poll for progress).
 - :func:`read_card_state` — ``card.state.json`` (the accumulated ``dispersion_prior`` +
   ``resolution_versions``; the running physics model the ω(q) model mirrors).
@@ -36,20 +37,24 @@ _NUMERIC_COLUMNS = frozenset({
     "log_evidence", "log_evidence_err",
     "gamma", "cost_per_dof",
     "zero", "gauss_fwhm", "lorentz_fwhm", "prior_omega", "prior_sigma",
-    "secondary_omega0", "secondary_omega0_err",
     "effective_exposure", "consistency_statistic", "consistency_pvalue",
     "consistency_alpha", "model_interval_lo", "model_interval_med", "model_interval_hi",
     "model_entropy",
     "target_probability", "identity_entropy",
     "best_model_posterior",
     "energy_lo", "energy_hi",
+    "count_probability", "runner_up_probability",
+    # report/modes.csv (read_modes_csv)
+    "peak_position", "peak_position_err", "gamma_err", "amplitude", "amplitude_intrinsic",
 })
 _INT_COLUMNS = frozenset({"scan", "prior_n", "n_modes", "n_members",
-                          "selected_candidate_index", "track_revision", "consistency_seed"})
+                          "selected_candidate_index", "track_revision", "consistency_seed",
+                          "deciding_rung", "runner_up_count", "mode_index"})
 # Coerced to bool ("True"/"False" → True/False; "" → None). ISAR writes Python bool reprs.
 _BOOL_COLUMNS = frozenset({"interval_reliable", "pooled", "hesse_trusted", "resolvable",
                            "gamma_at_bound", "pool_consistent", "model_robust",
-                           "local_identity_clear", "target_delivery_eligible"})
+                           "local_identity_clear", "target_delivery_eligible",
+                           "count_ambiguous"})
 # Split on ";" into a list of labels ("" → None; missing column → key absent via DictReader).
 _LIST_COLUMNS = frozenset({"members"})
 # JSON-encoded structured columns (GUI Phase 0): the amplitudes dict and candidate table. Parsed
@@ -108,6 +113,19 @@ def read_results_csv(workspace: str | Path) -> list[dict[str, Any]]:
         for raw in csv.DictReader(f):
             rows.append({k: _coerce(k, v) for k, v in raw.items()})
     return rows
+
+
+def read_modes_csv(workspace: str | Path) -> list[dict[str, Any]]:
+    """Parse ``<workspace>/report/modes.csv``, results.csv's linked mode-per-row table (one row per
+    fitted mode of each spectrum's selected count, ordered by energy), with the same coercion.
+
+    Raises :class:`FileNotFoundError` if the run has not produced it yet.
+    """
+    path = _report_dir(workspace) / "modes.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"no modes.csv at {path} (run ISAR first)")
+    with open(path, newline="", encoding="utf-8") as f:
+        return [{k: _coerce(k, v) for k, v in raw.items()} for raw in csv.DictReader(f)]
 
 
 def read_report_json(workspace: str | Path) -> dict[str, Any]:

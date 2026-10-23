@@ -168,7 +168,7 @@ def figure_three_questions() -> Path:
          "cost, cost_per_dof"),
         ("SELECT", "C1", 5.0,
          "which model?", "Akaike weights\n+ nested LRT",
-         "best_model, n_modes,\nsecondary_omega0"),
+         "best_model, n_modes,\nmodes.csv"),
         ("CERTIFY", "C2", 8.4,
          "what uncertainty?", "the interval ladder\n(below)",
          "interval_lo/hi,\ninterval_reliable"),
@@ -1003,7 +1003,9 @@ def figure_akaike(ws: Path) -> Path:
              label=f"stokes2+bg (w={scores['stokes2+bg'].weight:.3f})")
     for lab, vals in c2.evaluate_components(xf, t2, ctx):
         ax0.plot(xf, vals, ":", lw=1.0, alpha=0.8, color="0.5")
-    sec = rows[_AKAIKE_SCAN].get("secondary_omega0")
+    # The two-mode fit's mode farther from the one-mode fit's: the extra mode the selection weighs.
+    sec = max((m["omega0"] for m in (r2.modes or [])), key=lambda w: abs(w - r1.omega0),
+              default=None)
     if sec:
         ax0.annotate(f"second mode {float(sec):.2f} meV", xy=(float(sec), float(counts.max()) * 0.5),
                      xytext=(float(sec) + 1.5, float(counts.max()) * 0.8), fontsize=7.5, color="C1",
@@ -1037,7 +1039,7 @@ def figure_akaike(ws: Path) -> Path:
                          "aic": _r(scores[lab].aic, 3), "delta_aic": _r(scores[lab].delta_aic, 3),
                          "weight": _r(scores[lab].weight, 5)}
                    for lab in ("stokes+bg", "stokes2+bg")},
-        "secondary_omega0": _r(float(sec)) if sec else None, "seed": SEED})
+        "second_mode_omega0": _r(float(sec)) if sec else None, "seed": SEED})
     return _save_png(fig, "akaike_example", "stats/akaike_example", draw=False)
 
 
