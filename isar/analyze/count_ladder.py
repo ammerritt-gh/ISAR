@@ -47,12 +47,18 @@ STATES = (FITTING, PROVISIONAL, SETTLED, SEARCH_LIMITED, UNRESOLVED, HELD)
 # A model contends when its rung-1 log-evidence is within this of the best (a factor of about
 # 20 000). The design's default; tuned against the benchmark only with the change recorded.
 CONTENDING_MARGIN = 10.0
-# Measured 2026-10-23 with the S1U2 benchmark (tuning mode); see docs/STATS_PRIMER.md §2.1 and the
-# comment at each constant for what was run.
-SPLIT_MARGIN = 3.0                 # nats: a split candidate this close to its unsplit model contends
-START_DISAGREEMENT_MARGIN = 3.0    # nats: start families this close that pick different counts
-MERGED_FWHM_FRACTION = 0.5         # two modes closer than this x resolution FWHM have merged
-AMBIGUITY_RUNNER_UP_P = 0.20       # a runner-up count at or above this probability is "close"
+# Measured 2026-10-23 on the S1U2 benchmark's tuning stream (seed 20261023, cases T0000-T0059 at
+# ceiling 4, 57 finished inside the 30-minute cap; reference 20+20 Laplace draws; rung 2 forced on
+# every contending set at n_live 32). Rung 2 moved the count on 10 of 56 spectra: 4 to the truth
+# (T0004, T0027, T0044, T0057), 4 away. The structured-residual trigger caught 3 of the 4, the
+# missing-evidence trigger all 4; the four below caught none, at any margin tried, so they keep
+# their starting values and are recorded rather than tuned (R15).
+SPLIT_MARGIN = 3.0               # nats. Fired on 1/57; at 8 on 7/57, at 10 on 13/57 (catching 1/4)
+START_DISAGREEMENT_MARGIN = 3.0  # nats. Fired on 0/57; at 10 on 6/57 (catching 0/4)
+MERGED_FWHM_FRACTION = 0.5       # x resolution FWHM, the split seeds' separation. No selected model
+#                                  had two modes closer than 1.0 FWHM, so 0.25-1.0 all fired on 0/57
+AMBIGUITY_RUNNER_UP_P = 0.20     # Runner-up probabilities were <= 0.06 or >= 0.21 on every case, so
+#                                  0.05-0.30 classify alike; kept equal to the benchmark's stand-in
 # The central region, for the flag "central residual, quasi-elastic not tested": this many
 # resolution widths either side of the energy zero.
 CENTRAL_HALF_WIDTH_FWHM = 2.0
