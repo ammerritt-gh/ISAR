@@ -69,6 +69,12 @@ class BayesResult:
     parameter_samples: np.ndarray | None = None
     prior_fingerprint: str | None = None
     prior_specification: dict | None = None
+    # The evidence half of the gate (:func:`_evidence_gate`), for a caller that needs lnZ, not the
+    # interval: the count ladder's rung 2.
+    evidence_converged: bool = False
+    evidence_fail_reason: str | None = None
+    # The highest-likelihood sample by parameter name: rung 2 refits from it.
+    max_likelihood_sample: dict | None = None
 
 
 def _gauss_logpdf(x: float, mu: float, sigma: float) -> float:
@@ -86,22 +92,32 @@ def _rail_fraction(col: np.ndarray, lo: float, hi: float, rtol: float) -> float:
     return float(np.count_nonzero(near)) / float(col.size)
 
 
-def _diagnose(res, bounds, od_i, od_draws, omega0_interval, ess, max_iter):
-    """The silent-failure gate (§5.4). Returns ``(ok, reason)``; ALL hard checks must pass.
-
-    Γ piled at its floor is deliberately NOT a hard failure — it is the overdamped/Γ→0 physics
-    the Bayesian path exists to handle by prior support; only Ω_d running to the window edge
-    (an ill-posed *position*) hard-fails on railing."""
+def _evidence_gate(res, max_iter):
+    """The checks that judge the evidence itself, ``(ok, reason)``: a finite logz, the dlogz target
+    reached before ``max_iter``, and logzerr within the coarse bound. The rest of :func:`_diagnose`
+    judges the posterior's interval (its ESS, a railed Ω_d, a degenerate ω₀ interval)."""
     logz = float(res.logz[-1])
     logzerr = float(res.logzerr[-1])
     if not np.isfinite(logz):
         return False, "logz not finite"
     if max_iter is not None and int(res.niter) >= int(max_iter):
         return False, "hit max_iter before dlogz target"
-    if not np.isfinite(ess) or ess < ESS_MIN:                # primary interval-quality gate
-        return False, f"ess={ess:.0f} below {ESS_MIN:.0f}"
     if not np.isfinite(logzerr) or logzerr > LOGZERR_MAX:    # coarse evidence blow-up guard
         return False, f"logzerr={logzerr:.2f} exceeds {LOGZERR_MAX}"
+    return True, None
+
+
+def _diagnose(res, bounds, od_i, od_draws, omega0_interval, ess, max_iter):
+    """The silent-failure gate (§5.4). Returns ``(ok, reason)``; ALL hard checks must pass.
+
+    Γ piled at its floor is deliberately NOT a hard failure — it is the overdamped/Γ→0 physics
+    the Bayesian path exists to handle by prior support; only Ω_d running to the window edge
+    (an ill-posed *position*) hard-fails on railing."""
+    ok, reason = _evidence_gate(res, max_iter)
+    if not ok:
+        return ok, reason
+    if not np.isfinite(ess) or ess < ESS_MIN:                # primary interval-quality gate
+        return False, f"ess={ess:.0f} below {ESS_MIN:.0f}"
     if od_i is None:                                         # phonon-less: position checks vacuous
         return True, None
     od_lo, od_hi = bounds[od_i]
@@ -282,7 +298,11 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
         omega0_interval = gamma_interval = nan3
 
     ok, reason = _diagnose(res, prob.bounds, od_i, od, omega0_interval, ess, max_iter)
-    return BayesResult(omega0_interval=omega0_interval, gamma_interval=gamma_interval,
+    evidence_ok, evidence_reason = _evidence_gate(res, max_iter)
+    best = int(np.argmax(res.logl))
+    return BayesResult(
+        evidence_converged=evidence_ok, evidence_fail_reason=evidence_reason,
+        max_likelihood_sample={n: float(v) for n, v in zip(names, res.samples[best])},omega0_interval=omega0_interval, gamma_interval=gamma_interval,
                        omega0_samples=omega0_samples, gamma_samples=gamma_samples,
                        log_evidence=logz, log_evidence_err=logzerr, ess=ess,
                        bimodal=is_bimodal(omega0_samples), converged=ok,
