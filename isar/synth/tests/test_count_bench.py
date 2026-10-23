@@ -83,7 +83,7 @@ def test_the_fitter_sees_an_observation_never_a_truth(monkeypatch):
                                                                 "lorentz_fwhm", "exposure"}
     seen = []
 
-    def spy(obs, *, seed, errors_tier):
+    def spy(obs, *, seed, errors_tier, ceiling):
         seen.append(obs)
         return {"best_label": "bg", "n_modes": 0, "candidates": [], "model_manifest": None}
 
@@ -208,14 +208,15 @@ def test_reference_agreement_per_case_is_not_hidden_by_pooled_draws():
     assert per_case["value"] == pytest.approx(0.75) and pooled["value"] > 0.95
 
 
-def test_count_answer_reads_posterior_by_count_and_prefers_a_published_flag():
+def test_count_answer_reads_posterior_by_count_and_prefers_the_count_ladders_answer():
     fit = {"best_label": "x", "n_modes": 2, "candidates": [
         {"n_modes": 2, "posterior_probability": 0.6, "akaike_weight": 0.5},
         {"n_modes": 2, "posterior_probability": 0.1, "akaike_weight": 0.2},
         {"n_modes": 3, "posterior_probability": 0.3, "akaike_weight": 0.3}]}
     a = cb.count_answer(fit)
     assert a.n_modes == 2 and a.ambiguous and a.runner_up_p == pytest.approx(0.3 / 1.0)
-    assert not cb.count_answer({**fit, "count_ambiguous": False}).ambiguous
+    clear = {"count_ladder": {"ambiguity": None, "runner_up_probability": 0.3}}
+    assert not cb.count_answer({**fit, "fit_selection_semantics": clear}).ambiguous
     assert cb.count_answer({"best_label": None}).n_modes is None
 
 
@@ -239,12 +240,25 @@ def test_benchmark_stops_at_the_deadline_and_says_so():
     assert (cb.TUNING_MAX_CASES, cb.TUNING_MAX_SECONDS, cb.TUNING_WORKERS) == (60, 1800, 16)
 
 
+def test_the_fit_tries_the_ceiling_the_bench_states(monkeypatch):
+    """A case's ceiling reaches fit_one (through the card), whatever the environment says."""
+    from isar.analyze import count_ladder
+    monkeypatch.setenv(count_ladder.RUNG2_BUDGET_ENV, "0")    # rung 2 is not what this is about
+    monkeypatch.setenv(cb.MODE_CEILING_ENV, "3")
+    truth = _truth(ceiling=1)
+    obs = cb.draw_observation(truth, np.random.default_rng(4))
+    fit = cb.fit_observation(obs, seed=0, ceiling=truth.ceiling)
+    assert fit["fit_selection_semantics"]["count_ladder"]["ceiling"] == 1
+    assert max(int(r["n_modes"]) for r in fit["candidates"]) <= 1
+
+
 # --------------------------------------------------------------------------- end to end (tiny)
 def test_tiny_run_goes_through_fit_one_and_writes_figures_and_cases(monkeypatch, tmp_path):
     _stub_reference(monkeypatch, prefer_n=True)       # the reference is exercised by the slow test
-    # fit_one takes its ceiling from the environment (no argument yet): ceiling 1 keeps the ladder
-    # to counts 0 and 1, which is all this harness test needs, and is seconds instead of minutes.
-    monkeypatch.setenv(cb.MODE_CEILING_ENV, "1")
+    # The cases' ceiling 1 reaches fit_one: the ladder tries counts 0 and 1, which is all this
+    # harness test needs; rung 2 is not what it is about (a zero budget leaves it unsampled).
+    from isar.analyze import count_ladder
+    monkeypatch.setenv(count_ladder.RUNG2_BUDGET_ENV, "0")
     truths = [cb.generate_case(11, cb.STREAM_CASE_EVAL, i, 1) for i in range(3)]
     used = []
     real = cb.fit_observation

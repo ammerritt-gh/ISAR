@@ -318,24 +318,42 @@ class CountAnswer:
     runner_up_p: float | None
 
 
-def _card():
+def _card(ceiling: int | None = None):
+    """The campaign card; with ``ceiling``, its ``[fitting] max_modes`` is that ceiling, so the
+    production fit tries exactly the counts the benchmark drew (the card's route, as a beamtime
+    sets it). A ceiling of 0 fits counts 0 and 1: the card takes no ceiling below 1."""
+    from dataclasses import replace
     # The one synthetic card the STAT-2b campaign already builds; reused, not re-declared.
     from isar.synth.stat2b.campaign import _campaign_card
-    return _campaign_card()
+    card = _campaign_card()
+    if ceiling is None:
+        return card
+    fitting = {**(card.policy.fitting or {}), "max_modes": max(int(ceiling), 1)}
+    return replace(card, policy=replace(card.policy, fitting=fitting))
 
 
-def fit_observation(obs: Observation, *, seed: int, errors_tier: str = "cheap") -> dict:
-    """The production fit of one observation: ``scan_delivery.fit_one`` on a synthetic context.
-    ("cheap": the count decision is made before any error bars, and those are most of the cost.)"""
+def fit_observation(obs: Observation, *, seed: int, errors_tier: str = "cheap",
+                    ceiling: int | None = None) -> dict:
+    """The production fit of one observation: ``scan_delivery.fit_one`` on a synthetic context, at
+    the bench's ``ceiling`` (``None``: the card's default route, the environment then 6), so the
+    benchmark measures the ceiling it states. ("cheap": the count decision is made before any
+    error bars, and those are most of the cost.)"""
     from isar.session import scan_delivery
-    return scan_delivery.fit_one(context_of(obs), _card(), prior=None, M=1, seed=int(seed),
+    return scan_delivery.fit_one(context_of(obs), _card(ceiling), prior=None, M=1, seed=int(seed),
                                  errors_tier=errors_tier)
 
 
 def count_answer(fit: dict) -> CountAnswer:
-    """The count a fit result states, and whether it says the answer is ambiguous."""
+    """The count a fit result states, and whether it says the answer is ambiguous: the count
+    ladder's published outcome when the fit carries one (its deciding rung's probabilities), else
+    the candidates' posterior by count against the benchmark's stand-in threshold."""
     if not fit.get("best_label"):
         return CountAnswer(None, False, None)
+    ladder = (fit.get("fit_selection_semantics") or {}).get("count_ladder") or fit.get("count_ladder")
+    if ladder:
+        runner = ladder.get("runner_up_probability")
+        return CountAnswer(int(fit["n_modes"]), ladder.get("ambiguity") is not None,
+                           float(runner) if runner is not None else 0.0)
     share: dict = {}
     for row in fit.get("candidates") or ():
         p = row.get("posterior_probability")
@@ -581,7 +599,8 @@ def run_case(args) -> CaseResult:
     t0 = time.monotonic()
     obs = draw_observation(truth, rng_for(base_seed, STREAM_DRAW_FIT, truth.stream, truth.index))
     try:
-        fit = fit_observation(obs, seed=truth.index, errors_tier=errors_tier)
+        fit = fit_observation(obs, seed=truth.index, errors_tier=errors_tier,
+                              ceiling=truth.ceiling)
         answer = count_answer(fit)
     except Exception as exc:  # noqa: BLE001
         log.exception("fit failed for %s", truth.case_id)
