@@ -242,7 +242,10 @@ def test_benchmark_stops_at_the_deadline_and_says_so():
 # --------------------------------------------------------------------------- end to end (tiny)
 def test_tiny_run_goes_through_fit_one_and_writes_figures_and_cases(monkeypatch, tmp_path):
     _stub_reference(monkeypatch, prefer_n=True)       # the reference is exercised by the slow test
-    truths = [cb.generate_case(11, cb.STREAM_CASE_EVAL, i, 2) for i in range(3)]
+    # fit_one takes its ceiling from the environment (no argument yet): ceiling 1 keeps the ladder
+    # to counts 0 and 1, which is all this harness test needs, and is seconds instead of minutes.
+    monkeypatch.setenv(cb.MODE_CEILING_ENV, "1")
+    truths = [cb.generate_case(11, cb.STREAM_CASE_EVAL, i, 1) for i in range(3)]
     used = []
     real = cb.fit_observation
     monkeypatch.setattr(cb, "fit_observation", lambda *a, **k: used.append(1) or real(*a, **k))
@@ -271,7 +274,8 @@ def test_real_reference_prefers_the_true_count():
 
 
 @pytest.mark.slow
-def test_the_worker_pool_runs_cases_with_explicit_workers():
+def test_the_worker_pool_runs_cases_with_explicit_workers(monkeypatch):
+    monkeypatch.setenv(cb.MODE_CEILING_ENV, "1")      # inherited by the spawned workers
     empties = [_truth(modes=(), kind="empty", index=i) for i in range(2)]
     results, info = cb.run_benchmark(empties, base_seed=3, n_workers=2, budget=TINY, n_ab_draws=20)
     assert info.n_completed == 2 and [r.index for r in results] == [0, 1]
