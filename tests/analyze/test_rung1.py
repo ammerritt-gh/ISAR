@@ -180,10 +180,9 @@ def test_every_start_keeps_the_initial_vector_it_began_from():
         assert np.isclose(again.cost, start.cost, rtol=1e-6)
 
 
-def test_a_mode_between_the_energy_floor_and_one_resolution_width_still_gets_its_variant():
-    """The near-degenerate catalogue variant fires for omega0 <= FWHM; the recipe's energy floor
-    (half a FWHM) sits below that, so a mode at 0.75 FWHM is fitted and the variant offered, and
-    its start keeps the parent's parameters as its seed."""
+def test_a_mode_inside_one_resolution_width_gets_its_variant_seeded_from_its_parent():
+    """The near-degenerate catalogue variant fires for omega0 <= FWHM: a mode at 0.75 FWHM is
+    fitted and the variant offered, and its start keeps the parent's parameters as its seed."""
     x = np.linspace(-6.0, 6.0, 81)
     ctx = _ctx(_dho(x, 0.9, 0.3, 300.0) + 12.0, x, 1, prior_omega=0.9)
     ctx = replace(ctx, gauss_fwhm=1.2, T=150.0, energy_status="needs_conversion_and_zero")
@@ -192,5 +191,4 @@ def test_a_mode_between_the_energy_floor_and_one_resolution_width_still_gets_its
     models = out["rung1"].by_label()
     variant = models["stokes+bg_neardeg"]
     assert variant.variant == "near_degenerate"
-    assert variant.representative.omega0 > loop.mode_bounds(["phonon.Omega_d"], ctx)[0][0]
     assert variant.starts[0].x0 == models["stokes+bg"].representative.params

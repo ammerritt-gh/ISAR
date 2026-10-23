@@ -48,32 +48,11 @@ def test_bounds_follow_declared_exposure_and_resolution():
 def test_bounds_energy_width_amplitude_shapes():
     ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor")
     got = dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))
-    floor = prior.MODE_ENERGY_FLOOR_FRACTION * 1.0               # resolution FWHM 1.0 meV
-    assert got["phonon.Omega_d"] == got["phonon2.Omega_d"] == (floor, 10.0)  # window, off the elastic line
+    assert got["phonon.Omega_d"] == got["phonon2.Omega_d"] == (EPS_OMEGA_D, 10.0)  # fit window
     assert got["phonon.Gamma"] == (GAMMA_FLOOR, GAMMA_MAX)       # resolution 1.0 meV: floor wins
     for n in ("phonon.A", "phonon2.A", "elastic.E", "qe.QE"):
         assert got[n][0] == 0.0 and got[n][1] > 0.0 and np.isfinite(got[n][1])
     assert got["phonon.A"] == got["elastic.E"] == got["qe.QE"]
-
-
-def test_the_energy_floor_follows_the_resolution_and_never_the_counts():
-    # A mode closer than a fraction of the resolution width to the elastic line is not separable
-    # from it: the floor is declared (fraction x FWHM), so it scales with the resolution only.
-    energy = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))["phonon.Omega_d"]
-    base = _ctx()
-    assert energy(base)[0] == pytest.approx(prior.MODE_ENERGY_FLOOR_FRACTION * 1.0)
-    assert energy(dataclasses.replace(base, gauss_fwhm=2.0))[0] == pytest.approx(
-        prior.MODE_ENERGY_FLOOR_FRACTION * 2.0)
-    assert energy(dataclasses.replace(base, counts=base.counts * 1.0e4)) == energy(base)
-    assert energy(base)[0] > EPS_OMEGA_D
-
-
-def test_a_window_with_no_room_above_the_floor_keeps_the_window_edge():
-    # Half a resolution width is wider than the whole Stokes window: nothing could be separated
-    # from the elastic line, and an empty energy prior would only break the fit.
-    x = np.linspace(-0.4, 0.3, 15)
-    ctx = _ctx(x=x, counts=np.full(15, 10.0), mask=np.ones(15, dtype=bool))
-    assert dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))["phonon.Omega_d"] == (EPS_OMEGA_D, 0.3)
 
 
 def test_width_floor_scales_with_a_very_sharp_resolution():
@@ -218,28 +197,23 @@ def test_bundle_ordered_logpdf_adds_the_factorial_once_and_ignores_labels():
     assert bundle.logpdf_ordered(swapped) == pytest.approx(bundle.logpdf_ordered(theta))
 
 
-def test_both_ordered_lanes_use_the_energy_floor_as_their_lower_edge():
+def test_both_ordered_lanes_share_the_recipe_window():
     # Laplace (logpdf_ordered) and nested sampling (transform_ordered) must share the window the
-    # recipe bounds: [floor, x_max], so the N!/W^N normalisation is the same in each lane.
+    # recipe bounds, [EPS_OMEGA_D, x_max], so the N!/W^N normalisation is the same in each lane.
     names, bundle = _two_mode_bundle()
-    floor, top = prior.MODE_ENERGY_FLOOR_FRACTION * 1.0, 10.0
+    top = 10.0
     i1, i2 = names.index("phonon.Omega_d"), names.index("phonon2.Omega_d")
-    assert (bundle.params[i1].lo, bundle.params[i1].hi) == (floor, top)
+    assert (bundle.params[i1].lo, bundle.params[i1].hi) == (EPS_OMEGA_D, top)
     theta = dict(zip(names, [2.0, 0.3, 50.0, 6.0, 0.4, 30.0, 5.0]))
     lane = bundle.logpdf_ordered(theta) - bundle.logpdf(theta)
     assert lane == pytest.approx(math.log(2.0))                  # the same N! over the same W
-    inside = dict(theta, **{"phonon.Omega_d": floor + 0.01})
-    below = dict(theta, **{"phonon.Omega_d": floor - 0.01})
-    assert np.isfinite(bundle.logpdf_ordered(inside))
-    assert bundle.logpdf_ordered(below) == -math.inf
+    above = dict(theta, **{"phonon.Omega_d": top - 0.01})
+    beyond = dict(theta, **{"phonon.Omega_d": top + 0.01})
+    assert np.isfinite(bundle.logpdf_ordered(above))
+    assert bundle.logpdf_ordered(beyond) == -math.inf
     u = np.random.default_rng(5).random((2000, len(names)))
     draws = np.array([bundle.transform_ordered(row) for row in u])
-    assert draws[:, [i1, i2]].min() >= floor and draws[:, [i1, i2]].max() <= top
-
-
-def test_provenance_records_the_energy_floor():
-    p = prior.recipe_provenance(_ctx())
-    assert p["mode_energy_floor_fraction"] == prior.MODE_ENERGY_FLOOR_FRACTION
+    assert draws[:, [i1, i2]].min() >= EPS_OMEGA_D and draws[:, [i1, i2]].max() <= top
 
 
 def test_bundle_ordered_transform_is_the_ordered_prior_and_keeps_the_evidence():
