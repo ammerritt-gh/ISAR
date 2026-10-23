@@ -137,6 +137,51 @@ Verify (no workspace; ~1–8 min depending on `--workers`):
 python docs/stats/make_figures.py --only cost_bias --workers 8
 ```
 
+### 1.1 How the minimum is found: the amplitudes are profiled out
+
+**[Implemented, 2026-10-23]** Every amplitude of the model (each mode's `A`, the elastic `E`,
+the quasi-elastic `QE`, the background `BG`) enters the mean linearly, and non-negatively. So for
+given nonlinear parameters (each mode's `Omega_d` and `Gamma`) the best amplitudes are a convex
+problem with one answer. The Baker–Cousins cost is minimised over them inside their recipe
+bounds (§2.1) by a Poisson non-negative least-squares solve: Newton steps on the cost itself,
+each kept inside the box, warm-started from the previous evaluation (`backends.poisson_nnls`).
+MIGRAD then sees only the nonlinear parameters, and the cost it minimises is the *profile*
+`min over A of C(Omega_d, Gamma, A)`. A zero-count point still contributes its mean only (no
+floor, convention D3), and the anti-Stokes side is still the derived Bose partner inside each
+mode's unit shape, never a free amplitude. An amplitude with a soft prior on it, or a hard-fixed
+one, is not profiled: it stays with MIGRAD or at its value. The iminuit fit is the profiled one;
+the comparison backends (scipy, lmfit), the bootstrap and profile-likelihood refits and the MAP
+refit of §2 still fit every parameter. When MIGRAD on the profile fails (a start with a mode's
+amplitude on zero makes the profile exactly flat along that mode), the free fit of every
+parameter from the same start is the result.
+
+The optimum of the profile is the joint optimum, so nothing downstream changes meaning. The
+reported covariance, and the curvature the Laplace evidence reads, is **one HESSE over every free
+parameter at the joint optimum, on the full cost**, not the profile's curvature; the evidence is
+therefore the same integral over the same parameters as before. Two details of that HESSE:
+
+- An interior amplitude is unbounded in it. At the optimum Minuit's limit transform cancels out
+  of the covariance exactly, but numerically a freshly started Minuit differentiates an amplitude
+  near the bottom of its million-count range badly: on rung-1 models it was 20–30% off a
+  finite-difference Hessian in some sigmas, and the plain curvature is within 0.2%.
+- An amplitude the solve put exactly on a bound is held there, so its variance is zero. It is
+  pinned, and the evidence ladder treats a pin by its own rules (the degenerate-limit rule of §2
+  for a mode's `A` or `E` at zero, escalation for a pinned `BG`). A free fit only ever approached
+  such a bound, and its HESSE gave the amplitude a variance the limit transform had squashed
+  towards zero.
+
+Nested sampling is unchanged: it samples every parameter, amplitudes included, through the same
+prior transform. Integrating the amplitudes out analytically is not done.
+
+Two consequences are deliberate. Because the solve puts a vanishing amplitude exactly on zero,
+the degenerate-limit rule now fires there where a free fit stopped a little above zero; and a fit
+that previously ran into MIGRAD's call budget crawling along an amplitude direction now
+converges, so the budget's weak regularising effect (`backends._migrad_ncall`) acts only on the
+nonlinear parameters. The resolution kernel's Fourier transform is computed once per grid and
+resolution (`lineshapes.ResolutionConvolver`), and all modes of a model share one convolution.
+Measured on one BL43-like synthetic spectrum at ceiling 6, one worker: rung 1 took 319 s before
+these changes and 25 s after, with 871k objective calls before and about 88k after.
+
 ## 2. Select: which model, decided by Bayesian evidence
 
 Adding parameters always lowers the cost, so raw χ² (or raw likelihood) always votes for the
@@ -788,7 +833,9 @@ realizes. `y` = counts, `f` = model expected counts.
 - Evidence: `Z_s = ∫ L(theta) pi(theta) d(theta)` **[def]**; selection posterior
   `P(s) = pi_s Z_s / sum_s' pi_s' Z_s'`, uniform `pi` over admissible structures (ruling H4).
 - Laplace rung **[def]**: `ln Z ≈ ln L(th^) + ln pi(th^) + (k/2) ln 2pi - (1/2) ln det H`,
-  `H` the Hessian of `-ln(L pi)` at the optimum — the Gaussian-bump integral; refused on any
+  `H` the Hessian of `-ln(L pi)` at the optimum over every free parameter, amplitudes included
+  (the fit profiles the amplitudes out, §1.1, but `H` is the joint one) — the Gaussian-bump
+  integral; refused on any
   boundary-pinned fit (escalate to nested sampling). Dominance prune: a deferred candidate whose
   evidence *ceiling* sits ≥ 30 nats below a trusted leader is recorded `dominated`, unsampled.
 - Diagnostics lane: `AIC = C + 2k`; Akaike weight `w_s = exp(-Delta_s/2) / sum exp(-Delta/2)`.
