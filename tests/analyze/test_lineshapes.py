@@ -139,3 +139,57 @@ def test_cached_kernel_grid_and_elastic_profile_are_read_only():
     x_target = np.linspace(-5.0, 8.0, 131)
     profile = _elastic_unit_voigt(x_target.tobytes(), x_target.shape, 1.0, 0.0, 0.0)
     assert not profile.flags.writeable
+
+
+# --- a resolution-limited mode on the convolution grid -------------------------------------------
+def _bl43_like_curve():
+    """A tabulated curve of about 1.3 meV FWHM (a Voigt of 0.96 meV Gaussian and 0.6 meV Lorentzian
+    FWHM, as the endpoint world's), tabulated every 0.02 meV."""
+    from isar.analyze.resolution import TabulatedResolution
+
+    e = np.round(np.arange(-8.0, 12.0 + 1e-9, 0.02), 10)
+    profile = Voigt(e, 1.0, 0.96, 0.6, 0.0)
+    return TabulatedResolution(e, profile / profile.max(), "d", None, "generated")
+
+
+@pytest.mark.parametrize("path", ["voigt", "tabulated"])
+def test_a_resolution_limited_mode_keeps_its_area_wherever_it_sits_on_the_grid(path):
+    """A mode at the Γ floor (the delta-function twin) is the resolution curve with the mode's
+    area: moving its energy between two 0.05 meV grid nodes must not move that area or the peak
+    (both sides, the anti-Stokes partner at its Bose weight). The peak keeps about 0.1%: the linear
+    interpolation of the 0.05 meV output grid, which an ordinary 0.1 meV-wide mode shows too."""
+    from isar.analyze.phonon import GAMMA_FLOOR, omega0_from
+
+    curve = _bl43_like_curve() if path == "tabulated" else None
+    x = np.arange(-12.0, 18.0 + 1e-9, 0.01)
+    T = 300.0
+    stokes_area, peaks, bose = [], [], []
+    for f in np.linspace(0.0, 1.0, 11)[:-1]:
+        w0 = omega0_from(5.0 + f * DX, GAMMA_FLOOR)
+        args = (x, w0, 0.0, 0.96, 0.6, GAMMA_FLOOR, 1.0, 0.0, 0.0, T)
+        stokes = convolute_voigt_dho(*args, peak="stokes", resolution_curve=curve)
+        anti = convolute_voigt_dho(*args, peak="astokes", resolution_curve=curve)
+        stokes_area.append(np.trapezoid(stokes, x))
+        peaks.append(stokes.max())
+        bose.append(np.trapezoid(anti, x) / stokes_area[-1] / np.exp(-w0 / (KB * T)))
+    assert max(stokes_area) / min(stokes_area) - 1.0 < 1e-3
+    assert np.mean(stokes_area) == pytest.approx(np.pi / GAMMA_FLOOR, rel=0.02)   # the mode's area
+    assert max(peaks) / min(peaks) - 1.0 < 1.5e-3
+    assert max(bose) / min(bose) - 1.0 < 1e-3
+
+
+def test_the_narrow_rendering_is_continuous_in_the_width_and_leaves_ordinary_widths_alone():
+    """The B-spline average blends into the point samples between the two thresholds, so the model
+    has no step in Γ, and above them a mode is point-sampled exactly as before."""
+    from isar.analyze.lineshapes import NARROW_GAMMA_STEPS, dho_signal
+
+    grid = np.arange(-30.0, 30.0, DX)
+    lo, hi = (s * DX for s in NARROW_GAMMA_STEPS)
+    for edge in (lo, hi):
+        below, above = (dho_signal(grid, 5.0, g, 1.0, 300.0) for g in (edge * (1 - 1e-7),
+                                                                         edge * (1 + 1e-7)))
+        assert np.max(np.abs(below - above)) < 1e-5 * np.max(above)
+    broad = 1.5 * hi
+    point = (Stokes_DHO(grid, 1.0, broad, 5.0)
+             + antiStokes_DHO(grid, np.exp(-5.0 / (KB * 300.0)), broad, 5.0))
+    np.testing.assert_allclose(dho_signal(grid, 5.0, broad, 1.0, 300.0), point, rtol=1e-14)

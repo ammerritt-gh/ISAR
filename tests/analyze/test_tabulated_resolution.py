@@ -126,22 +126,24 @@ def test_library_keys_by_detector_and_setting_and_refuses_duplicates():
 @pytest.mark.parametrize("window", [(-4.0, 18.0), (-4.013, 18.037)])  # dx multiple, and not
 @pytest.mark.parametrize("center", [0.0, 0.123])
 def test_near_delta_dho_recovers_the_curve(window, center):
-    """A DHO far narrower than the grid, with its peak on a node, is a discrete delta: the model
-    must return the curve itself, at the right place, whatever the data window. The convolution
-    grid (window + 20 meV pad) is wider than the 20 meV table."""
+    """A DHO far narrower than the grid is a delta of the mode's area (pi A / Gamma, drawn
+    area-preserving on the grid, lineshapes.NARROW_GAMMA_STEPS): the model must return the curve
+    itself times that area, at the right place, whatever the data window. The convolution grid
+    (window + 20 meV pad) is wider than the 20 meV table."""
     curve = _asym_curve()
     gamma, omega_d = 5e-4, 5.0
     x = np.arange(*window, 0.002)
     y = convolute_voigt_dho(x, np.hypot(omega_d, gamma), center, 9.9, 9.9, gamma, 1.0,
                             0.0, 0.0, 10.0, peak="stokes", resolution_curve=curve)
-    weight = DX / gamma ** 2   # the on-node sample times dx: the discrete delta's area
-    # Off-node Lorentzian samples add sum_k gamma^2/(k dx)^2 ~ 3e-4 of the weight.
+    weight = np.pi / gamma     # the Lorentzian's area; it was the aliased DX / gamma^2 on a node
     assert _trapz(y, x) / weight == pytest.approx(1.0, abs=1e-3)
     c_left, c_right = _half_max(curve.energy, curve.values)
     y_left, y_right = _half_max(x, y)
     assert (y_left + y_right) / 2 - omega_d - center == pytest.approx(
         (c_left + c_right) / 2, abs=DX / 10)
-    assert y_right - y_left == pytest.approx(curve.fwhm, abs=1e-3)
+    # The B-spline average carries its own variance, DX^2 / 4 wherever the mode sits: +0.004 meV
+    # on this 1.3 meV FWHM (the aliased on-node sample carried none, and a wrong area).
+    assert y_right - y_left == pytest.approx(curve.fwhm, abs=5e-3)
 
 
 def test_gaussian_curve_reproduces_the_voigt_path():

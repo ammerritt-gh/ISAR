@@ -159,10 +159,12 @@ def railed():
     """A resolution-limited Stokes peak whose Γ̂ lands ON ``GAMMA_FLOOR`` with a converged fit
     and a PD covariance, so the ONLY at_limit pin is ``phonon.Gamma`` — the precondition of the
     H8 carve-out. Counts are deliberately modest: at high statistics σ_Γ shrinks until the
-    truncated mass is numerically 1 and the correction stops testing anything."""
+    truncated mass is numerically 1 and the correction stops testing anything. The truth is a
+    mode at the floor (the narrow rendering keeps its area, so a 0.01 meV truth is now resolved
+    from its Lorentzian tails and no longer rails); its area matches the earlier fixture's."""
     x = np.linspace(-10.0, 10.0, 81)
-    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.01, 15.0, 20.0, 40.0, 100.0, peak="all")
-    counts = np.random.default_rng(4).poisson(np.clip(lam, 0.0, None)).astype(float)
+    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.001, 1.5, 20.0, 40.0, 100.0, peak="all")
+    counts = np.random.default_rng(10).poisson(np.clip(lam, 0.0, None)).astype(float)
     ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
                       energy_status="needs_zero")
@@ -193,8 +195,9 @@ def test_railed_gamma_takes_the_truncated_laplace_rung(railed):
     sigma = np.asarray(fit.parameter_covariance)[np.ix_(
         [names.index(n) for n in free], [names.index(n) for n in free])]
     uncorrected = E.laplace_ln_z(fit.cost, bundle.logpdf(fit.params), sigma)
-    # Measured 2026-08-09: g = 79.6, σ_Γ = 1.27e-3 ⇒ gσ = 0.1012, and Γ̂ sits a = 2.11e-5 above
-    # the floor (a/σ = 0.0166, well inside GAMMA_BOUND_TOL = 5e-3) ⇒ correction = −0.7578 nats.
+    # Measured 2026-10-23 (the area-preserving narrow rendering): g = 1.28e4, σ_Γ = 8.93e-5 ⇒
+    # gσ = 1.141, and Γ̂ sits a = 1.06e-7 above the floor (a/σ = 1.2e-3, well inside
+    # GAMMA_BOUND_TOL = 5e-3) ⇒ correction = −1.411 nats.
     # Direction: the gradient term sheds MORE than ln½ (= −0.693) and the tiny offset gives a
     # little back, so a railed Γ still loses appreciably more than half its Gaussian mass.
     assert rec.log_evidence < uncorrected - 0.4

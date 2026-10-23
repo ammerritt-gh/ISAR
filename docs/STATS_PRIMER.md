@@ -298,6 +298,14 @@ at-limit tolerance), makes the model its degenerate twin. The limits, checked in
 | a mode's width Γ at the floor | that mode is resolution limited | the same model with that Γ pinned at the floor: a delta-function mode convolved with the resolution |
 | the flat background BG = 0 | there is no background | the same model without its background (label without `+bg`, same modes and elastic variant) |
 
+A mode much narrower than the 0.05 meV convolution grid (Γ below one grid step, blended into point
+sampling by two steps; `lineshapes.NARROW_GAMMA_STEPS`) is drawn on the grid by its average against
+each node's quadratic B-spline, not by point samples. Point samples alias: a mode at the floor changed
+its convolved area by a factor of about 250 as its energy crossed one grid step, which moved its
+amplitude and its evidence with it. The B-spline average keeps the area, the centroid and the second
+moment independent of where the mode sits between nodes, for both the Stokes side and its Bose-weighted
+anti-Stokes partner; ordinary widths are point-sampled as before.
+
 The first three twins are already models in the ladder. A pinned twin or a background-free twin is
 fitted from the railed fit's point, unless the ladder already holds it (the catalogue's
 near-degenerate variant is the pinned twin of a one-mode model); with one fewer free parameter, its

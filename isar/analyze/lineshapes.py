@@ -220,21 +220,62 @@ def _peak_parts(peak):
     return ['stokes', 'astokes', 'elastic'] if peak_lower == 'all' else peak_lower.split('+')
 
 
+#: A DHO side narrower than these multiples of the grid step is drawn by its average against each
+#: node's quadratic B-spline instead of by point samples, which alias: measured 2026-10-23, a
+#: Γ = 1e-3 meV mode's convolved area moved by a factor 250 as Ω_d crossed one 0.05 meV step. The
+#: B-spline average keeps the area, the centroid and the second moment independent of where the
+#: mode sits between nodes, so the convolved peak moves smoothly (a linear split of a delta keeps
+#: the area but not the second moment: its convolved peak still wobbled by 0.2-0.4%). Below the
+#: first multiple it is used alone, above the second the point samples alone (their aliasing is
+#: 2e-5 there), and in between a smoothstep blends the two, so the model stays continuous in Γ;
+#: ordinary widths are untouched.
+NARROW_GAMMA_STEPS = (1.0, 2.0)
+
+
+def _lorentz_side(grid, amplitude, damping, center, sign):
+    """One DHO side, ``amplitude / ((x - sign*Omega_d)^2 + damping^2)`` on the uniform ``grid``, with
+    ``Omega_d = sqrt(center^2 - damping^2)``: :func:`Stokes_DHO` (``sign = 1``) or
+    :func:`antiStokes_DHO` (``sign = -1``), rendered area-preserving when narrow
+    (:data:`NARROW_GAMMA_STEPS`)."""
+    point = (Stokes_DHO if sign > 0 else antiStokes_DHO)(grid, amplitude=amplitude,
+                                                         damping=damping, center=center)
+    h = float(grid[1] - grid[0]) if np.size(grid) > 1 else 0.0
+    lo, hi = NARROW_GAMMA_STEPS[0] * h, NARROW_GAMMA_STEPS[1] * h
+    # Γ = 0 exactly (a predictive draw clipped at zero, never a fit: Γ is bounded at the floor)
+    # has no finite B-spline average; it keeps the point samples it always had.
+    if damping == 0.0 or damping >= hi or center ** 2 <= damping ** 2:
+        return point
+    u = grid - sign * np.sqrt(center ** 2 - damping ** 2)
+
+    def thrice_integrated(v):   # d^3/dv^3 of this is 1 / (v^2 + damping^2)
+        return ((v * v - damping * damping) / (2.0 * damping) * np.arctan(v / damping)
+                + 0.5 * v - 0.5 * v * np.log(v * v + damping * damping))
+
+    spline = amplitude * (thrice_integrated(u + 1.5 * h) - 3.0 * thrice_integrated(u + 0.5 * h)
+                          + 3.0 * thrice_integrated(u - 0.5 * h)
+                          - thrice_integrated(u - 1.5 * h)) / h ** 3
+    if damping <= lo:
+        return spline
+    t = (damping - lo) / (hi - lo)
+    w = t * t * (3.0 - 2.0 * t)
+    return w * point + (1.0 - w) * spline
+
+
 def dho_signal(grid, phonon_energy, damping, phonon_amplitude, T, peak='stokes+astokes'):
-    """The unconvolved DHO on ``grid``: the Stokes side and, for ``T > 0``, its anti-Stokes partner
-    at the detailed-balance amplitude (never a free one). ``peak`` selects the sides as in
-    :func:`convolute_voigt_dho`; an ``elastic`` part is not part of this signal."""
+    """The unconvolved DHO on ``grid`` (uniform, the convolver's): the Stokes side and, for
+    ``T > 0``, its anti-Stokes partner at the detailed-balance amplitude (never a free one). A side
+    much narrower than the grid step is drawn area-preserving (:data:`NARROW_GAMMA_STEPS`).
+    ``peak`` selects the sides as in :func:`convolute_voigt_dho`; an ``elastic`` part is not part
+    of this signal."""
     peak_parts = _peak_parts(peak)
     signal = np.zeros_like(grid)
     if 'stokes' in peak_parts:
-        signal += Stokes_DHO(grid, amplitude=phonon_amplitude, damping=damping,
-                             center=phonon_energy)
+        signal += _lorentz_side(grid, phonon_amplitude, damping, phonon_energy, 1)
     if 'astokes' in peak_parts and T > 0:
         # Detailed balance is only defined for T > 0: at T = 0 the anti-Stokes side is exactly
         # empty (no phonons to annihilate), and a negative T would invert the Bose weight.
         astokes_amp = phonon_amplitude / np.exp(phonon_energy / (KB * T))
-        signal += antiStokes_DHO(grid, amplitude=astokes_amp, damping=damping,
-                                 center=phonon_energy)
+        signal += _lorentz_side(grid, astokes_amp, damping, phonon_energy, -1)
     return signal
 
 

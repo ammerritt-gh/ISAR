@@ -259,8 +259,8 @@ def test_two_stage_select_accepts_second_mode_on_true_double_peak():
     from isar.analyze import errors
 
     ctx = _two_peak_ctx()
-    results = loop.fit_structures_two_stage(ctx)
-    hyps = _hyps(ctx)
+    hyps = {}       # the fit's own offered set: degenerate twins exist only because a fit railed
+    results = loop.fit_structures_two_stage(ctx, hypotheses_out=hyps)
     sel = select.select_models(results, hyps, ctx)
     assert sel.selection_fallback is None
     assert sel.best == "stokes2+bg"
@@ -282,9 +282,10 @@ def test_two_stage_select_abstains_from_second_mode_on_true_single_peak():
     on the one-mode stokes+bg."""
     ctx = _one_peak_ctx()
     peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
-    results = loop.fit_structures_two_stage(ctx, peaks=peaks, mode_ceiling=2)
+    hyps = {}
+    results = loop.fit_structures_two_stage(ctx, peaks=peaks, mode_ceiling=2, hypotheses_out=hyps)
     assert "stokes2+bg" in {r.label for r in results}      # tried, not gated
-    sel = select.select_models(results, _hyps(ctx), ctx)
+    sel = select.select_models(results, hyps, ctx)
     assert sel.selection_fallback is None
     assert sel.best == "stokes+bg"
 
