@@ -12,7 +12,10 @@ covariance is `2·H⁻¹` and matches `curve_fit(absolute_sigma=True)`.
 - lmfit (comparison): scalar minimizer on the same cost; covariance where available.
   Optional — imported lazily, ships in the ``[test]`` extra.
 
-:func:`poisson_nnls` solves the linear amplitudes of a Poisson fit at fixed nonlinear parameters.
+The profiled fit (:func:`isar.analyze.loop.fit_hypothesis` with iminuit) uses the iminuit pieces
+separately: :func:`iminuit_migrad` on the nonlinear parameters, with the linear amplitudes solved
+inside the cost by :func:`poisson_nnls`, then :func:`iminuit_hesse` over every parameter at the
+joint optimum.
 """
 from __future__ import annotations
 
@@ -128,6 +131,71 @@ def iminuit_minimize(costv, x0, bounds, names, *, minos=False, ncall=None) -> Ba
     x = np.array([m.values[nm] for nm in names], dtype=float)
     return BackendResult(x, success, str(m.fmin.is_valid), int(m.nfcn),
                          covariance, covariance_ok, _at_limit_map(x, bounds, names), merrors)
+
+
+def iminuit_migrad(costv, x0, bounds, names, *, ncall=None):
+    """MIGRAD alone, with :func:`iminuit_minimize`'s call budget and no HESSE:
+    ``(x, success, message, n_eval)``."""
+    from iminuit import Minuit
+
+    names = list(names)
+
+    def cost_star(*params):
+        return costv(np.asarray(params, dtype=float))
+
+    cost_star.errordef = 1.0
+    m = Minuit(cost_star, *x0, name=names)
+    for nm, (lo, hi) in zip(names, bounds):
+        m.limits[nm] = (lo, hi)
+    m.migrad(ncall=(_migrad_ncall(len(names)) if ncall is None else int(ncall)))
+    x = np.array([m.values[nm] for nm in names], dtype=float)
+    return x, bool(m.valid), str(m.fmin.is_valid), int(m.nfcn)
+
+
+def iminuit_hesse(costv, x, bounds, names, *, fixed=(), minos=False):
+    """HESSE at the given point ``x``, with no MIGRAD before it, and MINOS on demand:
+    ``(covariance, covariance_ok, merrors, n_eval)``, accepted as :func:`iminuit_minimize` accepts
+    them. A ``bounds`` entry of ``None`` leaves that parameter unbounded; names in ``fixed`` are
+    held, so their rows and columns of the covariance are zero."""
+    from iminuit import Minuit
+
+    names = list(names)
+    if set(names) <= set(fixed):    # every parameter held: zero covariance, as for each held one
+        return np.zeros((len(names), len(names))), True, None, 0
+
+    def cost_star(*params):
+        return costv(np.asarray(params, dtype=float))
+
+    cost_star.errordef = 1.0
+    m = Minuit(cost_star, *x, name=names)
+    for nm, b in zip(names, bounds):
+        if b is not None:
+            m.limits[nm] = b
+    for nm in fixed:
+        m.fixed[nm] = True
+    covariance, covariance_ok = None, False
+    try:
+        m.hesse()
+        if m.covariance is not None and m.fmin.has_covariance:
+            cov = np.array(m.covariance, dtype=float)
+            if np.all(np.isfinite(cov)):
+                covariance, covariance_ok = cov, True
+    except Exception as exc:  # noqa: BLE001 - no covariance is a fit outcome, not an error
+        log.warning("HESSE failed at the profiled optimum: %s: %s", type(exc).__name__, exc)
+    n_eval = int(m.nfcn)
+    merrors = None
+    if minos and covariance_ok:
+        before = int(m.nfcn)
+        try:
+            m.minos()
+            merrors = {nm: (float(me.lower), float(me.upper), bool(me.is_valid))
+                       for nm, me in ((nm, m.merrors[nm]) for nm in names if nm in m.merrors)}
+            merrors = merrors or None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("MINOS failed at the profiled optimum: %s: %s", type(exc).__name__, exc)
+            merrors = None
+        n_eval += int(m.nfcn) - before
+    return covariance, covariance_ok, merrors, n_eval
 
 
 # ----------------------------------------------------------------------------

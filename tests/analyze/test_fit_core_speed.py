@@ -1,6 +1,6 @@
 """Fit-core speed (S1U7): the resolution kernel is transformed once per fit, the new evaluation
-matches the pre-change arithmetic, and the Poisson NNLS that profiles the amplitudes out finds the
-bounded minimum.
+matches the pre-change arithmetic, and a fit with its linear amplitudes profiled out reaches the
+free fit's optimum and evidence.
 
 The reference below is the pre-change model, written out with ``scipy.signal.fftconvolve`` per mode
 and per call, exactly as ``convolute_voigt_dho`` and ``convolve_tabulated`` computed it. Agreement
@@ -242,3 +242,129 @@ def test_poisson_nnls_is_the_bounded_minimum_of_the_poisson_cost():
         other = minimize(lambda b: baker_cousins_cost(y, phi @ b), start, method="L-BFGS-B",
                          bounds=list(zip(lo, hi)))
         assert cost <= other.fun + 1e-6
+
+
+def _spectrum(modes, *, seed, x=None, bg=3.0, elastic=200.0, curve=None, exposure=None, T=150.0,
+              constraints=None):
+    x = np.arange(-12.0, 16.0001, 0.25) if x is None else x
+    lam = bg + L.convolute_voigt_dho(x, 1.0, 0.0, 1.3, 0.2, 0.1, 0.0, elastic, 0.0, T,
+                                     peak="elastic", resolution_curve=curve)
+    for w, g, a in modes:
+        lam = lam + L.convolute_voigt_dho(x, w, 0.0, 1.3, 0.2, g, a, 0.0, 0.0, T,
+                                          resolution_curve=curve)
+    if exposure is not None:
+        lam = lam * exposure
+    counts = np.random.default_rng(seed).poisson(lam).astype(float)
+    kw = {} if exposure is None else {"exposure_scale": exposure, "exposure_reference": 1.0e6,
+                                      "exposure_source": "monitor"}
+    return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=T, center=0.0,
+                       gauss_fwhm=1.3, lorentz_fwhm=0.2, instrument="BL43LXU",
+                       energy_status="needs_zero", resolution_curve=curve, constraints=constraints,
+                       **kw)
+
+
+def _fixture(name):
+    from isar.schema.steering import ParamConstraints
+
+    one, two = [(5.0, 0.4, 80.0)], [(4.0, 0.4, 80.0), (9.0, 0.8, 50.0)]
+    if name == "one_mode":
+        return _spectrum(one, seed=0), "elastic+stokes+bg"
+    if name == "two_modes":
+        return _spectrum(two, seed=1), "elastic+stokes2+bg"
+    if name == "tabulated":
+        return _spectrum(one, seed=2, curve=_curve()), "elastic+stokes+bg"
+    if name == "exposure":
+        return (_spectrum(one, seed=3, exposure=np.linspace(0.6, 1.4, 113)), "elastic+stokes+bg")
+    if name == "zero_counts":   # a weak spectrum, most points zero
+        ctx = _spectrum([(5.0, 0.4, 1.0)], seed=4, bg=0.01, elastic=3.0)
+        assert np.mean(ctx.counts == 0) > 0.5
+        return ctx, "elastic+stokes+bg"
+    if name == "soft_amplitude":   # a soft prior keeps A out of the profile: an offset column
+        return (_spectrum(one, seed=5, constraints=ParamConstraints(soft={"phonon.A": (28.0, 3.0)})),
+                "elastic+stokes+bg")
+    if name == "hard_background":   # a hard-fixed amplitude is an offset too
+        return (_spectrum(one, seed=6, constraints=ParamConstraints(hard={"bg.BG": 3.0})),
+                "elastic+stokes+bg")
+    raise KeyError(name)
+
+
+def _hypothesis(ctx, label):
+    from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
+
+    return {h.label: h for h in enumerate_phonon_structures(ctx)
+            + enumerate_phonon_multimode(ctx, 2)}[label]
+
+
+def test_the_optimizer_sees_only_the_nonlinear_parameters(monkeypatch):
+    """Red on the pre-change code, whose MIGRAD carried every amplitude."""
+    from iminuit import Minuit
+
+    from isar.analyze import loop
+
+    seen = []
+    migrad = Minuit.migrad
+
+    def spy(self, *a, **k):
+        seen.append([p for p in self.parameters if not self.fixed[p]])
+        return migrad(self, *a, **k)
+
+    monkeypatch.setattr(Minuit, "migrad", spy)
+    ctx, label = _fixture("two_modes")
+    loop.fit_hypothesis(_hypothesis(ctx, label), ctx)
+    assert seen == [["phonon_Omega_d", "phonon_Gamma", "phonon2_Omega_d", "phonon2_Gamma"]]
+
+
+@pytest.mark.parametrize("name", ["one_mode", "two_modes", "tabulated", "exposure", "zero_counts",
+                                  "soft_amplitude", "hard_background"])
+def test_a_profiled_fit_reaches_the_free_fit_optimum_and_evidence(name):
+    """The profiled fit against the old free fit of every parameter, from the same start: the same
+    optimum to MIGRAD's tolerance (its EDM < 2e-4 bounds each fit's cost above the minimum by about
+    that), the same errors and the same Laplace evidence to HESSE's own precision (the free fit's
+    HESSE is about 1% off a finite-difference Hessian in a sigma)."""
+    from isar.analyze import evidence as E
+    from isar.analyze import loop
+
+    ctx, label = _fixture(name)
+    hyp = _hypothesis(ctx, label)
+    cctx = loop.candidate_context(hyp, ctx)
+    prob = loop.build_problem(hyp, cctx)
+    assert prob.profile is not None
+    be = [loop._sanitize(n) for n in prob.free_names]
+    fits = []
+    for br in (loop._minimize_fixed("iminuit", prob.objective, prob.x0, prob.bounds, be,
+                                    prob.fixed_pos, prob.fixed_vals),
+               loop._minimize_profiled(prob)):
+        fit = loop.result_from_backend(label, prob.composite, prob.costv, prob.n_used, prob.k, br,
+                                       penalty=prob.penalty, hard_fixed=prob.is_hard_fixed, T=ctx.T)
+        assert fit.optimizer_converged and fit.covariance_ok
+        fits.append(fit)
+    free, prof = fits
+    assert abs(prof.cost - free.cost) < 2e-3
+    # Modes compared in canonical (ascending omega0) order: label order is arbitrary.
+    for mf, mp in zip(free.modes, prof.modes):
+        for key in ("omega0", "gamma", "amplitude"):
+            err = mf[f"{key}_err"] if key != "amplitude" else None
+            tol = 0.05 * (err if err else abs(mf[key]) * 0.05)
+            assert abs(mp[key] - mf[key]) <= tol, (key, mp[key], mf[key])
+    for n in ("elastic.E", "bg.BG"):
+        if free.param_errors.get(n):
+            assert abs(prof.params[n] - free.params[n]) <= 0.05 * free.param_errors[n]
+            assert prof.param_errors[n] == pytest.approx(free.param_errors[n], rel=0.03)
+    bundle = E.candidate_bundle(hyp, ctx)
+    ln_z = [E.structure_evidence(hyp, ctx, f, bundle, escalation="defer") for f in (free, prof)]
+    assert ln_z[0].evidence_method == ln_z[1].evidence_method == "laplace"
+    assert ln_z[1].log_evidence == pytest.approx(ln_z[0].log_evidence, abs=0.1)
+
+
+def test_a_start_on_a_flat_profile_falls_back_to_the_free_fit():
+    """Pure elastic data, and a start (a railed parent's, as the degenerate-limit twins get) whose
+    amplitude is on zero: the profile is exactly flat along the mode, so MIGRAD on it has no
+    curvature and fails (or steps to NaN). The free fit takes over from the same start and converges
+    with the amplitude railed, as before profiling. Red without the fallback."""
+    from isar.analyze import loop
+
+    ctx = _spectrum([], seed=8, bg=20.0, elastic=900.0)
+    start = {"phonon.Omega_d": 5.0, "phonon.Gamma": 0.5, "phonon.A": 0.0, "bg.BG": 20.0}
+    fit = loop.fit_hypothesis(_hypothesis(ctx, "stokes+bg"), ctx, x0=start)
+    assert fit.optimizer_converged
+    assert all(np.isfinite(v) for v in fit.params.values())

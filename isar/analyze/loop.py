@@ -70,6 +70,11 @@ class Problem:
     # ``k``. Empty ⇒ no param frozen ⇒ every path is bit-identical to an ordinary fit.
     fixed_pos: list[int] = field(default_factory=list)
     fixed_vals: list[float] = field(default_factory=list)
+    # The linear amplitudes the iminuit fit profiles out (S1U7): positions of the free ones that no
+    # soft prior touches, and ``profile(theta) -> (theta, cost)``, which solves them by Poisson NNLS
+    # at ``theta``'s other values (its amplitudes are the warm start) and returns the DATA cost.
+    profiled_pos: list[int] = field(default_factory=list)
+    profile: Callable[[np.ndarray], tuple] | None = None
 
     @property
     def ndof(self) -> int:
@@ -530,9 +535,42 @@ def build_problem(hyp, ctx, *, x0=None) -> Problem:
     fixed_pos, fixed_vals = _hard_fixed(getattr(ctx, "constraints", None), names)
     fixed_names = {names[i] for i in fixed_pos}
     penalty = _soft_penalty(getattr(ctx, "constraints", None), names, skip=fixed_names)
+    soft = set(getattr(getattr(ctx, "constraints", None), "soft", None) or {})
+    linear = set(composite.linear_names())
+    profiled = [i for i, n in enumerate(names)
+                if n in linear and n not in fixed_names and n not in soft]
     return Problem(composite=composite, costv=costv, x0=x0, bounds=bounds,
                    free_names=names, k=len(names) - len(fixed_pos), n_used=int(x.size),
-                   penalty=penalty, fixed_pos=fixed_pos, fixed_vals=fixed_vals)
+                   penalty=penalty, fixed_pos=fixed_pos, fixed_vals=fixed_vals,
+                   profiled_pos=profiled,
+                   profile=_amplitude_profile(composite, ctx, bounds, profiled, est) if profiled else None)
+
+
+def _amplitude_profile(composite, ctx, bounds, profiled, est):
+    """``profile(theta) -> (theta, cost)`` for :attr:`Problem.profile`: at ``theta``'s nonlinear
+    values (and any amplitude not profiled, which enters as a fixed offset) the mean is linear and
+    non-negative in the profiled amplitudes, so they are the Poisson NNLS solution inside their
+    recipe bounds. The columns no parameter moves are computed once."""
+    x, counts = ctx.x_used, ctx.counts_used
+    names = composite.param_names()
+    lin_pos = [names.index(n) for n in composite.linear_names()]
+    prof_cols = [lin_pos.index(i) for i in profiled]
+    rest_cols = [c for c, i in enumerate(lin_pos) if i not in set(profiled)]
+    rest_pos = [lin_pos[c] for c in rest_cols]
+    lo = np.array([bounds[i][0] for i in profiled], dtype=float)
+    hi = np.array([bounds[i][1] for i in profiled], dtype=float)
+    static = composite.static_columns(x, ctx)
+
+    def profile(theta):
+        theta = np.array(theta, dtype=float)
+        phi = composite.basis(x, theta, ctx, static=static)
+        offset = phi[:, rest_cols] @ theta[rest_pos] if rest_cols else None
+        a = backends.poisson_nnls(phi[:, prof_cols], counts, theta[profiled], lo, hi, offset=offset)
+        theta[profiled] = a
+        mean = phi[:, prof_cols] @ a
+        return theta, est.cost(counts, mean if offset is None else mean + offset)
+
+    return profile
 
 
 def _soft_penalty(constraints, names, *, skip=()):
@@ -612,6 +650,80 @@ def _minimize_fixed(backend, objective, x0, bounds, be_names, fixed_pos, fixed_v
         cov_full[np.ix_(free_pos, free_pos)] = sub
     return BackendResult(x_full, br.success, br.message, br.n_eval, cov_full,
                          br.covariance_ok, dict(br.at_limit), br.merrors)
+
+
+def _minimize_profiled(prob, *, minos=False) -> BackendResult:
+    """The iminuit fit of ``prob`` with its linear amplitudes profiled out, as a full-space
+    :class:`BackendResult` shaped like :func:`_minimize_fixed`'s.
+
+    MIGRAD sees only the remaining free parameters (Ω_d, Γ and any soft-constrained amplitude);
+    each cost evaluation solves the profiled amplitudes by :attr:`Problem.profile`, warm-started from
+    the previous call's. The optimum of the profiled cost is the joint optimum, so the covariance is
+    one HESSE over every free parameter there, on the full objective: the curvature the Laplace
+    evidence and the HESSE errors read is the joint one, never the profile's. The nonlinear
+    parameters keep their limits, as in a free fit. An interior amplitude is unbounded in that HESSE:
+    at the optimum the limit transform cancels out of the covariance in exact arithmetic, but a
+    fresh Minuit's numerical derivatives in the transformed coordinate are poor for an amplitude
+    near the bottom of its million-count range (measured 20-30% off in sigma on rung-1 models
+    against finite differences), so the plain curvature is taken. An amplitude the NNLS put
+    exactly on a bound is held there, with zero variance: it is pinned, and the evidence ladder
+    treats a pin by its own rules. When MIGRAD on the profile fails, the free fit is the result."""
+    names = prob.free_names
+    n = len(names)
+    fixed, prof = set(prob.fixed_pos), set(prob.profiled_pos)
+    outer = [i for i in range(n) if i not in fixed and i not in prof]
+    free = [i for i in range(n) if i not in fixed]
+    theta = np.array(prob.x0, dtype=float)
+    theta[list(prob.fixed_pos)] = np.asarray(prob.fixed_vals, dtype=float)
+    state = {"theta": theta}
+    penalty = prob.penalty
+
+    def outer_objective(t):
+        th = state["theta"].copy()
+        th[outer] = t
+        th, cost = prob.profile(th)
+        state["theta"] = th
+        return cost if penalty is None else cost + penalty(th)
+
+    if outer:
+        x_outer, success, message, n_eval = backends.iminuit_migrad(
+            outer_objective, theta[outer], [prob.bounds[i] for i in outer],
+            [_sanitize(names[i]) for i in outer])
+        if not success:
+            # E.g. a start with a mode's amplitude on zero: the profile is exactly flat along that
+            # mode, MIGRAD has no curvature to begin with (and can step to NaN). The free fit of every
+            # parameter, the fit before profiling, takes over from the same start.
+            br = _minimize_fixed("iminuit", prob.objective, prob.x0, prob.bounds,
+                                 [_sanitize(nm) for nm in names], prob.fixed_pos, prob.fixed_vals,
+                                 minos=minos)
+            return replace(br, n_eval=br.n_eval + n_eval)
+        theta = state["theta"].copy()
+        theta[outer] = x_outer
+    else:   # a phonon-less structure: every free parameter is an amplitude, solved directly
+        success, message, n_eval = True, "True", 0
+    theta, _cost = prob.profile(theta)
+    n_eval += 1
+
+    template = theta.copy()
+
+    def full_objective(tf):
+        th = template.copy()
+        th[free] = tf
+        return prob.objective(th)
+
+    free_names = [_sanitize(names[i]) for i in free]
+    pinned = [_sanitize(names[i]) for i in prob.profiled_pos
+              if theta[i] <= prob.bounds[i][0] or theta[i] >= prob.bounds[i][1]]
+    cov, cov_ok, merrors, n_hesse = backends.iminuit_hesse(
+        full_objective, theta[free], [None if i in prof else prob.bounds[i] for i in free],
+        free_names, fixed=pinned, minos=minos and success)
+    cov_full = None
+    if cov is not None:
+        cov_full = np.zeros((n, n))
+        cov_full[np.ix_(free, free)] = cov
+    at_limit = backends._at_limit_map(theta[free], [prob.bounds[i] for i in free], free_names)
+    return BackendResult(theta, success, message, n_eval + n_hesse, cov_full, cov_ok, at_limit,
+                         merrors)
 
 
 def result_from_backend(label, composite, costv, n_used, k, br,
@@ -722,9 +834,12 @@ def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False, x0=None) -> Stru
     """Fit one structure hypothesis and classify the result. ``x0`` overrides the default IC
     (see :func:`build_problem`) — the two-stage loop passes the greedy multimode seed."""
     prob = build_problem(hyp, ctx, x0=x0)
-    be_names = [_sanitize(n) for n in prob.free_names]
-    br = _minimize_fixed(backend, prob.objective, prob.x0, prob.bounds, be_names,
-                         prob.fixed_pos, prob.fixed_vals, minos=minos)
+    if backend == "iminuit" and prob.profile is not None:
+        br = _minimize_profiled(prob, minos=minos)
+    else:   # the comparison backends fit every parameter freely
+        be_names = [_sanitize(n) for n in prob.free_names]
+        br = _minimize_fixed(backend, prob.objective, prob.x0, prob.bounds, be_names,
+                             prob.fixed_pos, prob.fixed_vals, minos=minos)
     result = result_from_backend(
         hyp.label,
         prob.composite,
