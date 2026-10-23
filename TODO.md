@@ -254,8 +254,6 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
 - [ ] **FIT-2 — Multi-branch dispersion prior.** `PriorPoint` has no branch/mode field, so the
       prior carries the primary mode only.
       **Acceptance:** the prior distinguishes branches and a secondary mode can seed one.
-- [ ] **FIT-3 — N=3 modes.** Mechanical extension once 2-mode is field-proven.
-      **Acceptance:** 3-mode enumeration passes the synthetic gates without regressing 1/2-mode.
 
 - [ ] **FIT-4 — Amplitude prior constants: sensitivity check not run.** `AMPLITUDE_SCALE_PER_MONITOR = 1.0`
       and `AMPLITUDE_SCALE_PER_SECOND = 1.0e5` (`isar/analyze/prior.py`) are agent-proposed. Their check (the

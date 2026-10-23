@@ -269,8 +269,9 @@ peak must buy its parameters in marginal likelihood — never raw χ², which sy
 noise as phantom phonons. AIC and Akaike weights persist per candidate as the recorded
 diagnostics lane. The peak count is open-ended and decided on the two-rung count ladder
 (`STATS_PRIMER.md` §2.2). *(Implemented: `best_model`, `n_modes`, `best_model_posterior`, and the
-count state `count_state`; every fitted mode is a row of `report/modes.csv`. No primary or
-secondary mode columns.)*
+count state `count_state`; every fitted mode is a row of `report/modes.csv`. The scalar `omega0` and `omega0_err`
+columns of `results.csv` are the one steering choice (the primary phonon steering reads),
+not the mode result; their rename to `steer_omega0` is deferred (TODO FIT-18).)*
 
 **Physics constraints are encoded, not rediscovered per scan.** Detailed balance (I_AS/I_S =
 exp(−ℏω/k_BT)) decides whether an anti-Stokes peak is even admissible before one is fit; symmetry
