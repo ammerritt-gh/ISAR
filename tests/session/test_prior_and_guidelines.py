@@ -277,6 +277,27 @@ def test_mode_ceiling_ignores_a_malformed_value_loudly(monkeypatch):
         assert G.mode_ceiling(G.Guidelines()) == 6
 
 
+def test_one_mode_ceiling_rule_for_production_and_the_benchmark(monkeypatch):
+    """The environment rule lives once, in the analyze layer: the benchmark and the card reader read
+    it alike (a 0 from the environment is refused by both), and analyze imports nothing from
+    session to get it. The benchmark's explicit argument may still be 0."""
+    import ast
+    import inspect
+
+    from isar.analyze import phonon
+    from isar.synth import count_bench as cb
+
+    monkeypatch.setenv("ISAR_MODE_CEILING", "0")
+    with pytest.warns(UserWarning, match="ISAR_MODE_CEILING"):
+        assert cb.mode_ceiling() == G.mode_ceiling(G.Guidelines()) == 6
+    assert cb.mode_ceiling(0) == 0
+    monkeypatch.setenv("ISAR_MODE_CEILING", "5")
+    assert cb.mode_ceiling() == G.mode_ceiling(G.Guidelines()) == phonon.default_mode_ceiling() == 5
+    imported = {node.module for node in ast.walk(ast.parse(inspect.getsource(phonon)))
+                if isinstance(node, ast.ImportFrom)}
+    assert not any(m and m.startswith("isar.session") for m in imported)
+
+
 def test_guidelines_signature_changes_with_ceiling_and_recipe_version(monkeypatch):
     from isar.analyze import prior
     monkeypatch.delenv("ISAR_MODE_CEILING", raising=False)

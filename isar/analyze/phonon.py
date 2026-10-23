@@ -13,6 +13,9 @@ component classes import them inside the function, each marked with the cycle it
 """
 from __future__ import annotations
 
+import os
+import warnings
+
 import numpy as np
 from scipy.optimize import nnls
 
@@ -503,13 +506,27 @@ def _phonon_for(ctx, prefix: str | None = None):
     return PhononDHO(prefix=prefix) if prefix else PhononDHO
 
 
-def default_mode_ceiling() -> int:
-    """The mode ceiling when a caller names none: :func:`isar.session.guidelines.mode_ceiling` on an
-    empty ``[fitting]`` policy, i.e. the ``ISAR_MODE_CEILING`` environment variable, else 6. A caller
-    holding the card passes its own ceiling (``[fitting] max_modes``) explicitly."""
-    from isar.session.guidelines import Guidelines, mode_ceiling  # session sits above analyze
+MODE_CEILING_ENV = "ISAR_MODE_CEILING"
+DEFAULT_MODE_CEILING = 6
 
-    return mode_ceiling(Guidelines())
+
+def default_mode_ceiling() -> int:
+    """The one mode-ceiling rule when the card names none: ``$ISAR_MODE_CEILING``, else 6. Read at
+    call time, not at import: the suite caps it (repo-root ``conftest.py``) and production leaves
+    it unset. A value that is not a whole number >= 1 warns and is ignored (it never silently
+    wins). The card's ``[fitting] max_modes`` beats it
+    (:func:`isar.session.guidelines.mode_ceiling`)."""
+    raw = os.environ.get(MODE_CEILING_ENV)
+    if raw is None or raw == "":
+        return DEFAULT_MODE_CEILING
+    try:
+        n = int(raw)
+        if float(raw) == n and n >= 1:
+            return n
+    except (TypeError, ValueError):
+        pass
+    warnings.warn(f"{MODE_CEILING_ENV}: {raw!r} is not a whole number >= 1 — ignoring")
+    return DEFAULT_MODE_CEILING
 
 
 def enumerate_phonon_multimode(ctx, n_max: int | None = None) -> list[Hypothesis]:

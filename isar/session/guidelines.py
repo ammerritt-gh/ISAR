@@ -9,18 +9,15 @@ is untouched.
 """
 from __future__ import annotations
 
-import os
 import warnings
 from dataclasses import dataclass, field
 
 from isar.analyze import prior as prior_recipe
+from isar.analyze.phonon import default_mode_ceiling
 from isar.analyze.prior import PhononPrior
 from isar.schema.card import Card
 
 _COMPONENT_INDEX = {"h": 0, "k": 1, "l": 2}
-
-DEFAULT_MODE_CEILING = 6
-MODE_CEILING_ENV = "ISAR_MODE_CEILING"
 
 
 def _positive_int(value, *, where: str) -> int | None:
@@ -225,18 +222,10 @@ def resolve(card: Card) -> Guidelines:
 
 def mode_ceiling(source) -> int:
     """The most modes any one spectrum may hold: the card's ``[fitting] max_modes`` (``source`` is a
-    :class:`Guidelines` or a :class:`~isar.schema.card.Card`), else the ``ISAR_MODE_CEILING``
-    environment variable, else 6. The environment is read here, at call time, not at import: the
-    suite caps it (repo-root ``conftest.py``) and production leaves it unset."""
+    :class:`Guidelines` or a :class:`~isar.schema.card.Card`), else
+    :func:`isar.analyze.phonon.default_mode_ceiling` (the environment, else 6)."""
     g = resolve(source) if isinstance(source, Card) else source
-    if g.max_modes is not None:
-        return g.max_modes
-    raw = os.environ.get(MODE_CEILING_ENV)
-    if raw is not None:
-        n = _positive_int(raw, where=MODE_CEILING_ENV)
-        if n is not None:
-            return n
-    return DEFAULT_MODE_CEILING
+    return g.max_modes if g.max_modes is not None else default_mode_ceiling()
 
 
 def _parse_fit_range(v, *, where: str) -> tuple | None:

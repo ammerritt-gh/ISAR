@@ -45,16 +45,15 @@ from pathlib import Path
 import numpy as np
 from scipy.optimize import nnls
 
+from isar.analyze.phonon import DEFAULT_MODE_CEILING, MODE_CEILING_ENV, default_mode_ceiling
+
 from . import config, noise
 
 log = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- named constants
-# The mode ceiling: a sibling unit owns the production resolution (card [fitting] max_modes ->
-# this environment variable -> 6). The generator takes the ceiling as an explicit argument and
-# reads only the environment/default here, so it imports nothing that does not exist yet.
-MODE_CEILING_ENV = "ISAR_MODE_CEILING"
-DEFAULT_MODE_CEILING = 6
+# The mode ceiling is production's one rule (isar.analyze.phonon.default_mode_ceiling: the
+# environment, else 6); the generator takes an explicit argument over it, which may be 0.
 
 # Independent random streams: every draw is seeded from (base_seed, stream, keys...), so the
 # tuning cases, the evaluation cases and the four kinds of Poisson draw never share numbers.
@@ -109,17 +108,11 @@ NEEDS_TWO_MODES = ("close_doublet", "weak_on_tail", "generic")
 
 # --------------------------------------------------------------------------- seeds and ceiling
 def mode_ceiling(explicit: int | None = None) -> int:
-    """The generator's maximum mode count: explicit argument, else ``ISAR_MODE_CEILING``, else 6."""
-    if explicit is not None:
-        value = int(explicit)
-    else:
-        raw = os.environ.get(MODE_CEILING_ENV)
-        if raw is None or raw == "":
-            return DEFAULT_MODE_CEILING
-        try:
-            value = int(raw)
-        except ValueError as exc:
-            raise ValueError(f"{MODE_CEILING_ENV}={raw!r} is not an integer") from exc
+    """The generator's maximum mode count: the explicit argument (0 allowed: an empty-only
+    benchmark), else production's :func:`~isar.analyze.phonon.default_mode_ceiling`."""
+    if explicit is None:
+        return default_mode_ceiling()
+    value = int(explicit)
     if value < 0:
         raise ValueError(f"mode ceiling must be >= 0, got {value}")
     return value
