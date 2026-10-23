@@ -357,6 +357,7 @@ def _acoustic_master_outcome(q, energy, *, pool_consistent=True, n_members=2):
         "verdict": "resolved", "modality": "fold", "gauss_fwhm": 0.8,
         "modes": [{"omega0": energy, "omega0_err": 0.08, "gamma": 0.2,
                    "gamma_err": 0.03, "amplitude": 5.0}],
+        "fit_selection_semantics": {"count_ladder": {"state": "settled", "ambiguity": None}},
     }
 
 
@@ -543,6 +544,7 @@ def test_session_wiring_recomputes_after_masters_and_rebuilds_connected_prior():
                 {"omega0": optic, "omega0_err": 0.12, "gamma": 0.7,
                  "gamma_err": 0.05, "amplitude": 4.0},
             ],
+            "fit_selection_semantics": {"count_ladder": {"state": "settled", "ambiguity": None}},
         }
         entry = ScanEntry(scan_id=f"master:q{index}", scan_number=9_000_000 + index,
                           scan_type="energy", status="fitted", detectors={"det0": outcome})

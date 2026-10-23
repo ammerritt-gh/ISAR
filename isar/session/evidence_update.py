@@ -794,7 +794,12 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
 
 
 def _master_prior_admissible(entry: ScanEntry, outcome: dict) -> bool:
-    """Full errors or a trusted HESSE master may seed the prior; cheap/untrusted fits may not."""
+    """Full errors or a trusted HESSE master may seed the prior; cheap/untrusted fits may not. Only
+    a peak count the count ladder settled, unambiguously, enters at all (hard rule 5 for the count):
+    a provisional, search-limited, unresolved or ambiguous one never does."""
+    count = ((outcome.get("fit_selection_semantics") or {}).get("count_ladder") or {})
+    if count.get("state") != "settled" or count.get("ambiguity") is not None:
+        return False
     provenance = entry.provenance or {}
     tier = provenance.get("errors_tier_effective") or provenance.get(
         "analysis_tier_effective") or provenance.get("analysis_tier")
