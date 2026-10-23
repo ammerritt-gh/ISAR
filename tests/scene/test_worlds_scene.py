@@ -10,10 +10,11 @@ Slow by construction (the fits are real), so slow-marked.
 import pytest
 
 from isar.analyze import verdict as _verdict
+from isar.analyze.prior import MODE_ENERGY_FLOOR_FRACTION, resolution_fwhm
 from isar.scene.build import build_scene
 from isar.scene.model import SampleKnowledge, Visibility
 
-from ._world_helpers import run_selection, scene_observation
+from ._world_helpers import run_selection, scan_ctx, scene_observation
 
 # Five nodes straddling the branch crossing of the ``crossing`` world (branch A rises 2→7 meV,
 # branch B falls 6.5→3 meV, degenerate at H≈2.178). The nodes are collinear along H, so
@@ -88,10 +89,12 @@ def test_the_scene_replays_byte_identically_from_the_same_seed(crossing_scene, c
 # ----------------------------------------------------------------------------
 # H = 2.00 is a zone centre of the declared period; 2.05/2.10/2.15/2.20 walk out of it. The
 # world's shallow acoustic branch (omega0 = 2|sin(pi(H-2))|) is 0.00/0.31/0.62/0.92/1.18 meV
-# there, against a ~0.96 meV resolution FWHM — so the local layer resolves it as a second mode
-# only from H = 2.15 outwards, and the arenas below that deliver an elastic line plus the optic
-# branch alone. That is the world's whole point, and the scene has to price the disappearance
-# without inventing a phonon at zero.
+# there, against a ~0.96 meV resolution FWHM. The recipe keeps a mode at least
+# MODE_ENERGY_FLOOR_FRACTION x FWHM (~0.48 meV) off the elastic line, and the rung-1 ladder offers a
+# second mode at every node, so the local layer resolves the acoustic branch from H = 2.10 outwards
+# (fitted 0.82 meV against the true 0.62) and delivers an elastic line plus the optic branch alone
+# at 2.00 and 2.05 (true 0.00 and 0.31 meV, under the floor). That is the world's whole point, and
+# the scene has to price the disappearance without inventing a phonon at zero.
 ENDPOINT_NODES = (2.00, 2.05, 2.10, 2.15, 2.20)
 ENDPOINT_SAMPLE = SampleKnowledge(zone_period=1.0, reflections=(2.0,))
 # The same path with a period whose folds (1.8, 2.7) miss it entirely — the control for "the
@@ -122,37 +125,39 @@ def test_the_endpoint_world_terminates_the_acoustic_track_at_the_declared_zone_c
     there rather than that it went missing.
 
     What the world actually delivers, and what this therefore pins: the local layer resolves the
-    acoustic branch only from H = 2.15 (0.741 meV) outwards, so the LINKED track is the two nodes
-    2.20 → 2.15, descending toward the centre. The endpoint is granted at the terminal node's
-    centre-ward edge — against the CONSECUTIVE arena 2.10, not against 2.00 four grid steps away
-    (review finding 3) — and it is granted because the contiguous run 2.10 → 2.05 → 2.00 is
-    covered, elastic-bearing, and ends on the declared fold."""
+    acoustic branch from H = 2.10 (fitted 0.82 meV; the truth there is 0.62, above the ~0.48 meV
+    recipe floor) outwards, so the LINKED track is the nodes 2.15 → 2.10, descending toward the
+    centre. The endpoint is granted at the terminal node's centre-ward edge — against the
+    CONSECUTIVE arena 2.05, not against 2.00 two grid steps away (review finding 3) — and it is
+    granted because the contiguous run 2.05 → 2.00 is covered, elastic-bearing, and ends on the
+    declared fold. (At 2.05 the truth is 0.31 meV, under the floor, so no mode is offered there.)"""
     cl, = endpoint_scene.payload["clusters"]
     assert cl["scan_refs"] == [f"world:{h:.2f}:d" for h in ENDPOINT_NODES]
     endpoints = [r for r in cl["visibility"]
                  if r["visibility"] == Visibility.STRUCTURAL_ENDPOINT]
     assert endpoints, "no track terminated at the zone centre"
     for r in endpoints:
-        assert r["scan_ref"] == "world:2.15:d"          # the terminal node of the resolved track
-        assert r["neighbour"] == "world:2.10:d"         # its centre-ward path edge
+        # truth omega0 = 2|sin(pi(H-2))| = 0.62 meV at 2.10 (above the floor), 0.31 at 2.05 (below)
+        assert r["scan_ref"] == "world:2.10:d"          # the terminal node of the resolved track
+        assert r["neighbour"] == "world:2.05:d"         # its centre-ward path edge
         assert r["elastic_present"] is True             # there IS an elastic response to hide in
         assert abs(r["omega"]) < 2.0                    # the acoustic branch, not the optic one
     # A reading of the LINKAGE, not of one mode's energy: the track it terminates is really there,
-    # and it continues away from the centre into H = 2.20. Asserted on the linkage rather than on
-    # a candidate label, because which 2-mode reading of H = 2.15 wins (with or without its own
-    # elastic term) is the local layer's business and not this claim's.
+    # and it continues away from the centre into H = 2.15 (truth 0.92 meV, resolved). Asserted on
+    # the linkage rather than on a candidate label, because which 2-mode reading of H = 2.15 wins
+    # (with or without its own elastic term) is the local layer's business and not this claim's.
     endpoint, = endpoints
     partners = [b for a, b in _leading(cl)["links"] if a == endpoint["component_id"]]
-    assert [p for p in partners if p.startswith("world:2.20:d#")], _leading(cl)["links"]
+    assert [p for p in partners if p.startswith("world:2.15:d#")], _leading(cl)["links"]
 
 
 @pytest.mark.slow
 def test_the_endpoint_says_what_blocked_unresolved_could_not(endpoint_arenas, endpoint_scene):
     """What the declaration actually buys on THIS world, stated honestly.
 
-    The acoustic mode at H = 2.15 sits at 0.74 meV, inside the ~0.96 meV elastic width, so
-    without any sample knowledge the scene already declines to penalize its absence at the zone
-    centre — ``blocked_unresolved``. Neither reading is priced, and that is the point: the two
+    The acoustic mode at H = 2.10 sits at 0.82 meV (truth 0.62), inside the ~0.96 meV elastic
+    width, so without any sample knowledge the scene already declines to penalize its absence at
+    the zone centre — ``blocked_unresolved``. Neither reading is priced, and that is the point: the two
     states differ in what they tell an operator, not in arithmetic. Blocked says *count longer,
     the answer may change*; structural endpoint says *the declared gapless branch ends here, so
     it never will*.
@@ -202,20 +207,30 @@ def test_the_zone_centre_exemption_does_not_spread_to_the_rest_of_the_path(endpo
 def test_the_endpoint_world_never_places_a_phonon_on_the_elastic_line(endpoint_scene):
     """The failure the exemption must not buy. "The branch is unresolvable here" is the honest
     answer; a fitted DHO at omega ~ 0 would be the scene agreeing with the declaration by
-    inventing the mode the declaration says cannot be seen. No SURVIVING candidate — not merely
-    no winner — may carry one."""
+    inventing the mode the declaration says cannot be seen. No candidate at all — not merely no
+    winner, not merely no surviving alternative — may carry one.
+
+    The claim is made over EVERY candidate row of every arena, not over the alternative set: the
+    rung-1 ladder offers 8-9 candidates per node, so the 5-node cluster has 5250 assignments
+    against the 4096 cap and is legitimately ``truncated`` — the alternative set is then only the
+    top of the base ordering, and a claim over it would say nothing about the rest."""
     payload = endpoint_scene.payload
-    omegas = {(o["scan_ref"], c["label"]): c["omegas"]
-              for o in payload["observations"] for c in o["candidates"]}
+    # The recipe's own floor, from the world's resolution: a Stokes mode may not sit nearer the
+    # elastic line than this (truth: 0.31 meV at 2.05 and 0.00 at 2.00 are under it, 0.62 at 2.10 is not).
+    floor = MODE_ENERGY_FLOOR_FRACTION * resolution_fwhm(scan_ctx("endpoint_under_bragg", 2.0))
+    for o in payload["observations"]:
+        for c in o["candidates"]:
+            for w in c["omegas"]:
+                assert w is None or abs(w) >= floor, \
+                    f"zero-DHO phantom at {o['scan_ref']} in {c['label']}: {w}"
+    # And the other direction: the elastic line is really there at every node up to 2.15 (truth: the
+    # Gaussian Bragg envelope, FWHM 0.20, is 1.00 / 0.84 / 0.50 / 0.21 of its peak at 2.00..2.15), so the
+    # leading reading must carry it rather than hand its intensity to a low-energy mode. 2.20 is
+    # excluded: the envelope has fallen to 0.06 there and the data may legitimately drop it.
     cl, = payload["clusters"]
-    # "No surviving candidate" is only what the alternative set says when the enumeration is
-    # exhaustive; a truncated cluster would make this a claim about the top of the base ordering.
-    assert cl["truncated"] is False
-    for alt in cl["alternatives"]:
-        for ref, label in alt["assignment"]:
-            for w in omegas[(ref, label)]:
-                # A quarter of the ~0.96 meV resolution: anything below is at the elastic line.
-                assert w is None or abs(w) > 0.25, f"zero-DHO phantom at {ref} in {label}"
+    for ref, label in _leading(cl)["assignment"]:
+        if ref != "world:2.20:d":
+            assert label.startswith("elastic"), f"elastic line dropped at {ref}: {label}"
 
 
 # ----------------------------------------------------------------------------
