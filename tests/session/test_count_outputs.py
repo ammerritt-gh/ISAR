@@ -7,6 +7,7 @@ Synthetic throughout (hard rule 10): hand-built outcomes, or spectra generated h
 """
 import math
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -297,3 +298,71 @@ def test_the_rung_2_slice_refuses_a_malformed_value(monkeypatch):
         driver.resolve_rung2_slice(-1.0)
     monkeypatch.setenv(driver.RUNG2_SLICE_ENV, "12.5")
     assert driver.resolve_rung2_slice() == 12.5
+
+
+# --------------------------------------------------------------------------- the per-fit count record
+def _tried(label, count, lnz=None, *, converged=True, resolved_to=None):
+    """A rung-1 model as the count record reads it: only the fields it uses."""
+    return SimpleNamespace(label=label, count=count, log_evidence=lnz, converged=converged,
+                           resolved_to=resolved_to,
+                           evidence_method="laplace" if lnz is not None else None)
+
+
+def _record_of(ladder, models):
+    """``scan_delivery._count_summary`` over hand-built rung-1 models, with "two" selected."""
+    sel = SimpleNamespace(best="two", scores=[SimpleNamespace(
+        label="two", posterior_probability=1.0, weight=1.0, log_evidence=-8.0,
+        evidence_method="dynesty")])
+    fits = {"two": SimpleNamespace(label="two", n_modes=2, modes=None)}
+    return scan_delivery._count_summary(ladder, sel, fits,
+                                        SimpleNamespace(ceiling=4, models=models))
+
+
+def test_every_count_rung_1_tried_is_listed_with_its_evidence_state():
+    """A settled rung 2 prices only the contending counts, but every count rung 1 tried stays in the
+    record, each with its evidence or the reason it has none."""
+    models = [_tried("zero", 0, -20.0), _tried("one_res", 1, -11.0, resolved_to="elastic"),
+              _tried("two", 2, -9.0), _tried("three", 3, converged=False)]
+    ladder = count_ladder.CountLadderResult(
+        state=count_ladder.SETTLED, reasons=["rung 2 sampled 1 contending model(s)"],
+        contending=["two"], shown="rung2", best_label="two", count_probabilities={2: 1.0},
+        rung2={"two": count_ladder.Rung2Model(
+            label="two", count=2, log_evidence=-8.0, log_evidence_err=0.1, method="nested",
+            reason=None, result=None, result_source="rung1", seconds=1.0)})
+    rows = _record_of(ladder, models)["candidate_counts"]
+    assert [r["count"] for r in rows] == [0, 1, 2, 3]
+    assert [(r["count"], r["label"], r["probability"], r["log_evidence"], r["evidence_state"])
+            for r in rows] == [
+        (0, "zero", None, -20.0, "not sampled at rung 2"),
+        (1, "one_res", None, -11.0, "resolved to elastic"),
+        (2, "two", 1.0, -8.0, "rung 2 nested sampling"),
+        (3, "three", None, None, "unconverged")]
+
+
+def test_a_count_whose_rung_2_sampling_failed_says_so_and_is_not_dropped():
+    models = [_tried("two", 2, -9.0), _tried("three", 3, -14.0)]
+    ladder = count_ladder.CountLadderResult(
+        state=count_ladder.UNRESOLVED, reasons=["evidence for three could not be computed (boom)"],
+        contending=["two", "three"], shown="rung1", best_label="two", count_probabilities={2: 1.0},
+        rung2={"two": count_ladder.Rung2Model(
+                   label="two", count=2, log_evidence=-8.0, log_evidence_err=0.1, method="nested",
+                   reason=None, result=None, result_source="rung1", seconds=1.0),
+               "three": count_ladder.Rung2Model(
+                   label="three", count=3, log_evidence=None, log_evidence_err=None,
+                   method="failed", reason="ValueError: boom", result=None,
+                   result_source="rung1", seconds=0.1)})
+    rows = _record_of(ladder, models)["candidate_counts"]
+    assert [r["count"] for r in rows] == [2, 3]
+    assert [(r["count"], r["probability"], r["evidence_state"]) for r in rows] == [
+        (2, 1.0, "rung 2 nested sampling"), (3, None, "sampling failed: ValueError: boom")]
+
+
+def test_a_count_priced_by_rung_1_alone_keeps_its_probability_and_says_rung_1():
+    """The opposite direction: no rung 2 ran, every count is priced by rung 1 and each row says so."""
+    models = [_tried("one", 1, -11.0), _tried("two", 2, -9.0)]
+    ladder = count_ladder.CountLadderResult(
+        state=count_ladder.SETTLED, reasons=["no escalation trigger fired; rung 1 decides"],
+        shown="rung1", best_label="two", count_probabilities={1: 0.25, 2: 0.75})
+    rows = _record_of(ladder, models)["candidate_counts"]
+    assert [(r["count"], r["probability"], r["log_evidence"], r["evidence_state"])
+            for r in rows] == [(1, 0.25, -11.0, "rung 1 lnZ"), (2, 0.75, -9.0, "rung 1 lnZ")]

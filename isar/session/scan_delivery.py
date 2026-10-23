@@ -1919,12 +1919,42 @@ def _with_peak_positions(modes, result) -> list:
     return out
 
 
+def _count_evidence(model, ladder) -> tuple:
+    """``(log_evidence, evidence_method, evidence_state)`` of one model rung 1 tried: rung 2's evidence
+    when it was sampled, else rung 1's, or the reason there is none. A failed calculation is named as
+    one, never read as evidence against the model."""
+    def finite(value):
+        return float(value) if value is not None and np.isfinite(value) else None
+
+    sampled = ladder.rung2.get(model.label)
+    if sampled is not None:
+        ln_z = finite(sampled.log_evidence)
+        if ln_z is not None:
+            return ln_z, "dynesty", "rung 2 nested sampling"
+        return None, None, f"sampling failed: {sampled.reason or 'no reason recorded'}"
+    if model.resolved_to is not None:
+        return finite(model.log_evidence), model.evidence_method, f"resolved to {model.resolved_to}"
+    if not model.converged:
+        return None, None, "unconverged"
+    rung1 = finite(model.log_evidence)
+    if model.label in ladder.contending or ladder.shown == "rung2":
+        return rung1, model.evidence_method, "not sampled at rung 2"
+    return rung1, model.evidence_method, "rung 1 lnZ" if rung1 is not None else "no evidence"
+
+
+def _count_speaker(models, ladder) -> tuple:
+    """The tried model that speaks for its count (the one with the most usable evidence), with its
+    :func:`_count_evidence`."""
+    scored = [(m, _count_evidence(m, ladder)) for m in models]
+    return max(scored, key=lambda ms: (ms[1][0] is not None, ms[1][0] or 0.0))
+
+
 def _count_summary(ladder, sel, fits, record) -> dict:
     """The spectrum's count outcome as persisted (``fit_selection_semantics["count_ladder"]``, so a
     pooled master carries it too): its one state with the reasons, the flags, the deciding rung,
-    the probability of every count tried, the selected count and the runner-up with their
-    probabilities, the ambiguity marker, each count's best model with its evidence, and the
-    runner-up count's modes, so the inspector and the export can show the alternative."""
+    the selected count and the runner-up with their probabilities, the ambiguity marker, every count
+    rung 1 tried with its evidence state (and the probability where the deciding rung priced it),
+    and the runner-up count's modes, so the inspector and the export can show the alternative."""
     probs = {int(n): float(p) for n, p in (ladder.count_probabilities or {}).items()
              if p is not None and np.isfinite(p)}
     best = fits.get(sel.best) if sel.best else None
@@ -1940,14 +1970,12 @@ def _count_summary(ladder, sel, fits, record) -> dict:
         if kept is None or (p or 0.0) > (kept[0] or 0.0):
             by_count[int(r.n_modes)] = (p, score)
     candidate_counts = []
-    for n in sorted(probs):
-        score = by_count.get(n, (None, None))[1]
-        ln_z = getattr(score, "log_evidence", None)
+    for n in sorted({m.count for m in record.models}):
+        model, (ln_z, method, state) = _count_speaker(
+            [m for m in record.models if m.count == n], ladder)
         candidate_counts.append({
-            "count": n, "probability": probs[n],
-            "label": None if score is None else str(score.label),
-            "log_evidence": float(ln_z) if ln_z is not None and np.isfinite(ln_z) else None,
-            "evidence_method": None if score is None else score.evidence_method})
+            "count": n, "probability": probs.get(n), "label": str(model.label),
+            "log_evidence": ln_z, "evidence_method": method, "evidence_state": state})
     runner_score = by_count.get(runner[1], (None, None))[1] if runner else None
     runner_fit = fits.get(runner_score.label) if runner_score is not None else None
     runner_modes = (_with_peak_positions(list(runner_fit.modes), runner_fit)
