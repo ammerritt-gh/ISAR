@@ -558,12 +558,23 @@ def _run_deferred_serial(es, deferred, leader, started, budget_s, ctx, kwargs) -
     return leader
 
 
-def candidate_set_evidence(candidates, ctx, *, budget_s=_BUDGET_DEFAULT, executor=None,
-                           **kwargs) -> EvidenceSet:
-    """Evidence for one scan's candidate set, with dominance pruning of the dynesty rung.
+def candidate_set_evidence(candidates, ctx, *, escalate=False, budget_s=_BUDGET_DEFAULT,
+                           executor=None, **kwargs) -> EvidenceSet:
+    """Evidence for one scan's candidate set: rung 1 of the count ladder by default.
 
     ``candidates`` is ``[(hyp, fit_result, bundle), ...]`` (converged fits only — the caller
-    owns that filter). Strategy (owner ruling 2026-08-08): the Gaussian rungs run for every
+    owns that filter).
+
+    ``escalate=False`` (the default, rung 1 of the count ladder, design 2026-10-22 §3.1): the
+    Gaussian rungs only. A candidate whose Gaussian picture is invalid keeps its
+    ``"deferred_escalation"`` marker: no evidence, never sampled here, never pruned, and never
+    counted against it. Rung 2 (:mod:`isar.analyze.count_ladder`) samples it as a contending
+    model. Measured cost of the alternative: inside rung 1 the overfit high counts (a pinned
+    amplitude) all went to the sampler, 76 of 88 s on one 81-point spectrum at ceiling 3.
+
+    ``escalate=True`` is the pre-ladder lane described below. Its pruning ceiling ``−cost/2`` is a
+    bound only at the global optimum, so it is never used for a count decision. Strategy (owner
+    ruling 2026-08-08): the Gaussian rungs run for every
     candidate first; escalations are then processed in descending order of their evidence
     ceiling ``lnZ ≤ −cost(θ̂)/2`` (exact for proper priors on an unpenalised fit, where θ̂ is the
     data MLE: Z = ∫L·p ≤ L(θ̂)·∫p = L(θ̂); a penalised fit carries no valid ceiling and is
@@ -613,10 +624,12 @@ def candidate_set_evidence(candidates, ctx, *, budget_s=_BUDGET_DEFAULT, executo
     deferred = []
     for hyp, fit, bundle in candidates:
         rec = structure_evidence(hyp, ctx, fit, bundle, escalation="defer", **kwargs)
-        if rec.evidence_method == "deferred_escalation":
+        if escalate and rec.evidence_method == "deferred_escalation":
             deferred.append((hyp, fit, bundle, rec))
         else:
             es.add(rec)
+    if not escalate:
+        return es
 
     leader = max((r.log_evidence for r in es.records if _trusted_evidence(r)),
                  default=float("-inf"))

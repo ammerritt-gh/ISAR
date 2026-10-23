@@ -304,11 +304,12 @@ def test_select_end_to_end_real_spectrum_folds():
     lo, med, hi = sel.pooled.interval
     assert lo <= 5.0 <= hi
     scores = {s.label: s for s in sel.scores}
-    assert all(s.evidence_method in ("laplace", "laplace_map", "dynesty", "dominated",
-                                     "invalid")
+    assert all(s.evidence_method in ("laplace", "laplace_truncated", "laplace_map",
+                                     "deferred_escalation")
                for s in sel.scores)
-    # the decisive scan's railed null is pruned by its evidence ceiling, not sampled
-    assert scores["elastic+bg"].evidence_method == "dominated"
+    # rung 1 is Laplace only: the railed null keeps a no-evidence marker for rung 2, unweighted,
+    # never pruned on its -cost/2 ceiling and never sampled here
+    assert scores["elastic+bg"].evidence_method == "deferred_escalation"
     assert scores["elastic+bg"].posterior_probability == 0.0
     assert scores["elastic+stokes+bg"].posterior_probability > 0.5
     win = {r.label: r for r in results}["elastic+stokes+bg"]

@@ -500,6 +500,12 @@ def test_qe_candidate_gets_finite_laplace_evidence():
     assert rec.evidence_method in ("laplace", "laplace_map", "dynesty")
 
 
+def _escalated(*args, **kwargs):
+    """The pre-ladder escalation lane (dominance pruning, budget, parallel batch), opt-in since rung
+    1 of the count ladder is Laplace only."""
+    return E.candidate_set_evidence(*args, escalate=True, **kwargs)
+
+
 # ------------------------------------------------------------------ dominance pruning
 def _set_triples(ctx, results):
     from isar.analyze.phonon import enumerate_phonon_structures
@@ -525,7 +531,7 @@ def test_dominated_candidate_never_pays_for_dynesty(clean, monkeypatch):
         raise AssertionError("dynesty must not run for a dominated candidate")
 
     monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", _no_sampling)
-    es = E.candidate_set_evidence(_set_triples(ctx, results), ctx)
+    es = _escalated(_set_triples(ctx, results), ctx)
     recs = es.by_label()
     dom = recs["elastic+bg"]
     assert dom.evidence_method == "dominated"
@@ -583,7 +589,7 @@ def test_penalised_fit_is_never_dominance_pruned(monkeypatch):
                                     log_evidence=-42.0, log_evidence_err=0.3)
     monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior",
                         lambda *a, **k: sampled)
-    es = E.candidate_set_evidence([(hyp, replace(fit, at_limit=None), _bundle(hyp, ctx))], ctx,
+    es = _escalated([(hyp, replace(fit, at_limit=None), _bundle(hyp, ctx))], ctx,
                                   **FAST)
     only = es.records[0]
     assert only.evidence_method == "dynesty"
@@ -600,7 +606,7 @@ def test_genuine_contest_still_pays_for_dynesty():
                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
                       energy_status="needs_zero")
     results = loop.fit_admissible_structures(ctx, errors=False)
-    es = E.candidate_set_evidence(_set_triples(ctx, results), ctx, **FAST)
+    es = _escalated(_set_triples(ctx, results), ctx, **FAST)
     methods = {label: r.evidence_method for label, r in es.by_label().items()}
     escalated = [m for m in methods.values() if m == "dynesty"]
     assert escalated, f"expected at least one close-contest escalation, got {methods}"
@@ -649,7 +655,7 @@ def test_the_suite_cap_still_produces_sampling_that_counts():
     run, ESCALATION_N_LIVE otherwise) and demands a converged sampler."""
     ctx = _blank_scan_ctx()
     results = loop.fit_admissible_structures(ctx, errors=False)
-    es = E.candidate_set_evidence(_set_triples(ctx, results), ctx)   # no explicit n_live
+    es = _escalated(_set_triples(ctx, results), ctx)   # no explicit n_live
 
     sampled = [r for r in es.records if r.evidence_method == "dynesty"]
     assert sampled, "expected a contested escalation to reach the sampler"
@@ -672,7 +678,7 @@ def test_exhausted_budget_records_unresolved_and_never_samples(monkeypatch):
         raise AssertionError("dynesty must not run once the escalation budget is exhausted")
 
     monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", _no_sampling)
-    es = E.candidate_set_evidence(_set_triples(ctx, results), ctx, budget_s=0.0, **FAST)
+    es = _escalated(_set_triples(ctx, results), ctx, budget_s=0.0, **FAST)
 
     unresolved = [r for r in es.records if r.evidence_method == "unresolved"]
     assert unresolved, f"expected a budget-skipped candidate, got {[r.evidence_method for r in es.records]}"
@@ -692,7 +698,7 @@ def test_budget_never_costs_a_certain_dominance_ruling(clean, monkeypatch):
     results = loop.fit_admissible_structures(ctx, errors=False)
     monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("no sampling")))
-    es = E.candidate_set_evidence(_set_triples(ctx, results), ctx, budget_s=0.0)
+    es = _escalated(_set_triples(ctx, results), ctx, budget_s=0.0)
 
     assert es.by_label()["elastic+bg"].evidence_method == "dominated"
     assert es.unresolved_contenders() == []                   # nothing left in doubt
@@ -742,7 +748,7 @@ def test_the_budget_default_is_resolved_at_call_time(monkeypatch):
         raise AssertionError("a zero budget patched onto the constant must stop the sampler")
 
     monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", _no_sampling)
-    es = E.candidate_set_evidence(_set_triples(blank, results), blank)    # no explicit budget_s
+    es = _escalated(_set_triples(blank, results), blank)    # no explicit budget_s
     assert any(r.evidence_method == "unresolved" for r in es.records)
 
 
@@ -756,7 +762,7 @@ def test_unresolved_contender_degrades_selection_to_recorded_aic(clean):
     ctx, _hyp, _fit = clean
     results = loop.fit_admissible_structures(ctx, errors=False)
     triples = _set_triples(ctx, results)
-    es = E.candidate_set_evidence(triples, ctx)
+    es = _escalated(triples, ctx)
     resolved = select_models(results, ctx=None, evidence=es, stamp=False)
     assert resolved.selection_fallback is None                # precondition: the set was fine
 
@@ -797,7 +803,7 @@ def test_all_railed_set_escalates_highest_ceiling_first(clean, monkeypatch):
             validity={"dynesty": {"converged": True}})
 
     monkeypatch.setattr(E, "structure_evidence", _stub)
-    es = E.candidate_set_evidence([(hyp, strong, bundle), (hyp, weak, bundle)], ctx)
+    es = _escalated([(hyp, strong, bundle), (hyp, weak, bundle)], ctx)
     assert ran == ["strong"]                               # exactly one sampler run
     assert es.by_label()["strong"].evidence_method == "dynesty"
     assert es.by_label()["weak"].evidence_method == "dominated"
@@ -836,20 +842,20 @@ def test_candidate_set_escalations_use_the_scoped_n_live_cut(clean, monkeypatch)
             validity={"dynesty": {"converged": True, "n_live": k.get("n_live")}})
 
     monkeypatch.setattr(E, "structure_evidence", _stub)
-    es = E.candidate_set_evidence([(hyp, fit, bundle)], ctx)
+    es = _escalated([(hyp, fit, bundle)], ctx)
     assert seen == [E.ESCALATION_N_LIVE] and E.ESCALATION_N_LIVE == 32
     # the record carries the cut honestly (rides validity into the /2 semantics record)
     assert es.by_label()[fit.label].validity["dynesty"]["n_live"] == 32
 
     seen.clear()
-    E.candidate_set_evidence([(hyp, fit, bundle)], ctx, n_live=80)
+    _escalated([(hyp, fit, bundle)], ctx, n_live=80)
     assert seen == [80]                                   # explicit caller n_live wins
 
     # The cap must actually REACH the sampler — that is the whole point of routing it through the
     # environment rather than a patched constant, since a spawned pool child re-imports the module.
     seen.clear()
     monkeypatch.setenv(E.ESCALATION_N_LIVE_ENV, "32")
-    es_capped = E.candidate_set_evidence([(hyp, fit, bundle)], ctx)
+    es_capped = _escalated([(hyp, fit, bundle)], ctx)
     assert seen == [32]
     assert es_capped.by_label()[fit.label].validity["dynesty"]["n_live"] == 32
 
@@ -902,12 +908,12 @@ def test_parallel_escalation_matches_serial(clean, monkeypatch):
     ran_serial, ran_parallel = [], []
 
     monkeypatch.setattr(E, "structure_evidence", _stub_evidence({"a": -50.0, "b": -70.0}, ran_serial))
-    es_serial = E.candidate_set_evidence(triples, ctx)
+    es_serial = _escalated(triples, ctx)
 
     monkeypatch.setattr(E, "structure_evidence",
                         _stub_evidence({"a": -50.0, "b": -70.0}, ran_parallel))
     with ThreadPoolExecutor(2) as pool:
-        es_parallel = E.candidate_set_evidence(triples, ctx, executor=pool)
+        es_parallel = _escalated(triples, ctx, executor=pool)
 
     assert ran_serial == ran_parallel == ["a", "b"]            # both ran under both paths
     rs, rp = es_serial.by_label(), es_parallel.by_label()
@@ -936,7 +942,7 @@ def test_parallel_escalation_still_prunes_before_the_batch(clean, monkeypatch):
         {"survivor": -50.0, "survivor2": -52.0, "doomed": -100.0}, ran, leader_label="leader"))
 
     with ThreadPoolExecutor(2) as pool:
-        es = E.candidate_set_evidence(triples, ctx, executor=pool)
+        es = _escalated(triples, ctx, executor=pool)
 
     assert "doomed" not in ran                                 # never submitted to the executor
     assert es.by_label()["doomed"].evidence_method == "dominated"
@@ -955,11 +961,11 @@ def test_parallel_escalation_falls_back_to_serial_on_submit_failure(clean, monke
 
     ran_serial, ran_fallback = [], []
     monkeypatch.setattr(E, "structure_evidence", _stub_evidence({"a": -50.0, "b": -70.0}, ran_serial))
-    es_serial = E.candidate_set_evidence(triples, ctx)
+    es_serial = _escalated(triples, ctx)
 
     monkeypatch.setattr(E, "structure_evidence",
                         _stub_evidence({"a": -50.0, "b": -70.0}, ran_fallback))
-    es_fallback = E.candidate_set_evidence(triples, ctx, executor=_BrokenExecutor())
+    es_fallback = _escalated(triples, ctx, executor=_BrokenExecutor())
 
     assert ran_fallback == ["a", "b"]
     rs, rf = es_serial.by_label(), es_fallback.by_label()
@@ -990,9 +996,9 @@ def test_parallel_batch_includes_prune_exempt_penalised_candidate(monkeypatch):
                                     log_evidence=-42.0, log_evidence_err=0.3)
     monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", lambda *a, **k: sampled)
 
-    es_serial = E.candidate_set_evidence(triples, ctx, **FAST)
+    es_serial = _escalated(triples, ctx, **FAST)
     with ThreadPoolExecutor(2) as pool:
-        es_parallel = E.candidate_set_evidence(triples, ctx, executor=pool, **FAST)
+        es_parallel = _escalated(triples, ctx, executor=pool, **FAST)
 
     for es in (es_serial, es_parallel):
         rec = es.by_label()["penalised"]
@@ -1044,11 +1050,11 @@ def test_prune_exempt_candidate_ignores_the_budget(clean, monkeypatch):
 
     ran_serial, ran_parallel = [], []
     monkeypatch.setattr(E, "structure_evidence", _stub_exempt_and_ceiling(ran_serial))
-    es_serial = E.candidate_set_evidence(triples, ctx, budget_s=0.0)
+    es_serial = _escalated(triples, ctx, budget_s=0.0)
 
     monkeypatch.setattr(E, "structure_evidence", _stub_exempt_and_ceiling(ran_parallel))
     with ThreadPoolExecutor(2) as pool:
-        es_parallel = E.candidate_set_evidence(triples, ctx, executor=pool, budget_s=0.0)
+        es_parallel = _escalated(triples, ctx, executor=pool, budget_s=0.0)
 
     for es, ran in ((es_serial, ran_serial), (es_parallel, ran_parallel)):
         recs = es.by_label()
@@ -1094,12 +1100,12 @@ def test_parallel_escalation_cancels_pending_futures_on_partial_submit_failure(c
 
     ran_serial, ran_fallback = [], []
     monkeypatch.setattr(E, "structure_evidence", _stub_evidence({"a": -50.0, "b": -70.0}, ran_serial))
-    es_serial = E.candidate_set_evidence(triples, ctx)
+    es_serial = _escalated(triples, ctx)
 
     monkeypatch.setattr(E, "structure_evidence",
                         _stub_evidence({"a": -50.0, "b": -70.0}, ran_fallback))
     partial = _PartialExecutor()
-    es_partial = E.candidate_set_evidence(triples, ctx, executor=partial)
+    es_partial = _escalated(triples, ctx, executor=partial)
 
     assert len(partial.futures) == 1
     assert partial.futures[0].cancel_called and partial.futures[0].cancelled()
@@ -1212,3 +1218,32 @@ def test_nested_lane_samples_ordered_mode_energies(two_mode):
     assert draws.shape[0] > 0
     assert np.all(draws[:, first] <= draws[:, second])
     assert bz.prior_specification["mode_energy_order"] == ["phonon.Omega_d", "phonon2.Omega_d"]
+
+
+# ------------------------------------------------------------------ rung 1 of the count ladder
+def test_rung_one_never_samples_or_prunes_a_laplace_invalid_candidate(clean, monkeypatch):
+    """Rung 1 is Laplace only: the railed elastic+bg null keeps its deferred_escalation marker (no
+    evidence), is never sampled, and is not pruned on its -cost/2 ceiling, which bounds lnZ only at
+    a global optimum. Selection keeps it in its scores, with no weight, and names the winner."""
+    from isar.analyze.select import select_models
+
+    ctx, _hyp, _fit = clean
+    results = loop.fit_admissible_structures(ctx, errors=False)
+
+    def _no_sampling(*a, **k):
+        raise AssertionError("rung 1 must not sample")
+
+    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior", _no_sampling)
+    triples = _set_triples(ctx, results)
+    es = E.candidate_set_evidence(triples, ctx)
+    rec = es.by_label()["elastic+bg"]
+    assert rec.evidence_method == "deferred_escalation"
+    assert math.isnan(rec.log_evidence)
+    assert "dominated_by_leader_log_evidence" not in rec.validity
+    assert {r.label for r in es.records} == {fit.label for _, fit, _ in triples}
+    sel = select_models(results, {h.label: h for h, _, _ in triples}, ctx, stamp=False)
+    score = {s.label: s for s in sel.scores}["elastic+bg"]
+    assert score.evidence_method == "deferred_escalation"
+    assert score.posterior_probability == 0.0
+    assert sel.selection_fallback is None
+    assert sel.best == "elastic+stokes+bg"
