@@ -104,7 +104,7 @@ def test_run_tasks_serial_threads_shared_executor_and_adaptive(monkeypatch):
     def fake_process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                          chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
                          boot_executor=None, boot_adaptive=False, bayes_opts=None,
-                         rung2_deadline=None, rung2_resume=None):
+                         rung2_slice_s=None, rung2_resume=None):
         captured.update(executor=boot_executor, adaptive=boot_adaptive, boot_workers=boot_workers)
         return ScanEntry(scan_id=scan_id, scan_number=1, scan_type="measurement",
                          content_hash=chash, status="fitted")

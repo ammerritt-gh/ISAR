@@ -422,14 +422,20 @@ def test_the_loop_stops_at_a_failed_model_and_a_raising_sampler_is_a_failure(one
     assert "RuntimeError: sampler exploded" in res.rung2[calls[0]].reason
 
 
-def test_the_loop_resumes_without_resampling_and_honours_the_deadline(one_peak, monkeypatch):
-    """A resumed model is kept, never sampled again; a deadline already past samples nothing and
-    leaves the spectrum provisional."""
+def test_the_loop_resumes_without_resampling_and_honours_the_slice(one_peak, monkeypatch):
+    """A resumed model is kept, never sampled again; a zero slice samples nothing and leaves the
+    spectrum provisional, and any positive slice samples at least one model."""
+    import time
+
     ctx, record = one_peak
-    calls = _escalating(monkeypatch, lambda model: _stub(record, model.label, -50.0))
+    calls = _escalating(monkeypatch, lambda model: time.sleep(0.05) or _stub(record, model.label,
+                                                                              -50.0))
     contending = CL.contending(record)
-    late = CL.run(record, ctx, deadline=0.0, budget_s=100.0)
+    late = CL.run(record, ctx, slice_s=0.0, budget_s=100.0)
     assert calls == [] and late.state == CL.PROVISIONAL
+    short = CL.run(record, ctx, slice_s=0.01, budget_s=100.0)        # shorter than one model
+    assert calls == contending[:1] and short.state == CL.PROVISIONAL
+    calls.clear()
     kept = {contending[0]: _stub(record, contending[0], -50.0)}
     done = CL.run(record, ctx, resume=kept, budget_s=100.0)
     assert calls == contending[1:] and set(done.rung2) == set(contending)

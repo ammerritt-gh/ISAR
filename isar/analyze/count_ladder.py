@@ -551,14 +551,16 @@ def _sample_guarded(model, ctx, *, seed, n_live) -> Rung2Model:
                           result_source="rung1", seconds=time.monotonic() - started)
 
 
-def run(record, ctx, *, deadline: float | None = None, resume: dict | None = None,
+def run(record, ctx, *, slice_s: float | None = None, resume: dict | None = None,
         budget_s: float | None = None, seed: int = RUNG2_SEED,
         n_live: int | None = None) -> CountLadderResult:
     """The one rung-2 loop, resumable in time slices: plan, keep what an earlier invocation sampled
     (``resume``: label -> :class:`Rung2Model`), sample the rest of the contending set in order
-    until ``deadline`` (a ``time.time()`` value) or the per-spectrum budget (counted over every
-    invocation from each model's seconds; checked before each model starts, a started model is
-    never cut off), conclude. A failed model stops the loop: the spectrum is unresolved, and the
+    for at most ``slice_s`` seconds of this invocation's sampling or until the per-spectrum budget
+    (counted over every invocation from each model's seconds) is spent, conclude. Both are checked
+    before each model starts and a started model is never cut off, so a positive slice always
+    advances rung 2 by at least one model; ``0`` samples none and ``None`` has no slice. The slice
+    clock starts here, after rung 1, so rung-1 time never uses it up. A failed model stops the loop: the spectrum is unresolved, and the
     other contenders cannot settle it. ``record`` is rung 1 with its selection applied
     (:meth:`~isar.analyze.loop.Rung1Record.apply_selection`)."""
     budget = rung2_budget_s() if budget_s is None else float(budget_s)
@@ -566,12 +568,14 @@ def run(record, ctx, *, deadline: float | None = None, resume: dict | None = Non
     sampled = {label: m for label, m in (resume or {}).items() if label in plan_.contending}
     elapsed = sum(m.seconds for m in sampled.values())
     by_label = record.by_label()
+    started = time.monotonic()
     for i, label in enumerate(plan_.contending):
         if label in sampled:
             continue
         if any(m.log_evidence is None for m in sampled.values()):
             break
-        if elapsed >= budget or (deadline is not None and time.time() >= deadline):
+        if elapsed >= budget or (slice_s is not None
+                                 and time.monotonic() - started >= slice_s):
             break
         sampled[label] = _sample_guarded(by_label[label], ctx, seed=seed + i, n_live=n_live)
         elapsed += sampled[label].seconds

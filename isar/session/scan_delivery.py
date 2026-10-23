@@ -1828,13 +1828,13 @@ def _resumed_rung2(stored, record, ctx) -> dict:
     return out
 
 
-def _count_ladder(record, ctx, *, deadline=None, resume=None):
+def _count_ladder(record, ctx, *, slice_s=None, resume=None):
     """Rung 2 for one spectrum through :func:`~isar.analyze.count_ladder.run`, the one rung-2 loop,
     resumed from an earlier invocation's :func:`_rung2_partial`. Returns ``(result, partial,
     seconds)``: the :class:`~isar.analyze.count_ladder.CountLadderResult`, what a later invocation
     resumes from, and this invocation's rung-2 wall time."""
     started = time.monotonic()
-    result = count_ladder.run(record, ctx, deadline=deadline,
+    result = count_ladder.run(record, ctx, slice_s=slice_s,
                               resume=_resumed_rung2(resume, record, ctx))
     return result, _rung2_partial(result.rung2, record), round(time.monotonic() - started, 4)
 
@@ -1990,7 +1990,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
             errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False,
             descriptor=None, structure_hint=None, bayes_opts=None,
             predictive_n_members: int | None = None, fit_role="provisional_scan",
-            shadow_enabled=True, rung2_deadline: float | None = None, rung2_resume=None):
+            shadow_enabled=True, rung2_slice_s: float | None = None, rung2_resume=None):
     """The count ladder (design 2026-10-22, §3.1), optionally narrowed by guideline labels, then
     select + verdict. Returns extracted fields.
 
@@ -1998,7 +1998,9 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     ceiling (:func:`guidelines.mode_ceiling`); ``peaks`` (guideline hints) seed every count. The
     whitelist narrows the candidate set — an empty match keeps all + warns. Rung 2
     (:func:`~isar.analyze.count_ladder.run`) samples the contending models when a trigger fires,
-    until ``rung2_deadline`` (a ``time.time()`` value; ``None`` runs it to the per-spectrum budget),
+    for at most ``rung2_slice_s`` seconds of sampling, counted from when rung 2 starts (after rung 1)
+    and always at least one contender when positive (``0`` samples none; ``None`` runs it to the
+    per-spectrum budget),
     resuming from ``rung2_resume`` (an earlier invocation's ``rung2_partial``). A settled rung 2
     replaces the rung-1 selection; an unfinished one leaves the spectrum ``provisional``, "rung 2
     pending".
@@ -2094,7 +2096,7 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         record = loop.Rung1Record(record.ceiling, [m for m in record.models if m.label in kept_labels])
     record.apply_selection(prelim)
     ladder, rung2_partial, rung2_seconds = _count_ladder(
-        record, ctx, deadline=rung2_deadline, resume=rung2_resume)
+        record, ctx, slice_s=rung2_slice_s, resume=rung2_resume)
     if ladder.shown == "rung2":
         # conclude shows rung 2 only with a converged winner the published selection agrees on.
         results, prelim = _rung2_selection(ladder, results, by_hyp, ctx)
@@ -2436,23 +2438,23 @@ def _process_one_task(args):
     serially in submission order."""
     (rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
      M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts, shadow_enabled,
-     rung2_deadline, rung2_resume) = args
+     rung2_slice_s, rung2_resume) = args
     shadow_kw = {} if shadow_enabled else {"shadow_enabled": False}
     return _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                         chash, ghash, M=M, seed=seed, errors_tier=errors_tier,
                         boot_workers=boot_workers, boot_adaptive=boot_adaptive,
-                        bayes_opts=bayes_opts, rung2_deadline=rung2_deadline,
+                        bayes_opts=bayes_opts, rung2_slice_s=rung2_slice_s,
                         rung2_resume=rung2_resume, **shadow_kw)
 
 
 def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_workers,
                use_pool, scan_workers, boot_executor=None, boot_adaptive=False,
                bayes_opts=None, on_complete=None, deadline_gate=None,
-               shadow_enabled=True, rung2_deadline=None, rung2_resume=None) -> list:
+               shadow_enabled=True, rung2_slice_s=None, rung2_resume=None) -> list:
     """Fit the fresh scan-detectors, serially or over a process pool, preserving submission order.
 
-    ``rung2_deadline`` (``time.time()``; ``None`` = no slice) bounds rung 2 of the count ladder for
-    every task; ``rung2_resume`` maps a scan id to its earlier invocation's ``rung2_partial``.
+    ``rung2_slice_s`` (seconds; ``None`` = no slice) bounds rung 2 of the count ladder for each
+    task, counted from that task's own rung-2 start; ``rung2_resume`` maps a scan id to its earlier invocation's ``rung2_partial``.
 
     ``boot_executor`` (a shared bootstrap pool) is threaded only through the SERIAL path — an
     executor is not picklable and must never enter a scan-pool worker (nested pools). The pool path
@@ -2464,7 +2466,7 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
     )
     arg_list = [(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
                  M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts,
-                 effective_shadow_enabled, rung2_deadline, (rung2_resume or {}).get(scan_id))
+                 effective_shadow_enabled, rung2_slice_s, (rung2_resume or {}).get(scan_id))
                 for (rec, det, q, T, sample, scan_id, chash, ghash, seed) in tasks]
     if not arg_list:
         return []
@@ -2475,13 +2477,13 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
                 raise AnalysisWorkIncomplete(
                     f"analysis deadline reached after {len(out)}/{len(arg_list)} scan fit units")
             (rec, det, q, T, sample, scan_id, card_, g_, runcal_, exclusions_, chash, ghash,
-             M_, tier_, seed, bw, adaptive_, bopts_, shadow_enabled_, deadline_, resume_) = a
+             M_, tier_, seed, bw, adaptive_, bopts_, shadow_enabled_, slice_, resume_) = a
             shadow_kw = {} if shadow_enabled_ else {"shadow_enabled": False}
             entry = _process_one(rec, det, q, T, sample, scan_id, card_, g_, runcal_,
                                  exclusions_, chash, ghash, M=M_, seed=seed, errors_tier=tier_,
                                  boot_workers=bw, boot_executor=boot_executor,
                                  boot_adaptive=adaptive_, bayes_opts=bopts_,
-                                 rung2_deadline=deadline_, rung2_resume=resume_, **shadow_kw)
+                                 rung2_slice_s=slice_, rung2_resume=resume_, **shadow_kw)
             if on_complete is not None:
                 on_complete(entry)
             out.append(entry)
@@ -2762,7 +2764,7 @@ def _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres,
 
 def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descriptor,
                          region_reasons, *, M, seed, errors_tier, boot_workers, boot_executor,
-                         boot_adaptive, bayes_opts=None, rung2_deadline=None, rung2_resume=None):
+                         boot_adaptive, bayes_opts=None, rung2_slice_s=None, rung2_resume=None):
     """Steering Phase 3b — hard-fix escalation: if the (soft / Stokes-only) fit STILL rails Γ to its
     bound (true low-count degeneracy — Γ un-identifiable even under the soft prior) and the branch
     predicts Γ within its anchor range, re-fit with Γ frozen to the branch value (k reduced,
@@ -2800,7 +2802,7 @@ def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descri
                                peaks=peaks, errors_tier=errors_tier, boot_workers=boot_workers,
                                boot_executor=boot_executor, boot_adaptive=boot_adaptive,
                                descriptor=descriptor, bayes_opts=bayes_opts,
-                               shadow_enabled=False, rung2_deadline=rung2_deadline,
+                               shadow_enabled=False, rung2_slice_s=rung2_slice_s,
                                rung2_resume=rung2_resume)
             except Exception:  # noqa: BLE001 — escalation is best-effort; keep the original fit
                 hfit = None
@@ -2909,7 +2911,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
 def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                  chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
                  boot_executor=None, boot_adaptive=False, bayes_opts=None,
-                 shadow_enabled=True, rung2_deadline=None, rung2_resume=None) -> ScanEntry:
+                 shadow_enabled=True, rung2_slice_s=None, rung2_resume=None) -> ScanEntry:
     _t_fit0 = time.perf_counter()
     base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
                 content_hash=chash, guidelines_hash=ghash)
@@ -2966,7 +2968,7 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                       errors_tier=errors_tier, boot_workers=boot_workers,
                       boot_executor=boot_executor, boot_adaptive=boot_adaptive, descriptor=descriptor,
                       bayes_opts=bayes_opts, shadow_enabled=shadow_enabled,
-                      rung2_deadline=rung2_deadline, rung2_resume=rung2_resume)
+                      rung2_slice_s=rung2_slice_s, rung2_resume=rung2_resume)
     except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
         return ScanEntry(status="non_result",
                          reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,
@@ -2977,7 +2979,7 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                                region_reasons, M=M, seed=seed, errors_tier=errors_tier,
                                boot_workers=boot_workers, boot_executor=boot_executor,
                                boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
-                               rung2_deadline=rung2_deadline, rung2_resume=rung2_resume)
+                               rung2_slice_s=rung2_slice_s, rung2_resume=rung2_resume)
 
     entry = _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calres, prior,
                             prior_source, n_neighbors, near_gamma, t_round, region_reasons, base,

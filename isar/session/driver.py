@@ -204,10 +204,12 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
               finish_initial_wave=False, rung2_slice_seconds=None) -> RunSummary:
     """The pipeline behind ``isar run``, in two passes (design 2026-10-22, §3.1). The first delivers
     rung 1 of the count ladder for every new or changed spectrum, writing each escalated one
-    ``provisional``. The second spends at most the rung-2 slice (:func:`resolve_rung2_slice`;
-    none: to completion) on the spectra still waiting on rung 2, resuming each from its stored
-    ``rung2_partial``; what it does not finish stays provisional, "rung 2 pending", and resumes on
-    the next invocation, which also covers a stopped or crashed run."""
+    ``provisional``. The second refits the spectra still waiting on rung 2 and gives each at most
+    the rung-2 slice (:func:`resolve_rung2_slice`; none: to completion) of nested sampling, counted
+    from when its rung 2 starts, so its rung-1 refit never uses the slice up and every pending
+    spectrum advances by at least one contender; each resumes from its stored ``rung2_partial``.
+    What it does not finish stays provisional, "rung 2 pending", and resumes on the next
+    invocation, which also covers a stopped or crashed run."""
     slice_s = resolve_rung2_slice(rung2_slice_seconds)
     started = time.monotonic()
     common = dict(llm=llm, M=M, scan_M=scan_M, detectors=detectors, formats=formats,
@@ -217,7 +219,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
     first = _run_batch_pass(workspace, data_paths, force=force, force_masters=force_masters,
                             analysis_allowance_seconds=analysis_allowance_seconds,
                             finish_initial_wave=finish_initial_wave,
-                            rung2_deadline=time.time(), retask_pending=False, **common)
+                            rung2_slice_s=0.0, retask_pending=False, **common)
     if certification_manifest is not None or first.analysis_incomplete or slice_s == 0:
         return first
     _card, session = workspace.load()
@@ -230,8 +232,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             return first
     second = _run_batch_pass(workspace, data_paths, force=False, force_masters=None,
                              analysis_allowance_seconds=allowance, finish_initial_wave=False,
-                             rung2_deadline=None if slice_s is None else time.time() + slice_s,
-                             retask_pending=True, **common)
+                             rung2_slice_s=slice_s, retask_pending=True, **common)
     second.context_lines = first.context_lines + second.context_lines
     second.n_fitted_this_run += first.n_fitted_this_run
     second.n_reprocessed += first.n_reprocessed
@@ -244,10 +245,11 @@ def _run_batch_pass(workspace: Workspace, data_paths, *, force=False, force_mast
                     errors_tier="full", scan_errors_tier=None, master_errors_tier=None,
                     bayes_cli=None, timer=None,
                     certification_manifest=None, analysis_allowance_seconds=None,
-                    finish_initial_wave=False, rung2_deadline=None,
+                    finish_initial_wave=False, rung2_slice_s=None,
                     retask_pending=False) -> RunSummary:
-    """One pass of :func:`run_batch`. ``rung2_deadline`` (``time.time()``) bounds rung 2 of every
-    fit; ``retask_pending`` refits the spectra waiting on rung 2, resuming each."""
+    """One pass of :func:`run_batch`. ``rung2_slice_s`` (seconds of sampling per spectrum, from its
+    own rung-2 start) bounds rung 2 of every fit; ``retask_pending`` refits the spectra waiting on
+    rung 2, resuming each."""
     timer = timer or NullTimer()
     # ``force_masters``: refit exactly these master ledger ids (e.g. "master:2.65_0.0_0.0_300")
     # even when their member set is unchanged, without forcing anything else. This is the
@@ -596,7 +598,7 @@ def _run_batch_pass(workspace: Workspace, data_paths, *, force=False, force_mast
                 boot_adaptive=scan_boot_adaptive, bayes_opts=bayes_opts,
                 on_complete=checkpoint_entry, deadline_gate=deadline_gate,
                 shadow_enabled=deadline_gate.deadline is None,
-                rung2_deadline=rung2_deadline, rung2_resume=rung2_resume)
+                rung2_slice_s=rung2_slice_s, rung2_resume=rung2_resume)
             cached.update(zip(remaining_indices, fresh_entries))
             entries = [cached[index] for index in range(len(tasks))]
             _m_fit["per_task"] = [

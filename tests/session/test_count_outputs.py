@@ -197,12 +197,12 @@ def test_a_settled_rung_2_is_what_delivery_shows(forced_trigger, monkeypatch):
 
 def test_a_slice_that_ends_leaves_rung_2_pending_and_a_later_call_resumes_it(forced_trigger,
                                                                             monkeypatch):
-    """Delivery order: a deadline already past delivers the rung-1 result as provisional with
-    "rung 2 pending" and samples nothing; a slice that ends after one model stores it, and the next
-    call resumes from what was stored, never sampling a model twice."""
+    """Delivery order: a zero slice delivers the rung-1 result as provisional with "rung 2
+    pending" and samples nothing; a slice that ends after one model stores it, and the next call
+    resumes from what was stored, never sampling a model twice."""
     ctx, card = _weak_elastic_ctx(), _card()
     first = scan_delivery.fit_one(ctx, card, prior=None, M=10, seed=1, errors_tier="cheap",
-                                  rung2_deadline=time.time())
+                                  rung2_slice_s=0.0)
     count = first["fit_selection_semantics"]["count_ladder"]
     assert count["state"] == "provisional" and count["deciding_rung"] == 1
     assert count["reasons"][0].startswith(count_ladder.RUNG2_PENDING)
@@ -210,21 +210,9 @@ def test_a_slice_that_ends_leaves_rung_2_pending_and_a_later_call_resumes_it(for
     contending = count["contending"]
     assert len(contending) >= 2
 
-    # The slice ends once the first model is sampled: the clock jumps past the deadline.
-    recording = count_ladder.sample_model               # the fixture's recording wrapper
-
-    def then_out_of_time(model, ctx_, **kw):
-        out = recording(model, ctx_, **kw)
-        monkeypatch.setattr(count_ladder, "time", type("Clock", (), {
-            "time": staticmethod(lambda: float("inf")), "monotonic": time.monotonic,
-            "perf_counter": time.perf_counter}))
-        return out
-
-    monkeypatch.setattr(count_ladder, "sample_model", then_out_of_time)
+    # A slice shorter than any sampling run: the first model always starts, and the slice is over.
     second = scan_delivery.fit_one(ctx, card, prior=None, M=10, seed=1, errors_tier="cheap",
-                                   rung2_deadline=time.time() + 3600.0)
-    monkeypatch.setattr(count_ladder, "time", time)
-    monkeypatch.setattr(count_ladder, "sample_model", recording)
+                                   rung2_slice_s=1e-9)
     partial = second["rung2_partial"]
     assert list(partial) == contending[:1]
     assert second["fit_selection_semantics"]["count_ladder"]["state"] == "provisional"
@@ -235,6 +223,25 @@ def test_a_slice_that_ends_leaves_rung_2_pending_and_a_later_call_resumes_it(for
     assert set(last["rung2_partial"]) == set(contending)
     assert last["rung2_partial"][contending[0]] == partial[contending[0]]
     assert last["fit_selection_semantics"]["count_ladder"]["state"] != "provisional"
+
+
+def test_a_slow_rung_1_refit_never_uses_up_the_rung_2_slice(forced_trigger, monkeypatch):
+    """The slice counts rung-2 sampling only: a pending spectrum whose rung-1 refit takes longer than
+    the whole slice still advances rung 2 by at least one model on every refresh."""
+    from isar.analyze import loop
+
+    real = loop.fit_structures_two_stage_hinted
+
+    def slow(*args, **kwargs):
+        out = real(*args, **kwargs)
+        time.sleep(0.6)
+        return out
+
+    monkeypatch.setattr(loop, "fit_structures_two_stage_hinted", slow)
+    ctx, card = _weak_elastic_ctx(), _card()
+    fit = scan_delivery.fit_one(ctx, card, prior=None, M=10, seed=1, errors_tier="cheap",
+                                rung2_slice_s=0.3)
+    assert len(forced_trigger) >= 1 and list(fit["rung2_partial"]) == forced_trigger
 
 
 def test_a_provisional_master_never_seeds_the_prior():
@@ -267,13 +274,11 @@ def test_run_batch_delivers_rung_1_first_then_spends_the_slice_on_pending(monkey
     ws = _workspace(tmp_path)
     monkeypatch.setattr(driver, "_run_batch_pass", fake_pass)
     monkeypatch.setattr(ws, "load", fake_load)
-    before = time.time()
     summary = driver.run_batch(ws, [], rung2_slice_seconds=30.0)
     first, second = calls
-    assert first["retask_pending"] is False and first["rung2_deadline"] <= time.time()
-    assert first["rung2_deadline"] >= before
+    assert first["retask_pending"] is False and first["rung2_slice_s"] == 0.0
     assert second["retask_pending"] is True and second["force"] is False
-    assert 29.0 <= second["rung2_deadline"] - before <= 31.0 + (time.time() - before)
+    assert second["rung2_slice_s"] == 30.0
     assert summary.context_lines == ["pass 1", "pass 2"]
 
     calls.clear()
@@ -287,7 +292,7 @@ def test_run_batch_delivers_rung_1_first_then_spends_the_slice_on_pending(monkey
     pending["value"] = True
     monkeypatch.setenv(driver.RUNG2_SLICE_ENV, "")
     driver.run_batch(ws, [])                                # no slice set: rung 2 to completion
-    assert calls[1]["rung2_deadline"] is None
+    assert calls[1]["rung2_slice_s"] is None
 
 
 def test_the_rung_2_slice_refuses_a_malformed_value(monkeypatch):

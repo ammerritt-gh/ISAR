@@ -426,8 +426,9 @@ the ladder existed reads `not recorded`. Each
 mode of the selected count is a row of `report/modes.csv`: intrinsic ω₀ and the displayed peak
 position Ω_d, Γ, amplitude, their HESSE errors (a missing one stays empty). A settled rung 2
 replaces rung 1's selection, priced on the contending models' nested-sampling evidence alone. An
-`isar run` delivers rung 1 for every new spectrum first, then spends at most its rung-2 slice on
-the spectra still provisional (a plain run: to completion; a campaign refresh: 120 s), resuming
+`isar run` delivers rung 1 for every new spectrum first, then gives each spectrum still provisional
+at most its rung-2 slice of nested sampling (a plain run: to completion; a campaign refresh: 120 s,
+counted from when that spectrum's rung 2 starts, and at least one contender per refresh), resuming
 each from what an earlier invocation sampled (`rung2_partial`); what it does not finish stays
 `provisional` with "rung 2 pending" as its reason. Only a settled, unambiguous count enters the
 dispersion prior (`evidence_update._master_prior_admissible`). A pooled master runs rung 2 to
@@ -517,10 +518,13 @@ that contends.
 `ISAR_RUNG2_BUDGET_S` overrides it). The budget counts across invocations and is checked before each
 contender starts; a contender that has started is never cut off. `isar run` delivers rung 1 for every
 new spectrum first, then runs rung 2 to completion, since a plain run has no slice. A campaign refresh
-spends at most 120 s of rung 2 per refresh (`CAMPAIGN_RUNG2_SLICE_S`, handed to the analysis child as
-`ISAR_RUNG2_SLICE_S`). A spectrum still pending resumes at the next refresh from the contenders already
-sampled (`rung2_partial`); a stored sample is reused only when the rung-1 fit it was sampled from is
-unchanged. Pooled masters run rung 2 to completion inside their own fit, with no slice.
+gives each pending spectrum at most 120 s of rung-2 sampling (`CAMPAIGN_RUNG2_SLICE_S`, handed to the
+analysis child as `ISAR_RUNG2_SLICE_S`). The slice counts sampling time only: it starts after that
+spectrum's rung-1 refit, so a slow rung 1 never uses it up, and a positive slice always samples at
+least one contender, so every refresh advances every pending spectrum. A refresh with several pending
+spectra therefore takes up to the slice per spectrum, spread over the workers. A spectrum still
+pending resumes at the next refresh from the contenders already sampled (`rung2_partial`); a stored
+sample is reused only when the rung-1 fit it was sampled from is unchanged. Pooled masters run rung 2 to completion inside their own fit, with no slice.
 
 **The six states.** Every spectrum is in exactly one state. When more than one applies, the precedence is
 unresolved, then provisional, then search limited, then settled, and every applicable reason is kept.
@@ -569,6 +573,9 @@ the peak count".
   ±1 to 1.5 nats. `logzerr` does not bound that bias. The live-point count is a shortcut recorded at
   `RUNG2_N_LIVE`, not a tuned value.
 - *A started contender is not cut off.* One nested-sampling run can therefore overrun the 120 s campaign slice.
+- *Each refresh refits rung 1 of a pending spectrum before resuming its rung 2.* The refit is
+  deterministic, so it reaches the same record, but its time is paid again on every refresh while the
+  spectrum stays pending, and a plain `isar run` fits each escalated spectrum's rung 1 twice.
 - *The elastic-line phantom at the endpoint world, H = 2.10, stays open.* The leading reading there is
   `stokes2+bg` with an overdamped mode at 0.195 meV standing in for the elastic line. The degenerate-limit
   rule does not resolve it, because Ω_d sits off its limit. The strict `xfail` in
