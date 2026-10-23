@@ -138,3 +138,18 @@ def test_bayes_no_op_on_unconverged_fit():
     assert res.converged is False
     assert res.fail_reason == "fit did not converge"
     assert res.omega0_samples.size == 0
+
+
+def test_evidence_lane_samples_a_model_whose_optimizer_did_not_converge():
+    """The evidence lane judges the model, not the fit: an unconverged optimizer is no refusal."""
+    from isar.analyze import catalogue
+
+    ctx = _spectrum_ctx()
+    hyp, _fit = _fitted(ctx)
+    prob = loop.build_problem(hyp, ctx)
+    bundle = catalogue.resolve_priors(prob.composite, ctx, prob.bounds)
+    stub = types.SimpleNamespace(optimizer_converged=False)
+    res = BZ.bayesian_posterior(hyp, ctx, stub, prior_bundle=bundle, seed=1, **FAST)
+    assert res.fail_reason != "fit did not converge"
+    assert np.isfinite(res.log_evidence)
+    assert res.parameter_samples.shape[0] > 0

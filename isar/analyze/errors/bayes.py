@@ -120,8 +120,9 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
                        sample: str = "rwalk", bound: str = "multi") -> BayesResult:
     """Sample the posterior of one fitted hypothesis; return ω₀/Γ credible intervals, the raw
     equal-weight posterior draws (for §4 pooling), the marginal-likelihood evidence, and the
-    §5.4 convergence gate. No-op (``converged=False``) on a non-converged fit, mirroring the
-    bootstrap. ``prior`` (a :class:`~isar.analyze.prior.PhononPrior`) makes the dispersion
+    §5.4 convergence gate. In the diagnostics tier (no ``prior_bundle``) a no-op
+    (``converged=False``) on a non-converged fit, mirroring the bootstrap; the evidence lane samples
+    it anyway. ``prior`` (a :class:`~isar.analyze.prior.PhononPrior`) makes the dispersion
     expectation a literal Normal prior on ω₀; ``None`` ⇒ weakly-informative (posterior ≈
     likelihood ≈ bootstrap in the well-counted regime, by Bernstein–von Mises).
 
@@ -153,7 +154,10 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
                            prior_fingerprint=prior_fingerprint,
                            prior_specification=prior_specification)
 
-    if not fit_result.optimizer_converged:
+    # The diagnostics tier interprets a fitted winner and mirrors the bootstrap's refusal. The
+    # evidence lane judges the model, not the fit: the sampler never reads θ̂, so a model that was
+    # hard to optimize is still sampled (design 2026-10-22 §3.1).
+    if prior_bundle is None and not fit_result.optimizer_converged:
         return _failed("fit did not converge")
 
     prob = loop.build_problem(hyp, ctx)

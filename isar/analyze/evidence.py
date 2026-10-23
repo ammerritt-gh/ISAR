@@ -21,7 +21,8 @@ by a **ladder** that records which rung it came from and why:
 4. ``"dynesty"`` — nested sampling through :func:`~isar.analyze.errors.bayes.bayesian_posterior`
    with the same bundle in the prior transform, when the Gaussian picture itself is invalid
    (non-Γ boundary-pinned parameter — Ω_d at the window edge is real physics and always pays
-   for the sampler — missing/non-PD covariance, failed MAP refit). Never silent: the
+   for the sampler — missing/non-PD covariance, failed MAP refit, an optimizer that did not
+   converge). Never silent: the
    escalation reason is recorded in ``validity``.
 
 Evidence is only comparable inside one **arena** — one observed-data likelihood. The arena is
@@ -336,6 +337,9 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     ruling 2026-08-08). A penalised (soft-prior) fit ignores the deferral and samples: θ̂ is its
     MAP, so −cost/2 is not a valid ceiling for it.
 
+    A fit whose optimizer did not converge has no Gaussian picture and escalates (with no ceiling:
+    its θ̂ is not the maximum); it is judged by the sampler, never refused.
+
     A dynesty run that fails its own convergence gate yields ``log_evidence=NaN`` with
     ``evidence_method="invalid"``; the untrusted value and the reason stay in ``validity``."""
     # A constrained-variant candidate carries the derived context it was fitted under, so the MAP
@@ -362,10 +366,6 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
                               k_free=int(fit_result.k), arena_fingerprint=arena,
                               prior_spec=tuple(bundle.spec()), validity=validity)
 
-    if not fit_result.optimizer_converged:
-        validity["reason"] = "fit did not converge"
-        return _record(float("nan"), None, "invalid")
-
     # --- Gaussian-picture validity (escalate to dynesty when it breaks) ----------------------
     at_limit = fit_result.at_limit
     # An older fit without per-param flags is unknown → fail-safe: treat as pinned.
@@ -386,9 +386,9 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
         # cost(θ̂) ≥ cost(θ̂_MLE) and −cost/2 UNDERstates the bound. Pruning on an understated
         # ceiling can drop a candidate whose true lnZ sits above it, so a penalised fit is never
         # deferred — it pays for the sampler. Pruning was always an optimisation, never a
-        # shortcut around one.
+        # shortcut around one. An unconverged θ̂ is not the maximum either, so it has no ceiling.
         if escalation == "defer":
-            if fit_result.prior_penalty is None:
+            if fit_result.prior_penalty is None and fit_result.optimizer_converged:
                 validity["log_evidence_upper_bound"] = -0.5 * float(fit_result.cost)
                 return _record(float("nan"), None, "deferred_escalation")
             # A penalised fit is still deferred (so the caller can batch/parallelize it with the
@@ -400,6 +400,12 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
         return _dynesty_evidence(hyp, ctx, fit_result, bundle, _record, validity,
                                  seed=seed, n_live=n_live, max_iter=max_iter,
                                  sample=sample, dlogz=dlogz)
+
+    if not fit_result.optimizer_converged:
+        # A model that is hard to optimize is still judged (design 2026-10-22 §3.1): there is no
+        # Gaussian picture at an unconverged point, so it goes to the sampler, which never reads θ̂.
+        validity["reason"] = "fit did not converge"
+        return _escalate("optimizer_not_converged")
 
     # Γ pins are carved out of the escalation rule (H8, SCENE-1 PR-c): GAMMA_FLOOR is a
     # modelling artifact — the DHO ⊗ resolution model is regular as Γ → 0, so a Γ jammed

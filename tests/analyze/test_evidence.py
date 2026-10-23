@@ -458,13 +458,20 @@ def test_missing_at_limit_is_fail_safe(clean):
     assert rec.evidence_method == "dynesty"
 
 
-def test_nonconverged_fit_yields_no_evidence(clean):
+def test_nonconverged_fit_is_still_sampled_and_judged(clean):
+    """A model whose optimizer did not converge is judged by the sampler, never refused; deferred,
+    it carries no ceiling (its θ̂ is not the maximum) and is exempt from pruning."""
     ctx, hyp, fit = clean
     bad = replace(fit, optimizer_converged=False)
-    rec = E.structure_evidence(hyp, ctx, bad, _bundle(hyp, ctx))
-    assert rec.evidence_method == "invalid"
-    assert math.isnan(rec.log_evidence)
+    rec = E.structure_evidence(hyp, ctx, bad, _bundle(hyp, ctx), **FAST)
+    assert rec.evidence_method == "dynesty"
+    assert np.isfinite(rec.log_evidence)
     assert rec.validity["reason"] == "fit did not converge"
+    assert rec.validity["escalation"] == "optimizer_not_converged"
+    deferred = E.structure_evidence(hyp, ctx, bad, _bundle(hyp, ctx), escalation="defer")
+    assert deferred.evidence_method == "deferred_escalation"
+    assert deferred.validity["prune_exempt"] is True
+    assert "log_evidence_upper_bound" not in deferred.validity
 
 
 # ------------------------------------------------------------------ proper-prior guard
