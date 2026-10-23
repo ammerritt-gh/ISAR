@@ -15,7 +15,8 @@ that record and:
 4. names the spectrum's one state with its reasons, the separate flags and the ambiguity marker
    (:func:`conclude`).
 
-:func:`run` composes the four for a caller that does not slice. A failed calculation is never
+:func:`run` is the one loop that composes the four, resumable in time slices (the delivery calls
+it and only stores and restores what it sampled). A failed calculation is never
 evidence against a model: it leaves the spectrum *unresolved*. A search-limited or unresolved
 spectrum keeps its rung-1 result as the shown result, and neither ever stops a campaign.
 """
@@ -78,6 +79,9 @@ RUNG2_BUDGET_ENV = "ISAR_RUNG2_BUDGET_S"
 
 FLAG_STRUCTURED = "structured residual"
 FLAG_CENTRAL = "central residual, quasi-elastic not tested"
+
+RUNG2_PENDING = "rung 2 pending"   # the provisional state's reason, "<this>: k of n ... sampled"
+RUNG2_SEED = 12345                 # model i of the contending set samples at seed + i
 
 
 def rung2_n_live() -> int:
@@ -423,9 +427,11 @@ def count_ambiguity(count_probabilities: dict, best_count: int) -> dict | None:
 def conclude(record, ctx, plan_, sampled: dict, *, elapsed_s: float = 0.0,
              budget_s: float | None = None) -> CountLadderResult:
     """The spectrum's state from rung 1, the plan and the models sampled so far (``sampled``:
-    label -> :class:`Rung2Model`). Rung 2 still has work and budget: *provisional*. Otherwise one
-    fixed precedence picks the state (unresolved, then search limited, then settled) and every
-    applicable reason is kept. Rung 2 is shown only when it finished and the state is settled."""
+    label -> :class:`Rung2Model`). One fixed precedence picks the state and every applicable reason
+    is kept: a failed calculation makes it *unresolved* at once, even with contenders still
+    pending; rung 2 still has work and budget: *provisional*; then search limited, then settled.
+    Rung 2 is shown only when it finished and the state is settled, and only with a converged fit
+    to show: a winner without one is unresolved, with rung 1 shown."""
     budget = rung2_budget_s() if budget_s is None else float(budget_s)
     by_label = record.by_label()
     best1 = _best(record.models)
@@ -444,8 +450,12 @@ def conclude(record, ctx, plan_, sampled: dict, *, elapsed_s: float = 0.0,
         for label, p in _probabilities(models).items():
             sampled[label].probability = p
         decided = max(models, key=lambda m: m.probability)
-        notes.append(f"rung 2 sampled {len(models)} contending model(s); {decided.label} has "
-                     f"P = {decided.probability:.3f}")
+        if not decided.result.optimizer_converged:
+            unresolved.append(f"rung-2 winner {decided.label} has no converged fit")
+            decided = None
+        else:
+            notes.append(f"rung 2 sampled {len(models)} contending model(s); {decided.label} "
+                         f"has P = {decided.probability:.3f}")
     if pending and elapsed_s >= budget:
         limited.append(f"rung-2 budget of {budget:.0f} s single-worker time reached after "
                        f"{len(sampled)} of {len(plan_.contending)} contending models")
@@ -456,12 +466,12 @@ def conclude(record, ctx, plan_, sampled: dict, *, elapsed_s: float = 0.0,
     result = CountLadderResult(state=SETTLED, reasons=[], triggers=list(plan_.triggers),
                                contending=list(plan_.contending), rung2=dict(sampled),
                                rung2_seconds=float(elapsed_s))
-    if plan_.escalate and pending and elapsed_s < budget:
-        result.state = PROVISIONAL
-        result.reasons = [f"rung 2 running: {len(sampled)} of {len(plan_.contending)} contending "
-                          f"models sampled"] + unresolved
-    elif unresolved:
+    if unresolved:
         result.state, result.reasons = UNRESOLVED, unresolved + limited + notes
+    elif plan_.escalate and pending and elapsed_s < budget:
+        result.state = PROVISIONAL
+        result.reasons = [f"{RUNG2_PENDING}: {len(sampled)} of {len(plan_.contending)} "
+                          f"contending models sampled"]
     elif limited:
         result.state, result.reasons = SEARCH_LIMITED, limited + notes
     else:
@@ -487,23 +497,46 @@ def conclude(record, ctx, plan_, sampled: dict, *, elapsed_s: float = 0.0,
     return result
 
 
-def run(record, ctx, *, budget_s: float | None = None, seed: int = 12345,
+def _sample_guarded(model, ctx, *, seed, n_live) -> Rung2Model:
+    """:func:`sample_model`, with a sampler that raises turned into a failed calculation (the
+    spectrum is unresolved), never evidence against the model."""
+    started = time.monotonic()
+    try:
+        return sample_model(model, ctx, seed=seed, n_live=n_live)
+    except Exception as exc:  # noqa: BLE001 — a failed calculation leaves the count unresolved
+        log.warning("rung 2 could not sample %s (%s): %s", model.label, type(exc).__name__, exc)
+        return Rung2Model(label=model.label, count=model.count, log_evidence=None,
+                          log_evidence_err=None, method="failed",
+                          reason=f"{type(exc).__name__}: {exc}", result=model.representative,
+                          result_source="rung1", seconds=time.monotonic() - started)
+
+
+def run(record, ctx, *, deadline: float | None = None, resume: dict | None = None,
+        budget_s: float | None = None, seed: int = RUNG2_SEED,
         n_live: int | None = None) -> CountLadderResult:
-    """The one entry point: plan, sample every contending model while the per-spectrum budget
-    lasts (checked before each model starts), conclude. ``record`` is rung 1 with its selection
-    applied (:meth:`~isar.analyze.loop.Rung1Record.apply_selection`)."""
+    """The one rung-2 loop, resumable in time slices: plan, keep what an earlier invocation sampled
+    (``resume``: label -> :class:`Rung2Model`), sample the rest of the contending set in order
+    until ``deadline`` (a ``time.time()`` value) or the per-spectrum budget (counted over every
+    invocation from each model's seconds; checked before each model starts, a started model is
+    never cut off), conclude. A failed model stops the loop: the spectrum is unresolved, and the
+    other contenders cannot settle it. ``record`` is rung 1 with its selection applied
+    (:meth:`~isar.analyze.loop.Rung1Record.apply_selection`)."""
     budget = rung2_budget_s() if budget_s is None else float(budget_s)
     plan_ = plan(record, ctx)
-    sampled = {}
-    started = time.monotonic()
+    sampled = {label: m for label, m in (resume or {}).items() if label in plan_.contending}
+    elapsed = sum(m.seconds for m in sampled.values())
     by_label = record.by_label()
     for i, label in enumerate(plan_.contending):
-        if time.monotonic() - started >= budget:
+        if label in sampled:
+            continue
+        if any(m.log_evidence is None for m in sampled.values()):
             break
-        sampled[label] = sample_model(by_label[label], ctx, seed=seed + i, n_live=n_live)
+        if elapsed >= budget or (deadline is not None and time.time() >= deadline):
+            break
+        sampled[label] = _sample_guarded(by_label[label], ctx, seed=seed + i, n_live=n_live)
+        elapsed += sampled[label].seconds
         log.info("rung 2: %s %s (%.1f s)", label,
                  "lnZ=%.2f" % sampled[label].log_evidence
                  if sampled[label].log_evidence is not None else sampled[label].reason,
                  sampled[label].seconds)
-    return conclude(record, ctx, plan_, sampled, elapsed_s=time.monotonic() - started,
-                    budget_s=budget)
+    return conclude(record, ctx, plan_, sampled, elapsed_s=elapsed, budget_s=budget)

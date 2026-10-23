@@ -1791,10 +1791,6 @@ def _finalize_shadow_selection(point, selection, fit_selection_semantics) -> dic
 # ===========================================================================
 # rung 2 of the count ladder and the per-spectrum count state (design 2026-10-22, §3.1)
 # ===========================================================================
-RUNG2_PENDING = "rung 2 pending"
-RUNG2_SEED = 12345     # count_ladder.run's seed: model i of the contending set samples at seed + i
-
-
 def _rung2_partial(sampled, record) -> dict:
     """What a later invocation resumes rung 2 from: per sampled model its evidence, the published
     fit's parameters when rung 2 refitted it, and the cost of the rung-1 fit it was sampled from (a
@@ -1835,41 +1831,14 @@ def _resumed_rung2(stored, record, ctx) -> dict:
 
 
 def _count_ladder(record, ctx, *, deadline=None, resume=None):
-    """Rung 2 for one spectrum, resumable in time slices: plan, keep what an earlier invocation
-    sampled, sample the rest of the contending set in order until ``deadline`` (``time.time()``)
-    or the per-spectrum budget (counted over every invocation), conclude. Returns ``(result,
-    partial, seconds)``: the :class:`~isar.analyze.count_ladder.CountLadderResult`, what a later
-    invocation resumes from, and this invocation's rung-2 wall time. A model whose sampling raises
-    is a failed calculation (the spectrum is unresolved), never evidence against it."""
+    """Rung 2 for one spectrum through :func:`~isar.analyze.count_ladder.run`, the one rung-2 loop,
+    resumed from an earlier invocation's :func:`_rung2_partial`. Returns ``(result, partial,
+    seconds)``: the :class:`~isar.analyze.count_ladder.CountLadderResult`, what a later invocation
+    resumes from, and this invocation's rung-2 wall time."""
     started = time.monotonic()
-    budget = count_ladder.rung2_budget_s()
-    plan_ = count_ladder.plan(record, ctx)
-    sampled = {label: m for label, m in _resumed_rung2(resume, record, ctx).items()
-               if label in plan_.contending}
-    elapsed = sum(m.seconds for m in sampled.values())
-    by_label = record.by_label()
-    for i, label in enumerate(plan_.contending):
-        if label in sampled:
-            continue
-        if elapsed >= budget or (deadline is not None and time.time() >= deadline):
-            break
-        one = time.monotonic()
-        try:
-            sampled[label] = count_ladder.sample_model(by_label[label], ctx, seed=RUNG2_SEED + i)
-        except Exception as exc:  # noqa: BLE001 — a failed calculation leaves the count unresolved
-            log.warning("rung 2 could not sample %s (%s): %s", label, type(exc).__name__, exc)
-            model = by_label[label]
-            sampled[label] = count_ladder.Rung2Model(
-                label=label, count=model.count, log_evidence=None, log_evidence_err=None,
-                method="failed", reason=f"{type(exc).__name__}: {exc}",
-                result=model.representative, result_source="rung1",
-                seconds=time.monotonic() - one)
-        elapsed += sampled[label].seconds
-    result = count_ladder.conclude(record, ctx, plan_, sampled, elapsed_s=elapsed, budget_s=budget)
-    if result.state == count_ladder.PROVISIONAL:
-        result.reasons = [f"{RUNG2_PENDING}: {len(sampled)} of {len(plan_.contending)} contending "
-                          f"models sampled"] + result.reasons[1:]
-    return result, _rung2_partial(sampled, record), round(time.monotonic() - started, 4)
+    result = count_ladder.run(record, ctx, deadline=deadline,
+                              resume=_resumed_rung2(resume, record, ctx))
+    return result, _rung2_partial(result.rung2, record), round(time.monotonic() - started, 4)
 
 
 def _rung2_selection(ladder, results, by_hyp, ctx):
@@ -2030,8 +1999,8 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     Rung 1 (:func:`loop.fit_structures_two_stage_hinted`) fits every count up to the card's mode
     ceiling (:func:`guidelines.mode_ceiling`); ``peaks`` (guideline hints) seed every count. The
     whitelist narrows the candidate set — an empty match keeps all + warns. Rung 2
-    (:func:`_count_ladder`) samples the contending models when a trigger fires, until
-    ``rung2_deadline`` (a ``time.time()`` value; ``None`` runs it to the per-spectrum budget),
+    (:func:`~isar.analyze.count_ladder.run`) samples the contending models when a trigger fires,
+    until ``rung2_deadline`` (a ``time.time()`` value; ``None`` runs it to the per-spectrum budget),
     resuming from ``rung2_resume`` (an earlier invocation's ``rung2_partial``). A settled rung 2
     replaces the rung-1 selection; an unfinished one leaves the spectrum ``provisional``, "rung 2
     pending".
@@ -2129,18 +2098,11 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     ladder, rung2_partial, rung2_seconds = _count_ladder(
         record, ctx, deadline=rung2_deadline, resume=rung2_resume)
     if ladder.shown == "rung2":
-        rung1_results, rung1_prelim = results, prelim
+        # conclude shows rung 2 only with a converged winner the published selection agrees on.
         results, prelim = _rung2_selection(ladder, results, by_hyp, ctx)
         if prelim.best != ladder.best_label:
-            # A rung-2 winner whose published fit did not converge has nothing to show: the rung-1
-            # selection stands and the count is unresolved, never settled on a fit it cannot show.
-            log.warning("rung-2 winner %s has no converged fit; rung 1 stays shown",
-                        ladder.best_label)
-            results, prelim = rung1_results, rung1_prelim
-            ladder.state, ladder.shown = count_ladder.UNRESOLVED, "rung1"
-            ladder.reasons = [f"rung-2 winner {ladder.best_label} has no converged fit"]
-            ladder.best_label = prelim.best
-            ladder.count_probabilities = record.count_probabilities()
+            log.error("rung-2 selection picked %s, the count ladder %s", prelim.best,
+                      ladder.best_label)
     fits = {r.label: r for r in results}
     escalation_reasons = (_auto_escalation_reasons(prelim, fits, ctx)
                           if errors_tier == "auto" else [])

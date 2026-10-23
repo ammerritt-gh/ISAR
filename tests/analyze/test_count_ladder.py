@@ -373,6 +373,95 @@ def test_a_contender_that_cannot_be_sampled_leaves_the_spectrum_unresolved(one_p
     assert any("stokes2+bg could not be computed" in r for r in res.reasons)
 
 
+def test_a_failed_contender_is_unresolved_at_once_even_with_others_pending(one_peak):
+    """A failed calculation is unresolved as soon as it happens, never provisional while the other
+    contenders wait; with every sampled model fine and some pending, the state is provisional."""
+    ctx, record = one_peak
+    plan = _escalated(record)
+    first = plan.contending[0]
+    failed = {first: _stub(record, first, None, reason="logz not finite")}
+    res = CL.conclude(record, ctx, plan, failed, elapsed_s=1.0, budget_s=100.0)
+    assert res.state == CL.UNRESOLVED and res.shown == "rung1"
+    assert any(f"{first} could not be computed" in r for r in res.reasons)
+    fine = CL.conclude(record, ctx, plan, {first: _stub(record, first, -50.0)}, elapsed_s=1.0,
+                       budget_s=100.0)
+    assert fine.state == CL.PROVISIONAL
+    assert fine.reasons == [f"{CL.RUNG2_PENDING}: 1 of {len(plan.contending)} contending models "
+                            f"sampled"]
+
+
+def _escalating(monkeypatch, outcome):
+    """``CL.run`` with a trigger forced and ``sample_model`` replaced by ``outcome(model)``;
+    returns the labels sampled, in order."""
+    calls = []
+    monkeypatch.setattr(CL, "triggers", lambda record, ctx, contenders=None: [
+        CL.Trigger("forced", "test")])
+
+    def sample(model, ctx, **kw):
+        calls.append(model.label)
+        return outcome(model)
+
+    monkeypatch.setattr(CL, "sample_model", sample)
+    return calls
+
+
+def test_the_loop_stops_at_a_failed_model_and_a_raising_sampler_is_a_failure(one_peak,
+                                                                             monkeypatch):
+    """The one rung-2 loop: a sampler that raises is a failed calculation, and no further contender
+    is sampled for that spectrum, whose state is unresolved."""
+    ctx, record = one_peak
+
+    def boom(model):
+        raise RuntimeError("sampler exploded (test)")
+
+    calls = _escalating(monkeypatch, boom)
+    res = CL.run(record, ctx, budget_s=100.0)
+    assert len(res.contending) >= 2 and calls == res.contending[:1]
+    assert res.state == CL.UNRESOLVED and res.shown == "rung1"
+    assert res.rung2[calls[0]].method == "failed"
+    assert "RuntimeError: sampler exploded" in res.rung2[calls[0]].reason
+
+
+def test_the_loop_resumes_without_resampling_and_honours_the_deadline(one_peak, monkeypatch):
+    """A resumed model is kept, never sampled again; a deadline already past samples nothing and
+    leaves the spectrum provisional."""
+    ctx, record = one_peak
+    calls = _escalating(monkeypatch, lambda model: _stub(record, model.label, -50.0))
+    contending = CL.contending(record)
+    late = CL.run(record, ctx, deadline=0.0, budget_s=100.0)
+    assert calls == [] and late.state == CL.PROVISIONAL
+    kept = {contending[0]: _stub(record, contending[0], -50.0)}
+    done = CL.run(record, ctx, resume=kept, budget_s=100.0)
+    assert calls == contending[1:] and set(done.rung2) == set(contending)
+    assert done.rung2[contending[0]] is kept[contending[0]]
+
+
+def test_a_rung_two_winner_without_a_converged_fit_is_unresolved(one_peak):
+    """Rung 2 is shown only with a converged fit of its winner; without one, rung 1 stays shown and
+    the state is unresolved. A loser without a converged fit leaves the count settled."""
+    ctx, record = one_peak
+    plan = _escalated(record)
+
+    def unconverged(stub):
+        return replace(stub, result=replace(stub.result, optimizer_converged=False))
+
+    def sampled_with(winner_ok, loser_ok):
+        out = {label: _stub(record, label, -90.0) for label in plan.contending}
+        out["stokes+bg"] = _stub(record, "stokes+bg", -50.0)
+        out["stokes2+bg"] = _stub(record, "stokes2+bg", -70.0)
+        if not winner_ok:
+            out["stokes+bg"] = unconverged(out["stokes+bg"])
+        if not loser_ok:
+            out["stokes2+bg"] = unconverged(out["stokes2+bg"])
+        return out
+
+    bad = CL.conclude(record, ctx, plan, sampled_with(False, True), budget_s=100.0)
+    assert bad.state == CL.UNRESOLVED and bad.shown == "rung1"
+    assert "rung-2 winner stokes+bg has no converged fit" in bad.reasons
+    fine = CL.conclude(record, ctx, plan, sampled_with(True, False), budget_s=100.0)
+    assert fine.state == CL.SETTLED and fine.shown == "rung2" and fine.best_label == "stokes+bg"
+
+
 def test_held_names_its_reason():
     res = CL.held("no energy zero")
     assert res.state == CL.HELD and res.reasons == ["no energy zero"] and res.shown == "none"

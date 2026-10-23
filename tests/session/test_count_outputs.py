@@ -205,7 +205,7 @@ def test_a_slice_that_ends_leaves_rung_2_pending_and_a_later_call_resumes_it(for
                                   rung2_deadline=time.time())
     count = first["fit_selection_semantics"]["count_ladder"]
     assert count["state"] == "provisional" and count["deciding_rung"] == 1
-    assert count["reasons"][0].startswith(scan_delivery.RUNG2_PENDING)
+    assert count["reasons"][0].startswith(count_ladder.RUNG2_PENDING)
     assert forced_trigger == [] and first["rung2_partial"] == {}
     contending = count["contending"]
     assert len(contending) >= 2
@@ -215,7 +215,7 @@ def test_a_slice_that_ends_leaves_rung_2_pending_and_a_later_call_resumes_it(for
 
     def then_out_of_time(model, ctx_, **kw):
         out = recording(model, ctx_, **kw)
-        monkeypatch.setattr(scan_delivery, "time", type("Clock", (), {
+        monkeypatch.setattr(count_ladder, "time", type("Clock", (), {
             "time": staticmethod(lambda: float("inf")), "monotonic": time.monotonic,
             "perf_counter": time.perf_counter}))
         return out
@@ -223,7 +223,7 @@ def test_a_slice_that_ends_leaves_rung_2_pending_and_a_later_call_resumes_it(for
     monkeypatch.setattr(count_ladder, "sample_model", then_out_of_time)
     second = scan_delivery.fit_one(ctx, card, prior=None, M=10, seed=1, errors_tier="cheap",
                                    rung2_deadline=time.time() + 3600.0)
-    monkeypatch.setattr(scan_delivery, "time", time)
+    monkeypatch.setattr(count_ladder, "time", time)
     monkeypatch.setattr(count_ladder, "sample_model", recording)
     partial = second["rung2_partial"]
     assert list(partial) == contending[:1]
