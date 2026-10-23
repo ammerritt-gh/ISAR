@@ -392,13 +392,20 @@ def test_no_acoustic_world_keeps_the_gap_at_the_zone_centre():
 
 @pytest.mark.slow
 def test_unknown_extra_world_extra_level_is_competitive():
-    # H=2.25: acoustic 4.24 + level 5.0 (blended) + optic 8.41 — three true modes against the
-    # 2-mode enumeration cap. A multimode structure must hold nonzero posterior, win or not:
-    # the machine may be honest at its ceiling, but it must not read the scan as one mode.
-    # Slow-marked (owner rule 2026-08-08): the genuinely ambiguous 3-vs-2 contest escalates to
-    # dynesty by design — 117 s measured at ESCALATION_N_LIVE=128, over the fast-lane budget.
-    _ctx, results, sel, _hyps = _run_selection("unknown_extra", 2.25)
-    n_modes = {r.label: r.n_modes for r in results}
-    multi = [s for s in sel.scores if n_modes.get(s.label, 1) >= 2]
-    assert multi
-    assert max(s.posterior_probability for s in multi) > 0.0
+    """H=2.25: acoustic, a weak dispersionless level within about one resolution width of it,
+    and optic: three true modes against the suite's mode ceiling of 3. The delivered count (the
+    count ladder, rung 2 included) is never one mode and never more than the truth holds, nor
+    unresolved, and every mode it shows sits on a true one, the optic among them. Slow-marked
+    (owner rule 2026-08-08): a whole delivery, rung 2 by design when a trigger fires."""
+    from ._world_helpers import deliver
+
+    cfg, truth = worlds.build("unknown_extra")
+    true = sorted(c.branch.omega0(2.25) for c in truth.components if c.branch is not None)
+    fit = deliver("unknown_extra", 2.25)
+    count = fit["fit_selection_semantics"]["count_ladder"]
+    assert count["state"] != "unresolved", count["reasons"]
+    assert 2 <= count["count"] <= len(true) == 3
+    assert sum(p for n, p in count["count_probabilities"].items() if int(n) >= 2) > 0.99
+    shown = [m["omega0"] for m in fit["modes"]]
+    assert all(min(abs(w - t) for t in true) < cfg.gauss_fwhm for w in shown), (shown, true)
+    assert min(abs(w - true[-1]) for w in shown) < 0.5 * cfg.gauss_fwhm

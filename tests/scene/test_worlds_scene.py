@@ -270,17 +270,19 @@ UNKNOWN_NODES = (2.20, 2.25, 2.30)
 
 @pytest.fixture(scope="module")
 def unknown_extra_scene():
-    return build_scene([scene_observation("unknown_extra", h) for h in UNKNOWN_NODES])
+    # The arenas a campaign persists: each node's candidate rows after the count ladder's rung 2.
+    return build_scene([scene_observation("unknown_extra", h, delivered=True)
+                        for h in UNKNOWN_NODES])
 
 
 @pytest.mark.slow
 def test_the_unknown_extra_level_survives_scene_construction_as_a_live_competitor(
         unknown_extra_scene):
     """Three true modes (acoustic, a dispersionless 5 meV level, optic), with the routine
-    suite's mode ceiling of 3. The scene may not resolve the level — but it must not lose it: the
-    multimode readings (two modes or more, against the truth's three) keep real posterior mass at
-    every arena, nothing is pruned or capped away, and no visibility rule suppresses the extra
-    feature into an absence."""
+    suite's mode ceiling of 3, each arena the count ladder's delivered rows. The scene may not
+    resolve the level — but it must not lose it: the multimode readings (two modes or more,
+    against the truth's three) keep real posterior mass at every arena, nothing is pruned or
+    capped away, and no visibility rule suppresses the extra feature into an absence."""
     cl, = unknown_extra_scene.payload["clusters"]
     assert cl["scan_refs"] == [f"world:{h:.2f}:d" for h in UNKNOWN_NODES]
     # Not narrowed by any builder knob: the answer is the full enumeration.
