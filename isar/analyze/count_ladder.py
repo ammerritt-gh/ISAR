@@ -59,6 +59,13 @@ MERGED_FWHM_FRACTION = 0.5       # x resolution FWHM, the split seeds' separatio
 #                                  had two modes closer than 1.0 FWHM, so 0.25-1.0 all fired on 0/57
 AMBIGUITY_RUNNER_UP_P = 0.20     # Runner-up probabilities were <= 0.06 or >= 0.21 on every case, so
 #                                  0.05-0.30 classify alike; kept equal to the benchmark's stand-in
+# Live points for rung 2's count decisions. ESCALATION_N_LIVE (32) was sized for one- and two-mode
+# Occam gaps; measured 2026-10-23 on case T0040 (2 and 3 modes, 8 and 11 free parameters) its lnZ
+# sat 39 and 29 nats below the 400-point value with a reported logzerr of 1.7 and 2.0, flipping the
+# count, while 128 points came within 1.8 and 0.2 nats of it at 4x the time.
+# shortcut: measured up to 11 free parameters; check it at the 6-mode ceiling (20) before relying
+# on rung 2 there. $ISAR_ESCALATION_N_LIVE, when set (the test suite sets it), still wins.
+RUNG2_N_LIVE = 128
 # The central region, for the flag "central residual, quasi-elastic not tested": this many
 # resolution widths either side of the energy zero.
 CENTRAL_HALF_WIDTH_FWHM = 2.0
@@ -71,6 +78,13 @@ RUNG2_BUDGET_ENV = "ISAR_RUNG2_BUDGET_S"
 
 FLAG_STRUCTURED = "structured residual"
 FLAG_CENTRAL = "central residual, quasi-elastic not tested"
+
+
+def rung2_n_live() -> int:
+    """``$ISAR_ESCALATION_N_LIVE`` when set (validated as there), else :data:`RUNG2_N_LIVE`."""
+    if os.environ.get(evidence.ESCALATION_N_LIVE_ENV):
+        return evidence.escalation_n_live()
+    return RUNG2_N_LIVE
 
 
 def rung2_budget_s() -> float:
@@ -349,7 +363,7 @@ def sample_model(model, ctx, *, seed: int = 12345, n_live: int | None = None) ->
     hyp = model.hypothesis
     rep = model.representative
     rec, bz = evidence.nested_evidence(hyp, ctx, rep, evidence.candidate_bundle(hyp, ctx),
-                                       seed=seed, n_live=n_live)
+                                       seed=seed, n_live=rung2_n_live() if n_live is None else n_live)
     result, source = rep, "rung1"
     ml = getattr(bz, "max_likelihood_sample", None)
     if ml:

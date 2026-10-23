@@ -326,3 +326,12 @@ def test_the_published_fit_is_the_refit_from_the_nested_maximum_likelihood_sampl
     assert out.result_source == "nested_refit"
     assert out.result.cost < poor.cost - 100.0
     assert abs(out.result.params["phonon.Omega_d"] - 5.0) < 0.5
+
+
+def test_rung_two_samples_at_its_own_live_points_unless_the_environment_caps_them(monkeypatch):
+    """Count decisions need more live points than the old escalation lane's 32 (measured: 30-40
+    nats off on two- and three-mode models); the suite's environment cap still wins."""
+    monkeypatch.delenv("ISAR_ESCALATION_N_LIVE", raising=False)
+    assert CL.rung2_n_live() == CL.RUNG2_N_LIVE == 128
+    monkeypatch.setenv("ISAR_ESCALATION_N_LIVE", "16")
+    assert CL.rung2_n_live() == 16
