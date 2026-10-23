@@ -479,20 +479,18 @@ class PriorBundle:
     def spec(self) -> list[dict]:
         return [p.spec() for p in self.params]
 
-    def _energy_group(self) -> list[int]:
-        """Positions of the mode energies (``*.Omega_d``) the ordered-energy prior can order: the
-        modes must be exchangeable. Each carries one plain flat energy prior over one window, and
-        every one of its parameters carries the same prior as the others (a prior on one mode's A
-        or Gamma alone singles it out). Fewer than two, or any difference, and nothing is ordered."""
-        idx = [i for i, p in enumerate(self.params) if p.name.endswith(".Omega_d")]
-        if len(idx) < 2:
-            return []
-        first = self.params[idx[0]]
-        same = all(self.params[i].kind == "flat" and (self.params[i].lo, self.params[i].hi)
-                   == (first.lo, first.hi) for i in idx)
-        if not same or len({self._mode_priors(i) for i in idx}) != 1:
-            return []
-        return idx
+    def _energy_groups(self) -> list[list[int]]:
+        """Positions of the mode energies (``*.Omega_d``) the ordered-energy prior can order, one
+        list per group of exchangeable modes: each carries one plain flat energy prior, and every
+        one of its parameters carries the same prior as the others of its group (a prior on one
+        mode's A or Gamma alone singles it out, and a mode whose Γ is pinned at the floor is a
+        delta-function mode, exchangeable only with another such mode). Groups of one are not
+        ordered."""
+        groups = {}
+        for i, p in enumerate(self.params):
+            if p.name.endswith(".Omega_d") and p.kind == "flat":
+                groups.setdefault(self._mode_priors(i), []).append(i)
+        return [g for g in groups.values() if len(g) >= 2]
 
     def _mode_priors(self, energy_index: int) -> tuple:
         """The density of every parameter prior of the mode whose energy is at ``energy_index``,
@@ -502,33 +500,34 @@ class PriorBundle:
                      for p in self.params if p.name.split(".", 1)[0] == prefix)
 
     def logpdf_ordered(self, named_values: dict) -> float:
-        """:meth:`logpdf` with the group of mode energies under the normalised ordered-energy prior
-        (``N!/W^N``, :func:`isar.analyze.prior.ordered_energy_log_prior`) instead of one flat factor
-        per label. The Laplace lane of the ordered prior; :meth:`transform_ordered` is its sampler."""
+        """:meth:`logpdf` with each group of exchangeable mode energies under the normalised
+        ordered-energy prior (``N!/W^N``, :func:`isar.analyze.prior.ordered_energy_log_prior`)
+        instead of one flat factor per label. The Laplace lane of the ordered prior;
+        :meth:`transform_ordered` is its sampler."""
         from isar.analyze.prior import ordered_energy_log_prior
 
-        group = set(self._energy_group())
+        groups = self._energy_groups()
+        grouped = {i for g in groups for i in g}
         total = float(sum(p.logpdf(named_values[p.name])
-                          for i, p in enumerate(self.params) if i not in group))
-        if group:
-            first = self.params[min(group)]
+                          for i, p in enumerate(self.params) if i not in grouped))
+        for g in groups:
+            first = self.params[g[0]]
             total += ordered_energy_log_prior(
-                [named_values[self.params[i].name] for i in sorted(group)], first.lo, first.hi)
+                [named_values[self.params[i].name] for i in g], first.lo, first.hi)
         return total
 
     def transform_ordered(self, u) -> np.ndarray:
         """Nested-sampling prior transform, ``u`` in ``params`` order: each parameter's own ``ppf``,
-        except the group of mode energies, which are the ascending order statistics of uniforms
-        (:func:`isar.analyze.prior.ordered_energy_transform`), assigned to the modes in component
-        order. Samples :meth:`logpdf_ordered`."""
+        except each group of exchangeable mode energies, which are the ascending order statistics of
+        uniforms (:func:`isar.analyze.prior.ordered_energy_transform`), assigned to the group's
+        modes in component order. Samples :meth:`logpdf_ordered`."""
         from isar.analyze.prior import ordered_energy_transform
 
         u = np.asarray(u, dtype=float)
         out = np.array([p.ppf(v) for p, v in zip(self.params, u)], dtype=float)
-        group = self._energy_group()
-        if group:
-            first = self.params[group[0]]
-            out[group] = ordered_energy_transform(u[group], first.lo, first.hi)
+        for g in self._energy_groups():
+            first = self.params[g[0]]
+            out[g] = ordered_energy_transform(u[g], first.lo, first.hi)
         return out
 
     @property

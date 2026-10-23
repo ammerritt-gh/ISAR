@@ -260,3 +260,24 @@ def test_a_mode_with_its_own_amplitude_or_width_prior_is_not_ordered():
                    constraints=ParamConstraints(soft={name: (mu, sigma)}, origins={name: "test"}))
         bundle = catalogue.resolve_priors(comp, ctx, prior.mode_bounds(names, ctx))
         assert bundle.logpdf_ordered(theta) == pytest.approx(bundle.logpdf(theta)), name
+
+
+def test_a_delta_function_mode_leaves_the_other_modes_ordered_among_themselves():
+    # A degenerate twin pins one mode's Gamma at the floor (no prior factor): that delta-function
+    # mode is distinguishable from the DHO modes, but the two DHO modes are still exchangeable, so
+    # they alone are ordered (2!, once) in both lanes; the delta mode's energy keeps its flat prior.
+    from isar.analyze import catalogue
+    comp = CompositeModel([PhononDHO(), PhononDHO(prefix="phonon2"), PhononDHO(prefix="phonon3"),
+                           ConstantBackground()])
+    ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor")
+    names = comp.param_names()
+    bundle = catalogue.resolve_priors(comp, ctx, prior.mode_bounds(names, ctx),
+                                      exclude=["phonon2.Gamma"])
+    theta = dict(zip(names, [2.0, 0.3, 50.0, 4.0, GAMMA_FLOOR, 20.0, 6.0, 0.4, 30.0, 5.0]))
+    assert bundle.logpdf_ordered(theta) - bundle.logpdf(theta) == pytest.approx(math.log(2.0))
+    free = [p.name for p in bundle.params]
+    i1, i2, i3 = (free.index(f"{p}.Omega_d") for p in ("phonon", "phonon2", "phonon3"))
+    u = np.random.default_rng(7).random((2000, len(free)))
+    draws = np.array([bundle.transform_ordered(row) for row in u])
+    assert np.all(draws[:, i1] <= draws[:, i3])                  # the DHO pair, ordered
+    assert np.any(draws[:, i2] < draws[:, i1]) and np.any(draws[:, i2] > draws[:, i3])

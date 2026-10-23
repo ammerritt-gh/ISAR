@@ -345,9 +345,11 @@ nested sampling draws it as the order statistics of uniforms (`ordered_energy_tr
 catalogue's prior bundle carries both (`logpdf_ordered`, `transform_ordered`). Each lane gets the
 N! exactly once and the two agree. The ordering is on Ω_d, the sampled coordinate, where that
 normalisation is exact; reported modes are still listed by derived ω₀. It applies only to exchangeable
-modes: every parameter of each mode (Ω_d, Γ, A) must carry the same prior density as the others. A
-prior that singles out one mode's amplitude or width leaves the energies unordered, and the labelled
-prior is used in both lanes.
+modes: every parameter of each mode (Ω_d, Γ, A) must carry the same prior density as the others. The
+modes are split into groups that are exchangeable among themselves, and each group of two or more is
+ordered on its own, N!/W^N per group. A prior that singles out one mode's amplitude or width puts
+that mode in a group of its own, so its energy keeps the labelled prior. A delta-function mode (Γ
+pinned at the floor by a degenerate twin, §2) is ordered only with other delta-function modes.
 
 **Status [Partial].** The recipe, the ordered prior, the ceiling and the signature are implemented and
 tested, and the fitter's bounds now come from the recipe (`loop.build_problem` reads

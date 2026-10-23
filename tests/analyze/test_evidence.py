@@ -1232,7 +1232,7 @@ def test_nested_lane_samples_ordered_mode_energies(two_mode):
     draws = bz.parameter_samples
     assert draws.shape[0] > 0
     assert np.all(draws[:, first] <= draws[:, second])
-    assert bz.prior_specification["mode_energy_order"] == ["phonon.Omega_d", "phonon2.Omega_d"]
+    assert bz.prior_specification["mode_energy_order"] == [["phonon.Omega_d", "phonon2.Omega_d"]]
 
 
 # ------------------------------------------------------------------ rung 1 of the count ladder
