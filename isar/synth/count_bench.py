@@ -256,19 +256,19 @@ class Observation:
     T: float
     gauss_fwhm: float
     lorentz_fwhm: float
-    exposure: float      # the declared exposure (a monitor, as a real scan records it)
+    exposure: float      # the declared exposure, counting seconds (heights are counts per second)
 
 
 def context_of(obs: Observation):
     from isar.analyze.context import ScanContext
-    # A monitor-normalised spectrum: relative scale 1 everywhere, reference the declared exposure.
-    # exposure_source is a sibling unit's field; set only where this base has it.
-    extra = {"exposure_source": "monitor"} if "exposure_source" in {f.name for f in fields(ScanContext)} else {}
+    # Relative scale 1 everywhere, reference the declared exposure. The source is "time": the generated
+    # heights are count rates (tens to thousands per second), and the prior recipe's per-monitor
+    # amplitude ceiling (one count per monitor count) would pin every fit of them at its bound.
     return ScanContext(x=obs.x, counts=obs.counts, mask=np.ones_like(obs.x, dtype=bool), T=obs.T,
                        center=0.0, gauss_fwhm=obs.gauss_fwhm, lorentz_fwhm=obs.lorentz_fwhm,
                        instrument="COUNT_BENCH", energy_status="absolute",
                        exposure_scale=np.ones_like(obs.x, dtype=float), exposure_reference=obs.exposure,
-                       **extra)
+                       exposure_source="time")
 
 
 def _prefix(i: int) -> str:

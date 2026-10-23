@@ -70,15 +70,12 @@ def test_counts_are_poisson_with_zeros_and_no_floor():
 
 
 def test_the_fitter_context_carries_the_generated_exposure():
-    import dataclasses
-    from isar.analyze.context import ScanContext
     obs = cb.draw_observation(_truth(exposure=2.5), cb.rng_for(1, cb.STREAM_DRAW_FIT, 0))
     assert obs.exposure == 2.5
     ctx = cb.context_of(obs)
-    # As a real monitor-normalised scan carries it: relative scale 1, reference = declared exposure.
+    # Relative scale 1, reference = declared exposure, counted in seconds (the recipe's amplitude ceiling).
     assert np.all(ctx.exposure_scale == 1.0) and ctx.exposure_reference == 2.5
-    if "exposure_source" in {f.name for f in dataclasses.fields(ScanContext)}:
-        assert ctx.exposure_source == "monitor"
+    assert ctx.exposure_source == "time"
 
 
 def test_the_fitter_sees_an_observation_never_a_truth(monkeypatch):
