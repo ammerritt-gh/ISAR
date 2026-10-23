@@ -155,3 +155,26 @@ def test_the_record_takes_evidence_and_probability_from_the_selection():
     assert set(counts) == {0, 1}
     assert abs(sum(counts.values()) - 1.0) < 1e-9
     assert counts[1] > 0.99
+
+
+def test_every_start_keeps_the_initial_vector_it_began_from():
+    """A reader can state and reproduce a seed: each fresh start keeps its x0 by parameter name,
+    the cold grid IC included (resolved in the parent, not left as None), and refitting from the
+    kept x0 gives the same cost."""
+    x = np.linspace(-6.0, 14.0, 61)
+    lam = (_dho(x, 5.65, 0.15, 400.0) + _dho(x, 6.35, 0.15, 200.0) + _dho(x, 11.0, 0.3, 15.0)
+           + 5.0)
+    ctx = _ctx(lam, x, 0)
+    record = loop._rung1_ladder(ctx, mode_ceiling=2)
+    for model in record.models:
+        names = model.hypothesis.build().param_names()
+        for start in model.starts:
+            assert list(start.x0) == names, (model.label, start.source)
+            assert all(np.isfinite(v) for v in start.x0.values())
+    two = record.by_label()["stokes2+bg"]
+    one = record.by_label()["stokes+bg"]
+    split = next(s for s in two.starts if s.source == "split")
+    cold = next(s for s in one.starts if s.source == "residual")
+    for model, start in ((two, split), (one, cold)):
+        again = loop.fit_hypothesis(model.hypothesis, ctx, x0=start.x0)
+        assert np.isclose(again.cost, start.cost, rtol=1e-6)

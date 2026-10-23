@@ -882,6 +882,9 @@ class Rung1Start:
     objective: float     # what the optimizer minimised (cost + any soft-prior penalty); inf if failed
     converged: bool
     result: StructureFitResult
+    # The initial parameter vector by name (the cold grid IC resolved, never left implicit), so a
+    # reader can state the seed and refit from it; ``None`` only for "reused", whose seed is not known.
+    x0: dict | None = None
 
 
 @dataclass
@@ -966,10 +969,10 @@ def _objective(result) -> float:
     return float(value) if np.isfinite(value) else float("inf")
 
 
-def _start(source, detail, result) -> Rung1Start:
+def _start(source, detail, result, x0=None) -> Rung1Start:
     return Rung1Start(source=source, detail=dict(detail), cost=float(result.cost),
                       objective=_objective(result), converged=bool(result.optimizer_converged),
-                      result=result)
+                      result=result, x0=None if x0 is None else dict(x0))
 
 
 def _at_upper_bound(result, ctx) -> list:
@@ -1001,19 +1004,22 @@ def _descriptor_omegas(ctx) -> list:
 
 def _count_seeds(hyp, n, ctx, previous, descriptor_omegas, declared_omegas, peaks,
                  hinted=False) -> list:
-    """``(source, detail, x0)`` for every start of the ``n``-mode model ``hyp``; ``x0`` ``None`` is
-    the cold grid IC. ``previous`` is the same variant's (n-1)-mode representative. ``hinted``:
-    ``hyp`` is the structure a master refit was hinted with, which adds its cold start. Duplicate
-    seeds are dropped."""
-    if n == 0:
-        return [("residual", {"hint": True} if hinted else {}, None)]
+    """``(source, detail, x0)`` for every start of the ``n``-mode model ``hyp``; ``x0`` is the full
+    initial vector by parameter name, the cold grid IC resolved here. ``previous`` is the same
+    variant's (n-1)-mode representative. ``hinted``: ``hyp`` is the structure a master refit was
+    hinted with, which adds its cold start. A seed that repeats an earlier one is dropped and named
+    in the kept seed's ``detail["also"]``."""
     composite = hyp.build()
+    names = composite.param_names()
+    cold = dict(zip(names, phonon_structure_ic(composite, ctx)))
+    if n == 0:
+        return [("residual", {"hint": True} if hinted else {}, cold)]
     seeds = []
     if n == 1:
-        seeds.append(("residual", {"hint": True} if hinted else {}, None))
+        seeds.append(("residual", {"hint": True} if hinted else {}, cold))
     else:
         if hinted:
-            seeds.append(("hint", {}, None))
+            seeds.append(("hint", {}, cold))
         seeds.append(("residual", {}, greedy_multimode_ic(composite, ctx, previous, peaks=peaks)))
         if previous is not None:
             width = resolution_fwhm(ctx)
@@ -1031,16 +1037,15 @@ def _count_seeds(hyp, n, ctx, previous, descriptor_omegas, declared_omegas, peak
     if declared_omegas:
         seeds.append(("declared", {"peaks": min(n, len(declared_omegas))},
                       placed_modes_ic(composite, ctx, declared_omegas[:n])))
-    names = composite.param_names()
     kept = []
-    for seed in seeds:
-        vec = None if seed[2] is None else np.array([seed[2][name] for name in names])
-        if any(vec is not None and other is not None and np.allclose(vec, other, rtol=1e-9)
-               for _s, _d, other in kept):
-            continue
-        kept.append((seed[0], seed[1], vec))
-    return [(source, detail, None if vec is None else dict(zip(names, vec)))
-            for source, detail, vec in kept]
+    for source, detail, x0 in seeds:
+        vec = np.array([x0[name] for name in names])
+        twin = next((k for k in kept if np.allclose(vec, k[3], rtol=1e-9)), None)
+        if twin is None:
+            kept.append((source, dict(detail), x0, vec))
+        else:
+            twin[1].setdefault("also", []).append(source)
+    return [(source, detail, x0) for source, detail, x0, _vec in kept]
 
 
 def _rung1_ladder(ctx, *, backend="iminuit", minos=False, peaks=None, executor=None,
@@ -1079,11 +1084,11 @@ def _rung1_ladder(ctx, *, backend="iminuit", minos=False, peaks=None, executor=N
                         hyp, n, ctx, previous.get((n - 1, _variant_key(hyp))), descriptor_omegas,
                         declared_omegas, peaks, hinted=str(hyp.label) == structure_hint):
                     tasks.append((hyp, ctx, backend, minos, x0))
-                    meta.append((entry, source, detail))
+                    meta.append((entry, source, detail, x0))
                 entries.append(entry)
         fitted = _fit_hypothesis_batch(tasks, executor, phase=f"count {'/'.join(map(str, counts))}")
-        for result, (entry, source, detail) in zip(fitted, meta):
-            entry["starts"].append(_start(source, detail, result))
+        for result, (entry, source, detail, x0) in zip(fitted, meta):
+            entry["starts"].append(_start(source, detail, result, x0))
         for entry in entries:
             hyp, starts = entry["hyp"], entry["starts"]
             best = min(range(len(starts)), key=lambda i: starts[i].objective)
@@ -1141,7 +1146,8 @@ def _offer_variants(pairs, ctx, *, backend="iminuit", minos=False, executor=None
     fit, as ADDITIONAL candidates (2a ruling 2 — the variant never replaces its twin).
 
     Each variant is fitted under a DERIVED context carrying its pins, seeded from the
-    unconstrained fit, and returned as ``(result, hypothesis, derived_context)`` for the single
+    unconstrained fit, and returned as ``(result, hypothesis, derived_context, x0)`` (``x0``: the
+    parent's parameters it was seeded from) for the single
     :func:`~isar.analyze.select.select_models` pass. Constraints are outside the data-likelihood
     fingerprint, so the pinned twin and its parent share one evidence arena legitimately and the
     posterior prices the extra physics against the parameter it costs.
@@ -1178,14 +1184,14 @@ def _offer_variants(pairs, ctx, *, backend="iminuit", minos=False, executor=None
                 continue
             twin = replace(hyp, label=hyp.label + variant.label_suffix, context=derived)
             tasks.append((twin, derived, backend, minos, dict(result.params)))
-            meta.append((twin, derived, variant.name))
+            meta.append((twin, derived, variant.name, dict(result.params)))
     if not tasks:
         return []
     fitted = _fit_hypothesis_batch(tasks, executor, phase="catalogue-variant candidate")
     offered = []
-    for result, (twin, derived, name) in zip(fitted, meta):
+    for result, (twin, derived, name, x0) in zip(fitted, meta):
         result.variant = name
-        offered.append((result, twin, derived))
+        offered.append((result, twin, derived, x0))
     return offered
 
 
@@ -1205,13 +1211,13 @@ def _enumerate_and_fit(ctx, *, backend="iminuit", minos=False, peaks=None, execu
     triples = [(model.representative, model.hypothesis, ctx) for model in record.models]
     one_pairs = [(model.representative, model.hypothesis)
                  for model in record.models if model.count == 1]
-    for result, twin, derived in _offer_variants(one_pairs, ctx, backend=backend, minos=minos,
-                                                 executor=executor):
+    for result, twin, derived, x0 in _offer_variants(one_pairs, ctx, backend=backend, minos=minos,
+                                                     executor=executor):
         triples.append((result, twin, derived))
         record.models.append(Rung1Model(
             label=str(twin.label), count=1, elastic="elastic" in str(twin.label).split("+"),
             quasielastic="qe" in str(twin.label).split("+"), variant=result.variant,
-            hypothesis=twin, starts=[_start("variant", {}, result)], representative_start=0,
+            hypothesis=twin, starts=[_start("variant", {}, result, x0)], representative_start=0,
             at_upper_bound=_at_upper_bound(result, derived)))
     if route_out is not None:
         route_out["multimode_route"] = "count_ladder"

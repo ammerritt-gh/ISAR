@@ -335,8 +335,9 @@ def test_variants_come_from_the_entry_that_owns_the_identity(monkeypatch):
 
     offered = loop._offer_variants(pairs, ctx, minos=False, profile=_SYNTH)
 
-    assert [twin.label for _, twin, _ in offered] == ["stokes+bg@a_neardeg"]
-    _, twin, derived = offered[0]
+    assert [twin.label for _, twin, _, _ in offered] == ["stokes+bg@a_neardeg"]
+    _, twin, derived, x0 = offered[0]
+    assert x0 == fits["stokes+bg@a"].params                  # the seed kept is the parent's fit
     assert twin.identity == "a"                              # the twin inherits its parent's
     assert derived.constraints.hard == {"phonon.Gamma": phonon.GAMMA_FLOOR}
     assert derived.constraints.origins == {"phonon.Gamma": "catalogue_variant"}
