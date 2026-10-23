@@ -90,7 +90,16 @@ def _fitted_model(label, params, ctx):
     enumerable here or its params do not pack."""
     from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 
-    hyp = {h.label: h for h in (*enumerate_phonon_structures(ctx), *enumerate_phonon_multimode(ctx))}.get(label)
+    hyps = {h.label: h for h in (*enumerate_phonon_structures(ctx), *enumerate_phonon_multimode(ctx))}
+    hyp = hyps.get(label)
+    if hyp is None and "bg.BG" not in (params or {}):
+        # A background-free degenerate twin (loop.without_background): the enumerated structure
+        # that, less its background, carries exactly these parameters.
+        from isar.analyze.loop import without_background
+
+        names = set(params or ())
+        hyp = next((twin for base in hyps.values() for twin in [without_background(base)]
+                    if twin is not None and set(twin.build().param_names()) == names), None)
     if hyp is None:
         return None
     comp = hyp.build()
@@ -393,12 +402,12 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None,
     #     detection-power split, constant 0.0); `elastic+bg` is the positive scan-local
     #     `elastic_only` claim — categorically humble (capped computed confidence), never region
     #     exclusion. A significant descriptor peak the null leaves unexplained outranks both.
-    if win.label in ("bg", "elastic+bg"):
+    if win.label in ("bg", "elastic+bg", "elastic"):   # "elastic": elastic+bg's background-free twin
         if unmatched:
             return _signal_unmodeled(unmatched, reasons + ["phonon-less winner leaves descriptor "
                                                            "peak(s) unexplained"], descriptor)
         dp = detection_power(ctx, prior, win) if _prior_expects_phonon(prior, ctx) else None
-        claim_elastic = win.label == "elastic+bg" and _elastic_significant(selection)
+        claim_elastic = win.label != "bg" and _elastic_significant(selection)
         if not claim_elastic:
             base = ("background alone won selection" if win.label == "bg" else
                     "elastic+bg won selection without established significance over "

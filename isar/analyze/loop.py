@@ -1018,8 +1018,9 @@ class Rung1Model:
     names any amplitude or background at the prior recipe's upper bound (the recipe's ceiling is a
     declared constant; a too-tight one must show, not bend the count). ``delta_modes`` names the
     modes whose Γ is pinned at the floor (a delta-function mode convolved with the resolution: the
-    catalogue's near-degenerate variant, or a degenerate twin). The evidence fields stay ``None``
-    until :meth:`Rung1Record.apply_selection`."""
+    catalogue's near-degenerate variant, or a degenerate twin). ``background`` is ``False`` only
+    for a background-free degenerate twin. The evidence fields stay ``None`` until
+    :meth:`Rung1Record.apply_selection`."""
 
     label: str
     count: int
@@ -1034,6 +1035,7 @@ class Rung1Model:
     evidence_method: str | None = None
     probability: float | None = None
     delta_modes: tuple = ()
+    background: bool = True
 
     @property
     def representative(self) -> StructureFitResult:
@@ -1363,7 +1365,8 @@ def degenerate_limit(result, hyp, ctx) -> tuple[str, str] | None:
     * ``"amplitude"``: a mode's ``.A`` at 0 — the mode is not there;
     * ``"energy"``: a mode's ``.Omega_d`` at the window edge — the mode is the elastic line;
     * ``"elastic"``: ``elastic.E`` at 0 — there is no elastic line;
-    * ``"width"``: a mode's ``.Gamma`` at the floor — the mode is resolution limited.
+    * ``"width"``: a mode's ``.Gamma`` at the floor — the mode is resolution limited;
+    * ``"background"``: ``bg.BG`` at 0 — there is no background.
 
     Only free parameters count (a pinned Γ sits on its floor by construction), and only a converged
     fit: an unconverged point is not where the model's likelihood peaks."""
@@ -1388,6 +1391,8 @@ def degenerate_limit(result, hyp, ctx) -> tuple[str, str] | None:
     for p in prefixes:
         if railed(p + ".Gamma"):
             return "width", p + ".Gamma"
+    if railed("bg.BG"):
+        return "background", "bg.BG"
     return None
 
 
@@ -1399,14 +1404,28 @@ def _delta_modes(hyp, ctx) -> tuple:
                         if n not in scan and n.endswith(".Gamma") and float(v) == GAMMA_FLOOR))
 
 
+def without_background(hyp):
+    """``hyp`` without its flat background (the label loses ``+bg``), or ``None`` when nothing
+    would be left. ``hyp`` is an enumerated structure, whose label carries no variant suffix."""
+    head, at, identity = str(hyp.label).partition("@")
+    tokens = [t for t in head.split("+") if t != "bg"]
+    components = tuple(c for c in hyp.components if getattr(c, "prefix", None) != "bg")
+    if not tokens or not components:
+        return None
+    return replace(hyp, label="+".join(tokens) + at + identity, components=components)
+
+
 def _twin_target(record, model, kind, name):
-    """``(plain model, delta modes, rename)`` of the twin ``model`` resolves to at ``name``'s lower
-    limit, or ``None`` when the record holds no such count or variant. ``rename`` maps each kept
-    mode prefix of ``model`` to its prefix in the twin."""
+    """``(plain model, delta modes, rename, background)`` of the twin ``model`` resolves to at
+    ``name``'s lower limit, or ``None`` when the record holds no such count or variant. The plain
+    model is the enumerated structure of the twin's count and elastic variant; the twin is it with
+    the ``delta`` modes' Γ pinned and, when ``background`` is false, without its background.
+    ``rename`` maps each kept mode prefix of ``model`` to its prefix in the twin."""
     prefixes = [_mode_prefix(i) for i in range(1, model.count + 1)]
     gone = name.rsplit(".", 1)[0]
     delta = set(model.delta_modes)
     count, elastic = model.count, model.elastic
+    background = model.background and kind != "background"
     if kind in ("amplitude", "energy"):
         kept = [p for p in prefixes if p != gone]
         rename = {p: _mode_prefix(i) for i, p in enumerate(kept, 1)}
@@ -1417,17 +1436,18 @@ def _twin_target(record, model, kind, name):
         rename = {p: p for p in prefixes}
         if kind == "elastic":
             elastic = False
-        else:
+        elif kind == "width":
             delta.add(gone)
     identity = getattr(model.hypothesis, "identity", None)
 
     def plain(with_elastic):
-        return next((m for m in record.models if m.variant is None and m.count == count
-                     and m.elastic == with_elastic and m.quasielastic == model.quasielastic
+        return next((m for m in record.models if m.variant is None and m.background
+                     and m.count == count and m.elastic == with_elastic
+                     and m.quasielastic == model.quasielastic
                      and getattr(m.hypothesis, "identity", None) == identity), None)
 
     base = plain(elastic) or (plain(model.elastic) if kind == "energy" else None)
-    return None if base is None else (base, tuple(sorted(delta)), rename)
+    return None if base is None else (base, tuple(sorted(delta)), rename, background)
 
 
 def _twin_x0(parent, twin_hyp, rename, ctx) -> dict:
@@ -1455,8 +1475,9 @@ def _resolve_degenerate(record, ctx, *, backend="iminuit", minos=False, executor
     mode); an energy at the window edge to the count below with the elastic line; the elastic
     height at 0 to the same count without the elastic line; a Γ at the floor to the same model with
     that mode's Γ pinned at the floor (a delta-function mode convolved with the resolution: one fewer
-    free parameter, so its Laplace evidence is valid). A pinned twin the record lacks is fitted here
-    (variant :data:`DELTA_VARIANT`) and joins the record; the catalogue's near-degenerate variant is
+    free parameter, so its Laplace evidence is valid); the background at 0 to the same model without
+    its background (:func:`without_background`). A twin the record lacks is fitted here and joins the
+    record (a pinned one as variant :data:`DELTA_VARIANT`); the catalogue's near-degenerate variant is
     reused where it is that twin. Each twin also gets a start from its railed parent's point, kept
     when it improves the twin by more than :data:`DEGENERATE_REFIT_GAIN`.
 
@@ -1483,24 +1504,31 @@ def _resolve_degenerate(record, ctx, *, backend="iminuit", minos=False, executor
             if target is None:
                 log.info("degenerate limit %s of %s has no twin in the record", name, model.label)
                 continue
-            base, delta, rename = target
-            twin = base if not delta else next(
+            base, delta, rename, background = target
+            plain = base.hypothesis if background else without_background(base.hypothesis)
+            if plain is None:
+                log.info("degenerate limit %s of %s leaves no model", name, model.label)
+                continue
+            twin = base if background and not delta else next(
                 (m for m in record.models + list(created.values())
-                 if m.hypothesis.components == base.hypothesis.components
-                 and getattr(m.hypothesis, "identity", None) == getattr(base.hypothesis, "identity", None)
+                 if m.hypothesis.components == plain.components
+                 and getattr(m.hypothesis, "identity", None) == getattr(plain, "identity", None)
                  and m.delta_modes == delta), None)
             if twin is None:
-                hard = {f"{p}.Gamma": GAMMA_FLOOR for p in delta}
-                derived = _variant_context(ctx, hard, {n: "catalogue_variant" for n in hard},
-                                           variant=DELTA_VARIANT, label=base.label)
-                if derived is None:
-                    continue
-                suffix = "_delta" + "-".join(p[len("phonon"):] or "1" for p in delta)
-                hyp = replace(base.hypothesis, label=base.label + suffix, context=derived)
+                hyp, variant = plain, None
+                if delta:
+                    hard = {f"{p}.Gamma": GAMMA_FLOOR for p in delta}
+                    derived = _variant_context(ctx, hard, {n: "catalogue_variant" for n in hard},
+                                               variant=DELTA_VARIANT, label=plain.label)
+                    if derived is None:
+                        continue
+                    suffix = "_delta" + "-".join(p[len("phonon"):] or "1" for p in delta)
+                    hyp = replace(plain, label=plain.label + suffix, context=derived)
+                    variant = DELTA_VARIANT
                 twin = Rung1Model(label=str(hyp.label), count=base.count, elastic=base.elastic,
-                                  quasielastic=base.quasielastic, variant=DELTA_VARIANT,
+                                  quasielastic=base.quasielastic, variant=variant,
                                   hypothesis=hyp, starts=[], representative_start=0,
-                                  at_upper_bound=[], delta_modes=delta)
+                                  at_upper_bound=[], delta_modes=delta, background=background)
                 created[twin.label] = twin
             x0 = _twin_x0(model, twin.hypothesis, rename, ctx)
             tasks.append((twin.hypothesis, candidate_context(twin.hypothesis, ctx), backend, minos, x0))
@@ -1509,7 +1537,7 @@ def _resolve_degenerate(record, ctx, *, backend="iminuit", minos=False, executor
         for result, (model, twin, name, x0) in zip(fitted, meta):
             start = _start("degenerate", {"from": model.label, "limit": name}, result, x0)
             if twin.label in created:
-                result.variant = DELTA_VARIANT
+                result.variant = twin.variant
                 twin.starts.append(start)
             elif start.objective < twin.starts[twin.representative_start].objective - DEGENERATE_REFIT_GAIN:
                 twin.starts.append(start)

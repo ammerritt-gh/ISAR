@@ -332,6 +332,58 @@ def test_an_energy_at_its_lower_limit_merges_into_the_elastic_line(two_mode_ladd
     _not_double_counted(sel, results, hyps, ctx, "stokes2+bg")
 
 
+def test_a_background_at_zero_resolves_to_the_background_free_twin(two_mode_ladder, monkeypatch):
+    """BG on zero: there is no background, so the model is the same one without it (same modes,
+    same elastic line, one fewer free parameter), fitted from the railed point and priced on its own
+    evidence."""
+    ctx, raw = two_mode_ladder
+    record = _railed(raw, TOP, {"bg.BG": 0.0})
+    results, hyps, sel, rung1 = _select(monkeypatch, ctx, record)
+    railed = rung1.by_label()[TOP]
+    assert railed.resolved_to == "elastic+stokes2" and railed.resolved_limit == "bg.BG"
+    twin = rung1.by_label()["elastic+stokes2"]
+    assert (twin.count, twin.elastic, twin.background, twin.variant) == (2, True, False, None)
+    assert "bg.BG" not in twin.representative.params
+    assert twin.representative.k == railed.representative.k - 1
+    assert twin.starts[-1].source == "degenerate" and twin.label in hyps
+    score = {s.label: s for s in sel.scores}[twin.label]
+    assert score.evidence_method.startswith("laplace") and np.isfinite(score.log_evidence)
+    assert railed.log_evidence == twin.log_evidence
+    _not_double_counted(sel, results, hyps, ctx, TOP)
+
+
+def test_zero_background_counts_its_modes_with_no_contender_left_unpriced_for_it():
+    """Two modes and an elastic line on a background of exactly zero counts (the BL43 case): every
+    model carrying a background rails it at zero, and each resolves to its background-free twin,
+    chained through any other limit, so the count is decided on evidence: two modes with the
+    elastic line, and no contender without evidence because its background sat at zero."""
+    from isar.analyze import count_ladder
+
+    x = np.linspace(-8.0, 16.0, 81)
+    elastic = convolute_voigt_dho(x, 1.0, 0.0, 1.0, 0.0, 0.3, 0.0, 300.0, 0.0, 50.0, peak="elastic")
+    ctx = _ctx(elastic + _dho(x, 4.0, 0.3, 400.0) + _dho(x, 9.0, 0.4, 250.0), x, 2)
+    out, hyps = {}, {}
+    results = loop.fit_structures_two_stage(ctx, mode_ceiling=3, rung1_out=out, hypotheses_out=hyps)
+    sel = select.select_models(results, hyps, ctx, stamp=False)
+    record = out["rung1"]
+    record.apply_selection(sel)
+    probabilities = record.count_probabilities()
+    assert max(probabilities, key=probabilities.get) == 2
+    assert {s.label: s for s in sel.scores}[sel.best].log_evidence is not None
+    assert sel.best.startswith("elastic+stokes2") and "+bg" not in sel.best
+    from isar.analyze import verdict                # the verdict rebuilds the background-free winner
+    best = {r.label: r for r in results}[sel.best]
+    assert verdict._fitted_model(best.label, best.params, ctx) is not None
+    resolved =select.resolved_twins({m.label: m.representative for m in record.models
+                                      if m.converged})
+    for label in count_ladder.contending(record):
+        model = record.by_label()[label]
+        if model.log_evidence is None:
+            assert loop.degenerate_limit(model.representative, model.hypothesis, ctx) != (
+                "background", "bg.BG"), label
+            assert label not in resolved
+
+
 def test_a_genuine_laplace_failure_still_has_no_evidence(two_mode_ladder, monkeypatch):
     """Curvature that is not positive definite with nothing at a bound is a failed calculation,
     not a degenerate limit: no twin, no evidence, left to rung 2."""

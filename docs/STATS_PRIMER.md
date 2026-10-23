@@ -293,10 +293,15 @@ at-limit tolerance), makes the model its degenerate twin. The limits, checked in
 | a mode's energy Ω_d at the window edge | that mode is the elastic line | the count below, with the elastic line |
 | the elastic height E = 0 | there is no elastic line | the same count without the elastic line |
 | a mode's width Γ at the floor | that mode is resolution limited | the same model with that Γ pinned at the floor: a delta-function mode convolved with the resolution |
+| the flat background BG = 0 | there is no background | the same model without its background (label without `+bg`, same modes and elastic variant) |
 
-Every twin except the pinned one is already a model in the ladder. A pinned twin is fitted from the
-railed fit's point, unless the catalogue's near-degenerate variant already is that twin; with one
-fewer free parameter, its Laplace evidence is valid. A twin that itself rails resolves in turn. The
+The first three twins are already models in the ladder. A pinned twin or a background-free twin is
+fitted from the railed fit's point, unless the ladder already holds it (the catalogue's
+near-degenerate variant is the pinned twin of a one-mode model); with one fewer free parameter, its
+Laplace evidence is valid, and it is a model of its own at every count and elastic variant: rung 2
+samples it like any other. A twin that itself rails resolves in turn. The background rule is what a
+nearly background-free spectrum (BL43LXU) needs: there every model carrying a background rails it
+at zero, and without the twin none of them would have evidence. The
 railed model stays in the rung-1 record, marked `resolved_to` with the limit named. Selection prices
 it as its twin, once: no evidence of its own, no prior weight, posterior 0, and `evidence_validity`
 names the twin. The equal prior runs over distinct models only. So a railed model is neither

@@ -274,10 +274,6 @@ def unknown_extra_scene():
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason=(
-    "Known failure until rung 2 reaches delivery (S1U5): at H = 2.25 every multimode model rails "
-    "its flat background at 0, which is no degenerate limit with a twin, so rung 1 has no Laplace "
-    "evidence for any of them and the one-mode reading takes P = 1 (truth: three modes)."))
 def test_the_unknown_extra_level_survives_scene_construction_as_a_live_competitor(
         unknown_extra_scene):
     """Three true modes (acoustic, a dispersionless 5 meV level, optic), with the routine
