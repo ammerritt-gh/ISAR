@@ -357,8 +357,8 @@ def plan(record, ctx) -> Rung2Plan:
 def sample_model(model, ctx, *, seed: int = 12345, n_live: int | None = None) -> Rung2Model:
     """Nested sampling of one contending model, then an optimizer refit from the sampler's
     maximum-likelihood sample; the better of the refit and the rung-1 representative is published.
-    A model that cannot be sampled (a hard-fixed catalogue variant) keeps a usable rung-1 Laplace
-    evidence; with none, its evidence is missing, never low."""
+    A model whose sampling cannot start keeps a usable rung-1 Laplace evidence; with none, its
+    evidence is missing, never low. ``n_live`` ``None`` is :func:`rung2_n_live`."""
     started = time.monotonic()
     hyp = model.hypothesis
     rep = model.representative

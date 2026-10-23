@@ -31,9 +31,9 @@ record from a different arena (:class:`ArenaMismatchError`) instead of quietly c
 incommensurable numbers.
 
 Prior counting is the H3/H4 exactly-once rule throughout: ``lnZ`` reads the DATA-only cost and
-adds ``PriorBundle.logpdf_ordered`` once (the per-parameter priors, with exchangeable mode energies
-under the ordered-energy prior, so swapped labels are one solution) — a transported soft constraint IS the prior for its parameter
-(never the penalty on top of the prior), and hard-fixed parameters contribute nothing (their k
+adds ``PriorBundle.logpdf_ordered`` once (the per-parameter priors, with exchangeable mode
+energies under the ordered-energy prior, so swapped labels are one solution) — a transported soft
+constraint IS the prior for its parameter (never the penalty on top of the prior), and hard-fixed parameters contribute nothing (their k
 is already reduced and :func:`~isar.analyze.catalogue.resolve_priors` excluded them).
 
 :mod:`isar.analyze.select` consumes this module: it calls :func:`candidate_set_evidence` for the
@@ -518,7 +518,7 @@ def nested_evidence(hyp, ctx, fit_result, bundle, *, seed: int = 12345, n_live: 
     """Rung 2 of the count ladder: one model's nested-sampling evidence, whatever its Laplace
     picture or its optimizer said. Returns ``(EvidenceRecord, BayesResult | None)``; the record is
     ``"dynesty"`` when the evidence is trusted, else ``"invalid"`` with the reason in ``validity``
-    (``BayesResult`` is ``None`` only when sampling could not start, e.g. a hard-fixed candidate).
+    (``BayesResult`` is ``None`` only when sampling could not start: a bundle that does not match).
 
     Trusted on the evidence gates alone (:func:`isar.analyze.errors.bayes._evidence_gate`: finite
     lnZ, dlogz reached before ``max_iter``, logzerr within bound). The interval gates judge a
