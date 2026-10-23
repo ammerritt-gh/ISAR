@@ -234,6 +234,32 @@ honestly say "we checked the Voigt; the evidence supports the degenerate case" �
 for parameters the instrument doesn't use. (Same pattern as §4's delta-function ruling: the
 degenerate case is a first-class candidate, not a failure mode or a silent pin.)
 
+**The rule in the peak-count ladder [Implemented, rung 1].** Owner direction, 2026-10-23: "for a
+DHO convoluted with a resolution, naturally when a peak becomes very low width it becomes
+resolution limited; the appropriate response is to model it as a delta function instead of as its
+own peak with a width". Rung 1 (§2.1) applies the rule to every limit a model can rail at
+(`loop.degenerate_limit`, `loop._resolve_degenerate`). Once a model's representative fit is
+chosen, a parameter at its lower bound, within `DEGENERATE_LIMIT_TOL` (the optimizer's own
+at-limit tolerance), makes the model its degenerate twin. The limits, checked in this order:
+
+| The fit rails at | The model is | Its twin |
+|---|---|---|
+| a mode's amplitude A = 0 | that mode is not there | the count below, same elastic variant, without that mode |
+| a mode's energy Ω_d at the window edge | that mode is the elastic line | the count below, with the elastic line |
+| the elastic height E = 0 | there is no elastic line | the same count without the elastic line |
+| a mode's width Γ at the floor | that mode is resolution limited | the same model with that Γ pinned at the floor: a delta-function mode convolved with the resolution |
+
+Every twin except the pinned one is already a model in the ladder. A pinned twin is fitted from the
+railed fit's point, unless the catalogue's near-degenerate variant already is that twin; with one
+fewer free parameter, its Laplace evidence is valid. A twin that itself rails resolves in turn. The
+railed model stays in the rung-1 record, marked `resolved_to` with the limit named. Selection prices
+it as its twin, once: no evidence of its own, no prior weight, posterior 0, and `evidence_validity`
+names the twin. The equal prior runs over distinct models only. So a railed model is neither
+"evidence could not be computed" nor a second vote for its twin. A model whose Laplace evidence is
+invalid for any other reason stays without evidence and goes to rung 2: a non-positive-definite
+curvature away from a bound, an unconverged fit, or a parameter at an upper bound. The energy rule
+replaces the half-width energy floor of recipe version 3 (§2.1).
+
 When two genuinely different structures fit equally well, ISAR reports a **fork** — both
 answers — rather than averaging them into a single wrong number **[Implemented]**. Columns:
 `best_model`, `n_modes`, `secondary_omega0`, `secondary_omega0_err`.

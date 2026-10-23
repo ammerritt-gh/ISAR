@@ -57,6 +57,14 @@ def _with_evidence_only(record):
     return replace(record, models=[m for m in record.models if CL._has_evidence(m)])
 
 
+def _unpriced(record, *labels):
+    """The record with ``labels`` left without rung-1 evidence, as a failed Laplace calculation
+    leaves a model (on these clean spectra every distinct model is priced)."""
+    return replace(record, models=[
+        replace(m, log_evidence=float("nan"), evidence_method="deferred_escalation")
+        if m.label in labels else m for m in record.models])
+
+
 def _names(fired):
     return {t.name for t in fired}
 
@@ -66,27 +74,43 @@ def test_contending_keeps_every_model_without_evidence_and_the_count_above(one_p
     """A model rung 1 could not price contends however far its -cost/2 'ceiling' sits below the
     best: that bound holds only at a global optimum, so it never prunes a count decision."""
     ctx, record = one_peak
-    by_label = record.by_label()
-    best = CL._best(record.models)
+    unpriced = _unpriced(record, "bg")
+    by_label = unpriced.by_label()
+    best = CL._best(unpriced.models)
     assert best.label == "stokes+bg"
-    null = by_label["elastic+bg"]
+    null = by_label["bg"]
     assert not CL._has_evidence(null)
     assert -0.5 * null.representative.cost < best.log_evidence - 1000.0    # the old prune's case
-    contenders = CL.contending(record)
+    contenders = CL.contending(unpriced)
     assert contenders[0] == "stokes+bg"
-    assert "elastic+bg" in contenders
+    assert "bg" in contenders
     assert "stokes2+bg" in contenders                                     # the count one above
-    assert "bg" not in contenders                                        # priced, far below
-    assert all(m.label in contenders for m in record.models if not CL._has_evidence(m))
+    assert "bg" not in CL.contending(record)                             # priced, far below
+    assert all(m.label in contenders for m in unpriced.models
+               if not CL._has_evidence(m) and m.resolved_to is None)
+
+
+def test_a_model_resolved_to_its_twin_is_not_a_contender_without_evidence(one_peak):
+    """elastic+bg rails its elastic height at 0, so it is bg (the degenerate-limit rule): with the
+    twin unpriced, the twin contends and the resolved model neither contends nor fires the
+    missing-evidence trigger on its own."""
+    ctx, record = one_peak
+    assert record.by_label()["elastic+bg"].resolved_to == "bg"
+    both = _unpriced(record, "elastic+bg", "bg")
+    contenders = CL.contending(both)
+    assert "bg" in contenders and "elastic+bg" not in contenders
+    alone = _unpriced(record, "elastic+bg")
+    assert "elastic+bg" not in CL.contending(alone)
+    assert "laplace_invalid" not in _names(CL.triggers(alone, ctx))
 
 
 # --- the triggers ---------------------------------------------------------------------------------
 def test_laplace_invalid_triggers_and_its_control(one_peak):
     ctx, record = one_peak
-    fired = CL.triggers(record, ctx)
+    fired = CL.triggers(_unpriced(record, "bg"), ctx)
     assert "laplace_invalid" in _names(fired)
-    assert "elastic+bg" in next(t.reason for t in fired if t.name == "laplace_invalid")
-    assert "laplace_invalid" not in _names(CL.triggers(_with_evidence_only(record), ctx))
+    assert "bg" in next(t.reason for t in fired if t.name == "laplace_invalid")
+    assert "laplace_invalid" not in _names(CL.triggers(record, ctx))
 
 
 def test_an_unconverged_contender_triggers(one_peak):
@@ -245,7 +269,7 @@ def test_the_budget_limits_the_search_and_keeps_rung_one_shown(one_peak, monkeyp
     never shown. The budget comes from the environment when not passed."""
     ctx, record = one_peak
     monkeypatch.setenv(CL.RUNG2_BUDGET_ENV, "0")
-    res = CL.run(record, ctx)                                  # nothing can start at a zero budget
+    res = CL.run(_unpriced(record, "bg"), ctx)                 # nothing can start at a zero budget
     assert res.state == CL.SEARCH_LIMITED and res.shown == "rung1" and res.rung2 == {}
     assert "rung-2 budget of 0 s" in res.reasons[0]
     monkeypatch.setenv(CL.RUNG2_BUDGET_ENV, "soon")

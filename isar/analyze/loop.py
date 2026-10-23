@@ -152,6 +152,11 @@ class StructureFitResult:
     # nothing in the verdict, confidence, stopping or steering path reads it. The object that OWNS
     # an identity lives in the scene store (SCENE-3); this labels one scan's evidence contribution.
     identity: str | None = None
+    # The degenerate-limit rule (rung 1, :func:`_resolve_degenerate`): this fit rails at the lower
+    # limit of ``resolved_limit`` (a parameter name), so the model is its degenerate twin, the
+    # candidate labelled ``resolved_to``, and selection prices it as that twin, once.
+    resolved_to: str | None = None
+    resolved_limit: str | None = None
 
 
 @dataclass
@@ -875,8 +880,9 @@ class Rung1Start:
     ``"descriptor"`` (the model-free descriptor's features), ``"declared"`` (the card's
     ``[fitting]`` peaks), ``"hint"`` (the cold grid IC of a hinted master structure, on its own
     count and variant; at counts 0 and 1 the residual start already is that fit and carries
-    ``detail["hint"]``), ``"reused"`` (an exact earlier result) or ``"variant"`` (a catalogue
-    constrained variant, seeded from its parent)."""
+    ``detail["hint"]``), ``"reused"`` (an exact earlier result), ``"variant"`` (a catalogue
+    constrained variant, seeded from its parent) or ``"degenerate"`` (a degenerate twin seeded
+    from the railed model that resolves to it, :func:`_resolve_degenerate`)."""
 
     source: str
     detail: dict
@@ -895,8 +901,10 @@ class Rung1Model:
     the lowest objective (the highest likelihood), kept whether or not it converged — a
     non-converged representative is marked by :attr:`converged`, never dropped. ``at_upper_bound``
     names any amplitude or background at the prior recipe's upper bound (the recipe's ceiling is a
-    declared constant; a too-tight one must show, not bend the count). The evidence fields stay
-    ``None`` until :meth:`Rung1Record.apply_selection`."""
+    declared constant; a too-tight one must show, not bend the count). ``delta_modes`` names the
+    modes whose Γ is pinned at the floor (a delta-function mode convolved with the resolution: the
+    catalogue's near-degenerate variant, or a degenerate twin). The evidence fields stay ``None``
+    until :meth:`Rung1Record.apply_selection`."""
 
     label: str
     count: int
@@ -910,6 +918,7 @@ class Rung1Model:
     log_evidence: float | None = None
     evidence_method: str | None = None
     probability: float | None = None
+    delta_modes: tuple = ()
 
     @property
     def representative(self) -> StructureFitResult:
@@ -918,6 +927,17 @@ class Rung1Model:
     @property
     def converged(self) -> bool:
         return bool(self.representative.optimizer_converged)
+
+    @property
+    def resolved_to(self) -> str | None:
+        """The degenerate twin this model resolves to (its representative rails at a limit), or
+        ``None``. Its evidence is the twin's, and it carries no posterior weight of its own."""
+        return self.representative.resolved_to
+
+    @property
+    def resolved_limit(self) -> str | None:
+        """The parameter whose lower limit the representative rails at, when resolved."""
+        return self.representative.resolved_limit
 
     @property
     def seeds_by_source(self) -> dict:
@@ -942,12 +962,16 @@ class Rung1Record:
     def apply_selection(self, selection) -> None:
         """Copy each model's log-evidence, evidence method and posterior probability from a
         :class:`~isar.analyze.select.Selection` over these candidates. A model the selection did
-        not score (its representative did not converge) keeps ``None``: no evidence, not zero."""
+        not score (its representative did not converge) keeps ``None``: no evidence, not zero. A
+        model resolved to its degenerate twin takes the twin's evidence (the selection names the
+        terminal twin) and probability 0: the twin carries its weight."""
         scores = {score.label: score for score in selection.scores}
         for model in self.models:
             score = scores.get(model.label)
-            model.log_evidence = None if score is None else score.log_evidence
-            model.evidence_method = None if score is None else score.evidence_method
+            twin = (score.evidence_validity or {}).get("resolved_to") if score is not None else None
+            source = scores.get(twin, score) if twin is not None else score
+            model.log_evidence = None if source is None else source.log_evidence
+            model.evidence_method = None if source is None else source.evidence_method
             model.probability = None if score is None else score.posterior_probability
 
     def count_probabilities(self) -> dict:
@@ -1197,30 +1221,224 @@ def _offer_variants(pairs, ctx, *, backend="iminuit", minos=False, executor=None
     return offered
 
 
+# ----------------------------------------------------------------------------
+# The degenerate-limit rule in rung 1 (docs/STATS_PRIMER.md §2; owner directions 2026-08-20 and
+# 2026-10-23: "when a peak becomes very low width it becomes resolution limited; the appropriate
+# response is to model it as a delta function instead of as its own peak with a width")
+# ----------------------------------------------------------------------------
+# A fitted value is "at its lower limit" within this of the bound, on the optimizer's own at-limit
+# scale (backends._at_limit: relative, floored at one unit), so a parameter the evidence ladder
+# reads as pinned at its lower bound is one this rule resolves.
+DEGENERATE_LIMIT_TOL = 1.0e-3
+# A refit of an existing twin from its railed parent's point replaces the twin's representative
+# only when it lowers the objective by more than this (cost units, -2 ln L): the same optimum
+# reached again is not a new start.
+DEGENERATE_REFIT_GAIN = 1.0e-3
+DELTA_VARIANT = "delta_mode"
+
+
+def _mode_prefix(i: int) -> str:
+    return "phonon" if i == 1 else f"phonon{i}"
+
+
+def degenerate_limit(result, hyp, ctx) -> tuple[str, str] | None:
+    """``(kind, parameter)`` of the lower limit a fit rails at, or ``None``. The kinds, checked in
+    this order (a vanished mode's other parameters are meaningless, so its amplitude comes first):
+
+    * ``"amplitude"``: a mode's ``.A`` at 0 — the mode is not there;
+    * ``"energy"``: a mode's ``.Omega_d`` at the window edge — the mode is the elastic line;
+    * ``"elastic"``: ``elastic.E`` at 0 — there is no elastic line;
+    * ``"width"``: a mode's ``.Gamma`` at the floor — the mode is resolution limited.
+
+    Only free parameters count (a pinned Γ sits on its floor by construction), and only a converged
+    fit: an unconverged point is not where the model's likelihood peaks."""
+    if not result.optimizer_converged:
+        return None
+    cctx = candidate_context(hyp, ctx)
+    fixed = set(getattr(getattr(cctx, "constraints", None), "hard", None) or {})
+    names = list(result.params)
+    lower = {n: lo for n, (lo, _hi) in zip(names, mode_bounds(names, cctx))}
+
+    def railed(name):
+        return (name in lower and name not in fixed
+                and result.params[name] <= lower[name] + DEGENERATE_LIMIT_TOL * max(abs(lower[name]), 1.0))
+
+    prefixes = [n[: -len(".Omega_d")] for n in names if n.endswith(".Omega_d")]
+    for kind, suffix in (("amplitude", ".A"), ("energy", ".Omega_d")):
+        for p in prefixes:
+            if railed(p + suffix):
+                return kind, p + suffix
+    if railed("elastic.E"):
+        return "elastic", "elastic.E"
+    for p in prefixes:
+        if railed(p + ".Gamma"):
+            return "width", p + ".Gamma"
+    return None
+
+
+def _delta_modes(hyp, ctx) -> tuple:
+    """Modes whose Γ the candidate's own context pins at the floor beyond the scan's pins."""
+    own = getattr(getattr(candidate_context(hyp, ctx), "constraints", None), "hard", None) or {}
+    scan = getattr(getattr(ctx, "constraints", None), "hard", None) or {}
+    return tuple(sorted(n[: -len(".Gamma")] for n, v in own.items()
+                        if n not in scan and n.endswith(".Gamma") and float(v) == GAMMA_FLOOR))
+
+
+def _twin_target(record, model, kind, name):
+    """``(plain model, delta modes, rename)`` of the twin ``model`` resolves to at ``name``'s lower
+    limit, or ``None`` when the record holds no such count or variant. ``rename`` maps each kept
+    mode prefix of ``model`` to its prefix in the twin."""
+    prefixes = [_mode_prefix(i) for i in range(1, model.count + 1)]
+    gone = name.rsplit(".", 1)[0]
+    delta = set(model.delta_modes)
+    count, elastic = model.count, model.elastic
+    if kind in ("amplitude", "energy"):
+        kept = [p for p in prefixes if p != gone]
+        rename = {p: _mode_prefix(i) for i, p in enumerate(kept, 1)}
+        delta = {rename[p] for p in delta if p != gone}
+        count -= 1
+        elastic = elastic or kind == "energy"          # a mode at zero energy is the elastic line
+    else:
+        rename = {p: p for p in prefixes}
+        if kind == "elastic":
+            elastic = False
+        else:
+            delta.add(gone)
+    identity = getattr(model.hypothesis, "identity", None)
+
+    def plain(with_elastic):
+        return next((m for m in record.models if m.variant is None and m.count == count
+                     and m.elastic == with_elastic and m.quasielastic == model.quasielastic
+                     and getattr(m.hypothesis, "identity", None) == identity), None)
+
+    base = plain(elastic) or (plain(model.elastic) if kind == "energy" else None)
+    return None if base is None else (base, tuple(sorted(delta)), rename)
+
+
+def _twin_x0(parent, twin_hyp, rename, ctx) -> dict:
+    """The twin's start: the railed parent's parameters, modes renamed, the vanished mode dropped;
+    a parameter the parent lacks (the elastic line a mode merges into) from the cold IC."""
+    params = {}
+    for n, v in parent.representative.params.items():
+        prefix, _, par = n.rpartition(".")
+        if prefix in rename:
+            params[f"{rename[prefix]}.{par}"] = v
+        elif not prefix.startswith("phonon"):
+            params[n] = v
+    composite = twin_hyp.build()
+    names = composite.param_names()
+    if any(n not in params for n in names):
+        cold = dict(zip(names, phonon_structure_ic(composite, candidate_context(twin_hyp, ctx))))
+        params = {n: params.get(n, cold[n]) for n in names}
+    return {n: float(params[n]) for n in names}
+
+
+def _resolve_degenerate(record, ctx, *, backend="iminuit", minos=False, executor=None) -> None:
+    """The degenerate-limit rule over rung 1, in place: every model whose representative rails at a
+    lower limit (:func:`degenerate_limit`) resolves to its degenerate twin, which already holds that
+    limit as a model of its own: an amplitude at 0 to the count below (same variant, without that
+    mode); an energy at the window edge to the count below with the elastic line; the elastic
+    height at 0 to the same count without the elastic line; a Γ at the floor to the same model with
+    that mode's Γ pinned at the floor (a delta-function mode convolved with the resolution: one fewer
+    free parameter, so its Laplace evidence is valid). A pinned twin the record lacks is fitted here
+    (variant :data:`DELTA_VARIANT`) and joins the record; the catalogue's near-degenerate variant is
+    reused where it is that twin. Each twin also gets a start from its railed parent's point, kept
+    when it improves the twin by more than :data:`DEGENERATE_REFIT_GAIN`.
+
+    The railed model stays in the record, marked (``resolved_to``, ``resolved_limit``); a twin that
+    itself rails resolves in turn, so the chain ends on a model at no limit. Models are taken in
+    falling free-parameter count, a twin always having fewer, so a twin is final before it is judged.
+    A model with no twin in the record (a quasi-elastic count with nothing below it, a scan pin in
+    the way) stays as it was: its evidence is whatever the Laplace ladder makes of it."""
+    done = set()
+    while True:
+        todo = [m for m in record.models if id(m) not in done]
+        if not todo:
+            return
+        k = max(m.representative.k for m in todo)
+        level = [m for m in todo if m.representative.k == k]
+        done.update(id(m) for m in level)
+        tasks, meta, created = [], [], {}
+        for model in level:
+            hit = degenerate_limit(model.representative, model.hypothesis, ctx)
+            if hit is None:
+                continue
+            kind, name = hit
+            target = _twin_target(record, model, kind, name)
+            if target is None:
+                log.info("degenerate limit %s of %s has no twin in the record", name, model.label)
+                continue
+            base, delta, rename = target
+            twin = base if not delta else next(
+                (m for m in record.models + list(created.values())
+                 if m.hypothesis.components == base.hypothesis.components
+                 and getattr(m.hypothesis, "identity", None) == getattr(base.hypothesis, "identity", None)
+                 and m.delta_modes == delta), None)
+            if twin is None:
+                hard = {f"{p}.Gamma": GAMMA_FLOOR for p in delta}
+                derived = _variant_context(ctx, hard, {n: "catalogue_variant" for n in hard},
+                                           variant=DELTA_VARIANT, label=base.label)
+                if derived is None:
+                    continue
+                suffix = "_delta" + "-".join(p[len("phonon"):] or "1" for p in delta)
+                hyp = replace(base.hypothesis, label=base.label + suffix, context=derived)
+                twin = Rung1Model(label=str(hyp.label), count=base.count, elastic=base.elastic,
+                                  quasielastic=base.quasielastic, variant=DELTA_VARIANT,
+                                  hypothesis=hyp, starts=[], representative_start=0,
+                                  at_upper_bound=[], delta_modes=delta)
+                created[twin.label] = twin
+            x0 = _twin_x0(model, twin.hypothesis, rename, ctx)
+            tasks.append((twin.hypothesis, candidate_context(twin.hypothesis, ctx), backend, minos, x0))
+            meta.append((model, twin, name, x0))
+        fitted = _fit_hypothesis_batch(tasks, executor, phase="degenerate twin")
+        for result, (model, twin, name, x0) in zip(fitted, meta):
+            start = _start("degenerate", {"from": model.label, "limit": name}, result, x0)
+            if twin.label in created:
+                result.variant = DELTA_VARIANT
+                twin.starts.append(start)
+            elif start.objective < twin.starts[twin.representative_start].objective - DEGENERATE_REFIT_GAIN:
+                twin.starts.append(start)
+                twin.representative_start = len(twin.starts) - 1
+            model.representative.resolved_to = twin.label
+            model.representative.resolved_limit = name
+        for twin in created.values():
+            twin.representative_start = min(range(len(twin.starts)), key=lambda i: twin.starts[i].objective)
+            twin.at_upper_bound = _at_upper_bound(twin.representative,
+                                                  candidate_context(twin.hypothesis, ctx))
+            record.models.append(twin)
+        for twin in {id(t): t for _m, t, _n, _x in meta}.values():
+            if twin.label not in created:
+                twin.at_upper_bound = _at_upper_bound(twin.representative,
+                                                      candidate_context(twin.hypothesis, ctx))
+
+
 def _enumerate_and_fit(ctx, *, backend="iminuit", minos=False, peaks=None, executor=None,
                        route_out=None, rung1_out=None, mode_ceiling=None, structure_hint=None):
     """Rung 1 of the count ladder (:func:`_rung1_ladder`; ``peaks`` are the declared seeds), then
-    the catalogue's constrained variants of the one-mode representatives. Returns
-    ``[(result, hypothesis, context), ...]``: every count's representative, then the variants. The
-    context is ``ctx`` for ordinary candidates and the variant's derived context for a variant —
-    carry it, do not re-derive it. Split out of :func:`fit_structures_two_stage` so the
+    the catalogue's constrained variants of the one-mode representatives, then the
+    degenerate-limit rule (:func:`_resolve_degenerate`). Returns ``[(result, hypothesis,
+    context), ...]``: every count's representative, then the variants, then any degenerate twin it
+    had to fit. The context is ``ctx`` for ordinary candidates and the variant's derived context
+    for a variant or a pinned twin — carry it, do not re-derive it. Split out of
+    :func:`fit_structures_two_stage` so the
     hinted fit (:func:`fit_structures_two_stage_hinted`) runs the same ladder.
 
     ``route_out``: an optional dict filled with ``{"multimode_route": "count_ladder"}``.
     ``rung1_out``: an optional dict filled with ``{"rung1": Rung1Record}`` (variants included)."""
     record = _rung1_ladder(ctx, backend=backend, minos=minos, peaks=peaks, executor=executor,
                            mode_ceiling=mode_ceiling, structure_hint=structure_hint)
-    triples = [(model.representative, model.hypothesis, ctx) for model in record.models]
     one_pairs = [(model.representative, model.hypothesis)
                  for model in record.models if model.count == 1]
     for result, twin, derived, x0 in _offer_variants(one_pairs, ctx, backend=backend, minos=minos,
                                                      executor=executor):
-        triples.append((result, twin, derived))
         record.models.append(Rung1Model(
             label=str(twin.label), count=1, elastic="elastic" in str(twin.label).split("+"),
             quasielastic="qe" in str(twin.label).split("+"), variant=result.variant,
             hypothesis=twin, starts=[_start("variant", {}, result, x0)], representative_start=0,
-            at_upper_bound=_at_upper_bound(result, derived)))
+            at_upper_bound=_at_upper_bound(result, derived), delta_modes=_delta_modes(twin, ctx)))
+    _resolve_degenerate(record, ctx, backend=backend, minos=minos, executor=executor)
+    triples = [(model.representative, model.hypothesis, candidate_context(model.hypothesis, ctx))
+               for model in record.models]
     if route_out is not None:
         route_out["multimode_route"] = "count_ladder"
     if rung1_out is not None:

@@ -291,6 +291,23 @@ def _candidate_evidence(results, hyps, ctx, executor=None):
     return evidence.candidate_set_evidence(triples, ctx, executor=executor)
 
 
+def _resolved_twins(conv) -> dict:
+    """``{label: terminal twin label}`` for every converged candidate the degenerate-limit rule
+    resolved (:func:`isar.analyze.loop._resolve_degenerate`), following each chain to the twin at
+    no limit. A chain that leaves the candidate set (a twin that did not converge, or that a caller
+    filtered out) resolves nothing: that candidate is priced as itself."""
+    out = {}
+    for label, r in conv.items():
+        twin, seen = getattr(r, "resolved_to", None), {label}
+        while twin is not None and twin in conv and twin not in seen:
+            seen.add(twin)
+            nxt = getattr(conv[twin], "resolved_to", None)
+            if nxt is None:
+                out[label] = twin
+            twin = nxt
+    return out
+
+
 def select_models(results, hyps=None, ctx=None, *, evidence=None,
                   weight_floor: float = DEFAULT_WEIGHT_FLOOR, level: float = 0.68,
                   stamp: bool = True, executor=None) -> Selection:
@@ -304,18 +321,25 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
     alone (the one model that receives the expensive errors); without bootstrap samples it is
     left out of the pool. ``executor`` (default ``None``) is forwarded to a freshly
     computed evidence set (ignored when ``evidence`` is supplied, since nothing is escalated in
-    that case) — see :func:`~isar.analyze.evidence.candidate_set_evidence`."""
+    that case) — see :func:`~isar.analyze.evidence.candidate_set_evidence`.
+
+    A candidate the degenerate-limit rule resolved (``resolved_to``, :func:`_resolved_twins`) is
+    its twin: it gets no evidence of its own, no prior weight and posterior 0, and its
+    ``evidence_validity`` names the twin and the limit. The posterior's equal prior runs over the
+    distinct models, so a railed model never counts its twin twice."""
     scores = score_models(results, weight_floor=weight_floor)
     if not scores:
         if stamp:
             _stamp(results, scores, None)
         return Selection([], None, [], None, "none")
     conv = {r.label: r for r in results if r.optimizer_converged}
+    resolved = _resolved_twins(conv)
 
     fallback = None
     if evidence is None:
         if hyps is not None and ctx is not None:
-            evidence = _candidate_evidence(list(conv.values()), hyps, ctx, executor=executor)
+            evidence = _candidate_evidence([r for r in conv.values() if r.label not in resolved],
+                                           hyps, ctx, executor=executor)
         else:
             fallback = "aic_no_evidence_inputs"
     if evidence is not None:
@@ -336,6 +360,12 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
         recs = evidence.by_label()
         finite = []
         for s in scores:
+            if s.label in resolved:
+                # The degenerate-limit rule: this model IS its twin, whose evidence is counted
+                # once, under the twin's label. No lnZ of its own, so no reader sums it twice.
+                s.evidence_validity = {"resolved_to": resolved[s.label],
+                                       "degenerate_limit": conv[s.label].resolved_limit}
+                continue
             rec = recs.get(s.label)
             if rec is not None:
                 s.log_evidence = float(rec.log_evidence)

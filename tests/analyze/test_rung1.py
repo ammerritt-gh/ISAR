@@ -4,15 +4,17 @@ representative (converged or not), no gate and no early stop, and a per-spectrum
 
 Every test names its ceiling: the count is what these tests are about.
 """
+import copy
 from dataclasses import replace
 
 import numpy as np
+import pytest
 
 from isar.analyze import backends, loop, select
 from isar.analyze.backends import BackendResult
 from isar.analyze.context import ScanContext
 from isar.analyze.lineshapes import convolute_voigt_dho
-from isar.analyze.phonon import enumerate_phonon_structures
+from isar.analyze.phonon import EPS_OMEGA_D, GAMMA_FLOOR, enumerate_phonon_structures
 
 
 def _ctx(lam, x, seed, **kw):
@@ -35,19 +37,21 @@ def _one_peak(n=41, seed=3):
 def test_every_count_to_the_ceiling_is_fitted_with_no_gate():
     """A clean single peak: nothing about it asks for a second mode, and the second mode is
     fitted anyway, with and without the elastic line; the record lists every model with its
-    starts, and each representative is its lowest-objective start."""
+    starts, and each representative is its lowest-objective start. Any model after them is a
+    degenerate twin the degenerate-limit rule had to fit."""
     ctx = _one_peak()
     out, route = {}, {}
     results = loop.fit_structures_two_stage(ctx, mode_ceiling=2, rung1_out=out, route_out=route)
     labels = [r.label for r in results]
-    assert labels == ["stokes+bg", "elastic+stokes+bg", "elastic+bg", "bg",
-                      "stokes2+bg", "elastic+stokes2+bg"]
+    assert labels[:6] == ["stokes+bg", "elastic+stokes+bg", "elastic+bg", "bg",
+                          "stokes2+bg", "elastic+stokes2+bg"]
     assert route["multimode_route"] == "count_ladder"
     record = out["rung1"]
     assert record.ceiling == 2
-    assert [(m.label, m.count, m.elastic) for m in record.models] == [
+    assert [(m.label, m.count, m.elastic) for m in record.models[:6]] == [
         ("stokes+bg", 1, False), ("elastic+stokes+bg", 1, True), ("elastic+bg", 0, True),
         ("bg", 0, False), ("stokes2+bg", 2, False), ("elastic+stokes2+bg", 2, True)]
+    assert all(m.variant == loop.DELTA_VARIANT for m in record.models[6:])
     for model, result in zip(record.models, results):
         assert model.representative is result
         assert model.starts[model.representative_start].objective == min(
@@ -150,7 +154,9 @@ def test_the_record_takes_evidence_and_probability_from_the_selection():
     scored = {s.label: s for s in sel.scores}
     for model in record.models:
         assert model.probability == scored[model.label].posterior_probability
-        assert model.log_evidence is scored[model.label].log_evidence   # NaN when pruned
+        # a model resolved to its degenerate twin carries the twin's evidence
+        twin = (scored[model.label].evidence_validity or {}).get("resolved_to", model.label)
+        assert model.log_evidence is scored[twin].log_evidence   # NaN when pruned
     counts = record.count_probabilities()
     assert set(counts) == {0, 1}
     assert abs(sum(counts.values()) - 1.0) < 1e-9
@@ -192,3 +198,152 @@ def test_a_mode_inside_one_resolution_width_gets_its_variant_seeded_from_its_par
     variant = models["stokes+bg_neardeg"]
     assert variant.variant == "near_degenerate"
     assert variant.starts[0].x0 == models["stokes+bg"].representative.params
+
+
+# --- the degenerate-limit rule (docs/STATS_PRIMER.md §2) -------------------------------------------
+
+@pytest.fixture(scope="module")
+def two_mode_ladder():
+    """Two clean modes and an elastic line at ceiling 2, the raw rung-1 ladder (before variants and
+    resolution). The model railed in each test is the top one, elastic+stokes2+bg, so no model
+    above it can hand it a new start."""
+    x = np.linspace(-8.0, 16.0, 61)
+    elastic = convolute_voigt_dho(x, 1.0, 0.0, 1.0, 0.0, 0.3, 0.0, 300.0, 0.0, 50.0, peak="elastic")
+    ctx = _ctx(elastic + _dho(x, 4.0, 0.3, 400.0) + _dho(x, 9.0, 0.4, 250.0) + 5.0, x, 2)
+    record = loop._rung1_ladder(ctx, mode_ceiling=2)
+    top = record.by_label()["elastic+stokes2+bg"]
+    assert top.converged and loop.degenerate_limit(top.representative, top.hypothesis, ctx) is None
+    return ctx, record
+
+
+def _railed(record, label, values):
+    """A deep copy of ``record`` whose ``label`` representative sits at ``values`` (each a lower
+    limit), flagged at its limit as the optimizer flags it."""
+    record = copy.deepcopy(record)
+    model = record.by_label()[label]
+    i = model.representative_start
+    rep = model.starts[i].result
+    assert rep.optimizer_converged
+    model.starts[i] = replace(model.starts[i], result=replace(
+        rep, params=dict(rep.params, **values), at_limit=dict(rep.at_limit, **{n: True for n in values})))
+    return record
+
+
+def _select(monkeypatch, ctx, record, *, ceiling=2):
+    """Rung 1 from ``record`` on through the variants and the degenerate-limit rule, then the
+    evidence selection, as the delivery runs it."""
+    monkeypatch.setattr(loop, "_rung1_ladder", lambda *a, **k: record)
+    out, hyps = {}, {}
+    results = loop.fit_structures_two_stage(ctx, mode_ceiling=ceiling, rung1_out=out,
+                                            hypotheses_out=hyps)
+    sel = select.select_models(results, hyps, ctx, stamp=False)
+    out["rung1"].apply_selection(sel)
+    return results, hyps, sel, out["rung1"]
+
+
+def _not_double_counted(sel, results, hyps, ctx, label):
+    """The railed model takes no prior weight of its own: every other model's posterior is what it
+    is with the railed model left out of the candidate set altogether."""
+    scores = {s.label: s for s in sel.scores}
+    assert scores[label].posterior_probability == 0.0 and scores[label].candidate_prior == 0.0
+    without = select.select_models([r for r in results if r.label != label], hyps, ctx, stamp=False)
+    for s in without.scores:
+        assert scores[s.label].posterior_probability == pytest.approx(s.posterior_probability,
+                                                                       abs=1e-12), s.label
+
+
+TOP = "elastic+stokes2+bg"
+
+
+def test_an_amplitude_at_zero_resolves_to_the_count_below(two_mode_ladder, monkeypatch):
+    ctx, raw = two_mode_ladder
+    record = _railed(raw, TOP, {"phonon2.A": 0.0})
+    results, hyps, sel, rung1 = _select(monkeypatch, ctx, record)
+    railed = rung1.by_label()[TOP]
+    assert railed.resolved_to == "elastic+stokes+bg" and railed.resolved_limit == "phonon2.A"
+    twin = rung1.by_label()["elastic+stokes+bg"]
+    assert railed.log_evidence == twin.log_evidence and np.isfinite(twin.log_evidence)
+    assert railed.probability == 0.0
+    score = {s.label: s for s in sel.scores}[TOP]
+    assert score.evidence_validity["resolved_to"] == "elastic+stokes+bg"
+    assert score.evidence_method != "deferred_escalation"            # never "could not be computed"
+    _not_double_counted(sel, results, hyps, ctx, TOP)
+
+
+def test_an_elastic_height_at_zero_resolves_to_the_same_count_without_it(two_mode_ladder,
+                                                                         monkeypatch):
+    ctx, raw = two_mode_ladder
+    record = _railed(raw, TOP, {"elastic.E": 0.0})
+    results, hyps, sel, rung1 = _select(monkeypatch, ctx, record)
+    railed = rung1.by_label()[TOP]
+    assert railed.resolved_to == "stokes2+bg" and railed.resolved_limit == "elastic.E"
+    assert railed.log_evidence == rung1.by_label()["stokes2+bg"].log_evidence
+    _not_double_counted(sel, results, hyps, ctx, TOP)
+
+
+def test_a_width_at_its_floor_resolves_to_the_delta_function_twin(two_mode_ladder, monkeypatch):
+    """Gamma on its floor: the mode is resolution limited, so the model is the same one with that
+    mode's Gamma pinned at the floor (one fewer free parameter, its Laplace evidence valid)."""
+    ctx, raw = two_mode_ladder
+    lo = loop.mode_bounds(["phonon.Gamma"], ctx)[0][0]
+    record = _railed(raw, TOP, {"phonon.Gamma": lo})
+    results, hyps, sel, rung1 = _select(monkeypatch, ctx, record)
+    railed = rung1.by_label()[TOP]
+    assert railed.resolved_limit == "phonon.Gamma"
+    twin = rung1.by_label()[railed.resolved_to]
+    assert twin.count == 2 and twin.elastic and twin.resolved_to is None
+    assert twin.variant == loop.DELTA_VARIANT and twin.delta_modes == ("phonon",)
+    pins = loop.candidate_context(twin.hypothesis, ctx).constraints.hard
+    assert pins == {"phonon.Gamma": GAMMA_FLOOR}
+    assert twin.representative.k == railed.representative.k - 1
+    assert twin.label in hyps and twin.label in {r.label for r in results}
+    score = {s.label: s for s in sel.scores}[twin.label]
+    assert score.evidence_method.startswith("laplace") and np.isfinite(score.log_evidence)
+    assert railed.log_evidence == twin.log_evidence
+    _not_double_counted(sel, results, hyps, ctx, TOP)
+
+
+def test_a_width_at_its_floor_reuses_the_catalogue_near_degenerate_twin(monkeypatch):
+    """The catalogue's near-degenerate variant already is the pinned twin of a one-mode model: it
+    is the model resolved to, never a second copy of it."""
+    x = np.linspace(-6.0, 6.0, 81)
+    ctx = _ctx(_dho(x, 0.9, 0.3, 300.0) + 12.0, x, 1, prior_omega=0.9)
+    ctx = replace(ctx, gauss_fwhm=1.2, T=150.0, energy_status="needs_conversion_and_zero")
+    lo = loop.mode_bounds(["phonon.Gamma"], ctx)[0][0]
+    record = _railed(loop._rung1_ladder(ctx, mode_ceiling=1), "stokes+bg", {"phonon.Gamma": lo})
+    results, hyps, sel, rung1 = _select(monkeypatch, ctx, record, ceiling=1)
+    assert rung1.by_label()["stokes+bg"].resolved_to == "stokes+bg_neardeg"
+    assert not any("_delta" in r.label for r in results)
+
+
+def test_an_energy_at_its_lower_limit_merges_into_the_elastic_line(two_mode_ladder, monkeypatch):
+    """A mode at zero energy is the elastic line: the count below, with the elastic line (here the
+    model already has one, so the twin keeps it; a model without one gains it)."""
+    ctx, raw = two_mode_ladder
+    record = _railed(raw, TOP, {"phonon.Omega_d": EPS_OMEGA_D})
+    results, hyps, sel, rung1 = _select(monkeypatch, ctx, record)
+    railed = rung1.by_label()[TOP]
+    assert railed.resolved_to == "elastic+stokes+bg" and railed.resolved_limit == "phonon.Omega_d"
+    _not_double_counted(sel, results, hyps, ctx, TOP)
+    # stokes2+bg: only TOP could rail onto it (through its elastic height), and TOP sits at no limit
+    record = _railed(raw, "stokes2+bg", {"phonon2.Omega_d": EPS_OMEGA_D})
+    results, hyps, sel, rung1 = _select(monkeypatch, ctx, record)
+    assert rung1.by_label()["stokes2+bg"].resolved_to == "elastic+stokes+bg"
+    _not_double_counted(sel, results, hyps, ctx, "stokes2+bg")
+
+
+def test_a_genuine_laplace_failure_still_has_no_evidence(two_mode_ladder, monkeypatch):
+    """Curvature that is not positive definite with nothing at a bound is a failed calculation,
+    not a degenerate limit: no twin, no evidence, left to rung 2."""
+    ctx, raw = two_mode_ladder
+    record = copy.deepcopy(raw)
+    model = record.by_label()[TOP]
+    i = model.representative_start
+    rep = model.starts[i].result
+    assert not any(rep.at_limit.values())
+    broken = (-np.eye(len(rep.params))).tolist()
+    model.starts[i] = replace(model.starts[i], result=replace(rep, parameter_covariance=broken))
+    results, hyps, sel, rung1 = _select(monkeypatch, ctx, record)
+    assert rung1.by_label()[TOP].resolved_to is None
+    score = {s.label: s for s in sel.scores}[TOP]
+    assert score.evidence_method == "deferred_escalation" and not np.isfinite(score.log_evidence)
