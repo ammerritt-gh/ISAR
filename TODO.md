@@ -289,8 +289,9 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       ceiling 6, with timings and rates reported.
 - [ ] **FIT-11 — Candidate-count record beside the deciding rung.** The per-count record shows each count's
       representative: an unsampled variant, or a partial rung-2 lnZ, can sit beside the deciding rung's
-      probability. **Acceptance:** settled with the analyzer inspector design; the record names which rung priced
-      each number.
+      probability; and a settled rung-2 runner-up probability can include a loser whose refit did not converge,
+      which `select_models` leaves out (the count itself is guarded). **Acceptance:** settled with the analyzer
+      inspector design; the record names which rung priced each number.
 - [ ] **FIT-12 — Rung-2 selection method name.** The rung-2 selection records
       `selection_method = "laplace_evidence_selection"` while its candidates carry `evidence_method = "dynesty"`.
       **Acceptance:** `isar/schema/statistics.py` names a nested-sampling selection method, and the rung-2
@@ -321,6 +322,29 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
 - [ ] **FIT-19 — `docs/stats/figures/akaike_example.json` is stale.** It still carries the key `secondary_omega0`;
       `docs/stats/make_figures.py` now writes `second_mode_omega0`. **Acceptance:** regenerated from the archived
       workspace, and the primer's Fig. 3 still matches it.
+- [ ] **FIT-20 — A campaign refresh has no refresh-wide rung-2 limit.** Each pending spectrum gets its own 120 s
+      rung-2 slice (`isar/session/driver.py`), so that every refresh advances rung 2; with more pending spectra than
+      workers the refresh runs in waves (56 pending on 12 workers: up to about ten minutes). **Acceptance:** the
+      operator rules between a refresh-wide cap with guaranteed per-spectrum progress and the per-spectrum slice,
+      and the refresh wait is measured on the example set.
+- [ ] **FIT-21 — A railed Ω_d with a broad Γ resolves to the elastic line.** The degenerate-limit rule
+      (`loop._resolve_degenerate`) reads Ω_d at its lower bound as "merge into the elastic line" without checking Γ;
+      since ω₀ = √(Ω_d² + Γ²), such a mode is a broad central feature, not a sharp one. Sent up for a ruling
+      (it changes amendment 7 and touches the R13 ruling of FIT-17). **Acceptance:** the ruling names the twin
+      (elastic, quasi-elastic or none) and the Γ condition, and a test pins it.
+- [ ] **FIT-22 — Boundary-mass correction size.** `evidence._boundary_mass_correction` returned +17 to +62 nats in
+      4 of 15 seeds when Γ̂ sat just above its floor but was flagged at the limit (repair scan, 2026-10-23), which
+      could push count decisions upward. **Acceptance:** the correction is checked against nested sampling on
+      such cases and bounded or corrected.
+- [ ] **FIT-23 — Retired master-hint leftovers.** `loop.fit_structures_two_stage_hinted` returns an always-False
+      flag, `route_out` is a constant, `master_delivery.py` still stamps `structure_skipped`, and comments describe
+      a skip-and-fall-back path that no longer exists. **Acceptance:** the hint folds into
+      `fit_structures_two_stage` and the rest is deleted (H1), with the next change to `loop.py` or
+      `master_delivery.py`.
+- [ ] **FIT-24 — Suite time after the count ladder.** The not-slow suite runs 94 to 136 s against the one-minute
+      budget, and `tests/session/test_master_fit.py::test_parallel_masters_match_serial_end_to_end` alone takes
+      about 9.4 min (rung 2 inside masters). **Acceptance:** the not-slow suite back near a minute and the masters
+      test under a few minutes, without weakening what they assert.
 
 ---
 
