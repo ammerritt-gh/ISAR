@@ -149,6 +149,9 @@ Read in this order when returning after time away:
 10. While it exists: [HANDOFF-catalogue-intake.md](HANDOFF-catalogue-intake.md) — the frontier of the
     catalogue-driven intake job (per-format catalogue entries, file and user values side by side,
     readiness and the needs-attention list), parked at its first packet.
+11. While it exists: [HANDOFF-letacon-fitting.md](HANDOFF-letacon-fitting.md) — the le Tacon BL43LXU
+    fitting job: slice S1 (open-ended peak count) held unlanded behind a scene presence-factor bound;
+    later slices paused for a replan.
 
 ### Door 2 — running ISAR on data (the user door)
 
