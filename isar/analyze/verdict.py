@@ -309,7 +309,18 @@ def held_for_calibration(reason: str) -> ScanVerdict:
     return ScanVerdict("held_for_calibration", 0.0, reasons=[reason])
 
 
-def classify(results, ctx, selection, *, prior=None, descriptor=None) -> ScanVerdict:
+def _count_probabilities(results, selection) -> dict:
+    """Probability of each mode count, summed over the selection's scored structures."""
+    n_modes = {r.label: int(r.n_modes) for r in results if getattr(r, "n_modes", None) is not None}
+    out = {}
+    for s in getattr(selection, "scores", None) or []:
+        if s.label in n_modes and getattr(s, "weight", None) is not None and np.isfinite(s.weight):
+            out[n_modes[s.label]] = out.get(n_modes[s.label], 0.0) + float(s.weight)
+    return out
+
+
+def classify(results, ctx, selection, *, prior=None, descriptor=None,
+             count_probabilities=None) -> ScanVerdict:
     """Classify one scan into a named bucket (§6) with a computed confidence (§9). Deterministic
     precedence (held → unconstrained → junk/model-incomplete/**signal_unmodeled** →
     elastic-only/no-signal (phonon-less winner) → no-signal/underpowered → resolved); never
@@ -318,7 +329,12 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None) -> ScanVer
 
     ``descriptor`` (a :class:`~isar.schema.steering.ScanDescriptor`, Phase 4a) is the model-free
     peak list; when the winning model leaves a family-wise-significant peak unmatched the verdict is
-    ``signal_unmodeled`` (under-model falsification). Built from ``ctx`` when None (self-contained)."""
+    ``signal_unmodeled`` (under-model falsification). Built from ``ctx`` when None (self-contained).
+
+    ``count_probabilities`` (count -> probability; the deciding rung's, from
+    :mod:`isar.analyze.count_ladder`) defaults to the selection's. An ambiguous count (the count
+    ladder's marker) is never ``resolved``: since only the winner is bootstrapped it can no longer
+    show as a fork, and hard rule 5 lets only a clean single answer into the dispersion prior."""
     from isar.analyze import confidence as _confidence
 
     def conf(win):
@@ -429,5 +445,16 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None) -> ScanVer
     if unmatched:
         return _signal_unmodeled(unmatched, reasons + ["model resolved fewer peaks than the "
                                                        "descriptor confirms"], descriptor)
+    # ...or the peak count is ambiguous: two answers, like a fork with no prior to break the tie.
+    from isar.analyze.count_ladder import count_ambiguity
+
+    probs = (_count_probabilities(results, selection) if count_probabilities is None
+             else count_probabilities)
+    ambiguity = (count_ambiguity(probs, int(win.n_modes))
+                 if getattr(win, "n_modes", None) is not None else None)
+    if ambiguity is not None:
+        return ScanVerdict("unconstrained", 0.0, reasons=reasons + [
+            f"peak count ambiguous: {ambiguity['count']} modes (P={ambiguity['probability']:.2f}) "
+            f"or {ambiguity['runner_up_count']} (P={ambiguity['runner_up_probability']:.2f})"])
     score, comp = conf(win)
     return ScanVerdict("resolved", score, components=comp, reasons=reasons or ["resolved"])
