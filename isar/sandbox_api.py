@@ -178,43 +178,18 @@ def fit_context(record, detector_id, card, calres, guidelines, *, unit_key, scan
 
 
 def _winning_curve(fit, ctx, x_eval):
-    """Evaluate the exact winning structure from its fitted nonlinear modes and amplitudes.
-
-    ``fit_one`` canonicalizes modes by energy, so match them back to phonon namespaces using their
-    fitted amplitudes. This preserves the winner's elastic/QE/background gates, Stokes-only choice,
-    and every admitted phonon instead of substituting the audit module's single-DHO model.
+    """Evaluate the exact winning structure from the fit's own model manifest (its components and
+    every fitted parameter, pinned ones included), so any winner the fit can return rebuilds,
+    degenerate twins and background-free models among them, never a re-enumerated stand-in.
     """
     from types import SimpleNamespace
 
-    from isar.analyze.components import PhononDHO
-    from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
+    from isar.analyze.model_manifest import compose_manifest
 
-    by_label = {h.label: h for h in enumerate_phonon_structures(ctx)}
-    by_label.update({h.label: h for h in enumerate_phonon_multimode(ctx)})
-    label = fit.get("best_label")
-    hyp = by_label.get(label)
-    if hyp is None:
-        raise ValueError(f"winning hypothesis {label!r} is not admissible in this context")
-    comp = hyp.build()
-    amplitudes = dict(fit.get("amplitudes") or {})
-    remaining_modes = [dict(mode) for mode in (fit.get("modes") or [])]
-    theta = []
-    for component in comp.components:
-        prefix = component.prefix
-        if isinstance(component, PhononDHO):
-            if not remaining_modes:
-                raise ValueError(f"winning hypothesis {label!r} has incomplete mode parameters")
-            fitted_amp = float(amplitudes.get(f"{prefix}.A", 0.0))
-            mode = min(remaining_modes,
-                       key=lambda item: abs(float(item.get("amplitude", 0.0)) - fitted_amp))
-            remaining_modes.remove(mode)
-            omega0 = float(mode["omega0"])
-            gamma = float(mode["gamma"])
-            omega_d = float(np.sqrt(max(omega0 * omega0 - gamma * gamma, 1e-12)))
-            theta.extend((omega_d, gamma, fitted_amp))
-        else:
-            theta.extend(float(amplitudes.get(f"{prefix}.{name}", 0.0))
-                         for name in component.param_names())
+    manifest = fit.get("model_manifest")
+    if not manifest:
+        raise ValueError(f"winning hypothesis {fit.get('best_label')!r} has no model manifest")
+    comp, theta = compose_manifest(manifest, getattr(ctx, "quasielastic_fwhm", None))
     xe = np.asarray(x_eval, dtype=float)
     components = comp.evaluate_components(xe, theta, ctx)
     return SimpleNamespace(x=xe, total=sum((values for _name, values in components),

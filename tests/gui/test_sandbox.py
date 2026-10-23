@@ -29,7 +29,7 @@ def _card():
     return card_mod.Card(pol, card_mod.CardState())
 
 
-def _record(x, counts):
+def _record(x, counts, monitor=1.0):
     x = np.asarray(x, dtype=float)
     ax = types.SimpleNamespace(role="scanned", values=x)
     sp = types.SimpleNamespace(intensity=np.asarray(counts, dtype=float),
@@ -39,7 +39,7 @@ def _record(x, counts):
         temperature=types.SimpleNamespace(setpoint=np.full_like(x, 50.0)),
         energy_calibration=types.SimpleNamespace(status="needs_zero"),
         normalization=types.SimpleNamespace(counting_mode="time", preset=0.0,
-                                            monitor=np.ones_like(x)))
+                                            monitor=np.full_like(x, monitor)))
 
 
 def _calres(center=0.0):
@@ -247,28 +247,46 @@ def test_fit_no_result_preserves_calibrated_marker_without_manual_zero_prompt(
     assert "drag" not in dock._status.text().lower()
 
 
+def _manifest(parts, parameters):
+    kinds = {"phonon": "phonon_dho", "phonon2": "phonon_dho", "elastic": "elastic",
+             "qe": "quasielastic", "bg": "constant_background"}
+    components = [{"type": kinds[p], "prefix": p, **({"peak": "stokes+astokes"}
+                                                    if p.startswith("phonon") else {})}
+                  for p in parts]
+    return {"schema": "isar.model_manifest/1", "components": components,
+            "parameters": parameters}
+
+
 @pytest.mark.parametrize(
-    ("label", "modes", "amplitudes", "prefixes"),
+    ("label", "parameters", "prefixes"),
     [
-        ("stokes+bg", [{"omega0": 5.0, "gamma": 0.4, "amplitude": 120.0}],
-         {"phonon.A": 120.0, "bg.BG": 8.0}, ["phonon", "bg"]),
-        ("stokes+qe+bg", [{"omega0": 5.0, "gamma": 0.4, "amplitude": 120.0}],
-         {"phonon.A": 120.0, "qe.QE": 30.0, "bg.BG": 8.0}, ["phonon", "qe", "bg"]),
+        ("stokes+bg", {"phonon.Omega_d": 5.0, "phonon.Gamma": 0.4, "phonon.A": 120.0,
+                       "bg.BG": 8.0}, ["phonon", "bg"]),
+        ("stokes+qe+bg", {"phonon.Omega_d": 5.0, "phonon.Gamma": 0.4, "phonon.A": 120.0,
+                          "qe.QE": 30.0, "bg.BG": 8.0}, ["phonon", "qe", "bg"]),
         ("elastic+stokes2+bg",
-         [{"omega0": 4.0, "gamma": 0.3, "amplitude": 90.0},
-          {"omega0": 9.0, "gamma": 0.7, "amplitude": 50.0}],
-         {"phonon.A": 90.0, "phonon2.A": 50.0, "elastic.E": 20.0, "bg.BG": 8.0},
-         ["phonon", "phonon2", "elastic", "bg"]),
+         {"phonon.Omega_d": 4.0, "phonon.Gamma": 0.3, "phonon.A": 90.0,
+          "phonon2.Omega_d": 9.0, "phonon2.Gamma": 0.7, "phonon2.A": 50.0,
+          "elastic.E": 20.0, "bg.BG": 8.0}, ["phonon", "phonon2", "elastic", "bg"]),
+        # Degenerate twins (S1U4/S1U5): re-enumeration cannot produce these labels.
+        ("elastic+stokes2+bg_delta1",
+         {"phonon.Omega_d": 4.0, "phonon.Gamma": 1e-3, "phonon.A": 0.5,
+          "phonon2.Omega_d": 9.0, "phonon2.Gamma": 0.7, "phonon2.A": 50.0,
+          "elastic.E": 20.0, "bg.BG": 8.0}, ["phonon", "phonon2", "elastic", "bg"]),
+        ("elastic+stokes", {"phonon.Omega_d": 5.0, "phonon.Gamma": 0.4, "phonon.A": 120.0,
+                            "elastic.E": 20.0}, ["phonon", "elastic"]),
     ],
 )
-def test_winning_curve_preserves_exact_selected_structure(label, modes, amplitudes, prefixes):
+def test_winning_curve_preserves_exact_selected_structure(label, parameters, prefixes):
+    """The preview rebuilds whatever the fit selected from its own model manifest, twins included,
+    with every fitted parameter as it stands (a pinned Γ too)."""
     ctx = types.SimpleNamespace(
         center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, quasielastic_fwhm=2.5,
         T=50.0, energy_status="needs_zero", window=(-8.0, 15.0), prior_omega=None,
         counts_used=np.ones(20))
     x = np.linspace(-8.0, 15.0, 101)
     curve = sandbox._winning_curve(
-        {"best_label": label, "modes": modes, "amplitudes": amplitudes}, ctx, x)
+        {"best_label": label, "model_manifest": _manifest(prefixes, parameters)}, ctx, x)
     assert [name for name, _values in curve.components] == prefixes
     assert np.allclose(curve.total, sum(values for _name, values in curve.components))
 
@@ -282,7 +300,9 @@ def test_fit_core_fits_a_single_peak():
                                peak="stokes+astokes")
     counts = peak + 10.0
     card = _card()
-    r = sandbox.fit_context(_record(x, counts), "ana7", card, _calres(center=0.0),
+    # A monitor that could have counted these counts: the prior recipe bounds an area by the
+    # declared exposure (S1U1), and one monitor count per point bounds a peak at about one count.
+    r = sandbox.fit_context(_record(x, counts, monitor=1.0e5), "ana7", card, _calres(center=0.0),
                             _guidelines(card), unit_key="E:7:ana7", scan_number=7,
                             q=[3.0, 0.2, 0.0], T=50.0,
                             peaks=({"omega0": 6.0, "sigma": 0.5},), m=20, seed=1)
