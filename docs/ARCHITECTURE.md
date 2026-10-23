@@ -242,7 +242,7 @@ whose spectrum carries a `counts_not_integer` warning (every `_lr` spectrum), is
 and is not fitted. In the fit the curve
 replaces the Voigt for the DHO convolution and the elastic line, its FWHM is the Gaussian width, and a
 fit range beyond the table raises `resolution_range_exceeded`. The in-plane momentum spread is not
-modelled. *(Implemented.)*
+modelled. Each given zero is also cross-checked against the beamline's elastic centroid (`elpk_centroid_meV`): a difference above 0.3 meV raises `zero_disagrees_with_beamline` and never moves the zero. *(Implemented.)*
 
 **Flag adjudication (LLM, off the critical path).** The deterministic layer flags; the LLM
 adjudicator *decides* each flag (mask / keep / drop_detector / hold_for_human) with a reason and

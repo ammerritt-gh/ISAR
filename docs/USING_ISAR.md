@@ -423,6 +423,8 @@ is rung 4, and the scan's `hkl_nominal` is the only HKL in the record.
 
 ### Resolution, slit and zero
 
+The per-analyzer files carry two energy columns. `meV` is the beamline's calibrated energy transfer: each analyzer's zero comes from its resolution-mode offset (`elpk_mk` in the `.var`). `meV_sft` is `meV` minus the half-maximum midpoint of the biggest peak in the summed spectrum; the same number is `apk_pk_meV` in the `.var` and the `.pkpos` peak list. It is not the elastic line and must never be taken as a zero. The `.var` `elpk_centroid_meV` (fact `elastic_centroid_meV`) is the beamline's elastic centroid on `meV`; ISAR uses it only as a cross-check of its own zero.
+
 A scan's slit sets which resolution curve each analyzer uses, and each analyzer's energy zero is fitted
 on its elastic line with that curve. To set this up:
 
@@ -443,6 +445,7 @@ Alerts on that choice and on the zeros:
 | `slit_ambiguous` | The runner-up slit fits within 10 in summed deviance, so the data do not pick one. | Check the slit and declare it. |
 | `slit_mismatch` | The declared slit is kept, but another fits the elastic lines clearly better. | Check the declared slit and the curve files. |
 | `pipeline_zero` | The analyzer has no significant elastic line. Its zero is the file's own axis, labelled. | Compare that analyzer's ω₀ with its neighbours before trusting it. |
+| `zero_disagrees_with_beamline` | The analyzer's zero (`elastic_fit` or `pipeline_zero`) is more than 0.3 meV from the beamline's elastic centroid; the reason gives both numbers. The centroid includes background and phonon tails, so the flag is a cross-check and ISAR's fit stays the zero. It is raised when a scan is calibrated, so an existing workspace shows it only once its data are run into a fresh one. | Inspect that analyzer's elastic fit. The flag does not change the zero. |
 | `missing_resolution` | No curve for that analyzer at that slit, or no folder: the analyzer is held and not fitted. | Add the curve to `rf/`, or correct `resolution_pattern`. |
 | `resolution_range_exceeded` | The fit range runs past the measured curve; the curve is used as given. | Read the fit with that in mind. |
 
