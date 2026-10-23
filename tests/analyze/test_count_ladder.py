@@ -90,6 +90,20 @@ def test_contending_keeps_every_model_without_evidence_and_the_count_above(one_p
                if not CL._has_evidence(m) and m.resolved_to is None)
 
 
+def test_the_count_above_contends_with_and_without_the_elastic_line(one_peak):
+    """The count one above the best is sampled in both elastic variants: the variant the best
+    model does not use may be the one whose local rung-1 fit was poor, and nested sampling is what
+    would find the mode it missed. Neither is near the best here, so only the rule puts them in."""
+    ctx, record = one_peak
+    best = CL._best(record.models)
+    assert (best.label, best.count, best.elastic) == ("stokes+bg", 1, False)
+    other = record.by_label()["elastic+stokes2+bg"]
+    assert not (CL._has_evidence(other) and other.log_evidence >= best.log_evidence - CL.CONTENDING_MARGIN)
+    contenders = CL.contending(record)
+    assert "stokes2+bg" in contenders and "elastic+stokes2+bg" in contenders
+    assert not [m for m in record.models if m.label in contenders and m.count > best.count + 1]
+
+
 def test_a_model_resolved_to_its_twin_is_not_a_contender_without_evidence(one_peak):
     """elastic+bg rails its elastic height at 0, so it is bg (the degenerate-limit rule): with the
     twin unpriced, the twin contends and the resolved model neither contends nor fires the

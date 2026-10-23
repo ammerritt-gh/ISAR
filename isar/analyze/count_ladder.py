@@ -9,7 +9,7 @@ that record and:
    named constant below;
 2. names the contending models (:func:`contending`): every count and elastic variant within
    :data:`CONTENDING_MARGIN` of the best rung-1 log-evidence, every model whose rung-1 evidence
-   could not be computed, and the count one above the best;
+   could not be computed, and the count one above the best in both elastic variants;
 3. samples each contending model by nested sampling (:func:`sample_model`, one model per call, so
    a caller can slice the work in time) and refits each from its maximum-likelihood sample;
 4. names the spectrum's one state with its reasons, the separate flags and the ambiguity marker
@@ -337,7 +337,8 @@ def triggers(record, ctx, contenders=None) -> list:
 
 def contending(record) -> list:
     """Labels of the contending models, in sampling order: the best, the other distinct models
-    within :data:`CONTENDING_MARGIN` by evidence, the count one above the best (its variant), then
+    within :data:`CONTENDING_MARGIN` by evidence, the count one above the best with and without the
+    elastic line (the variant the best does not use may be the one whose local fit was poor), then
     every distinct model with no rung-1 evidence, fewest parameters first. A model resolved to its
     degenerate twin is not a contender of its own; the count above is sampled even when resolved,
     since nested sampling explores the mode the optimizer railed."""
@@ -349,7 +350,7 @@ def contending(record) -> list:
                    and m.log_evidence >= best.log_evidence - CONTENDING_MARGIN),
                   key=lambda m: -m.log_evidence)
     above = [m for m in record.models if m.count == best.count + 1 and m.variant is None
-             and (m.elastic, m.quasielastic) == (best.elastic, best.quasielastic) and m not in near]
+             and m.quasielastic == best.quasielastic and m not in near]
     missing = sorted((m for m in record.models
                       if not _has_evidence(m) and _distinct(m) and m not in above),
                      key=lambda m: m.representative.k)
