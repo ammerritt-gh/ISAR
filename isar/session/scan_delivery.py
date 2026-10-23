@@ -1947,9 +1947,10 @@ def _count_summary(ladder, sel, fits, record) -> dict:
     runner_fit = fits.get(runner_score.label) if runner_score is not None else None
     runner_modes = (_with_peak_positions(list(runner_fit.modes), runner_fit)
                     if runner_fit is not None and runner_fit.modes else None)
+    # No wall time here: this record is a results.csv column, which must not depend on how the
+    # run was scheduled (rung-2 time lives in the timing provenance and in rung2_partial).
     rung2 = {label: {"log_evidence": m.log_evidence, "log_evidence_err": m.log_evidence_err,
-                     "method": m.method, "reason": m.reason, "probability": m.probability,
-                     "seconds": round(float(m.seconds), 4)}
+                     "method": m.method, "reason": m.reason, "probability": m.probability}
              for label, m in ladder.rung2.items()}
     return _finite_json({
         "state": ladder.state, "reasons": [str(r) for r in ladder.reasons],
