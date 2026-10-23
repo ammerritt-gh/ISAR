@@ -431,7 +431,10 @@ def test_shadow_selection_is_invariant_to_delivery_constraints(constraints):
     )
 
 
-def test_accepted_delivery_hint_records_partial_shadow_execution():
+def test_a_delivery_hint_never_shortcuts_the_ladder(monkeypatch):
+    """The opt-in master structure hint is a seed source: fit_one still tries every count (it used
+    to fit the hinted structure and a null alone, and so could never find a new peak)."""
+    monkeypatch.setenv("ISAR_MODE_CEILING", "1")       # the count is not what this test is about
     base = _single_peak_ctx_for_csv()
     ctx = replace(
         base,
@@ -450,19 +453,10 @@ def test_accepted_delivery_hint_records_partial_shadow_execution():
         structure_hint="stokes+bg",
     )
 
-    assert hinted["structure_skipped"] is True
+    assert hinted["structure_skipped"] is False
     shadow = validate_shadow_model_selection(hinted["shadow_model_selection"])
-    assert shadow["shadow_execution_kind"] == "partial"
-    assert shadow["reused_model_identities"]
-    assert shadow["freshly_fitted_model_identities"]
-    assert {
-        item["model_identity"] for item in shadow["reused_model_identities"]
-    } | {
-        item["model_identity"]
-        for item in shadow["freshly_fitted_model_identities"]
-    } == {
-        item["model_identity"] for item in shadow["attempted_model_identities"]
-    }
+    assert shadow["shadow_execution_kind"] != "partial"
+    assert len(shadow["attempted_model_identities"]) > 2        # not the hinted pair alone
 
 
 @pytest.mark.slow

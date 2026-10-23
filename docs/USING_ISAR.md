@@ -231,23 +231,19 @@ local energy resolution, then walks adjacently toward and away from the zone cen
 each q”, “highest at each q”, or “nearest to X at each q” only when you intentionally want independent
 local selection. Resuming an existing campaign keeps its frozen selector.
 
-`[fitting]` also carries one performance toggle, `reuse_master_structure` (default `false`):
+`[fitting]` also carries one toggle, `reuse_master_structure` (default `false`):
 
 ```toml
 [fitting]
-reuse_master_structure = true     # opt-in speed-up for repeated (Q, T) master fits
+reuse_master_structure = true     # seed repeated (Q, T) master fits with the previous winner
 ```
 
 When a merged "master scan" for a `(Q, T)` group is refit (a new member arrived, or `--force`),
-this reuses the group's *previous* winning structure as a hint: ISAR fits only that one structure
-plus a no-phonon null, skipping the full model enumeration, and accepts the shortcut only if the
-same gates the enumeration relies on still pass (cost/dof within tolerance, no structured residual,
-and the phonon still beats fitting nothing). On any gate failure it silently falls back to the full
-enumeration, so a genuinely changed spectrum is never mis-served. It is **statistically-equivalent,
-not bit-identical**: the selection layer sees a smaller candidate set, so a master's `modality`,
-`confidence` and `best_label` can differ from a full re-enumeration. Off by default; it only ever
-affects master (pooled) fits, never per-scan fits. Skipped fits are marked
-`structure_skipped` in the ledger provenance.
+this hands the group's *previous* winning structure to the fit as one extra starting point for that
+structure, like a declared peak. It saves nothing and skips nothing: the peak-count ladder still
+tries every count, so a refitted master can still gain a peak. Off by default; it only ever affects
+master (pooled) fits, never per-scan fits. `structure_skipped` stays `false` in the ledger
+provenance.
 
 ## During a beamtime
 

@@ -121,13 +121,6 @@ AS_MIN_COUNTS = 2.0      # …and this absolute floor (a fraction of a count is 
 # wide margin, and is a flag, never a value edit.
 GAMMA_BOUND_TOL = 5.0 * GAMMA_FLOOR
 
-# cost/dof above which a hinted structure is judged not enough on its own (the structure-hint
-# shortcut, isar.analyze.loop._hint_insufficient; no count is ever gated on it). A documented
-# default (Baker–Cousins -2lnL/dof; a good fit sits near 1), deliberately loose — the runs-test
-# structured-residual clause catches the wide-window trap where cost/dof looks acceptable — and
-# NOT tuned to any single toy spectrum.
-GATE_COST = 2.0
-
 # Split seeds of the count ladder: every fitted mode of the (n-1)-mode fit is tried as two modes
 # this many resolution FWHMs apart, "a small set spanning below and around one resolution width"
 # (design 2026-10-22), with unequal heights (SPLIT_HEIGHT_RATIO : 1), the heavier member
