@@ -244,6 +244,23 @@ def test_a_slow_rung_1_refit_never_uses_up_the_rung_2_slice(forced_trigger, monk
     assert len(forced_trigger) >= 1 and list(fit["rung2_partial"]) == forced_trigger
 
 
+def test_fit_one_takes_every_hypothesis_from_the_fit_never_a_re_enumeration(monkeypatch):
+    """The label -> hypothesis map is the fit's own offered set, so the card's ceiling, not the
+    environment default, bounds every lookup: a card above the default still finds its counts."""
+    def refuse(*args, **kwargs):
+        raise AssertionError("fit_one re-enumerated the hypotheses at the default ceiling")
+
+    monkeypatch.setenv("ISAR_MODE_CEILING", "1")
+    monkeypatch.setattr(scan_delivery, "enumerate_phonon_multimode", refuse)
+    monkeypatch.setattr(scan_delivery, "enumerate_phonon_structures", refuse)
+    card = _card()
+    card.policy.fitting["max_modes"] = 2
+    fit = scan_delivery.fit_one(_weak_elastic_ctx(), card, prior=None, M=10, seed=1,
+                                errors_tier="cheap", rung2_slice_s=0.0)
+    assert max(int(r["n_modes"]) for r in fit["candidates"]) == 2
+    assert fit["best_label"] in {r["label"] for r in fit["candidates"]}
+
+
 def test_a_provisional_master_never_seeds_the_prior():
     """Hard rule 5's gate reads the count outcome a delivery writes (fit_selection_semantics)."""
     from isar.session import evidence_update

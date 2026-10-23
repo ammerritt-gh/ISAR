@@ -2038,13 +2038,10 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     two_stage_seconds = round(time.perf_counter() - _t_two_stage, 4)
     all_results = results
     labels_before_guideline = [str(r.label) for r in results]
-    # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
-    by_hyp = {h.label: h for h in enumerate_phonon_structures(ctx)}
-    by_hyp.update({h.label: h for h in enumerate_phonon_multimode(ctx)})
-    # …and the catalogue constrained variants (SCENE-1 PR-c), which no re-enumeration can produce:
-    # they exist only because a fit came out near-degenerate, and each carries the derived context
-    # its evidence and bootstrap must run under.
-    by_hyp.update(offered_hypotheses)
+    # label -> hypothesis of every offered candidate, from the fit itself (never re-enumerated: the
+    # catalogue variants and degenerate twins exist only because a fit came out a certain way, and
+    # the card's ceiling, not the default, bounds the counts).
+    by_hyp = dict(offered_hypotheses)
 
     warn = None
     guideline_changed_set = False
