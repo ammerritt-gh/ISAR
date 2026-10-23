@@ -201,6 +201,9 @@ surviving escalations sample at n_live=32, scoped to that lane
 (128 until 2026-09-03: the evidence error of about 1.2 nats at 32 is still irrelevant against the
 10–40 nat Occam gaps the rung exists to separate, and 128 cost five minutes a fit for no decision
 benefit on the acoustic reference campaign).
+Since the count ladder (§2.1, §2.2) this lane decides no peak count: rung 1 is Laplace only, and rung 2
+samples the contenders at 128 live points. The dominance prune and the 32-point budget above describe the
+pre-ladder lane, which remains in the code, unused for counts.
 The escalation phase also carries a wall-clock budget per candidate set (`ESCALATION_BUDGET_S`,
 a backstop against a pathological set rather than a throughput lever). A candidate the budget
 skips is recorded `unresolved` with its ceiling intact — kept out of the posterior like
@@ -290,7 +293,7 @@ at-limit tolerance), makes the model its degenerate twin. The limits, checked in
 | The fit rails at | The model is | Its twin |
 |---|---|---|
 | a mode's amplitude A = 0 | that mode is not there | the count below, same elastic variant, without that mode |
-| a mode's energy Ω_d at the window edge | that mode is the elastic line | the count below, with the elastic line |
+| a mode's energy Ω_d at the zero-energy edge of the window (1e-3 meV) | that mode is the elastic line | the count below, with the elastic line |
 | the elastic height E = 0 | there is no elastic line | the same count without the elastic line |
 | a mode's width Γ at the floor | that mode is resolution limited | the same model with that Γ pinned at the floor: a delta-function mode convolved with the resolution |
 | the flat background BG = 0 | there is no background | the same model without its background (label without `+bg`, same modes and elastic variant) |
@@ -369,15 +372,15 @@ sit three decades or more below it. Taking that ceiling as the prior edge leaves
 of headroom over the strongest line, which costs about 2.3 nats per decade of headroom per
 amplitude in the Occam factor, and keeps the area prior within the range the older count-scaled
 bound (1e4 x the maximum count) gave on typical spectra. There is no card override: the constant
-is part of the versioned recipe. The recipe is run on the example set against one alternative
-prior width (the S6 sensitivity check); if any selected count moves, the affected spectra are
+is part of the versioned recipe. The sensitivity check, the example set refitted with one alternative
+prior width, is **Planned** and not yet run; if any selected count moves, the affected spectra are
 reported and the constant goes to the operator before the beamtime.
 
 The seconds constant is the same kind of ceiling in counts per second: the top of the 1e4 to 1e5
 events per second an analyzer detector saturates at, so a count-time ceiling never clips a real
 line. A 30 s scan at 0.4 meV resolution therefore admits a mode area of 1.2e6 counts·meV, where the
 monitor constant applied to seconds would have given 12 and clipped a strong line. It has the same
-status as the monitor constant: agent-proposed, versioned, and to the operator through the S6 check.
+status as the monitor constant: agent-proposed, versioned, and to the operator through the sensitivity check (Planned).
 
 **The exposure source.** `exposure_source` (`monitor` or `time`) travels from the normalization
 selection into the fit context. A context that declares an exposure reference with no source is
@@ -402,11 +405,12 @@ ordered on its own, N!/W^N per group. A prior that singles out one mode's amplit
 that mode in a group of its own, so its energy keeps the labelled prior. A delta-function mode (Γ
 pinned at the floor by a degenerate twin, §2) is ordered only with other delta-function modes.
 
-**Status [Partial].** The recipe, the ordered prior, the ceiling and the signature are implemented and
-tested, and the fitter's bounds now come from the recipe (`loop.build_problem` reads
-`prior.mode_bounds`; the count-scaled bounds are gone), as does rung 1 of the peak-count ladder, and
-both evidence lanes (`evidence.py`, `errors/bayes.py`) price modes under the ordered energy prior.
-The delivery (`scan_delivery.fit_one`) passes the card's `max_modes` to the fit and runs rung 2.
+**Status [Implemented; the sensitivity check is Planned].** The recipe, the ordered prior, the ceiling and
+the signature are implemented and tested. The fitter's bounds come from the recipe (`loop.build_problem`
+reads `prior.mode_bounds`; the count-scaled bounds are gone), as do rung 1 of the count ladder and both
+evidence lanes (`evidence.py`, `errors/bayes.py`), which price modes under the ordered energy prior. The
+delivery (`scan_delivery.fit_one`) passes the card's `max_modes` to the fit and runs rung 2 (§2.2). Not yet
+run: the sensitivity check of the two amplitude constants.
 
 **The delivery [Implemented].** Every spectrum is in one state (`isar.analyze.count_ladder`):
 `settled`, `provisional` (rung 2 still to run), `search limited`, `unresolved` or `held`, with its
@@ -449,6 +453,176 @@ so changing either refits the spectra it affects instead of carrying old results
 - B. J. Brewer, *Inference for trans-dimensional Bayesian models with diffusive nested sampling*,
   arXiv:1411.3921; A. Jasra, C. C. Holmes, D. A. Stephens, label switching in mixture models,
   Statistical Science (2005).
+
+### 2.2 The count ladder: two rungs and six states **[Implemented, 2026-10-23]**
+
+How many modes a spectrum holds is decided by evidence on two rungs: cheap by default, expensive only
+where the cheap rung is doubtful. The code is `isar/analyze/count_ladder.py`; the rung-1 fits are
+`loop._rung1_ladder`.
+
+**Rung 1, every spectrum: Laplace evidence per count.** Every count from 0 to the ceiling is fitted,
+each with and without the elastic line where the elastic line is admissible, every parameter free,
+and several independent starts per model. The lowest-objective start is the model's representative.
+There is no early stop. The starts include:
+
+- *residual*: the previous count's fit plus its largest residual feature (at one mode, the cold grid start);
+- *split*: each fitted mode of the previous count, divided into two modes 0.5 or 1.0 resolution FWHM
+  apart, with unequal heights (2:1, the heavier member alternating);
+- *descriptor*: the model-free peak finder's features;
+- *declared*: the peaks the card's `[fitting]` section gives, where present;
+- for a pooled master, its hinted structure, and the degenerate seeds of the railed fits they resolve to.
+
+Each model's evidence is its Laplace value (§2). A model whose Laplace value is invalid has no
+evidence. Probabilities use equal prior weight on every distinct model; a railed model resolves to its
+degenerate twin and is not a second vote (the degenerate-limit rule, §2). Rung 1 never samples.
+
+**The triggers: when rung 2 runs.** Rung 2 runs on a spectrum only when at least one trigger fires.
+Each is a named predicate in `count_ladder.py`. The thresholds are named constants, measured on the
+benchmark's tuning stream (§2.3) and recorded there; they were not tuned against the targets.
+
+| Trigger | Fires when | Threshold |
+|---|---|---|
+| `laplace_invalid` | a contender has no usable rung-1 evidence, or its representative did not converge | none |
+| `split_competitive` | a split start lies within the margin of its parent, and one of the two is the best model | 3.0 nats (`SPLIT_MARGIN`) |
+| `starts_disagree` | start families within the margin of the top start pick different counts | 3.0 nats (`START_DISAGREEMENT_MARGIN`) |
+| `modes_merged` | two modes of the best model are closer than the margin | 0.5 resolution FWHM (`MERGED_FWHM_FRACTION`) |
+| `amplitude_zero` | a mode amplitude of the best model sits at its lower bound, or within one standard error of zero | one standard error |
+| `structured_residual` | the verdict's runs test finds structure in the best model's pulls | the verdict's own test |
+| `at_ceiling` | the best count is the mode ceiling | none |
+
+**Rung 2, the contenders: nested sampling.** The contending set is every distinct model within 10 nats
+of the best rung-1 evidence (`CONTENDING_MARGIN`), the count above the best in both elastic variants,
+and every distinct model with no usable rung-1 evidence. A model resolved to its degenerate twin is not
+a contender of its own; the count above it still is, since nested sampling explores the mode the
+optimizer railed. Each contender is sampled by nested sampling at 128 live points (`RUNG2_N_LIVE`;
+`ISAR_ESCALATION_N_LIVE` overrides it, and the test suite sets 32), with `dlogz` 0.5. Its evidence is
+trusted when the evidence gates pass: a finite log-evidence, the `dlogz` target reached before the
+iteration cap, and `logzerr` at most 5 (`bayes._evidence_gate`). The sampler's interval gates (effective
+sample size, a railed Ω_d, a degenerate ω₀ interval) do not decide a count: a mode the data does not
+need spreads over the window, and that spread is the Occam penalty itself. A contender whose sampling
+raises is a failed calculation, and it is never evidence against the model.
+
+The published fit of a sampled model is an optimizer refit started from the sampler's maximum-likelihood
+point, kept only when it beats rung 1's representative. The count probabilities are the equal-prior
+posterior over the sampled contenders, summed by count.
+
+**Budget and time slices.** Each spectrum has a single-worker budget of 30 minutes (`RUNG2_BUDGET_S`;
+`ISAR_RUNG2_BUDGET_S` overrides it). The budget counts across invocations and is checked before each
+contender starts; a contender that has started is never cut off. `isar run` delivers rung 1 for every
+new spectrum first, then runs rung 2 to completion, since a plain run has no slice. A campaign refresh
+spends at most 120 s of rung 2 per refresh (`CAMPAIGN_RUNG2_SLICE_S`, handed to the analysis child as
+`ISAR_RUNG2_SLICE_S`). A spectrum still pending resumes at the next refresh from the contenders already
+sampled (`rung2_partial`); a stored sample is reused only when the rung-1 fit it was sampled from is
+unchanged. Pooled masters run rung 2 to completion inside their own fit, with no slice.
+
+**The six states.** Every spectrum is in exactly one state. When more than one applies, the precedence is
+unresolved, then search limited, then settled, and every applicable reason is kept.
+
+| State | Meaning | Shown result |
+|---|---|---|
+| `fitting` | no result yet (ingested, not fitted) | none |
+| `provisional` | rung 2 still has contenders to sample and budget left ("rung 2 pending") | rung 1 |
+| `settled` | the counts tried hold the evidence: one clear winner, or an ambiguity whose both probabilities are stated. With no trigger fired, rung 1 decides and the reason says so | rung 2's best if rung 2 ran, else rung 1's |
+| `search limited` | the mode ceiling or the 30-minute budget stopped the search; the reason names which | rung 1, even when rung 2 finished; the boundary is named |
+| `unresolved` | a contender's evidence could not be computed (its sampling failed or its evidence was not trusted), or no model was fitted | rung 1 |
+| `held` | not fitted: the energy zero could not be set; the hold reason is named | none |
+
+A rung-2 result is shown only when rung 2 finished and the state is settled. A partly finished rung 2 is
+never shown.
+
+**Flags and ambiguity.** A flag is a quality warning, kept apart from the state. Two exist:
+`structured residual` (the runs test on the shown fit), and `central residual, quasi-elastic not tested`
+(structure within two resolution FWHM of zero energy, where the quasi-elastic component is not tested;
+ruling R13). A flag never states that the quasi-elastic component is absent. The ambiguity marker is set
+when the runner-up count reaches probability 0.20 (`AMBIGUITY_RUNNER_UP_P`): both counts and both
+probabilities are recorded. The verdict then reads `unconstrained`, with the reason "peak count
+ambiguous". Under hard rule 5, only a settled, unambiguous count enters the dispersion prior
+(`evidence_update._master_prior_admissible`).
+
+The record lists every count rung 1 tried, with the evidence it has (rung 2's, else rung 1's) or the
+reason it has none (§2.1, "The delivery"). The reader's view of the states is in `USING_ISAR.md`, "Reading
+the peak count".
+
+**Limits, stated where they bite.**
+
+- *Laplace leans toward fewer modes.* On the tuning stream, the Laplace value of the count above the best
+  sat 15 to 18 nats below its nested-sampling value in three of four priced cases (measured 2026-10-23 with
+  400 live points; the measurement script is scratch, not committed). The count decisions checked there did
+  not flip at 400 points. Rung 2 corrects this only when a trigger fires, and three of the six wrong counts
+  on the ceiling-3 subset (T0010, T0011, T0012) fire no trigger at all.
+- *Escalation rate and rung-2 cost are out of date.* On the tuning-stream subset, 11 of 20 spectra escalated at
+  ceiling 3, before the background-free twin existed; a background railed at zero was the main reason contenders
+  lacked evidence. Rung 2 took a median of about 250 s per spectrum at 128 live points (one worker, before the
+  fit-core speed-up). Rung 2 has not been timed at the 6-mode ceiling since: in the one attempt, no spectrum
+  finished rung 1 plus rung 2 within 576 s.
+- *128 live points are not enough at 11 to 14 free parameters.* On single contenders with 11 and 14 free
+  parameters, nested-sampling lnZ at 128 points lay 31 to 54 nats from its 400-point value, while reporting
+  ±1 to 1.5 nats. `logzerr` does not bound that bias. The live-point count is a shortcut recorded at
+  `RUNG2_N_LIVE`, not a tuned value.
+- *A started contender is not cut off.* One nested-sampling run can therefore overrun the 120 s campaign slice.
+- *The elastic-line phantom at the endpoint world, H = 2.10, stays open.* The leading reading there is
+  `stokes2+bg` with an overdamped mode at 0.195 meV standing in for the elastic line. The degenerate-limit
+  rule does not resolve it, because Ω_d sits off its limit. The strict `xfail` in
+  `tests/scene/test_worlds_scene.py` records it. Operator ruling, 2026-10-23: it stays under the R13
+  central-residual flag and is revisited after the beamtime.
+
+### 2.3 The peak-count benchmark **[Built; targets not yet measured at the design's draw count]**
+
+`isar/synth/count_bench.py` tests the ladder on truths the fitter never sees, against the challenge: fit any
+spectrum a human could fit. The generator draws synthetic spectra with 0 to the ceiling modes (default 6):
+energies, widths, amplitudes, temperature, elastic strength, background, exposure and a Voigt resolution.
+Each mode's anti-Stokes partner is the production Bose tie, and counts are Poisson with no floor. Hard kinds
+are over-represented: close doublets, broad single peaks, a weak peak on a strong neighbour's tail, features
+near the elastic line, empty spectra and generic spectra of 2 to the ceiling modes. Each case is fitted
+through `scan_delivery.fit_one`, the production path, from an observation that carries no truth.
+
+**What "resolvable" means.** A truth with N modes is *resolvable* when two conditions hold over repeated
+Poisson draws of it. A reference fit prefers N modes over N−1 in at least 90% of the draws of the truth. And
+the same comparison on the truth with its weakest mode removed prefers N in at most 5% of its draws. The
+design's default is 200 draws. A truth that is not resolvable is *borderline*, and on a borderline case the
+fitter is not required to recover the count. The reference is the production Laplace evidence (default
+`--ref-evidence laplace`), with truth-placed starts and eight random starts per model. `--ref-evidence nested`
+is the sampler route: about three hours per resolvable two-mode case at the design's draw count. The reference
+shares rung 1's method and so its blind spot: the limit on Laplace in §2.2 applies to these labels too. Its
+agreement with the truth is reported beside the figures.
+
+**The figures.** All three are targets (rulings R5, R14, R15), reported with numerator, denominator, binomial
+standard error and a Wilson 95% interval. None is a gate.
+
+1. *Correct counts on resolvable cases:* target at least 90%. An ambiguous answer on a resolvable case is an
+   abstention: it is not correct, and it stays in the denominator.
+2. *Confident extra modes on empty or single-mode truths:* target at most 5%. A confident extra mode is a count
+   above the truth's that the fit does not mark ambiguous.
+3. *The A/B test:* for each resolvable case, 1000 fresh draws from the truth and 1000 from the fitted curve. The
+   likelihood-ratio test picks the source of each draw. A case passes when its accuracy is at most 60%; 50% is a
+   coin flip. The figure is the share of resolvable cases that pass. No share target is set.
+
+A figure that stalls is reported as reached, not tuned overnight.
+
+**Status, 2026-10-23.**
+
+- The design's draw count has not been run. A probe measured 1.6 to 2.1 s per draw pair of the Laplace reference
+  (one worker), so one resolvable two-mode case at 200 plus 200 draws takes about 12 minutes; nested sampling would
+  take hours. The full characterisation therefore runs only on request.
+- The tuning run used 20 draws (cases T0000 to T0059 at ceiling 4; 57 finished). It labelled 1 of 57 truths
+  resolvable, and many clean single peaks came out borderline. At 10 null draws the 5% rule allows no false split at
+  all. None of the three figures was measured meaningfully.
+- The same run, with rung 2 forced on every contending set, moved the count on 10 of 56 spectra: 4 towards the truth
+  and 4 away. Correct counts were 37 of 56 at both rungs. This is a check on synthetic cases that set the triggers'
+  starting thresholds, not a figure against the targets.
+- On one resolvable smoke case with a correct count, the A/B test picked the source 93.5 to 95% of the time, far
+  above the 60% target. With thousands of counts a fit differs detectably from its truth, so the A/B target is
+  expected to be hard on well-counted cases.
+
+**Running it.**
+
+- `python -m isar.synth.count_bench --mode tuning`: the capped tuning run (at most 60 cases and 30 minutes, on the
+  tuning seeds).
+- `run-isar-count-bench.bat --cases 4 --draws 3 --null-draws 3 --ab-draws 200`: a quick look. Output goes to
+  `out\count_bench\<timestamp>\` (`figures.json`, `cases.csv`, `count_bench.log`), and the folder and wall-clock
+  time are printed.
+- The full run (`--cases 100 --draws 200`, the defaults) takes hours. It runs only when started.
+- The routine suite runs only the fast subset (`-m "not slow"`).
 
 ## 3. Certify: the interval ladder, with its coverage measured
 
@@ -863,7 +1037,8 @@ realizes. `y` = counts, `f` = model expected counts.
   (the fit profiles the amplitudes out, §1.1, but `H` is the joint one) — the Gaussian-bump
   integral; refused on any
   boundary-pinned fit (escalate to nested sampling). Dominance prune: a deferred candidate whose
-  evidence *ceiling* sits ≥ 30 nats below a trusted leader is recorded `dominated`, unsampled.
+  evidence *ceiling* sits ≥ 30 nats below a trusted leader is recorded `dominated`, unsampled (the
+  pre-ladder lane; the count ladder does not prune, §2.2).
 - Diagnostics lane: `AIC = C + 2k`; Akaike weight `w_s = exp(-Delta_s/2) / sum exp(-Delta/2)`.
 - Soft dispersion prior (MAP, §5): the Gaussian belief `(prior_omega, prior_sigma)` enters the
   minimized cost once as its `-2 ln` density (`(w0 - prior_omega)^2 / prior_sigma^2` up to the

@@ -267,8 +267,10 @@ count, elastic vs anti-Stokes forms) are fit and compared by per-candidate Bayes
 (Laplace with escalation to nested sampling, uniform prior over admissible structures); an extra
 peak must buy its parameters in marginal likelihood — never raw χ², which systematically fits
 noise as phantom phonons. AIC and Akaike weights persist per candidate as the recorded
-diagnostics lane. *(Implemented: `best_model`, `n_modes`, `best_model_posterior`,
-secondary-peak columns.)*
+diagnostics lane. The peak count is open-ended and decided on the two-rung count ladder
+(`STATS_PRIMER.md` §2.2). *(Implemented: `best_model`, `n_modes`, `best_model_posterior`, and the
+count state `count_state`; every fitted mode is a row of `report/modes.csv`. No primary or
+secondary mode columns.)*
 
 **Physics constraints are encoded, not rediscovered per scan.** Detailed balance (I_AS/I_S =
 exp(−ℏω/k_BT)) decides whether an anti-Stokes peak is even admissible before one is fit; symmetry
@@ -474,6 +476,8 @@ rulings W1–W3.)*
 | Momentum (in-plane) resolution spread modelled inside the fit | Planned (after the SIXCIRCLE geometry) |
 | Adjudication (decide–record–defer) | Implemented (opt-in) |
 | Stage II: Baker–Cousins fit, evidence selection (H4; Akaike diagnostics retained), branch posterior, verdicts | Implemented |
+| Open-ended peak count: rung 1 Laplace evidence for every count from 0 to the ceiling (card `[fitting] max_modes`, default 6), rung 2 nested sampling of the contending counts, six count states, `report/modes.csv` with one row per mode, the `secondary_omega0` columns removed | Implemented (2026-10-23; `STATS_PRIMER.md` §2.1–2.2, `isar/analyze/count_ladder.py`). Pooled masters run rung 2 to completion inside their fit, not in time slices. |
+| Peak-count benchmark (`isar.synth.count_bench`): synthetic resolvability, correct-count, extra-mode and A/B figures | **Partial**: built, with its fast subset in the routine suite. The figures are targets, not gates (R14, R15), and are not yet measured at the design's draw count (`STATS_PRIMER.md` §2.3). The full run is on request. |
 | Interval ladder through bootstrap; `interval_reliable` flag | Implemented |
 | Uniform `interval_reliable` convergence rule | Implemented (2026-07-10) |
 | Pooled-fit member provenance | Implemented (2026-07-10) |

@@ -139,6 +139,29 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   the weight that drives selection, pooling, and the EIG/master consumers since H4. Persisted per
   candidate in `isar.fit_selection_semantics/2` alongside the AIC diagnostics; `None` on the
   recorded AIC fallback lanes rather than invented.
+- **count ladder, rung 1** — the cheap rung that decides the peak count of every spectrum: Laplace evidence for
+  each count from 0 to the mode ceiling, with and without the elastic line, several starts per model. It never
+  samples. (Not the same as the Q rung below.)
+- **count ladder, rung 2** — nested sampling of the *contending* counts, run only when a trigger fires: a split
+  that competes with its parent, starts that disagree, two modes merged, a mode amplitude at zero, structure left
+  in the residual, a count at the ceiling, or a Laplace evidence that is invalid.
+- **contending model** — a model rung 2 samples: within 10 nats of the best rung-1 evidence, or the count above
+  the best, or one with no usable rung-1 evidence.
+- **count state** — the one state of a spectrum's peak count: `fitting`, `provisional` (rung 2 still pending),
+  `settled`, `search limited` (the ceiling or the budget stopped the search), `unresolved` (a contender's evidence
+  could not be computed; a failed calculation is never evidence against a model), or `held` (not fitted, because
+  its calibration is missing). Its reasons are recorded beside it. See `USING_ISAR.md`, "Reading the peak count".
+- **ambiguous count** — the runner-up count has probability at least 0.20. Both counts and both probabilities are
+  reported, the verdict is `unconstrained`, and the count stays out of the dispersion prior.
+- **degenerate limit / twin** — a fit railed at a lower limit is the degenerate case of a model next to it: a
+  mode's amplitude or the elastic height at zero, a mode's energy at zero, a mode's width at its floor (the
+  resolution-limited delta-function mode), or the background at zero (the background-free model). That neighbour
+  is its twin. The railed model is not a second vote for its twin.
+- **resolvable (benchmark)** — a synthetic truth whose extra mode a reference fit finds in at least 90% of Poisson
+  draws, and whose weakest-removed version is split in at most 5%. The benchmark's measurable sense of "a human could
+  fit it".
+- **count flag** — a quality warning on a fit, kept apart from its state: `structured residual`, or `central
+  residual, quasi-elastic not tested`. The second never states that the quasi-elastic component is absent.
 - **statistical semantics** — additive producer metadata declaring what estimator, constraints,
   model denominator, interval/particle measure, probability-like score, and authority scope a
   quantity actually has. Missing metadata leaves a legacy quantity valid but semantically

@@ -283,6 +283,47 @@ move left would have to leave the energy search band you declared — authorise 
 in the objective, or re-compile the goal) and resume; more beam time alone will not help. Anything else
 is genuinely data- or budget-limited, and resuming without changing something will reproduce it.
 
+## Reading the peak count
+
+Each scan × detector row of `report/results.csv` is one spectrum. Its fitted peak count is `n_modes`, and
+its state is in the count columns:
+
+| Column | Meaning |
+|---|---|
+| `count_state` | the spectrum's one state (table below), or `not fitted` / `not recorded` (below the table) |
+| `count_state_reason` | why, in words: the trigger, the limit that stopped the search, the calculation that failed, or the hold reason |
+| `deciding_rung` | `1` (Laplace evidence) or `2` (nested sampling): the rung whose result is shown |
+| `count_probability` | the probability of the selected count |
+| `runner_up_count`, `runner_up_probability` | the next most probable count and its probability |
+| `count_ambiguous` | `True` when the runner-up is close (probability at least 0.20): read both counts |
+| `count_flags` | quality warnings, kept apart from the state: `structured residual`, `central residual, quasi-elastic not tested` |
+
+`report/modes.csv` has one row per mode of the selected count, ordered by energy (`mode_index` 0 is the
+lowest). Each row repeats its spectrum's `count_state`, so a provisional mode is never mistaken for a
+settled one. `omega0` is the intrinsic mode energy and `peak_position` the displayed one (the damped
+frequency). `uncertainty_kind` is `hesse` when the mode has an error bar and empty when it has none. An
+empty cell means missing, never zero.
+
+| State | What it means | What to do |
+|---|---|---|
+| `settled` | the evidence picks a count, or the ambiguity is stated | use it; check `count_ambiguous` |
+| `provisional` | rung 2 is still sampling: `count_state_reason` reads "rung 2 pending: k of n contending models sampled" | the shown count is rung 1's; it becomes `settled` when rung 2 completes |
+| `search limited` | the mode ceiling or the 30-minute per-spectrum budget stopped the search | the count is the best found; the reason names the limit, and the spectrum may hold more modes |
+| `unresolved` | a contender's evidence could not be computed | the rung-1 count is shown; it stops nothing, but read it with care |
+| `held` | not fitted, because the energy zero could not be set | the reason names what is missing; the scan is re-examined on every later run |
+| `fitting` | ingested, not yet fitted | nothing to do until the next run |
+
+Two row states are not ladder states: `not fitted` (the scan is excluded, or undersampled and so not fitted)
+and `not recorded` (a detector outcome written before the count ladder existed; a re-run fills it in).
+
+**"Rung 2 pending"** means the spectrum is `provisional`. In `isar run` rung 2 runs to completion within the
+same invocation, unless the 30-minute per-spectrum budget is reached first, which makes the spectrum
+`search limited`. During a campaign each refresh spends at most two minutes on rung 2, so a spectrum can stay
+`provisional` for several refreshes. It resumes where it stopped and becomes `settled` once its contenders are
+sampled. A campaign does not stop on a provisional spectrum, and only a settled, unambiguous count enters the
+dispersion prior. Pooled masters run rung 2 to completion inside their own fit, so they are never provisional
+for that reason. How the rungs and states are decided is in `STATS_PRIMER.md` §2.2.
+
 ## What ISAR does and doesn't do here (honest limits)
 
 - The fitted **ω₀ is the product**; error bars are statistical-only (see

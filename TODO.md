@@ -17,7 +17,7 @@ ISAR = analysis authority). Forward workstreams live in their own plans:
 [SPEEDUP](docs/plans/speedup.md), [STEERING roadmap §10](docs/design/steering.md),
 [BACKGROUND](docs/plans/background.md), [EIG](docs/design/eig.md).
 
-Last updated: 2026-08-07.
+Last updated: 2026-10-23.
 
 ---
 
@@ -256,6 +256,73 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       **Acceptance:** the prior distinguishes branches and a secondary mode can seed one.
 - [ ] **FIT-3 — N=3 modes.** Mechanical extension once 2-mode is field-proven.
       **Acceptance:** 3-mode enumeration passes the synthetic gates without regressing 1/2-mode.
+
+- [ ] **FIT-4 — Amplitude prior constants: sensitivity check not run.** `AMPLITUDE_SCALE_PER_MONITOR = 1.0`
+      and `AMPLITUDE_SCALE_PER_SECOND = 1.0e5` (`isar/analyze/prior.py`) are agent-proposed. Their check (the
+      example set refitted with one alternative prior width) has not been run, so a count could move with the
+      constant unseen before the beamtime. **Acceptance:** the check runs on the example set; any count that moves
+      is reported with its spectra, and the constant goes to the operator before the beamtime.
+      **Governing:** `docs/STATS_PRIMER.md` §2.1.
+- [ ] **FIT-5 — A `[fitting] structures` restriction that matches nothing is silently widened.**
+      `scan_delivery.fit_one` keeps every admissible candidate and records one reason ("kept all"), so the scan
+      is fitted on the full model set and the scientist's restriction is not applied. The same behaviour is
+      written in `Guidelines.filter_structures` (`isar/session/guidelines.py`), which has no caller.
+      **Acceptance:** a test with a mistyped label shows the scan is refused or held with its reason, not fitted
+      on all models; the choice of refusal or hold is the operator's.
+- [ ] **FIT-6 — Pooled masters run rung 2 unsliced.** `master_delivery.py` calls `fit_one` without a deadline,
+      so a campaign refresh waits for a master's whole rung 2. **Acceptance:** masters take the rung-2 deadline and
+      resume as per-scan fits do, and the refresh's wait is measured.
+- [ ] **FIT-7 — A started rung-2 contender is never cut off.** The 120 s campaign slice is checked between
+      contenders, so one nested-sampling run can overrun it (measured 2026-10-23: about 250 s median per spectrum at
+      ceiling 3). **Acceptance:** the overrun is measured on the example set and either bounded or stated in
+      `STATS_PRIMER.md` §2.2.
+- [ ] **FIT-8 — Rung 2 at 11 to 14 free parameters is not reliable at 128 live points.** Nested lnZ lay 31 to 54
+      nats from its 400-point value while reporting ±1 to 1.5 nats (`count_ladder.RUNG2_N_LIVE`, a shortcut).
+      `logzerr ≤ 5` does not bound this bias, so a count decided at high mode numbers may be wrong.
+      **Acceptance:** the live-point count at the 6-mode ceiling is measured against a 400-point reference and the
+      constant set from it, or contenders at high counts are marked untrusted.
+- [ ] **FIT-9 — Undercounts that no trigger sees.** Laplace prices the count above the best 15 to 18 nats too low
+      (tuning stream, four priced cases), and three of six wrong counts at ceiling 3 (T0010, T0011, T0012) fire no
+      trigger, so rung 2 never sees them. **Acceptance:** a trigger or rule that sends these cases to rung 2,
+      tested on the tuning stream, with the figures reported as targets (R15), not tuned to a pass rate.
+- [ ] **FIT-10 — Rung-2 cost and escalation rate at the 6-mode ceiling are unmeasured.** Both were measured at
+      ceilings 3 and 4, before the background-free twin existed; at ceiling 6 no spectrum finished rung 1 plus
+      rung 2 within 576 s, before the fit-core speed-up. **Acceptance:** both measured on the tuning stream at
+      ceiling 6, with timings and rates reported.
+- [ ] **FIT-11 — Candidate-count record beside the deciding rung.** The per-count record shows each count's
+      representative: an unsampled variant, or a partial rung-2 lnZ, can sit beside the deciding rung's
+      probability. **Acceptance:** settled with the analyzer inspector design; the record names which rung priced
+      each number.
+- [ ] **FIT-12 — Rung-2 selection method name.** The rung-2 selection records
+      `selection_method = "laplace_evidence_selection"` while its candidates carry `evidence_method = "dynesty"`.
+      **Acceptance:** `isar/schema/statistics.py` names a nested-sampling selection method, and the rung-2
+      selection records it.
+- [ ] **FIT-13 — Row states outside the six ladder states.** `not fitted` and `not recorded`
+      (`isar/session/outcome.py`) are not among the six states. **Acceptance:** the operator rules whether they stay
+      or map onto the six; `STATS_PRIMER.md` §2.2 and `USING_ISAR.md` follow the ruling.
+- [ ] **FIT-14 — The shadow lane and the structure-label filter skip the degenerate-limit rule.**
+      `fit_shadow_candidates` does not apply it, and a `structure_labels` filter that drops a twin leaves the railed
+      candidate priced as itself. **Acceptance:** both route through the rule, or the gap is stated in
+      `STATS_PRIMER.md` §2.1.
+- [ ] **FIT-15 — Benchmark figures not yet measured.** The three figures (`STATS_PRIMER.md` §2.3) have no run at
+      the design's 200 draws, and the default reference is Laplace, which shares rung 1's blind spot.
+      **Acceptance:** a characterisation run on request at a stated draw count, with reference agreement reported
+      beside the figures and each figure marked reached or not reached.
+- [ ] **FIT-16 — Dead lane and a duplicate.** `evidence.candidate_set_evidence(escalate=True)` (pruning, budget,
+      parallel batch) has no production caller, and `evidence.candidate_bundle` repeats
+      `select._candidate_evidence`. **Acceptance:** both deleted, with the `select.py` change in the same commit.
+- [ ] **FIT-17 — Elastic-line phantom at the endpoint world, H = 2.10.** Operator ruling 2026-10-23, option 3: it
+      stays under the central-residual flag (R13) and is revisited after the beamtime. The strict `xfail` in
+      `tests/scene/test_worlds_scene.py` stays until then. **Acceptance:** after the beamtime the test passes, or a
+      new ruling reclassifies the case.
+- [ ] **FIT-18 — Deferred rename, `omega0` to `steer_omega0`.** The column and the `FitOutcome` field `omega0` are
+      read by about fourteen modules across analyze, session, drive, report and the GUI; a partial rename breaks
+      `isar score` and the campaign diagnostic. **Acceptance:** one packet covers those files, or a ruling makes the
+      CSV column alone the rename with its two extra readers. It comes back with the GUI overview work or any change
+      that reshapes `results.csv` readers.
+- [ ] **FIT-19 — `docs/stats/figures/akaike_example.json` is stale.** It still carries the key `secondary_omega0`;
+      `docs/stats/make_figures.py` now writes `second_mode_omega0`. **Acceptance:** regenerated from the archived
+      workspace, and the primer's Fig. 3 still matches it.
 
 ---
 
