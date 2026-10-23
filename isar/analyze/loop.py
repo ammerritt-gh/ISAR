@@ -515,6 +515,8 @@ def build_problem(hyp, ctx, *, x0=None) -> Problem:
     else:
         x0 = np.asarray(x0, dtype=float)
     bounds = mode_bounds(names, ctx)   # the prior recipe: declared quantities, never the counts
+    lo, hi = np.array(bounds, dtype=float).T
+    x0 = np.clip(x0, lo, hi)           # a seed below the energy floor starts on it, not outside
     est =estimators.get_estimator("baker_cousins")
 
     def costv(theta):

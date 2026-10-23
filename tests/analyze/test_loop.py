@@ -330,8 +330,11 @@ def test_sparse_two_peak_selects_two_mode_and_single_peak_stays_one_mode():
     two = select.select_models(loop.fit_structures_two_stage(_sparse_two_peak_ctx(), minos=False,
                                                              mode_ceiling=2))
     assert "stokes2" in (two.best or "")
-    single = select.select_models(loop.fit_structures_two_stage(_one_peak_ctx(), minos=False,
-                                                                mode_ceiling=2))
+    # Judged by evidence, as production does: the AIC fallback (no hypotheses) rewards a
+    # zero-amplitude spike on one noisy point with a 3-parameter AIC gain of a fraction of a unit.
+    ctx, hyps = _one_peak_ctx(), {}
+    results = loop.fit_structures_two_stage(ctx, minos=False, mode_ceiling=2, hypotheses_out=hyps)
+    single = select.select_models(results, hyps, ctx, stamp=False)
     assert single.best is not None and "stokes2" not in single.best
 
 

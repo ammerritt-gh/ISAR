@@ -250,14 +250,14 @@ How many peaks a spectrum holds is a model-selection question, so it is decided 
 everything: by evidence, with the Occam penalty paid out of the priors. That penalty is only as
 honest as the priors, and a prior built from the spectrum's own counts is not honest: a brighter
 spectrum would get a wider amplitude prior and pay a bigger penalty for the same extra peak. The
-**mode prior recipe** (`isar/analyze/prior.py`, version `isar.mode-prior-recipe/2`) fixes that. It is
+**mode prior recipe** (`isar/analyze/prior.py`, version `isar.mode-prior-recipe/3`) fixes that. It is
 one rule, set before fitting and identical for every spectrum, built only from quantities the
 experiment *declares*: the fit window, the resolution width and the exposure. Starting values may
 still come from the data (a seed is not a prior); bounds and priors may not.
 
 | Parameter | Prior (flat over) | Built from |
 |---|---|---|
-| mode energy Ω_d | `(1e-3, highest fitted energy)` meV | the fit window |
+| mode energy Ω_d | `(0.5 x resolution FWHM, highest fitted energy)` meV | the fit window, the resolution width |
 | mode width Γ | `(min(1e-3 meV, 0.01 x resolution FWHM), 5 meV)` | the resolution width, a declared maximum |
 | mode / elastic / quasi-elastic area | `(0, scale x exposure x resolution FWHM)` | the exposure, the resolution width |
 | flat background (counts per point) | `(0, scale x exposure)` | the exposure |
@@ -268,6 +268,21 @@ the counting time where a spectrum has no monitor), and `scale` depends on which
 nominal `1e6`, never a number taken from its counts. A spectrum with no usable resolution is held
 before it gets here. The anti-Stokes partner is still derived from its Stokes mode, never given a
 prior (§2, hard rule 2).
+
+**The energy floor.** The lower edge of the energy prior is `MODE_ENERGY_FLOOR_FRACTION = 0.5` of
+the resolution FWHM, not the window edge (the recipe's version 3; version 2 started at 1e-3 meV).
+Why: a mode closer than half a resolution width to the elastic line is not separable from it, and
+with every count tried the evidence did pick a "phonon" at 0.19 meV standing in for the elastic
+line (P = 0.993 on one world node). The quasi-elastic component is untested unless an experiment
+declares its width (R13), so a central residual is *flagged*, never fitted by a mode that is
+really the elastic line. The floor is on the Stokes energy Ω_d only, which is what the anti-Stokes
+partner derives from; the ordered-energy prior below normalises over the same window `[floor, top]`
+in both evidence lanes (it reads its edges from the prior bundle), and a window with no room above
+the floor keeps the window edge. The constant is agent-proposed and provisional; set it to 0 (and
+bump the version) to undo. Measured on the endpoint world: a floor of 0.5 moves the spurious
+low-energy mode from 0.19 to 0.82 meV rather than removing it, and a floor of one full width (1.0)
+removes it but pins the fitted mode on the floor at some nodes, which is itself the "central
+residual" reading; the value is for the operator to confirm.
 
 **The amplitude constants.** `scale` is `AMPLITUDE_SCALE_PER_MONITOR = 1.0` for a monitor-normalised
 spectrum, and `AMPLITUDE_SCALE_PER_SECOND = 1.0e5` for one normalised by counting time alone (the
@@ -314,9 +329,11 @@ prior that singles out one mode's amplitude or width leaves the energies unorder
 prior is used in both lanes.
 
 **Status [Partial].** The recipe, the ordered prior, the ceiling and the signature are implemented and
-tested. The fitter's bounds (`loop.build_problem`) and the two evidence lanes (`evidence.py`,
-`errors/bayes.py`) switch to them with the open-ended peak-count ladder; until then the older
-count-scaled bounds and the per-label flat energy prior still run.
+tested, and the fitter's bounds now come from the recipe (`loop.build_problem` reads
+`prior.mode_bounds`; the count-scaled bounds are gone), as does rung 1 of the peak-count ladder.
+Still to switch: the two evidence lanes (`evidence.py`, `errors/bayes.py`) onto the ordered energy
+prior, with the nested-sampling rung, so until then they still use the per-label flat energy prior;
+and the card's `max_modes` reaching the fit (the delivery passes the environment default for now).
 
 **The mode ceiling.** A spectrum may hold up to a configurable number of modes: card
 `[fitting] max_modes`, else the environment variable `ISAR_MODE_CEILING`, else 6

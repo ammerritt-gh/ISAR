@@ -43,7 +43,7 @@ class PhononPrior:
 # ----------------------------------------------------------------------------
 # Bump the version whenever a constant or a rule below changes: it is hashed into the guidelines
 # signature (so the affected spectra refit) and recorded with every fit.
-PRIOR_RECIPE_VERSION = "isar.mode-prior-recipe/2"
+PRIOR_RECIPE_VERSION = "isar.mode-prior-recipe/3"
 
 # Amplitude ceiling: a fitted area A (counts at the reference exposure, integrated over meV) is
 # bounded by scale x exposure x width, i.e. a resolution-limited peak may reach `scale x exposure`
@@ -64,6 +64,13 @@ NOMINAL_EXPOSURE = 1.0e6
 # (kept: the H8 boundary-pin tolerance reads it) is reached; it only bites for a resolution sharper
 # than GAMMA_FLOOR / WIDTH_FLOOR_FRACTION = 0.1 meV.
 WIDTH_FLOOR_FRACTION = 1.0e-2
+
+# A mode's energy (Omega_d, the coordinate the recipe bounds and orders) may not fall below this
+# fraction of the resolution FWHM: a DHO nearer than that to the elastic line is not separable from
+# it, and the quasi-elastic component is untested (ruling R13), so a central residual is flagged,
+# never fitted by a "phonon" standing in for the elastic line. Agent-proposed; undo with 0 (and a
+# version bump). The Stokes side only: the anti-Stokes partner is derived from it.
+MODE_ENERGY_FLOOR_FRACTION = 0.5
 
 
 def recipe_exposure(ctx) -> float:
@@ -107,7 +114,9 @@ def mode_bounds(names, ctx) -> list[tuple[float, float]]:
     """(lo, hi) for each global parameter name, in order: the recipe's bounds and, since every
     parameter's prior is flat over them, its priors.
 
-    * ``.Omega_d`` (energy): uniform over the fit window, ``(EPS_OMEGA_D, max fitted energy)``.
+    * ``.Omega_d`` (energy): uniform over the fit window above the elastic line,
+      ``(MODE_ENERGY_FLOOR_FRACTION x resolution width, max fitted energy)``; a window with no room
+      above that floor keeps ``(EPS_OMEGA_D, max fitted energy)``.
     * ``.Gamma`` (width): from ``WIDTH_FLOOR_FRACTION`` of the resolution width (never above the
       absolute ``GAMMA_FLOOR``) to ``GAMMA_MAX``.
     * ``.A`` / ``.E`` / ``.QE`` (areas): ``(0, amplitude_scale x exposure x resolution width)``.
@@ -118,10 +127,12 @@ def mode_bounds(names, ctx) -> list[tuple[float, float]]:
     width = resolution_fwhm(ctx)
     scale = amplitude_scale(ctx)
     area_hi = scale * exposure * width
+    floor = MODE_ENERGY_FLOOR_FRACTION * width
+    energy_lo = floor if EPS_OMEGA_D < floor < x_max else EPS_OMEGA_D
     out = []
     for name in names:
         if name.endswith(".Omega_d"):
-            out.append((EPS_OMEGA_D, x_max))
+            out.append((energy_lo, x_max))
         elif name.endswith(".Gamma"):
             out.append((min(GAMMA_FLOOR, WIDTH_FLOOR_FRACTION * width), GAMMA_MAX))
         elif name.endswith((".A", ".E", ".QE")):
@@ -139,7 +150,8 @@ def recipe_provenance(ctx) -> dict:
     return {"version": PRIOR_RECIPE_VERSION, "amplitude_scale": amplitude_scale(ctx),
             "exposure_source": getattr(ctx, "exposure_source", None),
             "exposure": recipe_exposure(ctx), "resolution_fwhm": resolution_fwhm(ctx),
-            "width_floor_fraction": WIDTH_FLOOR_FRACTION}
+            "width_floor_fraction": WIDTH_FLOOR_FRACTION,
+            "mode_energy_floor_fraction": MODE_ENERGY_FLOOR_FRACTION}
 
 
 # ----------------------------------------------------------------------------
