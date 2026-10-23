@@ -689,8 +689,12 @@ def published_artifact(tmp_path_factory):
     ws.root.mkdir(parents=True, exist_ok=True)
     ws.policy_path.write_text(Path(ill_in8._CARD_PATH).read_text(encoding="utf-8"),
                               encoding="utf-8")
-    driver.run_batch(ws, [data], M=25, detectors="det0", formats=(), workers=1,
-                     errors_tier="fast")
+    from isar.analyze import count_ladder
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv(count_ladder.RUNG2_BUDGET_ENV, "0")   # rung 2 is not what this test is about: a zero budget leaves an escalated count search limited, unsampled
+        driver.run_batch(ws, [data], M=25, detectors="det0", formats=(), workers=1,
+                         errors_tier="fast")
     _card, session = ws.load()
     refs = [outcome["predictive_ref"]
             for key, entry in session.scans.items() if key.startswith("master:")

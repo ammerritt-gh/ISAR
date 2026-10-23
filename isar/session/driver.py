@@ -167,13 +167,87 @@ def _resolve_bayes_opts(cli_opts=None) -> dict:
     return out
 
 
+# The campaign's rung-2 slice reaches the analysis child (a subprocess or the persistent worker) by
+# environment, like ISAR_ESCALATION_N_LIVE: isar.drive.isar_io.runner sets it around every runner
+# call. Unset: no slice, so a plain `isar run` runs rung 2 to completion.
+RUNG2_SLICE_ENV = "ISAR_RUNG2_SLICE_S"
+
+
+def resolve_rung2_slice(explicit=None) -> float | None:
+    """The invocation's rung-2 time slice in seconds: ``explicit``, else ``$ISAR_RUNG2_SLICE_S``,
+    else ``None`` (no slice). A malformed or negative value raises: a slice that quietly ignored
+    what it was told would hold a campaign decision on nested sampling."""
+    raw = explicit if explicit is not None else os.environ.get(RUNG2_SLICE_ENV)
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{RUNG2_SLICE_ENV}={raw!r} is not a number") from exc
+    if not value >= 0.0:
+        raise ValueError(f"rung-2 slice {value} must be a number >= 0")
+    return value
+
+
+def _rung2_pending(outcome) -> bool:
+    """Whether a stored outcome waits on rung 2 (provisional: its rung-1 result is shown)."""
+    count = ((outcome or {}).get("fit_selection_semantics") or {}).get("count_ladder") or {}
+    return count.get("state") == "provisional"
+
+
 def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=None, llm=False,
               M=200, scan_M=None,
               detectors=None, formats=("html", "markdown"), workers=None,
               errors_tier="full", scan_errors_tier=None, master_errors_tier=None,
               bayes_cli=None, timer=None,
               certification_manifest=None, analysis_allowance_seconds=None,
-              finish_initial_wave=False) -> RunSummary:
+              finish_initial_wave=False, rung2_slice_seconds=None) -> RunSummary:
+    """The pipeline behind ``isar run``, in two passes (design 2026-10-22, §3.1). The first delivers
+    rung 1 of the count ladder for every new or changed spectrum, writing each escalated one
+    ``provisional``. The second spends at most the rung-2 slice (:func:`resolve_rung2_slice`;
+    none: to completion) on the spectra still waiting on rung 2, resuming each from its stored
+    ``rung2_partial``; what it does not finish stays provisional, "rung 2 pending", and resumes on
+    the next invocation, which also covers a stopped or crashed run."""
+    slice_s = resolve_rung2_slice(rung2_slice_seconds)
+    started = time.monotonic()
+    common = dict(llm=llm, M=M, scan_M=scan_M, detectors=detectors, formats=formats,
+                  workers=workers, errors_tier=errors_tier, scan_errors_tier=scan_errors_tier,
+                  master_errors_tier=master_errors_tier, bayes_cli=bayes_cli, timer=timer,
+                  certification_manifest=certification_manifest)
+    first = _run_batch_pass(workspace, data_paths, force=force, force_masters=force_masters,
+                            analysis_allowance_seconds=analysis_allowance_seconds,
+                            finish_initial_wave=finish_initial_wave,
+                            rung2_deadline=time.time(), retask_pending=False, **common)
+    if certification_manifest is not None or first.analysis_incomplete or slice_s == 0:
+        return first
+    _card, session = workspace.load()
+    if not any(_rung2_pending(oc) for e in session.scans.values() for oc in e.detectors.values()):
+        return first
+    allowance = None
+    if analysis_allowance_seconds is not None:
+        allowance = float(analysis_allowance_seconds) - (time.monotonic() - started)
+        if allowance <= 0.0:
+            return first
+    second = _run_batch_pass(workspace, data_paths, force=False, force_masters=None,
+                             analysis_allowance_seconds=allowance, finish_initial_wave=False,
+                             rung2_deadline=None if slice_s is None else time.time() + slice_s,
+                             retask_pending=True, **common)
+    second.context_lines = first.context_lines + second.context_lines
+    second.n_fitted_this_run += first.n_fitted_this_run
+    second.n_reprocessed += first.n_reprocessed
+    return second
+
+
+def _run_batch_pass(workspace: Workspace, data_paths, *, force=False, force_masters=None,
+                    llm=False, M=200, scan_M=None,
+                    detectors=None, formats=("html", "markdown"), workers=None,
+                    errors_tier="full", scan_errors_tier=None, master_errors_tier=None,
+                    bayes_cli=None, timer=None,
+                    certification_manifest=None, analysis_allowance_seconds=None,
+                    finish_initial_wave=False, rung2_deadline=None,
+                    retask_pending=False) -> RunSummary:
+    """One pass of :func:`run_batch`. ``rung2_deadline`` (``time.time()``) bounds rung 2 of every
+    fit; ``retask_pending`` refits the spectra waiting on rung 2, resuming each."""
     timer = timer or NullTimer()
     # ``force_masters``: refit exactly these master ledger ids (e.g. "master:2.65_0.0_0.0_300")
     # even when their member set is unchanged, without forcing anything else. This is the
@@ -325,6 +399,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
     from isar.session.state import canonical_hash
     tasks = []          # (rec, det, q, T, sample, scan_id, chash, ghash, seed)
     plan = []           # ordered: ("carry", scan, outcome) | ("task", scan, det, task_idx)
+    rung2_resume = {}   # scan_id -> the rung2_partial a pending spectrum resumes from
     for rec in routed.measurements:
         scan = rec.scan_number
         chash = content_hash(rec)
@@ -350,6 +425,9 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                      or prev.status == "ingested" or force
                      or (calfp is not None and prev.status != "excluded"   # an excluded set stays so
                          and (prev.provenance or {}).get("calibration_fingerprint") != calfp))
+            if not fresh and retask_pending and _rung2_pending(prev.detectors.get(det)):
+                fresh = True
+                rung2_resume[scan_id] = prev.detectors[det].get("rung2_partial")
             if not fresh:
                 # Unchanged & already resolved: keep the ledger entry, re-list its outcome for the report.
                 if prev.detectors.get(det):
@@ -399,6 +477,11 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                     for rec in records
                 ],
             },
+            # Which rung-2 pass and what each pending spectrum resumes from: a later pass over
+            # the same spectra is new work, never a cached earlier pass.
+            "rung2": {"pass": "resume" if retask_pending else "rung1_first",
+                      "resume": {scan_id: canonical_hash(partial)
+                                 for scan_id, partial in sorted(rung2_resume.items())}},
             "seeds": {"scan_seed_base": seed_base, "scan_rule": "6000 + scan_number",
                       "master_rule": "6000 + canonical_group_index",
                       "error_attachment_default": 12345,
@@ -512,13 +595,16 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                 scan_workers=scan_workers, boot_executor=shared_pool,
                 boot_adaptive=scan_boot_adaptive, bayes_opts=bayes_opts,
                 on_complete=checkpoint_entry, deadline_gate=deadline_gate,
-                shadow_enabled=deadline_gate.deadline is None)
+                shadow_enabled=deadline_gate.deadline is None,
+                rung2_deadline=rung2_deadline, rung2_resume=rung2_resume)
             cached.update(zip(remaining_indices, fresh_entries))
             entries = [cached[index] for index in range(len(tasks))]
             _m_fit["per_task"] = [
                 {"scan_id": e.scan_id,
                  "seconds": e.provenance.get("fit_seconds"),
                  "two_stage_seconds": e.provenance.get("two_stage_seconds"),
+                 "rung1_seconds": e.provenance.get("rung1_seconds"),
+                 "rung2_seconds": e.provenance.get("rung2_seconds"),
                  "errors_attach_seconds": e.provenance.get("errors_attach_seconds"),
                  "bootstrap_seconds": e.provenance.get("bootstrap_seconds"),
                  "minos_seconds": e.provenance.get("minos_seconds"),
@@ -966,6 +1052,8 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
     replace_retrying(staged_workspace.state_path, workspace.state_path)
     replace_retrying(staged_workspace.report_dir / "results.csv",
                      workspace.report_dir / "results.csv")
+    replace_retrying(staged_workspace.report_dir / "modes.csv",
+                     workspace.report_dir / "modes.csv")
     hashes = _publication_hashes(workspace)
     checkpoint_store.mark_published(unit_keys=unit_keys, published_hashes=hashes)
     progress(phase="completed", published=True)

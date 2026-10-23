@@ -208,7 +208,7 @@ def test_fit_one_runs_the_count_ladder_and_records_its_route():
 
 
 @pytest.mark.slow
-def test_fit_one_two_peak_returns_two_modes_and_secondary_csv(tmp_path):
+def test_fit_one_two_peak_returns_two_modes_one_row_each_in_modes_csv(tmp_path):
     ctx = _two_peak_ctx()
     card = _card_with_fitting({})
     peaks = ({"omega0": 4.0, "sigma": 0.5}, {"omega0": 10.0, "sigma": 0.5})
@@ -219,7 +219,7 @@ def test_fit_one_two_peak_returns_two_modes_and_secondary_csv(tmp_path):
     oms = sorted(m["omega0"] for m in fit["modes"])
     assert abs(oms[0] - 4.0) < 1.0 and abs(oms[1] - 10.0) < 1.0
 
-    # Build an outcome + ledger and write results.csv: secondary columns populate.
+    # Build an outcome + ledger and write results.csv: every mode is a modes.csv row, by energy.
     outcome = outcome_mod.FitOutcome(
         detector_id="ana7", verdict=fit["verdict"], disposition="resolved",
         confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
@@ -238,14 +238,15 @@ def test_fit_one_two_peak_returns_two_modes_and_secondary_csv(tmp_path):
     assert len(rows) == 1
     row = rows[0]
     assert row["n_modes"] == 2                            # int-coerced
-    assert isinstance(row["secondary_omega0"], float)     # float-coerced, populated
-    # secondary is the non-primary mode's omega0 (primary matches scalar omega0).
-    assert row["secondary_omega0"] != row["omega0"]
-    assert abs(row["secondary_omega0"] - (oms[1] if row["omega0"] == oms[0] else oms[0])) < 1e-6
+    assert "secondary_omega0" not in row                  # no "primary"/"secondary" columns
+    modes = readers.read_modes_csv(ws.root)
+    assert [m["mode_index"] for m in modes] == [0, 1]
+    assert [m["omega0"] for m in modes] == pytest.approx(oms, abs=1e-9)
+    assert all(isinstance(m["peak_position"], float) for m in modes)
 
 
 @pytest.mark.slow
-def test_fit_one_single_peak_leaves_secondary_blank(tmp_path):
+def test_fit_one_single_peak_is_one_modes_csv_row(tmp_path):
     x = np.linspace(-8.0, 16.0, 81)
     counts = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
                                  peak="stokes+astokes") + 8.0
@@ -269,7 +270,8 @@ def test_fit_one_single_peak_leaves_secondary_blank(tmp_path):
     driver._write_results_csv(ws, st)
     row = readers.read_results_csv(ws.root)[0]
     assert row["n_modes"] == 1
-    assert row["secondary_omega0"] is None and row["secondary_omega0_err"] is None
+    mode, = readers.read_modes_csv(ws.root)
+    assert mode["omega0"] == pytest.approx(fit["modes"][0]["omega0"])
 
 
 # --------------------------------------------------------------------------- fast (HESSE) tier
@@ -453,7 +455,8 @@ def test_a_delivery_hint_never_shortcuts_the_ladder(monkeypatch):
         structure_hint="stokes+bg",
     )
 
-    assert hinted["structure_skipped"] is False
+    route = hinted["fit_selection_semantics"]["candidate_generation_route"]
+    assert route["supplied_hint"] == "stokes+bg" and route["hint_accepted"] is False
     shadow = validate_shadow_model_selection(hinted["shadow_model_selection"])
     assert shadow["shadow_execution_kind"] != "partial"
     assert len(shadow["attempted_model_identities"]) > 2        # not the hinted pair alone

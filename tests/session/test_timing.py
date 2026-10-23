@@ -78,6 +78,24 @@ def test_fit_timing_breakdown_is_disjoint_and_keeps_methods():
     assert got["method_seconds"]["bootstrap_seconds"] == 8.5
 
 
+def test_fit_timing_breakdown_reports_each_rung_of_the_count_ladder():
+    """Rung-1 and rung-2 wall time per spectrum reach the run timing report; the scan pool's two
+    passes (rung 1 first, then rung 2) each contribute their own per-task rows."""
+    timings = [{"stages": [
+        {"stage": "fit_scans", "per_task": [
+            {"scan_id": "E:1:d", "seconds": 4.0, "two_stage_seconds": 1.0, "rung1_seconds": 1.2,
+             "rung2_seconds": 0.0}]},
+        {"stage": "fit_scans", "per_task": [
+            {"scan_id": "E:1:d", "seconds": 9.0, "two_stage_seconds": 1.0, "rung1_seconds": 1.2,
+             "rung2_seconds": 6.5}]},
+    ]}]
+    got = fit_timing_breakdown(timings)
+    assert got["count_ladder_seconds"] == {"rung1": 2.4, "rung2": 6.5}
+    assert got["per_spectrum_rungs"] == [
+        {"scan_id": "E:1:d", "rung1_seconds": 1.2, "rung2_seconds": 0.0},
+        {"scan_id": "E:1:d", "rung1_seconds": 1.2, "rung2_seconds": 6.5}]
+
+
 def test_malformed_embedded_timing_is_logged_and_skipped(caplog):
     events = [{"kind": "analyze", "payload": {"timings": "broken"}}]
     assert embedded_run_timings(events) == []

@@ -9,13 +9,37 @@ boundary: the driver never imports a fit internal.
 from __future__ import annotations
 
 import inspect
+import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
 from isar.drive.session_log import AnalysisLimitExceeded
+
+# The campaign's rung-2 slice (design 2026-10-22, §3.1): each analysis refresh spends at most this
+# much single-spectrum wall time on nested sampling for spectra still provisional, so the campaign's
+# next decision waits minutes at most (ruling R6), never on a whole rung 2; the rest resumes on the
+# next refresh. It reaches the analysis child by environment (read by
+# isar.session.driver.resolve_rung2_slice), because the persistent worker takes no new request field.
+RUNG2_SLICE_ENV = "ISAR_RUNG2_SLICE_S"
+CAMPAIGN_RUNG2_SLICE_S = 120.0
+
+
+@contextmanager
+def _campaign_rung2_slice():
+    """``$ISAR_RUNG2_SLICE_S`` set for the analysis child a runner call may start (a subprocess, or
+    the persistent worker at its spawn), unless the operator already set it."""
+    if os.environ.get(RUNG2_SLICE_ENV) not in (None, ""):
+        yield
+        return
+    os.environ[RUNG2_SLICE_ENV] = str(CAMPAIGN_RUNG2_SLICE_S)
+    try:
+        yield
+    finally:
+        os.environ.pop(RUNG2_SLICE_ENV, None)
 
 
 @dataclass
@@ -250,7 +274,8 @@ def ingest_new(runner, workspace, data_paths) -> RunResult | None:
     """
     if not hasattr(runner, "ingest"):
         return None
-    return runner.ingest(workspace, list(data_paths))
+    with _campaign_rung2_slice():                 # this call may be the one that spawns the worker
+        return runner.ingest(workspace, list(data_paths))
 
 
 def refresh_analysis(runner, workspace, data_dirs, *,
@@ -276,6 +301,9 @@ def refresh_analysis(runner, workspace, data_dirs, *,
 
     With ``enforce_completion``, a soft runner checkpoint stop (``completed=False``) is turned into
     the campaign's explicit incomplete outcome, :class:`AnalysisLimitExceeded`.
+
+    The run spends at most :data:`CAMPAIGN_RUNG2_SLICE_S` on rung 2 of the count ladder; a spectrum
+    it does not finish stays provisional and resumes on the next refresh.
     """
     kwargs = {"errors_tier": errors_tier, "force": force, "render": render}
     if scan_errors_tier is not None:
@@ -291,7 +319,8 @@ def refresh_analysis(runner, workspace, data_dirs, *,
         kwargs["analysis_allowance_seconds"] = analysis_allowance_seconds
     if finish_initial_wave is not None and runner_accepts(runner, "finish_initial_wave"):
         kwargs["finish_initial_wave"] = bool(finish_initial_wave)
-    result = runner.run(workspace, list(data_dirs), **kwargs)
+    with _campaign_rung2_slice():
+        result = runner.run(workspace, list(data_dirs), **kwargs)
     if enforce_completion and not getattr(result, "completed", True):
         raise AnalysisLimitExceeded(
             "analysis limit exhausted; active fit wave checkpointed "

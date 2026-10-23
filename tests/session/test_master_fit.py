@@ -103,7 +103,8 @@ def test_run_tasks_serial_threads_shared_executor_and_adaptive(monkeypatch):
 
     def fake_process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                          chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
-                         boot_executor=None, boot_adaptive=False, bayes_opts=None):
+                         boot_executor=None, boot_adaptive=False, bayes_opts=None,
+                         rung2_deadline=None, rung2_resume=None):
         captured.update(executor=boot_executor, adaptive=boot_adaptive, boot_workers=boot_workers)
         return ScanEntry(scan_id=scan_id, scan_number=1, scan_type="measurement",
                          content_hash=chash, status="fitted")
@@ -567,8 +568,10 @@ def test_master_certification_survives_a_master_born_out_of_key_order(tmp_path, 
     ledger-derived group index with the run's sorted position and died on "group-index drift"
     after the planner had met the goal (acoustic path measured h = 2.6 before 2.55, 2026-09-08).
     The ledger number is the identity; the sorted position is an enumeration artefact."""
+    from isar.analyze import count_ladder
     from isar.drive import loop as drive_loop
 
+    monkeypatch.setenv(count_ladder.RUNG2_BUDGET_ENV, "0")   # rung 2 is not what this test is about: a zero budget leaves an escalated count search limited, unsampled
     later_key = _in8_file(tmp_path, "OOA", 57500, 2.55)   # measured first, born as 9000000
     earlier_key = _in8_file(tmp_path, "OOB", 57600, 2.15)  # measured second, sorts first
     ws = Workspace.open(tmp_path / "order-ws")

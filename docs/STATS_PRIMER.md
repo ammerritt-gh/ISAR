@@ -312,7 +312,8 @@ replaces the half-width energy floor of recipe version 3 (§2.1).
 
 When two genuinely different structures fit equally well, ISAR reports a **fork** — both
 answers — rather than averaging them into a single wrong number **[Implemented]**. Columns:
-`best_model`, `n_modes`, `secondary_omega0`, `secondary_omega0_err`.
+`best_model`, `n_modes`; every mode of the selected count is a row of `report/modes.csv`, ordered
+by energy (§2.1, the delivery).
 
 Verify:
 
@@ -405,8 +406,23 @@ pinned at the floor by a degenerate twin, §2) is ordered only with other delta-
 tested, and the fitter's bounds now come from the recipe (`loop.build_problem` reads
 `prior.mode_bounds`; the count-scaled bounds are gone), as does rung 1 of the peak-count ladder, and
 both evidence lanes (`evidence.py`, `errors/bayes.py`) price modes under the ordered energy prior.
-Still to switch: the card's `max_modes` reaching the fit (the delivery passes the environment
-default for now).
+The delivery (`scan_delivery.fit_one`) passes the card's `max_modes` to the fit and runs rung 2.
+
+**The delivery [Implemented].** Every spectrum is in one state (`isar.analyze.count_ladder`):
+`settled`, `provisional` (rung 2 still to run), `search limited`, `unresolved` or `held`, with its
+reasons, the rung that decided it, the probability of every count tried and the ambiguity marker,
+recorded as `fit_selection_semantics["count_ladder"]` and projected onto `results.csv`
+(`count_state`, `count_state_reason`, `deciding_rung`, `count_probability`, `runner_up_count`,
+`runner_up_probability`, `count_ambiguous`, `count_flags`; the selected count is `n_modes`). Each
+mode of the selected count is a row of `report/modes.csv`: intrinsic ω₀ and the displayed peak
+position Ω_d, Γ, amplitude, their HESSE errors (a missing one stays empty). A settled rung 2
+replaces rung 1's selection, priced on the contending models' nested-sampling evidence alone. An
+`isar run` delivers rung 1 for every new spectrum first, then spends at most its rung-2 slice on
+the spectra still provisional (a plain run: to completion; a campaign refresh: 120 s), resuming
+each from what an earlier invocation sampled (`rung2_partial`); what it does not finish stays
+`provisional` with "rung 2 pending" as its reason. Only a settled, unambiguous count enters the
+dispersion prior (`evidence_update._master_prior_admissible`). A pooled master runs rung 2 to
+completion inside its own fit.
 
 **The mode ceiling.** A spectrum may hold up to a configurable number of modes: card
 `[fitting] max_modes`, else the environment variable `ISAR_MODE_CEILING`, else 6
