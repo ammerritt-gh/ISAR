@@ -56,12 +56,19 @@ def _write_library(folder: Path, settings=SETTINGS, analyzers=ANALYZERS, *, skip
 
 
 def _write_scan(folder: Path, stem=STEM, analyzers=ANALYZERS, *, slit=None, seed=1, monitors=None, weak=(),
-                hkl=None, zero=ZERO, true_slit=TRUE_SLIT):
+                hkl=None, zero=ZERO, true_slit=TRUE_SLIT, centroids=None):
     """One scan in the CsV3Sb5 layout: an elastic line at `zero` through the `true_slit` curve, one DHO
-    mode at 4 meV, a flat background; Poisson counts. `slit` = (h, v) written as header facts."""
+    mode at 4 meV, a flat background; Poisson counts. `slit` = (h, v) written as header facts.
+    `centroids` (analyzer -> beamline elastic centroid, meV) writes the `.var` sidecar: every analyzer is
+    listed, and only the analyzers in the mapping carry `elpk_centroid_meV`."""
     folder.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
     grid = np.round(np.arange(-15.0, 15.0001, 0.1), 4)
+    if centroids is not None:
+        var = ["silicon_order = 4", "meV_bin_size = 0.2", "nscans = 1", f"array ano[{len(analyzers)}]"]
+        var += [f"ano[{i}] = {int(det[1:])}" for i, det in enumerate(analyzers)]
+        var += [f"elpk_centroid_meV[{i}] = {centroids[det]}" for i, det in enumerate(analyzers) if det in centroids]
+        (folder / f"{stem}.var").write_text("\n".join(var) + "\n", encoding="utf-8", newline="\n")
     for det in analyzers:
         from isar.analyze.resolution import TabulatedResolution
         curve = TabulatedResolution(grid, _curve_values(grid, SETTINGS[true_slit]), det, true_slit)
@@ -101,11 +108,13 @@ def _records(card, folder):
     return recs
 
 
-def _calibrated(tmp_path, *, slit=None, library_skip=(), analyzers=ANALYZERS, weak=(), lr=(), monitors=None):
+def _calibrated(tmp_path, *, slit=None, library_skip=(), analyzers=ANALYZERS, weak=(), lr=(), monitors=None,
+                centroids=None):
     """A workspace with data and library; returns (ws, card, records, state entry of the one scan)."""
     ws = _workspace(tmp_path)
     _write_library(ws.root / "rf", skip=library_skip)
-    _write_scan(tmp_path / "data", analyzers=analyzers, slit=slit, weak=weak, monitors=monitors)
+    _write_scan(tmp_path / "data", analyzers=analyzers, slit=slit, weak=weak, monitors=monitors,
+                centroids=centroids)
     card, _session = ws.load()
     recs = _records(card, tmp_path / "data")
     for det in lr:                       # what the reader does to an _lr spectrum
@@ -238,6 +247,33 @@ def test_lr_spectrum_is_held_never_fitted_and_not_scored(tmp_path):
     assert "a04" not in entry["comparison_set"] and entry["setting"] == TRUE_SLIT
     calres = calibrations.resolve(recs[0], "a04", card, calibrations.calibration_view(card))
     assert calres.held and calres.held_reason == calibrations.NON_RAW_REASON
+
+
+def test_beamline_centroid_flags_only_the_analyzer_whose_zero_disagrees(tmp_path):
+    # a03 agrees with the centroid, a04 is 1 meV off, a05 has no centroid in the .var (no fact, no flag)
+    _ws, _card, recs, entry = _calibrated(tmp_path, centroids={"a03": ZERO, "a04": ZERO + 1.0})
+    assert recs[0].spectra["a03"].facts["elastic_centroid_meV"]["value"] == pytest.approx(ZERO)
+    assert recs[0].spectra["a04"].facts["elastic_centroid_meV"]["value"] == pytest.approx(ZERO + 1.0)
+    assert recs[0].spectra["a05"].facts["elastic_centroid_meV"]["value"] is None
+    flags = {det: [f for f in entry["detectors"][det]["flags"] if f["type"] == "zero_disagrees_with_beamline"]
+             for det in ANALYZERS}
+    assert flags["a03"] == [] and flags["a05"] == []
+    (flag,) = flags["a04"]
+    assert "a04" in flag["reason"] and f"{entry['detectors']['a04']['zero']:.3f}" in flag["reason"]
+    assert f"{ZERO + 1.0:.3f}" in flag["reason"] and flag["severity"] == "warning"
+
+
+def test_beamline_centroid_flag_does_not_change_the_calibration_fingerprint(tmp_path):
+    # Same workspace before and after the .var is added: a library fingerprint hashes the folder path and
+    # mtimes, so only an in-place comparison isolates the flag.
+    ws, card, _recs, _entry = _calibrated(tmp_path)
+    before = calibrations.calibration_fingerprint(calibrations.calibration_view(card), _recs[0], "a04")
+    _write_scan(tmp_path / "data", centroids={"a04": ZERO + 1.0})
+    recs = _records(card, tmp_path / "data")
+    calibrations.refresh_tabulated(card, recs, base_dir=ws.root)
+    (entry,) = card.state.tabulated_calibration.values()
+    assert any(f["type"] == "zero_disagrees_with_beamline" for f in entry["detectors"]["a04"]["flags"])
+    assert calibrations.calibration_fingerprint(calibrations.calibration_view(card), recs[0], "a04") == before
 
 
 def test_state_is_updated_in_place_for_new_or_changed_scans_only(tmp_path):

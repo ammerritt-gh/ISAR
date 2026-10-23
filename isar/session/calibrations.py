@@ -171,6 +171,7 @@ def _refresh_cooper_nathans(card: Card) -> list[str]:
 # tabulated_elastic — the setting ladder and the per-detector elastic zero, per measurement scan
 # ---------------------------------------------------------------------------
 NON_RAW_REASON = "non-raw counts (_lr) are not fitted"
+ZERO_CROSSCHECK_MEV = 0.3       # above the 0.1 meV agreement seen; the beamline centroid has background and phonon tails, so never the zero
 
 
 def _flag_row(flag: Flag) -> dict:
@@ -221,11 +222,18 @@ def _calibrate_detector(x, det, spectrum, library, setting, problem) -> dict:
                                          f"{det}: {why}; parsed and shown, not fitted"))]}
     result = tabulated.zero_for(x, spectrum, curve)
     f = result.fit
-    return {"zero": _num(result.centre), "zero_source": result.source,
+    zero = _num(result.centre)
+    flags = [_flag_row(fl) for fl in result.flags]
+    centroid = (spectrum.facts.get("elastic_centroid_meV") or {}).get("value")
+    if zero is not None and isinstance(centroid, float) and abs(zero - centroid) > ZERO_CROSSCHECK_MEV:
+        reason = (f"{det}: ISAR zero {zero:.3f} meV ({result.source}) differs from the beamline elastic "
+                  f"centroid {centroid:.3f} meV by more than {ZERO_CROSSCHECK_MEV:g} meV")
+        flags.append(_flag_row(Flag("zero_disagrees_with_beamline", "warning", reason)))
+    return {"zero": zero, "zero_source": result.source,
             "fit": {"centre": _num(f.centre), "amplitude": _num(f.amplitude),
                     "background": _num(f.background), "deviance_per_point": _num(f.deviance_per_point),
                     "n_points": f.n_points, "significant": bool(f.significant)},
-            "flags": [_flag_row(fl) for fl in result.flags]}
+            "flags": flags}
 
 
 def _calibrate_scan(rec, library, fp, problem, folder, pattern, chash) -> dict:
