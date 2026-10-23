@@ -462,6 +462,91 @@ def test_a_rung_two_winner_without_a_converged_fit_is_unresolved(one_peak):
     assert fine.state == CL.SETTLED and fine.shown == "rung2" and fine.best_label == "stokes+bg"
 
 
+# --- the count is the most probable count, its variants summed -----------------------------------
+def test_the_most_probable_count_sums_its_variants():
+    """The reviewer's case: two zero-mode variants at 0.30 each outweigh a one-mode model at 0.40,
+    so the count is 0 and the shown model the more probable zero-mode variant."""
+    probability = {"bg": 0.30, "elastic+bg": 0.30, "stokes+bg": 0.40}
+    count = {"bg": 0, "elastic+bg": 0, "stokes+bg": 1}
+    assert select.most_probable_count(probability, count)[0] == 0
+    assert select.most_probable_count({**probability, "bg": 0.31, "elastic+bg": 0.29}, count) \
+        == (0, "bg")
+    assert select.most_probable_count({"bg": 0.2, "elastic+bg": 0.2, "stokes+bg": 0.6}, count) \
+        == (1, "stokes+bg")
+
+
+def test_rung_two_decides_the_count_by_its_summed_probability(one_peak):
+    ctx, record = one_peak
+    plan = CL.Rung2Plan(triggers=[CL.Trigger("forced", "test")],
+                        contending=["bg", "elastic+bg", "stokes+bg"])
+    sampled = {"bg": _stub(record, "bg", np.log(0.30)),
+               "elastic+bg": _stub(record, "elastic+bg", np.log(0.30)),
+               "stokes+bg": _stub(record, "stokes+bg", np.log(0.40))}
+    res = CL.conclude(record, ctx, plan, sampled, budget_s=100.0)
+    assert res.state == CL.SETTLED and res.shown == "rung2"
+    assert res.best_label in ("bg", "elastic+bg")
+    assert res.count_probabilities[0] == pytest.approx(0.60)
+    amb = res.ambiguity
+    assert (amb["count"], amb["runner_up_count"]) == (0, 1)
+    assert amb["probability"] == pytest.approx(0.60)
+
+
+def test_a_count_that_turns_on_an_unconverged_contender_is_unresolved(one_peak):
+    """Without the unconverged zero-mode variant the published selection would pick one mode, so
+    the count cannot be shown settled at 0."""
+    ctx, record = one_peak
+    plan = CL.Rung2Plan(triggers=[CL.Trigger("forced", "test")],
+                        contending=["bg", "elastic+bg", "stokes+bg"])
+    stuck = _stub(record, "elastic+bg", np.log(0.29))
+    sampled = {"bg": _stub(record, "bg", np.log(0.31)),
+               "elastic+bg": replace(stuck, result=replace(stuck.result, optimizer_converged=False)),
+               "stokes+bg": _stub(record, "stokes+bg", np.log(0.40))}
+    res = CL.conclude(record, ctx, plan, sampled, budget_s=100.0)
+    assert res.state == CL.UNRESOLVED and res.shown == "rung1"
+    assert any("turns on elastic+bg" in r for r in res.reasons)
+
+
+def _priced(record, ln_p):
+    """The record with the given models' rung-1 evidence and probability set (label -> ln P), every
+    other model far below."""
+    out = []
+    for m in record.models:
+        lnz = ln_p.get(m.label, -1e4)
+        out.append(replace(m, log_evidence=lnz, probability=float(np.exp(lnz))))
+    return replace(record, models=out)
+
+
+def test_rung_one_shows_the_most_probable_count(one_peak):
+    """Rung 1 decides the same way: two one-mode variants at 0.30 each outweigh a two-mode model
+    at 0.40, and the count above the decided count is the one that contends."""
+    ctx, record = one_peak
+    priced = _priced(record, {"stokes+bg": np.log(0.30), "elastic+stokes+bg": np.log(0.30),
+                              "stokes2+bg": np.log(0.40)})
+    res = CL.conclude(priced, ctx, CL.Rung2Plan(triggers=[], contending=[]), {})
+    assert res.state == CL.SETTLED and res.shown == "rung1"
+    assert res.best_label in ("stokes+bg", "elastic+stokes+bg")
+    assert (res.ambiguity["count"], res.ambiguity["runner_up_count"]) == (1, 2)
+    assert "stokes2+bg" in CL.contending(priced)
+
+
+def test_selection_picks_the_most_probable_count(one_peak):
+    """select_models' winner, which the delivery shows and exports, follows the same rule."""
+    from isar.analyze import evidence
+
+    _ctx_, record = one_peak
+    results = [m.representative for m in record.models
+               if m.label in ("stokes+bg", "elastic+stokes+bg", "stokes2+bg")]
+    ev = evidence.EvidenceSet("arena")
+    for r, p in zip(results, (0.30, 0.30, 0.40)):
+        ev.add(evidence.EvidenceRecord(label=r.label, log_evidence=float(np.log(p)),
+                                       log_evidence_err=0.1, evidence_method="dynesty",
+                                       k_free=int(r.k), arena_fingerprint="arena",
+                                       prior_spec=(), validity={}))
+    sel = select.select_models(results, stamp=False, evidence=ev)
+    assert {r.label: r.n_modes for r in results}[sel.best] == 1
+    assert [s.label for s in sel.scores if s.label == sel.best] == sel.survivors
+
+
 def test_held_names_its_reason():
     res = CL.held("no energy zero")
     assert res.state == CL.HELD and res.reasons == ["no energy zero"] and res.shown == "none"

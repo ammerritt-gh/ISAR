@@ -503,8 +503,15 @@ need spreads over the window, and that spread is the Occam penalty itself. A con
 raises is a failed calculation, and it is never evidence against the model.
 
 The published fit of a sampled model is an optimizer refit started from the sampler's maximum-likelihood
-point, kept only when it beats rung 1's representative. The count probabilities are the equal-prior
-posterior over the sampled contenders, summed by count.
+point, kept only when it beats rung 1's representative: a converged fit always beats an unconverged
+one, and between two of the same status the lower cost wins. The count probabilities are the
+equal-prior posterior over the sampled contenders, summed by count.
+
+**The decided count.** On either rung the decided count is the most probable count, its elastic and
+constrained variants summed, and the shown model is the most probable model of that count
+(`select.most_probable_count`). Two zero-mode variants at 0.30 each therefore outweigh a one-mode
+model at 0.40: the count is 0. The triggers read the shown model, and the count above it is the one
+that contends.
 
 **Budget and time slices.** Each spectrum has a single-worker budget of 30 minutes (`RUNG2_BUDGET_S`;
 `ISAR_RUNG2_BUDGET_S` overrides it). The budget counts across invocations and is checked before each
@@ -516,7 +523,9 @@ sampled (`rung2_partial`); a stored sample is reused only when the rung-1 fit it
 unchanged. Pooled masters run rung 2 to completion inside their own fit, with no slice.
 
 **The six states.** Every spectrum is in exactly one state. When more than one applies, the precedence is
-unresolved, then search limited, then settled, and every applicable reason is kept.
+unresolved, then provisional, then search limited, then settled, and every applicable reason is kept.
+A failed calculation is unresolved at once, even with other contenders still pending, and rung 2 stops
+sampling that spectrum.
 
 | State | Meaning | Shown result |
 |---|---|---|
@@ -524,7 +533,7 @@ unresolved, then search limited, then settled, and every applicable reason is ke
 | `provisional` | rung 2 still has contenders to sample and budget left ("rung 2 pending") | rung 1 |
 | `settled` | the counts tried hold the evidence: one clear winner, or an ambiguity whose both probabilities are stated. With no trigger fired, rung 1 decides and the reason says so | rung 2's best if rung 2 ran, else rung 1's |
 | `search limited` | the mode ceiling or the 30-minute budget stopped the search; the reason names which | rung 1, even when rung 2 finished; the boundary is named |
-| `unresolved` | a contender's evidence could not be computed (its sampling failed or its evidence was not trusted), or no model was fitted | rung 1 |
+| `unresolved` | a contender's evidence could not be computed (its sampling failed or its evidence was not trusted), rung 2's winner has no converged fit, rung 2's count turns on a contender without one, or no model was fitted | rung 1 |
 | `held` | not fitted: the energy zero could not be set; the hold reason is named | none |
 
 A rung-2 result is shown only when rung 2 finished and the state is settled. A partly finished rung 2 is

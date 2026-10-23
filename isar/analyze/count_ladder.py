@@ -203,6 +203,25 @@ def _best(models):
     return max(scored, key=lambda m: m.log_evidence) if scored else None
 
 
+def _decided(models):
+    """The model rung 1 shows, or ``None``: the most probable model of the most probable count
+    (:func:`isar.analyze.select.most_probable_count`), over the distinct models with evidence at
+    equal prior, as selection prices them."""
+    resolved = _resolved(models)
+    scored = [m for m in models if _has_evidence(m) and _distinct(m, resolved)]
+    return _most_probable(scored)
+
+
+def _most_probable(models):
+    """The most probable model of the most probable count among ``models`` (each with a finite
+    ``log_evidence``), or ``None``."""
+    if not models:
+        return None
+    _n, label = select.most_probable_count(_probabilities(models),
+                                           {m.label: m.count for m in models})
+    return next(m for m in models if m.label == label)
+
+
 def _variant(model) -> tuple:
     return (model.elastic, model.quasielastic, model.variant)
 
@@ -323,7 +342,7 @@ def triggers(record, ctx, contenders=None) -> list:
     """Every escalation trigger that fires on ``record`` (rung 1 with its evidence applied)."""
     contenders = contending(record) if contenders is None else contenders
     by_label = record.by_label()
-    best = _best(record.models)
+    best = _decided(record.models)
     out = []
     invalid = [label for label in contenders
                if not _has_evidence(by_label[label]) or not by_label[label].converged]
@@ -348,21 +367,22 @@ def triggers(record, ctx, contenders=None) -> list:
 
 def contending(record) -> list:
     """Labels of the contending models, in sampling order: the best, the other distinct models
-    within :data:`CONTENDING_MARGIN` by evidence, the count one above the best with and without the
-    elastic line (the variant the best does not use may be the one whose local fit was poor), then
+    within :data:`CONTENDING_MARGIN` of its evidence, the count one above the decided count
+    (:func:`_decided`) with and without the elastic line (the variant the decided model does not
+    use may be the one whose local fit was poor), then
     every distinct model with no rung-1 evidence, fewest parameters first. A model resolved to its
     degenerate twin is not a contender of its own; the count above is sampled even when resolved,
     since nested sampling explores the mode the optimizer railed."""
     resolved = _resolved(record.models)
-    best = _best(record.models)
+    best, shown = _best(record.models), _decided(record.models)
     if best is None:
         return [m.label for m in sorted(record.models, key=lambda m: m.representative.k)
                 if _distinct(m, resolved)]
     near = sorted((m for m in record.models if _has_evidence(m) and _distinct(m, resolved)
                    and m.log_evidence >= best.log_evidence - CONTENDING_MARGIN),
                   key=lambda m: -m.log_evidence)
-    above = [m for m in record.models if m.count == best.count + 1 and m.variant is None
-             and m.quasielastic == best.quasielastic and m not in near]
+    above = [m for m in record.models if m.count == shown.count + 1 and m.variant is None
+             and m.quasielastic == shown.quasielastic and m not in near]
     missing = sorted((m for m in record.models
                       if not _has_evidence(m) and _distinct(m, resolved) and m not in above),
                      key=lambda m: m.representative.k)
@@ -442,10 +462,13 @@ def conclude(record, ctx, plan_, sampled: dict, *, elapsed_s: float = 0.0,
     is kept: a failed calculation makes it *unresolved* at once, even with contenders still
     pending; rung 2 still has work and budget: *provisional*; then search limited, then settled.
     Rung 2 is shown only when it finished and the state is settled, and only with a converged fit
-    to show: a winner without one is unresolved, with rung 1 shown."""
+    to show: a winner without one, or a count that turns on a contender without one (the published
+    selection prices converged fits only), is unresolved, with rung 1 shown. The decided count is
+    the most probable count, its variants summed, and the shown model the most probable of it
+    (:func:`isar.analyze.select.most_probable_count`), on either rung."""
     budget = rung2_budget_s() if budget_s is None else float(budget_s)
     by_label = record.by_label()
-    best1 = _best(record.models)
+    best1 = _decided(record.models)
     pending = [label for label in plan_.contending if label not in sampled]
     unresolved, limited, notes = [], [], []
 
@@ -460,9 +483,15 @@ def conclude(record, ctx, plan_, sampled: dict, *, elapsed_s: float = 0.0,
         models = [sampled[label] for label in plan_.contending]
         for label, p in _probabilities(models).items():
             sampled[label].probability = p
-        decided = max(models, key=lambda m: m.probability)
+        decided = _most_probable(models)
+        shown_alone = _most_probable([m for m in models if m.result.optimizer_converged])
         if not decided.result.optimizer_converged:
             unresolved.append(f"rung-2 winner {decided.label} has no converged fit")
+            decided = None
+        elif shown_alone is not decided:
+            # The published selection prices converged fits only; it must reach the same answer.
+            unconverged = ", ".join(m.label for m in models if not m.result.optimizer_converged)
+            unresolved.append(f"rung 2's count turns on {unconverged}, which has no converged fit")
             decided = None
         else:
             notes.append(f"rung 2 sampled {len(models)} contending model(s); {decided.label} "

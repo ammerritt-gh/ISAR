@@ -308,6 +308,19 @@ def resolved_twins(conv) -> dict:
     return out
 
 
+def most_probable_count(probability: dict, count: dict) -> tuple:
+    """``(n, label)``: the count ``n`` whose models' probabilities sum highest (its elastic and
+    constrained variants together), and the most probable model of that count. The count ladder's
+    rule (design 2026-10-22, §3.1): the shown fit comes from the most probable count, so two
+    variants of one count are never outvoted by a single model they outweigh together.
+    ``probability`` and ``count`` map label -> P and label -> number of modes."""
+    totals = {}
+    for label, p in probability.items():
+        totals[count[label]] = totals.get(count[label], 0.0) + p
+    n = max(totals, key=totals.get)
+    return n, max((label for label in probability if count[label] == n), key=probability.get)
+
+
 def select_models(results, hyps=None, ctx=None, *, evidence=None,
                   weight_floor: float = DEFAULT_WEIGHT_FLOOR, level: float = 0.68,
                   stamp: bool = True, executor=None) -> Selection:
@@ -326,7 +339,8 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
     A candidate the degenerate-limit rule resolved (``resolved_to``, :func:`resolved_twins`) is
     its twin: it gets no evidence of its own, no prior weight and posterior 0, and its
     ``evidence_validity`` names the twin and the limit. The posterior's equal prior runs over the
-    distinct models, so a railed model never counts its twin twice."""
+    distinct models, so a railed model never counts its twin twice. The winner is the most probable
+    model of the most probable count (:func:`most_probable_count`)."""
     scores = score_models(results, weight_floor=weight_floor)
     if not scores:
         if stamp:
@@ -399,7 +413,8 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
             fallback = "aic_all_evidence_invalid"
 
     if fallback is None:
-        best = max(scores, key=lambda s: s.posterior_probability).label
+        best = most_probable_count({s.label: s.posterior_probability for s in scores},
+                                   {s.label: conv[s.label].n_modes for s in scores})[1]
     else:
         # Recorded degraded mode: scores keep their score_models Akaike weights/survivors.
         best = min(scores, key=lambda s: s.aic).label
