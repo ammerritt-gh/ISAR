@@ -87,7 +87,7 @@ def test_contending_keeps_every_model_without_evidence_and_the_count_above(one_p
     assert "stokes2+bg" in contenders                                     # the count one above
     assert "bg" not in CL.contending(record)                             # priced, far below
     assert all(m.label in contenders for m in unpriced.models
-               if not CL._has_evidence(m) and m.resolved_to is None)
+               if not CL._has_evidence(m) and m.label not in CL._resolved(unpriced.models))
 
 
 def test_the_count_above_contends_with_and_without_the_elastic_line(one_peak):
@@ -116,6 +116,23 @@ def test_a_model_resolved_to_its_twin_is_not_a_contender_without_evidence(one_pe
     alone = _unpriced(record, "elastic+bg")
     assert "elastic+bg" not in CL.contending(alone)
     assert "laplace_invalid" not in _names(CL.triggers(alone, ctx))
+
+
+def test_a_railed_model_whose_twin_did_not_converge_is_a_model_of_its_own(one_peak):
+    """Selection prices a railed model as itself when its twin did not converge (select.resolved_twins),
+    so the ladder must read 'resolved' the same way: the railed model can be the best and it contends.
+    Its evidence is set directly here, as a selection would give it."""
+    ctx, record = one_peak
+    rail = record.by_label()["elastic+bg"]
+    assert rail.resolved_to == "bg"
+    bg = record.by_label()["bg"]
+    stuck_bg = replace(bg, starts=[replace(s, result=replace(s.result, optimizer_converged=False))
+                                   for s in bg.starts])
+    lead = CL._best(record.models).log_evidence + 1.0
+    alone = replace(record, models=[replace(m, log_evidence=lead) if m is rail
+                                    else stuck_bg if m is bg else m for m in record.models])
+    assert CL._best(alone.models).label == "elastic+bg"
+    assert "elastic+bg" in CL.contending(alone)
 
 
 # --- the triggers ---------------------------------------------------------------------------------

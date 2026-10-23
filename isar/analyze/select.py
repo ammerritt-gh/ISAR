@@ -291,7 +291,7 @@ def _candidate_evidence(results, hyps, ctx, executor=None):
     return evidence.candidate_set_evidence(triples, ctx, executor=executor)
 
 
-def _resolved_twins(conv) -> dict:
+def resolved_twins(conv) -> dict:
     """``{label: terminal twin label}`` for every converged candidate the degenerate-limit rule
     resolved (:func:`isar.analyze.loop._resolve_degenerate`), following each chain to the twin at
     no limit. A chain that leaves the candidate set (a twin that did not converge, or that a caller
@@ -323,7 +323,7 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
     computed evidence set (ignored when ``evidence`` is supplied, since nothing is escalated in
     that case) — see :func:`~isar.analyze.evidence.candidate_set_evidence`.
 
-    A candidate the degenerate-limit rule resolved (``resolved_to``, :func:`_resolved_twins`) is
+    A candidate the degenerate-limit rule resolved (``resolved_to``, :func:`resolved_twins`) is
     its twin: it gets no evidence of its own, no prior weight and posterior 0, and its
     ``evidence_validity`` names the twin and the limit. The posterior's equal prior runs over the
     distinct models, so a railed model never counts its twin twice."""
@@ -333,7 +333,7 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
             _stamp(results, scores, None)
         return Selection([], None, [], None, "none")
     conv = {r.label: r for r in results if r.optimizer_converged}
-    resolved = _resolved_twins(conv)
+    resolved = resolved_twins(conv)
 
     fallback = None
     if evidence is None:

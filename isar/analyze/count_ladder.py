@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from isar.analyze import evidence, loop
+from isar.analyze import evidence, loop, select
 from isar.analyze.prior import mode_bounds, resolution_fwhm
 
 log = logging.getLogger(__name__)
@@ -180,15 +180,22 @@ def _has_evidence(model) -> bool:
     return model.log_evidence is not None and math.isfinite(model.log_evidence)
 
 
-def _distinct(model) -> bool:
+def _resolved(models) -> set:
+    """Labels resolved to a converged degenerate twin, by selection's own chain rule
+    (:func:`isar.analyze.select.resolved_twins`): the ladder and the selection never disagree."""
+    return set(select.resolved_twins({m.label: m.representative for m in models if m.converged}))
+
+
+def _distinct(model, resolved) -> bool:
     """Not resolved to a degenerate twin (:func:`isar.analyze.loop._resolve_degenerate`): a resolved
     model carries its twin's evidence, so it is that twin, never a second model or a missing one."""
-    return model.resolved_to is None
+    return model.label not in resolved
 
 
 def _best(models):
     """The distinct model with the highest finite log-evidence, or ``None``."""
-    scored = [m for m in models if _has_evidence(m) and _distinct(m)]
+    resolved = _resolved(models)
+    scored = [m for m in models if _has_evidence(m) and _distinct(m, resolved)]
     return max(scored, key=lambda m: m.log_evidence) if scored else None
 
 
@@ -342,17 +349,18 @@ def contending(record) -> list:
     every distinct model with no rung-1 evidence, fewest parameters first. A model resolved to its
     degenerate twin is not a contender of its own; the count above is sampled even when resolved,
     since nested sampling explores the mode the optimizer railed."""
+    resolved = _resolved(record.models)
     best = _best(record.models)
     if best is None:
         return [m.label for m in sorted(record.models, key=lambda m: m.representative.k)
-                if _distinct(m)]
-    near = sorted((m for m in record.models if _has_evidence(m) and _distinct(m)
+                if _distinct(m, resolved)]
+    near = sorted((m for m in record.models if _has_evidence(m) and _distinct(m, resolved)
                    and m.log_evidence >= best.log_evidence - CONTENDING_MARGIN),
                   key=lambda m: -m.log_evidence)
     above = [m for m in record.models if m.count == best.count + 1 and m.variant is None
              and m.quasielastic == best.quasielastic and m not in near]
     missing = sorted((m for m in record.models
-                      if not _has_evidence(m) and _distinct(m) and m not in above),
+                      if not _has_evidence(m) and _distinct(m, resolved) and m not in above),
                      key=lambda m: m.representative.k)
     return [m.label for m in near + above + missing]
 
