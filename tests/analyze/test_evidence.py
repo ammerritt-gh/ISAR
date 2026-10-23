@@ -1151,9 +1151,10 @@ def test_prior_and_prior_bundle_are_mutually_exclusive(clean):
                               prior_bundle=_bundle(hyp, ctx), **FAST)
 
 
-def test_prior_bundle_refuses_hard_fixed_candidates():
-    """The sampler works full-space; a frozen coordinate must never become an integrated
-    dimension. Explicitly closed, whether or not the bundle happens to cover the frozen name."""
+def test_prior_bundle_holds_a_hard_fixed_coordinate_and_never_integrates_it():
+    """A frozen coordinate must never become an integrated dimension: the sampler works in the
+    free subspace with the frozen value held in every draw (so a hard-fixed catalogue variant is
+    still judged in rung 2), and a bundle carrying a prior for the frozen name is refused."""
     ctx = _spectrum_ctx(constraints=ParamConstraints(hard={"phonon.Gamma": 0.4},
                                                      origins={"phonon.Gamma": "test"}))
     hyp, fit = _fitted(ctx)
@@ -1161,6 +1162,13 @@ def test_prior_bundle_refuses_hard_fixed_candidates():
     full = C.resolve_priors(prob.composite, ctx, prob.bounds)   # covers the frozen param too
     with pytest.raises(ValueError, match="hard-fixed"):
         BZ.bayesian_posterior(hyp, ctx, fit, prior_bundle=full, **FAST)
+    bz = BZ.bayesian_posterior(hyp, ctx, fit, prior_bundle=_bundle(hyp, ctx), **FAST)
+    assert np.isfinite(bz.log_evidence)
+    gamma = bz.parameter_samples[:, list(bz.parameter_names).index("phonon.Gamma")]
+    assert np.all(gamma == 0.4)
+    assert bz.max_likelihood_sample["phonon.Gamma"] == 0.4
+    assert bz.prior_specification["hard_fixed"] == {"phonon.Gamma": 0.4}
+    assert bz.prior_fingerprint is not None
 
 
 def test_prior_bundle_must_cover_every_sampled_parameter(clean):

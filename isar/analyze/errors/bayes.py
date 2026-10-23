@@ -148,9 +148,10 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
     loglike stays pure data — ``log_evidence`` is then the properly prior-weighted lnZ,
     consistent with the Laplace lanes. Mutually exclusive with ``prior`` (the ω₀-diagnostics
     tier), which stays a loglike term on the DERIVED ω₀ and is untouched. The bundle must cover
-    every sampled (free, non-hard-fixed) parameter — a missing name raises, because sampling a
-    parameter the bundle excluded (e.g. hard-fixed) would integrate a dimension the evidence
-    must not have."""
+    every sampled (free, non-hard-fixed) parameter, in order — a missing name raises. A hard-fixed
+    parameter is held at its value and never sampled (the sampler works in the free subspace), so
+    a bundle carrying a prior for it raises: it would integrate a dimension the evidence must not
+    have."""
     if prior is not None and prior_bundle is not None:
         raise ValueError("prior and prior_bundle are mutually exclusive: the PhononPrior "
                          "diagnostics tier and the evidence prior-transform tier answer "
@@ -198,29 +199,39 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
 
     lows = np.array([b[0] for b in prob.bounds], dtype=float)
     spans = np.array([b[1] - b[0] for b in prob.bounds], dtype=float)
+    free_pos = list(range(len(names)))
+    template = None
     if prior_bundle is not None:
-        if prob.fixed_pos:
-            # The sampler works in the FULL parameter space (freezing happens only inside
-            # _minimize_fixed); sampling a hard-fixed coordinate would integrate a dimension
-            # the evidence must not have. Fail closed — the evidence ladder records it.
-            frozen = [names[i] for i in prob.fixed_pos]
-            raise ValueError(f"prior_bundle lane cannot sample a hard-fixed candidate "
-                             f"(frozen: {frozen}); evidence for it has no dynesty escalation")
         by_name = prior_bundle.by_name()
-        missing = [n for n in names if n not in by_name]
+        if prob.fixed_pos:
+            # A hard-fixed coordinate is held at its value and never integrated: the sampler works
+            # in the free subspace, as the optimizer does (loop._minimize_fixed). A prior on it
+            # would integrate a dimension the evidence must not have, so that bundle is refused.
+            frozen = [names[i] for i in prob.fixed_pos]
+            if any(n in by_name for n in frozen):
+                raise ValueError(f"prior_bundle carries a prior for hard-fixed parameter(s) "
+                                 f"{[n for n in frozen if n in by_name]}; a frozen coordinate "
+                                 f"is never integrated")
+            fixed = set(prob.fixed_pos)
+            free_pos = [i for i in range(len(names)) if i not in fixed]
+            template = np.asarray(prob.x0, dtype=float).copy()
+            template[list(prob.fixed_pos)] = np.asarray(prob.fixed_vals, dtype=float)
+        sampled = [names[i] for i in free_pos]
+        missing = [n for n in sampled if n not in by_name]
         if missing:
             raise ValueError(f"prior_bundle has no prior for sampled parameter(s) {missing}; "
                              f"every free parameter must carry exactly one prior factor")
-        if [p.name for p in prior_bundle.params] != list(names):
+        if [p.name for p in prior_bundle.params] != sampled:
             raise ValueError("prior_bundle parameters are not in the sampled parameter order; "
                              "the ordered transform assigns by position")
         prior_specification = {
             "prior_kind": "catalogue_prior_bundle",
             "parameter_prior": "per_parameter_truncated_ppf",
-            "parameters": [by_name[n].spec() for n in names],
+            "parameters": [by_name[n].spec() for n in sampled],
+            "hard_fixed": {names[i]: float(template[i]) for i in prob.fixed_pos},
             # Exchangeable mode energies are sampled as ordered statistics (N!/W^N, the Laplace
             # lane's logpdf_ordered), so N swapped labellings are one solution, not N!.
-            "mode_energy_order": [names[i] for i in prior_bundle._energy_group()],
+            "mode_energy_order": [sampled[i] for i in prior_bundle._energy_group()],
             "omega_loglike_term": None,
         }
         semantics_id = "isar.catalogue_prior_bundle_nested_prior/2"
@@ -261,7 +272,15 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
     mu = float(prior.omega0) if prior_used else 0.0
     sig = float(prior.omega0_sigma) if prior_used else 1.0
 
+    def embed(theta):
+        if template is None:
+            return np.asarray(theta, dtype=float)
+        full = template.copy()
+        full[free_pos] = theta
+        return full
+
     def loglike(theta):
+        theta = embed(theta)
         f = composite.evaluate(x, theta, ctx)
         ll = -0.5 * est.cost(counts, f)                     # exact Baker–Cousins −2lnL/2
         if prior_used:                                      # guarded above: od_i/g_i exist
@@ -271,7 +290,7 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
 
     rng = np.random.default_rng(seed)
     try:                                                    # §5.4: sampler failure must not escape
-        sampler = dynesty.NestedSampler(loglike, ptform, ndim=len(names), nlive=int(n_live),
+        sampler = dynesty.NestedSampler(loglike, ptform, ndim=len(free_pos), nlive=int(n_live),
                                         bound=bound, sample=sample, rstate=rng)
         sampler.run_nested(dlogz=dlogz, maxiter=max_iter, print_progress=False)
         res = sampler.results
@@ -281,6 +300,8 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
         weights = weights / weights.sum()
         ess = 1.0 / float(np.sum(weights ** 2))             # Kish effective sample size
         eq = resample_equal(res.samples, weights, rstate=rng)
+        if template is not None:                            # back to the full parameter vector
+            eq = np.array([embed(row) for row in eq])
     except Exception as exc:                                # → frequentist fallback + flag
         return _failed(f"sampler failed: {exc}")
 
@@ -300,9 +321,10 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
     ok, reason = _diagnose(res, prob.bounds, od_i, od, omega0_interval, ess, max_iter)
     evidence_ok, evidence_reason = _evidence_gate(res, max_iter)
     best = int(np.argmax(res.logl))
-    return BayesResult(
-        evidence_converged=evidence_ok, evidence_fail_reason=evidence_reason,
-        max_likelihood_sample={n: float(v) for n, v in zip(names, res.samples[best])},omega0_interval=omega0_interval, gamma_interval=gamma_interval,
+    return BayesResult(omega0_interval=omega0_interval, gamma_interval=gamma_interval,
+                       evidence_converged=evidence_ok, evidence_fail_reason=evidence_reason,
+                       max_likelihood_sample={n: float(v)
+                                              for n, v in zip(names, embed(res.samples[best]))},
                        omega0_samples=omega0_samples, gamma_samples=gamma_samples,
                        log_evidence=logz, log_evidence_err=logzerr, ess=ess,
                        bimodal=is_bimodal(omega0_samples), converged=ok,
