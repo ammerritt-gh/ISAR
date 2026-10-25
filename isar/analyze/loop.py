@@ -1407,6 +1407,22 @@ def _delta_modes(hyp, ctx) -> tuple:
                         if n not in scan and n.endswith(".Gamma") and float(v) == GAMMA_FLOOR))
 
 
+def delta_twin_hypothesis(plain, delta_prefixes, ctx):
+    """``plain`` with the Γ of every mode in ``delta_prefixes`` pinned at :data:`GAMMA_FLOOR` (a
+    delta-function mode convolved with the resolution), labelled ``plain.label + "_delta<i>-<j>"``
+    (mode numbers 1-based) and carrying its derived context; ``None`` when the scan's own
+    constraints already constrain one of those widths. The one implementation of the delta-twin
+    label and context: rung 1's degenerate-limit rule and the fast pass both build twins here."""
+    delta_prefixes = tuple(delta_prefixes)
+    hard = {f"{p}.Gamma": GAMMA_FLOOR for p in delta_prefixes}
+    derived = _variant_context(ctx, hard, {n: "catalogue_variant" for n in hard},
+                               variant=DELTA_VARIANT, label=plain.label)
+    if derived is None:
+        return None
+    suffix = "_delta" + "-".join(p[len("phonon"):] or "1" for p in delta_prefixes)
+    return replace(plain, label=plain.label + suffix, context=derived)
+
+
 def without_background(hyp):
     """``hyp`` without its flat background (the label loses ``+bg``), or ``None`` when nothing
     would be left. ``hyp`` is an enumerated structure, whose label carries no variant suffix."""
@@ -1520,13 +1536,9 @@ def _resolve_degenerate(record, ctx, *, backend="iminuit", minos=False, executor
             if twin is None:
                 hyp, variant = plain, None
                 if delta:
-                    hard = {f"{p}.Gamma": GAMMA_FLOOR for p in delta}
-                    derived = _variant_context(ctx, hard, {n: "catalogue_variant" for n in hard},
-                                               variant=DELTA_VARIANT, label=plain.label)
-                    if derived is None:
+                    hyp = delta_twin_hypothesis(plain, delta, ctx)
+                    if hyp is None:
                         continue
-                    suffix = "_delta" + "-".join(p[len("phonon"):] or "1" for p in delta)
-                    hyp = replace(plain, label=plain.label + suffix, context=derived)
                     variant = DELTA_VARIANT
                 twin = Rung1Model(label=str(hyp.label), count=base.count, elastic=base.elastic,
                                   quasielastic=base.quasielastic, variant=variant,
