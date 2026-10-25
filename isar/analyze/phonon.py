@@ -55,7 +55,8 @@ STEP = 0.25
 PRIOR_HALF_WIDTH = 1.5  # meV grid half-window when a dispersion prior is present
 
 GAMMA_FLOOR = 1e-3
-GAMMA_MAX = 5.0
+GAMMA_MAX = 20.0      # the v5 width cap (prior recipe /5); every reader inherits it
+GAMMA_MAX_V4 = 5.0    # today's cap: the legacy_v4 sensitivity arm only
 
 # Anti-Stokes is dropped only when its *predicted counts* — Stokes excursion × the
 # detailed-balance weight exp(−ħω/kT) — cannot be told from the background Poisson noise.

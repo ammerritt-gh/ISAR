@@ -230,10 +230,11 @@ def test_ceiling_railed_gamma_escalates_not_truncates():
     so it must pay for the sampler, never take the cheap rung. Found by a fresh-context
     verifier 2026-08-09: the original gate tested the NAME suffix only, and this exact fit
     (Γ̂ = 4.9999… at GAMMA_MAX = 5.0) came back laplace_truncated. The planted mode is
-    overdamped (Γ = 8 > E0 = 5): the full DHO form expresses any Γ below the ceiling, so only a
-    width beyond it rails there."""
+    overdamped (Γ = 15 > E0 = 5): the full DHO form expresses any Γ below the ceiling, so only a
+    width beyond it rails there. Recipe /5 lifted the ceiling from 5 to 20 meV (re-pin: planted Γ
+    8 -> 15, which still rails at 20 for this seed; a planted Γ above 20 pins the elastic line)."""
     x = np.linspace(-15.0, 15.0, 101)
-    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 8.0, 200.0, 0.0, 20.0, 300.0, peak="all")
+    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 15.0, 200.0, 0.0, 20.0, 300.0, peak="all")
     counts = np.random.default_rng(3).poisson(np.clip(lam, 0.0, None)).astype(float)
     ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=300.0,
                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
