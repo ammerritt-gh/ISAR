@@ -9,6 +9,7 @@ import logging
 from dataclasses import replace
 
 import numpy as np
+import pytest
 
 from isar.analyze import loop
 from isar.analyze.components import CompositeModel, ConstantBackground, PhononDHO
@@ -41,9 +42,11 @@ def test_build_problem_per_hypothesis_k_and_ndof():
     assert p_full.k == 5 and p_full.ndof == 41 - 5
 
 
-def test_bounds_come_from_the_prior_recipe_never_the_counts():
-    """Every fitted parameter's bound (and so its flat prior) is the recipe's: scaling the counts
-    leaves the problem's bounds alone, and the fit records the recipe it was bounded by."""
+def test_bounds_come_from_the_prior_recipe_amplitudes_from_the_max_count():
+    """Every fitted parameter's bound (and so its prior) is the recipe's. Re-pin (recipe /5): the
+    amplitude bounds follow the spectrum's highest count (empirical Bayes), so a 50x brighter
+    spectrum has 50x the amplitude bounds and the same energy and width bounds; the fit records
+    the recipe it was bounded by."""
     from isar.analyze import prior
 
     ctx = _spectrum_ctx(n=41)
@@ -51,7 +54,10 @@ def test_bounds_come_from_the_prior_recipe_never_the_counts():
     prob = loop.build_problem(hyp, ctx)
     assert prob.bounds == prior.mode_bounds(prob.free_names, ctx)
     brighter = replace(ctx, counts=ctx.counts * 50.0)
-    assert loop.build_problem(hyp, brighter).bounds == prob.bounds
+    for name, (lo, hi), (blo, bhi) in zip(prob.free_names, prob.bounds,
+                                          loop.build_problem(hyp, brighter).bounds):
+        amplitude = name.endswith((".h", ".BG"))
+        assert (blo, bhi) == (lo, pytest.approx(hi * 50.0 if amplitude else hi)), name
     res = loop.fit_hypothesis(hyp, ctx, minos=False)
     assert res.fit_semantics["prior_recipe"] == prior.recipe_provenance(ctx)
 
