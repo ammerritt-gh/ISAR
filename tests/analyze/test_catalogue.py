@@ -189,12 +189,12 @@ _TWO_IDENTITIES = (
     catalogue.PhenomenonDefinition(
         name="a", identity="synthetic identity A — declares a distinguishing prior",
         local_models=(catalogue.LocalModel("dho", PhononDHO),),
-        parameter_priors=(catalogue.ParamPrior("Omega_d", "gaussian", 4.0, 0.5),),
+        parameter_priors=(catalogue.ParamPrior("omega0", "gaussian", 4.0, 0.5),),
     ),
     catalogue.PhenomenonDefinition(
         name="b", identity="synthetic identity B — a different prior on the same model",
         local_models=(catalogue.LocalModel("dho", PhononDHO),),
-        parameter_priors=(catalogue.ParamPrior("Omega_d", "gaussian", 8.0, 0.5),),
+        parameter_priors=(catalogue.ParamPrior("omega0", "gaussian", 8.0, 0.5),),
     ),
     catalogue.PhenomenonDefinition(
         name="elastic", identity="elastic", gates=(phonon.elastic_admissible,),
@@ -290,8 +290,8 @@ def test_identity_conditions_the_prior_bundle(synth_profile):
             prob.composite, ctx, prob.bounds,
             entry=catalogue.identity_entry(hyp.identity, profile=synth_profile))
 
-    a = bundles["stokes+bg@a"].by_name()["phonon.Omega_d"]
-    b = bundles["stokes+bg@b"].by_name()["phonon.Omega_d"]
+    a = bundles["stokes+bg@a"].by_name()["phonon.omega0"]
+    b = bundles["stokes+bg@b"].by_name()["phonon.omega0"]
     assert (a.kind, a.mu, a.origin) == ("gaussian", 4.0, "identity")
     assert (b.kind, b.mu, b.origin) == ("gaussian", 8.0, "identity")
     assert bundles["stokes+bg@a"].spec() != bundles["stokes+bg@b"].spec()

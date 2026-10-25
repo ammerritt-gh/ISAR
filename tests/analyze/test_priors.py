@@ -36,10 +36,10 @@ _BOUNDS = [(1e-3, 10.0), (1e-3, 5.0), (0.0, 1e4), (0.0, 100.0)]
 
 def test_default_is_normalized_flat_over_bounds():
     bundle = catalogue.resolve_priors(_composite(), _ctx(), _BOUNDS)
-    assert [p.name for p in bundle.params] == ["phonon.Omega_d", "phonon.Gamma",
-                                               "phonon.A", "bg.BG"]
+    assert [p.name for p in bundle.params] == ["phonon.omega0", "phonon.Gamma",
+                                               "phonon.h", "bg.BG"]
     assert all(p.kind == "flat" and p.origin == "default_flat" for p in bundle.params)
-    p = bundle.by_name()["phonon.Omega_d"]
+    p = bundle.by_name()["phonon.omega0"]
     total, _ = quad(lambda v: math.exp(p.logpdf(v)), p.lo, p.hi)
     assert abs(total - 1.0) < 1e-9
     assert p.logpdf(p.lo - 1.0) == float("-inf")
@@ -47,7 +47,7 @@ def test_default_is_normalized_flat_over_bounds():
 
 
 def test_gaussian_prior_matches_truncated_scipy():
-    p = catalogue.ResolvedPrior("phonon.Omega_d", "gaussian", 4.0, 1.0, 1e-3, 10.0, "identity")
+    p = catalogue.ResolvedPrior("phonon.omega0", "gaussian", 4.0, 1.0, 1e-3, 10.0, "identity")
     dist = stats.norm(loc=4.0, scale=1.0)
     z = dist.cdf(10.0) - dist.cdf(1e-3)
     for v in (0.5, 2.0, 4.0, 9.0):
@@ -57,7 +57,7 @@ def test_gaussian_prior_matches_truncated_scipy():
 
 
 def test_lognormal_prior_matches_truncated_scipy_and_median():
-    p = catalogue.ResolvedPrior("phonon.A", "lognormal", 50.0, 0.5, 0.0, 1e4, "identity")
+    p = catalogue.ResolvedPrior("phonon.h", "lognormal", 50.0, 0.5, 0.0, 1e4, "identity")
     dist = stats.lognorm(s=0.5, scale=50.0)
     z = dist.cdf(1e4) - dist.cdf(0.0)
     assert abs(p.logpdf(50.0) - (dist.logpdf(50.0) - math.log(z))) < 1e-12
@@ -87,10 +87,10 @@ def test_ctx_attribute_resolution_and_fail_loud():
     entry = catalogue.PhenomenonDefinition(
         name="probe", identity="test entry",
         local_models=(catalogue.LocalModel("dho", PhononDHO),),
-        parameter_priors=(catalogue.ParamPrior("Omega_d", "gaussian",
+        parameter_priors=(catalogue.ParamPrior("omega0", "gaussian",
                                                mu="prior_omega", sigma="gauss_fwhm"),))
     bundle = catalogue.resolve_priors(_composite(), _ctx(prior_omega=6.0), _BOUNDS, entry=entry)
-    p = bundle.by_name()["phonon.Omega_d"]
+    p = bundle.by_name()["phonon.omega0"]
     assert p.kind == "gaussian" and p.origin == "identity"
     assert p.mu == 6.0 and p.sigma == 1.0                     # gauss_fwhm from ctx
     with pytest.raises(ValueError, match="prior_omega"):
@@ -103,16 +103,16 @@ def test_transport_is_the_prior_never_doubled():
     entry = catalogue.PhenomenonDefinition(
         name="probe", identity="test entry",
         local_models=(catalogue.LocalModel("dho", PhononDHO),),
-        parameter_priors=(catalogue.ParamPrior("A", "lognormal", mu=99.0, sigma=1.0),))
-    constraints = ParamConstraints(soft={"phonon.A": (40.0, 8.0)},
-                                   origins={"phonon.A": "prior_predictive"})
+        parameter_priors=(catalogue.ParamPrior("h", "lognormal", mu=99.0, sigma=1.0),))
+    constraints = ParamConstraints(soft={"phonon.h": (40.0, 8.0)},
+                                   origins={"phonon.h": "prior_predictive"})
     bundle = catalogue.resolve_priors(_composite(), _ctx(constraints=constraints), _BOUNDS,
                                       entry=entry)
-    p = bundle.by_name()["phonon.A"]
+    p = bundle.by_name()["phonon.h"]
     assert p.kind == "gaussian" and p.origin == "transport"   # the constraint won
     assert (p.mu, p.sigma) == (40.0, 8.0)
     assert p.origin_detail == "prior_predictive"
-    assert sum(q.name == "phonon.A" for q in bundle.params) == 1
+    assert sum(q.name == "phonon.h" for q in bundle.params) == 1
 
 
 def test_hard_fixed_parameters_contribute_no_prior_factor():
@@ -123,33 +123,33 @@ def test_hard_fixed_parameters_contribute_no_prior_factor():
 
 
 def test_bundle_logpdf_sums_and_spec_is_declarative():
-    constraints = ParamConstraints(soft={"phonon.A": (40.0, 8.0)},
-                                   origins={"phonon.A": "prior_predictive"})
+    constraints = ParamConstraints(soft={"phonon.h": (40.0, 8.0)},
+                                   origins={"phonon.h": "prior_predictive"})
     bundle = catalogue.resolve_priors(_composite(), _ctx(constraints=constraints), _BOUNDS)
-    values = {"phonon.Omega_d": 4.0, "phonon.Gamma": 0.4, "phonon.A": 40.0, "bg.BG": 10.0}
+    values = {"phonon.omega0": 4.0, "phonon.Gamma": 0.4, "phonon.h": 40.0, "bg.BG": 10.0}
     expected = sum(p.logpdf(values[p.name]) for p in bundle.params)
     assert abs(bundle.logpdf(values) - expected) < 1e-12
     spec = bundle.spec()
     assert [row["name"] for row in spec] == [p.name for p in bundle.params]
     assert all(set(row) == {"name", "kind", "mu", "sigma", "lo", "hi", "origin",
                             "origin_detail"} for row in spec)
-    assert bundle.nontrivial == (bundle.by_name()["phonon.A"],)
+    assert bundle.nontrivial == (bundle.by_name()["phonon.h"],)
 
 
 def test_invalid_hyperparameters_fail_at_resolution_time():
     """A broken prior must be refused when resolved, never fail later inside logpdf/dynesty."""
-    bad_soft = ParamConstraints(soft={"phonon.A": (40.0, 0.0)},
-                                origins={"phonon.A": "prior_predictive"})
+    bad_soft = ParamConstraints(soft={"phonon.h": (40.0, 0.0)},
+                                origins={"phonon.h": "prior_predictive"})
     with pytest.raises(ValueError, match="sigma > 0"):
         catalogue.resolve_priors(_composite(), _ctx(constraints=bad_soft), _BOUNDS)
-    nan_soft = ParamConstraints(soft={"phonon.A": (float("nan"), 5.0)},
-                                origins={"phonon.A": "prior_predictive"})
+    nan_soft = ParamConstraints(soft={"phonon.h": (float("nan"), 5.0)},
+                                origins={"phonon.h": "prior_predictive"})
     with pytest.raises(ValueError, match="non-finite"):
         catalogue.resolve_priors(_composite(), _ctx(constraints=nan_soft), _BOUNDS)
     entry = catalogue.PhenomenonDefinition(
         name="probe", identity="test entry",
         local_models=(catalogue.LocalModel("dho", PhononDHO),),
-        parameter_priors=(catalogue.ParamPrior("A", "lognormal", mu=-1.0, sigma=0.5),))
+        parameter_priors=(catalogue.ParamPrior("h", "lognormal", mu=-1.0, sigma=0.5),))
     with pytest.raises(ValueError, match="lognormal.*mu > 0"):
         catalogue.resolve_priors(_composite(), _ctx(), _BOUNDS, entry=entry)
 
@@ -166,9 +166,9 @@ def test_stale_declaration_suffix_fails_loudly():
     entry_a = catalogue.PhenomenonDefinition(
         name="probe", identity="test entry",
         local_models=(catalogue.LocalModel("dho", PhononDHO),),
-        parameter_priors=(catalogue.ParamPrior("A", "gaussian", mu=40.0, sigma=8.0),))
-    constraints = ParamConstraints(soft={"phonon.A": (40.0, 8.0)},
-                                   origins={"phonon.A": "prior_predictive"})
+        parameter_priors=(catalogue.ParamPrior("h", "gaussian", mu=40.0, sigma=8.0),))
+    constraints = ParamConstraints(soft={"phonon.h": (40.0, 8.0)},
+                                   origins={"phonon.h": "prior_predictive"})
     bundle = catalogue.resolve_priors(_composite(), _ctx(constraints=constraints), _BOUNDS,
                                       entry=entry_a)
-    assert bundle.by_name()["phonon.A"].origin == "transport"
+    assert bundle.by_name()["phonon.h"].origin == "transport"

@@ -264,9 +264,9 @@ def test_hard_prior_uses_production_gamma_amplitude_surface_and_rescue_starts_fr
     hard_dataset = generate_dataset(spec, "hard", 0)
     assert set(hard_dataset.fit_context.constraints.hard) == {
         "phonon.Gamma",
-        "phonon.A",
+        "phonon.h",
     }
-    assert "phonon.Omega_d" not in hard_dataset.fit_context.constraints.hard
+    assert "phonon.omega0" not in hard_dataset.fit_context.constraints.hard
     assert hard_dataset.delivery_design is not None
     assert "delivery_design" not in hard_dataset.truth_manifest
     assert hard_dataset.truth_manifest["delivery_design_fingerprint"]

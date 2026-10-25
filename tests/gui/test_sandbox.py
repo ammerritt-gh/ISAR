@@ -253,28 +253,28 @@ def _manifest(parts, parameters):
     components = [{"type": kinds[p], "prefix": p, **({"peak": "stokes+astokes"}
                                                     if p.startswith("phonon") else {})}
                   for p in parts]
-    return {"schema": "isar.model_manifest/1", "components": components,
+    return {"schema": "isar.model_manifest/2", "components": components,
             "parameters": parameters}
 
 
 @pytest.mark.parametrize(
     ("label", "parameters", "prefixes"),
     [
-        ("stokes+bg", {"phonon.Omega_d": 5.0, "phonon.Gamma": 0.4, "phonon.A": 120.0,
+        ("stokes+bg", {"phonon.omega0": 5.0, "phonon.Gamma": 0.4, "phonon.h": 120.0,
                        "bg.BG": 8.0}, ["phonon", "bg"]),
-        ("stokes+qe+bg", {"phonon.Omega_d": 5.0, "phonon.Gamma": 0.4, "phonon.A": 120.0,
+        ("stokes+qe+bg", {"phonon.omega0": 5.0, "phonon.Gamma": 0.4, "phonon.h": 120.0,
                           "qe.QE": 30.0, "bg.BG": 8.0}, ["phonon", "qe", "bg"]),
         ("elastic+stokes2+bg",
-         {"phonon.Omega_d": 4.0, "phonon.Gamma": 0.3, "phonon.A": 90.0,
-          "phonon2.Omega_d": 9.0, "phonon2.Gamma": 0.7, "phonon2.A": 50.0,
-          "elastic.E": 20.0, "bg.BG": 8.0}, ["phonon", "phonon2", "elastic", "bg"]),
+         {"phonon.omega0": 4.0, "phonon.Gamma": 0.3, "phonon.h": 90.0,
+          "phonon2.omega0": 9.0, "phonon2.Gamma": 0.7, "phonon2.h": 50.0,
+          "elastic.h": 20.0, "bg.BG": 8.0}, ["phonon", "phonon2", "elastic", "bg"]),
         # Degenerate twins (S1U4/S1U5): re-enumeration cannot produce these labels.
         ("elastic+stokes2+bg_delta1",
-         {"phonon.Omega_d": 4.0, "phonon.Gamma": 1e-3, "phonon.A": 0.5,
-          "phonon2.Omega_d": 9.0, "phonon2.Gamma": 0.7, "phonon2.A": 50.0,
-          "elastic.E": 20.0, "bg.BG": 8.0}, ["phonon", "phonon2", "elastic", "bg"]),
-        ("elastic+stokes", {"phonon.Omega_d": 5.0, "phonon.Gamma": 0.4, "phonon.A": 120.0,
-                            "elastic.E": 20.0}, ["phonon", "elastic"]),
+         {"phonon.omega0": 4.0, "phonon.Gamma": 1e-3, "phonon.h": 0.5,
+          "phonon2.omega0": 9.0, "phonon2.Gamma": 0.7, "phonon2.h": 50.0,
+          "elastic.h": 20.0, "bg.BG": 8.0}, ["phonon", "phonon2", "elastic", "bg"]),
+        ("elastic+stokes", {"phonon.omega0": 5.0, "phonon.Gamma": 0.4, "phonon.h": 120.0,
+                            "elastic.h": 20.0}, ["phonon", "elastic"]),
     ],
 )
 def test_winning_curve_preserves_exact_selected_structure(label, parameters, prefixes):

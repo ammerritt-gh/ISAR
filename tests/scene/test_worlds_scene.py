@@ -211,8 +211,8 @@ def test_the_zone_centre_exemption_does_not_spread_to_the_rest_of_the_path(endpo
 @pytest.mark.xfail(strict=True, reason=(
     "Known failure since the energy floor was reversed (recipe version 4): at H = 2.10 (truth: "
     "acoustic 0.62 meV and an elastic line at half the Bragg peak) the leading reading is "
-    "stokes2+bg with an overdamped mode at 0.195 meV (Omega_d 0.10 +- 0.23, Gamma 0.17) standing "
-    "in for the elastic line, and no elastic term. That Omega_d sits off its limit, so the "
+    "stokes2+bg with an overdamped mode at 0.195 meV (Ω_d 0.10 +- 0.23, Gamma 0.17) standing "
+    "in for the elastic line, and no elastic term. That Ω_d sits off its limit, so the "
     "degenerate-limit rule does not resolve it. Open for the operator; strict, so a fix shows."))
 def test_the_endpoint_world_never_places_a_phonon_on_the_elastic_line(endpoint_scene):
     """The failure the exemption must not buy. "The branch is unresolvable here" is the honest

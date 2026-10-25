@@ -373,7 +373,7 @@ def test_canonical_world_wins_both_branches_off_centre():
     _ctx, results, sel, _hyps = _run_selection("canonical", 2.25)
     win = {r.label: r for r in results}[sel.best]
     assert win.n_modes == 2
-    modes = sorted(v for n, v in win.params.items() if n.endswith(".Omega_d"))
+    modes = sorted(v for n, v in win.params.items() if n.endswith(".omega0"))
     assert abs(modes[0] - 4.24) < 0.8
     assert abs(modes[1] - 8.41) < 0.8
 
@@ -385,7 +385,7 @@ def test_no_acoustic_world_keeps_the_gap_at_the_zone_centre():
     _ctx, results, sel, _hyps = _run_selection("no_acoustic", 2.0)
     win = {r.label: r for r in results}[sel.best]
     assert win.n_modes >= 1
-    modes = [v for n, v in win.params.items() if n.endswith(".Omega_d")]
+    modes = [v for n, v in win.params.items() if n.endswith(".omega0")]
     assert min(modes) > 2.0
     assert abs(min(modes) - 3.0) < 0.8
 

@@ -11,7 +11,7 @@ from isar.analyze import count_ladder as CL
 from isar.analyze import loop, select
 from isar.analyze.backends import BackendResult
 from isar.analyze.context import ScanContext
-from isar.analyze.lineshapes import convolute_voigt_dho
+from isar.analyze.lineshapes import KB, convolute_voigt_dho
 
 pytestmark = pytest.mark.filterwarnings("ignore:The enlargement factor",
                                         "ignore:The sampling was stopped short")
@@ -27,7 +27,10 @@ def _ctx(lam, seed=3):
 
 
 def _dho(omega0, gamma, amp):
-    return convolute_voigt_dho(X, omega0, 0.0, 1.0, 0.0, gamma, amp, 0.0, 0.0, 50.0,
+    """``amp`` in the pre-Eq.-2 Lorentzian convention (Stokes area pi amp / gamma), converted to the
+    intrinsic A so the spectra keep the counts these tests were written for."""
+    a = amp * np.pi / gamma * -np.expm1(-omega0 / (KB * 50.0))
+    return convolute_voigt_dho(X, omega0, 0.0, 1.0, 0.0, gamma, a, 0.0, 0.0, 50.0,
                                peak="stokes+astokes")
 
 
@@ -227,10 +230,10 @@ def test_amplitude_at_zero_or_within_one_error_triggers(doublet):
     clean = replace(_with_evidence_only(record), ceiling=3)
     fit = CL._best(clean.models).representative
     assert "amplitude_zero" not in _names(CL.triggers(clean, ctx))
-    weak = dict(fit.params, **{"phonon2.A": 2.0})
-    errs = dict(fit.param_errors, **{"phonon2.A": 3.0})
+    weak = dict(fit.params, **{"phonon2.h": 2.0})
+    errs = dict(fit.param_errors, **{"phonon2.h": 3.0})
     assert "amplitude_zero" in _names(CL.triggers(_best_with(clean, params=weak, param_errors=errs), ctx))
-    railed = dict(fit.at_limit, **{"phonon2.A": True})
+    railed = dict(fit.at_limit, **{"phonon2.h": True})
     assert "amplitude_zero" in _names(CL.triggers(_best_with(clean, at_limit=railed), ctx))
 
 
@@ -576,7 +579,7 @@ def test_the_published_fit_is_the_refit_from_the_nested_maximum_likelihood_sampl
     model = record.by_label()["stokes+bg"]
     prob = loop.build_problem(model.hypothesis, ctx)
     names = prob.composite.param_names()
-    theta = np.array([{"phonon.Omega_d": 11.0, "phonon.Gamma": 0.4}.get(n, model.representative.params[n])
+    theta = np.array([{"phonon.omega0": 11.0, "phonon.Gamma": 0.4}.get(n, model.representative.params[n])
                       for n in names])
     br = BackendResult(theta, True, "stub", 1, None, False, {}, None)
     poor = loop.result_from_backend(model.label, prob.composite, prob.costv, prob.n_used, prob.k, br)
@@ -584,7 +587,7 @@ def test_the_published_fit_is_the_refit_from_the_nested_maximum_likelihood_sampl
     out = CL.sample_model(stuck, ctx, n_live=16)
     assert out.result_source == "nested_refit"
     assert out.result.cost < poor.cost - 100.0
-    assert abs(out.result.params["phonon.Omega_d"] - 5.0) < 0.5
+    assert abs(out.result.params["phonon.omega0"] - 5.0) < 0.5
 
 
 def test_a_converged_refit_beats_a_lower_cost_unconverged_representative(one_peak):

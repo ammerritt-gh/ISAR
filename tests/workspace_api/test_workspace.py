@@ -58,7 +58,7 @@ def test_results_full_field_exposure(make_ws):
         "hesse_lo": 4.95, "hesse_hi": 5.25, "hesse_trusted": "True",
         "bayes_lo": 4.9, "bayes_med": 5.1, "bayes_hi": 5.3, "bayes_ess": 900.0, "log_evidence": -12.3,
         "pooled": "False", "gamma": 0.3, "best_model": "phonon+elastic", "modality": None,
-        "amplitudes": json.dumps({"phonon.A": 100.0}), "candidates": json.dumps([{"label": "x"}]),
+        "amplitudes": json.dumps({"phonon.h": 100.0}), "candidates": json.dumps([{"label": "x"}]),
     }])
     fv = Workspace.open(root).results[0]
     assert fv.scan_number == 7 and fv.detector_id == "det" and fv.sample == "tavi"
@@ -70,7 +70,7 @@ def test_results_full_field_exposure(make_ws):
     assert fv.bayes_ess == pytest.approx(900.0) and fv.log_evidence == pytest.approx(-12.3)
     assert fv.interval_reliable is True
     assert fv.best_label == "phonon+elastic"
-    assert fv.amplitudes == {"phonon.A": 100.0}
+    assert fv.amplitudes == {"phonon.h": 100.0}
     assert fv.candidates == [{"label": "x"}]
     assert fv.q == [2.0, 0.0, 0.0]
 
@@ -219,7 +219,7 @@ def _valid_predictive_payload():
         "parameter_names": ["bg.BG"], "parameter_draws": [[1.0], [2.0]],
         "draw_weighting": "equal_weight_resampled", "draw_weights": None,
         "draw_ids": ["draw-0", "draw-1"], "omega0_draws": [], "mode_energies": [[], []],
-        "model_manifest": {"schema": "isar.model_manifest/1",
+        "model_manifest": {"schema": "isar.model_manifest/2",
                            "components": [{"type": "constant_background", "prefix": "bg"}],
                            "parameters": {"bg.BG": 1.0}},
         "expected_counts": [[1.0, 1.0], [2.0, 2.0]],
@@ -349,7 +349,7 @@ def test_stale_atomic_result_id_never_enriches_from_same_scan_detector(make_ws):
 
 def test_atomic_evaluation_lookup_never_falls_back_to_another_experiment(make_ws):
     actual = detector_outcome(omega0=7.0, gamma=0.4, sample="actual",
-                              amplitudes={"phonon.A": 1.0, "bg.BG": 1.0})
+                              amplitudes={"phonon.h": 1.0, "bg.BG": 1.0})
     scans = {"actual:9:det": {**scan_entry(9, detectors={"det": actual}),
                                 "scan_id": "actual:9:det"}}
     ws = Workspace.open(make_ws(scans=scans))
@@ -566,7 +566,7 @@ def _truth_curve(energy, *, omega0, gamma, amps, ctx):
 def test_evaluate_pure_vs_fallback_equivalence(make_ws):
     energy = np.linspace(-2.0, 7.0, 60)
     ctx = SimpleNamespace(center=0.0, gauss_fwhm=1.2, lorentz_fwhm=0.0, T=200.0)
-    amps = {"phonon.A": 5000.0, "elastic.E": 8000.0, "bg.BG": 40.0}
+    amps = {"phonon.h": 5000.0, "elastic.h": 8000.0, "bg.BG": 40.0}
     truth = _truth_curve(energy, omega0=4.0, gamma=0.4, amps=amps, ctx=ctx)
     counts = np.asarray(truth.total, dtype=float)   # noise-free counts from the same model
 
@@ -596,7 +596,7 @@ def test_evaluate_pure_quasielastic_branch(make_ws):
     root = make_ws(data_files=[{"scan_number": 21, "energy": energy, "counts": np.zeros_like(energy)}])
     data_dir = root / "data"
 
-    amps = {"phonon.A": 5000.0, "elastic.E": 8000.0, "qe.QE": 300.0, "bg.BG": 40.0}
+    amps = {"phonon.h": 5000.0, "elastic.h": 8000.0, "qe.QE": 300.0, "bg.BG": 40.0}
     res_row = {"scan": 21, "detector": "det", "omega0": 4.0, "gamma": 0.4,
                "zero": 0.0, "gauss_fwhm": 1.2, "lorentz_fwhm": 0.0, "T": 200.0}
     fit_pure = FitView.from_row({**res_row, "amplitudes": amps})
@@ -612,12 +612,12 @@ def test_evaluate_pure_quasielastic_branch(make_ws):
 
 
 @pytest.mark.parametrize("manifest, message", [
-    ({"schema": "isar.model_manifest/1", "components": ["phonon"], "parameters": {}},
+    ({"schema": "isar.model_manifest/2", "components": ["phonon"], "parameters": {}},
      "must be an object"),
-    ({"schema": "isar.model_manifest/1",
+    ({"schema": "isar.model_manifest/2",
       "components": [{"type": "phonon_dho"}], "parameters": {}},
      "valid prefix"),
-    ({"schema": "isar.model_manifest/1",
+    ({"schema": "isar.model_manifest/2",
       "components": [{"type": "constant_background", "prefix": "bg"}],
       "parameters": {"bg.BG": "not-a-number"}},
      "must be numeric"),
@@ -687,7 +687,7 @@ class _StubFit:
     detector_id = "det"
     omega0 = 4.0
     gamma = 0.4
-    amplitudes = {"phonon.A": 5000.0, "elastic.E": 8000.0, "qe.QE": 300.0, "bg.BG": 40.0}
+    amplitudes = {"phonon.h": 5000.0, "elastic.h": 8000.0, "qe.QE": 300.0, "bg.BG": 40.0}
 
     def __init__(self, res):
         self._res = res
@@ -774,7 +774,7 @@ def test_session_events_parses_file_once(make_ws, monkeypatch):
 def test_evaluate_via_workspace_fallback(make_ws):
     energy = np.linspace(-2.0, 7.0, 50)
     ctx = SimpleNamespace(center=0.0, gauss_fwhm=1.2, lorentz_fwhm=0.0, T=200.0)
-    amps = {"phonon.A": 4000.0, "elastic.E": 6000.0, "bg.BG": 30.0}
+    amps = {"phonon.h": 4000.0, "elastic.h": 6000.0, "bg.BG": 30.0}
     counts = np.asarray(_truth_curve(energy, omega0=3.5, gamma=0.3, amps=amps, ctx=ctx).total)
     root = make_ws(
         rows=[{"scan": 5, "detector": "det", "sample": "tavi", "status": "fitted",

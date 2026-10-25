@@ -16,7 +16,7 @@ from isar.analyze import evidence as E
 from isar.analyze import loop
 from isar.analyze.context import ScanContext
 from isar.analyze.errors import bayes as BZ
-from isar.analyze.lineshapes import convolute_voigt_dho
+from isar.analyze.lineshapes import KB, convolute_voigt_dho
 from isar.analyze.phonon import enumerate_phonon_structures
 from isar.schema.statistics import EVIDENCE_METHODS
 from isar.schema.steering import ParamConstraints
@@ -28,7 +28,10 @@ FAST = dict(n_live=80, dlogz=1.5, sample="unif", seed=3)
 
 def _spectrum_ctx(seed=0, omega0=5.0, n=81, constraints=None):
     x = np.linspace(-10.0, 10.0, n)
-    lam = convolute_voigt_dho(x, omega0, 0.0, 1.0, 0.0, 0.4, 300.0, 80.0, 15.0, 100.0, peak="all")
+    # 300 is the pre-Eq.-2 Lorentzian amplitude (Stokes area pi 300 / 0.4); converted to the
+    # intrinsic A so the spectrum keeps the counts these tests were written for.
+    a = 300.0 * np.pi / 0.4 * -np.expm1(-omega0 / (KB * 100.0))
+    lam = convolute_voigt_dho(x, omega0, 0.0, 1.0, 0.0, 0.4, a, 80.0, 15.0, 100.0, peak="all")
     counts = np.random.default_rng(seed).poisson(np.clip(lam, 0.0, None)).astype(float)
     kw = {} if constraints is None else {"constraints": constraints}
     return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
@@ -222,13 +225,15 @@ def test_unavailable_gradient_escalates_and_persists_no_nan(railed, monkeypatch)
 
 def test_ceiling_railed_gamma_escalates_not_truncates():
     """Γ has TWO bounds and only the floor is the H8 modelling artifact. A Γ railed at
-    GAMMA_MAX is overdamped physics the model cannot express — the likelihood gradient at the
+    GAMMA_MAX is a mode broader than the ceiling allows — the likelihood gradient at the
     bound is genuinely nonzero and an overdamped-vs-two-mode contest is selection-material —
     so it must pay for the sampler, never take the cheap rung. Found by a fresh-context
     verifier 2026-08-09: the original gate tested the NAME suffix only, and this exact fit
-    (Γ̂ = 4.9999… at GAMMA_MAX = 5.0) came back laplace_truncated."""
+    (Γ̂ = 4.9999… at GAMMA_MAX = 5.0) came back laplace_truncated. The planted mode is
+    overdamped (Γ = 8 > E0 = 5): the full DHO form expresses any Γ below the ceiling, so only a
+    width beyond it rails there."""
     x = np.linspace(-15.0, 15.0, 101)
-    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 4.0, 200.0, 0.0, 20.0, 300.0, peak="all")
+    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 8.0, 200.0, 0.0, 20.0, 300.0, peak="all")
     counts = np.random.default_rng(3).poisson(np.clip(lam, 0.0, None)).astype(float)
     ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=300.0,
                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
@@ -257,7 +262,7 @@ def test_truncated_laplace_agrees_with_dynesty(railed):
 
     # ``sample="unif"`` (the FAST default elsewhere) is hopeless on a boundary-sharp posterior —
     # rejection sampling inside the bounding ellipsoid stalls for minutes. rwalk finishes in ~15 s.
-    forced = replace(fit, at_limit=dict(fit.at_limit, **{"phonon.A": True}))
+    forced = replace(fit, at_limit=dict(fit.at_limit, **{"phonon.h": True}))
     dyn = E.structure_evidence(hyp, ctx, forced, bundle, **dict(FAST, sample="rwalk"))
     assert dyn.evidence_method == "dynesty"
     assert abs(lap.log_evidence - dyn.log_evidence) < max(2.0, 5.0 * dyn.log_evidence_err)
@@ -267,7 +272,7 @@ def test_a_non_gamma_pin_never_takes_the_truncated_rung(railed):
     """The carve-out is Γ-only. Ω_d at the window edge is real physics (H8) — a boundary the
     Gaussian picture genuinely cannot describe — so it keeps escalating even alongside a Γ pin."""
     ctx, hyp, fit = railed
-    forced = replace(fit, at_limit=dict(fit.at_limit, **{"phonon.Omega_d": True}))
+    forced = replace(fit, at_limit=dict(fit.at_limit, **{"phonon.omega0": True}))
     rec = E.structure_evidence(hyp, ctx, forced, _bundle(hyp, ctx), escalation="defer")
 
     assert rec.evidence_method == "deferred_escalation"     # i.e. NOT laplace_truncated
@@ -431,10 +436,10 @@ def test_map_refit_agrees_with_dynesty(clean):
     """The escalated lane and the analytic lane answer the same integral: on a well-behaved
     scan laplace_map ≈ dynesty within sampler error (coarse budget ⇒ coarse tolerance)."""
     ctx, hyp, fit = clean
-    bundle = _bundle(hyp, ctx, entry=_narrow_entry(fit, sigma=5e-2))
+    bundle = _bundle(hyp, ctx, entry=_narrow_entry(fit, sigma=3e-2))
     lap = E.structure_evidence(hyp, ctx, fit, bundle)
     assert lap.evidence_method == "laplace_map"
-    pinned = replace(fit, at_limit=dict(fit.at_limit, **{"phonon.A": True}))
+    pinned = replace(fit, at_limit=dict(fit.at_limit, **{"phonon.h": True}))
     dyn = E.structure_evidence(hyp, ctx, pinned, bundle, **FAST)
     assert dyn.evidence_method == "dynesty"
     assert abs(lap.log_evidence - dyn.log_evidence) < max(2.0, 5.0 * dyn.log_evidence_err)
@@ -444,10 +449,10 @@ def test_map_refit_agrees_with_dynesty(clean):
 def test_boundary_pin_escalates_to_dynesty(clean):
     ctx, hyp, fit = clean
     bundle = _bundle(hyp, ctx)
-    pinned = replace(fit, at_limit=dict(fit.at_limit, **{"phonon.Omega_d": True}))
+    pinned = replace(fit, at_limit=dict(fit.at_limit, **{"phonon.omega0": True}))
     rec = E.structure_evidence(hyp, ctx, pinned, bundle, **FAST)
     assert rec.validity["escalation"] == "laplace_invalid"
-    assert rec.validity["boundary_pinned"] == ["phonon.Omega_d"]
+    assert rec.validity["boundary_pinned"] == ["phonon.omega0"]
     assert rec.evidence_method == "dynesty"
     assert np.isfinite(rec.log_evidence)
     assert rec.log_evidence_err is not None and rec.log_evidence_err > 0.0
@@ -555,7 +560,7 @@ def test_dominated_candidate_never_pays_for_dynesty(clean, monkeypatch):
 def test_failed_sampler_gate_yields_no_usable_evidence(clean, monkeypatch):
     """A dynesty run that fails its own §5.4 gate returns a finite logz — and must NOT be
     usable evidence. Finiteness cannot separate the failures (max_iter, low ESS, logzerr blow-up,
-    a railed Omega_d all leave logz finite), so the gate is convergence, not finiteness.
+    a railed omega0 all leave logz finite), so the gate is convergence, not finiteness.
     Otherwise a sampler the module already distrusts for pruning decides the production
     posterior, since select_models admits every finite lnZ."""
     ctx, hyp, fit = clean
@@ -1136,10 +1141,10 @@ def test_prior_bundle_ppf_drives_the_sampler(clean):
     target = 3.0
     params = tuple(
         C.ResolvedPrior(p.name, "gaussian", target, 1e-4, p.lo, p.hi, "identity")
-        if p.name == "phonon.Omega_d" else p
+        if p.name == "phonon.omega0" else p
         for p in _bundle(hyp, ctx).params)
     bz = BZ.bayesian_posterior(hyp, ctx, fit, prior_bundle=C.PriorBundle(params), **FAST)
-    od_i = bz.parameter_names.index("phonon.Omega_d")
+    od_i = bz.parameter_names.index("phonon.omega0")
     draws = bz.parameter_samples[:, od_i]
     assert np.all(np.abs(draws - target) < 1e-2)
     assert bz.prior_used is False                         # the ω₀ diagnostics tier is untouched
@@ -1229,13 +1234,13 @@ def test_nested_lane_samples_ordered_mode_energies(two_mode):
     prior specification records which energies are ordered."""
     ctx, hyp, fit = two_mode
     bz = BZ.bayesian_posterior(hyp, ctx, fit, prior_bundle=_bundle(hyp, ctx), n_live=40,
-                               dlogz=5.0, sample="unif", seed=3, max_iter=400)
+                               dlogz=5.0, sample="unif", seed=3, max_iter=120)
     names = list(bz.parameter_names)
-    first, second = names.index("phonon.Omega_d"), names.index("phonon2.Omega_d")
+    first, second = names.index("phonon.omega0"), names.index("phonon2.omega0")
     draws = bz.parameter_samples
     assert draws.shape[0] > 0
     assert np.all(draws[:, first] <= draws[:, second])
-    assert bz.prior_specification["mode_energy_order"] == [["phonon.Omega_d", "phonon2.Omega_d"]]
+    assert bz.prior_specification["mode_energy_order"] == [["phonon.omega0", "phonon2.omega0"]]
 
 
 # ------------------------------------------------------------------ rung 1 of the count ladder

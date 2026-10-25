@@ -147,7 +147,7 @@ def _synthetic_pooled_ws(tmp_path) -> Workspace:
         "confidence": 0.9, "omega0": 5.0, "gamma": 1.0, "q": [2.0, 0.0, 0.0], "T": 200.0,
         "sample": "tavi", "best_label": "phonon", "modality": "single", "fit_kind": "unconstrained",
         "n_modes": 1, "calib": {"center": 0.0, "gauss_fwhm": 1.2, "lorentz_fwhm": 0.0},
-        "amplitudes": {"phonon.A": 500.0, "bg.BG": 100.0},
+        "amplitudes": {"phonon.h": 500.0, "bg.BG": 100.0},
         "interval": [4.6, 5.4], "interval_reliable": True,
         "pooled": True, "n_members": 2, "members": ["1", "2"],
     }

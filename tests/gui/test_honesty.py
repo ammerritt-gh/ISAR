@@ -63,7 +63,7 @@ _SPECS = [
     dict(scan=4, h=2.05, k=0.5, l=0.0, omega0=5.5, reliable=True, entropy=0.1, verdict="resolved"),
 ]
 
-_AMPL = {"phonon.A": 500.0, "bg.BG": 100.0}
+_AMPL = {"phonon.h": 500.0, "bg.BG": 100.0}
 
 
 def _make(make_ws) -> Workspace:

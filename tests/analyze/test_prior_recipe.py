@@ -10,7 +10,7 @@ import pytest
 from isar.analyze import prior
 from isar.analyze.components import CompositeModel, ConstantBackground, Elastic, PhononDHO
 from isar.analyze.context import ScanContext
-from isar.analyze.phonon import EPS_OMEGA_D, GAMMA_FLOOR, GAMMA_MAX
+from isar.analyze.phonon import EPS_OMEGA0, GAMMA_FLOOR, GAMMA_MAX
 
 
 def _ctx(**kw):
@@ -22,8 +22,8 @@ def _ctx(**kw):
     return ScanContext(**d)
 
 
-NAMES = ["phonon.Omega_d", "phonon.Gamma", "phonon.A", "phonon2.Omega_d", "phonon2.Gamma",
-         "phonon2.A", "elastic.E", "qe.QE", "bg.BG"]
+NAMES = ["phonon.omega0", "phonon.Gamma", "phonon.h", "phonon2.omega0", "phonon2.Gamma",
+         "phonon2.h", "elastic.h", "qe.QE", "bg.BG"]
 
 
 # --------------------------------------------------------------------------- the recipe's bounds
@@ -37,10 +37,12 @@ def test_bounds_follow_declared_exposure_and_resolution():
     a = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor")
     b = dataclasses.replace(a, exposure_reference=2.0e5)
     c = dataclasses.replace(a, gauss_fwhm=2.0)
-    amp = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))["phonon.A"][1]
-    assert amp(a) == pytest.approx(prior.AMPLITUDE_SCALE_PER_MONITOR * 1.0e5 * 1.0)
+    amp = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))["phonon.h"][1]
+    area = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))["qe.QE"][1]
+    assert amp(a) == pytest.approx(prior.AMPLITUDE_SCALE_PER_MONITOR * 1.0e5)
     assert amp(b) == pytest.approx(2.0 * amp(a))
-    assert amp(c) == pytest.approx(2.0 * amp(a))
+    assert amp(c) == pytest.approx(amp(a))        # a height ceiling does not scale with the width
+    assert area(c) == pytest.approx(2.0 * area(a))  # an area ceiling does
     bg = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))["bg.BG"][1]
     assert bg(b) == pytest.approx(2.0 * bg(a))
 
@@ -48,11 +50,11 @@ def test_bounds_follow_declared_exposure_and_resolution():
 def test_bounds_energy_width_amplitude_shapes():
     ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor")
     got = dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))
-    assert got["phonon.Omega_d"] == got["phonon2.Omega_d"] == (EPS_OMEGA_D, 10.0)  # fit window
+    assert got["phonon.omega0"] == got["phonon2.omega0"] == (EPS_OMEGA0, 10.0)  # fit window
     assert got["phonon.Gamma"] == (GAMMA_FLOOR, GAMMA_MAX)       # resolution 1.0 meV: floor wins
-    for n in ("phonon.A", "phonon2.A", "elastic.E", "qe.QE"):
+    for n in ("phonon.h", "phonon2.h", "elastic.h", "qe.QE"):
         assert got[n][0] == 0.0 and got[n][1] > 0.0 and np.isfinite(got[n][1])
-    assert got["phonon.A"] == got["elastic.E"] == got["qe.QE"]
+    assert got["phonon.h"] == got["elastic.h"] == got["qe.QE"]
 
 
 def test_width_floor_scales_with_a_very_sharp_resolution():
@@ -76,8 +78,8 @@ def test_time_and_monitor_exposures_get_their_own_amplitude_scale():
     tim = dataclasses.replace(mon, exposure_source="time")
     width = prior.resolution_fwhm(mon)
     bounds = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))
-    assert bounds(mon)["phonon.A"][1] == pytest.approx(prior.AMPLITUDE_SCALE_PER_MONITOR * 30.0 * width)
-    assert bounds(tim)["phonon.A"][1] == pytest.approx(prior.AMPLITUDE_SCALE_PER_SECOND * 30.0 * width)
+    assert bounds(mon)["phonon.h"][1] == pytest.approx(prior.AMPLITUDE_SCALE_PER_MONITOR * 30.0 * width)
+    assert bounds(tim)["phonon.h"][1] == pytest.approx(prior.AMPLITUDE_SCALE_PER_SECOND * 30.0 * width)
     assert bounds(tim)["bg.BG"][1] == pytest.approx(prior.AMPLITUDE_SCALE_PER_SECOND * 30.0)
 
 
@@ -170,9 +172,9 @@ def test_mode_order_puts_the_lower_energy_first_and_keeps_the_curve():
                         100.0, 2.0])
     perm = comp.mode_order(swapped)
     ordered = swapped[perm]
-    assert ordered[names.index("phonon.Omega_d")] == 3.0
-    assert ordered[names.index("phonon2.Omega_d")] == 7.0
-    assert ordered[names.index("phonon.A")] == 50.0 and ordered[names.index("phonon2.A")] == 30.0
+    assert ordered[names.index("phonon.omega0")] == 3.0
+    assert ordered[names.index("phonon2.omega0")] == 7.0
+    assert ordered[names.index("phonon.h")] == 50.0 and ordered[names.index("phonon2.h")] == 30.0
     # already ordered input is untouched
     assert np.array_equal(comp.mode_order(ordered), np.arange(len(names)))
     ctx = _ctx()
@@ -192,35 +194,35 @@ def _two_mode_bundle():
 def test_bundle_ordered_logpdf_adds_the_factorial_once_and_ignores_labels():
     names, bundle = _two_mode_bundle()
     theta = dict(zip(names, [2.0, 0.3, 50.0, 6.0, 0.4, 30.0, 5.0]))
-    swapped = dict(theta, **{"phonon.Omega_d": 6.0, "phonon2.Omega_d": 2.0})
+    swapped = dict(theta, **{"phonon.omega0": 6.0, "phonon2.omega0": 2.0})
     assert bundle.logpdf_ordered(theta) - bundle.logpdf(theta) == pytest.approx(math.log(2.0))
     assert bundle.logpdf_ordered(swapped) == pytest.approx(bundle.logpdf_ordered(theta))
 
 
 def test_both_ordered_lanes_share_the_recipe_window():
     # Laplace (logpdf_ordered) and nested sampling (transform_ordered) must share the window the
-    # recipe bounds, [EPS_OMEGA_D, x_max], so the N!/W^N normalisation is the same in each lane.
+    # recipe bounds, [EPS_OMEGA0, x_max], so the N!/W^N normalisation is the same in each lane.
     names, bundle = _two_mode_bundle()
     top = 10.0
-    i1, i2 = names.index("phonon.Omega_d"), names.index("phonon2.Omega_d")
-    assert (bundle.params[i1].lo, bundle.params[i1].hi) == (EPS_OMEGA_D, top)
+    i1, i2 = names.index("phonon.omega0"), names.index("phonon2.omega0")
+    assert (bundle.params[i1].lo, bundle.params[i1].hi) == (EPS_OMEGA0, top)
     theta = dict(zip(names, [2.0, 0.3, 50.0, 6.0, 0.4, 30.0, 5.0]))
     lane = bundle.logpdf_ordered(theta) - bundle.logpdf(theta)
     assert lane == pytest.approx(math.log(2.0))                  # the same N! over the same W
-    above = dict(theta, **{"phonon.Omega_d": top - 0.01})
-    beyond = dict(theta, **{"phonon.Omega_d": top + 0.01})
+    above = dict(theta, **{"phonon.omega0": top - 0.01})
+    beyond = dict(theta, **{"phonon.omega0": top + 0.01})
     assert np.isfinite(bundle.logpdf_ordered(above))
     assert bundle.logpdf_ordered(beyond) == -math.inf
     u = np.random.default_rng(5).random((2000, len(names)))
     draws = np.array([bundle.transform_ordered(row) for row in u])
-    assert draws[:, [i1, i2]].min() >= EPS_OMEGA_D and draws[:, [i1, i2]].max() <= top
+    assert draws[:, [i1, i2]].min() >= EPS_OMEGA0 and draws[:, [i1, i2]].max() <= top
 
 
 def test_bundle_ordered_transform_is_the_ordered_prior_and_keeps_the_evidence():
     # A swap-symmetric likelihood has the same evidence under the flat labelled prior and under
     # the ordered one: the sampler for the ordered prior must not lose or double any mass.
     names, bundle = _two_mode_bundle()
-    i1, i2 = names.index("phonon.Omega_d"), names.index("phonon2.Omega_d")
+    i1, i2 = names.index("phonon.omega0"), names.index("phonon2.omega0")
     g = lambda e: np.exp(-0.5 * ((e - 2.0) / 0.5) ** 2) + np.exp(-0.5 * ((e - 6.0) / 0.5) ** 2)
     rng = np.random.default_rng(3)
     u = rng.random((40000, len(names)))
@@ -239,8 +241,8 @@ def test_bundle_leaves_an_informative_energy_prior_alone():
     from isar.schema.steering import ParamConstraints
     comp = CompositeModel([PhononDHO(), PhononDHO(prefix="phonon2"), ConstantBackground()])
     ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor",
-               constraints=ParamConstraints(soft={"phonon.Omega_d": (3.0, 0.5)},
-                                            origins={"phonon.Omega_d": "transport"}))
+               constraints=ParamConstraints(soft={"phonon.omega0": (3.0, 0.5)},
+                                            origins={"phonon.omega0": "transport"}))
     names = comp.param_names()
     bundle = catalogue.resolve_priors(comp, ctx, prior.mode_bounds(names, ctx))
     theta = dict(zip(names, [3.0, 0.3, 50.0, 6.0, 0.4, 30.0, 5.0]))
@@ -255,7 +257,7 @@ def test_a_mode_with_its_own_amplitude_or_width_prior_is_not_ordered():
     comp = CompositeModel([PhononDHO(), PhononDHO(prefix="phonon2"), ConstantBackground()])
     names = comp.param_names()
     theta = dict(zip(names, [2.0, 0.3, 50.0, 6.0, 0.4, 30.0, 5.0]))
-    for name, (mu, sigma) in (("phonon.A", (50.0, 20.0)), ("phonon.Gamma", (0.3, 0.1))):
+    for name, (mu, sigma) in (("phonon.h", (50.0, 20.0)), ("phonon.Gamma", (0.3, 0.1))):
         ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor",
                    constraints=ParamConstraints(soft={name: (mu, sigma)}, origins={name: "test"}))
         bundle = catalogue.resolve_priors(comp, ctx, prior.mode_bounds(names, ctx))
@@ -276,7 +278,7 @@ def test_a_delta_function_mode_leaves_the_other_modes_ordered_among_themselves()
     theta = dict(zip(names, [2.0, 0.3, 50.0, 4.0, GAMMA_FLOOR, 20.0, 6.0, 0.4, 30.0, 5.0]))
     assert bundle.logpdf_ordered(theta) - bundle.logpdf(theta) == pytest.approx(math.log(2.0))
     free = [p.name for p in bundle.params]
-    i1, i2, i3 = (free.index(f"{p}.Omega_d") for p in ("phonon", "phonon2", "phonon3"))
+    i1, i2, i3 = (free.index(f"{p}.omega0") for p in ("phonon", "phonon2", "phonon3"))
     u = np.random.default_rng(7).random((2000, len(free)))
     draws = np.array([bundle.transform_ordered(row) for row in u])
     assert np.all(draws[:, i1] <= draws[:, i3])                  # the DHO pair, ordered

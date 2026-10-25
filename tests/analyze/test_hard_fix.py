@@ -65,7 +65,7 @@ def test_fit_freezes_gamma_tags_branch_conditional_and_recovers_omega0():
     assert res.optimizer_converged
     assert res.params["phonon.Gamma"] == gfix              # frozen exactly at the branch value
     assert res.param_errors["phonon.Gamma"] == 0.0         # zero variance for a fixed param
-    assert res.param_errors["phonon.Omega_d"] and res.param_errors["phonon.Omega_d"] > 0
+    assert res.param_errors["phonon.omega0"] and res.param_errors["phonon.omega0"] > 0
     assert res.k == 4                                       # elastic+stokes+bg is k=5 → 4 free
     assert abs(res.omega0 - 5.0) < 0.2
 
@@ -99,11 +99,11 @@ def _escalation_env(monkeypatch):
 
 
 def test_escalation_skipped_when_gamma_already_hard_fixed(monkeypatch):
-    """A near-Γ branch_conditional fit already hard-fixes phonon.Gamma (and phonon.A). gamma_at_bound
+    """A near-Γ branch_conditional fit already hard-fixes phonon.Gamma (and phonon.h). gamma_at_bound
     is computed from the fitted Γ regardless of constraints, so it can still read True — but re-freezing
-    an already-frozen Γ rescues nothing and would drop the existing hard A. The guard must skip it."""
+    an already-frozen Γ rescues nothing and would drop the existing hard h. The guard must skip it."""
     calls = _escalation_env(monkeypatch)
-    ctx = _ctx(ParamConstraints(hard={"phonon.Gamma": 0.6, "phonon.A": 400.0}))
+    ctx = _ctx(ParamConstraints(hard={"phonon.Gamma": 0.6, "phonon.h": 400.0}))
     fit = {"gamma_at_bound": True, "omega0": 5.0}
     prior = types.SimpleNamespace(omega0=5.0)
     region_reasons = []

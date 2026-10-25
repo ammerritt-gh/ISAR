@@ -13,7 +13,7 @@ from scipy.optimize import brentq
 from isar.analyze import context as CTX
 from isar.analyze.components import (CompositeModel, ConstantBackground, Elastic, PhononDHO,
                                      QuasiElastic)
-from isar.analyze.lineshapes import CONVOLUTION_DX, Voigt, convolute_voigt_dho
+from isar.analyze.lineshapes import CONVOLUTION_DX, KB, Voigt, convolute_voigt_dho
 from isar.analyze.resolution import ResolutionLibrary, TabulatedResolution
 from isar.schema import axes
 
@@ -126,20 +126,20 @@ def test_library_keys_by_detector_and_setting_and_refuses_duplicates():
 @pytest.mark.parametrize("window", [(-4.0, 18.0), (-4.013, 18.037)])  # dx multiple, and not
 @pytest.mark.parametrize("center", [0.0, 0.123])
 def test_near_delta_dho_recovers_the_curve(window, center):
-    """A DHO far narrower than the grid is a delta of the mode's area (pi A / Gamma, drawn
-    area-preserving on the grid, lineshapes.NARROW_GAMMA_STEPS): the model must return the curve
-    itself times that area, at the right place, whatever the data window. The convolution grid
-    (window + 20 meV pad) is wider than the 20 meV table."""
+    """A DHO far narrower than the grid is a delta of the mode's Stokes area (A (n(E0)+1) in the
+    full Eq. 2 normalisation, drawn area-preserving on the grid, lineshapes.NARROW_GAMMA_STEPS):
+    the model must return the curve itself times that area, at the right place, whatever the data
+    window. The convolution grid (window + 20 meV pad) is wider than the 20 meV table."""
     curve = _asym_curve()
-    gamma, omega_d = 5e-4, 5.0
+    gamma, e0 = 5e-4, 5.0                # the damped energy sits 2.5e-8 meV below E0
     x = np.arange(*window, 0.002)
-    y = convolute_voigt_dho(x, np.hypot(omega_d, gamma), center, 9.9, 9.9, gamma, 1.0,
+    y = convolute_voigt_dho(x, e0, center, 9.9, 9.9, gamma, 1.0,
                             0.0, 0.0, 10.0, peak="stokes", resolution_curve=curve)
-    weight = np.pi / gamma     # the Lorentzian's area; it was the aliased DX / gamma^2 on a node
+    weight = 1.0 / -np.expm1(-e0 / (KB * 10.0))     # n(E0) + 1 at A = 1, T = 10 K
     assert _trapz(y, x) / weight == pytest.approx(1.0, abs=1e-3)
     c_left, c_right = _half_max(curve.energy, curve.values)
     y_left, y_right = _half_max(x, y)
-    assert (y_left + y_right) / 2 - omega_d - center == pytest.approx(
+    assert (y_left + y_right) / 2 - e0 - center == pytest.approx(
         (c_left + c_right) / 2, abs=DX / 10)
     # The B-spline average carries its own variance, DX^2 / 4 wherever the mode sits: +0.004 meV
     # on this 1.3 meV FWHM (the aliased on-node sample carried none, and a wrong area).
@@ -161,8 +161,8 @@ def test_gaussian_curve_reproduces_the_voigt_path():
                               quasielastic_fwhm=1.5, resolution_curve=curve)
     ctx_voigt = SimpleNamespace(center=0.2, gauss_fwhm=fwhm, lorentz_fwhm=0.0, T=100.0,
                                 quasielastic_fwhm=1.5)
-    el_tab = Elastic().evaluate(x_off, {"E": 1.0}, ctx_tab)
-    el_voigt = Elastic().evaluate(x_off, {"E": 1.0}, ctx_voigt)
+    el_tab = Elastic().evaluate(x_off, {"h": 1.0}, ctx_tab)
+    el_voigt = Elastic().evaluate(x_off, {"h": 1.0}, ctx_voigt)
     assert np.max(np.abs(el_tab - el_voigt)) <= 1e-4 * np.max(el_voigt)
     # The quasi-elastic Lorentzian is convolved numerically on the grid: its far tails beyond the
     # 20 meV pad and the 8 meV table edge are lost, about 3e-4 of the peak here.
@@ -176,13 +176,13 @@ def test_asymmetric_elastic_line_is_the_curve_at_the_zero():
     ctx = SimpleNamespace(center=-0.31, gauss_fwhm=0.0, lorentz_fwhm=0.0, T=100.0,
                           resolution_curve=curve)
     x = np.arange(-9.0, 13.0, 0.001)   # the whole table, shifted by the zero
-    y = Elastic().evaluate(x, {"E": 250.0}, ctx)
-    assert np.array_equal(y, 250.0 * curve.profile(x + 0.31))
+    y = Elastic().evaluate(x, {"h": 250.0}, ctx)          # elastic.h is the line's height
+    assert np.array_equal(y, 250.0 * (curve.profile(x + 0.31) / float(np.max(curve.values))))
     left, right = _half_max(x, y)
     assert right - left == pytest.approx(curve.fwhm, abs=1e-3)
     peak = x[np.argmax(y)]
     assert right - peak > peak - left   # the broad side stays on the energy-loss side
-    assert _trapz(y, x) == pytest.approx(250.0, rel=1e-3)
+    assert np.max(y) == pytest.approx(250.0, rel=1e-3)
 
 
 def test_composite_model_fits_the_curve_shape_through_the_nnls_basis():
@@ -194,13 +194,13 @@ def test_composite_model_fits_the_curve_shape_through_the_nnls_basis():
     model = CompositeModel([PhononDHO(), Elastic(), ConstantBackground()])
     theta = [6.0, 0.8, 3.0, 40.0, 0.5]
     truth = model.evaluate(ctx.x, theta, ctx)
-    phi, names = model.nnls_basis(ctx.x, {"phonon.Omega_d": 6.0, "phonon.Gamma": 0.8}, ctx)
+    phi, names = model.nnls_basis(ctx.x, {"phonon.omega0": 6.0, "phonon.Gamma": 0.8}, ctx)
     amps, *_ = np.linalg.lstsq(phi, truth, rcond=None)
-    assert names == ["phonon.A", "elastic.E", "bg.BG"]
+    assert names == ["phonon.h", "elastic.h", "bg.BG"]
     assert amps == pytest.approx([3.0, 40.0, 0.5], rel=1e-9)
     # Anti-Stokes stays derived from detailed balance: removing it changes the gain side only.
-    stokes = PhononDHO(peak="stokes").evaluate(ctx.x, {"Omega_d": 6.0, "Gamma": 0.8, "A": 3.0}, ctx)
-    both = PhononDHO().evaluate(ctx.x, {"Omega_d": 6.0, "Gamma": 0.8, "A": 3.0}, ctx)
+    stokes = PhononDHO(peak="stokes").evaluate(ctx.x, {"omega0": 6.0, "Gamma": 0.8, "h": 3.0}, ctx)
+    both = PhononDHO().evaluate(ctx.x, {"omega0": 6.0, "Gamma": 0.8, "h": 3.0}, ctx)
     gain = ctx.x < -3.0
     assert np.all(both[gain] > stokes[gain])
 

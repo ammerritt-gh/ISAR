@@ -14,7 +14,7 @@ import pytest
 
 from isar.analyze import count_ladder
 from isar.analyze.context import ScanContext
-from isar.analyze.lineshapes import convolute_voigt_dho
+from isar.analyze.lineshapes import KB, convolute_voigt_dho
 from isar.drive.isar_io import readers
 from isar.schema import card as card_mod
 from isar.session import driver, outcome as outcome_mod, scan_delivery
@@ -138,7 +138,8 @@ def _weak_elastic_ctx():
     """One peak and a weak elastic line: both elastic variants contend at ceiling 1, so rung 2 has
     two models to sample (a few seconds at the suite's n_live)."""
     x = np.linspace(-8.0, 16.0, 81)
-    return _ctx(convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 20.0, 8.0, 50.0,
+    a = 500.0 * np.pi / 0.4 * -np.expm1(-5.0 / (KB * 50.0))   # pre-Eq.-2 Lorentzian 500, as intrinsic A
+    return _ctx(convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, a, 20.0, 8.0, 50.0,
                                     peak="all"), x, 1)
 
 
@@ -221,7 +222,16 @@ def test_a_slice_that_ends_leaves_rung_2_pending_and_a_later_call_resumes_it(for
                                  rung2_resume=partial)
     assert forced_trigger == contending[1:]
     assert set(last["rung2_partial"]) == set(contending)
-    assert last["rung2_partial"][contending[0]] == partial[contending[0]]
+    kept, stored = last["rung2_partial"][contending[0]], partial[contending[0]]
+    # The stored evidence is reused as is; a published refit is refitted again from its stored
+    # parameters (one optimizer run), so those agree to the optimizer's tolerance, not bit for bit.
+    assert {k: v for k, v in kept.items() if k != "params"} == \
+        {k: v for k, v in stored.items() if k != "params"}
+    assert (kept["params"] is None) == (stored["params"] is None)
+    if stored["params"] is not None:
+        assert kept["params"].keys() == stored["params"].keys()
+        assert all(kept["params"][k] == pytest.approx(v, rel=1e-6)
+                   for k, v in stored["params"].items())
     assert last["fit_selection_semantics"]["count_ladder"]["state"] != "provisional"
 
 

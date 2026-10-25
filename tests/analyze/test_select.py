@@ -15,7 +15,7 @@ import pytest
 from isar.analyze import loop, select
 from isar.analyze.context import ScanContext
 from isar.analyze.evidence import EvidenceRecord, EvidenceSet
-from isar.analyze.lineshapes import convolute_voigt_dho
+from isar.analyze.lineshapes import KB, convolute_voigt_dho
 from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 
 pytestmark = pytest.mark.filterwarnings("ignore:The enlargement factor")
@@ -75,10 +75,10 @@ def test_akaike_weights_sum_to_one_and_track_aic():
 
 def test_nested_lrt_reports_for_subset_and_skips_non_nested():
     reduced = _result("stokes+bg", k=4, ndof=20, cost=120.0,
-                      params={"phonon.Omega_d": 0, "phonon.Gamma": 0, "phonon.A": 0, "bg.BG": 0})
+                      params={"phonon.omega0": 0, "phonon.Gamma": 0, "phonon.h": 0, "bg.BG": 0})
     full = _result("elastic+stokes+bg", k=5, ndof=19, cost=90.0,
-                   params={"phonon.Omega_d": 0, "phonon.Gamma": 0, "phonon.A": 0,
-                           "elastic.E": 0, "bg.BG": 0})
+                   params={"phonon.omega0": 0, "phonon.Gamma": 0, "phonon.h": 0,
+                           "elastic.h": 0, "bg.BG": 0})
     scores = _by_label([reduced, full])
     nt = scores["elastic+stokes+bg"].nested
     assert nt is not None
@@ -106,10 +106,10 @@ def test_nested_lrt_pairs_one_mode_subset_two_mode():
     unchanged nested LRT pairs them (mode 1 keeps the ``phonon`` prefix — that is what makes
     the subset relation hold)."""
     one = _result("stokes+bg", k=4, ndof=20, cost=140.0,
-                  params={"phonon.Omega_d": 0, "phonon.Gamma": 0, "phonon.A": 0, "bg.BG": 0})
+                  params={"phonon.omega0": 0, "phonon.Gamma": 0, "phonon.h": 0, "bg.BG": 0})
     two = _result("stokes2+bg", k=7, ndof=17, cost=95.0,
-                  params={"phonon.Omega_d": 0, "phonon.Gamma": 0, "phonon.A": 0,
-                          "phonon2.Omega_d": 0, "phonon2.Gamma": 0, "phonon2.A": 0, "bg.BG": 0})
+                  params={"phonon.omega0": 0, "phonon.Gamma": 0, "phonon.h": 0,
+                          "phonon2.omega0": 0, "phonon2.Gamma": 0, "phonon2.h": 0, "bg.BG": 0})
     scores = _by_label([one, two])
     nt = scores["stokes2+bg"].nested
     assert nt is not None and nt["reduced"] == "stokes+bg"
@@ -245,7 +245,10 @@ def _one_peak_ctx(o1=5.0, a1=500.0, g=0.4, bg=8.0, n=81, seed=3):
 
 def _spectrum_ctx(seed=0, omega0=5.0, n=81):
     x = np.linspace(-10.0, 10.0, n)
-    lam = convolute_voigt_dho(x, omega0, 0.0, 1.0, 0.0, 0.4, 300.0, 80.0, 15.0, 100.0, peak="all")
+    # 300 is the pre-Eq.-2 Lorentzian amplitude (Stokes area pi 300 / 0.4); converted to the
+    # intrinsic A so the spectrum keeps the counts these tests were written for.
+    a = 300.0 * np.pi / 0.4 * -np.expm1(-omega0 / (KB * 100.0))
+    lam = convolute_voigt_dho(x, omega0, 0.0, 1.0, 0.0, 0.4, a, 80.0, 15.0, 100.0, peak="all")
     counts = np.random.default_rng(seed).poisson(np.clip(lam, 0.0, None)).astype(float)
     return ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=100.0,
                        center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",

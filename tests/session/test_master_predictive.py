@@ -42,24 +42,24 @@ def _fixture():
 # ---------------------------------------------------------------------------
 def test_full_parameter_draw_basis_prefers_nested_then_bootstrap_then_laplace():
     nested = SimpleNamespace(
-        within_model={"bayes_ok": True, "bayes_parameter_names": ["phonon.Omega_d", "bg.BG"],
+        within_model={"bayes_ok": True, "bayes_parameter_names": ["phonon.omega0", "bg.BG"],
                       "bayes_parameter_samples": [[2.0, 1.0], [2.1, 1.2]],
                       "parameter_names": ["wrong"], "parameter_samples": [[9.0]]},
         covariance_ok=True, parameter_covariance=np.eye(2),
-        params={"phonon.Omega_d": 2.0, "bg.BG": 1.0})
+        params={"phonon.omega0": 2.0, "bg.BG": 1.0})
     names, samples, basis, diagnostics = _bounded_parameter_draws(nested, seed=7)
-    assert names == ("phonon.Omega_d", "bg.BG")
+    assert names == ("phonon.omega0", "bg.BG")
     assert samples.shape == (2, 2) and basis == "nested_sampling"
     assert diagnostics["source_draw_count"] == 2 and diagnostics["retained_draw_count"] == 2
     assert diagnostics["draw_mass_retained"] == 1.0 and diagnostics["dropped_draws"] == []
 
-    nested.within_model = {"parameter_names": ["phonon.Omega_d", "bg.BG"],
+    nested.within_model = {"parameter_names": ["phonon.omega0", "bg.BG"],
                            "parameter_samples": [[2.0, 1.0], [2.1, 1.2]]}
     assert _bounded_parameter_draws(nested, seed=7)[2] == "parametric_bootstrap"
 
     nested.within_model = {}
     names, samples, basis, _diagnostics = _bounded_parameter_draws(nested, seed=7, maximum=8)
-    assert names == ("phonon.Omega_d", "bg.BG")
+    assert names == ("phonon.omega0", "bg.BG")
     assert samples.shape == (8, 2) and basis == "laplace_hesse"
 
 
@@ -140,13 +140,13 @@ def test_predictive_artifact_is_content_addressed_and_retained(tmp_path):
 # The shared evaluation path: substitution is BY NAME
 # ---------------------------------------------------------------------------
 _MANIFEST = {
-    "schema": "isar.model_manifest/1",
+    "schema": "isar.model_manifest/2",
     "components": [{"type": "phonon_dho", "prefix": "phonon", "peak": "stokes+astokes"},
                    {"type": "constant_background", "prefix": "bg"}],
-    "parameters": {"phonon.Omega_d": 3.0, "phonon.Gamma": 0.3, "phonon.A": 100.0,
+    "parameters": {"phonon.omega0": 3.0, "phonon.Gamma": 0.3, "phonon.h": 100.0,
                    "bg.BG": 4.0},
 }
-_NAMES = ["phonon.Omega_d", "phonon.Gamma", "phonon.A", "bg.BG"]
+_NAMES = ["phonon.omega0", "phonon.Gamma", "phonon.h", "bg.BG"]
 _DRAW = [3.0, 0.3, 100.0, 4.0]
 _GRID = [-2.0, 0.0, 2.0, 4.0, 6.0]
 _CONTEXT = mm.EvaluationContext(center=0.0, gauss_fwhm=0.4, lorentz_fwhm=0.1, T=100.0)
@@ -158,15 +158,15 @@ def test_named_substitution_is_order_independent_but_identity_exact():
     shuffled_names = [_NAMES[index] for index in order]
     shuffled_draw = [_DRAW[index] for index in order]
     shuffled = mm.expected_counts(_MANIFEST, shuffled_names, shuffled_draw, _CONTEXT, _GRID)
-    # A positional implementation would silently feed bg.BG into phonon.Omega_d here.
+    # A positional implementation would silently feed bg.BG into phonon.omega0 here.
     assert np.allclose(canonical, shuffled, rtol=0.0, atol=0.0)
     assert not np.allclose(canonical, mm.expected_counts(
         _MANIFEST, _NAMES, shuffled_draw, _CONTEXT, _GRID))
 
 
 @pytest.mark.parametrize("names,draw", [
-    (["phonon.Omega_d", "phonon.Omega_d", "phonon.A", "bg.BG"], _DRAW),          # duplicate
-    (["phonon.Omega_d", "phonon.Gamma", "phonon.A"], _DRAW[:3]),                 # missing
+    (["phonon.omega0", "phonon.omega0", "phonon.h", "bg.BG"], _DRAW),          # duplicate
+    (["phonon.omega0", "phonon.Gamma", "phonon.h"], _DRAW[:3]),                 # missing
     (_NAMES + ["phonon.extra"], _DRAW + [1.0]),                                  # extra
     (_NAMES, _DRAW[:3]),                                                         # short row
     (_NAMES, [3.0, 0.3, 100.0, float("nan")]),                                   # non-finite
@@ -347,7 +347,7 @@ def test_a_master_without_a_monitor_publishes_no_exposure_basis(monkeypatch):
 
 def test_predictive_ensemble_keeps_a_null_model_with_no_modes(monkeypatch):
     ctx, _reference = _pool_context([1e9] * 5)
-    null_manifest = {"schema": "isar.model_manifest/1",
+    null_manifest = {"schema": "isar.model_manifest/2",
                      "components": [{"type": "constant_background", "prefix": "bg"}],
                      "parameters": {"bg.BG": 4.0}}
     _stub_models(monkeypatch, {"null": null_manifest}, {"null": [[4.0], [6.0]]}, names=["bg.BG"])
@@ -374,7 +374,7 @@ def test_a_model_whose_draws_do_not_map_onto_its_manifest_is_dropped_not_guessed
     def draws(result, **kwargs):
         names, samples, basis, diagnostics = real(result, **kwargs)
         if result.label == "mismatched":
-            return ("phonon.Omega_d", "phonon.Gamma", "phonon.A", "elastic.E"), samples, \
+            return ("phonon.omega0", "phonon.Gamma", "phonon.h", "elastic.h"), samples, \
                 basis, diagnostics
         return names, samples, basis, diagnostics
 
@@ -1014,7 +1014,7 @@ def test_a_tampered_basis_fingerprint_refuses_even_when_everything_else_is_valid
 def test_machine_precision_negatives_clamp_but_substantial_negatives_refuse():
     # A Poisson mean of -1e-15 is floating-point noise around zero; -1.0 is a broken model, and
     # clamping it published a plausible prediction from an impossible one.
-    manifest = {"schema": "isar.model_manifest/1",
+    manifest = {"schema": "isar.model_manifest/2",
                 "components": [{"type": "constant_background", "prefix": "bg"}],
                 "parameters": {"bg.BG": 1.0}}
     clamped = mm.expected_counts(manifest, ["bg.BG"], [-1e-15], _CONTEXT, _GRID)
@@ -1041,7 +1041,7 @@ def test_the_negative_prediction_verdict_is_a_property_of_the_model_not_the_expo
     could make an impossible prediction disappear by asking for fewer neutrons, and the surviving
     scores were computed from a clamped negative Poisson mean.
     """
-    manifest = {"schema": "isar.model_manifest/1",
+    manifest = {"schema": "isar.model_manifest/2",
                 "components": [{"type": "constant_background", "prefix": "bg"}],
                 "parameters": {"bg.BG": 1.0}}
 

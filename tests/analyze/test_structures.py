@@ -54,8 +54,8 @@ def test_tas_quasielastic_admitted_when_card_enables_it():
     hyps = S.enumerate_phonon_structures(_tas_offwindow_ctx(quasielastic_fwhm=1.5))
     assert [h.label for h in hyps] == ["stokes+bg", "stokes+qe+bg", "bg"]
     qe = {h.label: h for h in hyps}["stokes+qe+bg"]
-    assert qe.k == 5  # phonon (Omega_d, Gamma, A) + qe.QE + bg.BG
-    assert qe.build().param_names() == ["phonon.Omega_d", "phonon.Gamma", "phonon.A",
+    assert qe.k == 5  # phonon (omega0, Gamma, h) + qe.QE + bg.BG
+    assert qe.build().param_names() == ["phonon.omega0", "phonon.Gamma", "phonon.h",
                                         "qe.QE", "bg.BG"]
 
 
@@ -74,8 +74,8 @@ def test_in_window_elastic_and_quasielastic_emit_four_hypotheses():
         "stokes+bg", "elastic+stokes+bg", "stokes+qe+bg", "elastic+stokes+qe+bg",
         "elastic+bg", "bg"]
     full = {h.label: h for h in hyps}["elastic+stokes+qe+bg"].build()
-    assert full.param_names() == ["phonon.Omega_d", "phonon.Gamma", "phonon.A",
-                                  "elastic.E", "qe.QE", "bg.BG"]
+    assert full.param_names() == ["phonon.omega0", "phonon.Gamma", "phonon.h",
+                                  "elastic.h", "qe.QE", "bg.BG"]
 
 
 def test_antistokes_gate_is_tied_at_step1():
@@ -89,8 +89,8 @@ def test_enumerate_multimode_two_phonon_build_and_k():
     by_label = {h.label: h for h in hyps}
     assert set(by_label) == {"stokes2+bg", "elastic+stokes2+bg"}
     two = by_label["stokes2+bg"].build()
-    assert two.param_names() == ["phonon.Omega_d", "phonon.Gamma", "phonon.A",
-                                 "phonon2.Omega_d", "phonon2.Gamma", "phonon2.A", "bg.BG"]
+    assert two.param_names() == ["phonon.omega0", "phonon.Gamma", "phonon.h",
+                                 "phonon2.omega0", "phonon2.Gamma", "phonon2.h", "bg.BG"]
     assert by_label["stokes2+bg"].k == 7
     assert by_label["elastic+stokes2+bg"].k == 8
     # 1-mode params are a strict subset of the 2-mode params (nesting the LRT keys on)
@@ -119,7 +119,7 @@ def test_enumerate_multimode_runs_every_count_to_the_ceiling():
                                        "elastic+stokes3+bg", "stokes4+bg", "elastic+stokes4+bg"]
     four = {h.label: h for h in hyps}["stokes4+bg"]
     assert four.k == 13
-    assert four.build().param_names()[-4:] == ["phonon4.Omega_d", "phonon4.Gamma", "phonon4.A",
+    assert four.build().param_names()[-4:] == ["phonon4.omega0", "phonon4.Gamma", "phonon4.h",
                                                "bg.BG"]
     three = {h.label: h for h in hyps}["stokes3+bg"].build()
     assert set(three.param_names()) < set(four.build().param_names())
@@ -130,7 +130,7 @@ def test_enumerate_multimode_runs_every_count_to_the_ceiling():
 def test_hypothesis_build_param_order():
     by_label = {h.label: h for h in S.enumerate_phonon_structures(_ixs_ctx())}
     full = by_label["elastic+stokes+bg"].build()
-    assert full.param_names() == ["phonon.Omega_d", "phonon.Gamma", "phonon.A",
-                                  "elastic.E", "bg.BG"]
+    assert full.param_names() == ["phonon.omega0", "phonon.Gamma", "phonon.h",
+                                  "elastic.h", "bg.BG"]
     stokes_only = by_label["stokes+bg"].build()
-    assert stokes_only.param_names() == ["phonon.Omega_d", "phonon.Gamma", "phonon.A", "bg.BG"]
+    assert stokes_only.param_names() == ["phonon.omega0", "phonon.Gamma", "phonon.h", "bg.BG"]

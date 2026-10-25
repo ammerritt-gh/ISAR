@@ -37,7 +37,7 @@ def test_stokes_only_drops_the_gain_side_peak():
     total intensity than the Bose-tied pair (the dropped gain-side counts)."""
     ctx = _ctx(prior_omega=6.0, T=300.0)                  # warm ⇒ anti-Stokes non-negligible
     x = ctx.x
-    local = {"Omega_d": 6.0, "Gamma": 0.5, "A": 100.0}
+    local = {"omega0": 6.0, "Gamma": 0.5, "h": 100.0}
     tied = PhononDHO(peak="stokes+astokes").evaluate(x, local, ctx)
     stokes = PhononDHO(peak="stokes").evaluate(x, local, ctx)
     assert stokes.sum() > 0
@@ -85,7 +85,7 @@ def test_enumeration_emits_stokes_only_when_buried():
             if "stokes" in h.label]                  # the phonon-less nulls carry no lineshape
     assert hyps and all(h.build().is_stokes_only() for h in hyps)
     # param set unchanged — Stokes-only is a lineshape choice, not fewer params
-    assert hyps[0].build().param_names() == ["phonon.Omega_d", "phonon.Gamma", "phonon.A", "bg.BG"]
+    assert hyps[0].build().param_names() == ["phonon.omega0", "phonon.Gamma", "phonon.h", "bg.BG"]
 
 
 def test_enumeration_stays_tied_when_resolvable():
@@ -96,7 +96,7 @@ def test_enumeration_stays_tied_when_resolvable():
 def test_multimode_honors_stokes_only():
     hyps = S.enumerate_phonon_multimode(_ctx(prior_omega=30.0, T=100.0))
     assert hyps and all(h.build().is_stokes_only() for h in hyps)
-    assert "phonon.Omega_d" in hyps[0].build().param_names()  # mode-1 nesting preserved
+    assert "phonon.omega0" in hyps[0].build().param_names()  # mode-1 nesting preserved
 
 
 # --------------------------------------------------------------------------- composite property

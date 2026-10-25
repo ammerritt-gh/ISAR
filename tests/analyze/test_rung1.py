@@ -13,8 +13,8 @@ import pytest
 from isar.analyze import backends, loop, select
 from isar.analyze.backends import BackendResult
 from isar.analyze.context import ScanContext
-from isar.analyze.lineshapes import convolute_voigt_dho
-from isar.analyze.phonon import EPS_OMEGA_D, GAMMA_FLOOR, enumerate_phonon_structures
+from isar.analyze.lineshapes import KB, convolute_voigt_dho
+from isar.analyze.phonon import EPS_OMEGA0, GAMMA_FLOOR, enumerate_phonon_structures
 
 
 def _ctx(lam, x, seed, **kw):
@@ -27,6 +27,12 @@ def _ctx(lam, x, seed, **kw):
 def _dho(x, omega0, gamma, amp):
     return convolute_voigt_dho(x, omega0, 0.0, 1.0, 0.0, gamma, amp, 0.0, 0.0, 50.0,
                                peak="stokes+astokes")
+
+
+def _legacy(amp, omega0, gamma):
+    """A pre-Eq.-2 Lorentzian amplitude (Stokes area pi amp / gamma) as the intrinsic A, so a
+    spectrum keeps the counts its test was written for."""
+    return amp * np.pi / gamma * -np.expm1(-omega0 / (KB * 50.0))
 
 
 def _one_peak(n=41, seed=3):
@@ -97,8 +103,8 @@ def test_split_seeds_find_a_close_doublet_the_residual_seed_misses(monkeypatch):
     and the joint fit stays there. Splitting the one-mode fit's peak resolves the doublet, and
     that start is the representative; without split seeds the ladder keeps the poorer fit."""
     x = np.linspace(-6.0, 14.0, 61)
-    lam = (_dho(x, 5.65, 0.15, 400.0) + _dho(x, 6.35, 0.15, 200.0) + _dho(x, 11.0, 0.3, 15.0)
-           + 5.0)
+    lam = (_dho(x, 5.65, 0.15, _legacy(400.0, 5.65, 0.15)) + _dho(x, 6.35, 0.15, _legacy(200.0, 6.35, 0.15))
+           + _dho(x, 11.0, 0.3, _legacy(15.0, 11.0, 0.3)) + 5.0)
     ctx = _ctx(lam, x, 0)
     record = loop._rung1_ladder(ctx, mode_ceiling=2)
     two = record.by_label()["stokes2+bg"]
@@ -137,7 +143,7 @@ def test_an_amplitude_at_the_recipe_ceiling_is_marked():
     out = {}
     loop.fit_structures_two_stage(ctx, mode_ceiling=1, rung1_out=out)
     model = out["rung1"].by_label()["stokes+bg"]
-    assert "phonon.A" in model.at_upper_bound
+    assert "phonon.h" in model.at_upper_bound
     nominal = replace(ctx, exposure_scale=None, exposure_reference=None, exposure_source=None)
     loop.fit_structures_two_stage(nominal, mode_ceiling=1, rung1_out=out)
     assert out["rung1"].by_label()["stokes+bg"].at_upper_bound == []
@@ -168,8 +174,8 @@ def test_every_start_keeps_the_initial_vector_it_began_from():
     the cold grid IC included (resolved in the parent, not left as None), and refitting from the
     kept x0 gives the same cost."""
     x = np.linspace(-6.0, 14.0, 61)
-    lam = (_dho(x, 5.65, 0.15, 400.0) + _dho(x, 6.35, 0.15, 200.0) + _dho(x, 11.0, 0.3, 15.0)
-           + 5.0)
+    lam = (_dho(x, 5.65, 0.15, _legacy(400.0, 5.65, 0.15)) + _dho(x, 6.35, 0.15, _legacy(200.0, 6.35, 0.15))
+           + _dho(x, 11.0, 0.3, _legacy(15.0, 11.0, 0.3)) + 5.0)
     ctx = _ctx(lam, x, 0)
     record = loop._rung1_ladder(ctx, mode_ceiling=2)
     for model in record.models:
@@ -257,10 +263,10 @@ TOP = "elastic+stokes2+bg"
 
 def test_an_amplitude_at_zero_resolves_to_the_count_below(two_mode_ladder, monkeypatch):
     ctx, raw = two_mode_ladder
-    record = _railed(raw, TOP, {"phonon2.A": 0.0})
+    record = _railed(raw, TOP, {"phonon2.h": 0.0})
     results, hyps, sel, rung1 = _select(monkeypatch, ctx, record)
     railed = rung1.by_label()[TOP]
-    assert railed.resolved_to == "elastic+stokes+bg" and railed.resolved_limit == "phonon2.A"
+    assert railed.resolved_to == "elastic+stokes+bg" and railed.resolved_limit == "phonon2.h"
     twin = rung1.by_label()["elastic+stokes+bg"]
     assert railed.log_evidence == twin.log_evidence and np.isfinite(twin.log_evidence)
     assert railed.probability == 0.0
@@ -273,10 +279,10 @@ def test_an_amplitude_at_zero_resolves_to_the_count_below(two_mode_ladder, monke
 def test_an_elastic_height_at_zero_resolves_to_the_same_count_without_it(two_mode_ladder,
                                                                          monkeypatch):
     ctx, raw = two_mode_ladder
-    record = _railed(raw, TOP, {"elastic.E": 0.0})
+    record = _railed(raw, TOP, {"elastic.h": 0.0})
     results, hyps, sel, rung1 = _select(monkeypatch, ctx, record)
     railed = rung1.by_label()[TOP]
-    assert railed.resolved_to == "stokes2+bg" and railed.resolved_limit == "elastic.E"
+    assert railed.resolved_to == "stokes2+bg" and railed.resolved_limit == "elastic.h"
     assert railed.log_evidence == rung1.by_label()["stokes2+bg"].log_evidence
     _not_double_counted(sel, results, hyps, ctx, TOP)
 
@@ -320,13 +326,13 @@ def test_an_energy_at_its_lower_limit_merges_into_the_elastic_line(two_mode_ladd
     """A mode at zero energy is the elastic line: the count below, with the elastic line (here the
     model already has one, so the twin keeps it; a model without one gains it)."""
     ctx, raw = two_mode_ladder
-    record = _railed(raw, TOP, {"phonon.Omega_d": EPS_OMEGA_D})
+    record = _railed(raw, TOP, {"phonon.omega0": EPS_OMEGA0})
     results, hyps, sel, rung1 = _select(monkeypatch, ctx, record)
     railed = rung1.by_label()[TOP]
-    assert railed.resolved_to == "elastic+stokes+bg" and railed.resolved_limit == "phonon.Omega_d"
+    assert railed.resolved_to == "elastic+stokes+bg" and railed.resolved_limit == "phonon.omega0"
     _not_double_counted(sel, results, hyps, ctx, TOP)
     # stokes2+bg: only TOP could rail onto it (through its elastic height), and TOP sits at no limit
-    record = _railed(raw, "stokes2+bg", {"phonon2.Omega_d": EPS_OMEGA_D})
+    record = _railed(raw, "stokes2+bg", {"phonon2.omega0": EPS_OMEGA0})
     results, hyps, sel, rung1 = _select(monkeypatch, ctx, record)
     assert rung1.by_label()["stokes2+bg"].resolved_to == "elastic+stokes+bg"
     _not_double_counted(sel, results, hyps, ctx, "stokes2+bg")

@@ -276,17 +276,6 @@ def test_phonon_height_is_the_intrinsic_amplitude_times_the_unit_peak_height():
     assert np.allclose(comp.evaluate(x, local, ctx), expected)
 
 
-def test_bose_occupation_limits():
-    from isar.analyze.phonon import bose_occupation, KB
-
-    assert bose_occupation(5.0, 0.0) == 1.0                     # T=0: no occupation
-    assert bose_occupation(5.0, -10.0) == 1.0                   # defensive
-    assert abs(bose_occupation(50.0, 10.0) - 1.0) < 1e-20       # Bose-dead limit
-    # classical limit: (n+1) ≈ kT/ω + 1/2
-    w, T = 0.05, 300.0
-    assert abs(bose_occupation(w, T) - (KB * T / w + 0.5)) < 0.01
-
-
 def test_same_intrinsic_amplitude_gives_the_occupation_ratio_in_height():
     """One intrinsic A produces a narrow Stokes peak scaled by the occupation ratio — the decoupling
     that makes amplitude transport physical (H4). Narrow (Γ = 0.05) so the Bose factor is flat

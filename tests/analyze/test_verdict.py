@@ -46,7 +46,7 @@ def test_residual_structured_vs_noise():
 
 def _fit_result(label, params, *, cost_per_dof, converged=True, within_model=None, omega0=None):
     if omega0 is None:
-        omega0 = float(np.hypot(params["phonon.Omega_d"], params["phonon.Gamma"]))
+        omega0 = float(params["phonon.omega0"])
     return loop.StructureFitResult(
         label=label, k=len(params), ndof=40, cost=cost_per_dof * 40, cost_per_dof=cost_per_dof,
         optimizer_converged=converged, covariance_ok=True, profile_ok=True,
@@ -60,7 +60,7 @@ def _sel(modality="fold", *, best="stokes+bg", pooled=None):
                             pooled=pooled, modality=modality)
 
 
-_SB = {"phonon.Omega_d": 5.0, "phonon.Gamma": 0.4, "phonon.A": 300.0, "bg.BG": 20.0}
+_SB = {"phonon.omega0": 5.0, "phonon.Gamma": 0.4, "phonon.h": 300.0, "bg.BG": 20.0}
 
 
 def test_held_for_calibration_when_uncalibrated():
@@ -86,7 +86,7 @@ def test_fork_without_prior_is_unconstrained_but_prior_breaks_it():
     rng = np.random.default_rng(3)
     counts = rng.poisson(40.0, 81).astype(float); counts[40] += 600.0   # signal present
     ctx = _ctx(counts, x=np.linspace(-10, 10, 81))
-    res = _fit_result("elastic+stokes+bg", {**_SB, "elastic.E": 50.0}, cost_per_dof=2.0)
+    res = _fit_result("elastic+stokes+bg", {**_SB, "elastic.h": 50.0}, cost_per_dof=2.0)
     pooled = select.Pooled("fork", np.array([]), np.array([]), None,
                            [select.Mode(5.0, 0.5, (4.8, 5.0, 5.2)),
                             select.Mode(8.0, 0.5, (7.8, 8.0, 8.2))], "either 5 or 8")
@@ -102,7 +102,7 @@ def test_sparse_and_wide_is_unconstrained():
     ctx = _ctx(counts, x=np.linspace(-10, 10, 81))
     wm = {"freq_interval": (2.0, 5.0, 9.0),                   # hw 3.5 / omega0 5 = 0.7 > 0.5
           "agreement": types.SimpleNamespace(regime="sparse")}
-    res = _fit_result("elastic+stokes+bg", {**_SB, "elastic.E": 50.0}, cost_per_dof=2.0,
+    res = _fit_result("elastic+stokes+bg", {**_SB, "elastic.h": 50.0}, cost_per_dof=2.0,
                       within_model=wm, omega0=5.0)
     assert verdict.classify([res], ctx, _sel("fold", best="elastic+stokes+bg")).verdict == "unconstrained"
 
@@ -111,7 +111,7 @@ def test_junk_vs_model_incomplete_split():
     x = np.linspace(-10.0, 10.0, 81)
     base = _ctx(np.zeros_like(x), x=x)
     comp = {h.label: h for h in enumerate_phonon_structures(base)}["stokes+bg"].build()
-    theta = np.array([_SB["phonon.Omega_d"], _SB["phonon.Gamma"], _SB["phonon.A"], _SB["bg.BG"]])
+    theta = np.array([_SB["phonon.omega0"], _SB["phonon.Gamma"], _SB["phonon.h"], _SB["bg.BG"]])
     model = comp.evaluate(x, theta, base)
     rng = np.random.default_rng(0)
     junk_counts = np.maximum(model + rng.normal(0.0, 8.0, x.size), 0.0)   # structureless residual
@@ -125,7 +125,7 @@ def test_junk_vs_model_incomplete_split():
 
 def test_no_signal_when_flat_and_no_prior():
     ctx = _ctx(np.full(61, 50.0))
-    res = _fit_result("elastic+stokes+bg", {**_SB, "elastic.E": 50.0}, cost_per_dof=1.0)
+    res = _fit_result("elastic+stokes+bg", {**_SB, "elastic.h": 50.0}, cost_per_dof=1.0)
     assert verdict.classify([res], ctx, _sel(best="elastic+stokes+bg"), prior=None).verdict == "no_signal"
 
 
@@ -134,7 +134,7 @@ def test_resolved_clean_scan_has_confidence():
     counts = rng.poisson(40.0, 81).astype(float); counts[40] += 600.0
     ctx = _ctx(counts, x=np.linspace(-10, 10, 81), energy_status="absolute")
     wm = {"freq_interval": (5.95, 6.0, 6.05), "agreement": types.SimpleNamespace(regime="asymptotic")}
-    res = _fit_result("elastic+stokes+bg", {**_SB, "elastic.E": 50.0}, cost_per_dof=2.0,
+    res = _fit_result("elastic+stokes+bg", {**_SB, "elastic.h": 50.0}, cost_per_dof=2.0,
                       within_model=wm, omega0=6.0)
     v = verdict.classify([res], ctx, _sel("fold", best="elastic+stokes+bg"))
     assert v.verdict == "resolved"
@@ -144,8 +144,8 @@ def test_resolved_clean_scan_has_confidence():
 
 # --- detection power + underpowered/no-signal split (the circularity guard) ------------------
 
-_EL = {"phonon.Omega_d": 6.0, "phonon.Gamma": 0.4, "phonon.A": 300.0,
-       "elastic.E": 50.0, "bg.BG": 50.0}
+_EL = {"phonon.omega0": 6.0, "phonon.Gamma": 0.4, "phonon.h": 300.0,
+       "elastic.h": 50.0, "bg.BG": 50.0}
 
 
 def test_detection_power_detectable_vs_underpowered():
@@ -210,7 +210,7 @@ def _elastic_counts(x, *, area=400.0, bg=20.0, seed=11):
 def test_elastic_only_when_elastic_bg_wins():
     x = np.linspace(-10.0, 10.0, 81)
     ctx = _ctx(_elastic_counts(x), x=x)
-    res = _null_result("elastic+bg", {"elastic.E": 200.0, "bg.BG": 20.0})
+    res = _null_result("elastic+bg", {"elastic.h": 200.0, "bg.BG": 20.0})
     v = verdict.classify([res], ctx, _sel_null())
     assert v.verdict == "elastic_only"
     assert 0.0 < v.confidence <= 0.5 + 1e-12             # the categorical-humility cap
@@ -224,7 +224,7 @@ def test_elastic_only_fails_closed_without_the_bg_comparison():
     never claim elastic_only (PR #13 review)."""
     x = np.linspace(-10.0, 10.0, 81)
     ctx = _ctx(_elastic_counts(x), x=x)
-    res = _null_result("elastic+bg", {"elastic.E": 200.0, "bg.BG": 20.0})
+    res = _null_result("elastic+bg", {"elastic.h": 200.0, "bg.BG": 20.0})
     # no scores at all -> no LRT -> fail closed
     bare = verdict.classify([res], ctx, _sel("fold", best="elastic+bg"))
     assert bare.verdict == "no_signal" and bare.confidence == 0.0
@@ -237,7 +237,7 @@ def test_elastic_only_fails_closed_without_the_bg_comparison():
 def test_elastic_only_is_provisional_when_power_is_unconfirmed():
     x = np.linspace(-10.0, 10.0, 81)
     ctx = _ctx(_elastic_counts(x), x=x, prior_omega=6.0)
-    res = _null_result("elastic+bg", {"elastic.E": 200.0, "bg.BG": 20.0})
+    res = _null_result("elastic+bg", {"elastic.h": 200.0, "bg.BG": 20.0})
     sel = _sel_null()
     # prior expects a mode but declares no strength -> power abstains -> provisional (S0.4 guard)
     v = verdict.classify([res], ctx, sel, prior=PhononPrior(6.0, None, 1.0))
@@ -269,7 +269,7 @@ def test_gof_bad_null_winner_is_not_elastic_only():
     rng = np.random.default_rng(7)
     counts = np.maximum(_elastic_counts(x) + rng.normal(0.0, 40.0, x.size), 0.0)
     ctx = _ctx(counts, x=x)
-    res = _null_result("elastic+bg", {"elastic.E": 200.0, "bg.BG": 20.0}, cost_per_dof=9.0)
+    res = _null_result("elastic+bg", {"elastic.h": 200.0, "bg.BG": 20.0}, cost_per_dof=9.0)
     v = verdict.classify([res], ctx, _sel("fold", best="elastic+bg"))
     assert v.verdict in ("junk", "model_incomplete", "signal_unmodeled")
 
@@ -304,9 +304,9 @@ def _clean_two_counts(p_two):
     counts = rng.poisson(40.0, 81).astype(float); counts[40] += 600.0
     ctx = _ctx(counts, x=np.linspace(-10, 10, 81), energy_status="absolute")
     wm = {"freq_interval": (5.95, 6.0, 6.05), "agreement": types.SimpleNamespace(regime="asymptotic")}
-    one = _fit_result("elastic+stokes+bg", {**_SB, "elastic.E": 50.0}, cost_per_dof=2.0,
+    one = _fit_result("elastic+stokes+bg", {**_SB, "elastic.h": 50.0}, cost_per_dof=2.0,
                       within_model=wm, omega0=6.0)
-    two = _fit_result("elastic+stokes2+bg", {**_SB, "elastic.E": 50.0}, cost_per_dof=2.0,
+    two = _fit_result("elastic+stokes2+bg", {**_SB, "elastic.h": 50.0}, cost_per_dof=2.0,
                       omega0=6.0)
     two.n_modes = 2
     sel = select.Selection(scores=[_scored(one.label, 1.0 - p_two), _scored(two.label, p_two)],

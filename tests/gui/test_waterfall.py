@@ -45,7 +45,7 @@ def _outcome(*, h, k, l, omega0, T, reliable=True, entropy=0.0, verdict="resolve
         # A pooled master has no persisted spectrum, so its curve can only come from the "pure"
         # (amplitudes-only) evaluate_model path — mirrors how a real pooled fit stores its combined
         # linear amplitudes rather than raw member counts.
-        oc["amplitudes"] = {"phonon.A": 500.0, "bg.BG": 100.0}
+        oc["amplitudes"] = {"phonon.h": 500.0, "bg.BG": 100.0}
     return oc
 
 

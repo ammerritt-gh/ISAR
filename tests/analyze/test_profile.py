@@ -29,7 +29,7 @@ def _fitted(seed=0):
 def test_minos_intervals_present_and_ordered():
     hyp, ctx, fit = _fitted()
     mi = P.minos_intervals(hyp, ctx, fit)
-    assert "phonon.Omega_d" in mi and "phonon.Gamma" in mi
+    assert "phonon.omega0" in mi and "phonon.Gamma" in mi
     for lo, hi, valid in mi.values():
         assert lo <= hi
 
@@ -64,15 +64,14 @@ def test_omega0_profile_parallel_path_preserves_unavailable_side(monkeypatch):
     assert np.isnan(lo) and hi == 6.0
 
 
-def test_omega0_profile_lower_scan_stops_at_gamma_floor(monkeypatch):
-    """A weak fit may step below Gamma's floor before finding a lower cost crossing."""
+def test_omega0_profile_lower_scan_stops_at_the_omega0_floor(monkeypatch):
+    """A weak fit may reach the .omega0 floor before finding a lower cost crossing."""
     best = 0.021
     gamma = loop.GAMMA_FLOOR
-    omega_d = float(np.sqrt(best ** 2 - gamma ** 2))
     problem = SimpleNamespace(
-        free_names=["phonon.Omega_d", "phonon.Gamma", "phonon.A"],
+        free_names=["phonon.omega0", "phonon.Gamma", "phonon.h"],
         bounds=[
-            (loop.EPS_OMEGA_D, 10.0),
+            (loop.EPS_OMEGA0, 10.0),
             (loop.GAMMA_FLOOR, loop.GAMMA_MAX),
             (0.0, 1e4),
         ],
@@ -80,7 +79,7 @@ def test_omega0_profile_lower_scan_stops_at_gamma_floor(monkeypatch):
         fixed_vals=[],
     )
     fit = SimpleNamespace(
-        params={"phonon.Omega_d": omega_d, "phonon.Gamma": gamma, "phonon.A": 1.0},
+        params={"phonon.omega0": best, "phonon.Gamma": gamma, "phonon.h": 1.0},
         omega0=best,
         omega0_err_hesse=0.02,
         posterior_cost=None,
@@ -91,20 +90,19 @@ def test_omega0_profile_lower_scan_stops_at_gamma_floor(monkeypatch):
         P,
         "_cost_closure",
         lambda _prob, _ctx: lambda theta:
-        (float(np.hypot(theta[0], theta[1])) - best) ** 2,
+        (float(theta[0]) - best) ** 2,
     )
 
     assert np.isnan(P._omega0_profile_crossing(None, None, fit, -1))
 
 
-def test_omega0_profile_fixed_gamma_stops_at_omega_d_floor(monkeypatch):
+def test_omega0_profile_fixed_gamma_stops_at_the_omega0_floor(monkeypatch):
     best = 0.021
     gamma = 0.02
-    omega_d = float(np.sqrt(best ** 2 - gamma ** 2))
     problem = SimpleNamespace(
-        free_names=["phonon.Omega_d", "phonon.Gamma", "phonon.A"],
+        free_names=["phonon.omega0", "phonon.Gamma", "phonon.h"],
         bounds=[
-            (loop.EPS_OMEGA_D, 10.0),
+            (loop.EPS_OMEGA0, 10.0),
             (loop.GAMMA_FLOOR, loop.GAMMA_MAX),
             (0.0, 1e4),
         ],
@@ -112,7 +110,7 @@ def test_omega0_profile_fixed_gamma_stops_at_omega_d_floor(monkeypatch):
         fixed_vals=[gamma],
     )
     fit = SimpleNamespace(
-        params={"phonon.Omega_d": omega_d, "phonon.Gamma": gamma, "phonon.A": 1.0},
+        params={"phonon.omega0": best, "phonon.Gamma": gamma, "phonon.h": 1.0},
         omega0=best,
         omega0_err_hesse=0.02,
         posterior_cost=None,
@@ -123,7 +121,7 @@ def test_omega0_profile_fixed_gamma_stops_at_omega_d_floor(monkeypatch):
         P,
         "_cost_closure",
         lambda _prob, _ctx: lambda theta:
-        (float(np.hypot(theta[0], theta[1])) - best) ** 2,
+        (float(theta[0]) - best) ** 2,
     )
 
     assert np.isnan(P._omega0_profile_crossing(None, None, fit, -1))
@@ -138,16 +136,15 @@ def test_omega0_profile_near_bootstrap_when_well_counted():
 
 
 def _edge_problem(*, od_bounds, gamma, best):
-    """A fit pinned against its Ω_d box, with a cost so flat that Δcost=1 is unreachable inside it."""
-    omega_d = float(np.sqrt(max(best ** 2 - gamma ** 2, 1e-12)))
+    """A fit pinned against its .omega0 box, with a cost so flat that Δcost=1 is unreachable inside it."""
     problem = SimpleNamespace(
-        free_names=["phonon.Omega_d", "phonon.Gamma", "phonon.A"],
+        free_names=["phonon.omega0", "phonon.Gamma", "phonon.h"],
         bounds=[od_bounds, (loop.GAMMA_FLOOR, loop.GAMMA_MAX), (0.0, 1e4)],
         fixed_pos=[1],
         fixed_vals=[gamma],
     )
     fit = SimpleNamespace(
-        params={"phonon.Omega_d": omega_d, "phonon.Gamma": gamma, "phonon.A": 1.0},
+        params={"phonon.omega0": best, "phonon.Gamma": gamma, "phonon.h": 1.0},
         omega0=best, omega0_err_hesse=0.02, posterior_cost=None, cost=0.0,
     )
     return problem, fit
@@ -157,27 +154,27 @@ def test_a_lower_bound_truncated_profile_is_an_explicit_refusal_not_a_bare_nan(m
     # "profile hit a physical bound" and "profile unavailable" were the same nan, so a
     # non-convergence could not be told from a missing diagnostic downstream.
     best = 0.021
-    problem, fit = _edge_problem(od_bounds=(loop.EPS_OMEGA_D, 10.0), gamma=0.02, best=best)
+    problem, fit = _edge_problem(od_bounds=(loop.EPS_OMEGA0, 10.0), gamma=0.02, best=best)
     monkeypatch.setattr(P.loop, "build_problem", lambda _hyp, _ctx: problem)
     monkeypatch.setattr(P, "_cost_closure", lambda _prob, _ctx: lambda theta:
-                        (float(np.hypot(theta[0], theta[1])) - best) ** 2)
+                        (float(theta[0]) - best) ** 2)
 
     value = P._omega0_profile_crossing(None, None, fit, -1)
     assert P.is_bound_truncated(value)
     assert np.isnan(value)          # every existing numeric consumer still sees a nan
 
 
-def test_the_upper_scan_is_capped_by_the_fitted_omega_d_bound(monkeypatch):
+def test_the_upper_scan_is_capped_by_the_fitted_omega0_bound(monkeypatch):
     # The clamp used to be one-sided: the lower side stopped at the box while the upper side walked
     # straight out of it, so the "1σ" interval came back asymmetric and skewed upward.
     best, od_hi = 0.021, 0.05
-    problem, fit = _edge_problem(od_bounds=(loop.EPS_OMEGA_D, od_hi), gamma=0.02, best=best)
+    problem, fit = _edge_problem(od_bounds=(loop.EPS_OMEGA0, od_hi), gamma=0.02, best=best)
     seen = []
 
     def _cost(_prob, _ctx):
         def costv(theta):
             seen.append(float(theta[0]))
-            return (float(np.hypot(theta[0], theta[1])) - best) ** 2
+            return (float(theta[0]) - best) ** 2
         return costv
 
     monkeypatch.setattr(P.loop, "build_problem", lambda _hyp, _ctx: problem)

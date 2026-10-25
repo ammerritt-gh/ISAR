@@ -35,11 +35,12 @@ def test_guard_never_fires_in_model():
         assert y.max() < 1e5  # the 1e6 guard would dwarf this
 
 
-def test_direct_overdamped_call_does_fire_guard():
-    # Sanity: the guard exists in the production lib when called overdamped directly.
+def test_direct_overdamped_call_is_represented_not_penalised():
+    # The production lineshape is the full DHO (paper Eq. 2): an overdamped mode (Γ > E0) is a
+    # finite, positive curve, no longer the 1e6 penalty the phase-1 core's reparameterization avoided.
     x = np.linspace(-10, 10, 81)
     y = convolute_voigt_dho(x, 0.2, 0.0, 0.961, 0.596, 0.5, 100.0, 0.0, 0.0, 100.0, peak="stokes")
-    assert y.max() >= 1e6
+    assert np.all(np.isfinite(y)) and 0.0 < y.max() < 1e5
 
 
 # ---------------------------------------------------------------- ω₀ propagation

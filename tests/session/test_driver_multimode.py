@@ -20,7 +20,7 @@ from isar.session import driver, outcome as outcome_mod, scan_delivery
 from isar.session import guidelines as G
 from isar.session.state import ScanEntry, SessionState, canonical_hash
 from isar.session.workspace import Workspace
-from isar.analyze.lineshapes import convolute_voigt_dho
+from isar.analyze.lineshapes import KB, convolute_voigt_dho
 from isar.drive.isar_io import readers
 
 
@@ -156,7 +156,8 @@ def test_fit_one_attaches_expensive_errors_to_the_selected_model_only(monkeypatc
     and profile (count ladder: errors for the selected model, not for every count tried)."""
     monkeypatch.setenv("ISAR_MODE_CEILING", "1")       # the count is not what this test is about
     x = np.linspace(-8.0, 16.0, 81)
-    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 20.0, 8.0, 50.0, peak="all")
+    a = 500.0 * np.pi / 0.4 * -np.expm1(-5.0 / (KB * 50.0))   # pre-Eq.-2 Lorentzian 500, as intrinsic A
+    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, a, 20.0, 8.0, 50.0, peak="all")
     counts = np.random.default_rng(1).poisson(np.clip(lam, 0.0, None)).astype(float)
     ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
@@ -381,8 +382,8 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
     "constraints",
     [
         ParamConstraints(
-            soft={"phonon.Omega_d": (4.0, 0.2)},
-            origins={"phonon.Omega_d": "prior_predictive"},
+            soft={"phonon.omega0": (4.0, 0.2)},
+            origins={"phonon.omega0": "prior_predictive"},
         ),
         ParamConstraints(
             hard={"phonon.Gamma": 0.3},
@@ -467,8 +468,8 @@ def test_soft_deadline_shadow_policy_skips_extra_candidate_fits(monkeypatch):
     ctx = replace(
         _single_peak_ctx_for_csv(),
         constraints=ParamConstraints(
-            soft={"phonon.Omega_d": (4.0, 0.2)},
-            origins={"phonon.Omega_d": "prior_predictive"},
+            soft={"phonon.omega0": (4.0, 0.2)},
+            origins={"phonon.omega0": "prior_predictive"},
         ),
     )
 

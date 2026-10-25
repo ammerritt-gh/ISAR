@@ -22,7 +22,7 @@ def _anchors():
 def test_retired_basis_anchors_are_excluded_and_said_out_loud(caplog):
     """A pre-H4 point holds the MEASURED amplitude A·(n+1) under the retired basis. The stored
     number cannot be told from an intrinsic one and the occupation is not recoverable, so fitting
-    log A(ω₀) across the mixture would emit phonon.A constraints wrong by (n+1).
+    log A(ω₀) across the mixture would emit intensity constraints wrong by (n+1).
 
     Excluded, never reinterpreted — and logged, because a resumed campaign would otherwise lose
     anchors in silence."""
@@ -110,20 +110,20 @@ def test_add_point_stores_fit_kind_only_when_constrained():
 def test_soft_constraints_scale_amplitude_to_exposure():
     b = BM.build_branch(_anchors(), sample="S", t_bin=100.0)
     p = BM.predict(b, 4.5)
-    pc = p.soft_constraints(exposure=2.0e6)
-    assert "phonon.Gamma" in pc.soft and "phonon.A" in pc.soft
+    pc = p.soft_constraints(exposure=2.0e6, height_per_intrinsic=0.8)
+    assert "phonon.Gamma" in pc.soft and "phonon.h" in pc.soft
     assert pc.origins == {
         "phonon.Gamma": "prior_predictive",
-        "phonon.A": "prior_predictive",
+        "phonon.h": "prior_predictive",
     }
     mu_g, sig_g = pc.soft["phonon.Gamma"]
     assert mu_g == pytest.approx(p.gamma) and sig_g == pytest.approx(p.gamma_sigma)
-    mu_a, sig_a = pc.soft["phonon.A"]
-    assert mu_a == pytest.approx(p.amplitude_norm * 2.0e6)         # normalized → raw at this exposure
-    assert sig_a >= BM.A_REL_SIGMA_FLOOR * mu_a - 1e-9            # loose relative σ, A stays soft
-    # no exposure → no A constraint (Γ only)
-    gamma_only = p.soft_constraints(exposure=0.0)
-    assert "phonon.A" not in gamma_only.soft
+    mu_a, sig_a = pc.soft["phonon.h"]
+    assert mu_a == pytest.approx(p.amplitude_norm * 2.0e6 * 0.8)   # normalized → height at this exposure
+    assert sig_a >= BM.A_REL_SIGMA_FLOOR * mu_a - 1e-9            # loose relative σ, h stays soft
+    # no exposure → no height constraint (Γ only)
+    gamma_only = p.soft_constraints(exposure=0.0, height_per_intrinsic=0.8)
+    assert "phonon.h" not in gamma_only.soft
     assert gamma_only.origins == {"phonon.Gamma": "prior_predictive"}
 
 

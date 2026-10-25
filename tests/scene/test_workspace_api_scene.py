@@ -62,7 +62,7 @@ def _row(scan, *, candidates, scan_id=None, content_hash="ch-1", **kw):
         "energy_bands": json.dumps([[-5.0, 10.0]]), "effective_exposure": 1000.0,
         "evidence_sink": "canonical_master",
         "fit_selection_semantics": _selection(),
-        "amplitudes": json.dumps({"bg.BG": 3.0, "phonon.A": 20.0}),
+        "amplitudes": json.dumps({"bg.BG": 3.0, "phonon.h": 20.0}),
         "candidates": candidates if isinstance(candidates, str) else json.dumps(candidates),
         "content_hash": content_hash,
     }

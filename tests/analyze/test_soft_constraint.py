@@ -24,7 +24,7 @@ def _ctx(gamma_true=0.5, seed=0, constraints=None):
                        center=0.0, gauss_fwhm=1.5, lorentz_fwhm=0.0, instrument="S30",
                        energy_status="absolute", constraints=constraints)
     comp = _HYP.build()
-    theta = np.array([4.0, gamma_true, 500.0, 20.0])       # Omega_d, Gamma, A, BG
+    theta = np.array([4.0, gamma_true, 500.0, 20.0])       # omega0, Gamma, h, BG
     model = comp.evaluate(x, theta, base)
     counts = np.random.default_rng(seed).poisson(np.clip(model, 0, None)).astype(float)
     return replace(base, counts=counts)
@@ -32,7 +32,7 @@ def _ctx(gamma_true=0.5, seed=0, constraints=None):
 
 # --------------------------------------------------------------------------- penalty mechanics (unit)
 def test_soft_penalty_math_and_filtering():
-    names = ["phonon.Omega_d", "phonon.Gamma", "phonon.A", "bg.BG"]
+    names = ["phonon.omega0", "phonon.Gamma", "phonon.h", "bg.BG"]
     pen = loop._soft_penalty(ParamConstraints(soft={"phonon.Gamma": (0.3, 0.1)}), names)
     theta = np.array([4.0, 0.5, 500.0, 20.0])
     assert pen(theta) == pytest.approx(((0.5 - 0.3) / 0.1) ** 2)

@@ -21,16 +21,16 @@ from isar.session import driver, evidence_update, master_delivery, predictive_ar
 from isar.session.predictive_artifact import build_master_predictive, build_target_projection
 
 _TWO_MODE_MANIFEST = {
-    "schema": "isar.model_manifest/1",
+    "schema": "isar.model_manifest/2",
     "components": [{"type": "phonon_dho", "prefix": "phonon", "peak": "stokes+astokes"},
                    {"type": "phonon_dho", "prefix": "phonon2", "peak": "stokes+astokes"},
                    {"type": "constant_background", "prefix": "bg"}],
-    "parameters": {"phonon.Omega_d": 2.0, "phonon.Gamma": 0.3, "phonon.A": 10.0,
-                   "phonon2.Omega_d": 5.0, "phonon2.Gamma": 0.3, "phonon2.A": 8.0,
+    "parameters": {"phonon.omega0": 2.0, "phonon.Gamma": 0.3, "phonon.h": 10.0,
+                   "phonon2.omega0": 5.0, "phonon2.Gamma": 0.3, "phonon2.h": 8.0,
                    "bg.BG": 4.0},
 }
-_TWO_MODE_NAMES = ["phonon.Omega_d", "phonon.Gamma", "phonon.A",
-                   "phonon2.Omega_d", "phonon2.Gamma", "phonon2.A", "bg.BG"]
+_TWO_MODE_NAMES = ["phonon.omega0", "phonon.Gamma", "phonon.h",
+                   "phonon2.omega0", "phonon2.Gamma", "phonon2.h", "bg.BG"]
 _TWO_MODE_DRAWS = [[2.0, 0.3, 10.0, 5.0, 0.3, 8.0, 4.0],
                    [2.1, 0.3, 10.5, 5.1, 0.3, 8.2, 4.2]]
 

@@ -147,25 +147,25 @@ def test_build_branch_filters_by_branch_id():
 
 # ---------------------------------------------------------------- near-Γ constrained recipe
 def test_hard_constraints_fix_gamma_and_amplitude():
-    """The near-Γ constrained recipe hard-fixes BOTH Γ and A (to the branch 1/ω law), reducing the
-    fit to ~ω₀-only so the blob brightness pins ω₀."""
+    """The near-Γ constrained recipe hard-fixes BOTH Γ and the height (the branch 1/ω law at the
+    predicted ω₀), reducing the fit to ~ω₀-only; ω₀ is then pinned by position only (T-1)."""
     pts = [_anchor(f"A:{i}", w, branch_id="acoustic") for i, w in enumerate((3.0, 4.0, 5.0, 6.0))]
     b = BM.build_branch(pts, sample="S", t_bin=200.0)
     pred = BM.predict(b, 4.5)
-    cons = pred.hard_constraints(exposure=1e6)
-    assert "phonon.Gamma" in cons.hard and "phonon.A" in cons.hard
+    cons = pred.hard_constraints(exposure=1e6, height_per_intrinsic=0.8)
+    assert "phonon.Gamma" in cons.hard and "phonon.h" in cons.hard
     assert not cons.soft                                  # nothing soft — the constrained recipe is hard
     assert cons.origins == {
         "phonon.Gamma": "prior_predictive",
-        "phonon.A": "prior_predictive",
+        "phonon.h": "prior_predictive",
     }
-    assert cons.hard["phonon.A"] == pytest.approx(pred.amplitude_norm * 1e6, rel=1e-6)
-    # the ordinary soft rescue keeps A soft (never hard), for contrast
-    soft = pred.soft_constraints(exposure=1e6)
-    assert "phonon.A" in soft.soft and not soft.hard
+    assert cons.hard["phonon.h"] == pytest.approx(pred.amplitude_norm * 1e6 * 0.8, rel=1e-6)
+    # the ordinary soft rescue keeps the height soft (never hard), for contrast
+    soft = pred.soft_constraints(exposure=1e6, height_per_intrinsic=0.8)
+    assert "phonon.h" in soft.soft and not soft.hard
     assert soft.origins == {
         "phonon.Gamma": "prior_predictive",
-        "phonon.A": "prior_predictive",
+        "phonon.h": "prior_predictive",
     }
 
 

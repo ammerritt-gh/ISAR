@@ -443,7 +443,7 @@ def make_mock_runner(omega_true, *, window_gate=True, hesse_only=False, blank_me
                          "sigma_meV": hw, "omega0_err": hw, "amplitude": 12.0,
                          "probabilities": {branch: 0.97, "new": 0.03}}]),
                     "selected_candidate_index": 0,
-                    "amplitudes": json.dumps({"phonon.A": 12.0, "elastic.E": 30.0, "bg.BG": 0.3}),
+                    "amplitudes": json.dumps({"phonon.h": 12.0, "elastic.h": 30.0, "bg.BG": 0.3}),
                     "effective_exposure": float(QUICKLOOK_NCOUNT),
                     # A real campaign maps a declared branch, so its pooled master publishes
                     # where the point sits on that track; without it the point never converges.
@@ -1100,7 +1100,7 @@ def _d2_branch_aware_runner(omega_true, target_hypothesis):
                      "sigma_meV": hw, "omega0_err": hw, "amplitude": 12.0,
                      "probabilities": {target_hypothesis: 0.97, "new": 0.03}}]),
                 "selected_candidate_index": 0,
-                "amplitudes": json.dumps({"phonon.A": 12.0, "elastic.E": 30.0, "bg.BG": 0.3}),
+                "amplitudes": json.dumps({"phonon.h": 12.0, "elastic.h": 30.0, "bg.BG": 0.3}),
                 "effective_exposure": float(QUICKLOOK_NCOUNT),
                 "confidence": 0.9, "reasons": "pooled master",
                 "track_state": "confirmed", "track_revision": 1})
@@ -3795,7 +3795,8 @@ def test_the_intensity_map_is_integrated_from_the_counts(tmp_path):
     amplitudes, and it reproduces the counts it was read from.
 
     The fitted amplitudes do not carry the convention the planner needs — the second live run
-    published ``phonon.A = 6.7e-5`` against a 5e6 exposure for a scan holding an 18-count peak, five
+    published an intrinsic phonon amplitude of 6.7e-5 (the pre-height-coordinate parameter)
+    against a 5e6 exposure for a scan holding an 18-count peak, five
     orders of magnitude too dim — so every design's expected information was exactly zero.
     """
     from isar.drive.acquisition.eig_planner import branch_counts

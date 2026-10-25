@@ -21,8 +21,8 @@ def _ctx(energy_status="absolute"):
 def _result(omega0=6.0, *, freq_hw=0.05, regime="asymptotic", cost_per_dof=2.0):
     lo, hi = omega0 - freq_hw, omega0 + freq_hw
     wm = {"freq_interval": (lo, omega0, hi), "agreement": types.SimpleNamespace(regime=regime)}
-    params = {"phonon.Omega_d": omega0, "phonon.Gamma": 0.3, "phonon.A": 300.0,
-              "elastic.E": 50.0, "bg.BG": 10.0}
+    params = {"phonon.omega0": omega0, "phonon.Gamma": 0.3, "phonon.h": 300.0,
+              "elastic.h": 50.0, "bg.BG": 10.0}
     return loop.StructureFitResult(
         label="elastic+stokes+bg", k=5, ndof=36, cost=cost_per_dof * 36,
         cost_per_dof=cost_per_dof, optimizer_converged=True, covariance_ok=True, profile_ok=True,

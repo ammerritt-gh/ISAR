@@ -139,7 +139,7 @@ def _fit_context(*, constraints=None, **changes):
 
 
 def _problem(*, composite=None, bounds=None, free_names=None, fixed_pos=None, fixed_vals=None):
-    names = list(free_names or ["phonon.Gamma", "phonon.A"])
+    names = list(free_names or ["phonon.Gamma", "phonon.h"])
     return loop.Problem(
         composite=object() if composite is None else composite,
         costv=lambda theta: 0.0,
@@ -157,10 +157,10 @@ def _problem(*, composite=None, bounds=None, free_names=None, fixed_pos=None, fi
 def test_effective_constraints_are_classified_from_actual_origins():
     constraints = ParamConstraints(
         soft={"phonon.Gamma": (0.3, 0.1)},
-        hard={"phonon.A": 25.0},
+        hard={"phonon.h": 25.0},
         origins={
             "phonon.Gamma": "prior_predictive",
-            "phonon.A": "data_dependent_rescue",
+            "phonon.h": "data_dependent_rescue",
         },
     )
     problem = _problem(fixed_pos=[1], fixed_vals=[25.0])
@@ -176,8 +176,8 @@ def test_effective_constraints_are_classified_from_actual_origins():
         "data_dependent_or_post_selection_hard_constraint",
     ]
     assert [item["parameter"] for item in semantics["effective_constraints"]] == [
-        "phonon.A",
         "phonon.Gamma",
+        "phonon.h",
     ]
 
 
@@ -228,8 +228,8 @@ def test_user_declared_soft_prior_is_selection_eligible():
 def test_user_declared_hard_constraint_is_unapproved_conditioning():
     """A HARD pin from ``user_declared`` is not a prior — H4(c) recast soft priors only — so it
     stays ineligible, same as any other prespecified-origin hard constraint."""
-    constraints = ParamConstraints(hard={"phonon.A": 25.0},
-                                   origins={"phonon.A": "user_declared"})
+    constraints = ParamConstraints(hard={"phonon.h": 25.0},
+                                   origins={"phonon.h": "user_declared"})
     problem = _problem(fixed_pos=[1], fixed_vals=[25.0])
     semantics = loop._fit_semantics_for(
         problem, _fit_context(constraints=constraints), "branch_conditional")
@@ -245,8 +245,8 @@ def test_any_hard_constraint_is_unapproved_conditioning_whatever_its_origin():
     (eligible ⇒ every effective constraint soft AND prespecified). The producer now mirrors that
     invariant, and the record it writes validates. (A literal ``"none"`` origin cannot be tested
     here: the constraint validator rejects it as a per-constraint origin.)"""
-    constraints = ParamConstraints(hard={"phonon.A": 25.0},
-                                   origins={"phonon.A": "catalogue_variant"})
+    constraints = ParamConstraints(hard={"phonon.h": 25.0},
+                                   origins={"phonon.h": "catalogue_variant"})
     problem = _problem(fixed_pos=[1], fixed_vals=[25.0])
     semantics = loop._fit_semantics_for(
         problem, _fit_context(constraints=constraints), "branch_conditional")
@@ -259,8 +259,8 @@ def test_any_hard_constraint_is_unapproved_conditioning_whatever_its_origin():
 def test_data_dependent_hard_constraint_keeps_only_its_own_reason():
     """The two hard-constraint reasons stay disjoint: a rescue pin is named by the
     data-dependent reason alone, not doubled by the ANY-hard rule above."""
-    constraints = ParamConstraints(hard={"phonon.A": 25.0},
-                                   origins={"phonon.A": "data_dependent_rescue"})
+    constraints = ParamConstraints(hard={"phonon.h": 25.0},
+                                   origins={"phonon.h": "data_dependent_rescue"})
     problem = _problem(fixed_pos=[1], fixed_vals=[25.0])
     semantics = loop._fit_semantics_for(
         problem, _fit_context(constraints=constraints), "branch_conditional")
@@ -623,8 +623,8 @@ def test_comparison_fingerprint_mutation_matrix(monkeypatch):
 
     constrained_problem = _problem(fixed_pos=[1], fixed_vals=[25.0])
     constraints = ParamConstraints(
-        hard={"phonon.A": 25.0},
-        origins={"phonon.A": "prior_predictive"},
+        hard={"phonon.h": 25.0},
+        origins={"phonon.h": "prior_predictive"},
     )
     changed_constraint = loop._fit_semantics_for(
         constrained_problem,
@@ -742,7 +742,7 @@ def test_selection_aggregate_preserves_strongest_reason_and_incomparability():
         eligibility="ineligible_data_dependent_conditioning",
         constraints=[
             {
-                "parameter": "phonon.A",
+                "parameter": "phonon.h",
                 "constraint_kind": "hard",
                 "value": 25.0,
                 "origin": "data_dependent_rescue",
@@ -785,7 +785,7 @@ def _catalogue_variant_loser():
         eligibility="ineligible_unapproved_conditioning",
         constraints=[
             {
-                "parameter": "phonon.Omega_d",
+                "parameter": "phonon.omega0",
                 "constraint_kind": "hard",
                 "value": 0.001,
                 "origin": "catalogue_variant",
@@ -1262,7 +1262,7 @@ def test_metadata_is_excluded_from_scientific_selection_and_identity_firewalls()
         "label": "one",
         "identity_label": "one",
         "source_weight": 1.0,
-        "model_manifest": {"schema": "isar.model_manifest/1"},
+        "model_manifest": {"schema": "isar.model_manifest/2"},
         "parameter_names": ["x"],
         "parameter_draws": [[1.0]],
         "draw_weighting": "equal_weight_resampled",

@@ -15,8 +15,8 @@ from isar.analyze.lineshapes import convolute_voigt_dho
 def _result(**overrides):
     values = dict(
         analysis_usable=True, covariance_ok=True, parameter_covariance=[[1.0]],
-        params={"phonon.Omega_d": 5.0, "phonon.Gamma": 1.0},
-        param_errors={"phonon.Omega_d": 0.1, "phonon.Gamma": 0.1})
+        params={"phonon.omega0": 5.0, "phonon.Gamma": 1.0},
+        param_errors={"phonon.omega0": 0.1, "phonon.Gamma": 0.1})
     values.update(overrides)
     return SimpleNamespace(**values)
 
@@ -52,12 +52,12 @@ def _card():
 def test_auto_escalation_reasons_are_stable_and_ordered(monkeypatch):
     monkeypatch.setattr(scan_delivery, "_hesse_interval_and_trust", lambda best, ctx: (None, False))
     fit = _result(
-        params={"phonon.Omega_d": 0.01, "phonon.Gamma": 0.002},
-        param_errors={"phonon.Omega_d": 0.1, "phonon.Gamma": 0.1})
+        params={"phonon.omega0": 0.01, "phonon.Gamma": 0.002},
+        param_errors={"phonon.omega0": 0.1, "phonon.Gamma": 0.1})
     assert scan_delivery._auto_escalation_reasons(
         _prelim(runner_weight=0.10), {"best": fit}, _ctx()) == [
             "untrusted_hesse",
-            "omega_d_within_2sigma_of_bound",
+            "omega0_within_2sigma_of_bound",
             "gamma_within_2sigma_of_bound",
             "runner_up_model_weight_ge_0.10",
         ]

@@ -71,9 +71,10 @@ def test_fit_one_populates_amplitudes_and_candidates():
     amps = fit["amplitudes"]
     assert isinstance(amps, dict) and amps
     assert all(isinstance(v, float) for v in amps.values())
-    # the phonon area must be present (the winner is a phonon structure) and positive.
-    assert any(k.endswith(".A") for k in amps)
-    assert amps[next(k for k in amps if k.endswith(".A"))] > 0.0
+    # the phonon height must be present (the winner is a phonon structure) and positive.
+    phonon_h = [k for k in amps if k.startswith("phonon") and k.endswith(".h")]
+    assert phonon_h
+    assert amps[phonon_h[0]] > 0.0
 
     # candidates: >=1 row, each with the compact schema, plain scalar types (JSON-clean).
     cands = fit["candidates"]
@@ -224,8 +225,8 @@ def test_stored_amplitudes_reproduce_reconstruct_curve():
     omega_d = float(np.sqrt(max(omega0 ** 2 - gamma ** 2, 1e-6)))
     comp = CompositeModel([PhononDHO(), Elastic(), ConstantBackground()])
     theta = [omega_d, float(gamma),
-             float(amps.get("phonon.A", 0.0)),
-             float(amps.get("elastic.E", 0.0)),
+             float(amps.get("phonon.h", 0.0)),
+             float(amps.get("elastic.h", 0.0)),
              float(amps.get("bg.BG", 0.0))]
     stored_total = comp.evaluate(ctx.x, theta, ctx)
 
@@ -281,7 +282,7 @@ def test_evidence_sink_survives_to_results_csv(tmp_path):
 
 
 def test_to_dict_is_json_clean_for_new_fields():
-    amps = {"phonon.A": 501.2, "bg.BG": 8.0}
+    amps = {"phonon.h": 501.2, "bg.BG": 8.0}
     d = _outcome_with(amps, _cands()).to_dict()
     # No numpy leakage: the whole dict must json round-trip and preserve the new fields exactly.
     restored = json.loads(json.dumps(d))
@@ -320,7 +321,7 @@ def test_local_identity_survives_the_writer_to_results_csv_path(tmp_path, writer
 
 
 def test_results_csv_roundtrips_amplitudes_and_candidates(tmp_path):
-    amps = {"phonon.A": 501.2, "elastic.E": 12.0, "bg.BG": 8.0}
+    amps = {"phonon.h": 501.2, "elastic.h": 12.0, "bg.BG": 8.0}
     row = _write_read(tmp_path, _outcome_with(amps, _cands()))
     assert row["amplitudes"] == amps
     assert row["candidates"] == _cands()
@@ -522,7 +523,7 @@ def test_coerce_fit_outcome_passes_through_an_existing_instance():
 
 
 def test_session_json_roundtrips_new_fields(tmp_path):
-    amps = {"phonon.A": 501.2, "bg.BG": 8.0}
+    amps = {"phonon.h": 501.2, "bg.BG": 8.0}
     st = SessionState()
     st.put(ScanEntry(scan_id="E:7:ana7", scan_number=7, scan_type="measurement", status="fitted",
                      detectors={"ana7": _outcome_with(amps, _cands()).to_dict()}))
@@ -573,8 +574,8 @@ def test_candidate_rows_carry_variant_at_limit_and_effective_constraints():
               _score("stokes+bg_neardeg", log_evidence=-39.0, posterior=0.6,
                      effective_constraints=[pin])]
     fits = {
-        "stokes+bg": _fit_result(at_limit={"phonon.Omega_d": False, "phonon.Gamma": False}),
-        "stokes+bg_neardeg": _fit_result(at_limit={"phonon.Omega_d": False},
+        "stokes+bg": _fit_result(at_limit={"phonon.omega0": False, "phonon.Gamma": False}),
+        "stokes+bg_neardeg": _fit_result(at_limit={"phonon.omega0": False},
                                          variant="near_degenerate", identity="acoustic"),
     }
     hyps = {"stokes+bg": _hyp("stokes+bg"), "stokes+bg_neardeg": _hyp("stokes+bg_neardeg")}
@@ -583,10 +584,10 @@ def test_candidate_rows_carry_variant_at_limit_and_effective_constraints():
     plain, twin = rows["stokes+bg"], rows["stokes+bg_neardeg"]
     assert plain["variant"] is None and plain["identity"] is None
     assert plain["effective_constraints"] == []          # recorded, unconstrained
-    assert plain["at_limit"] == {"phonon.Omega_d": False, "phonon.Gamma": False}
+    assert plain["at_limit"] == {"phonon.omega0": False, "phonon.Gamma": False}
     assert twin["variant"] == "near_degenerate" and twin["identity"] == "acoustic"
     assert twin["effective_constraints"] == [pin]        # read back, never re-derived
-    assert twin["at_limit"] == {"phonon.Omega_d": False}
+    assert twin["at_limit"] == {"phonon.omega0": False}
     # The rows must be JSON-clean: they are persisted as one CSV cell and one session.json value.
     assert json.loads(json.dumps(list(rows.values())))
 
@@ -618,7 +619,7 @@ def test_identity_twin_rows_keep_independent_log_evidence():
 
 def _scene1_outcome():
     outcome = _outcome_with(None, None)
-    outcome.at_limit = {"phonon.Omega_d": False, "phonon.Gamma": True}
+    outcome.at_limit = {"phonon.omega0": False, "phonon.Gamma": True}
     outcome.evidence_identity = "acoustic"
     outcome.identity_ba_disagreement = {"evidence_identity": "acoustic", "branch_id": "optic"}
     return outcome
@@ -626,7 +627,7 @@ def _scene1_outcome():
 
 def test_scene1_outcome_fields_roundtrip_to_dict_from_dict():
     restored = driver._coerce_fit_outcome(json.loads(json.dumps(_scene1_outcome().to_dict())))
-    assert restored.at_limit == {"phonon.Omega_d": False, "phonon.Gamma": True}
+    assert restored.at_limit == {"phonon.omega0": False, "phonon.Gamma": True}
     assert restored.evidence_identity == "acoustic"
     assert restored.identity_ba_disagreement == {"evidence_identity": "acoustic",
                                                  "branch_id": "optic"}

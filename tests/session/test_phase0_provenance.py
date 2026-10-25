@@ -51,7 +51,7 @@ def test_intensity_measure_from_fit_normalizes_by_exposure():
     assert im["exposure"] == pytest.approx(1e6)
     assert im["value"] == pytest.approx(42.0 / 1e6)               # intrinsic, not the 96.0
     assert im["counting_mode"] == "monitor"
-    assert im["basis"] == "intrinsic_amplitude_per_exposure"
+    assert im["basis"] == "dho_intrinsic_area_per_exposure"
     assert IntensityMeasure.from_dict(im).expected_amplitude(2e6) == pytest.approx(84.0)
 
 
@@ -142,7 +142,7 @@ def test_scancontext_constraints_defaults_none():
 
 def test_param_constraints_empty_and_roundtrip():
     assert ParamConstraints().is_empty() is True
-    pc = ParamConstraints(soft={"phonon.Gamma": (0.3, 0.1)}, hard={"phonon.A": 5.0})
+    pc = ParamConstraints(soft={"phonon.Gamma": (0.3, 0.1)}, hard={"phonon.h": 5.0})
     assert pc.is_empty() is False
     rt = ParamConstraints.from_dict(pc.to_dict())
-    assert rt.soft == {"phonon.Gamma": (0.3, 0.1)} and rt.hard == {"phonon.A": 5.0}
+    assert rt.soft == {"phonon.Gamma": (0.3, 0.1)} and rt.hard == {"phonon.h": 5.0}

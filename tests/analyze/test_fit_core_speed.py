@@ -2,8 +2,10 @@
 matches the pre-change arithmetic, and a fit with its linear amplitudes profiled out reaches the
 free fit's optimum and evidence.
 
-The reference below is the pre-change model, written out with ``scipy.signal.fftconvolve`` per mode
-and per call, exactly as ``convolute_voigt_dho`` and ``convolve_tabulated`` computed it. Agreement
+The reference below is the model written out with ``scipy.signal.fftconvolve`` per mode and per
+call, as ``convolute_voigt_dho`` and ``convolve_tabulated`` computed it before the cached batched
+convolver: the full-DHO signal (``dho_signal``) convolved alone, each mode normalised to its own
+height (the production ``unit_peak`` height, so what is checked is the convolution machinery). Agreement
 is asserted to 1e-9 of the curve's peak: FFT round-off is absolute on the scale of the peak
 (about 1e-16 of it), so a point-by-point relative test in a far tail would be testing round-off, not
 the model.
@@ -16,7 +18,6 @@ from isar.analyze import lineshapes as L
 from isar.analyze.components import (CompositeModel, ConstantBackground, Elastic, PhononDHO,
                                      QuasiElastic)
 from isar.analyze.context import ScanContext
-from isar.analyze.phonon import bose_occupation, omega0_from
 from isar.analyze.resolution import TabulatedResolution
 
 DX = L.CONVOLUTION_DX
@@ -28,13 +29,7 @@ def _close(new, old):
 
 
 def _signal(grid, w0, gamma, amp, T, peak):
-    parts = ["stokes", "astokes"] if peak == "all" else peak.split("+")
-    s = np.zeros_like(grid)
-    if "stokes" in parts:
-        s += L.Stokes_DHO(grid, amp, gamma, w0)
-    if "astokes" in parts and T > 0:
-        s += L.antiStokes_DHO(grid, amp / np.exp(w0 / (L.KB * T)), gamma, w0)
-    return s
+    return L.dho_signal(grid, w0, gamma, amp, T, peak)
 
 
 def _old_voigt_dho(x, w0, center, g, lor, gamma, amp, T, peak="stokes+astokes"):
@@ -73,7 +68,7 @@ def _ctx(x, *, curve=None, exposure=None, qe=None, T=150.0, center=0.13):
                        **kw)
 
 
-# (Omega_d, Gamma, A) per mode; the third mode is broad, the second is Stokes-only.
+# (omega0, Gamma, h) per mode; the third mode is broad, the second is Stokes-only.
 MODES = [(3.2, 0.3, 50.0), (6.5, 0.6, 30.0), (11.0, 1.4, 20.0)]
 
 
@@ -92,18 +87,20 @@ def _theta(comp, n):
     vals = {}
     for i, (od, g, a) in enumerate(MODES[:n]):
         p = "phonon" if i == 0 else f"phonon{i + 1}"
-        vals.update({f"{p}.Omega_d": od, f"{p}.Gamma": g, f"{p}.A": a})
-    vals.update({"elastic.E": 400.0, "qe.QE": 70.0, "bg.BG": 2.5})
+        vals.update({f"{p}.omega0": od, f"{p}.Gamma": g, f"{p}.h": a})
+    vals.update({"elastic.h": 400.0, "qe.QE": 70.0, "bg.BG": 2.5})
     return np.array([vals[nm] for nm in comp.param_names()])
 
 
 def _old_composite(comp, x, theta, ctx):
-    """Pre-change CompositeModel.evaluate: each mode convolved on its own, then summed."""
+    """Per-call CompositeModel.evaluate: each mode convolved on its own at A = h / its height,
+    then summed."""
     total = np.zeros_like(x)
     for c, local in zip(comp.components, comp._split(theta)):
         if isinstance(c, PhononDHO):
-            w0 = omega0_from(local["Omega_d"], local["Gamma"])
-            amp = local["A"] * bose_occupation(w0, ctx.T)
+            w0 = local["omega0"]
+            conv = L.resolution_convolver(x, ctx.gauss_fwhm, ctx.lorentz_fwhm, ctx.resolution_curve)
+            amp = local["h"] / L.unit_peak(conv, w0, local["Gamma"], ctx.T, c.peak)[1].height
             if ctx.resolution_curve is not None:
                 y = _old_tabulated(x, ctx.center, ctx.resolution_curve,
                                    lambda g: _signal(g, w0, local["Gamma"], amp, ctx.T, c.peak))
@@ -279,8 +276,8 @@ def _fixture(name):
         ctx = _spectrum([(5.0, 0.4, 1.0)], seed=4, bg=0.01, elastic=3.0)
         assert np.mean(ctx.counts == 0) > 0.5
         return ctx, "elastic+stokes+bg"
-    if name == "soft_amplitude":   # a soft prior keeps A out of the profile: an offset column
-        return (_spectrum(one, seed=5, constraints=ParamConstraints(soft={"phonon.A": (28.0, 3.0)})),
+    if name == "soft_amplitude":   # a soft prior keeps h out of the profile: an offset column
+        return (_spectrum(one, seed=5, constraints=ParamConstraints(soft={"phonon.h": (100.0, 10.0)})),
                 "elastic+stokes+bg")
     if name == "hard_background":   # a hard-fixed amplitude is an offset too
         return (_spectrum(one, seed=6, constraints=ParamConstraints(hard={"bg.BG": 3.0})),
@@ -311,7 +308,7 @@ def test_the_optimizer_sees_only_the_nonlinear_parameters(monkeypatch):
     monkeypatch.setattr(Minuit, "migrad", spy)
     ctx, label = _fixture("two_modes")
     loop.fit_hypothesis(_hypothesis(ctx, label), ctx)
-    assert seen == [["phonon_Omega_d", "phonon_Gamma", "phonon2_Omega_d", "phonon2_Gamma"]]
+    assert seen == [["phonon_omega0", "phonon_Gamma", "phonon2_omega0", "phonon2_Gamma"]]
 
 
 @pytest.mark.parametrize("name", ["one_mode", "two_modes", "tabulated", "exposure", "zero_counts",
@@ -324,10 +321,16 @@ def test_a_profiled_fit_reaches_the_free_fit_optimum_and_evidence(name):
     from isar.analyze import evidence as E
     from isar.analyze import loop
 
+    from isar.analyze.phonon import greedy_multimode_ic
+
     ctx, label = _fixture(name)
     hyp = _hypothesis(ctx, label)
     cctx = loop.candidate_context(hyp, ctx)
-    prob = loop.build_problem(hyp, cctx)
+    x0 = None
+    if label == "elastic+stokes2+bg":   # the start production gives a two-mode fit: the residual seed
+        one = loop.fit_hypothesis(_hypothesis(ctx, "elastic+stokes+bg"), ctx)
+        x0 = greedy_multimode_ic(hyp.build(), cctx, one)
+    prob = loop.build_problem(hyp, cctx, x0=x0)
     assert prob.profile is not None
     be = [loop._sanitize(n) for n in prob.free_names]
     fits = []
@@ -346,7 +349,7 @@ def test_a_profiled_fit_reaches_the_free_fit_optimum_and_evidence(name):
             err = mf[f"{key}_err"] if key != "amplitude" else None
             tol = 0.05 * (err if err else abs(mf[key]) * 0.05)
             assert abs(mp[key] - mf[key]) <= tol, (key, mp[key], mf[key])
-    for n in ("elastic.E", "bg.BG"):
+    for n in ("elastic.h", "bg.BG"):
         if free.param_errors.get(n):
             assert abs(prof.params[n] - free.params[n]) <= 0.05 * free.param_errors[n]
             assert prof.param_errors[n] == pytest.approx(free.param_errors[n], rel=0.03)
@@ -364,7 +367,7 @@ def test_a_start_on_a_flat_profile_falls_back_to_the_free_fit():
     from isar.analyze import loop
 
     ctx = _spectrum([], seed=8, bg=20.0, elastic=900.0)
-    start = {"phonon.Omega_d": 5.0, "phonon.Gamma": 0.5, "phonon.A": 0.0, "bg.BG": 20.0}
+    start = {"phonon.omega0": 5.0, "phonon.Gamma": 0.5, "phonon.h": 0.0, "bg.BG": 20.0}
     fit = loop.fit_hypothesis(_hypothesis(ctx, "stokes+bg"), ctx, x0=start)
     assert fit.optimizer_converged
     assert all(np.isfinite(v) for v in fit.params.values())

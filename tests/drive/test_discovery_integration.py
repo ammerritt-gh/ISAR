@@ -100,7 +100,7 @@ def delivering_runner(root: Path):
             "best_model": "phonon+bg", "gauss_fwhm": 1.2, "lorentz_fwhm": 0.0,
             "energy_lo": 0.0, "energy_hi": 10.0, "energy_bands": json.dumps([[0.0, 10.0]]),
             "effective_exposure": 1000.0, "evidence_sink": "canonical_master",
-            "amplitudes": json.dumps({"bg.BG": 3.0, "phonon.A": 20.0}),
+            "amplitudes": json.dumps({"bg.BG": 3.0, "phonon.h": 20.0}),
             "candidates": json.dumps([_candidate()]), "content_hash": chash,
         }]
         write_results(ws, rows, FULL_COLUMNS)

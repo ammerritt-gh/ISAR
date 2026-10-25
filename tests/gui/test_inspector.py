@@ -38,7 +38,7 @@ def _outcome(**over) -> dict:
         "confidence": 0.9, "omega0": 5.0, "gamma": 1.0, "q": [2.0, 0.0, 0.0], "T": 200.0,
         "sample": "tavi", "best_label": "phonon", "modality": "single", "fit_kind": "unconstrained",
         "n_modes": 1, "calib": {"center": 0.0, "gauss_fwhm": 1.2, "lorentz_fwhm": 0.0},
-        "amplitudes": {"phonon.A": 500.0, "bg.BG": 100.0},
+        "amplitudes": {"phonon.h": 500.0, "bg.BG": 100.0},
         "candidates": [dict(c) for c in _DEFAULT_CANDS],
         "interval": [4.6, 5.4], "interval_reliable": True,
         "bayes_interval": [4.55, 5.0, 5.45], "bayes_ess": 420.0,
@@ -201,15 +201,15 @@ def test_op3_shaped_two_mode_master_shows_pooled_data_components_and_residuals(m
     from isar.plotspec.spec import Role
 
     manifest = {
-        "schema": "isar.model_manifest/1",
+        "schema": "isar.model_manifest/2",
         "components": [
             {"type": "phonon_dho", "prefix": "phonon", "peak": "stokes+astokes"},
             {"type": "phonon_dho", "prefix": "phonon2", "peak": "stokes+astokes"},
             {"type": "constant_background", "prefix": "bg"},
         ],
         "parameters": {
-            "phonon.Omega_d": 3.9, "phonon.Gamma": 0.3, "phonon.A": 350.0,
-            "phonon2.Omega_d": 6.2, "phonon2.Gamma": 0.4, "phonon2.A": 220.0,
+            "phonon.omega0": 3.9, "phonon.Gamma": 0.3, "phonon.h": 350.0,
+            "phonon2.omega0": 6.2, "phonon2.Gamma": 0.4, "phonon2.h": 220.0,
             "bg.BG": 20.0,
         },
     }
