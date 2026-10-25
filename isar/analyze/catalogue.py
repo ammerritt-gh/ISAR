@@ -12,9 +12,9 @@ the catalogue holds *references* to them. It is also lattice-blind: the ``elasti
 generic incoherent/coherent elastic scattering, not a Bragg model — Bragg is scene-level knowledge
 (scene-program decision 20), and an elastic-only outcome is a scan-local claim, never region exclusion.
 
-**Status.** ``local_models`` and their gates drive the one- and two-mode enumerations (both
-catalogue-backed since SCENE-1 PR-b, pinned bit-identical to the legacy hand lists by
-``tests/analyze/test_catalogue.py``), extended by the phonon-less nulls ``elastic+bg`` and ``bg``
+**Status.** ``local_models`` and their gates drive the per-count enumeration
+(:func:`enumerate_count_structures`; one and two modes pinned bit-identical to the legacy hand
+lists by ``tests/analyze/test_catalogue.py``), with the phonon-less nulls ``elastic+bg`` and ``bg``
 (SCENE-1 PR-a — what the ``elastic_only`` / ``no_signal`` verdicts select on).
 ``parameter_priors`` is live: :func:`resolve_priors` turns declarations into the
 :class:`PriorBundle` the evidence layer counts exactly once (SCENE-1 PR-b), and since PR-c
@@ -343,46 +343,22 @@ def enumerate_structures(ctx, profile: str = DEFAULT_PROFILE) -> list[Hypothesis
     distinguishes those identities by a declared prior (:func:`_identity_candidates`). The
     phonon-less nulls carry no identity: there is no phenomenon in them to identify.
     """
-    sharp = entry("elastic", profile).model("sharp")
-    broad = entry("quasielastic", profile).model("broad")
-    bg = entry("bg_only", profile).model("flat").recipe
-
-    elastic = sharp.admissible(ctx)
-    qe = broad.admissible(ctx)
-    pho = phonon._phonon_for(ctx)   # Bose-tied class or Stokes-only instance (DHO physics)
-
-    hyps: list[Hypothesis] = []
-    add = _phonon_bearing_adder(hyps, profile)
-
-    add("stokes+bg", (pho, bg))
-    if elastic:
-        add("elastic+stokes+bg", (pho, sharp.recipe, bg))
-    if qe:
-        add("stokes+qe+bg", (pho, broad.recipe, bg))
-    if elastic and qe:
-        add("elastic+stokes+qe+bg", (pho, sharp.recipe, broad.recipe, bg))
-    if elastic:
-        hyps.append(Hypothesis("elastic+bg", (sharp.recipe, bg)))
-    hyps.append(Hypothesis("bg", (bg,)))
-    return hyps
+    return enumerate_count_structures(ctx, 1, profile) + enumerate_count_structures(ctx, 0, profile)
 
 
-def enumerate_multimode_structures(ctx, n_max: int = 2,
-                                   profile: str = DEFAULT_PROFILE) -> list[Hypothesis]:
-    """The two-mode (2-phonon) escalation set, catalogue-driven (SCENE-1 PR-b).
+def enumerate_count_structures(ctx, n: int, profile: str = DEFAULT_PROFILE) -> list[Hypothesis]:
+    """The admissible structures holding exactly ``n`` modes: one rung of the count ladder
+    (:func:`isar.analyze.loop.fit_structures_two_stage`).
 
-    Multiplicity as the catalogue owns it: a second instance of the same phenomenon occupies the
-    ``phonon2`` prefix namespace, and mode 1 keeps the default ``phonon`` prefix so each 1-mode
-    hypothesis stays *strictly nested* in its 2-mode counterpart (the §4 LRT/AIC comparison is
-    then exact). Both modes honour the Bose-dead Stokes-only choice
-    (:func:`isar.analyze.phonon._phonon_for` — DHO physics stays in phonon.py). The phonon-less
-    nulls do NOT appear here: they live in the 1-mode set and a "two nulls" structure is not a
-    thing. Capped at N=2 (``n_max`` accepted for the later N=3 extension; >2 treated as 2).
-    Labels, order and k are pinned bit-identical to the legacy hand enumeration by
-    ``tests/analyze/test_catalogue.py``.
+    ``n = 0`` is the phonon-less nulls (``elastic+bg`` under the elastic gate, then ``bg``). For
+    ``n >= 1`` each structure is the ``n`` modes plus the sharp elastic and/or the broad
+    quasi-elastic as their gates allow, in the order plain, elastic, quasi-elastic, both. Mode ``i``
+    takes the prefix ``phonon`` (``i = 1``) or ``phonon<i>``, so each ``n``-mode structure is
+    *strictly nested* in its ``n + 1``-mode counterpart; the label counts the modes (``stokes+bg``,
+    ``stokes2+bg``, ``stokes3+bg``, ...). Every mode honours the Bose-dead Stokes-only choice
+    (:func:`isar.analyze.phonon._phonon_for`; DHO physics stays in phonon.py). Labels, order and k
+    for ``n <= 2`` are pinned to the legacy hand enumeration by ``tests/analyze/test_catalogue.py``.
     """
-    if n_max < 2:
-        return []
     sharp = entry("elastic", profile).model("sharp")
     broad = entry("quasielastic", profile).model("broad")
     bg = entry("bg_only", profile).model("flat").recipe
@@ -390,20 +366,36 @@ def enumerate_multimode_structures(ctx, n_max: int = 2,
     elastic = sharp.admissible(ctx)
     qe = broad.admissible(ctx)
 
-    def twophonon():
-        return (phonon._phonon_for(ctx), phonon._phonon_for(ctx, prefix="phonon2"))
-
     hyps: list[Hypothesis] = []
-    add = _phonon_bearing_adder(hyps, profile)
+    if n == 0:
+        if elastic:
+            hyps.append(Hypothesis("elastic+bg", (sharp.recipe, bg)))
+        hyps.append(Hypothesis("bg", (bg,)))
+        return hyps
 
-    add("stokes2+bg", (*twophonon(), bg))
+    def modes():
+        # a Bose-tied class or Stokes-only instance per mode (DHO physics: phonon._phonon_for)
+        return tuple(phonon._phonon_for(ctx) if i == 1 else phonon._phonon_for(ctx, f"phonon{i}")
+                     for i in range(1, n + 1))
+
+    stokes = "stokes" if n == 1 else f"stokes{n}"
+    add = _phonon_bearing_adder(hyps, profile)
+    add(f"{stokes}+bg", (*modes(), bg))
     if elastic:
-        add("elastic+stokes2+bg", (*twophonon(), sharp.recipe, bg))
+        add(f"elastic+{stokes}+bg", (*modes(), sharp.recipe, bg))
     if qe:
-        add("stokes2+qe+bg", (*twophonon(), broad.recipe, bg))
+        add(f"{stokes}+qe+bg", (*modes(), broad.recipe, bg))
     if elastic and qe:
-        add("elastic+stokes2+qe+bg", (*twophonon(), sharp.recipe, broad.recipe, bg))
+        add(f"elastic+{stokes}+qe+bg", (*modes(), sharp.recipe, broad.recipe, bg))
     return hyps
+
+
+def enumerate_multimode_structures(ctx, n_max: int,
+                                   profile: str = DEFAULT_PROFILE) -> list[Hypothesis]:
+    """Every structure holding 2..``n_max`` modes, count by count
+    (:func:`enumerate_count_structures`). The one-mode set and the phonon-less nulls are
+    :func:`enumerate_structures`; together the two lists are the whole count ladder."""
+    return [h for n in range(2, n_max + 1) for h in enumerate_count_structures(ctx, n, profile)]
 
 
 # --------------------------------------------------------------------------- prior resolution
@@ -487,6 +479,57 @@ class PriorBundle:
     def spec(self) -> list[dict]:
         return [p.spec() for p in self.params]
 
+    def _energy_groups(self) -> list[list[int]]:
+        """Positions of the mode energies (``*.Omega_d``) the ordered-energy prior can order, one
+        list per group of exchangeable modes: each carries one plain flat energy prior, and every
+        one of its parameters carries the same prior as the others of its group (a prior on one
+        mode's A or Gamma alone singles it out, and a mode whose Γ is pinned at the floor is a
+        delta-function mode, exchangeable only with another such mode). Groups of one are not
+        ordered."""
+        groups = {}
+        for i, p in enumerate(self.params):
+            if p.name.endswith(".Omega_d") and p.kind == "flat":
+                groups.setdefault(self._mode_priors(i), []).append(i)
+        return [g for g in groups.values() if len(g) >= 2]
+
+    def _mode_priors(self, energy_index: int) -> tuple:
+        """The density of every parameter prior of the mode whose energy is at ``energy_index``,
+        with the mode prefix stripped, so two modes compare equal when their priors are the same."""
+        prefix = self.params[energy_index].name.split(".", 1)[0]
+        return tuple((p.name.split(".", 1)[1], p.kind, p.mu, p.sigma, p.lo, p.hi)
+                     for p in self.params if p.name.split(".", 1)[0] == prefix)
+
+    def logpdf_ordered(self, named_values: dict) -> float:
+        """:meth:`logpdf` with each group of exchangeable mode energies under the normalised
+        ordered-energy prior (``N!/W^N``, :func:`isar.analyze.prior.ordered_energy_log_prior`)
+        instead of one flat factor per label. The Laplace lane of the ordered prior;
+        :meth:`transform_ordered` is its sampler."""
+        from isar.analyze.prior import ordered_energy_log_prior
+
+        groups = self._energy_groups()
+        grouped = {i for g in groups for i in g}
+        total = float(sum(p.logpdf(named_values[p.name])
+                          for i, p in enumerate(self.params) if i not in grouped))
+        for g in groups:
+            first = self.params[g[0]]
+            total += ordered_energy_log_prior(
+                [named_values[self.params[i].name] for i in g], first.lo, first.hi)
+        return total
+
+    def transform_ordered(self, u) -> np.ndarray:
+        """Nested-sampling prior transform, ``u`` in ``params`` order: each parameter's own ``ppf``,
+        except each group of exchangeable mode energies, which are the ascending order statistics of
+        uniforms (:func:`isar.analyze.prior.ordered_energy_transform`), assigned to the group's
+        modes in component order. Samples :meth:`logpdf_ordered`."""
+        from isar.analyze.prior import ordered_energy_transform
+
+        u = np.asarray(u, dtype=float)
+        out = np.array([p.ppf(v) for p, v in zip(self.params, u)], dtype=float)
+        for g in self._energy_groups():
+            first = self.params[g[0]]
+            out[g] = ordered_energy_transform(u[g], first.lo, first.hi)
+        return out
+
     @property
     def nontrivial(self) -> tuple[ResolvedPrior, ...]:
         """The informative (non-flat) priors — what the curvature check inspects."""
@@ -552,7 +595,7 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=()) -> PriorBu
             # better-fitting model loses with no flag. Fail at construction, loudly.
             raise ValueError(f"free parameter {name!r} has non-finite optimizer bounds "
                              f"({lo!r}, {hi!r}); evidence needs a proper prior — bound the "
-                             f"parameter in loop._bound or declare a ParamPrior for it")
+                             f"parameter in prior.mode_bounds or declare a ParamPrior for it")
         suffix = name.split(".", 1)[-1]
         if name in soft:
             mu, sigma = float(soft[name][0]), float(soft[name][1])

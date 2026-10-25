@@ -167,15 +167,40 @@ def test_current_promotion_reconciliation_fails_closed_on_unreadable_record(tmp_
     assert "could not read promotion record" in caplog.text
 
 
+def _settled(**outcome):
+    """An outcome whose peak count the count ladder settled, unambiguously."""
+    return {**outcome, "fit_selection_semantics": {"count_ladder": {"state": "settled",
+                                                                    "ambiguity": None}}}
+
+
 def test_prior_admission_requires_full_or_trusted_hesse():
     def entry(tier):
         return ScanEntry("master:q", 1, "measurement", "fitted",
                          provenance={"errors_tier_effective": tier})
 
-    assert evidence_update._master_prior_admissible(entry("full"), {"hesse_trusted": False})
-    assert evidence_update._master_prior_admissible(entry("bayes"), {"hesse_trusted": False})
-    assert evidence_update._master_prior_admissible(entry("fast"), {"hesse_trusted": True})
-    assert not evidence_update._master_prior_admissible(entry("fast"), {"hesse_trusted": False})
-    assert not evidence_update._master_prior_admissible(entry("cheap"), {"hesse_trusted": True})
+    assert evidence_update._master_prior_admissible(entry("full"), _settled(hesse_trusted=False))
+    assert evidence_update._master_prior_admissible(entry("bayes"), _settled(hesse_trusted=False))
+    assert evidence_update._master_prior_admissible(entry("fast"), _settled(hesse_trusted=True))
+    assert not evidence_update._master_prior_admissible(entry("fast"), _settled(hesse_trusted=False))
+    assert not evidence_update._master_prior_admissible(entry("cheap"), _settled(hesse_trusted=True))
     assert evidence_update._master_prior_admissible(
-        ScanEntry("legacy", 1, "measurement", "fitted"), {"hesse_trusted": False})
+        ScanEntry("legacy", 1, "measurement", "fitted"), _settled(hesse_trusted=False))
+
+
+@pytest.mark.parametrize("count", [
+    {"state": "provisional", "ambiguity": None},
+    {"state": "search limited", "ambiguity": None},
+    {"state": "unresolved", "ambiguity": None},
+    {"state": "settled", "ambiguity": {"count": 2, "probability": 0.6, "runner_up_count": 3,
+                                       "runner_up_probability": 0.4}},
+    None,
+])
+def test_only_a_settled_unambiguous_count_enters_the_prior(count):
+    """Hard rule 5's fold gate, for the peak count: a provisional result (rung 2 still to run), a
+    search-limited, unresolved or ambiguous one, and one with no count outcome at all, never seed
+    the dispersion prior, however good its errors."""
+    entry = ScanEntry("master:q", 1, "measurement", "fitted",
+                      provenance={"errors_tier_effective": "full"})
+    outcome = {"hesse_trusted": True, "fit_selection_semantics": {"count_ladder": count}}
+    assert not evidence_update._master_prior_admissible(entry, outcome)
+    assert evidence_update._master_prior_admissible(entry, _settled(hesse_trusted=True))

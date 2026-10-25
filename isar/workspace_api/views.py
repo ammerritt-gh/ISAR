@@ -274,14 +274,6 @@ class FitView:
         except (TypeError, ValueError):
             return None
 
-    @property
-    def secondary_omega0(self) -> float | None:
-        return _f(self._pick("secondary_omega0", None))
-
-    @property
-    def secondary_omega0_err(self) -> float | None:
-        return _f(self._pick("secondary_omega0_err", None))
-
     # -- interval ladder -----------------------------------------------------
     @property
     def interval(self):

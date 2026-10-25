@@ -16,13 +16,14 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from isar.analyze import errors, loop, select, shadow_selection, verdict
+from isar.analyze import count_ladder, errors, loop, select, shadow_selection, verdict
 from isar.analyze.evidence import EVIDENCE_REVISION
 from isar.analyze import gold as gold_mod
 from isar.analyze.components import ConstantBackground, Elastic, PhononDHO, QuasiElastic
 from isar.analyze.context import ScanContext, effective_exposure, select_exposure
 from isar.analyze.descriptor import describe_spectrum
-from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
+from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures, omega0_from
+from isar.analyze.prior import mode_bounds
 from isar.schema.card import Card
 from isar.schema.scan import Flag, exposure_for
 from isar.schema.measurement import (MeasurementArena, campaign_provenance,
@@ -361,7 +362,9 @@ def _timing_provenance(fit) -> dict:
     """Per-method wall-time + (bayes tier only) sampler-config provenance from a fit dict. The
     ``bayes_*``/``dynesty_version`` keys are added only when the bayes tier ran (``dynesty_version``
     is set only there). Kept alongside — not replacing — the ``errors_attach_seconds`` lump."""
-    prov = {"bootstrap_seconds": fit.get("bootstrap_seconds"),
+    prov = {"rung1_seconds": fit.get("rung1_seconds"),
+            "rung2_seconds": fit.get("rung2_seconds"),
+            "bootstrap_seconds": fit.get("bootstrap_seconds"),
             "minos_seconds": fit.get("minos_seconds"),
             "profile_seconds": fit.get("profile_seconds"),
             "bayes_seconds": fit.get("bayes_seconds"),
@@ -839,8 +842,10 @@ def _build_selection_semantics(
     route,
     *,
     error_attachment_labels,
+    count_ladder=None,
 ) -> dict | None:
-    """Describe the exact candidate-set transitions without changing selection behavior."""
+    """Describe the exact candidate-set transitions without changing selection behavior.
+    count_ladder (:func:`_count_summary`) is the spectrum's count outcome, recorded as is."""
     try:
         missing = [r.label for r in results if getattr(r, "fit_semantics", None) is None]
         if missing:
@@ -1016,6 +1021,8 @@ def _build_selection_semantics(
         if arena_fingerprint is not None:
             record["evidence_arena_fingerprint"] = str(arena_fingerprint)
             record["evidence_revision"] = EVIDENCE_REVISION
+        if count_ladder is not None:
+            record["count_ladder"] = count_ladder
         return validate_for_write(record, FIT_SELECTION_SCHEMA)
     except SemanticsConstructionError as exc:
         log.warning(
@@ -1412,14 +1419,15 @@ def _auto_escalation_reasons(prelim, fits, ctx) -> list[str]:
     if not trusted:
         reasons.append("untrusted_hesse")
 
-    x_max = float(np.max(ctx.x_used))
     for name, value in best.params.items():
         sigma = best.param_errors.get(name)
         if sigma is None or not np.isfinite(sigma) or float(sigma) <= 0:
             continue
         value, sigma = float(value), float(sigma)
         if name.endswith(".Omega_d"):
-            if min(value - loop.EPS_OMEGA_D, x_max - value) <= 2.0 * sigma:
+            # The energy prior's own edges (the recipe that bounded the fit), the rule the fit uses.
+            lo, hi = mode_bounds([name], ctx)[0]
+            if min(value - lo, hi - value) <= 2.0 * sigma:
                 reasons.append("omega_d_within_2sigma_of_bound")
                 break
     for name, value in best.params.items():
@@ -1452,9 +1460,7 @@ def _delivery_constraint_origins(results) -> list[str]:
     return sorted(origins)
 
 
-def _shadow_can_alias_delivery(results, *, structure_skipped: bool) -> bool:
-    if structure_skipped:
-        return False
+def _shadow_can_alias_delivery(results) -> bool:
     for result in results:
         semantics = getattr(result, "fit_semantics", None)
         if not isinstance(semantics, dict):
@@ -1473,6 +1479,9 @@ def _shadow_model_identities(results, selection_ctx) -> list[dict]:
     hypotheses.update(
         {hypothesis.label: hypothesis for hypothesis in enumerate_phonon_multimode(selection_ctx)}
     )
+    # A background-free degenerate twin is unconstrained, so it reaches the shadow lane by alias.
+    hypotheses.update({twin.label: twin for twin in map(loop.without_background, list(hypotheses.values()))
+                       if twin is not None})
     identities = []
     for result in results:
         hypothesis = hypotheses.get(result.label)
@@ -1559,7 +1568,7 @@ def _safe_shadow_unavailable(reason_code: str, stage: str, *, point, legacy_fing
 
 
 def _build_shadow_point_bundle(ctx, all_results, *, structure_labels, peaks,
-                               structure_hint, structure_skipped, boot_executor,
+                               structure_hint, boot_executor,
                                shadow_enabled, delivery_multimode_route=None) -> dict:
     """Produce point-fit-only standard evidence without touching legacy selection authority."""
     started = time.perf_counter()
@@ -1571,7 +1580,7 @@ def _build_shadow_point_bundle(ctx, all_results, *, structure_labels, peaks,
         "candidate_generation_route": {
             "route": "shadow_not_evaluated",
             "supplied_hint": None if structure_hint is None else str(structure_hint),
-            "delivery_hint_accepted": bool(structure_skipped),
+            "delivery_hint_accepted": False,
             "guideline_structure_filter": (
                 [str(label) for label in structure_labels] if structure_labels else []
             ),
@@ -1605,8 +1614,7 @@ def _build_shadow_point_bundle(ctx, all_results, *, structure_labels, peaks,
         return point
 
     try:
-        if _shadow_can_alias_delivery(
-                all_results, structure_skipped=structure_skipped):
+        if _shadow_can_alias_delivery(all_results):
             candidate_bundle = loop.shadow_bundle_from_complete_results(
                 all_results, multimode_route=delivery_multimode_route
             )
@@ -1653,7 +1661,7 @@ def _build_shadow_point_bundle(ctx, all_results, *, structure_labels, peaks,
         route = {
             "route": "full_two_stage",
             "supplied_hint": None if structure_hint is None else str(structure_hint),
-            "delivery_hint_accepted": bool(structure_skipped),
+            "delivery_hint_accepted": False,
             "guideline_structure_filter": (
                 [str(label) for label in structure_labels] if structure_labels else []
             ),
@@ -1780,23 +1788,226 @@ def _finalize_shadow_selection(point, selection, fit_selection_semantics) -> dic
         )
 
 
+# ===========================================================================
+# rung 2 of the count ladder and the per-spectrum count state (design 2026-10-22, §3.1)
+# ===========================================================================
+def _rung2_partial(sampled, record) -> dict:
+    """What a later invocation resumes rung 2 from: per sampled model its evidence, the published
+    fit's parameters when rung 2 refitted it, and the cost of the rung-1 fit it was sampled from (a
+    changed rung 1 is a different question, so its stored evidence is not reused)."""
+    by_label = record.by_label()
+    return {label: {"log_evidence": m.log_evidence, "log_evidence_err": m.log_evidence_err,
+                    "method": m.method, "reason": m.reason, "result_source": m.result_source,
+                    "params": (dict(m.result.params) if m.result_source == "nested_refit" else None),
+                    "rung1_cost": float(by_label[label].representative.cost),
+                    "seconds": float(m.seconds)}
+            for label, m in sampled.items()}
+
+
+def _resumed_rung2(stored, record, ctx) -> dict:
+    """``label -> Rung2Model`` rebuilt from an earlier invocation's :func:`_rung2_partial`, for the
+    models whose rung-1 fit is unchanged. A refitted published fit is refitted again from its
+    stored parameters (one optimizer run), never trusted as a bare number."""
+    out = {}
+    by_label = record.by_label()
+    for label, kept in (stored or {}).items():
+        model = by_label.get(label)
+        if model is None or not np.isclose(model.representative.cost,
+                                           float(kept.get("rung1_cost", np.nan)), rtol=1e-9):
+            continue
+        result, source = model.representative, "rung1"
+        if kept.get("params"):
+            result, source = count_ladder.published_fit(result, loop.fit_hypothesis(
+                model.hypothesis, loop.candidate_context(model.hypothesis, ctx),
+                x0=kept["params"]))
+        out[label] = count_ladder.Rung2Model(
+            label=label, count=model.count, log_evidence=kept.get("log_evidence"),
+            log_evidence_err=kept.get("log_evidence_err"), method=kept.get("method", "failed"),
+            reason=kept.get("reason"), result=result, result_source=source,
+            seconds=float(kept.get("seconds") or 0.0))
+    return out
+
+
+def _count_ladder(record, ctx, *, slice_s=None, resume=None):
+    """Rung 2 for one spectrum through :func:`~isar.analyze.count_ladder.run`, the one rung-2 loop,
+    resumed from an earlier invocation's :func:`_rung2_partial`. Returns ``(result, partial,
+    seconds)``: the :class:`~isar.analyze.count_ladder.CountLadderResult`, what a later invocation
+    resumes from, and this invocation's rung-2 wall time."""
+    started = time.monotonic()
+    result = count_ladder.run(record, ctx, slice_s=slice_s,
+                              resume=_resumed_rung2(resume, record, ctx))
+    return result, _rung2_partial(result.rung2, record), round(time.monotonic() - started, 4)
+
+
+def _rung2_selection(ladder, results, by_hyp, ctx):
+    """``(results, selection)`` with rung 2's answer in place of rung 1's: each contending model's
+    published fit (its nested-sampling refit, or its rung-1 fit when that is better), priced on its
+    nested-sampling evidence. A sampled model is a model of its own (rung 2 explored the limit it
+    railed at); every other model has no rung-2 evidence and takes no weight, as in
+    :func:`~isar.analyze.count_ladder.conclude`."""
+    from isar.analyze import evidence
+
+    arena = loop.data_likelihood_fingerprint(ctx)
+    evidence_set = evidence.EvidenceSet(arena)
+    fits = {r.label: r for r in results}
+    published = {}
+    for label in ladder.contending:
+        sampled = ladder.rung2[label]
+        published[label] = replace(sampled.result, label=label, resolved_to=None,
+                                   resolved_limit=None, variant=fits[label].variant)
+        evidence_set.add(evidence.EvidenceRecord(
+            label=label, log_evidence=float(sampled.log_evidence),
+            log_evidence_err=sampled.log_evidence_err, evidence_method="dynesty",
+            k_free=int(published[label].k), arena_fingerprint=arena,
+            prior_spec=tuple(evidence.candidate_bundle(by_hyp[label], ctx).spec()),
+            validity={"lane": "count_ladder_rung2", "result_source": sampled.result_source}))
+    rows = [published.get(r.label, r) for r in results]
+    return rows, select.select_models(rows, by_hyp, ctx, stamp=False, evidence=evidence_set)
+
+
+def _with_peak_positions(modes, result) -> list:
+    """Each mode dict with its displayed peak position: the DHO's damped frequency Ω_d (meV), the
+    fitted parameter itself, and its HESSE error. ω₀ = √(Ω_d² + Γ²) stays the intrinsic energy."""
+    params = getattr(result, "params", None) or {}
+    errs = getattr(result, "param_errors", None) or {}
+    prefixes = [n[: -len(".Omega_d")] for n in params if n.endswith(".Omega_d")]
+    out = []
+    for mode in modes:
+        if not isinstance(mode, dict) or not prefixes or mode.get("omega0") is None:
+            out.append(mode)
+            continue
+        prefix = min(prefixes, key=lambda p: (
+            abs(omega0_from(params[p + ".Omega_d"], params[p + ".Gamma"]) - float(mode["omega0"]))
+            + abs(float(params[p + ".Gamma"]) - float(mode.get("gamma") or 0.0))))
+        err = errs.get(prefix + ".Omega_d")
+        out.append({**mode, "peak_position": float(params[prefix + ".Omega_d"]),
+                    "peak_position_err": (float(err) if err is not None and np.isfinite(err)
+                                          else None)})
+    return out
+
+
+def _count_evidence(model, ladder) -> tuple:
+    """``(log_evidence, evidence_method, evidence_state)`` of one model rung 1 tried: rung 2's evidence
+    when it was sampled, else rung 1's, or the reason there is none. A failed calculation is named as
+    one, never read as evidence against the model."""
+    def finite(value):
+        return float(value) if value is not None and np.isfinite(value) else None
+
+    sampled = ladder.rung2.get(model.label)
+    if sampled is not None:
+        ln_z = finite(sampled.log_evidence)
+        if ln_z is not None:
+            return ln_z, "dynesty", "rung 2 nested sampling"
+        return None, None, f"sampling failed: {sampled.reason or 'no reason recorded'}"
+    if model.resolved_to is not None:
+        return finite(model.log_evidence), model.evidence_method, f"resolved to {model.resolved_to}"
+    if not model.converged:
+        return None, None, "unconverged"
+    rung1 = finite(model.log_evidence)
+    if model.label in ladder.contending or ladder.shown == "rung2":
+        return rung1, model.evidence_method, "not sampled at rung 2"
+    return rung1, model.evidence_method, "rung 1 lnZ" if rung1 is not None else "no evidence"
+
+
+def _count_speaker(models, ladder) -> tuple:
+    """The tried model that speaks for its count (the one with the most usable evidence), with its
+    :func:`_count_evidence`."""
+    scored = [(m, _count_evidence(m, ladder)) for m in models]
+    return max(scored, key=lambda ms: (ms[1][0] is not None, ms[1][0] or 0.0))
+
+
+def _count_summary(ladder, sel, fits, record) -> dict:
+    """The spectrum's count outcome as persisted (``fit_selection_semantics["count_ladder"]``, so a
+    pooled master carries it too): its one state with the reasons, the flags, the deciding rung,
+    the selected count and the runner-up with their probabilities, the ambiguity marker, every count
+    rung 1 tried with its evidence state (and the probability where the deciding rung priced it),
+    and the runner-up count's modes, so the inspector and the export can show the alternative."""
+    probs = {int(n): float(p) for n, p in (ladder.count_probabilities or {}).items()
+             if p is not None and np.isfinite(p)}
+    best = fits.get(sel.best) if sel.best else None
+    count = int(best.n_modes) if best is not None else None
+    runner = max(((p, n) for n, p in probs.items() if n != count), default=None)
+    by_count = {}
+    for score in sel.scores:
+        r = fits.get(score.label)
+        if r is None:
+            continue
+        p = score.posterior_probability if score.posterior_probability is not None else score.weight
+        kept = by_count.get(int(r.n_modes))
+        if kept is None or (p or 0.0) > (kept[0] or 0.0):
+            by_count[int(r.n_modes)] = (p, score)
+    candidate_counts = []
+    for n in sorted({m.count for m in record.models}):
+        model, (ln_z, method, state) = _count_speaker(
+            [m for m in record.models if m.count == n], ladder)
+        candidate_counts.append({
+            "count": n, "probability": probs.get(n), "label": str(model.label),
+            "log_evidence": ln_z, "evidence_method": method, "evidence_state": state})
+    runner_score = by_count.get(runner[1], (None, None))[1] if runner else None
+    runner_fit = fits.get(runner_score.label) if runner_score is not None else None
+    runner_modes = (_with_peak_positions(list(runner_fit.modes), runner_fit)
+                    if runner_fit is not None and runner_fit.modes else None)
+    # No wall time here: this record is a results.csv column, which must not depend on how the
+    # run was scheduled (rung-2 time lives in the timing provenance and in rung2_partial).
+    rung2 = {label: {"log_evidence": m.log_evidence, "log_evidence_err": m.log_evidence_err,
+                     "method": m.method, "reason": m.reason, "probability": m.probability}
+             for label, m in ladder.rung2.items()}
+    return _finite_json({
+        "state": ladder.state, "reasons": [str(r) for r in ladder.reasons],
+        "flags": [str(f) for f in ladder.flags],
+        "deciding_rung": 2 if ladder.shown == "rung2" else 1,
+        "ceiling": int(record.ceiling),
+        "count": count, "count_probability": probs.get(count) if count is not None else None,
+        "runner_up_count": runner[1] if runner else None,
+        "runner_up_probability": runner[0] if runner else None,
+        "ambiguity": ladder.ambiguity,
+        "count_probabilities": {str(n): probs[n] for n in sorted(probs)},
+        "candidate_counts": candidate_counts,
+        "runner_up_label": None if runner_score is None else str(runner_score.label),
+        "runner_up_modes": runner_modes,
+        "triggers": [{"name": t.name, "reason": t.reason} for t in ladder.triggers],
+        "contending": list(ladder.contending),
+        "rung2": rung2,
+    })
+
+
+def _finite_json(value):
+    """``value`` as canonical JSON accepts it: numpy scalars as Python ones, a non-finite number as
+    ``None`` (a missing value stays missing, never a NaN token)."""
+    if isinstance(value, dict):
+        return {str(k): _finite_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite_json(v) for v in value]
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        return float(value) if np.isfinite(value) else None
+    return value
+
+
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
             errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False,
             descriptor=None, structure_hint=None, bayes_opts=None,
             predictive_n_members: int | None = None, fit_role="provisional_scan",
-            shadow_enabled=True):
-    """Two-stage structure fit (§ multiplicity), optionally narrowed by guideline labels, then
-    select + verdict. Mirrors docs/phase3_gold*_check.run_pipeline; returns extracted fields.
+            shadow_enabled=True, rung2_slice_s: float | None = None, rung2_resume=None):
+    """The count ladder (design 2026-10-22, §3.1), optionally narrowed by guideline labels, then
+    select + verdict. Returns extracted fields.
 
-    ``peaks`` (guideline hints, ≥2 forces the 2-mode offer and seeds the greedy IC) are threaded
-    into :func:`loop.fit_structures_two_stage`. The whitelist narrows the union of 1- and 2-mode
-    labels (``stokes2+bg`` etc. pass through) — an empty match keeps all + warns.
+    Rung 1 (:func:`loop.fit_structures_two_stage_hinted`) fits every count up to the card's mode
+    ceiling (:func:`guidelines.mode_ceiling`); ``peaks`` (guideline hints) seed every count. The
+    whitelist narrows the candidate set — an empty match keeps all + warns. Rung 2
+    (:func:`~isar.analyze.count_ladder.run`) samples the contending models when a trigger fires,
+    for at most ``rung2_slice_s`` seconds of sampling, counted from when rung 2 starts (after rung 1)
+    and always at least one contender when positive (``0`` samples none; ``None`` runs it to the
+    per-spectrum budget),
+    resuming from ``rung2_resume`` (an earlier invocation's ``rung2_partial``). A settled rung 2
+    replaces the rung-1 selection; an unfinished one leaves the spectrum ``provisional``, "rung 2
+    pending".
 
     ``structure_hint`` (a previous best_label, master-refit only; card policy
-    ``[fitting].reuse_master_structure``) offers the structure-skip shortcut: fit only that
-    structure + the no-phonon null instead of the full enumeration when the gates permit
-    (:func:`loop.fit_structures_two_stage_hinted`). ``None`` (every other path) is the unchanged
-    full enumeration. The returned ``structure_skipped`` reports whether the shortcut was taken.
+    ``[fitting].reuse_master_structure``) is one more seed source on its own count and variant.
 
     ``errors_tier`` selects the uncertainty depth. ``"full"`` (default, unchanged) runs MINOS +
     parametric bootstrap + ω₀ profile — the authoritative interval the stop rule consumes.
@@ -1820,19 +2031,18 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # the preliminary AIC pass and runs once per survivor in errors.attach_batch below.
     offered_hypotheses = {}
     route_out = {}
-    results, structure_skipped = loop.fit_structures_two_stage_hinted(
+    rung1_out = {}
+    results, _ = loop.fit_structures_two_stage_hinted(
         ctx, minos=False, peaks=peaks, structure_hint=structure_hint,
-        executor=boot_executor, hypotheses_out=offered_hypotheses, route_out=route_out)
+        executor=boot_executor, hypotheses_out=offered_hypotheses, route_out=route_out,
+        rung1_out=rung1_out, mode_ceiling=guide_mod.mode_ceiling(card))
     two_stage_seconds = round(time.perf_counter() - _t_two_stage, 4)
     all_results = results
     labels_before_guideline = [str(r.label) for r in results]
-    # by_hyp spans both stages so errors.attach can find any surviving label's hypothesis.
-    by_hyp = {h.label: h for h in enumerate_phonon_structures(ctx)}
-    by_hyp.update({h.label: h for h in enumerate_phonon_multimode(ctx)})
-    # …and the catalogue constrained variants (SCENE-1 PR-c), which no re-enumeration can produce:
-    # they exist only because a fit came out near-degenerate, and each carries the derived context
-    # its evidence and bootstrap must run under.
-    by_hyp.update(offered_hypotheses)
+    # label -> hypothesis of every offered candidate, from the fit itself (never re-enumerated: the
+    # catalogue variants and degenerate twins exist only because a fit came out a certain way, and
+    # the card's ceiling, not the default, bounds the counts).
+    by_hyp = dict(offered_hypotheses)
 
     warn = None
     guideline_changed_set = False
@@ -1850,9 +2060,9 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # it does not force the route).
     multimode_route = route_out.get("multimode_route", "not_offered")
     candidate_generation_route = {
-        "route": "structure_hint_shortcut" if structure_skipped else "full_two_stage",
+        "route": "full_two_stage",
         "supplied_hint": None if structure_hint is None else str(structure_hint),
-        "hint_accepted": bool(structure_skipped),
+        "hint_accepted": False,
         "guideline_structure_filter": (
             [str(label) for label in structure_labels] if structure_labels else []
         ),
@@ -1869,17 +2079,29 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         structure_labels=structure_labels,
         peaks=peaks,
         structure_hint=structure_hint,
-        structure_skipped=structure_skipped,
         boot_executor=boot_executor,
         shadow_enabled=shadow_enabled,
         delivery_multimode_route=multimode_route,
     )
 
-    fits = {r.label: r for r in results}
-
-    # The shared bootstrap pool also runs the surviving dynesty escalations concurrently
-    # (evidence.candidate_set_evidence, executor=); serial and bit-identical when None.
+    # Rung 1's evidence (Laplace only); serial and bit-identical with or without the pool.
+    _t_rung1_select = time.perf_counter()
     prelim = select.select_models(results, by_hyp, ctx, stamp=False, executor=boot_executor)
+    rung1_seconds = round(two_stage_seconds + time.perf_counter() - _t_rung1_select, 4)
+    record = rung1_out["rung1"]
+    if guideline_changed_set:
+        kept_labels = {r.label for r in results}
+        record = loop.Rung1Record(record.ceiling, [m for m in record.models if m.label in kept_labels])
+    record.apply_selection(prelim)
+    ladder, rung2_partial, rung2_seconds = _count_ladder(
+        record, ctx, slice_s=rung2_slice_s, resume=rung2_resume)
+    if ladder.shown == "rung2":
+        # conclude shows rung 2 only with a converged winner the published selection agrees on.
+        results, prelim = _rung2_selection(ladder, results, by_hyp, ctx)
+        if prelim.best != ladder.best_label:
+            log.error("rung-2 selection picked %s, the count ladder %s", prelim.best,
+                      ladder.best_label)
+    fits = {r.label: r for r in results}
     escalation_reasons = (_auto_escalation_reasons(prelim, fits, ctx)
                           if errors_tier == "auto" else [])
     if errors_tier == "auto" and escalation_reasons:
@@ -1911,17 +2133,20 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # moves theta-hat, cost, covariance, or at_limit, which are all the ladder reads.
     sel = select.select_models(results, by_hyp, ctx, evidence=prelim.evidence)
     candidate_generation_route["scored_labels"] = [str(score.label) for score in sel.scores]
+    count_summary = _count_summary(ladder, sel, fits, record)
     fit_selection_semantics = _build_selection_semantics(
         results,
         sel,
         candidate_generation_route,
         error_attachment_labels=error_attachment_labels,
+        count_ladder=count_summary,
     )
     sel.fit_selection_semantics = fit_selection_semantics
     shadow_model_selection = _finalize_shadow_selection(
         shadow_point, sel, fit_selection_semantics
     )
-    sv = verdict.classify(results, ctx, sel, prior=prior, descriptor=descriptor)
+    sv = verdict.classify(results, ctx, sel, prior=prior, descriptor=descriptor,
+                          count_probabilities=ladder.count_probabilities)
 
     best = fits.get(sel.best) if sel.best else None
     omega0 = best.omega0 if best is not None else None
@@ -2121,6 +2346,8 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     # included, projects only its own candidate-tier record (see ``_mode_intervals_of``). Nothing
     # about the outcome-level ``interval_semantics``/selected quantity above feeds the rows.
     candidates = _candidate_rows(sel.scores, fits, by_hyp)
+    if modes:
+        modes = _with_peak_positions(modes, best)
 
     # The QC-masked energy window this fit actually saw — the scene layer's observation footprint:
     # what a scan looked at, whether or not it found anything. Shifted onto the ω scale by the
@@ -2171,7 +2398,10 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
                             "not_required" if requested_tier == "auto" else "not_requested"),
         "two_stage_seconds": two_stage_seconds,
         "errors_attach_seconds": errors_attach_seconds,
-        "structure_skipped": structure_skipped,
+        "rung1_seconds": rung1_seconds,
+        "rung2_seconds": rung2_seconds,
+        "count_ladder": count_summary,
+        "rung2_partial": rung2_partial,
         # Bayes-errors tier diagnostics (None/False/0.0 on the other tiers).
         "bayes_interval": (tuple(bayes_interval) if bayes_interval is not None else None),
         "bayes_ok": bayes_ok,
@@ -2205,19 +2435,24 @@ def _process_one_task(args):
     the returned :class:`ScanEntry` carries everything; the parent applies ledger + prior mutations
     serially in submission order."""
     (rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
-     M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts, shadow_enabled) = args
+     M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts, shadow_enabled,
+     rung2_slice_s, rung2_resume) = args
     shadow_kw = {} if shadow_enabled else {"shadow_enabled": False}
     return _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                         chash, ghash, M=M, seed=seed, errors_tier=errors_tier,
                         boot_workers=boot_workers, boot_adaptive=boot_adaptive,
-                        bayes_opts=bayes_opts, **shadow_kw)
+                        bayes_opts=bayes_opts, rung2_slice_s=rung2_slice_s,
+                        rung2_resume=rung2_resume, **shadow_kw)
 
 
 def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_workers,
                use_pool, scan_workers, boot_executor=None, boot_adaptive=False,
                bayes_opts=None, on_complete=None, deadline_gate=None,
-               shadow_enabled=True) -> list:
+               shadow_enabled=True, rung2_slice_s=None, rung2_resume=None) -> list:
     """Fit the fresh scan-detectors, serially or over a process pool, preserving submission order.
+
+    ``rung2_slice_s`` (seconds; ``None`` = no slice) bounds rung 2 of the count ladder for each
+    task, counted from that task's own rung-2 start; ``rung2_resume`` maps a scan id to its earlier invocation's ``rung2_partial``.
 
     ``boot_executor`` (a shared bootstrap pool) is threaded only through the SERIAL path — an
     executor is not picklable and must never enter a scan-pool worker (nested pools). The pool path
@@ -2229,7 +2464,7 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
     )
     arg_list = [(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
                  M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts,
-                 effective_shadow_enabled)
+                 effective_shadow_enabled, rung2_slice_s, (rung2_resume or {}).get(scan_id))
                 for (rec, det, q, T, sample, scan_id, chash, ghash, seed) in tasks]
     if not arg_list:
         return []
@@ -2240,13 +2475,13 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
                 raise AnalysisWorkIncomplete(
                     f"analysis deadline reached after {len(out)}/{len(arg_list)} scan fit units")
             (rec, det, q, T, sample, scan_id, card_, g_, runcal_, exclusions_, chash, ghash,
-             M_, tier_, seed, bw, adaptive_, bopts_, shadow_enabled_) = a
+             M_, tier_, seed, bw, adaptive_, bopts_, shadow_enabled_, slice_, resume_) = a
             shadow_kw = {} if shadow_enabled_ else {"shadow_enabled": False}
             entry = _process_one(rec, det, q, T, sample, scan_id, card_, g_, runcal_,
                                  exclusions_, chash, ghash, M=M_, seed=seed, errors_tier=tier_,
                                  boot_workers=bw, boot_executor=boot_executor,
                                  boot_adaptive=adaptive_, bayes_opts=bopts_,
-                                 **shadow_kw)
+                                 rung2_slice_s=slice_, rung2_resume=resume_, **shadow_kw)
             if on_complete is not None:
                 on_complete(entry)
             out.append(entry)
@@ -2527,7 +2762,7 @@ def _resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres,
 
 def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descriptor,
                          region_reasons, *, M, seed, errors_tier, boot_workers, boot_executor,
-                         boot_adaptive, bayes_opts=None):
+                         boot_adaptive, bayes_opts=None, rung2_slice_s=None, rung2_resume=None):
     """Steering Phase 3b — hard-fix escalation: if the (soft / Stokes-only) fit STILL rails Γ to its
     bound (true low-count degeneracy — Γ un-identifiable even under the soft prior) and the branch
     predicts Γ within its anchor range, re-fit with Γ frozen to the branch value (k reduced,
@@ -2565,7 +2800,8 @@ def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descri
                                peaks=peaks, errors_tier=errors_tier, boot_workers=boot_workers,
                                boot_executor=boot_executor, boot_adaptive=boot_adaptive,
                                descriptor=descriptor, bayes_opts=bayes_opts,
-                               shadow_enabled=False)
+                               shadow_enabled=False, rung2_slice_s=rung2_slice_s,
+                               rung2_resume=rung2_resume)
             except Exception:  # noqa: BLE001 — escalation is best-effort; keep the original fit
                 hfit = None
             if hfit is not None and hfit.get("omega0") is not None \
@@ -2652,6 +2888,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         energy_window=fit.get("energy_window"), energy_bands=fit.get("energy_bands"),
         evidence_identity=fit.get("evidence_identity"),
         identity_ba_disagreement=fit.get("identity_ba_disagreement"),
+        rung2_partial=fit.get("rung2_partial"),
         evidence_sink=evidence_sink_for(getattr(rec, "raw_header", None),
                                         getattr(card.state, "acquisition_provenance", None)))
     outcome.probability_semantics = _refresh_probability_semantics(outcome.__dict__)
@@ -2672,7 +2909,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
 def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                  chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
                  boot_executor=None, boot_adaptive=False, bayes_opts=None,
-                 shadow_enabled=True) -> ScanEntry:
+                 shadow_enabled=True, rung2_slice_s=None, rung2_resume=None) -> ScanEntry:
     _t_fit0 = time.perf_counter()
     base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
                 content_hash=chash, guidelines_hash=ghash)
@@ -2728,7 +2965,8 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
                       errors_tier=errors_tier, boot_workers=boot_workers,
                       boot_executor=boot_executor, boot_adaptive=boot_adaptive, descriptor=descriptor,
-                      bayes_opts=bayes_opts, shadow_enabled=shadow_enabled)
+                      bayes_opts=bayes_opts, shadow_enabled=shadow_enabled,
+                      rung2_slice_s=rung2_slice_s, rung2_resume=rung2_resume)
     except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
         return ScanEntry(status="non_result",
                          reasons=[f"fit error ({type(exc).__name__}): {exc}"] + region_reasons,
@@ -2738,7 +2976,8 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
     fit = _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descriptor,
                                region_reasons, M=M, seed=seed, errors_tier=errors_tier,
                                boot_workers=boot_workers, boot_executor=boot_executor,
-                               boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
+                               boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
+                               rung2_slice_s=rung2_slice_s, rung2_resume=rung2_resume)
 
     entry = _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calres, prior,
                             prior_source, n_neighbors, near_gamma, t_round, region_reasons, base,

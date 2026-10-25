@@ -12,10 +12,24 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass, field
 
+from isar.analyze import prior as prior_recipe
+from isar.analyze.phonon import default_mode_ceiling
 from isar.analyze.prior import PhononPrior
 from isar.schema.card import Card
 
 _COMPONENT_INDEX = {"h": 0, "k": 1, "l": 2}
+
+
+def _positive_int(value, *, where: str) -> int | None:
+    """``value`` as an int >= 1, else None with a warning (malformed input never silently wins)."""
+    try:
+        n = int(value)
+        if float(value) == n and n >= 1:
+            return n
+    except (TypeError, ValueError):
+        pass
+    warnings.warn(f"{where}: {value!r} is not a whole number >= 1 — ignoring")
+    return None
 
 
 def _peak_hints(peaks: tuple, omega0, omega0_sigma) -> tuple:
@@ -104,6 +118,7 @@ class Guidelines:
     omega_window: tuple | None = None       # (lo, hi) meV or None
     monitor_frac: float = 0.9
     min_fit_points: int = 6
+    max_modes: int | None = None            # mode ceiling; None = environment, then the default
     expectations: list = field(default_factory=list)
     overrides: dict = field(default_factory=dict)   # scan -> Override
 
@@ -198,9 +213,19 @@ def resolve(card: Card) -> Guidelines:
         omega_window=omega_window,
         monitor_frac=float(f.get("monitor_frac", 0.9)),
         min_fit_points=int(f.get("min_fit_points", 6)),
+        max_modes=(_positive_int(f["max_modes"], where="[fitting] max_modes")
+                   if "max_modes" in f else None),
         expectations=expectations,
         overrides=overrides,
     )
+
+
+def mode_ceiling(source) -> int:
+    """The most modes any one spectrum may hold: the card's ``[fitting] max_modes`` (``source`` is a
+    :class:`Guidelines` or a :class:`~isar.schema.card.Card`), else
+    :func:`isar.analyze.phonon.default_mode_ceiling` (the environment, else 6)."""
+    g = resolve(source) if isinstance(source, Card) else source
+    return g.max_modes if g.max_modes is not None else default_mode_ceiling()
 
 
 def _parse_fit_range(v, *, where: str) -> tuple | None:
@@ -317,6 +342,8 @@ def guidelines_signature(g: Guidelines, *, scan_number, q, T) -> dict:
         "omega_window": g.omega_window,
         "monitor_frac": g.monitor_frac,
         "min_fit_points": g.min_fit_points,
+        "mode_ceiling": mode_ceiling(g),
+        "prior_recipe": prior_recipe.PRIOR_RECIPE_VERSION,
         "fit_range": None if fit_range is None else [fit_range[0], fit_range[1]],
         "exclude_regions": [[lo, hi] for lo, hi in exclude_regions],
         "peaks": [[p["omega0"], p["sigma"]] for p in peaks],

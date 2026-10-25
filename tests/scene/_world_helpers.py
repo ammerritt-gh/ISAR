@@ -45,16 +45,46 @@ def run_selection(name: str, h: float):
     return ctx, results, sel, hyps
 
 
-def scene_observation(name: str, h: float, *, scan_ref: str | None = None) -> SceneObservation:
+def _card():
+    from isar.schema import card as card_mod
+
+    policy = card_mod.CardPolicy(
+        facility="SYNTH", instrument="S30", format_version="2025", plugin="spec_s30",
+        detectors=[card_mod.DetectorSpec("d", 0, "d", True)], energy_column="E",
+        monitor_column="M", counting_mode="time", normalize_by="none",
+        raw_abscissa_kind="energy", energy_status="needs_zero", measurement_pattern="fscan",
+        alignment_pattern="ascan", temperature_rule={}, collation={}, fitting={})
+    return card_mod.Card(policy, card_mod.CardState())
+
+
+def deliver(name: str, h: float) -> dict:
+    """One world node through the delivery's fit, ``scan_delivery.fit_one``: rung 1 of the count
+    ladder, rung 2 when a trigger fires, and the delivered count outcome
+    (``fit["fit_selection_semantics"]["count_ladder"]``). The ceiling is the suite's."""
+    from isar.session import scan_delivery
+
+    return scan_delivery.fit_one(scan_ctx(name, h), _card(), prior=None, M=1, seed=1,
+                                 errors_tier="cheap")
+
+
+def scene_observation(name: str, h: float, *, scan_ref: str | None = None,
+                      delivered: bool = False) -> SceneObservation:
     """One world node as a scene arena, built from the REAL selection output.
 
     The candidate table goes through ``isar.session.scan_delivery._candidate_rows`` — the same
     reshaping production persists — so the rows a test scores are the rows a campaign would
     persist, not a hand-made approximation of them. The selection record is complete by
-    construction: ``run_selection`` refuses anything but the Bayesian lane.
+    construction: ``run_selection`` refuses anything but the Bayesian lane. ``delivered``: the
+    rows and winner :func:`deliver` persists instead, after the count ladder's rung 2.
     """
-    ctx, results, sel, hyps = run_selection(name, h)
-    rows = _candidate_rows(sel.scores, {r.label: r for r in results}, hyps) or []
+    if delivered:
+        fit = deliver(name, h)
+        ctx = scan_ctx(name, h)
+        rows, best = fit["candidates"] or [], fit["best_label"]
+    else:
+        ctx, results, sel, hyps = run_selection(name, h)
+        rows = _candidate_rows(sel.scores, {r.label: r for r in results}, hyps) or []
+        best = sel.best
     obs = SceneObservation(
         scan_ref=scan_ref or f"world:{h:.2f}:d",
         q=(float(h), 0.0, 0.0),
@@ -71,7 +101,7 @@ def scene_observation(name: str, h: float, *, scan_ref: str | None = None) -> Sc
         # gate would (correctly) refuse to charge anything anywhere on these worlds.
         effective_exposure=1.0,
         background=None,
-        best_label=sel.best,
+        best_label=best,
         candidates=tuple(CandidateRow.from_dict(r)
                          for r in sorted(rows, key=lambda r: str(r["label"]))),
         evidence_comparison_status="complete",

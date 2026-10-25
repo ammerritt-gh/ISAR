@@ -276,6 +276,7 @@ def generate_dataset(
         quasielastic_fwhm=float(scenario.qe_fwhm),
         exposure_scale=exposure,
         exposure_reference=1.0 if exposure is not None else None,
+        exposure_source="monitor" if exposure is not None else None,  # a flux profile, as a monitor
     )
     lam, modes = _build_truth_model(scenario, x, truth_context)
     fit_seed = _stream_seed(spec, scenario, phase, realization_index, "fit")
@@ -300,6 +301,7 @@ def generate_dataset(
         constraints=_constraints(scenario, delivery_design),
         exposure_scale=exposure,
         exposure_reference=1.0 if exposure is not None else None,
+        exposure_source="monitor" if exposure is not None else None,  # a flux profile, as a monitor
     )
     dataset_id = _dataset_id(spec, scenario, phase, realization_index)
     manifest = {

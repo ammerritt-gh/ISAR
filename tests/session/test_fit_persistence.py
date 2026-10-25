@@ -141,7 +141,18 @@ def test_fit_one_populates_amplitudes_and_candidates():
     assert all(r["posterior_probability"] is not None for r in cands)
     winner = max(cands, key=lambda r: r["posterior_probability"])
     assert winner["label"] == fit["best_label"]
-    assert all(r["evidence_method"] is not None for r in cands)
+    # A row with no evidence of its own is either resolved to its degenerate twin, which its
+    # candidate record names (the twin carries the weight, S1U4), or, when rung 2 decided, outside
+    # rung 2's contending set (rung 2 prices its contenders alone).
+    records = {r["label"]: r for r in fit["fit_selection_semantics"]["candidate_records"]}
+    ladder = fit["fit_selection_semantics"]["count_ladder"]
+    for row in cands:
+        if row["evidence_method"] is None:
+            twin = (records[row["label"]]["evidence_validity"] or {}).get("resolved_to")
+            assert twin in records or (ladder["deciding_rung"] == 2
+                                       and row["label"] not in ladder["contending"])
+            assert row["posterior_probability"] == 0.0
+    assert any(r["evidence_method"] is not None for r in cands)
 
     # Both weight lanes are normalised distributions over the scored candidates.
     assert sum(r["akaike_weight"] for r in cands) == pytest.approx(1.0, abs=1e-6)

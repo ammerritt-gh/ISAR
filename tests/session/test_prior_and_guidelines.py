@@ -254,3 +254,59 @@ def test_prior_reproduces_predict_omega_shape():
         p = SP.prior_for(st, sample="S", T=100.0, q=[3.0, k, -0.1], exclude_scan_id=f"S:{i}")
         assert p.omega0 == pytest.approx(pred, abs=1e-6)
         assert p.omega0_sigma == pytest.approx(sig, abs=1e-6)
+
+# --------------------------------------------------------------------------- mode ceiling (S1U1)
+def test_mode_ceiling_precedence_card_then_env_then_six(monkeypatch):
+    monkeypatch.delenv("ISAR_MODE_CEILING", raising=False)
+    assert G.mode_ceiling(G.resolve(_card_with_fitting({}))) == 6          # the default
+    monkeypatch.setenv("ISAR_MODE_CEILING", "3")
+    assert G.mode_ceiling(G.resolve(_card_with_fitting({}))) == 3          # environment
+    card = _card_with_fitting({"max_modes": 4})
+    assert G.mode_ceiling(G.resolve(card)) == 4                            # card beats environment
+    assert G.mode_ceiling(card) == 4                                       # a Card works too
+    assert G.mode_ceiling(G.Guidelines()) == 3                             # so does a bare policy
+
+
+def test_mode_ceiling_ignores_a_malformed_value_loudly(monkeypatch):
+    monkeypatch.delenv("ISAR_MODE_CEILING", raising=False)
+    with pytest.warns(UserWarning, match="max_modes"):
+        g = G.resolve(_card_with_fitting({"max_modes": 0}))
+    assert G.mode_ceiling(g) == 6
+    monkeypatch.setenv("ISAR_MODE_CEILING", "many")
+    with pytest.warns(UserWarning, match="ISAR_MODE_CEILING"):
+        assert G.mode_ceiling(G.Guidelines()) == 6
+
+
+def test_one_mode_ceiling_rule_for_production_and_the_benchmark(monkeypatch):
+    """The environment rule lives once, in the analyze layer: the benchmark and the card reader read
+    it alike (a 0 from the environment is refused by both), and analyze imports nothing from
+    session to get it. The benchmark's explicit argument may still be 0."""
+    import ast
+    import inspect
+
+    from isar.analyze import phonon
+    from isar.synth import count_bench as cb
+
+    monkeypatch.setenv("ISAR_MODE_CEILING", "0")
+    with pytest.warns(UserWarning, match="ISAR_MODE_CEILING"):
+        assert cb.mode_ceiling() == G.mode_ceiling(G.Guidelines()) == 6
+    assert cb.mode_ceiling(0) == 0
+    monkeypatch.setenv("ISAR_MODE_CEILING", "5")
+    assert cb.mode_ceiling() == G.mode_ceiling(G.Guidelines()) == phonon.default_mode_ceiling() == 5
+    imported = {node.module for node in ast.walk(ast.parse(inspect.getsource(phonon)))
+                if isinstance(node, ast.ImportFrom)}
+    assert not any(m and m.startswith("isar.session") for m in imported)
+
+
+def test_guidelines_signature_changes_with_ceiling_and_recipe_version(monkeypatch):
+    from isar.analyze import prior
+    monkeypatch.delenv("ISAR_MODE_CEILING", raising=False)
+    sig = lambda card: G.guidelines_signature(G.resolve(card), scan_number=1, q=None, T=None)
+    base = sig(_card_with_fitting({}))
+    assert sig(_card_with_fitting({})) == base                              # stable
+    assert sig(_card_with_fitting({"max_modes": 4})) != base                # card ceiling
+    monkeypatch.setenv("ISAR_MODE_CEILING", "3")
+    assert sig(_card_with_fitting({})) != base                              # environment ceiling
+    monkeypatch.delenv("ISAR_MODE_CEILING")
+    monkeypatch.setattr(prior, "PRIOR_RECIPE_VERSION", prior.PRIOR_RECIPE_VERSION + "+next")
+    assert sig(_card_with_fitting({})) != base                              # recipe version

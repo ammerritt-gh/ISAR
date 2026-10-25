@@ -150,12 +150,40 @@ def _two_peak_ctx(o1=4.0, a1=500.0, o2=10.0, a2=350.0, g=0.35, bg=8.0, n=121):
                        energy_status="needs_zero")
 
 
-def test_fit_one_multimode_route_is_declaration_relaxed_not_peaks_presence():
-    """`fit_one`'s persisted ``multimode_route`` is re-derived from the actual gate outcome
-    (2026-08-09 ruling), never guessed from ``peaks`` presence: a declared scan whose residual
-    structure clears the relaxed thresholds but not the global ones persists
-    ``"declaration_relaxed"``, and the identical undeclared scan offers no 2-mode candidate at
-    all. The aliased shadow-selection route agrees."""
+def test_fit_one_attaches_expensive_errors_to_the_selected_model_only(monkeypatch):
+    """A one-peak spectrum with a weak elastic line: the elastic and no-elastic models both keep a
+    selection weight above the survivor floor, and only the selected one receives the bootstrap
+    and profile (count ladder: errors for the selected model, not for every count tried)."""
+    monkeypatch.setenv("ISAR_MODE_CEILING", "1")       # the count is not what this test is about
+    x = np.linspace(-8.0, 16.0, 81)
+    lam = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 20.0, 8.0, 50.0, peak="all")
+    counts = np.random.default_rng(1).poisson(np.clip(lam, 0.0, None)).astype(float)
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
+                      center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
+                      energy_status="needs_zero")
+    selections, attached = [], []
+    original = scan_delivery.select.select_models
+
+    def capture(*args, **kwargs):
+        selections.append(original(*args, **kwargs))
+        return selections[-1]
+
+    monkeypatch.setattr(scan_delivery.select, "select_models", capture)
+    monkeypatch.setattr(scan_delivery.errors, "attach_batch",
+                        lambda items, **kwargs: attached.append([i[0].label for i in items]))
+    fit = scan_delivery.fit_one(ctx, _card_with_fitting({}), prior=None, M=20, seed=1,
+                                errors_tier="full")
+
+    prelim = selections[0]
+    assert sum(score.weight >= 0.01 for score in prelim.scores) >= 2   # a real runner-up
+    assert attached == [[fit["best_label"]]]
+
+
+@pytest.mark.slow
+def test_fit_one_runs_the_count_ladder_and_records_its_route():
+    """`fit_one` fits through the count ladder: every count to the ceiling is offered (no gate;
+    a declared count only seeds), and the persisted ``multimode_route`` says so. The aliased
+    shadow-selection route agrees. Slow: one full ladder with its evidence escalations."""
     x = np.linspace(-6.0, 20.0, 121)
     p1 = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
                              peak="stokes+astokes")
@@ -168,20 +196,19 @@ def test_fit_one_multimode_route_is_declaration_relaxed_not_peaks_presence():
     card = _card_with_fitting({})
     peaks = ({"omega0": 5.0}, {"omega0": 11.0})
 
-    undeclared = scan_delivery.fit_one(ctx, card, prior=None, M=1, seed=1, errors_tier="cheap")
-    assert undeclared["n_modes"] != 2
-
     fit = scan_delivery.fit_one(
         ctx, card, prior=None, M=1, seed=1, peaks=peaks, errors_tier="cheap")
     route = fit["fit_selection_semantics"]["candidate_generation_route"]
-    assert route["multimode_route"] == "declaration_relaxed"
+    assert route["multimode_route"] == "count_ladder"
+    ceiling = G.mode_ceiling(card)
+    assert {f"stokes{n}+bg" for n in range(2, ceiling + 1)} <= set(route["offered_labels"])
     shadow_route = fit["shadow_model_selection"].get("candidate_generation_route")
     if shadow_route is not None:
-        assert shadow_route.get("multimode_route") == "declaration_relaxed"
+        assert shadow_route.get("multimode_route") == "count_ladder"
 
 
 @pytest.mark.slow
-def test_fit_one_two_peak_returns_two_modes_and_secondary_csv(tmp_path):
+def test_fit_one_two_peak_returns_two_modes_one_row_each_in_modes_csv(tmp_path):
     ctx = _two_peak_ctx()
     card = _card_with_fitting({})
     peaks = ({"omega0": 4.0, "sigma": 0.5}, {"omega0": 10.0, "sigma": 0.5})
@@ -192,7 +219,7 @@ def test_fit_one_two_peak_returns_two_modes_and_secondary_csv(tmp_path):
     oms = sorted(m["omega0"] for m in fit["modes"])
     assert abs(oms[0] - 4.0) < 1.0 and abs(oms[1] - 10.0) < 1.0
 
-    # Build an outcome + ledger and write results.csv: secondary columns populate.
+    # Build an outcome + ledger and write results.csv: every mode is a modes.csv row, by energy.
     outcome = outcome_mod.FitOutcome(
         detector_id="ana7", verdict=fit["verdict"], disposition="resolved",
         confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
@@ -211,14 +238,15 @@ def test_fit_one_two_peak_returns_two_modes_and_secondary_csv(tmp_path):
     assert len(rows) == 1
     row = rows[0]
     assert row["n_modes"] == 2                            # int-coerced
-    assert isinstance(row["secondary_omega0"], float)     # float-coerced, populated
-    # secondary is the non-primary mode's omega0 (primary matches scalar omega0).
-    assert row["secondary_omega0"] != row["omega0"]
-    assert abs(row["secondary_omega0"] - (oms[1] if row["omega0"] == oms[0] else oms[0])) < 1e-6
+    assert "secondary_omega0" not in row                  # no "primary"/"secondary" columns
+    modes = readers.read_modes_csv(ws.root)
+    assert [m["mode_index"] for m in modes] == [0, 1]
+    assert [m["omega0"] for m in modes] == pytest.approx(oms, abs=1e-9)
+    assert all(isinstance(m["peak_position"], float) for m in modes)
 
 
 @pytest.mark.slow
-def test_fit_one_single_peak_leaves_secondary_blank(tmp_path):
+def test_fit_one_single_peak_is_one_modes_csv_row(tmp_path):
     x = np.linspace(-8.0, 16.0, 81)
     counts = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
                                  peak="stokes+astokes") + 8.0
@@ -242,7 +270,8 @@ def test_fit_one_single_peak_leaves_secondary_blank(tmp_path):
     driver._write_results_csv(ws, st)
     row = readers.read_results_csv(ws.root)[0]
     assert row["n_modes"] == 1
-    assert row["secondary_omega0"] is None and row["secondary_omega0_err"] is None
+    mode, = readers.read_modes_csv(ws.root)
+    assert mode["omega0"] == pytest.approx(fit["modes"][0]["omega0"])
 
 
 # --------------------------------------------------------------------------- fast (HESSE) tier
@@ -404,7 +433,10 @@ def test_shadow_selection_is_invariant_to_delivery_constraints(constraints):
     )
 
 
-def test_accepted_delivery_hint_records_partial_shadow_execution():
+def test_a_delivery_hint_never_shortcuts_the_ladder(monkeypatch):
+    """The opt-in master structure hint is a seed source: fit_one still tries every count (it used
+    to fit the hinted structure and a null alone, and so could never find a new peak)."""
+    monkeypatch.setenv("ISAR_MODE_CEILING", "1")       # the count is not what this test is about
     base = _single_peak_ctx_for_csv()
     ctx = replace(
         base,
@@ -423,19 +455,11 @@ def test_accepted_delivery_hint_records_partial_shadow_execution():
         structure_hint="stokes+bg",
     )
 
-    assert hinted["structure_skipped"] is True
+    route = hinted["fit_selection_semantics"]["candidate_generation_route"]
+    assert route["supplied_hint"] == "stokes+bg" and route["hint_accepted"] is False
     shadow = validate_shadow_model_selection(hinted["shadow_model_selection"])
-    assert shadow["shadow_execution_kind"] == "partial"
-    assert shadow["reused_model_identities"]
-    assert shadow["freshly_fitted_model_identities"]
-    assert {
-        item["model_identity"] for item in shadow["reused_model_identities"]
-    } | {
-        item["model_identity"]
-        for item in shadow["freshly_fitted_model_identities"]
-    } == {
-        item["model_identity"] for item in shadow["attempted_model_identities"]
-    }
+    assert shadow["shadow_execution_kind"] != "partial"
+    assert len(shadow["attempted_model_identities"]) > 2        # not the hinted pair alone
 
 
 @pytest.mark.slow

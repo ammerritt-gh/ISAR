@@ -6,8 +6,9 @@ Three things live here, all of them persistence-layer:
   (``ScanEntry.detectors[det] == FitOutcome.to_dict()`` in ``session.json``);
 * :func:`_coerce_fit_outcome` / :func:`_outcome_from_entry` — the tolerant historical reader that
   rehydrates a stored dict, dropping (and logging) keys a newer writer added;
-* ``_CSV_COLUMNS`` + :func:`_write_results_csv` and its two cell helpers — the ``results.csv``
-  projection of the ledger.
+* ``_CSV_COLUMNS`` + :func:`_write_results_csv` and its cell helpers — the ``results.csv``
+  projection of the ledger (one summary row per spectrum), and ``_MODES_COLUMNS`` — its linked
+  ``modes.csv`` (one row per fitted mode of the selected count, ordered by energy).
 
 The *scientific producers* stay in :mod:`isar.session.driver`: nothing here fits, selects, or
 interprets a number — it only declares the storage shape and flattens stored dicts. Accordingly this
@@ -19,6 +20,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import math
 import os
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -226,6 +228,10 @@ class FitOutcome:
     # claimed as searched coverage, and the end cells reach half a bin past the window.
     # ``None`` on older ledgers and wherever the window is.
     energy_bands: list | None = None
+    # Rung 2 of the count ladder so far (scan_delivery._rung2_partial): per sampled contending model
+    # its evidence and published fit, what the next invocation resumes from while the spectrum is
+    # provisional. The count outcome itself is ``fit_selection_semantics["count_ladder"]``.
+    rung2_partial: dict | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -273,7 +279,7 @@ _CSV_COLUMNS = [
     "bayes_freq_ratio", "hesse_freq_ratio", "bayes_prior_driven", "bayes_fork_suspected",
     "bayes_unconstrained", "log_evidence", "log_evidence_err",
     "pooled", "n_members", "members",
-    "gamma", "gamma_provisional", "modality", "n_modes", "secondary_omega0", "secondary_omega0_err",
+    "gamma", "gamma_provisional", "modality", "n_modes",
     "best_model", "cost_per_dof", "fit_kind", "branch_id", "assignment_entropy", "resolvable",
     "descriptor_n_peaks", "descriptor_peaks",
     "zero", "zero_source", "gauss_fwhm",
@@ -339,6 +345,23 @@ _CSV_COLUMNS = [
     # measurement record from delivery N+1. Scan-level, not per-detector, so every detector row of
     # the same scan carries the same value. Empty on every historical row.
     "content_hash",
+    # The count ladder (design 2026-10-22, §3.1), projected from fit_selection_semantics
+    # ["count_ladder"]: the spectrum's one state and its reasons, the rung that decided it, the
+    # selected count's probability (the count itself is n_modes) and the runner-up's, whether the
+    # two are close enough to call the count ambiguous, and the quality flags. Every mode of the
+    # selected count is a row of the linked modes.csv.
+    "count_state", "count_state_reason", "deciding_rung", "count_probability",
+    "runner_up_count", "runner_up_probability", "count_ambiguous", "count_flags",
+]
+
+# report/modes.csv: one row per fitted mode of the selected count, keyed to its results.csv row by
+# scan_id + detector, mode_index 0 the lowest energy. omega0 is the intrinsic DHO energy, the
+# peak_position the displayed one (the damped frequency Omega_d); a missing value stays empty.
+_MODES_COLUMNS = [
+    "scan_id", "scan", "detector", "sample", "T", "h", "k", "l", "count_state", "best_model",
+    "n_modes", "mode_index", "omega0", "omega0_err", "peak_position", "peak_position_err",
+    "gamma", "gamma_err", "amplitude", "amplitude_intrinsic", "uncertainty_kind",
+    "hesse_trusted", "content_hash",
 ]
 
 
@@ -370,30 +393,87 @@ def _best_model_posterior(oc: dict):
     return None
 
 
-def _secondary_mode(oc: dict) -> tuple:
-    """The (omega0, omega0_err) of the non-primary mode for a 2-mode fit, else (None, None).
+def _count_ladder(oc: dict) -> dict:
+    """The stored count outcome (``fit_selection_semantics["count_ladder"]``), ``{}`` when absent."""
+    return (oc.get("fit_selection_semantics") or {}).get("count_ladder") or {}
 
-    Primary = the mode whose ω₀ matches the reported scalar ``omega0``; secondary is the other.
-    """
-    if (oc.get("n_modes") or 1) != 2:
-        return None, None
-    modes = oc.get("modes") or []
-    if len(modes) != 2:
-        return None, None
-    prim = oc.get("omega0")
-    others = [m for m in modes if m.get("omega0") != prim]
-    sec = others[0] if others else modes[-1]
-    return sec.get("omega0"), sec.get("omega0_err")
+
+# count_state of a row with no count-ladder record. The two ladder names are isar.analyze.count_ladder's
+# FITTING and HELD, spelled here so this read path does not import the fitting stack (a test pins them).
+NOT_FITTED = "not fitted"       # excluded, undersampled, or otherwise no fit
+NOT_RECORDED = "not recorded"   # a detector outcome written before the count ladder existed
+
+
+def _unfitted_count(e: ScanEntry) -> dict:
+    """The count columns of a scan with no detector outcome: a held scan is ``held`` with its hold
+    reason, an ingested scan is still ``fitting`` (no result yet), any other is ``not fitted``."""
+    if e.status.startswith("held"):
+        state = "held"
+    elif e.status == "ingested":
+        state = "fitting"
+    else:
+        state = NOT_FITTED
+    return {"count_state": state, "count_state_reason": "; ".join(e.reasons) or e.status}
+
+
+def _finite(value):
+    """A number as written: a non-finite one is missing, never a ``nan`` cell."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _mode_rows(e: ScanEntry, det: str, oc: dict) -> list:
+    """The modes.csv rows of one stored outcome, ordered by energy."""
+    modes = sorted((m for m in (oc.get("modes") or []) if isinstance(m, dict)
+                    and _finite(m.get("omega0")) is not None),
+                   key=lambda m: float(m["omega0"]))
+    q = oc.get("q") or [None, None, None]
+    rows = []
+    for index, mode in enumerate(modes):
+        err = _finite(mode.get("omega0_err"))
+        rows.append({
+            "scan_id": e.scan_id, "scan": e.scan_number, "detector": det,
+            "sample": oc.get("sample"), "T": oc.get("T"), "h": q[0], "k": q[1], "l": q[2],
+            "count_state": _count_ladder(oc).get("state") or NOT_RECORDED,
+            "best_model": oc.get("best_label"),
+            "n_modes": len(modes), "mode_index": index,
+            "omega0": mode.get("omega0"), "omega0_err": err,
+            "peak_position": _finite(mode.get("peak_position")),
+            "peak_position_err": _finite(mode.get("peak_position_err")),
+            "gamma": _finite(mode.get("gamma")), "gamma_err": _finite(mode.get("gamma_err")),
+            "amplitude": _finite(mode.get("amplitude")),
+            "amplitude_intrinsic": _finite(mode.get("amplitude_intrinsic")),
+            "uncertainty_kind": "hesse" if err is not None else None,
+            "hesse_trusted": mode.get("hesse_trusted"), "content_hash": e.content_hash,
+        })
+    return rows
+
+
+def _replace_csv(path: Path, columns: list, rows: list) -> None:
+    """Write ``rows`` to a temporary file in full and swap it in, so no reader sees a torn file."""
+    temporary = path.with_name(path.name + ".tmp")
+    with open(temporary, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=columns)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: r.get(k) for k in columns})
+        f.flush()
+        os.fsync(f.fileno())
+    replace_retrying(temporary, path)
 
 
 def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
+    """Write ``report/results.csv`` and its linked ``report/modes.csv``, each replaced whole."""
     workspace.report_dir.mkdir(parents=True, exist_ok=True)
     path = workspace.report_dir / "results.csv"
     rows = []
+    mode_rows = []
     for e in sorted(session.scans.values(), key=lambda e: e.scan_number):
         if not e.detectors:
             rows.append({"scan_id": e.scan_id, "scan": e.scan_number, "status": e.status,
-                         "reasons": "; ".join(e.reasons), "content_hash": e.content_hash})
+                         "reasons": "; ".join(e.reasons), "content_hash": e.content_hash,
+                         **_unfitted_count(e)})
             continue
         for det, oc in e.detectors.items():
             q = oc.get("q") or [None, None, None]
@@ -415,6 +495,8 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 raise ValueError(
                     f"master scan {e.scan_number}: n_members={oc.get('n_members')} != "
                     f"len(members)={len(members)} — member provenance corrupt")
+            count = _count_ladder(oc)
+            mode_rows.extend(_mode_rows(e, det, oc))
             rows.append({
                 "scan_id": e.scan_id, "scan": e.scan_number, "detector": det, "sample": oc.get("sample"),
                 "content_hash": e.content_hash,
@@ -482,9 +564,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "members": (";".join(members) if members else None),
                 "gamma": oc.get("gamma"), "gamma_provisional": oc.get("gamma_provisional"),
                 "modality": oc.get("modality"),
-                "n_modes": oc.get("n_modes") or 1,
-                "secondary_omega0": _secondary_mode(oc)[0],
-                "secondary_omega0_err": _secondary_mode(oc)[1],
+                "n_modes": oc.get("n_modes") if oc.get("n_modes") is not None else 1,
                 "best_model": oc.get("best_label"), "cost_per_dof": oc.get("cost_per_dof"),
                 "fit_kind": oc.get("fit_kind"),
                 "branch_id": oc.get("branch_id"),
@@ -556,14 +636,16 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "energy_lo": (ew[0] if ew else None), "energy_hi": (ew[-1] if ew else None),
                 "energy_bands": (json.dumps(oc.get("energy_bands"), sort_keys=True)
                                  if oc.get("energy_bands") is not None else None),
+                "count_state": count.get("state") or NOT_RECORDED,
+                "count_state_reason": ("; ".join(count.get("reasons") or []) or None
+                                       if count else "no count-ladder record"),
+                "deciding_rung": count.get("deciding_rung"),
+                "count_probability": count.get("count_probability"),
+                "runner_up_count": count.get("runner_up_count"),
+                "runner_up_probability": count.get("runner_up_probability"),
+                "count_ambiguous": (None if not count else count.get("ambiguity") is not None),
+                "count_flags": "; ".join(count.get("flags") or []) or None,
             })
-    temporary = path.with_name(path.name + ".tmp")
-    with open(temporary, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=_CSV_COLUMNS)
-        w.writeheader()
-        for r in rows:
-            w.writerow({k: r.get(k) for k in _CSV_COLUMNS})
-        f.flush()
-        os.fsync(f.fileno())
-    replace_retrying(temporary, path)
+    _replace_csv(path, _CSV_COLUMNS, rows)
+    _replace_csv(workspace.report_dir / "modes.csv", _MODES_COLUMNS, mode_rows)
     return path

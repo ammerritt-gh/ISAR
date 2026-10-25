@@ -19,7 +19,7 @@ One directory per experiment (`isar/session/workspace.py`):
   card.policy.toml    # human-owned; the machine NEVER writes it
   card.state.json     # machine-owned accumulated state — experiment-critical, not deletable
   session.json        # machine bookkeeping (manifest + ledger) — deletable, rebuildable
-  report/             # report.md/.html/.json, reduction.*, results.csv, figures/,
+  report/             # report.md/.html/.json, reduction.*, results.csv, modes.csv, figures/,
                       # measurements.jsonl (counts-authoritative arena log), scene/ (revisions)
     scene/            # scene revisions: <digest>.json blobs + current.json pointer
 ```

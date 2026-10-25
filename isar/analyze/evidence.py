@@ -21,7 +21,8 @@ by a **ladder** that records which rung it came from and why:
 4. ``"dynesty"`` — nested sampling through :func:`~isar.analyze.errors.bayes.bayesian_posterior`
    with the same bundle in the prior transform, when the Gaussian picture itself is invalid
    (non-Γ boundary-pinned parameter — Ω_d at the window edge is real physics and always pays
-   for the sampler — missing/non-PD covariance, failed MAP refit). Never silent: the
+   for the sampler — missing/non-PD covariance, failed MAP refit, an optimizer that did not
+   converge). Never silent: the
    escalation reason is recorded in ``validity``.
 
 Evidence is only comparable inside one **arena** — one observed-data likelihood. The arena is
@@ -30,8 +31,9 @@ record from a different arena (:class:`ArenaMismatchError`) instead of quietly c
 incommensurable numbers.
 
 Prior counting is the H3/H4 exactly-once rule throughout: ``lnZ`` reads the DATA-only cost and
-adds ``PriorBundle.logpdf`` once — a transported soft constraint IS the prior for its parameter
-(never the penalty on top of the prior), and hard-fixed parameters contribute nothing (their k
+adds ``PriorBundle.logpdf_ordered`` once (the per-parameter priors, with exchangeable mode
+energies under the ordered-energy prior, so swapped labels are one solution) — a transported soft
+constraint IS the prior for its parameter (never the penalty on top of the prior), and hard-fixed parameters contribute nothing (their k
 is already reduced and :func:`~isar.analyze.catalogue.resolve_priors` excluded them).
 
 :mod:`isar.analyze.select` consumes this module: it calls :func:`candidate_set_evidence` for the
@@ -335,6 +337,9 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     ruling 2026-08-08). A penalised (soft-prior) fit ignores the deferral and samples: θ̂ is its
     MAP, so −cost/2 is not a valid ceiling for it.
 
+    A fit whose optimizer did not converge has no Gaussian picture and escalates (with no ceiling:
+    its θ̂ is not the maximum); it is judged by the sampler, never refused.
+
     A dynesty run that fails its own convergence gate yields ``log_evidence=NaN`` with
     ``evidence_method="invalid"``; the untrusted value and the reason stay in ``validity``."""
     # A constrained-variant candidate carries the derived context it was fitted under, so the MAP
@@ -361,10 +366,6 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
                               k_free=int(fit_result.k), arena_fingerprint=arena,
                               prior_spec=tuple(bundle.spec()), validity=validity)
 
-    if not fit_result.optimizer_converged:
-        validity["reason"] = "fit did not converge"
-        return _record(float("nan"), None, "invalid")
-
     # --- Gaussian-picture validity (escalate to dynesty when it breaks) ----------------------
     at_limit = fit_result.at_limit
     # An older fit without per-param flags is unknown → fail-safe: treat as pinned.
@@ -385,9 +386,9 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
         # cost(θ̂) ≥ cost(θ̂_MLE) and −cost/2 UNDERstates the bound. Pruning on an understated
         # ceiling can drop a candidate whose true lnZ sits above it, so a penalised fit is never
         # deferred — it pays for the sampler. Pruning was always an optimisation, never a
-        # shortcut around one.
+        # shortcut around one. An unconverged θ̂ is not the maximum either, so it has no ceiling.
         if escalation == "defer":
-            if fit_result.prior_penalty is None:
+            if fit_result.prior_penalty is None and fit_result.optimizer_converged:
                 validity["log_evidence_upper_bound"] = -0.5 * float(fit_result.cost)
                 return _record(float("nan"), None, "deferred_escalation")
             # A penalised fit is still deferred (so the caller can batch/parallelize it with the
@@ -399,6 +400,12 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
         return _dynesty_evidence(hyp, ctx, fit_result, bundle, _record, validity,
                                  seed=seed, n_live=n_live, max_iter=max_iter,
                                  sample=sample, dlogz=dlogz)
+
+    if not fit_result.optimizer_converged:
+        # A model that is hard to optimize is still judged (design 2026-10-22 §3.1): there is no
+        # Gaussian picture at an unconverged point, so it goes to the sampler, which never reads θ̂.
+        validity["reason"] = "fit did not converge"
+        return _escalate("optimizer_not_converged")
 
     # Γ pins are carved out of the escalation rule (H8, SCENE-1 PR-c): GAMMA_FLOOR is a
     # modelling artifact — the DHO ⊗ resolution model is regular as Γ → 0, so a Γ jammed
@@ -434,7 +441,9 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
               and _effective_sigma(p) < CURVATURE_RATIO * sig_post[free_names.index(p.name)]]
     validity["unseen_informative"] = narrow
     if not narrow:
-        ln_prior = bundle.logpdf(fit_result.params)
+        # Ordered mode energies (N!/W^N): the Gaussian at θ̂ covers one labelling, so the prior is
+        # the ordered one, or lnZ undercounts every N-mode model by ln N! against the sampler.
+        ln_prior = bundle.logpdf_ordered(fit_result.params)
         try:
             ln_z = laplace_ln_z(fit_result.cost, ln_prior, sigma_free)
         except np.linalg.LinAlgError as exc:
@@ -484,9 +493,68 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
         theta_map = {n: float(v) for n, v in zip(prob_names, br.x)}
         if _is_pd(sigma_map):
             cost_map = float(prob.costv(np.asarray(br.x, dtype=float)))
-            return _record(laplace_ln_z(cost_map, bundle.logpdf(theta_map), sigma_map),
+            return _record(laplace_ln_z(cost_map, bundle.logpdf_ordered(theta_map), sigma_map),
                            None, "laplace_map")
     return _escalate("map_refit_invalid")
+
+
+def candidate_bundle(hyp, ctx):
+    """The :class:`~isar.analyze.catalogue.PriorBundle` a candidate is priced under: resolved under
+    its own context (a variant's pins stay pinned), its identity entry's declared priors, and no
+    factor for a hard-fixed parameter. The same resolution as
+    :func:`isar.analyze.select._candidate_evidence`."""
+    from isar.analyze import catalogue
+
+    cctx = loop.candidate_context(hyp, ctx)
+    prob = loop.build_problem(hyp, cctx)
+    return catalogue.resolve_priors(
+        prob.composite, cctx, prob.bounds,
+        entry=catalogue.identity_entry(getattr(hyp, "identity", None)),
+        exclude=[prob.free_names[i] for i in prob.fixed_pos])
+
+
+def nested_evidence(hyp, ctx, fit_result, bundle, *, seed: int = 12345, n_live: int | None = None,
+                    max_iter: int | None = 50_000, sample: str = "rwalk", dlogz: float = 0.5):
+    """Rung 2 of the count ladder: one model's nested-sampling evidence, whatever its Laplace
+    picture or its optimizer said. Returns ``(EvidenceRecord, BayesResult | None)``; the record is
+    ``"dynesty"`` when the evidence is trusted, else ``"invalid"`` with the reason in ``validity``
+    (``BayesResult`` is ``None`` only when sampling could not start: a bundle that does not match).
+
+    Trusted on the evidence gates alone (:func:`isar.analyze.errors.bayes._evidence_gate`: finite
+    lnZ, dlogz reached before ``max_iter``, logzerr within bound). The interval gates judge a
+    position: a mode the data does not support legitimately spreads over the window, and that
+    spread is the Occam penalty a count decision is made of, not a failed calculation.
+    ``n_live`` ``None`` is :func:`escalation_n_live`."""
+    from isar.analyze.errors.bayes import bayesian_posterior
+
+    ctx = loop.candidate_context(hyp, ctx)
+    n_live = escalation_n_live() if n_live is None else int(n_live)
+    validity: dict = {"lane": "count_ladder_rung2",
+                      "optimizer_converged": bool(fit_result.optimizer_converged)}
+
+    def _record(ln_z, err, method) -> EvidenceRecord:
+        return EvidenceRecord(label=fit_result.label, log_evidence=float(ln_z),
+                              log_evidence_err=err, evidence_method=method,
+                              k_free=int(fit_result.k),
+                              arena_fingerprint=loop.data_likelihood_fingerprint(ctx),
+                              prior_spec=tuple(bundle.spec()), validity=validity)
+
+    try:
+        bz = bayesian_posterior(hyp, ctx, fit_result, prior_bundle=bundle, seed=seed,
+                                n_live=n_live, max_iter=max_iter, sample=sample, dlogz=dlogz)
+    except ValueError as exc:
+        validity["dynesty"] = {"attempted": False, "reason": str(exc)}
+        return _record(float("nan"), None, "invalid"), None
+    validity["dynesty"] = {"attempted": True, "converged": bool(bz.converged),
+                           "fail_reason": bz.fail_reason,
+                           "evidence_converged": bool(bz.evidence_converged),
+                           "evidence_fail_reason": bz.evidence_fail_reason,
+                           "ess": float(bz.ess), "n_live": int(n_live)}
+    if not (bz.evidence_converged and np.isfinite(bz.log_evidence)):
+        if np.isfinite(bz.log_evidence):
+            validity["dynesty"]["log_evidence_untrusted"] = float(bz.log_evidence)
+        return _record(float("nan"), None, "invalid"), bz
+    return _record(float(bz.log_evidence), float(bz.log_evidence_err), "dynesty"), bz
 
 
 def _structure_evidence_task(args):
@@ -555,12 +623,23 @@ def _run_deferred_serial(es, deferred, leader, started, budget_s, ctx, kwargs) -
     return leader
 
 
-def candidate_set_evidence(candidates, ctx, *, budget_s=_BUDGET_DEFAULT, executor=None,
-                           **kwargs) -> EvidenceSet:
-    """Evidence for one scan's candidate set, with dominance pruning of the dynesty rung.
+def candidate_set_evidence(candidates, ctx, *, escalate=False, budget_s=_BUDGET_DEFAULT,
+                           executor=None, **kwargs) -> EvidenceSet:
+    """Evidence for one scan's candidate set: rung 1 of the count ladder by default.
 
     ``candidates`` is ``[(hyp, fit_result, bundle), ...]`` (converged fits only — the caller
-    owns that filter). Strategy (owner ruling 2026-08-08): the Gaussian rungs run for every
+    owns that filter).
+
+    ``escalate=False`` (the default, rung 1 of the count ladder, design 2026-10-22 §3.1): the
+    Gaussian rungs only. A candidate whose Gaussian picture is invalid keeps its
+    ``"deferred_escalation"`` marker: no evidence, never sampled here, never pruned, and never
+    counted against it. Rung 2 (:mod:`isar.analyze.count_ladder`) samples it as a contending
+    model. Measured cost of the alternative: inside rung 1 the overfit high counts (a pinned
+    amplitude) all went to the sampler, 76 of 88 s on one 81-point spectrum at ceiling 3.
+
+    ``escalate=True`` is the pre-ladder lane described below. Its pruning ceiling ``−cost/2`` is a
+    bound only at the global optimum, so it is never used for a count decision. Strategy (owner
+    ruling 2026-08-08): the Gaussian rungs run for every
     candidate first; escalations are then processed in descending order of their evidence
     ceiling ``lnZ ≤ −cost(θ̂)/2`` (exact for proper priors on an unpenalised fit, where θ̂ is the
     data MLE: Z = ∫L·p ≤ L(θ̂)·∫p = L(θ̂); a penalised fit carries no valid ceiling and is
@@ -610,10 +689,12 @@ def candidate_set_evidence(candidates, ctx, *, budget_s=_BUDGET_DEFAULT, executo
     deferred = []
     for hyp, fit, bundle in candidates:
         rec = structure_evidence(hyp, ctx, fit, bundle, escalation="defer", **kwargs)
-        if rec.evidence_method == "deferred_escalation":
+        if escalate and rec.evidence_method == "deferred_escalation":
             deferred.append((hyp, fit, bundle, rec))
         else:
             es.add(rec)
+    if not escalate:
+        return es
 
     leader = max((r.log_evidence for r in es.records if _trusted_evidence(r)),
                  default=float("-inf"))

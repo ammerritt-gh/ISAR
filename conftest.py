@@ -57,6 +57,21 @@ the cap below now coincides with production and stays as the explicit contract).
 than a fixture patching the module constant is what matters here: a spawned pool child re-imports
 ``isar.analyze.evidence`` and would otherwise silently sample at 128, which is exactly the arm
 these tests exist to compare.
+
+Mode ceiling cap
+----------------
+The peak-count ladder tries every count from 0 to the ceiling for every spectrum, so each extra
+count multiplies the fit cost of every test that fits. The ceiling resolves card
+``[fitting] max_modes`` -> ``ISAR_MODE_CEILING`` -> 6 (``isar.session.guidelines.mode_ceiling``).
+``ISAR_MODE_CEILING=3`` is one above the largest count any routine fixture holds (two), so no
+two-mode fixture sits *at* the ceiling, which would trigger rung 2 and the "search limited" state
+and change what those tests mean. Tests of the at-ceiling trigger and state pass the ceiling
+explicitly (a card with ``max_modes``), and an explicit value always wins over the environment.
+
+Same route and reasoning as ``ISAR_ESCALATION_N_LIVE``: the *environment*, so a spawned pool child
+that re-imports the fit code sees the same ceiling instead of silently searching up to 6, and
+``setdefault`` so an operator or a test needing the production value sets it themselves.
+Production leaves the variable unset and uses 6.
 """
 
 import os
@@ -66,3 +81,4 @@ import os
 os.environ.setdefault("ISAR_WORKERS", "2")
 os.environ.setdefault("ISAR_BOOTSTRAP_WORKERS", "2")
 os.environ.setdefault("ISAR_ESCALATION_N_LIVE", "32")
+os.environ.setdefault("ISAR_MODE_CEILING", "3")

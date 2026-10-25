@@ -90,7 +90,16 @@ def _fitted_model(label, params, ctx):
     enumerable here or its params do not pack."""
     from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 
-    hyp = {h.label: h for h in (*enumerate_phonon_structures(ctx), *enumerate_phonon_multimode(ctx))}.get(label)
+    hyps = {h.label: h for h in (*enumerate_phonon_structures(ctx), *enumerate_phonon_multimode(ctx))}
+    hyp = hyps.get(label)
+    if hyp is None and "bg.BG" not in (params or {}):
+        # A background-free degenerate twin (loop.without_background): the enumerated structure
+        # that, less its background, carries exactly these parameters.
+        from isar.analyze.loop import without_background
+
+        names = set(params or ())
+        hyp = next((twin for base in hyps.values() for twin in [without_background(base)]
+                    if twin is not None and set(twin.build().param_names()) == names), None)
     if hyp is None:
         return None
     comp = hyp.build()
@@ -309,7 +318,18 @@ def held_for_calibration(reason: str) -> ScanVerdict:
     return ScanVerdict("held_for_calibration", 0.0, reasons=[reason])
 
 
-def classify(results, ctx, selection, *, prior=None, descriptor=None) -> ScanVerdict:
+def _count_probabilities(results, selection) -> dict:
+    """Probability of each mode count, summed over the selection's scored structures."""
+    n_modes = {r.label: int(r.n_modes) for r in results if getattr(r, "n_modes", None) is not None}
+    out = {}
+    for s in getattr(selection, "scores", None) or []:
+        if s.label in n_modes and getattr(s, "weight", None) is not None and np.isfinite(s.weight):
+            out[n_modes[s.label]] = out.get(n_modes[s.label], 0.0) + float(s.weight)
+    return out
+
+
+def classify(results, ctx, selection, *, prior=None, descriptor=None,
+             count_probabilities=None) -> ScanVerdict:
     """Classify one scan into a named bucket (§6) with a computed confidence (§9). Deterministic
     precedence (held → unconstrained → junk/model-incomplete/**signal_unmodeled** →
     elastic-only/no-signal (phonon-less winner) → no-signal/underpowered → resolved); never
@@ -318,7 +338,12 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None) -> ScanVer
 
     ``descriptor`` (a :class:`~isar.schema.steering.ScanDescriptor`, Phase 4a) is the model-free
     peak list; when the winning model leaves a family-wise-significant peak unmatched the verdict is
-    ``signal_unmodeled`` (under-model falsification). Built from ``ctx`` when None (self-contained)."""
+    ``signal_unmodeled`` (under-model falsification). Built from ``ctx`` when None (self-contained).
+
+    ``count_probabilities`` (count -> probability; the deciding rung's, from
+    :mod:`isar.analyze.count_ladder`) defaults to the selection's. An ambiguous count (the count
+    ladder's marker) is never ``resolved``: since only the winner is bootstrapped it can no longer
+    show as a fork, and hard rule 5 lets only a clean single answer into the dispersion prior."""
     from isar.analyze import confidence as _confidence
 
     def conf(win):
@@ -377,12 +402,12 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None) -> ScanVer
     #     detection-power split, constant 0.0); `elastic+bg` is the positive scan-local
     #     `elastic_only` claim — categorically humble (capped computed confidence), never region
     #     exclusion. A significant descriptor peak the null leaves unexplained outranks both.
-    if win.label in ("bg", "elastic+bg"):
+    if win.label in ("bg", "elastic+bg", "elastic"):   # "elastic": elastic+bg's background-free twin
         if unmatched:
             return _signal_unmodeled(unmatched, reasons + ["phonon-less winner leaves descriptor "
                                                            "peak(s) unexplained"], descriptor)
         dp = detection_power(ctx, prior, win) if _prior_expects_phonon(prior, ctx) else None
-        claim_elastic = win.label == "elastic+bg" and _elastic_significant(selection)
+        claim_elastic = win.label != "bg" and _elastic_significant(selection)
         if not claim_elastic:
             base = ("background alone won selection" if win.label == "bg" else
                     "elastic+bg won selection without established significance over "
@@ -429,5 +454,16 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None) -> ScanVer
     if unmatched:
         return _signal_unmodeled(unmatched, reasons + ["model resolved fewer peaks than the "
                                                        "descriptor confirms"], descriptor)
+    # ...or the peak count is ambiguous: two answers, like a fork with no prior to break the tie.
+    from isar.analyze.count_ladder import count_ambiguity
+
+    probs = (_count_probabilities(results, selection) if count_probabilities is None
+             else count_probabilities)
+    ambiguity = (count_ambiguity(probs, int(win.n_modes))
+                 if getattr(win, "n_modes", None) is not None else None)
+    if ambiguity is not None:
+        return ScanVerdict("unconstrained", 0.0, reasons=reasons + [
+            f"peak count ambiguous: {ambiguity['count']} modes (P={ambiguity['probability']:.2f}) "
+            f"or {ambiguity['runner_up_count']} (P={ambiguity['runner_up_probability']:.2f})"])
     score, comp = conf(win)
     return ScanVerdict("resolved", score, components=comp, reasons=reasons or ["resolved"])

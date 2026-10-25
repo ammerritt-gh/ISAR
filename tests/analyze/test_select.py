@@ -253,15 +253,20 @@ def _spectrum_ctx(seed=0, omega0=5.0, n=81):
 
 
 def test_two_stage_select_accepts_second_mode_on_true_double_peak():
-    """End-to-end: a wide two-peak spectrum → the two-stage loop offers 2-mode, the evidence
-    posterior selects it, and the PRIMARY (largest-amplitude, acoustic-like ~4 meV) ω₀
-    interval brackets the truth."""
+    """End-to-end: a wide two-peak spectrum → the count ladder fits every count, the evidence
+    posterior selects two modes, the bootstrap goes to that winner alone (count ladder), and the
+    PRIMARY (largest-amplitude, acoustic-like ~4 meV) ω₀ interval brackets the truth."""
+    from isar.analyze import errors
+
     ctx = _two_peak_ctx()
-    results = loop.fit_structures_two_stage(ctx, with_errors=True, M=40, seed=1)
-    sel = select.select_models(results, _hyps(ctx), ctx)
+    hyps = {}       # the fit's own offered set: degenerate twins exist only because a fit railed
+    results = loop.fit_structures_two_stage(ctx, hypotheses_out=hyps)
+    sel = select.select_models(results, hyps, ctx)
     assert sel.selection_fallback is None
     assert sel.best == "stokes2+bg"
+    assert sel.survivors == ["stokes2+bg"]
     win = {r.label: r for r in results}["stokes2+bg"]
+    errors.attach_batch([(win, hyps["stokes2+bg"], ctx)], M=40, seed=1)
     assert win.n_modes == 2
     assert abs(win.omega0 - 4.0) < 0.6                    # primary = the stronger (a1>a2) mode
     lo, med, hi = win.within_model["freq_interval"]
@@ -271,16 +276,16 @@ def test_two_stage_select_accepts_second_mode_on_true_double_peak():
 
 
 def test_two_stage_select_abstains_from_second_mode_on_true_single_peak():
-    """SCENE-4 PR 4.0 re-baseline (H15): a declared peak count RELAXES the offering diagnostic,
-    it never forces the offer. On a TRUE single peak — clean under even the relaxed thresholds —
-    the 2-mode set is not offered at all (natural abstention), and selection still lands on the
-    1-mode stokes+bg. The declared-with-real-structure case (offered, then judged on evidence)
-    is pinned in tests/analyze/test_loop.py."""
+    """A declared peak count seeds the fit, it never forces the answer (ruling H8(a), now a seed
+    source of the count ladder). On a TRUE single peak the two-mode model is fitted (every count
+    is, declared or not, from the declared positions among its starts) and evidence still lands
+    on the one-mode stokes+bg."""
     ctx = _one_peak_ctx()
     peaks = [{"omega0": 5.0}, {"omega0": 11.0}]
-    results = loop.fit_structures_two_stage(ctx, with_errors=False, M=40, seed=1, peaks=peaks)
-    assert "stokes2+bg" not in {r.label for r in results}  # relaxed ≠ bypassed: no offer
-    sel = select.select_models(results, _hyps(ctx), ctx)
+    hyps = {}
+    results = loop.fit_structures_two_stage(ctx, peaks=peaks, mode_ceiling=2, hypotheses_out=hyps)
+    assert "stokes2+bg" in {r.label for r in results}      # tried, not gated
+    sel = select.select_models(results, hyps, ctx)
     assert sel.selection_fallback is None
     assert sel.best == "stokes+bg"
 
@@ -300,11 +305,12 @@ def test_select_end_to_end_real_spectrum_folds():
     lo, med, hi = sel.pooled.interval
     assert lo <= 5.0 <= hi
     scores = {s.label: s for s in sel.scores}
-    assert all(s.evidence_method in ("laplace", "laplace_map", "dynesty", "dominated",
-                                     "invalid")
+    assert all(s.evidence_method in ("laplace", "laplace_truncated", "laplace_map",
+                                     "deferred_escalation")
                for s in sel.scores)
-    # the decisive scan's railed null is pruned by its evidence ceiling, not sampled
-    assert scores["elastic+bg"].evidence_method == "dominated"
+    # rung 1 is Laplace only: the railed null keeps a no-evidence marker for rung 2, unweighted,
+    # never pruned on its -cost/2 ceiling and never sampled here
+    assert scores["elastic+bg"].evidence_method == "deferred_escalation"
     assert scores["elastic+bg"].posterior_probability == 0.0
     assert scores["elastic+stokes+bg"].posterior_probability > 0.5
     win = {r.label: r for r in results}["elastic+stokes+bg"]

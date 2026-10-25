@@ -152,9 +152,9 @@ class Pooled:
 @dataclass
 class Selection:
     """Scan-level model-selection outcome: per-structure ``scores``, the max-posterior
-    ``best`` (min-AIC only in the recorded fallback), the surviving labels, and the pooled
-    across-model ``Pooled`` (or ``None`` when nothing converged / no survivor carried
-    bootstrap samples). ``evidence`` is the per-candidate
+    ``best`` (min-AIC only in the recorded fallback), ``survivors`` (the labels that receive the
+    expensive errors: ``best`` alone), and the pooled ``Pooled`` of their bootstrap samples (or
+    ``None`` when nothing converged / the winner carried none). ``evidence`` is the per-candidate
     :class:`~isar.analyze.evidence.EvidenceSet` (reusable across the prelim/final calls of one
     fit); ``selection_fallback`` is ``None`` on the evidence path, else the recorded reason
     selection had to fall back to AIC."""
@@ -291,6 +291,36 @@ def _candidate_evidence(results, hyps, ctx, executor=None):
     return evidence.candidate_set_evidence(triples, ctx, executor=executor)
 
 
+def resolved_twins(conv) -> dict:
+    """``{label: terminal twin label}`` for every converged candidate the degenerate-limit rule
+    resolved (:func:`isar.analyze.loop._resolve_degenerate`), following each chain to the twin at
+    no limit. A chain that leaves the candidate set (a twin that did not converge, or that a caller
+    filtered out) resolves nothing: that candidate is priced as itself."""
+    out = {}
+    for label, r in conv.items():
+        twin, seen = getattr(r, "resolved_to", None), {label}
+        while twin is not None and twin in conv and twin not in seen:
+            seen.add(twin)
+            nxt = getattr(conv[twin], "resolved_to", None)
+            if nxt is None:
+                out[label] = twin
+            twin = nxt
+    return out
+
+
+def most_probable_count(probability: dict, count: dict) -> tuple:
+    """``(n, label)``: the count ``n`` whose models' probabilities sum highest (its elastic and
+    constrained variants together), and the most probable model of that count. The count ladder's
+    rule (design 2026-10-22, §3.1): the shown fit comes from the most probable count, so two
+    variants of one count are never outvoted by a single model they outweigh together.
+    ``probability`` and ``count`` map label -> P and label -> number of modes."""
+    totals = {}
+    for label, p in probability.items():
+        totals[count[label]] = totals.get(count[label], 0.0) + p
+    n = max(totals, key=totals.get)
+    return n, max((label for label in probability if count[label] == n), key=probability.get)
+
+
 def select_models(results, hyps=None, ctx=None, *, evidence=None,
                   weight_floor: float = DEFAULT_WEIGHT_FLOOR, level: float = 0.68,
                   stamp: bool = True, executor=None) -> Selection:
@@ -300,22 +330,30 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
     :class:`~isar.analyze.evidence.EvidenceSet` (the prelim/final pair of one fit computes it
     once). Without evidence inputs the selection is the **recorded** AIC fallback — honest
     for hand-built diagnostics, never the production path. With ``stamp`` (default), writes
-    the per-scan deliverable onto each result's ``across_model``. Survivors lacking bootstrap
-    samples are dropped from the pool (run ``fit_admissible_structures(errors=True)`` first so
-    every converged fit carries them). ``executor`` (default ``None``) is forwarded to a freshly
+    the per-scan deliverable onto each result's ``across_model``. The survivor is the winner
+    alone (the one model that receives the expensive errors); without bootstrap samples it is
+    left out of the pool. ``executor`` (default ``None``) is forwarded to a freshly
     computed evidence set (ignored when ``evidence`` is supplied, since nothing is escalated in
-    that case) — see :func:`~isar.analyze.evidence.candidate_set_evidence`."""
+    that case) — see :func:`~isar.analyze.evidence.candidate_set_evidence`.
+
+    A candidate the degenerate-limit rule resolved (``resolved_to``, :func:`resolved_twins`) is
+    its twin: it gets no evidence of its own, no prior weight and posterior 0, and its
+    ``evidence_validity`` names the twin and the limit. The posterior's equal prior runs over the
+    distinct models, so a railed model never counts its twin twice. The winner is the most probable
+    model of the most probable count (:func:`most_probable_count`)."""
     scores = score_models(results, weight_floor=weight_floor)
     if not scores:
         if stamp:
             _stamp(results, scores, None)
         return Selection([], None, [], None, "none")
     conv = {r.label: r for r in results if r.optimizer_converged}
+    resolved = resolved_twins(conv)
 
     fallback = None
     if evidence is None:
         if hyps is not None and ctx is not None:
-            evidence = _candidate_evidence(list(conv.values()), hyps, ctx, executor=executor)
+            evidence = _candidate_evidence([r for r in conv.values() if r.label not in resolved],
+                                           hyps, ctx, executor=executor)
         else:
             fallback = "aic_no_evidence_inputs"
     if evidence is not None:
@@ -336,6 +374,12 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
         recs = evidence.by_label()
         finite = []
         for s in scores:
+            if s.label in resolved:
+                # The degenerate-limit rule: this model IS its twin, whose evidence is counted
+                # once, under the twin's label. No lnZ of its own, so no reader sums it twice.
+                s.evidence_validity = {"resolved_to": resolved[s.label],
+                                       "degenerate_limit": conv[s.label].resolved_limit}
+                continue
             rec = recs.get(s.label)
             if rec is not None:
                 s.log_evidence = float(rec.log_evidence)
@@ -369,11 +413,15 @@ def select_models(results, hyps=None, ctx=None, *, evidence=None,
             fallback = "aic_all_evidence_invalid"
 
     if fallback is None:
-        best = max(scores, key=lambda s: s.posterior_probability).label
+        best = most_probable_count({s.label: s.posterior_probability for s in scores},
+                                   {s.label: conv[s.label].n_modes for s in scores})[1]
     else:
         # Recorded degraded mode: scores keep their score_models Akaike weights/survivors.
         best = min(scores, key=lambda s: s.aic).label
-    survivors = [s for s in scores if s.survives]
+    # The expensive errors (bootstrap, profile) go to the selected model only, not to every count
+    # tried (count ladder, design 2026-10-22): the delivery attaches them to ``survivors``, so that
+    # is the winner alone. Each score's ``survives`` still records weight >= floor.
+    survivors = [s for s in scores if s.label == best]
     pool_inputs = []
     for s in survivors:
         samp = (conv[s.label].within_model or {}).get("omega0_samples")

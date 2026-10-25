@@ -285,8 +285,52 @@ def test_null_structures_fit_end_to_end():
         assert r.optimizer_converged
         assert r.n_modes == 0 and r.modes == []
         assert np.isnan(r.omega0) and np.isnan(r.gamma)   # NaN, never a fake 0.0
-    full = loop.fit_structures_two_stage(ctx)
+    full = loop.fit_structures_two_stage(ctx, mode_ceiling=2)
     sel = select.select_models(full)
     assert sel.best == "elastic+bg"                       # the null wins on pure-elastic data
     v = verdict.classify(full, ctx, sel)
     assert v.verdict == "elastic_only"
+
+
+# --- an ambiguous peak count is never a clean fold (hard rule 5) ----------------------------------
+def _scored(label, weight):
+    return select.ModelScore(label=label, k=4, n=81, cost=80.0, aic=88.0, aicc=88.5, bic=96.0,
+                             delta_aic=0.0, weight=weight, nested=None, survives=True,
+                             posterior_probability=weight)
+
+
+def _clean_two_counts(p_two):
+    rng = np.random.default_rng(5)
+    counts = rng.poisson(40.0, 81).astype(float); counts[40] += 600.0
+    ctx = _ctx(counts, x=np.linspace(-10, 10, 81), energy_status="absolute")
+    wm = {"freq_interval": (5.95, 6.0, 6.05), "agreement": types.SimpleNamespace(regime="asymptotic")}
+    one = _fit_result("elastic+stokes+bg", {**_SB, "elastic.E": 50.0}, cost_per_dof=2.0,
+                      within_model=wm, omega0=6.0)
+    two = _fit_result("elastic+stokes2+bg", {**_SB, "elastic.E": 50.0}, cost_per_dof=2.0,
+                      omega0=6.0)
+    two.n_modes = 2
+    sel = select.Selection(scores=[_scored(one.label, 1.0 - p_two), _scored(two.label, p_two)],
+                           best=one.label, survivors=[one.label], pooled=None, modality="fold")
+    return [one, two], ctx, sel
+
+
+def test_an_ambiguous_peak_count_is_not_resolved():
+    """Only the winner is bootstrapped, so two close counts no longer pool into a fork; the count
+    ladder's ambiguity marker takes its place and keeps the scan out of 'resolved' (and so out of
+    the dispersion prior). A clear count stays resolved."""
+    results, ctx, sel = _clean_two_counts(0.35)
+    v = verdict.classify(results, ctx, sel)
+    assert v.verdict == "unconstrained"
+    assert "peak count ambiguous: 1 modes (P=0.65) or 2 (P=0.35)" in v.reasons[-1]
+    results, ctx, sel = _clean_two_counts(0.02)
+    assert verdict.classify(results, ctx, sel).verdict == "resolved"
+
+
+def test_the_deciding_rungs_count_probabilities_override_the_selection():
+    """When rung 2 decided the count, its probabilities are the ones the verdict reads."""
+    results, ctx, sel = _clean_two_counts(0.35)
+    assert verdict.classify(results, ctx, sel,
+                            count_probabilities={1: 0.99, 2: 0.01}).verdict == "resolved"
+    results, ctx, sel = _clean_two_counts(0.02)
+    assert verdict.classify(results, ctx, sel,
+                            count_probabilities={1: 0.6, 2: 0.4}).verdict == "unconstrained"

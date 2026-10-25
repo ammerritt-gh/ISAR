@@ -25,7 +25,10 @@ from isar.synth_format import run_builder
 # publish ``selection_status=unavailable``, which ``isar/eig/eligibility.py`` treats as a *science*
 # blocker.  A regression test for that has to run in the day-to-day ``-m "not slow"`` lane, because
 # the failure it catches is data-dependent and invisible to every hand-built-record test.
-def test_real_fit_shadow_selection_is_never_unavailable(tmp_path):
+def test_real_fit_shadow_selection_is_never_unavailable(tmp_path, monkeypatch):
+    from isar.analyze import count_ladder
+
+    monkeypatch.setenv(count_ladder.RUNG2_BUDGET_ENV, "0")   # rung 2 is not what this test is about: a zero budget leaves an escalated count search limited, unsampled
     run = run_builder.build_in8_run(
         "SHADOWREG", n_scans=3, seed0=54500, first_numor=54500, q_point=[2.25, 0.05, 0.0]
     )

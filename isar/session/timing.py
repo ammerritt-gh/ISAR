@@ -201,6 +201,9 @@ def fit_timing_breakdown(timings) -> dict[str, Any] | None:
     and two-stage fitting; their remainder is enumeration/IC/other optimization overhead. The four
     buckets therefore sum to total fit time without double counting. Per-method timings are retained
     separately because parallel work can overlap and is not a disjoint wall-time decomposition.
+    So are the count ladder's: ``count_ladder_seconds`` sums each scan unit's rung-1 (fits and their
+    Laplace selection) and rung-2 (nested sampling) wall time, and ``per_spectrum_rungs`` lists them
+    unit by unit (rung 2 sits inside the remainder bucket).
     """
     buckets = {
         "scan_error_attachment": 0.0,
@@ -209,6 +212,8 @@ def fit_timing_breakdown(timings) -> dict[str, Any] | None:
         "fit_remainder": 0.0,
     }
     methods = {key: 0.0 for key in _ERROR_METHOD_KEYS}
+    rungs = {"rung1": 0.0, "rung2": 0.0}
+    per_spectrum = []
     n_units = 0
     for timing_index, timing in enumerate(timings):
         if not isinstance(timing, dict):
@@ -246,6 +251,18 @@ def fit_timing_breakdown(timings) -> dict[str, Any] | None:
                         continue
                     for key, value in item_methods.items():
                         methods[key] += value
+                    if "rung1_seconds" in item or "rung2_seconds" in item:
+                        try:
+                            rung1 = float(item.get("rung1_seconds") or 0.0)
+                            rung2 = float(item.get("rung2_seconds") or 0.0)
+                        except (TypeError, ValueError) as exc:
+                            log.warning("malformed rung timing in %s item %d:%d:%d skipped: %s",
+                                        field, timing_index, stage_index, item_index, exc)
+                        else:
+                            rungs["rung1"] += rung1
+                            rungs["rung2"] += rung2
+                            per_spectrum.append({"scan_id": item.get("scan_id"),
+                                                 "rung1_seconds": rung1, "rung2_seconds": rung2})
                     buckets[role] += max(errors, 0.0)
                     buckets["two_stage_fitting"] += max(two_stage, 0.0)
                     buckets["fit_remainder"] += max(fit - errors - two_stage, 0.0)
@@ -254,7 +271,9 @@ def fit_timing_breakdown(timings) -> dict[str, Any] | None:
         return None
     total = sum(buckets.values())
     return {"buckets": buckets, "method_seconds": methods,
-            "total_fit_seconds": total, "n_units": n_units}
+            "total_fit_seconds": total, "n_units": n_units,
+            "count_ladder_seconds": {k: round(v, 4) for k, v in rungs.items()},
+            "per_spectrum_rungs": per_spectrum}
 
 
 class StageTimer:

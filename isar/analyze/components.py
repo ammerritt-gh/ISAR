@@ -21,13 +21,19 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from isar.analyze.lineshapes import Lorentzian, Voigt, convolve_tabulated, convolute_voigt_dho
+from isar.analyze.lineshapes import (Lorentzian, Voigt, convolve_tabulated, convolute_voigt_dho,
+                                     dho_signal, resolution_convolver)
 from isar.analyze.phonon import bose_occupation, omega0_from, omega0_value_error
 
 
 def _curve(ctx):
     """The context's tabulated resolution curve, or ``None`` (duck-typed contexts have none)."""
     return getattr(ctx, "resolution_curve", None)
+
+
+def _convolver(x, ctx):
+    """The context's cached resolution convolution for a model evaluated at ``x``."""
+    return resolution_convolver(x, ctx.gauss_fwhm, ctx.lorentz_fwhm, _curve(ctx))
 
 
 @dataclass(frozen=True)
@@ -115,6 +121,13 @@ class PhononDHO(Component):
         return convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
                                    local["Gamma"], measured, 0.0, 0.0, ctx.T,
                                    peak=self.peak, resolution_curve=_curve(ctx))
+
+    def grid_signal(self, grid, local: dict, ctx) -> np.ndarray:
+        """This mode before convolution, on the convolver's ``grid``: what :meth:`evaluate`
+        convolves, so the modes of one composite can share one convolution."""
+        omega0 = omega0_from(local["Omega_d"], local["Gamma"])
+        measured = local["A"] * bose_occupation(omega0, ctx.T)   # intrinsic × (n+1), H4
+        return dho_signal(grid, omega0, local["Gamma"], measured, ctx.T, self.peak)
 
     def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
         unit = {"Omega_d": nonlinear["Omega_d"], "Gamma": nonlinear["Gamma"], "A": 1.0}
@@ -224,10 +237,21 @@ class CompositeModel:
         return out
 
     def evaluate(self, x, theta, ctx) -> np.ndarray:
+        """The model mean at ``x``. The phonon modes are summed before convolution, so all of them
+        cost one convolution (linearity; each mode's own :meth:`PhononDHO.evaluate` is the same
+        curve)."""
         x = np.asarray(x, dtype=float)
         total = np.zeros_like(x)
+        conv, phonons = None, None
         for comp, local in zip(self.components, self._split(theta)):
-            total = total + comp.evaluate(x, local, ctx)
+            if isinstance(comp, PhononDHO):
+                conv = conv or _convolver(x, ctx)
+                signal = comp.grid_signal(conv.grid, local, ctx)
+                phonons = signal if phonons is None else phonons + signal
+            else:
+                total = total + comp.evaluate(x, local, ctx)
+        if phonons is not None:
+            total = total + conv(phonons, x - ctx.center)
         exposure = getattr(ctx, "exposure_for", lambda _x: None)(x)
         if exposure is not None:
             total = total * exposure
@@ -250,19 +274,43 @@ class CompositeModel:
 
         ``nonlinear_global`` maps global nonlinear names (e.g. ``"phonon.Omega_d"``) to
         the values at which the basis is evaluated (the IC grid candidate)."""
-        cols, names = [], []
-        for comp in self.components:
-            local_nl = {n: nonlinear_global[self._global(comp, n)]
-                        for n in comp.nonlinear_params()}
-            unit = comp.unit_columns(x, local_nl, ctx)
-            for n in comp.linear_params():
-                names.append(self._global(comp, n))
-                cols.append(np.asarray(unit[n], dtype=float))
-        phi = np.column_stack(cols) if cols else np.empty((np.size(x), 0))
-        exposure = getattr(ctx, "exposure_for", lambda _x: None)(np.asarray(x, dtype=float))
+        nonlinear = set(self.nonlinear_names())
+        theta = [float(nonlinear_global[n]) if n in nonlinear else 0.0 for n in self.param_names()]
+        return self.basis(x, theta, ctx), self.linear_names()
+
+    def static_columns(self, x, ctx) -> dict:
+        """The unit columns that depend on no parameter (components with no nonlinear parameter:
+        elastic, quasi-elastic, background), keyed by component index, for :meth:`basis` to reuse
+        across the evaluations of one fit."""
+        return {i: comp.unit_columns(x, {}, ctx) for i, comp in enumerate(self.components)
+                if not comp.nonlinear_params()}
+
+    def basis(self, x, theta, ctx, *, static=None) -> np.ndarray:
+        """One column per :meth:`linear_names` entry: that amplitude's unit response at
+        ``theta``'s nonlinear values, exposure applied, so the model mean is ``basis @
+        amplitudes`` (``theta``'s linear entries are not read). The phonon columns share one
+        batched convolution; ``static`` (from :meth:`static_columns`) supplies the columns that
+        depend on no parameter."""
+        x = np.asarray(x, dtype=float)
+        cols, phonon_at, signals = [], [], []
+        conv = None
+        for i, (comp, local) in enumerate(zip(self.components, self._split(theta))):
+            if isinstance(comp, PhononDHO):
+                conv = conv or _convolver(x, ctx)
+                phonon_at.append(len(cols))
+                cols.append(None)
+                signals.append(comp.grid_signal(conv.grid, {**local, "A": 1.0}, ctx))
+                continue
+            unit = static[i] if static is not None and i in static else comp.unit_columns(x, local, ctx)
+            cols.extend(np.asarray(unit[n], dtype=float) for n in comp.linear_params())
+        if signals:
+            for at, col in zip(phonon_at, conv(np.stack(signals), x - ctx.center)):
+                cols[at] = col
+        phi = np.column_stack(cols) if cols else np.empty((x.size, 0))
+        exposure = getattr(ctx, "exposure_for", lambda _x: None)(x)
         if exposure is not None:
             phi = phi * exposure[:, None]
-        return phi, names
+        return phi
 
     # -- derived quantities --------------------------------------------------
     def _phonon_slots(self):
@@ -284,6 +332,22 @@ class CompositeModel:
     def phonon_indices(self) -> list[int]:
         """Global Omega_d index of every PhononDHO, in component order."""
         return [i for i, _ in self._phonon_slots()]
+
+    def mode_order(self, theta) -> np.ndarray:
+        """Index permutation ``perm`` of the flat parameter vector that puts the phonon blocks
+        ``(Omega_d, Gamma, A)`` in ascending ``Omega_d``: ``theta[perm]`` is the canonical labelling
+        (and ``cov[np.ix_(perm, perm)]`` its covariance). Swapped labels are one solution; the
+        ordered-energy prior (:mod:`isar.analyze.prior`) is defined on the ordered one, so a fit
+        that converged with swapped labels is canonicalised through this before its prior is read.
+        Ordered on ``Omega_d``, the sampled coordinate, where the prior's normalisation is exact;
+        ``omega0_all`` still reports modes by derived omega0."""
+        theta = np.asarray(theta, dtype=float)
+        starts = self.phonon_indices()
+        width = len(PhononDHO.params)
+        perm = np.arange(self.n_params)
+        for dst, src in zip(starts, sorted(starts, key=lambda i: theta[i])):
+            perm[dst:dst + width] = np.arange(src, src + width)
+        return perm
 
     def is_stokes_only(self) -> bool:
         """True iff the composite has ≥1 phonon and *every* phonon is Stokes-only

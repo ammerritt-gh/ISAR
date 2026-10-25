@@ -122,6 +122,7 @@ def _fit_context(*, constraints=None, **changes):
         "mask": np.array([False, False, False]),
         "exposure_scale": np.array([1.0, 1.0, 1.0]),
         "exposure_reference": 1.0,
+        "exposure_source": "monitor",
         "T": 300.0,
         "center": 0.0,
         "gauss_fwhm": 0.4,
@@ -575,6 +576,8 @@ def test_comparison_fingerprint_mutation_matrix(monkeypatch):
         {"x": np.array([-1.1, 0.0, 1.0])},
         {"mask": np.array([False, True, False])},
         {"exposure_scale": np.array([1.0, 2.0, 1.0])},
+        # the prior recipe's amplitude ceiling follows what the exposure counts
+        {"exposure_source": "time"},
     )
     for change in data_changes:
         changed = loop._fit_semantics_for(

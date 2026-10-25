@@ -137,7 +137,7 @@ def _expected_multimode(elastic: bool, qe: bool, stokes_only: bool) -> list[tupl
 @pytest.mark.parametrize("elastic,qe,stokes_only", _COMBOS)
 def test_catalogue_multimode_matches_legacy(elastic, qe, stokes_only):
     ctx = _ctx(elastic=elastic, qe=qe, stokes_only=stokes_only)
-    got = _shape(phonon.enumerate_phonon_multimode(ctx))
+    got = _shape(phonon.enumerate_phonon_multimode(ctx, n_max=2))
     expected = _expected_multimode(elastic, qe, stokes_only)
     # mode 1: class when tied (no prefix override), instance when stokes-only — same as 1-mode.
     if not stokes_only:
@@ -225,7 +225,7 @@ def test_production_catalogue_declares_no_identity_split():
     assert catalogue._identity_candidates(PhononDHO, catalogue.DEFAULT_PROFILE) == ()
     for ctx in (_ctx(elastic=e, qe=q, stokes_only=s) for e, q, s in _COMBOS):
         for hyp in (*catalogue.enumerate_structures(ctx),
-                    *catalogue.enumerate_multimode_structures(ctx)):
+                    *catalogue.enumerate_multimode_structures(ctx, 3)):
             assert hyp.identity is None
             assert "@" not in hyp.label
 
@@ -268,7 +268,7 @@ def test_distinguished_rivals_split_every_phonon_bearing_structure(synth_profile
 
 def test_multimode_enumeration_carries_identity(synth_profile):
     ctx = _ctx(elastic=True, qe=False, stokes_only=True)
-    hyps = catalogue.enumerate_multimode_structures(ctx, profile=synth_profile)
+    hyps = catalogue.enumerate_multimode_structures(ctx, 2, profile=synth_profile)
 
     assert [h.label for h in hyps] == ["stokes2+bg@a", "stokes2+bg@b",
                                        "elastic+stokes2+bg@a", "elastic+stokes2+bg@b"]
@@ -335,8 +335,9 @@ def test_variants_come_from_the_entry_that_owns_the_identity(monkeypatch):
 
     offered = loop._offer_variants(pairs, ctx, minos=False, profile=_SYNTH)
 
-    assert [twin.label for _, twin, _ in offered] == ["stokes+bg@a_neardeg"]
-    _, twin, derived = offered[0]
+    assert [twin.label for _, twin, _, _ in offered] == ["stokes+bg@a_neardeg"]
+    _, twin, derived, x0 = offered[0]
+    assert x0 == fits["stokes+bg@a"].params                  # the seed kept is the parent's fit
     assert twin.identity == "a"                              # the twin inherits its parent's
     assert derived.constraints.hard == {"phonon.Gamma": phonon.GAMMA_FLOOR}
     assert derived.constraints.origins == {"phonon.Gamma": "catalogue_variant"}

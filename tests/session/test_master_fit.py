@@ -103,7 +103,8 @@ def test_run_tasks_serial_threads_shared_executor_and_adaptive(monkeypatch):
 
     def fake_process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                          chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
-                         boot_executor=None, boot_adaptive=False, bayes_opts=None):
+                         boot_executor=None, boot_adaptive=False, bayes_opts=None,
+                         rung2_slice_s=None, rung2_resume=None):
         captured.update(executor=boot_executor, adaptive=boot_adaptive, boot_workers=boot_workers)
         return ScanEntry(scan_id=scan_id, scan_number=1, scan_type="measurement",
                          content_hash=chash, status="fitted")
@@ -238,16 +239,19 @@ def test_force_masters_accepts_a_bare_string_as_one_id(tmp_path, monkeypatch):
     ws.root.mkdir(parents=True, exist_ok=True)
     ws.policy_path.write_text(Path(ill_in8._CARD_PATH).read_text(encoding="utf-8"),
                               encoding="utf-8")
-    captured = {}
+    captured = []
 
     def fake_fit_masters(*a, **kw):
-        captured["force_masters"] = kw.get("force_masters")
+        captured.append(kw.get("force_masters"))
         return 0
 
     monkeypatch.setattr(master_delivery, "_fit_masters", fake_fit_masters)
     driver.run_batch(ws, [data], force_masters="master:tavi_(43, 0, 0)_200.0",
                      detectors="det0", formats=(), workers=1, errors_tier="cheap")
-    assert captured["force_masters"] == frozenset({"master:tavi_(43, 0, 0)_200.0"})
+    # The first pass carries the forced set; a second pass, which only resumes spectra waiting on
+    # rung 2 of the count ladder (driver.run_batch), forces nothing again.
+    assert captured[0] == frozenset({"master:tavi_(43, 0, 0)_200.0"})
+    assert all(not forced for forced in captured[1:])
 
 
 def test_force_masters_without_merged_collation_fails_loud(monkeypatch):
@@ -279,7 +283,8 @@ def _master_entries(session):
 
 def _prov_no_timing(prov):
     return {k: v for k, v in (prov or {}).items()
-            if k not in ("fit_seconds", "two_stage_seconds", "errors_attach_seconds")}
+            if k not in ("fit_seconds", "two_stage_seconds", "errors_attach_seconds",
+                         "rung1_seconds", "rung2_seconds")}
 
 
 def _detectors_no_timing(detectors):
@@ -567,8 +572,10 @@ def test_master_certification_survives_a_master_born_out_of_key_order(tmp_path, 
     ledger-derived group index with the run's sorted position and died on "group-index drift"
     after the planner had met the goal (acoustic path measured h = 2.6 before 2.55, 2026-09-08).
     The ledger number is the identity; the sorted position is an enumeration artefact."""
+    from isar.analyze import count_ladder
     from isar.drive import loop as drive_loop
 
+    monkeypatch.setenv(count_ladder.RUNG2_BUDGET_ENV, "0")   # rung 2 is not what this test is about: a zero budget leaves an escalated count search limited, unsampled
     later_key = _in8_file(tmp_path, "OOA", 57500, 2.55)   # measured first, born as 9000000
     earlier_key = _in8_file(tmp_path, "OOB", 57600, 2.15)  # measured second, sorts first
     ws = Workspace.open(tmp_path / "order-ws")

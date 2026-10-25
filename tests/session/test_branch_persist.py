@@ -121,7 +121,8 @@ def test_rebuild_tracked_prior_leaves_foreign_tracked_points_at_their_own_revisi
                "modality": "fold", "verdict": "resolved"}
     card = SimpleNamespace(state=CardState(dispersion_prior=[foreign]))
     outcome = {"pooled": True, "modality": "fold", "verdict": "resolved",
-               "sample": "x", "T": 300.0, "q": [0.25, 0.0, 0.0], "fit_kind": "dho"}
+               "sample": "x", "T": 300.0, "q": [0.25, 0.0, 0.0], "fit_kind": "dho",
+               "fit_selection_semantics": {"count_ladder": {"state": "settled", "ambiguity": None}},}
     refs = {"master:s100:D": (SimpleNamespace(provenance={}), "D", outcome)}
     track = {"revision": 7, "assignments": [{
         "track_state": "confirmed", "optic_candidate_index": 0, "assignment_entropy": 0.1,

@@ -113,6 +113,17 @@ def test_from_scan_prefers_monitor_exposure_even_in_time_counting_mode():
     ctx = CTX.ScanContext.from_scan(rec, "ana5", card,
                                     center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0)
     assert np.allclose(ctx.exposure_scale, monitor / np.median(monitor))
+    assert ctx.exposure_source == "monitor"
+
+
+def test_from_scan_carries_the_time_source_when_there_is_no_monitor():
+    rec = _stub_record()
+    rec.normalization = SimpleNamespace(counting_mode="time", monitor=None,
+                                        time=np.full(41, 10.0))
+    card = SimpleNamespace(policy=SimpleNamespace(instrument="S30", quasielastic_fwhm=None))
+    ctx = CTX.ScanContext.from_scan(rec, "ana5", card,
+                                    center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0)
+    assert ctx.exposure_source == "time" and ctx.exposure_reference == 10.0
 
 
 def test_from_scan_falls_back_to_time_when_monitor_is_malformed():
