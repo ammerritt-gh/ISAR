@@ -6,21 +6,26 @@ neighbours, §11) will fill. Step 4 only ever consumes it — it is an input, ne
 adds the expected peak strength the detection-power test needs and the spread the confidence
 distance term uses.
 
-The second half of the module is the **mode prior recipe** (S1U1): the one place a mode's
-parameter bounds, and so its flat priors, come from. Every quantity is declared (the fit window,
-the resolution width, the spectrum's exposure) and none is read from the observed counts, so the
-Occam penalty a candidate pays does not depend on how bright the spectrum happens to be. Starting
-values may still come from the data; priors and bounds may not. Derivation of the constants:
+The second half of the module is the **mode prior recipe** (v5): the one place a mode's parameter
+bounds, and so its priors, come from. Amplitudes are *empirical Bayes*: the peak and elastic
+heights are flat on ``[0, margin x the spectrum's highest count]`` and the background on
+``[0, highest count]`` (operator ruling 2026-10-25, replacing v4's rule that no prior reads the
+counts; for amplitudes only). Widths take the softened log-uniform density ``1/(Gamma + knee)``
+and energies are ordered-uniform across the fit window, with their k! normalisation. Every fit
+records the data-derived quantity (``SpectrumPrior.provenance``). Starting values may still come
+from the data. The v4 recipe (declared exposure x a scale) survives as the ``legacy_v4``
+sensitivity arm and for the quasi-elastic area. Derivation of the constants:
 ``docs/STATS_PRIMER.md``, "The mode prior recipe".
 """
 from __future__ import annotations
 
+import dataclasses
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import numpy as np
 
-from isar.analyze.phonon import EPS_OMEGA0, GAMMA_FLOOR, GAMMA_MAX
+from isar.analyze.phonon import EPS_OMEGA0, GAMMA_FLOOR, GAMMA_MAX, GAMMA_MAX_V4
 
 
 @dataclass(frozen=True)
@@ -43,10 +48,11 @@ class PhononPrior:
 # ----------------------------------------------------------------------------
 # Bump the version whenever a constant or a rule below changes: it is hashed into the guidelines
 # signature (so the affected spectra refit) and recorded with every fit.
-# /4h: v4's ceilings read in the height coordinate (the full-DHO lineshape's `.h`), interim until
-# prior_v5.
-PRIOR_RECIPE_VERSION = "isar.mode-prior-recipe/4h"
+# /5: heights flat on [0, 1.2 x max count] (empirical Bayes), softened log-uniform widths on
+# 0..20 meV, ordered energies with k!, posterior-mode Laplace with the box rule.
+PRIOR_RECIPE_VERSION = "isar.mode-prior-recipe/5"
 
+# --- The v4 reference arm (legacy_v4) and the quasi-elastic area rule ---------------------------
 # Amplitude ceiling: a fitted height h (counts per point at the reference exposure) is bounded by
 # scale x exposure, i.e. a resolution-limited peak may reach `scale x exposure` counts per point;
 # a quasi-elastic area by scale x exposure x width. The scale depends on what the exposure counts: monitor counts (one count per
@@ -105,47 +111,215 @@ def amplitude_scale(ctx) -> float:
                      f"('monitor' or 'time'), got {source!r}: the amplitude scale cannot be chosen")
 
 
-def mode_bounds(names, ctx) -> list[tuple[float, float]]:
-    """(lo, hi) for each global parameter name, in order: the recipe's bounds and, since every
-    parameter's prior is flat over them, its priors.
+# --- Recipe v5: settings, the resolved spectrum prior, the Laplace evidence ----------------------
+@dataclass(frozen=True)
+class PriorSettings:
+    """What the sensitivity check (design 2.4) varies. Defaults are the operator's 2026-10-25 recipe.
 
-    * ``.omega0`` (the undamped energy E0): uniform over the fit window,
-      ``(EPS_OMEGA0, max fitted energy)``.
-    * ``.Gamma`` (width): from ``WIDTH_FLOOR_FRACTION`` of the resolution width (never above the
-      absolute ``GAMMA_FLOOR``) to ``GAMMA_MAX``.
-    * ``.h`` (phonon and elastic heights, counts per point): ``(0, amplitude_scale x exposure)``.
-    * ``.QE`` (area): ``(0, amplitude_scale x exposure x resolution width)``.
-    * ``.BG`` (flat background, counts per point): ``(0, amplitude_scale x exposure)``.
+    amplitude_margin: peak and elastic heights flat on [0, margin x max count]  (1.2; check 1.05, 3).
+    width_kind: "softlog" -> density 1/(Gamma + width_knee) on [0, width_cap]; "flat" -> uniform.
+    width_knee: meV (0.12).  width_cap: meV (20; check 40).
+    energy_cap: meV, E0 uniform-ordered on (energy_floor, min(energy_cap, max fitted E)].
+    legacy_v4: True -> the v4 recipe in the height coordinate (S1U2's /4h), the sensitivity
+        check's reference arm.
     """
-    x_max = float(np.max(ctx.x_used))
-    exposure = recipe_exposure(ctx)
+    amplitude_margin: float = 1.2
+    width_kind: str = "softlog"
+    width_knee: float = 0.12
+    width_cap: float = GAMMA_MAX
+    energy_floor: float = EPS_OMEGA0
+    energy_cap: float = 20.0
+    legacy_v4: bool = False
+
+    def __post_init__(self):
+        if self.width_kind not in ("softlog", "flat"):
+            raise ValueError(f"width_kind must be 'softlog' or 'flat', got {self.width_kind!r}")
+        if not (self.amplitude_margin > 0 and self.width_cap > 0 and self.width_knee > 0
+                and self.energy_cap > self.energy_floor >= 0):
+            raise ValueError(f"invalid prior settings {self!r}")
+
+
+SENSITIVITY_ARMS = {
+    "recipe": PriorSettings(),
+    "margin_1.05": PriorSettings(amplitude_margin=1.05),
+    "margin_3": PriorSettings(amplitude_margin=3.0),
+    "width_flat": PriorSettings(width_kind="flat"),
+    "width_cap_40": PriorSettings(width_cap=40.0),   # moves the prior and the TRF bound, not
+                                                     # phonon._gamma_at_bound (a diagnostic flag)
+    "today_v4": PriorSettings(legacy_v4=True),
+}
+
+
+@dataclass(frozen=True)
+class SpectrumPrior:
+    """The resolved prior for one spectrum (the empirical-Bayes part is `max_count`).
+
+    Every log density below is a normalised density in the stated coordinate; -inf outside support.
+    """
+    settings: PriorSettings
+    max_count: float          # highest count at the reference exposure among kept points; >= 1
+    e_lo: float               # meV, energy support lower end
+    e_hi: float               # meV, energy support upper end
+    v4_height_hi: float | None = None   # legacy_v4 arm only: amplitude_scale(ctx) x recipe_exposure(ctx)
+
+    # ---- bounds (used as TRF bounds; the support of each density) ----
+    @property
+    def height_hi(self) -> float:
+        if self.settings.legacy_v4:
+            return self._v4_ceiling()
+        return self.settings.amplitude_margin * self.max_count
+
+    @property
+    def background_hi(self) -> float:
+        return self._v4_ceiling() if self.settings.legacy_v4 else self.max_count
+
+    def _v4_ceiling(self) -> float:
+        if self.v4_height_hi is None:
+            raise ValueError("the legacy_v4 prior needs v4_height_hi: resolve it with resolve_prior_for")
+        return self.v4_height_hi
+
+    def _width_support(self) -> tuple[float, float]:
+        if self.settings.legacy_v4:
+            return (GAMMA_FLOOR, GAMMA_MAX_V4)       # v4: flat between the fit's own bounds
+        return (0.0, self.settings.width_cap)
+
+    def bounds(self, kind: str) -> tuple[float, float]:
+        """kind in {"h", "omega0", "Gamma", "elastic", "bg"}."""
+        if kind in ("h", "elastic"):
+            return (0.0, self.height_hi)
+        if kind == "bg":
+            return (0.0, self.background_hi)
+        if kind == "omega0":
+            return (self.e_lo, self.e_hi)
+        if kind == "Gamma":
+            return self._width_support()
+        raise ValueError(f"no prior for parameter kind {kind!r}")
+
+    # ---- log densities ----
+    def ln_height(self, h: float) -> float:
+        return -math.log(self.height_hi) if 0.0 <= h <= self.height_hi else -math.inf
+
+    def ln_background(self, b: float) -> float:
+        return -math.log(self.background_hi) if 0.0 <= b <= self.background_hi else -math.inf
+
+    def ln_width(self, g: float) -> float:
+        s = self.settings
+        lo, hi = self._width_support()
+        if not lo <= g <= hi:
+            return -math.inf
+        if s.width_kind == "flat" or s.legacy_v4:
+            return -math.log(hi - lo)
+        return -math.log(g + s.width_knee) - math.log(math.log((hi + s.width_knee)
+                                                              / s.width_knee))
+
+    def dln_width(self, g: float) -> float:
+        """d ln p / d Gamma (analytic; enters the exact Hessian and the boundary correction)."""
+        s = self.settings
+        return 0.0 if s.width_kind == "flat" or s.legacy_v4 else -1.0 / (g + s.width_knee)
+
+    def ln_energies(self, energies) -> float:
+        """ln(k!/W^k) on the ordered region; a function of the set, so label order is irrelevant.
+        One implementation: :func:`ordered_energy_log_prior`."""
+        return ordered_energy_log_prior(energies, self.e_lo, self.e_hi)
+
+    def ln_prior(self, peaks, elastic: float | None, bg: float | None) -> float:
+        """peaks: iterable of (omega0, Gamma, h); Gamma None is a delta mode and carries no width
+        factor (its width is pinned, not fitted). elastic/bg None = that variant has no such term."""
+        peaks = list(peaks)
+        lp = self.ln_energies([p[0] for p in peaks])
+        for _, g, h in peaks:
+            if g is not None:
+                lp += self.ln_width(g)
+            lp += self.ln_height(h)
+        if elastic is not None:
+            lp += self.ln_height(elastic)
+        if bg is not None:
+            lp += self.ln_background(bg)
+        return lp
+
+    def provenance(self) -> dict:
+        """Recorded with every fit: the recipe, its settings and the data-derived quantity."""
+        out = {"version": PRIOR_RECIPE_VERSION, "empirical_bayes": True,
+               "empirical_quantity": "max_count", "max_count": float(self.max_count),
+               "height_hi": float(self.height_hi), "background_hi": float(self.background_hi),
+               "energy_support_meV": [float(self.e_lo), float(self.e_hi)],
+               "settings": asdict(self.settings)}
+        return out
+
+
+def resolve_prior(counts, energies_used, settings: PriorSettings | None = None, *,
+                  exposure_scale=None) -> SpectrumPrior:
+    """The one place the empirical-Bayes quantity is read: the highest count at the reference
+    exposure, max(y_i / exposure_scale_i) over kept points (raw max when exposure_scale is None).
+    Missing/NaN counts (and points with non-positive exposure) are ignored; a spectrum whose highest
+    count is 0 gets max_count 1 (so the support is never empty; recorded)."""
+    s = settings or PriorSettings()
+    c = np.asarray(counts, float)
+    if exposure_scale is not None:
+        sc = np.asarray(exposure_scale, float)
+        if sc.shape != c.shape:
+            raise ValueError("resolve_prior: exposure_scale must match counts")
+        with np.errstate(divide="ignore", invalid="ignore"):
+            c = np.where(sc > 0, c / sc, np.nan)
+    c = c[np.isfinite(c)]
+    if c.size == 0:
+        raise ValueError("resolve_prior: no finite counts")
+    mx = max(1.0, float(c.max()))
+    e_max = float(np.max(energies_used))
+    e_hi = e_max if s.legacy_v4 else min(s.energy_cap, e_max)   # v4 never capped the window
+    if not e_hi > s.energy_floor:
+        raise ValueError(f"resolve_prior: no positive energy range (max E {e_hi!r})")
+    return SpectrumPrior(settings=s, max_count=mx, e_lo=s.energy_floor, e_hi=e_hi)
+
+
+def resolve_prior_for(ctx, settings: PriorSettings | None = None) -> SpectrumPrior:
+    """The one ctx-level entry (``mode_bounds``, ``recipe_provenance`` and the fast pass call it):
+    the kept points' counts, energies and exposure; under ``legacy_v4`` also the v4 ceiling."""
+    s = settings or PriorSettings()
+    sp = resolve_prior(ctx.counts_used, ctx.x_used, s, exposure_scale=ctx.exposure_used)
+    if s.legacy_v4:
+        sp = dataclasses.replace(sp, v4_height_hi=amplitude_scale(ctx) * recipe_exposure(ctx))
+    return sp
+
+
+def mode_bounds(names, ctx, settings: PriorSettings | None = None) -> list[tuple[float, float]]:
+    """(lo, hi) for each global parameter name, in order: the recipe's bounds, and so the support
+    of its priors. All of them come from :func:`resolve_prior_for`, so the TRF box and the Laplace
+    box can never disagree.
+
+    * ``.omega0`` (the undamped energy E0): ``(energy_floor, min(20, max fitted energy))``.
+    * ``.Gamma`` (width): from ``WIDTH_FLOOR_FRACTION`` of the resolution width (never above the
+      absolute ``GAMMA_FLOOR``) to the width cap (``GAMMA_MAX`` = 20 meV).
+    * ``.h`` (phonon and elastic heights, counts per point): ``(0, margin x max count)``.
+    * ``.BG`` (flat background, counts per point): ``(0, max count)``.
+    * ``.QE`` (area): v4's rule, ``(0, amplitude_scale x exposure x resolution width)``; the
+      quasi-elastic line is out of the recipe's scope and its coefficient is an area, not a height.
+
+    ``PriorSettings(legacy_v4=True)`` gives the v4 bounds (amplitude ``scale x exposure``).
+    """
+    sp = resolve_prior_for(ctx, settings)
     width = resolution_fwhm(ctx)
-    scale = amplitude_scale(ctx)
-    area_hi = scale * exposure * width
     out = []
     for name in names:
         if name.endswith(".omega0"):
-            out.append((EPS_OMEGA0, x_max))
+            out.append(sp.bounds("omega0"))
         elif name.endswith(".Gamma"):
-            out.append((min(GAMMA_FLOOR, WIDTH_FLOOR_FRACTION * width), GAMMA_MAX))
+            out.append((min(GAMMA_FLOOR, WIDTH_FLOOR_FRACTION * width), sp.bounds("Gamma")[1]))
         elif name.endswith(".h"):
-            out.append((0.0, scale * exposure))
+            out.append(sp.bounds("h"))
         elif name.endswith(".QE"):
-            out.append((0.0, area_hi))
+            out.append((0.0, amplitude_scale(ctx) * recipe_exposure(ctx) * width))
         elif name.endswith(".BG"):
-            out.append((0.0, scale * exposure))
+            out.append(sp.bounds("bg"))
         else:
             raise ValueError(f"mode prior recipe has no bound for parameter {name!r}")
     return out
 
 
-def recipe_provenance(ctx) -> dict:
-    """What a fit records about the recipe it was bounded by: the version and the declared
-    quantities it resolved to for this spectrum (JSON-able)."""
-    return {"version": PRIOR_RECIPE_VERSION, "amplitude_scale": amplitude_scale(ctx),
-            "exposure_source": getattr(ctx, "exposure_source", None),
-            "exposure": recipe_exposure(ctx), "resolution_fwhm": resolution_fwhm(ctx),
-            "width_floor_fraction": WIDTH_FLOOR_FRACTION}
+def recipe_provenance(ctx, settings: PriorSettings | None = None) -> dict:
+    """What a fit records about the recipe it was bounded by: the version, the settings and the
+    data-derived quantity (``max_count``) it resolved to for this spectrum (JSON-able)."""
+    return resolve_prior_for(ctx, settings).provenance()
 
 
 # ----------------------------------------------------------------------------
@@ -183,3 +357,127 @@ def ordered_energy_transform(u, lo: float, hi: float) -> np.ndarray:
         for i in range(n - 2, -1, -1):              # then the largest of the i + 1 left below it
             t[i] = t[i + 1] * u[i] ** (1.0 / (i + 1))
     return lo + (hi - lo) * t
+
+
+# ----------------------------------------------------------------------------
+# Posterior-mode Laplace evidence with the box rule
+# ----------------------------------------------------------------------------
+# ln Z = ln L + ln prior + d/2 ln 2pi - 1/2 ln det H, H the exact Hessian of -(ln L + ln prior) in
+# the fit coordinates (central differences of the scalar objective, never J^T J). The prior is
+# supported on a box, and the Gaussian must not be priced as if it did not spread beyond it: the
+# integral of the quadratic over the box is the Gaussian's normaliser times the mass P_box inside.
+# A coordinate railed at a bound adds the linear term of the one-sided gradient there (the quadratic's
+# centre moves outside the box); a coordinate with a huge sd is cut by the box without being railed.
+@dataclass
+class LaplaceResult:
+    ln_z: float               # nan unless status is "ok" or "ok_boundary"
+    status: str               # "ok" | "ok_boundary" | "no_evidence"
+    reason: str               # "" or why there is no evidence
+    ln_det_h: float
+    cov: np.ndarray | None    # H^-1 in theta's order (free coordinates only), None if not PD
+    boundary_method: str      # "" | "box"
+    ln_box_mass: float        # ln of the Gaussian's mass inside the support box (0.0 when none)
+
+
+def hessian_fd(f, x, steps):
+    """Central-difference Hessian of scalar f at x; steps per coordinate (absolute)."""
+    x = np.asarray(x, float)
+    n = x.size
+    H = np.empty((n, n))
+    f0 = f(x)
+    for i in range(n):
+        ei = np.zeros(n); ei[i] = steps[i]
+        H[i, i] = (f(x + ei) - 2 * f0 + f(x - ei)) / steps[i] ** 2
+        for j in range(i + 1, n):
+            ej = np.zeros(n); ej[j] = steps[j]
+            H[i, j] = H[j, i] = (f(x + ei + ej) - f(x + ei - ej) - f(x - ei + ej)
+                                 + f(x - ei - ej)) / (4 * steps[i] * steps[j])
+    return H
+
+
+def _ln_interval_mass(a, b):
+    """ln(Phi(b) - Phi(a)) for standardised limits, either of which may be +-inf."""
+    from scipy.special import log_ndtr
+    if np.isneginf(a):
+        return float(log_ndtr(b))
+    if np.isposinf(b):
+        return float(log_ndtr(-a))
+    lb = float(log_ndtr(b))
+    return lb + math.log1p(-math.exp(float(log_ndtr(a)) - lb))
+
+
+def _ln_box_mass(mu, cov, lo, hi, sd):
+    """ln of the mass of N(mu, cov) inside [lo, hi], over the coordinates whose bound lies within
+    6 sd of mu (the rest contribute 1)."""
+    # shortcut: 6-sd cut leaves under 1e-9 of mass, far below Genz's own ~1e-4 relative error,
+    # which is accepted; upgrade only if a model's evidence ever contends at that precision.
+    a = (lo - mu) / sd
+    b = (hi - mu) / sd
+    a = np.where(a > -6.0, a, -np.inf)
+    b = np.where(b < 6.0, b, np.inf)
+    near = np.flatnonzero(np.isfinite(a) | np.isfinite(b))
+    if near.size == 0:
+        return 0.0
+    if near.size == 1:
+        return _ln_interval_mass(a[near[0]], b[near[0]])
+    from scipy.stats import multivariate_normal
+    sub = np.ix_(near, near)
+    lo_n = np.where(np.isfinite(a[near]), lo[near], -np.inf)
+    hi_n = np.where(np.isfinite(b[near]), hi[near], np.inf)
+    mvn = multivariate_normal(mean=mu[near], cov=cov[sub], seed=0, abseps=1e-12, releps=1e-6,
+                              maxpts=20000 * near.size)
+    mass = float(mvn.cdf(hi_n, lower_limit=lo_n))
+    if np.isfinite(mass) and mass >= 1e-10:
+        return math.log(mass)
+    # Genz loses relative accuracy below about 1e-10; upgrade to a tilted estimator if such a
+    # model ever contends. The product of the 1-D masses is exact for uncorrelated coordinates.
+    return float(sum(_ln_interval_mass(a[i], b[i]) for i in near))
+
+
+def laplace_log_evidence(neg_log_post, theta, lo, hi, *, rel_step=1e-4) -> LaplaceResult:
+    """Posterior-mode Laplace evidence on the support box ``[lo, hi]`` (the box rule).
+
+    neg_log_post(theta) = -(ln L + ln prior), finite inside the support. ``theta`` is the posterior
+    mode found by a bounded optimiser, free coordinates only. A coordinate within 1e-6 x span of a
+    bound is railed: its Hessian stencil is nudged two steps inward and the one-sided inward
+    gradient g enters. With C = H^-1 and mu = theta - C g the quadratic's centre,
+    ``ln Z = -f(theta) + g'Cg/2 + (d/2) ln 2pi - (1/2) ln det H + ln P_box``, P_box the mass of
+    N(mu, C) inside the box. One railed coordinate reproduces the single-boundary correction
+    ``(g s)^2/2 + ln Phi(-g s)``. A Hessian that is not positive definite is ``no_evidence``."""
+    theta = np.asarray(theta, float).copy()
+    lo = np.asarray(lo, float)
+    hi = np.asarray(hi, float)
+    d = theta.size
+    span = np.maximum(hi - lo, 1e-9)
+    steps = rel_step * np.maximum(np.abs(theta), 1e-2 * span)
+    tol = 1e-6 * span
+    at_lo = theta - lo <= tol
+    at_hi = hi - theta <= tol
+    x = theta.copy()
+    x[at_lo] = lo[at_lo] + 2.0 * steps[at_lo]          # stencil inside the support
+    x[at_hi] = hi[at_hi] - 2.0 * steps[at_hi]
+    f0 = float(neg_log_post(theta))
+    H = hessian_fd(neg_log_post, x, steps)
+    if not np.all(np.isfinite(H)):
+        return LaplaceResult(math.nan, "no_evidence", "Hessian not finite", math.nan, None, "", 0.0)
+    try:
+        L = np.linalg.cholesky(H)
+    except np.linalg.LinAlgError:
+        return LaplaceResult(math.nan, "no_evidence", "Hessian not positive definite",
+                             math.nan, None, "", 0.0)
+    ln_det = 2.0 * float(np.sum(np.log(np.diag(L))))
+    cov = np.linalg.inv(H)
+    g = np.zeros(d)
+    for i in np.flatnonzero(at_lo):
+        e = np.zeros(d); e[i] = steps[i]
+        g[i] = max((float(neg_log_post(theta + e)) - f0) / steps[i], 0.0)
+    for i in np.flatnonzero(at_hi):
+        e = np.zeros(d); e[i] = steps[i]
+        g[i] = -max((float(neg_log_post(theta - e)) - f0) / steps[i], 0.0)
+    mu = theta - cov @ g
+    ln_box = _ln_box_mass(mu, cov, lo, hi, np.sqrt(np.diag(cov)))
+    ln_z = (-f0 + 0.5 * float(g @ cov @ g) + 0.5 * d * math.log(2 * math.pi)
+            - 0.5 * ln_det + ln_box)
+    boxed = abs(ln_box) > 1e-6
+    return LaplaceResult(ln_z, "ok_boundary" if boxed else "ok", "", ln_det, cov,
+                         "box" if boxed else "", ln_box)
