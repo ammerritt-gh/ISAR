@@ -165,7 +165,7 @@ def test_example_8_the_bose_factor_moves_the_maximum_off_the_damped_energy():
     i = int(np.argmax(np.where(half, s, -1.0)))
     assert s[i] == pytest.approx(0.98150561, rel=2e-3)
     assert grid[i] == pytest.approx(10.2115, abs=0.01)
-    assert abs(grid[i] - math.sqrt(E0 * E0 - G * G)) > 0.03         # Omega_d = 10.2513
+    assert abs(grid[i] - math.sqrt(E0 * E0 - G * G)) > 0.03         # Ω_d = 10.2513
 
 
 # --- numerical validation: the convolved model (design 2.1) ------------------------------------
@@ -370,3 +370,14 @@ def test_a_mode_with_no_positive_height_is_refused_by_name():
     conv = L.resolution_convolver(DENSE, 0.0, 0.0, CURVE)
     with pytest.raises(ValueError, match="E0=3.0.*Gamma=0.5"):
         L.unit_peak_of_nodes(conv, np.zeros(conv.x_out.size), 3.0, 0.5)
+
+
+def test_an_optimizer_nan_step_reaches_the_cost_as_nan_not_an_exception():
+    """MIGRAD can step to NaN; the profiled fit then fails over to the free fit on a NaN cost. A NaN
+    E0 or Gamma is that step, not a lineshape failure, so its column is NaN (a finite mode's
+    missing height still raises, above)."""
+    ctx = _ctx(DENSE)
+    for mode in ((float("nan"), 0.3), (3.0, float("nan"))):
+        cols, ups = phonon_unit_columns(DENSE, ctx, [mode, (3.0, 0.3)], ["stokes+astokes"] * 2)
+        assert np.all(np.isnan(cols[0])) and np.isnan(ups[0].height)
+        assert np.all(np.isfinite(cols[1]))

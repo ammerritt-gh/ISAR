@@ -261,7 +261,10 @@ def _bose_numerator_at_pole(p, T):
 def _unit_dho(grid, E0, damping, T):
     """The full DHO of paper Eq. 2 at A = 1 on the uniform ``grid``: ``s(E) = (E0/π)·4Γ·y(E) /
     ((E² − E0²)² + 4Γ²E²)`` by point samples, plus the area-preserving correction of each pole
-    narrower than :data:`NARROW_GAMMA_STEPS` allows (see :func:`dho_signal`)."""
+    narrower than :data:`NARROW_GAMMA_STEPS` allows (see :func:`dho_signal`). A non-finite E0 or
+    Gamma (an optimizer's NaN step) gives a NaN signal, so the cost is NaN and the fit fails over."""
+    if not (np.isfinite(E0) and np.isfinite(damping)):
+        return np.full(np.shape(grid), np.nan)
     damping = max(float(damping), GAMMA_CLIP)
     h = float(grid[1] - grid[0])
     pref = (E0 / np.pi) * 4.0 * damping
@@ -331,7 +334,11 @@ def unit_peak_of_nodes(conv, row, phonon_energy, damping):
     convolved tail counts). The largest node gives the vertex of the parabola through it and its
     neighbours (O(dx^3), continuous as the maximum moves between nodes); at the E = 0 edge it is
     the row interpolated at E = 0. Areas are trapezoid sums of the same row. A zero or non-finite
-    height raises ``ValueError`` naming E0 and Gamma."""
+    height raises ``ValueError`` naming E0 and Gamma, except for a non-finite E0 or Gamma (an
+    optimizer's NaN step), whose UnitPeak is NaN so the NaN reaches the cost."""
+    if not (np.isfinite(phonon_energy) and np.isfinite(damping)):
+        nan = float("nan")
+        return UnitPeak(nan, nan, nan, nan)
     x_out = conv.x_out
     positive = x_out >= 0.0
     energy = x_out[positive]
