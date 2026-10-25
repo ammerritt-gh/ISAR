@@ -135,18 +135,18 @@ def test_a_non_converged_representative_is_kept_and_marked(monkeypatch):
 
 
 def test_an_amplitude_at_the_recipe_ceiling_is_marked():
-    """The recipe's amplitude ceiling is a declared constant: a spectrum brighter than it allows
-    rails its amplitude at the upper bound, and the record says which parameter."""
+    """The record marks an amplitude sitting on the recipe's upper bound. Re-pin (recipe /5): the
+    ceiling is 1.2 x the spectrum's highest count (empirical Bayes), which no real fit reaches, so
+    the marking is checked on the rule itself instead of a fit brighter than a declared constant."""
+    from types import SimpleNamespace
+
     x = np.linspace(-8.0, 16.0, 41)
-    ctx = _ctx(_dho(x, 5.0, 0.4, 500.0) + 8.0, x, 3, exposure_scale=np.ones_like(x),
-               exposure_reference=20.0, exposure_source="monitor")
-    out = {}
-    loop.fit_structures_two_stage(ctx, mode_ceiling=1, rung1_out=out)
-    model = out["rung1"].by_label()["stokes+bg"]
-    assert "phonon.h" in model.at_upper_bound
-    nominal = replace(ctx, exposure_scale=None, exposure_reference=None, exposure_source=None)
-    loop.fit_structures_two_stage(nominal, mode_ceiling=1, rung1_out=out)
-    assert out["rung1"].by_label()["stokes+bg"].at_upper_bound == []
+    ctx = _ctx(_dho(x, 5.0, 0.4, 500.0) + 8.0, x, 3)
+    top = float(ctx.counts.max())
+    at = lambda **p: loop._at_upper_bound(SimpleNamespace(params=p), ctx)
+    assert at(**{"phonon.h": 1.2 * top, "bg.BG": 3.0}) == ["phonon.h"]
+    assert at(**{"phonon.h": 1.19 * top, "bg.BG": top}) == ["bg.BG"]       # background ceiling: max
+    assert at(**{"phonon.h": 1.19 * top, "bg.BG": 0.99 * top}) == []
 
 
 def test_the_record_takes_evidence_and_probability_from_the_selection():
@@ -212,9 +212,13 @@ def test_a_mode_inside_one_resolution_width_gets_its_variant_seeded_from_its_par
 def two_mode_ladder():
     """Two clean modes and an elastic line at ceiling 2, the raw rung-1 ladder (before variants and
     resolution). The model railed in each test is the top one, elastic+stokes2+bg, so no model
-    above it can hand it a new start."""
+    above it can hand it a new start.
+
+    Re-pin (recipe /5): the elastic line is 150, was 300. With the width cap at 20 meV a 300 line lets
+    stokes2+bg model it as a broad zero-energy mode (Gamma 19.5) that does not converge, and several
+    tests below need that model converged; at 150 it converges onto the two real modes."""
     x = np.linspace(-8.0, 16.0, 61)
-    elastic = convolute_voigt_dho(x, 1.0, 0.0, 1.0, 0.0, 0.3, 0.0, 300.0, 0.0, 50.0, peak="elastic")
+    elastic = convolute_voigt_dho(x, 1.0, 0.0, 1.0, 0.0, 0.3, 0.0, 150.0, 0.0, 50.0, peak="elastic")
     ctx = _ctx(elastic + _dho(x, 4.0, 0.3, 400.0) + _dho(x, 9.0, 0.4, 250.0) + 5.0, x, 2)
     record = loop._rung1_ladder(ctx, mode_ceiling=2)
     top = record.by_label()["elastic+stokes2+bg"]
