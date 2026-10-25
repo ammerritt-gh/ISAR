@@ -2,8 +2,8 @@
 
 Take the best-fit DHO⊗resolution model as the generating model, draw `M` Poisson
 realizations of the counts, refit each under Baker–Cousins, and let the scatter of the
-refit parameters be the error. The reported ω₀ interval is built by transforming **each
-draw** (ω₀=√(Ω_d²+Γ²)), not by propagating the point HESSE σ — this is the F4 fix.
+refit parameters be the error. The reported ω₀ interval is built from **each draw**'s fitted
+``.omega0``, not by propagating the point HESSE σ — this is the F4 fix.
 
 It is the production promotion of the Phase-1 MC harness (``isar.synth.score``) from
 MC-against-truth to MC-against-fit, and has no silent-failure mode: a degenerate fit shows
@@ -127,11 +127,9 @@ def _refit_replicate(counts_b, composite, x, ctx, theta_fit, bounds, be_names,
                               list(fixed_pos), list(fixed_vals), minos=False, ncall=ncall)
     if not br.success:
         return None
-    w0 = np.array([np.sqrt(float(br.x[i]) ** 2 + float(br.x[i + 1]) ** 2) for i in phonon_i])
+    w0 = np.array([float(br.x[i]) for i in phonon_i])
     sel_pos = phonon_i[int(np.argsort(w0)[prim_rank])]  # global index of the primary mode
-    od_b, g_b = float(br.x[sel_pos]), float(br.x[sel_pos + 1])
-    return (float(np.sqrt(od_b ** 2 + g_b ** 2)), g_b,
-            np.asarray(br.x, dtype=float))
+    return (float(br.x[sel_pos]), float(br.x[sel_pos + 1]), np.asarray(br.x, dtype=float))
 
 
 def _bootstrap_chunk(args):
@@ -190,11 +188,11 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
     be_names = [loop._sanitize(n) for n in names]
 
     # Per-mode canonicalization (kills bootstrap label-switching on close modes): each phonon's
-    # (Ω_d, Γ) are at global indices (i, i+1). The PRIMARY mode is fixed from the ORIGINAL fit;
+    # (ω₀, Γ) are at global indices (i, i+1). The PRIMARY mode is fixed from the ORIGINAL fit;
     # per replicate we sort phonons ascending by ω₀ and take the mode at the primary's sorted
     # rank. Single-phonon fits reduce to the previous behaviour (one mode, rank 0).
     phonon_i = prob.composite.phonon_indices()
-    fit_w0 = [np.sqrt(theta_fit[i] ** 2 + theta_fit[i + 1] ** 2) for i in phonon_i]
+    fit_w0 = [theta_fit[i] for i in phonon_i]
     order = list(np.argsort(fit_w0))                    # component-order positions, ascending ω₀
     prim_global = prob.composite.primary_phonon_index(
         theta_fit, None, getattr(ctx, "prior_omega", None), getattr(ctx, "acoustic_omega", None),

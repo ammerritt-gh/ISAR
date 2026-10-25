@@ -227,9 +227,9 @@ def _exposure_per_point(rec, ctx, det=None) -> tuple[float, str]:
 def _primary_amplitude(fit) -> float | None:
     """INTRINSIC amplitude of the primary phonon (the mode nearest the reported ω₀).
 
-    Intrinsic, not measured (H4): the branch model's log A(ω₀) trend and the soft/hard
-    constraints it emits target the fitted ``phonon.A``, which is the intrinsic strength — the
-    acoustic law is then literally A ∝ 1/ω with no occupation contamination.
+    Intrinsic, not measured (H4): the branch model's log A(ω₀) trend is in the lineshape's
+    intrinsic A (``amplitude_intrinsic`` = h / UnitPeak.height), so the acoustic law is literally
+    A ∝ 1/ω with no occupation contamination.
 
     A mode record without ``amplitude_intrinsic`` yields ``None`` rather than falling back to the
     measured ``amplitude``: the two differ by (n+1), and relabelling a measured value as intrinsic
@@ -241,7 +241,7 @@ def _primary_amplitude(fit) -> float | None:
         return None
     prim = min(modes, key=lambda m: abs(float(m.get("omega0", 1e18)) - float(w0)))
     a = prim.get("amplitude_intrinsic")
-    return float(a) if a is not None else None
+    return float(a) if a is not None and np.isfinite(float(a)) else None
 
 
 def _intensity_measure(rec, ctx, fit, det=None) -> dict | None:
@@ -1428,7 +1428,7 @@ def _auto_escalation_reasons(prelim, fits, ctx) -> list[str]:
             # The energy prior's own edges (the recipe that bounded the fit), the rule the fit uses.
             lo, hi = mode_bounds([name], ctx)[0]
             if min(value - lo, hi - value) <= 2.0 * sigma:
-                reasons.append("omega_d_within_2sigma_of_bound")
+                reasons.append("omega0_within_2sigma_of_bound")
                 break
     for name, value in best.params.items():
         sigma = best.param_errors.get(name)

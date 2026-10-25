@@ -108,7 +108,7 @@ _WITHHOLDING_REASONS = frozenset({PROJECTION_AUXILIARY_ONLY})
 # Fit inspection
 # ---------------------------------------------------------------------------
 def model_manifest_of(best, by_hyp) -> dict | None:
-    """Declarative ``isar.model_manifest/1`` payload for the delivered structure.
+    """Declarative ``isar.model_manifest/2`` payload for the delivered structure.
 
     The manifest intentionally names only component kinds owned by ISAR.  It is sufficient for a
     Qt-free reader to reconstruct multi-mode curves without importing a hypothesis class or solving
@@ -138,7 +138,7 @@ def model_manifest_of(best, by_hyp) -> dict | None:
                   if name in best.params}
     if set(parameters) != set(composite.param_names()):
         return None
-    return {"schema": "isar.model_manifest/1", "components": components,
+    return {"schema": manifest_mod.MANIFEST_SCHEMA, "components": components,
             "parameters": parameters}
 
 
@@ -419,7 +419,7 @@ def bounded_parameter_draws(result, *, seed: int, maximum: int = 64):
         samples = samples[keep]
         source_ids = [source_ids[index] for index in keep]
     for column, name in enumerate(names):
-        if name.endswith((".Omega_d", ".Gamma", ".A", ".E", ".QE", ".BG")):
+        if name.endswith((".omega0", ".Gamma", ".h", ".QE", ".BG")):
             samples[:, column] = np.maximum(samples[:, column], 0.0)
     diagnostics = {
         "draw_weighting": DRAW_WEIGHTING[basis],
@@ -571,8 +571,7 @@ def build_master_predictive(best, scores, fits, by_hyp, ctx, *, seed: int,
                 theta = manifest_mod.draw_theta(composite, names, sample)
                 expected.append(manifest_mod.expected_counts(
                     manifest, names, sample, eval_ctx, grid).tolist())
-                candidates = [math.sqrt(theta[i] ** 2 + theta[i + 1] ** 2)
-                              for i in phonon_indices]
+                candidates = [float(theta[i]) for i in phonon_indices]
                 # Every fitted mode of this draw, in composite order: the complete physical menu a
                 # later projection selects from without re-running the fit.
                 mode_energies.append([float(value) for value in candidates])

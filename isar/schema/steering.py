@@ -17,15 +17,16 @@ from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
-#: What an :class:`IntensityMeasure` value means since H4: the exposure-normalised **intrinsic**
-#: amplitude, the fitted ``phonon.A`` with no thermal occupation in it.
-INTRINSIC_AMPLITUDE_BASIS = "intrinsic_amplitude_per_exposure"
-#: Bases retired by H4, read as a **refusal** table and never a migration table (H1). A point
-#: persisted under one of these carries the MEASURED amplitude ``A·(n+1)``; nothing in the stored
-#: number distinguishes it from an intrinsic one, and no ``(n+1)`` is recoverable after the fact
-#: without the temperature that produced it. A consumer excludes such a point — it never
-#: reinterprets it.
-RETIRED_AMPLITUDE_BASES = frozenset({"amplitude_per_exposure"})
+#: What an :class:`IntensityMeasure` value means since the full-DHO lineshape: the
+#: exposure-normalised **intrinsic** amplitude A of McGuinness et al. Eq. 2 (the narrow-limit area,
+#: ``A = h / UnitPeak.height`` behind the fitted height ``phonon.h``), with no thermal occupation.
+INTRINSIC_AMPLITUDE_BASIS = "dho_intrinsic_area_per_exposure"
+#: Retired bases, read as a **refusal** table and never a migration table (H1). A point persisted
+#: under ``amplitude_per_exposure`` (retired by H4) carries the MEASURED amplitude ``A·(n+1)``;
+#: one under ``intrinsic_amplitude_per_exposure`` the pre-Eq.-2 lineshape's intrinsic amplitude, a
+#: different normalisation. Nothing in a stored number says which it is, so a consumer excludes
+#: such a point — it never reinterprets it.
+RETIRED_AMPLITUDE_BASES = frozenset({"amplitude_per_exposure", "intrinsic_amplitude_per_exposure"})
 
 
 @dataclass(frozen=True)
@@ -47,8 +48,8 @@ class IntensityMeasure:
     ``value`` currently is so a future consumer can upgrade without silently mis-scaling old points.
 
     Since H4 that naming is load-bearing rather than decorative. The amplitude carried here is the
-    **intrinsic** strength — the fitted ``phonon.A``, with the thermal occupation applied
-    explicitly by the model — so ``basis`` is :data:`INTRINSIC_AMPLITUDE_BASIS`. A pre-H4 point
+    **intrinsic** strength — the lineshape's A behind the fitted height ``phonon.h``, with the
+    thermal occupation inside the model — so ``basis`` is :data:`INTRINSIC_AMPLITUDE_BASIS`. A pre-H4 point
     persisted the **measured** amplitude ``A·(n+1)`` under the old name
     :data:`RETIRED_AMPLITUDE_BASES`, and the two differ by an occupation factor that is invisible
     in the number itself. Mixing them in one ``log A(ω₀)`` fit is what the retirement prevents.
@@ -286,7 +287,7 @@ class ProposalScore:
 
 @dataclass(frozen=True)
 class ParamConstraints:
-    """Fit-time constraints on named global parameters (e.g. ``"phonon.Gamma"``, ``"phonon.A"``).
+    """Fit-time constraints on named global parameters (e.g. ``"phonon.Gamma"``, ``"phonon.h"``).
 
     Carried on :class:`~isar.analyze.context.ScanContext`; consumed from Phase 2. Two kinds, kept
     apart so the fit-vs-decide contract holds (contract 1):

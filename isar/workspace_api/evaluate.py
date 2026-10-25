@@ -146,9 +146,11 @@ def _component_manifest(fit, quasielastic_fwhm):
             mode.get("gamma") if mode.get("gamma") is not None else fit.gamma or 0.0,
             f"{prefix} gamma",
         )
-        parameters[f"{prefix}.Omega_d"] = math.sqrt(max(omega0 * omega0 - gamma * gamma, 1e-6))
+        parameters[f"{prefix}.omega0"] = omega0
         parameters[f"{prefix}.Gamma"] = gamma
-    return {"schema": "isar.model_manifest/1", "components": components,
+    from isar.analyze.model_manifest import MANIFEST_SCHEMA
+
+    return {"schema": MANIFEST_SCHEMA, "components": components,
             "parameters": parameters}
 
 

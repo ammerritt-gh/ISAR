@@ -1,6 +1,6 @@
 """The single manifest → expected-counts evaluation path (Qt-free, analysis-owned).
 
-One declarative ``isar.model_manifest/1`` payload plus one **named** parameter draw, an evaluation
+One declarative ``isar.model_manifest/2`` payload plus one **named** parameter draw, an evaluation
 context and an energy grid produce one expected-count vector. Every producer and consumer of a
 predictive artifact goes through :func:`expected_counts`:
 
@@ -40,7 +40,9 @@ from collections.abc import Mapping, Sequence
 
 import numpy as np
 
-MANIFEST_SCHEMA = "isar.model_manifest/1"
+# /2: the full-DHO height coordinate (``.omega0``, ``.Gamma``, ``.h``, ``elastic.h``); a /1 manifest
+# (the retired damped-frequency / area parameters) is refused, never read (H1: no compatibility reader).
+MANIFEST_SCHEMA = "isar.model_manifest/2"
 
 #: Version of this evaluation path. It is hashed into ``predictive_basis_fingerprint`` so a score
 #: computed under one evaluator can never be reused under another.
@@ -77,9 +79,10 @@ NEGATIVE_PREDICTION_EPS = 1e-9
 #: zero-exposure case (threshold and value both zero) falling out correctly.
 NEGATIVE_PREDICTION_EPS_RULE = "exposure_scaled"
 
-#: The registered PhononDHO peak vocabulary. ``isar.analyze.lineshapes.convolute_voigt_dho`` lowercases
-#: ``peak`` and either takes the literal ``all`` or splits it on ``+`` into these parts; an
-#: unrecognised part is silently dropped there, producing a plausible but wrong lineshape.
+#: The registered PhononDHO peak vocabulary. ``isar.analyze.lineshapes.dho_signal`` lowercases
+#: ``peak`` and either takes the literal ``all`` or splits it on ``+`` into these parts (``stokes``
+#: the E >= 0 half of the one full-DHO curve, ``astokes`` the E < 0 half); an unrecognised part is
+#: silently dropped there, producing a plausible but wrong lineshape.
 PHONON_PEAK_PARTS = ("stokes", "astokes", "elastic")
 PHONON_PEAK_ALL = "all"
 

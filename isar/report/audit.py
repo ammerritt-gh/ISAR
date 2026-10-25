@@ -16,14 +16,12 @@ from scipy.optimize import nnls
 
 from isar.analyze.components import CompositeModel, ConstantBackground, Elastic, PhononDHO
 
-_OMEGA_D_FLOOR = 1e-6  # keep Ω_d real when a reported ω₀ < Γ (an overdamped/blown-up expert fit)
-
 
 def assemble_curve(comp, x_eval, *, omega0, gamma, amp, ctx):
     """Assemble ``theta`` from fixed nonlinear (ω₀, Γ) + a linear-amplitude dict, then evaluate.
 
-    The nonlinear phonon values are fixed to the reported ω₀/Γ (Ω_d = √max(ω₀²−Γ², floor)); every
-    linear amplitude is taken from ``amp`` (``{global_param_name: value}``, default 0.0 when absent).
+    The nonlinear phonon values are fixed to the reported ω₀/Γ (``.omega0`` is ω₀ itself, so an
+    overdamped ω₀ < Γ is represented as reported); every linear height is taken from ``amp`` (``{global_param_name: value}``, default 0.0 when absent).
     Returns the same ``SimpleNamespace`` (``x``, ``theta``, ``total``, ``components``, ``omega0``,
     ``gamma``) that :func:`reconstruct_curve` returns. Shared by :func:`reconstruct_curve` (``amp``
     solved by NNLS against counts) and ``isar.workspace_api`` (``amp`` read from a stored
@@ -33,11 +31,10 @@ def assemble_curve(comp, x_eval, *, omega0, gamma, amp, ctx):
     if not isinstance(amp, Mapping):
         raise ValueError(
             f"amp must be a mapping of amplitude names to values, got {type(amp).__name__}")
-    omega_d = float(np.sqrt(max(float(omega0) ** 2 - float(gamma) ** 2, _OMEGA_D_FLOOR)))
     theta = []
     for pn in comp.param_names():
-        if pn.endswith(".Omega_d"):
-            theta.append(omega_d)
+        if pn.endswith(".omega0"):
+            theta.append(float(omega0))
         elif pn.endswith(".Gamma"):
             theta.append(float(gamma))
         else:
@@ -54,8 +51,8 @@ def reconstruct_curve(x, counts, *, omega0, gamma, center, gauss_fwhm, lorentz_f
                       x_eval=None):
     """Rebuild an elastic+phonon+background curve at fixed (ω₀, Γ, center, resolution).
 
-    The nonlinear values are fixed to the reported ones; the linear amplitudes (phonon area, elastic
-    area, background) are solved by NNLS against `counts`. Returns a namespace with `total`,
+    The nonlinear values are fixed to the reported ones; the linear heights (``phonon.h``,
+    ``elastic.h``) and background are solved by NNLS against `counts`. Returns a namespace with `total`,
     per-component `components` ([(name, values), …]), and the assembled `theta`. `x_eval` (optional)
     evaluates the recovered curve on a finer grid for plotting.
     """
@@ -65,8 +62,7 @@ def reconstruct_curve(x, counts, *, omega0, gamma, center, gauss_fwhm, lorentz_f
                           lorentz_fwhm=float(lorentz_fwhm), T=float(T))
     comp = CompositeModel([PhononDHO(), Elastic(), ConstantBackground()])
 
-    omega_d = float(np.sqrt(max(float(omega0) ** 2 - float(gamma) ** 2, _OMEGA_D_FLOOR)))
-    nl = {"phonon.Omega_d": omega_d, "phonon.Gamma": float(gamma)}
+    nl = {"phonon.omega0": float(omega0), "phonon.Gamma": float(gamma)}
     phi, names = comp.nnls_basis(x, nl, ctx)
     amps, _ = nnls(phi, counts)
     amp = dict(zip(names, amps))
