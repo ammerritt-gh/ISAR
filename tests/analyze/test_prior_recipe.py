@@ -1,5 +1,6 @@
-"""The declared-quantity prior recipe (S1U1): bounds from the energy window, the resolution width
-and the exposure, never from the spectrum's own counts; mode energies ordered once."""
+"""The mode prior recipe: v5 bounds (heights from the spectrum's highest count, the empirical-Bayes
+amplitude rule; widths and energies declared), the v4 recipe as the legacy arm, and the mode
+energies ordered once."""
 import dataclasses
 import itertools
 import math
@@ -10,12 +11,12 @@ import pytest
 from isar.analyze import prior
 from isar.analyze.components import CompositeModel, ConstantBackground, Elastic, PhononDHO
 from isar.analyze.context import ScanContext
-from isar.analyze.phonon import EPS_OMEGA0, GAMMA_FLOOR, GAMMA_MAX
+from isar.analyze.phonon import EPS_OMEGA0, GAMMA_FLOOR, GAMMA_MAX, GAMMA_MAX_V4
 
 
 def _ctx(**kw):
     x = np.linspace(-10.0, 10.0, 81)
-    d = dict(x=x, counts=np.full(81, 10.0), mask=np.ones(81, dtype=bool), T=100.0,
+    d = dict(x=x, counts=np.full(81, 100.0), mask=np.ones(81, dtype=bool), T=100.0,
              center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
              energy_status="absolute")
     d.update(kw)
@@ -27,23 +28,46 @@ NAMES = ["phonon.omega0", "phonon.Gamma", "phonon.h", "phonon2.omega0", "phonon2
 
 
 # --------------------------------------------------------------------------- the recipe's bounds
-def test_bounds_ignore_observed_counts():
+def test_amplitude_bounds_follow_max_count():
+    # The operator's ruling (2026-10-25), replacing "bounds ignore observed counts": heights are
+    # flat on [0, 1.2 x highest count], the background on [0, highest count]; the rest is declared.
     base = _ctx(exposure_scale=np.ones(81), exposure_reference=3.0e5, exposure_source="monitor")
-    loud = dataclasses.replace(base, counts=base.counts * 1.0e4 + 7.0)
-    assert prior.mode_bounds(NAMES, base) == prior.mode_bounds(NAMES, loud)
+    counts = base.counts.copy()
+    counts[40] = 400.0
+    loud = dataclasses.replace(base, counts=counts)
+    b, l = (dict(zip(NAMES, prior.mode_bounds(NAMES, c))) for c in (base, loud))
+    assert l["phonon.h"] == l["phonon2.h"] == l["elastic.h"] == (0.0, pytest.approx(480.0))
+    assert l["bg.BG"] == (0.0, pytest.approx(400.0)) and b["bg.BG"] == (0.0, pytest.approx(100.0))
+    for n in ("phonon.omega0", "phonon.Gamma", "qe.QE"):          # not read from the counts
+        assert l[n] == b[n]
+    # a masked point does not count, and the exposure rescales: counts per reference exposure
+    masked = dataclasses.replace(loud, mask=np.arange(81) != 40)
+    assert dict(zip(NAMES, prior.mode_bounds(NAMES, masked)))["bg.BG"] == (0.0, pytest.approx(100.0))
+    halved = dataclasses.replace(loud, exposure_scale=np.where(np.arange(81) == 40, 0.5, 1.0))
+    assert dict(zip(NAMES, prior.mode_bounds(NAMES, halved)))["bg.BG"] == (0.0, pytest.approx(800.0))
+
+
+def test_mode_bounds_and_spectrum_prior_are_one_source():
+    ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor")
+    sp = prior.resolve_prior_for(ctx)
+    got = dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))
+    assert got["phonon.omega0"] == sp.bounds("omega0") and got["phonon.h"] == sp.bounds("h")
+    assert got["bg.BG"] == sp.bounds("bg") and got["phonon.Gamma"][1] == sp.bounds("Gamma")[1]
+    assert prior.recipe_provenance(ctx) == sp.provenance()
 
 
 def test_bounds_follow_declared_exposure_and_resolution():
     a = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor")
     b = dataclasses.replace(a, exposure_reference=2.0e5)
     c = dataclasses.replace(a, gauss_fwhm=2.0)
-    amp = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))["phonon.h"][1]
+    # re-pin: v4 is now the legacy arm; the quasi-elastic area rule is v4's in both
+    amp = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx, prior.PriorSettings(legacy_v4=True))))["phonon.h"][1]
     area = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))["qe.QE"][1]
     assert amp(a) == pytest.approx(prior.AMPLITUDE_SCALE_PER_MONITOR * 1.0e5)
     assert amp(b) == pytest.approx(2.0 * amp(a))
     assert amp(c) == pytest.approx(amp(a))        # a height ceiling does not scale with the width
     assert area(c) == pytest.approx(2.0 * area(a))  # an area ceiling does
-    bg = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))["bg.BG"][1]
+    bg = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx, prior.PriorSettings(legacy_v4=True))))["bg.BG"][1]
     assert bg(b) == pytest.approx(2.0 * bg(a))
 
 
@@ -51,10 +75,14 @@ def test_bounds_energy_width_amplitude_shapes():
     ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor")
     got = dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))
     assert got["phonon.omega0"] == got["phonon2.omega0"] == (EPS_OMEGA0, 10.0)  # fit window
-    assert got["phonon.Gamma"] == (GAMMA_FLOOR, GAMMA_MAX)       # resolution 1.0 meV: floor wins
-    for n in ("phonon.h", "phonon2.h", "elastic.h", "qe.QE"):
-        assert got[n][0] == 0.0 and got[n][1] > 0.0 and np.isfinite(got[n][1])
-    assert got["phonon.h"] == got["elastic.h"] == got["qe.QE"]
+    assert got["phonon.Gamma"] == (GAMMA_FLOOR, 20.0)            # resolution 1.0 meV: floor wins
+    # re-pin (recipe /5): heights 1.2 x max count, background the max count (counts are 100)
+    assert got["phonon.h"] == got["phonon2.h"] == got["elastic.h"] == (0.0, pytest.approx(120.0))
+    assert got["bg.BG"] == (0.0, pytest.approx(100.0))
+    assert got["qe.QE"][0] == 0.0 and got["qe.QE"][1] == pytest.approx(1.0e5)   # v4 area rule
+    v4 = dict(zip(NAMES, prior.mode_bounds(NAMES, ctx, prior.PriorSettings(legacy_v4=True))))
+    assert v4["phonon.Gamma"] == (GAMMA_FLOOR, GAMMA_MAX_V4)
+    assert v4["phonon.h"] == v4["elastic.h"] == v4["bg.BG"] == (0.0, pytest.approx(1.0e5))
 
 
 def test_width_floor_scales_with_a_very_sharp_resolution():
@@ -68,7 +96,8 @@ def test_no_declared_exposure_uses_the_nominal_one_not_the_counts():
     a = _ctx()                                    # exposure_reference None
     b = dataclasses.replace(a, counts=a.counts * 1.0e3)
     assert prior.recipe_exposure(a) == prior.NOMINAL_EXPOSURE
-    assert prior.mode_bounds(NAMES, a) == prior.mode_bounds(NAMES, b)
+    legacy = prior.PriorSettings(legacy_v4=True)                                   # re-pin: the declared-exposure rule is the v4 arm
+    assert prior.mode_bounds(NAMES, a, legacy) == prior.mode_bounds(NAMES, b, legacy)
 
 
 def test_time_and_monitor_exposures_get_their_own_amplitude_scale():
@@ -77,7 +106,7 @@ def test_time_and_monitor_exposures_get_their_own_amplitude_scale():
     mon = _ctx(exposure_scale=np.ones(81), exposure_reference=30.0, exposure_source="monitor")
     tim = dataclasses.replace(mon, exposure_source="time")
     width = prior.resolution_fwhm(mon)
-    bounds = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))
+    bounds = lambda ctx: dict(zip(NAMES, prior.mode_bounds(NAMES, ctx, prior.PriorSettings(legacy_v4=True))))   # re-pin: v4 arm
     assert bounds(mon)["phonon.h"][1] == pytest.approx(prior.AMPLITUDE_SCALE_PER_MONITOR * 30.0 * width)
     assert bounds(tim)["phonon.h"][1] == pytest.approx(prior.AMPLITUDE_SCALE_PER_SECOND * 30.0 * width)
     assert bounds(tim)["bg.BG"][1] == pytest.approx(prior.AMPLITUDE_SCALE_PER_SECOND * 30.0)
@@ -99,12 +128,20 @@ def test_unknown_parameter_is_refused():
         prior.mode_bounds(["phonon.Nonsense"], _ctx())
 
 
-def test_provenance_names_the_version_and_the_declared_quantities():
+def test_provenance_records_the_empirical_bayes_quantity():
+    # re-pin (recipe /5): the provenance names the data-derived max count, as the ruling requires
     p = prior.recipe_provenance(_ctx(exposure_scale=np.ones(81), exposure_reference=2.0e5,
                                      exposure_source="time"))
-    assert p["version"] == prior.PRIOR_RECIPE_VERSION
-    assert p["exposure"] == 2.0e5 and p["exposure_source"] == "time"
-    assert p["amplitude_scale"] == prior.AMPLITUDE_SCALE_PER_SECOND
+    assert p["version"] == prior.PRIOR_RECIPE_VERSION == "isar.mode-prior-recipe/5"
+    assert p["empirical_bayes"] is True and p["empirical_quantity"] == "max_count"
+    assert p["max_count"] == 100.0 and p["height_hi"] == pytest.approx(120.0)
+    assert p["settings"] == dataclasses.asdict(prior.PriorSettings())
+    import json
+    json.dumps(p)                                                  # JSON-able, recorded as is
+    legacy = prior.recipe_provenance(_ctx(exposure_scale=np.ones(81), exposure_reference=2.0e5,
+                                          exposure_source="time"), prior.PriorSettings(legacy_v4=True))
+    assert legacy["settings"]["legacy_v4"] is True
+    assert legacy["height_hi"] == pytest.approx(prior.AMPLITUDE_SCALE_PER_SECOND * 2.0e5)
 
 
 # --------------------------------------------------------------------------- ordered energies
@@ -261,13 +298,15 @@ def test_a_mode_with_its_own_amplitude_or_width_prior_is_not_ordered():
         ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor",
                    constraints=ParamConstraints(soft={name: (mu, sigma)}, origins={name: "test"}))
         bundle = catalogue.resolve_priors(comp, ctx, prior.mode_bounds(names, ctx))
+        assert np.isfinite(bundle.logpdf(theta))                  # not -inf == -inf
         assert bundle.logpdf_ordered(theta) == pytest.approx(bundle.logpdf(theta)), name
 
 
-def test_a_delta_function_mode_leaves_the_other_modes_ordered_among_themselves():
-    # A degenerate twin pins one mode's Gamma at the floor (no prior factor): that delta-function
-    # mode is distinguishable from the DHO modes, but the two DHO modes are still exchangeable, so
-    # they alone are ordered (2!, once) in both lanes; the delta mode's energy keeps its flat prior.
+def test_a_delta_function_mode_is_ordered_with_the_others():
+    # Re-pin (delta-mode twin rule, C-prior example 9): a degenerate twin pins one mode's Gamma at
+    # the floor (no width factor), and its energy is still one of the k exchangeable energies the
+    # k! counts: all three omega0 are ordered together, one 3!, one ordered transform. (Before the
+    # rule the delta mode was left out and only the DHO pair was ordered, ln 2.)
     from isar.analyze import catalogue
     comp = CompositeModel([PhononDHO(), PhononDHO(prefix="phonon2"), PhononDHO(prefix="phonon3"),
                            ConstantBackground()])
@@ -276,10 +315,9 @@ def test_a_delta_function_mode_leaves_the_other_modes_ordered_among_themselves()
     bundle = catalogue.resolve_priors(comp, ctx, prior.mode_bounds(names, ctx),
                                       exclude=["phonon2.Gamma"])
     theta = dict(zip(names, [2.0, 0.3, 50.0, 4.0, GAMMA_FLOOR, 20.0, 6.0, 0.4, 30.0, 5.0]))
-    assert bundle.logpdf_ordered(theta) - bundle.logpdf(theta) == pytest.approx(math.log(2.0))
+    assert bundle.logpdf_ordered(theta) - bundle.logpdf(theta) == pytest.approx(math.log(6.0))
     free = [p.name for p in bundle.params]
     i1, i2, i3 = (free.index(f"{p}.omega0") for p in ("phonon", "phonon2", "phonon3"))
     u = np.random.default_rng(7).random((2000, len(free)))
     draws = np.array([bundle.transform_ordered(row) for row in u])
-    assert np.all(draws[:, i1] <= draws[:, i3])                  # the DHO pair, ordered
-    assert np.any(draws[:, i2] < draws[:, i1]) and np.any(draws[:, i2] > draws[:, i3])
+    assert np.all(draws[:, i1] <= draws[:, i2]) and np.all(draws[:, i2] <= draws[:, i3])
