@@ -190,7 +190,10 @@ def test_energy_window_is_on_the_omega_scale_not_the_raw_abscissa():
     to contain — invisible whenever the zero happens to be 0.0, as in the fixture above."""
     center = 2.0
     x = np.linspace(-8.0, 16.0, 81)
-    counts = convolute_voigt_dho(x, 5.0, center, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
+    # A = 500 pi / Gamma / (n(E0) + 1): the intrinsic amplitude giving the counts this noise-free
+    # fixture had under the old Lorentzian-area amplitude. At A = 500 the curve is 5x dimmer, and
+    # the zero-noise tie among candidates (cost ~1e-8 each) is broken toward a second mode.
+    counts = convolute_voigt_dho(x, 5.0, center, 1.0, 0.0, 0.4, 2700.0, 0.0, 0.0, 50.0,
                                  peak="stokes+astokes") + 8.0
     ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
                       center=center, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
