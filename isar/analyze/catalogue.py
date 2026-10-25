@@ -39,6 +39,8 @@ from typing import Callable
 
 import numpy as np
 
+from isar.analyze.prior import PriorSettings
+
 from isar.analyze import phonon
 from isar.analyze.components import ConstantBackground, Elastic, PhononDHO, QuasiElastic
 from isar.analyze.structures import Hypothesis
@@ -405,12 +407,19 @@ class ResolvedPrior:
 
     ``origin`` ∈ ``"transport"`` (a soft constraint from ``ctx.constraints`` — it IS the prior
     for that parameter, the applied-exactly-once rule), ``"identity"`` (declared by a catalogue
-    entry), or ``"default_flat"`` (normalized flat over the optimizer bounds).
+    entry), ``"default_flat"`` (normalized flat over the optimizer bounds) or ``"default_softlog"``
+    (the recipe's width prior, below).
+
+    ``kind == "softlog"`` is the recipe's softened log-uniform width density
+    ``1/(x + mu) / ln((hi + mu)/mu)`` with ``mu`` the knee (meV) and ``sigma`` ``None``. It is
+    normalised on ``[0, hi]`` like :meth:`isar.analyze.prior.SpectrumPrior.ln_width`, so the
+    campaign path and the fast pass share one width density (its mass on ``[lo, hi]`` is 1 less the
+    ~0.002-nat mass below the Γ floor, which is not renormalised).
     ``origin_detail`` carries the constraint-origin string when transport supplied it (what the
     STAT eligibility rules read)."""
 
     name: str
-    kind: str                       # "gaussian" | "lognormal" | "flat"
+    kind: str                       # "gaussian" | "lognormal" | "flat" | "softlog"
     mu: float | None
     sigma: float | None
     lo: float
@@ -437,6 +446,8 @@ class ResolvedPrior:
         if self.kind == "flat":
             span = self.hi - self.lo
             return -math.log(span) if span > 0 else 0.0
+        if self.kind == "softlog":
+            return -math.log(v + self.mu) - math.log(math.log((self.hi + self.mu) / self.mu))
         dist = self._dist()
         z = self._trunc_mass(dist)
         if not (z > 0):
@@ -448,6 +459,11 @@ class ResolvedPrior:
         u = min(max(float(u), 0.0), 1.0)
         if self.kind == "flat":
             return self.lo + u * (self.hi - self.lo)
+        if self.kind == "softlog":
+            # shortcut: this inverts the CDF truncated to [lo, hi], so the sampled density exceeds
+            # logpdf by -ln(1 - mass below lo), ~0.0016 nats per free width; upgrade if that
+            # offset ever matters between the Laplace and nested lanes.
+            return (self.lo + self.mu) * ((self.hi + self.mu) / (self.lo + self.mu)) ** u - self.mu
         dist = self._dist()
         c_lo = float(dist.cdf(self.lo))
         z = self._trunc_mass(dist)
@@ -482,10 +498,11 @@ class PriorBundle:
     def _energy_groups(self) -> list[list[int]]:
         """Positions of the mode energies (``*.omega0``) the ordered-energy prior can order, one
         list per group of exchangeable modes: each carries one plain flat energy prior, and every
-        one of its parameters carries the same prior as the others of its group (a prior on one
-        mode's h or Gamma alone singles it out, and a mode whose Γ is pinned at the floor is a
-        delta-function mode, exchangeable only with another such mode). Groups of one are not
-        ordered."""
+        one of its other parameters carries the same prior as the others of its group (a prior on
+        one mode's h or Gamma alone singles it out). The recipe's default width prior is not part
+        of that comparison: a delta mode (Γ hard-fixed, no width prior) and a finite-width mode
+        are one ordered group, as :meth:`isar.analyze.prior.SpectrumPrior.ln_energies` has it (one
+        k!, one ordered transform over every mode's ω₀). Groups of one are not ordered."""
         groups = {}
         for i, p in enumerate(self.params):
             if p.name.endswith(".omega0") and p.kind == "flat":
@@ -493,11 +510,13 @@ class PriorBundle:
         return [g for g in groups.values() if len(g) >= 2]
 
     def _mode_priors(self, energy_index: int) -> tuple:
-        """The density of every parameter prior of the mode whose energy is at ``energy_index``,
-        with the mode prefix stripped, so two modes compare equal when their priors are the same."""
+        """The density of every parameter prior of the mode whose energy is at ``energy_index``
+        except its default width prior, with the mode prefix stripped, so two modes compare equal
+        when their priors are the same."""
         prefix = self.params[energy_index].name.split(".", 1)[0]
         return tuple((p.name.split(".", 1)[1], p.kind, p.mu, p.sigma, p.lo, p.hi)
-                     for p in self.params if p.name.split(".", 1)[0] == prefix)
+                     for p in self.params if p.name.split(".", 1)[0] == prefix
+                     and p.origin != "default_softlog")
 
     def logpdf_ordered(self, named_values: dict) -> float:
         """:meth:`logpdf` with each group of exchangeable mode energies under the normalised
@@ -533,7 +552,11 @@ class PriorBundle:
     @property
     def nontrivial(self) -> tuple[ResolvedPrior, ...]:
         """The informative (non-flat) priors — what the curvature check inspects."""
-        return tuple(p for p in self.params if p.kind != "flat")
+        # shortcut: the softlog knee's curvature 1/(Γ+0.12)² is ignored by the unseen-informative
+        # test; it can rival the likelihood's only for a width below about 0.1 meV, where the
+        # campaign path already takes the Γ-floor rung; upgrade if the campaign path prices such
+        # widths.
+        return tuple(p for p in self.params if p.kind not in ("flat", "softlog"))
 
 
 def _resolve_value(value, ctx, *, what: str) -> float:
@@ -572,7 +595,8 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=()) -> PriorBu
     Precedence per parameter — **exactly one prior factor each** (the H3/H4 no-double-counting
     rule): a transported soft constraint from ``ctx.constraints`` IS the prior (truncated
     Gaussian on the optimizer bounds); else an ``entry``-declared :class:`ParamPrior` matched by
-    suffix; else normalized flat over the bounds. ``exclude`` names the hard-fixed parameters
+    suffix; else the recipe default: the softened log-uniform density for a ``.Gamma``
+    (``default_softlog``), normalized flat over the bounds for anything else. ``exclude`` names the hard-fixed parameters
     (no prior factor; k already reduced). ``bounds`` is the per-parameter (lo, hi) list in
     ``composite.param_names()`` order, exactly as :func:`isar.analyze.loop.build_problem` built
     them.
@@ -610,6 +634,9 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=()) -> PriorBu
                 mu = _resolve_value(d.mu, ctx, what=f"{name} mu")
                 sigma = _resolve_value(d.sigma, ctx, what=f"{name} sigma")
                 resolved.append(_validated(name, d.kind, mu, sigma, lo, hi, "identity"))
+        elif suffix == "Gamma":
+            resolved.append(ResolvedPrior(name, "softlog", PriorSettings().width_knee, None,
+                                          lo, hi, "default_softlog"))
         else:
             resolved.append(ResolvedPrior(name, "flat", None, None, lo, hi, "default_flat"))
     # A declared suffix no free parameter carries is a stale/misspelled declaration — silent

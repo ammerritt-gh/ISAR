@@ -191,3 +191,42 @@ def test_a_comfortable_interior_mode_is_plain_laplace():
                              [2.0, 2.0], [0.0, 0.0], [4.0, 4.0])
     assert r.status == "ok" and r.boundary_method == "" and r.ln_box_mass == 0.0
     assert r.ln_z == pytest.approx(math.log(2 * math.pi * 0.01), abs=1e-6)
+
+
+# --------------------------------------------------------------------------- example 9: the bundle
+def test_ex9_bundle_prices_what_the_spectrum_prior_prices_delta_twin_included():
+    # What the deep pass samples (the campaign path's PriorBundle) is the same prior the fast pass
+    # prices (SpectrumPrior), for the plain model and for its delta twin (mode 2's width pinned
+    # and absent from the bundle). The ordered omega0 group spans every mode, delta or finite.
+    from dataclasses import replace
+
+    from isar.analyze import catalogue, evidence, loop
+    x = np.linspace(-10.0, 10.0, 81)
+    counts = np.round(5 + 200 * np.exp(-0.5 * ((x - 3) / 0.7) ** 2)
+                      + 80 * np.exp(-0.5 * ((x - 7) / 0.7) ** 2) + 150 * np.exp(-0.5 * (x / 0.5) ** 2))
+    ctx = ScanContext(x=x, counts=counts, mask=np.ones(81, dtype=bool), T=100.0, center=0.0,
+                      gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30", energy_status="absolute")
+    plain = next(h for h in catalogue.enumerate_count_structures(ctx, 2)
+                 if h.label == "elastic+stokes2+bg")
+    derived = loop._variant_context(ctx, {"phonon2.Gamma": GAMMA_FLOOR},
+                                    {"phonon2.Gamma": "catalogue_variant"},
+                                    variant=loop.DELTA_VARIANT, label=plain.label)
+    twin = replace(plain, label=plain.label + "_delta2", context=derived)
+    sp = prior.resolve_prior_for(ctx)
+    point = {"phonon.omega0": 3.0, "phonon.Gamma": 0.4, "phonon.h": 190.0,
+             "phonon2.omega0": 7.0, "phonon2.Gamma": 0.9, "phonon2.h": 70.0,
+             "elastic.h": 140.0, "bg.BG": 5.0}
+    for hyp, g2 in ((plain, 0.9), (twin, None)):
+        bundle = evidence.candidate_bundle(hyp, ctx)
+        names = [q.name for q in bundle.params]
+        assert ("phonon2.Gamma" in names) == (g2 is not None)
+        theta = {n: point[n] for n in names}
+        want = sp.ln_prior([(3.0, 0.4, 190.0), (7.0, g2, 70.0)], 140.0, 5.0)
+        assert bundle.logpdf_ordered(theta) == pytest.approx(want, abs=1e-9), hyp.label
+        for q in bundle.params:
+            kind = q.name.split(".", 1)[1]
+            kind = {"BG": "bg"}.get(kind, "elastic" if q.name == "elastic.h" else kind)
+            lo, hi = sp.bounds(kind)
+            assert q.hi == hi and (q.lo == lo or kind == "Gamma"), q.name
+            if kind == "Gamma":
+                assert q.lo == GAMMA_FLOOR and q.kind == "softlog"       # the fit's floor, not 0

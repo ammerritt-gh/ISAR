@@ -38,7 +38,10 @@ def test_default_is_normalized_flat_over_bounds():
     bundle = catalogue.resolve_priors(_composite(), _ctx(), _BOUNDS)
     assert [p.name for p in bundle.params] == ["phonon.omega0", "phonon.Gamma",
                                                "phonon.h", "bg.BG"]
-    assert all(p.kind == "flat" and p.origin == "default_flat" for p in bundle.params)
+    # re-pin (recipe /5): the width default is the softened log-uniform, not flat
+    got = {q.name: (q.kind, q.origin) for q in bundle.params}
+    assert got["phonon.Gamma"] == ("softlog", "default_softlog")
+    assert all(v == ("flat", "default_flat") for n, v in got.items() if n != "phonon.Gamma")
     p = bundle.by_name()["phonon.omega0"]
     total, _ = quad(lambda v: math.exp(p.logpdf(v)), p.lo, p.hi)
     assert abs(total - 1.0) < 1e-9
@@ -66,7 +69,7 @@ def test_lognormal_prior_matches_truncated_scipy_and_median():
 
 
 @pytest.mark.parametrize("kind,mu,sigma", [("gaussian", 4.0, 1.0), ("lognormal", 50.0, 0.5),
-                                           ("flat", None, None)])
+                                           ("flat", None, None), ("softlog", 0.12, None)])
 def test_ppf_roundtrips_through_the_truncated_cdf(kind, mu, sigma):
     lo, hi = (1e-3, 10.0) if kind != "lognormal" else (1.0, 1e4)
     p = catalogue.ResolvedPrior("x.p", kind, mu, sigma, lo, hi, "identity")
@@ -75,12 +78,28 @@ def test_ppf_roundtrips_through_the_truncated_cdf(kind, mu, sigma):
         assert lo <= v <= hi
         if kind == "flat":
             u_back = (v - lo) / (hi - lo)
+        elif kind == "softlog":       # closed-form CDF of 1/(x + mu), truncated to [lo, hi]
+            u_back = math.log((v + mu) / (lo + mu)) / math.log((hi + mu) / (lo + mu))
         else:
             dist = stats.norm(loc=mu, scale=sigma) if kind == "gaussian" \
                 else stats.lognorm(s=sigma, scale=mu)
             z = dist.cdf(hi) - dist.cdf(lo)
             u_back = (dist.cdf(v) - dist.cdf(lo)) / z
         assert abs(u_back - u) < 1e-9
+
+
+def test_softlog_is_normalised_on_zero_to_hi_and_sheds_the_mass_below_lo():
+    p = catalogue.ResolvedPrior("phonon.Gamma", "softlog", 0.12, None, 1e-3, 20.0, "default_softlog")
+    pdf = lambda v: math.exp(p.logpdf(v))
+    assert quad(pdf, 0.0, 1.0)[0] + quad(pdf, 1.0, 20.0)[0] == pytest.approx(1.0, abs=1e-9)
+    below = math.log((1e-3 + 0.12) / 0.12) / math.log((20.0 + 0.12) / 0.12)    # ~1.6e-3
+    assert quad(pdf, 1e-3, 1.0)[0] + quad(pdf, 1.0, 20.0)[0] == pytest.approx(1.0 - below, abs=1e-9)
+    assert p.logpdf(0.5e-3) == float("-inf") and p.logpdf(20.5) == float("-inf")
+    # one width density on both paths: the fast pass's SpectrumPrior is the same function
+    from isar.analyze.prior import resolve_prior
+    sp = resolve_prior([5.0, 9.0], [1.0, 9.0])
+    for v in (1e-3, 0.3, 4.0, 19.0):
+        assert p.logpdf(v) == pytest.approx(sp.ln_width(v), abs=1e-12)
 
 
 def test_ctx_attribute_resolution_and_fail_loud():
