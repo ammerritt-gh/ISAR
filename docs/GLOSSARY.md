@@ -32,6 +32,10 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 
 - **energy transfer** — the energy the probe lost or gained (meV); 0 meV is elastic scattering.
 - **phonon / DHO** — the inelastic peak ISAR fits, modelled as a damped harmonic oscillator in the full form of the paper's Eq. 2 (`STATS_PRIMER.md` §8).
+- **convolved height** — a peak's fitted amplitude `h`: the maximum, over `E ≥ 0`, of its whole
+  convolved profile, in counts per point at the spectrum's reference exposure (`STATS_PRIMER.md` §8).
+  The engine's columns have unit maximum, so `h` is the linear coefficient, and the amplitude prior
+  (flat on `[0, 1.2 x the spectrum's highest count]`, `STATS_PRIMER.md` §2.1) is a prior on `h` itself.
 - **elastic line** — the peak at zero energy transfer (no energy exchanged).
 - **energy zero** — where the elastic line sits on the energy axis; defines 0 meV. ISAR self-calibrates
   it from dedicated elastic/Bragg scans.

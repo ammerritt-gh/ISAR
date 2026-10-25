@@ -336,66 +336,79 @@ python docs/stats/make_figures.py --only akaike --workspace <path-to-mvp_zone_te
 
 How many peaks a spectrum holds is a model-selection question, so it is decided the way §2 decides
 everything: by evidence, with the Occam penalty paid out of the priors. That penalty is only as
-honest as the priors, and a prior built from the spectrum's own counts is not honest: a brighter
-spectrum would get a wider amplitude prior and pay a bigger penalty for the same extra peak. The
-**mode prior recipe** (`isar/analyze/prior.py`, version `isar.mode-prior-recipe/4`) fixes that. It is
-one rule, set before fitting and identical for every spectrum, built only from quantities the
-experiment *declares*: the fit window, the resolution width and the exposure. Starting values may
-still come from the data (a seed is not a prior); bounds and priors may not.
+honest as the priors. The **mode prior recipe** (`isar/analyze/prior.py`, version
+`isar.mode-prior-recipe/5`) is one rule, set before fitting and identical for every spectrum.
+Starting values may come from the data (a seed is not a prior).
 
-| Parameter | Prior (flat over) | Built from |
+**Empirical Bayes, for amplitudes only.** Recipe /4 built every bound from declared quantities and
+none from the spectrum's counts: a brighter spectrum then pays no larger Occam penalty for the same
+extra peak. Recipe /5 reverses that for the amplitudes, on the operator's ruling (2026-10-25): the
+heights are flat on `[0, 1.2 x the spectrum's highest count]`, so the prior is data-derived
+(empirical Bayes), and every fit records it (`recipe_provenance`: `empirical_bayes`, `max_count`,
+the resulting bounds and the settings). The cost is stated, not hidden: the amplitude prior is
+set by the data it is then used to explain, which makes the evidence slightly over-confident about
+the amplitude's scale. The margin 1.2 keeps the tallest peak about 6 sigma of headroom at 900 counts.
+Widths and energies stay declared.
+
+| Parameter | Prior | Built from |
 |---|---|---|
-| mode energy E0 (`omega0`) | `(1e-3, highest fitted energy)` meV | the fit window |
-| mode width Γ | `(min(1e-3 meV, 0.01 x resolution FWHM), 5 meV)` | the resolution width, a declared maximum |
-| mode / elastic / quasi-elastic area | `(0, scale x exposure x resolution FWHM)` | the exposure, the resolution width |
-| flat background (counts per point) | `(0, scale x exposure)` | the exposure |
+| mode energy E0 (`omega0`) | uniform and ordered on `(1e-3, min(20, highest fitted energy))` meV | the fit window |
+| mode width Γ | `1/(Γ + 0.12 meV)` on `(0, 20)` meV, normalised on `[0, 20]` (a softened log-uniform: equal weight per factor of ten, finite at zero, overdamped widths allowed); a delta mode has no width factor | a tenth of the resolution FWHM as the knee; the 20 meV cap |
+| mode / elastic height h | flat on `[0, 1.2 x max count]` | the spectrum's highest count |
+| flat background (counts per point) | flat on `[0, max count]` | the spectrum's highest count |
+| quasi-elastic area | flat on `(0, scale x exposure x resolution FWHM)` (the v4 rule; out of this recipe's scope) | the exposure, the resolution width |
 
-The exposure is the spectrum's own declared one (`exposure_reference`: the median kept monitor, or
-the counting time where a spectrum has no monitor), and `scale` depends on which of the two it is
-(`exposure_source`, below); a spectrum that declares none is given the
-nominal `1e6`, never a number taken from its counts. A spectrum with no usable resolution is held
-before it gets here. The anti-Stokes partner is still derived from its Stokes mode, never given a
-prior (§2, hard rule 2).
+**The height coordinate.** A peak's amplitude coordinate is its convolved height h (glossary): the
+maximum of its continuous convolved Stokes-side profile, in counts per point at the spectrum's
+reference exposure. The engine's columns are normalised to unit maximum, so h is the linear
+coefficient and the flat prior is a genuine prior on h, with no Jacobian. `max count` is the
+highest kept count at the reference exposure, `max(y_i / exposure_scale_i)`, floored at one count;
+NaN counts are dropped and a spectrum with no finite count is held upstream, never given a default
+prior. The width support is `[0, 20]` in the density while the fit's lower bound stays the
+`GAMMA_FLOOR` of 1e-3 meV; the density's mass below the floor (about 1.6e-3, 0.002 nats) is not
+renormalised. The anti-Stokes partner is still derived from its Stokes mode, never given a prior
+(§2, hard rule 2).
 
 **The energy floor, reversed.** Version 3 of the recipe started the energy prior at half a
-resolution FWHM (`MODE_ENERGY_FLOOR_FRACTION = 0.5`) to keep a "phonon" from standing in for the
-elastic line: the evidence had picked one at 0.19 meV with P = 0.993 on one world node. Measured
-on the endpoint world, that floor moved the spurious mode up to 0.82 meV rather than removing it.
-Version 4 removes the floor (operator direction, 2026-10-23). The energy prior is the fit window
-again. A mode that drifts onto the elastic line is handled by the degenerate-limit rule (§2): a fit
-railed at a limit is treated as its degenerate twin, instead of being kept off the limit. The
-ordered-energy prior below normalises over the recipe's window `[1e-3, top]` in both evidence
-lanes, reading its edges from the prior bundle.
+resolution FWHM to keep a "phonon" from standing in for the elastic line; measured on the endpoint
+world, that floor moved the spurious mode up to 0.82 meV rather than removing it. Version 4 removed
+the floor (operator direction, 2026-10-23) and recipe /5 keeps it removed. A mode that drifts onto
+the elastic line is handled by the degenerate-limit rule (§2): a fit railed at a limit is treated
+as its degenerate twin. The window is now capped at 20 meV (E0 is positive, 0 to 20 meV).
 
-**The amplitude constants.** `scale` is `AMPLITUDE_SCALE_PER_MONITOR = 1.0` for a monitor-normalised
-spectrum, and `AMPLITUDE_SCALE_PER_SECOND = 1.0e5` for one normalised by counting time alone (the
-recipe provenance of each fit records which was used). The monitor constant: a resolution-limited
-line may reach one count per point for every monitor count. It is a ceiling, not an expectation,
-and it is **agent-proposed** from order-of-magnitude public instrument figures
-(no measured value is used or committed): an inelastic X-ray analyzer detector counts at most some
-1e4 to 1e5 events per second before it saturates, the strongest elastic lines sit one to two
-decades below that, and the beam monitor integrates of order 1e4 to 1e5 counts per second, so the
-scattered peak rate per monitor count stays below one even for the strongest line, and phonons
-sit three decades or more below it. Taking that ceiling as the prior edge leaves one to two decades
-of headroom over the strongest line, which costs about 2.3 nats per decade of headroom per
-amplitude in the Occam factor, and keeps the area prior within the range the older count-scaled
-bound (1e4 x the maximum count) gave on typical spectra. There is no card override: the constant
-is part of the versioned recipe. The sensitivity check, the example set refitted with one alternative
-prior width, is **Planned** and not yet run; if any selected count moves, the affected spectra are
-reported and the constant goes to the operator before the beamtime.
+**The evidence: posterior mode, exact Hessian, box rule.** The fast pass and `laplace_log_evidence`
+take the evidence at the posterior mode (likelihood times prior), with the exact Hessian H of
+minus (ln L + ln prior) in the fit coordinates by central differences of the scalar objective
+(never J^T J, which is a Gauss-Newton approximation):
+`ln Z = ln L + ln prior + (d/2) ln 2 pi - (1/2) ln det H`. The Gaussian must not be priced as if
+it did not spread beyond the prior's support, so the integral is taken over the support box. With
+C = H^-1 and g the one-sided inward gradient on the coordinates railed at a bound, the quadratic's
+centre is mu = theta - C g, and `ln Z = -f(theta) + (1/2) g'Cg + (d/2) ln 2 pi - (1/2) ln det H +
+ln P_box`, P_box the mass of N(mu, C) inside the box. It is computed over the coordinates whose
+bound lies within 6 sd of mu (the rest contribute 1): one coordinate in closed form (`log_ndtr`),
+several by Genz's multivariate normal CDF (relative error about 1e-4, accepted). One railed
+coordinate reproduces the single-boundary correction `(g s)^2/2 + ln Phi(-g s)` exactly, so the
+older treatment is a special case. A wide coordinate that is not railed is still cut by the box:
+f = x^2/5000 on `[-10, 10]` has an unboxed Laplace value of 125.3 against an exact 19.87, and the
+box mass 0.1585 puts it right. A Hessian that is not positive definite is `no_evidence` (there is
+no linear-limit branch). Laplace is not promised accurate for a prior-dominated coordinate; it is
+not priced as if it did not spread beyond the support.
 
-The seconds constant is the same kind of ceiling in counts per second: the top of the 1e4 to 1e5
-events per second an analyzer detector saturates at, so a count-time ceiling never clips a real
-line. A 30 s scan at 0.4 meV resolution therefore admits a mode area of 1.2e6 counts·meV, where the
-monitor constant applied to seconds would have given 12 and clipped a strong line. It has the same
-status as the monitor constant: agent-proposed, versioned, and to the operator through the sensitivity check (Planned).
+**The sensitivity arms.** `SENSITIVITY_ARMS` names the five alternatives the recipe is checked
+against, plus itself: `margin_1.05` and `margin_3` (the amplitude margin), `width_flat` (a flat
+width prior), `width_cap_40` (a 40 meV cap) and `today_v4` (recipe /4 in the height coordinate:
+heights and background `scale x exposure`, width flat on `[1e-3, 5]`). Changing the margin from 1.05
+to 3 costs 1.05 nats per extra peak in the Occam factor (`ln(3/1.05)`), the figure the design
+quotes. The check itself, on the real spectra, is run before the beamtime and reported to the
+operator **[Planned]**.
 
 **The exposure source.** `exposure_source` (`monitor` or `time`) travels from the normalization
-selection into the fit context. A context that declares an exposure reference with no source is
-refused, never given a default scale. The synthetic stat2b world's exposure is a flux profile and is
-labelled `monitor`, so its bounds are unchanged. The pooled-master path normalises by monitor only:
-a master with no monitor takes the nominal exposure on the monitor scale, not seconds. That gap is
-the pooled path's own, and this recipe does not change it.
+selection into the fit context and still decides the scale of the quasi-elastic area ceiling and of
+the `today_v4` arm (`AMPLITUDE_SCALE_PER_MONITOR = 1.0`, `AMPLITUDE_SCALE_PER_SECOND = 1.0e5`,
+agent-proposed ceilings from order-of-magnitude instrument figures, no measured value committed). A
+context that declares an exposure reference with no source is refused for those, never given a
+default scale. The pooled-master path normalises by monitor only: a master with no monitor takes the
+nominal exposure `1e6` on the monitor scale, not seconds. That gap is the pooled path's own.
 
 **Mode identities.** The modes of one structure are exchangeable: swapping two labels gives the same
 curve, so every solution appears N! times in the likelihood. A flat prior per label then makes the
@@ -407,18 +420,30 @@ nested sampling draws it as the order statistics of uniforms (`ordered_energy_tr
 catalogue's prior bundle carries both (`logpdf_ordered`, `transform_ordered`). Each lane gets the
 N! exactly once and the two agree. The ordering is on E0 (`omega0`), the sampled coordinate, where that
 normalisation is exact. It applies only to exchangeable
-modes: every parameter of each mode (E0, Γ, h) must carry the same prior density as the others. The
+modes: every other parameter of each mode (Γ, h) must carry the same prior density as the others. The
 modes are split into groups that are exchangeable among themselves, and each group of two or more is
 ordered on its own, N!/W^N per group. A prior that singles out one mode's amplitude or width puts
-that mode in a group of its own, so its energy keeps the labelled prior. A delta-function mode (Γ
-pinned at the floor by a degenerate twin, §2) is ordered only with other delta-function modes.
+that mode in a group of its own, so its energy keeps the labelled prior. The recipe's own width
+prior is not part of that comparison: a delta-function mode (Γ pinned at the floor by a degenerate
+twin, §2, and so with no width factor) is ordered together with the finite-width modes, one k!, one
+ordered transform over every mode's E0.
 
-**Status [Implemented; the sensitivity check is Planned].** The recipe, the ordered prior, the ceiling and
-the signature are implemented and tested. The fitter's bounds come from the recipe (`loop.build_problem`
-reads `prior.mode_bounds`; the count-scaled bounds are gone), as do rung 1 of the count ladder and both
-evidence lanes (`evidence.py`, `errors/bayes.py`), which price modes under the ordered energy prior. The
-delivery (`scan_delivery.fit_one`) passes the card's `max_modes` to the fit and runs rung 2 (§2.2). Not yet
-run: the sensitivity check of the two amplitude constants.
+**The k! in the Laplace path.** The Laplace expansion at one labelled mode with `ln(k!/W^k)` equals
+the integral over all k! label copies with the flat `1/W^k`. Omitting the k! would add a spurious
+ln(k+1) penalty per extra peak. It is checked (`tests/analyze/test_prior_v5.py`) on two peaks of
+equal height with free positions: the brute-force grid gives ln Z = -237.3786, Laplace with the k!
+gives -237.3789, and without it -238.0720. Two peaks of fixed, different heights with only positions
+free have one label copy, so a k! test must use equal heights or free all of each peak's
+parameters, or it cannot tell right from wrong.
+
+**Status [Implemented; sensitivity check in S1U7].** The recipe, the ordered prior, the box-rule
+Laplace, the softened log-uniform width and the signature are implemented and tested. The fitter's
+bounds come from the recipe (`loop.build_problem` reads `prior.mode_bounds`, which resolves
+`prior.resolve_prior_for`, so the TRF box and the Laplace box are one source), as do rung 1 of the
+count ladder and both evidence lanes (`evidence.py`, `errors/bayes.py`), which price modes under the
+ordered energy prior. The campaign path's `PriorBundle` carries the same width density
+(`ResolvedPrior.kind = "softlog"`). The delivery (`scan_delivery.fit_one`) passes the card's
+`max_modes` to the fit and runs rung 2 (§2.2). Not yet run: the sensitivity check on the real spectra.
 
 **The delivery [Implemented].** Every spectrum is in one state (`isar.analyze.count_ladder`):
 `settled`, `provisional` (rung 2 still to run), `search limited`, `unresolved` or `held`, with its
