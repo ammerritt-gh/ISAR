@@ -119,7 +119,7 @@ def _fit_context(*, constraints=None, **changes):
     values = {
         "x": np.array([-1.0, 0.0, 1.0]),
         "counts": np.array([3.0, 8.0, 4.0]),
-        "mask": np.array([False, False, False]),
+        "mask": np.array([True, True, True]),     # re-pin (recipe /5): the prior reads kept points
         "exposure_scale": np.array([1.0, 1.0, 1.0]),
         "exposure_reference": 1.0,
         "exposure_source": "monitor",
@@ -135,7 +135,13 @@ def _fit_context(*, constraints=None, **changes):
         "constraints": constraints,
     }
     values.update(changes)
-    return SimpleNamespace(**values)
+    ctx = SimpleNamespace(**values)
+    # Re-pin (recipe /5): recipe_provenance reads the kept points through ScanContext's properties.
+    keep = np.asarray(ctx.mask, dtype=bool)
+    ctx.x_used = np.asarray(ctx.x, dtype=float)[keep]
+    ctx.counts_used = np.asarray(ctx.counts, dtype=float)[keep]
+    ctx.exposure_used = np.asarray(ctx.exposure_scale, dtype=float)[keep]
+    return ctx
 
 
 def _problem(*, composite=None, bounds=None, free_names=None, fixed_pos=None, fixed_vals=None):
@@ -574,7 +580,7 @@ def test_comparison_fingerprint_mutation_matrix(monkeypatch):
     data_changes = (
         {"counts": np.array([3.0, 9.0, 4.0])},
         {"x": np.array([-1.1, 0.0, 1.0])},
-        {"mask": np.array([False, True, False])},
+        {"mask": np.array([False, True, True])},   # re-pin (recipe /5): keeps a positive energy
         {"exposure_scale": np.array([1.0, 2.0, 1.0])},
         # the prior recipe's amplitude ceiling follows what the exposure counts
         {"exposure_source": "time"},
