@@ -13,3 +13,5 @@ docs/campaigns/2026-08-05_O44_ZONE_CENTRE_SOURCE_CLOSURE/** -text
 tests/gui/fixtures/** text eol=lf
 # Committed copies of facility files keep the facility line endings byte for byte.
 artificial_data/** -text
+# The session transcript is kept byte for byte as received (CRLF), not normalised like other docs.
+docs/transcripts/2026-10-25-peak-fitting-for-letacon-csv3sb5-data-d70ac2ed.md -text

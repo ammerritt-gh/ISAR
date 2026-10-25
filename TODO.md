@@ -91,6 +91,16 @@ Things that are wrong now, as opposed to things not yet built.
       **Acceptance:** no test reads `test_workspaces/`, and the routine lane's skip count in a
       fresh worktree drops by three.
 
+- [ ] **DEFECT-9 — PR #46 fails the fcc campaign test at its wall ceiling.**
+      `tests/drive/test_fcc_battery.py::test_full_range_discovery_finds_and_maps_both_phonons` hits its
+      closed-loop wall ceiling (698 s serially) on PR #46's lineage; it passes on `main` in 118 s.
+      Bisected to `1f58dfe` (a narrow mode keeps its area on the grid): narrow modes go
+      resolution-limited and spawn negligible delta-twin rows, and the scene `presence` factor has no
+      score bound (`isar/scene/factors.py:524-533`), so margin pruning is off and the cluster passes the
+      4096-alternative cap after 5 scans. Cause as stated in `docs/HANDOFF-letacon-fitting.md`.
+      **Acceptance:** the presence factor has a cluster-size-dependent bound, and the test passes within
+      its ceiling (a later job; the scene presence bound is out of scope for the fast-pass job).
+
 ---
 
 ## Validation gates

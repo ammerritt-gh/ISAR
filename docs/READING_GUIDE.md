@@ -196,6 +196,7 @@ standing check that we are building a usable instrument, not a self-certifying l
 | Does the same core work on triple-axis? | [assets/in8_phase1/FINDINGS.md](assets/in8_phase1/FINDINGS.md) |
 | What the committed evidence bundle is and is not | [assets/README.md](assets/README.md) |
 | The frozen campaign evidence bundles (data, never contract) | [campaigns/README.md](campaigns/README.md) |
+| External research reports (amplitude priors for peak counting; nested-sampling evidence) | [research/Bayesian_Priors_Counting_ChatGPT.md](research/Bayesian_Priors_Counting_ChatGPT.md) · [research/Nested-Sampling_Evidence_ChatGPT.md](research/Nested-Sampling_Evidence_ChatGPT.md) |
 | The 2026-07-06 IN8 calibration record | [../calibration/README.md](../calibration/README.md) — terminal; fate on the closeout list |
 | Pre-rebuild design rationale (phases 1–3, unification) | git history (`git log --all -- docs/archive/ docs/UNIFICATION_DESIGN.md`); load-bearing rationale absorbed into ARCHITECTURE, STATS_PRIMER, design/steering |
 
