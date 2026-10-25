@@ -1,8 +1,9 @@
 """Component-model layer: each lineshape is a Component; a CompositeModel sums them.
 
 The load-bearing test is `test_composite_equals_convolute_voigt_dho_all` — the composite
-of [PhononDHO, Elastic, ConstantBackground] must be numerically identical to the frozen
-production model `convolute_voigt_dho(peak="all")`, proving the generalization is faithful.
+of [PhononDHO, Elastic, ConstantBackground] must be numerically identical to the production
+lineshape `convolute_voigt_dho(peak="all")` once the fitted heights are turned into the
+lineshape's intrinsic amplitude, proving the generalization is faithful.
 """
 from types import SimpleNamespace
 
@@ -10,15 +11,15 @@ import numpy as np
 
 from isar.analyze import components as C
 from isar.analyze.context import ScanContext
-from isar.analyze.lineshapes import Voigt, convolute_voigt_dho
-from isar.analyze.phonon import omega0_from, omega0_value_error
+from isar.analyze.lineshapes import KB, Voigt, convolute_voigt_dho, voigt_area_for_height
 
 
 def _ctx(gauss_fwhm=1.2, lorentz_fwhm=0.3, center=-0.5, T=200.0, x=None, counts=None,
          quasielastic_fwhm=1.5):
-    """Duck-typed stand-in for ScanContext (only the fields components read)."""
+    """Duck-typed stand-in for ScanContext (only the fields components read); ``x_used`` is the
+    window the phonon's unit peak is read on."""
     return SimpleNamespace(gauss_fwhm=gauss_fwhm, lorentz_fwhm=lorentz_fwhm,
-                           center=center, T=T, x=x, counts=counts,
+                           center=center, T=T, x=x, x_used=x, counts=counts,
                            quasielastic_fwhm=quasielastic_fwhm)
 
 
@@ -29,24 +30,28 @@ def test_constant_background_is_flat():
     assert out.shape == x.shape
 
 
-def test_elastic_matches_voigt():
+def test_elastic_height_is_the_peak_of_the_voigt():
     x = np.linspace(-10, 10, 81)
     ctx = _ctx(gauss_fwhm=1.1, lorentz_fwhm=0.2, center=-0.3)
-    out = C.Elastic().evaluate(x, {"E": 42.0}, ctx)
-    expected = Voigt(x, 42.0, ctx.gauss_fwhm, ctx.lorentz_fwhm, ctx.center)
-    assert np.allclose(out, expected)
+    out = C.Elastic().evaluate(x, {"h": 42.0}, ctx)
+    area = 42.0 * voigt_area_for_height(1.0, ctx.gauss_fwhm, ctx.lorentz_fwhm)
+    assert np.allclose(out, Voigt(x, area, ctx.gauss_fwhm, ctx.lorentz_fwhm, ctx.center))
+    at_center = C.Elastic().evaluate(np.array([ctx.center]), {"h": 42.0}, ctx)[0]
+    assert np.isclose(at_center, 42.0) and np.isclose(out.max(), 42.0, rtol=2e-2)
+
+
+def _phonon_amplitude(local, ctx):
+    """The lineshape's intrinsic A behind a fitted height (the library's own bookkeeping)."""
+    return C.PhononDHO().intrinsic_amplitude(local, ctx)
 
 
 def test_phonon_matches_stokes_astokes_convolution():
     x = np.linspace(-10, 10, 81)
-    ctx = _ctx()
-    od, g, A = 4.0, 0.5, 300.0
-    out = C.PhononDHO().evaluate(x, {"Omega_d": od, "Gamma": g, "A": A}, ctx)
-    omega0 = omega0_from(od, g)
-    # H4: the fitted A is intrinsic; the lineshape sees the measured strength A·(n+1).
-    from isar.analyze.phonon import bose_occupation
-    expected = convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
-                                   g, A * bose_occupation(omega0, ctx.T), 0.0, 0.0, ctx.T,
+    ctx = _ctx(x=x)
+    local = {"omega0": 4.0, "Gamma": 0.5, "h": 300.0}
+    out = C.PhononDHO().evaluate(x, local, ctx)
+    expected = convolute_voigt_dho(x, 4.0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
+                                   0.5, _phonon_amplitude(local, ctx), 0.0, 0.0, ctx.T,
                                    peak="stokes+astokes")
     assert np.allclose(out, expected)
 
@@ -55,9 +60,9 @@ def test_phonon_tied_antistokes_grows_with_T():
     """The Bose-tied anti-Stokes (gain side) is ~0 as T->0 and grows with T — the
     step-1 form of the §2 detailed-balance guard (no free anti-Stokes parameter)."""
     x = np.linspace(-12, 12, 241)
-    od, g, A = 4.0, 0.4, 500.0
-    cold = C.PhononDHO().evaluate(x, {"Omega_d": od, "Gamma": g, "A": A}, _ctx(center=0.0, T=5.0))
-    hot = C.PhononDHO().evaluate(x, {"Omega_d": od, "Gamma": g, "A": A}, _ctx(center=0.0, T=300.0))
+    local = {"omega0": 4.0, "Gamma": 0.4, "h": 500.0}
+    cold = C.PhononDHO().evaluate(x, local, _ctx(center=0.0, T=5.0, x=x))
+    hot = C.PhononDHO().evaluate(x, local, _ctx(center=0.0, T=300.0, x=x))
     gain = x < -1.0  # anti-Stokes (energy-gain) side
     assert hot[gain].sum() > 10.0 * cold[gain].sum()
     assert cold[gain].sum() >= 0.0
@@ -95,77 +100,77 @@ def test_quasielastic_has_in_window_leverage_where_sharp_elastic_has_none():
     x = np.array([2.0])
     ctx = _ctx(gauss_fwhm=0.6, lorentz_fwhm=0.0, center=0.0, quasielastic_fwhm=1.5)
     qe = C.QuasiElastic().evaluate(x, {"QE": 1.0}, ctx)[0]
-    el = C.Elastic().evaluate(x, {"E": 1.0}, ctx)[0]
+    el = C.Elastic().evaluate(x, {"h": 1.0}, ctx)[0]
     assert qe > 1000.0 * el
 
 
 def test_composite_equals_convolute_voigt_dho_all():
     x = np.linspace(-10, 10, 81)
-    ctx = _ctx(gauss_fwhm=1.2, lorentz_fwhm=0.3, center=-0.5, T=200.0)
+    ctx = _ctx(gauss_fwhm=1.2, lorentz_fwhm=0.3, center=-0.5, T=200.0, x=x)
     comp = C.CompositeModel([C.PhononDHO(), C.Elastic(), C.ConstantBackground()])
-    theta = np.array([4.0, 0.5, 300.0, 50.0, 10.0])  # (Omega_d, Gamma, A, E, BG)
+    theta = np.array([4.0, 0.5, 300.0, 50.0, 10.0])  # (omega0, Gamma, h, elastic.h, BG)
     out = comp.evaluate(x, theta, ctx)
-    omega0 = omega0_from(theta[0], theta[1])
-    # H4: measured phonon strength = intrinsic A · (n+1); elastic/bg are occupation-free.
-    from isar.analyze.phonon import bose_occupation
-    expected = convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
-                                   theta[1], theta[2] * bose_occupation(omega0, ctx.T),
-                                   theta[3], theta[4], ctx.T, peak="all")
+    # The phonon's height is turned into the lineshape's intrinsic A; the elastic height into
+    # the Voigt area that has that peak value; background is occupation-free.
+    expected = convolute_voigt_dho(
+        x, theta[0], ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm, theta[1],
+        _phonon_amplitude({"omega0": theta[0], "Gamma": theta[1], "h": theta[2]}, ctx),
+        theta[3] * voigt_area_for_height(1.0, ctx.gauss_fwhm, ctx.lorentz_fwhm), theta[4], ctx.T,
+        peak="all")
     assert np.allclose(out, expected)
 
 
 def test_composite_param_names_and_kinds():
     comp = C.CompositeModel([C.PhononDHO(), C.Elastic(), C.ConstantBackground()])
-    assert comp.param_names() == ["phonon.Omega_d", "phonon.Gamma", "phonon.A",
-                                  "elastic.E", "bg.BG"]
-    assert comp.nonlinear_names() == ["phonon.Omega_d", "phonon.Gamma"]
-    assert comp.linear_names() == ["phonon.A", "elastic.E", "bg.BG"]
+    assert comp.param_names() == ["phonon.omega0", "phonon.Gamma", "phonon.h",
+                                  "elastic.h", "bg.BG"]
+    assert comp.nonlinear_names() == ["phonon.omega0", "phonon.Gamma"]
+    assert comp.linear_names() == ["phonon.h", "elastic.h", "bg.BG"]
 
 
 def test_composite_param_names_drop_elastic():
     comp = C.CompositeModel([C.PhononDHO(), C.ConstantBackground()])
-    assert comp.param_names() == ["phonon.Omega_d", "phonon.Gamma", "phonon.A", "bg.BG"]
-    assert comp.linear_names() == ["phonon.A", "bg.BG"]
+    assert comp.param_names() == ["phonon.omega0", "phonon.Gamma", "phonon.h", "bg.BG"]
+    assert comp.linear_names() == ["phonon.h", "bg.BG"]
 
 
 def test_composite_nnls_basis_matches_initial_guess_columns():
     x = np.linspace(-9.99, 9.99, 41)
-    ctx = _ctx(gauss_fwhm=1.0, lorentz_fwhm=0.0, center=0.0, T=100.0)
+    ctx = _ctx(gauss_fwhm=1.0, lorentz_fwhm=0.0, center=0.0, T=100.0, x=x)
     comp = C.CompositeModel([C.PhononDHO(), C.Elastic(), C.ConstantBackground()])
-    od, g0 = 4.5, 0.3
-    phi, names = comp.nnls_basis(x, {"phonon.Omega_d": od, "phonon.Gamma": g0}, ctx)
-    assert names == ["phonon.A", "elastic.E", "bg.BG"]
+    e0, g0 = 4.5, 0.3
+    phi, names = comp.nnls_basis(x, {"phonon.omega0": e0, "phonon.Gamma": g0}, ctx)
+    assert names == ["phonon.h", "elastic.h", "bg.BG"]
     assert phi.shape == (x.size, 3)
-    omega0 = omega0_from(od, g0)
-    from isar.analyze.phonon import bose_occupation
-    # H4: the phonon's unit column is the unit INTRINSIC amplitude response = (n+1)·lineshape(1).
-    ph = convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
-                             g0, bose_occupation(omega0, ctx.T), 0.0, 0.0, ctx.T,
-                             peak="stokes+astokes")
-    el = convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
-                             g0, 0.0, 1.0, 0.0, ctx.T, peak="elastic")
+    # The phonon's unit column is the unit-HEIGHT response: the lineshape at A = 1 over its height.
+    from isar.analyze import lineshapes as L
+    conv = L.resolution_convolver(x, ctx.gauss_fwhm, ctx.lorentz_fwhm)
+    height = L.unit_peak(conv, e0, g0, ctx.T)[1].height
+    ph = convolute_voigt_dho(x, e0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
+                             g0, 1.0, 0.0, 0.0, ctx.T, peak="stokes+astokes") / height
+    el = Voigt(x, voigt_area_for_height(1.0, ctx.gauss_fwhm, ctx.lorentz_fwhm), ctx.gauss_fwhm,
+               ctx.lorentz_fwhm, ctx.center)
     assert np.allclose(phi[:, 0], ph)
     assert np.allclose(phi[:, 1], el)
     assert np.allclose(phi[:, 2], np.ones_like(x))
 
 
-def test_composite_omega0_and_error_match_helper():
+def test_composite_omega0_and_error_are_the_fitted_energy():
     comp = C.CompositeModel([C.PhononDHO(), C.Elastic(), C.ConstantBackground()])
     theta = np.array([4.0, 0.5, 300.0, 50.0, 10.0])
     cov = np.zeros((5, 5))
     cov[0, 0], cov[1, 1], cov[0, 1] = 0.01, 0.04, -0.005
     cov[1, 0] = cov[0, 1]
     omega0, err = comp.omega0(theta, cov)
-    exp_o, exp_e = omega0_value_error(theta[0], theta[1], cov[:2, :2])
-    assert np.isclose(omega0, exp_o)
-    assert np.isclose(err, exp_e)
+    assert omega0 == 4.0
+    assert np.isclose(err, 0.1)                 # E0 is fitted directly: sigma = sqrt(cov[0, 0])
 
 
 def test_composite_omega0_error_nan_without_covariance():
     comp = C.CompositeModel([C.PhononDHO(), C.ConstantBackground()])
     theta = np.array([4.0, 0.5, 300.0, 10.0])
     omega0, err = comp.omega0(theta, None)
-    assert np.isclose(omega0, omega0_from(4.0, 0.5))
+    assert omega0 == 4.0
     assert np.isnan(err)
 
 
@@ -177,40 +182,38 @@ def test_instance_prefix_override_namespaces_two_phonons():
     assert p1.prefix == "phonon1" and p2.prefix == "phonon2"
     assert C.PhononDHO().prefix == "phonon"                 # instance override did not mutate class
     comp = C.CompositeModel([p1, p2, C.ConstantBackground()])
-    assert comp.param_names() == ["phonon1.Omega_d", "phonon1.Gamma", "phonon1.A",
-                                  "phonon2.Omega_d", "phonon2.Gamma", "phonon2.A", "bg.BG"]
+    assert comp.param_names() == ["phonon1.omega0", "phonon1.Gamma", "phonon1.h",
+                                  "phonon2.omega0", "phonon2.Gamma", "phonon2.h", "bg.BG"]
     assert len(set(comp.param_names())) == 7               # no collision
 
 
 def test_phonon_indices_and_omega0_all_sorted():
     comp = C.CompositeModel([C.PhononDHO(prefix="phonon1"), C.PhononDHO(prefix="phonon2"),
                              C.ConstantBackground()])
-    # phonon1 is the HIGH-ω₀ mode; phonon2 the low one — omega0_all must canonicalize ascending.
+    # phonon1 is the HIGH-E0 mode; phonon2 the low one — omega0_all must canonicalize ascending.
     theta = np.array([9.0, 0.3, 100.0,   3.0, 0.3, 400.0,   10.0])
     assert comp.phonon_indices() == [0, 3]
     w = comp.omega0_all(theta, None)
-    assert [round(o, 3) for o, _ in w] == sorted(round(o, 3) for o, _ in w)
-    assert np.isclose(w[0][0], omega0_from(3.0, 0.3))       # low mode first
-    assert np.isclose(w[1][0], omega0_from(9.0, 0.3))
+    assert [o for o, _ in w] == [3.0, 9.0]                  # low mode first
 
 
-def test_primary_phonon_index_amplitude_then_prior():
+def test_primary_phonon_index_height_then_prior():
     comp = C.CompositeModel([C.PhononDHO(prefix="phonon1"), C.PhononDHO(prefix="phonon2"),
                              C.ConstantBackground()])
     theta = np.array([9.0, 0.3, 100.0,   3.0, 0.3, 400.0,   10.0])
-    # no prior → largest amplitude (phonon2, A=400 at index 3)
+    # no prior → largest height (phonon2, h=400 at index 3)
     assert comp.primary_phonon_index(theta, None) == 3
     o_primary, _ = comp.omega0(theta, None)
-    assert np.isclose(o_primary, omega0_from(3.0, 0.3))
+    assert o_primary == 3.0
     # prior near the high mode → nearest-to-prior wins (phonon1 at index 0)
     assert comp.primary_phonon_index(theta, None, prior_omega=9.0) == 0
     o_prior, _ = comp.omega0(theta, None, prior_omega=9.0)
-    assert np.isclose(o_prior, omega0_from(9.0, 0.3))
+    assert o_prior == 9.0
 
 
 def test_composite_evaluate_components_sum_to_total():
     x = np.linspace(-10, 10, 81)
-    ctx = _ctx()
+    ctx = _ctx(x=x)
     comp = C.CompositeModel([C.PhononDHO(), C.Elastic(), C.ConstantBackground()])
     theta = np.array([4.0, 0.5, 300.0, 50.0, 10.0])
     parts = comp.evaluate_components(x, theta, ctx)
@@ -236,7 +239,7 @@ def test_exposure_scales_composite_mean_components_and_nnls_only():
     assert np.allclose(comp.evaluate(x, theta, exposed), base * scale)
     parts = comp.evaluate_components(x, theta, exposed)
     assert np.allclose(sum(values for _name, values in parts), base * scale)
-    nonlinear = {"phonon.Omega_d": 4.0, "phonon.Gamma": 0.4}
+    nonlinear = {"phonon.omega0": 4.0, "phonon.Gamma": 0.4}
     phi0, names0 = comp.nnls_basis(x, nonlinear, legacy)
     phi1, names1 = comp.nnls_basis(x, nonlinear, exposed)
     assert names0 == names1
@@ -258,21 +261,19 @@ def test_uniform_exposure_is_regression_identical():
                           comp.evaluate(x, theta, uniform_ctx))
 
 
-# --- universal Bose factor (H4): fitted A is intrinsic, model applies (n+1) ------------------
+# --- the intrinsic amplitude behind a height, and the Bose tie --------------------------------
 
-def test_phonon_amplitude_is_intrinsic_times_bose():
-    """evaluate(A) == convolute(measured) with measured = A·(n+1)(ω₀,T) — the H4 relation."""
-    from isar.analyze.phonon import bose_occupation, omega0_from
-
+def test_phonon_height_is_the_intrinsic_amplitude_times_the_unit_peak_height():
+    """evaluate(h) == the lineshape at A = h / UnitPeak.height — the height coordinate's relation."""
     x = np.linspace(-10.0, 10.0, 161)
-    ctx = _ctx(center=0.0, T=150.0)
-    od, g, A = 3.0, 0.5, 40.0
-    omega0 = omega0_from(od, g)
-    got = C.PhononDHO().evaluate(x, {"Omega_d": od, "Gamma": g, "A": A}, ctx)
-    expected = convolute_voigt_dho(x, omega0, 0.0, ctx.gauss_fwhm, ctx.lorentz_fwhm,
-                                   g, A * bose_occupation(omega0, ctx.T), 0.0, 0.0, ctx.T,
-                                   peak="stokes+astokes")
-    assert np.allclose(got, expected)
+    ctx = _ctx(center=0.0, T=150.0, x=x)
+    local = {"omega0": 3.0, "Gamma": 0.5, "h": 40.0}
+    comp = C.PhononDHO()
+    a = comp.intrinsic_amplitude(local, ctx)
+    assert np.isclose(a * comp.unit_peak(local, ctx).height, 40.0, rtol=1e-12)
+    expected = convolute_voigt_dho(x, 3.0, 0.0, ctx.gauss_fwhm, ctx.lorentz_fwhm,
+                                   0.5, a, 0.0, 0.0, ctx.T, peak="stokes+astokes")
+    assert np.allclose(comp.evaluate(x, local, ctx), expected)
 
 
 def test_bose_occupation_limits():
@@ -286,45 +287,36 @@ def test_bose_occupation_limits():
     assert abs(bose_occupation(w, T) - (KB * T / w + 0.5)) < 0.01
 
 
-def test_same_intrinsic_amplitude_across_temperatures():
-    """One intrinsic A produces Stokes peaks scaled by the occupation ratio — the decoupling
-    that makes amplitude transport physical (H4)."""
-    from isar.analyze.phonon import bose_occupation, omega0_from
-
+def test_same_intrinsic_amplitude_gives_the_occupation_ratio_in_height():
+    """One intrinsic A produces a narrow Stokes peak scaled by the occupation ratio — the decoupling
+    that makes amplitude transport physical (H4). Narrow (Γ = 0.05) so the Bose factor is flat
+    across the line to 3%."""
     x = np.linspace(-10.0, 10.0, 401)
-    od, g, A = 4.0, 0.4, 100.0
-    omega0 = omega0_from(od, g)
-    cold = C.PhononDHO(peak="stokes").evaluate(x, {"Omega_d": od, "Gamma": g, "A": A},
-                                               _ctx(center=0.0, T=30.0))
-    hot = C.PhononDHO(peak="stokes").evaluate(x, {"Omega_d": od, "Gamma": g, "A": A},
-                                              _ctx(center=0.0, T=600.0))
-    ratio = np.max(hot) / np.max(cold)
-    expected = bose_occupation(omega0, 600.0) / bose_occupation(omega0, 30.0)
-    assert abs(ratio - expected) < 1e-6 * expected
+    e0, g = 4.0, 0.05
+    heights = {}
+    for T in (30.0, 600.0):
+        ctx = _ctx(center=0.0, gauss_fwhm=0.6, lorentz_fwhm=0.0, T=T, x=x)
+        heights[T] = C.PhononDHO(peak="stokes").unit_peak({"omega0": e0, "Gamma": g}, ctx).height
+    ratio = heights[600.0] / heights[30.0]
+    n1 = lambda T: 1.0 / (1.0 - np.exp(-e0 / (KB * T)))
+    assert abs(ratio / (n1(600.0) / n1(30.0)) - 1.0) < 0.03
 
 
 def test_detailed_balance_ratio_survives_reparameterization():
-    """The anti-Stokes/Stokes ratio stays exp(−ω/kT) — the tie is untouched by H4."""
-    from isar.analyze.lineshapes import KB
-    from isar.analyze.phonon import omega0_from
-
+    """The anti-Stokes/Stokes ratio stays exp(−E0/kT) — the tie is untouched by the height."""
     x = np.linspace(-12.0, 12.0, 961)
-    ctx = _ctx(center=0.0, gauss_fwhm=0.6, lorentz_fwhm=0.0, T=250.0)
-    od, g, A = 5.0, 0.3, 80.0
-    omega0 = omega0_from(od, g)
-    y = C.PhononDHO().evaluate(x, {"Omega_d": od, "Gamma": g, "A": A}, ctx)
+    ctx = _ctx(center=0.0, gauss_fwhm=0.6, lorentz_fwhm=0.0, T=250.0, x=x)
+    y = C.PhononDHO().evaluate(x, {"omega0": 5.0, "Gamma": 0.3, "h": 80.0}, ctx)
     stokes = float(np.max(y[x > 1.0]))
     astokes = float(np.max(y[x < -1.0]))
-    assert abs(astokes / stokes - np.exp(-omega0 / (KB * ctx.T))) < 0.02
+    assert abs(astokes / stokes - np.exp(-5.0 / (KB * ctx.T))) < 0.02
 
 
-def test_primary_phonon_index_bose_corrects_with_T():
-    """With T, 'strongest' means measured A·(n+1): a low-ω mode with smaller intrinsic A can be
-    the stronger measured peak. Without T, raw intrinsic A decides (old behaviour)."""
+def test_primary_phonon_index_is_the_largest_height_whatever_the_temperature():
+    """The fitted h is already the measured strength, so there is no Bose weighting: the strongest
+    mode is the largest h with or without T."""
     comp = C.CompositeModel([C.PhononDHO(), C.PhononDHO(prefix="phonon2"),
                              C.ConstantBackground()])
-    # mode 1: ω≈1 meV, intrinsic 60; mode 2: ω≈8 meV, intrinsic 100. At T=300 K the low-ω
-    # occupation (~26×) makes mode 1 the far stronger measured peak.
     theta = np.array([1.0, 0.1, 60.0, 8.0, 0.1, 100.0, 5.0])
-    assert comp.primary_phonon_index(theta) == 3                # raw intrinsic: mode 2
-    assert comp.primary_phonon_index(theta, T=300.0) == 0       # measured: mode 1
+    assert comp.primary_phonon_index(theta) == 3
+    assert comp.primary_phonon_index(theta, T=300.0) == 3

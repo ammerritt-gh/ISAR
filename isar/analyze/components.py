@@ -3,17 +3,23 @@
 A :class:`Component` owns an ordered list of named :class:`Parameter` objects and knows
 how to ``evaluate`` its contribution on an energy grid. A :class:`CompositeModel` is an
 ordered list of components summed together, with a flat prefixed parameter namespace
-(``phonon.Omega_d``, ``elastic.E``, ``bg.BG`` …).
+(``phonon.omega0``, ``elastic.h``, ``bg.BG`` …).
 
-The components wrap the *frozen, validated* lineshape library
-(``Fitting_Functions.convolute_voigt_dho`` via :mod:`isar.analyze.lineshapes`) — the physics is
-not reimplemented here. The phonon component carries its own Bose-tied anti-Stokes
+The components wrap the lineshape library (:mod:`isar.analyze.lineshapes`), where the full
+damped-harmonic-oscillator form of McGuinness et al. 2026 Eq. 2 lives — the physics is not
+reimplemented here. The phonon component carries its own Bose-tied anti-Stokes
 (``peak="stokes+astokes"``), so anti-Stokes is never a free parameter (a *functional*
 tie, unlike PUFFIN's equality-only link groups).
 
+Each peak's amplitude coordinate is its convolved **height** ``h``: the maximum, over E >= 0, of
+its whole convolved profile (:func:`isar.analyze.lineshapes.unit_peak_of_nodes`), in model units at
+the spectrum's reference exposure. The unit column of a peak is its profile divided by that
+maximum, so the model mean is ``exposure × Σ h_i·column_i``; the exposure multiplies once, in
+:class:`CompositeModel`, never in a column.
+
 Parameter ``kind`` (``"linear"`` vs ``"nonlinear"``) is what the grid+NNLS IC
-(:mod:`isar.analyze.phonon`) needs: linear amplitudes are solved by non-negative least
-squares at fixed nonlinear values; nonlinear values (Ω_d, Γ) are grid-scanned / optimized.
+(:mod:`isar.analyze.phonon`) needs: linear heights are solved by non-negative least
+squares at fixed nonlinear values; nonlinear values (E0 = ``omega0``, Γ) are grid-scanned / optimized.
 """
 from __future__ import annotations
 
@@ -21,9 +27,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from isar.analyze.lineshapes import (Lorentzian, Voigt, convolve_tabulated, convolute_voigt_dho,
-                                     dho_signal, resolution_convolver)
-from isar.analyze.phonon import bose_occupation, omega0_from, omega0_value_error
+from isar.analyze.lineshapes import (Lorentzian, UnitPeak, Voigt, convolve_tabulated, dho_signal,
+                                     resolution_convolver, unit_peak, unit_peak_of_nodes,
+                                     voigt_area_for_height)
 
 
 def _curve(ctx):
@@ -36,9 +42,30 @@ def _convolver(x, ctx):
     return resolution_convolver(x, ctx.gauss_fwhm, ctx.lorentz_fwhm, _curve(ctx))
 
 
+def phonon_unit_columns(x, ctx, modes, peaks):
+    """``(columns, unit_peaks)`` for DHO modes ``modes`` = ``[(E0, Gamma), …]`` with peak selectors
+    ``peaks``, from ONE batched convolution: ``columns`` is ``(k, x.size)``, each row the mode's
+    convolved profile at ``x - ctx.center`` divided by its height (the maximum over E >= 0, so the
+    row's maximum is 1; no exposure), and ``unit_peaks`` each mode's :class:`UnitPeak`.
+    :meth:`CompositeModel.evaluate`, :meth:`CompositeModel.basis` and the fast-pass adapter all
+    go through here."""
+    x = np.asarray(x, dtype=float)
+    if len(modes) == 0:
+        return np.empty((0, x.size)), ()
+    conv = _convolver(x, ctx)
+    signals = np.stack([dho_signal(conv.grid, e0, gamma, 1.0, ctx.T, peak)
+                        for (e0, gamma), peak in zip(modes, peaks)])
+    rows = conv.nodes(signals)
+    ups = tuple(unit_peak_of_nodes(conv, row, e0, gamma) for row, (e0, gamma) in zip(rows, modes))
+    q = x - ctx.center
+    cols = np.stack([np.interp(q, conv.x_out, row, left=0.0, right=0.0) / up.height
+                     for row, up in zip(rows, ups)])
+    return cols, ups
+
+
 @dataclass(frozen=True)
 class Parameter:
-    """A single model parameter. ``kind`` is ``"linear"`` (NNLS amplitude) or
+    """A single model parameter. ``kind`` is ``"linear"`` (NNLS height) or
     ``"nonlinear"`` (grid-scanned / optimized)."""
 
     name: str
@@ -82,77 +109,76 @@ class Component:
         raise NotImplementedError
 
     def unit_columns(self, x, nonlinear: dict, ctx) -> dict:  # pragma: no cover - abstract
-        """Each linear amplitude's unit-response column (amplitude = 1), given the
+        """Each linear parameter's unit-response column (value = 1), given the
         component's nonlinear values. Used to build the NNLS basis."""
         raise NotImplementedError
 
 
 class PhononDHO(Component):
-    """Stokes DHO + its Bose-tied anti-Stokes, convolved with the Voigt resolution.
+    """The full DHO (paper Eq. 2) and its Bose-tied anti-Stokes, convolved with the resolution.
 
-    Fit-space params: ``Omega_d``, ``Gamma`` (nonlinear) and ``A`` (linear). The reported
-    ω₀ = √(Ω_d²+Γ²) is derived, never fit directly (keeps Ω_d ≥ 0, ω₀ ≥ Γ).
+    Fit-space params: ``omega0`` (the undamped energy E0) and ``Gamma`` (nonlinear), and ``h``
+    (linear), the convolved height: the maximum of the whole convolved profile over E >= 0, in
+    model units at the reference exposure. E0 is fitted directly, so overdamped modes
+    (Γ > E0) are representable. The intrinsic amplitude ``A`` of the lineshape (the narrow-limit
+    area) is derived, never fit: ``A = h / UnitPeak.height`` (:meth:`intrinsic_amplitude`), and the
+    anti-Stokes tie is exact pointwise (detailed balance) by construction.
 
-    ``A`` is the **intrinsic** strength (H4): the thermal occupation (n(ω₀,T)+1) is applied
-    here, explicitly, before the frozen lineshape sees an amplitude — so the measured Stokes
-    peak strength is A·(n+1) and the anti-Stokes tie (n+1)·e^(−ω/kT) = n stays exact by
-    construction. The lineshape library itself is untouched; the Bose-dead high-q limit needs
-    no special case ((n+1) → 1 there).
-
-    ``peak`` selects the lineshape sides passed to ``convolute_voigt_dho``. Default
-    ``"stokes+astokes"`` keeps the Bose-tied pair (unchanged Step-1 behaviour). ``"stokes"``
-    drops the anti-Stokes mirror for the high-q Bose-dead rescue (steering Phase 3a): where
-    ``exp(−ħω/kT)`` is negligible the anti-Stokes carries no counts and only adds a degenerate
+    ``peak`` selects the lineshape sides. Default ``"stokes+astokes"`` keeps the Bose-tied pair.
+    ``"stokes"`` drops the anti-Stokes half for the high-q Bose-dead rescue (steering Phase 3a):
+    where ``exp(−ħω/kT)`` is negligible the anti-Stokes carries no counts and only adds a degenerate
     gain-side peak, so fitting the Stokes side alone removes that degeneracy.
     """
 
     prefix = "phonon"
-    params = (Parameter("Omega_d", "nonlinear"),
+    params = (Parameter("omega0", "nonlinear"),
               Parameter("Gamma", "nonlinear"),
-              Parameter("A", "linear"))
+              Parameter("h", "linear"))
 
     def __init__(self, prefix: str | None = None, peak: str = "stokes+astokes"):
         super().__init__(prefix)
         self.peak = peak
 
     def evaluate(self, x, local: dict, ctx) -> np.ndarray:
-        omega0 = omega0_from(local["Omega_d"], local["Gamma"])
-        measured = local["A"] * bose_occupation(omega0, ctx.T)   # intrinsic × (n+1), H4
-        return convolute_voigt_dho(x, omega0, ctx.center, ctx.gauss_fwhm, ctx.lorentz_fwhm,
-                                   local["Gamma"], measured, 0.0, 0.0, ctx.T,
-                                   peak=self.peak, resolution_curve=_curve(ctx))
-
-    def grid_signal(self, grid, local: dict, ctx) -> np.ndarray:
-        """This mode before convolution, on the convolver's ``grid``: what :meth:`evaluate`
-        convolves, so the modes of one composite can share one convolution."""
-        omega0 = omega0_from(local["Omega_d"], local["Gamma"])
-        measured = local["A"] * bose_occupation(omega0, ctx.T)   # intrinsic × (n+1), H4
-        return dho_signal(grid, omega0, local["Gamma"], measured, ctx.T, self.peak)
+        """``h`` times the unit column; no exposure (:class:`CompositeModel` applies it once)."""
+        return local["h"] * self.unit_columns(x, local, ctx)["h"]
 
     def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
-        unit = {"Omega_d": nonlinear["Omega_d"], "Gamma": nonlinear["Gamma"], "A": 1.0}
-        return {"A": self.evaluate(x, unit, ctx)}
+        cols, _ = phonon_unit_columns(x, ctx, [(nonlinear["omega0"], nonlinear["Gamma"])], [self.peak])
+        return {"h": cols[0]}
+
+    def unit_peak(self, nonlinear: dict, ctx) -> UnitPeak:
+        """The :class:`UnitPeak` (per unit intrinsic A) at ``{"omega0", "Gamma"}``, on the grid of
+        the context's fitted window."""
+        conv = _convolver(np.asarray(ctx.x_used, dtype=float), ctx)
+        return unit_peak(conv, nonlinear["omega0"], nonlinear["Gamma"], ctx.T, self.peak)[1]
+
+    def intrinsic_amplitude(self, local: dict, ctx) -> float:
+        """The lineshape's intrinsic A behind the fitted height: ``h / UnitPeak.height``."""
+        return local["h"] / self.unit_peak(local, ctx).height
 
 
 class Elastic(Component):
-    """Resolution-limited elastic line: a Voigt at ``ctx.center`` (width = resolution).
+    """Resolution-limited elastic line: the resolution profile at ``ctx.center``.
 
-    Linear param ``E`` (the Voigt area). Distinct from a broad quasi-elastic component
+    Linear param ``h`` is the line's height (the resolution profile divided by its continuous
+    maximum, so ``h`` is the peak value). Distinct from a broad quasi-elastic component
     (which would carry its own nonlinear width) — that is a later-step extension.
     """
 
     prefix = "elastic"
-    params = (Parameter("E", "linear"),)
+    params = (Parameter("h", "linear"),)
 
     def evaluate(self, x, local: dict, ctx) -> np.ndarray:
-        curve = _curve(ctx)
-        if curve is not None:
-            return local["E"] * curve.profile(np.asarray(x, dtype=float) - ctx.center)
-        return Voigt(np.asarray(x, dtype=float), local["E"],
-                     ctx.gauss_fwhm, ctx.lorentz_fwhm, ctx.center)
+        return local["h"] * self.unit_columns(x, {}, ctx)["h"]
 
     def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
-        return {"E": self.evaluate(x, {"E": 1.0}, ctx)}
+        x = np.asarray(x, dtype=float)
+        curve = _curve(ctx)
+        if curve is not None:
+            return {"h": curve.profile(x - ctx.center) / float(np.max(curve.values))}
+        area = voigt_area_for_height(1.0, ctx.gauss_fwhm, ctx.lorentz_fwhm)
+        return {"h": Voigt(x, area, ctx.gauss_fwhm, ctx.lorentz_fwhm, ctx.center)}
 
 
 class QuasiElastic(Component):
@@ -202,7 +228,7 @@ class CompositeModel:
 
     The global parameter order is the concatenation of each component's params, named
     ``f"{component.prefix}.{param}"``. For ``[PhononDHO, Elastic, ConstantBackground]``
-    this is exactly ``(Omega_d, Gamma, A, E, BG)`` — matching the frozen Phase-1 fitter.
+    this is ``(omega0, Gamma, h, elastic.h, BG)``.
     """
 
     def __init__(self, components: list[Component]):
@@ -236,22 +262,25 @@ class CompositeModel:
             i += len(names)
         return out
 
+    def _phonon_columns(self, x, ctx, locals_):
+        """The unit columns of every phonon component, from one batched convolution:
+        ``{component index: column}``."""
+        at = [i for i, c in enumerate(self.components) if isinstance(c, PhononDHO)]
+        cols, _ = phonon_unit_columns(x, ctx, [(locals_[i]["omega0"], locals_[i]["Gamma"])
+                                               for i in at],
+                                      [self.components[i].peak for i in at])
+        return dict(zip(at, cols))
+
     def evaluate(self, x, theta, ctx) -> np.ndarray:
-        """The model mean at ``x``. The phonon modes are summed before convolution, so all of them
-        cost one convolution (linearity; each mode's own :meth:`PhononDHO.evaluate` is the same
-        curve)."""
+        """The model mean at ``x``: ``exposure × (Σ h_i·column_i + the other components)``. The
+        phonon modes' columns come from one batched convolution."""
         x = np.asarray(x, dtype=float)
+        locals_ = self._split(theta)
+        phonon_cols = self._phonon_columns(x, ctx, locals_)
         total = np.zeros_like(x)
-        conv, phonons = None, None
-        for comp, local in zip(self.components, self._split(theta)):
-            if isinstance(comp, PhononDHO):
-                conv = conv or _convolver(x, ctx)
-                signal = comp.grid_signal(conv.grid, local, ctx)
-                phonons = signal if phonons is None else phonons + signal
-            else:
-                total = total + comp.evaluate(x, local, ctx)
-        if phonons is not None:
-            total = total + conv(phonons, x - ctx.center)
+        for i, (comp, local) in enumerate(zip(self.components, locals_)):
+            total = total + (local["h"] * phonon_cols[i] if i in phonon_cols
+                             else comp.evaluate(x, local, ctx))
         exposure = getattr(ctx, "exposure_for", lambda _x: None)(x)
         if exposure is not None:
             total = total * exposure
@@ -270,9 +299,9 @@ class CompositeModel:
         return parts
 
     def nnls_basis(self, x, nonlinear_global: dict, ctx):
-        """Stack each linear amplitude's unit column → (phi, linear_global_names).
+        """Stack each linear parameter's unit column → (phi, linear_global_names).
 
-        ``nonlinear_global`` maps global nonlinear names (e.g. ``"phonon.Omega_d"``) to
+        ``nonlinear_global`` maps global nonlinear names (e.g. ``"phonon.omega0"``) to
         the values at which the basis is evaluated (the IC grid candidate)."""
         nonlinear = set(self.nonlinear_names())
         theta = [float(nonlinear_global[n]) if n in nonlinear else 0.0 for n in self.param_names()]
@@ -286,26 +315,21 @@ class CompositeModel:
                 if not comp.nonlinear_params()}
 
     def basis(self, x, theta, ctx, *, static=None) -> np.ndarray:
-        """One column per :meth:`linear_names` entry: that amplitude's unit response at
+        """One column per :meth:`linear_names` entry: that parameter's unit response at
         ``theta``'s nonlinear values, exposure applied, so the model mean is ``basis @
-        amplitudes`` (``theta``'s linear entries are not read). The phonon columns share one
+        heights`` (``theta``'s linear entries are not read). The phonon columns share one
         batched convolution; ``static`` (from :meth:`static_columns`) supplies the columns that
         depend on no parameter."""
         x = np.asarray(x, dtype=float)
-        cols, phonon_at, signals = [], [], []
-        conv = None
-        for i, (comp, local) in enumerate(zip(self.components, self._split(theta))):
-            if isinstance(comp, PhononDHO):
-                conv = conv or _convolver(x, ctx)
-                phonon_at.append(len(cols))
-                cols.append(None)
-                signals.append(comp.grid_signal(conv.grid, {**local, "A": 1.0}, ctx))
+        locals_ = self._split(theta)
+        by_component = self._phonon_columns(x, ctx, locals_)
+        cols = []
+        for i, (comp, local) in enumerate(zip(self.components, locals_)):
+            if i in by_component:
+                cols.append(by_component[i])
                 continue
             unit = static[i] if static is not None and i in static else comp.unit_columns(x, local, ctx)
             cols.extend(np.asarray(unit[n], dtype=float) for n in comp.linear_params())
-        if signals:
-            for at, col in zip(phonon_at, conv(np.stack(signals), x - ctx.center)):
-                cols[at] = col
         phi = np.column_stack(cols) if cols else np.empty((x.size, 0))
         exposure = getattr(ctx, "exposure_for", lambda _x: None)(x)
         if exposure is not None:
@@ -314,9 +338,9 @@ class CompositeModel:
 
     # -- derived quantities --------------------------------------------------
     def _phonon_slots(self):
-        """``[(global_index_of_Omega_d, component), …]`` for each PhononDHO, in component
-        order. Within a PhononDHO the params are ``(Omega_d, Gamma, A)`` so ``i`` is Omega_d,
-        ``i+1`` is Gamma, ``i+2`` is the linear amplitude A."""
+        """``[(global_index_of_omega0, component), …]`` for each PhononDHO, in component
+        order. Within a PhononDHO the params are ``(omega0, Gamma, h)`` so ``i`` is E0,
+        ``i+1`` is Gamma, ``i+2`` is the linear height h."""
         out, i = [], 0
         for c in self.components:
             if isinstance(c, PhononDHO):
@@ -325,22 +349,21 @@ class CompositeModel:
         return out
 
     def _phonon_index(self):
-        """Global index of the FIRST phonon's Omega_d (back-compat helper), or None."""
+        """Global index of the FIRST phonon's omega0 (back-compat helper), or None."""
         slots = self._phonon_slots()
         return slots[0][0] if slots else None
 
     def phonon_indices(self) -> list[int]:
-        """Global Omega_d index of every PhononDHO, in component order."""
+        """Global omega0 index of every PhononDHO, in component order."""
         return [i for i, _ in self._phonon_slots()]
 
     def mode_order(self, theta) -> np.ndarray:
         """Index permutation ``perm`` of the flat parameter vector that puts the phonon blocks
-        ``(Omega_d, Gamma, A)`` in ascending ``Omega_d``: ``theta[perm]`` is the canonical labelling
+        ``(omega0, Gamma, h)`` in ascending ``omega0``: ``theta[perm]`` is the canonical labelling
         (and ``cov[np.ix_(perm, perm)]`` its covariance). Swapped labels are one solution; the
         ordered-energy prior (:mod:`isar.analyze.prior`) is defined on the ordered one, so a fit
         that converged with swapped labels is canonicalised through this before its prior is read.
-        Ordered on ``Omega_d``, the sampled coordinate, where the prior's normalisation is exact;
-        ``omega0_all`` still reports modes by derived omega0."""
+        Ordered on ``omega0``, the sampled coordinate, where the prior's normalisation is exact."""
         theta = np.asarray(theta, dtype=float)
         starts = self.phonon_indices()
         width = len(PhononDHO.params)
@@ -359,16 +382,15 @@ class CompositeModel:
                                    for _, c in slots)
 
     def _omega0_at(self, theta, cov, i):
-        """ω₀ + HESSE error for the phonon whose Omega_d is at global index ``i``."""
-        sub = None
-        if cov is not None:
-            cov = np.asarray(cov, dtype=float)
-            sub = np.array([[cov[i, i], cov[i, i + 1]],
-                            [cov[i + 1, i], cov[i + 1, i + 1]]])
-        return omega0_value_error(theta[i], theta[i + 1], sub)
+        """E0 + HESSE error for the phonon whose omega0 is at global index ``i`` (the error is
+        NaN without a usable variance)."""
+        if cov is None:
+            return float(theta[i]), float("nan")
+        var = float(np.asarray(cov, dtype=float)[i, i])
+        return float(theta[i]), float(np.sqrt(var)) if var > 0 else float("nan")
 
     def omega0_all(self, theta, cov):
-        """All phonons' derived (ω₀, error), sorted ascending by ω₀ (canonicalization)."""
+        """All phonons' (E0, error), sorted ascending by E0 (canonicalization)."""
         theta = np.asarray(theta, dtype=float)
         out = [self._omega0_at(theta, cov, i) for i in self.phonon_indices()]
         out.sort(key=lambda t: t[0])
@@ -376,13 +398,11 @@ class CompositeModel:
 
     def primary_phonon_index(self, theta, cov=None, prior_omega=None, acoustic_omega=None,
                              T=None):
-        """Global Omega_d index of the *primary* phonon. Precedence (Phase A): the mode nearest the
+        """Global omega0 index of the *primary* phonon. Precedence (Phase A): the mode nearest the
         branch-assignment ``acoustic_omega`` hint (which mode IS the acoustic QoI) if given; else the
-        mode nearest the dispersion ``prior_omega``; else the strongest mode. "Strongest" means the
-        largest MEASURED Stokes strength A·(n+1)(ω₀ᵢ,T) when ``T`` is given — the fitted A is
-        intrinsic (H4), and comparing intrinsic amplitudes across modes at different ω₀ would bias
-        the primary toward high-ω modes. ``T=None`` compares raw A (no occupation information).
-        ``None`` if there is no phonon."""
+        mode nearest the dispersion ``prior_omega``; else the strongest mode, the largest fitted
+        height ``h`` (already the measured strength, so no occupation weighting; ``T`` is kept for
+        the callers' signature and not read). ``None`` if there is no phonon."""
         theta = np.asarray(theta, dtype=float)
         slots = self.phonon_indices()
         if not slots:
@@ -390,15 +410,12 @@ class CompositeModel:
         target = acoustic_omega if acoustic_omega is not None else prior_omega
         if target is not None:
             po = float(target)
-            return min(slots, key=lambda i: abs(omega0_from(theta[i], theta[i + 1]) - po))
-        if T is None:
-            return max(slots, key=lambda i: theta[i + 2])
-        return max(slots, key=lambda i: theta[i + 2]
-                   * bose_occupation(omega0_from(theta[i], theta[i + 1]), T))
+            return min(slots, key=lambda i: abs(theta[i] - po))
+        return max(slots, key=lambda i: theta[i + 2])
 
     def omega0(self, theta, cov, prior_omega=None, acoustic_omega=None):
-        """Derived ω₀ and its (HESSE-propagated) error for the *primary* phonon (§ primary =
-        acoustic-hint / nearest-to-prior / largest-amplitude). Single-phonon composites are unchanged."""
+        """E0 and its HESSE error for the *primary* phonon (§ primary =
+        acoustic-hint / nearest-to-prior / largest-height). Single-phonon composites are unchanged."""
         theta = np.asarray(theta, dtype=float)
         i = self.primary_phonon_index(theta, cov, prior_omega, acoustic_omega)
         if i is None:
