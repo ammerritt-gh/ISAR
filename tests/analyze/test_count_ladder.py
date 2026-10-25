@@ -93,10 +93,15 @@ def test_contending_keeps_every_model_without_evidence_and_the_count_above(one_p
                if not CL._has_evidence(m) and m.label not in CL._resolved(unpriced.models))
 
 
-def test_the_count_above_contends_with_and_without_the_elastic_line(one_peak):
+def test_the_count_above_contends_with_and_without_the_elastic_line(one_peak, monkeypatch):
     """The count one above the best is sampled in both elastic variants: the variant the best
     model does not use may be the one whose local rung-1 fit was poor, and nested sampling is what
-    would find the mode it missed. Neither is near the best here, so only the rule puts them in."""
+    would find the mode it missed. Neither is near the best here, so only the rule puts them in.
+
+    Re-pin (recipe /5): the heights' prior is now 1.2 x max count wide, so an extra mode costs less
+    Occam penalty and elastic+stokes2+bg sits 8.8 nats below the best, inside the 10-nat margin. The
+    margin is narrowed to 3 so that "not near the best" still holds and the rule is what is tested."""
+    monkeypatch.setattr(CL, "CONTENDING_MARGIN", 3.0)
     ctx, record = one_peak
     best = CL._best(record.models)
     assert (best.label, best.count, best.elastic) == ("stokes+bg", 1, False)
