@@ -113,14 +113,16 @@ def test_is_stokes_only_requires_a_phonon_and_all_one_sided():
 def test_fit_kind_tagged_stokes_only_and_recovers_omega0():
     """A high-q Bose-dead Stokes-only spectrum: enumeration goes Stokes-only, the fit recovers
     ω₀, and the result is tagged ``stokes_only`` (never reads as an ordinary resolved phonon)."""
-    x = np.linspace(-8.0, 45.0, 121)
-    counts = convolute_voigt_dho(x, 25.0, 0.0, 1.1, 0.0, 0.4, 20.0, 8.0, 0.0, 70.0,
+    # Re-pin (recipe /5): E0 is supported on (0, 20] meV, so the truth moves 25 -> 18 meV (window
+    # 45 -> 30); 25 meV is outside the recipe and rails at 20.
+    x = np.linspace(-8.0, 30.0, 121)
+    counts = convolute_voigt_dho(x, 18.0, 0.0, 1.1, 0.0, 0.4, 20.0, 8.0, 0.0, 70.0,
                                  peak="stokes")             # cold, high-q, one-sided truth
     ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=70.0,
                       center=0.0, gauss_fwhm=1.1, lorentz_fwhm=0.0, instrument="S30",
-                      energy_status="needs_zero", prior_omega=25.0)
-    assert S.antistokes_mode(ctx) == "stokes_only"          # exp(-25/(KB·70)) ≈ 0.016 → buried
+                      energy_status="needs_zero", prior_omega=18.0)
+    assert S.antistokes_mode(ctx) == "stokes_only"          # exp(-18/(KB·70)) ≈ 0.05 → buried
     hyp = {h.label: h for h in S.enumerate_phonon_structures(ctx)}["stokes+bg"]
     res = loop.fit_hypothesis(hyp, ctx, minos=False)
     assert res.fit_kind == "stokes_only"
-    assert res.optimizer_converged and abs(res.omega0 - 25.0) < 0.5
+    assert res.optimizer_converged and abs(res.omega0 - 18.0) < 0.5
