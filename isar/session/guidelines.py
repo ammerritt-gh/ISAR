@@ -228,6 +228,13 @@ def mode_ceiling(source) -> int:
     return g.max_modes if g.max_modes is not None else default_mode_ceiling()
 
 
+def fast_pass_settings(source) -> "FastPassSettings":
+    """The fast pass's settings for this card. Stub: only the mode ceiling is read until the card's
+    [fitting.fast_pass] and [fitting.prior] tables are wired (S1U5)."""
+    from isar.analyze.fast_pass import FastPassSettings
+    return FastPassSettings(mode_ceiling=mode_ceiling(source))
+
+
 def _parse_fit_range(v, *, where: str) -> tuple | None:
     """Parse `[lo, hi]` into a validated (lo, hi). Malformed → warn-and-ignore (tolerant style)."""
     if v is None:
