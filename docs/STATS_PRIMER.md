@@ -1055,6 +1055,10 @@ realizes. `y` = counts, `f` = model expected counts.
   otherwise show. A smoothstep between one and two grid steps is the only blend; below one step the
   same rendering runs down to Γ = 1e-9 meV, so the column is smooth through Γ = 0 and the optimiser
   meets no branch switch.
+- Evaluation cost, measured 2026-10-25 (diagnostic, not a requirement): `CompositeModel.evaluate` on
+  the a06 curve (145 points, T = 300 K, elastic and background present, shared machine) took
+  0.048 / 0.070 / 0.103 ms for 1 / 3 / 6 modes before the full DHO and 0.094 / 0.209 / 0.365 ms
+  after, about 2x at one mode and 3.5x at six: one height search and one pole correction per mode.
 - Validation **[test — `tests/analyze/test_dho_full.py`]**: as Γ → 0 at fixed E0 the convolved model
   approaches the two resolution curves at ±E0 with their Bose weights; it is continuous through
   critical damping (Γ = E0) and finite as E0 → 0; grid refinement and a wider support change nothing;
