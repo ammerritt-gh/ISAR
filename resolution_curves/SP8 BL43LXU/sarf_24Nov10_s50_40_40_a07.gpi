@@ -1,0 +1,13 @@
+# SARF created 2024111../df/rf_24Nov10_s50_40_40_a07
+ n_lines =            9
+ data_file = "../df/rf_24Nov10_s50_40_40_a07"
+xoff1 =  -0.027
+res_fwhm =   1.208
+res_fwtm =   3.168
+res_fwm100 =  10.315
+data_fwhm =   1.217
+data_fwtm =   3.187
+data_fwm100 =  11.726
+Q =  18.346
+T = 302.000
+chisq/dof =   1.256

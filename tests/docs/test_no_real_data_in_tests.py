@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import ast
 import re
+import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 ROOTS = ("tests", "isar/synth/tests")
 FOLDER = re.compile(r"(?:^|[/\\])(?:real_data|test_data)(?:$|[/\\])")
+CURVES = REPO / "resolution_curves"
+CARD = REPO / "isar" / "parsers" / "cards" / "bl43lxu.policy.toml"
 
 # test_collect_evidence builds a throwaway fake folder in tmp_path to test the collector tool; this
 # file spells the names out to find them; test_artificial_copy checks that the copy tool refuses
@@ -63,4 +66,22 @@ def test_no_test_names_the_real_data_folder():
         "a test names real_data/ or test_data/, which exist only in the main checkout, so it "
         "fails in every worktree; move it to proofs/ or use artificial_data/ or generated data:\n  "
         + "\n  ".join(found)
+    )
+
+
+def test_resolution_curves_folder_holds_only_curves():
+    # The committed curves are the one measured data the repo carries (hard rule 10's exception);
+    # anything else dropped beside them would make the exception grow silently.
+    assert CURVES.is_dir(), CURVES
+    pattern = re.compile(tomllib.loads(CARD.read_text(encoding="utf-8"))["calibration"]["resolution_pattern"])
+    stray = []
+    for path in sorted(CURVES.rglob("*")):
+        if not path.is_file() or path.name == "README.md":
+            continue
+        name = path.name[:-len(".gpi")] if path.name.endswith(".gpi") else path.name
+        if pattern.fullmatch(name) is None:
+            stray.append(path.relative_to(CURVES.parent).as_posix())
+    assert not stray, (
+        "resolution_curves/ holds a file that is neither a SARF curve, its .gpi sidecar nor the README "
+        "(AGENTS.md hard rule 10: only the measured curves may be committed):\n  " + "\n  ".join(stray)
     )

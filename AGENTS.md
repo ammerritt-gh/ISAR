@@ -47,6 +47,9 @@ area.
   number replaced (headers kept, but a measured number in a header or trailer comment line is replaced too, e.g. the BL43LXU analyzer files' trailing `#Q=` / `#T=` and the SARF eshift), made once with `python tools/artificial_copy.py <real file> --out
   <folder>`, each with a truth file beside it, never regenerated; the parser tests read them.
   Behaviour tests that depend on the numbers use data generated at test time (`isar/synth_format/`).
+- **Committed curves.** `resolution_curves/` — verbatim copies of the measured BL43LXU resolution curves,
+  the one measured data the repository carries (`isar/synth/bl43_curves.py` reads them; the folder's
+  README has provenance).
 - **Running the suite — three commands, pick by intent:**
   1. *Targeted / debugging (serial):* `python -m pytest <path>::<test> -s`. Keep debugging serial —
      `-s`, `--pdb`, and the stall recipe `-o faulthandler_timeout=60` do not work meaningfully
@@ -139,7 +142,10 @@ area.
     (`proofs/`, run on purpose); a test uses `artificial_data/` or data generated at test time.
     `tests/docs/test_no_real_data_in_tests.py` fails on any test that names `real_data` or
     `test_data` as a path. Never commit a measured data value: an artificial copy replaces every
-    data number, and no truth file, test expectation or comment may carry one.
+    data number, and no truth file, test expectation or comment may carry one. One exception: the
+    measured resolution curves in `resolution_curves/` (operator, 2026-10-25: "Resolutions are much
+    safer for the public to read, so you can make a copy for the tests."). Nothing else measured may go
+    there, and `tests/docs/test_no_real_data_in_tests.py` checks that the folder holds only curves and sidecars.
 
 ## Before You Touch X
 
