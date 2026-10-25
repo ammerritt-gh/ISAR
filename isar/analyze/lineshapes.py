@@ -249,6 +249,15 @@ def _third_antiderivative(z):
     return 0.5 * z * z * (np.log(z) - 1.5)
 
 
+def _bose_numerator_at_pole(p, T):
+    """``y`` continued analytically to the complex pole ``p``, so that ``(y(E) - y(p))/(E - p)`` is
+    regular at the pole and the point-sampled remainder has no dip of width Gamma. An unknown
+    temperature (``y = max(E, 0)``, not analytic) keeps ``y(Re p)``."""
+    if T is None or not np.isfinite(T) or T <= 0:
+        return float(bose_numerator(p.real, T))
+    return p / (-np.expm1(-p / (KB * float(T))))
+
+
 def _unit_dho(grid, E0, damping, T):
     """The full DHO of paper Eq. 2 at A = 1 on the uniform ``grid``: ``s(E) = (E0/π)·4Γ·y(E) /
     ((E² − E0²)² + 4Γ²E²)`` by point samples, plus the area-preserving correction of each pole
@@ -279,7 +288,7 @@ def _unit_dho(grid, E0, damping, T):
         average = (_third_antiderivative(z + 1.5 * h) - 3.0 * _third_antiderivative(z + 0.5 * h)
                    + 3.0 * _third_antiderivative(z - 0.5 * h) - _third_antiderivative(z - 1.5 * h)
                    ) / h ** 3                                          # B-spline mean of 1/(E-p)
-        correction += float(bose_numerator(p.real, T)) * 2.0 * np.real(residue * (average - 1.0 / z))
+        correction += 2.0 * np.real(residue * _bose_numerator_at_pole(p, T) * (average - 1.0 / z))
     s[i0:i1] += weight * pref * correction
     return s
 

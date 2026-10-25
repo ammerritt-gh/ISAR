@@ -283,11 +283,7 @@ def test_step_7b_the_lineshape_curvature_does_not_depend_on_which_tiny_gamma(E0)
 
 @pytest.mark.parametrize("E0", [
     5.013, 0.317,
-    pytest.param(5.0, marks=pytest.mark.xfail(
-        strict=True,
-        reason="PLAN DEFECT: with a node exactly under the pole the correction's y(Re p) leaves a "
-               "dip of width Gamma in the point-sampled remainder, 1.46e-2 of the curvature at "
-               "Gamma = 1e-4 (limit 1e-2); the analytic y(p) at the complex pole gives 2.7e-3"))])
+    5.0])
 def test_step_7b_the_unit_column_curvature_does_not_depend_on_which_tiny_gamma(E0):
     assert max(_curvature_agrees(_column, E0)) <= 1e-2, NARROW
 
