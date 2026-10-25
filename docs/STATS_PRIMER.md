@@ -345,9 +345,9 @@ none from the spectrum's counts: a brighter spectrum then pays no larger Occam p
 extra peak. Recipe /5 reverses that for the amplitudes, on the operator's ruling (2026-10-25): the
 heights are flat on `[0, 1.2 x the spectrum's highest count]`, so the prior is data-derived
 (empirical Bayes), and every fit records it (`recipe_provenance`: `empirical_bayes`, `max_count`,
-the resulting bounds and the settings). The cost is stated, not hidden: the amplitude prior is
-set by the data it is then used to explain, which makes the evidence slightly over-confident about
-the amplitude's scale. The margin 1.2 keeps the tallest peak about 6 sigma of headroom at 900 counts.
+the resulting bounds and the settings). The cost is the usual one for empirical Bayes: the amplitude
+prior is set by the data it is then used to explain, so it is a convention for the Occam penalty,
+not an independent belief about the amplitude. The margin 1.2 keeps the tallest peak about 6 sigma of headroom at 900 counts.
 Widths and energies stay declared.
 
 | Parameter | Prior | Built from |
