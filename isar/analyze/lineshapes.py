@@ -6,7 +6,8 @@ Canonical version used by both FeSeS_1 and FeSeS_2 analysis pipelines.
 Provides:
   - Gaussian, Lorentzian, Voigt profiles (FWHM-parameterised, integrate to Area)
   - Pseudo-Voigt (for elastic-line / K=0 energy-zero calibration)
-  - DHO (Damped Harmonic Oscillator) Stokes / anti-Stokes lineshapes
+  - The full DHO of McGuinness et al. 2026 Eq. 2 (Bose factor at every point), the unit-peak
+    height coordinate and the narrow-pole area-preserving rendering
   - Voigt ⊗ DHO convolution model with elastic Voigt peak + flat background
   - The same model with a tabulated (measured) resolution curve in place of the Voigt
   - ResolutionConvolver: the per-fit resolution convolution, kernel transformed once
@@ -85,30 +86,6 @@ def voigt_area_for_height(height, gauss_fwhm, lorentz_fwhm):
 
 
 # ============================================================
-# DHO (Damped Harmonic Oscillator)
-# ============================================================
-
-def Stokes_DHO(x, amplitude, damping, center):
-    """Stokes (phonon creation) DHO lineshape.
-    Returns large penalty if overdamped (centre² ≤ damping²).
-    """
-    x = np.asarray(x, dtype=float)
-    damping_sq = center ** 2 - damping ** 2
-    if damping_sq <= 0:
-        return np.full_like(x, 1e6 * (1 + abs(damping_sq)))
-    return amplitude / ((x - np.sqrt(damping_sq)) ** 2 + damping ** 2)
-
-
-def antiStokes_DHO(x, amplitude, damping, center):
-    """Anti-Stokes (phonon annihilation) DHO lineshape."""
-    x = np.asarray(x, dtype=float)
-    damping_sq = center ** 2 - damping ** 2
-    if damping_sq <= 0:
-        return np.full_like(x, 1e6 * (1 + abs(damping_sq)))
-    return amplitude / ((x + np.sqrt(damping_sq)) ** 2 + damping ** 2)
-
-
-# ============================================================
 # Voigt ⊗ DHO convolution model
 # ============================================================
 
@@ -166,10 +143,15 @@ class ResolutionConvolver:
     x_out: np.ndarray       # energies of the kept output nodes
     dx: float
 
-    def __call__(self, signal, q):
+    def nodes(self, signal):
+        """The convolution on ``self.x_out`` (one row per row of a stacked ``signal``), before
+        interpolation."""
         spectrum = sp_fft.rfft(signal, self.n_fft, axis=-1) * self.kernel_fft
         kept = sp_fft.irfft(spectrum, self.n_fft, axis=-1)[..., self.first:self.first + self.x_out.size]
-        conv = kept * self.dx
+        return kept * self.dx
+
+    def __call__(self, signal, q):
+        conv = self.nodes(signal)
         if conv.ndim == 1:
             return np.interp(q, self.x_out, conv, left=0.0, right=0.0)
         return np.stack([np.interp(q, self.x_out, row, left=0.0, right=0.0) for row in conv])
@@ -220,63 +202,156 @@ def _peak_parts(peak):
     return ['stokes', 'astokes', 'elastic'] if peak_lower == 'all' else peak_lower.split('+')
 
 
-#: A DHO side narrower than these multiples of the grid step is drawn by its average against each
-#: node's quadratic B-spline instead of by point samples, which alias: measured 2026-10-23, a
-#: Γ = 1e-3 meV mode's convolved area moved by a factor 250 as Ω_d crossed one 0.05 meV step. The
-#: B-spline average keeps the area, the centroid and the second moment independent of where the
-#: mode sits between nodes, so the convolved peak moves smoothly (a linear split of a delta keeps
-#: the area but not the second moment: its convolved peak still wobbled by 0.2-0.4%). Below the
-#: first multiple it is used alone, above the second the point samples alone (their aliasing is
-#: 2e-5 there), and in between a smoothstep blends the two, so the model stays continuous in Γ;
-#: ordinary widths are untouched.
+#: A DHO pole narrower than these multiples of the grid step is drawn with an area-preserving
+#: correction on top of the point samples of the formula, which alias: measured 2026-10-23, a
+#: Γ = 1e-3 meV mode's convolved area moved by a factor 250 as the mode crossed one 0.05 meV step.
+#: The correction replaces the pole's point samples by their average against each node's quadratic
+#: B-spline, which keeps the area, the centroid and the second moment independent of where the
+#: pole sits between nodes. Below the first multiple it applies in full (down to GAMMA_CLIP, with
+#: no other branch: the column is smooth through Γ = 0), above the second not at all (the point
+#: samples' aliasing is 2e-5 there), and in between a smoothstep blends the two, so the model
+#: stays continuous in Γ. Ordinary widths are untouched.
 NARROW_GAMMA_STEPS = (1.0, 2.0)
+#: Grid steps either side of the narrow poles that the correction spans (it decays as 1/distance^3).
+NARROW_WINDOW_STEPS = 64
+#: ``|sqrt(E0^2 - Gamma^2)|`` is floored at this fraction of ``max(Gamma, dx)``: at critical
+#: damping the two pole residues diverge and cancel, and the floor keeps that cancellation benign.
+CRITICAL_NUDGE = 1e-4
+#: Γ (meV) below this renders as this: a predictive draw clipped at zero is its narrow limit.
+GAMMA_CLIP = 1e-9
 
 
-def _lorentz_side(grid, amplitude, damping, center, sign):
-    """One DHO side, ``amplitude / ((x - sign*Omega_d)^2 + damping^2)`` on the uniform ``grid``, with
-    ``Omega_d = sqrt(center^2 - damping^2)``: :func:`Stokes_DHO` (``sign = 1``) or
-    :func:`antiStokes_DHO` (``sign = -1``), rendered area-preserving when narrow
-    (:data:`NARROW_GAMMA_STEPS`)."""
-    point = (Stokes_DHO if sign > 0 else antiStokes_DHO)(grid, amplitude=amplitude,
-                                                         damping=damping, center=center)
-    h = float(grid[1] - grid[0]) if np.size(grid) > 1 else 0.0
+def bose_numerator(E, T):
+    """``y(E) = (n(E)+1)·E = E / (-expm1(-E/kT))``, the Bose factor and the E of the DHO numerator
+    evaluated together in the stable form, so ``y(0) = kT``. An unknown temperature (``None``,
+    ``<= 0`` or non-finite) gives the T -> 0+ limit ``max(E, 0)``."""
+    E = np.asarray(E, dtype=float)
+    if T is None or not np.isfinite(T) or T <= 0:
+        return np.maximum(E, 0.0)
+    kT = KB * float(T)
+    safe = np.where(E == 0.0, 1.0, E)
+    with np.errstate(over="ignore"):   # deep anti-Stokes: exp(+large) = inf, y -> 0
+        return np.where(E == 0.0, kT, safe / (-np.expm1(-safe / kT)))
+
+
+def _smooth_weight(narrowest_width, h):
     lo, hi = NARROW_GAMMA_STEPS[0] * h, NARROW_GAMMA_STEPS[1] * h
-    # Γ = 0 exactly (a predictive draw clipped at zero, never a fit: Γ is bounded at the floor)
-    # has no finite B-spline average; it keeps the point samples it always had.
-    if damping == 0.0 or damping >= hi or center ** 2 <= damping ** 2:
-        return point
-    u = grid - sign * np.sqrt(center ** 2 - damping ** 2)
+    if narrowest_width <= lo:
+        return 1.0
+    if narrowest_width >= hi:
+        return 0.0
+    t = (narrowest_width - lo) / (hi - lo)
+    return 1.0 - t * t * (3.0 - 2.0 * t)
 
-    def thrice_integrated(v):   # d^3/dv^3 of this is 1 / (v^2 + damping^2)
-        return ((v * v - damping * damping) / (2.0 * damping) * np.arctan(v / damping)
-                + 0.5 * v - 0.5 * v * np.log(v * v + damping * damping))
 
-    spline = amplitude * (thrice_integrated(u + 1.5 * h) - 3.0 * thrice_integrated(u + 0.5 * h)
-                          + 3.0 * thrice_integrated(u - 0.5 * h)
-                          - thrice_integrated(u - 1.5 * h)) / h ** 3
-    if damping <= lo:
-        return spline
-    t = (damping - lo) / (hi - lo)
-    w = t * t * (3.0 - 2.0 * t)
-    return w * point + (1.0 - w) * spline
+def _third_antiderivative(z):
+    """F with ``F''' = 1/z`` (principal log; ``Im z > 0`` for a lower-half-plane pole)."""
+    return 0.5 * z * z * (np.log(z) - 1.5)
+
+
+def _unit_dho(grid, E0, damping, T):
+    """The full DHO of paper Eq. 2 at A = 1 on the uniform ``grid``: ``s(E) = (E0/π)·4Γ·y(E) /
+    ((E² − E0²)² + 4Γ²E²)`` by point samples, plus the area-preserving correction of each pole
+    narrower than :data:`NARROW_GAMMA_STEPS` allows (see :func:`dho_signal`)."""
+    damping = max(float(damping), GAMMA_CLIP)
+    h = float(grid[1] - grid[0])
+    pref = (E0 / np.pi) * 4.0 * damping
+    s = pref * bose_numerator(grid, T) / ((grid ** 2 - E0 ** 2) ** 2 + 4.0 * damping ** 2 * grid ** 2)
+    r = np.sqrt(complex(E0 * E0 - damping * damping))
+    floor = CRITICAL_NUDGE * max(damping, h)
+    if abs(r) < floor:
+        r = complex(floor, 0.0)
+    poles = (r - 1j * damping, -r - 1j * damping)    # the lower-half-plane poles; width = -Im p
+    weight = _smooth_weight(min(-p.imag for p in poles), h)   # ONE weight for both poles
+    if weight == 0.0:
+        return s
+    all_poles = (poles[0], poles[1], np.conj(poles[0]), np.conj(poles[1]))
+    first = float(grid[0])
+    i0 = max(int(np.floor((min(p.real for p in poles) - first) / h)) - NARROW_WINDOW_STEPS, 0)
+    i1 = min(int(np.ceil((max(p.real for p in poles) - first) / h)) + NARROW_WINDOW_STEPS + 1,
+             grid.size)
+    if i1 <= i0:
+        return s
+    correction = np.zeros(i1 - i0)
+    for j, p in enumerate(poles):
+        residue = 1.0 / np.prod([p - q for k, q in enumerate(all_poles) if k != j])   # of 1/D
+        z = grid[i0:i1] - p
+        average = (_third_antiderivative(z + 1.5 * h) - 3.0 * _third_antiderivative(z + 0.5 * h)
+                   + 3.0 * _third_antiderivative(z - 0.5 * h) - _third_antiderivative(z - 1.5 * h)
+                   ) / h ** 3                                          # B-spline mean of 1/(E-p)
+        correction += float(bose_numerator(p.real, T)) * 2.0 * np.real(residue * (average - 1.0 / z))
+    s[i0:i1] += weight * pref * correction
+    return s
 
 
 def dho_signal(grid, phonon_energy, damping, phonon_amplitude, T, peak='stokes+astokes'):
-    """The unconvolved DHO on ``grid`` (uniform, the convolver's): the Stokes side and, for
-    ``T > 0``, its anti-Stokes partner at the detailed-balance amplitude (never a free one). A side
-    much narrower than the grid step is drawn area-preserving (:data:`NARROW_GAMMA_STEPS`).
-    ``peak`` selects the sides as in :func:`convolute_voigt_dho`; an ``elastic`` part is not part
-    of this signal."""
+    """The unconvolved full DHO on ``grid`` (uniform, the convolver's) with intrinsic amplitude
+    ``A = phonon_amplitude``: ``A·(E0/π)·4Γ·y(E)/((E²−E0²)²+4Γ²E²)`` with ``y = E/(−expm1(−E/kT))``
+    (:func:`bose_numerator`) at every point, so the anti-Stokes side is the detailed-balance
+    partner pointwise and never a parameter. ``A`` is the narrow-limit intrinsic area: the Stokes
+    area tends to ``A(n(E0)+1)``, the anti-Stokes to ``A·n(E0)``. A pole narrower than the grid step
+    is drawn area-preserving (:data:`NARROW_GAMMA_STEPS`). ``peak`` selects the E >= 0 half
+    (``stokes``), the E < 0 half (``astokes``, exactly empty for an unknown temperature), or both
+    (node 0 at half weight to each half); an ``elastic`` part is not part of this signal."""
     peak_parts = _peak_parts(peak)
-    signal = np.zeros_like(grid)
-    if 'stokes' in peak_parts:
-        signal += _lorentz_side(grid, phonon_amplitude, damping, phonon_energy, 1)
-    if 'astokes' in peak_parts and T > 0:
-        # Detailed balance is only defined for T > 0: at T = 0 the anti-Stokes side is exactly
-        # empty (no phonons to annihilate), and a negative T would invert the Bose weight.
-        astokes_amp = phonon_amplitude / np.exp(phonon_energy / (KB * T))
-        signal += _lorentz_side(grid, astokes_amp, damping, phonon_energy, -1)
-    return signal
+    has_stokes, has_astokes = 'stokes' in peak_parts, 'astokes' in peak_parts
+    if not (has_stokes or has_astokes):
+        return np.zeros_like(grid)
+    signal = phonon_amplitude * _unit_dho(grid, phonon_energy, damping, T)
+    if has_stokes and has_astokes:
+        return signal
+    half = 0.5 * (grid == 0.0)
+    return signal * ((grid > 0.0) + half if has_stokes else (grid < 0.0) + half)
+
+
+@dataclass(frozen=True)
+class UnitPeak:
+    """One unit-amplitude (A = 1) convolved DHO mode: where its height is read, and its areas."""
+
+    height: float       # max over continuous E >= 0 of the convolved profile at A = 1 (model units,
+                        #   no exposure): h = A * height
+    position: float     # E (meV, energy-transfer frame) of that maximum, 0.0 when it is the E = 0 edge
+    area_stokes: float  # convolved profile at A = 1, integrated over E > 0 (meV x model units)
+    area_both: float    # convolved profile at A = 1, integrated over all E
+
+
+def unit_peak_of_nodes(conv, row, phonon_energy, damping):
+    """The :class:`UnitPeak` of one convolved ``row`` (``conv.nodes`` of an A = 1 signal).
+
+    The height is the maximum of the whole row over E >= 0 (both sides: the anti-Stokes partner's
+    convolved tail counts). The largest node gives the vertex of the parabola through it and its
+    neighbours (O(dx^3), continuous as the maximum moves between nodes); at the E = 0 edge it is
+    the row interpolated at E = 0. Areas are trapezoid sums of the same row. A zero or non-finite
+    height raises ``ValueError`` naming E0 and Gamma."""
+    x_out = conv.x_out
+    positive = x_out >= 0.0
+    energy = x_out[positive]
+    values = row[positive]
+    if energy.size == 0 or energy[0] > 0.0:     # no node at E = 0: interpolate the edge in
+        edge = float(np.interp(0.0, x_out, row))
+        energy, values = np.concatenate(([0.0], energy)), np.concatenate(([edge], values))
+    i = int(np.argmax(values))
+    height, position = float(values[i]), float(energy[i])
+    if 0 < i < values.size - 1:
+        y0, y1, y2 = values[i - 1], values[i], values[i + 1]
+        denominator = y0 - 2.0 * y1 + y2
+        offset = 0.5 * (y0 - y2) / denominator if denominator < 0.0 else 0.0
+        height = float(y1 - 0.25 * (y0 - y2) * offset)
+        position = float(energy[i] + offset * (energy[i + 1] - energy[i]))
+    elif i == 0:
+        position = 0.0
+    if not (np.isfinite(height) and height > 0.0):
+        raise ValueError(f"DHO mode with E0={phonon_energy!r}, Gamma={damping!r} has no positive "
+                         f"finite height (got {height!r})")
+    both = float(np.sum(0.5 * (row[1:] + row[:-1]) * np.diff(x_out)))
+    stokes = float(np.sum(0.5 * (values[1:] + values[:-1]) * np.diff(energy)))
+    return UnitPeak(height, position, stokes, both)
+
+
+def unit_peak(conv, phonon_energy, damping, T, peak='stokes+astokes'):
+    """``(row, UnitPeak)``: the convolved A = 1 mode on ``conv.x_out`` and its :class:`UnitPeak`."""
+    row = conv.nodes(dho_signal(conv.grid, phonon_energy, damping, 1.0, T, peak))
+    return row, unit_peak_of_nodes(conv, row, phonon_energy, damping)
 
 
 def convolve_tabulated(x_target, center, curve, signal):
@@ -326,12 +401,12 @@ def convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, lorentz_fwh
     Parameters
     ----------
     x_target        : array-like — energy grid (meV)
-    phonon_energy   : float      — undamped phonon frequency ω₀ (meV)
+    phonon_energy   : float      — undamped phonon energy E0 (meV)
     center          : float      — energy-zero offset (meV)
     gauss_fwhm      : float      — Gaussian FWHM of Voigt resolution (meV)
     lorentz_fwhm    : float      — Lorentzian FWHM of Voigt resolution (meV)
-    damping         : float      — DHO damping Γ (meV)
-    phonon_amplitude: float      — Stokes DHO amplitude
+    damping         : float      — DHO damping Γ (meV, HWHM)
+    phonon_amplitude: float      — intrinsic DHO amplitude A (narrow-limit area; Bose inside)
     elastic_amplitude: float     — elastic Voigt area
     BG              : float      — flat background
     T               : float      — temperature (K)

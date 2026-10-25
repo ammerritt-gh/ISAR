@@ -1,0 +1,276 @@
+"""The full DHO lineshape (McGuinness et al. 2026 Eq. 2) against independent references.
+
+Reference values are ``scipy.integrate.quad`` integrals of the formula
+``s(E) = A (E0/pi) 4 Gamma y(E) / ((E^2 - E0^2)^2 + 4 Gamma^2 E^2)``, ``y = E/(-expm1(-E/kT))``
+(``d1_dho_examples.py``, 2026-10-25), kT = 0.086173324 T. The formula is rewritten here from the
+paper, not imported, so a mistake in the library cannot agree with itself.
+
+Required agreements (tolerances are requirements, not fits to the output):
+- grid sums against the exact integrals: 2e-3 relative (the grid sum's own error at dx = 0.05 is
+  below 1e-3; the Poisson sigma of the best-measured real bin is 3.3% of its counts);
+- pointwise values on a grid node: 1e-8 relative (the reference is printed to ten digits).
+
+The narrow-pole checks (steps 2-5, 7) name the rendering that keeps them true: the area-preserving
+correction of ``lineshapes.NARROW_GAMMA_STEPS`` on top of the formula's point samples. Point
+samples alone alias (a Gamma = 1e-3 meV mode's area moved by a factor 250 between grid nodes), and
+a column that switches branch at a tiny Gamma locks the fast pass's optimiser.
+"""
+import math
+
+import numpy as np
+import pytest
+from scipy.integrate import quad
+
+from isar.analyze import lineshapes as L
+from isar.analyze.lineshapes import KB, bose_numerator, dho_signal
+from isar.analyze.phonon import GAMMA_FLOOR
+from isar.synth import bl43_curves
+
+DX = L.CONVOLUTION_DX
+NARROW = ("the area-preserving narrow-pole rendering (lineshapes.NARROW_GAMMA_STEPS) is what keeps "
+          "this true; point samples of the formula alone alias")
+
+
+def _y(E, T):
+    if T is None or not T > 0:
+        return max(E, 0.0)
+    kT = KB * T
+    return kT if E == 0.0 else E / (-math.expm1(-E / kT))
+
+
+def _s(E, E0, G, T):
+    """The formula, A = 1, one energy."""
+    return (E0 / math.pi) * 4.0 * G * _y(E, T) / ((E * E - E0 * E0) ** 2 + 4.0 * G * G * E * E)
+
+
+def _exact_area(E0, G, T, lo, hi):
+    pts = sorted({p for p in (-E0, 0.0, E0) if lo < p < hi})
+    edges = [lo] + pts + [hi]
+    return sum(quad(lambda e: _s(e, E0, G, T), a, b, limit=4000, epsabs=0, epsrel=1e-10)[0]
+               for a, b in zip(edges, edges[1:]))
+
+
+def _grid(dx=DX, half=200.0):
+    n = int(round(half / dx))
+    return np.arange(-n, n + 1) * dx
+
+
+def _sides(E0, G, T, dx=DX):
+    grid = _grid(dx)
+    return tuple(float(np.sum(dho_signal(grid, E0, G, 1.0, T, peak=p)) * dx)
+                 for p in ("stokes", "astokes"))
+
+
+def _n1(E, T):
+    return 1.0 / (-math.expm1(-E / (KB * T)))
+
+
+# --- bose_numerator ----------------------------------------------------------------------------
+def test_bose_numerator_is_kT_at_zero_and_stable_in_both_tails():
+    import warnings
+
+    T = 300.0
+    kT = KB * T
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")   # no overflow warning from the deep anti-Stokes tail
+        y = bose_numerator(np.array([-1e5, -50.0, -1e-12, 0.0, 1e-12, 50.0, 4000.0]), T)
+    assert y[3] == kT
+    assert y[0] == 0.0 and y[-1] == pytest.approx(4000.0, rel=1e-12)
+    assert y[2] == pytest.approx(kT, rel=1e-9) and y[4] == pytest.approx(kT, rel=1e-9)
+    assert y[1] == pytest.approx(-50.0 / (-math.expm1(50.0 / kT)), rel=1e-12)
+    assert float(bose_numerator(7.0, T)) == pytest.approx(7.0 / (-math.expm1(-7.0 / kT)), rel=1e-14)
+
+
+@pytest.mark.parametrize("T", [None, 0.0, -5.0, float("nan")])
+def test_unknown_temperature_is_the_zero_temperature_limit(T):
+    np.testing.assert_array_equal(bose_numerator(np.array([-3.0, 0.0, 2.5]), T), [0.0, 0.0, 2.5])
+
+
+# --- worked examples 1-8 (C-dho) ---------------------------------------------------------------
+def test_example_1_pointwise_detailed_balance_and_zero_energy():
+    E0, G, T = 10.0, 0.5, 300.0
+    od = math.sqrt(E0 * E0 - G * G)
+    grid = np.arange(-400, 401) * (od / 200.0)       # +-od and 0 are nodes
+    s = dho_signal(grid, E0, G, 1.0, T)
+    at = {name: int(np.argmin(abs(grid - e))) for name, e in (("+", od), ("-", -od), ("0", 0.0))}
+    assert s[at["+"]] == pytest.approx(1.987847473, rel=1e-8)
+    assert s[at["-"]] == pytest.approx(1.350829565, rel=1e-8)
+    assert s[at["-"]] / s[at["+"]] == pytest.approx(0.6795438701, rel=1e-8)
+    assert s[at["-"]] / s[at["+"]] == pytest.approx(math.exp(-od / (KB * T)), rel=1e-12)
+    assert s[at["0"]] == pytest.approx(0.01645789257, rel=1e-8)
+    assert s[at["0"]] == pytest.approx((E0 / math.pi) * 4 * G * KB * T / E0 ** 4, rel=1e-12)
+
+
+def test_example_2_a_finite_width_area_is_not_the_narrow_limit_value():
+    stokes, anti = _sides(10.0, 0.5, 300.0)
+    assert stokes == pytest.approx(3.101895209, rel=2e-3)
+    assert anti == pytest.approx(2.132527007, rel=2e-3)
+    assert abs(stokes - _n1(10.0, 300.0)) > 0.01          # n(E0)+1 = 3.117354394 is not it
+
+
+@pytest.mark.parametrize("G, stokes_ref", [(0.3, 5.6682214), (0.1, 5.6802245), (0.03, 5.6846015),
+                                           (0.01, 5.6858697), (0.001, 5.686443)])
+def test_example_3_the_narrow_limit_is_n_plus_one_and_n(G, stokes_ref):
+    stokes, anti = _sides(5.0, G, 300.0)
+    assert stokes == pytest.approx(stokes_ref, rel=2e-3), NARROW
+    if G <= 0.001:
+        assert stokes == pytest.approx(_n1(5.0, 300.0), rel=2e-3), NARROW
+        assert anti == pytest.approx(_n1(5.0, 300.0) - 1.0, rel=2e-3), NARROW
+
+
+def test_example_4_overdamped_mode_is_representable():
+    E0, G, T = 2.0, 5.0, 97.0
+    grid = _grid()
+    s = dho_signal(grid, E0, G, 1.0, T)
+    assert s[int(np.argmin(abs(grid)))] == pytest.approx(6.651731581, rel=1e-8)
+    stokes, anti = _sides(E0, G, T)
+    assert stokes == pytest.approx(4.414622419, rel=2e-3)
+    assert anti == pytest.approx(3.979297205, rel=2e-3)
+    assert np.all(np.isfinite(s)) and np.all(s >= 0.0)
+
+
+def test_example_5_continuous_through_critical_damping():
+    grid = _grid()
+    at = int(np.argmin(abs(grid - 1.0)))
+    vals = [dho_signal(grid, 3.0, G, 1.0, 300.0)[at] for G in (3.0 - 1e-6, 3.0, 3.0 + 1e-6)]
+    for got, want in zip(vals, (3.02008553484, 3.02008581671, 3.02008609859)):
+        assert got == pytest.approx(want, rel=1e-8)
+
+
+def test_example_6_unknown_temperature_is_the_zero_temperature_mode():
+    E0, G = 6.0, 0.4
+    grid = _grid()
+    assert np.all(dho_signal(grid, E0, G, 1.0, None, peak="astokes") == 0.0)
+    assert dho_signal(grid, E0, G, 1.0, None)[int(np.argmin(abs(grid + 3.0)))] == 0.0
+    stokes, anti = _sides(E0, G, None)
+    od = math.sqrt(E0 * E0 - G * G)
+    closed = (E0 / math.pi) / od * (math.pi / 2 + math.atan((E0 * E0 - 2 * G * G) / (2 * G * od)))
+    assert closed == pytest.approx(0.9596621381, rel=1e-9)
+    assert stokes == pytest.approx(closed, rel=2e-3) and anti == 0.0
+
+
+def test_example_7_classical_sum_rule():
+    stokes, anti = _sides(1.0, 0.5, 3000.0)
+    assert stokes + anti == pytest.approx(517.0405884, rel=2e-3)
+    assert stokes + anti == pytest.approx(2 * KB * 3000.0 / 1.0, rel=2e-3)
+
+
+def test_example_8_the_bose_factor_moves_the_maximum_off_the_damped_energy():
+    E0, G, T = 10.3, 1.0, 302.0
+    grid = np.arange(-3000, 3001) * 0.01
+    s = dho_signal(grid, E0, G, 1.0, T)
+    half = grid > 0
+    i = int(np.argmax(np.where(half, s, -1.0)))
+    assert s[i] == pytest.approx(0.98150561, rel=2e-3)
+    assert grid[i] == pytest.approx(10.2115, abs=0.01)
+    assert abs(grid[i] - math.sqrt(E0 * E0 - G * G)) > 0.03         # Omega_d = 10.2513
+
+
+# --- numerical validation: the convolved model (design 2.1) ------------------------------------
+CURVE = bl43_curves.curve()          # a06
+X = np.arange(-16.0, 20.0001, 0.2)
+
+
+def _model(E0, G, T=300.0, x=X, A=1.0):
+    return L.convolute_voigt_dho(x, E0, 0.0, 0.0, 0.0, G, A, 0.0, 0.0, T, peak="stokes+astokes",
+                                 resolution_curve=CURVE)
+
+
+def _clear_convolver_caches():
+    for f in (L._tabulated_convolver, L._tabulated_grid_and_kernel, L._voigt_convolver,
+              L._grid_and_kernel):
+        f.cache_clear()
+
+
+@pytest.mark.parametrize("E0", [5.0, 0.3])
+def test_step_2_gamma_to_zero_approaches_two_resolution_curves_at_plus_and_minus_E0(E0):
+    """The reference is built from the curve alone: A [(n+1) R(x-E0) + n R(x+E0)]."""
+    T = 300.0
+    x = np.arange(-12.0, 14.0001, 0.05)
+    ref = _n1(E0, T) * CURVE.profile(x - E0) + (_n1(E0, T) - 1.0) * CURVE.profile(x + E0)
+    gammas = [0.1, 0.03, 0.01, GAMMA_FLOOR]
+    err = [float(np.max(np.abs(_model(E0, g, T, x) - ref)) / ref.max()) for g in gammas]
+    assert all(b < a for a, b in zip(err, err[1:])), (err, NARROW)
+    # Required agreement 5e-3 of the peak, the sum of two measured parts (E0 = 5 on a node, a06):
+    # the DHO at GAMMA_FLOOR is not a delta (1.9e-3, converged on a 0.0025 meV grid), and the
+    # area-preserving average smooths a delta by a quadratic B-spline of the grid step, lowering
+    # a06's peak by (R(dx)+R(-dx)-2R(0))/(8R(0)) = 2.7e-3, since a06's core is twice as sharp as a
+    # Gaussian of its FWHM (R''/R = -8.7 against -4.4). Poisson sigma is >= 3.3%.
+    assert err[-1] <= 5e-3, (err, NARROW)
+
+
+@pytest.mark.parametrize("E0", [3.0, 0.3, 0.06])
+def test_step_3_continuous_through_critical_damping(E0):
+    lo, hi = (_model(E0, E0 * (1 + e)) for e in (-1e-6, 1e-6))
+    assert np.max(np.abs(hi - lo)) <= 1e-3 * max(lo.max(), hi.max()), NARROW
+
+
+def _row_area(E0, G, T=300.0, x=X):
+    conv = L.resolution_convolver(x, 0.0, 0.0, CURVE)
+    return L.unit_peak(conv, E0, G, T)[1].area_both
+
+
+@pytest.mark.parametrize("G", [0.5, 2.0, 5.0])
+def test_step_4_e0_to_zero_is_finite_with_the_exact_area_and_no_spike(G):
+    span = 36.0     # the data window plus the pad: the grid the model integrates over
+    for E0 in (2.0, 0.5, 0.1, 0.03, 0.01, 0.003):
+        assert _row_area(E0, G) == pytest.approx(_exact_area(E0, G, 300.0, -span, span), rel=1e-3), \
+            (E0, G, NARROW)
+    sweep = np.arange(0.003, 0.2001, 1e-3)[::-1]          # 0.2 meV down to 0.003, 1e-3 meV steps
+    cols = np.array([_model(E0, G) for E0 in sweep])
+    assert np.all(np.isfinite(cols))
+    cols = cols / cols.max(axis=1, keepdims=True)
+    steps = np.max(np.abs(np.diff(cols, axis=0)), axis=1)
+    assert steps.max() <= 10.0 * np.median(steps), (steps.max(), np.median(steps), NARROW)
+
+
+@pytest.mark.parametrize("E0, G", [(6.0, 0.3), (6.0, 2.0), (6.0, 5.0), (6.0, 20.0), (0.5, 5.0)])
+def test_step_5_halving_the_step_and_doubling_the_support_changes_nothing(E0, G, monkeypatch):
+    base = _model(E0, G)
+    monkeypatch.setattr(L, "CONVOLUTION_DX", DX / 2)
+    monkeypatch.setattr(L, "CONVOLUTION_PAD", 2 * L.CONVOLUTION_PAD)
+    _clear_convolver_caches()
+    try:
+        refined = _model(E0, G)
+    finally:
+        monkeypatch.undo()
+        _clear_convolver_caches()
+    assert np.max(np.abs(refined - base)) <= 1e-3 * base.max(), (E0, G, NARROW)
+
+
+# --- smooth through Gamma = 0 (C-dho requirement; the fast pass takes Hessians there) ----------
+XS = np.arange(-16.0, 20.0001, 0.2)
+ETA = 2.5e-4
+
+
+def _column(E0, G):
+    """The mode's convolved profile on XS, scaled to a fixed height-like unit."""
+    return _model(E0, G, 300.0, XS)
+
+
+def _gamma_points():
+    edges = [k * DX for k in L.NARROW_GAMMA_STEPS]
+    pts = {0.0, 1e-8, 1e-6, 1e-5}
+    pts.update(np.arange(2 * ETA, 3 * DX, ETA))
+    pts.update(e + d for e in edges for d in (-1e-6, 1e-6))
+    return sorted(pts)
+
+
+@pytest.mark.parametrize("E0", [5.013, 0.317, 5.0])
+def test_step_7a_the_column_is_smooth_in_gamma_through_zero(E0):
+    pts = _gamma_points()
+    D = np.array([(_column(E0, g + ETA) - _column(E0, g)) / ETA for g in pts])
+    worst = float(np.max(np.abs(np.diff(D, axis=0))) / np.max(np.abs(D)))
+    assert worst <= 1e-2, (worst, "a branch switch at tiny Gamma, or a missing " + NARROW)
+
+
+@pytest.mark.parametrize("E0", [5.013, 0.317, 5.0])
+def test_step_7b_the_energy_curvature_does_not_depend_on_which_tiny_gamma(E0):
+    d = 1e-3
+
+    def curvature(g):
+        return (_column(E0 + d, g) - 2.0 * _column(E0, g) + _column(E0 - d, g)) / d ** 2
+
+    zero = curvature(0.0)
+    for g in (1e-8, 1e-4):
+        assert np.max(np.abs(curvature(g) - zero)) <= 1e-2 * np.max(np.abs(zero)), (g, NARROW)

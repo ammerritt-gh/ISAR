@@ -18,9 +18,7 @@ import pytest
 from scipy.interpolate import interp1d
 from scipy.signal import fftconvolve
 
-from isar.analyze.lineshapes import (
-    CONVOLUTION_DX, KB, Stokes_DHO, Voigt, antiStokes_DHO, convolute_voigt_dho,
-)
+from isar.analyze.lineshapes import CONVOLUTION_DX, KB, Voigt, convolute_voigt_dho, dho_signal
 
 TRUE_OMEGA0 = 5.0
 DX = CONVOLUTION_DX   # the model's internal grid step (lineshapes.convolute_voigt_dho)
@@ -70,14 +68,7 @@ def _reference_convolute_voigt_dho(x_target, phonon_energy, center, gauss_fwhm, 
     peak_lower = peak.lower()
     peak_parts = ['stokes', 'astokes', 'elastic'] if peak_lower == 'all' else peak_lower.split('+')
 
-    signal = np.zeros_like(x_uniform)
-    if 'stokes' in peak_parts:
-        signal += Stokes_DHO(x_uniform, amplitude=phonon_amplitude, damping=damping,
-                             center=phonon_energy)
-    if 'astokes' in peak_parts and T > 0:
-        astokes_amp = phonon_amplitude / np.exp(phonon_energy / (KB * T))
-        signal += antiStokes_DHO(x_uniform, amplitude=astokes_amp, damping=damping,
-                                 center=phonon_energy)
+    signal = dho_signal(x_uniform, phonon_energy, damping, phonon_amplitude, T, peak)
 
     voigt_kernel = Voigt(x_uniform, Area=1.0, gauss_fwhm=gauss_fwhm, lorentz_fwhm=lorentz_fwhm,
                          center=0)
@@ -155,25 +146,26 @@ def _bl43_like_curve():
 @pytest.mark.parametrize("path", ["voigt", "tabulated"])
 def test_a_resolution_limited_mode_keeps_its_area_wherever_it_sits_on_the_grid(path):
     """A mode at the Γ floor (the delta-function twin) is the resolution curve with the mode's
-    area: moving its energy between two 0.05 meV grid nodes must not move that area or the peak
+    area A(n(E0)+1): moving its energy between two 0.05 meV grid nodes must not move that area or the peak
     (both sides, the anti-Stokes partner at its Bose weight). The peak keeps about 0.1%: the linear
     interpolation of the 0.05 meV output grid, which an ordinary 0.1 meV-wide mode shows too."""
-    from isar.analyze.phonon import GAMMA_FLOOR, omega0_from
+    from isar.analyze.phonon import GAMMA_FLOOR
 
     curve = _bl43_like_curve() if path == "tabulated" else None
     x = np.arange(-12.0, 18.0 + 1e-9, 0.01)
     T = 300.0
     stokes_area, peaks, bose = [], [], []
     for f in np.linspace(0.0, 1.0, 11)[:-1]:
-        w0 = omega0_from(5.0 + f * DX, GAMMA_FLOOR)
+        w0 = 5.0 + f * DX
         args = (x, w0, 0.0, 0.96, 0.6, GAMMA_FLOOR, 1.0, 0.0, 0.0, T)
         stokes = convolute_voigt_dho(*args, peak="stokes", resolution_curve=curve)
         anti = convolute_voigt_dho(*args, peak="astokes", resolution_curve=curve)
-        stokes_area.append(np.trapezoid(stokes, x))
-        peaks.append(stokes.max())
-        bose.append(np.trapezoid(anti, x) / stokes_area[-1] / np.exp(-w0 / (KB * T)))
+        n_plus_1 = 1.0 / (1.0 - np.exp(-w0 / (KB * T)))   # the narrow-limit Stokes area at A = 1
+        stokes_area.append(np.trapezoid(stokes, x) / n_plus_1)
+        peaks.append(stokes.max() / n_plus_1)
+        bose.append(np.trapezoid(anti, x) / np.trapezoid(stokes, x) / np.exp(-w0 / (KB * T)))
     assert max(stokes_area) / min(stokes_area) - 1.0 < 1e-3
-    assert np.mean(stokes_area) == pytest.approx(np.pi / GAMMA_FLOOR, rel=0.02)   # the mode's area
+    assert np.mean(stokes_area) == pytest.approx(1.0, rel=0.02)   # the mode's area, A(n+1)
     assert max(peaks) / min(peaks) - 1.0 < 1.5e-3
     assert max(bose) / min(bose) - 1.0 < 1e-3
 
@@ -190,6 +182,9 @@ def test_the_narrow_rendering_is_continuous_in_the_width_and_leaves_ordinary_wid
                                                                          edge * (1 + 1e-7)))
         assert np.max(np.abs(below - above)) < 1e-5 * np.max(above)
     broad = 1.5 * hi
-    point = (Stokes_DHO(grid, 1.0, broad, 5.0)
-             + antiStokes_DHO(grid, np.exp(-5.0 / (KB * 300.0)), broad, 5.0))
-    np.testing.assert_allclose(dho_signal(grid, 5.0, broad, 1.0, 300.0), point, rtol=1e-14)
+    E = grid[grid != 0.0]
+    kT = KB * 300.0
+    point = ((5.0 / np.pi) * 4.0 * broad * (E / (-np.expm1(-E / kT)))
+             / ((E ** 2 - 25.0) ** 2 + 4.0 * broad ** 2 * E ** 2))
+    got = dho_signal(grid, 5.0, broad, 1.0, 300.0)
+    np.testing.assert_allclose(got[grid != 0.0], point, rtol=1e-12)
