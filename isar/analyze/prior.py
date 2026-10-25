@@ -239,8 +239,10 @@ class SpectrumPrior:
 
     def provenance(self) -> dict:
         """Recorded with every fit: the recipe, its settings and the data-derived quantity."""
-        out = {"version": PRIOR_RECIPE_VERSION, "empirical_bayes": True,
-               "empirical_quantity": "max_count", "max_count": float(self.max_count),
+        empirical = not self.settings.legacy_v4      # the v4 arm's amplitudes come from exposure
+        out = {"version": PRIOR_RECIPE_VERSION, "empirical_bayes": empirical,
+               "empirical_quantity": "max_count" if empirical else None,
+               "max_count": float(self.max_count),
                "height_hi": float(self.height_hi), "background_hi": float(self.background_hi),
                "energy_support_meV": [float(self.e_lo), float(self.e_hi)],
                "settings": asdict(self.settings)}

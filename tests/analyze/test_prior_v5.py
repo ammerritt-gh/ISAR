@@ -40,6 +40,11 @@ def test_legacy_arm_is_the_v4_recipe_in_the_height_coordinate():
     assert z == pytest.approx(1.0, abs=1e-9)
     assert sp.ln_width(GAMMA_MAX_V4 + 1.0) == -math.inf
     assert sp.bounds("omega0") == (EPS_OMEGA0, 10.0)            # v4 never capped the window
+    prov = sp.provenance()                       # the reference arm is not the data-derived prior
+    assert prov["empirical_bayes"] is False and prov["empirical_quantity"] is None
+    assert prov["height_hi"] == sp.height_hi
+    v5 = prior.resolve_prior_for(ctx).provenance()
+    assert v5["empirical_bayes"] is True and v5["empirical_quantity"] == "max_count"
     with pytest.raises(ValueError, match="v4_height_hi"):             # counts alone cannot give it
         resolve_prior([5.0], [1.0], PriorSettings(legacy_v4=True)).height_hi
 
