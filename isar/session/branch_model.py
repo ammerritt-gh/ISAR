@@ -4,9 +4,11 @@ Shares more than ω₀ across a dispersion branch: Γ and the (portable, exposur
 A, so a fit near the zone centre — where the acoustic peak merges with the elastic line and Γ/A go
 unidentifiable — can be softly constrained to the branch and recover ω₀ (the LOW-q rescue).
 
-The anchor intensity is the **intrinsic** amplitude per exposure (H4: the fitted ``phonon.A``
-carries no thermal occupation — the model applies (n+1) explicitly), so the constraints this
-module emits are already in the fit parameter's own space and the acoustic law below is exact.
+The anchor intensity is the **intrinsic** amplitude per exposure (H4: the lineshape's A behind
+the fitted height carries no thermal occupation — the model applies it pointwise), so the acoustic
+law below is exact. The fit parameter is the convolved height ``phonon.h``, so the constraints this
+module emits convert the branch's A to a height with the caller's ``height_per_intrinsic`` (the
+:class:`~isar.analyze.lineshapes.UnitPeak` height at the predicted ω₀ and Γ).
 
 **Coordinate = ω₀, not q** (owner decision): Γ and A are modelled as functions of ω₀ itself, because
 the acoustic intensity law is literally A ∝ 1/ω (intrinsic — the measured kT/ω² classical form is
@@ -53,33 +55,38 @@ class BranchPrediction:
     n_anchors: int
     branch_id: str = BRANCH_ID
 
-    def soft_constraints(self, exposure) -> ParamConstraints:
+    def soft_constraints(self, exposure, height_per_intrinsic: float) -> ParamConstraints:
         """Soft :class:`ParamConstraints` for a low-q fit: Γ pinned to ``gamma ± gamma_sigma`` and the
-        raw amplitude to the branch intensity scaled to *this scan's* exposure
-        (``amplitude_norm × exposure``) with a loose relative σ. Never hard (A absorbs systematics)."""
+        height ``phonon.h`` to the branch intensity scaled to *this scan's* exposure and converted
+        to a height (``amplitude_norm × exposure × height_per_intrinsic``) with a loose relative σ.
+        Never hard (the intensity absorbs systematics)."""
         soft: dict = {}
         if self.gamma_sigma > 0:
             soft["phonon.Gamma"] = (float(self.gamma), float(self.gamma_sigma))
         if exposure and float(exposure) > 0 and self.amplitude_norm > 0:
-            raw_a = float(self.amplitude_norm) * float(exposure)
-            soft["phonon.A"] = (raw_a, max(self.amplitude_rel_sigma, A_REL_SIGMA_FLOOR) * raw_a)
+            raw_h = float(self.amplitude_norm) * float(exposure) * float(height_per_intrinsic)
+            soft["phonon.h"] = (raw_h, max(self.amplitude_rel_sigma, A_REL_SIGMA_FLOOR) * raw_h)
         return ParamConstraints(
             soft=soft,
             origins={name: "prior_predictive" for name in soft},
         )
 
-    def hard_constraints(self, exposure) -> ParamConstraints:
+    def hard_constraints(self, exposure, height_per_intrinsic: float) -> ParamConstraints:
         """The near-Γ **constrained** recipe (Phase A; the old ``examples/old_fitters`` ``Constrained``
-        model): hard-fix BOTH Γ and the raw amplitude A to the branch's 1/ω law, reducing the near-zero
-        acoustic to ω₀-only. With A fixed, the blob's Bose-weighted brightness (∝ 1/ω near Γ) pins ω₀
-        where its *position* — 0.34 FWHM from the origin, Stokes/anti-Stokes merged — cannot. Used only
-        in the near-Γ unresolvable regime, in-anchor (so A is trustworthy); away from Γ the ordinary
-        soft rescue applies (A stays soft, absorbing systematics)."""
+        model): hard-fix BOTH Γ and the height ``phonon.h`` to the branch's 1/ω law at the predicted
+        ω₀ (``amplitude_norm × exposure × height_per_intrinsic``), reducing the near-zero acoustic to
+        ω₀-only. With the height fixed, ω₀ is pinned by the blob's *position* only — 0.34 FWHM from
+        the origin, Stokes/anti-Stokes merged. The Bose-weighted brightness mechanism of the old
+        intrinsic-amplitude coordinate (A fixed, the height following ω₀) is lost: accepted (T-1),
+        with no functional tie; ``TODO.md`` DEFECT-10 records it. Used only in the near-Γ
+        unresolvable regime, in-anchor (so the intensity is trustworthy); away from Γ the ordinary
+        soft rescue applies (the height stays soft, absorbing systematics)."""
         hard: dict = {}
         if self.gamma > 0:
             hard["phonon.Gamma"] = float(self.gamma)
         if exposure and float(exposure) > 0 and self.amplitude_norm > 0:
-            hard["phonon.A"] = float(self.amplitude_norm) * float(exposure)
+            hard["phonon.h"] = (float(self.amplitude_norm) * float(exposure)
+                                * float(height_per_intrinsic))
         return ParamConstraints(
             hard=hard,
             origins={name: "prior_predictive" for name in hard},
@@ -131,7 +138,7 @@ def build_branch(points, *, sample, t_bin, branch_id: str = BRANCH_ID) -> dict |
     # H4/H1 clean break: a point persisted under a retired basis holds the MEASURED amplitude
     # A·(n+1). Nothing in the stored number distinguishes it from an intrinsic one and the
     # occupation is not recoverable after the fact, so mixing the two would fit log A(ω₀) across
-    # incomparable anchors and emit phonon.A constraints wrong by (n+1). Excluded, never
+    # incomparable anchors and emit intensity constraints wrong by (n+1). Excluded, never
     # reinterpreted — and said out loud, since a resumed campaign otherwise loses anchors silently.
     usable, retired = [], 0
     for p in points:

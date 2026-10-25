@@ -103,7 +103,9 @@ def _exposure_scale(scenario: ScenarioSpec, n: int) -> np.ndarray | None:
 
 
 def _constraints(
-    scenario: ScenarioSpec, delivery_design: Mapping[str, Any] | None
+    scenario: ScenarioSpec,
+    delivery_design: Mapping[str, Any] | None,
+    truth_context: ScanContext,
 ) -> ParamConstraints:
     if scenario.constraint_kind in {"unconstrained", "post_rail_rescue"}:
         # A rescue cell starts unconstrained; the production delivery path decides whether it rails.
@@ -124,9 +126,12 @@ def _constraints(
         in_anchor_range=True,
         n_anchors=4,
     )
+    # The branch intensity is an intrinsic A; the fitted parameter is the height at the prior's ω₀.
+    height_per_intrinsic = PhononDHO(peak=scenario.phonon_sides).unit_peak(
+        {"omega0": prior_omega, "Gamma": float(delivery_design["gamma"])}, truth_context).height
     if scenario.constraint_kind == "soft_prior_predictive":
-        return prediction.soft_constraints(exposure=1.0)
-    return prediction.hard_constraints(exposure=1.0)
+        return prediction.soft_constraints(exposure=1.0, height_per_intrinsic=height_per_intrinsic)
+    return prediction.hard_constraints(exposure=1.0, height_per_intrinsic=height_per_intrinsic)
 
 
 def _delivery_design(
@@ -145,7 +150,7 @@ def _delivery_design(
         "omega0_sigma": float(scenario.constraint_sigma_mev),
         "amplitude": float(target_mode["amplitude"]),
         "amplitude_norm": (
-            float(target_mode["amplitude"])
+            float(target_mode["amplitude_intrinsic"])
             * float(target_mode["omega0"])
             / prior_omega
         ),
@@ -192,6 +197,9 @@ def _build_truth_model(
                 "omega_d": omega_d,
                 "gamma": float(scenario.gamma),
                 "amplitude": amplitude,
+                "amplitude_intrinsic": float(component.intrinsic_amplitude(
+                    {"omega0": float(omega0), "Gamma": scenario.gamma, "h": amplitude},
+                    truth_context)),
                 "phonon_sides": peak_kind,
             }
         )
@@ -298,7 +306,7 @@ def generate_dataset(
         instrument="STAT2B_SYNTH",
         energy_status="absolute",
         quasielastic_fwhm=float(scenario.qe_fwhm),
-        constraints=_constraints(scenario, delivery_design),
+        constraints=_constraints(scenario, delivery_design, truth_context),
         exposure_scale=exposure,
         exposure_reference=1.0 if exposure is not None else None,
         exposure_source="monitor" if exposure is not None else None,  # a flux profile, as a monitor

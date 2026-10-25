@@ -22,7 +22,8 @@ from isar.analyze import gold as gold_mod
 from isar.analyze.components import ConstantBackground, Elastic, PhononDHO, QuasiElastic
 from isar.analyze.context import ScanContext, effective_exposure, select_exposure
 from isar.analyze.descriptor import describe_spectrum
-from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
+from isar.analyze.phonon import (EPS_OMEGA0, _phonon_for, enumerate_phonon_multimode,
+                                 enumerate_phonon_structures)
 from isar.analyze.prior import mode_bounds
 from isar.schema.card import Card
 from isar.schema.scan import Flag, exposure_for
@@ -2525,7 +2526,7 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
 
 # Phase A branch assignment: near a zone centre the acoustic ω₀ is unresolvable BY POSITION (below
 # BA.RESOLVABLE_FWHM_FACTOR × resolution FWHM the merged Stokes/anti-Stokes blob is shape-identical to
-# an elastic peak). There it is measured by the constrained (hard Γ+A / brightness) fit, or reported as
+# an elastic peak). There it is measured by the constrained (hard Γ + height) fit, or reported as
 # branch_continuation.
 # The dispersion prior narrows the Ω_d IC grid to ω₀±1.5 (ic.PRIOR_HALF_WIDTH). A COLD acoustic belief
 # predicts ω₀≈0 with a large σ; narrowing to [0,1.5] there would miss the resolvable acoustic (1.4+) and
@@ -2705,15 +2706,21 @@ def _apply_low_q_rescue(ctx, prior, card, sample, T, rec, near_gamma, region_rea
         if pred is not None:
             exposure, _mode = _exposure_per_point(rec, ctx, det)
             exp = exposure if np.isfinite(exposure) else 0.0
-            # Near Γ AND in-anchor: the CONSTRAINED recipe (hard Γ+A → the blob's Bose-weighted
-            # brightness pins ω₀ where its position, 0.34 FWHM from the origin, cannot). Elsewhere the
-            # ordinary soft rescue (A stays soft, absorbing monitor / focusing-asymmetry drift).
+            # The branch predicts an intrinsic A; the fit parameter is the height, so convert at the
+            # predicted ω₀ (clamped to the fit's own energy floor) and Γ, with this scan's phonon.
+            recipe = _phonon_for(ctx)
+            phonon_comp = recipe() if isinstance(recipe, type) else recipe
+            per_a = phonon_comp.unit_peak({"omega0": max(float(prior.omega0), EPS_OMEGA0),
+                                           "Gamma": float(pred.gamma)}, ctx).height
+            # Near Γ AND in-anchor: the CONSTRAINED recipe (hard Γ + height from 1/ω; ω₀ is then
+            # pinned by position only — T-1, TODO.md DEFECT-10). Elsewhere the ordinary soft rescue
+            # (the height stays soft, absorbing monitor / focusing-asymmetry drift).
             if near_gamma and pred.in_anchor_range:
-                cons = pred.hard_constraints(exp)
-                note = (f"near-Γ constrained fit (hard Γ={pred.gamma:.2f} meV + A from 1/ω; "
-                        f"brightness pins ω₀)")
+                cons = pred.hard_constraints(exp, per_a)
+                note = (f"near-Γ constrained fit (hard Γ={pred.gamma:.2f} meV + height from 1/ω; "
+                        f"ω₀ pinned by position only)")
             else:
-                cons = pred.soft_constraints(exp)
+                cons = pred.soft_constraints(exp, per_a)
                 note = (f"low-q branch soft-constraint applied (Γ≈{pred.gamma:.2f}±{pred.gamma_sigma:.2f}, "
                         f"A from 1/ω{'' if pred.in_anchor_range else '; extrapolated'})")
             if not cons.is_empty():
@@ -2795,7 +2802,7 @@ def _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descri
     Skipped when Γ is ALREADY hard-constrained (the near-Γ branch_conditional path): gamma_at_bound is
     computed from the fitted Γ value regardless of constraints, so a frozen Γ can still read at-bound —
     but re-freezing an already-frozen Γ rescues nothing, and rebuilding constraints from soft-only here
-    would silently drop the existing hard phonon.A brightness constraint."""
+    would silently drop the existing hard phonon.h intensity constraint."""
     target_branch, _target_label, _energy_search = _campaign_target(card)
     already_hard_gamma = (ctx.constraints is not None
                           and "phonon.Gamma" in (ctx.constraints.hard or {}))

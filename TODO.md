@@ -101,6 +101,17 @@ Things that are wrong now, as opposed to things not yet built.
       **Acceptance:** the presence factor has a cluster-size-dependent bound, and the test passes within
       its ceiling (a later job; the scene presence bound is out of scope for the fast-pass job).
 
+- [ ] **DEFECT-10 — The near-Γ constrained recipe pins ω₀ by position only.**
+      Since the full-DHO height coordinate (`phonon.h`), `BranchPrediction.hard_constraints`
+      (`isar/session/branch_model.py`) fixes the convolved height at the predicted ω₀ instead of the
+      intrinsic amplitude A. With A fixed, the height used to follow ω₀ through the Bose-weighted 1/ω
+      brightness, which pinned ω₀ where the merged Stokes/anti-Stokes blob's position (0.34 FWHM from
+      the origin) cannot; that mechanism is lost and ω₀ is pinned by position only. Accepted by the
+      operator (T-1, 2026-10-25), beside the PR #46 item above. Only the campaign path (`isar drive`'s
+      low-q rescue in `isar/session/scan_delivery.py`) uses the recipe; file fitting never does.
+      **Acceptance:** a functional tie (`h = A × height(ω₀, Γ)`, re-evaluated at every model
+      evaluation) restores the brightness pin, if a campaign needs it.
+
 ---
 
 ## Validation gates
