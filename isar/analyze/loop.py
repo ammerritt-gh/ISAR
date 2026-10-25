@@ -27,8 +27,8 @@ from isar.analyze import backends, estimators
 from isar.analyze.backends import BackendResult
 from isar.analyze.catalogue import enumerate_count_structures
 from isar.analyze.phonon import (
-    EPS_OMEGA_D, SPLIT_SEPARATIONS, _gamma_at_bound, _mode_prefixes, _peak_omega0,
-    assess_success, default_mode_ceiling, enumerate_phonon_structures, greedy_multimode_ic, omega0_value_error, phonon_structure_ic,
+    EPS_OMEGA0, SPLIT_SEPARATIONS, _gamma_at_bound, _mode_prefixes, _peak_omega0,
+    assess_success, default_mode_ceiling, enumerate_phonon_structures, greedy_multimode_ic, phonon_structure_ic,
     placed_modes_ic, split_mode_ic,
 )
 from isar.analyze.prior import mode_bounds, recipe_provenance, resolution_fwhm
@@ -39,7 +39,7 @@ from isar.analyze.phonon import GAMMA_FLOOR, GAMMA_MAX  # noqa: F401
 # STAT-1.5 metadata revisions.  These are descriptive fingerprints only: changing either label
 # changes semantic comparability identity, never a fit/cache/scientific identity.
 DATA_LIKELIHOOD_REVISION = "isar.baker_cousins_data_likelihood/1"
-MODEL_PARAMETERIZATION_REVISION = "isar.fit_model_parameterization/1"
+MODEL_PARAMETERIZATION_REVISION = "isar.fit_model_parameterization/2"
 
 def _sanitize(name: str) -> str:
     """Backend parameter names must be plain identifiers (iminuit); drop the dotted prefix."""
@@ -656,7 +656,7 @@ def _minimize_profiled(prob, *, minos=False) -> BackendResult:
     """The iminuit fit of ``prob`` with its linear amplitudes profiled out, as a full-space
     :class:`BackendResult` shaped like :func:`_minimize_fixed`'s.
 
-    MIGRAD sees only the remaining free parameters (Ω_d, Γ and any soft-constrained amplitude);
+    MIGRAD sees only the remaining free parameters (E0, Γ and any soft-constrained height);
     each cost evaluation solves the profiled amplitudes by :attr:`Problem.profile`, warm-started from
     the previous call's. The optimum of the profiled cost is the joint optimum, so the covariance is
     one HESSE over every free parameter there, on the full objective: the curvature the Laplace
@@ -728,7 +728,7 @@ def _minimize_profiled(prob, *, minos=False) -> BackendResult:
 
 def result_from_backend(label, composite, costv, n_used, k, br,
                         *, prior_omega=None, acoustic_omega=None, penalty=None,
-                        hard_fixed=False, T=None) -> StructureFitResult:
+                        hard_fixed=False, T=None, ctx=None) -> StructureFitResult:
     """Build a :class:`StructureFitResult` from a backend result, reading the *raw,
     separated* convergence/covariance/profile signals (not the lossy combined success).
 
@@ -739,7 +739,9 @@ def result_from_backend(label, composite, costv, n_used, k, br,
 
     Per-phonon detail is collected into ``modes`` (canonicalized ascending by ω₀); the reported
     scalar ω₀/Γ are the PRIMARY mode's (nearest ``prior_omega`` if given, else largest
-    amplitude). Single-phonon fits are unchanged (one mode, itself primary)."""
+    height). Single-phonon fits are unchanged (one mode, itself primary). A mode's
+    ``amplitude_intrinsic`` (the lineshape's A behind the height) needs the scan context ``ctx``;
+    without one it is NaN."""
     theta = np.asarray(br.x, dtype=float)
     cov = br.covariance if br.covariance_ok else None
     errs = np.sqrt(np.diag(cov)) if cov is not None else None
@@ -769,20 +771,20 @@ def result_from_backend(label, composite, costv, n_used, k, br,
     else:
         param_errors = {n: None for n in names}
 
-    # per-mode collection, canonicalized ascending by ω₀ (kills label switching). The fitted A is
-    # INTRINSIC (H4); ``amplitude`` stays the MEASURED Stokes strength A·(n+1)(ω₀,T) so every
-    # delivery-space consumer (intensity portability, branch features, detection power, reports)
-    # keeps its counts-scale meaning, with the intrinsic value alongside. With T unknown the two
-    # coincide by convention ((n+1)=1 — no occupation information).
-    from isar.analyze.phonon import bose_occupation
+    # per-mode collection, canonicalized ascending by ω₀ (kills label switching). ``amplitude`` is
+    # the fitted height h (counts per point at the reference exposure, the measured strength every
+    # delivery-space consumer reads); ``amplitude_intrinsic`` is the lineshape's A behind it.
+    slot = dict(composite._phonon_slots())
     modes = []
     for i in composite.phonon_indices():
         w0, w0e = composite._omega0_at(theta, cov, i)
         g_err = float(errs[i + 1]) if errs is not None else float("nan")
-        occ = bose_occupation(w0, T) if T is not None else 1.0
+        local = {"omega0": w0, "Gamma": float(theta[i + 1]), "h": float(theta[i + 2])}
+        intrinsic = (float(slot[i].intrinsic_amplitude(local, ctx)) if ctx is not None
+                     else float("nan"))
         modes.append({"omega0": w0, "omega0_err": w0e, "gamma": float(theta[i + 1]),
-                      "gamma_err": g_err, "amplitude": float(theta[i + 2]) * occ,
-                      "amplitude_intrinsic": float(theta[i + 2])})
+                      "gamma_err": g_err, "amplitude": float(theta[i + 2]),
+                      "amplitude_intrinsic": intrinsic})
     modes.sort(key=lambda m: m["omega0"])
     n_modes = len(modes)
 
@@ -797,7 +799,7 @@ def result_from_backend(label, composite, costv, n_used, k, br,
 
     if prim_i is None:
         # Phonon-less structure (elastic+bg / bg, SCENE-1 PR-a): there is no ω to report. NaN,
-        # never 0.0 — a fake zero would read as a real zone-centre energy downstream. Ω_d
+        # never 0.0 — a fake zero would read as a real zone-centre energy downstream. Energy
         # separability is vacuous here, so well-constrained reduces to converged + covariance.
         omega0 = omega0_err = gamma = gamma_err = float("nan")
         at_limit_adpt = {"omega_d": False}
@@ -806,11 +808,11 @@ def result_from_backend(label, composite, costv, n_used, k, br,
         omega0, omega0_err = composite._omega0_at(theta, cov, prim_i)
         gamma = float(theta[prim_i + 1])
         gamma_err = float(errs[prim_i + 1]) if errs is not None else float("nan")
-        # strict Phase-1 rule, adapting the Ω_d at-limit key (Ω_d is the first free param)
+        # strict Phase-1 rule, adapting the energy's at-limit key (``.omega0`` is the first param)
         od_key = _sanitize(names[0])
         at_limit_adpt = {"omega_d": bool((br.at_limit or {}).get(od_key, False))}
         well_constrained = bool(assess_success(theta, errs, at_limit_adpt, br.success,
-                                               br.covariance_ok, EPS_OMEGA_D))
+                                               br.covariance_ok, EPS_OMEGA0))
     analysis_usable = optimizer_converged
 
     gamma_at_bound = _gamma_at_bound(m["gamma"] for m in modes)
@@ -852,6 +854,7 @@ def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False, x0=None) -> Stru
         penalty=prob.penalty,
         hard_fixed=prob.is_hard_fixed,
         T=getattr(ctx, "T", None),
+        ctx=ctx,
     )
     result.identity = getattr(hyp, "identity", None)
     _attach_fit_semantics(result, prob, ctx)
@@ -1119,8 +1122,8 @@ def _start(source, detail, result, x0=None) -> Rung1Start:
 
 
 def _at_upper_bound(result, ctx) -> list:
-    """Amplitudes and background of ``result`` at the prior recipe's upper bound."""
-    names = [n for n in result.params if n.endswith((".A", ".E", ".QE", ".BG"))]
+    """Heights, quasi-elastic area and background of ``result`` at the prior recipe's upper bound."""
+    names = [n for n in result.params if n.endswith((".h", ".QE", ".BG"))]
     if not names:
         return []
     return [n for n, (_lo, hi) in zip(names, mode_bounds(names, ctx))
@@ -1304,7 +1307,7 @@ def _offer_variants(pairs, ctx, *, backend="iminuit", minos=False, executor=None
     for result, hyp in pairs:
         if not result.optimizer_converged or not result.modes:
             continue                                   # nothing fitted, or a phonon-less null
-        prefixes = [n.rsplit(".", 1)[0] for n in result.params if n.endswith(".Omega_d")]
+        prefixes = [n.rsplit(".", 1)[0] for n in result.params if n.endswith(".omega0")]
         if len(prefixes) != 1:
             continue
         # Variants come from the entry that OWNS the candidate's identity: offering another
@@ -1362,9 +1365,9 @@ def degenerate_limit(result, hyp, ctx) -> tuple[str, str] | None:
     """``(kind, parameter)`` of the lower limit a fit rails at, or ``None``. The kinds, checked in
     this order (a vanished mode's other parameters are meaningless, so its amplitude comes first):
 
-    * ``"amplitude"``: a mode's ``.A`` at 0 — the mode is not there;
-    * ``"energy"``: a mode's ``.Omega_d`` at the window edge — the mode is the elastic line;
-    * ``"elastic"``: ``elastic.E`` at 0 — there is no elastic line;
+    * ``"amplitude"``: a mode's ``.h`` at 0 — the mode is not there;
+    * ``"energy"``: a mode's ``.omega0`` at the window edge — the mode is the elastic line;
+    * ``"elastic"``: ``elastic.h`` at 0 — there is no elastic line;
     * ``"width"``: a mode's ``.Gamma`` at the floor — the mode is resolution limited;
     * ``"background"``: ``bg.BG`` at 0 — there is no background.
 
@@ -1381,13 +1384,13 @@ def degenerate_limit(result, hyp, ctx) -> tuple[str, str] | None:
         return (name in lower and name not in fixed
                 and result.params[name] <= lower[name] + DEGENERATE_LIMIT_TOL * max(abs(lower[name]), 1.0))
 
-    prefixes = [n[: -len(".Omega_d")] for n in names if n.endswith(".Omega_d")]
-    for kind, suffix in (("amplitude", ".A"), ("energy", ".Omega_d")):
+    prefixes = [n[: -len(".omega0")] for n in names if n.endswith(".omega0")]
+    for kind, suffix in (("amplitude", ".h"), ("energy", ".omega0")):
         for p in prefixes:
             if railed(p + suffix):
                 return kind, p + suffix
-    if railed("elastic.E"):
-        return "elastic", "elastic.E"
+    if railed("elastic.h"):
+        return "elastic", "elastic.h"
     for p in prefixes:
         if railed(p + ".Gamma"):
             return "width", p + ".Gamma"

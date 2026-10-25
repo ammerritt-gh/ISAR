@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from isar.analyze.phonon import EPS_OMEGA_D, GAMMA_FLOOR, GAMMA_MAX
+from isar.analyze.phonon import EPS_OMEGA0, GAMMA_FLOOR, GAMMA_MAX
 
 
 @dataclass(frozen=True)
@@ -43,11 +43,13 @@ class PhononPrior:
 # ----------------------------------------------------------------------------
 # Bump the version whenever a constant or a rule below changes: it is hashed into the guidelines
 # signature (so the affected spectra refit) and recorded with every fit.
-PRIOR_RECIPE_VERSION = "isar.mode-prior-recipe/4"
+# /4h: v4's ceilings read in the height coordinate (the full-DHO lineshape's `.h`), interim until
+# prior_v5.
+PRIOR_RECIPE_VERSION = "isar.mode-prior-recipe/4h"
 
-# Amplitude ceiling: a fitted area A (counts at the reference exposure, integrated over meV) is
-# bounded by scale x exposure x width, i.e. a resolution-limited peak may reach `scale x exposure`
-# counts per point. The scale depends on what the exposure counts: monitor counts (one count per
+# Amplitude ceiling: a fitted height h (counts per point at the reference exposure) is bounded by
+# scale x exposure, i.e. a resolution-limited peak may reach `scale x exposure` counts per point;
+# a quasi-elastic area by scale x exposure x width. The scale depends on what the exposure counts: monitor counts (one count per
 # monitor count) or seconds (a count rate per second). Agent-proposed from order-of-magnitude
 # instrument figures, no measured value: docs/STATS_PRIMER.md. No card override; the S6 sensitivity
 # check is how the values reach the operator.
@@ -107,10 +109,12 @@ def mode_bounds(names, ctx) -> list[tuple[float, float]]:
     """(lo, hi) for each global parameter name, in order: the recipe's bounds and, since every
     parameter's prior is flat over them, its priors.
 
-    * ``.Omega_d`` (energy): uniform over the fit window, ``(EPS_OMEGA_D, max fitted energy)``.
+    * ``.omega0`` (the undamped energy E0): uniform over the fit window,
+      ``(EPS_OMEGA0, max fitted energy)``.
     * ``.Gamma`` (width): from ``WIDTH_FLOOR_FRACTION`` of the resolution width (never above the
       absolute ``GAMMA_FLOOR``) to ``GAMMA_MAX``.
-    * ``.A`` / ``.E`` / ``.QE`` (areas): ``(0, amplitude_scale x exposure x resolution width)``.
+    * ``.h`` (phonon and elastic heights, counts per point): ``(0, amplitude_scale x exposure)``.
+    * ``.QE`` (area): ``(0, amplitude_scale x exposure x resolution width)``.
     * ``.BG`` (flat background, counts per point): ``(0, amplitude_scale x exposure)``.
     """
     x_max = float(np.max(ctx.x_used))
@@ -120,11 +124,13 @@ def mode_bounds(names, ctx) -> list[tuple[float, float]]:
     area_hi = scale * exposure * width
     out = []
     for name in names:
-        if name.endswith(".Omega_d"):
-            out.append((EPS_OMEGA_D, x_max))
+        if name.endswith(".omega0"):
+            out.append((EPS_OMEGA0, x_max))
         elif name.endswith(".Gamma"):
             out.append((min(GAMMA_FLOOR, WIDTH_FLOOR_FRACTION * width), GAMMA_MAX))
-        elif name.endswith((".A", ".E", ".QE")):
+        elif name.endswith(".h"):
+            out.append((0.0, scale * exposure))
+        elif name.endswith(".QE"):
             out.append((0.0, area_hi))
         elif name.endswith(".BG"):
             out.append((0.0, scale * exposure))
@@ -148,7 +154,7 @@ def recipe_provenance(ctx) -> dict:
 # N modes of one structure are exchangeable: swapping two labels gives the same curve, so the
 # likelihood has N! identical copies of every solution. A flat prior per label makes the two evidence
 # lanes disagree by ln N!: nested sampling finds all N! copies, a Laplace expansion at one fitted
-# point sees one. The recipe orders the energy coordinate (Omega_d, the sampled one, so the
+# point sees one. The recipe orders the energy coordinate (`.omega0`, the sampled one, so the
 # normalisation below is exact) and puts one joint density on the ordered region: N!/W^N. The Laplace
 # evidence (ordered_energy_log_prior) and the nested-sampling prior transform
 # (ordered_energy_transform) are the same prior, so each lane gets the N! exactly once and agrees.

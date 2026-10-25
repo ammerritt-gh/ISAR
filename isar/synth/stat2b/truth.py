@@ -179,11 +179,11 @@ def _build_truth_model(
         component = PhononDHO(prefix=prefix, peak=peak_kind)
         omega_d = math.sqrt(omega0**2 - scenario.gamma**2)
         unit = component.evaluate(
-            x, {"Omega_d": omega_d, "Gamma": scenario.gamma, "A": 1.0}, truth_context
+            x, {"omega0": float(omega0), "Gamma": scenario.gamma, "h": 1.0}, truth_context
         )
         amplitude = float(scenario.peak_counts) / float(np.max(unit * exposure_multiplier))
         components.append(component)
-        theta.extend((omega_d, scenario.gamma, amplitude))
+        theta.extend((float(omega0), scenario.gamma, amplitude))
         modes.append(
             {
                 "rank": "lower" if index == 0 and len(scenario.energies) == 2
@@ -199,7 +199,7 @@ def _build_truth_model(
     if scenario.elastic_height_ratio > 0:
         component = Elastic()
         unit_height = float(
-            np.max(component.evaluate(x, {"E": 1.0}, truth_context) * exposure_multiplier)
+            np.max(component.evaluate(x, {"h": 1.0}, truth_context) * exposure_multiplier)
         )
         components.append(component)
         theta.append(float(scenario.peak_counts) * scenario.elastic_height_ratio / unit_height)

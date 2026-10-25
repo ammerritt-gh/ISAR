@@ -119,8 +119,8 @@ class FitOutcome:
     bayes_fork_suspected: bool = False
     bayes_unconstrained: bool = False
     # GUI Phase 0 (P0-3 / P0-4), additive. ``amplitudes``: the DELIVERED fit's linear amplitudes
-    # ({linear_param_name: value} for the winning structure — phonon area(s) ``…A``, elastic
-    # ``elastic.E``, quasi-elastic ``qe.QE``, background ``bg.BG``), the same linear params the
+    # ({linear_param_name: value} for the winning structure — phonon height(s) ``…h``, elastic
+    # ``elastic.h``, quasi-elastic ``qe.QE``, background ``bg.BG``), the same linear params the
     # fitter solved, kept so a params-only curve evaluator can rebuild the model without re-solving
     # NNLS against counts (report.audit.reconstruct_curve does the latter today). ``candidates``: one
     # compact row per SCORED structure ({label, k, ndof, cost, cost_per_dof, n_modes, delta_aic,
@@ -355,8 +355,9 @@ _CSV_COLUMNS = [
 ]
 
 # report/modes.csv: one row per fitted mode of the selected count, keyed to its results.csv row by
-# scan_id + detector, mode_index 0 the lowest energy. omega0 is the intrinsic DHO energy, the
-# peak_position the displayed one (the damped frequency Omega_d); a missing value stays empty.
+# scan_id + detector, mode_index 0 the lowest energy. omega0 is the undamped DHO energy E0 (the
+# fitted parameter), peak_position the damped frequency sqrt(E0^2 - Gamma^2), empty when the mode is
+# overdamped (Gamma >= E0); a missing value stays empty.
 _MODES_COLUMNS = [
     "scan_id", "scan", "detector", "sample", "T", "h", "k", "l", "count_state", "best_model",
     "n_modes", "mode_index", "omega0", "omega0_err", "peak_position", "peak_position_err",

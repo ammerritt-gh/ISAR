@@ -325,7 +325,7 @@ def _merged_trigger(best, ctx) -> list:
             out.append(Trigger("modes_merged", f"modes at {lo_e:.2f} and {hi_e:.2f} meV are "
                                                f"{(hi_e - lo_e) / width:.2f} resolution widths apart"))
             break
-    amps = [n for n in result.params if n.endswith(".A")]
+    amps = [n for n in result.params if n.endswith(".h") and not n.startswith("elastic.")]
     cctx = loop.candidate_context(best.hypothesis, ctx)
     for name, (lo, _hi) in zip(amps, mode_bounds(amps, cctx)):
         value = float(result.params[name])

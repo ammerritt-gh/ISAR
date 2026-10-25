@@ -22,7 +22,7 @@ from isar.analyze import gold as gold_mod
 from isar.analyze.components import ConstantBackground, Elastic, PhononDHO, QuasiElastic
 from isar.analyze.context import ScanContext, effective_exposure, select_exposure
 from isar.analyze.descriptor import describe_spectrum
-from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures, omega0_from
+from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 from isar.analyze.prior import mode_bounds
 from isar.schema.card import Card
 from isar.schema.scan import Flag, exposure_for
@@ -1424,7 +1424,7 @@ def _auto_escalation_reasons(prelim, fits, ctx) -> list[str]:
         if sigma is None or not np.isfinite(sigma) or float(sigma) <= 0:
             continue
         value, sigma = float(value), float(sigma)
-        if name.endswith(".Omega_d"):
+        if name.endswith(".omega0"):
             # The energy prior's own edges (the recipe that bounded the fit), the rule the fit uses.
             lo, hi = mode_bounds([name], ctx)[0]
             if min(value - lo, hi - value) <= 2.0 * sigma:
@@ -1865,24 +1865,44 @@ def _rung2_selection(ladder, results, by_hyp, ctx):
     return rows, select.select_models(rows, by_hyp, ctx, stamp=False, evidence=evidence_set)
 
 
+def _damped_frequency(e0, gamma, cov2):
+    """``(Ω, σ_Ω)`` for the damped frequency Ω = √(E0² − Γ²), or ``(None, None)`` when Γ ≥ E0 (an
+    overdamped mode has none). ``cov2`` is the (E0, Γ) covariance block, or ``None``:
+    σ² = (E0/Ω)²σ_E0² + (Γ/Ω)²σ_Γ² − 2(E0Γ/Ω²)cov(E0, Γ)."""
+    if not gamma < e0:
+        return None, None
+    omega = float(np.sqrt(e0 * e0 - gamma * gamma))
+    if cov2 is None:
+        return omega, None
+    d_e, d_g = e0 / omega, -gamma / omega
+    var = d_e * d_e * cov2[0, 0] + d_g * d_g * cov2[1, 1] + 2.0 * d_e * d_g * cov2[0, 1]
+    return omega, (float(np.sqrt(var)) if np.isfinite(var) and var > 0 else None)
+
+
 def _with_peak_positions(modes, result) -> list:
-    """Each mode dict with its displayed peak position: the DHO's damped frequency Ω_d (meV), the
-    fitted parameter itself, and its HESSE error. ω₀ = √(Ω_d² + Γ²) stays the intrinsic energy."""
+    """Each mode dict with its displayed peak position: the DHO's damped frequency
+    Ω_d = √(E0² − Γ²) (meV) when Γ < E0, empty when Γ ≥ E0, with its error propagated from the
+    fitted (E0, Γ) covariance. ``omega0`` stays the undamped energy E0, the fitted parameter."""
     params = getattr(result, "params", None) or {}
-    errs = getattr(result, "param_errors", None) or {}
-    prefixes = [n[: -len(".Omega_d")] for n in params if n.endswith(".Omega_d")]
+    names = list(params)
+    cov = getattr(result, "parameter_covariance", None)
+    cov = np.asarray(cov, dtype=float) if cov is not None else None
+    if cov is not None and cov.shape != (len(names), len(names)):
+        cov = None
+    prefixes = [n[: -len(".omega0")] for n in params if n.endswith(".omega0")]
     out = []
     for mode in modes:
         if not isinstance(mode, dict) or not prefixes or mode.get("omega0") is None:
             out.append(mode)
             continue
         prefix = min(prefixes, key=lambda p: (
-            abs(omega0_from(params[p + ".Omega_d"], params[p + ".Gamma"]) - float(mode["omega0"]))
+            abs(float(params[p + ".omega0"]) - float(mode["omega0"]))
             + abs(float(params[p + ".Gamma"]) - float(mode.get("gamma") or 0.0))))
-        err = errs.get(prefix + ".Omega_d")
-        out.append({**mode, "peak_position": float(params[prefix + ".Omega_d"]),
-                    "peak_position_err": (float(err) if err is not None and np.isfinite(err)
-                                          else None)})
+        i, j = names.index(prefix + ".omega0"), names.index(prefix + ".Gamma")
+        omega, err = _damped_frequency(float(params[prefix + ".omega0"]),
+                                       float(params[prefix + ".Gamma"]),
+                                       cov[np.ix_([i, j], [i, j])] if cov is not None else None)
+        out.append({**mode, "peak_position": omega, "peak_position_err": err})
     return out
 
 

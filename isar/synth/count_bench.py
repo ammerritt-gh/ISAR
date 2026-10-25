@@ -90,8 +90,8 @@ HARD_KILL_GRACE_S = 300.0    # no case starts in the last this many seconds befo
 # reference does not move when the fitter's prior recipe does; amplitudes are boxed relative to the
 # observed peak count (the reference may look at the data; the fitter's recipe may not).
 REF_LN_BAYES_MIN = 0.0
-REF_AMPLITUDE_FACTOR = 100.0     # intrinsic phonon amplitude A in [0, factor * max counts]
-REF_ELASTIC_FACTOR = 20.0        # elastic area E in [0, factor * max counts]
+REF_AMPLITUDE_FACTOR = 100.0     # phonon height h in [0, factor * max counts]
+REF_ELASTIC_FACTOR = 20.0        # elastic height elastic.h in [0, factor * max counts]
 REF_MAX_SUBSET_STARTS = 8        # cap on truth-position starts for an N-1 sub-model
 REF_EVIDENCE_KINDS = ("laplace", "nested")   # laplace: production Gaussian rungs, no sampler
 
@@ -271,21 +271,15 @@ def _truth_model(truth: CaseTruth):
     """The production composite for the truth (anti-Stokes partner derived inside PhononDHO by
     detailed balance, never a parameter), its parameter vector, and a context to evaluate on."""
     from isar.analyze.components import CompositeModel, ConstantBackground, Elastic, PhononDHO
-    from isar.analyze.lineshapes import voigt_area_for_height
-    from isar.analyze.phonon import omega_d_from
 
     x = energy_axis()
     ctx = context_of(Observation(x, np.zeros_like(x), truth.T, truth.gauss_fwhm, truth.lorentz_fwhm,
                                 truth.exposure))
     phonons = [PhononDHO(prefix=_prefix(i)) for i in range(truth.n_modes)]
-    xf = np.arange(X_MIN, X_MAX + 1e-9, 0.05)
     theta = []
-    for comp, m in zip(phonons, truth.modes):
-        od = omega_d_from(m.omega0, m.gamma)
-        unit_height = float(np.max(comp.evaluate(xf, {"Omega_d": od, "Gamma": m.gamma, "A": 1.0}, ctx)))
-        theta += [od, m.gamma, m.height / unit_height]
-    theta += [voigt_area_for_height(truth.elastic_height, truth.gauss_fwhm, truth.lorentz_fwhm),
-              truth.background]
+    for m in truth.modes:            # the height coordinate: the truth's height is the parameter
+        theta += [m.omega0, m.gamma, m.height]
+    theta += [truth.elastic_height, truth.background]
     return CompositeModel([*phonons, Elastic(), ConstantBackground()]), theta, ctx
 
 
@@ -388,11 +382,11 @@ def _reference_hypothesis(m: int):
 
 def _start_vector(comp, ctx, pairs) -> np.ndarray:
     """Initial parameters for mode (omega0, gamma) ``pairs``; the linear amplitudes by NNLS."""
-    from isar.analyze.phonon import EPS_OMEGA_D, GAMMA_FLOOR, GAMMA_MAX, omega_d_from
+    from isar.analyze.phonon import EPS_OMEGA0, GAMMA_FLOOR, GAMMA_MAX
     nonlinear = {}
     for i, (w0, g) in enumerate(pairs):
         g = float(min(max(g, GAMMA_FLOOR), GAMMA_MAX))
-        nonlinear[f"{_prefix(i)}.Omega_d"] = float(min(max(omega_d_from(w0, g), EPS_OMEGA_D), X_MAX))
+        nonlinear[f"{_prefix(i)}.omega0"] = float(min(max(w0, EPS_OMEGA0), X_MAX))
         nonlinear[f"{_prefix(i)}.Gamma"] = g
     phi, lin_names = comp.nnls_basis(ctx.x_used, nonlinear, ctx)
     coef, _ = nnls(phi, ctx.counts_used)
@@ -403,11 +397,12 @@ def _start_vector(comp, ctx, pairs) -> np.ndarray:
 
 def _reference_bundle(names, cmax: float):
     from isar.analyze.catalogue import PriorBundle, ResolvedPrior
-    from isar.analyze.phonon import EPS_OMEGA_D, GAMMA_FLOOR, GAMMA_MAX
-    box = {"Omega_d": (EPS_OMEGA_D, X_MAX), "Gamma": (GAMMA_FLOOR, GAMMA_MAX),
-           "A": (0.0, REF_AMPLITUDE_FACTOR * cmax), "E": (0.0, REF_ELASTIC_FACTOR * cmax),
+    from isar.analyze.phonon import EPS_OMEGA0, GAMMA_FLOOR, GAMMA_MAX
+    box = {"omega0": (EPS_OMEGA0, X_MAX), "Gamma": (GAMMA_FLOOR, GAMMA_MAX),
+           "h": (0.0, REF_AMPLITUDE_FACTOR * cmax), "elastic.h": (0.0, REF_ELASTIC_FACTOR * cmax),
            "BG": (0.0, cmax + 10.0)}
-    return PriorBundle(tuple(ResolvedPrior(n, "flat", None, None, *box[n.split(".")[-1]], "identity")
+    return PriorBundle(tuple(ResolvedPrior(n, "flat", None, None,
+                                           *box.get(n, box.get(n.split(".")[-1])), "identity")
                              for n in names))
 
 

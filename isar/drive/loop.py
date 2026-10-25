@@ -3686,8 +3686,8 @@ def _reduced_u(hkl, period: float) -> float:
 
 
 def _bose_plus_one(omega_meV: float, temperature_K: float) -> float:
-    """``n(w,T)+1 = 1/(1-exp(-w/k_BT))`` — the factor :func:`isar.analyze.phonon.bose_occupation`
-    applies, re-stated here because the drive may not import the analysis package."""
+    """``n(w,T)+1 = 1/(1-exp(-w/k_BT))`` — the Stokes-side Bose factor, stated here because the
+    drive may not import the analysis package."""
     if temperature_K is None or float(temperature_K) <= 0.0 or float(omega_meV) <= 0.0:
         return 1.0
     return 1.0 / -math.expm1(-float(omega_meV) / (KB_MEV_PER_K * float(temperature_K)))
@@ -3980,7 +3980,8 @@ def _planner_scale(cfg, observations: list[dict], path, branches, temperature_K:
     """The intensity map, integrated from the counts each scan actually recorded.
 
     Read from the counts, not from the fits: the fitted amplitudes do not carry the convention this
-    needs. Measured on the second live run, master (41,0,0) published ``phonon.A = 6.7e-5`` against
+    needs. Measured on the second live run, master (41,0,0) published an intrinsic phonon amplitude of
+    6.7e-5 (the pre-height-coordinate parameter) against
     an ``effective_exposure`` of 5e6 -- 1.3e-11 counts*meV per neutron -- while the scan that
     produced it holds an 18-count peak over a background of 6, about 8 counts*meV above background.
     The forward model was five orders of magnitude too dim, so no design could complete a point,

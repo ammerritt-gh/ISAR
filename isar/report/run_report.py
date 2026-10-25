@@ -30,7 +30,7 @@ def _outcomes(session):
 
 def _scan_json(scan, det, status, oc) -> dict:
     """One report.json `scans` entry. Additive: carries a per-mode `modes` list (mode, omega0,
-    omega0_err, gamma, amplitude) only for multi-mode fits (`n_modes` > 1); pooled masters carry
+    omega0_err, gamma, amplitude = the fitted height h) only for multi-mode fits (`n_modes` > 1); pooled masters carry
     their member provenance (`pooled`, `n_members`, `members`)."""
     d = {"scan": scan, "detector": det, "status": status,
          **{k: oc.get(k) for k in ("verdict", "disposition", "omega0", "confidence", "best_label")}}

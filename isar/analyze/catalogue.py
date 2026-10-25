@@ -75,7 +75,7 @@ class LocalModel:
 class ParamPrior:
     """A proper per-parameter prior an entry declares for its local models (SCENE-1 PR-b).
 
-    ``param`` is the *suffix* name (``"Omega_d"``, ``"A"``, …), applied per component instance
+    ``param`` is the *suffix* name (``"omega0"``, ``"h"``, …), applied per component instance
     through its prefix. ``kind`` ∈ ``"gaussian"`` / ``"lognormal"`` / ``"flat"``. ``mu`` and
     ``sigma`` are floats **or ctx-attribute names** (e.g. ``"acoustic_omega"``,
     ``"gauss_fwhm"``) resolved at evaluation time — context-aware priors without a callable zoo.
@@ -480,15 +480,15 @@ class PriorBundle:
         return [p.spec() for p in self.params]
 
     def _energy_groups(self) -> list[list[int]]:
-        """Positions of the mode energies (``*.Omega_d``) the ordered-energy prior can order, one
+        """Positions of the mode energies (``*.omega0``) the ordered-energy prior can order, one
         list per group of exchangeable modes: each carries one plain flat energy prior, and every
         one of its parameters carries the same prior as the others of its group (a prior on one
-        mode's A or Gamma alone singles it out, and a mode whose Γ is pinned at the floor is a
+        mode's h or Gamma alone singles it out, and a mode whose Γ is pinned at the floor is a
         delta-function mode, exchangeable only with another such mode). Groups of one are not
         ordered."""
         groups = {}
         for i, p in enumerate(self.params):
-            if p.name.endswith(".Omega_d") and p.kind == "flat":
+            if p.name.endswith(".omega0") and p.kind == "flat":
                 groups.setdefault(self._mode_priors(i), []).append(i)
         return [g for g in groups.values() if len(g) >= 2]
 

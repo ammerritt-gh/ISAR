@@ -20,7 +20,7 @@ by a **ladder** that records which rung it came from and why:
    curvature.
 4. ``"dynesty"`` — nested sampling through :func:`~isar.analyze.errors.bayes.bayesian_posterior`
    with the same bundle in the prior transform, when the Gaussian picture itself is invalid
-   (non-Γ boundary-pinned parameter — Ω_d at the window edge is real physics and always pays
+   (non-Γ boundary-pinned parameter — E0 at the window edge is real physics and always pays
    for the sampler — missing/non-PD covariance, failed MAP refit, an optimizer that did not
    converge). Never silent: the
    escalation reason is recorded in ``validity``.
@@ -411,15 +411,16 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     # modelling artifact — the DHO ⊗ resolution model is regular as Γ → 0, so a Γ jammed
     # against the floor is an integrable boundary, not broken physics. With a healthy PD
     # covariance the one-sided pin is handled analytically below (truncated-Gaussian mass
-    # correction) instead of paying for dynesty. Every other pin — Ω_d at the window edge
+    # correction) instead of paying for dynesty. Every other pin — E0 at the window edge
     # above all — keeps escalating: there the boundary IS physics (H8) and the sampler is
     # spent on a real question.
     # `at_limit is not None` keeps the fail-safe honest: an older fit with UNKNOWN pin status
     # must escalate, never take the truncated rung on a name coincidence. The value test against
     # the FLOOR is load-bearing: Γ has two bounds (phonon.GAMMA_FLOOR and GAMMA_MAX), and only
-    # the floor is the H8 modelling artifact — a Γ railed at the CEILING is overdamped physics
-    # the model cannot express, its likelihood gradient at the bound is genuinely nonzero, and
-    # an overdamped-vs-two-mode contest is selection-material, so it pays for the sampler.
+    # the floor is the H8 modelling artifact — a Γ railed at the CEILING is a mode broader than
+    # the ceiling allows (the full DHO form expresses overdamping; the bound cuts it off), its
+    # likelihood gradient at the bound is genuinely nonzero, and an overdamped-vs-two-mode contest
+    # is selection-material, so the ceiling pin still escalates and pays for the sampler.
     from isar.analyze.phonon import GAMMA_BOUND_TOL
 
     # ponytail: single-pin only — the product of per-axis masses ignores the pinned block's
@@ -809,7 +810,7 @@ def _dynesty_evidence(hyp, ctx, fit_result, bundle, _record, validity, *,
         return _record(float("nan"), None, "invalid")
     if not bz.converged:
         # A sampler that failed its own §5.4 gate returns a number, not evidence. The gates that
-        # fail here (max_iter, ess < ESS_MIN, logzerr > LOGZERR_MAX, a railed Omega_d, a degenerate
+        # fail here (max_iter, ess < ESS_MIN, logzerr > LOGZERR_MAX, a railed omega0, a degenerate
         # interval) all leave logz finite, so finiteness alone cannot separate them — and logzerr
         # is allowed up to 5 nats, noise on the 10-40 nat Occam gaps selection turns on. Refusing
         # here rather than at each reader keeps one trust standard: this is the same condition

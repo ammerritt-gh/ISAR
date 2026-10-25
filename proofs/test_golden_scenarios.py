@@ -87,12 +87,12 @@ def _x0(hyp, ctx, seeds):
     prob = loop.build_problem(hyp, ctx)
     x0, it, cur = {}, iter(seeds), None
     for name in prob.composite.param_names():
-        if name.endswith(".Omega_d"):
+        if name.endswith(".omega0"):
             cur = next(it)
             x0[name] = cur[0]
         elif name.endswith(".Gamma"):
             x0[name] = cur[1]
-        elif name.endswith(".A"):
+        elif name.endswith(".h") and not name.startswith("elastic."):
             x0[name] = cur[2]
         elif name.endswith(".QE"):
             x0[name] = 1e5
