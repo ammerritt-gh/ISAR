@@ -151,6 +151,17 @@ def test_example_6_unknown_temperature_is_the_zero_temperature_mode():
     assert stokes == pytest.approx(closed, rel=2e-3) and anti == 0.0
 
 
+def test_unknown_temperature_keeps_a_narrow_pole_off_the_anti_stokes_side():
+    # the narrow-pole correction's window spans E < 0 nodes; for an unknown T they must stay exactly 0
+    E0, G = 0.01, 0.001
+    grid = _grid()
+    s = dho_signal(grid, E0, G, 1.0, None)
+    assert np.all(s[grid < 0.0] == 0.0)
+    assert np.max(s) > 0.0
+    # the opposite direction: a known temperature keeps the anti-Stokes side (detailed balance)
+    assert np.sum(dho_signal(grid, E0, G, 1.0, 300.0)[grid < 0.0]) > 0.0
+
+
 def test_example_7_classical_sum_rule():
     stokes, anti = _sides(1.0, 0.5, 3000.0)
     assert stokes + anti == pytest.approx(517.0405884, rel=2e-3)

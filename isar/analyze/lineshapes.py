@@ -292,6 +292,8 @@ def _unit_dho(grid, E0, damping, T):
                    + 3.0 * _third_antiderivative(z - 0.5 * h) - _third_antiderivative(z - 1.5 * h)
                    ) / h ** 3                                          # B-spline mean of 1/(E-p)
         correction += 2.0 * np.real(residue * _bose_numerator_at_pole(p, T) * (average - 1.0 / z))
+    if T is None or not np.isfinite(T) or T <= 0:   # T -> 0+: the anti-Stokes side is exactly empty
+        correction[grid[i0:i1] < 0.0] = 0.0
     s[i0:i1] += weight * pref * correction
     return s
 
