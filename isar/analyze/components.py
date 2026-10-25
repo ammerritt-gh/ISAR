@@ -397,12 +397,15 @@ class CompositeModel:
         return out
 
     def primary_phonon_index(self, theta, cov=None, prior_omega=None, acoustic_omega=None,
-                             T=None):
+                             T=None, ctx=None):
         """Global omega0 index of the *primary* phonon. Precedence (Phase A): the mode nearest the
         branch-assignment ``acoustic_omega`` hint (which mode IS the acoustic QoI) if given; else the
-        mode nearest the dispersion ``prior_omega``; else the strongest mode, the largest fitted
-        height ``h`` (already the measured strength, so no occupation weighting; ``T`` is kept for
-        the callers' signature and not read). ``None`` if there is no phonon."""
+        mode nearest the dispersion ``prior_omega``; else the strongest mode, the largest intrinsic
+        amplitude ``A`` (:meth:`PhononDHO.intrinsic_amplitude`, which needs ``ctx``). Not the largest
+        height ``h``: a broad near-elastic mode that mimics the elastic wings can out-top a real
+        phonon in height while carrying far less intrinsic amplitude. Without ``ctx`` there is no
+        ``A``, and the largest ``h`` stands in. ``T`` is kept for the callers' signature and not
+        read. ``None`` if there is no phonon."""
         theta = np.asarray(theta, dtype=float)
         slots = self.phonon_indices()
         if not slots:
@@ -411,13 +414,18 @@ class CompositeModel:
         if target is not None:
             po = float(target)
             return min(slots, key=lambda i: abs(theta[i] - po))
-        return max(slots, key=lambda i: theta[i + 2])
+        if ctx is None:
+            return max(slots, key=lambda i: theta[i + 2])
+        slot = dict(self._phonon_slots())
+        return max(slots, key=lambda i: slot[i].intrinsic_amplitude(
+            {"omega0": theta[i], "Gamma": theta[i + 1], "h": theta[i + 2]}, ctx))
 
-    def omega0(self, theta, cov, prior_omega=None, acoustic_omega=None):
+    def omega0(self, theta, cov, prior_omega=None, acoustic_omega=None, ctx=None):
         """E0 and its HESSE error for the *primary* phonon (§ primary =
-        acoustic-hint / nearest-to-prior / largest-height). Single-phonon composites are unchanged."""
+        acoustic-hint / nearest-to-prior / largest-intrinsic-amplitude). Single-phonon composites
+        are unchanged."""
         theta = np.asarray(theta, dtype=float)
-        i = self.primary_phonon_index(theta, cov, prior_omega, acoustic_omega)
+        i = self.primary_phonon_index(theta, cov, prior_omega, acoustic_omega, ctx=ctx)
         if i is None:
             raise ValueError("composite has no PhononDHO component")
         return self._omega0_at(theta, cov, i)

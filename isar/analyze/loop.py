@@ -790,7 +790,7 @@ def result_from_backend(label, composite, costv, n_used, k, br,
 
     # primary mode → the reported scalar ω₀ / Γ (back-compat); the acoustic hint (Phase A) selects
     # which mode of a multi-mode fit is the acoustic QoI, ahead of the prior/amplitude fallbacks.
-    prim_i = composite.primary_phonon_index(theta, cov, prior_omega, acoustic_omega, T=T)
+    prim_i = composite.primary_phonon_index(theta, cov, prior_omega, acoustic_omega, T=T, ctx=ctx)
 
     optimizer_converged = bool(br.success)
     covariance_ok = bool(br.covariance_ok)

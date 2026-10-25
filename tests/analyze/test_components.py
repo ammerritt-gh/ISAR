@@ -301,11 +301,26 @@ def test_detailed_balance_ratio_survives_reparameterization():
     assert abs(astokes / stokes - np.exp(-5.0 / (KB * ctx.T))) < 0.02
 
 
-def test_primary_phonon_index_is_the_largest_height_whatever_the_temperature():
-    """The fitted h is already the measured strength, so there is no Bose weighting: the strongest
-    mode is the largest h with or without T."""
+def test_primary_phonon_index_without_ctx_is_the_largest_height_whatever_the_temperature():
+    """With no context there is no intrinsic amplitude: the largest h stands in, with or without T
+    (h is already the measured strength, so no Bose weighting)."""
     comp = C.CompositeModel([C.PhononDHO(), C.PhononDHO(prefix="phonon2"),
                              C.ConstantBackground()])
     theta = np.array([1.0, 0.1, 60.0, 8.0, 0.1, 100.0, 5.0])
     assert comp.primary_phonon_index(theta) == 3
     assert comp.primary_phonon_index(theta, T=300.0) == 3
+
+def test_primary_phonon_index_is_the_largest_intrinsic_amplitude_not_the_tallest():
+    """A near-elastic mode tops a real phonon in height h (its unit peak is ~4x taller per unit A)
+    yet carries less intrinsic amplitude A; with a context the primary is the larger A."""
+    comp = C.CompositeModel([C.PhononDHO(), C.PhononDHO(prefix="phonon2"),
+                             C.ConstantBackground()])
+    ctx = _ctx(x=np.linspace(-12.0, 12.0, 241), T=50.0, center=0.0, gauss_fwhm=0.8,
+               lorentz_fwhm=0.0)
+    theta = np.array([1.0, 0.3, 300.0, 6.0, 0.3, 100.0, 5.0])      # mimic h=300, phonon h=100
+    a = [C.PhononDHO().intrinsic_amplitude({"omega0": theta[i], "Gamma": theta[i + 1],
+                                            "h": theta[i + 2]}, ctx) for i in (0, 3)]
+    assert a[0] < a[1] and theta[2] > theta[5]                       # the premise
+    assert comp.primary_phonon_index(theta, ctx=ctx) == 3
+    assert comp.omega0(theta, None, ctx=ctx)[0] == 6.0
+    assert comp.primary_phonon_index(theta) == 0                     # no ctx: tallest stands in
