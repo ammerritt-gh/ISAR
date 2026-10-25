@@ -31,7 +31,7 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 ## Fitting & lineshape
 
 - **energy transfer** — the energy the probe lost or gained (meV); 0 meV is elastic scattering.
-- **phonon / DHO** — the inelastic peak ISAR fits, modelled as a damped harmonic oscillator.
+- **phonon / DHO** — the inelastic peak ISAR fits, modelled as a damped harmonic oscillator in the full form of the paper's Eq. 2 (`STATS_PRIMER.md` §8).
 - **elastic line** — the peak at zero energy transfer (no energy exchanged).
 - **energy zero** — where the elastic line sits on the energy axis; defines 0 meV. ISAR self-calibrates
   it from dedicated elastic/Bragg scans.
@@ -100,7 +100,7 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   sampling and recorded as such.
 - **laplace_truncated** — the evidence rung for a converged fit whose single pin is one `.Gamma`
   at its floor: rung-1 Laplace with a boundary-mass correction, since the Γ floor is a modelling
-  artifact and the boundary is integrable, not an invalidity (H9(b)). Ω_d window-edge pins,
+  artifact and the boundary is integrable, not an invalidity (H9(b)). E0 window-edge pins,
   unknown pin status, Γ at its ceiling, and two-plus pinned Γs (whose joint truncated mass
   depends on their covariance, which the per-axis product cannot see) all still escalate to
   dynesty. The mass factor is gradient- and offset-aware — exact for the

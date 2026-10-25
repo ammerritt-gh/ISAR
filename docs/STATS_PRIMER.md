@@ -139,14 +139,14 @@ python docs/stats/make_figures.py --only cost_bias --workers 8
 
 ### 1.1 How the minimum is found: the amplitudes are profiled out
 
-**[Implemented, 2026-10-23]** Every amplitude of the model (each mode's `A`, the elastic `E`,
+**[Implemented, 2026-10-23]** Every amplitude of the model (each mode's height `h`, the elastic `h`,
 the quasi-elastic `QE`, the background `BG`) enters the mean linearly, and non-negatively. So for
-given nonlinear parameters (each mode's `Omega_d` and `Gamma`) the best amplitudes are a convex
+given nonlinear parameters (each mode's `omega0` = E0 and `Gamma`) the best amplitudes are a convex
 problem with one answer. The Baker–Cousins cost is minimised over them inside their recipe
 bounds (§2.1) by a Poisson non-negative least-squares solve: Newton steps on the cost itself,
 each kept inside the box, warm-started from the previous evaluation (`backends.poisson_nnls`).
 MIGRAD then sees only the nonlinear parameters, and the cost it minimises is the *profile*
-`min over A of C(Omega_d, Gamma, A)`. A zero-count point still contributes its mean only (no
+`min over h of C(omega0, Gamma, h)`. A zero-count point still contributes its mean only (no
 floor, convention D3), and the anti-Stokes side is still the derived Bose partner inside each
 mode's unit shape, never a free amplitude. An amplitude with a soft prior on it, or a hard-fixed
 one, is not profiled: it stays with MIGRAD or at its value. The iminuit fit is the profiled one;
@@ -293,7 +293,7 @@ at-limit tolerance), makes the model its degenerate twin. The limits, checked in
 | The fit rails at | The model is | Its twin |
 |---|---|---|
 | a mode's amplitude A = 0 | that mode is not there | the count below, same elastic variant, without that mode |
-| a mode's energy Ω_d at the zero-energy edge of the window (1e-3 meV) | that mode is the elastic line | the count below, with the elastic line |
+| a mode's energy E0 (`omega0`) at the zero-energy edge of the window (1e-3 meV) | that mode is the elastic line | the count below, with the elastic line |
 | the elastic height E = 0 | there is no elastic line | the same count without the elastic line |
 | a mode's width Γ at the floor | that mode is resolution limited | the same model with that Γ pinned at the floor: a delta-function mode convolved with the resolution |
 | the flat background BG = 0 | there is no background | the same model without its background (label without `+bg`, same modes and elastic variant) |
@@ -345,7 +345,7 @@ still come from the data (a seed is not a prior); bounds and priors may not.
 
 | Parameter | Prior (flat over) | Built from |
 |---|---|---|
-| mode energy Ω_d | `(1e-3, highest fitted energy)` meV | the fit window |
+| mode energy E0 (`omega0`) | `(1e-3, highest fitted energy)` meV | the fit window |
 | mode width Γ | `(min(1e-3 meV, 0.01 x resolution FWHM), 5 meV)` | the resolution width, a declared maximum |
 | mode / elastic / quasi-elastic area | `(0, scale x exposure x resolution FWHM)` | the exposure, the resolution width |
 | flat background (counts per point) | `(0, scale x exposure)` | the exposure |
@@ -405,9 +405,9 @@ normalised joint density on the ordered region, N!/W^N for N modes in a window o
 Laplace evidence reads it as a function of the set of energies (`ordered_energy_log_prior`) and
 nested sampling draws it as the order statistics of uniforms (`ordered_energy_transform`); the
 catalogue's prior bundle carries both (`logpdf_ordered`, `transform_ordered`). Each lane gets the
-N! exactly once and the two agree. The ordering is on Ω_d, the sampled coordinate, where that
-normalisation is exact; reported modes are still listed by derived ω₀. It applies only to exchangeable
-modes: every parameter of each mode (Ω_d, Γ, A) must carry the same prior density as the others. The
+N! exactly once and the two agree. The ordering is on E0 (`omega0`), the sampled coordinate, where that
+normalisation is exact. It applies only to exchangeable
+modes: every parameter of each mode (E0, Γ, h) must carry the same prior density as the others. The
 modes are split into groups that are exchangeable among themselves, and each group of two or more is
 ordered on its own, N!/W^N per group. A prior that singles out one mode's amplitude or width puts
 that mode in a group of its own, so its energy keeps the labelled prior. A delta-function mode (Γ
@@ -432,7 +432,7 @@ or the reason it has none: `unconverged`, `resolved to <twin>`, `not sampled at 
 (ingested, not yet fitted) or `not fitted` (excluded or undersampled); a detector row written before
 the ladder existed reads `not recorded`. Each
 mode of the selected count is a row of `report/modes.csv`: intrinsic ω₀ and the displayed peak
-position Ω_d, Γ, amplitude, their HESSE errors (a missing one stays empty). A settled rung 2
+position Ω_d (√(E0² − Γ²), empty when Γ ≥ E0), Γ, amplitude, their HESSE errors (a missing one stays empty). A settled rung 2
 replaces rung 1's selection, priced on the contending models' nested-sampling evidence alone. An
 `isar run` delivers rung 1 for every new spectrum first, then gives each spectrum still provisional
 at most its rung-2 slice of nested sampling (a plain run: to completion; a campaign refresh: 120 s,
@@ -507,7 +507,7 @@ optimizer railed. Each contender is sampled by nested sampling at 128 live point
 `ISAR_ESCALATION_N_LIVE` overrides it, and the test suite sets 32), with `dlogz` 0.5. Its evidence is
 trusted when the evidence gates pass: a finite log-evidence, the `dlogz` target reached before the
 iteration cap, and `logzerr` at most 5 (`bayes._evidence_gate`). The sampler's interval gates (effective
-sample size, a railed Ω_d, a degenerate ω₀ interval) do not decide a count: a mode the data does not
+sample size, a railed E0, a degenerate ω₀ interval) do not decide a count: a mode the data does not
 need spreads over the window, and that spread is the Occam penalty itself. A contender whose sampling
 raises is a failed calculation, and it is never evidence against the model.
 
@@ -586,7 +586,7 @@ the peak count".
   spectrum stays pending, and a plain `isar run` fits each escalated spectrum's rung 1 twice.
 - *The elastic-line phantom at the endpoint world, H = 2.10, stays open.* The leading reading there is
   `stokes2+bg` with an overdamped mode at 0.195 meV standing in for the elastic line. The degenerate-limit
-  rule does not resolve it, because Ω_d sits off its limit. The strict `xfail` in
+  rule does not resolve it, because E0 sits off its limit. The strict `xfail` in
   `tests/scene/test_worlds_scene.py` records it. Operator ruling, 2026-10-23: it stays under the R13
   central-residual flag and is revisited after the beamtime.
 
@@ -704,7 +704,7 @@ Two things in Fig. 5 still demand explanation, and neither flatters the machiner
 ~0.60–0.61, about 2 SE below nominal, with zero central-value bias (mean pull −0.03, bias
 < 0.001 meV). The pull width tells the story: 1.01 at 15 counts → 1.09 at 100. There is a small,
 count-independent scatter floor in the derived ω₀ (~0.01 meV, from the initial-condition grid,
-optimizer tolerance, and the ω₀ = √(Ω_d² + Γ²) reparameterization) that no per-fit interval —
+optimizer tolerance, and the ω₀ = √(Ω_d² + Γ²) reparameterization the fit used when these figures were measured) that no per-fit interval —
 curvature, profile, or bootstrap — can see, because all three are built on the same fit. It is
 negligible when σ ≈ 0.09 meV and eats ~7% of coverage when the interval tightens to
 σ ≈ 0.034 meV. This is a preview of Chapter 6: an interval can only account for the
@@ -1035,15 +1035,36 @@ realizes. `y` = counts, `f` = model expected counts.
 
 **Lineshapes and physics gates (§2, ARCHITECTURE §7)**
 
-- DHO, Stokes side **[code — `analyze/lineshapes.py`]**:
-  `S(x) = A / [ (x - sqrt(w0^2 - G^2))^2 + G^2 ]` — a Lorentzian of HWHM `G` centred at the
-  damped frequency `sqrt(w0^2 - G^2)`; anti-Stokes is the mirror at `-sqrt(w0^2 - G^2)`.
-  Underdamping `w0^2 > G^2` is enforced (an overdamped proposal is penalized, not fit).
+- DHO, full form (paper Eq. 2) **[code — `analyze/lineshapes.py` `dho_signal`; `analyze/components.py` `PhononDHO`]**:
+  `S(E) = A (E0/π) 4Γ y(E) / [ (E² − E0²)² + 4Γ²E² ]`, with `y(E) = (n(E)+1)·E = E / (−expm1(−E/kT))`
+  evaluated at every energy point, so `y(0) = kT`. `E0` is the undamped energy (`omega0`), `Γ` the
+  damping (HWHM), `A` the intrinsic narrow-limit amplitude. The Stokes side is `E ≥ 0` and the
+  anti-Stokes side `E < 0` comes from the same formula, so detailed balance holds pointwise. The
+  narrow-limit Stokes area is `A(n(E0)+1)`, the anti-Stokes area `A·n(E0)`. There is no underdamping
+  constraint: an overdamped mode (`Γ > E0`) is an ordinary point of the model.
+- Height coordinate **[code — `analyze/components.py` `PhononDHO`, `lineshapes.UnitPeak`]**: the
+  fitted amplitude is the convolved height `h`, the maximum over `E ≥ 0` of the whole convolved
+  profile (both sides, so the anti-Stokes tail counts), in counts at the spectrum's exposure. The
+  model mean is `exposure × h × (profile / height)`, and the derived intrinsic amplitude is
+  `A = h / height`.
+- Narrow poles **[code — `lineshapes._unit_dho`]**: point samples of the formula alias on the
+  convolution grid (a Γ = 1e-3 meV mode's area moved by a factor 250 as it crossed one 0.05 meV
+  step), so each pole narrower than two grid steps adds an area-preserving correction: its point
+  samples are replaced by their average against each node's quadratic B-spline. The Bose numerator
+  is taken at the complex pole, which removes the dip of width Γ that a node under the pole would
+  otherwise show. A smoothstep between one and two grid steps is the only blend; below one step the
+  same rendering runs down to Γ = 1e-9 meV, so the column is smooth through Γ = 0 and the optimiser
+  meets no branch switch.
+- Validation **[test — `tests/analyze/test_dho_full.py`]**: as Γ → 0 at fixed E0 the convolved model
+  approaches the two resolution curves at ±E0 with their Bose weights; it is continuous through
+  critical damping (Γ = E0) and finite as E0 → 0; grid refinement and a wider support change nothing;
+  the column is smooth through Γ = 0. Not promised: exact areas at the corner of small E0 with large Γ
+  (E0 near 1e-3 meV, Γ near 20 meV), where the grid's support limits the tail, and the kernel table's
+  own truncation.
 - Detailed balance (Hard Rule 2) **[def]**: `I_AS / I_S = exp(-hbar w / k_B T)` — the
   anti-Stokes amplitude is *derived*, never fit; admissibility of an anti-Stokes candidate is
-  gated on this before any fit. The fitted amplitude carries the thermal factor explicitly
-  (`n(w,T) + 1`, with `n = 1/(exp(hbar w / k_B T) - 1)`), so amplitude transport is physical
-  (ruling H4(a); `analyze/components.py`).
+  gated on this before any fit. The thermal factor sits inside the lineshape, so amplitude
+  transport is physical (ruling H4(a); `analyze/components.py`).
 - Resolution **[code — `analyze/lineshapes.py`]**: Gaussian and Lorentzian FWHM-parameterized;
   Voigt via the Faddeeva function `V(x) = A * Re[w(z)] / (sigma sqrt(2 pi))` with
   `z = ((x - c) + i gamma) / (sigma sqrt 2)`, `sigma = FWHM_G / (2 sqrt(2 ln 2))`,

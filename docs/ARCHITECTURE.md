@@ -477,6 +477,7 @@ rulings W1–W3.)*
 | Momentum (in-plane) resolution spread modelled inside the fit | Planned (after the SIXCIRCLE geometry) |
 | Adjudication (decide–record–defer) | Implemented (opt-in) |
 | Stage II: Baker–Cousins fit, evidence selection (H4; Akaike diagnostics retained), branch posterior, verdicts | Implemented |
+| Full DHO lineshape (paper Eq. 2) in the one fitting path: E0 fitted directly, Bose factor at every energy point, height coordinate, overdamped modes representable | Implemented (2026-10-25; `STATS_PRIMER.md` §8, `tests/analyze/test_dho_full.py`) |
 | Open-ended peak count: rung 1 Laplace evidence for every count from 0 to the ceiling (card `[fitting] max_modes`, default 6), rung 2 nested sampling of the contending counts, six count states, `report/modes.csv` with one row per mode, the `secondary_omega0` columns removed | Implemented (2026-10-23; `STATS_PRIMER.md` §2.1–2.2, `isar/analyze/count_ladder.py`). Pooled masters run rung 2 to completion inside their fit, not in time slices. |
 | Peak-count benchmark (`isar.synth.count_bench`): synthetic resolvability, correct-count, extra-mode and A/B figures | **Partial**: built, with its fast subset in the routine suite. The figures are targets, not gates (R14, R15), and are not yet measured at the design's draw count (`STATS_PRIMER.md` §2.3). The full run is on request. |
 | Interval ladder through bootstrap; `interval_reliable` flag | Implemented |

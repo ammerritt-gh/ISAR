@@ -300,9 +300,10 @@ its state is in the count columns:
 
 `report/modes.csv` has one row per mode of the selected count, ordered by energy (`mode_index` 0 is the
 lowest). Each row repeats its spectrum's `count_state`, so a provisional mode is never mistaken for a
-settled one. `omega0` is the intrinsic mode energy and `peak_position` the displayed one (the damped
-frequency). `uncertainty_kind` is `hesse` when the mode has an error bar and empty when it has none. An
-empty cell means missing, never zero.
+settled one. `omega0` is the undamped mode energy E0, the fitted parameter, and `peak_position` the
+displayed one, the damped frequency √(E0² − Γ²), empty when the mode is overdamped (Γ ≥ E0).
+`uncertainty_kind` is `hesse` when the mode has an error bar and empty when it has none. An empty cell
+means missing, never zero.
 
 | State | What it means | What to do |
 |---|---|---|
