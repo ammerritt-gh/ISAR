@@ -276,11 +276,17 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       prior carries the primary mode only.
       **Acceptance:** the prior distinguishes branches and a secondary mode can seed one.
 
-- [ ] **FIT-4 — Amplitude prior constants: sensitivity check not run.** `AMPLITUDE_SCALE_PER_MONITOR = 1.0`
+- [ ] **FIT-4 — Amplitude prior constants: sensitivity check ran, the operator's call is open.** `AMPLITUDE_SCALE_PER_MONITOR = 1.0`
       and `AMPLITUDE_SCALE_PER_SECOND = 1.0e5` (`isar/analyze/prior.py`) are agent-proposed. Their check (the
-      example set refitted with one alternative prior width) has not been run, so a count could move with the
-      constant unseen before the beamtime. The sensitivity arms of the planned le Tacon proof
-      (`proofs/test_letacon_fast_pass.py`) are the run of this check; that run has not happened yet.
+      example set refitted under alternative priors) had not been run, so a count could move with the
+      constant unseen before the beamtime. The sensitivity arms of the le Tacon proof
+      (`proofs/test_letacon_fast_pass.py`) are the run of this check. It ran once on 2026-10-26, all 56 spectra under
+      the recipe and five other prior settings (margin 1.05 and 3, flat width, width cap 40, today's v4 priors): the
+      count decision (preferred count and state) was the same under all six for 6 spectra and prior-dependent for 50;
+      the confident-peak list was stable for 10 and prior-dependent for 46. The arms and spectra are in the run's
+      gitignored `out/letacon_fast_pass/<timestamp>/summary.json`; the report to the operator carries the table.
+      The constants themselves (above) belong to the retired v4 priors and are the `today_v4` arm; whether to keep
+      the v5 recipe is the operator's call.
       **Acceptance:** the check runs on the example set; any count that moves
       is reported with its spectra, and the constant goes to the operator before the beamtime.
       **Governing:** `docs/STATS_PRIMER.md` §2.1.
