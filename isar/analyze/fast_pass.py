@@ -302,6 +302,27 @@ class _Basin:
         return b
 
 
+def _merge_pair(a, b, delta: bool):
+    """One mode from two: summed height, height-weighted omega0 and Gamma (GAMMA_FLOOR if delta)."""
+    w = a[2] + b[2]
+    fa = a[2] / w if w > 0 else 0.5
+    e = fa * a[0] + (1.0 - fa) * b[0]
+    g = GAMMA_FLOOR if delta else fa * a[1] + (1.0 - fa) * b[1]
+    return (e, g, w, delta)
+
+
+def _merge_chain(modes, distance: float) -> list:
+    """The prototype's all-pairs merge: ascending omega0, each mode merged into the previous merged
+    one when closer than ``distance``; a merged mode is delta only when both parts are."""
+    out = []
+    for m in sorted(modes, key=lambda m: m[0]):
+        if out and abs(m[0] - out[-1][0]) < distance:
+            out[-1] = _merge_pair(out[-1], m, out[-1][3] and m[3])
+        else:
+            out.append(tuple(m))
+    return out
+
+
 class _Engine:
     """One spectrum's fast pass. ``run`` searches; ``conclude`` tallies and reports, from any state
     (so a stopped search still reports what it priced)."""
@@ -751,6 +772,107 @@ class _Engine:
             for v in self.variants[k]:
                 for family, modes in starts:
                     self.fit(v, modes, family)
+
+    # ---- twins ------------------------------------------------------------------------------------
+    def resolve(self, b, point):
+        """Step 5: whether ``b`` at ``point`` (a TRF optimum or a posterior mode) is a degenerate or
+        delta-mode twin of a model with fewer free coordinates. The first screen that hits acts:
+        its twin is refitted by TRF from ``point`` and, except for a railed width, must reach
+        ``point``'s cost within ``twin_cost_tolerance``; a twin that fails or does not exist leaves
+        ``b`` a model of its own. Recursion runs through the twin's own placement."""
+        with self._stage("twins"):
+            self._resolve(b, point)
+
+    def _resolve(self, b, point):
+        s, model, sp = self.s, b.model, self.sp
+        v, k, names = model.variant, model.variant.k, model.names
+        free = set(model.free.tolist())
+        cost_p = b.cost if point is b.theta else self.cost(model, point)
+        modes = self.modes_of(model, point)
+        lin = self.linear_of(model, point)
+
+        def twin(kind, limit, variant, new_modes, linear, *, verify=True, reason=None):
+            out = self.fit(variant, new_modes, "twin", linear)
+            if out is None:
+                return False
+            tb, tcost = out
+            if verify and tcost > cost_p + s.twin_cost_tolerance:
+                return False
+            b.status, b.twin, b.limit = "degenerate_twin", tb, limit
+            b.reason = f"{kind}: {reason or limit}"
+            return True
+
+        def without(j):
+            return modes[:j] + modes[j + 1:]
+
+        for j, (_a, _g, c) in enumerate(model.modes):                  # 1 amplitude
+            if c in free and point[c] <= s.twin_height_frac * sp.height_hi:
+                twin("zero height", names[c], self.variant(k - 1, v.elastic, v.background),
+                     without(j), lin)
+                return
+        for j, (a, _g, c) in enumerate(model.modes):                   # 2 energy
+            lo = model.lo[a]
+            railed = a in free and point[a] <= lo + loop.DEGENERATE_LIMIT_TOL * max(abs(lo), 1.0)
+            if railed or self._mimics_elastic(model, point, j):
+                target = self.variant(k - 1, True, v.background)
+                if target is not None:
+                    merged = dict(lin, elastic=(lin["elastic"] or 0.0) + float(point[c]))
+                    twin("elastic limit", names[a], target, without(j), merged)
+                return
+        if model.el is not None and model.el in free \
+                and point[model.el] <= s.twin_height_frac * sp.height_hi:       # 3 elastic
+            twin("zero elastic", names[model.el], self.variant(k, False, v.background), modes, lin)
+            return
+        if self._coincident(model, modes, lin, twin):                     # 4 coincident
+            return
+        if DELTA_TWIN_RULE:                                                # 5 width
+            for j, (_a, g, _c) in enumerate(model.modes):
+                if g in free and point[g] <= GAMMA_FLOOR + loop.DEGENERATE_LIMIT_TOL * max(GAMMA_FLOOR, 1.0):
+                    e, _gv, h, _d = modes[j]
+                    railed = modes[:j] + [(e, GAMMA_FLOOR, h, True)] + modes[j + 1:]
+                    twin("width railed", names[g], v, railed, lin, verify=False)
+                    return
+        if model.bg is not None and model.bg in free \
+                and point[model.bg] <= s.twin_height_frac * sp.background_hi:   # 6 background
+            twin("zero background", names[model.bg], self.variant(k, v.elastic, False), modes, lin)
+
+    def _mimics_elastic(self, model, point, j) -> bool:
+        """A mode whose unit column is the elastic column (both of maximum 1) within tolerance."""
+        a, g, _c = model.modes[j]
+        col = self.units([(point[a], point[g])], [model.variant.peaks[j]])[0][0]
+        return float(np.max(np.abs(col - self.el_col))) < self.s.elastic_twin_tolerance
+
+    def _coincident(self, model, modes, lin, twin) -> bool:
+        """Screen 4: pairs closer than ``twin_coincide_fwhm`` x FWHM, merged ONE AT A TIME into the
+        count below (exactly coincident delta pairs first, then ascending separation); when none
+        refits within tolerance, the all-pairs chained merge is one more candidate. True when the
+        screen hit (whether or not a twin was accepted)."""
+        v, k, names = model.variant, model.variant.k, model.names
+        distance = self.s.twin_coincide_fwhm * self.fwhm
+        pairs = [(i, j) for i in range(k) for j in range(i + 1, k)
+                 if abs(modes[i][0] - modes[j][0]) < distance]
+        if not pairs:
+            return False
+
+        def order(p):
+            i, j = p
+            d = abs(modes[i][0] - modes[j][0])
+            return (not (modes[i][3] and modes[j][3] and d < COINCIDENT_DELTA_MEV), d)
+
+        target = self.variant(k - 1, v.elastic, v.background)
+        for i, j in sorted(pairs, key=order):
+            merged = _merge_pair(modes[i], modes[j], modes[i][3] and modes[j][3])
+            rest = [m for n, m in enumerate(modes) if n not in (i, j)]
+            pair = f"{names[model.modes[i][0]]}, {names[model.modes[j][0]]}"
+            if twin("coincident", names[model.modes[j][0]], target, rest + [merged], lin,
+                    reason=pair):
+                return True
+        chained = _merge_chain(modes, distance)
+        if len(pairs) > 1 and len(chained) < k:
+            twin("coincident", names[model.modes[pairs[0][1]][0]],
+                 self.variant(len(chained), v.elastic, v.background), chained, lin,
+                 reason="all-pairs merge")
+        return True
 
 
 def run_fast_pass(ctx, *, settings: FastPassSettings | None = None, peaks=(), structures=None) -> FastPassResult:
