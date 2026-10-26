@@ -19,6 +19,7 @@ dependencies = [
 test = ["pytest>=7.4", "pytest-xdist>=3.5", "pytest-timeout>=2.3", "lmfit>=1.2"]  # lmfit: comparison backend only
 test-gui = ["pytest-qt"]
 gui = ["PySide6", "pyqtgraph>=0.13,<0.15", "watchdog"]
+calibration = ["ultranest>=4.6,<5"]  # deep-pass calibration cross-check only (tools/calibrate_deep_pass.py); never in the default install
 
 [project.scripts]
 isar = "isar.cli.main:main"
