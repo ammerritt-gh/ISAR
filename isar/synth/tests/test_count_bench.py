@@ -154,6 +154,12 @@ def test_refit_keeps_the_strongest_isolated_peak_and_fails_the_shoulder():
     assert refit < cb.REFIT_SHARE_MIN * grade, (grade, refit)
 
 
+def test_the_refit_runs_to_convergence_not_to_its_first_stop():
+    # the default L-BFGS-B tolerance stopped this refit at deviance 18096, 13% above the converged 16030
+    grade, refit = cb.visibility_grades(cb.named_cases(1)[0])[0]
+    assert refit == pytest.approx(16030.0, rel=2e-3), (grade, refit)
+
+
 def test_matching_is_one_to_one_and_not_greedy():
     # greedy nearest-first takes 6.0<->5.9 and leaves 5.0 without a partner within 1.2
     assert sorted(cb.match_peaks([5.0, 6.0], [5.9, 6.8], 1.2)) == [(0, 0), (1, 1)]

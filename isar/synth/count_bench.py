@@ -461,7 +461,9 @@ def _refit_deviance(truth: CaseTruth, skip: int, full: np.ndarray) -> float:
         hi[k_g] = min(hi[k_g], 2.0 * m.gamma + 0.5 * truth.gauss_fwhm)
     try:
         prob = loop.build_problem(hyp, ctx, x0=start)
-        theta = minimize(prob.costv, np.clip(prob.x0, lo, hi), method="L-BFGS-B", bounds=list(zip(lo, hi))).x
+        # the default ftol stops early on these ill-scaled parameters (a restart found 13% lower deviance)
+        theta = minimize(prob.costv, np.clip(prob.x0, lo, hi), method="L-BFGS-B", bounds=list(zip(lo, hi)),
+                         options={"ftol": 1e-14, "gtol": 1e-10, "maxiter": 5000, "maxfun": 50000}).x
     except Exception as exc:  # noqa: BLE001 - one failed refit must not end the run
         log.warning("refit without mode %d of %s failed: %s: %s", skip, truth.case_id, type(exc).__name__, exc)
         return float("nan")
