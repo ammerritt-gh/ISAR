@@ -265,7 +265,7 @@ def _fast_weight(e: ModelEntry) -> float:
 def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
               exploratory: SamplerSettings = EXPLORATORY, budget_s: float | None = None,
               seed: int = 20261025, map_fn=map, close_call_p: float = CLOSE_CALL_P,
-              chunk: int = 1) -> DeepPassResult:
+              chunk: int = 1, fast_limit: str = "") -> DeepPassResult:
     """Staged coverage over EVERY model the fast pass admitted (all counts/variants to the ceiling).
 
     Stage 1: contenders (fast-pass P >= CONTENDER_MIN_P, and always the top two) at ``accepted``.
@@ -275,7 +275,9 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
              RELEVANCE_GAP of the leader (weights include the model prior) is rerun at ``accepted``.
     Each stage runs in chunks of ``chunk`` models and the budget is checked before each chunk; a
     started chunk is never cut. A model left without a usable lnZ, or promoted but not yet rerun,
-    makes the result "search limited": its probabilities are then labelled partial.
+    makes the result "search limited": its probabilities are then labelled partial. So does a
+    non-empty ``fast_limit`` (the record's ``search_limit_reason``): the fast pass stopped before
+    pricing every count, so the models here are not all the competing ones.
     ``map_fn`` lets the caller run a chunk's models in a process pool (each run single-threaded)."""
     t0 = time.perf_counter()
     chunk = max(1, int(chunk))
@@ -336,8 +338,8 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
     suspect = [m.label for m in models if m.status == "unresolved"] + \
         [lb for lb in pending if lb in attempted_promotion]
     unrun = [m.label for m in models if m.status == "not_run"]
-    complete = not (unrun or waiting or suspect)
-    reasons = []
+    complete = not (unrun or waiting or suspect or fast_limit)
+    reasons = [f"fast pass search limited: {fast_limit}"] if fast_limit else []
     if unrun:
         reasons.append("budget ended before " + ", ".join(unrun))
     if waiting:

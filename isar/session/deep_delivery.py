@@ -165,7 +165,7 @@ def deliver(fit: dict, ctx, request: DeepRequest, *, executor=None, refuse=None)
             entries, accepted=deep_pass.ACCEPTED, exploratory=deep_pass.EXPLORATORY,
             budget_s=request.budget_s, seed=request.seed,
             map_fn=executor.map if executor is not None else map, close_call_p=close_call_p,
-            chunk=request.workers)
+            chunk=request.workers, fast_limit=record.get("search_limit_reason") or "")
         t_errors = time.perf_counter()
         m = _chosen_model(res)
         by_label = {e.label: e for e in entries}

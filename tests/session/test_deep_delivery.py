@@ -131,6 +131,23 @@ def test_deliver_refuses_rather_than_compares_other_data():
     assert record["state"] == "refused" and "hard-fix" in record["reason"]
 
 
+def test_deliver_passes_the_fast_pass_search_limit_to_the_deep_pass(monkeypatch):
+    ctx, fit = _spectrum()
+    limited = {"fast_pass": {**fit["fast_pass"], "search_limit_reason": "safety_budget"}}
+    seen = {}
+    real = deep_pass.deep_pass
+
+    def spy(entries, **kw):
+        seen.update(kw)
+        return real(entries, **{**kw, "budget_s": 0.0})     # nothing sampled: only the wiring is tested
+
+    monkeypatch.setattr(deep_pass, "deep_pass", spy)
+    record, _ = deep_delivery.deliver(limited, ctx, REQ)
+    assert seen["fast_limit"] == "safety_budget"
+    assert record["state"] == "search_limited" and not record["complete"]
+    assert "fast pass search limited: safety_budget" in record["search_limited"]
+
+
 @pytest.mark.slow
 @pytest.mark.timeout(600)
 def test_deliver_end_to_end_at_tiny_settings(monkeypatch):

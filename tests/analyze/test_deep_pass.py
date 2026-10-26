@@ -217,6 +217,19 @@ def test_a_promotion_the_budget_leaves_pending_is_not_a_full_comparison(monkeypa
     assert len(log) == 3 and res.exploratory_only == ("c3",) and res.complete
 
 
+def test_a_search_limited_fast_pass_makes_the_deep_result_partial(monkeypatch):
+    # every sampled model is clean, but the fast pass never priced the higher counts
+    entries = [_fake_entry("c1", 1, 0.0), _fake_entry("c2", 2, -1.0)]
+    values = {"c1": (0.0, None), "c2": (-1.0, None)}
+    map_fn, _, _ = _fake_pool(monkeypatch, values)
+    res = dp.deep_pass(entries, map_fn=map_fn)
+    assert res.complete and res.comparison_scope == "full"
+    map_fn, _, _ = _fake_pool(monkeypatch, values)
+    res = dp.deep_pass(entries, map_fn=map_fn, fast_limit="safety_budget")
+    assert not res.complete and res.comparison_scope == "partial (search limited)"
+    assert res.search_limited == "fast pass search limited: safety_budget"
+
+
 def test_a_twin_parent_without_a_fast_pass_value_is_always_promoted(monkeypatch):
     entries = [_fake_entry("c1", 1, 0.0), _fake_entry("c2", 2, -1.0), _fake_entry("parent", 3, None)]
     values = {"c1": (0.0, None), "c2": (-1.0, None), "parent": (-2.0, -30.0)}
