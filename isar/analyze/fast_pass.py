@@ -255,6 +255,7 @@ class _Model:
     bg: int | None
     omit: frozenset                   # positions with no recipe factor: pinned or soft-constrained
     soft_priors: list                 # (position, ResolvedPrior) truncated Gaussian of each soft coordinate
+    groups: list = field(default_factory=list)   # energy positions of each group of exchangeable modes
     basins: list = field(default_factory=list)
 
 
@@ -719,14 +720,25 @@ class _Engine:
             got = catalogue.resolve_priors(composite, cctx, bounds,
                                            exclude=[names[i] for i in fixed_pos]).by_name()
             soft_priors = [(i, got[names[i]]) for i, _mu, _sd in soft]
+        omit = frozenset(fixed_pos) | {modes[i][1] for i in delta} | {i for i, _mu, _sd in soft}
+        # Modes are exchangeable (one ordered-energy factor) only when their non-default priors
+        # agree, as catalogue.PriorBundle._energy_groups has it: a soft prior or a pin on one mode's
+        # width or height singles it out; a delta mode's own pinned width does not.
+        soft_by_pos = {i: (p.kind, p.mu, p.sigma, p.lo, p.hi) for i, p in soft_priors}
+        by_key = {}
+        for m, (a, g, c) in enumerate(modes):
+            if a in omit:
+                continue
+            key = tuple((tag, soft_by_pos.get(j, "pinned")) for tag, j in (("Gamma", g), ("h", c))
+                        if j in soft_by_pos or (j in fixed_pos and not (j == g and m in delta)))
+            by_key.setdefault(key, []).append(a)
         return _Model(variant=variant, delta=delta, hyp=hyp, cctx=cctx, names=names, lo=lo, hi=hi,
                       fixed_pos=list(fixed_pos), fixed_vals=list(fixed_vals),
                       free=np.array([i for i in range(len(names)) if i not in set(fixed_pos)], int),
                       soft=soft, modes=modes,
                       el=names.index("elastic.h") if "elastic.h" in names else None,
                       bg=names.index("bg.BG") if "bg.BG" in names else None,
-                      omit=frozenset(fixed_pos) | {modes[i][1] for i in delta}
-                      | {i for i, _mu, _sd in soft}, soft_priors=soft_priors)
+                      omit=omit, soft_priors=soft_priors, groups=list(by_key.values()))
 
     def modes_of(self, model, theta) -> list:
         """[(omega0, Gamma, h, delta)] per mode, ascending omega0 for a canonical point."""
@@ -1124,9 +1136,10 @@ class _Engine:
     def ln_prior(self, model, theta) -> float:
         """The configured recipe's log prior (C-prior) at a full vector, one factor per coordinate: a
         pinned coordinate (a delta mode's width included) carries none and a soft-constrained one
-        its truncated Gaussian instead; the ordered-energy factor covers the remaining energies."""
+        its truncated Gaussian instead; one ordered-energy factor per group of exchangeable modes
+        (``model.groups``; a group of one is the plain flat energy factor)."""
         sp, omit = self.sp, model.omit
-        lp = sp.ln_energies([theta[a] for a, _g, _c in model.modes if a not in omit])
+        lp = sum(sp.ln_energies([theta[a] for a in grp]) for grp in model.groups)
         for a, g, c in model.modes:
             if g not in omit:
                 lp += sp.ln_width(theta[g])

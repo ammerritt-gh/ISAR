@@ -94,12 +94,37 @@ def test_a_soft_constraint_replaces_only_its_own_coordinates_recipe_factor():
     sp = eng.sp
     lo, hi = model.lo[4], model.hi[4]
     gauss = truncnorm.logpdf(0.6, (lo - 0.5) / 0.2, (hi - 0.5) / 0.2, loc=0.5, scale=0.2)
-    others = sp.ln_prior([(4.0, 0.3, 50.0), (9.0, None, 40.0)], 100.0, 4.0)
+    # the constraint singles mode 2 out, so the energies are two plain factors, not one ordered k = 2
+    others = sp.ln_prior([(4.0, 0.3, 50.0), (9.0, None, 40.0)], 100.0, 4.0) - math.log(2)
     assert math.isfinite(others + gauss)
     assert eng.ln_prior(model, theta) == pytest.approx(others + gauss, abs=1e-9)
     # a pinned (delta) width carries no factor either: the delta twin of the same count
     twin = eng.model(eng.variant(2, True, True), (0,))
     assert twin.delta == (0,) and twin.omit >= {twin.modes[0][1], 4}
+
+
+def test_a_constrained_mode_leaves_the_ordered_energy_group():
+    # Unconstrained: both energies share the k! factor. A soft width on mode 2 singles it out: two
+    # flat single-energy factors (catalogue.PriorBundle._energy_groups). A delta twin's pinned
+    # width does not split the group.
+    theta = np.array([4.0, 0.3, 50.0, 9.0, 0.6, 40.0, 100.0, 4.0])
+    plain = fast_pass._Engine(_ctx(np.full(X.size, 200.0)), FastPassSettings(mode_ceiling=2))
+    free = plain.model(plain.variant(2, True, True), ())
+    sp = plain.sp
+    assert [len(g) for g in free.groups] == [2]
+    assert plain.ln_prior(free, theta) == pytest.approx(sp.ln_prior([(4.0, 0.3, 50.0), (9.0, 0.6, 40.0)],
+                                                                     100.0, 4.0), abs=1e-9)
+    soft = ParamConstraints(soft={"phonon2.Gamma": (0.5, 0.2)})
+    eng = fast_pass._Engine(_ctx(np.full(X.size, 200.0), constraints=soft), FastPassSettings(mode_ceiling=2))
+    model = eng.model(eng.variant(2, True, True), ())
+    assert [len(g) for g in model.groups] == [1, 1]
+    flat = sp.ln_energies([4.0]) + sp.ln_energies([9.0])
+    assert flat == pytest.approx(sp.ln_energies([4.0, 9.0]) - math.log(2))
+    rest = (sp.ln_width(0.3) + sp.ln_height(50.0) + sp.ln_height(40.0) + sp.ln_height(100.0)
+            + sp.ln_background(4.0) + model.soft_priors[0][1].logpdf(0.6))
+    assert eng.ln_prior(model, theta) == pytest.approx(flat + rest, abs=1e-9)
+    twin = plain.model(plain.variant(2, True, True), (0,))
+    assert [len(g) for g in twin.groups] == [2]
 
 
 # --------------------------------------------------------------------------- example 2
