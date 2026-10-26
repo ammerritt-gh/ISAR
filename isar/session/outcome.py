@@ -232,6 +232,9 @@ class FitOutcome:
     # scan_delivery.fit_one): the count state and probabilities, every model tried, the selected
     # model's peaks and the flags. ``None`` for an outcome with no fast pass. Read via fast_pass_of.
     fast_pass: dict | None = None
+    # The deep pass's result as persisted (deep_delivery, ``isar.deep-pass/1``): the nested-sampling
+    # count comparison of a spectrum the user chose. ``None`` when none ran. Read via deep_pass_of.
+    deep_pass: dict | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -352,6 +355,10 @@ _CSV_COLUMNS = [
     "count_state", "count_state_reason", "count_probability", "count_probabilities",
     "probabilities_conditional", "numerically_marginal", "search_limit_reason",
     "n_confident", "n_tentative", "flags", "deep_pass_candidate",
+    # The deep pass (deep_pass_of): its state and reason, the preferred count and its probability,
+    # and whether the count decision is numerically marginal. Empty when no deep pass ran.
+    "deep_state", "deep_state_reason", "deep_best_count", "deep_p_best",
+    "deep_numerically_marginal",
 ]
 
 # report/modes.csv: one row per fitted mode of the selected count, keyed to its results.csv row by
@@ -401,6 +408,11 @@ def _best_model_posterior(oc: dict):
 def fast_pass_of(oc: dict) -> dict:
     """The stored fast-pass record (``oc["fast_pass"]``), ``{}`` when absent; never raises."""
     return (oc or {}).get("fast_pass") or {}
+
+
+def deep_pass_of(oc: dict) -> dict:
+    """The stored deep-pass record (``oc["deep_pass"]``), ``{}`` when absent; never raises."""
+    return (oc or {}).get("deep_pass") or {}
 
 
 # The non-fit count states, spelled here so this read path does not import the fitting stack.
@@ -476,6 +488,16 @@ def _fast_pass_columns(oc: dict) -> dict:
         "flags": "; ".join(flags) or None,
         "deep_pass_candidate": fp.get("deep_pass_candidate"),
     }
+
+
+def _deep_pass_columns(oc: dict) -> dict:
+    """The results.csv deep-pass columns of one stored outcome; empty when no deep pass ran."""
+    dp = deep_pass_of(oc)
+    if not dp:
+        return {}
+    return {"deep_state": dp.get("state"), "deep_state_reason": dp.get("reason"),
+            "deep_best_count": dp.get("best_count"), "deep_p_best": dp.get("p_best"),
+            "deep_numerically_marginal": (dp.get("close_call") or {}).get("numerical")}
 
 
 def _mode_rows(e: ScanEntry, det: str, oc: dict) -> list:
@@ -704,7 +726,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "energy_lo": (ew[0] if ew else None), "energy_hi": (ew[-1] if ew else None),
                 "energy_bands": (json.dumps(oc.get("energy_bands"), sort_keys=True)
                                  if oc.get("energy_bands") is not None else None),
-                **_fast_pass_columns(oc),
+                **_fast_pass_columns(oc), **_deep_pass_columns(oc),
             })
     _replace_csv(path, _CSV_COLUMNS, rows)
     _replace_csv(workspace.report_dir / "modes.csv", _MODES_COLUMNS, mode_rows)

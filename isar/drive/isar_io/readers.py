@@ -43,7 +43,7 @@ _NUMERIC_COLUMNS = frozenset({
     "target_probability", "identity_entropy",
     "best_model_posterior",
     "energy_lo", "energy_hi",
-    "count_probability",
+    "count_probability", "deep_p_best",
     # report/modes.csv (read_modes_csv)
     "peak_position", "peak_position_err", "gamma_err", "amplitude", "amplitude_intrinsic",
     "height", "height_err", "area_stokes", "area_stokes_err", "corr_omega0_gamma",
@@ -51,13 +51,14 @@ _NUMERIC_COLUMNS = frozenset({
 })
 _INT_COLUMNS = frozenset({"scan", "prior_n", "n_modes", "n_members",
                           "selected_candidate_index", "track_revision", "consistency_seed",
-                          "n_confident", "n_tentative", "mode_index"})
+                          "n_confident", "n_tentative", "mode_index", "deep_best_count"})
 # Coerced to bool ("True"/"False" → True/False; "" → None). ISAR writes Python bool reprs.
 _BOOL_COLUMNS = frozenset({"interval_reliable", "pooled", "hesse_trusted", "resolvable",
                            "gamma_at_bound", "pool_consistent", "model_robust",
                            "local_identity_clear", "target_delivery_eligible",
                            "probabilities_conditional", "numerically_marginal",
-                           "deep_pass_candidate", "confident", "delta", "manual_fit"})
+                           "deep_pass_candidate", "confident", "delta", "manual_fit",
+                           "deep_numerically_marginal"})
 # Split on ";" into a list of labels ("" → None; missing column → key absent via DictReader).
 _LIST_COLUMNS = frozenset({"members"})
 # JSON-encoded structured columns (GUI Phase 0): the amplitudes dict and candidate table. Parsed
