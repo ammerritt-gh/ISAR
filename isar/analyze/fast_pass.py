@@ -253,8 +253,8 @@ class _Model:
     modes: list                       # (i_omega0, i_Gamma, i_h) per mode, component order
     el: int | None
     bg: int | None
-    bundle: object | None             # catalogue.PriorBundle when a scan pin or soft constraint
-                                      #   changes a coordinate's prior; else SpectrumPrior prices it
+    omit: frozenset                   # positions with no recipe factor: pinned or soft-constrained
+    soft_priors: list                 # (position, ResolvedPrior) truncated Gaussian of each soft coordinate
     basins: list = field(default_factory=list)
 
 
@@ -712,19 +712,21 @@ class _Engine:
                 for n, v in (getattr(constraints, "soft", None) or {}).items()
                 if n in names and names.index(n) not in fixed_pos and float(v[1]) > 0]
         modes = [(i, i + 1, i + 2) for i in composite.phonon_indices()]
-        delta_names = {names[modes[i][1]] for i in delta}
-        bundle = None
-        if soft or any(names[i] not in delta_names for i in fixed_pos):
-            # A soft constraint replaces its coordinate's recipe factor, and a scan pin carries
-            # none: catalogue.resolve_priors' one-prior-per-coordinate rule.
-            bundle = catalogue.resolve_priors(composite, cctx, bounds,
-                                              exclude=[names[i] for i in fixed_pos])
+        soft_priors = []
+        if soft:
+            # A soft constraint replaces its own coordinate's recipe factor (one prior per
+            # coordinate); every other coordinate keeps the configured recipe (ln_prior).
+            got = catalogue.resolve_priors(composite, cctx, bounds,
+                                           exclude=[names[i] for i in fixed_pos]).by_name()
+            soft_priors = [(i, got[names[i]]) for i, _mu, _sd in soft]
         return _Model(variant=variant, delta=delta, hyp=hyp, cctx=cctx, names=names, lo=lo, hi=hi,
                       fixed_pos=list(fixed_pos), fixed_vals=list(fixed_vals),
                       free=np.array([i for i in range(len(names)) if i not in set(fixed_pos)], int),
                       soft=soft, modes=modes,
                       el=names.index("elastic.h") if "elastic.h" in names else None,
-                      bg=names.index("bg.BG") if "bg.BG" in names else None, bundle=bundle)
+                      bg=names.index("bg.BG") if "bg.BG" in names else None,
+                      omit=frozenset(fixed_pos) | {modes[i][1] for i in delta}
+                      | {i for i, _mu, _sd in soft}, soft_priors=soft_priors)
 
     def modes_of(self, model, theta) -> list:
         """[(omega0, Gamma, h, delta)] per mode, ascending omega0 for a canonical point."""
@@ -1120,13 +1122,21 @@ class _Engine:
 
     # ---- evidence ----------------------------------------------------------------------------------
     def ln_prior(self, model, theta) -> float:
-        """The recipe's log prior (C-prior) at a full vector: a delta mode carries no width factor."""
-        if model.bundle is not None:
-            return model.bundle.logpdf_ordered({n: float(theta[i]) for i, n in enumerate(model.names)})
-        peaks = [(theta[a], None if j in model.delta else theta[g], theta[c])
-                 for j, (a, g, c) in enumerate(model.modes)]
-        return self.sp.ln_prior(peaks, None if model.el is None else theta[model.el],
-                                None if model.bg is None else theta[model.bg])
+        """The configured recipe's log prior (C-prior) at a full vector, one factor per coordinate: a
+        pinned coordinate (a delta mode's width included) carries none and a soft-constrained one
+        its truncated Gaussian instead; the ordered-energy factor covers the remaining energies."""
+        sp, omit = self.sp, model.omit
+        lp = sp.ln_energies([theta[a] for a, _g, _c in model.modes if a not in omit])
+        for a, g, c in model.modes:
+            if g not in omit:
+                lp += sp.ln_width(theta[g])
+            if c not in omit:
+                lp += sp.ln_height(theta[c])
+        if model.el is not None and model.el not in omit:
+            lp += sp.ln_height(theta[model.el])
+        if model.bg is not None and model.bg not in omit:
+            lp += sp.ln_background(theta[model.bg])
+        return lp + sum(p.logpdf(float(theta[i])) for i, p in model.soft_priors)
 
     def objective(self, model, theta):
         """f(z) = cost/2 - sat - ln prior on the free coordinates, +inf outside the box; with

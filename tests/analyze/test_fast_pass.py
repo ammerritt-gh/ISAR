@@ -11,11 +11,13 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from scipy.stats import truncnorm
 
 from isar.analyze import catalogue, fast_pass, loop, prior
 from isar.analyze.context import ScanContext
 from isar.analyze.fast_pass import FastPassSettings
 from isar.analyze.phonon import GAMMA_FLOOR
+from isar.schema.steering import ParamConstraints
 
 FWHM = 1.5
 X = np.linspace(-8.0, 20.0, 113)
@@ -79,6 +81,25 @@ def test_a_count_with_a_priced_basin_never_contends_unpriced():
                entry(3, "no_evidence", -9.0), entry(4, "no_evidence", -20.0)]
     tally = fast_pass._tally(entries, 10.0)
     assert tally.preferred == 1 and tally.unpriced_contenders == [3]
+
+
+def test_a_soft_constraint_replaces_only_its_own_coordinates_recipe_factor():
+    # Flat-width arm: the unconstrained width must keep the flat factor, not the catalogue's default.
+    arm = prior.PriorSettings(width_kind="flat")
+    soft = ParamConstraints(soft={"phonon2.Gamma": (0.5, 0.2)})
+    eng = fast_pass._Engine(_ctx(np.full(X.size, 200.0), constraints=soft),
+                            FastPassSettings(mode_ceiling=2, prior=arm))
+    model = eng.model(eng.variant(2, True, True), ())
+    theta = np.array([4.0, 0.3, 50.0, 9.0, 0.6, 40.0, 100.0, 4.0])
+    sp = eng.sp
+    lo, hi = model.lo[4], model.hi[4]
+    gauss = truncnorm.logpdf(0.6, (lo - 0.5) / 0.2, (hi - 0.5) / 0.2, loc=0.5, scale=0.2)
+    others = sp.ln_prior([(4.0, 0.3, 50.0), (9.0, None, 40.0)], 100.0, 4.0)
+    assert math.isfinite(others + gauss)
+    assert eng.ln_prior(model, theta) == pytest.approx(others + gauss, abs=1e-9)
+    # a pinned (delta) width carries no factor either: the delta twin of the same count
+    twin = eng.model(eng.variant(2, True, True), (0,))
+    assert twin.delta == (0,) and twin.omit >= {twin.modes[0][1], 4}
 
 
 # --------------------------------------------------------------------------- example 2
