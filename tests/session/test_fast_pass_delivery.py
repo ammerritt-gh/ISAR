@@ -156,6 +156,11 @@ def test_an_unresolved_count_is_never_a_confident_answer(real, monkeypatch):
     assert any("peak count unresolved" in r for r in fit["reasons"])
     assert fit["fast_pass"]["state"] == "unresolved"
     assert fit["fast_pass"]["probabilities_conditional"] is True
+    # the comparison is recorded incomplete: the AIC lane with the scene's incomplete fallback
+    semantics = fit["fit_selection_semantics"]
+    assert semantics is not None
+    assert semantics["selection_method"] == "aic_fallback"
+    assert semantics["selection_fallback"] == "evidence_budget_exhausted"
 
 
 def test_with_nothing_priced_there_is_no_winner_and_a_valid_record(real, monkeypatch):

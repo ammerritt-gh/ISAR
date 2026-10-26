@@ -1607,7 +1607,11 @@ def _selection_from_fast_pass(res, results, rows) -> select.Selection:
     evidence = evidence_mod.EvidenceSet(res.arena_fingerprint)
     prior_spec = tuple(sorted((k, repr(v)) for k, v in res.prior_provenance.items()))
     best = None if res.selected is None else res.selected.label
-    fallback = None if best is not None else "aic_all_evidence_invalid"
+    # Unresolved = a contender without evidence: the lane falls back to the AIC weights (no
+    # posterior overwrites them below), recorded as evidence_budget_exhausted, which the scene reads
+    # as an incomplete comparison (H7), never as complete.
+    fallback = ("aic_all_evidence_invalid" if best is None else
+                "evidence_budget_exhausted" if res.state == "unresolved" else None)
     scores = select.score_models(results)
     for s in scores:
         m = rows[s.label]
