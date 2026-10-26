@@ -1135,10 +1135,247 @@ class _Engine:
             self.expired = True
             log.warning("fast pass stopped by its safety budget (%.0f s)", self.s.safety_budget_s)
 
+    # ---- adapter out ---------------------------------------------------------------------------------
+    def _full_cov(self, b):
+        if b.status not in _PRICED or b.cov_free is None:
+            return None
+        n, free = len(b.model.names), b.model.free
+        cov = np.zeros((n, n))
+        cov[np.ix_(free, free)] = b.cov_free
+        return cov
+
+    def _structure_fit(self, b, point, cov):
+        """The loop.StructureFitResult of ``b`` at ``point``, built from the engine's own point and
+        covariance (no refit), so the verdict and the error layers attach to it."""
+        model, ctx = b.model, self.ctx
+        names = model.names
+        prob = loop.build_problem(model.hyp, model.cctx, x0=dict(zip(names, point)))
+        prob.bounds = [(float(l), float(h)) for l, h in zip(model.lo, model.hi)]
+        free = model.free
+        br = backends.BackendResult(
+            x=np.asarray(point, dtype=float), success=True, message=b.message, n_eval=b.nfev,
+            covariance=cov, covariance_ok=cov is not None,
+            at_limit=backends._at_limit_map(point[free], [prob.bounds[i] for i in free],
+                                            [loop._sanitize(names[i]) for i in free]),
+            merrors=None)
+        fit = loop.result_from_backend(
+            str(model.hyp.label), prob.composite, prob.costv, prob.n_used, prob.k, br,
+            prior_omega=getattr(ctx, "prior_omega", None),
+            acoustic_omega=getattr(ctx, "acoustic_omega", None), penalty=prob.penalty,
+            hard_fixed=prob.is_hard_fixed, T=getattr(ctx, "T", None), ctx=model.cctx)
+        fit.identity = getattr(model.hyp, "identity", None)
+        fit.variant = loop.DELTA_VARIANT if model.delta else None
+        if b.status == "degenerate_twin":
+            fit.resolved_to = str(b.terminal().model.hyp.label)
+            fit.resolved_limit = b.limit
+        loop._attach_fit_semantics(fit, prob, model.cctx)
+        return fit
+
+    def _model_result(self, b, probability):
+        model = b.model
+        names, free = model.names, model.free
+        priced = b.status in _PRICED
+        cov = self._full_cov(b)
+        fitted = b.theta is not None
+        point = b.theta_map if priced else b.theta
+        terminal = b.terminal() if b.status == "degenerate_twin" else None
+        return ModelResult(
+            model_id=b.model_id, label=str(model.hyp.label), n_peaks=model.variant.k,
+            elastic=model.variant.elastic, background=model.variant.background,
+            delta_modes=tuple(model.delta), ln_model_prior=b.ln_model_prior,
+            evidence_status=b.status, ln_z=b.ln_z if priced else None, ln_like=b.ln_like,
+            ln_prior=b.ln_prior if priced else None, cost=b.cost,
+            twin_of=None if terminal is None else terminal.model_id,
+            n_basins=1 if priced else 0, reason=b.reason,
+            params=({n: float(v) for n, v in zip(names, b.theta)} if fitted else {}),
+            map_params=({n: float(v) for n, v in zip(names, b.theta_map)} if priced else None),
+            free=tuple(names[i] for i in free), cov=cov, probability=float(probability),
+            k_free=int(free.size), pinned=tuple(b.pinned) if priced else (),
+            boundary_method=b.boundary_method if priced else "",
+            posterior_iterations=b.posterior_iterations, hypothesis=model.hyp,
+            fit=self._structure_fit(b, point, cov) if fitted else None)
+
+    # ---- the selected model's peaks (reporting; S1U4P2 adds confidence, flags and groups) --------------
+    def _area_per_h(self, peak, e, g):
+        _col, up = self.units([(e, g)], [peak])[0]
+        return up.area_stokes / up.height, up.area_both / up.height
+
+    def _peaks(self, b) -> tuple:
+        if b is None or b.theta_map is None:
+            return ()
+        s, model, t = self.s, b.model, b.theta_map
+        cov = self._full_cov(b)
+        mean = self.mean(model, t)
+        sd = None if cov is None else np.sqrt(np.clip(np.diag(cov), 0.0, None))
+        corr_hh = {}
+        if cov is not None:
+            for i, (_ai, _gi, ci) in enumerate(model.modes):
+                for j, (_aj, _gj, cj) in enumerate(model.modes):
+                    if i != j and sd[ci] > 0 and sd[cj] > 0:
+                        corr_hh[(i, j)] = cov[ci, cj] / (sd[ci] * sd[cj])
+        out = []
+        for i, (a, g, c) in enumerate(model.modes):
+            delta = i in model.delta
+            e, gam, h = float(t[a]), float(t[g]), float(t[c])
+            peak = model.variant.peaks[i]
+            col = self.units([(e, gam)], [peak])[0][0]
+            per_s, per_b = self._area_per_h(peak, e, gam)
+            correlated = any(abs(r) > s.overdamped_correlation
+                             for (p, _q), r in corr_hh.items() if p == i)
+
+            def sigma(j):
+                return float(sd[j]) if sd is not None and sd[j] > 0 else None
+
+            corr = None
+            if cov is not None and not delta and sd[a] > 0 and sd[g] > 0:
+                corr = float(cov[a, g] / (sd[a] * sd[g]))
+            sig_area = sig_area_both = None
+            if cov is not None:
+                grad_s, grad_b = np.zeros(len(t)), np.zeros(len(t))
+                grad_s[c], grad_b[c] = per_s, per_b
+                for j, val in ((a, e), (g, gam)):
+                    if j not in model.free.tolist():
+                        continue
+                    step = 1e-4 * max(1.0, abs(val))
+                    step = -step if val + step > model.hi[j] else step   # inward at the bound
+                    moved = (e + step, gam) if j == a else (e, gam + step)
+                    ds, db = self._area_per_h(peak, *moved)
+                    grad_s[j], grad_b[j] = h * (ds - per_s) / step, h * (db - per_b) / step
+                sig_area = float(math.sqrt(max(grad_s @ cov @ grad_s, 0.0)))
+                sig_area_both = float(math.sqrt(max(grad_b @ cov @ grad_b, 0.0)))
+            reduced = mean - self.expo * h * col
+            with np.errstate(divide="ignore", invalid="ignore"):
+                terms = np.where(mean > 0, mean * np.log(mean / reduced) - (mean - reduced), 0.0)
+            impact = float(2.0 * np.sum(terms))
+            if not math.isfinite(impact):
+                impact = float(np.finfo(float).max)
+            if e <= s.near_elastic_fwhm * self.fwhm:
+                regime = "near_elastic"
+            elif gam >= e or (corr is not None and abs(corr) >= s.overdamped_correlation):
+                regime = "overdamped"
+            else:
+                regime = "underdamped"
+
+            def status(j, key):
+                if cov is None:
+                    return "undetermined"
+                if key == "Gamma" and delta:
+                    return "boundary_limited"
+                if model.names[j] in b.pinned:
+                    return "boundary_limited"
+                if sd[j] >= (model.hi[j] - model.lo[j]) / math.sqrt(12.0):
+                    return "undetermined"
+                if key in ("height", "area") and correlated:
+                    return "model_dependent"
+                return "constrained"
+
+            out.append(PeakResult(
+                index=i, omega0=e, Gamma=gam, delta=delta, height=h,
+                area_stokes=h * per_s, area_both=h * per_b,
+                sigma_omega0=sigma(a), sigma_Gamma=None if delta else sigma(g),
+                sigma_height=sigma(c), sigma_area=sig_area, sigma_area_both=sig_area_both,
+                area_status=("unavailable" if cov is None else
+                             "decomposition_conditional" if correlated else "usable"),
+                corr_omega0_Gamma=corr, regime=regime,
+                status={"omega0": status(a, "omega0"), "Gamma": status(g, "Gamma"),
+                        "height": status(c, "height"), "area": status(c, "area")},
+                confident=False, deletion_impact=impact, manual_fit=regime != "underdamped"))
+        return tuple(out)
+
+    # ---- tally and result ------------------------------------------------------------------------------
+    def conclude(self) -> FastPassResult:
+        """Steps 9-11 from whatever the search reached: tally, states, peaks, ModelResults."""
+        s = self.s
+        self.deadline = math.inf                  # the classify stage checks no deadline
+        with self._stage("classify"):
+            for b in self.basins():
+                if b.status == "pending":
+                    b.status = "no_evidence"
+                    b.reason = "safety budget expired before pricing" if self.expired else "not priced"
+            fitted = {b.count for b in self.basins() if b.theta is not None}
+            for k in sorted(self.reached - fitted):
+                for v in self.variants[k]:
+                    m = self.model(v, ())
+                    if m is not None and not m.basins:
+                        m.basins.append(_Basin(m, 0, None, None, None,
+                                               _ln_model_prior(len(self.variants[k]), k), "",
+                                               status="not_fitted",
+                                               reason=f"no start converged at count {k}"))
+            basins = sorted(self.basins(), key=lambda b: (b.count, b.model.variant.elastic,
+                                                          b.model.variant.background,
+                                                          b.model.delta, b.index))
+            tally = _tally(basins, s.contending_margin)
+            prob = {id(b): (math.exp(tally.terms[id(b)] - tally.total) if id(b) in tally.terms else 0.0)
+                    for b in basins}
+            spreads = []
+            for b in basins:
+                if prob[id(b)] >= s.material_p and b.objective is not None:
+                    z = b.theta_map[b.model.free]
+                    lap = self.laplace(b, b.objective, z, b.model.lo[b.model.free],
+                                       b.model.hi[b.model.free], rel_step=3e-4)
+                    if lap.status == "no_evidence":
+                        log.info("fast pass: %s has no evidence at the wider step (%s)",
+                                 b.model_id, lap.reason)
+                    else:
+                        b.spread = abs(b.ln_z - float(lap.ln_z))
+                        spreads.append(b.spread)
+            spread = max(spreads, default=0.0)
+            selected = tally.selected
+            preferred = tally.preferred
+            reason = ("safety_budget" if self.expired
+                      else "ceiling" if preferred is not None and preferred == s.mode_ceiling else "")
+            if selected is None or tally.unpriced_contenders:
+                state = "unresolved"
+            elif reason:
+                state = "search_limited"
+            elif tally.probabilities[preferred] < s.close_call_p:
+                state = "close_call"
+            else:
+                state = "resolved"
+            results = [self._model_result(b, prob[id(b)]) for b in basins]
+            by_id = {id(b): r for b, r in zip(basins, results)}
+            peaks = self._peaks(selected)
+            t_map = None if selected is None else selected.theta_map
+            sel_model = None if selected is None else selected.model
+            flag_statistics = {
+                "max_count": float(self.sp.max_count), "fwhm": float(self.fwhm),
+                "count_ln_z": {int(k): float(v) for k, v in tally.count_ln_z.items()},
+                "unpriced_contenders": [int(k) for k in tally.unpriced_contenders],
+                "evidence_spread_nats": float(spread)}
+        timing = dict(self.timing)
+        timing["total"] = time.perf_counter() - self.start
+        timing["families"] = {k: dict(v) for k, v in self.families.items()}
+        timing["seed_count"] = self.seed_count
+        return FastPassResult(
+            state=state, preferred_count=preferred,
+            count_probabilities={int(k): float(v) for k, v in sorted(tally.probabilities.items())},
+            probabilities_conditional=state == "unresolved",
+            close_call_alternatives=tuple(k for k, p in sorted(tally.probabilities.items())
+                                          if k != preferred and p >= s.material_p),
+            numerically_marginal=_numerically_marginal(tally.count_ln_z, preferred, spread,
+                                                       s.close_call_p),
+            search_limit_reason=reason, models=tuple(results),
+            selected=None if selected is None else by_id[id(selected)], peaks=peaks,
+            elastic_height=(None if sel_model is None or sel_model.el is None
+                            else float(t_map[sel_model.el])),
+            background=(None if sel_model is None or sel_model.bg is None
+                        else float(t_map[sel_model.bg])),
+            grouped_intensity=(), flags=(), flag_statistics=flag_statistics,
+            prior_provenance=self.sp.provenance(),
+            arena_fingerprint=loop.data_likelihood_fingerprint(self.ctx),
+            ln_like_saturated=self.sat, settings=s, timing=timing, n_fits=self.n_fits,
+            deep_pass_candidate=state != "resolved")
+
 
 def run_fast_pass(ctx, *, settings: FastPassSettings | None = None, peaks=(), structures=None) -> FastPassResult:
-    raise NotImplementedError("fast pass: S1U4")
+    """The fast pass on one spectrum (C-fastpass). ``peaks``: card peak hints, extra starts only;
+    ``structures``: a whitelist of catalogue labels (None: every count structure). Raises
+    ``ValueError`` only for an unusable context (no finite counts, no positive energy, no
+    resolution)."""
+    engine = _Engine(ctx, settings or FastPassSettings(), peaks=peaks, structures=structures)
+    engine.run()
+    return engine.conclude()
 def reclassify(result: FastPassResult, settings: FastPassSettings) -> FastPassResult:
-    raise NotImplementedError("fast pass: S1U4")
+    raise NotImplementedError("fast pass: S1U4P2")
 def reclassify_record(record: dict, settings: FastPassSettings) -> dict:  # (new) on a C-fastpass-record
-    raise NotImplementedError("fast pass: S1U4")
+    raise NotImplementedError("fast pass: S1U4P2")
