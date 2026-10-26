@@ -87,6 +87,23 @@ zero_fallback = "file_axis"             # no significant elastic line: use the f
 min_fit_points = 6              # fewer usable points than this -> non-result (undersampled)
 # detectors = ["a06"]           # which analyzers to fit (default: all enabled)
 
+# The fast pass's thresholds. The values shown are the installed defaults (PROVISIONAL, calibrated on
+# generated spectra 2026-10-26: your call). Uncomment a line to change it; a change refits the
+# affected scans on the next run.
+# [fitting.fast_pass]
+# seed_stop_gain = 6.0                                 # 2*dlnL a seed peak must add (not calibrated)
+# confident_anchor = [[300.0, 10.0], [600.0, 10.0]]    # [spectrum max count, counts a peak's removal must change]
+# flag_residual_threshold = 10.05                      # residual-scan statistic at or above which "possible hidden component" is flagged (0 = off)
+# overdamped_correlation = 0.8                         # |corr(omega0, Gamma)| above which a peak is warned overdamped
+
+# The prior (a data-derived empirical-Bayes starting point; the defaults are the 2026-10-25 recipe).
+# [fitting.prior]
+# amplitude_margin = 1.2     # peak and elastic heights flat on [0, margin x the highest count]
+# width_kind = "softlog"     # width density 1/(Gamma + width_knee); "flat" = uniform
+# width_knee = 0.12          # meV
+# width_cap = 20.0           # meV, largest Gamma
+# energy_cap = 20.0          # meV, largest omega0
+
 # The analyzers. `value_index` and `signal_column` are unused for this instrument (the reader finds its
 # columns by name, from [reader]); `enabled = false` leaves an analyzer out of every scan.
 [[detectors]]
