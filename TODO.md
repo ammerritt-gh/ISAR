@@ -560,12 +560,18 @@ conditions — these are wants, not commitments.
   them as their own `trailer` source. Revisit when the macro first writes leading `# T_K`/`# Q_nm`.
 - `isar/parsers/sp8_bl43.py:517` — `points_per_bin` is stored as a per-bin fact in every ledger
   entry; carry it beside the counts. Revisit if a BL43 session.json passes a few MB.
+- `tools/calibrate_deep_pass.py:132` — the calibration report has its own count-probability and
+  close-call rule beside `deep_pass.close_call`, and re-implements `deep_pass._fast_weight`; take
+  both from `deep_pass`. Revisit with the deep-pass method-change follow-up.
+- `isar/analyze/deep_pass.py:335` — at the installed exploratory sigma (12.38) stage-3 promotion
+  admits nearly every model, so stage 2 is mostly overhead inside a binding budget; send near-lead
+  non-contenders straight to the accepted settings. Revisit when `EXPLORATORY.calibrated_sigma` changes.
 
 ---
 
 ## Notes
 
-routine suite 2.0 min, over its 1-min budget
+routine suite 7.9 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test

@@ -1,53 +1,38 @@
-# Handoff — le Tacon BL43LXU Layer I fitting
+# Handoff — le Tacon BL43LXU fitting
 
 > **Status:** live
 > **Authority:** the frontier of the le Tacon multi-analyzer fitting workstream, rewritten at every closeout
 
-**End condition:** job j313eac923389's slices are landed or cancelled, and the operator has replanned the paused ones.
+**End condition:** job j313eac923389's paused slices (S2 overview and inspector, S3 export, S4 labels and tracking, S5 HTML report, S6 real-data checks) are landed or cancelled after the operator replans them, and the pinned fitting follow-ups below are opened or dropped.
 **Board entry:** none. The repository has no `WIP.md` board; this file is linked from `docs/READING_GUIDE.md`, Door 1.
 
 ## Frontier
-- Landed: nothing on `main` from this job. Slice S1 (open-ended peak count on a two-rung evidence ladder, fit-core speed-up, mode-per-row `modes.csv`, background-free and other degenerate twins) is complete on branch `acs/j313eac923389` at `047a6a7`, PR #46, held unlanded by operator ruling (job amendment 12).
-- Verified at `047a6a7`:
-  - The routine suite (`python -m pytest -m "not slow" -n 16 --dist worksteal`) gave 4899 passed, 11 skipped, 1 xfailed.
-  - The full parallel suite gave 1 failed, 4979 passed, 12 skipped, 3 xfailed in 1277 s (measured 2026-10-23). The failure is `tests/drive/test_fcc_battery.py::test_full_range_discovery_finds_and_maps_both_phonons`: its closed-loop wall ceiling is hit (698 s serially alone). The same test passes on `main` in 118 s and on the branch at `bf33ef5` in 116 s.
-- Cause, bisected to commit `1f58dfe` (a narrow mode keeps its area on the grid):
-  1. Narrow modes now go resolution-limited instead of dropping to zero amplitude.
-  2. That spawns negligible but evidence-bearing delta-twin candidate rows.
-  3. The scene's `presence` factor has no score bound (`isar/scene/factors.py:524-533`), so margin pruning is off.
-  4. The cluster therefore passes the 4096-alternative cap after 5 scans. Planning cost grows about quadratically, and every ConfirmPresence answer is withdrawn.
+- Landed: PR #49 (job j6420291926ab slice S2, deep pass: calibrated dynesty engine, staged coverage, profile and bootstrap batch option, one calibration pass) at `048ddc5`.
+- Landed: PR #48 (job j6420291926ab slice S1: full DHO lineshape of the paper's Eq. 2 in the height coordinate, prior recipe v5 with data-derived amplitude priors, the fast pass with delta-mode twins wired into `isar run`, the count benchmark, the le Tacon proof) at `0b59dca`; it carries PR #46 (job j313eac923389's S1, the open-ended count ladder) by operator ruling, with the recorded fcc campaign-test regression.
+- Frontier at `2568f7f` (main, closeout sweep).
+- Verified: the full suite `python -m pytest -n 16 --dist worksteal -o timeout=1500` passed on `048ddc5` (5128 passed, 13 skipped, 2 xfailed, 472 s, measured by the S2 coordinator); the le Tacon proof ran once (3 passed, 1 failed on the a06 slit, since fixed by declaring `slit = "40x40"`, not rerun).
 
 ## Next
-The replan's first item, ruled by the operator: give the scene `presence` factor a bound that depends on cluster size, so margin pruning removes negligible alternatives honestly. Then re-run the fcc test on PR #46's branch. Before that, check whether `isar run` on the 56 le Tacon spectra hits the same scene blow-up; that decides how urgent the bound is for the beamtime.
+The operator runs his own ChatGPT review of PR #48 and PR #49; each finding becomes a follow-up job (`acs-job open --follow-up j6420291926ab` for a fix inside the approved design, a new job otherwise).
 
 ## Where
-- Job: j313eac923389 (t3), handoff c8162beb6039, bound with `acs-job.bat bind --handoff c8162beb6039`
-- Branch: `acs/j313eac923389`; upstream ahead 67, behind 6 of origin/main
-- Worktree: `C:\Users\AMM\Documents\Github\Science\.jobs\ISAR\automated-multi-analyzer`; unit lane `...\automated-multi-analyzer-S1U2` (clean)
-- PR: #46, open
-- Approved design: `C:\Users\AMM\AppData\Local\ACS\state\v1\working\j313eac923389\design.md`; transcript `docs/transcripts/2026-10-22-le-tacon-dataset-isar-fitting-328afc0b.md`
+- Job: j313eac923389 (t3), stage land, its S1 landed inside PR #48; slices S2–S6 paused for replanning. Job j6420291926ab is closed.
+- Branch: `acs/j313eac923389` merged into main; nothing unlanded.
+- Worktree: `C:\Users\AMM\Documents\Github\Science\.jobs\ISAR\automated-multi-analyzer` (and `...-S1U2`), clean, tips in main; kept for the operator's word on closing job j313eac923389.
+- PR: #46, #48 and #49 merged.
 
 ## Verify before trusting
-1. The branch is still open: `git fetch --prune`, then `gh pr view 46 --json state`. If it merged since this was written, close the job (`acs-job.bat close --job j313eac923389`) and continue from main.
-2. The failure still reproduces: in the worktree, `python -m pytest "tests/drive/test_fcc_battery.py::test_full_range_discovery_finds_and_maps_both_phonons" -q`. Expect a wall-ceiling failure at `047a6a7`, and a pass on main.
+1. `git fetch --prune`, then `gh pr view 46 --json state`, `gh pr view 48 --json state`, `gh pr view 49 --json state`: all MERGED.
+2. `git log --oneline -1 origin/main` contains `048ddc5`.
+3. `acs-job.bat show --job j313eac923389` names its stage; if the operator closed it, the paused slices are cancelled and this file's end condition reads only the follow-ups.
 
 ## Decisions since the plan
-- **Hold S1 and bound the scene first** (2026-10-23).
-  - Question, as put: land PR #46 despite the campaign regression, or hold it while the scene presence factor gets a bound.
-  - Ruling: "(d) then (a) sounds good."
-  - Ruled by: operator.
-  - Constrains: PR #46 stays unlanded until the presence bound exists; the replan starts there.
-- **Background railed at zero resolves to a background-free twin** (2026-10-23). Ruling: "This is important to handle, because at BL43 for the experiment next week the background is really close to 0 (or basically 0). So 2->3, again like the others where a degenerate parameter drops that element (0 background -> backgroundless model)". Ruled by: operator. Built in S1.
-- **Keep the plan as a draft and replan later** (2026-10-23). Ruling: "So we keep the plan as it stands right now, and we'll look at modifying it with new information later." Ruled by: operator. Slices S2–S6 stay paused.
+none
 
 ## Open items
-- FIT-21: a railed Ω_d with a broad Γ resolves to a sharp elastic line. This needs an operator ruling on the twin (elastic, quasi-elastic or none) and on the Γ condition, since ω₀ = √(Ω_d² + Γ²).
-- Method findings, reported and not tuned:
-  - FIT-9: rung 1 undercounts some spectra with no trigger firing.
-  - FIT-8: rung-2 nested sampling at 128 live points is 31–54 nats off at 11–14 parameters.
-  - FIT-22: the boundary-mass correction gives +17 to +62 nats near the Γ floor.
-- FIT-4: the amplitude-prior sensitivity check on real le Tacon data has not run (slice S6). Beamtime risk: the prior assumes `norm_i` is in raw-count units.
-- FIT-20: campaign rung-2 budget is 120 s per pending spectrum with no refresh-wide cap.
-- The A/B benchmark criterion as designed is unreachable by construction (94% classifier success on a well-counted case). Redefine it as a comparison against a fit made with the true peak count on the same data.
-- The benchmark figures measured before S1's last repair are stale.
-- The job goal's clause "operator-declared excitation hypotheses" is outside the approved design (ruling R3) and is not to be reported as delivered.
+- Pinned follow-ups (operator rulings, 2026-10-26): deep-pass warm start; a cheaper model curve (precomputed per-analyzer convolution matrix, batched evaluation, numba on the hot path); prior tuning (count decision stable under alternative priors on 6 of 56 le Tacon spectra); a method change for deep-pass accuracy (seed spreads 10–18 nats at 5–6 modes; every deep count is labelled untrusted).
+- Fast pass misses two aims (reported, not chased): median ~80–90 s per spectrum against the 60 s aim; false flags on clean spectra 7.1% against 5%; the hidden-component flag caught 13 of 71 planted cases.
+- The a06 slit (`40x40`) and the confident-peak anchor (back to 50) are config changes not yet run on real data.
+- About 25 lesser findings deferred, listed as known issues in the bodies of PR #48 and PR #49.
+- No ChatGPT review ran on job j6420291926ab (requests too large; fix is Workflow job j01326cc9bce3).
+- The fcc campaign-test regression from PR #46 stays open until the scene `presence` bound exists.
