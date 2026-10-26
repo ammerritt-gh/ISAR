@@ -449,15 +449,16 @@ gives -237.3789, and without it -238.0720. Two peaks of fixed, different heights
 free have one label copy, so a k! test must use equal heights or free all of each peak's
 parameters, or it cannot tell right from wrong.
 
-**Status [Implemented; sensitivity check pending].** The recipe, the ordered prior, the box-rule
+**Status [Implemented; sensitivity check run].** The recipe, the ordered prior, the box-rule
 Laplace, the softened log-uniform width and the signature are implemented and tested. The fitter's
 bounds come from the recipe (`loop.build_problem` reads `prior.mode_bounds`, which resolves
 `prior.resolve_prior_for`, so the TRF box and the Laplace box are one source). The fast pass's
 Laplace evidence takes its prior from the same recipe (`SpectrumPrior`), as do both evidence lanes
 (`evidence.py`, `errors/bayes.py`), which price modes under the ordered energy prior. The campaign
 path's `PriorBundle` carries the same width density (`ResolvedPrior.kind = "softlog"`). `fit_one`
-runs the fast pass (§2.2) with the card's `max_modes` as its ceiling. Not yet run: the sensitivity
-check on the real spectra (planned in the le Tacon proof).
+runs the fast pass (§2.2) with the card's `max_modes` as its ceiling. The sensitivity check has
+run once on the 56 le Tacon spectra (`run-isar-proofs.bat letacon`; TODO.md FIT-4 has the totals).
+Most count decisions depend on the prior there; which arm to trust is the operator's call.
 
 **The delivery [Implemented].** `fit_one` runs the fast pass on every spectrum (§2.2) and records
 its result: the count state (`resolved`, `close_call`, `unresolved` or `search_limited`) with its
@@ -688,8 +689,9 @@ They are aims, not gates.
 - The flag fires on 18% of planted shoulder, broad and soft cases, 39% at level `high` and never at
   level `low` (0 of 38). It also fires on 7.1% of clean spectra, against its 5% setting.
 - The 60 s per-spectrum aim is not met (median 79 s). It is reported, not chased.
-- The reached figures come from synthetic spectra only. The real-data proof against the le Tacon
-  spectra is planned and has not run.
+- The reached figures come from synthetic spectra only. The real-data le Tacon proof
+  (`run-isar-proofs.bat letacon`) has run once; its comparison with the paper is a printout for the
+  operator, not a figure here.
 
 **Running it.** `isar/synth/tests/test_count_bench_routine.py` runs one isolated peak through the
 real `fit_one` (one draw, ceiling 2 passed explicitly), in 2.3 s measured against a 5 s budget; it
