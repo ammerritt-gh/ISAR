@@ -127,6 +127,28 @@ def test_omega0_profile_fixed_gamma_stops_at_the_omega0_floor(monkeypatch):
     assert np.isnan(P._omega0_profile_crossing(None, None, fit, -1))
 
 
+def test_omega0_profile_with_no_nuisance_left_is_the_cost_at_omega0(monkeypatch):
+    # A hard-constrained model leaves ω₀ as the only free parameter: the profile is the cost at ω₀,
+    # with nothing to minimise over (scipy used to fail on the empty bounds list).
+    best = 0.5
+    problem = SimpleNamespace(
+        free_names=["phonon.omega0", "phonon.Gamma"],
+        bounds=[(loop.EPS_OMEGA0, 10.0), (loop.GAMMA_FLOOR, loop.GAMMA_MAX)],
+        fixed_pos=[1],
+        fixed_vals=[0.5],
+    )
+    fit = SimpleNamespace(
+        params={"phonon.omega0": best, "phonon.Gamma": 0.5},
+        omega0=best, omega0_err_hesse=0.02, posterior_cost=None, cost=0.0,
+    )
+    monkeypatch.setattr(P.loop, "build_problem", lambda _hyp, _ctx: problem)
+    monkeypatch.setattr(P, "_cost_closure", lambda _prob, _ctx: lambda theta:
+                        (float(theta[0]) - best) ** 2)
+
+    # cost (ω₀ - best)² = 1 at ω₀ = best + 1: the upper Δcost=1 crossing, exactly.
+    assert abs(P._omega0_profile_crossing(None, None, fit, +1) - (best + 1.0)) < 1e-6
+
+
 def test_omega0_profile_near_bootstrap_when_well_counted():
     hyp, ctx, fit = _fitted()
     lo, hi = P.omega0_profile_interval(hyp, ctx, fit)

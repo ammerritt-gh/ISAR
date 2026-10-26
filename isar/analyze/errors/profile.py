@@ -118,6 +118,8 @@ def _omega0_profile_crossing(hyp, ctx, fit_result, direction, delta: float = 1.0
     def profile_cost(omega0: float) -> float:
         if omega0 < omega0_edge:
             return float("inf")
+        if not reduced:                                   # nothing left to minimise: the cost at ω₀
+            return float(costv(_full(omega0, np.empty(0))))
         rbounds, red0 = [], []
         for n in reduced:
             lo, hi = (float(v) for v in bounds[n])
