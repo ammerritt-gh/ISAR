@@ -279,7 +279,9 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
 - [ ] **FIT-4 — Amplitude prior constants: sensitivity check not run.** `AMPLITUDE_SCALE_PER_MONITOR = 1.0`
       and `AMPLITUDE_SCALE_PER_SECOND = 1.0e5` (`isar/analyze/prior.py`) are agent-proposed. Their check (the
       example set refitted with one alternative prior width) has not been run, so a count could move with the
-      constant unseen before the beamtime. **Acceptance:** the check runs on the example set; any count that moves
+      constant unseen before the beamtime. The sensitivity arms of the planned le Tacon proof
+      (`proofs/test_letacon_fast_pass.py`) are the run of this check; that run has not happened yet.
+      **Acceptance:** the check runs on the example set; any count that moves
       is reported with its spectra, and the constant goes to the operator before the beamtime.
       **Governing:** `docs/STATS_PRIMER.md` §2.1.
 - [ ] **FIT-5 — A `[fitting] structures` restriction that matches nothing is silently widened.**

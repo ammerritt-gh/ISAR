@@ -449,41 +449,34 @@ gives -237.3789, and without it -238.0720. Two peaks of fixed, different heights
 free have one label copy, so a k! test must use equal heights or free all of each peak's
 parameters, or it cannot tell right from wrong.
 
-**Status [Implemented; sensitivity check in S1U7].** The recipe, the ordered prior, the box-rule
+**Status [Implemented; sensitivity check pending].** The recipe, the ordered prior, the box-rule
 Laplace, the softened log-uniform width and the signature are implemented and tested. The fitter's
 bounds come from the recipe (`loop.build_problem` reads `prior.mode_bounds`, which resolves
-`prior.resolve_prior_for`, so the TRF box and the Laplace box are one source), as do rung 1 of the
-count ladder and both evidence lanes (`evidence.py`, `errors/bayes.py`), which price modes under the
-ordered energy prior. The campaign path's `PriorBundle` carries the same width density
-(`ResolvedPrior.kind = "softlog"`). The delivery (`scan_delivery.fit_one`) passes the card's
-`max_modes` to the fit and runs rung 2 (the earlier count ladder, which the fast pass replaces; §2.2). Not yet run: the sensitivity check on the real spectra.
+`prior.resolve_prior_for`, so the TRF box and the Laplace box are one source). The fast pass's
+Laplace evidence takes its prior from the same recipe (`SpectrumPrior`), as do both evidence lanes
+(`evidence.py`, `errors/bayes.py`), which price modes under the ordered energy prior. The campaign
+path's `PriorBundle` carries the same width density (`ResolvedPrior.kind = "softlog"`). `fit_one`
+runs the fast pass (§2.2) with the card's `max_modes` as its ceiling. Not yet run: the sensitivity
+check on the real spectra (planned in the le Tacon proof).
 
-**The delivery [Implemented].** Every spectrum is in one state (`isar.analyze.count_ladder`):
-`settled`, `provisional` (rung 2 still to run), `search limited`, `unresolved` or `held`, with its
-reasons, the rung that decided it, the probability of each count the deciding rung priced and the
-ambiguity marker, recorded as `fit_selection_semantics["count_ladder"]` and projected onto `results.csv`
-(`count_state`, `count_state_reason`, `deciding_rung`, `count_probability`, `runner_up_count`,
-`runner_up_probability`, `count_ambiguous`, `count_flags`; the selected count is `n_modes`). The record
-lists every count rung 1 tried, each with its evidence (rung 2's nested lnZ, else rung 1's Laplace lnZ)
-or the reason it has none: `unconverged`, `resolved to <twin>`, `not sampled at rung 2`, or
-`sampling failed: <reason>`. A scan with no fit reads `held` (with its hold reason), `fitting`
-(ingested, not yet fitted) or `not fitted` (excluded or undersampled); a detector row written before
-the ladder existed reads `not recorded`. Each
-mode of the selected count is a row of `report/modes.csv`: intrinsic ω₀ and the displayed peak
-position Ω_d (√(E0² − Γ²), empty when Γ ≥ E0), Γ, amplitude, their HESSE errors (a missing one stays empty). A settled rung 2
-replaces rung 1's selection, priced on the contending models' nested-sampling evidence alone. An
-`isar run` delivers rung 1 for every new spectrum first, then gives each spectrum still provisional
-at most its rung-2 slice of nested sampling (a plain run: to completion; a campaign refresh: 120 s,
-counted from when that spectrum's rung 2 starts, and at least one contender per refresh), resuming
-each from what an earlier invocation sampled (`rung2_partial`); what it does not finish stays
-`provisional` with "rung 2 pending" as its reason. Only a settled, unambiguous count enters the
-dispersion prior (`evidence_update._master_prior_admissible`). A pooled master runs rung 2 to
-completion inside its own fit.
+**The delivery [Implemented].** `fit_one` runs the fast pass on every spectrum (§2.2) and records
+its result: the count state (`resolved`, `close_call`, `unresolved` or `search_limited`) with its
+reason, the preferred count and the probability of each count, the numbers of confident and
+tentative peaks, the flags and `deep_pass_candidate`. These are the count columns of `results.csv`
+and `fit_selection_semantics`. Each mode of the selected count is a row of `report/modes.csv`, with
+its ω₀, Γ, height and area, their covariance errors (a missing one stays empty), its regime, whether
+it is confident and whether it is a delta mode. A scan with no fit reads `held` (with its hold
+reason), `fitting` (ingested, not yet fitted) or `not fitted` (excluded or undersampled); a detector
+outcome with no fast-pass record reads `not recorded`. Only a `resolved` count enters the dispersion
+prior (`evidence_update._master_prior_admissible`). A pooled master goes through the same `fit_one`.
+The earlier two-rung count ladder (`isar/analyze/count_ladder.py`) is off the fit path; its code
+remains only for the shadow candidates of the STAT-2b campaign (`isar/synth/stat2b/campaign.py`)
+until it is retired.
 
 **The mode ceiling.** A spectrum may hold up to a configurable number of modes: card
 `[fitting] max_modes`, else the environment variable `ISAR_MODE_CEILING`, else 6
 (`isar.session.guidelines.mode_ceiling`). A best count at the ceiling is reported as "search limited",
-never as a settled answer. The ceiling and the recipe version are part of the guidelines signature,
+never as a resolved count. The ceiling and the recipe version are part of the guidelines signature,
 so changing either refits the spectra it affects instead of carrying old results forward.
 
 **References.** The method and its relatives, pinned here for later use:
@@ -501,20 +494,21 @@ so changing either refits the spectra it affects instead of carrying old results
   arXiv:1411.3921; A. Jasra, C. C. Holmes, D. A. Stephens, label switching in mixture models,
   Statistical Science (2005).
 
-### 2.2 The fast pass: a seed, then the full search **[Partial: engine built, synthetic count aims met; wall time above its aim; four thresholds provisional]**
+### 2.2 The fast pass: a seed, then the full search **[Implemented; four thresholds provisional, `seed_stop_gain` not calibrated]**
 
 How many modes a spectrum holds, where they are and how sure the answer is: one search that aims at about
 a minute per spectrum on a laptop (an aim and a diagnostic, never a stopping rule). The code is
 `isar/analyze/fast_pass.py` (`run_fast_pass`); the settings are `FastPassSettings`. It runs no nested
-sampling, profile interval, bootstrap or automatic second pass. It replaces the earlier count ladder
-(a Laplace rung and a nested-sampling rung with seven triggers), which stays in the code until
-`scan_delivery.fit_one` calls the fast pass; §2.1's "delivery" paragraph still describes that pipeline.
+sampling, profile interval, bootstrap or automatic second pass. `scan_delivery.fit_one` runs it in
+place of the earlier count ladder (a Laplace rung and a nested-sampling rung with seven triggers),
+which is off the fit path.
 
 **Stage 1, the seed.** Pseudo-Voigt peaks, each with its anti-Stokes partner tied by the Bose factor and no
 convolution, so it is cheap. Fitted on the original counts (never on subtracted residuals): candidate
 positions are ranked by how much they improve the Poisson fit, all seed peaks are refitted jointly after each
 insertion so a centre can move, and the search stops when no candidate adds `seed_stop_gain` (a provisional
-2·Δln L) or at the mode ceiling. The seed's only outputs are starting points. It never limits stage 2.
+2·Δln L, not yet calibrated) or at the mode ceiling. The seed's only outputs are starting points. It
+never limits stage 2.
 
 **Stage 2, the full search.** Every count from 0 to the ceiling is fitted, with and without the elastic line
 and the background where admissible, every parameter free, from several starts: the seed, the previous count's
@@ -584,10 +578,14 @@ settings)` and `reclassify_record(record, settings)` re-apply `confident_anchor`
 
 **Limits, stated where they bite.**
 
-- *Four thresholds are provisional.* `seed_stop_gain`, `confident_anchor`, `flag_residual_threshold` (0 means
-  that flag kind is off) and `overdamped_correlation` are agent defaults, to be calibrated on synthetic spectra
-  before the fast pass counts as Implemented. The close-call and contending margins are rulings and existing
-  constants.
+- *Four thresholds are provisional, installed 2026-10-26 from the development streams.*
+  `flag_residual_threshold` 10.05 is the 95th percentile of the residual-scan statistic on the 63
+  clean development spectra (the combined false-flag rate there was 6.3%; 7.1% on the evaluation
+  streams, over its 5% setting). `confident_anchor` and `overdamped_correlation` (0.80) were picked
+  by rules whose development grids were flat, every grid value passing, so they sit at their grid
+  edges and are not calibrated optima. `seed_stop_gain` (6.0) is **not calibrated**: its refit grid
+  was skipped under the run-once ruling. The close-call and contending margins are rulings and
+  existing constants.
 - *The probabilities are model-dependent.* They are empirical-Bayes under the priors of §2.1, and the 2^k delta
   mask weight is a modelling choice: it moves a clean spectrum's count probabilities by a few nats at most.
   They come from Laplace evidence; whether they track nested-sampling evidence is what the deep pass checks.
@@ -622,63 +620,85 @@ unresolved. Wall time per spectrum has a median of 84 s and a maximum of 215 s a
 processes sharing the machine), still above it. The table is reported, not a gate, and is not rerun to chase
 the aim.
 
-### 2.3 The peak-count benchmark **[Built; targets not yet measured at the design's draw count]**
+### 2.3 The peak-count benchmark **[Built; figures reached, 2026-10-26]**
 
-`isar/synth/count_bench.py` tests the ladder on truths the fitter never sees, against the challenge: fit any
-spectrum a human could fit. The generator draws synthetic spectra with 0 to the ceiling modes (default 6):
-energies, widths, amplitudes, temperature, elastic strength, background, exposure and a Voigt resolution.
-Each mode's anti-Stokes partner is the production Bose tie, and counts are Poisson with no floor. Hard kinds
-are over-represented: close doublets, broad single peaks, a weak peak on a strong neighbour's tail, features
-near the elastic line, empty spectra and generic spectra of 2 to the ceiling modes. Each case is fitted
-through `scan_delivery.fit_one`, the production path, from an observation that carries no truth.
+`isar/synth/count_bench.py` tests the fast pass on truths the fitter never sees. Its method is
+written in the module docstring; this section is the summary. The question is the operator's: a
+randomly generated set of peaks should be fittable, and the fitter should find the peaks a person
+would call clear, and say so when it is not sure. The resolvability and A/B figures of 2026-10-23
+were replaced by this method and are in git history.
 
-**What "resolvable" means.** A truth with N modes is *resolvable* when two conditions hold over repeated
-Poisson draws of it. A reference fit prefers N modes over N−1 in at least 90% of the draws of the truth. And
-the same comparison on the truth with its weakest mode removed prefers N in at most 5% of its draws. The
-design's default is 200 draws. A truth that is not resolvable is *borderline*, and on a borderline case the
-fitter is not required to recover the count. The reference is the production Laplace evidence (default
-`--ref-evidence laplace`), with truth-placed starts and eight random starts per model. `--ref-evidence nested`
-is the sampler route: about three hours per resolvable two-mode case at the design's draw count. The reference
-shares rung 1's method and so its blind spot: the limit on Laplace in §2.2 applies to these labels too. Its
-agreement with the truth is reported beside the figures.
+**Generator.** Truths use the production model: full DHO pairs (Stokes and anti-Stokes by detailed
+balance), an elastic line and a flat background, convolved with one of the 28 committed BL43LXU
+resolution curves (`isar/synth/bl43_curves.py`) on the real file grid (-16 to +20 meV in 0.2 meV
+steps), then drawn as Poisson counts with no floor. The strongest phonon is 600 counts per bin at
+level `high` (302 K-like) or 300 at `low` (97 K-like). Fourteen named truths (a broad low peak, a
+weak shoulder, a close doublet, a near-elastic peak, zero background, a 302 K / 97 K soft-mode pair)
+are fitted alongside seeded random suites of the same kinds and a set of clean spectra, every peak
+of which has grade at least 100. The fitter sees the counts, the temperature, the resolution curve
+and the exposure, and no truth.
 
-**The figures.** All three are targets (rulings R5, R14, R15), reported with numerator, denominator, binomial
-standard error and a Wilson 95% interval. None is a gate.
+**Grades and should-find.** A true peak's grade is twice the Poisson log-likelihood difference
+between the noiseless truth with and without it. A *should-find* peak has grade at least 100 at
+level `high` or 25 at `low` (the operator's 2026-10-25 judgements of clear isolated peaks), a refit
+grade at least 0.3 times its grade (so neighbours cannot absorb it), ω₀ above two resolution FWHM
+and Γ below ω₀/2. Shoulders and broad modes are not scored as misses at these statistics: the
+operator judged them all ambiguous.
 
-1. *Correct counts on resolvable cases:* target at least 90%. An ambiguous answer on a resolvable case is an
-   abstention: it is not correct, and it stays in the denominator.
-2. *Confident extra modes on empty or single-mode truths:* target at most 5%. A confident extra mode is a count
-   above the truth's that the fit does not mark ambiguous.
-3. *The A/B test:* for each resolvable case, 1000 fresh draws from the truth and 1000 from the fitted curve. The
-   likelihood-ratio test picks the source of each draw. A case passes when its accuracy is at most 60%; 50% is a
-   coin flip. The figure is the share of resolvable cases that pass. No share target is set.
+**Matching and outcomes.** Fitted peaks (confident and tentative) are matched one-to-one to true
+peaks within one resolution FWHM, maximising matched pairs and then minimising total |Δω₀|. Each
+should-find peak has exactly one outcome: confident (matched to a confident peak), tentative or
+abstained (matched to a tentative peak, or the fit gave no answer), or missed. A confident fitted
+peak with no true peak is a false peak.
 
-A figure that stalls is reported as reached, not tuned overnight.
+**Calibration (development streams, then frozen).**
+- `flag_residual_threshold` 10.05: the 95th percentile of the residual-scan statistic on the 63
+  clean development spectra. The ambiguous-decomposition kind alone gave no false flags there; the
+  combined rate was 4/63 (6.3%).
+- `confident_anchor` ((300, 10), (600, 10)) and `overdamped_correlation` 0.80: the smallest grid
+  values meeting their 5% rules. Both grids were flat (every value passed), so the first point was
+  taken; the earlier default 50 for the anchor gives identical development results. The development
+  peaks all lie far above the operator's grade-25 and grade-100 boundaries, so the anchor is not
+  tested near them.
+- `seed_stop_gain` 6.0: not calibrated; the four-value refit grid was skipped under the run-once ruling.
 
-**Status, 2026-10-23.**
+**Evaluation figures.** Run once with the installed settings: 292 spectra (14 named truths times 10
+draws, 76 random, 76 clean), base seed 20261023, evaluation streams, 12 workers, code at commit
+`31bccfc` (the later commit changes tests only). Wall clock 2220 s; no spectrum stopped by the
+deadline; no failed fit. Each figure is numerator over denominator with its Wilson 95% interval.
+They are aims, not gates.
 
-- The design's draw count has not been run. A probe measured 1.6 to 2.1 s per draw pair of the Laplace reference
-  (one worker), so one resolvable two-mode case at 200 plus 200 draws takes about 12 minutes; nested sampling would
-  take hours. The full characterisation therefore runs only on request.
-- The tuning run used 20 draws (cases T0000 to T0059 at ceiling 4; 57 finished). It labelled 1 of 57 truths
-  resolvable, and many clean single peaks came out borderline. At 10 null draws the 5% rule allows no false split at
-  all. None of the three figures was measured meaningfully.
-- The same run, with rung 2 forced on every contending set, moved the count on 10 of 56 spectra: 4 towards the truth
-  and 4 away. Correct counts were 37 of 56 at both rungs. This is a check on synthetic cases that set the triggers'
-  starting thresholds, not a figure against the targets.
-- On one resolvable smoke case with a correct count, the A/B test picked the source 93.5 to 95% of the time, far
-  above the 60% target. With thousands of counts a fit differs detectably from its truth, so the A/B target is
-  expected to be hard on well-counted cases.
+| Figure | All | Level `high` | Level `low` | Aim | Reached |
+|---|---|---|---|---|---|
+| Missed / should-find | 0/551 = 0.000 [0.000, 0.007] | 0/272 [0.000, 0.014] | 0/279 [0.000, 0.014] | ≤ 0.10 | yes |
+| False / confident fitted | 1/712 = 0.001 [0.000, 0.008] | 0/363 [0.000, 0.010] | 1/349 = 0.003 [0.001, 0.016] | ≤ 0.05 | yes |
+| State: resolved | 218/292 = 0.747 [0.694, 0.793] | 112/149 = 0.752 [0.677, 0.814] | 106/143 = 0.741 [0.664, 0.806] | none | n/a |
+| State: close call | 50/292 = 0.171 [0.132, 0.219] | 26/149 = 0.174 [0.122, 0.243] | 24/143 = 0.168 [0.116, 0.238] | none | n/a |
+| State: unresolved | 24/292 = 0.082 [0.056, 0.119] | 11/149 = 0.074 [0.042, 0.127] | 13/143 = 0.091 [0.054, 0.149] | none | n/a |
+| State: search limited | 0/292 [0.000, 0.013] | 0/149 [0.000, 0.025] | 0/143 [0.000, 0.026] | none | n/a |
+| Flag hit, planted shoulder / broad / soft | 13/71 = 0.183 [0.110, 0.288] | 13/33 = 0.394 [0.247, 0.563] | 0/38 = 0.000 [0.000, 0.092] | none | n/a |
+| False flag, clean spectra (any flag) | 7/99 = 0.071 [0.035, 0.139] | 3/51 = 0.059 [0.020, 0.159] | 4/48 = 0.083 [0.033, 0.196] | 0.05 (mirrors the false-peak aim) | **no**: 7.1% |
+| Time per spectrum, median / p90 (one core, 12 in parallel) | 78.9 s / 137.7 s | 74.0 s / 132.9 s | 83.1 s / 151.2 s | 60 s median (diagnostic) | **no**: 79 s median |
 
-**Running it.**
+**Reading these.**
+- Every should-find peak is in the denominator, and none was missed. The one false confident peak is
+  at level `low`.
+- 74 of 292 spectra (25%) are close calls or unresolved, which are the deep-pass candidates. None
+  was search limited.
+- The flag fires on 18% of planted shoulder, broad and soft cases, 39% at level `high` and never at
+  level `low` (0 of 38). It also fires on 7.1% of clean spectra, against its 5% setting.
+- The 60 s per-spectrum aim is not met (median 79 s). It is reported, not chased.
+- The reached figures come from synthetic spectra only. The real-data proof against the le Tacon
+  spectra is planned and has not run.
 
-- `python -m isar.synth.count_bench --mode tuning`: the capped tuning run (at most 60 cases and 30 minutes, on the
-  tuning seeds).
-- `run-isar-count-bench.bat --cases 4 --draws 3 --null-draws 3 --ab-draws 200`: a quick look. Output goes to
-  `out\count_bench\<timestamp>\` (`figures.json`, `cases.csv`, `count_bench.log`), and the folder and wall-clock
-  time are printed.
-- The full run (`--cases 100 --draws 200`, the defaults) takes hours. It runs only when started.
-- The routine suite runs only the fast subset (`-m "not slow"`).
+**Running it.** `isar/synth/tests/test_count_bench_routine.py` runs one isolated peak through the
+real `fit_one` (one draw, ceiling 2 passed explicitly), in 2.3 s measured against a 5 s budget; it
+checks one outcome per should-find peak and that `records.jsonl` parses. The full run is on request
+and is not part of the routine suite: `python -m isar.synth.count_bench --mode evaluation` (the
+default) or `--mode development` to tune. `run-isar-count-bench.bat` wraps it, prints the output
+folder and wall time, and reads `ISAR_COUNT_BENCH_MAX_SECONDS` (default 5400 s). Outputs go to
+`out\count_bench\<timestamp>\`: `figures.json`, `cases.csv`, `true_peaks.csv`, `fitted_peaks.csv`,
+`records.jsonl` and the truth-versus-fit galleries. The run outputs are gitignored, not committed.
 
 ## 3. Certify: the interval ladder, with its coverage measured
 
