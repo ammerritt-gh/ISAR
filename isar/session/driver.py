@@ -36,7 +36,7 @@ from isar.session import unit_data
 from isar.session.state import ScanEntry, SessionState, canonical_hash, content_hash
 from isar.session.timing import NullTimer
 from isar.session.workspace import Workspace
-from isar.session import evidence_update, master_delivery, scan_delivery
+from isar.session import deep_delivery, evidence_update, master_delivery, scan_delivery
 from isar.session.scan_delivery import (
     AnalysisWorkIncomplete, FULL_TIERS, _campaign_hypotheses, _dispersion_period,
 )
@@ -177,7 +177,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
               errors_tier="full", scan_errors_tier=None, master_errors_tier=None,
               bayes_cli=None, timer=None,
               certification_manifest=None, analysis_allowance_seconds=None,
-              finish_initial_wave=False) -> RunSummary:
+              finish_initial_wave=False, deep_pass=None) -> RunSummary:
     """The pipeline behind ``isar run``: one pass. Every fresh spectrum gets the fast pass
     (:func:`isar.analyze.fast_pass.run_fast_pass`) and the tier decides only which errors are
     attached to the selected model afterwards; a spectrum is never revisited within or across runs
@@ -360,6 +360,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             fresh = (prev is None or prev.content_hash != chash
                      or prev.guidelines_hash != ghash or prev.status.startswith("held")
                      or prev.status == "ingested" or force
+                     or (deep_pass is not None and bool(prev.detectors.get(det))
+                         and not deep_delivery.is_current(prev.detectors[det], deep_pass))
                      or (calfp is not None and prev.status != "excluded"   # an excluded set stays so
                          and (prev.provenance or {}).get("calibration_fingerprint") != calfp))
             if not fresh:
@@ -438,7 +440,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
     is_full = scan_tier in FULL_TIERS
     bayes_opts = _resolve_bayes_opts(bayes_cli)
     use_workorder = is_full and len(tasks) <= scan_workers
-    if use_workorder:
+    if use_workorder or deep_pass is not None:     # a deep run fits its scans serially
         use_pool = False
         boot_workers = _resolve_boot_workers(scan_workers)
     else:
@@ -459,10 +461,16 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
         # and the spawn cost stays a fraction of one escalation (2026-09-03).
         pool_workers = boot_workers if is_full else min(boot_workers, 6)
         shared_pool = ProcessPoolExecutor(max_workers=pool_workers)
+    # The deep pass's one pool (stage runs and the errors step's bootstrap); workers start lazily.
+    deep_pool = (ProcessPoolExecutor(max_workers=deep_pass.workers)
+                 if deep_pass is not None and deep_pass.workers > 1 and tasks else None)
     try:
         with timer.stage("fit_scans", n_tasks=len(tasks), use_pool=use_pool,
                          boot_workers=boot_workers, scan_workers=scan_workers,
-                         threads={name: os.environ.get(name) for name in _THREAD_ENV}) as _m_fit:
+                         threads={name: os.environ.get(name) for name in _THREAD_ENV},
+                         **({"deep_workers": deep_pass.workers,
+                             "deep_budget_s": deep_pass.budget_s}
+                            if deep_pass is not None else {})) as _m_fit:
             cached: dict[int, ScanEntry] = {}
             remaining = []
             remaining_indices = []
@@ -524,7 +532,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                 boot_workers=boot_workers, use_pool=use_pool,
                 scan_workers=scan_workers, boot_executor=shared_pool,
                 boot_adaptive=scan_boot_adaptive, bayes_opts=bayes_opts,
-                on_complete=checkpoint_entry, deadline_gate=deadline_gate)
+                on_complete=checkpoint_entry, deadline_gate=deadline_gate,
+                deep=deep_pass, deep_executor=deep_pool)
             cached.update(zip(remaining_indices, fresh_entries))
             entries = [cached[index] for index in range(len(tasks))]
             _m_fit["per_task"] = [
@@ -539,6 +548,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                  "bayes_seconds": e.provenance.get("bayes_seconds")}
                 | {"bootstrap_M_requested": e.provenance.get("bootstrap_M_requested"),
                    "bootstrap_M_effective": e.provenance.get("bootstrap_M_effective")}
+                | ({"deep_pass": e.provenance["deep_pass"]}
+                   if e.provenance.get("deep_pass") is not None else {})
                 for e in entries if e.provenance.get("fit_seconds") is not None]
         completed_master_keys: list[str] = []
         _apply_and_finish(summary, session, card, records, runcal, g, plan, entries,
@@ -559,6 +570,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
     finally:
         if shared_pool is not None:
             shared_pool.shutdown()
+        if deep_pool is not None:
+            deep_pool.shutdown()
     return summary
 
 

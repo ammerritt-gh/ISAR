@@ -42,7 +42,7 @@ from isar.session import branch_assignment as BA
 from isar.session import (
     branch_model, branch_tracking, calibrations, guidelines as guide_mod, session_prior,
 )
-from isar.session import predictive_artifact
+from isar.session import deep_delivery, predictive_artifact
 from isar.session.outcome import FitOutcome
 from isar.session.predictive_artifact import model_manifest_of as _model_manifest_of
 from isar.session.state import ScanEntry
@@ -377,6 +377,8 @@ def _timing_provenance(fit) -> dict:
         prov["bayes_n_live"] = fit.get("bayes_n_live")
         prov["bayes_seed"] = fit.get("bayes_seed")
         prov["dynesty_version"] = fit.get("dynesty_version")
+    if fit.get("deep_pass_timing") is not None:
+        prov["deep_pass"] = fit["deep_pass_timing"]
     return prov
 
 
@@ -2022,8 +2024,12 @@ def _process_one_task(args):
 
 def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_workers,
                use_pool, scan_workers, boot_executor=None, boot_adaptive=False,
-               bayes_opts=None, on_complete=None, deadline_gate=None) -> list:
+               bayes_opts=None, on_complete=None, deadline_gate=None, deep=None,
+               deep_executor=None) -> list:
     """Fit the fresh scan-detectors, serially or over a process pool, preserving submission order.
+
+    ``deep`` (a :class:`~isar.session.deep_delivery.DeepRequest`) adds the deep pass after each
+    fast-pass fit, serial path only: ``deep_executor`` is its one pool (not picklable).
 
     ``boot_executor`` (a shared bootstrap pool) is threaded only through the SERIAL path — an
     executor is not picklable and must never enter a scan-pool worker (nested pools). The pool path
@@ -2034,6 +2040,8 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
                 for (rec, det, q, T, sample, scan_id, chash, ghash, seed) in tasks]
     if not arg_list:
         return []
+    if deep is not None and use_pool:
+        raise ValueError("the deep pass fits its scans serially (use_pool=False)")
     if not use_pool:
         out = []
         for a in arg_list:
@@ -2045,7 +2053,9 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
             entry = _process_one(rec, det, q, T, sample, scan_id, card_, g_, runcal_,
                                  exclusions_, chash, ghash, M=M_, seed=seed, errors_tier=tier_,
                                  boot_workers=bw, boot_executor=boot_executor,
-                                 boot_adaptive=adaptive_, bayes_opts=bopts_)
+                                 boot_adaptive=adaptive_, bayes_opts=bopts_,
+                                 **({"deep": deep, "deep_executor": deep_executor}
+                                    if deep is not None else {}))
             if on_complete is not None:
                 on_complete(entry)
             out.append(entry)
@@ -2458,7 +2468,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
         energy_window=fit.get("energy_window"), energy_bands=fit.get("energy_bands"),
         evidence_identity=fit.get("evidence_identity"),
         identity_ba_disagreement=fit.get("identity_ba_disagreement"),
-        fast_pass=fit["fast_pass"],
+        fast_pass=fit["fast_pass"], deep_pass=fit.get("deep_pass"),
         evidence_sink=evidence_sink_for(getattr(rec, "raw_header", None),
                                         getattr(card.state, "acquisition_provenance", None)))
     outcome.probability_semantics = _refresh_probability_semantics(outcome.__dict__)
@@ -2478,7 +2488,8 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
 
 def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                  chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
-                 boot_executor=None, boot_adaptive=False, bayes_opts=None) -> ScanEntry:
+                 boot_executor=None, boot_adaptive=False, bayes_opts=None, deep=None,
+                 deep_executor=None) -> ScanEntry:
     _t_fit0 = time.perf_counter()
     base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
                 content_hash=chash, guidelines_hash=ghash)
@@ -2542,10 +2553,17 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                          provenance=calres.provenance(), **base,
                          measurement_record=measurement_record)
 
+    fast_fit = fit
     fit = _hard_fix_escalation(fit, ctx, prior, card, sample, T, labels, peaks, descriptor,
                                region_reasons, M=M, seed=seed, errors_tier=errors_tier,
                                boot_workers=boot_workers, boot_executor=boot_executor,
                                boot_adaptive=boot_adaptive, bayes_opts=bayes_opts)
+    if deep is not None:
+        # A hard-fix escalation replaced the fit by one on a constrained context: refused.
+        record, timing = deep_delivery.deliver(
+            fit, ctx, deep, executor=deep_executor,
+            refuse="hard-fix escalation replaced the fast-pass fit" if fit is not fast_fit else None)
+        fit["deep_pass"], fit["deep_pass_timing"] = _finite_json(record), _finite_json(timing)
 
     entry = _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calres, prior,
                             prior_source, n_neighbors, near_gamma, t_round, region_reasons, base,

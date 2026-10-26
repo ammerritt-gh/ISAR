@@ -14,6 +14,7 @@ import uuid
 
 from isar.schema import card as card_mod
 from isar.session import driver
+from isar.session.deep_delivery import DeepRequest
 from isar.session.timing import StageTimer
 from isar.session.workspace import Workspace
 
@@ -136,6 +137,20 @@ def run(args) -> int:
     for unknown in card_mod.unknown_toml_tables(ws.policy_path):
         print(f"warning: unknown card section [{unknown}] — ignored (typo?)", file=sys.stderr)
 
+    deep = None
+    if getattr(args, "deep_pass", False):
+        if (getattr(args, "certification_manifest", None) is not None
+                or getattr(args, "certification_request", None) is not None
+                or getattr(args, "analysis_allowance_seconds", None) is not None):
+            print("error: --deep-pass is for file fitting; it cannot be combined with a "
+                  "certification request or manifest or an analysis allowance", file=sys.stderr)
+            return 2
+        workers = getattr(args, "deep_workers", None)
+        deep = DeepRequest(
+            budget_s=60.0 * float(args.deep_budget_minutes),
+            workers=max(1, workers if workers else min(6, driver._resolve_workers(
+                getattr(args, "workers", None)))),
+            M=args.M)
     errors_tier = getattr(args, "errors", "fast")
     scan_errors_tier = getattr(args, "scan_errors_tier", None)
     master_errors_tier = getattr(args, "master_errors_tier", None)
@@ -148,6 +163,8 @@ def run(args) -> int:
     scan_M = getattr(args, "scan_M", None)
     timer_meta = {"errors_tier": errors_tier, "M": args.M,
                   "scan_M": (50 if scan_M is None else scan_M), "argv": list(sys.argv)}
+    if deep is not None:
+        timer_meta["deep_pass"] = {"budget_s": deep.budget_s, "workers": deep.workers}
     if scan_errors_tier is not None:
         timer_meta["scan_errors_tier"] = scan_errors_tier
     if master_errors_tier is not None:
@@ -186,7 +203,7 @@ def run(args) -> int:
             certification_manifest=certification_manifest,
             analysis_allowance_seconds=getattr(args, "analysis_allowance_seconds", None),
             finish_initial_wave=bool(getattr(args, "finish_initial_wave", False)),
-            **role_kwargs)
+            deep_pass=deep, **role_kwargs)
         analysis_incomplete = bool(getattr(summary, "analysis_incomplete", False))
         analysis_revision = _results_revision(ws.report_dir)
 

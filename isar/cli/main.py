@@ -75,6 +75,17 @@ def build_parser() -> argparse.ArgumentParser:
                          "'full' (MINOS+bootstrap+profile on the selected model), or "
                          "'bayes' = full + nested-sampling posterior interval (slow; three-method "
                          "cross-check)")
+    pr.add_argument("--deep-pass", dest="deep_pass", action="store_true",
+                    help="after the fast pass, run the deep pass on the spectra this run fits "
+                         "(pick them with --detectors; --force refits): nested-sampling evidence "
+                         "for every model of each spectrum, staged, plus profile and bootstrap "
+                         "errors on the chosen model. Tens of minutes per spectrum; every run is "
+                         "recorded in report/run_timings.json and session.json")
+    pr.add_argument("--deep-budget-minutes", dest="deep_budget_minutes", type=float, default=60.0,
+                    help="deep pass: sampling budget per spectrum in minutes (default 60); "
+                         "a spectrum that runs out is reported as search limited")
+    pr.add_argument("--deep-workers", dest="deep_workers", type=int, default=None,
+                    help="deep pass: processes for the sampler runs (default min(6, --workers))")
     pr.add_argument("--profile", action="store_true",
                     help="profile this run with cProfile in one process (workers forced to 1) and "
                          "write report/run_profile.prof and report/run_profile.txt; combine with "
