@@ -267,8 +267,9 @@ count, elastic vs anti-Stokes forms) are fit and compared by per-candidate Bayes
 (Laplace with escalation to nested sampling, uniform prior over admissible structures); an extra
 peak must buy its parameters in marginal likelihood — never raw χ², which systematically fits
 noise as phantom phonons. AIC and Akaike weights persist per candidate as the recorded
-diagnostics lane. The peak count is open-ended and decided on the two-rung count ladder
-(`STATS_PRIMER.md` §2.2). *(Implemented: `best_model`, `n_modes`, `best_model_posterior`, and the
+diagnostics lane. The peak count is open-ended and decided by the fast pass
+(`STATS_PRIMER.md` §2.2; the pipeline still counts on the earlier two-rung ladder until `fit_one` calls it).
+*(Implemented: `best_model`, `n_modes`, `best_model_posterior`, and the
 count state `count_state`; every fitted mode is a row of `report/modes.csv`. The scalar `omega0` and `omega0_err`
 columns of `results.csv` are the one steering choice (the primary phonon steering reads),
 not the mode result; their rename to `steer_omega0` is deferred (TODO FIT-18).)*
@@ -478,7 +479,7 @@ rulings W1–W3.)*
 | Adjudication (decide–record–defer) | Implemented (opt-in) |
 | Stage II: Baker–Cousins fit, evidence selection (H4; Akaike diagnostics retained), branch posterior, verdicts | Implemented |
 | Full DHO lineshape (paper Eq. 2) in the one fitting path: E0 fitted directly, Bose factor at every energy point, height coordinate, overdamped modes representable | Implemented (2026-10-25; `STATS_PRIMER.md` §8, `tests/analyze/test_dho_full.py`) |
-| Open-ended peak count: rung 1 Laplace evidence for every count from 0 to the ceiling (card `[fitting] max_modes`, default 6), rung 2 nested sampling of the contending counts, six count states, `report/modes.csv` with one row per mode, the `secondary_omega0` columns removed | Implemented (2026-10-23; `STATS_PRIMER.md` §2.1–2.2, `isar/analyze/count_ladder.py`). Pooled masters run rung 2 to completion inside their fit, not in time slices. |
+| Open-ended peak count by the fast pass: a pseudo-Voigt seed, then every count from 0 to the ceiling (card `[fitting] max_modes`, default 6, arbitrary) fitted in full with audits, delta-mode twins and box-rule Laplace evidence at the posterior mode, four count states, confident and tentative peaks, `report/modes.csv` with one row per mode, the `secondary_omega0` columns removed | **Partial**: engine built, but its first synthetic acceptance table missed the aim (1 of 10 draws pass, 9 of 12 rows unresolved; `STATS_PRIMER.md` §2–2.2, `isar/analyze/fast_pass.py`); four thresholds are provisional, and `scan_delivery.fit_one` still counts on the earlier two-rung ladder (`isar/analyze/count_ladder.py`, pooled masters running rung 2 to completion inside their fit) until it calls the fast pass. |
 | Peak-count benchmark (`isar.synth.count_bench`): synthetic resolvability, correct-count, extra-mode and A/B figures | **Partial**: built, with its fast subset in the routine suite. The figures are targets, not gates (R14, R15), and are not yet measured at the design's draw count (`STATS_PRIMER.md` §2.3). The full run is on request. |
 | Interval ladder through bootstrap; `interval_reliable` flag | Implemented |
 | Uniform `interval_reliable` convergence rule | Implemented (2026-07-10) |
