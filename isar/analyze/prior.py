@@ -212,11 +212,6 @@ class SpectrumPrior:
         return -math.log(g + s.width_knee) - math.log(math.log((hi + s.width_knee)
                                                               / s.width_knee))
 
-    def dln_width(self, g: float) -> float:
-        """d ln p / d Gamma (analytic; enters the exact Hessian and the boundary correction)."""
-        s = self.settings
-        return 0.0 if s.width_kind == "flat" or s.legacy_v4 else -1.0 / (g + s.width_knee)
-
     def ln_energies(self, energies) -> float:
         """ln(k!/W^k) on the ordered region; a function of the set, so label order is irrelevant.
         One implementation: :func:`ordered_energy_log_prior`."""
