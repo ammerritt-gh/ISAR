@@ -604,9 +604,10 @@ settings)` and `reclassify_record(record, settings)` re-apply `confident_anchor`
 
 **Acceptance (synthetic).** A clean three-peak spectrum (ω₀ 5, 9 and 14 meV; an elastic line; a background; a
 Voigt resolution of 1.5 meV FWHM), ten Poisson draws, plus the same truth with a fourth, planted narrow peak
-at 17.5 meV (Γ 0.05 and 0) sized to a noiseless deletion grade of 100, run at the production defaults: `python
--m pytest tests/analyze/test_fast_pass_acceptance.py -m slow -s -p no:xdist` (a table of twelve rows in its
-own process pool; slow-marked, run on purpose, never by a routine check). A draw passes when each true peak is
+at 17.5 meV (Γ 0.05 and 0) sized to a noiseless deletion grade of 100, run at the production defaults:
+`set ISAR_FAST_PASS_ACCEPTANCE=1` then `python -m pytest tests/analyze/test_fast_pass_acceptance.py -m slow
+-s -p no:xdist` (a table of twelve rows in its own process pool; slow-marked and opt-in by that variable, run
+on purpose, never by a routine check; it prints the aims as reached and asserts none). A draw passes when each true peak is
 matched one-to-one by a confident peak within 0.75 meV, no confident peak is left over, and the state is
 `resolved` at three or `close_call` with P(3) ≥ 0.05. The aim is 9 of 10 draws passing, none unresolved, and
 both narrow peaks found as a confident peak within one FWHM with ln Z(4) − ln Z(3) > 10. **First measurement,
