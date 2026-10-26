@@ -10,7 +10,7 @@ is untouched.
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 
 from isar.analyze import prior as prior_recipe
 from isar.analyze.phonon import default_mode_ceiling
@@ -121,6 +121,8 @@ class Guidelines:
     max_modes: int | None = None            # mode ceiling; None = environment, then the default
     expectations: list = field(default_factory=list)
     overrides: dict = field(default_factory=dict)   # scan -> Override
+    fast_pass: dict = field(default_factory=dict)   # [fitting.fast_pass], validated by fast_pass_settings
+    prior: dict = field(default_factory=dict)       # [fitting.prior], validated by fast_pass_settings
 
     # --- queries ------------------------------------------------------------
     def excluded(self, scan_number) -> str | None:
@@ -217,6 +219,8 @@ def resolve(card: Card) -> Guidelines:
                    if "max_modes" in f else None),
         expectations=expectations,
         overrides=overrides,
+        fast_pass=dict(f.get("fast_pass") or {}),
+        prior=dict(f.get("prior") or {}),
     )
 
 
@@ -228,11 +232,45 @@ def mode_ceiling(source) -> int:
     return g.max_modes if g.max_modes is not None else default_mode_ceiling()
 
 
+def _cast_like(value, default):
+    """``value`` in the type of ``default``: a tuple default takes a list (nested lists become
+    tuples); a scalar takes its own type. TypeError/ValueError when it will not."""
+    if isinstance(default, tuple):
+        if not isinstance(value, (list, tuple)):
+            raise TypeError(f"expected a list, got {value!r}")
+        element = default[0] if default else 0.0
+        return tuple(_cast_like(v, element) for v in value)
+    return type(default)(value)
+
+
 def fast_pass_settings(source) -> "FastPassSettings":
-    """The fast pass's settings for this card. Stub: only the mode ceiling is read until the card's
-    [fitting.fast_pass] and [fitting.prior] tables are wired (S1U5)."""
+    """The fast pass's settings for this card: the mode ceiling, every valid ``[fitting.fast_pass]``
+    key, and ``[fitting.prior]`` as the recipe's PriorSettings (no table: None, which is recipe v5).
+    A key that is unknown, the ceiling, or does not cast warns and is ignored; a bad prior table
+    warns and is ignored whole."""
     from isar.analyze.fast_pass import FastPassSettings
-    return FastPassSettings(mode_ceiling=mode_ceiling(source))
+    from isar.analyze.prior import PriorSettings
+
+    g = resolve(source) if isinstance(source, Card) else source
+    known = {f.name: f.default for f in fields(FastPassSettings)}
+    settings = {}
+    for key, value in g.fast_pass.items():
+        if key in ("mode_ceiling", "prior") or key not in known:
+            hint = " (the ceiling is [fitting] max_modes)" if key == "mode_ceiling" else ""
+            warnings.warn(f"[fitting.fast_pass] {key}: not a fast-pass setting{hint} — ignoring")
+            continue
+        try:
+            settings[key] = _cast_like(value, known[key])
+        except (TypeError, ValueError):
+            warnings.warn(f"[fitting.fast_pass] {key}: {value!r} does not fit the setting's type "
+                          f"— ignoring")
+    prior = None
+    if g.prior:
+        try:
+            prior = PriorSettings(**g.prior)
+        except (TypeError, ValueError) as error:
+            warnings.warn(f"[fitting.prior] ignored: {error}")
+    return FastPassSettings(mode_ceiling=mode_ceiling(g), prior=prior, **settings)
 
 
 def _parse_fit_range(v, *, where: str) -> tuple | None:
@@ -354,4 +392,5 @@ def guidelines_signature(g: Guidelines, *, scan_number, q, T) -> dict:
         "fit_range": None if fit_range is None else [fit_range[0], fit_range[1]],
         "exclude_regions": [[lo, hi] for lo, hi in exclude_regions],
         "peaks": [[p["omega0"], p["sigma"]] for p in peaks],
+        "fast_pass_settings": asdict(fast_pass_settings(g)),
     }

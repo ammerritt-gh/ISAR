@@ -310,3 +310,36 @@ def test_guidelines_signature_changes_with_ceiling_and_recipe_version(monkeypatc
     monkeypatch.delenv("ISAR_MODE_CEILING")
     monkeypatch.setattr(prior, "PRIOR_RECIPE_VERSION", prior.PRIOR_RECIPE_VERSION + "+next")
     assert sig(_card_with_fitting({})) != base                              # recipe version
+
+
+def test_the_card_tables_configure_the_fast_pass():
+    from isar.analyze.prior import PriorSettings
+    card = _card_with_fitting({
+        "fast_pass": {"seed_stop_gain": 4.0, "confident_anchor": [[300.0, 25.0], [600.0, 100.0]]},
+        "prior": {"amplitude_margin": 3.0}})
+    settings = G.fast_pass_settings(card)
+    assert settings.seed_stop_gain == 4.0
+    assert settings.confident_anchor == ((300.0, 25.0), (600.0, 100.0))
+    assert settings.prior == PriorSettings(amplitude_margin=3.0)
+    assert G.fast_pass_settings(_card_with_fitting({})).prior is None
+
+
+def test_bad_fast_pass_entries_warn_and_keep_the_defaults():
+    from isar.analyze.fast_pass import FastPassSettings
+    card = _card_with_fitting({
+        "fast_pass": {"mode_ceiling": 2, "no_such_key": 1, "confident_anchor": 70},
+        "prior": {"amplitude_margin": -1.0}})
+    with pytest.warns(UserWarning) as caught:
+        settings = G.fast_pass_settings(card)
+    text = " ".join(str(w.message) for w in caught)
+    assert "mode_ceiling" in text and "no_such_key" in text and "confident_anchor" in text
+    assert "[fitting.prior]" in text
+    assert settings.confident_anchor == FastPassSettings().confident_anchor
+    assert settings.prior is None and settings.mode_ceiling == G.mode_ceiling(G.resolve(card))
+
+
+def test_a_fast_pass_edit_changes_the_signature_of_a_scan():
+    base = G.guidelines_signature(G.resolve(_card_with_fitting({})), scan_number=1, q=None, T=None)
+    edit = G.guidelines_signature(G.resolve(_card_with_fitting({"fast_pass": {"seed_stop_gain": 4.0}})),
+                                  scan_number=1, q=None, T=None)
+    assert edit != base
