@@ -99,12 +99,13 @@ STREAM_DRAW_EVAL = 8         # Poisson draws the evaluation set shows the fitter
 STREAM_GALLERY = 9           # the gallery's own sample of spectra (not a fit stream)
 STREAMS = (STREAM_CASE_TUNING, STREAM_CASE_EVAL, STREAM_DRAW_FIT, STREAM_DRAW_EVAL)
 
-# Draw counts [setting]: estimates at 30 s per fit and 12 workers; S1U7 rescales by measured time.
+# Draw counts [setting]: sized for 30 s per fit, then the random and clean counts (never the named
+# ones) x 0.38 = 30 s / the measured median 78.9 s (14 named spectra, 12 workers, 2026-10-26).
 MODE_PLANS = {
     "development": dict(case_stream=STREAM_CASE_TUNING, draw_stream=STREAM_DRAW_FIT,
-                        named_draws=5, random=60, clean=150),
+                        named_draws=5, random=23, clean=57),
     "evaluation": dict(case_stream=STREAM_CASE_EVAL, draw_stream=STREAM_DRAW_EVAL,
-                       named_draws=10, random=200, clean=200),
+                       named_draws=10, random=76, clean=76),
 }
 CLEAN_INDEX0 = 100_000       # the extra clean spectra count up from here, apart from the random suite
 
