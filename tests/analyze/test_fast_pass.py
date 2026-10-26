@@ -68,6 +68,19 @@ def test_ex1_count_prior_is_normalised_over_variants_and_masks():
     assert tally.probabilities == pytest.approx({1: 0.5, 2: 0.5})
 
 
+def test_a_count_with_a_priced_basin_never_contends_unpriced():
+    # Count 1 is priced; count 2 has a priced basin and a higher-ln L unpriced one (not a contender);
+    # count 3 has only unpriced basins reaching the selected ln L (a contender); count 4's only
+    # unpriced basin fits worse than the selected model (not a contender).
+    def entry(count, status, ln_like, ln_z=None):
+        return SimpleNamespace(count=count, status=status, ln_z=ln_z, ln_like=ln_like, k_free=3 * count,
+                               ln_model_prior=0.0)
+    entries = [entry(1, "ok", -10.0, 0.0), entry(2, "ok", -11.0, -3.0), entry(2, "no_evidence", -5.0),
+               entry(3, "no_evidence", -9.0), entry(4, "no_evidence", -20.0)]
+    tally = fast_pass._tally(entries, 10.0)
+    assert tally.preferred == 1 and tally.unpriced_contenders == [3]
+
+
 # --------------------------------------------------------------------------- example 2
 def test_ex2_a_railed_width_resolves_to_its_delta_twin():
     eng = _engine(_expected(FOUR), 4)

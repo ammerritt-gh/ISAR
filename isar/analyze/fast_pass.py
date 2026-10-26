@@ -341,8 +341,9 @@ def _tally(entries, contending_margin: float) -> _Tally:
 
     ``entries`` carry ``count``, ``status``, ``ln_z``, ``ln_model_prior``, ``ln_like`` and
     ``k_free``. Z_k sums exp(ln_model_prior + ln_z) over the count's priced entries; a count with
-    none has no evidence. A count lacks evidence and contends when its best-ln L non-twin entry is
-    unpriced with ln L at least the selected model's, or when every entry of it is not fitted."""
+    none has no evidence. A count lacks evidence and contends only when no entry of it is priced and
+    its best-ln L non-twin entry has ln L at least the selected model's, or when every entry of it
+    is not fitted (the prototype's rule, amendment 14)."""
     terms, by_count = {}, {}
     for e in entries:
         by_count.setdefault(e.count, []).append(e)
@@ -364,6 +365,8 @@ def _tally(entries, contending_margin: float) -> _Tally:
     priced = sorted(k for k, v in lnz.items() if v >= top - contending_margin)
     unpriced = []
     for k, es in sorted(by_count.items()):
+        if k in lnz:                  # a priced basin gives the count its evidence
+            continue
         live = [e for e in es if e.status not in ("degenerate_twin", "not_fitted")
                 and e.ln_like is not None]
         if not live:
