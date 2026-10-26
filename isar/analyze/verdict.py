@@ -328,6 +328,32 @@ def _count_probabilities(results, selection) -> dict:
     return out
 
 
+def _count_verdict(win, results, selection, count_probabilities, count_state, reasons, *,
+                   default_rule):
+    """The ``unconstrained`` verdict for an ambiguous peak count, else None: the fast pass's
+    ``close_call``/``unresolved``, or ``search_limited`` with the winner's count below
+    ``close_call_p`` (the search limit is named beside the alternatives). ``default_rule`` applies
+    the same 0.80 rule to ``count_probabilities`` when the fast pass gave no state."""
+    from isar.analyze.fast_pass import FastPassSettings
+
+    close_call_p = FastPassSettings().close_call_p
+    probs = {int(k): float(v) for k, v in
+             (_count_probabilities(results, selection) if count_probabilities is None
+              else count_probabilities).items()}
+    n = None if getattr(win, "n_modes", None) is None else int(win.n_modes)
+    if count_state is None and default_rule and n is not None and n in probs:
+        count_state = "close_call" if probs[n] < close_call_p else None
+    limited = count_state == "search_limited" and n in probs and probs[n] < close_call_p
+    if count_state not in ("close_call", "unresolved") and not limited:
+        return None
+    others = ", ".join(f"{k} (P={p:.2f})" for k, p in sorted(probs.items()) if k != n)
+    own = f" (P={probs[n]:.2f})" if n in probs else ""
+    what = ("close call, search limited: the best count is at the search's limit" if limited
+            else count_state.replace("_", " "))
+    return ScanVerdict("unconstrained", 0.0, reasons=reasons + [
+        f"peak count {what}: {n} modes{own}" + (f"; alternatives {others}" if others else "")])
+
+
 def classify(results, ctx, selection, *, prior=None, descriptor=None,
              count_probabilities=None, count_state=None) -> ScanVerdict:
     """Classify one scan into a named bucket (§6) with a computed confidence (§9). Deterministic
@@ -341,8 +367,9 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None,
     ``signal_unmodeled`` (under-model falsification). Built from ``ctx`` when None (self-contained).
 
     ``count_state`` is the fast pass's (:mod:`isar.analyze.fast_pass`): ``close_call`` and
-    ``unresolved`` make the scan ``unconstrained``, naming the alternatives; ``search_limited``
-    adds its reason. Without it, the scan is a close call when the winner's count carries less than
+    ``unresolved`` make the scan ``unconstrained``, naming the alternatives, even when the winner
+    has no phonon; ``search_limited`` does the same when the winner's count is below the 0.80 rule
+    and otherwise only adds its reason. Without it, the scan is a close call when the winner's count carries less than
     ``FastPassSettings.close_call_p`` of ``count_probabilities`` (count -> probability; defaults to
     the selection's). A close count is never ``resolved``: since only the winner is bootstrapped it
     can no longer show as a fork, and hard rule 5 lets only a clean single answer into the
@@ -460,20 +487,10 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None,
     # ...or the peak count is a close call or unresolved: no single answer, like a fork with no
     # prior to break the tie. The fast pass's state decides; without one (hand-built selections),
     # the same 0.80 rule on the count probabilities.
-    from isar.analyze.fast_pass import FastPassSettings
-
-    probs = {int(k): float(v) for k, v in
-             (_count_probabilities(results, selection) if count_probabilities is None
-              else count_probabilities).items()}
-    n = None if getattr(win, "n_modes", None) is None else int(win.n_modes)
-    if count_state is None and n is not None and n in probs:
-        count_state = "close_call" if probs[n] < FastPassSettings().close_call_p else None
-    if count_state in ("close_call", "unresolved"):
-        others = ", ".join(f"{k} (P={p:.2f})" for k, p in sorted(probs.items()) if k != n)
-        own = f" (P={probs[n]:.2f})" if n in probs else ""
-        return ScanVerdict("unconstrained", 0.0, reasons=reasons + [
-            f"peak count {count_state.replace('_', ' ')}: {n} modes{own}"
-            + (f"; alternatives {others}" if others else "")])
+    v = _count_verdict(win, results, selection, count_probabilities, count_state, reasons,
+                       default_rule=True)
+    if v is not None:
+        return v
     if count_state == "search_limited":
         reasons.append("peak count search limited: the best count is at the search's limit")
     score, comp = conf(win)

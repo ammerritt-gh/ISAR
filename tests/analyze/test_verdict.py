@@ -349,3 +349,13 @@ def test_the_fast_pass_state_decides_the_count():
     assert v.verdict == "resolved" and any("search limited" in r for r in v.reasons)
     results, ctx, sel = _clean_two_counts(0.35)
     assert verdict.classify(results, ctx, sel, count_state="resolved").verdict == "resolved"
+
+
+def test_search_limited_with_a_low_winner_probability_is_a_close_call():
+    """A search-limited count whose winner carries < 0.80 reads like a close call (naming the
+    limit and the alternatives); at >= 0.80 it stays resolved with the reason appended."""
+    results, ctx, sel = _clean_two_counts(0.35)
+    v = verdict.classify(results, ctx, sel, count_state="search_limited")
+    assert v.verdict == "unconstrained"
+    assert "search limit" in v.reasons[-1] and "alternatives 2 (P=0.35)" in v.reasons[-1]
+
