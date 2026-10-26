@@ -169,9 +169,8 @@ def test_current_promotion_reconciliation_fails_closed_on_unreadable_record(tmp_
 
 
 def _settled(**outcome):
-    """An outcome whose peak count the count ladder settled, unambiguously."""
-    return {**outcome, "fit_selection_semantics": {"count_ladder": {"state": "settled",
-                                                                    "ambiguity": None}}}
+    """An outcome whose peak count the fast pass resolved."""
+    return {**outcome, "fast_pass": {"schema": "isar.fast-pass/1", "state": "resolved"}}
 
 
 def test_prior_admission_requires_full_or_trusted_hesse():
@@ -188,20 +187,19 @@ def test_prior_admission_requires_full_or_trusted_hesse():
         ScanEntry("legacy", 1, "measurement", "fitted"), _settled(hesse_trusted=False))
 
 
-@pytest.mark.parametrize("count", [
-    {"state": "provisional", "ambiguity": None},
-    {"state": "search limited", "ambiguity": None},
-    {"state": "unresolved", "ambiguity": None},
-    {"state": "settled", "ambiguity": {"count": 2, "probability": 0.6, "runner_up_count": 3,
-                                       "runner_up_probability": 0.4}},
+@pytest.mark.parametrize("record", [
+    {"schema": "isar.fast-pass/1", "state": "close_call"},
+    {"schema": "isar.fast-pass/1", "state": "search_limited"},
+    {"schema": "isar.fast-pass/1", "state": "unresolved"},
+    {},
     None,
 ])
-def test_only_a_settled_unambiguous_count_enters_the_prior(count):
-    """Hard rule 5's fold gate, for the peak count: a provisional result (rung 2 still to run), a
-    search-limited, unresolved or ambiguous one, and one with no count outcome at all, never seed
-    the dispersion prior, however good its errors."""
+def test_only_a_resolved_count_enters_the_prior(record):
+    """Hard rule 5's fold gate, for the peak count: a close call, a search-limited or unresolved
+    one, and one with no fast-pass record at all, never seed the dispersion prior, however good
+    its errors."""
     entry = ScanEntry("master:q", 1, "measurement", "fitted",
                       provenance={"errors_tier_effective": "full"})
-    outcome = {"hesse_trusted": True, "fit_selection_semantics": {"count_ladder": count}}
+    outcome = {"hesse_trusted": True, "fast_pass": record}
     assert not evidence_update._master_prior_admissible(entry, outcome)
     assert evidence_update._master_prior_admissible(entry, _settled(hesse_trusted=True))

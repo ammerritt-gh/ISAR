@@ -32,6 +32,7 @@ from isar.schema.steering import AUXILIARY_TRACK_NODE, CANDIDATE_NOT_DETECTED, r
 from isar.session import branch_assignment as BA
 from isar.session import branch_model, branch_tracking, predictive_artifact, session_prior
 from isar.session.master_delivery import _persist_content_addressed
+from isar.session.outcome import fast_pass_of
 from isar.session.scan_delivery import (
     FULL_TIERS, _campaign_hypotheses, _campaign_target, _dispersion_period,
     _refresh_interval_semantics, _refresh_probability_semantics,
@@ -795,10 +796,9 @@ def _apply_tracked_branch(session: SessionState, card, *, t_round: float) -> dic
 
 def _master_prior_admissible(entry: ScanEntry, outcome: dict) -> bool:
     """Full errors or a trusted HESSE master may seed the prior; cheap/untrusted fits may not. Only
-    a peak count the count ladder settled, unambiguously, enters at all (hard rule 5 for the count):
-    a provisional, search-limited, unresolved or ambiguous one never does."""
-    count = ((outcome.get("fit_selection_semantics") or {}).get("count_ladder") or {})
-    if count.get("state") != "settled" or count.get("ambiguity") is not None:
+    a peak count the fast pass resolved enters at all (hard rule 5 for the count): a close call,
+    unresolved or search-limited one, and any outcome with no fast-pass record, never does."""
+    if fast_pass_of(outcome).get("state") != "resolved":
         return False
     provenance = entry.provenance or {}
     tier = provenance.get("errors_tier_effective") or provenance.get(
