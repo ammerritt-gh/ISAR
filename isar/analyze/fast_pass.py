@@ -13,17 +13,18 @@ areas in counts x meV; evidence in nats; ``time.perf_counter`` seconds.
 """
 from __future__ import annotations
 
+import copy
 import itertools
 import logging
 import math
 import time
 from collections import OrderedDict
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Literal
 
 import numpy as np
-from scipy.optimize import least_squares, minimize
+from scipy.optimize import least_squares, linear_sum_assignment, minimize
 from scipy.special import gammaln, logsumexp, xlogy
 
 from isar.analyze import backends, catalogue, loop, prior
@@ -391,6 +392,176 @@ def _numerically_marginal(count_ln_z: dict, preferred, spread: float, close_call
     p_low, best_low = shifted(-1.0)
     p_high, _ = shifted(+1.0)
     return best_low != preferred or (p_low < close_call_p) != (p_high < close_call_p)
+
+# ---- classification: the post-search thresholds, on plain quantities ----------------------------------
+# One function serves the engine, reclassify (a FastPassResult) and reclassify_record (a saved
+# C-fastpass-record), so the three cannot drift. It reads only what flag_statistics, the peaks, the
+# count probabilities and the settings hold: never a covariance, a model or the data.
+RECLASSIFIABLE = ("confident_anchor", "flag_residual_threshold", "overdamped_correlation",
+                  "close_call_p", "material_p")
+_MISSING = object()
+
+
+def _anchor_at(pairs, max_count: float) -> float:
+    """The deletion-impact anchor at the spectrum's max count: log-linear between the
+    (count, anchor) pairs, clamped at the ends; one pair is a constant."""
+    pts = sorted((float(c), float(a)) for c, a in pairs)
+    if not pts:
+        raise ValueError("fast pass: confident_anchor needs at least one (count, anchor) pair")
+    if len(pts) == 1:
+        return pts[0][1]
+    return float(np.interp(math.log(max(float(max_count), 1.0)),
+                           [math.log(max(c, 1.0)) for c, _ in pts], [a for _, a in pts]))
+
+
+def _matched(selected, other, fwhm: float) -> np.ndarray:
+    """Which ``selected`` energies get a one-to-one match within one FWHM in ``other``; the
+    assignment maximises the number of matches before it minimises distance."""
+    matched = np.zeros(len(selected), bool)
+    if len(selected) and len(other):
+        d = np.abs(np.subtract.outer(np.asarray(selected, float), np.asarray(other, float))) / fwhm
+        cost = np.where(d <= 1.0, d, len(selected) + len(other) + 1.0)
+        rows, cols = linear_sum_assignment(cost)
+        matched[rows[d[rows, cols] <= 1.0]] = True
+    return matched
+
+
+def _groups(n: int, edges) -> list:
+    """Connected groups (size >= 2) of the peaks 0..n-1 joined by ``edges``, each ascending."""
+    groups = [{i} for i in range(n)]
+    for a, b in edges:
+        ga, gb = next(g for g in groups if a in g), next(g for g in groups if b in g)
+        if ga is not gb:
+            ga.update(gb)
+            groups.remove(gb)
+    return [sorted(g) for g in groups if len(g) > 1]
+
+
+def _classify(s: FastPassSettings, peaks: list, fs: dict, probabilities: dict, preferred,
+              search_limit_reason: str) -> dict:
+    """Step 10's thresholds. ``peaks``: PeakResult-shaped dicts (ascending omega0) whose ``status``
+    and ``area_status`` carry the covariance-only part; ``fs``: flag_statistics, JSON-shaped
+    (``count_ln_z`` keys may be strings); ``probabilities``: count -> P. Returns the recomputed
+    state, close-call alternatives, numerical marginality, flags, grouped intensity and the
+    per-peak ``confident``, ``regime``, ``manual_fit``, ``status`` and ``area_status``."""
+    fwhm, n = float(fs["fwhm"]), len(peaks)
+    fp, e0 = fs["peaks"], [float(p["omega0"]) for p in fs["peaks"]]
+    probs = {int(k): float(v) for k, v in probabilities.items()}
+    height_pairs = [(int(i), int(j), float(c)) for i, j, c in fs["height_correlations"]]
+    corr_edges = [(i, j) for i, j, c in height_pairs if abs(c) > s.overdamped_correlation]
+    conditional = {i for e in corr_edges for i in e}
+
+    # -- flags: (lo, hi, statistic, kind)
+    found = []
+    if s.flag_residual_threshold > 0:
+        merged = []
+        for lo, hi, stat in fs["residual_scan"]:
+            if stat < s.flag_residual_threshold:
+                continue
+            if merged and lo <= merged[-1][1]:
+                merged[-1][1], merged[-1][2] = max(merged[-1][1], hi), max(merged[-1][2], stat)
+            else:
+                merged.append([lo, hi, stat])
+        found += [(lo, hi, stat, "structured_residual") for lo, hi, stat in merged]
+    ambiguous = []                       # (lo, hi, evidence gap | None)
+    for g in _groups(n, corr_edges):     # correlated heights: the assignment of intensity is ambiguous
+        ambiguous.append((max(0.0, e0[g[0]] - fwhm / 2), e0[g[-1]] + fwhm / 2, None))
+    material = [a for a in fs["alternatives"]
+                if a["evidence_gap"] is not None and a["probability"] >= s.material_p]
+    for a in material:                   # a forced broad or shoulder fit about as good, elsewhere
+        if a["family"] in ("broad", "shoulder"):
+            for c in a["omega0"]:        # within one FWHM of a selected peak is a split, not a new place
+                if all(abs(c - e) > fwhm for e in e0):
+                    ambiguous.append((max(0.0, c - fwhm / 2), c + fwhm / 2, float(a["evidence_gap"])))
+    for lo, hi in sorted({(lo, hi) for lo, hi, _ in ambiguous}):
+        gaps = [g for a, b, g in ambiguous if (a, b) == (lo, hi) and g is not None]
+        found.append((lo, hi, min(gaps) if gaps else None, "ambiguous_decomposition"))
+    flags = [{"kind": kind, "e_lo": float(lo), "e_hi": float(hi),
+              "statistic": None if stat is None else float(stat),
+              "detail": ("possible hidden component near %.1f meV; a neighbour may be absorbing it (%s)"
+                         % ((lo + hi) / 2, kind.replace("_", " ")))}
+             for lo, hi, stat, kind in found]
+
+    # -- peaks
+    anchor = _anchor_at(s.confident_anchor, fs["max_count"])
+    credible = [a for a in fs["alternatives"]
+                if a["evidence_gap"] is None or a["probability"] >= s.material_p]
+    alive = np.ones(n, bool)
+    for a in credible:                   # every credible alternative must hold a matching peak
+        alive &= _matched(e0, a["omega0"], fwhm)
+    updates = []
+    for i, (p, f) in enumerate(zip(peaks, fp)):
+        corr = f["corr_omega0_gamma"]
+        if f["omega0"] <= s.near_elastic_fwhm * fwhm:
+            regime = "near_elastic"
+        elif f["Gamma"] >= f["omega0"] or (corr is not None and abs(corr) >= s.overdamped_correlation):
+            regime = "overdamped"
+        else:
+            regime = "underdamped"
+        status = dict(p["status"])
+        for key in ("height", "area"):
+            if status[key] in ("constrained", "model_dependent"):
+                status[key] = "model_dependent" if i in conditional else "constrained"
+        area_status = p["area_status"]
+        if area_status in ("usable", "decomposition_conditional"):
+            area_status = "decomposition_conditional" if i in conditional else "usable"
+        named = any(lo - fwhm <= f["omega0"] <= hi + fwhm for lo, hi, _, _ in found)
+        updates.append({
+            "confident": bool(p["height"] > 0 and f["deletion_impact"] >= anchor
+                              and alive[i] and not named),
+            "regime": regime, "manual_fit": regime != "underdamped",
+            "status": status, "area_status": area_status})
+
+    # -- grouped intensity: peaks within one FWHM of a neighbour, or a correlated pair
+    near_edges = [(i, j) for i in range(n) for j in range(i + 1, n) if abs(e0[i] - e0[j]) <= fwhm]
+    area_cov = fs.get("area_covariance")
+    grouped = []
+    for g in _groups(n, near_edges + corr_edges):
+        sigma = None
+        if area_cov is not None:
+            sigma = float(math.sqrt(max(sum(area_cov[i][j] for i in g for j in g), 0.0)))
+        grouped.append((max(0.0, e0[g[0]] - fwhm / 2), e0[g[-1]] + fwhm / 2,
+                        float(sum(peaks[i]["area_stokes"] for i in g)), sigma))
+
+    # -- the count state
+    if preferred is None or fs["unpriced_contenders"]:
+        state = "unresolved"
+    elif search_limit_reason:
+        state = "search_limited"
+    elif probs[preferred] < s.close_call_p:
+        state = "close_call"
+    else:
+        state = "resolved"
+    count_ln_z = {int(k): float(v) for k, v in fs["count_ln_z"].items()}
+    return {
+        "state": state, "probabilities_conditional": state == "unresolved",
+        "deep_pass_candidate": state != "resolved", "anchor": anchor,
+        "close_call_alternatives": tuple(k for k in sorted(probs)
+                                         if k != preferred and probs[k] >= s.material_p),
+        "numerically_marginal": _numerically_marginal(count_ln_z, preferred,
+                                                      fs["evidence_spread_nats"], s.close_call_p),
+        "flags": flags, "grouped_intensity": grouped, "peaks": updates}
+
+
+def _plain(v):
+    """Tuples as lists, recursively: a settings dict compares equal across a JSON round trip."""
+    if isinstance(v, dict):
+        return {k: _plain(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_plain(x) for x in v]
+    return v
+
+
+def _settings_dict(settings: FastPassSettings) -> dict:
+    return _plain(asdict(settings))
+
+
+def _refuse_changed_search(old: dict, new: dict) -> None:
+    """ValueError naming the first settings field outside RECLASSIFIABLE that differs."""
+    for name, value in new.items():
+        if name not in RECLASSIFIABLE and old.get(name, _MISSING) != value:
+            raise ValueError(f"fast pass: {name} changed since the search; only "
+                             f"{', '.join(RECLASSIFIABLE)} can be reclassified (rerun the fast pass)")
 
 
 class _Engine:
@@ -1195,33 +1366,31 @@ class _Engine:
             posterior_iterations=b.posterior_iterations, hypothesis=model.hyp,
             fit=self._structure_fit(b, point, cov) if fitted else None)
 
-    # ---- the selected model's peaks (reporting; S1U4P2 adds confidence, flags and groups) --------------
+    # ---- the selected model's peaks: values only; thresholds are applied by _classify ---------------------
     def _area_per_h(self, peak, e, g):
         _col, up = self.units([(e, g)], [peak])[0]
         return up.area_stokes / up.height, up.area_both / up.height
 
-    def _peaks(self, b) -> tuple:
+    def _peaks(self, b):
+        """(PeakResult values, the plain statistics ``_classify`` reads) of the selected basin ``b``.
+        ``confident``, ``regime``, ``manual_fit`` and the correlation-dependent statuses are
+        placeholders here: ``_classify`` sets them, in the engine and in reclassify alike."""
+        extras = {"peaks": [], "height_correlations": [], "area_covariance": None,
+                  "residual_scan": [], "residual_scan_max": 0.0, "saturated_deletion_peaks": []}
         if b is None or b.theta_map is None:
-            return ()
-        s, model, t = self.s, b.model, b.theta_map
+            return (), extras
+        model, t = b.model, b.theta_map
         cov = self._full_cov(b)
         mean = self.mean(model, t)
         sd = None if cov is None else np.sqrt(np.clip(np.diag(cov), 0.0, None))
-        corr_hh = {}
-        if cov is not None:
-            for i, (_ai, _gi, ci) in enumerate(model.modes):
-                for j, (_aj, _gj, cj) in enumerate(model.modes):
-                    if i != j and sd[ci] > 0 and sd[cj] > 0:
-                        corr_hh[(i, j)] = cov[ci, cj] / (sd[ci] * sd[cj])
-        out = []
+        free = model.free.tolist()
+        out, grads = [], []
         for i, (a, g, c) in enumerate(model.modes):
             delta = i in model.delta
             e, gam, h = float(t[a]), float(t[g]), float(t[c])
             peak = model.variant.peaks[i]
             col = self.units([(e, gam)], [peak])[0][0]
             per_s, per_b = self._area_per_h(peak, e, gam)
-            correlated = any(abs(r) > s.overdamped_correlation
-                             for (p, _q), r in corr_hh.items() if p == i)
 
             def sigma(j):
                 return float(sd[j]) if sd is not None and sd[j] > 0 else None
@@ -1230,11 +1399,11 @@ class _Engine:
             if cov is not None and not delta and sd[a] > 0 and sd[g] > 0:
                 corr = float(cov[a, g] / (sd[a] * sd[g]))
             sig_area = sig_area_both = None
+            grad_s, grad_b = np.zeros(len(t)), np.zeros(len(t))
             if cov is not None:
-                grad_s, grad_b = np.zeros(len(t)), np.zeros(len(t))
                 grad_s[c], grad_b[c] = per_s, per_b
                 for j, val in ((a, e), (g, gam)):
-                    if j not in model.free.tolist():
+                    if j not in free:
                         continue
                     step = 1e-4 * max(1.0, abs(val))
                     step = -step if val + step > model.hi[j] else step   # inward at the bound
@@ -1243,18 +1412,14 @@ class _Engine:
                     grad_s[j], grad_b[j] = h * (ds - per_s) / step, h * (db - per_b) / step
                 sig_area = float(math.sqrt(max(grad_s @ cov @ grad_s, 0.0)))
                 sig_area_both = float(math.sqrt(max(grad_b @ cov @ grad_b, 0.0)))
+            grads.append(grad_s)
             reduced = mean - self.expo * h * col
             with np.errstate(divide="ignore", invalid="ignore"):
                 terms = np.where(mean > 0, mean * np.log(mean / reduced) - (mean - reduced), 0.0)
             impact = float(2.0 * np.sum(terms))
-            if not math.isfinite(impact):
+            if not math.isfinite(impact):          # a zero reduced mean under counts: infinite grade
                 impact = float(np.finfo(float).max)
-            if e <= s.near_elastic_fwhm * self.fwhm:
-                regime = "near_elastic"
-            elif gam >= e or (corr is not None and abs(corr) >= s.overdamped_correlation):
-                regime = "overdamped"
-            else:
-                regime = "underdamped"
+                extras["saturated_deletion_peaks"].append(i)
 
             def status(j, key):
                 if cov is None:
@@ -1265,8 +1430,6 @@ class _Engine:
                     return "boundary_limited"
                 if sd[j] >= (model.hi[j] - model.lo[j]) / math.sqrt(12.0):
                     return "undetermined"
-                if key in ("height", "area") and correlated:
-                    return "model_dependent"
                 return "constrained"
 
             out.append(PeakResult(
@@ -1274,13 +1437,36 @@ class _Engine:
                 area_stokes=h * per_s, area_both=h * per_b,
                 sigma_omega0=sigma(a), sigma_Gamma=None if delta else sigma(g),
                 sigma_height=sigma(c), sigma_area=sig_area, sigma_area_both=sig_area_both,
-                area_status=("unavailable" if cov is None else
-                             "decomposition_conditional" if correlated else "usable"),
-                corr_omega0_Gamma=corr, regime=regime,
+                area_status="unavailable" if cov is None else "usable",
+                corr_omega0_Gamma=corr, regime="underdamped",
                 status={"omega0": status(a, "omega0"), "Gamma": status(g, "Gamma"),
                         "height": status(c, "height"), "area": status(c, "area")},
-                confident=False, deletion_impact=impact, manual_fit=regime != "underdamped"))
-        return tuple(out)
+                confident=False, deletion_impact=impact, manual_fit=False))
+            extras["peaks"].append({"omega0": e, "Gamma": gam, "deletion_impact": impact,
+                                    "corr_omega0_gamma": corr})
+        if cov is not None and grads:                  # count 0 has no peak to correlate
+            hc = [m[2] for m in model.modes]
+            extras["height_correlations"] = [
+                [i, j, float(cov[hc[i], hc[j]] / (sd[hc[i]] * sd[hc[j]]))]
+                for i in range(len(hc)) for j in range(i + 1, len(hc))
+                if sd[hc[i]] > 0 and sd[hc[j]] > 0]
+            G = np.array(grads)
+            extras["area_covariance"] = (G @ cov @ G.T).tolist()
+        extras["residual_scan"] = self._residual_scan(mean)
+        extras["residual_scan_max"] = max((w[2] for w in extras["residual_scan"]), default=0.0)
+        return tuple(out), extras
+
+    def _residual_scan(self, mean):
+        """Every one-FWHM window of the signed deviance, both energy signs: [e_lo, e_hi,
+        (sum r)^2 / N] for the window centred on each kept point; ``_classify`` thresholds and
+        merges them."""
+        order = np.argsort(self.E)
+        e, r = self.E[order], poisson_residuals(self.y, mean)[order]
+        csum = np.concatenate(([0.0], np.cumsum(r)))
+        half = 0.5 * self.fwhm + 1e-9
+        lo, hi = np.searchsorted(e, e - half, "left"), np.searchsorted(e, e + half, "right")
+        stat = (csum[hi] - csum[lo]) ** 2 / (hi - lo)
+        return [[float(e[a]), float(e[b - 1]), float(v)] for a, b, v in zip(lo, hi, stat)]
 
     # ---- tally and result ------------------------------------------------------------------------------
     def conclude(self) -> FastPassResult:
@@ -1324,47 +1510,55 @@ class _Engine:
             preferred = tally.preferred
             reason = ("safety_budget" if self.expired
                       else "ceiling" if preferred is not None and preferred == s.mode_ceiling else "")
-            if selected is None or tally.unpriced_contenders:
-                state = "unresolved"
-            elif reason:
-                state = "search_limited"
-            elif tally.probabilities[preferred] < s.close_call_p:
-                state = "close_call"
-            else:
-                state = "resolved"
             results = [self._model_result(b, prob[id(b)]) for b in basins]
             by_id = {id(b): r for b, r in zip(basins, results)}
-            peaks = self._peaks(selected)
+            peaks, extras = self._peaks(selected)
             t_map = None if selected is None else selected.theta_map
             sel_model = None if selected is None else selected.model
+            # every other priced non-twin basin, and the best basin of each unpriced contender
+            # (evidence_gap None): what the survival test and the ambiguity flag compare against
+            alternatives = []
+            for b in basins:
+                if b is not selected and b.status in _PRICED:
+                    alternatives.append(self._alternative(b, b.theta_map, prob[id(b)],
+                                                          tally.terms[id(selected)] - tally.terms[id(b)]))
+            for k in tally.unpriced_contenders:
+                best = max((b for b in basins if b.count == k and b.theta is not None
+                            and b.status not in ("degenerate_twin", "not_fitted")),
+                           key=lambda b: b.ln_like, default=None)
+                if best is not None:
+                    alternatives.append(self._alternative(best, best.theta, 0.0, None))
             flag_statistics = {
                 "max_count": float(self.sp.max_count), "fwhm": float(self.fwhm),
                 "count_ln_z": {int(k): float(v) for k, v in tally.count_ln_z.items()},
                 "unpriced_contenders": [int(k) for k in tally.unpriced_contenders],
-                "evidence_spread_nats": float(spread)}
+                "evidence_spread_nats": float(spread), "alternatives": alternatives, **extras}
+            c = _classify(s, [asdict(p) for p in peaks], flag_statistics, tally.probabilities,
+                          preferred, reason)
+            flag_statistics["anchor"] = c["anchor"]
+            peaks = tuple(replace(p, **u) for p, u in zip(peaks, c["peaks"]))
         timing = dict(self.timing)
         timing["total"] = time.perf_counter() - self.start
         timing["families"] = {k: dict(v) for k, v in self.families.items()}
         timing["seed_count"] = self.seed_count
         return FastPassResult(
-            state=state, preferred_count=preferred,
+            preferred_count=preferred,
             count_probabilities={int(k): float(v) for k, v in sorted(tally.probabilities.items())},
-            probabilities_conditional=state == "unresolved",
-            close_call_alternatives=tuple(k for k, p in sorted(tally.probabilities.items())
-                                          if k != preferred and p >= s.material_p),
-            numerically_marginal=_numerically_marginal(tally.count_ln_z, preferred, spread,
-                                                       s.close_call_p),
             search_limit_reason=reason, models=tuple(results),
             selected=None if selected is None else by_id[id(selected)], peaks=peaks,
             elastic_height=(None if sel_model is None or sel_model.el is None
                             else float(t_map[sel_model.el])),
             background=(None if sel_model is None or sel_model.bg is None
                         else float(t_map[sel_model.bg])),
-            grouped_intensity=(), flags=(), flag_statistics=flag_statistics,
-            prior_provenance=self.sp.provenance(),
+            flag_statistics=flag_statistics, prior_provenance=self.sp.provenance(),
             arena_fingerprint=loop.data_likelihood_fingerprint(self.ctx),
             ln_like_saturated=self.sat, settings=s, timing=timing, n_fits=self.n_fits,
-            deep_pass_candidate=state != "resolved")
+            **_apply(c))
+
+    def _alternative(self, b, theta, probability, gap):
+        omega0 = sorted(float(theta[a]) for a, _g, _c in b.model.modes)
+        return {"model_id": b.model_id, "family": b.family, "probability": float(probability),
+                "evidence_gap": None if gap is None else float(gap), "omega0": omega0}
 
 
 def run_fast_pass(ctx, *, settings: FastPassSettings | None = None, peaks=(), structures=None) -> FastPassResult:
@@ -1375,7 +1569,47 @@ def run_fast_pass(ctx, *, settings: FastPassSettings | None = None, peaks=(), st
     engine = _Engine(ctx, settings or FastPassSettings(), peaks=peaks, structures=structures)
     engine.run()
     return engine.conclude()
+
+
+def _apply(c: dict) -> dict:
+    """The recomputed fields of ``_classify`` in FastPassResult form."""
+    return dict(state=c["state"], probabilities_conditional=c["probabilities_conditional"],
+                close_call_alternatives=c["close_call_alternatives"],
+                numerically_marginal=c["numerically_marginal"],
+                deep_pass_candidate=c["deep_pass_candidate"],
+                flags=tuple(SpectrumFlag(**f) for f in c["flags"]),
+                grouped_intensity=tuple(c["grouped_intensity"]))
+
+
 def reclassify(result: FastPassResult, settings: FastPassSettings) -> FastPassResult:
-    raise NotImplementedError("fast pass: S1U4P2")
+    """Re-apply the post-search thresholds (RECLASSIFIABLE) with no refit and no mutation.
+    ValueError naming the field when anything else in ``settings`` differs from the search's."""
+    _refuse_changed_search(_settings_dict(result.settings), _settings_dict(settings))
+    c = _classify(settings, [asdict(p) for p in result.peaks], result.flag_statistics,
+                  result.count_probabilities, result.preferred_count, result.search_limit_reason)
+    peaks = tuple(replace(p, **u) for p, u in zip(result.peaks, c["peaks"]))
+    return replace(result, peaks=peaks, settings=settings,
+                   flag_statistics={**result.flag_statistics, "anchor": c["anchor"]}, **_apply(c))
+
+
 def reclassify_record(record: dict, settings: FastPassSettings) -> dict:  # (new) on a C-fastpass-record
-    raise NotImplementedError("fast pass: S1U4P2")
+    """:func:`reclassify` on a saved record dict (C-fastpass-record): a new dict, the input untouched,
+    with ``state``, ``close_call_alternatives``, ``deep_pass_candidate``, ``flags`` and each peak's
+    ``confident``, ``regime``, ``manual_fit`` and ``status`` recomputed from ``flag_statistics``."""
+    if "settings" not in record:
+        raise ValueError("fast pass: the record carries no settings to compare")
+    _refuse_changed_search(_plain(record["settings"]), _settings_dict(settings))
+    out = copy.deepcopy(record)
+    c = _classify(settings, out["peaks"], out["flag_statistics"], out["count_probabilities"],
+                  out["preferred_count"], out["search_limit_reason"])
+    for peak, u in zip(out["peaks"], c["peaks"]):
+        peak.update(u)
+    out["flag_statistics"]["anchor"] = c["anchor"]
+    out.update(state=c["state"], probabilities_conditional=c["probabilities_conditional"],
+               close_call_alternatives=list(c["close_call_alternatives"]),
+               numerically_marginal=c["numerically_marginal"],
+               deep_pass_candidate=c["deep_pass_candidate"], flags=c["flags"],
+               grouped_intensity=[dict(zip(("e_lo", "e_hi", "intensity", "sigma"), g))
+                                  for g in c["grouped_intensity"]],
+               settings=_settings_dict(settings))
+    return out
