@@ -1,10 +1,69 @@
-"""Fast-pass engine: the boundary the peak-count fitter is built against (design sec. 2.2-2.3).
+"""Fast-pass engine: one spectrum's peak count, parameters and evidence (design sec. 2.2-2.3).
 
-Qt-free (ISAR hard rule 6); stdlib imports only. Both entry points are stubs until S1U4 fills them.
+A cheap pseudo-Voigt seed gives starting points only; the full stage then fits every count from 0
+to the mode ceiling in every elastic/background variant (bounded TRF on signed Poisson-deviance
+residuals), audits the contending counts, resolves degenerate and delta-mode twins recursively,
+and prices each distinct solution by the box-rule Laplace evidence at its posterior mode
+(:func:`isar.analyze.prior.laplace_log_evidence`). Every count carries equal prior weight, split
+equally over its V(k) variants and its 2^k delta/width masks. No nested sampling, no bootstrap and
+no second pass run here.
+
+Qt-free (ISAR hard rule 6). Units: meV; heights in counts per point at ``ctx.exposure_reference``;
+areas in counts x meV; evidence in nats; ``time.perf_counter`` seconds.
 """
 from __future__ import annotations
+
+import itertools
+import logging
+import math
+import time
+from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Literal
+
+import numpy as np
+from scipy.optimize import least_squares, minimize
+from scipy.special import gammaln, logsumexp, xlogy
+
+from isar.analyze import backends, catalogue, loop, prior
+from isar.analyze.components import Elastic, PhononDHO, phonon_unit_columns
+from isar.analyze.estimators import FMIN
+from isar.analyze.lineshapes import KB
+from isar.analyze.phonon import GAMMA_FLOOR, _peak_omega0
+
+log = logging.getLogger(__name__)
+
+# Algorithm settings: agent defaults, uncalibrated; changing one changes cost, not a connection.
+SEED_STEP_FWHM = 0.4          # seed candidate grid step (x FWHM)
+SEED_GAMMA = 0.1              # meV, a seed candidate's width
+SEED_EXCLUDE_FWHM = 0.6       # no seed candidate this close (x FWHM) to a held seed peak
+MIN_ADD_ENERGY = 0.5          # meV, lowest energy a seed or ladder addition is placed at
+LADDER_GAMMA = 0.3            # meV, a ladder addition's width
+LADDER_EXCLUDE_FWHM = 0.4     # a ladder addition keeps this far (x FWHM) from the parent's modes
+LADDER_SPLIT_FWHM = 0.125     # a ladder split puts its parts this far (x FWHM) either side
+LADDER_SPLIT_HEIGHTS = (0.6, 0.4)
+HINT_EXCLUDE_FWHM = 0.5       # a card peak hint this close (x FWHM) to a seed peak adds nothing
+HINT_GAMMA_FWHM = 0.3         # a hint's starting width (x FWHM)
+RESTART_SPREAD = (0.3, 0.7, 0.3)   # restart jitter: omega0 sd (x FWHM), ln Gamma sd, h +- fraction
+BROAD_STEP_MEV = 3.0
+BROAD_WIDTHS_MEV = (1.5, 4.0, 10.0)
+BROAD_HEIGHT_FRAC = 0.04      # a broad addition's height (x height ceiling)
+MOVE_FWHM = 0.5
+WIDTH_FACTORS = (1 / 3, 3)
+SHOULDER_FWHM = 1.5
+SHOULDER_FRACTION = 0.2
+SPLIT_FRACTIONS = (0.75, 0.25)     # an audit split's lower part carries this share; both orientations
+NEAR_ZERO_SIGMAS = 4.5
+NEAR_ZERO_MAX_MODES = 3
+COINCIDENT_DELTA_MEV = 1e-6   # two delta modes closer than this are one mode, merged first
+CACHE_SIZE = 4096             # unit columns kept, keyed by (omega0, Gamma, peak selector)
+# The red-first switch of the delta-mode twin rule: a module flag the acceptance worker may set;
+# never a setting, never read from the environment.
+DELTA_TWIN_RULE = True
+
+STAGES = ("seed", "ladder", "audits", "twins", "evidence", "classify")
+_PRICED = ("ok", "ok_boundary")
 
 @dataclass(frozen=True)
 class FastPassSettings:
@@ -135,6 +194,564 @@ class FastPassResult:
                                      # "families": {family: {"fits": int, "seconds": float}}; "seed_count": int
     n_fits: int                      # TRF calls made
     deep_pass_candidate: bool        # state is unresolved, close_call or search_limited
+
+
+class _BudgetExpired(RuntimeError):
+    """The per-spectrum safety budget ran out; raised in the model mean, caught in run()."""
+
+
+def poisson_residuals(y, mu) -> np.ndarray:
+    """Signed Baker-Cousins deviance residuals: their sum of squares is
+    ``estimators.baker_cousins_cost`` (the mean clipped at its FMIN). No floor on the counts (D3)."""
+    mu = np.maximum(np.asarray(mu, dtype=float), FMIN)
+    out = np.sqrt(2.0 * mu)
+    pos = y > 0
+    yp, mp = y[pos], mu[pos]
+    ratio = (mp - yp) / yp
+    term = ratio - np.log1p(ratio)
+    small = np.abs(ratio) < 1e-4            # the series is exact where the difference cancels
+    r = ratio[small]
+    term[small] = r * r * (0.5 - r / 3 + r * r / 4 - r * r * r / 5)
+    out[pos] = np.sign(mp - yp) * np.sqrt(2.0 * yp * np.maximum(term, 0.0))
+    return out
+
+
+def _ln_model_prior(n_variants: int, k: int) -> float:
+    """ln of one (variant, delta mask) combination's weight within count k: 1/(V(k) 2^k)."""
+    return -math.log(n_variants) - k * math.log(2.0)
+
+
+@dataclass(eq=False)
+class _Variant:
+    """One catalogue structure in one elastic/background variant (no delta mask)."""
+    k: int
+    hyp: object
+    elastic: bool
+    background: bool
+    peaks: tuple                      # each mode's PhononDHO peak selector, from the catalogue
+
+    @property
+    def label(self) -> str:
+        return str(self.hyp.label)
+
+
+@dataclass(eq=False)
+class _Model:
+    """One model identity: a variant and a delta mask (0-based positions in ascending omega0)."""
+    variant: _Variant
+    delta: tuple
+    hyp: object                       # the variant's hypothesis, or its delta twin's
+    cctx: object                      # loop.candidate_context(hyp, ctx)
+    names: list
+    lo: np.ndarray
+    hi: np.ndarray
+    fixed_pos: list
+    fixed_vals: list
+    free: np.ndarray
+    soft: list                        # (position, mu, sigma) of the soft-constrained coordinates
+    modes: list                       # (i_omega0, i_Gamma, i_h) per mode, component order
+    el: int | None
+    bg: int | None
+    bundle: object | None             # catalogue.PriorBundle when a scan pin or soft constraint
+                                      #   changes a coordinate's prior; else SpectrumPrior prices it
+    basins: list = field(default_factory=list)
+
+
+@dataclass(eq=False)
+class _Basin:
+    """One distinct solution of one model: its TRF optimum, twin link and evidence."""
+    model: _Model
+    index: int
+    theta: np.ndarray | None          # TRF optimum, full vector (None: not fitted)
+    cost: float | None
+    ln_like: float | None
+    ln_model_prior: float
+    family: str
+    nfev: int = 0
+    message: str = ""
+    status: str = "pending"
+    reason: str = ""
+    twin: "_Basin | None" = None
+    limit: str = ""
+    theta_map: np.ndarray | None = None
+    ln_z: float | None = None
+    ln_prior: float | None = None
+    cov_free: np.ndarray | None = None
+    pinned: tuple = ()
+    boundary_method: str = ""
+    posterior_iterations: int = 0
+    objective: object = None          # the posterior objective on the free coordinates
+    spread: float | None = None
+
+    @property
+    def count(self) -> int:
+        return self.model.variant.k
+
+    @property
+    def k_free(self) -> int:
+        return int(self.model.free.size)
+
+    @property
+    def model_id(self) -> str:
+        return f"{self.model.hyp.label}#{self.index}"
+
+    def terminal(self) -> "_Basin":
+        b = self
+        while b.status == "degenerate_twin" and b.twin is not None:
+            b = b.twin
+        return b
+
+
+class _Engine:
+    """One spectrum's fast pass. ``run`` searches; ``conclude`` tallies and reports, from any state
+    (so a stopped search still reports what it priced)."""
+
+    def __init__(self, ctx, settings: FastPassSettings, peaks=(), structures=None):
+        self.ctx, self.s = ctx, settings
+        self.prior_s = settings.prior or prior.PriorSettings()
+        x = np.asarray(ctx.x_used, dtype=float)
+        y = np.asarray(ctx.counts_used, dtype=float)
+        if x.size == 0 or not np.all(np.isfinite(y)) or np.any(y < 0):
+            raise ValueError("fast pass: the kept points need finite, non-negative counts")
+        self.sp = prior.resolve_prior_for(ctx, self.prior_s)   # ValueError: no counts / energy
+        self.fwhm = prior.resolution_fwhm(ctx)                  # ValueError: no resolution
+        self.x, self.y = x, y
+        self.E = x - float(ctx.center)
+        expo = ctx.exposure_for(x)
+        self.expo = np.ones_like(x) if expo is None else np.asarray(expo, dtype=float)
+        self.el_col = np.asarray(Elastic().unit_columns(x, {}, ctx)["h"], dtype=float)
+        self.sat = float(np.sum(xlogy(y, y) - y - gammaln(y + 1.0)))
+        T = getattr(ctx, "T", None)
+        self.kT = KB * float(T) if T is not None and np.isfinite(T) and T > 0 else None
+        self.g_lo, self.g_hi = prior.mode_bounds(["phonon.Gamma"], ctx, self.prior_s)[0]
+        self.hints = [w for w in (_peak_omega0(p) for p in (peaks or ())) if w is not None and w > 0]
+        self.variants, self._by_flags = {}, {}
+        for n in range(settings.mode_ceiling + 1):
+            found = []
+            for s in catalogue.enumerate_count_structures(ctx, n):
+                if any(getattr(c, "prefix", None) == "qe" for c in s.components):
+                    continue                     # design sec. 5: quasi-elastic stays out (R13)
+                for hyp in (s, loop.without_background(s)):
+                    if hyp is None or (structures is not None and hyp.label not in structures
+                                       and s.label not in structures):
+                        continue
+                    comps = hyp.build().components
+                    found.append(_Variant(
+                        n, hyp, elastic=any(c.prefix == "elastic" for c in comps),
+                        background=any(c.prefix == "bg" for c in comps),
+                        peaks=tuple(c.peak for c in comps if isinstance(c, PhononDHO))))
+            self.variants[n] = found
+            for v in found:
+                self._by_flags.setdefault((n, v.elastic, v.background), v)
+        self.seed_elastic = any(v.elastic for vs in self.variants.values() for v in vs)
+        self.models = {}
+        self.cache = OrderedDict()
+        self.timing = {name: 0.0 for name in STAGES}
+        self.families = {}
+        self._stack = []
+        self.n_fits = 0
+        self.seed_count = None
+        self.expired = False
+        self.reached = set()
+        self.rng = np.random.default_rng(0)
+        self.start = time.perf_counter()
+        self.deadline = self.start + settings.safety_budget_s
+
+    # ---- bookkeeping ---------------------------------------------------------------------------
+    @contextmanager
+    def _stage(self, name):
+        """Exclusive stage time: a nested stage's time is taken out of the stage around it."""
+        t0 = time.perf_counter()
+        self._stack.append(0.0)
+        try:
+            yield
+        finally:
+            elapsed = time.perf_counter() - t0
+            self.timing[name] += elapsed - self._stack.pop()
+            if self._stack:
+                self._stack[-1] += elapsed
+
+    def _check_budget(self):
+        if time.perf_counter() > self.deadline:
+            raise _BudgetExpired("safety budget")
+
+    def variant(self, k, elastic, background):
+        """The variant at count ``k`` with those flags, or None."""
+        return self._by_flags.get((k, bool(elastic), bool(background)))
+
+    def basins(self):
+        return [b for m in list(self.models.values()) if m is not None for b in m.basins]
+
+    # ---- the model mean --------------------------------------------------------------------------
+    def units(self, modes, peaks):
+        """(unit column, UnitPeak) per (omega0, Gamma) mode; the uncached ones from ONE batched
+        convolution, so a finite difference that moves one shape costs one convolution."""
+        keys = [(float(e), float(g), p) for (e, g), p in zip(modes, peaks)]
+        got, missing = {}, []
+        for key in keys:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+                got[key] = self.cache[key]
+            elif key not in missing:
+                missing.append(key)
+        if missing:
+            cols, ups = phonon_unit_columns(self.x, self.ctx, [k[:2] for k in missing],
+                                            [k[2] for k in missing])
+            for key, col, up in zip(missing, cols, ups):
+                got[key] = self.cache[key] = (col, up)
+            while len(self.cache) > CACHE_SIZE:
+                self.cache.popitem(last=False)
+        return [got[k] for k in keys]
+
+    def mean(self, model, theta):
+        """``exposure x (sum h_i col_i + elastic.h x elastic column + bg.BG)``; checks the budget."""
+        self._check_budget()
+        total = np.zeros_like(self.y)
+        if model.modes:
+            units = self.units([(theta[a], theta[b]) for a, b, _ in model.modes], model.variant.peaks)
+            for (_, _, c), (col, _up) in zip(model.modes, units):
+                total += theta[c] * col
+        if model.el is not None:
+            total += theta[model.el] * self.el_col
+        if model.bg is not None:
+            total += theta[model.bg]
+        return total * self.expo
+
+    def cost(self, model, theta) -> float:
+        r = poisson_residuals(self.y, self.mean(model, theta))
+        return float(r @ r)
+
+    # ---- model identities ------------------------------------------------------------------------
+    def model(self, variant, delta) -> _Model | None:
+        """The model of ``variant`` with delta mask ``delta``; None when the scan's own constraints
+        clash with the mask (no such model)."""
+        key = (variant.label, tuple(delta))
+        if key not in self.models:
+            self.models[key] = self._build_model(variant, tuple(delta))
+        return self.models[key]
+
+    def _build_model(self, variant, delta):
+        hyp = variant.hyp
+        if delta:
+            hyp = loop.delta_twin_hypothesis(hyp, [loop._mode_prefix(i + 1) for i in delta], self.ctx)
+            if hyp is None:
+                return None
+        cctx = loop.candidate_context(hyp, self.ctx)
+        composite = hyp.build()
+        names = composite.param_names()
+        bounds = prior.mode_bounds(names, cctx, self.prior_s)
+        lo, hi = np.array(bounds, dtype=float).T
+        constraints = getattr(cctx, "constraints", None)
+        fixed_pos, fixed_vals = loop._hard_fixed(constraints, names)
+        soft = [(names.index(n), float(v[0]), float(v[1]))
+                for n, v in (getattr(constraints, "soft", None) or {}).items()
+                if n in names and names.index(n) not in fixed_pos and float(v[1]) > 0]
+        modes = [(i, i + 1, i + 2) for i in composite.phonon_indices()]
+        delta_names = {names[modes[i][1]] for i in delta}
+        bundle = None
+        if soft or any(names[i] not in delta_names for i in fixed_pos):
+            # A soft constraint replaces its coordinate's recipe factor, and a scan pin carries
+            # none: catalogue.resolve_priors' one-prior-per-coordinate rule.
+            bundle = catalogue.resolve_priors(composite, cctx, bounds,
+                                              exclude=[names[i] for i in fixed_pos])
+        return _Model(variant=variant, delta=delta, hyp=hyp, cctx=cctx, names=names, lo=lo, hi=hi,
+                      fixed_pos=list(fixed_pos), fixed_vals=list(fixed_vals),
+                      free=np.array([i for i in range(len(names)) if i not in set(fixed_pos)], int),
+                      soft=soft, modes=modes,
+                      el=names.index("elastic.h") if "elastic.h" in names else None,
+                      bg=names.index("bg.BG") if "bg.BG" in names else None, bundle=bundle)
+
+    def modes_of(self, model, theta) -> list:
+        """[(omega0, Gamma, h, delta)] per mode, ascending omega0 for a canonical point."""
+        return [(float(theta[a]), float(theta[b]), float(theta[c]), i in model.delta)
+                for i, (a, b, c) in enumerate(model.modes)]
+
+    def linear_of(self, model, theta) -> dict:
+        return {"elastic": None if model.el is None else float(theta[model.el]),
+                "bg": None if model.bg is None else float(theta[model.bg])}
+
+    # ---- one fit ---------------------------------------------------------------------------------
+    def _start(self, model, modes, linear):
+        """The start vector: the modes' values, the given elastic/background heights, the pins; any
+        height left unset (``None``) solved by Poisson NNLS with the others held."""
+        theta = np.full(len(model.names), np.nan)
+        for (a, b, c), (e, g, h, _d) in zip(model.modes, modes):
+            theta[a], theta[b], theta[c] = e, g, (np.nan if h is None else h)
+        for key, pos in (("elastic", model.el), ("bg", model.bg)):
+            if pos is not None and linear and linear.get(key) is not None:
+                theta[pos] = linear[key]
+        ok = np.isfinite(theta)
+        theta[ok] = np.clip(theta[ok], model.lo[ok], model.hi[ok])
+        theta[model.fixed_pos] = model.fixed_vals
+        missing = [int(i) for i in model.free if not np.isfinite(theta[i])]
+        if missing:
+            theta[missing] = 0.0
+            offset = self.mean(model, theta)
+            phi = np.column_stack([self._linear_column(model, theta, i) for i in missing])
+            theta[missing] = backends.poisson_nnls(phi, self.y, np.zeros(len(missing)),
+                                                   model.lo[missing], model.hi[missing],
+                                                   offset=offset)
+        return theta
+
+    def _linear_column(self, model, theta, i):
+        if i == model.el:
+            return self.el_col * self.expo
+        if i == model.bg:
+            return self.expo
+        j = next(j for j, (_a, _b, c) in enumerate(model.modes) if c == i)
+        a, b, _c = model.modes[j]
+        return self.units([(theta[a], theta[b])], [model.variant.peaks[j]])[0][0] * self.expo
+
+    def _least_squares(self, residual, z0, lo, hi, family):
+        """One bounded TRF call (prototype tolerances); None when it fails or hits max_nfev."""
+        t0 = time.perf_counter()
+        self.n_fits += 1
+        try:
+            res = least_squares(residual, z0, bounds=(lo, hi), method="trf", x_scale="jac",
+                                max_nfev=self.s.trf_max_nfev, ftol=2e-7, xtol=2e-7, gtol=2e-6)
+        except (ValueError, np.linalg.LinAlgError) as exc:
+            log.info("fast pass: a %s start failed: %s", family, exc)
+            return None
+        finally:
+            fam = self.families.setdefault(family, {"fits": 0, "seconds": 0.0})
+            fam["fits"] += 1
+            fam["seconds"] += time.perf_counter() - t0
+        if res.status <= 0 or not res.success:
+            log.debug("fast pass: a %s start stopped: %s", family, res.message)
+            return None
+        return res
+
+    def _trf(self, model, theta0, family):
+        free = model.free
+        lo, hi = model.lo[free], model.hi[free]
+
+        def residual(z):
+            t = theta0.copy()
+            t[free] = z
+            r = poisson_residuals(self.y, self.mean(model, t))
+            if model.soft:
+                r = np.concatenate([r, [(t[i] - mu) / sd for i, mu, sd in model.soft]])
+            return np.nan_to_num(r, nan=1e100, posinf=1e100, neginf=-1e100)
+
+        return self._least_squares(residual, np.clip(theta0[free], lo, hi), lo, hi, family)
+
+    def fit(self, variant, modes, family, linear=None):
+        """Fit ``modes`` ([(omega0, Gamma, h | None, delta)]) in ``variant`` by TRF, canonicalise,
+        and place the optimum in its model's basins (a new or improved basin is resolved).
+        Returns (basin, this fit's cost), or None when there is no such model or the start failed
+        (recorded only in the family counts)."""
+        if variant is None:
+            return None
+        modes = sorted(modes, key=lambda m: m[0])
+        model = self.model(variant, tuple(i for i, m in enumerate(modes) if m[3]))
+        if model is None:
+            return None
+        theta0 = self._start(model, modes, linear)
+        res = self._trf(model, theta0, family)
+        if res is None:
+            return None
+        theta = theta0.copy()
+        theta[model.free] = res.x
+        model, theta = self._canonical(model, theta)
+        if model is None:
+            return None
+        cost = self.cost(model, theta)
+        if not math.isfinite(cost):
+            return None
+        return self._place(model, theta, cost, family, int(res.nfev), str(res.message)), cost
+
+    def _canonical(self, model, theta):
+        """Modes sorted by omega0; the delta mask permutes with its modes (a new identity)."""
+        order = sorted(range(len(model.modes)), key=lambda i: theta[model.modes[i][0]])
+        if order == list(range(len(order))):
+            return model, theta
+        out = theta.copy()
+        for dst, src in enumerate(order):
+            for a, b in zip(model.modes[dst], model.modes[src]):
+                out[a] = theta[b]
+        delta = tuple(sorted(dst for dst, src in enumerate(order) if src in model.delta))
+        return self.model(model.variant, delta), out
+
+    def same_basin(self, model, a, b) -> bool:
+        """One basin needs, mode by mode, every omega0, Gamma and height close (C-fastpass)."""
+        s, w = self.s, self.fwhm
+        for i, j, c in model.modes:
+            if abs(a[i] - b[i]) >= s.basin_merge_fwhm * w:
+                return False
+            if abs(a[j] - b[j]) > s.basin_gamma_frac * max(w, a[j], b[j]):
+                return False
+            if abs(a[c] - b[c]) > s.basin_height_frac * max(a[c], b[c]):
+                return False
+        return True
+
+    def _place(self, model, theta, cost, family, nfev, message):
+        for b in model.basins:
+            if b.theta is not None and self.same_basin(model, b.theta, theta):
+                if cost < b.cost - loop.DEGENERATE_REFIT_GAIN:
+                    b.theta, b.cost, b.ln_like = theta, cost, self.sat - cost / 2
+                    b.family, b.nfev, b.message = family, nfev, message
+                    b.status, b.reason, b.twin, b.limit = "pending", "", None, ""
+                    b.theta_map = b.ln_z = b.ln_prior = b.cov_free = b.objective = None
+                    b.pinned, b.boundary_method, b.posterior_iterations = (), "", 0
+                    self.resolve(b, b.theta)
+                return b
+        b = _Basin(model, len(model.basins), theta, cost, self.sat - cost / 2,
+                   _ln_model_prior(len(self.variants[model.variant.k]), model.variant.k),
+                   family, nfev, message)
+        model.basins.append(b)
+        self.resolve(b, theta)
+        return b
+
+    # ---- stage 1: the seed -------------------------------------------------------------------------
+    def _pv(self, e0, gamma):
+        """The seed's pseudo-Voigt column at unit height, its anti-Stokes partner tied by the Bose
+        factor (none at unknown T, C-dho's convention); no convolution."""
+        width = self.fwhm + 2.0 * gamma
+
+        def side(c):
+            u = (self.E - c) / width
+            return 0.5 * np.exp(-4.0 * math.log(2.0) * u * u) + 0.5 / (1.0 + 4.0 * u * u)
+
+        w = math.exp(-e0 / self.kT) if self.kT else 0.0
+        return side(e0) + w * side(-e0)
+
+    def _seed_linear_cols(self):
+        return ([self.el_col] if self.seed_elastic else []) + [np.ones_like(self.y)]
+
+    def _seed_nnls(self, cols, n_peaks):
+        sp = self.sp
+        phi = np.column_stack(cols) * self.expo[:, None]
+        hi = np.array([sp.height_hi] * (n_peaks + self.seed_elastic) + [sp.background_hi])
+        a = backends.poisson_nnls(phi, self.y, np.zeros(phi.shape[1]), np.zeros(phi.shape[1]), hi)
+        r = poisson_residuals(self.y, phi @ a)
+        return a, float(r @ r)
+
+    def _seed_fit(self, peaks, linear):
+        """Joint TRF of the PV seed model, every centre free; (peaks ascending, cost) or None."""
+        sp, k, el = self.sp, len(peaks), self.seed_elastic
+        z0 = np.array([v for p in peaks for v in p] + list(linear), dtype=float)
+        lo = np.array([sp.e_lo, self.g_lo, 0.0] * k + [0.0] * (el + 1))
+        hi = np.array([sp.e_hi, self.g_hi, sp.height_hi] * k + [sp.height_hi] * el
+                      + [sp.background_hi])
+
+        def mean(z):
+            mu = np.zeros_like(self.y)
+            for i in range(k):
+                mu += z[3 * i + 2] * self._pv(z[3 * i], z[3 * i + 1])
+            if el:
+                mu += z[3 * k] * self.el_col
+            return (mu + z[-1]) * self.expo
+
+        def residual(z):
+            self._check_budget()
+            return np.nan_to_num(poisson_residuals(self.y, mean(z)), nan=1e100, posinf=1e100,
+                                 neginf=-1e100)
+
+        res = self._least_squares(residual, np.clip(z0, lo, hi), lo, hi, "seed")
+        if res is None:
+            return None
+        r = poisson_residuals(self.y, mean(res.x))
+        return sorted((res.x[3 * i], res.x[3 * i + 1], res.x[3 * i + 2]) for i in range(k)), float(r @ r)
+
+    def seed(self) -> list:
+        """Stage 1: PV peaks added one at a time at the grid energy that most improves the Poisson
+        fit (NNLS heights), all refitted jointly after each insertion, until a peak adds less than
+        ``seed_stop_gain`` or the ceiling. Starting points only: [(omega0, Gamma, h)]."""
+        sp, w = self.sp, self.fwhm
+        base = self._seed_linear_cols()
+        a, _ = self._seed_nnls(base, 0)
+        prev = self._seed_fit([], a)
+        held = []
+        if prev is not None:
+            for k in range(1, self.s.mode_ceiling + 1):
+                best = None
+                for e in np.arange(max(MIN_ADD_ENERGY, sp.e_lo), sp.e_hi, SEED_STEP_FWHM * w):
+                    if any(abs(e - p[0]) < SEED_EXCLUDE_FWHM * w for p in held):
+                        continue
+                    trial = [(p[0], p[1]) for p in held] + [(float(e), SEED_GAMMA)]
+                    a, score = self._seed_nnls([self._pv(*p) for p in trial] + base, k)
+                    if best is None or score < best[0]:
+                        best = (score, trial, a)
+                if best is None:
+                    break
+                _, trial, a = best
+                cand = self._seed_fit([(e, g, h) for (e, g), h in zip(trial, a[:k])], a[k:])
+                if cand is None or prev[1] - cand[1] < self.s.seed_stop_gain:
+                    break
+                held, prev = cand[0], cand
+        self.seed_count = len(held)
+        return held
+
+    # ---- stage 2: the ladder -------------------------------------------------------------------------
+    def best_basin(self, k, *, live=False):
+        """The lowest-cost fitted basin at count ``k`` (``live``: twins excluded), or None."""
+        found = [b for b in self.basins() if b.count == k and b.theta is not None
+                 and not (live and b.status in ("degenerate_twin", "not_fitted"))]
+        return min(found, key=lambda b: b.cost, default=None)
+
+    def _perturbed(self, top):
+        sp, (de, dg, dh) = self.sp, RESTART_SPREAD
+        out = []
+        for e, g, h in top:
+            out.append((float(np.clip(e + self.rng.normal(0.0, de * self.fwhm), sp.e_lo, sp.e_hi)),
+                        float(np.clip(g * math.exp(self.rng.normal(0.0, dg)), self.g_lo, self.g_hi)),
+                        float(np.clip(h * self.rng.uniform(1.0 - dh, 1.0 + dh), 0.0, sp.height_hi)),
+                        False))
+        return out
+
+    def _additions(self, parent):
+        """Ladder starts above the seed's count: the parent plus one mode at its largest positive
+        residual, and every parent mode split in two (family "split")."""
+        w, sp = self.fwhm, self.sp
+        model, t = parent.model, parent.theta
+        held = self.modes_of(model, t)
+        r = (self.y - self.mean(model, t)) / self.expo
+        pick = next((i for i in np.argsort(-r) if MIN_ADD_ENERGY < self.E[i] <= sp.e_hi
+                     and all(abs(self.E[i] - m[0]) > LADDER_EXCLUDE_FWHM * w for m in held)), None)
+        e_new, h_new = ((0.8 * sp.e_hi, 1.0) if pick is None
+                        else (float(self.E[pick]), max(float(r[pick]), 1.0)))
+        starts = [("ladder", held + [(e_new, LADDER_GAMMA, h_new, False)])]
+        lo_f, hi_f = LADDER_SPLIT_HEIGHTS
+        for j, (e, g, h, d) in enumerate(held):
+            g2 = SEED_GAMMA if d else g
+            parts = [(e - LADDER_SPLIT_FWHM * w, g2, h * lo_f, False),
+                     (e + LADDER_SPLIT_FWHM * w, g2, h * hi_f, False)]
+            starts.append(("split", held[:j] + parts + held[j + 1:]))
+        return starts
+
+    def _hint_start(self, seed, k):
+        """Card peak hints (not within 0.5 FWHM of a seed peak) first, then the seed peaks, k of
+        them; None when no hint survives or there are fewer than k modes."""
+        w = self.fwhm
+        hints = [h for h in self.hints if all(abs(h - p[0]) >= HINT_EXCLUDE_FWHM * w for p in seed)]
+        modes = ([(h, HINT_GAMMA_FWHM * w, None, False) for h in hints]
+                 + [(e, g, h, False) for e, g, h in seed])[:k]
+        return modes if hints and len(modes) == k else None
+
+    def ladder(self, seed):
+        """Stage 2: every count 0..ceiling, each start fitted in every variant at that count."""
+        for k in range(self.s.mode_ceiling + 1):
+            if not self.variants.get(k):
+                continue
+            self.reached.add(k)
+            starts = []
+            if k <= len(seed):
+                top = sorted(seed, key=lambda p: -p[2])[:k]
+                starts.append(("ladder", [(e, g, h, False) for e, g, h in top]))
+                if k:
+                    starts += [("restart", self._perturbed(top)) for _ in range(self.s.n_restarts)]
+            else:
+                parent = self.best_basin(k - 1)
+                if parent is not None:
+                    starts += self._additions(parent)
+            if k >= 1 and self.hints:
+                hinted = self._hint_start(seed, k)
+                if hinted is not None:
+                    starts.append(("hint", hinted))
+            for v in self.variants[k]:
+                for family, modes in starts:
+                    self.fit(v, modes, family)
+
 
 def run_fast_pass(ctx, *, settings: FastPassSettings | None = None, peaks=(), structures=None) -> FastPassResult:
     raise NotImplementedError("fast pass: S1U4")
