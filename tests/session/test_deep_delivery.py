@@ -157,6 +157,10 @@ def test_deliver_end_to_end_at_tiny_settings(monkeypatch):
     monkeypatch.setattr(deep_pass, "EXPLORATORY",
                         dataclasses.replace(deep_pass.EXPLORATORY, n_live=16))
     ctx, fit = _spectrum()
+    # The ceiling-1 fast pass really is search limited (its best count is the ceiling), and the
+    # deep pass rightly inherits that as partial; this test is about staged coverage, so lift it.
+    assert fit["fast_pass"]["search_limit_reason"] == "ceiling"
+    fit = {"fast_pass": {**fit["fast_pass"], "search_limit_reason": ""}}
     record, timing = deep_delivery.deliver(fit, ctx, REQ)
     record = scan_delivery._finite_json(record)
     json.dumps(record, allow_nan=False)
