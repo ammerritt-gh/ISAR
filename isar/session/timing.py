@@ -201,9 +201,10 @@ def fit_timing_breakdown(timings) -> dict[str, Any] | None:
     and two-stage fitting; their remainder is enumeration/IC/other optimization overhead. The four
     buckets therefore sum to total fit time without double counting. Per-method timings are retained
     separately because parallel work can overlap and is not a disjoint wall-time decomposition.
-    So are the count ladder's: ``count_ladder_seconds`` sums each scan unit's rung-1 (fits and their
-    Laplace selection) and rung-2 (nested sampling) wall time, and ``per_spectrum_rungs`` lists them
-    unit by unit (rung 2 sits inside the remainder bucket).
+    So are the fast pass's own figures (C-timing): ``fast_pass_stage_seconds`` sums each engine
+    stage over the units, and ``per_spectrum_fast_pass`` lists each unit's total, fit count and why
+    its search stopped. The "two_stage_fitting" bucket is the fast pass's wall (seed + full stage +
+    evidence + classify).
     """
     buckets = {
         "scan_error_attachment": 0.0,
@@ -212,7 +213,7 @@ def fit_timing_breakdown(timings) -> dict[str, Any] | None:
         "fit_remainder": 0.0,
     }
     methods = {key: 0.0 for key in _ERROR_METHOD_KEYS}
-    rungs = {"rung1": 0.0, "rung2": 0.0}
+    stage_seconds: dict[str, float] = {}
     per_spectrum = []
     n_units = 0
     for timing_index, timing in enumerate(timings):
@@ -251,18 +252,20 @@ def fit_timing_breakdown(timings) -> dict[str, Any] | None:
                         continue
                     for key, value in item_methods.items():
                         methods[key] += value
-                    if "rung1_seconds" in item or "rung2_seconds" in item:
+                    fast_pass = item.get("fast_pass")
+                    if isinstance(fast_pass, dict):
                         try:
-                            rung1 = float(item.get("rung1_seconds") or 0.0)
-                            rung2 = float(item.get("rung2_seconds") or 0.0)
-                        except (TypeError, ValueError) as exc:
-                            log.warning("malformed rung timing in %s item %d:%d:%d skipped: %s",
+                            for name, value in (fast_pass.get("stages") or {}).items():
+                                stage_seconds[name] = stage_seconds.get(name, 0.0) + float(value or 0.0)
+                            id_key = "master_id" if field == "per_master" else "scan_id"
+                            per_spectrum.append({
+                                id_key: item.get(id_key),
+                                "total_seconds": fast_pass.get("total_seconds"),
+                                "stop_reason": fast_pass.get("stop_reason"),
+                                "n_fits": fast_pass.get("n_fits")})
+                        except (TypeError, ValueError, AttributeError) as exc:
+                            log.warning("malformed fast-pass timing in %s item %d:%d:%d skipped: %s",
                                         field, timing_index, stage_index, item_index, exc)
-                        else:
-                            rungs["rung1"] += rung1
-                            rungs["rung2"] += rung2
-                            per_spectrum.append({"scan_id": item.get("scan_id"),
-                                                 "rung1_seconds": rung1, "rung2_seconds": rung2})
                     buckets[role] += max(errors, 0.0)
                     buckets["two_stage_fitting"] += max(two_stage, 0.0)
                     buckets["fit_remainder"] += max(fit - errors - two_stage, 0.0)
@@ -272,8 +275,8 @@ def fit_timing_breakdown(timings) -> dict[str, Any] | None:
     total = sum(buckets.values())
     return {"buckets": buckets, "method_seconds": methods,
             "total_fit_seconds": total, "n_units": n_units,
-            "count_ladder_seconds": {k: round(v, 4) for k, v in rungs.items()},
-            "per_spectrum_rungs": per_spectrum}
+            "fast_pass_stage_seconds": {k: round(v, 4) for k, v in stage_seconds.items()},
+            "per_spectrum_fast_pass": per_spectrum}
 
 
 class StageTimer:

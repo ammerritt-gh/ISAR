@@ -105,7 +105,7 @@ def test_error_method_breakdown_renders_with_keys(tmp_path, capsys):
     toks = lines[0].split()
     assert int(toks[1]) == 3           # count
     assert float(toks[2]) == pytest.approx(4.5)   # total_s
-    assert "HESSE cost is inside the MIGRAD fit" in out
+    assert "covariance (HESSE-equivalent) cost is inside the fast pass" in out
 
 
 def test_error_method_breakdown_skipped_without_keys(tmp_path, capsys):
@@ -115,7 +115,7 @@ def test_error_method_breakdown_skipped_without_keys(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "error-method breakdown" not in out
-    assert "HESSE cost is inside the MIGRAD fit" not in out
+    assert "covariance (HESSE-equivalent) cost is inside the fast pass" not in out
 
 
 def test_missing_log_exits_2(tmp_path, capsys):

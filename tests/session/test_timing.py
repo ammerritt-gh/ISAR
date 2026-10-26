@@ -78,22 +78,31 @@ def test_fit_timing_breakdown_is_disjoint_and_keeps_methods():
     assert got["method_seconds"]["bootstrap_seconds"] == 8.5
 
 
-def test_fit_timing_breakdown_reports_each_rung_of_the_count_ladder():
-    """Rung-1 and rung-2 wall time per spectrum reach the run timing report; the scan pool's two
-    passes (rung 1 first, then rung 2) each contribute their own per-task rows."""
+def test_fit_timing_breakdown_reports_the_fast_pass_entries():
+    """C-timing example 2: stage seconds sum over units, each spectrum (scan or master) gets a row,
+    and the two_stage_fitting bucket equals the sum of two_stage_seconds."""
+    def entry(total, ladder, stop="complete"):
+        return {"total_seconds": total, "n_fits": 100, "stop_reason": stop,
+                "stages": {"seed": 0.5, "ladder": ladder, "audits": 1.0}}
+
     timings = [{"stages": [
-        {"stage": "fit_scans", "per_task": [
-            {"scan_id": "E:1:d", "seconds": 4.0, "two_stage_seconds": 1.0, "rung1_seconds": 1.2,
-             "rung2_seconds": 0.0}]},
-        {"stage": "fit_scans", "per_task": [
-            {"scan_id": "E:1:d", "seconds": 9.0, "two_stage_seconds": 1.0, "rung1_seconds": 1.2,
-             "rung2_seconds": 6.5}]},
+        {"stage": "fit_scans", "scan_workers": 2, "per_task": [
+            {"scan_id": "E:1:d", "seconds": 4.0, "two_stage_seconds": 3.0,
+             "fast_pass": entry(3.0, 1.5)},
+            {"scan_id": "E:2:d", "seconds": 9.0, "two_stage_seconds": 8.0,
+             "fast_pass": entry(8.0, 6.5, stop="safety_budget")},
+            {"scan_id": "E:3:d", "seconds": 1.0, "two_stage_seconds": 0.0, "fast_pass": None}]},
+        {"stage": "fit_masters", "per_master": [
+            {"master_id": "master:q", "fit_seconds": 5.0, "two_stage_seconds": 4.0,
+             "fast_pass": entry(4.0, 2.0)}]},
     ]}]
     got = fit_timing_breakdown(timings)
-    assert got["count_ladder_seconds"] == {"rung1": 2.4, "rung2": 6.5}
-    assert got["per_spectrum_rungs"] == [
-        {"scan_id": "E:1:d", "rung1_seconds": 1.2, "rung2_seconds": 0.0},
-        {"scan_id": "E:1:d", "rung1_seconds": 1.2, "rung2_seconds": 6.5}]
+    assert got["fast_pass_stage_seconds"] == {"seed": 1.5, "ladder": 10.0, "audits": 3.0}
+    assert got["buckets"]["two_stage_fitting"] == 15.0
+    assert got["per_spectrum_fast_pass"] == [
+        {"scan_id": "E:1:d", "total_seconds": 3.0, "stop_reason": "complete", "n_fits": 100},
+        {"scan_id": "E:2:d", "total_seconds": 8.0, "stop_reason": "safety_budget", "n_fits": 100},
+        {"master_id": "master:q", "total_seconds": 4.0, "stop_reason": "complete", "n_fits": 100}]
 
 
 def test_malformed_embedded_timing_is_logged_and_skipped(caplog):

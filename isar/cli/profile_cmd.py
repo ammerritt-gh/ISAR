@@ -115,8 +115,9 @@ def _print_error_method_breakdown(events, log_path, wall, top):
     print()
     _print_table(_aggregate(pairs), wall, top, "  error-method breakdown:", key_label="method")
     print()
-    print("  Note: HESSE cost is inside the MIGRAD fit (two_stage_seconds); the comparable "
-          "fast-tier number is mean fit_seconds on fast-tier iterations.")
+    print("  Note: the covariance (HESSE-equivalent) cost is inside the fast pass "
+          "(two_stage_seconds); the comparable fast-tier number is mean fit_seconds on "
+          "fast-tier iterations.")
 
 
 def _print_disjoint_fit_breakdown(events, log_path, wall):
@@ -128,7 +129,7 @@ def _print_disjoint_fit_breakdown(events, log_path, wall):
     labels = {
         "scan_error_attachment": "scan error attachment",
         "master_error_attachment": "master error attachment",
-        "two_stage_fitting": "two-stage fitting",
+        "two_stage_fitting": "fast pass (seed + full stage)",
         "fit_remainder": "enumeration/IC/optimization remainder",
     }
     print()

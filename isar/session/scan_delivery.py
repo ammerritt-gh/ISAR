@@ -2047,15 +2047,19 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
             out.append(entry)
         return out
     max_workers = min(scan_workers, len(arg_list))
-    # Dispatch bounded waves.  map preserves order within each wave, so cached-unit reduction remains
-    # canonical while the soft deadline can stop *new* work without killing active processes.
+    # No deadline: one wave holding every task, so a slow spectrum never leaves the other workers
+    # idle at a wave boundary. Under a deadline, bounded waves let the soft stop end *new* work
+    # without killing active processes. ``map`` preserves order within a wave, so cached-unit
+    # reduction stays canonical either way.
+    no_deadline = deadline_gate is None or deadline_gate.deadline is None
+    wave_size = len(arg_list) if no_deadline else max_workers
     with ProcessPoolExecutor(max_workers=max_workers) as ex:
         out = []
-        for offset in range(0, len(arg_list), max_workers):
+        for offset in range(0, len(arg_list), wave_size):
             if deadline_gate is not None and not deadline_gate.begin_wave():
                 raise AnalysisWorkIncomplete(
                     f"analysis deadline reached after {len(out)}/{len(arg_list)} scan fit units")
-            wave = arg_list[offset:offset + max_workers]
+            wave = arg_list[offset:offset + wave_size]
             for entry in ex.map(_process_one_task, wave):
                 if on_complete is not None:
                     on_complete(entry)

@@ -152,67 +152,6 @@ def test_the_cards_ceiling_bounds_the_fast_pass_not_the_environment_default(monk
     assert fit["best_label"] in {r["label"] for r in fit["candidates"]}
 
 
-def test_a_provisional_master_never_seeds_the_prior():
-    """Hard rule 5's gate reads the count outcome a delivery writes (fit_selection_semantics)."""
-    from isar.session import evidence_update
-
-    entry = ScanEntry("master:q", 1, "measurement", "fitted",
-                      provenance={"errors_tier_effective": "full"})
-    provisional = {"fit_selection_semantics": {"count_ladder": {"state": "provisional",
-                                                                "ambiguity": None}}}
-    assert not evidence_update._master_prior_admissible(entry, provisional)
-
-
-# --------------------------------------------------------------------------- the two passes
-def test_run_batch_delivers_rung_1_first_then_spends_the_slice_on_pending(monkeypatch, tmp_path):
-    calls = []
-    pending = {"value": True}
-
-    def fake_pass(workspace, data_paths, **kw):
-        calls.append(kw)
-        return driver.RunSummary(context_lines=[f"pass {len(calls)}"])
-
-    def fake_load():
-        oc = {"fit_selection_semantics": {"count_ladder": {
-            "state": "provisional" if pending["value"] else "settled"}}}
-        st = SessionState()
-        st.put(ScanEntry("E:1:d", 1, "measurement", "fitted", detectors={"d": oc}))
-        return None, st
-
-    ws = _workspace(tmp_path)
-    monkeypatch.setattr(driver, "_run_batch_pass", fake_pass)
-    monkeypatch.setattr(ws, "load", fake_load)
-    summary = driver.run_batch(ws, [], rung2_slice_seconds=30.0)
-    first, second = calls
-    assert first["retask_pending"] is False and first["rung2_slice_s"] == 0.0
-    assert second["retask_pending"] is True and second["force"] is False
-    assert second["rung2_slice_s"] == 30.0
-    assert summary.context_lines == ["pass 1", "pass 2"]
-
-    calls.clear()
-    driver.run_batch(ws, [], rung2_slice_seconds=0.0)        # no slice: rung 2 waits for a later run
-    assert len(calls) == 1
-    calls.clear()
-    pending["value"] = False
-    driver.run_batch(ws, [])                                # nothing pending: one pass
-    assert len(calls) == 1
-    calls.clear()
-    pending["value"] = True
-    monkeypatch.setenv(driver.RUNG2_SLICE_ENV, "")
-    driver.run_batch(ws, [])                                # no slice set: rung 2 to completion
-    assert calls[1]["rung2_slice_s"] is None
-
-
-def test_the_rung_2_slice_refuses_a_malformed_value(monkeypatch):
-    monkeypatch.setenv(driver.RUNG2_SLICE_ENV, "soon")
-    with pytest.raises(ValueError):
-        driver.resolve_rung2_slice()
-    with pytest.raises(ValueError):
-        driver.resolve_rung2_slice(-1.0)
-    monkeypatch.setenv(driver.RUNG2_SLICE_ENV, "12.5")
-    assert driver.resolve_rung2_slice() == 12.5
-
-
 # --------------------------------------------------------------------------- scans with no fit
 def _unfitted_row(root, status, reasons):
     ws = _workspace(root)

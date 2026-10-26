@@ -156,7 +156,42 @@ def test_soft_deadline_finishes_active_wave_then_stops_dispatch(monkeypatch):
     assert len(completed) == 1
 
 
-def test_master_task_threads_deadline_shadow_policy(monkeypatch):
+def test_scan_pool_is_one_wave_without_a_deadline_and_bounded_waves_under_one(monkeypatch):
+    """Waves wait on their slowest spectrum, so they exist only to honour a soft deadline."""
+    waves = []
+
+    class _Pool:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def map(self, _fn, wave):
+            waves.append(len(wave))
+            return [object() for _ in wave]
+
+    monkeypatch.setattr(scan_delivery, "ProcessPoolExecutor", _Pool)
+    tasks = [(None, "det", [2.0, 0, 0], 300.0, "sample", f"scan:{index}",
+              f"content:{index}", "guide", 6000 + index) for index in range(5)]
+
+    def run(gate):
+        waves.clear()
+        out = scan_delivery._run_tasks(
+            tasks, object(), object(), object(), set(), M=10, errors_tier="fast",
+            boot_workers=1, use_pool=True, scan_workers=2, deadline_gate=gate)
+        assert len(out) == 5
+        return list(waves)
+
+    assert run(None) == [5]
+    assert run(driver._AnalysisDeadline(None)) == [5]
+    assert run(driver._AnalysisDeadline(time.monotonic() + 3600.0)) == [2, 2, 1]
+
+
+def test_master_task_threads_the_certification_role(monkeypatch):
     captured = {}
 
     def fake_master_group(*_args, **kwargs):
@@ -166,11 +201,11 @@ def test_master_task_threads_deadline_shadow_policy(monkeypatch):
     monkeypatch.setattr(master_delivery, "_fit_master_group", fake_master_group)
     master_delivery._fit_master_group_task((
         None, None, None, "det", None, None, None, "master:q", 9000001, "hash",
-        20, 1, "full", False, None, None, "certification", False,
+        20, 1, "full", False, None, None, "certification",
     ))
 
     assert captured["fit_role"] == "certification"
-    assert captured["shadow_enabled"] is False
+    assert "shadow_enabled" not in captured
 
 
 def test_master_fingerprint_covers_numerical_dependencies_but_not_execution_order():

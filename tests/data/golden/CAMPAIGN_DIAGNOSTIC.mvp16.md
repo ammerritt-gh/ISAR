@@ -31,7 +31,7 @@
 | --- | --- | --- | --- |
 | scan error attachment | 518.09 | 23.4% | 23.8% |
 | master error attachment | 589.59 | 26.7% | 27.1% |
-| two-stage fitting | 419.95 | 19% | 19.3% |
+| fast pass (seed + full stage) | 419.95 | 19% | 19.3% |
 | enumeration / IC / optimization remainder | 644.88 | 29.2% | 29.7% |
 
 ![Delivered dispersion vs truth](figures/campaign_dispersion_truth.png)

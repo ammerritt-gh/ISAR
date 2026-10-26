@@ -658,7 +658,7 @@ def _section_outcome(doc: FindingsDoc, di: DiagInputs, per_q: list, ec: EventCou
         labels = {
             "scan_error_attachment": "scan error attachment",
             "master_error_attachment": "master error attachment",
-            "two_stage_fitting": "two-stage fitting",
+            "two_stage_fitting": "fast pass (seed + full stage)",
             "fit_remainder": "enumeration / IC / optimization remainder",
         }
         timing_rows = []

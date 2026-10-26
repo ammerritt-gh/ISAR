@@ -127,6 +127,27 @@ def test_run_batch_registers_ingested_before_fit_stage(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- timing instrumentation
+def test_run_batch_pins_blas_threads_to_one_unless_the_operator_chose(tmp_path, monkeypatch):
+    """Several pool workers times a multi-threaded BLAS oversubscribes the cores; an operator's own
+    value wins, and run_timings.json records what the pool children see (C-timing)."""
+    from isar.parsers import spec_s30 as s30
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        monkeypatch.setenv(name, "x")
+        monkeypatch.delenv(name)                  # leaves the variable unset, restored at teardown
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "3")
+    ws = _init_workspace(tmp_path, s30)
+    run = run_builder.build_s30_run("SYN", n_scans=1, seed0=1000)
+    data = tmp_path / "SYN.spec_supplementary.dat"
+    data.write_bytes(s30.emit_file(run, s30.card_template()))
+
+    timer = StageTimer(errors_tier="fast", M=10)
+    driver.run_batch(ws, [data], M=10, detectors="ana5", timer=timer)
+
+    fit = next(s for s in timer.to_dict()["stages"] if s["stage"] == "fit_scans")
+    assert fit["threads"] == {"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "3",
+                              "MKL_NUM_THREADS": "1"}
+
+
 def test_run_batch_emits_timer_stages(tmp_path):
     """A StageTimer threaded into run_batch records the pipeline stages (mighty-starfish §3). Uses the
     always-run S30 held path: scans still traverse the fitter as tasks, so fit_scans is emitted."""
@@ -148,6 +169,9 @@ def test_run_batch_emits_timer_stages(tmp_path):
     assert ingest["n_records"] >= 1
     fit = next(s for s in d["stages"] if s["stage"] == "fit_scans")
     assert fit["n_tasks"] == 3 and "use_pool" in fit and "boot_workers" in fit
+    # C-timing: the worker and thread settings the pool children see.
+    assert isinstance(fit["scan_workers"], int) and fit["scan_workers"] >= 1
+    assert set(fit["threads"]) == {"OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"}
     assert isinstance(d["total_seconds"], float) and d["total_seconds"] >= 0.0
 
 
@@ -175,12 +199,15 @@ def test_in8_provenance_carries_fit_seconds(tmp_path):
     prov = e82.provenance
     assert isinstance(prov.get("fit_seconds"), float) and prov["fit_seconds"] >= 0.0
     assert "two_stage_seconds" in prov  # attached from the fit dict
+    assert prov["fast_pass"]["total_seconds"] > 0.0     # C-timing's per-spectrum entry
 
     # The fit_scans stage aggregates the per-task timing for the fitted scan.
     fit = next(s for s in timer.to_dict()["stages"] if s["stage"] == "fit_scans")
     per_task = fit.get("per_task") or []
     assert any(t["scan_id"] == e82.scan_id and isinstance(t["seconds"], float)
                for t in per_task)
+    assert [t["fast_pass"]["stop_reason"] for t in per_task if t["scan_id"] == e82.scan_id]
+    assert not any("rung1_seconds" in t or "rung2_seconds" in t for t in per_task)
 
 
 

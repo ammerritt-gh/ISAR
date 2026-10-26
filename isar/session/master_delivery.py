@@ -228,16 +228,14 @@ def _fit_master_group_task(args):
     (ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number, chash,
      M, seed, errors_tier, boot_adaptive, structure_hint, bayes_opts, *role_tail) = args
     fit_role = role_tail[0] if role_tail else "master"
-    shadow_enabled = bool(role_tail[1]) if len(role_tail) > 1 else True
     # Pass structure_hint only when set: with the reuse policy off (default) hint is None and this
     # call is byte-identical to the pre-B2 call (keeps the "change nothing when off" guarantee).
     hint_kw = {"structure_hint": structure_hint} if structure_hint is not None else {}
     role_kw = {"fit_role": fit_role} if fit_role != "master" else {}
-    shadow_kw = {} if shadow_enabled else {"shadow_enabled": False}
     return _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id,
                              scan_number, chash, M=M, seed=seed, errors_tier=errors_tier,
                              boot_workers=1, boot_executor=None, boot_adaptive=boot_adaptive,
-                             bayes_opts=bayes_opts, **shadow_kw, **role_kw, **hint_kw)
+                             bayes_opts=bayes_opts, **role_kw, **hint_kw)
 
 
 def _stamp_master_analysis(entry: ScanEntry, *, errors_tier: str,
@@ -438,8 +436,7 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
         # preserves order → entries[k] aligns with refits[k], keeping the serial ledger order.
         arg_list = [(ms, grp, member_rec, member_det, card, runcal, g, master_id,
                      _MASTER_SCAN_BASE + idx, chash, M, seed_base + _MASTER_SCAN_BASE + idx,
-                     errors_tier, boot_adaptive, hint, bayes_opts, "master",
-                     deadline_gate is None or deadline_gate.deadline is None)
+                     errors_tier, boot_adaptive, hint, bayes_opts, "master")
                     for (idx, grp, ms, master_id, chash, member_rec, member_det, hint) in pending]
         max_workers = min(scan_workers, len(arg_list))
         with ProcessPoolExecutor(max_workers=max_workers) as ex_pool:
@@ -470,18 +467,12 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
                     raise AnalysisWorkIncomplete(
                         f"analysis deadline reached after {len(fresh_entries)}/{len(pending)} "
                         "master fit units")
-                shadow_kw = (
-                    {}
-                    if deadline_gate is None or deadline_gate.deadline is None
-                    else {"shadow_enabled": False}
-                )
                 entry = _fit_master_group(
                     ms, grp, member_rec, member_det, card, runcal, g, master_id,
                     _MASTER_SCAN_BASE + idx, chash, M=M,
                     seed=seed_base + _MASTER_SCAN_BASE + idx, errors_tier=errors_tier,
                     boot_workers=boot_workers, boot_executor=ex,
                     boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
-                    **shadow_kw,
                     **({"structure_hint": hint} if hint is not None else {}))
                 if checkpoint_store is not None:
                     checkpoint_store.save(f"master:{entry.scan_id}", entry)
@@ -525,6 +516,7 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
                 {"master_id": master_id,
                  "seconds": entry.provenance.get("fit_seconds"),
                  "two_stage_seconds": entry.provenance.get("two_stage_seconds"),
+                 "fast_pass": entry.provenance.get("fast_pass"),
                  "errors_attach_seconds": entry.provenance.get("errors_attach_seconds"),
                  "bootstrap_seconds": entry.provenance.get("bootstrap_seconds"),
                  "minos_seconds": entry.provenance.get("minos_seconds"),
@@ -538,7 +530,7 @@ def _fit_masters(collation, records, card, runcal, g, session, *, data_dir=None,
 def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_id, scan_number,
                       chash, *, M, seed, errors_tier="full", boot_workers=1, boot_executor=None,
                       boot_adaptive=False, structure_hint=None, bayes_opts=None,
-                      fit_role="master", shadow_enabled=True) -> ScanEntry:
+                      fit_role="master") -> ScanEntry:
     """Fit one merged group's pooled spectrum → a ``pooled=True`` ScanEntry (or a non_result).
 
     ``structure_hint`` (the group's previous fitted best_label, opt-in via card policy

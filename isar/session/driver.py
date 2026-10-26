@@ -147,6 +147,10 @@ _BAYES_ENV = {"n_live": "ISAR_BAYES_NLIVE", "dlogz": "ISAR_BAYES_DLOGZ", "max_it
 _BAYES_CASTS = {"n_live": int, "dlogz": float, "max_iter": int}
 
 
+# The BLAS thread variables run_batch pins to 1 and run_timings.json records (C-timing).
+_THREAD_ENV = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+
+
 def _resolve_bayes_opts(cli_opts=None) -> dict:
     """Resolve the bayes-tier sampler options with precedence CLI > env > defaults. Returns a plain
     picklable dict ``{n_live, dlogz, max_iter}`` threaded through the fit task tuples to
@@ -167,89 +171,21 @@ def _resolve_bayes_opts(cli_opts=None) -> dict:
     return out
 
 
-# The campaign's rung-2 slice reaches the analysis child (a subprocess or the persistent worker) by
-# environment, like ISAR_ESCALATION_N_LIVE: isar.drive.isar_io.runner sets it around every runner
-# call. Unset: no slice, so a plain `isar run` runs rung 2 to completion.
-RUNG2_SLICE_ENV = "ISAR_RUNG2_SLICE_S"
-
-
-def resolve_rung2_slice(explicit=None) -> float | None:
-    """The invocation's rung-2 time slice in seconds: ``explicit``, else ``$ISAR_RUNG2_SLICE_S``,
-    else ``None`` (no slice). A malformed or negative value raises: a slice that quietly ignored
-    what it was told would hold a campaign decision on nested sampling."""
-    raw = explicit if explicit is not None else os.environ.get(RUNG2_SLICE_ENV)
-    if raw is None or raw == "":
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{RUNG2_SLICE_ENV}={raw!r} is not a number") from exc
-    if not value >= 0.0:
-        raise ValueError(f"rung-2 slice {value} must be a number >= 0")
-    return value
-
-
-def _rung2_pending(outcome) -> bool:
-    """Whether a stored outcome waits on rung 2 (provisional: its rung-1 result is shown)."""
-    count = ((outcome or {}).get("fit_selection_semantics") or {}).get("count_ladder") or {}
-    return count.get("state") == "provisional"
-
-
 def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=None, llm=False,
               M=200, scan_M=None,
               detectors=None, formats=("html", "markdown"), workers=None,
               errors_tier="full", scan_errors_tier=None, master_errors_tier=None,
               bayes_cli=None, timer=None,
               certification_manifest=None, analysis_allowance_seconds=None,
-              finish_initial_wave=False, rung2_slice_seconds=None) -> RunSummary:
-    """The pipeline behind ``isar run``, in two passes (design 2026-10-22, §3.1). The first delivers
-    rung 1 of the count ladder for every new or changed spectrum, writing each escalated one
-    ``provisional``. The second refits the spectra still waiting on rung 2 and gives each at most
-    the rung-2 slice (:func:`resolve_rung2_slice`; none: to completion) of nested sampling, counted
-    from when its rung 2 starts, so its rung-1 refit never uses the slice up and every pending
-    spectrum advances by at least one contender; each resumes from its stored ``rung2_partial``.
-    What it does not finish stays provisional, "rung 2 pending", and resumes on the next
-    invocation, which also covers a stopped or crashed run."""
-    slice_s = resolve_rung2_slice(rung2_slice_seconds)
-    started = time.monotonic()
-    common = dict(llm=llm, M=M, scan_M=scan_M, detectors=detectors, formats=formats,
-                  workers=workers, errors_tier=errors_tier, scan_errors_tier=scan_errors_tier,
-                  master_errors_tier=master_errors_tier, bayes_cli=bayes_cli, timer=timer,
-                  certification_manifest=certification_manifest)
-    first = _run_batch_pass(workspace, data_paths, force=force, force_masters=force_masters,
-                            analysis_allowance_seconds=analysis_allowance_seconds,
-                            finish_initial_wave=finish_initial_wave,
-                            rung2_slice_s=0.0, retask_pending=False, **common)
-    if certification_manifest is not None or first.analysis_incomplete or slice_s == 0:
-        return first
-    _card, session = workspace.load()
-    if not any(_rung2_pending(oc) for e in session.scans.values() for oc in e.detectors.values()):
-        return first
-    allowance = None
-    if analysis_allowance_seconds is not None:
-        allowance = float(analysis_allowance_seconds) - (time.monotonic() - started)
-        if allowance <= 0.0:
-            return first
-    second = _run_batch_pass(workspace, data_paths, force=False, force_masters=None,
-                             analysis_allowance_seconds=allowance, finish_initial_wave=False,
-                             rung2_slice_s=slice_s, retask_pending=True, **common)
-    second.context_lines = first.context_lines + second.context_lines
-    second.n_fitted_this_run += first.n_fitted_this_run
-    second.n_reprocessed += first.n_reprocessed
-    return second
-
-
-def _run_batch_pass(workspace: Workspace, data_paths, *, force=False, force_masters=None,
-                    llm=False, M=200, scan_M=None,
-                    detectors=None, formats=("html", "markdown"), workers=None,
-                    errors_tier="full", scan_errors_tier=None, master_errors_tier=None,
-                    bayes_cli=None, timer=None,
-                    certification_manifest=None, analysis_allowance_seconds=None,
-                    finish_initial_wave=False, rung2_slice_s=None,
-                    retask_pending=False) -> RunSummary:
-    """One pass of :func:`run_batch`. ``rung2_slice_s`` (seconds of sampling per spectrum, from its
-    own rung-2 start) bounds rung 2 of every fit; ``retask_pending`` refits the spectra waiting on
-    rung 2, resuming each."""
+              finish_initial_wave=False) -> RunSummary:
+    """The pipeline behind ``isar run``: one pass. Every fresh spectrum gets the fast pass
+    (:func:`isar.analyze.fast_pass.run_fast_pass`) and the tier decides only which errors are
+    attached to the selected model afterwards; a spectrum is never revisited within or across runs
+    unless its content or guidelines changed (or ``force``)."""
+    # One BLAS thread per process before any pool starts: several workers times a multi-threaded
+    # BLAS on 184x20 Jacobians oversubscribes the cores. An operator's own value wins.
+    for _name in _THREAD_ENV:
+        os.environ.setdefault(_name, "1")
     timer = timer or NullTimer()
     # ``force_masters``: refit exactly these master ledger ids (e.g. "master:2.65_0.0_0.0_300")
     # even when their member set is unchanged, without forcing anything else. This is the
@@ -401,7 +337,6 @@ def _run_batch_pass(workspace: Workspace, data_paths, *, force=False, force_mast
     from isar.session.state import canonical_hash
     tasks = []          # (rec, det, q, T, sample, scan_id, chash, ghash, seed)
     plan = []           # ordered: ("carry", scan, outcome) | ("task", scan, det, task_idx)
-    rung2_resume = {}   # scan_id -> the rung2_partial a pending spectrum resumes from
     for rec in routed.measurements:
         scan = rec.scan_number
         chash = content_hash(rec)
@@ -427,9 +362,6 @@ def _run_batch_pass(workspace: Workspace, data_paths, *, force=False, force_mast
                      or prev.status == "ingested" or force
                      or (calfp is not None and prev.status != "excluded"   # an excluded set stays so
                          and (prev.provenance or {}).get("calibration_fingerprint") != calfp))
-            if not fresh and retask_pending and _rung2_pending(prev.detectors.get(det)):
-                fresh = True
-                rung2_resume[scan_id] = prev.detectors[det].get("rung2_partial")
             if not fresh:
                 # Unchanged & already resolved: keep the ledger entry, re-list its outcome for the report.
                 if prev.detectors.get(det):
@@ -479,11 +411,6 @@ def _run_batch_pass(workspace: Workspace, data_paths, *, force=False, force_mast
                     for rec in records
                 ],
             },
-            # Which rung-2 pass and what each pending spectrum resumes from: a later pass over
-            # the same spectra is new work, never a cached earlier pass.
-            "rung2": {"pass": "resume" if retask_pending else "rung1_first",
-                      "resume": {scan_id: canonical_hash(partial)
-                                 for scan_id, partial in sorted(rung2_resume.items())}},
             "seeds": {"scan_seed_base": seed_base, "scan_rule": "6000 + scan_number",
                       "master_rule": "6000 + canonical_group_index",
                       "error_attachment_default": 12345,
@@ -534,7 +461,8 @@ def _run_batch_pass(workspace: Workspace, data_paths, *, force=False, force_mast
         shared_pool = ProcessPoolExecutor(max_workers=pool_workers)
     try:
         with timer.stage("fit_scans", n_tasks=len(tasks), use_pool=use_pool,
-                         boot_workers=boot_workers) as _m_fit:
+                         boot_workers=boot_workers, scan_workers=scan_workers,
+                         threads={name: os.environ.get(name) for name in _THREAD_ENV}) as _m_fit:
             cached: dict[int, ScanEntry] = {}
             remaining = []
             remaining_indices = []
@@ -603,8 +531,7 @@ def _run_batch_pass(workspace: Workspace, data_paths, *, force=False, force_mast
                 {"scan_id": e.scan_id,
                  "seconds": e.provenance.get("fit_seconds"),
                  "two_stage_seconds": e.provenance.get("two_stage_seconds"),
-                 "rung1_seconds": e.provenance.get("rung1_seconds"),
-                 "rung2_seconds": e.provenance.get("rung2_seconds"),
+                 "fast_pass": e.provenance.get("fast_pass"),
                  "errors_attach_seconds": e.provenance.get("errors_attach_seconds"),
                  "bootstrap_seconds": e.provenance.get("bootstrap_seconds"),
                  "minos_seconds": e.provenance.get("minos_seconds"),
@@ -933,7 +860,7 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
                 fit_card, runcal, g, str(item["unit"]["master_id"]),
                 _MASTER_SCAN_BASE + item["group_index"], item["content_hash"], M,
                 int(item["unit"]["seed"]), requested_tier, boot_adaptive, None, bayes_opts,
-                "certification", deadline_gate.deadline is None,
+                "certification",
             ) for item in wave]
             progress(active=len(wave))
             pool = None
