@@ -129,6 +129,81 @@ def _diagnose(res, bounds, omega0_i, omega0_draws, omega0_interval, ess, max_ite
     return True, None
 
 
+@dataclass(frozen=True)
+class EvidenceProblem:
+    """The prior-bundle sampling problem of one candidate, shared by :func:`bayesian_posterior` and
+    the deep pass (:mod:`isar.analyze.deep_pass`) so both sample the same loglike and transform.
+
+    Picklable: it holds ``(hyp, ctx, bundle)``, the objects ``evidence._structure_evidence_task``
+    already ships to pool workers, and builds its closures where it is called. ``ctx`` is the
+    candidate's own context (``loop.candidate_context``); the loglike is the pure Baker-Cousins
+    ``-cost/2`` (the priors enter through ``bundle.transform_ordered``)."""
+
+    hyp: object
+    ctx: object          # loop.candidate_context(hyp, scan ctx)
+    bundle: object       # catalogue.PriorBundle from evidence.candidate_bundle(hyp, scan ctx)
+
+    def setup(self):
+        """``(problem, names, free_pos, template)``; ``ValueError`` when the bundle does not match
+        the sampled (free, non-hard-fixed) parameters. ``template`` is the full parameter vector
+        with the hard-fixed values in place (``None`` when nothing is fixed)."""
+        prob = loop.build_problem(self.hyp, self.ctx)
+        names = prob.free_names
+        by_name = self.bundle.by_name()
+        free_pos = list(range(len(names)))
+        template = None
+        if prob.fixed_pos:
+            # A hard-fixed coordinate is held at its value and never integrated: the sampler works
+            # in the free subspace, as the optimizer does (loop._minimize_fixed). A prior on it
+            # would integrate a dimension the evidence must not have, so that bundle is refused.
+            frozen = [names[i] for i in prob.fixed_pos]
+            if any(n in by_name for n in frozen):
+                raise ValueError(f"prior_bundle carries a prior for hard-fixed parameter(s) "
+                                 f"{[n for n in frozen if n in by_name]}; a frozen coordinate "
+                                 f"is never integrated")
+            fixed = set(prob.fixed_pos)
+            free_pos = [i for i in range(len(names)) if i not in fixed]
+            template = np.asarray(prob.x0, dtype=float).copy()
+            template[list(prob.fixed_pos)] = np.asarray(prob.fixed_vals, dtype=float)
+        sampled = [names[i] for i in free_pos]
+        missing = [n for n in sampled if n not in by_name]
+        if missing:
+            raise ValueError(f"prior_bundle has no prior for sampled parameter(s) {missing}; "
+                             f"every free parameter must carry exactly one prior factor")
+        if [p.name for p in self.bundle.params] != sampled:
+            raise ValueError("prior_bundle parameters are not in the sampled parameter order; "
+                             "the ordered transform assigns by position")
+        return prob, names, free_pos, template
+
+    def __call__(self):
+        """``(loglike, ptform, ndim)`` for dynesty."""
+        prob, _names, free_pos, template = self.setup()
+        x, counts, ctx = self.ctx.x_used, self.ctx.counts_used, self.ctx
+        est = estimators.get_estimator("baker_cousins")
+        composite = prob.composite
+
+        def loglike(theta):
+            if template is not None:
+                full = template.copy()
+                full[free_pos] = theta
+                theta = full
+            ll = -0.5 * est.cost(counts, composite.evaluate(x, np.asarray(theta, dtype=float), ctx))
+            return ll if np.isfinite(ll) else -1e300
+
+        return loglike, self.bundle.transform_ordered, len(free_pos)
+
+    def full_params(self, theta) -> dict:
+        """The sampled coordinates ``theta`` (bundle order) as every parameter by name, the
+        hard-fixed ones at their pinned values."""
+        _prob, names, free_pos, template = self.setup()
+        if template is None:
+            full = np.asarray(theta, dtype=float)
+        else:
+            full = template.copy()
+            full[free_pos] = theta
+        return {n: float(v) for n, v in zip(names, full)}
+
+
 def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
                        seed: int = 12345,
                        n_live: int = DEFAULT_NLIVE, dlogz: float = DEFAULT_DLOGZ,
@@ -177,11 +252,18 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
     if prior_bundle is None and not fit_result.optimizer_converged:
         return _failed("fit did not converge")
 
-    prob = loop.build_problem(hyp, ctx)
     # NB (steering contract 1): nested sampling carries its own ω₀ prior (below, via ``prior_used``);
     # it does NOT apply ``ctx.constraints`` soft penalties. Soft Γ/A constraints are honoured by the
     # authoritative bootstrap + profile intervals, not this opt-in Bayesian path.
-    names = prob.free_names
+    if prior_bundle is not None:
+        problem = EvidenceProblem(hyp, ctx, prior_bundle)
+        prob, names, free_pos, template = problem.setup()
+    else:
+        problem = None
+        prob = loop.build_problem(hyp, ctx)
+        names = prob.free_names
+        free_pos = list(range(len(names)))
+        template = None
     x = ctx.x_used
     counts = ctx.counts_used
     est = estimators.get_estimator("baker_cousins")
@@ -199,31 +281,9 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
 
     lows = np.array([b[0] for b in prob.bounds], dtype=float)
     spans = np.array([b[1] - b[0] for b in prob.bounds], dtype=float)
-    free_pos = list(range(len(names)))
-    template = None
     if prior_bundle is not None:
         by_name = prior_bundle.by_name()
-        if prob.fixed_pos:
-            # A hard-fixed coordinate is held at its value and never integrated: the sampler works
-            # in the free subspace, as the optimizer does (loop._minimize_fixed). A prior on it
-            # would integrate a dimension the evidence must not have, so that bundle is refused.
-            frozen = [names[i] for i in prob.fixed_pos]
-            if any(n in by_name for n in frozen):
-                raise ValueError(f"prior_bundle carries a prior for hard-fixed parameter(s) "
-                                 f"{[n for n in frozen if n in by_name]}; a frozen coordinate "
-                                 f"is never integrated")
-            fixed = set(prob.fixed_pos)
-            free_pos = [i for i in range(len(names)) if i not in fixed]
-            template = np.asarray(prob.x0, dtype=float).copy()
-            template[list(prob.fixed_pos)] = np.asarray(prob.fixed_vals, dtype=float)
         sampled = [names[i] for i in free_pos]
-        missing = [n for n in sampled if n not in by_name]
-        if missing:
-            raise ValueError(f"prior_bundle has no prior for sampled parameter(s) {missing}; "
-                             f"every free parameter must carry exactly one prior factor")
-        if [p.name for p in prior_bundle.params] != sampled:
-            raise ValueError("prior_bundle parameters are not in the sampled parameter order; "
-                             "the ordered transform assigns by position")
         prior_specification = {
             "prior_kind": "catalogue_prior_bundle",
             "parameter_prior": "per_parameter_truncated_ppf",
@@ -235,7 +295,6 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
             "omega_loglike_term": None,
         }
         semantics_id = "isar.catalogue_prior_bundle_nested_prior/3"
-        ptform = prior_bundle.transform_ordered
     else:
         prior_specification = {
             "prior_kind": "optimizer_bound_data_dependent",
@@ -279,13 +338,16 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
         full[free_pos] = theta
         return full
 
-    def loglike(theta):
-        theta = embed(theta)
-        f = composite.evaluate(x, theta, ctx)
-        ll = -0.5 * est.cost(counts, f)                     # exact Baker–Cousins −2lnL/2
-        if prior_used:                                      # guarded above: omega0_i exists
-            ll += _gauss_logpdf(float(theta[omega0_i]), mu, sig)
-        return ll if np.isfinite(ll) else -1e300
+    if problem is not None:                                 # the evidence tier: pure data loglike
+        loglike, ptform, _ndim = problem()
+    else:
+        def loglike(theta):
+            theta = embed(theta)
+            f = composite.evaluate(x, theta, ctx)
+            ll = -0.5 * est.cost(counts, f)                 # exact Baker–Cousins −2lnL/2
+            if prior_used:                                  # guarded above: omega0_i exists
+                ll += _gauss_logpdf(float(theta[omega0_i]), mu, sig)
+            return ll if np.isfinite(ll) else -1e300
 
     rng = np.random.default_rng(seed)
     try:                                                    # §5.4: sampler failure must not escape
