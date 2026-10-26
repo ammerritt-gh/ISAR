@@ -516,7 +516,7 @@ class PriorBundle:
         prefix = self.params[energy_index].name.split(".", 1)[0]
         return tuple((p.name.split(".", 1)[1], p.kind, p.mu, p.sigma, p.lo, p.hi)
                      for p in self.params if p.name.split(".", 1)[0] == prefix
-                     and p.origin != "default_softlog")
+                     and p.origin not in ("default_softlog", "default_flat_width"))
 
     def logpdf_ordered(self, named_values: dict) -> float:
         """:meth:`logpdf` with each group of exchangeable mode energies under the normalised
@@ -589,7 +589,8 @@ def _validated(name: str, kind: str, mu: float, sigma: float, lo: float, hi: flo
     return ResolvedPrior(name, kind, mu, sigma, lo, hi, origin, origin_detail)
 
 
-def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=()) -> PriorBundle:
+def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=(),
+                   prior_settings=None) -> PriorBundle:
     """Resolve every free parameter's proper prior for one candidate (SCENE-1 PR-b).
 
     Precedence per parameter — **exactly one prior factor each** (the H3/H4 no-double-counting
@@ -599,8 +600,12 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=()) -> PriorBu
     (``default_softlog``), normalized flat over the bounds for anything else. ``exclude`` names the hard-fixed parameters
     (no prior factor; k already reduced). ``bounds`` is the per-parameter (lo, hi) list in
     ``composite.param_names()`` order, exactly as :func:`isar.analyze.loop.build_problem` built
-    them.
+    them. ``prior_settings`` (a :class:`~isar.analyze.prior.PriorSettings`, ``None``: recipe v5)
+    sets the default width density as :meth:`isar.analyze.prior.SpectrumPrior.ln_width` has it: the
+    softened log-uniform with the settings' knee, or flat when ``width_kind`` is ``"flat"`` or under
+    ``legacy_v4``. The bounds are the caller's (``prior.mode_bounds(names, ctx, prior_settings)``).
     """
+    settings = prior_settings or PriorSettings()
     constraints = getattr(ctx, "constraints", None)
     soft = dict(getattr(constraints, "soft", None) or {})
     origins = dict(getattr(constraints, "origins", None) or {})
@@ -635,8 +640,13 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=()) -> PriorBu
                 sigma = _resolve_value(d.sigma, ctx, what=f"{name} sigma")
                 resolved.append(_validated(name, d.kind, mu, sigma, lo, hi, "identity"))
         elif suffix == "Gamma":
-            resolved.append(ResolvedPrior(name, "softlog", PriorSettings().width_knee, None,
-                                          lo, hi, "default_softlog"))
+            if settings.width_kind == "flat" or settings.legacy_v4:
+                # shortcut: normalised over [lo, hi], SpectrumPrior over [0, cap]; the unrenormalised
+                # mass below the floor is lo/cap, ~5e-5 nats, like the softlog width's.
+                resolved.append(ResolvedPrior(name, "flat", None, None, lo, hi, "default_flat_width"))
+            else:
+                resolved.append(ResolvedPrior(name, "softlog", settings.width_knee, None,
+                                              lo, hi, "default_softlog"))
         else:
             resolved.append(ResolvedPrior(name, "flat", None, None, lo, hi, "default_flat"))
     # A declared suffix no free parameter carries is a stale/misspelled declaration — silent

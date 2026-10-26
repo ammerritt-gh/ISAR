@@ -499,19 +499,23 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     return _escalate("map_refit_invalid")
 
 
-def candidate_bundle(hyp, ctx):
+def candidate_bundle(hyp, ctx, *, prior_settings=None):
     """The :class:`~isar.analyze.catalogue.PriorBundle` a candidate is priced under: resolved under
     its own context (a variant's pins stay pinned), its identity entry's declared priors, and no
     factor for a hard-fixed parameter. The same resolution as
-    :func:`isar.analyze.select._candidate_evidence`."""
-    from isar.analyze import catalogue
+    :func:`isar.analyze.select._candidate_evidence`. ``prior_settings`` (``None``: recipe v5, the
+    bounds ``loop.build_problem`` gives) rebuilds the bundle under a configured
+    :class:`~isar.analyze.prior.PriorSettings`, bounds and default width density both."""
+    from isar.analyze import catalogue, prior
 
     cctx = loop.candidate_context(hyp, ctx)
     prob = loop.build_problem(hyp, cctx)
+    bounds = (prob.bounds if prior_settings is None
+              else prior.mode_bounds(prob.free_names, cctx, prior_settings))
     return catalogue.resolve_priors(
-        prob.composite, cctx, prob.bounds,
+        prob.composite, cctx, bounds,
         entry=catalogue.identity_entry(getattr(hyp, "identity", None)),
-        exclude=[prob.free_names[i] for i in prob.fixed_pos])
+        exclude=[prob.free_names[i] for i in prob.fixed_pos], prior_settings=prior_settings)
 
 
 def nested_evidence(hyp, ctx, fit_result, bundle, *, seed: int = 12345, n_live: int | None = None,
