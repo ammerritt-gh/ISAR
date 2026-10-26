@@ -30,7 +30,7 @@ from scipy.special import gammaln, logsumexp, xlogy
 from isar.analyze import backends, catalogue, loop, prior
 from isar.analyze.components import Elastic, PhononDHO, phonon_unit_columns
 from isar.analyze.estimators import FMIN
-from isar.analyze.lineshapes import KB
+from isar.analyze.lineshapes import KB, voigt_area_for_height
 from isar.analyze.phonon import GAMMA_FLOOR, _peak_omega0
 
 log = logging.getLogger(__name__)
@@ -517,16 +517,27 @@ def _classify(s: FastPassSettings, peaks: list, fs: dict, probabilities: dict, p
             "regime": regime, "manual_fit": regime != "underdamped",
             "status": status, "area_status": area_status})
 
-    # -- grouped intensity: peaks within one FWHM of a neighbour, or a correlated pair
+    # -- grouped intensity: peaks within one FWHM of a neighbour, or a correlated pair; a peak whose
+    #    height trades with the elastic line's joins it (node n), the group then running from zero
     near_edges = [(i, j) for i in range(n) for j in range(i + 1, n) if abs(e0[i] - e0[j]) <= fwhm]
-    area_cov = fs.get("area_covariance")
+    area_cov, el_cov = fs.get("area_covariance"), fs.get("elastic_area_covariance")
+    el_corr = fs.get("elastic_height_correlations") or []     # absent from older records: no group
+    el_edges = [(i, n) for i, c in enumerate(el_corr)
+                if c is not None and abs(c) > s.overdamped_correlation
+                and fs.get("elastic_area") is not None and el_cov is not None]
     grouped = []
-    for g in _groups(n, near_edges + corr_edges):
+    for g in _groups(n + 1, near_edges + corr_edges + el_edges):
+        with_el = n in g
+        g = [i for i in g if i < n]
         sigma = None
         if area_cov is not None:
-            sigma = float(math.sqrt(max(sum(area_cov[i][j] for i in g for j in g), 0.0)))
-        grouped.append((max(0.0, e0[g[0]] - fwhm / 2), e0[g[-1]] + fwhm / 2,
-                        float(sum(peaks[i]["area_stokes"] for i in g)), sigma))
+            var = sum(area_cov[i][j] for i in g for j in g)
+            if with_el:                  # Var(A_el + sum A_i) = Var(A_el) + 2 sum Cov(A_el, A_i) + ...
+                var += el_cov[n] + 2.0 * sum(el_cov[i] for i in g)
+            sigma = float(math.sqrt(max(var, 0.0)))
+        grouped.append((0.0 if with_el else max(0.0, e0[g[0]] - fwhm / 2), e0[g[-1]] + fwhm / 2,
+                        float(sum(peaks[i]["area_stokes"] for i in g))
+                        + (float(fs["elastic_area"]) if with_el else 0.0), sigma))
 
     # -- the count state
     if preferred is None or fs["unpriced_contenders"]:
@@ -1400,11 +1411,21 @@ class _Engine:
         _col, up = self.units([(e, g)], [peak])[0]
         return up.area_stokes / up.height, up.area_both / up.height
 
+    def _elastic_area_per_h(self):
+        """The elastic line's area (counts*meV) per unit height: the resolution profile has unit
+        area, ``Elastic`` scales it to unit height (same convention as the phonon areas, no exposure)."""
+        curve = getattr(self.ctx, "resolution_curve", None)
+        if curve is not None:
+            return 1.0 / float(np.max(curve.values))
+        return voigt_area_for_height(1.0, self.ctx.gauss_fwhm, self.ctx.lorentz_fwhm)
+
     def _peaks(self, b):
         """(PeakResult values, the plain statistics ``_classify`` reads) of the selected basin ``b``.
         ``confident``, ``regime``, ``manual_fit`` and the correlation-dependent statuses are
         placeholders here: ``_classify`` sets them, in the engine and in reclassify alike."""
         extras = {"peaks": [], "height_correlations": [], "area_covariance": None,
+                  "elastic_area": None, "elastic_height_correlations": [],
+                  "elastic_area_covariance": None,
                   "residual_scan": [], "residual_scan_max": 0.0, "saturated_deletion_peaks": []}
         if b is None or b.theta_map is None:
             return (), extras
@@ -1481,6 +1502,16 @@ class _Engine:
                 if sd[hc[i]] > 0 and sd[hc[j]] > 0]
             G = np.array(grads)
             extras["area_covariance"] = (G @ cov @ G.T).tolist()
+            el = model.el
+            if el is not None and sd[el] > 0:     # the elastic line's area trades with a soft mode's
+                a_el = self._elastic_area_per_h()
+                extras["elastic_height_correlations"] = [
+                    float(cov[hc[i], el] / (sd[hc[i]] * sd[el])) if sd[hc[i]] > 0 else None
+                    for i in range(len(hc))]
+                extras["elastic_area_covariance"] = (
+                    [float(v) for v in a_el * (G @ cov[:, el])] + [float(a_el ** 2 * cov[el, el])])
+        if model.el is not None:
+            extras["elastic_area"] = float(t[model.el]) * self._elastic_area_per_h()
         extras["residual_scan"] = self._residual_scan(mean)
         extras["residual_scan_max"] = max((w[2] for w in extras["residual_scan"]), default=0.0)
         return tuple(out), extras

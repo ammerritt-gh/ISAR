@@ -15,6 +15,7 @@ from scipy.optimize import least_squares
 from scipy.special import gammaln, xlogy
 
 from isar.analyze import catalogue, fast_pass
+from isar.analyze.components import Elastic
 from isar.analyze.context import ScanContext
 from isar.analyze.fast_pass import FastPassSettings
 
@@ -322,3 +323,35 @@ def test_reclassify_and_reclassify_record_agree(two_peak, change):
     assert (want.peaks, want.flags, want.grouped_intensity) != (base.peaks, base.flags, base.grouped_intensity)
     with pytest.raises(ValueError, match="trf_max_nfev"):
         fast_pass.reclassify_record(rec, replace(r.settings, trf_max_nfev=1))
+
+
+def test_a_height_correlated_with_the_elastic_line_groups_with_it():
+    """Design 2.3: a soft component trading intensity with the elastic line has only the sum over
+    an interval from zero constrained; the group adds the elastic area, sigma from the sum."""
+    fs = _fs([(2.0, 0.5, 100.0, 0.1)], area_covariance=[[9.0]], elastic_area=100.0,
+             elastic_height_correlations=[-0.95], elastic_area_covariance=[-20.0, 50.0])
+    (lo, hi, area, sigma), = _run(fs)["grouped_intensity"]
+    assert (lo, hi, area) == (0.0, 2.75, 110.0) and sigma == pytest.approx(math.sqrt(9 - 40 + 50))
+    assert _run(fs, overdamped_correlation=0.99)["grouped_intensity"] == []     # below the threshold
+    weak = dict(fs, elastic_height_correlations=[-0.5])
+    assert _run(weak)["grouped_intensity"] == []
+    absent = {k: v for k, v in fs.items() if not k.startswith("elastic_")}      # an older record
+    assert _run(absent)["grouped_intensity"] == []
+
+
+def test_the_engine_records_the_elastic_correlation_for_the_group():
+    flat = np.full(X.size, 30.0)
+    cov = np.diag([0.04, 0.04, 25.0, 25.0, 0.1])
+    cov[2, 3] = cov[3, 2] = -0.95 * 25.0
+    eng, b = _hand(flat, [2.0, 0.5, 100.0, 150.0, 4.0], cov)
+    peaks, extras = eng._peaks(b)
+    assert extras["elastic_height_correlations"] == [pytest.approx(-0.95)]
+    xs = np.linspace(-40.0, 40.0, 80001)
+    a_el = float(np.sum(Elastic().unit_columns(xs, {}, eng.ctx)["h"]) * (xs[1] - xs[0]))
+    assert extras["elastic_area"] == pytest.approx(150.0 * a_el, rel=1e-3)
+    per_s, _ = eng._area_per_h(b.model.variant.peaks[0], 2.0, 0.5)
+    assert extras["elastic_area_covariance"] == pytest.approx(
+        [a_el * per_s * cov[3, 2], a_el ** 2 * 25.0], rel=1e-3)
+    (lo, hi, area, sigma), = _classified(eng, b)[1]["grouped_intensity"]
+    assert lo == 0.0 and area == pytest.approx(peaks[0].area_stokes + extras["elastic_area"])
+    assert sigma < math.sqrt(extras["elastic_area_covariance"][1] + extras["area_covariance"][0][0])
