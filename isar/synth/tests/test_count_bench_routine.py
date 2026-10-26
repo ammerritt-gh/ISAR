@@ -22,7 +22,7 @@ def test_one_isolated_peak_through_the_real_fit(tmp_path):
     (res,) = results
     assert res.status == "ok" and res.record is not None
     sf = [p for p in res.true_peaks if p["should_find"]]
-    assert len(sf) == 1 and sf[0]["outcome"] in ("confident", "tentative_or_abstained", "missed")
+    assert len(sf) == 1 and sf[0]["outcome"] != "missed"
     paths = cb.write_outputs(tmp_path / "out", results, cb.summarize(results), {"note": "routine"}, base_seed=1)
     lines = [json.loads(s) for s in paths["records.jsonl"].read_text(encoding="utf-8").splitlines()]
     assert len(lines) == 1 and lines[0]["fast_pass"] == res.record and lines[0]["truth"]["name"] == "clean_one"
