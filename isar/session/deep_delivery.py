@@ -75,9 +75,8 @@ def _run_timing(r) -> dict:
 
 
 def _chosen_model(res):
-    """The highest-weight model of the best count, preferring one sampled at reference precision."""
+    """The highest-weight model of the best count, whatever its stage, so the fit matches the weights."""
     cands = [m for m in res.models if m.count == res.best_count and math.isfinite(m.log_z)]
-    cands = [m for m in cands if m.status == "reference"] or cands
     return max(cands, key=lambda m: m.log_z + m.log_model_prior, default=None)
 
 

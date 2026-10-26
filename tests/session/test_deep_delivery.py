@@ -6,6 +6,7 @@ compares the wrong data, and one tiny end-to-end pass (slow) yields a complete r
 import dataclasses
 import functools
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -129,6 +130,15 @@ def test_deliver_refuses_rather_than_compares_other_data():
     assert record["state"] == "refused" and "no fast-pass record" in record["reason"]
     record, _ = deep_delivery.deliver(fit, ctx, REQ, refuse="hard-fix escalation replaced the fit")
     assert record["state"] == "refused" and "hard-fix" in record["reason"]
+
+
+def test_the_chosen_fit_is_the_heaviest_model_of_the_best_count_whatever_its_stage():
+    # the lighter reference variant must not be published over the exploratory one the weights favour
+    ref = deep_pass.ModelEvidence("ref", 2, "reference", log_z=-10.0)
+    dom = deep_pass.ModelEvidence("dom", 2, "exploratory", log_z=-2.0)
+    other = deep_pass.ModelEvidence("one", 1, "reference", log_z=-1.0)
+    res = SimpleNamespace(models=[ref, dom, other], best_count=2)
+    assert deep_delivery._chosen_model(res).label == "dom"
 
 
 def test_deliver_passes_the_fast_pass_search_limit_to_the_deep_pass(monkeypatch):
