@@ -1,9 +1,10 @@
 """The (Ω_d, Γ) reparameterized fit layer.
 
 Vary (Ω_d ≥ ε, Γ, A, E, BG); convert ω₀ = √(Ω_d²+Γ²) and call the production model
-unchanged, so the Stokes peak sits at √(ω₀²−Γ²) = Ω_d and the overdamped `1e6` guard
-is unreachable. center, resolution, and T are FIXED at their true values (baked into
-the model closure) — five free parameters. The estimator and backend are pluggable.
+unchanged. Ω_d is the underdamped coordinate: the Stokes peak of the full lineshape only
+approximates it, not exactly. ω₀ ≥ Γ always, so this layer cannot represent Γ > ω₀
+(an overdamped truth). center, resolution, and T are FIXED at their true values (baked
+into the model closure) — five free parameters. The estimator and backend are pluggable.
 """
 from __future__ import annotations
 
