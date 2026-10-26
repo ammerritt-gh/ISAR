@@ -12,7 +12,7 @@ which parameters do the counts support? ISAR minimizes the Baker–Cousins Poiss
 rather than a χ², because at triage-level counts the standard χ² choices are not approximately
 right — they are measurably biased, in opposite directions, by an exact identity (Fig. 2).
 **Select:** which model? A posterior over structures from per-candidate Bayesian evidence
-(Laplace, with escalation to nested sampling), Akaike weights persisting as a recorded
+(Laplace in the fast pass, nested sampling in the deep pass), Akaike weights persisting as a recorded
 diagnostic, and a fork reported when the data genuinely cannot decide (Fig. 3).
 **Certify:** what uncertainty? A ladder of intervals — Hessian, profile,
 parametric bootstrap — whose 68% coverage we measured on known truth rather than assumed
@@ -215,10 +215,9 @@ The **fast pass** (§2.2) prices every model one way **[Partial]**: a Laplace ap
 - **What the probabilities are.** Approximate empirical-Bayes model probabilities under the stated
   priors (the height prior reads the spectrum's own counts, §2.1), recorded as such.
 
-The nested-sampling lane of the earlier pipeline (dynesty at 128 live points for the count's
-contenders, the validity ladder Laplace → MAP refit → sampling, and the dominance prune) is still in
-the code and still decides counts until `scan_delivery.fit_one` calls the fast pass; the deep pass that
-replaces it is a later job, and this section no longer describes its tuning.
+The earlier pipeline's nested-sampling lane for the count (dynesty at 128 live points for the count's
+contenders) is deleted with `count_ladder.py` and `evidence.nested_evidence`; nested-sampling evidence for the
+counts is now the deep pass (§2.4), and this section does not describe the old lane's tuning.
 
 **In plain terms**, because this paragraph earns its keep at the podium: the likelihood at the
 best-fit point always improves when you add a knob, so it cannot judge between models. The
@@ -470,9 +469,8 @@ it is confident and whether it is a delta mode. A scan with no fit reads `held` 
 reason), `fitting` (ingested, not yet fitted) or `not fitted` (excluded or undersampled); a detector
 outcome with no fast-pass record reads `not recorded`. Only a `resolved` count enters the dispersion
 prior (`evidence_update._master_prior_admissible`). A pooled master goes through the same `fit_one`.
-The earlier two-rung count ladder (`isar/analyze/count_ladder.py`) is off the fit path; its code
-remains only for the shadow candidates of the STAT-2b campaign (`isar/synth/stat2b/campaign.py`)
-until it is retired.
+The earlier two-rung count ladder (a Laplace rung and a nested-sampling rung with seven triggers) is
+deleted; git history holds it. Nested-sampling evidence for the counts is the deep pass (§2.4).
 
 **The mode ceiling.** A spectrum may hold up to a configurable number of modes: card
 `[fitting] max_modes`, else the environment variable `ISAR_MODE_CEILING`, else 6
@@ -502,7 +500,7 @@ a minute per spectrum on a laptop (an aim and a diagnostic, never a stopping rul
 `isar/analyze/fast_pass.py` (`run_fast_pass`); the settings are `FastPassSettings`. It runs no nested
 sampling, profile interval, bootstrap or automatic second pass. `scan_delivery.fit_one` runs it in
 place of the earlier count ladder (a Laplace rung and a nested-sampling rung with seven triggers),
-which is off the fit path.
+which is deleted.
 
 **Stage 1, the seed.** Pseudo-Voigt peaks, each with its anti-Stokes partner tied by the Bose factor and no
 convolution, so it is cheap. Fitted on the original counts (never on subtracted residuals): candidate
@@ -582,9 +580,10 @@ settings)` and `reclassify_record(record, settings)` re-apply `confident_anchor`
 - *Four thresholds are provisional, installed 2026-10-26 from the development streams.*
   `flag_residual_threshold` 10.05 is the 95th percentile of the residual-scan statistic on the 63
   clean development spectra (the combined false-flag rate there was 6.3%; 7.1% on the evaluation
-  streams, over its 5% setting). `confident_anchor` and `overdamped_correlation` (0.80) were picked
-  by rules whose development grids were flat, every grid value passing, so they sit at their grid
-  edges and are not calibrated optima. `seed_stop_gain` (6.0) is **not calibrated**: its refit grid
+  streams, over its 5% setting). `overdamped_correlation` (0.80) was picked by a rule whose development
+  grid was flat, every grid value passing, so it sits at its grid edge and is not a calibrated optimum.
+  `confident_anchor` is a constant 50, the operator's call on 2026-10-26 (the grid-edge value of the same
+  rule gave identical development results). `seed_stop_gain` (6.0) is **not calibrated**: its refit grid
   was skipped under the run-once ruling. The close-call and contending margins are rulings and
   existing constants.
 - *The probabilities are model-dependent.* They are empirical-Bayes under the priors of §2.1, and the 2^k delta
@@ -656,11 +655,12 @@ peak with no true peak is a false peak.
 - `flag_residual_threshold` 10.05: the 95th percentile of the residual-scan statistic on the 63
   clean development spectra. The ambiguous-decomposition kind alone gave no false flags there; the
   combined rate was 4/63 (6.3%).
-- `confident_anchor` ((300, 10), (600, 10)) and `overdamped_correlation` 0.80: the smallest grid
-  values meeting their 5% rules. Both grids were flat (every value passed), so the first point was
-  taken; the earlier default 50 for the anchor gives identical development results. The development
-  peaks all lie far above the operator's grade-25 and grade-100 boundaries, so the anchor is not
-  tested near them.
+- `overdamped_correlation` 0.80: the smallest grid value meeting its 5% rule. The grid was flat (every
+  value passed), so the first point was taken.
+- `confident_anchor` is a constant 50 (the operator's call, 2026-10-26: "50 is fine"). The development rule's
+  grid was flat too, and its first point ((300, 10), (600, 10)) gave results identical to 50, so that value
+  is dropped. The development peaks all lie far above the operator's grade-25 and grade-100 boundaries, so
+  the anchor is not tested near them.
 - `seed_stop_gain` 6.0: not calibrated; the four-value refit grid was skipped under the run-once ruling.
 
 **Evaluation figures.** Run once with the installed settings: 292 spectra (14 named truths times 10
@@ -701,6 +701,114 @@ default) or `--mode development` to tune. `run-isar-count-bench.bat` wraps it, p
 folder and wall time, and reads `ISAR_COUNT_BENCH_MAX_SECONDS` (default 5400 s). Outputs go to
 `out\count_bench\<timestamp>\`: `figures.json`, `cases.csv`, `true_peaks.csv`, `fitted_peaks.csv`,
 `records.jsonl` and the truth-versus-fit galleries. The run outputs are gitignored, not committed.
+
+### 2.4 The deep pass: nested-sampling evidence on the spectra you choose **[Partial; sampler settings provisional, calibration Planned]**
+
+The fast pass (§2.2) prices every count with Laplace evidence. The deep pass prices the same models by
+nested sampling, which makes no Gaussian assumption about the posterior, so it is the check on Laplace's
+known lean toward fewer modes (§2.2). It is slow (an estimate of tens of minutes per spectrum, not yet
+measured) and runs only on spectra the user names: `isar run --deep-pass` (`USING_ISAR.md`). The code is
+`isar/analyze/deep_pass.py` (the engine) and `isar/session/deep_delivery.py` (the entry and the persisted
+record). It runs after the fast pass, in the same run, on the same spectrum. The fast pass's fit, its
+count state and its `modes.csv` rows are not changed; the deep pass writes its own record and five
+`results.csv` columns.
+
+**What it samples.** Every model of that spectrum's fast-pass record: every count from 0 to the ceiling,
+with and without the background, the delta-mode twins and also the twin parents (the railed fits that
+resolve to a twin). Nested sampling needs no optimiser fit, so no model is left out because it was
+degenerate for the fitter. Each model is rebuilt as the fast pass priced it: the same likelihood
+(Baker–Cousins on raw counts, no zero-count floor), the same priors (the record's configured
+`PriorSettings`, §2.1) and the same ordered energy transform, with the hard-fixed coordinates held out;
+`bayes.EvidenceProblem` is that one sampled problem, shared with `--errors bayes`. If the data changed since
+the fast pass, the context is constrained (a campaign rescue), the prior recipe differs from the record's, or a
+model does not rebuild as the record fitted it, the deep pass is **refused** with that reason and writes no
+count decision.
+
+**Sampling starts from the prior.** The fast-pass result orders the work (which models run first) and feeds
+the suspect-run check below. It never seeds or restricts a run. Seeding the sampler from the fast-pass
+optimum is a later job (Planned, out of scope here).
+
+**The model prior and the count probabilities.** Each model carries the record's `ln_model_prior`: equal
+prior weight per count, shared equally over that count's variants and its 2^k delta/finite-width masks,
+normalised so a count's total is unchanged (§2.2). A count's probability is the sum over its models of
+exp(ln Z + ln prior), normalised over the models that have a sampled evidence. The fast pass's Laplace
+evidences enter on the sampler's own scale (ln Z minus the saturated log-likelihood, the -cost/2 scale) and
+only to order the work and to decide promotion.
+
+**Staged coverage.** (Constants in the table below.)
+
+1. *Contenders.* The models whose fast-pass probability is at least 0.01, and always the two highest, run at
+   the *accepted* settings.
+2. *Exploratory.* Every other model runs once at cheaper settings. It stays in the comparison at a wider
+   sigma, and it can order the work but can never exclude a model on its own.
+3. *Promotion.* An exploratory model whose exploratory ln Z + 3 sigma, or whose fast-pass ln Z, lies within 10
+   nats of the leading model (model prior included) is rerun at the accepted settings with an independent
+   seed. The second criterion exists because a 128-point run can sit tens of nats low while its best
+   log-likelihood looks fine.
+
+The sampling budget (`--deep-budget-minutes`, default 60) is per spectrum and is checked before each chunk of
+models; a chunk is as many models as there are workers, run in separate processes, each sampler
+single-threaded. A started chunk is never cut. The errors step below runs afterwards and is outside the budget.
+
+**Suspect runs and restarts.** A run is *suspect* when its ln Z is not finite, it stopped at an iteration cap,
+or its best log-likelihood lies more than `SUSPECT_GAP_BASE + SUSPECT_GAP_PER_DIM x ndim` (5 + 0.5 x ndim
+nats, provisional) below the fast-pass optimum of the same model. The test only detects failure: reaching
+the optimum does not certify a run. A suspect run is restarted with a new seed, first with the step length
+doubled, then with the live points doubled, up to two restarts. Every run, failures and restarts included, stays
+in the record. A model still suspect after its restarts is `unresolved`: kept, never rejected, and it makes
+the result search limited.
+
+**Search limited.** The result is *search limited*, and its probabilities are labelled `partial (search
+limited)` rather than a full comparison, when the budget ended before a model ran or before a promotion could
+run, or when a model is still suspect after its restarts. The probabilities then cover only the models that
+have a usable ln Z. A contenders-only comparison is never shown as the full one.
+
+**The state.** `refused`, `search_limited`, `close_call` or `resolved`, checked in that order. `close_call` uses
+the fast pass's threshold: the preferred count carries less than 0.80 of the probability (the record's
+`close_call_p`, §2.2).
+
+**The numerical qualification, and its limit.** Each model's ln Z is perturbed by an independent normal draw
+whose sigma is the larger of the settings' calibrated sigma (1.0 accepted, 3.0 exploratory; both provisional)
+and dynesty's own error, 4000 times. The result is *numerically marginal* (`deep_numerically_marginal`) when the
+winning count changes in more than 5% of the draws, or when the 5-95% band of the preferred count's probability
+crosses 0.80. The limit is one-sided. A marginal flag says the sampling noise could move the decision. An
+unflagged result does not say the evidence is accurate: agreement between runs bounds the error from below, not
+from above, and the sigmas are not yet measured. That is why the live-point and step-length escalation and an
+independent sampler are part of the calibration plan below.
+
+**What H is.** Each run records H, the information gained from prior to posterior in nats (dynesty's
+`information`). Nested-sampling's own error is about sqrt(H / n_live), which is why H is recorded with every
+run beside the real number of likelihood calls (counted here; dynesty's own count overstates it by about 25%),
+the iterations, the seed, the settings and the best log-likelihood. Wall times go to `run_timings.json`, not to
+the record.
+
+**The errors step.** On the chosen model (the highest-weight model of the preferred count, preferring one sampled
+at accepted precision) the deep pass refits from the nested maximum-likelihood sample and from the fast-pass best
+basin, keeps the better fit (a converged one first, then the lower objective), and attaches profile intervals and
+the bootstrap once (`errors.attach`, `--M` draws). A failure there is recorded as `errors_failure` and never loses
+the count result.
+
+**Provisional calibration status.** The sampler settings, the two sigmas and the suspect gap are provisional
+defaults, not yet measured on the final model. While the status reads provisional, every deep-pass count decision
+is labelled untrusted: the record carries `trusted: false` and the reason in `results.csv` ends "provisional
+sampler settings: untrusted until calibration". Planned, not built: the one bounded calibration pass on the final
+model (dynesty random walk against random slice, live points and step length varied separately, an UltraNest
+cross-check) and the comparison of the fast pass's Laplace differences with its reference differences. The
+figures will be added under this heading.
+
+| Constant (`deep_pass.py`) | Value | Status |
+|---|---|---|
+| Accepted settings (`ACCEPTED`) | 400 live points, random walk of `ndim + 20` steps, `dlogz` 0.05, no iteration cap, sigma 1.0 | provisional |
+| Exploratory settings (`EXPLORATORY`) | 128 live points, same walk, `dlogz` 0.5, sigma 3.0 | provisional |
+| Contender floor, always at least two (`CONTENDER_MIN_P`) | fast-pass probability 0.01 | provisional |
+| Promotion window (`RELEVANCE_GAP`) | 10 nats | provisional |
+| Suspect gap | 5 + 0.5 x ndim nats | provisional |
+| Restarts (`MAX_RESTARTS`) | 2 | provisional |
+| Numerical flag | winner flips in more than 5% of 4000 draws, or the 5-95% band crosses 0.80 | implementation default |
+
+**Carried, not rerun.** A deep pass is stored with the signature of everything that decides it (the settings,
+the constants above, the budget, the seed and `--M`). A later run under the same signature carries it; any
+change, including the budget, reruns it. A refused deep pass is retried.
 
 ## 3. Certify: the interval ladder, with its coverage measured
 

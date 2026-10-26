@@ -296,35 +296,16 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       written in `Guidelines.filter_structures` (`isar/session/guidelines.py`), which has no caller.
       **Acceptance:** a test with a mistyped label shows the scan is refused or held with its reason, not fitted
       on all models; the choice of refusal or hold is the operator's.
-- [ ] **FIT-6 — Pooled masters run rung 2 unsliced.** `master_delivery.py` calls `fit_one` without a deadline,
-      so a campaign refresh waits for a master's whole rung 2. **Acceptance:** masters take the rung-2 deadline and
-      resume as per-scan fits do, and the refresh's wait is measured.
-- [ ] **FIT-7 — A started rung-2 contender is never cut off.** The 120 s campaign slice is checked between
-      contenders, so one nested-sampling run can overrun it (measured 2026-10-23: about 250 s median per spectrum at
-      ceiling 3). **Acceptance:** the overrun is measured on the example set and either bounded or stated in
-      `STATS_PRIMER.md` §2.2.
 - [ ] **FIT-8 — Rung 2 at 11 to 14 free parameters is not reliable at 128 live points.** Nested lnZ lay 31 to 54
       nats from its 400-point value while reporting ±1 to 1.5 nats (`count_ladder.RUNG2_N_LIVE`, a shortcut).
       `logzerr ≤ 5` does not bound this bias, so a count decided at high mode numbers may be wrong.
       **Acceptance:** the live-point count at the 6-mode ceiling is measured against a 400-point reference and the
       constant set from it, or contenders at high counts are marked untrusted.
-- [ ] **FIT-9 — Undercounts that no trigger sees.** Laplace prices the count above the best 15 to 18 nats too low
-      (tuning stream, four priced cases), and three of six wrong counts at ceiling 3 (T0010, T0011, T0012) fire no
-      trigger, so rung 2 never sees them. **Acceptance:** a trigger or rule that sends these cases to rung 2,
-      tested on the tuning stream, with the figures reported as targets (R15), not tuned to a pass rate.
-- [ ] **FIT-10 — Rung-2 cost and escalation rate at the 6-mode ceiling are unmeasured.** Both were measured at
-      ceilings 3 and 4, before the background-free twin existed; at ceiling 6 no spectrum finished rung 1 plus
-      rung 2 within 576 s, before the fit-core speed-up. **Acceptance:** both measured on the tuning stream at
-      ceiling 6, with timings and rates reported.
-- [ ] **FIT-11 — Candidate-count record beside the deciding rung.** The per-count record shows each count's
-      representative: an unsampled variant, or a partial rung-2 lnZ, can sit beside the deciding rung's
-      probability; and a settled rung-2 runner-up probability can include a loser whose refit did not converge,
-      which `select_models` leaves out (the count itself is guarded). **Acceptance:** settled with the analyzer
-      inspector design; the record names which rung priced each number.
-- [ ] **FIT-12 — Rung-2 selection method name.** The rung-2 selection records
-      `selection_method = "laplace_evidence_selection"` while its candidates carry `evidence_method = "dynesty"`.
-      **Acceptance:** `isar/schema/statistics.py` names a nested-sampling selection method, and the rung-2
-      selection records it.
+- [ ] **FIT-9 — Laplace may price the count above the best too low.** Measured on the earlier ladder's tuning
+      stream (2026-10-23, four priced cases, 400 live points): 15 to 18 nats too low. The fast pass is Laplace-only
+      and nothing sends a spectrum to nested sampling by itself; the user chooses the deep pass (`STATS_PRIMER.md`
+      §2.4). **Acceptance:** the fast pass's Laplace differences are compared with the deep pass's calibrated
+      reference on the timed cases, with the figures reported as targets (R15), not tuned to a pass rate.
 - [ ] **FIT-13 — Row states outside the six ladder states.** `not fitted` and `not recorded`
       (`isar/session/outcome.py`) are not among the six states. **Acceptance:** the operator rules whether they stay
       or map onto the six; `STATS_PRIMER.md` §2.2 and `USING_ISAR.md` follow the ruling.
@@ -367,8 +348,9 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       `master_delivery.py`.
 - [ ] **FIT-24 — Suite time after the count ladder.** The not-slow suite runs 94 to 136 s against the one-minute
       budget, and `tests/session/test_master_fit.py::test_parallel_masters_match_serial_end_to_end` alone takes
-      about 9.4 min (rung 2 inside masters). **Acceptance:** the not-slow suite back near a minute and the masters
-      test under a few minutes, without weakening what they assert.
+      about 9.4 min when measured (rung 2 has since been deleted; unmeasured since). **Acceptance:** the
+      not-slow suite back near a minute and the masters test under a few minutes, without weakening what they
+      assert.
 - [ ] **FIT-25 — The mode ceiling of 6 is an arbitrary, pinned known limit.** The fast pass fits every peak count
       from 0 to the card's `[fitting] max_modes` (default 6; the operator: "6 is arbitrary", and it may bite once
       spectra hold more modes). A best count at the ceiling reads `search_limited`. **Acceptance:** none set; revisit

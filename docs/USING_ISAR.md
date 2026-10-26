@@ -83,6 +83,8 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   parameter-bound, or model-weight gates require it; `full` adds MINOS, bootstrap and profile intervals;
   `bayes` adds the nested-sampling interval. Final certification always requests `full` or `bayes`
   explicitly. `isar drive` fits through the same `isar run` path.
+  `--deep-pass` (with `--deep-budget-minutes` and `--deep-workers`) sends the spectra this run fits to the
+  slow deep pass; see [The deep pass](#the-deep-pass-a-closer-look-at-spectra-you-choose).
   `--profile` runs the whole batch in one process with one worker under cProfile and writes
   `report/run_profile.prof` and `report/run_profile.txt`; add `--detectors` and `--force` to profile one
   spectrum. Per-spectrum and per-stage times are in `report/run_timings.json`.
@@ -304,7 +306,7 @@ the fast pass's verdict on that count is in the count columns:
 | `search_limit_reason` | `ceiling` (the mode ceiling was reached) or `safety_budget` (the per-spectrum time budget ran out) |
 | `n_confident`, `n_tentative` | how many of the shown peaks are confident, and how many are tentative |
 | `flags` | warnings kept apart from the state, with their energy interval, e.g. `ambiguous decomposition 5.00-7.00 meV` |
-| `deep_pass_candidate` | `True` when the state is not `resolved`: the spectrum is worth a closer look |
+| `deep_pass_candidate` | `True` when the state is not `resolved`: the spectrum is worth a closer look (`--deep-pass` runs it; five more `deep_*` columns, below) |
 
 `report/modes.csv` has one row per mode of the selected count, ordered by energy (`mode_index` 0 is the
 lowest). Each row repeats its spectrum's `count_state` and carries the mode's own fields: `confident`
@@ -339,6 +341,51 @@ hidden component exists. Until the benchmark calibrates its threshold the struct
 rather than a measured one. A best count at the ceiling reads `search_limited`.
 
 The search and the states are decided as `STATS_PRIMER.md` §2.2 describes.
+
+## The deep pass: a closer look at spectra you choose
+
+The fast pass settles most spectra. When a row reads `close_call`, `unresolved` or `search_limited` (its
+`deep_pass_candidate` is `True`), or you simply want the count checked, send that spectrum to the deep pass: nested-sampling
+evidence for every model of its fast-pass record, then profile intervals and bootstrap errors on the chosen
+model. It never runs on its own.
+
+```
+isar run <data file> --workspace DIR --detectors ana7 --deep-pass [--deep-budget-minutes 60] [--deep-workers K]
+```
+
+- `--deep-pass` runs the fast pass on the spectra this run fits, then the deep pass on each. Pick the spectra
+  by data file and `--detectors` (the analyzers); add `--force` to refit a spectrum that is already current.
+  It cannot be combined with a certification request, a certification manifest or an analysis allowance.
+- `--deep-budget-minutes` (default 60) is the sampling budget per spectrum. A spectrum that runs out reports
+  `search_limited` with the models it did not reach. The profile and bootstrap step after sampling is not counted
+  in it, and `--M` sets its bootstrap draws.
+- `--deep-workers K` (default the smaller of 6 and `--workers`) is the number of processes for the sampler runs
+  and the bootstrap. A deep run fits its spectra one after another and spends the workers inside each spectrum.
+  Pooled masters are not deep-passed.
+- **Cost.** An estimate of tens of minutes per spectrum, not yet measured. Every run (seed, settings, wall time,
+  likelihood calls, best log-likelihood) is recorded.
+- **Carried, not rerun.** A spectrum that already holds a deep pass under the same settings, budget, seed and
+  `--M` is skipped. Changing the budget reruns it, and a refused deep pass is retried.
+
+**What you get.** Five more columns on the spectrum's `report/results.csv` row, empty when no deep pass ran:
+
+| Column | Meaning |
+|---|---|
+| `deep_state` | `resolved` (the preferred count has 0.80 or more of the probability, every model sampled), `close_call` (below 0.80), `search_limited` (the budget ended, or a model stayed suspect after restarts; the probabilities cover only the models sampled) or `refused` (the deep pass could not run; the reason says why) |
+| `deep_state_reason` | why, in words, with the preferred count and its probability |
+| `deep_best_count` | the preferred count by nested-sampling evidence |
+| `deep_p_best` | its probability |
+| `deep_numerically_marginal` | `True` when the sampling error could move the preferred count or cross the 0.80 line |
+
+The full record (every model's evidence, every run with its seed, settings, information H, likelihood calls and
+best log-likelihood, and the errors on the chosen model) is the spectrum's `deep_pass` entry in `session.json`;
+per-stage and per-run wall times are in `report/run_timings.json`. The fast-pass columns, the shown fit and
+`modes.csv` are not changed by the deep pass; read the two side by side.
+
+**Untrusted for now.** The sampler settings are provisional and not yet calibrated on the final model, so every
+count decision's `deep_state_reason` ends "provisional sampler settings: untrusted until calibration". Treat the deep pass's
+preferred count as a second opinion, not a verdict, until that note is gone. How the pass works is
+`STATS_PRIMER.md` §2.4.
 
 ## What ISAR does and doesn't do here (honest limits)
 
