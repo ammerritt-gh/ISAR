@@ -367,6 +367,12 @@ def test_development_and_evaluation_never_share_a_stream():
     assert cb.observe(truth, 0, 5, dev_draws).counts.tolist() != cb.observe(truth, 1, 5, dev_draws).counts.tolist()
 
 
+def test_the_run_ceiling_reaches_the_named_truths():
+    # --ceiling 2 fits the named three- and four-peak truths at 2 too: the run's meta records one ceiling
+    tasks, _ = cb.plan_tasks("development", 5, 2, named_draws=1, random=0, clean=0)
+    assert len(tasks) == 14 and all(t.ceiling == 2 for t, _ in tasks)
+
+
 def test_serial_run_stops_launching_before_the_cap_minus_the_grace(monkeypatch):
     def slow_case(job):
         time.sleep(0.25)

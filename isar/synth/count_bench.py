@@ -746,7 +746,7 @@ def plan_tasks(mode: str, base_seed: int, ceiling: int | None = None, *, named_d
     n_named = plan["named_draws"] if named_draws is None else named_draws
     n_random = plan["random"] if random is None else random
     n_clean = plan["clean"] if clean is None else clean
-    tasks = [(t, d) for t in named_cases(base_seed) for d in range(n_named)]
+    tasks = [(replace(t, ceiling=ceiling), d) for t in named_cases(base_seed) for d in range(n_named)]
     tasks += [(generate_case(base_seed, plan["case_stream"], i, ceiling), 0) for i in range(n_random)]
     tasks += [(generate_case(base_seed, plan["case_stream"], CLEAN_INDEX0 + i, ceiling, kind="clean"), 0)
               for i in range(n_clean)]
