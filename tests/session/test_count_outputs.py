@@ -1,6 +1,5 @@
-"""The count ladder's outputs (design 2026-10-22, §3.1, §3.4): results.csv keeps one summary row per
-spectrum with its count state, report/modes.csv holds every fitted mode ordered by energy, and both
-files are replaced whole.
+"""The fast pass's outputs: results.csv keeps one summary row per spectrum with its count state,
+report/modes.csv holds every fitted mode ordered by energy, and both files are replaced whole.
 
 Synthetic throughout (hard rule 10): hand-built outcomes, or spectra generated here.
 """
@@ -9,7 +8,6 @@ import math
 import numpy as np
 import pytest
 
-from isar.analyze import count_ladder
 from isar.analyze.context import ScanContext
 from isar.analyze.lineshapes import KB, convolute_voigt_dho
 from isar.drive.isar_io import readers
@@ -37,22 +35,30 @@ def _mode(omega0, err, gamma, amp):
             "peak_position_err": err}
 
 
-COUNT = {"state": "settled", "reasons": ["rung 2 sampled 3 contending model(s)"],
-         "flags": ["structured residual"], "deciding_rung": 2, "ceiling": 6, "count": 3,
-         "count_probability": 0.7, "runner_up_count": 2, "runner_up_probability": 0.3,
-         "ambiguity": {"count": 3, "probability": 0.7, "runner_up_count": 2,
-                       "runner_up_probability": 0.3},
-         "count_probabilities": {"2": 0.3, "3": 0.7}}
+def _record(n, *, state="resolved", probs=None, confident=None):
+    """A C-fastpass-record with ``n`` peaks, one per mode; the writer reads only these keys."""
+    status = {"omega0": "constrained", "Gamma": "constrained", "height": "constrained",
+              "area": "constrained"}
+    peaks = [{"index": i, "omega0": 4.0 + 5.0 * i, "delta": False, "regime": "underdamped",
+              "status": status, "height": 100.0, "sigma_height": 5.0, "area_stokes": 50.0,
+              "sigma_area": 3.0, "area_status": "usable", "corr_omega0_Gamma": 0.1,
+              "deletion_impact": 500.0, "manual_fit": False,
+              "confident": True if confident is None else confident[i]} for i in range(n)]
+    return {"schema": "isar.fast-pass/1", "state": state, "preferred_count": n,
+            "count_probabilities": probs or {str(n - 1): 0.3, str(n): 0.7},
+            "probabilities_conditional": False, "close_call_alternatives": [],
+            "numerically_marginal": False, "search_limit_reason": "",
+            "deep_pass_candidate": state != "resolved", "models": [], "peaks": peaks, "flags": []}
 
 
-def _ledger(modes, count=COUNT):
+def _ledger(modes, record=None):
     oc = outcome_mod.FitOutcome(
         detector_id="ana7", verdict="unconstrained", disposition="abstain", confidence=0.0,
         omega0=modes[0]["omega0"], omega0_err=modes[0]["omega0_err"], interval=None,
         modality="unpooled", gamma=0.3, gamma_provisional=False,
         best_label="elastic+stokes3+bg", cost_per_dof=1.1, q=[3.0, 0.2, 0.0], T=50.0,
         sample="S", prior_used=None, calib={}, n_modes=len(modes), modes=modes,
-        fit_selection_semantics={"count_ladder": count})
+        fast_pass=_record(len(modes)) if record is None else record)
     st = SessionState()
     st.put(ScanEntry(scan_id="E:7:ana7", scan_number=7, scan_type="measurement",
                      status="fitted", detectors={"ana7": oc.to_dict()}))
@@ -71,17 +77,17 @@ def test_the_results_row_summarises_the_count_and_drops_the_secondary_columns(tm
     driver._write_results_csv(ws, _ledger(modes))
     row, = readers.read_results_csv(ws.root)
     assert "secondary_omega0" not in row and "secondary_omega0_err" not in row
-    assert row["n_modes"] == 3 and row["count_state"] == "settled"
-    assert row["count_probability"] == 0.7 and row["runner_up_count"] == 2
-    assert row["runner_up_probability"] == 0.3 and row["count_ambiguous"] is True
-    assert row["deciding_rung"] == 2
-    assert row["count_state_reason"] == "rung 2 sampled 3 contending model(s)"
-    assert row["count_flags"] == "structured residual"
+    assert row["n_modes"] == 3 and row["count_state"] == "resolved"
+    assert row["count_probability"] == 0.7 and row["count_probabilities"] == {"2": 0.3, "3": 0.7}
+    assert row["count_state_reason"] == "counts 2 (0.30), 3 (0.70)"
+    assert row["n_confident"] == 3 and row["n_tentative"] == 0 and row["flags"] is None
+    assert row["probabilities_conditional"] is False and row["deep_pass_candidate"] is False
+    assert "deciding_rung" not in row and "runner_up_count" not in row
 
 
 def test_a_zero_mode_winner_reads_back_as_zero_modes(tmp_path):
     ws = _workspace(tmp_path)
-    st = _ledger([_mode(4.0, 0.1, 0.3, 50.0)], count={**COUNT, "count": 0})
+    st = _ledger([_mode(4.0, 0.1, 0.3, 50.0)], record=_record(0, probs={"0": 1.0}))
     st.scans["E:7:ana7"].detectors["ana7"].update(n_modes=0, modes=None, omega0=None)
     driver._write_results_csv(ws, st)
     row, = readers.read_results_csv(ws.root)
@@ -93,7 +99,9 @@ def test_modes_csv_has_one_row_per_mode_ordered_by_energy_and_missing_stays_empt
     ws = _workspace(tmp_path)
     modes = [_mode(9.0, 0.2, 0.4, 30.0), _mode(4.0, float("nan"), 0.3, 50.0),
              _mode(12.0, 0.3, 0.5, 10.0)]
-    driver._write_results_csv(ws, _ledger(modes))
+    st = _ledger(modes, record=_record(3, confident=[True, False, True]))
+    st.scans["E:7:ana7"].provenance = {"analyzer_facts": {"Q_nm": {"value": 3.1, "source": "trailer"}}}
+    driver._write_results_csv(ws, st)
     rows = readers.read_modes_csv(ws.root)
     assert [r["mode_index"] for r in rows] == [0, 1, 2]
     assert [r["omega0"] for r in rows] == [4.0, 9.0, 12.0]
@@ -101,8 +109,11 @@ def test_modes_csv_has_one_row_per_mode_ordered_by_energy_and_missing_stays_empt
     assert rows[1]["omega0_err"] == 0.2 and rows[1]["uncertainty_kind"] == "hesse"
     assert rows[1]["peak_position"] == pytest.approx(math.sqrt(81.0 - 0.16))
     assert all(r["scan_id"] == "E:7:ana7" and r["detector"] == "ana7" for r in rows)
-    assert all(r["count_state"] == "settled" and r["best_model"] == "elastic+stokes3+bg"
+    assert all(r["count_state"] == "resolved" and r["best_model"] == "elastic+stokes3+bg"
                for r in rows)
+    # each mode joins the fast-pass peak of its index: the middle peak is the tentative one
+    assert [r["confident"] for r in rows] == [True, False, True]
+    assert all(r["Q_nm"] == pytest.approx(3.1) and r["area_status"] == "usable" for r in rows)
     assert isinstance(rows[2]["amplitude"], float) and isinstance(rows[2]["gamma_err"], float)
 
 
@@ -165,7 +176,7 @@ def _unfitted_row(root, status, reasons):
 
 def test_a_scan_held_for_calibration_reads_held_with_its_reason(tmp_path):
     row = _unfitted_row(tmp_path, "held_for_calibration", ["ana7: no energy zero"])
-    assert row["count_state"] == count_ladder.HELD and row["count_state_reason"] == "ana7: no energy zero"
+    assert row["count_state"] == "held" and row["count_state_reason"] == "ana7: no energy zero"
 
 
 def test_a_scan_with_no_fit_reads_a_stated_state_not_a_blank(tmp_path):
@@ -174,4 +185,4 @@ def test_a_scan_with_no_fit_reads_a_stated_state_not_a_blank(tmp_path):
     assert excluded["count_state"] == "not fitted"
     assert excluded["count_state_reason"] == "excluded (card exclusions_seed / state)"
     ingested = _unfitted_row(tmp_path / "y", "ingested", [])
-    assert ingested["count_state"] == count_ladder.FITTING and ingested["count_state_reason"] == "ingested"
+    assert ingested["count_state"] == "fitting" and ingested["count_state_reason"] == "ingested"

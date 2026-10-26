@@ -76,11 +76,16 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   this run), and `--workers N` (the total fitting CPU budget; default `min(30, cpu-2)`, also settable
   with `ISAR_WORKERS`). ISAR assigns that budget across scans for a large batch or within a promoted
   full/Bayes fit for a small workorder; it does not nest the two kinds of process pool.
-  `--errors auto` performs HESSE-first uncertainty estimation and promotes the same point-estimation
-  candidates to full errors when trust, covariance, parameter-bound, or model-weight gates require
-  it. `full`, `fast`, `cheap`, and `bayes` retain their existing meanings. Drive campaigns continue
-  using the validated legacy router until the Phase-2 shadow gate is recorded; final certification
-  always requests `full` or `bayes` explicitly.
+  Every spectrum is searched by the fast pass (a seed, then every peak count to the mode ceiling with its
+  audits; there is no second pass). `--errors` chooses only what is attached to the selected model
+  afterwards, and defaults to `fast` (the delta-method ω₀ interval and its trust flag, no bootstrap).
+  `cheap` gives covariance errors only; `auto` is `fast`, promoted to `full` when the trust, covariance,
+  parameter-bound, or model-weight gates require it; `full` adds MINOS, bootstrap and profile intervals;
+  `bayes` adds the nested-sampling interval. Final certification always requests `full` or `bayes`
+  explicitly. `isar drive` fits through the same `isar run` path.
+  `--profile` runs the whole batch in one process with one worker under cProfile and writes
+  `report/run_profile.prof` and `report/run_profile.txt`; add `--detectors` and `--force` to profile one
+  spectrum. Per-spectrum and per-stage times are in `report/run_timings.json`.
   Full-tier bootstrap is adaptive but deterministic for a fixed seed: draws are evaluated in blocks
   of 32, with stopping allowed only after at least 64 draws and two consecutive changes below 5% in
   the ω₀ interval half-width. The requested cap is never exceeded; a provisional `--scan-M 50` run
@@ -286,44 +291,54 @@ is genuinely data- or budget-limited, and resuming without changing something wi
 ## Reading the peak count
 
 Each scan × detector row of `report/results.csv` is one spectrum. Its fitted peak count is `n_modes`, and
-its state is in the count columns:
+the fast pass's verdict on that count is in the count columns:
 
 | Column | Meaning |
 |---|---|
-| `count_state` | the spectrum's one state (table below), or `not fitted` / `not recorded` (below the table) |
-| `count_state_reason` | why, in words: the trigger, the limit that stopped the search, the calculation that failed, or the hold reason |
-| `deciding_rung` | `1` (Laplace evidence) or `2` (nested sampling): the rung whose result is shown |
-| `count_probability` | the probability of the selected count |
-| `runner_up_count`, `runner_up_probability` | the next most probable count and its probability |
-| `count_ambiguous` | `True` when the runner-up is close (probability at least 0.20): read both counts |
-| `count_flags` | quality warnings, kept apart from the state: `structured residual`, `central residual, quasi-elastic not tested` |
+| `count_state` | the fast pass's state (table below), or `held`, `fitting`, `not fitted`, `not recorded` |
+| `count_state_reason` | why, in words: the count probabilities, the close-call alternatives, the counts with no evidence and why, the search limit |
+| `count_probability` | the probability of the shown count (`n_modes`) |
+| `count_probabilities` | every count's probability, as JSON, e.g. `{"3": 0.91, "4": 0.09}` |
+| `probabilities_conditional` | `True` when a count has no evidence, so the probabilities cover only the counts that have it |
+| `numerically_marginal` | `True` when the numerical error of the evidence could move the count, or cross the 0.80 close-call line |
+| `search_limit_reason` | `ceiling` (the mode ceiling was reached) or `safety_budget` (the per-spectrum time budget ran out) |
+| `n_confident`, `n_tentative` | how many of the shown peaks are confident, and how many are tentative |
+| `flags` | warnings kept apart from the state, with their energy interval, e.g. `ambiguous decomposition 5.00-7.00 meV` |
+| `deep_pass_candidate` | `True` when the state is not `resolved`: the spectrum is worth a closer look |
 
 `report/modes.csv` has one row per mode of the selected count, ordered by energy (`mode_index` 0 is the
-lowest). Each row repeats its spectrum's `count_state`, so a provisional mode is never mistaken for a
-settled one. `omega0` is the undamped mode energy E0, the fitted parameter, and `peak_position` the
-displayed one, the damped frequency √(E0² − Γ²), empty when the mode is overdamped (Γ ≥ E0).
-`uncertainty_kind` is `hesse` when the mode has an error bar and empty when it has none. An empty cell
-means missing, never zero.
+lowest). Each row repeats its spectrum's `count_state` and carries the mode's own fields: `confident`
+(`False` for a tentative peak), `delta` (resolution-limited: a delta function with its width fixed), `regime`
+(`near_elastic`, `underdamped` or `overdamped`, recorded apart from the parameter statuses), `omega0_status`,
+`gamma_status`, `height`, `area_stokes` with its error and `area_status`, `corr_omega0_gamma`,
+`deletion_impact` and `manual_fit` (flagged for manual fitting). `Q_nm` is the analyzer's |Q| when the data
+provides it. `omega0` is the undamped mode energy E0, the fitted parameter, and `peak_position` the displayed
+one, the damped frequency √(E0² − Γ²), empty when the mode is overdamped (Γ ≥ E0). `uncertainty_kind` is
+`hesse` when the mode has an error bar and empty when it has none. An empty cell means missing, never zero.
 
-| State | What it means | What to do |
+| `count_state` | What it means | What to do |
 |---|---|---|
-| `settled` | the evidence picks a count, or the ambiguity is stated | use it; check `count_ambiguous` |
-| `provisional` | rung 2 is still sampling: `count_state_reason` reads "rung 2 pending: k of n contending models sampled" | the shown count is rung 1's; it becomes `settled` when rung 2 completes |
-| `search limited` | the mode ceiling or the 30-minute per-spectrum budget stopped the search | the count is the best found; the reason names the limit, and the spectrum may hold more modes |
-| `unresolved` | a contender's evidence could not be computed | the rung-1 count is shown; it stops nothing, but read it with care |
-| `held` | not fitted, because the energy zero could not be set | the reason names what is missing; the scan is re-examined on every later run |
+| `resolved` | the preferred count has probability 0.80 or more, and every contending count has evidence | use it |
+| `close_call` | the preferred count is below 0.80; the alternatives named in the reason carry the rest | read the alternatives; the shown fit is the most probable count |
+| `unresolved` | a contender's evidence could not be computed, so no winner is declared; the probabilities are conditional on the counts that have evidence | read it with care; the comparison is recorded as incomplete, and the spectrum is a deep-pass candidate |
+| `search_limited` | the mode ceiling or the per-spectrum time budget stopped the search | the count is the best found, and the spectrum may hold more modes |
+| `held` | the scan is held, for example because its energy zero is missing; the reason names it | nothing until the hold is cleared; it is re-examined on every run |
 | `fitting` | ingested, not yet fitted | nothing to do until the next run |
+| `not fitted` | excluded, undersampled, or the fit failed | the reason says which |
+| `not recorded` | a detector outcome with no fast-pass result (written before the fast pass existed) | a re-run refits it |
 
-Two row states are not ladder states: `not fitted` (the scan is excluded, or undersampled and so not fitted)
-and `not recorded` (a detector outcome written before the count ladder existed; a re-run fills it in).
+**Confident and tentative peaks.** Only confident peaks are reported as found. A tentative peak stays in the
+fit record, counts toward the close call and the flags, and has `confident` set to `False` in `modes.csv`.
 
-**"Rung 2 pending"** means the spectrum is `provisional`. In `isar run` rung 2 runs to completion within the
-same invocation, unless the 30-minute per-spectrum budget is reached first, which makes the spectrum
-`search limited`. During a campaign each refresh spends at most two minutes on rung 2, so a spectrum can stay
-`provisional` for several refreshes. It resumes where it stopped and becomes `settled` once its contenders are
-sampled. A campaign does not stop on a provisional spectrum, and only a settled, unambiguous count enters the
-dispersion prior. Pooled masters run rung 2 to completion inside their own fit, so they are never provisional
-for that reason. How the rungs and states are decided is in `STATS_PRIMER.md` §2.2.
+**Flags.** Two kinds, each with its energy interval. `structured residual`: the fit leaves a residual pattern a
+clean spectrum would not show. `ambiguous decomposition`: a forced broader or shoulder alternative fits about as
+well and moves intensity to a different energy. That says the assignment of intensity is ambiguous, not that a
+hidden component exists. Until the benchmark calibrates its threshold the structured-residual flag is off.
+
+**Pinned limit.** The mode ceiling is 6 (the card's `[fitting] max_modes`), a known limit set by the operator
+rather than a measured one. A best count at the ceiling reads `search_limited`.
+
+The search and the states are decided as `STATS_PRIMER.md` §2.2 describes.
 
 ## What ISAR does and doesn't do here (honest limits)
 

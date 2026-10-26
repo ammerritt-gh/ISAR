@@ -345,24 +345,28 @@ _CSV_COLUMNS = [
     # measurement record from delivery N+1. Scan-level, not per-detector, so every detector row of
     # the same scan carries the same value. Empty on every historical row.
     "content_hash",
-    # The count ladder (design 2026-10-22, §3.1), projected from fit_selection_semantics
-    # ["count_ladder"]: the spectrum's one state and its reasons, the rung that decided it, the
-    # selected count's probability (the count itself is n_modes) and the runner-up's, whether the
-    # two are close enough to call the count ambiguous, and the quality flags. Every mode of the
-    # selected count is a row of the linked modes.csv.
-    "count_state", "count_state_reason", "deciding_rung", "count_probability",
-    "runner_up_count", "runner_up_probability", "count_ambiguous", "count_flags",
+    # The fast pass's count outcome (C-fastpass-record), projected by _fast_pass_columns: the state and
+    # its reasons, the preferred count's probability and every count's, whether they are conditional
+    # or numerically marginal, the search limit, the confident and tentative peak counts, the flags and
+    # the deep-pass candidacy. Every mode of the selected count is a row of the linked modes.csv.
+    "count_state", "count_state_reason", "count_probability", "count_probabilities",
+    "probabilities_conditional", "numerically_marginal", "search_limit_reason",
+    "n_confident", "n_tentative", "flags", "deep_pass_candidate",
 ]
 
 # report/modes.csv: one row per fitted mode of the selected count, keyed to its results.csv row by
 # scan_id + detector, mode_index 0 the lowest energy. omega0 is the undamped DHO energy E0 (the
 # fitted parameter), peak_position the damped frequency sqrt(E0^2 - Gamma^2), empty when the mode is
-# overdamped (Gamma >= E0); a missing value stays empty.
+# overdamped (Gamma >= E0); a missing value stays empty. The columns after hesse_trusted come from the
+# mode's fast-pass peak (joined by index); Q_nm is the analyzer's |Q| when the data provides it.
 _MODES_COLUMNS = [
     "scan_id", "scan", "detector", "sample", "T", "h", "k", "l", "count_state", "best_model",
     "n_modes", "mode_index", "omega0", "omega0_err", "peak_position", "peak_position_err",
     "gamma", "gamma_err", "amplitude", "amplitude_intrinsic", "uncertainty_kind",
     "hesse_trusted", "content_hash",
+    "Q_nm", "confident", "delta", "regime", "omega0_status", "gamma_status", "height", "height_err",
+    "area_stokes", "area_stokes_err", "area_status", "corr_omega0_gamma", "deletion_impact",
+    "manual_fit",
 ]
 
 
@@ -399,15 +403,9 @@ def fast_pass_of(oc: dict) -> dict:
     return (oc or {}).get("fast_pass") or {}
 
 
-def _count_ladder(oc: dict) -> dict:
-    """The stored count outcome (``fit_selection_semantics["count_ladder"]``), ``{}`` when absent."""
-    return (oc.get("fit_selection_semantics") or {}).get("count_ladder") or {}
-
-
-# count_state of a row with no count-ladder record. The two ladder names are isar.analyze.count_ladder's
-# FITTING and HELD, spelled here so this read path does not import the fitting stack (a test pins them).
+# The non-fit count states, spelled here so this read path does not import the fitting stack.
 NOT_FITTED = "not fitted"       # excluded, undersampled, or otherwise no fit
-NOT_RECORDED = "not recorded"   # a detector outcome written before the count ladder existed
+NOT_RECORDED = "not recorded"   # a detector outcome with no fast-pass record
 
 
 def _unfitted_count(e: ScanEntry) -> dict:
@@ -429,19 +427,73 @@ def _finite(value):
     return value
 
 
+def _count_reason(fp: dict) -> str | None:
+    """The count state's reasons, read from the record alone: the probabilities, the close-call
+    alternatives, the counts without evidence and why, and the search limit."""
+    probs = fp.get("count_probabilities") or {}
+    parts = []
+    if probs:
+        parts.append("counts " + ", ".join(f"{k} ({p:.2f})" for k, p in probs.items()))
+    alternatives = fp.get("close_call_alternatives") or []
+    if alternatives:
+        parts.append("close call with alternatives " + ", ".join(
+            f"{k} ({probs.get(str(k), 0.0):.2f})" for k in alternatives))
+    if fp.get("probabilities_conditional"):
+        parts.append("probabilities conditional on the counts with evidence")
+    if fp.get("numerically_marginal"):
+        parts.append("numerically marginal")
+    for m in fp.get("models") or ():
+        if m.get("evidence_status") == "no_evidence":
+            parts.append(f"count {m.get('n_peaks')} has no evidence ({m.get('reason') or 'unknown'})")
+    if fp.get("search_limit_reason"):
+        parts.append(f"search limited ({fp['search_limit_reason']})")
+    return "; ".join(parts) or None
+
+
+def _fast_pass_columns(oc: dict) -> dict:
+    """The results.csv count columns of one stored outcome, projected from its fast-pass record."""
+    fp = fast_pass_of(oc)
+    if not fp:
+        return {"count_state": NOT_RECORDED, "count_state_reason": "no fast-pass record"}
+    probs = fp.get("count_probabilities") or {}
+    preferred = fp.get("preferred_count")
+    peaks = fp.get("peaks") or []
+    n_confident = sum(1 for p in peaks if p.get("confident"))
+    flags = [f"{f['kind'].replace('_', ' ')} {f['e_lo']:.2f}-{f['e_hi']:.2f} meV"
+             for f in fp.get("flags") or []]
+    return {
+        "count_state": fp.get("state"), "count_state_reason": _count_reason(fp),
+        "count_probability": probs.get(str(preferred)) if preferred is not None else None,
+        "count_probabilities": json.dumps(probs, sort_keys=True),
+        "probabilities_conditional": fp.get("probabilities_conditional"),
+        "numerically_marginal": fp.get("numerically_marginal"),
+        "search_limit_reason": fp.get("search_limit_reason") or None,
+        "n_confident": n_confident, "n_tentative": len(peaks) - n_confident,
+        "flags": "; ".join(flags) or None,
+        "deep_pass_candidate": fp.get("deep_pass_candidate"),
+    }
+
+
 def _mode_rows(e: ScanEntry, det: str, oc: dict) -> list:
-    """The modes.csv rows of one stored outcome, ordered by energy."""
+    """The modes.csv rows of one stored outcome, ordered by energy. Each mode joins the selected
+    model's fast-pass peak of the same index (ascending omega0), which carries its confidence, regime,
+    statuses and height and area."""
     modes = sorted((m for m in (oc.get("modes") or []) if isinstance(m, dict)
                     and _finite(m.get("omega0")) is not None),
                    key=lambda m: float(m["omega0"]))
+    fp = fast_pass_of(oc)
+    peaks = {p.get("index"): p for p in fp.get("peaks") or () if isinstance(p, dict)}
     q = oc.get("q") or [None, None, None]
+    q_nm = (((e.provenance or {}).get("analyzer_facts") or {}).get("Q_nm") or {}).get("value")
     rows = []
     for index, mode in enumerate(modes):
         err = _finite(mode.get("omega0_err"))
+        peak = peaks.get(index) or {}
+        status = peak.get("status") or {}
         rows.append({
             "scan_id": e.scan_id, "scan": e.scan_number, "detector": det,
             "sample": oc.get("sample"), "T": oc.get("T"), "h": q[0], "k": q[1], "l": q[2],
-            "count_state": _count_ladder(oc).get("state") or NOT_RECORDED,
+            "count_state": fp.get("state") or NOT_RECORDED,
             "best_model": oc.get("best_label"),
             "n_modes": len(modes), "mode_index": index,
             "omega0": mode.get("omega0"), "omega0_err": err,
@@ -452,6 +504,13 @@ def _mode_rows(e: ScanEntry, det: str, oc: dict) -> list:
             "amplitude_intrinsic": _finite(mode.get("amplitude_intrinsic")),
             "uncertainty_kind": "hesse" if err is not None else None,
             "hesse_trusted": mode.get("hesse_trusted"), "content_hash": e.content_hash,
+            "Q_nm": q_nm, "confident": peak.get("confident"), "delta": peak.get("delta"),
+            "regime": peak.get("regime"), "omega0_status": status.get("omega0"),
+            "gamma_status": status.get("Gamma"), "height": peak.get("height"),
+            "height_err": peak.get("sigma_height"), "area_stokes": peak.get("area_stokes"),
+            "area_stokes_err": peak.get("sigma_area"), "area_status": peak.get("area_status"),
+            "corr_omega0_gamma": peak.get("corr_omega0_Gamma"),
+            "deletion_impact": peak.get("deletion_impact"), "manual_fit": peak.get("manual_fit"),
         })
     return rows
 
@@ -501,7 +560,6 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 raise ValueError(
                     f"master scan {e.scan_number}: n_members={oc.get('n_members')} != "
                     f"len(members)={len(members)} — member provenance corrupt")
-            count = _count_ladder(oc)
             mode_rows.extend(_mode_rows(e, det, oc))
             rows.append({
                 "scan_id": e.scan_id, "scan": e.scan_number, "detector": det, "sample": oc.get("sample"),
@@ -642,15 +700,7 @@ def _write_results_csv(workspace: Workspace, session: SessionState) -> Path:
                 "energy_lo": (ew[0] if ew else None), "energy_hi": (ew[-1] if ew else None),
                 "energy_bands": (json.dumps(oc.get("energy_bands"), sort_keys=True)
                                  if oc.get("energy_bands") is not None else None),
-                "count_state": count.get("state") or NOT_RECORDED,
-                "count_state_reason": ("; ".join(count.get("reasons") or []) or None
-                                       if count else "no count-ladder record"),
-                "deciding_rung": count.get("deciding_rung"),
-                "count_probability": count.get("count_probability"),
-                "runner_up_count": count.get("runner_up_count"),
-                "runner_up_probability": count.get("runner_up_probability"),
-                "count_ambiguous": (None if not count else count.get("ambiguity") is not None),
-                "count_flags": "; ".join(count.get("flags") or []) or None,
+                **_fast_pass_columns(oc),
             })
     _replace_csv(path, _CSV_COLUMNS, rows)
     _replace_csv(workspace.report_dir / "modes.csv", _MODES_COLUMNS, mode_rows)

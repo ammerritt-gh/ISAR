@@ -43,18 +43,21 @@ _NUMERIC_COLUMNS = frozenset({
     "target_probability", "identity_entropy",
     "best_model_posterior",
     "energy_lo", "energy_hi",
-    "count_probability", "runner_up_probability",
+    "count_probability",
     # report/modes.csv (read_modes_csv)
     "peak_position", "peak_position_err", "gamma_err", "amplitude", "amplitude_intrinsic",
+    "height", "height_err", "area_stokes", "area_stokes_err", "corr_omega0_gamma",
+    "deletion_impact", "Q_nm",
 })
 _INT_COLUMNS = frozenset({"scan", "prior_n", "n_modes", "n_members",
                           "selected_candidate_index", "track_revision", "consistency_seed",
-                          "deciding_rung", "runner_up_count", "mode_index"})
+                          "n_confident", "n_tentative", "mode_index"})
 # Coerced to bool ("True"/"False" → True/False; "" → None). ISAR writes Python bool reprs.
 _BOOL_COLUMNS = frozenset({"interval_reliable", "pooled", "hesse_trusted", "resolvable",
                            "gamma_at_bound", "pool_consistent", "model_robust",
                            "local_identity_clear", "target_delivery_eligible",
-                           "count_ambiguous"})
+                           "probabilities_conditional", "numerically_marginal",
+                           "deep_pass_candidate", "confident", "delta", "manual_fit"})
 # Split on ";" into a list of labels ("" → None; missing column → key absent via DictReader).
 _LIST_COLUMNS = frozenset({"members"})
 # JSON-encoded structured columns (GUI Phase 0): the amplitudes dict and candidate table. Parsed
@@ -63,7 +66,7 @@ _JSON_COLUMNS = frozenset({"amplitudes", "candidates", "model_manifest",
                            "exposure_provenance", "branch_posterior",
                            "branch_candidates", "fit_selection_semantics",
                            "interval_semantics", "probability_semantics",
-                           "shadow_model_selection", "energy_bands"})
+                           "shadow_model_selection", "energy_bands", "count_probabilities"})
 
 
 def _report_dir(workspace: str | Path) -> Path:

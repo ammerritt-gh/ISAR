@@ -143,20 +143,23 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   the weight that drives selection, pooling, and the EIG/master consumers since H4. Persisted per
   candidate in `isar.fit_selection_semantics/2` alongside the AIC diagnostics; `None` on the
   recorded AIC fallback lanes rather than invented.
-- **count ladder, rung 1** — the cheap rung that decides the peak count of every spectrum: Laplace evidence for
-  each count from 0 to the mode ceiling, with and without the elastic line, several starts per model. It never
-  samples. (Not the same as the Q rung below.)
-- **count ladder, rung 2** — nested sampling of the *contending* counts, run only when a trigger fires: a split
-  that competes with its parent, starts that disagree, two modes merged, a mode amplitude at zero, structure left
-  in the residual, a count at the ceiling, or a Laplace evidence that is invalid.
-- **contending model** — a model rung 2 samples: within 10 nats of the best rung-1 evidence, or the count above
-  the best, or one with no usable rung-1 evidence.
-- **count state** — the one state of a spectrum's peak count: `fitting`, `provisional` (rung 2 still pending),
-  `settled`, `search limited` (the ceiling or the budget stopped the search), `unresolved` (a contender's evidence
-  could not be computed; a failed calculation is never evidence against a model), or `held` (not fitted, because
-  its calibration is missing). Its reasons are recorded beside it. See `USING_ISAR.md`, "Reading the peak count".
-- **ambiguous count** — the runner-up count has probability at least 0.20. Both counts and both probabilities are
-  reported, the verdict is `unconstrained`, and the count stays out of the dispersion prior.
+- **fast pass** — the one search every spectrum gets (`isar run`, the GUI and the campaign alike): a pseudo-Voigt
+  seed, then every peak count from 0 to the mode ceiling fitted and audited, each priced by its Laplace evidence.
+  It runs no nested sampling and no second pass. The seed only gives starting points. (`STATS_PRIMER.md` §2.2.)
+- **contending model** — a non-degenerate count within 10 nats of the best evidence. A count whose evidence cannot
+  be computed contends when its best log-likelihood reaches the selected model's; if one does, the comparison is
+  unresolved.
+- **close call** — the preferred count has probability below 0.80, so its alternatives together carry 0.20 or more.
+  Both counts and both probabilities are reported, the verdict is `unconstrained`, and the count stays out of the
+  dispersion prior.
+- **count state** — the fast pass's state for a spectrum's peak count: `resolved`, `close call`, `unresolved` (a
+  contender's evidence could not be computed; a failed calculation is never evidence against a model), or
+  `search limited` (the mode ceiling or the per-spectrum safety budget stopped the search). Two more appear for rows
+  with no fast-pass result: `held` (not fitted, because its calibration is missing) and `fitting`, plus `not fitted`
+  and `not recorded`. Its reasons are recorded beside it. See `USING_ISAR.md`, "Reading the peak count".
+- **confident / tentative peak** — a confident peak is one whose removal changes the predicted counts by at least
+  the calibrated anchor, and which survives every credible alternative decomposition. A tentative peak stays in the
+  fit record but is not reported as found.
 - **degenerate limit / twin** — a fit railed at a lower limit is the degenerate case of a model next to it: a
   mode's amplitude or the elastic height at zero, a mode's energy at zero, a mode's width at its floor (the
   resolution-limited delta-function mode), or the background at zero (the background-free model). That neighbour

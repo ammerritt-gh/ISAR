@@ -1,19 +1,26 @@
 """The persisted fast-pass record (plan C-fastpass-record, worked examples 1-7): the fields the
 benchmark, the deep pass and the reports read, written by ``scan_delivery._fast_pass_record`` from
-the engine's result. Hand-built engine results (no fit), so every example is exact; the results.csv
-and modes.csv columns of the same examples belong with the CSV writer.
+the engine's result. Hand-built engine results (no fit), so every example is exact. The ``csv_*``
+tests at the end check each example's results.csv and modes.csv halves through the real writer.
 """
 import json
 import math
 from types import SimpleNamespace
+
+import pytest
 
 from isar.analyze import select
 from isar.analyze.fast_pass import (FastPassResult, FastPassSettings, ModelResult, PeakResult,
                                     SpectrumFlag)
 from isar.analyze.phonon import GAMMA_FLOOR
 from isar.analyze.prior import PriorSettings
+from isar.drive.isar_io import readers
+from isar.session import outcome as outcome_mod
 from isar.session import scan_delivery
+from isar.workspace_api import scene
 from isar.session.outcome import FitOutcome, fast_pass_of
+from isar.session.state import ScanEntry, SessionState
+from isar.session.workspace import Workspace
 
 # The connection's lists, verbatim: a field the writer drops fails here.
 RECORD_KEYS = {
@@ -103,22 +110,26 @@ def test_ex1_resolved_clean_three_peaks():
         {"3": -100.0}
 
 
-def test_ex2_close_call_four_components_three_confident():
+def _close_call():
     m3 = _model("elastic+stokes3+bg", 3, p=0.30)
     m4 = _model("elastic+stokes4+bg", 4, p=0.62)
     m5 = _model("elastic+stokes5+bg", 5, p=0.08)
     flag = SpectrumFlag("ambiguous_decomposition", 5.0, 7.0, 1.2,
                         "possible hidden component near 6.0 meV; a neighbour may be absorbing it")
-    rec = scan_delivery._fast_pass_record(_result(
-        [m3, m4, m5], m4, [_peak(0, 3.0), _peak(1, 6.0), _peak(2, 9.0, confident=False),
-                           _peak(3, 14.0)],
-        probabilities={3: 0.30, 4: 0.62, 5: 0.08}, state="close_call", alternatives=(3, 5),
-        flags=[flag]))
+    return _result([m3, m4, m5], m4, [_peak(0, 3.0), _peak(1, 6.0), _peak(2, 9.0, confident=False),
+                                      _peak(3, 14.0)],
+                   probabilities={3: 0.30, 4: 0.62, 5: 0.08}, state="close_call", alternatives=(3, 5),
+                   flags=[flag])
+
+
+def test_ex2_close_call_four_components_three_confident():
+    rec = scan_delivery._fast_pass_record(_close_call())
     assert rec["state"] == "close_call" and rec["close_call_alternatives"] == [3, 5]
     assert rec["deep_pass_candidate"] is True and rec["preferred_count"] == 4
     assert [p["confident"] for p in rec["peaks"]] == [True, True, False, True]
     assert rec["flags"] == [{"kind": "ambiguous_decomposition", "e_lo": 5.0, "e_hi": 7.0,
-                             "statistic": 1.2, "detail": flag.detail}]
+                             "statistic": 1.2,
+                             "detail": _close_call().flags[0].detail}]
 
 
 def test_ex3_unresolved_keeps_the_model_without_evidence():
@@ -201,3 +212,117 @@ def test_ex7_an_outcome_without_a_fast_pass_reads_as_empty():
                     modality="unpooled", gamma=None, gamma_provisional=False, best_label=None,
                     cost_per_dof=None, q=[0, 0, 0], T=10.0, sample="S", prior_used=None, calib={})
     assert oc.to_dict()["fast_pass"] is None and fast_pass_of(oc.to_dict()) == {}
+
+
+# --------------------------------------------------------------------------- the CSV halves
+def _modes(omegas, gamma_err=None):
+    return [{"omega0": w, "omega0_err": 0.1, "gamma": 0.4, "gamma_err": gamma_err,
+             "amplitude": 50.0, "amplitude_intrinsic": 25.0, "hesse_trusted": True}
+            for w in omegas]
+
+
+def _csv(tmp_path, res, modes, *, omega0=None, provenance=None):
+    """results.csv and modes.csv as the writer produces them for one spectrum carrying ``res``."""
+    best = None if res.selected is None else res.selected.label
+    oc = FitOutcome(detector_id="ana7", verdict="unconstrained", disposition="abstain",
+                    confidence=0.0, omega0=omega0, omega0_err=None, interval=None,
+                    modality="unpooled", gamma=None, gamma_provisional=False, best_label=best,
+                    cost_per_dof=None, q=[3.0, 0.2, 0.0], T=50.0, sample="S", prior_used=None,
+                    calib={}, n_modes=len(modes), modes=modes or None,
+                    fast_pass=scan_delivery._fast_pass_record(res))
+    st = SessionState()
+    st.put(ScanEntry(scan_id="E:7:ana7", scan_number=7, scan_type="measurement", status="fitted",
+                     detectors={"ana7": oc.to_dict()}, provenance=provenance or {}))
+    ws = Workspace.open(tmp_path / "ws")
+    ws.root.mkdir(parents=True)
+    outcome_mod._write_results_csv(ws, st)
+    row, = readers.read_results_csv(ws.root)
+    return row, readers.read_modes_csv(ws.root)
+
+
+def test_an_unresolved_comparison_reads_incomplete_in_the_scene():
+    m2 = _model("elastic+stokes2+bg", 2, p=0.7)
+    m3 = _model("elastic+stokes3+bg", 3, p=0.3)
+    m4 = _model("stokes4+bg", 4, status="no_evidence", reason="posterior Hessian not positive definite")
+    res = _result([m2, m3, m4], m2, [_peak(0, 5.0), _peak(1, 9.0)], probabilities={2: 0.7, 3: 0.3},
+                  state="unresolved", conditional=True)
+    fits = [SimpleNamespace(label=m.label, optimizer_converged=True, cost=50.0, k=m.k_free,
+                            ndof=70, n_modes=m.n_peaks, fit_semantics=None, params=m.params)
+            for m in res.models]
+    sel = scan_delivery._selection_from_fast_pass(res, fits, {m.label: m for m in res.models})
+    assert sel.selection_fallback == "evidence_budget_exhausted"
+    record = {"selection_method": "aic_fallback", "selection_fallback": sel.selection_fallback}
+    status, fallback, _ = scene._evidence_comparison(SimpleNamespace(fit_selection_semantics=record),
+                                                     "scan 7")
+    assert status == "incomplete" and fallback == "evidence_budget_exhausted"
+
+
+def test_csv_ex1_resolved_clean_three_peaks(tmp_path):
+    provenance = {"analyzer_facts": {"Q_nm": {"value": 3.1, "source": "trailer"}}}
+    row, modes = _csv(tmp_path, _three_peaks(), _modes([5.0, 9.0, 14.0]), omega0=5.0,
+                      provenance=provenance)
+    assert row["count_state"] == "resolved" and row["count_probability"] == 0.91
+    assert row["n_confident"] == 3 and row["n_tentative"] == 0 and row["flags"] is None
+    assert row["deep_pass_candidate"] is False and "3" in row["count_state_reason"]
+    assert len(modes) == 3 and all(m["confident"] is True for m in modes)
+    assert all(m["Q_nm"] == pytest.approx(3.1) for m in modes)
+
+
+def test_csv_ex2_close_call_names_alternatives_and_flags_the_tentative_mode(tmp_path):
+    row, modes = _csv(tmp_path, _close_call(), _modes([3.0, 6.0, 9.0, 14.0]))
+    assert row["count_state"] == "close_call" and row["count_probability"] == 0.62
+    assert row["n_confident"] == 3 and row["n_tentative"] == 1
+    assert row["flags"] == "ambiguous decomposition 5.00-7.00 meV"
+    assert row["deep_pass_candidate"] is True
+    assert "3 (0.30)" in row["count_state_reason"] and "5 (0.08)" in row["count_state_reason"]
+    assert len(modes) == 4 and [m["confident"] for m in modes] == [True, True, False, True]
+
+
+def test_csv_ex3_unresolved_is_conditional_and_names_the_unpriced_count(tmp_path):
+    m2 = _model("elastic+stokes2+bg", 2, p=0.7)
+    m3 = _model("elastic+stokes3+bg", 3, p=0.3)
+    m4 = _model("stokes4+bg", 4, status="no_evidence", reason="posterior Hessian not positive definite")
+    res = _result([m2, m3, m4], m2, [_peak(0, 5.0), _peak(1, 9.0)], probabilities={2: 0.7, 3: 0.3},
+                  state="unresolved", conditional=True)
+    row, modes = _csv(tmp_path, res, _modes([5.0, 9.0]))
+    assert row["count_state"] == "unresolved" and row["probabilities_conditional"] is True
+    assert "count 4 has no evidence (posterior Hessian not positive definite)" in row["count_state_reason"]
+    assert len(modes) == 2
+
+
+def test_csv_ex4_search_limited_by_the_ceiling(tmp_path):
+    m6 = _model("elastic+stokes6+bg", 6, p=1.0)
+    res = _result([m6], m6, [_peak(i, 2.0 + 2.5 * i) for i in range(6)], probabilities={6: 1.0},
+                  state="search_limited", reason="ceiling")
+    row, modes = _csv(tmp_path, res, _modes([2.0 + 2.5 * i for i in range(6)]))
+    assert row["count_state"] == "search_limited" and row["search_limit_reason"] == "ceiling"
+    assert row["deep_pass_candidate"] is True and "search limited (ceiling)" in row["count_state_reason"]
+    assert len(modes) == 6
+
+
+def test_csv_ex5_count_zero_has_no_modes(tmp_path):
+    m0 = _model("elastic+bg", 0, p=1.0)
+    row, modes = _csv(tmp_path, _result([m0], m0, [], probabilities={0: 1.0}), [])
+    assert row["n_modes"] == 0 and row["omega0"] is None and row["n_confident"] == 0
+    assert row["count_state"] == "resolved" and modes == []
+
+
+def test_csv_ex6_a_selected_delta_twin_marks_its_resolution_limited_mode(tmp_path):
+    delta = _model("elastic+stokes4+bg_delta4", 4, p=1.0, delta=(3,))
+    peaks = [_peak(0, 4.0), _peak(1, 7.0), _peak(2, 10.0), _peak(3, 13.0, delta=True)]
+    row, modes = _csv(tmp_path, _result([delta], delta, peaks, probabilities={4: 1.0}),
+                      _modes([4.0, 7.0, 10.0, 13.0]))
+    assert [m["delta"] for m in modes] == [False, False, False, True]
+    assert modes[3]["gamma_status"] == "boundary_limited" and modes[3]["gamma_err"] is None
+
+
+def test_csv_ex7_a_scan_with_no_fit_reads_not_fitted(tmp_path):
+    ws = Workspace.open(tmp_path / "ws")
+    ws.root.mkdir(parents=True)
+    st = SessionState()
+    st.put(ScanEntry(scan_id="E:7:ana7", scan_number=7, scan_type="measurement", status="failed",
+                     reasons=["fit raised"]))
+    outcome_mod._write_results_csv(ws, st)
+    row, = readers.read_results_csv(ws.root)
+    assert row["count_state"] == "not fitted" and row["count_state_reason"] == "fit raised"
+    assert readers.read_modes_csv(ws.root) == []
