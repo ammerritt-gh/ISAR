@@ -72,13 +72,14 @@ class FastPassSettings:
     safety_budget_s: float = 300.0           # per-spectrum runaway stop (design agent default)
     contending_margin: float = 10.0          # nats, = count_ladder.CONTENDING_MARGIN (existing)
     close_call_p: float = 0.80               # preferred count below this -> close call (operator)
-    seed_stop_gain: float = 6.0              # PROVISIONAL (S1U7): 2*dlnL a seed peak must add
-    confident_anchor: tuple[tuple[float, float], ...] = ((0.0, 50.0),)
-                                             # PROVISIONAL (S1U7): (spectrum max count, deletion-
+    seed_stop_gain: float = 6.0              # PROVISIONAL, NOT calibrated (refit grid skipped, run-once ruling); operator's call: 2*dlnL a seed peak must add
+    confident_anchor: tuple[tuple[float, float], ...] = ((300.0, 10.0), (600.0, 10.0))
+                                             # PROVISIONAL, calibrated 2026-10-26 on development seed 20261023, 150 spectra; operator's call
+                                             # (the grid was flat: 10 is its first point): (spectrum max count, deletion-
                                              # impact anchor) pairs, interpolated log-linearly in the
                                              # count, clamped at the ends; one pair = a constant
-    flag_residual_threshold: float = 0.0     # PROVISIONAL (S1U7): 0.0 = uncalibrated -> that flag kind off
-    overdamped_correlation: float = 0.9      # PROVISIONAL (S1U7): |corr(omega0, Gamma)| above -> overdamped warning
+    flag_residual_threshold: float = 10.05   # PROVISIONAL, calibrated 2026-10-26 on development seed 20261023, 63 clean spectra; operator's call: residual-scan statistic at/above -> flag (0.0 = that flag kind off)
+    overdamped_correlation: float = 0.8      # PROVISIONAL, calibrated 2026-10-26 on development seed 20261023, 150 spectra; operator's call: |corr(omega0, Gamma)| above -> overdamped warning
     near_elastic_fwhm: float = 2.0           # resolution FWHMs from zero -> near elastic (design)
     material_p: float = 0.05                 # an alternative carrying at least this is "material" (agent default)
     twin_height_frac: float = 1e-3           # height below frac x height ceiling -> zero-height twin screen
