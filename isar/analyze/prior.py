@@ -423,12 +423,12 @@ def _ln_box_mass(mu, cov, lo, hi, sd):
     if near.size == 1:
         return _ln_interval_mass(a[near[0]], b[near[0]])
     from scipy.stats import multivariate_normal
-    sub = np.ix_(near, near)
-    lo_n = np.where(np.isfinite(a[near]), lo[near], -np.inf)
-    hi_n = np.where(np.isfinite(b[near]), hi[near], np.inf)
-    mvn = multivariate_normal(mean=mu[near], cov=cov[sub], seed=0, abseps=1e-12, releps=1e-6,
-                              maxpts=20000 * near.size)
-    mass = float(mvn.cdf(hi_n, lower_limit=lo_n))
+    # Standardised (correlation matrix, limits a and b): the mass is scale free and scipy's
+    # singularity test is not, so counts-scale heights beside meV widths read as singular.
+    s = sd[near]
+    mvn = multivariate_normal(mean=np.zeros(near.size), cov=cov[np.ix_(near, near)] / np.outer(s, s),
+                              seed=0, abseps=1e-12, releps=1e-6, maxpts=20000 * near.size)
+    mass = float(mvn.cdf(b[near], lower_limit=a[near]))
     if np.isfinite(mass) and mass >= 1e-10:
         return math.log(mass)
     # Genz loses relative accuracy below about 1e-10; upgrade to a tilted estimator if such a
@@ -477,7 +477,11 @@ def laplace_log_evidence(neg_log_post, theta, lo, hi, *, rel_step=1e-4) -> Lapla
         e = np.zeros(d); e[i] = steps[i]
         g[i] = -max((float(neg_log_post(theta - e)) - f0) / steps[i], 0.0)
     mu = theta - cov @ g
-    ln_box = _ln_box_mass(mu, cov, lo, hi, np.sqrt(np.diag(cov)))
+    try:
+        ln_box = _ln_box_mass(mu, cov, lo, hi, np.sqrt(np.diag(cov)))
+    except np.linalg.LinAlgError:
+        return LaplaceResult(math.nan, "no_evidence", "box covariance numerically singular",
+                             math.nan, None, "", 0.0)
     ln_z = (-f0 + 0.5 * float(g @ cov @ g) + 0.5 * d * math.log(2 * math.pi)
             - 0.5 * ln_det + ln_box)
     boxed = abs(ln_box) > 1e-6

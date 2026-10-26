@@ -184,6 +184,17 @@ def test_ex7_a_wide_coordinate_is_cut_by_the_box_without_being_railed():
     assert r.status == "ok_boundary"
 
 
+def test_the_box_mass_is_scale_free():
+    # Heights in counts beside widths in meV: a covariance whose eigenvalues span 1e10 is still
+    # positive definite, and the box mass is the same as for its correlation matrix.
+    from isar.analyze.prior import _ln_box_mass
+    corr = np.array([[1.0, 0.9], [0.9, 1.0]])
+    sd = np.array([1e-3, 1e3])
+    mu, lo, hi = np.array([1e-3, 0.0]), np.array([0.0, -1e3]), np.array([1.0, 1e4])
+    exact = _ln_box_mass(mu / sd, corr, lo / sd, hi / sd, np.ones(2))
+    assert _ln_box_mass(mu, corr * np.outer(sd, sd), lo, hi, sd) == pytest.approx(exact, abs=1e-6)
+
+
 def test_a_non_positive_definite_hessian_has_no_evidence():
     r = laplace_log_evidence(lambda th: -th[0] ** 2 + th[1] ** 2, [0.0, 0.0], [-1.0, -1.0],
                              [1.0, 1.0])
