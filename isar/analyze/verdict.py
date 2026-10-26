@@ -436,6 +436,12 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None,
         if unmatched:
             return _signal_unmodeled(unmatched, reasons + ["phonon-less winner leaves descriptor "
                                                            "peak(s) unexplained"], descriptor)
+        # a close call between none and some peaks is no claim of absence (fast pass state only)
+        if count_state is not None:
+            v = _count_verdict(win, results, selection, count_probabilities, count_state,
+                               reasons, default_rule=False)
+            if v is not None:
+                return v
         dp = detection_power(ctx, prior, win) if _prior_expects_phonon(prior, ctx) else None
         claim_elastic = win.label != "bg" and _elastic_significant(selection)
         if not claim_elastic:

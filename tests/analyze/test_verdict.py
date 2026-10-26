@@ -359,3 +359,17 @@ def test_search_limited_with_a_low_winner_probability_is_a_close_call():
     assert v.verdict == "unconstrained"
     assert "search limit" in v.reasons[-1] and "alternatives 2 (P=0.35)" in v.reasons[-1]
 
+
+def test_a_close_call_between_none_and_some_peaks_is_not_no_signal():
+    """The fast pass's close_call/unresolved outranks the phonon-less-winner branch, which would
+    otherwise read the scan as background alone (the scene's searched-empty)."""
+    x = np.linspace(-10.0, 10.0, 81)
+    ctx = _ctx(np.full(81, 20.0), x=x)
+    res = _null_result("bg", {"bg.BG": 20.0})
+    sel = _sel("fold", best="bg")
+    probs = {0: 0.55, 1: 0.45}
+    for state in ("close_call", "unresolved"):
+        v = verdict.classify([res], ctx, sel, count_probabilities=probs, count_state=state)
+        assert v.verdict == "unconstrained" and "alternatives 1 (P=0.45)" in v.reasons[-1]
+    assert verdict.classify([res], ctx, sel, count_probabilities=probs,
+                            count_state="resolved").verdict == "no_signal"
