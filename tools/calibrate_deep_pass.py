@@ -373,9 +373,10 @@ def leading_factor(runs, labels):
 def evaluate_config(runs, labels, ref, top, n_live, factor):
     """Deciding-difference error of one screened configuration: for the pairs (top, other) with a
     reference, max over seeds of |(z_a - z_b) - (ref_a - ref_b)|. ``complete``: every core model has
-    all its runs clean here and at least one pair exists."""
+    all its runs clean here and a finite reference, and at least one pair exists."""
     groups = {lb: _group(runs, "screen", lb, n_live, factor) for lb in labels}
     all_clean = all(len(g) == SEEDS and all(clean(r) for r in g) for g in groups.values())
+    all_ref = all(finite(ref.get(lb)) for lb in labels)
     pairs = [(top, lb) for lb in labels
              if lb != top and finite(ref.get(top)) and finite(ref.get(lb))]
     errors = {}
@@ -385,7 +386,7 @@ def evaluate_config(runs, labels, ref, top, n_live, factor):
                                     for ra, rb in zip(groups[a], groups[b])]
     flat = [e for v in errors.values() for e in v]
     walls = [r["wall_s"] for g in groups.values() for r in g]
-    return dict(n_live=n_live, step_factor=factor, complete=bool(all_clean and flat),
+    return dict(n_live=n_live, step_factor=factor, complete=bool(all_clean and all_ref and flat),
                 largest=max(flat) if flat else None, rms=rms(flat), pair_errors=errors,
                 mean_wall_s=statistics.mean(walls) if walls else None)
 
@@ -1019,6 +1020,16 @@ def self_check():
     bad = [dict(r, evidence_converged=False) if r["settings"]["n_live"] == 400 else r for r in missed]
     assert choose({(n, f): evaluate_config(bad, labels, ref, "m0", n, f)
                    for n in SCREEN_LIVE for f in SCREEN_FACTORS}, 2.0)[0][0] == 128    # unclean runs never chosen
+    # a configuration is complete only when every core model has a finite reference (the decisive rival included)
+    labels3 = ["m0", "m1", "m2"]
+    ref3 = {"m0": 10.0, "m1": 6.0, "m2": 0.0}
+    runs3 = [row(ref3[lb], label=lb, stage="screen", seed=100 * n + 10 * f + k,
+                 settings=dict(n_live=n, step_factor=f)) for lb in labels3 for n in SCREEN_LIVE
+             for f in SCREEN_FACTORS for k in range(SEEDS)]
+    assert evaluate_config(runs3, labels3, ref3, "m0", 400, 1)["complete"]
+    for gone in ("m1", "m2"):                     # m1 missing still leaves the pair (m0, m2) measured
+        part = dict(ref3, **{gone: float("nan")})
+        assert not evaluate_config(runs3, labels3, part, "m0", 400, 1)["complete"], gone
     # core set: one model per count 0..preferred+2, a twin parent standing in for an unpriced count
     entry = lambda lb, k, z, o, lp=0.0: NS(label=lb, count=k, fastpass_ln_z=z, fastpass_lnl_opt=o,  # noqa: E731
                                            log_model_prior=lp)
