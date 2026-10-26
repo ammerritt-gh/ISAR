@@ -39,7 +39,9 @@ area.
   carries only the generic runner; every expectation lives in gitignored
   `real_data/golden/<scenario>/scenario.json`, which is **never read, run, or consulted during
   development** — the gate runs only when the owner names it (`ISAR_GOLDEN=1`, or
-  `run-isar-proofs.bat golden`).
+  `run-isar-proofs.bat golden`). The le Tacon fast-pass proof (`proofs/test_letacon_fast_pass.py`, one to
+  two hours: two 28-spectrum batches and the prior sensitivity check) is gated the same way and runs
+  only on `ISAR_LETACON=1`, or `run-isar-proofs.bat letacon`.
   A job worktree runs a proof on the main checkout's data with `ISAR_REAL_DATA=<main checkout>\real_data` (read only).
 - **Data folders.** `real_data/` — gitignored, main checkout only: the real facility files, each
   proof's measured expectations in `<proof stem>.expect.json` beside its data, and the sealed

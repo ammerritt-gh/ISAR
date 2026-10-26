@@ -6,6 +6,9 @@ rem
 rem   run-isar-proofs.bat          every proof except the sealed golden scenarios
 rem   run-isar-proofs.bat golden   ONLY the sealed golden scenarios (sets ISAR_GOLDEN=1);
 rem                                run it only when you have named a golden gate run
+rem   run-isar-proofs.bat letacon   ONLY the le Tacon fast-pass proof (sets ISAR_LETACON=1): two
+rem                                28-spectrum batches plus the prior sensitivity check, one to two
+rem                                hours; results land in out\letacon_fast_pass\<timestamp>\
 rem
 rem Set MICROMAMBA_EXE to override the micromamba location, or ISAR_ENV to force an environment.
 rem The environment needs pytest (pip install -e ".[test]").
@@ -24,10 +27,12 @@ rem Fail with the fix named, not with "No module named pytest" in a window that 
 if errorlevel 1 goto nopytest
 
 if /i "%~1"=="golden" goto golden
+if /i "%~1"=="letacon" goto letacon
 
 echo Running the proofs against real_data\ ...
 rem Clear ISAR_GOLDEN so a switch inherited from an earlier gate cannot run the sealed scenarios.
 set "ISAR_GOLDEN="
+set "ISAR_LETACON="
 "%MM%" run -n %ISAR_ENV% python -m pytest proofs -q
 goto done
 
@@ -35,6 +40,13 @@ goto done
 echo Running the sealed golden scenarios (ISAR_GOLDEN=1) ...
 set "ISAR_GOLDEN=1"
 "%MM%" run -n %ISAR_ENV% python -m pytest proofs\test_golden_scenarios.py -m golden -q
+
+:letacon
+echo Running the le Tacon fast-pass proof (ISAR_LETACON=1): one to two hours, results in out\letacon_fast_pass ...
+set "ISAR_GOLDEN="
+set "ISAR_LETACON=1"
+"%MM%" run -n %ISAR_ENV% python -m pytest proofs\test_letacon_fast_pass.py -q -s
+goto done
 
 :done
 set "RC=%ERRORLEVEL%"
