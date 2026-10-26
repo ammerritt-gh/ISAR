@@ -314,23 +314,38 @@ def _clean_two_counts(p_two):
     return [one, two], ctx, sel
 
 
-def test_an_ambiguous_peak_count_is_not_resolved():
-    """Only the winner is bootstrapped, so two close counts no longer pool into a fork; the count
-    ladder's ambiguity marker takes its place and keeps the scan out of 'resolved' (and so out of
-    the dispersion prior). A clear count stays resolved."""
+def test_a_close_call_peak_count_is_not_resolved():
+    """Only the winner is bootstrapped, so two close counts no longer pool into a fork; a close
+    call keeps the scan out of 'resolved' (and so out of the dispersion prior). A clear count
+    stays resolved."""
     results, ctx, sel = _clean_two_counts(0.35)
     v = verdict.classify(results, ctx, sel)
     assert v.verdict == "unconstrained"
-    assert "peak count ambiguous: 1 modes (P=0.65) or 2 (P=0.35)" in v.reasons[-1]
+    assert "peak count close call: 1 modes (P=0.65); alternatives 2 (P=0.35)" in v.reasons[-1]
     results, ctx, sel = _clean_two_counts(0.02)
     assert verdict.classify(results, ctx, sel).verdict == "resolved"
 
 
-def test_the_deciding_rungs_count_probabilities_override_the_selection():
-    """When rung 2 decided the count, its probabilities are the ones the verdict reads."""
-    results, ctx, sel = _clean_two_counts(0.35)
-    assert verdict.classify(results, ctx, sel,
-                            count_probabilities={1: 0.99, 2: 0.01}).verdict == "resolved"
+def test_the_alternatives_together_make_the_close_call():
+    """The 0.80 rule (operator, 2026-10-25): no single alternative reaches 0.20, but together they
+    do, so the winner's 0.75 is a close call; given probabilities override the selection's."""
     results, ctx, sel = _clean_two_counts(0.02)
     assert verdict.classify(results, ctx, sel,
-                            count_probabilities={1: 0.6, 2: 0.4}).verdict == "unconstrained"
+                            count_probabilities={0: 0.10, 1: 0.75, 2: 0.15}).verdict \
+        == "unconstrained"
+    results, ctx, sel = _clean_two_counts(0.35)
+    assert verdict.classify(results, ctx, sel,
+                            count_probabilities={0: 0.05, 1: 0.85, 2: 0.10}).verdict == "resolved"
+
+
+def test_the_fast_pass_state_decides_the_count():
+    """With the fast pass's state given, close_call and unresolved are unconstrained whatever the
+    probabilities say; search_limited only adds its reason."""
+    results, ctx, sel = _clean_two_counts(0.02)
+    for state in ("close_call", "unresolved"):
+        v = verdict.classify(results, ctx, sel, count_state=state)
+        assert v.verdict == "unconstrained" and state.replace("_", " ") in v.reasons[-1]
+    v = verdict.classify(results, ctx, sel, count_state="search_limited")
+    assert v.verdict == "resolved" and any("search limited" in r for r in v.reasons)
+    results, ctx, sel = _clean_two_counts(0.35)
+    assert verdict.classify(results, ctx, sel, count_state="resolved").verdict == "resolved"

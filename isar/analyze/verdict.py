@@ -329,7 +329,7 @@ def _count_probabilities(results, selection) -> dict:
 
 
 def classify(results, ctx, selection, *, prior=None, descriptor=None,
-             count_probabilities=None) -> ScanVerdict:
+             count_probabilities=None, count_state=None) -> ScanVerdict:
     """Classify one scan into a named bucket (§6) with a computed confidence (§9). Deterministic
     precedence (held → unconstrained → junk/model-incomplete/**signal_unmodeled** →
     elastic-only/no-signal (phonon-less winner) → no-signal/underpowered → resolved); never
@@ -340,10 +340,13 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None,
     peak list; when the winning model leaves a family-wise-significant peak unmatched the verdict is
     ``signal_unmodeled`` (under-model falsification). Built from ``ctx`` when None (self-contained).
 
-    ``count_probabilities`` (count -> probability; the deciding rung's, from
-    :mod:`isar.analyze.count_ladder`) defaults to the selection's. An ambiguous count (the count
-    ladder's marker) is never ``resolved``: since only the winner is bootstrapped it can no longer
-    show as a fork, and hard rule 5 lets only a clean single answer into the dispersion prior."""
+    ``count_state`` is the fast pass's (:mod:`isar.analyze.fast_pass`): ``close_call`` and
+    ``unresolved`` make the scan ``unconstrained``, naming the alternatives; ``search_limited``
+    adds its reason. Without it, the scan is a close call when the winner's count carries less than
+    ``FastPassSettings.close_call_p`` of ``count_probabilities`` (count -> probability; defaults to
+    the selection's). A close count is never ``resolved``: since only the winner is bootstrapped it
+    can no longer show as a fork, and hard rule 5 lets only a clean single answer into the
+    dispersion prior."""
     from isar.analyze import confidence as _confidence
 
     def conf(win):
@@ -454,16 +457,24 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None,
     if unmatched:
         return _signal_unmodeled(unmatched, reasons + ["model resolved fewer peaks than the "
                                                        "descriptor confirms"], descriptor)
-    # ...or the peak count is ambiguous: two answers, like a fork with no prior to break the tie.
-    from isar.analyze.count_ladder import count_ambiguity
+    # ...or the peak count is a close call or unresolved: no single answer, like a fork with no
+    # prior to break the tie. The fast pass's state decides; without one (hand-built selections),
+    # the same 0.80 rule on the count probabilities.
+    from isar.analyze.fast_pass import FastPassSettings
 
-    probs = (_count_probabilities(results, selection) if count_probabilities is None
-             else count_probabilities)
-    ambiguity = (count_ambiguity(probs, int(win.n_modes))
-                 if getattr(win, "n_modes", None) is not None else None)
-    if ambiguity is not None:
+    probs = {int(k): float(v) for k, v in
+             (_count_probabilities(results, selection) if count_probabilities is None
+              else count_probabilities).items()}
+    n = None if getattr(win, "n_modes", None) is None else int(win.n_modes)
+    if count_state is None and n is not None and n in probs:
+        count_state = "close_call" if probs[n] < FastPassSettings().close_call_p else None
+    if count_state in ("close_call", "unresolved"):
+        others = ", ".join(f"{k} (P={p:.2f})" for k, p in sorted(probs.items()) if k != n)
+        own = f" (P={probs[n]:.2f})" if n in probs else ""
         return ScanVerdict("unconstrained", 0.0, reasons=reasons + [
-            f"peak count ambiguous: {ambiguity['count']} modes (P={ambiguity['probability']:.2f}) "
-            f"or {ambiguity['runner_up_count']} (P={ambiguity['runner_up_probability']:.2f})"])
+            f"peak count {count_state.replace('_', ' ')}: {n} modes{own}"
+            + (f"; alternatives {others}" if others else "")])
+    if count_state == "search_limited":
+        reasons.append("peak count search limited: the best count is at the search's limit")
     score, comp = conf(win)
     return ScanVerdict("resolved", score, components=comp, reasons=reasons or ["resolved"])
