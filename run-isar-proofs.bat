@@ -40,6 +40,7 @@ goto done
 echo Running the sealed golden scenarios (ISAR_GOLDEN=1) ...
 set "ISAR_GOLDEN=1"
 "%MM%" run -n %ISAR_ENV% python -m pytest proofs\test_golden_scenarios.py -m golden -q
+goto done
 
 :letacon
 echo Running the le Tacon fast-pass proof (ISAR_LETACON=1): one to two hours, results in out\letacon_fast_pass ...
