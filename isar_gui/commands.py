@@ -34,7 +34,7 @@ class RunOptions:
     llm: bool = False
     force: bool = False
     M: int = 200
-    errors: str = "full"          # full | fast | cheap | bayes
+    errors: str = "fast"          # fast | full | cheap | bayes (the CLI default; omitted from the command)
     detectors: str | None = None  # comma-separated detector ids, or None for the card default
 
 
@@ -103,7 +103,7 @@ def build_run_command(python: str, data_paths, workspace: str, opts: RunOptions)
         cmd.append("--force")
     if opts.M != 200:
         cmd += ["--M", str(opts.M)]
-    if opts.errors != "full":
+    if opts.errors != "fast":
         cmd += ["--errors", opts.errors]
     if opts.detectors:
         cmd += ["--detectors", opts.detectors]

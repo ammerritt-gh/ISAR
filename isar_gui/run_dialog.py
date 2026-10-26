@@ -51,7 +51,7 @@ class RunDialog(QDialog):
 
         self._errors = QComboBox()
         self._errors.addItems(_ERRORS)
-        self._errors.setCurrentText(opts.errors if opts.errors in _ERRORS else "full")
+        self._errors.setCurrentText(opts.errors if opts.errors in _ERRORS else "fast")
         form.addRow("Uncertainty tier:", self._errors)
 
         self._M = QSpinBox()

@@ -57,11 +57,18 @@ def test_build_run_command_maps_nondefault_options():
 
 
 def test_build_run_command_omits_default_M_and_errors():
-    opts = RunOptions(M=200, errors="full")
+    opts = RunOptions(M=200, errors="fast")
     cmd = commands.build_run_command("py", ["d"], "ws", opts)
     assert "--M" not in cmd
     assert "--errors" not in cmd
     assert "--detectors" not in cmd
+
+
+def test_the_full_tier_is_sent_explicitly_now_that_fast_is_the_default():
+    cmd = commands.build_run_command("py", ["d"], "ws", RunOptions())
+    assert "--errors" not in cmd
+    cmd = commands.build_run_command("py", ["d"], "ws", RunOptions(errors="full"))
+    assert cmd[cmd.index("--errors") + 1] == "full"
 
 
 def test_default_workspace_dir_sibling_of_data():

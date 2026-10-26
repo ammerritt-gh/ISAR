@@ -57,17 +57,17 @@ def test_run_enabled_but_rerun_needs_history(qtbot, make_ws):
 def test_launch_builds_command_remembers_and_sets_status(qtbot, make_ws, monkeypatch):
     w, root = _win(qtbot, make_ws)
     monkeypatch.setattr(operations, "ProcessRunner", _FakeRunner)
-    opts = RunOptions(errors="fast", M=200)
+    opts = RunOptions(errors="full", M=200)
     w._launch_run([r"D:\data"], opts)
 
     cmd = w._operations._run_runner.started_cmd
     assert cmd[1:4] == ["-m", "isar", "run"]
     assert r"D:\data" in cmd
     assert cmd[cmd.index("--workspace") + 1] == str(root)
-    assert "--errors" in cmd  # non-default tier propagated
+    assert cmd[cmd.index("--errors") + 1] == "full"  # non-default tier propagated
     # The invocation is remembered, but Re-run remains disabled until this single-writer run ends.
     assert w._run_state() == {"data": [r"D:\data"], "opts": {"llm": False, "force": False,
-                                                             "M": 200, "errors": "fast",
+                                                             "M": 200, "errors": "full",
                                                              "detectors": None}}
     assert not w._rerun_action.isEnabled()
     assert "running" in w._run_status.text()
