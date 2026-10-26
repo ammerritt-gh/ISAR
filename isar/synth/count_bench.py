@@ -513,8 +513,8 @@ def score_case(truth: CaseTruth, fast_pass: dict | None, status: str, grades) ->
         j = pairs.get(i)
         if not sf:
             outcome, why = "not_scored", ""
-        elif fast_pass is None:
-            outcome, why = "tentative_or_abstained", status
+        elif fast_pass is None or fast_pass.get("preferred_count") is None:   # no priced model: abstained
+            outcome, why = "tentative_or_abstained", status if fast_pass is None else fast_pass.get("state", status)
         elif j is None:
             outcome, why = "missed", ""
         elif peaks[j]["confident"]:

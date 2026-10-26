@@ -210,6 +210,14 @@ def test_a_fit_without_a_record_is_tentative_or_abstained_with_its_status():
         assert fit_rows == []
 
 
+def test_a_record_with_no_priced_model_abstains_with_its_state():
+    # preferred_count None (no count has evidence): abstained, not a miss, with the record's state
+    truth = _two_peak_truth()
+    rec = {**_record([]), "preferred_count": None, "state": "unresolved"}
+    rows, _ = cb.score_case(truth, rec, "ok", GRADES)
+    assert [(r["outcome"], r["status"]) for r in rows] == [("tentative_or_abstained", "unresolved")] * 2
+
+
 def test_peaks_that_are_not_should_find_are_not_scored():
     truth = _two_peak_truth()
     rows, _ = cb.score_case(truth, _record([]), "ok", ((500.0, 400.0), (500.0, 5.0)))   # second one absorbed
