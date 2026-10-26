@@ -1,56 +1,87 @@
-"""Peak-count benchmark: how many modes does a spectrum hold, and does the fitter say so?
+"""Peak benchmark for the fast pass: does it find the peaks a human would call clear, and say so?
 
-A seeded generator draws spectra with 0..ceiling modes (hard cases over-represented), the
-production fit path (:func:`isar.session.scan_delivery.fit_one`, on a synthetic
-:class:`~isar.analyze.context.ScanContext`) fits one fresh Poisson draw of each, and three figures
-are scored against the generator's truth, which the harness holds and never passes to the fitter
-(the fitter sees only an :class:`Observation`):
+Method (STATS_PRIMER section 2.3 is written from this docstring).
 
-1. correct counts on *resolvable* cases (an ambiguous answer is not correct; it is reported as an
-   abstention and stays in the denominator);
-2. confident extra modes on single-mode and empty spectra;
-3. the A/B figure: per resolvable case, fresh draws from the truth curve and from the fitted
-   curve, the likelihood ratio picks the source; the share of resolvable cases at <=60%.
+Generator. Truths are made with the production model: full DHO pairs (Stokes and anti-Stokes by
+detailed balance), an elastic line and a flat background, convolved with one of the 28 committed
+BL43LXU resolution curves (:mod:`isar.synth.bl43_curves`), on the real files' grid (-16..+20 meV in
+0.2 meV steps), then drawn as Poisson counts. The strongest phonon's height h (C-dho's coordinate,
+the maximum of the convolved profile over E >= 0, counts per bin) is 600 at level ``high`` (302 K-like)
+or 300 at level ``low`` (97 K-like); the elastic line is 0.2 x and the background 0.04 x that
+(background 0 in a share of the random suite). Exposure is 1: heights are counts per point, the
+fitter's own coordinate. Fixed *named* truths cover the cases a human has judged (broad low peak, weak
+shoulder, close doublet, near-elastic peak, zero background, and a 302 K / 97 K soft-mode pair);
+a *random suite* draws the same kinds with seeded parameters. The truth never reaches the fitter: it
+sees an :class:`Observation` (counts, T, the resolution curve, exposure), nothing else.
 
-*Resolvable* ("a human could fit it"): over repeated Poisson draws of one truth, a high-budget
-reference tells N modes from N-1 in >=90% of draws, while wrongly splitting the truth with its
-weakest mode removed in <=5% of draws. The reference is its own fixed configuration (many starts,
-some placed at the true mode positions, which the fitter under test never sees), independent of any
-escalation threshold of the fitter. Its evidence on the N and N-1 models is Laplace by default, the
-same Gaussian rungs as the fitter's rung 1 (so the two can share a blind spot; the
-reference-against-truth agreement figure exposes it); ``--ref-evidence nested`` switches it to
-nested sampling through :func:`isar.analyze.errors.bayes.bayesian_posterior` for spot checks, at
-about three hours per resolvable two-mode case at 200 draws.
+Visibility grade. For a true peak, ``grade = D(lam_full, lam_full - lam_peak)`` with the deviance
+``D(mu, nu) = 2 sum[mu ln(mu/nu) - (mu - nu)]`` (twice the Poisson log-likelihood difference between
+the noiseless truth with and without that peak, everything else held fixed). The refit diagnostic is
+the same difference after refitting the remaining peaks (the truth's structure minus that peak, on
+noiseless counts, started at the truth, each kept peak's omega0 within 0.5 resolution FWHM of its truth
+and its Gamma at most 2 x the truth's + 0.5 FWHM, so a neighbour cannot relocate or widen over the peak;
+heights, the elastic line and the background keep the prior's bounds), which shows how far neighbours
+absorb the peak.
 
-Every figure is a *target*, never a gate (rulings R14/R15): the figures file reports what was
-reached, with its denominator and Monte Carlo uncertainty.
+Should-find. A true peak is should-find when grade >= 100 (level high) or 25 (low), refit >= 0.3 x
+grade (isolated), omega0 > 2 resolution FWHM and Gamma < omega0 / 2. Other peaks are scored for
+matching and for false peaks only; a weak shoulder or broad mode is never counted as a miss.
 
-Run the full characterisation deliberately: ``python -m isar.synth.count_bench --help`` or
-double-click ``run-isar-count-bench.bat``. The routine suite only runs a tiny subset
-(``isar/synth/tests/test_count_bench.py``).
+Matching. Per spectrum, fitted peaks (confident and tentative) against true peaks, one-to-one,
+within one resolution FWHM: the assignment that maximises the number of in-gate pairs and then
+minimises the total |delta omega0| (a greedy nearest-first match can lose a pair). Each should-find
+peak gets exactly one outcome: ``confident`` (matched to a confident fitted peak),
+``tentative_or_abstained`` (matched to a tentative one, or the fit errored or gave no answer) or
+``missed``. A confident fitted peak with no match is a false peak.
+
+Figures (targets, never gates), each with numerator, denominator and Wilson 95% interval, for all
+spectra and split by level: missed / should-find (aim <= 0.10); false / confident fitted (aim <=
+0.05); shares of the four count states; flag hit rate on planted shoulder, broad_low and soft cases (a
+flag whose [e_lo - FWHM, e_hi + FWHM] holds the planted omega0); false-flag rate on ``clean`` spectra
+(any flag); per-spectrum time (median, p90) from ``fast_pass_timing.total_seconds``.
+
+Streams. Development uses the named truths with draws from ``STREAM_DRAW_FIT`` and random truths
+from ``STREAM_CASE_TUNING``; evaluation uses the same named truths with draws from ``STREAM_DRAW_EVAL``
+and random truths from ``STREAM_CASE_EVAL``. Thresholds are tuned on development; the settings are
+then frozen and the reported figures come from evaluation. ``figures.json`` records the settings in
+force (``dataclasses.asdict`` of ``guidelines.fast_pass_settings(card)``) and their sha256.
+``--settings`` reaches the fits only through the bench card's ``[fitting.fast_pass]`` and
+``[fitting.prior]`` tables, production's one settings path.
+
+Outputs (``out/count_bench/<timestamp>/``): ``figures.json``, ``cases.csv`` (one row per spectrum),
+``true_peaks.csv``, ``fitted_peaks.csv``, ``records.jsonl`` (per spectrum: the truth, the fast-pass
+record verbatim, the timing) and ``gallery/page_NN.png``: 4 x 3 truth-versus-fit panels (each named
+truth's first draw, a seeded sample of the random suite, then the spectra with a miss or a false peak,
+at most 48). The fitted curves are rebuilt from the record's peaks, which carries no curves.
+
+Run it deliberately: ``python -m isar.synth.count_bench --help`` or double-click
+``run-isar-count-bench.bat``. The routine suite runs canned records, a fake fit and the refit
+diagnostic's own small fits (``isar/synth/tests/test_count_bench.py``).
 """
 from __future__ import annotations
 
 import argparse
 import csv
-import itertools
+import hashlib
 import json
 import logging
 import math
 import os
 import sys
 import time
+import tomllib
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
-from scipy.optimize import nnls
+from scipy.optimize import linear_sum_assignment
 
 from isar.analyze.phonon import DEFAULT_MODE_CEILING, MODE_CEILING_ENV, default_mode_ceiling
 
-from . import config, noise
+from . import bl43_curves, config, noise
 
 log = logging.getLogger(__name__)
 
@@ -59,50 +90,53 @@ log = logging.getLogger(__name__)
 # environment, else 6); the generator takes an explicit argument over it, which may be 0.
 
 # Independent random streams: every draw is seeded from (base_seed, stream, keys...), so the
-# tuning cases, the evaluation cases and the four kinds of Poisson draw never share numbers.
-STREAM_CASE_TUNING = 1       # case parameters of the cases S1U4 tunes thresholds on
-STREAM_CASE_EVAL = 2         # case parameters of the evaluation cases
-STREAM_DRAW_FIT = 3          # the one fresh draw the fitter under test sees
-STREAM_DRAW_REFERENCE = 4    # the reference's draws of the truth
-STREAM_DRAW_NULL = 5         # the reference's draws of the truth minus its weakest mode
-STREAM_DRAW_AB = 6           # the A/B test's fresh draws
-STREAM_REF_SEARCH = 7        # random starts and sampler seeds of the reference
-STREAMS = (STREAM_CASE_TUNING, STREAM_CASE_EVAL, STREAM_DRAW_FIT, STREAM_DRAW_REFERENCE,
-           STREAM_DRAW_NULL, STREAM_DRAW_AB, STREAM_REF_SEARCH)
+# development cases, the evaluation cases and the two kinds of Poisson draw never share numbers.
+STREAM_NAMED = 0             # label of the fixed named truths (they draw no case parameters)
+STREAM_CASE_TUNING = 1       # random truths of the development set
+STREAM_CASE_EVAL = 2         # random truths of the evaluation set
+STREAM_DRAW_FIT = 3          # Poisson draws the development set shows the fitter
+STREAM_DRAW_EVAL = 8         # Poisson draws the evaluation set shows the fitter
+STREAM_GALLERY = 9           # the gallery's own sample of spectra (not a fit stream)
+STREAMS = (STREAM_CASE_TUNING, STREAM_CASE_EVAL, STREAM_DRAW_FIT, STREAM_DRAW_EVAL)
 
-# Resolvability (ruling R5) and the three targets (R5, R14, R15: reported, never gates).
-RESOLVE_DRAWS = 200          # Poisson draws per truth for the resolvability classifier
-RESOLVE_DETECT_MIN = 0.90    # the extra mode must be found in at least this share of draws
-FALSE_SPLIT_MAX = 0.05       # the single mode may be wrongly split in at most this share
-AB_DRAWS = 1000              # fresh draws per source (truth, fit) in the A/B test
-TARGET_CORRECT = 0.90
-TARGET_EXTRA = 0.05
-TARGET_AB = 0.60             # the best test may pick the source right at most this often
+# Draw counts [setting]: estimates at 30 s per fit and 12 workers; S1U7 rescales by measured time.
+MODE_PLANS = {
+    "development": dict(case_stream=STREAM_CASE_TUNING, draw_stream=STREAM_DRAW_FIT,
+                        named_draws=5, random=60, clean=150),
+    "evaluation": dict(case_stream=STREAM_CASE_EVAL, draw_stream=STREAM_DRAW_EVAL,
+                       named_draws=10, random=200, clean=200),
+}
+CLEAN_INDEX0 = 100_000       # the extra clean spectra count up from here, apart from the random suite
 
-# The tuning run S1U4 uses is capped (R15): reached figures are recorded, not tuned further.
-TUNING_MAX_CASES = 60
-TUNING_MAX_SECONDS = 30 * 60
+TARGET_MISSED = 0.10         # aim: missed / should-find (reported, never a gate)
+TARGET_FALSE = 0.05          # aim: false / confident fitted
 TUNING_WORKERS = 16
 HARD_KILL_GRACE_S = 300.0    # no case starts in the last this many seconds before the wall-clock cap
+GALLERY_PANELS = 12          # per page: 4 x 3
+GALLERY_RANDOM = 24          # random-suite spectra sampled into the gallery
+GALLERY_FAILS_MAX = 48       # spectra with a miss or a false peak, at most
 
-# The reference: N modes beat N-1 when ln Z_N - ln Z_{N-1} exceeds this (equal prior weight on the
-# two counts, as the fitter's ladder uses). Its own flat prior box, fixed and declared here, so the
-# reference does not move when the fitter's prior recipe does; amplitudes are boxed relative to the
-# observed peak count (the reference may look at the data; the fitter's recipe may not).
-REF_LN_BAYES_MIN = 0.0
-REF_AMPLITUDE_FACTOR = 100.0     # phonon height h in [0, factor * max counts]
-REF_ELASTIC_FACTOR = 20.0        # elastic height elastic.h in [0, factor * max counts]
-REF_MAX_SUBSET_STARTS = 8        # cap on truth-position starts for an N-1 sub-model
-REF_EVIDENCE_KINDS = ("laplace", "nested")   # laplace: production Gaussian rungs, no sampler
-
-# Generator: the instrument window is the BL43LXU-like one (about -16..+20 meV); the resolution is
-# a generic Voigt of a few tenths-to-two meV, not any measured curve.
-X_MIN, X_MAX, X_STEP = -16.0, 20.0, 0.5
-KIND_WEIGHTS = {            # hard cases deliberately over-represented
-    "empty": 0.08, "single": 0.12, "broad_single": 0.10, "close_doublet": 0.20,
-    "weak_on_tail": 0.14, "near_elastic": 0.12, "generic": 0.24,
+# Generator [setting]: round numbers, not file values (hard rule 10). Energy axis = the real files' grid.
+X_MIN, X_MAX, X_STEP = -16.0, 20.0, 0.2
+LEVEL_HEIGHT = {"high": 600.0, "low": 300.0}   # strongest phonon h, counts per bin
+LEVEL_T = {"high": 300.0, "low": 100.0}        # 302 K-like and 97 K-like
+ELASTIC_REL, BACKGROUND_REL = 0.2, 0.04        # of the strongest phonon height
+ZERO_BACKGROUND_SHARE = 0.10                   # of the random suite
+ANALYZERS = tuple(d["detector_id"] for d in
+                  tomllib.loads(bl43_curves.CARD.read_text(encoding="utf-8"))["detectors"])
+KIND_WEIGHTS = {
+    "clean": 0.25, "single": 0.10, "separated": 0.15, "close_doublet": 0.10, "shoulder": 0.12,
+    "broad_low": 0.10, "near_elastic": 0.08, "empty": 0.05, "generic": 0.05,
 }
-NEEDS_TWO_MODES = ("close_doublet", "weak_on_tail", "generic")
+NEEDS_TWO_MODES = ("separated", "close_doublet", "shoulder", "broad_low", "generic")
+CLEAN_GRADE_MIN = 100.0      # every peak of a clean spectrum is at least this visible
+CLEAN_RESAMPLES = 200
+
+# Should-find [setting from the operator's judgements of the 2026-10-25 galleries].
+G_CLEAR = {"high": 100.0, "low": 25.0}
+REFIT_SHARE_MIN = 0.3        # refit >= this x grade: not absorbed by neighbours
+ISOLATED_FWHM = 2.0          # omega0 above this many FWHM
+MAX_GAMMA_OVER_OMEGA0 = 0.5
 
 
 # --------------------------------------------------------------------------- seeds and ceiling
@@ -126,29 +160,35 @@ def rng_for(base_seed: int, stream: int, *keys: int) -> np.random.Generator:
 # --------------------------------------------------------------------------- truth (harness-only)
 @dataclass(frozen=True)
 class ModeTruth:
-    omega0: float        # intrinsic mode energy (meV)
-    gamma: float         # DHO damping (meV), < omega0
-    height: float        # Stokes+anti-Stokes peak height above background at exposure 1 (counts)
+    omega0: float        # E0, the undamped energy (meV)
+    gamma: float         # DHO damping (meV); above omega0 is overdamped
+    height: float        # h: maximum of the convolved mode over E >= 0, counts per bin (C-dho)
 
 
 @dataclass(frozen=True)
 class CaseTruth:
     """Everything the generator knows. Held by the harness; the fitter never receives it."""
 
-    stream: int          # which case stream made it (STREAM_CASE_TUNING / STREAM_CASE_EVAL)
+    stream: int          # STREAM_NAMED, STREAM_CASE_TUNING or STREAM_CASE_EVAL
     index: int
     kind: str
-    modes: tuple
+    modes: tuple         # ascending omega0
     elastic_height: float
     background: float
     T: float
-    exposure: float
-    gauss_fwhm: float
+    exposure: float      # 1.0: heights are counts per point, the fitter's coordinate
+    gauss_fwhm: float    # the curve's FWHM (lorentz_fwhm is 0, as ScanContext makes it)
     lorentz_fwhm: float
     ceiling: int
+    resolution: str = "a06"      # key into bl43_curves
+    level: str = "high"
+    name: str = ""               # a named truth's name
+    planted: int | None = None   # index into modes of the planted shoulder / broad / soft mode
 
     @property
     def case_id(self) -> str:
+        if self.name:
+            return self.name
         return f"{'T' if self.stream == STREAM_CASE_TUNING else 'E'}{self.index:04d}"
 
     @property
@@ -156,82 +196,148 @@ class CaseTruth:
         return len(self.modes)
 
 
-def _res_fwhm(gauss: float, lorentz: float) -> float:
-    """Voigt FWHM (Olivero-Longbothum approximation); only used to place hard cases."""
-    return 0.5346 * lorentz + math.sqrt(0.2166 * lorentz ** 2 + gauss ** 2)
+def curve_of(key: str):
+    return bl43_curves.curve(key)
 
 
 def _loguniform(rng, lo: float, hi: float) -> float:
     return float(math.exp(rng.uniform(math.log(lo), math.log(hi))))
 
 
-def _mode(omega0: float, gamma: float, rel: float) -> tuple:
-    """A mode that is underdamped (omega0 > gamma) and inside the window."""
+def _build(*, stream, index, kind, drawn, planted, level, resolution, background_on, ceiling,
+           name="", T=None) -> CaseTruth:
+    """A truth from ``drawn = [(omega0, gamma, relative_height)]`` (the strongest has 1); ``planted``
+    indexes ``drawn``. Modes are stored ascending in omega0."""
+    scale, fwhm = LEVEL_HEIGHT[level], curve_of(resolution).fwhm
+    order = sorted(range(len(drawn)), key=lambda i: drawn[i][0])
+    modes = tuple(ModeTruth(float(drawn[i][0]), float(drawn[i][1]), scale * float(drawn[i][2]))
+                  for i in order)
+    return CaseTruth(
+        stream=int(stream), index=int(index), kind=kind, modes=modes,
+        elastic_height=ELASTIC_REL * scale, background=BACKGROUND_REL * scale if background_on else 0.0,
+        T=LEVEL_T[level] if T is None else float(T), exposure=1.0, gauss_fwhm=float(fwhm),
+        lorentz_fwhm=0.0, ceiling=int(ceiling), resolution=resolution, level=level, name=name,
+        planted=None if planted is None or planted >= len(drawn) else order.index(planted))
+
+
+def _mode(omega0: float, gamma: float, rel: float, *, underdamped: bool = True) -> tuple:
+    """A mode inside the window; underdamped (gamma < omega0 / 1.2) unless a broad kind asks otherwise."""
     omega0 = float(min(max(omega0, 0.4), X_MAX - 1.0))
-    return omega0, float(min(gamma, omega0 / 1.2)), float(rel)
+    return omega0, float(min(gamma, omega0 / 1.2) if underdamped else gamma), float(rel)
 
 
-def _draw_modes(kind: str, rng, res: float, ceiling: int) -> list:
-    """``[(omega0, gamma, relative_height)]`` for one case kind; the strongest has height 1."""
-    gam = lambda: _loguniform(rng, 0.15, 1.5)   # noqa: E731 - three uses below
+def _spaced(rng, n: int, fwhm: float, lo: float, gap: float) -> np.ndarray:
+    """``n`` ascending energies in [lo, X_MAX - 1] at least ``gap`` apart (best effort after 200 tries)."""
+    for _ in range(200):
+        energies = np.sort(rng.uniform(lo, X_MAX - 1.0, size=n))
+        if n == 1 or np.min(np.diff(energies)) >= gap:
+            break
+    return energies
+
+
+def _draw_modes(kind: str, rng, fwhm: float, ceiling: int) -> tuple:
+    """``([(omega0, gamma, relative_height)], planted_index_or_None)`` for one kind."""
+    gam = lambda: _loguniform(rng, 0.15, 1.5)   # noqa: E731
     if kind == "empty":
-        return []
+        return [], None
     if kind == "single":
-        return [_mode(rng.uniform(1.5, 18.0), gam(), 1.0)]
-    if kind == "broad_single":
-        return [_mode(rng.uniform(4.0, 16.0), rng.uniform(1.5, 4.0), 1.0)]
+        return [_mode(rng.uniform(2.5, 18.0), gam(), 1.0)], None
+    if kind in ("clean", "separated"):
+        n = int(rng.integers(1, min(3, ceiling) + 1)) if kind == "clean" else int(rng.integers(2, min(3, ceiling) + 1))
+        lo = 2.0 * fwhm + 0.2 if kind == "clean" else 1.0
+        energies = _spaced(rng, n, fwhm, lo, 3.0 * fwhm)
+        g_hi = 0.5 if kind == "clean" else 1.5
+        heights = [rng.uniform(0.3, 1.0) for _ in range(n)]
+        heights[int(rng.integers(n))] = 1.0
+        return [_mode(w, _loguniform(rng, 0.15, g_hi), h) for w, h in zip(energies, heights)], None
     if kind == "close_doublet":
-        w1, sep = rng.uniform(3.0, 15.0), rng.uniform(0.5, 2.0) * res
-        g = gam()
-        return [_mode(w1, g, 1.0), _mode(w1 + sep, g * rng.uniform(0.7, 1.4), rng.uniform(0.3, 1.0))]
-    if kind == "weak_on_tail":
+        w1, sep, g = rng.uniform(3.0, 15.0), rng.uniform(0.5, 2.0) * fwhm, gam()
+        return [_mode(w1, g, 1.0), _mode(w1 + sep, g * rng.uniform(0.7, 1.4), rng.uniform(0.3, 1.0))], None
+    if kind == "shoulder":
         w1 = rng.uniform(4.0, 14.0)
-        off = rng.choice([-1.0, 1.0]) * rng.uniform(1.5, 4.0) * res
-        return [_mode(w1, gam(), 1.0), _mode(w1 + off, gam(), _loguniform(rng, 0.03, 0.15))]
+        sep = rng.choice([-1.0, 1.0]) * rng.uniform(0.8, 1.5) * fwhm
+        return [_mode(w1, gam(), 1.0), _mode(w1 + sep, gam(), rng.uniform(0.05, 0.15))], 1
+    if kind == "broad_low":
+        main = [_mode(w, gam(), h) for w, h in zip(_spaced(rng, 2, fwhm, 2.5, 4.0 * fwhm), (1.0, rng.uniform(0.3, 1.0)))]
+        broad = _mode(rng.uniform(4.0, 14.0), rng.uniform(2.0, 4.0), rng.uniform(0.04, 0.10), underdamped=False)
+        return [*main, broad], 2
     if kind == "near_elastic":
-        modes = [_mode(rng.uniform(0.7, 2.5) * res, _loguniform(rng, 0.15, 0.6), 1.0)]
+        modes = [_mode(rng.uniform(0.7, 2.5) * fwhm, _loguniform(rng, 0.15, 0.6), 1.0)]
         if ceiling >= 2 and rng.random() < 0.5:
             modes.append(_mode(rng.uniform(5.0, 17.0), gam(), rng.uniform(0.2, 1.0)))
-        return modes
-    n = int(rng.integers(2, ceiling + 1))      # generic: 2..ceiling modes, spaced >= 0.3 res
-    for _ in range(200):
-        energies = np.sort(rng.uniform(1.0, X_MAX - 1.0, size=n))
-        if n == 1 or np.min(np.diff(energies)) >= 0.3 * res:
-            break
+        return modes, None
+    n = int(rng.integers(2, ceiling + 1))      # generic: 2..ceiling modes, spaced >= 0.3 FWHM
+    energies = _spaced(rng, n, fwhm, 1.0, 0.3 * fwhm)
     heights = [_loguniform(rng, 0.15, 1.0) for _ in range(n)]
     heights[int(rng.integers(n))] = 1.0
-    return [_mode(w, gam(), h) for w, h in zip(energies, heights)]
+    return [_mode(w, gam(), h) for w, h in zip(energies, heights)], None
 
 
-def generate_case(base_seed: int, stream: int, index: int, ceiling: int | None = None) -> CaseTruth:
-    """One seeded case. ``ceiling`` is the largest mode count the generator may draw."""
+def generate_case(base_seed: int, stream: int, index: int, ceiling: int | None = None,
+                  kind: str | None = None) -> CaseTruth:
+    """One seeded random truth. ``ceiling`` is the largest mode count it may hold; ``kind`` forces a
+    kind (the extra clean spectra)."""
     ceiling = mode_ceiling(ceiling)
     rng = rng_for(base_seed, stream, index)
-    gauss, lorentz = float(rng.uniform(1.0, 2.0)), float(rng.uniform(0.2, 0.8))
-    res = _res_fwhm(gauss, lorentz)
-    kinds = list(KIND_WEIGHTS)
-    kind = str(rng.choice(kinds, p=np.array(list(KIND_WEIGHTS.values())) / sum(KIND_WEIGHTS.values())))
+    resolution = str(rng.choice(ANALYZERS))
+    level = "high" if rng.random() < 0.5 else "low"
+    background_on = rng.random() >= ZERO_BACKGROUND_SHARE
+    if kind is None:
+        kinds = list(KIND_WEIGHTS)
+        kind = str(rng.choice(kinds, p=np.array(list(KIND_WEIGHTS.values())) / sum(KIND_WEIGHTS.values())))
     if ceiling < 2 and kind in NEEDS_TWO_MODES:
         kind = "single"
     if ceiling < 1:
         kind = "empty"
-    drawn = _draw_modes(kind, rng, res, ceiling)[:ceiling]
-    scale = _loguniform(rng, 30.0, 1500.0)           # strongest mode height at exposure 1
-    modes = tuple(ModeTruth(w, g, scale * rel) for w, g, rel in drawn)
-    elastic_ratio = _loguniform(rng, 0.3, 30.0) * (3.0 if kind == "near_elastic" else 1.0)
-    return CaseTruth(
-        stream=int(stream), index=int(index), kind=kind, modes=modes,
-        elastic_height=scale * elastic_ratio,
-        background=max(scale * _loguniform(rng, 0.003, 0.08), 0.05),
-        T=_loguniform(rng, 80.0, 320.0), exposure=_loguniform(rng, 0.5, 4.0),
-        gauss_fwhm=gauss, lorentz_fwhm=lorentz, ceiling=int(ceiling))
+    fwhm = curve_of(resolution).fwhm
+    common = dict(stream=stream, index=index, level=level, resolution=resolution,
+                  background_on=background_on, ceiling=ceiling)
+    if kind == "clean":                 # every peak clearly visible, else resample, else a single peak
+        for _ in range(CLEAN_RESAMPLES):
+            drawn, planted = _draw_modes(kind, rng, fwhm, ceiling)
+            truth = _build(kind=kind, drawn=drawn, planted=planted, **common)
+            if min(g for g, _ in _grades_only(truth)) >= CLEAN_GRADE_MIN:
+                return truth
+        kind = "single"
+        for _ in range(CLEAN_RESAMPLES):
+            drawn, planted = _draw_modes(kind, rng, fwhm, ceiling)
+            truth = _build(kind=kind, drawn=drawn, planted=planted, **common)
+            if _grades_only(truth)[0][0] >= CLEAN_GRADE_MIN:
+                break
+        return truth
+    drawn, planted = _draw_modes(kind, rng, fwhm, ceiling)
+    if len(drawn) > ceiling:            # a truncated draw loses its planted mode
+        drawn, planted = drawn[:ceiling], (planted if planted is not None and planted < ceiling else None)
+    return _build(kind=kind, drawn=drawn, planted=planted, **common)
 
 
-def null_truth(truth: CaseTruth) -> CaseTruth:
-    """The truth with its weakest mode removed: the "single mode" a false split would come from."""
-    weakest = min(range(truth.n_modes), key=lambda i: truth.modes[i].height)
-    return replace(truth, kind=f"{truth.kind}:null",
-                   modes=tuple(m for i, m in enumerate(truth.modes) if i != weakest))
+def named_cases(base_seed: int) -> list:
+    """The 14 fixed truths (energies invented, never the paper's): the base shape plus one planted
+    change, each at both levels, and the soft-mode pair. They do not depend on a stream: the same
+    truths serve development and evaluation, which differ in their Poisson draws."""
+    base = [(4.0, 0.3, 1.0), (9.5, 0.4, 0.3), (14.0, 0.3, 0.15)]
+    plain = {
+        "clean_three": (base, None, True),
+        "broad_low": ([*base, (6.5, 3.0, 0.06)], 3, True),
+        "shoulder": ([*base, (10.7, 0.4, 0.08)], 3, True),
+        "close_doublet": ([(4.0, 0.3, 1.0), (9.3, 0.4, 0.3), (10.0, 0.4, 0.2), (14.0, 0.3, 0.15)], None, True),
+        "near_elastic": ([*base, (1.5, 0.4, 0.2)], None, True),
+        "zero_background": (base, None, False),
+    }
+    soft = {"soft_high": ("high", 302.0, [*base, (10.7, 0.4, 0.08)]),
+            "soft_low": ("low", 97.0, [*base, (6.0, 7.0, 0.05)])}
+    out = []
+    for k, (name, (drawn, planted, bg)) in enumerate(plain.items()):
+        resolution = str(rng_for(base_seed, STREAM_NAMED, k).choice(ANALYZERS))
+        for level in ("high", "low"):
+            out.append(_build(stream=STREAM_NAMED, index=len(out), kind=name, drawn=drawn, planted=planted,
+                              level=level, resolution=resolution, background_on=bg, ceiling=6,
+                              name=f"{name}_{level}"))
+    for j, (name, (level, T, drawn)) in enumerate(soft.items()):
+        resolution = str(rng_for(base_seed, STREAM_NAMED, len(plain) + j).choice(ANALYZERS))
+        out.append(_build(stream=STREAM_NAMED, index=len(out), kind="soft", drawn=drawn, planted=3,
+                          level=level, resolution=resolution, background_on=True, ceiling=6, name=name, T=T))
+    return out
 
 
 def energy_axis() -> np.ndarray:
@@ -248,23 +354,29 @@ class Observation:
     T: float
     gauss_fwhm: float
     lorentz_fwhm: float
-    exposure: float      # the declared exposure, counting seconds (heights are counts per second)
+    exposure: float      # the declared exposure; truths use 1, so heights are counts per point
+    resolution: object = None   # the TabulatedResolution (None: the Voigt widths above)
 
 
 def context_of(obs: Observation):
     from isar.analyze.context import ScanContext
-    # Relative scale 1 everywhere, reference the declared exposure. The source is "time": the generated
-    # heights are count rates (tens to thousands per second), and the prior recipe's per-monitor
-    # amplitude ceiling (one count per monitor count) would pin every fit of them at its bound.
+    # Relative scale 1 everywhere, reference the declared exposure, source "time" (the prior recipe's
+    # amplitude scale for counts that are not per monitor count). A resolution curve replaces the
+    # Voigt and puts its FWHM in gauss_fwhm, lorentz_fwhm 0 (ScanContext.__post_init__).
     return ScanContext(x=obs.x, counts=obs.counts, mask=np.ones_like(obs.x, dtype=bool), T=obs.T,
                        center=0.0, gauss_fwhm=obs.gauss_fwhm, lorentz_fwhm=obs.lorentz_fwhm,
                        instrument="COUNT_BENCH", energy_status="absolute",
                        exposure_scale=np.ones_like(obs.x, dtype=float), exposure_reference=obs.exposure,
-                       exposure_source="time")
+                       exposure_source="time", resolution_curve=obs.resolution)
 
 
 def _prefix(i: int) -> str:
     return "phonon" if i == 0 else f"phonon{i + 1}"
+
+
+def _observation_of(truth: CaseTruth, counts: np.ndarray) -> Observation:
+    return Observation(energy_axis(), counts, truth.T, truth.gauss_fwhm, truth.lorentz_fwhm,
+                       truth.exposure, curve_of(truth.resolution))
 
 
 def _truth_model(truth: CaseTruth):
@@ -272,9 +384,7 @@ def _truth_model(truth: CaseTruth):
     detailed balance, never a parameter), its parameter vector, and a context to evaluate on."""
     from isar.analyze.components import CompositeModel, ConstantBackground, Elastic, PhononDHO
 
-    x = energy_axis()
-    ctx = context_of(Observation(x, np.zeros_like(x), truth.T, truth.gauss_fwhm, truth.lorentz_fwhm,
-                                truth.exposure))
+    ctx = context_of(_observation_of(truth, np.zeros_like(energy_axis())))
     phonons = [PhononDHO(prefix=_prefix(i)) for i in range(truth.n_modes)]
     theta = []
     for m in truth.modes:            # the height coordinate: the truth's height is the parameter
@@ -291,321 +401,276 @@ def truth_lambda(truth: CaseTruth) -> np.ndarray:
 
 def draw_observation(truth: CaseTruth, rng: np.random.Generator) -> Observation:
     """One Poisson realisation (sigma = sqrt(N), 0 at zero counts: no floor is applied anywhere)."""
-    return Observation(x=energy_axis(), counts=rng.poisson(truth_lambda(truth)).astype(float),
-                       T=truth.T, gauss_fwhm=truth.gauss_fwhm, lorentz_fwhm=truth.lorentz_fwhm,
-                       exposure=truth.exposure)
+    return _observation_of(truth, rng.poisson(truth_lambda(truth)).astype(float))
+
+
+def observe(truth: CaseTruth, draw: int, base_seed: int, draw_stream: int) -> Observation:
+    """The draw ``draw`` of ``truth`` in a draw stream; the gallery regenerates the data with it."""
+    return draw_observation(truth, rng_for(base_seed, draw_stream, truth.stream, truth.index, draw))
+
+
+# --------------------------------------------------------------------------- visibility and should-find
+def deviance(mu, nu) -> float:
+    """D(mu, nu) = 2 sum[mu ln(mu/nu) - (mu - nu)] over mu > 0 (nu floored at 1e-12)."""
+    mu, nu = np.asarray(mu, dtype=float), np.clip(np.asarray(nu, dtype=float), 1e-12, None)
+    pos = mu > 0
+    return float(2.0 * np.sum(mu[pos] * np.log(mu[pos] / nu[pos]) - (mu[pos] - nu[pos])))
+
+
+def _mode_lambdas(truth: CaseTruth) -> tuple:
+    """(full noiseless lambda, [each mode's lambda]), exposure included."""
+    comp, theta, ctx = _truth_model(truth)
+    parts = comp.evaluate_components(ctx.x, theta, ctx)
+    full = np.clip(truth.exposure * comp.evaluate(ctx.x, theta, ctx), 0.0, None)
+    return full, [truth.exposure * parts[i][1] for i in range(truth.n_modes)]
+
+
+@lru_cache(maxsize=1024)
+def _grades_only(truth: CaseTruth) -> tuple:
+    """``(grade, nan)`` per mode: the cheap half, used while a clean truth is being drawn."""
+    full, per_mode = _mode_lambdas(truth)
+    return tuple((deviance(full, full - lam), float("nan")) for lam in per_mode)
+
+
+def _refit_deviance(truth: CaseTruth, skip: int, full: np.ndarray) -> float:
+    """D(lam_full, the refit of the truth's structure without mode ``skip``), on noiseless counts,
+    started at the truth. The kept modes stay near their truths (omega0 within 0.5 FWHM, Gamma at most
+    2 x the truth's + 0.5 FWHM), so a neighbour cannot relocate or widen over the removed peak; heights,
+    the elastic line and the background keep the prior recipe's bounds. nan (logged) when the refit fails."""
+    from scipy.optimize import minimize
+
+    from isar.analyze import loop
+    from isar.analyze.components import ConstantBackground, Elastic, PhononDHO
+    from isar.analyze.prior import mode_bounds
+    from isar.analyze.structures import Hypothesis
+
+    kept = [m for j, m in enumerate(truth.modes) if j != skip]
+    hyp = Hypothesis(f"refit{len(kept)}", (*[PhononDHO(prefix=_prefix(j)) for j in range(len(kept))],
+                                           Elastic, ConstantBackground))
+    comp = hyp.build()
+    names = comp.param_names()
+    start = {"elastic.h": truth.elastic_height, "bg.BG": truth.background}
+    for j, m in enumerate(kept):
+        start.update({f"{_prefix(j)}.omega0": m.omega0, f"{_prefix(j)}.Gamma": m.gamma,
+                      f"{_prefix(j)}.h": m.height})
+    ctx = context_of(_observation_of(truth, full))
+    lo, hi = np.array(mode_bounds(names, ctx), dtype=float).T
+    for j, m in enumerate(kept):
+        k_w, k_g = names.index(f"{_prefix(j)}.omega0"), names.index(f"{_prefix(j)}.Gamma")
+        lo[k_w], hi[k_w] = max(lo[k_w], m.omega0 - 0.5 * truth.gauss_fwhm), min(hi[k_w], m.omega0 + 0.5 * truth.gauss_fwhm)
+        hi[k_g] = min(hi[k_g], 2.0 * m.gamma + 0.5 * truth.gauss_fwhm)
+    try:
+        prob = loop.build_problem(hyp, ctx, x0=start)
+        # the default ftol stops early on these ill-scaled parameters (a restart found 13% lower deviance)
+        theta = minimize(prob.costv, np.clip(prob.x0, lo, hi), method="L-BFGS-B", bounds=list(zip(lo, hi)),
+                         options={"ftol": 1e-14, "gtol": 1e-10, "maxiter": 5000, "maxfun": 50000}).x
+    except Exception as exc:  # noqa: BLE001 - one failed refit must not end the run
+        log.warning("refit without mode %d of %s failed: %s: %s", skip, truth.case_id, type(exc).__name__, exc)
+        return float("nan")
+    return deviance(full, truth.exposure * comp.evaluate(ctx.x, theta, ctx))
+
+
+@lru_cache(maxsize=1024)
+def visibility_grades(truth: CaseTruth) -> tuple:
+    """``(grade, refit)`` for every true mode, in ``truth.modes`` order (see the module docstring)."""
+    full, per_mode = _mode_lambdas(truth)
+    return tuple((deviance(full, full - lam), _refit_deviance(truth, i, full))
+                 for i, lam in enumerate(per_mode))
+
+
+def should_find(mode: ModeTruth, grade: float, refit: float, level: str, fwhm: float) -> bool:
+    """A peak a human would call clear: visible, isolated, clear of the elastic line and underdamped.
+    A nan refit is not isolated."""
+    return bool(grade >= G_CLEAR[level] and refit >= REFIT_SHARE_MIN * grade
+                and mode.omega0 > ISOLATED_FWHM * fwhm and mode.gamma < MAX_GAMMA_OVER_OMEGA0 * mode.omega0)
+
+
+# --------------------------------------------------------------------------- matching and scoring
+def match_peaks(true_omega0, fit_omega0, fwhm: float) -> list:
+    """One-to-one ``[(true_index, fit_index)]`` within one FWHM: the most in-gate pairs first, then
+    the least total |delta omega0| (out-of-gate pairs cost 1e6 and are dropped)."""
+    t, f = np.asarray(true_omega0, dtype=float), np.asarray(fit_omega0, dtype=float)
+    if not t.size or not f.size:
+        return []
+    gap = np.abs(t[:, None] - f[None, :])
+    cost = np.where(gap <= fwhm, gap, 1e6)
+    rows, cols = linear_sum_assignment(cost)
+    return [(int(i), int(j)) for i, j in zip(rows, cols) if cost[i, j] < 1e6]
+
+
+def score_case(truth: CaseTruth, fast_pass: dict | None, status: str, grades) -> tuple:
+    """``(true_peak_rows, fitted_peak_rows)`` for one spectrum.
+
+    ``fast_pass`` is the C-fastpass-record (None when the fit errored or gave no answer, ``status``
+    saying which); ``grades`` is :func:`visibility_grades`. Every should-find peak gets exactly one
+    outcome; a confident fitted peak with no match is false."""
+    peaks = list((fast_pass or {}).get("peaks") or [])
+    pairs = dict(match_peaks([m.omega0 for m in truth.modes], [p["omega0"] for p in peaks], truth.gauss_fwhm))
+    matched_fit = {j: i for i, j in pairs.items()}
+    true_rows = []
+    for i, (m, (grade, refit)) in enumerate(zip(truth.modes, grades)):
+        sf = should_find(m, grade, refit, truth.level, truth.gauss_fwhm)
+        j = pairs.get(i)
+        if not sf:
+            outcome, why = "not_scored", ""
+        elif fast_pass is None or fast_pass.get("preferred_count") is None:   # no priced model: abstained
+            outcome, why = "tentative_or_abstained", status if fast_pass is None else fast_pass.get("state", status)
+        elif j is None:
+            outcome, why = "missed", ""
+        elif peaks[j]["confident"]:
+            outcome, why = "confident", ""
+        else:
+            outcome, why = "tentative_or_abstained", "tentative"
+        true_rows.append({"index": i, "omega0": m.omega0, "gamma": m.gamma, "height": m.height,
+                          "grade": grade, "refit": refit, "should_find": sf, "outcome": outcome,
+                          "status": why, "matched_fit": j,
+                          "abs_delta_omega0": None if j is None else abs(m.omega0 - peaks[j]["omega0"])})
+    fit_rows = [{"index": int(p.get("index", j)), "omega0": p["omega0"], "confident": bool(p["confident"]),
+                 "delta": bool(p.get("delta", False)), "matched_true": matched_fit.get(j),
+                 "false": bool(p["confident"]) and j not in matched_fit}
+                for j, p in enumerate(peaks)]
+    return true_rows, fit_rows
+
+
+def flags_text(flags) -> str:
+    return "; ".join(f"{f['kind']} {f['e_lo']:.2f}-{f['e_hi']:.2f} meV" for f in flags)
+
+
+def flag_hit(truth: CaseTruth, flags) -> bool | None:
+    """Does a flag cover the planted mode (its interval widened by one FWHM)? None without a planted mode."""
+    if truth.planted is None:
+        return None
+    w = truth.modes[truth.planted].omega0
+    return any(f["e_lo"] - truth.gauss_fwhm <= w <= f["e_hi"] + truth.gauss_fwhm for f in flags)
 
 
 # --------------------------------------------------------------------------- the fitter under test
-@dataclass(frozen=True)
-class CountAnswer:
-    n_modes: int | None          # None when the fit produced no answer
-    ambiguous: bool
-    runner_up_p: float | None
-
-
-def _card(ceiling: int | None = None):
-    """The campaign card; with ``ceiling``, its ``[fitting] max_modes`` is that ceiling, so the
-    production fit tries exactly the counts the benchmark drew (the card's route, as a beamtime
-    sets it). A ceiling of 0 fits counts 0 and 1: the card takes no ceiling below 1."""
-    from dataclasses import replace
+def _card(ceiling: int | None = None, settings: dict | None = None):
+    """The campaign card; with ``ceiling``, its ``[fitting] max_modes`` is that ceiling (the card's
+    route, as a beamtime sets it; the card takes no ceiling below 1). ``settings`` is
+    ``{"fast_pass": {...}, "prior": {...}}``: written into ``[fitting.fast_pass]`` and
+    ``[fitting.prior]`` exactly as a hand-edited card carries them, so the fit reads them through
+    ``guidelines.fast_pass_settings``, production's one settings path."""
     # The one synthetic card the STAT-2b campaign already builds; reused, not re-declared.
     from isar.synth.stat2b.campaign import _campaign_card
     card = _campaign_card()
-    if ceiling is None:
-        return card
-    fitting = {**(card.policy.fitting or {}), "max_modes": max(int(ceiling), 1)}
+    fitting = dict(card.policy.fitting or {})
+    if ceiling is not None:
+        fitting["max_modes"] = max(int(ceiling), 1)
+    for table in ("fast_pass", "prior"):
+        if (settings or {}).get(table):
+            fitting[table] = dict(settings[table])
     return replace(card, policy=replace(card.policy, fitting=fitting))
 
 
+def load_settings(text: str | None) -> dict | None:
+    """``--settings``: inline JSON or the path of a JSON file, ``{"fast_pass": {...}, "prior": {...}}``."""
+    if not text:
+        return None
+    raw = text if text.lstrip().startswith("{") else Path(text).read_text(encoding="utf-8")
+    settings = json.loads(raw)
+    unknown = set(settings) - {"fast_pass", "prior"}
+    if unknown:
+        raise ValueError(f"--settings takes only 'fast_pass' and 'prior' tables, got {sorted(unknown)}")
+    return settings
+
+
+def settings_meta(ceiling: int | None, settings: dict | None) -> dict:
+    """What the fits ran on: the resolved FastPassSettings and its sha256 (evaluation on frozen settings)."""
+    from isar.session import guidelines
+    resolved = asdict(guidelines.fast_pass_settings(_card(ceiling, settings)))
+    digest = hashlib.sha256(json.dumps(resolved, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return {"fast_pass_settings": resolved, "settings_sha256": digest, "settings_override": settings}
+
+
 def fit_observation(obs: Observation, *, seed: int, errors_tier: str = "cheap",
-                    ceiling: int | None = None) -> dict:
+                    ceiling: int | None = None, settings: dict | None = None) -> dict:
     """The production fit of one observation: ``scan_delivery.fit_one`` on a synthetic context, at
     the bench's ``ceiling`` (``None``: the card's default route, the environment then 6), so the
-    benchmark measures the ceiling it states. ("cheap": the count decision is made before any
-    error bars, and those are most of the cost.)"""
+    benchmark measures the ceiling it states. ("cheap": error bars are most of the cost and the
+    benchmark reads only the fast-pass record.)"""
     from isar.session import scan_delivery
-    return scan_delivery.fit_one(context_of(obs), _card(ceiling), prior=None, M=1, seed=int(seed),
+    return scan_delivery.fit_one(context_of(obs), _card(ceiling, settings), prior=None, M=1, seed=int(seed),
                                  errors_tier=errors_tier)
 
 
-def count_answer(fit: dict) -> CountAnswer:
-    """The count a fit result states, and whether it says the answer is ambiguous: the count
-    ladder's published outcome (``fit_selection_semantics["count_ladder"]``, its deciding rung's
-    probabilities and :data:`isar.analyze.count_ladder.AMBIGUITY_RUNNER_UP_P`). Every
-    :func:`~isar.session.scan_delivery.fit_one` result carries one; a fit without it raises rather
-    than being judged against a second threshold."""
-    if not fit.get("best_label"):
-        return CountAnswer(None, False, None)
-    ladder = (fit.get("fit_selection_semantics") or {}).get("count_ladder")
-    if not ladder:
-        raise ValueError(f"fit {fit['best_label']!r} carries no count_ladder record")
-    runner = ladder.get("runner_up_probability")
-    return CountAnswer(int(fit["n_modes"]), ladder.get("ambiguity") is not None,
-                       float(runner) if runner is not None else 0.0)
-
-
-def fitted_lambda(fit: dict, obs: Observation) -> np.ndarray | None:
-    """The selected fit's expected counts on the observation grid, rebuilt from its manifest."""
-    manifest = fit.get("model_manifest")
-    if not manifest:
-        return None
-    from isar.analyze.model_manifest import compose_manifest
-    comp, theta = compose_manifest(manifest)
-    return np.clip(comp.evaluate(obs.x, theta, context_of(obs)), 0.0, None)
-
-
-# --------------------------------------------------------------------------- the reference
-@dataclass(frozen=True)
-class ReferenceBudget:
-    """The reference's cost knobs; the full run uses the design's 200 draws, the fast subset shrinks them."""
-
-    draws: int = RESOLVE_DRAWS          # draws of the truth
-    null_draws: int = RESOLVE_DRAWS     # draws of the truth minus its weakest mode
-    evidence: str = "laplace"           # "laplace" (production Gaussian rungs) | "nested" (sampler)
-    random_starts: int = 8              # random-start fits per model, beside the truth-placed ones
-    n_live: int = 100                   # nested-sampling live points (evidence="nested" only)
-    dlogz: float = 0.5
-    max_iter: int | None = 40_000
-
-    def __post_init__(self):
-        if self.evidence not in REF_EVIDENCE_KINDS:
-            raise ValueError(f"reference evidence must be one of {REF_EVIDENCE_KINDS}, got {self.evidence!r}")
-
-
-def _reference_hypothesis(m: int):
-    from isar.analyze.components import ConstantBackground, Elastic, PhononDHO
-    from isar.analyze.structures import Hypothesis
-    return Hypothesis(f"ref{m}", (*[PhononDHO(prefix=_prefix(i)) for i in range(m)],
-                                  Elastic, ConstantBackground))
-
-
-def _start_vector(comp, ctx, pairs) -> np.ndarray:
-    """Initial parameters for mode (omega0, gamma) ``pairs``; the linear amplitudes by NNLS."""
-    from isar.analyze.phonon import EPS_OMEGA0, GAMMA_FLOOR, GAMMA_MAX
-    nonlinear = {}
-    for i, (w0, g) in enumerate(pairs):
-        g = float(min(max(g, GAMMA_FLOOR), GAMMA_MAX))
-        nonlinear[f"{_prefix(i)}.omega0"] = float(min(max(w0, EPS_OMEGA0), X_MAX))
-        nonlinear[f"{_prefix(i)}.Gamma"] = g
-    phi, lin_names = comp.nnls_basis(ctx.x_used, nonlinear, ctx)
-    coef, _ = nnls(phi, ctx.counts_used)
-    linear = dict(zip(lin_names, coef))
-    return np.array([nonlinear[n] if n in nonlinear else max(float(linear[n]), 0.0)
-                     for n in comp.param_names()], dtype=float)
-
-
-def _reference_bundle(names, cmax: float):
-    from isar.analyze.catalogue import PriorBundle, ResolvedPrior
-    from isar.analyze.phonon import EPS_OMEGA0, GAMMA_FLOOR, GAMMA_MAX
-    box = {"omega0": (EPS_OMEGA0, X_MAX), "Gamma": (GAMMA_FLOOR, GAMMA_MAX),
-           "h": (0.0, REF_AMPLITUDE_FACTOR * cmax), "elastic.h": (0.0, REF_ELASTIC_FACTOR * cmax),
-           "BG": (0.0, cmax + 10.0)}
-    return PriorBundle(tuple(ResolvedPrior(n, "flat", None, None,
-                                           *box.get(n, box.get(n.split(".")[-1])), "identity")
-                             for n in names))
-
-
-def reference_ln_evidence(obs: Observation, m: int, positions, budget: ReferenceBudget,
-                          rng: np.random.Generator) -> float | None:
-    """ln Z of the m-mode model (Laplace by default, ``budget.evidence == "nested"``: nested
-    sampling), or None when it could not be computed.
-
-    ``positions`` are the true mode (omega0, gamma) pairs: starts are placed at them (every
-    m-subset, capped), which only the reference may do. The best converged start defines the
-    problem for the evidence; with ``evidence="nested"`` the sampler explores the whole prior box.
-    A failed calculation is None, never a low evidence."""
-    from isar.analyze import loop
-
-    ctx, hyp = context_of(obs), _reference_hypothesis(m)
-    comp = hyp.build()
-    subsets = list(itertools.combinations(positions, m))
-    if len(subsets) > REF_MAX_SUBSET_STARTS:
-        subsets = [subsets[i] for i in rng.choice(len(subsets), REF_MAX_SUBSET_STARTS, replace=False)]
-    starts = [list(s) for s in subsets]
-    for _ in range(budget.random_starts if m else 0):
-        starts.append([(rng.uniform(0.5, X_MAX - 1.0), _loguniform(rng, 0.15, 2.0)) for _ in range(m)])
-    best = None
-    for pairs in starts or [[]]:
-        try:
-            fit = loop.fit_hypothesis(hyp, ctx, x0=_start_vector(comp, ctx, pairs))
-        except Exception as exc:  # noqa: BLE001 - one bad start must not end the reference
-            log.warning("reference start failed (m=%d): %s: %s", m, type(exc).__name__, exc)
-            continue
-        if fit.optimizer_converged and (best is None or fit.cost < best.cost):
-            best = fit
-    if best is None:
-        return None
-    bundle = _reference_bundle(comp.param_names(), max(float(np.max(obs.counts)), 1.0))
-    if budget.evidence == "laplace":
-        # escalation="defer": the Gaussian rungs only. An invalid rung is NaN, i.e. None here.
-        from isar.analyze.evidence import structure_evidence
-        ln_z = structure_evidence(hyp, ctx, best, bundle, escalation="defer").log_evidence
-        return float(ln_z) if np.isfinite(ln_z) else None
-    from isar.analyze.errors.bayes import bayesian_posterior
-    bz = bayesian_posterior(hyp, ctx, best, prior_bundle=bundle, seed=int(rng.integers(2 ** 31)),
-                            n_live=budget.n_live, dlogz=budget.dlogz, max_iter=budget.max_iter)
-    return float(bz.log_evidence) if bz.converged and np.isfinite(bz.log_evidence) else None
-
-
-@dataclass
-class Resolvability:
-    label: str                      # resolvable | borderline | not_applicable
-    n_modes: int
-    detect_found: int = 0
-    detect_draws: int = 0
-    detect_indeterminate: int = 0
-    split_found: int = 0
-    split_draws: int = 0
-    split_indeterminate: int = 0
-    seconds: float = 0.0
-
-
-def _prefers_n(data_truth: CaseTruth, positions, n: int, key: int, stream: int, base_seed: int,
-               budget: ReferenceBudget) -> bool | None:
-    """One reference draw: does ln Z_N beat ln Z_{N-1}? None when either evidence is missing."""
-    rng = rng_for(base_seed, stream, data_truth.stream, data_truth.index, key)
-    obs = draw_observation(data_truth, rng)
-    search = rng_for(base_seed, STREAM_REF_SEARCH, data_truth.stream, data_truth.index, key, stream)
-    lnz_n = reference_ln_evidence(obs, n, positions, budget, search)
-    lnz_lo = reference_ln_evidence(obs, n - 1, positions, budget, search)
-    if lnz_n is None or lnz_lo is None:
-        return None
-    return lnz_n - lnz_lo > REF_LN_BAYES_MIN
-
-
-def classify_resolvability(truth: CaseTruth, base_seed: int, budget: ReferenceBudget) -> Resolvability:
-    """Resolvable / borderline for one truth by the reference (an exact early exit: the label is
-    decided as soon as the allowed misses or false splits are exceeded, and the denominators say
-    how many draws were actually used)."""
-    n, t0 = truth.n_modes, time.monotonic()
-    if n == 0:
-        return Resolvability("not_applicable", 0)
-    positions = [(m.omega0, m.gamma) for m in truth.modes]
-    out = Resolvability("borderline", n)
-    miss_ok = budget.draws - math.ceil(RESOLVE_DETECT_MIN * budget.draws - 1e-9)
-    split_ok = math.floor(FALSE_SPLIT_MAX * budget.null_draws + 1e-9)
-    misses = 0
-    for k in range(budget.draws):
-        out.detect_draws += 1
-        verdict = _prefers_n(truth, positions, n, k, STREAM_DRAW_REFERENCE, base_seed, budget)
-        out.detect_indeterminate += verdict is None
-        out.detect_found += bool(verdict)
-        misses += not verdict                       # an indeterminate draw is not "found"
-        if misses > miss_ok:
-            break
-    else:
-        splits, null = 0, null_truth(truth)
-        for k in range(budget.null_draws):
-            out.split_draws += 1
-            verdict = _prefers_n(null, positions, n, k, STREAM_DRAW_NULL, base_seed, budget)
-            out.split_indeterminate += verdict is None
-            out.split_found += verdict is None or bool(verdict)   # unknown counts against it
-            splits += verdict is None or bool(verdict)
-            if splits > split_ok:
-                break
-        else:
-            out.label = "resolvable"
-    out.seconds = time.monotonic() - t0
-    return out
-
-
-# --------------------------------------------------------------------------- the A/B test
-def ab_accuracy(lam_truth: np.ndarray, lam_fit: np.ndarray, n_draws: int,
-                rng: np.random.Generator) -> tuple:
-    """Accuracy of the likelihood-ratio test at telling truth draws from fit draws.
-
-    ``n_draws`` fresh spectra from each curve; the statistic ln L(truth) - ln L(fit) of the draw
-    picks "truth" when positive (an exact tie scores half). Returns (accuracy, binomial s.e.)."""
-    lt, lf = np.clip(lam_truth, 1e-12, None), np.clip(lam_fit, 1e-12, None)
-    log_ratio = np.log(lt / lf)
-    def statistic(draws):                   # sum_i d_i ln(lt_i/lf_i) - (lt_i - lf_i)
-        return draws @ log_ratio - np.sum(lt - lf)
-    from_truth = statistic(rng.poisson(lt, size=(n_draws, lt.size)))
-    from_fit = statistic(rng.poisson(lf, size=(n_draws, lf.size)))
-    right = (np.sum(from_truth > 0) + 0.5 * np.sum(from_truth == 0)
-             + np.sum(from_fit < 0) + 0.5 * np.sum(from_fit == 0))
-    acc = float(right / (2 * n_draws))
-    return acc, math.sqrt(acc * (1.0 - acc) / (2 * n_draws))
-
-
-# --------------------------------------------------------------------------- one case
+# --------------------------------------------------------------------------- one spectrum
 @dataclass
 class CaseResult:
     case_id: str = ""
     stream: int = 0
     index: int = 0
+    draw: int = 0
+    draw_stream: int = 0
     kind: str = ""
+    level: str = ""
+    resolution: str = ""
     n_true: int = 0
-    resolvability: str = ""
-    detect_found: int = 0
-    detect_draws: int = 0
-    detect_indeterminate: int = 0
-    split_found: int = 0
-    split_draws: int = 0
-    split_indeterminate: int = 0
     status: str = "ok"                 # ok | fit_error | no_answer | error
-    n_fit: int | None = None
-    ambiguous: bool | None = None
-    runner_up_p: float | None = None
-    outcome: str = ""                  # correct | abstain | wrong | n/a (not resolvable)
-    confident_extra: bool | None = None
-    ab_accuracy: float | None = None
-    ab_se: float | None = None
-    ab_pass: bool | None = None
-    seconds_reference: float = 0.0
-    seconds_fit: float = 0.0
+    state: str = ""                    # the engine's state, verbatim
+    preferred_count: int | None = None
+    p_preferred: float | None = None
+    n_confident: int | None = None
+    n_tentative: int | None = None
+    n_flags: int | None = None
+    flags: str = ""
+    flag_hit: bool | None = None       # planted shoulder / broad / soft mode covered by a flag
+    false_flag: bool | None = None     # any flag on a clean spectrum
+    seconds: float | None = None       # fast_pass_timing.total_seconds
+    wall_seconds: float = 0.0          # around the whole fit call
     note: str = ""
+    # not in cases.csv:
+    truth: CaseTruth | None = None
+    record: dict | None = None
+    timing: dict | None = None
+    true_peaks: list = field(default_factory=list)
+    fitted_peaks: list = field(default_factory=list)
+
+
+CASE_CSV_SKIP = ("truth", "record", "timing", "true_peaks", "fitted_peaks")
 
 
 def run_case(args) -> CaseResult:
-    """Everything for one case; top-level and picklable so a pool worker can run it. Never raises:
+    """Everything for one spectrum; top-level and picklable so a pool worker can run it. Never raises:
     a failure becomes a row that stays in every denominator."""
-    truth, base_seed, budget, n_ab, errors_tier = args
-    res = CaseResult(case_id=truth.case_id, stream=truth.stream, index=truth.index,
-                     kind=truth.kind, n_true=truth.n_modes)
-    try:
-        cls = classify_resolvability(truth, base_seed, budget)
-    except Exception as exc:  # noqa: BLE001
-        log.exception("reference failed for %s", truth.case_id)
-        res.status, res.note, res.resolvability = "error", f"reference: {type(exc).__name__}: {exc}", "unknown"
-        return res
-    res.resolvability, res.seconds_reference = cls.label, cls.seconds
-    for name in ("detect_found", "detect_draws", "detect_indeterminate",
-                 "split_found", "split_draws", "split_indeterminate"):
-        setattr(res, name, getattr(cls, name))
-
+    truth, draw, base_seed, draw_stream, errors_tier, settings = args
+    res = CaseResult(case_id=truth.case_id, stream=truth.stream, index=truth.index, draw=draw,
+                     draw_stream=draw_stream, kind=truth.kind, level=truth.level,
+                     resolution=truth.resolution, n_true=truth.n_modes, truth=truth)
     t0 = time.monotonic()
-    obs = draw_observation(truth, rng_for(base_seed, STREAM_DRAW_FIT, truth.stream, truth.index))
+    record = None
     try:
-        fit = fit_observation(obs, seed=truth.index, errors_tier=errors_tier,
-                              ceiling=truth.ceiling)
-        answer = count_answer(fit)
-    except Exception as exc:  # noqa: BLE001
-        log.exception("fit failed for %s", truth.case_id)
-        res.status, res.note = "fit_error", f"{type(exc).__name__}: {exc}"
-        res.seconds_fit = time.monotonic() - t0
-        return res
-    res.seconds_fit = time.monotonic() - t0
-    if answer.n_modes is None:
-        res.status = "no_answer"
-    else:
-        res.n_fit, res.ambiguous, res.runner_up_p = answer.n_modes, answer.ambiguous, answer.runner_up_p
-        if truth.n_modes <= 1:
-            res.confident_extra = answer.n_modes > truth.n_modes and not answer.ambiguous
-    if res.resolvability == "resolvable":
-        res.outcome = ("abstain" if answer.ambiguous else
-                       "correct" if answer.n_modes == truth.n_modes else "wrong")
-        lam_fit = fitted_lambda(fit, obs) if answer.n_modes is not None else None
-        if lam_fit is None:
-            res.note = (res.note + " no fitted curve").strip()
-            res.ab_pass = False
+        grades = visibility_grades(truth)
+        obs = observe(truth, draw, base_seed, draw_stream)
+        seed = int(rng_for(base_seed, draw_stream, truth.stream, truth.index, draw, 1).integers(2 ** 31))
+        try:
+            fit = fit_observation(obs, seed=seed, errors_tier=errors_tier, ceiling=truth.ceiling,
+                                  settings=settings)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("fit failed for %s draw %d", truth.case_id, draw)
+            res.status, res.note = "fit_error", f"{type(exc).__name__}: {exc}"
         else:
-            rng = rng_for(base_seed, STREAM_DRAW_AB, truth.stream, truth.index)
-            res.ab_accuracy, res.ab_se = ab_accuracy(truth_lambda(truth), lam_fit, n_ab, rng)
-            res.ab_pass = res.ab_accuracy <= TARGET_AB
-    else:
-        res.outcome = "n/a"
+            record, res.timing = fit.get("fast_pass"), fit.get("fast_pass_timing")
+            if not record:
+                record, res.status = None, "no_answer"
+    except Exception as exc:  # noqa: BLE001 - the truth's own grading failed
+        log.exception("scoring setup failed for %s", truth.case_id)
+        res.status, res.note = "error", f"{type(exc).__name__}: {exc}"
+        res.wall_seconds = time.monotonic() - t0
+        return res
+    res.wall_seconds, res.record = time.monotonic() - t0, record
+    res.true_peaks, res.fitted_peaks = score_case(truth, record, res.status, grades)
+    flags = (record or {}).get("flags") or []
+    if record:
+        peaks, probs = record.get("peaks") or [], record.get("count_probabilities") or {}
+        res.state, res.preferred_count = record["state"], record.get("preferred_count")
+        res.p_preferred = probs.get(str(res.preferred_count))
+        res.n_confident = sum(bool(p["confident"]) for p in peaks)
+        res.n_tentative = len(peaks) - res.n_confident
+    res.n_flags, res.flags = len(flags), flags_text(flags)
+    res.flag_hit = flag_hit(truth, flags)
+    res.false_flag = bool(flags) if truth.kind == "clean" else None
+    res.seconds = (res.timing or {}).get("total_seconds")
     return res
 
 
@@ -619,89 +684,47 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple:
     return (max(0.0, centre - half), min(1.0, centre + half))
 
 
-def _figure(name: str, num: int, den: int, target: float | None, *, higher_is_better: bool,
-            note: str) -> dict:
+def _figure(name: str, level: str, num: int, den: int, target: float | None, note: str) -> dict:
     value = num / den if den else None
     lo, hi = wilson(num, den)
-    return {"name": name, "numerator": num, "denominator": den, "value": value,
-            "mc_se": math.sqrt(value * (1 - value) / den) if den else None,
+    return {"name": name, "level": level, "numerator": num, "denominator": den, "value": value,
             "wilson95": [lo, hi] if den else None, "target": target,
-            "target_reached": (None if value is None or target is None else
-                               (value >= target if higher_is_better else value <= target)),
+            "target_reached": None if value is None or target is None else value <= target,
             "note": note}
 
 
-def _majority(found: int, computed: int) -> bool | None:
-    """Whether a strict majority of the computed draws says yes; None without computed draws."""
-    return None if computed <= 0 else 2 * found > computed
-
-
-def _reference_matches_truth(r) -> bool | None:
-    """Does the reference's majority count for one truth equal the truth count? Its N is the
-    majority of the truth draws preferring N; the weakest-removed draws must not majority-prefer N
-    (a false split). None when a side has no computed draws. A tie is not a majority."""
-    if r.n_true == 0:
-        return None
-    says_n = _majority(r.detect_found, r.detect_draws - r.detect_indeterminate)
-    if says_n is None:
-        return None
-    if not says_n:
-        return False
-    split = _majority(r.split_found - r.split_indeterminate, r.split_draws - r.split_indeterminate)
-    return None if split is None else not split
+STATES = ("resolved", "close_call", "unresolved", "search_limited")
 
 
 def summarize(results) -> dict:
-    """The three figures and the counts behind them. Targets are reported, never enforced."""
+    """The figures, for all spectra and split by level. Targets are reported, never enforced."""
     res = list(results)
-    resolvable = [r for r in res if r.resolvability == "resolvable"]
-    low = [r for r in res if r.n_true <= 1]
-    agree = sum(r.detect_found for r in res) + sum(r.split_draws - r.split_found for r in res)
-    agree_den = sum(r.detect_draws - r.detect_indeterminate for r in res) \
-        + sum(r.split_draws - r.split_indeterminate for r in res)
-    per_case = [_reference_matches_truth(r) for r in res]
-    per_case_scored = [m for m in per_case if m is not None]
-    n_abstain = sum(r.outcome == "abstain" for r in resolvable)
-    figures = [
-        _figure("correct_counts_on_resolvable", sum(r.outcome == "correct" for r in resolvable),
-                len(resolvable), TARGET_CORRECT, higher_is_better=True,
-                note=f"{n_abstain} abstentions (ambiguous answers) are in the denominator"),
-        _figure("confident_extra_on_empty_or_single", sum(bool(r.confident_extra) for r in low),
-                len(low), TARGET_EXTRA, higher_is_better=False,
-                note="fit states more modes than the truth holds, without saying it is ambiguous"),
-        _figure("ab_share_at_or_below_60pct", sum(bool(r.ab_pass) for r in resolvable),
-                len(resolvable), None, higher_is_better=True,
-                note="share of resolvable cases whose likelihood-ratio A/B accuracy is <= 60%; "
-                     "the design sets no share target, only the per-case 60% limit"),
-    ]
-    ab = [r.ab_accuracy for r in resolvable if r.ab_accuracy is not None]
-    return {
-        "figures": figures,
-        "n_cases": len(res),
-        "n_resolvable": len(resolvable),
-        "n_borderline": sum(r.resolvability == "borderline" for r in res),
-        "n_not_applicable": sum(r.resolvability == "not_applicable" for r in res),
-        "n_abstentions": n_abstain,
-        "n_wrong_confident": sum(r.outcome == "wrong" for r in resolvable),
-        "n_failed_fits": sum(r.status != "ok" for r in res),
-        "n_reference_errors": sum(r.status == "error" for r in res),
-        "mean_ab_accuracy": float(np.mean(ab)) if ab else None,
-        # Pooled over draws: a truth with many draws outweighs one with few, so it can look high
-        # while the reference fails on many truths. The per-case share gives each truth one vote.
-        "reference_agreement_pooled_draws": {
-            "numerator": int(agree), "denominator": int(agree_den),
-            "value": agree / agree_den if agree_den else None,
-            "note": "reference picks N on truth draws and N-1 on weakest-removed draws, pooled over "
-                    "every draw with a computed evidence"},
-        "reference_agreement_per_case": {
-            "numerator": sum(per_case_scored), "denominator": len(per_case_scored),
-            "unscored": sum(1 for r, m in zip(res, per_case) if m is None and r.n_true > 0),
-            "value": (sum(per_case_scored) / len(per_case_scored)) if per_case_scored else None,
-            "note": "share of generated truths (n >= 1) whose majority reference count equals the "
-                    "truth count; unscored truths (no computed draws on a side) are not counted"},
-        "reference_indeterminate_draws": int(sum(r.detect_indeterminate + r.split_indeterminate
-                                                 for r in res)),
-    }
+    figures, times = [], {}
+    for level in ("all", "high", "low"):
+        sel = [r for r in res if level == "all" or r.level == level]
+        find = [p for r in sel for p in r.true_peaks if p["should_find"]]
+        confident = [p for r in sel for p in r.fitted_peaks if p["confident"]]
+        planted = [r for r in sel if r.flag_hit is not None]
+        clean = [r for r in sel if r.false_flag is not None]
+        figures += [
+            _figure("missed_share", level, sum(p["outcome"] == "missed" for p in find), len(find),
+                    TARGET_MISSED, "missed / should-find; a fit error or no answer is tentative_or_abstained"),
+            _figure("false_share", level, sum(p["false"] for p in confident), len(confident), TARGET_FALSE,
+                    "confident fitted peaks with no true peak within one FWHM / confident fitted peaks"),
+            _figure("flag_hit_rate", level, sum(bool(r.flag_hit) for r in planted), len(planted), None,
+                    "planted shoulder, broad_low and soft cases: a flag covers the planted omega0"),
+            _figure("false_flag_rate_clean", level, sum(bool(r.false_flag) for r in clean), len(clean), None,
+                    "clean spectra with any flag"),
+        ]
+        figures += [_figure(f"state_{s}", level, sum(r.state == s for r in sel), len(sel), None,
+                            "share of spectra") for s in STATES]
+        figures.append(_figure("state_no_record", level, sum(not r.state for r in sel), len(sel), None,
+                               "fit error, no answer or scoring error"))
+        t = np.array([r.seconds for r in sel if r.seconds is not None], dtype=float)
+        times[level] = {"n": int(t.size), "median_s": float(np.median(t)) if t.size else None,
+                        "p90_s": float(np.percentile(t, 90)) if t.size else None}
+    return {"figures": figures, "time": times, "n_spectra": len(res),
+            "n_failed_fits": sum(r.status != "ok" for r in res)}
 
 
 # --------------------------------------------------------------------------- running
@@ -714,38 +737,55 @@ class RunInfo:
     killed_in_flight: int = 0
 
 
-def run_benchmark(truths, *, base_seed: int, n_workers: int, budget: ReferenceBudget,
-                  n_ab_draws: int = AB_DRAWS, errors_tier: str = "cheap",
+def plan_tasks(mode: str, base_seed: int, ceiling: int | None = None, *, named_draws: int | None = None,
+               random: int | None = None, clean: int | None = None) -> tuple:
+    """``([(truth, draw)], draw_stream)`` for a mode: the named truths with several draws, random
+    truths with one, and extra clean spectra for the false-flag rate. The mode alone picks the streams."""
+    plan = MODE_PLANS[mode]
+    ceiling = mode_ceiling(ceiling)
+    n_named = plan["named_draws"] if named_draws is None else named_draws
+    n_random = plan["random"] if random is None else random
+    n_clean = plan["clean"] if clean is None else clean
+    tasks = [(replace(t, ceiling=ceiling), d) for t in named_cases(base_seed) for d in range(n_named)]
+    tasks += [(generate_case(base_seed, plan["case_stream"], i, ceiling), 0) for i in range(n_random)]
+    tasks += [(generate_case(base_seed, plan["case_stream"], CLEAN_INDEX0 + i, ceiling, kind="clean"), 0)
+              for i in range(n_clean)]
+    return tasks, plan["draw_stream"]
+
+
+def run_benchmark(tasks, *, base_seed: int, n_workers: int, draw_stream: int = STREAM_DRAW_EVAL,
+                  errors_tier: str = "cheap", settings: dict | None = None,
                   deadline_s: float | None = None) -> tuple:
-    """Run the cases on ``n_workers`` processes (1 = in this process). ``deadline_s`` is the wall-clock
-    cap: no case starts in its last grace seconds (:data:`HARD_KILL_GRACE_S`, at most half the cap),
-    and workers still running are killed at the cap; the cases that finished are reported. The
-    in-process path can only check between cases. Returns (results sorted by case, RunInfo)."""
+    """Run ``tasks`` (``[(truth, draw)]``) on ``n_workers`` processes (1 = in this process).
+    ``deadline_s`` is the wall-clock cap: no case starts in its last grace seconds
+    (:data:`HARD_KILL_GRACE_S`, at most half the cap), and workers still running are killed at the cap;
+    the cases that finished are reported. The in-process path can only check between cases.
+    Returns (results sorted by case, RunInfo)."""
     if n_workers < 1:
         raise ValueError("n_workers must be >= 1")
     t0 = time.monotonic()
-    info = RunInfo(n_requested=len(truths))
-    tasks = [(t, base_seed, budget, n_ab_draws, errors_tier) for t in truths]
+    info = RunInfo(n_requested=len(tasks))
+    jobs = [(t, d, base_seed, draw_stream, errors_tier, settings) for t, d in tasks]
     # shortcut: a cap under two grace periods gets half the cap as grace, so it still starts cases
     grace = 0.0 if deadline_s is None else min(HARD_KILL_GRACE_S, deadline_s / 2)
     elapsed = lambda: time.monotonic() - t0   # noqa: E731
     closed = lambda: deadline_s is not None and elapsed() >= deadline_s - grace   # noqa: E731
     results: list = []
     if n_workers == 1:
-        for task in tasks:
+        for job in jobs:
             if closed():
                 break
-            results.append(run_case(task))
+            results.append(run_case(job))
     else:
         ex = ProcessPoolExecutor(max_workers=n_workers)
-        pending, queue = set(), iter(tasks)
+        pending, queue = set(), iter(jobs)
         try:
             while True:
                 while len(pending) < n_workers and not closed():
-                    task = next(queue, None)
-                    if task is None:
+                    job = next(queue, None)
+                    if job is None:
                         break
-                    pending.add(ex.submit(run_case, task))
+                    pending.add(ex.submit(run_case, job))
                 if not pending:
                     break
                 done, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
@@ -757,54 +797,158 @@ def run_benchmark(truths, *, base_seed: int, n_workers: int, budget: ReferenceBu
                     break
         finally:
             ex.shutdown(wait=False, cancel_futures=True)
-    info.stopped_by_deadline = len(results) < len(tasks)
+    info.stopped_by_deadline = len(results) < len(jobs)
     info.n_completed, info.wall_clock_s = len(results), elapsed()
-    results.sort(key=lambda r: (r.stream, r.index))
+    results.sort(key=lambda r: (r.stream, r.index, r.draw))
     return results, info
 
 
-def write_outputs(folder: Path, results, summary: dict, meta: dict) -> tuple:
-    """``figures.json`` and ``cases.csv`` in ``folder``; returns both paths."""
-    folder.mkdir(parents=True, exist_ok=True)
-    figures = folder / "figures.json"
-    figures.write_text(json.dumps({"meta": meta, "summary": summary}, indent=2, default=str),
-                       encoding="utf-8", newline="\n")
-    cases = folder / "cases.csv"
-    names = [f.name for f in fields(CaseResult)]
-    with open(cases, "w", encoding="utf-8", newline="") as fh:
+def _write_csv(path: Path, rows: list, names: list) -> None:
+    with open(path, "w", encoding="utf-8", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=names)
         w.writeheader()
+        for row in rows:
+            w.writerow({k: ("" if row.get(k) is None else row[k]) for k in names})
+
+
+def write_outputs(folder: Path, results, summary: dict, meta: dict, base_seed: int) -> dict:
+    """``figures.json``, ``cases.csv``, ``true_peaks.csv``, ``fitted_peaks.csv``, ``records.jsonl`` and the
+    ``gallery`` folder in ``folder``; returns their paths by name."""
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = {n: folder / n for n in ("figures.json", "cases.csv", "true_peaks.csv", "fitted_peaks.csv",
+                                     "records.jsonl")}
+    paths["figures.json"].write_text(json.dumps({"meta": meta, "summary": summary}, indent=2, default=str),
+                                     encoding="utf-8", newline="\n")
+    names = [f.name for f in fields(CaseResult) if f.name not in CASE_CSV_SKIP]
+    _write_csv(paths["cases.csv"], [asdict_shallow(r) for r in results], names)
+    key = {"case": None, "draw": None}
+    for fname, attr, cols in (
+            ("true_peaks.csv", "true_peaks", ["index", "omega0", "gamma", "height", "grade", "refit",
+                                             "should_find", "outcome", "status", "matched_fit",
+                                             "abs_delta_omega0"]),
+            ("fitted_peaks.csv", "fitted_peaks", ["index", "omega0", "confident", "delta", "matched_true",
+                                                  "false"])):
+        rows = [{**row, "case": r.case_id, "draw": r.draw} for r in results for row in getattr(r, attr)]
+        _write_csv(paths[fname], rows, [*key, *cols])
+    with open(paths["records.jsonl"], "w", encoding="utf-8", newline="\n") as fh:
         for r in results:
-            w.writerow({k: ("" if v is None else v) for k, v in asdict(r).items()})
-    return figures, cases
+            line = {"case": r.case_id, "draw": r.draw,
+                    "truth": asdict(r.truth) if r.truth is not None else None,
+                    "fast_pass": r.record, "timing": r.timing}
+            if r.record is None:
+                line["status"] = r.status
+            fh.write(json.dumps(line, default=str) + "\n")
+    write_gallery(folder / "gallery", results, base_seed)
+    return {**paths, "gallery": folder / "gallery"}
+
+
+def asdict_shallow(r: CaseResult) -> dict:
+    """The CaseResult's own fields without ``asdict``'s recursive copy of the record."""
+    return {f.name: getattr(r, f.name) for f in fields(r)}
+
+
+# --------------------------------------------------------------------------- galleries
+def gallery_pick(results, base_seed: int) -> list:
+    """The spectra a gallery shows, each once: every named truth's first draw, a seeded sample of the
+    random suite, then the spectra with a missed or a false peak (capped)."""
+    named = [r for r in results if r.stream == STREAM_NAMED and r.draw == 0]
+    pool = [r for r in results if r.stream != STREAM_NAMED]
+    picks = rng_for(base_seed, STREAM_GALLERY).choice(len(pool), size=min(GALLERY_RANDOM, len(pool)),
+                                                      replace=False)
+    fails = [r for r in results if any(p["outcome"] == "missed" for p in r.true_peaks)
+             or any(p["false"] for p in r.fitted_peaks)][:GALLERY_FAILS_MAX]
+    out, seen = [], set()
+    for r in named + [pool[i] for i in sorted(picks)] + fails:
+        if (r.stream, r.index, r.draw) not in seen:
+            seen.add((r.stream, r.index, r.draw))
+            out.append(r)
+    return out
+
+
+def fitted_parts(record: dict, obs: Observation) -> tuple:
+    """``(parts, peaks)``: the fitted model's per-component curves, rebuilt from the record's peaks
+    (the record holds no curves; a delta mode is its Gamma at the floor, so the same model)."""
+    from isar.analyze.components import CompositeModel, ConstantBackground, Elastic, PhononDHO
+
+    peaks = list(record.get("peaks") or [])
+    ctx = context_of(obs)
+    comp = CompositeModel([*(PhononDHO(prefix=_prefix(i)) for i in range(len(peaks))), Elastic(),
+                           ConstantBackground()])
+    theta = [v for p in peaks for v in (p["omega0"], p["Gamma"], p["height"])]
+    theta += [record.get("elastic_height") or 0.0, record.get("background") or 0.0]
+    return comp.evaluate_components(ctx.x, theta, ctx), peaks
+
+
+def _panel(ax, r: CaseResult, base_seed: int) -> None:
+    truth = r.truth
+    obs = observe(truth, r.draw, base_seed, r.draw_stream)
+    ax.errorbar(obs.x, obs.counts, yerr=np.sqrt(obs.counts), fmt=".", ms=2, lw=0.5, color="0.4",
+                ecolor="0.75", zorder=1)
+    ax.plot(obs.x, truth_lambda(truth), color="tab:green", lw=1.0, zorder=2)
+    for m, row in zip(truth.modes, r.true_peaks):
+        ax.axvline(m.omega0, color="tab:green", ls=":", lw=0.8)
+        ax.text(m.omega0, ax.get_ylim()[1] * 0.97, f" {row['grade']:.0f}", fontsize=6, color="tab:green",
+                va="top")
+    title = f"{r.case_id} {r.kind} {r.level}: "
+    if r.record is None:
+        ax.set_title(title + r.status, fontsize=7)
+        return
+    for f in r.record.get("flags") or []:
+        ax.axvspan(f["e_lo"], f["e_hi"], color="orange", alpha=0.25, zorder=0)
+    parts, peaks = fitted_parts(r.record, obs)
+    for i, p in enumerate(peaks):
+        ax.plot(obs.x, parts[i][1], color="tab:blue", lw=0.9, ls="-" if p["confident"] else "--", zorder=3)
+    ax.plot(obs.x, sum(values for _, values in parts), color="tab:red", lw=1.0, zorder=4)
+    p_pref = (r.record.get("count_probabilities") or {}).get(str(r.preferred_count))
+    p_text = "n/a" if p_pref is None else f"{p_pref:.2f}"
+    ax.set_title(f"{title}{r.state}, N={r.preferred_count}, P={p_text}", fontsize=7)
+
+
+def write_gallery(folder: Path, results, base_seed: int) -> list:
+    """Truth-versus-fit pages (matplotlib, Agg: no window): ``folder/page_NN.png``, 4 x 3 panels each.
+    Data with sqrt(N) bars; truth green; fitted total red, peaks blue (confident solid, tentative
+    dashed); true omega0 lines with their grades; flag intervals shaded."""
+    from matplotlib.figure import Figure
+
+    picks = gallery_pick(results, base_seed)
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for page, start in enumerate(range(0, len(picks), GALLERY_PANELS), 1):
+        chunk = picks[start:start + GALLERY_PANELS]
+        fig = Figure(figsize=(16, 10.5))
+        axes = fig.subplots(3, 4, squeeze=False).ravel()
+        for ax, r in zip(axes, chunk):
+            _panel(ax, r, base_seed)
+        for ax in axes[len(chunk):]:
+            ax.set_visible(False)
+        paths.append(folder / f"page_{page:02d}.png")
+        fig.savefig(paths[-1], dpi=80)
+    return paths
 
 
 # --------------------------------------------------------------------------- command line
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m isar.synth.count_bench",
-        description="Peak-count benchmark: figures file and per-case table in an output folder. "
-                    "Targets are reported, never gates.")
+        description="Fast-pass peak benchmark: figures, per-spectrum and per-peak tables, the "
+                    "fast-pass records and galleries in an output folder. Targets are reported, never gates.")
     p.add_argument("--out", type=Path, default=None,
                    help="output folder (default: out/count_bench/<timestamp> under the repo)")
-    p.add_argument("--mode", choices=("evaluation", "tuning"), default="evaluation",
-                   help="tuning uses the separate tuning seeds and is capped at "
-                        f"{TUNING_MAX_CASES} cases / {TUNING_MAX_SECONDS // 60} min")
+    p.add_argument("--mode", choices=tuple(MODE_PLANS), default="evaluation",
+                   help="development tunes thresholds; evaluation reports figures on streams that "
+                        "development never saw")
     p.add_argument("--n-workers", type=int, default=None,
                    help=f"worker processes (default: min({TUNING_WORKERS}, cpu-2))")
-    p.add_argument("--cases", type=int, default=100, help="number of cases")
+    p.add_argument("--named-draws", type=int, default=None, help="draws per named truth (default by mode)")
+    p.add_argument("--random", type=int, default=None, help="random-suite spectra (default by mode)")
+    p.add_argument("--clean", type=int, default=None, help="extra clean spectra (default by mode)")
     p.add_argument("--seed", type=int, default=20261023, help="base seed")
     p.add_argument("--ceiling", type=int, default=None,
-                   help=f"largest mode count generated (default: ${MODE_CEILING_ENV}, else "
+                   help=f"largest mode count generated and fitted (default: ${MODE_CEILING_ENV}, else "
                         f"{DEFAULT_MODE_CEILING})")
-    p.add_argument("--draws", type=int, default=RESOLVE_DRAWS, help="reference draws of the truth")
-    p.add_argument("--null-draws", type=int, default=None,
-                   help="reference draws of the weakest-removed truth (default: = --draws)")
-    p.add_argument("--ab-draws", type=int, default=AB_DRAWS, help="A/B draws per source")
-    p.add_argument("--ref-evidence", choices=REF_EVIDENCE_KINDS, default=ReferenceBudget.evidence,
-                   help="reference evidence: laplace (default, no sampler) or nested (slow, spot checks)")
-    p.add_argument("--ref-n-live", type=int, default=ReferenceBudget.n_live)
-    p.add_argument("--ref-random-starts", type=int, default=ReferenceBudget.random_starts)
+    p.add_argument("--settings", default=None,
+                   help='fast-pass and prior settings: inline JSON or a JSON file, '
+                        '{"fast_pass": {...}, "prior": {...}}, written into the bench card')
     p.add_argument("--errors-tier", default="cheap", choices=("cheap", "fast", "auto", "full"))
     p.add_argument("--max-seconds", type=float, default=None,
                    help="wall-clock cap: no case starts in its last "
@@ -814,6 +958,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = _parser().parse_args(argv)
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ.setdefault(var, "1")     # one thread per fit worker, before the pool starts
     t0 = time.monotonic()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     folder = Path(args.out) if args.out else config.OUT_DIR / "count_bench" / stamp
@@ -821,45 +967,31 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
                         handlers=[logging.FileHandler(folder / "count_bench.log", encoding="utf-8"),
                                   logging.StreamHandler(sys.stderr)])
-    n_cases, max_seconds = args.cases, args.max_seconds
-    if args.mode == "tuning":
-        n_cases = min(n_cases, TUNING_MAX_CASES)
-        max_seconds = TUNING_MAX_SECONDS if max_seconds is None else min(max_seconds, TUNING_MAX_SECONDS)
-    n_workers = args.n_workers or max(1, min(TUNING_WORKERS, (os.cpu_count() or 2) - 2))
+    settings = load_settings(args.settings)
     ceiling = mode_ceiling(args.ceiling)
-    stream = STREAM_CASE_TUNING if args.mode == "tuning" else STREAM_CASE_EVAL
-    budget = ReferenceBudget(draws=args.draws, null_draws=args.null_draws or args.draws,
-                             evidence=args.ref_evidence, n_live=args.ref_n_live,
-                             random_starts=args.ref_random_starts)
-    print(f"count_bench: {n_cases} {args.mode} cases, ceiling {ceiling}, {n_workers} workers, "
-          f"reference {budget.draws}/{budget.null_draws} draws ({budget.evidence} evidence), "
-          f"A/B {args.ab_draws} draws")
-    truths = [generate_case(args.seed, stream, i, ceiling) for i in range(n_cases)]
-    results, info = run_benchmark(truths, base_seed=args.seed, n_workers=n_workers, budget=budget,
-                                  n_ab_draws=args.ab_draws, errors_tier=args.errors_tier,
-                                  deadline_s=max_seconds)
+    n_workers = args.n_workers or max(1, min(TUNING_WORKERS, (os.cpu_count() or 2) - 2))
+    tasks, draw_stream = plan_tasks(args.mode, args.seed, ceiling, named_draws=args.named_draws,
+                                    random=args.random, clean=args.clean)
+    print(f"count_bench: {args.mode}, {len(tasks)} spectra, ceiling {ceiling}, {n_workers} workers")
+    results, info = run_benchmark(tasks, base_seed=args.seed, n_workers=n_workers, draw_stream=draw_stream,
+                                  errors_tier=args.errors_tier, settings=settings,
+                                  deadline_s=args.max_seconds)
     summary = summarize(results)
     meta = {"mode": args.mode, "base_seed": args.seed, "ceiling": ceiling, "n_workers": n_workers,
-            "reference_budget": asdict(budget), "ab_draws": args.ab_draws,
+            "case_stream": MODE_PLANS[args.mode]["case_stream"], "draw_stream": draw_stream,
             "errors_tier": args.errors_tier, "run": asdict(info),
-            "tuning_cap_reached": bool(args.mode == "tuning" and (
-                info.stopped_by_deadline or args.cases > TUNING_MAX_CASES)),
+            **settings_meta(ceiling, settings),
             "targets_are_not_gates": "ruling R15: reported, never enforced"}
-    figures_path, cases_path = write_outputs(folder, results, summary, meta)
+    write_outputs(folder, results, summary, meta, args.seed)
     for fig in summary["figures"]:
-        value, se = (("n/a", "n/a") if fig["value"] is None
-                     else (f"{fig['value']:.3f}", f"{fig['mc_se']:.3f}"))
-        print(f"  {fig['name']}: {fig['numerator']}/{fig['denominator']} = {value} "
-              f"(+/- {se}; target {fig['target'] if fig['target'] is not None else 'per case <= 0.60'})")
-    for key, label in (("reference_agreement_per_case", "per case"),
-                       ("reference_agreement_pooled_draws", "pooled over draws")):
-        agr = summary[key]
-        value = "n/a" if agr["value"] is None else f"{agr['value']:.3f}"
-        print(f"  reference agreement, {label}: {agr['numerator']}/{agr['denominator']} = {value}")
-    print(f"  resolvable {summary['n_resolvable']}, borderline {summary['n_borderline']}, "
-          f"no-N-1 {summary['n_not_applicable']}, failed fits {summary['n_failed_fits']}")
+        if fig["level"] == "all" and not fig["name"].startswith("state_"):
+            value = "n/a" if fig["value"] is None else f"{fig['value']:.3f}"
+            aim = "" if fig["target"] is None else f" (aim <= {fig['target']})"
+            print(f"  {fig['name']}: {fig['numerator']}/{fig['denominator']} = {value}{aim}")
+    print(f"  time per spectrum: median {summary['time']['all']['median_s']} s, "
+          f"p90 {summary['time']['all']['p90_s']} s; failed fits {summary['n_failed_fits']}")
     print(f"Output folder: {folder}")
-    print(f"Wall clock: {time.monotonic() - t0:.1f} s ({info.n_completed}/{info.n_requested} cases"
+    print(f"Wall clock: {time.monotonic() - t0:.1f} s ({info.n_completed}/{info.n_requested} spectra"
           f"{', stopped at the deadline' if info.stopped_by_deadline else ''}"
           f"{f', {info.killed_in_flight} killed in flight' if info.killed_in_flight else ''})")
     return 0 if info.n_completed else 2

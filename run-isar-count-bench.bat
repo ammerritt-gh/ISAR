@@ -1,20 +1,22 @@
 @echo off
-rem Run ISAR's peak-count benchmark (isar.synth.count_bench): synthetic spectra with 0..6 modes, fitted
-rem through the production fit path, scored for correct counts, confident extra modes and the A/B test.
+rem Run ISAR's fast-pass peak benchmark (isar.synth.count_bench): synthetic spectra with 0..6 modes on the
+rem committed BL43LXU resolution curves, fitted through the production fast pass and scored for the peaks
+rem a human would call clear: missed and false peaks, the count states and the within-spectrum flags.
 rem The figures are TARGETS, reported with their denominators; none is a pass/fail gate.
 rem
-rem The full characterisation is SLOW (hours: a nested-sampling reference on 200 draws per case).
-rem It runs only when you start it. Shrink it with arguments, for example a quick look:
-rem   run-isar-count-bench.bat --cases 4 --draws 3 --null-draws 3 --ab-draws 200
-rem or the capped tuning run (60 cases, 30 minutes):
-rem   run-isar-count-bench.bat --mode tuning
+rem --mode development (the tuning streams) is for setting thresholds. --mode evaluation (the default)
+rem reports the figures on streams development never saw. Both are deliberate and slow: each spectrum is
+rem a full fast-pass fit. Estimates at 30 s a fit on 12 workers: development about 12 min, evaluation
+rem about 23 min. Shrink either with arguments, for example a quick look:
+rem   run-isar-count-bench.bat --mode development --named-draws 1 --random 4 --clean 2
 rem All options:  run-isar-count-bench.bat --help
 rem
-rem Results go to out\count_bench\<timestamp>\ (figures.json, cases.csv, count_bench.log); the folder
-rem and the wall-clock time are printed at the end. Set ISAR_COUNT_BENCH_MAX_SECONDS to change the
-rem time limit (default 7200 s): no new case starts after it, and workers still running 5 minutes later
-rem are killed and the finished cases are reported. Set MICROMAMBA_EXE to override the micromamba
-rem location, or ISAR_ENV to force an environment.
+rem Results go to out\count_bench\<timestamp>\: figures.json, cases.csv, true_peaks.csv, fitted_peaks.csv,
+rem records.jsonl, count_bench.log and gallery\page_NN.png (truth-versus-fit pages). The folder and the
+rem wall-clock time are printed at the end. ISAR_COUNT_BENCH_MAX_SECONDS sets the wall-clock cap (default
+rem 5400 s): no new spectrum starts in the last 300 s before it, and fits still running at the cap are
+rem killed and the finished spectra are reported. Set MICROMAMBA_EXE to override the micromamba location,
+rem or ISAR_ENV to force an environment.
 setlocal
 cd /d "%~dp0"
 if defined MICROMAMBA_EXE (set "MM=%MICROMAMBA_EXE%") else (set "MM=%USERPROFILE%\AppData\Local\micromamba\micromamba.exe")
@@ -24,7 +26,7 @@ if not defined MAMBA_ROOT_PREFIX set "MAMBA_ROOT_PREFIX=%USERPROFILE%\AppData\Ro
 if not defined ISAR_ENV (
     if exist "%MAMBA_ROOT_PREFIX%\envs\isar\python.exe" (set "ISAR_ENV=isar") else (set "ISAR_ENV=tavi-dev")
 )
-if not defined ISAR_COUNT_BENCH_MAX_SECONDS set "ISAR_COUNT_BENCH_MAX_SECONDS=7200"
+if not defined ISAR_COUNT_BENCH_MAX_SECONDS set "ISAR_COUNT_BENCH_MAX_SECONDS=5400"
 
 if not exist "%MM%" goto nomamba
 
