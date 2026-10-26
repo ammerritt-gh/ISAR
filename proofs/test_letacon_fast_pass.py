@@ -107,6 +107,9 @@ def _init_workspace(data, ws, rf, log, prior_arm=None):
     text = policy.read_text(encoding="utf-8")
     assert 'resolution_folder = "rf"' in text
     text = text.replace('resolution_folder = "rf"', f'resolution_folder = "{rf.as_posix()}"')
+    # The paper records the 40x40 slit; a declared slit is always kept (inferred, a06 gets 20x20).
+    assert "\n[facts]\n" in text
+    text = text.replace("\n[facts]\n", '\n[facts]\nslit = "40x40"\n', 1)
     if prior_arm:
         text += _prior_table(prior_arm)
     policy.write_text(text, encoding="utf-8", newline="\n")
