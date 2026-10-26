@@ -18,7 +18,10 @@ Visibility grade. For a true peak, ``grade = D(lam_full, lam_full - lam_peak)`` 
 ``D(mu, nu) = 2 sum[mu ln(mu/nu) - (mu - nu)]`` (twice the Poisson log-likelihood difference between
 the noiseless truth with and without that peak, everything else held fixed). The refit diagnostic is
 the same difference after refitting the remaining peaks (the truth's structure minus that peak, on
-noiseless counts, started at the truth), which shows how far neighbours absorb the peak.
+noiseless counts, started at the truth, each kept peak's omega0 within 0.5 resolution FWHM of its truth
+and its Gamma at most 2 x the truth's + 0.5 FWHM, so a neighbour cannot relocate or widen over the peak;
+heights, the elastic line and the background keep the prior's bounds), which shows how far neighbours
+absorb the peak.
 
 Should-find. A true peak is should-find when grade >= 100 (level high) or 25 (low), refit >= 0.3 x
 grade (isolated), omega0 > 2 resolution FWHM and Gamma < omega0 / 2. Other peaks are scored for
@@ -47,11 +50,13 @@ force (``dataclasses.asdict`` of ``guidelines.fast_pass_settings(card)``) and th
 
 Outputs (``out/count_bench/<timestamp>/``): ``figures.json``, ``cases.csv`` (one row per spectrum),
 ``true_peaks.csv``, ``fitted_peaks.csv``, ``records.jsonl`` (per spectrum: the truth, the fast-pass
-record verbatim, the timing) and the gallery.
+record verbatim, the timing) and ``gallery/page_NN.png``: 4 x 3 truth-versus-fit panels (each named
+truth's first draw, a seeded sample of the random suite, then the spectra with a miss or a false peak,
+at most 48). The fitted curves are rebuilt from the record's peaks, which carries no curves.
 
 Run it deliberately: ``python -m isar.synth.count_bench --help`` or double-click
-``run-isar-count-bench.bat``. The routine suite runs only canned records and fake fits
-(``isar/synth/tests/test_count_bench.py``).
+``run-isar-count-bench.bat``. The routine suite runs canned records, a fake fit and the refit
+diagnostic's own small fits (``isar/synth/tests/test_count_bench.py``).
 """
 from __future__ import annotations
 
@@ -91,6 +96,7 @@ STREAM_CASE_TUNING = 1       # random truths of the development set
 STREAM_CASE_EVAL = 2         # random truths of the evaluation set
 STREAM_DRAW_FIT = 3          # Poisson draws the development set shows the fitter
 STREAM_DRAW_EVAL = 8         # Poisson draws the evaluation set shows the fitter
+STREAM_GALLERY = 9           # the gallery's own sample of spectra (not a fit stream)
 STREAMS = (STREAM_CASE_TUNING, STREAM_CASE_EVAL, STREAM_DRAW_FIT, STREAM_DRAW_EVAL)
 
 # Draw counts [setting]: estimates at 30 s per fit and 12 workers; S1U7 rescales by measured time.
@@ -106,6 +112,9 @@ TARGET_MISSED = 0.10         # aim: missed / should-find (reported, never a gate
 TARGET_FALSE = 0.05          # aim: false / confident fitted
 TUNING_WORKERS = 16
 HARD_KILL_GRACE_S = 300.0    # no case starts in the last this many seconds before the wall-clock cap
+GALLERY_PANELS = 12          # per page: 4 x 3
+GALLERY_RANDOM = 24          # random-suite spectra sampled into the gallery
+GALLERY_FAILS_MAX = 48       # spectra with a miss or a false peak, at most
 
 # Generator [setting]: round numbers, not file values (hard rule 10). Energy axis = the real files' grid.
 X_MIN, X_MAX, X_STEP = -16.0, 20.0, 0.2
@@ -316,7 +325,7 @@ def named_cases(base_seed: int) -> list:
         "zero_background": (base, None, False),
     }
     soft = {"soft_high": ("high", 302.0, [*base, (10.7, 0.4, 0.08)]),
-            "soft_low": ("low", 97.0, [*base, (6.0, 4.0, 0.05)])}
+            "soft_low": ("low", 97.0, [*base, (6.0, 7.0, 0.05)])}
     out = []
     for k, (name, (drawn, planted, bg)) in enumerate(plain.items()):
         resolution = str(rng_for(base_seed, STREAM_NAMED, k).choice(ANALYZERS))
@@ -424,24 +433,35 @@ def _grades_only(truth: CaseTruth) -> tuple:
 
 
 def _refit_deviance(truth: CaseTruth, skip: int, full: np.ndarray) -> float:
-    """D(lam_full, the best refit of the truth's structure without mode ``skip``), on noiseless
-    counts, started at the truth. nan (logged) when the refit fails."""
+    """D(lam_full, the refit of the truth's structure without mode ``skip``), on noiseless counts,
+    started at the truth. The kept modes stay near their truths (omega0 within 0.5 FWHM, Gamma at most
+    2 x the truth's + 0.5 FWHM), so a neighbour cannot relocate or widen over the removed peak; heights,
+    the elastic line and the background keep the prior recipe's bounds. nan (logged) when the refit fails."""
+    from scipy.optimize import minimize
+
     from isar.analyze import loop
     from isar.analyze.components import ConstantBackground, Elastic, PhononDHO
+    from isar.analyze.prior import mode_bounds
     from isar.analyze.structures import Hypothesis
 
     kept = [m for j, m in enumerate(truth.modes) if j != skip]
     hyp = Hypothesis(f"refit{len(kept)}", (*[PhononDHO(prefix=_prefix(j)) for j in range(len(kept))],
                                            Elastic, ConstantBackground))
     comp = hyp.build()
+    names = comp.param_names()
     start = {"elastic.h": truth.elastic_height, "bg.BG": truth.background}
     for j, m in enumerate(kept):
         start.update({f"{_prefix(j)}.omega0": m.omega0, f"{_prefix(j)}.Gamma": m.gamma,
                       f"{_prefix(j)}.h": m.height})
     ctx = context_of(_observation_of(truth, full))
+    lo, hi = np.array(mode_bounds(names, ctx), dtype=float).T
+    for j, m in enumerate(kept):
+        k_w, k_g = names.index(f"{_prefix(j)}.omega0"), names.index(f"{_prefix(j)}.Gamma")
+        lo[k_w], hi[k_w] = max(lo[k_w], m.omega0 - 0.5 * truth.gauss_fwhm), min(hi[k_w], m.omega0 + 0.5 * truth.gauss_fwhm)
+        hi[k_g] = min(hi[k_g], 2.0 * m.gamma + 0.5 * truth.gauss_fwhm)
     try:
-        fit = loop.fit_hypothesis(hyp, ctx, x0=np.array([start[n] for n in comp.param_names()]))
-        theta = [fit.params[n] for n in comp.param_names()]
+        prob = loop.build_problem(hyp, ctx, x0=start)
+        theta = minimize(prob.costv, np.clip(prob.x0, lo, hi), method="L-BFGS-B", bounds=list(zip(lo, hi))).x
     except Exception as exc:  # noqa: BLE001 - one failed refit must not end the run
         log.warning("refit without mode %d of %s failed: %s: %s", skip, truth.case_id, type(exc).__name__, exc)
         return float("nan")
@@ -789,9 +809,9 @@ def _write_csv(path: Path, rows: list, names: list) -> None:
             w.writerow({k: ("" if row.get(k) is None else row[k]) for k in names})
 
 
-def write_outputs(folder: Path, results, summary: dict, meta: dict) -> dict:
-    """``figures.json``, ``cases.csv``, ``true_peaks.csv``, ``fitted_peaks.csv`` and ``records.jsonl``
-    in ``folder`` (the gallery is drawn separately); returns their paths by name."""
+def write_outputs(folder: Path, results, summary: dict, meta: dict, base_seed: int) -> dict:
+    """``figures.json``, ``cases.csv``, ``true_peaks.csv``, ``fitted_peaks.csv``, ``records.jsonl`` and the
+    ``gallery`` folder in ``folder``; returns their paths by name."""
     folder.mkdir(parents=True, exist_ok=True)
     paths = {n: folder / n for n in ("figures.json", "cases.csv", "true_peaks.csv", "fitted_peaks.csv",
                                      "records.jsonl")}
@@ -816,12 +836,92 @@ def write_outputs(folder: Path, results, summary: dict, meta: dict) -> dict:
             if r.record is None:
                 line["status"] = r.status
             fh.write(json.dumps(line, default=str) + "\n")
-    return paths
+    write_gallery(folder / "gallery", results, base_seed)
+    return {**paths, "gallery": folder / "gallery"}
 
 
 def asdict_shallow(r: CaseResult) -> dict:
     """The CaseResult's own fields without ``asdict``'s recursive copy of the record."""
     return {f.name: getattr(r, f.name) for f in fields(r)}
+
+
+# --------------------------------------------------------------------------- galleries
+def gallery_pick(results, base_seed: int) -> list:
+    """The spectra a gallery shows, each once: every named truth's first draw, a seeded sample of the
+    random suite, then the spectra with a missed or a false peak (capped)."""
+    named = [r for r in results if r.stream == STREAM_NAMED and r.draw == 0]
+    pool = [r for r in results if r.stream != STREAM_NAMED]
+    picks = rng_for(base_seed, STREAM_GALLERY).choice(len(pool), size=min(GALLERY_RANDOM, len(pool)),
+                                                      replace=False)
+    fails = [r for r in results if any(p["outcome"] == "missed" for p in r.true_peaks)
+             or any(p["false"] for p in r.fitted_peaks)][:GALLERY_FAILS_MAX]
+    out, seen = [], set()
+    for r in named + [pool[i] for i in sorted(picks)] + fails:
+        if (r.stream, r.index, r.draw) not in seen:
+            seen.add((r.stream, r.index, r.draw))
+            out.append(r)
+    return out
+
+
+def fitted_parts(record: dict, obs: Observation) -> tuple:
+    """``(parts, peaks)``: the fitted model's per-component curves, rebuilt from the record's peaks
+    (the record holds no curves; a delta mode is its Gamma at the floor, so the same model)."""
+    from isar.analyze.components import CompositeModel, ConstantBackground, Elastic, PhononDHO
+
+    peaks = list(record.get("peaks") or [])
+    ctx = context_of(obs)
+    comp = CompositeModel([*(PhononDHO(prefix=_prefix(i)) for i in range(len(peaks))), Elastic(),
+                           ConstantBackground()])
+    theta = [v for p in peaks for v in (p["omega0"], p["Gamma"], p["height"])]
+    theta += [record.get("elastic_height") or 0.0, record.get("background") or 0.0]
+    return comp.evaluate_components(ctx.x, theta, ctx), peaks
+
+
+def _panel(ax, r: CaseResult, base_seed: int) -> None:
+    truth = r.truth
+    obs = observe(truth, r.draw, base_seed, r.draw_stream)
+    ax.errorbar(obs.x, obs.counts, yerr=np.sqrt(obs.counts), fmt=".", ms=2, lw=0.5, color="0.4",
+                ecolor="0.75", zorder=1)
+    ax.plot(obs.x, truth_lambda(truth), color="tab:green", lw=1.0, zorder=2)
+    for m, row in zip(truth.modes, r.true_peaks):
+        ax.axvline(m.omega0, color="tab:green", ls=":", lw=0.8)
+        ax.text(m.omega0, ax.get_ylim()[1] * 0.97, f" {row['grade']:.0f}", fontsize=6, color="tab:green",
+                va="top")
+    title = f"{r.case_id} {r.kind} {r.level}: "
+    if r.record is None:
+        ax.set_title(title + r.status, fontsize=7)
+        return
+    for f in r.record.get("flags") or []:
+        ax.axvspan(f["e_lo"], f["e_hi"], color="orange", alpha=0.25, zorder=0)
+    parts, peaks = fitted_parts(r.record, obs)
+    for i, p in enumerate(peaks):
+        ax.plot(obs.x, parts[i][1], color="tab:blue", lw=0.9, ls="-" if p["confident"] else "--", zorder=3)
+    ax.plot(obs.x, sum(values for _, values in parts), color="tab:red", lw=1.0, zorder=4)
+    p_pref = (r.record.get("count_probabilities") or {}).get(str(r.preferred_count))
+    p_text = "n/a" if p_pref is None else f"{p_pref:.2f}"
+    ax.set_title(f"{title}{r.state}, N={r.preferred_count}, P={p_text}", fontsize=7)
+
+
+def write_gallery(folder: Path, results, base_seed: int) -> list:
+    """Truth-versus-fit pages (matplotlib, Agg: no window): ``folder/page_NN.png``, 4 x 3 panels each.
+    Data with sqrt(N) bars; truth green; fitted total red, peaks blue (confident solid, tentative
+    dashed); true omega0 lines with their grades; flag intervals shaded."""
+    from matplotlib.figure import Figure
+
+    picks = gallery_pick(results, base_seed)
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for page, start in enumerate(range(0, len(picks), GALLERY_PANELS), 1):
+        chunk = picks[start:start + GALLERY_PANELS]
+        fig = Figure(figsize=(16, 10.5))
+        axes = fig.subplots(3, 4, squeeze=False).ravel()
+        for ax, r in zip(axes, chunk):
+            _panel(ax, r, base_seed)
+        for ax in axes[len(chunk):]:
+            ax.set_visible(False)
+        paths.append(folder / f"page_{page:02d}.png")
+        fig.savefig(paths[-1], dpi=80)
+    return paths
 
 
 # --------------------------------------------------------------------------- command line
@@ -880,7 +980,7 @@ def main(argv=None) -> int:
             "errors_tier": args.errors_tier, "run": asdict(info),
             **settings_meta(ceiling, settings),
             "targets_are_not_gates": "ruling R15: reported, never enforced"}
-    write_outputs(folder, results, summary, meta)
+    write_outputs(folder, results, summary, meta, args.seed)
     for fig in summary["figures"]:
         if fig["level"] == "all" and not fig["name"].startswith("state_"):
             value = "n/a" if fig["value"] is None else f"{fig['value']:.3f}"

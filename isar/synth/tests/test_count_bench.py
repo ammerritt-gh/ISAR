@@ -1,8 +1,8 @@
 """Routine tests of the fast-pass benchmark (isar/synth/count_bench.py).
 
 Everything here runs on canned fast-pass records and a fake ``fit_observation``: no real fast-pass
-fit (the benchmark itself runs once, deliberately, from ``run-isar-count-bench.bat``). The one real
-fit is the refit diagnostic's single ``fit_hypothesis``. Figures are targets, never asserted (R15).
+fit (the benchmark itself runs once, deliberately, from ``run-isar-count-bench.bat``). The real fits are
+the refit diagnostic's bounded refits. Figures are targets, never asserted (R15).
 """
 import csv
 import json
@@ -86,7 +86,7 @@ def test_named_cases_are_the_fourteen_fixed_truths():
     assert by["clean_three_high"].modes[0].height == 600.0 and by["clean_three_low"].modes[0].height == 300.0
     assert (by["soft_high"].T, by["soft_low"].T) == (302.0, 97.0)
     soft = by["soft_low"].modes[by["soft_low"].planted]
-    assert (soft.omega0, soft.gamma, soft.height) == (6.0, 4.0, 15.0)
+    assert (soft.omega0, soft.gamma, soft.height) == (6.0, 7.0, 15.0) and soft.gamma > soft.omega0
     assert by["shoulder_high"].modes[by["shoulder_high"].planted].omega0 == 10.7
     assert by["clean_three_high"].planted is None
     # the soft-mode pair's analyzer is the shoulder case's own draw; both levels of a case share one
@@ -142,6 +142,16 @@ def test_refit_tells_a_resolved_peak_from_one_a_neighbour_absorbs():
         truth = _truth(modes=(cb.ModeTruth(6.0, 0.3, 400.0), cb.ModeTruth(6.0 + sep * fwhm, 0.3, 400.0)))
         grade, refit = cb.visibility_grades(truth)[1]
         assert (refit < cb.REFIT_SHARE_MIN * grade) is absorbed, (sep, grade, refit)
+
+
+def test_refit_keeps_the_strongest_isolated_peak_and_fails_the_shoulder():
+    # the bounded refit (amendment 12): neighbours cannot relocate or widen over a clear peak
+    by = {t.case_id: t for t in cb.named_cases(1)}
+    grade, refit = cb.visibility_grades(by["clean_three_high"])[0]
+    assert refit >= cb.REFIT_SHARE_MIN * grade, (grade, refit)
+    shoulder = by["shoulder_high"]
+    grade, refit = cb.visibility_grades(shoulder)[shoulder.planted]
+    assert refit < cb.REFIT_SHARE_MIN * grade, (grade, refit)
 
 
 def test_matching_is_one_to_one_and_not_greedy():
@@ -276,8 +286,10 @@ def test_a_run_writes_the_outputs_and_the_record_verbatim(monkeypatch, tmp_path)
     results, info = cb.run_benchmark(tasks, base_seed=1, n_workers=1, draw_stream=cb.STREAM_DRAW_EVAL)
     assert info.n_completed == 2 and [r.index for r in results] == [0, 1]
     summary = cb.summarize(results)
-    paths = cb.write_outputs(tmp_path / "out", results, summary, {"note": "test"})
-    assert set(paths) == {"figures.json", "cases.csv", "true_peaks.csv", "fitted_peaks.csv", "records.jsonl"}
+    paths = cb.write_outputs(tmp_path / "out", results, summary, {"note": "test"}, base_seed=1)
+    assert set(paths) == {"figures.json", "cases.csv", "true_peaks.csv", "fitted_peaks.csv", "records.jsonl",
+                          "gallery"}
+    assert len(list(paths["gallery"].glob("page_*.png"))) == 1          # two spectra: one page
     assert json.loads(paths["figures.json"].read_text(encoding="utf-8"))["summary"]["n_spectra"] == 2
     for name, n in (("cases.csv", 2), ("true_peaks.csv", 2), ("fitted_peaks.csv", 2)):
         with open(paths[name], encoding="utf-8", newline="") as fh:
@@ -293,7 +305,7 @@ def test_a_run_writes_the_outputs_and_the_record_verbatim(monkeypatch, tmp_path)
 def test_a_record_less_spectrum_says_why_in_records_jsonl(monkeypatch, tmp_path):
     monkeypatch.setattr(cb, "fit_observation", _fake_fit(None))
     results, _ = cb.run_benchmark([(_truth(modes=(), kind="empty"), 0)], base_seed=1, n_workers=1)
-    line = json.loads(cb.write_outputs(tmp_path, results, cb.summarize(results), {})["records.jsonl"]
+    line = json.loads(cb.write_outputs(tmp_path, results, cb.summarize(results), {}, base_seed=1)["records.jsonl"]
                       .read_text(encoding="utf-8"))
     assert line["fast_pass"] is None and line["status"] == "no_answer"
 
