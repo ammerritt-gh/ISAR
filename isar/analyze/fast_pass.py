@@ -323,6 +323,76 @@ def _merge_chain(modes, distance: float) -> list:
     return out
 
 
+@dataclass
+class _Tally:
+    count_ln_z: dict
+    probabilities: dict
+    preferred: int | None
+    selected: object | None
+    terms: dict                       # id(entry) -> ln_model_prior + ln_z
+    total: float | None
+    priced_contenders: list
+    unpriced_contenders: list
+
+
+def _tally(entries, contending_margin: float) -> _Tally:
+    """Step 9: count evidence, probabilities, the selected model and the contending counts.
+
+    ``entries`` carry ``count``, ``status``, ``ln_z``, ``ln_model_prior``, ``ln_like`` and
+    ``k_free``. Z_k sums exp(ln_model_prior + ln_z) over the count's priced entries; a count with
+    none has no evidence. A count lacks evidence and contends when its best-ln L non-twin entry is
+    unpriced with ln L at least the selected model's, or when every entry of it is not fitted."""
+    terms, by_count = {}, {}
+    for e in entries:
+        by_count.setdefault(e.count, []).append(e)
+        if e.status in _PRICED and e.ln_z is not None:
+            terms[id(e)] = e.ln_model_prior + e.ln_z
+    lnz = {}
+    for k, es in sorted(by_count.items()):
+        t = [terms[id(e)] for e in es if id(e) in terms]
+        if t:
+            lnz[k] = float(logsumexp(t))
+    probs, preferred, selected, total = {}, None, None, None
+    if lnz:
+        total = float(logsumexp(list(lnz.values())))
+        probs = {k: float(np.exp(v - total)) for k, v in lnz.items()}
+        preferred = min(probs, key=lambda k: (-probs[k], k))
+        selected = min((e for e in by_count[preferred] if id(e) in terms),
+                       key=lambda e: (-terms[id(e)], e.k_free))
+    top = max(lnz.values()) if lnz else None
+    priced = sorted(k for k, v in lnz.items() if v >= top - contending_margin)
+    unpriced = []
+    for k, es in sorted(by_count.items()):
+        live = [e for e in es if e.status not in ("degenerate_twin", "not_fitted")
+                and e.ln_like is not None]
+        if not live:
+            if all(e.status == "not_fitted" for e in es):
+                unpriced.append(k)
+            continue
+        best = max(live, key=lambda e: e.ln_like)
+        if best.status == "no_evidence" and (selected is None or best.ln_like >= selected.ln_like):
+            unpriced.append(k)
+    return _Tally(lnz, probs, preferred, selected, terms, total, priced, unpriced)
+
+
+def _numerically_marginal(count_ln_z: dict, preferred, spread: float, close_call_p: float) -> bool:
+    """Whether shifting every count's ln Z by the evidence's numerical spread, in the worst
+    direction, changes the preferred count or moves its probability across ``close_call_p``."""
+    if preferred is None or not spread > 0 or len(count_ln_z) < 2:
+        return False
+
+    def shifted(sign):
+        z = {k: v + (sign * spread if k == preferred else -sign * spread)
+             for k, v in count_ln_z.items()}
+        total = logsumexp(list(z.values()))
+        best = max(z, key=lambda k: (z[k], -k))
+        return float(np.exp(z[preferred] - total)), best
+
+    p_low, best_low = shifted(-1.0)
+    p_high, _ = shifted(+1.0)
+    return best_low != preferred or (p_low < close_call_p) != (p_high < close_call_p)
+
+
 class _Engine:
     """One spectrum's fast pass. ``run`` searches; ``conclude`` tallies and reports, from any state
     (so a stopped search still reports what it priced)."""
@@ -873,6 +943,197 @@ class _Engine:
                  self.variant(len(chained), v.elastic, v.background), chained, lin,
                  reason="all-pairs merge")
         return True
+
+    # ---- evidence ----------------------------------------------------------------------------------
+    def ln_prior(self, model, theta) -> float:
+        """The recipe's log prior (C-prior) at a full vector: a delta mode carries no width factor."""
+        if model.bundle is not None:
+            return model.bundle.logpdf_ordered({n: float(theta[i]) for i, n in enumerate(model.names)})
+        peaks = [(theta[a], None if j in model.delta else theta[g], theta[c])
+                 for j, (a, g, c) in enumerate(model.modes)]
+        return self.sp.ln_prior(peaks, None if model.el is None else theta[model.el],
+                                None if model.bg is None else theta[model.bg])
+
+    def objective(self, model, theta):
+        """f(z) = cost/2 - sat - ln prior on the free coordinates, +inf outside the box; with
+        ``theta`` supplying the fixed coordinates. Returns (f, lo, hi)."""
+        free = model.free
+        lo, hi = model.lo[free], model.hi[free]
+        tol = 1e-10 * np.maximum(np.abs(lo) + np.abs(hi), 1.0)
+        template = np.array(theta, dtype=float)
+
+        def f(z):
+            z = np.asarray(z, dtype=float)
+            if np.any(z < lo - tol) or np.any(z > hi + tol):
+                return math.inf
+            t = template.copy()
+            t[free] = np.clip(z, lo, hi)     # a bound transform can round a few ulps outside
+            lp = self.ln_prior(model, t)
+            if not math.isfinite(lp):
+                return math.inf
+            return 0.5 * self.cost(model, t) - self.sat - lp
+
+        return f, lo, hi
+
+    def laplace(self, b, f, z, lo, hi, rel_step=1e-4):
+        return prior.laplace_log_evidence(f, z, lo, hi, rel_step=rel_step)
+
+    def price_all(self):
+        """Step 6 for every pending basin, until none is left (pricing can add basins)."""
+        with self._stage("evidence"):
+            while True:
+                pending = [b for b in self.basins() if b.status == "pending"]
+                if not pending:
+                    return
+                for b in pending:
+                    if b.status == "pending":
+                        self.price(b)
+
+    def price(self, b):
+        """The posterior mode by L-BFGS-B from the TRF optimum, the twin screens there, then the
+        box-rule Laplace evidence; a hit iteration limit is ``no_evidence``, never a failed model."""
+        s, model = self.s, b.model
+        f, lo, hi = self.objective(model, b.theta)
+        z0 = b.theta[model.free]
+        scale = np.maximum(np.abs(z0), 1.0)
+        res = minimize(lambda u: f(u * scale), z0 / scale, method="L-BFGS-B",
+                       bounds=list(zip(lo / scale, hi / scale)),
+                       options={"maxiter": s.posterior_maxiter, "ftol": 1e-11, "gtol": 1e-5,
+                                "maxfun": 20 * (z0.size + 1) * s.posterior_maxiter})
+        b.posterior_iterations = int(res.nit)
+        z = np.clip(res.x * scale, lo, hi)
+        point = b.theta.copy()
+        point[model.free] = z
+        if res.status == 1:
+            b.status = "no_evidence"
+            b.reason = f"posterior optimiser iteration limit ({s.posterior_maxiter})"
+            if DELTA_TWIN_RULE:
+                self._delta_proposal(model, point)
+            return
+        if not res.success:
+            b.status, b.reason = "no_evidence", f"posterior optimiser: {res.message}"
+            return
+        self.resolve(b, point)
+        if b.status == "degenerate_twin":
+            return
+        lap = self.laplace(b, f, z, lo, hi)
+        if lap.status == "no_evidence":
+            b.status, b.reason = "no_evidence", lap.reason
+            return
+        b.status, b.ln_z, b.theta_map = lap.status, float(lap.ln_z), point
+        b.ln_prior = float(self.ln_prior(model, point))
+        b.cov_free, b.boundary_method, b.objective = lap.cov, lap.boundary_method, f
+        span = hi - lo
+        b.pinned = tuple(model.names[i] for i, zi, l, h, w in zip(model.free, z, lo, hi, span)
+                         if zi - l <= 1e-6 * w or h - zi <= 1e-6 * w)
+        self._near_zero(b)
+
+    def _delta_proposal(self, model, point):
+        """An unconverged posterior iterate that rails a free width only proposes that delta
+        twin, as one more start (decision 2); the iterate never replaces the model."""
+        free = set(model.free.tolist())
+        for j, (_a, g, _c) in enumerate(model.modes):
+            if g in free and point[g] <= GAMMA_FLOOR + loop.DEGENERATE_LIMIT_TOL * max(GAMMA_FLOOR, 1.0):
+                modes = self.modes_of(model, point)
+                e, _gv, h, _d = modes[j]
+                modes[j] = (e, GAMMA_FLOOR, h, True)
+                self.fit(model.variant, modes, "delta_proposal", self.linear_of(model, point))
+                return
+
+    def _near_zero(self, b):
+        """Step 6a: every finite width within NEAR_ZERO_SIGMAS sd of zero gets its delta masks
+        fitted and priced although it never rails (the mask prior is unchanged)."""
+        model, t = b.model, b.theta_map
+        free = model.free.tolist()
+        near = []
+        for j, (_a, g, _c) in enumerate(model.modes):
+            if j in model.delta or g not in free:
+                continue
+            var = float(b.cov_free[free.index(g), free.index(g)]) if b.cov_free is not None else math.nan
+            sd = math.sqrt(var) if math.isfinite(var) and var > 0 else None
+            if t[g] < (NEAR_ZERO_SIGMAS * sd if sd is not None else self.fwhm / 2):
+                near.append(j)
+        # shortcut: masks over a 4th near-zero mode stay unpriced; upgrade if a spectrum shows four.
+        # shortcut: masks of well-resolved widths (Gamma >= 4.5 sd) are not fitted: their evidence is
+        #   below e^-10 of the parent's (a Gaussian width 4.5 sd from zero); S2U2's comparison checks it.
+        near = sorted(sorted(near, key=lambda j: t[model.modes[j][1]])[:NEAR_ZERO_MAX_MODES])
+        modes, lin = self.modes_of(model, t), self.linear_of(model, t)
+        for r in range(1, len(near) + 1):
+            for subset in itertools.combinations(near, r):
+                mask = tuple(sorted(set(model.delta) | set(subset)))
+                target = self.model(model.variant, mask)
+                if target is None or target.basins:
+                    continue
+                start = [(e, GAMMA_FLOOR, h, True) if j in subset else (e, g, h, d)
+                         for j, (e, g, h, d) in enumerate(modes)]
+                self.fit(model.variant, start, "near_zero", lin)
+
+    # ---- audits ------------------------------------------------------------------------------------
+    def audit(self):
+        """Step 7: from the best non-twin basin of every contending count, deletions and merges
+        down, moved centres and changed widths, splits both ways, shoulders and broad additions up."""
+        tally = _tally(self.basins(), self.s.contending_margin)
+        for k in sorted(set(tally.priced_contenders) | set(tally.unpriced_contenders)):
+            parent = max((b for b in self.basins() if b.count == k and b.theta is not None
+                          and b.status not in ("degenerate_twin", "not_fitted")),
+                         key=lambda b: b.ln_like, default=None)
+            if parent is None:
+                continue
+            v = parent.model.variant
+            for family, n, modes in self._audit_starts(parent):
+                self.fit(self.variant(n, v.elastic, v.background), modes, family)
+
+    def _audit_starts(self, parent):
+        s, sp, w = self.s, self.sp, self.fwhm
+        modes = self.modes_of(parent.model, parent.theta)
+        k = len(modes)
+        out = []
+        if k >= 1:
+            for j in range(k):
+                out.append(("delete", k - 1, modes[:j] + modes[j + 1:]))
+            for j in range(k - 1):
+                merged = _merge_pair(modes[j], modes[j + 1], False)
+                out.append(("merge", k - 1, modes[:j] + [merged] + modes[j + 2:]))
+            for j, (e, g, h, d) in enumerate(modes):
+                for sign in (-1.0, 1.0):
+                    out.append(("move", k, modes[:j] + [(e + sign * MOVE_FWHM * w, g, h, d)]
+                                + modes[j + 1:]))
+                if not d:
+                    for factor in WIDTH_FACTORS:
+                        out.append(("width", k, modes[:j] + [(e, max(g * factor, self.g_lo), h, d)]
+                                    + modes[j + 1:]))
+        if k < s.mode_ceiling:
+            for j, (e, g, h, d) in enumerate(modes):
+                g2 = SEED_GAMMA if d else g
+                for sep in s.split_separations_fwhm:
+                    for low in SPLIT_FRACTIONS:
+                        parts = [(e - sep * w / 2, g2, h * low, False),
+                                 (e + sep * w / 2, g2, h * (1.0 - low), False)]
+                        out.append(("split", k + 1, modes[:j] + parts + modes[j + 1:]))
+                for sign in (-1.0, 1.0):
+                    out.append(("shoulder", k + 1,
+                                modes + [(e + sign * SHOULDER_FWHM * w, g2, SHOULDER_FRACTION * h, False)]))
+            for e in np.arange(1.0, sp.e_hi, BROAD_STEP_MEV):
+                for width in BROAD_WIDTHS_MEV:
+                    out.append(("broad", k + 1, modes + [(float(e), width,
+                                                          BROAD_HEIGHT_FRAC * sp.height_hi, False)]))
+        return out
+
+    def run(self):
+        """Seed, ladder, pricing and the audit rounds; the safety budget stops the search."""
+        try:
+            with self._stage("seed"):
+                seed = self.seed()
+            with self._stage("ladder"):
+                self.ladder(seed)
+            self.price_all()
+            for _ in range(self.s.audit_rounds):
+                with self._stage("audits"):
+                    self.audit()
+                self.price_all()
+        except _BudgetExpired:
+            self.expired = True
+            log.warning("fast pass stopped by its safety budget (%.0f s)", self.s.safety_budget_s)
 
 
 def run_fast_pass(ctx, *, settings: FastPassSettings | None = None, peaks=(), structures=None) -> FastPassResult:
