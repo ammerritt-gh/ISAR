@@ -50,6 +50,10 @@ if os.environ.get("ISAR_LETACON") != "1":
     pytest.skip("the le Tacon fast-pass proof runs only when named: run-isar-proofs.bat letacon "
                 "(sets ISAR_LETACON=1)", allow_module_level=True)
 
+# pyproject's 900 s per-test timeout is the routine suite's guard; this proof runs for an hour and every
+# subprocess carries its own timeout (TIMEOUT_S), so the global one is switched off for it.
+pytestmark = pytest.mark.timeout(0)
+
 ROOT = Path(__file__).resolve().parents[1]
 FOLDER = "leTacon_SP8_CsV3Sb5"
 TEMPERATURES = (302, 97)
