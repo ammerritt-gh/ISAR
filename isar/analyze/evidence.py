@@ -518,50 +518,6 @@ def candidate_bundle(hyp, ctx, *, prior_settings=None):
         exclude=[prob.free_names[i] for i in prob.fixed_pos], prior_settings=prior_settings)
 
 
-def nested_evidence(hyp, ctx, fit_result, bundle, *, seed: int = 12345, n_live: int | None = None,
-                    max_iter: int | None = 50_000, sample: str = "rwalk", dlogz: float = 0.5):
-    """Rung 2 of the count ladder: one model's nested-sampling evidence, whatever its Laplace
-    picture or its optimizer said. Returns ``(EvidenceRecord, BayesResult | None)``; the record is
-    ``"dynesty"`` when the evidence is trusted, else ``"invalid"`` with the reason in ``validity``
-    (``BayesResult`` is ``None`` only when sampling could not start: a bundle that does not match).
-
-    Trusted on the evidence gates alone (:func:`isar.analyze.errors.bayes._evidence_gate`: finite
-    lnZ, dlogz reached before ``max_iter``, logzerr within bound). The interval gates judge a
-    position: a mode the data does not support legitimately spreads over the window, and that
-    spread is the Occam penalty a count decision is made of, not a failed calculation.
-    ``n_live`` ``None`` is :func:`escalation_n_live`."""
-    from isar.analyze.errors.bayes import bayesian_posterior
-
-    ctx = loop.candidate_context(hyp, ctx)
-    n_live = escalation_n_live() if n_live is None else int(n_live)
-    validity: dict = {"lane": "count_ladder_rung2",
-                      "optimizer_converged": bool(fit_result.optimizer_converged)}
-
-    def _record(ln_z, err, method) -> EvidenceRecord:
-        return EvidenceRecord(label=fit_result.label, log_evidence=float(ln_z),
-                              log_evidence_err=err, evidence_method=method,
-                              k_free=int(fit_result.k),
-                              arena_fingerprint=loop.data_likelihood_fingerprint(ctx),
-                              prior_spec=tuple(bundle.spec()), validity=validity)
-
-    try:
-        bz = bayesian_posterior(hyp, ctx, fit_result, prior_bundle=bundle, seed=seed,
-                                n_live=n_live, max_iter=max_iter, sample=sample, dlogz=dlogz)
-    except ValueError as exc:
-        validity["dynesty"] = {"attempted": False, "reason": str(exc)}
-        return _record(float("nan"), None, "invalid"), None
-    validity["dynesty"] = {"attempted": True, "converged": bool(bz.converged),
-                           "fail_reason": bz.fail_reason,
-                           "evidence_converged": bool(bz.evidence_converged),
-                           "evidence_fail_reason": bz.evidence_fail_reason,
-                           "ess": float(bz.ess), "n_live": int(n_live)}
-    if not (bz.evidence_converged and np.isfinite(bz.log_evidence)):
-        if np.isfinite(bz.log_evidence):
-            validity["dynesty"]["log_evidence_untrusted"] = float(bz.log_evidence)
-        return _record(float("nan"), None, "invalid"), bz
-    return _record(float(bz.log_evidence), float(bz.log_evidence_err), "dynesty"), bz
-
-
 def _structure_evidence_task(args):
     """Picklable process-worker entry point for one deferred escalation (mirrors
     :func:`isar.analyze.loop._fit_hypothesis_task`)."""
@@ -638,8 +594,7 @@ def candidate_set_evidence(candidates, ctx, *, escalate=False, budget_s=_BUDGET_
     ``escalate=False`` (the default, rung 1 of the count ladder, design 2026-10-22 §3.1): the
     Gaussian rungs only. A candidate whose Gaussian picture is invalid keeps its
     ``"deferred_escalation"`` marker: no evidence, never sampled here, never pruned, and never
-    counted against it. Rung 2 (:mod:`isar.analyze.count_ladder`) samples it as a contending
-    model. Measured cost of the alternative: inside rung 1 the overfit high counts (a pinned
+    counted against it. Measured cost of the alternative: inside rung 1 the overfit high counts (a pinned
     amplitude) all went to the sampler, 76 of 88 s on one 81-point spectrum at ceiling 3.
 
     ``escalate=True`` is the pre-ladder lane described below. Its pruning ceiling ``−cost/2`` is a

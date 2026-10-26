@@ -70,7 +70,7 @@ _PRICED = ("ok", "ok_boundary")
 class FastPassSettings:
     mode_ceiling: int = 6                    # pinned known limit (operator); card [fitting] max_modes
     safety_budget_s: float = 300.0           # per-spectrum runaway stop (design agent default)
-    contending_margin: float = 10.0          # nats, = count_ladder.CONTENDING_MARGIN (existing)
+    contending_margin: float = 10.0          # nats: a count within this of the best evidence is contending
     close_call_p: float = 0.80               # preferred count below this -> close call (operator)
     seed_stop_gain: float = 6.0              # PROVISIONAL, NOT calibrated (refit grid skipped, run-once ruling); operator's call: 2*dlnL a seed peak must add
     confident_anchor: tuple[tuple[float, float], ...] = ((300.0, 10.0), (600.0, 10.0))
