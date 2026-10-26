@@ -122,9 +122,10 @@ def test_regime_is_recorded_apart_from_status():
 def test_a_weak_peak_is_not_confident_and_a_missing_covariance_is_undetermined():
     flat = np.full(X.size, 30.0)
     cov = np.diag([0.04, 0.04, 0.25, 25.0, 0.1])
-    weak, _ = _classified(*_hand(flat, [8.0, 0.55, 2.0, 150.0, 4.0], cov))
+    s = FastPassSettings(mode_ceiling=1, confident_anchor=((0.0, 50.0),), flag_residual_threshold=0.0)
+    weak, _ = _classified(*_hand(flat, [8.0, 0.55, 2.0, 150.0, 4.0], cov), s)
     assert weak[0].deletion_impact < 50.0 and not weak[0].confident
-    strong, _ = _classified(*_hand(flat, [8.0, 0.55, 300.0, 150.0, 4.0], cov))
+    strong, _ = _classified(*_hand(flat, [8.0, 0.55, 300.0, 150.0, 4.0], cov), s)
     assert strong[0].deletion_impact > 50.0 and strong[0].confident
     none, c = _classified(*_hand(flat, [8.0, 0.55, 300.0, 150.0, 4.0], None))
     assert none[0].area_status == "unavailable" and none[0].sigma_area is None
@@ -188,7 +189,7 @@ def test_a_peak_must_have_a_match_in_every_credible_alternative():
 def test_a_flag_demotes_the_peak_a_neighbour_may_be_absorbing():
     scan = [[6.2, 7.8, 40.0], [7.0, 8.6, 5.0]]
     fs = _fs([(6.0, 0.4, 100.0, 0.1), (14.0, 0.4, 100.0, 0.1)], residual_scan=scan)
-    off = _run(fs)                                                  # threshold 0: that flag kind is off
+    off = _run(fs, flag_residual_threshold=0.0)                     # that flag kind is off
     assert off["flags"] == [] and [p["confident"] for p in off["peaks"]] == [True, True]
     on = _run(fs, flag_residual_threshold=25.0)
     assert [(f["kind"], f["e_lo"], f["e_hi"], f["statistic"]) for f in on["flags"]] == [
@@ -253,7 +254,8 @@ def test_the_count_state_follows_the_stated_precedence():
 def two_peak():
     lam = _expected([(4.0, 0.4, 90.0), (9.0, 0.6, 60.0)])
     counts = np.random.default_rng(11).poisson(lam).astype(float)
-    return fast_pass.run_fast_pass(_ctx(counts), settings=FastPassSettings(mode_ceiling=2, audit_rounds=0))
+    return fast_pass.run_fast_pass(_ctx(counts), settings=FastPassSettings(
+        mode_ceiling=2, audit_rounds=0, confident_anchor=((0.0, 50.0),)))
 
 
 def _record(r):

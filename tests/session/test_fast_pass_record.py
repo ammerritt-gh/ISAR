@@ -151,7 +151,7 @@ def test_ex4_search_limited_by_the_ceiling():
     rec = scan_delivery._fast_pass_record(_result(
         [m6], m6, [_peak(i, 2.0 + 2.5 * i) for i in range(6)], probabilities={6: 1.0},
         state="search_limited", reason="ceiling",
-        settings=FastPassSettings(mode_ceiling=6, prior=PriorSettings())))
+        settings=FastPassSettings(mode_ceiling=6, prior=PriorSettings(), confident_anchor=((0.0, 50.0),))))
     assert rec["state"] == "search_limited" and rec["search_limit_reason"] == "ceiling"
     assert rec["preferred_count"] == 6 and rec["deep_pass_candidate"] is True
     assert rec["settings"]["mode_ceiling"] == 6
