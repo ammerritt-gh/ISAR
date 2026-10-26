@@ -296,11 +296,17 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       written in `Guidelines.filter_structures` (`isar/session/guidelines.py`), which has no caller.
       **Acceptance:** a test with a mistyped label shows the scan is refused or held with its reason, not fitted
       on all models; the choice of refusal or hold is the operator's.
-- [ ] **FIT-8 — Rung 2 at 11 to 14 free parameters is not reliable at 128 live points.** Nested lnZ lay 31 to 54
-      nats from its 400-point value while reporting ±1 to 1.5 nats (`count_ladder.RUNG2_N_LIVE`, a shortcut).
-      `logzerr ≤ 5` does not bound this bias, so a count decided at high mode numbers may be wrong.
-      **Acceptance:** the live-point count at the 6-mode ceiling is measured against a 400-point reference and the
-      constant set from it, or contenders at high counts are marked untrusted.
+- [ ] **FIT-8 — Deep-pass nested sampling is not accurate at four or more modes.** The one calibration pass
+      (2026-10-26, le Tacon 302 K a05, 7 core models, 98 runs, `STATS_PRIMER.md` §2.4) found that no screened
+      dynesty random-walk setting reaches the 2 nat limit on the deciding differences. At the installed 400 live x
+      step factor 4 the three seeds on the counts 4, 5 and 6 models span 1.1, 17.6 and 10.5 nats (sigma 9.7);
+      at 128 live points and step 1 count 5 spans 271 nats. The spread is mostly one run per model landing in a
+      mode 12 to 20 nats lower in log-likelihood. The reference (1600 live) reached only counts 0 to 2, and all six
+      UltraNest runs hit the 3600 s per-run limit. The earlier finding (128 against 400 live points, 31 to 54 nats at 11 to
+      14 parameters) stands. Deep counts at four or more modes are untrusted and numerically marginal at these
+      settings. **Acceptance:** a method change (a follow-up job: not more tuning of these settings) that brings the
+      deciding differences within 2 nats, aim 1 nat, on repeated seeds and against a reference at the deciding
+      counts, on more than one spectrum; then `CALIBRATION_STATUS` can leave provisional.
 - [ ] **FIT-9 — Laplace may price the count above the best too low.** Measured on the earlier ladder's tuning
       stream (2026-10-23, four priced cases, 400 live points): 15 to 18 nats too low. The fast pass is Laplace-only
       and nothing sends a spectrum to nested sampling by itself; the user chooses the deep pass (`STATS_PRIMER.md`

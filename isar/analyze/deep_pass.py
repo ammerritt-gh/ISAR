@@ -32,10 +32,14 @@ CONTENDER_MIN_P = 0.01          # fast-pass probability that makes a model a sta
 RELEVANCE_GAP = 10.0            # nats below the leader beyond which more precision cannot matter
 MAX_RESTARTS = 2
 FAST_PASS_SCHEMA = "isar.fast-pass/1"    # scan_delivery.FAST_PASS_RECORD_SCHEMA; analyze imports no session code
-CALIBRATION_STATUS = ("provisional: sampler settings not yet calibrated on the final model "
-                      "(S2U2)")
-SUSPECT_GAP_BASE = 5.0          # PROVISIONAL (S2U2)
-SUSPECT_GAP_PER_DIM = 0.5       # PROVISIONAL (S2U2)
+# The one calibration pass missed both aims (1 and 2 nats); the numbers below are the screen's most stable
+# configuration on the deciding models, not a settled accuracy. The next step is a method change.
+CALIBRATION_STATUS = ("provisional: one-pass calibration on le Tacon 302 K a05, 2026-10-26; 2-nat limit missed "
+                      "(reference reached only counts 0-2; seed std 9.7 nats at 400 live x step factor 4 on the "
+                      "deciding models); UltraNest not finished (6 of 6 runs hit the 3600 s per-run limit); "
+                      "report out/j6420291926ab/deep-calibration/a05/ (calibration.json, calibration.md)")
+SUSPECT_GAP_BASE = 5.0          # PROVISIONAL, unchanged: the pass's large deficits are failed runs, not a gap to widen
+SUSPECT_GAP_PER_DIM = 0.5       # PROVISIONAL, unchanged
 
 
 @dataclass(frozen=True)
@@ -46,7 +50,7 @@ class SamplerSettings:
     dlogz: float = 0.05
     max_iter: int | None = None     # the deep pass has no iteration cap
     bound: str = "multi"
-    calibrated_sigma: float = 1.0   # PROVISIONAL: lnZ error from S2U2's one-pass screen runs
+    calibrated_sigma: float = 1.0   # lnZ error in nats; installed values are the one-pass screen's seed std
 
     def step_kwargs(self, ndim: int) -> dict:
         if self.sample == "rwalk":
@@ -56,8 +60,9 @@ class SamplerSettings:
         raise ValueError(f"unknown sample method {self.sample!r}")
 
 
-ACCEPTED = SamplerSettings()                                   # PROVISIONAL; S2U2 installs one-pass measured values
-EXPLORATORY = SamplerSettings(n_live=128, dlogz=0.5, calibrated_sigma=3.0)   # PROVISIONAL
+# PROVISIONAL, from the one-pass screen on a05 (sigma = largest 3-seed std on counts 4-6; EXPLORATORY adds 0.5 for dlogz).
+ACCEPTED = SamplerSettings(n_live=400, step_factor=4, calibrated_sigma=9.7)
+EXPLORATORY = SamplerSettings(n_live=128, step_factor=4, dlogz=0.5, calibrated_sigma=12.38)
 
 
 @dataclass(frozen=True)
@@ -98,7 +103,8 @@ class _Counted:
 def suspect_gap(ndim: int) -> float:
     """PROVISIONAL nats a run's best lnL may sit below the optimizer optimum before the run is suspect.
     The best of n_live terminal points sits ~ (d/2)(1 - n_live**(-2/d)) below the peak for a Gaussian
-    posterior (a few nats at d = 14); 5 + d/2 leaves room for that. S2U2 measures the real deficits."""
+    posterior (a few nats at d = 14); 5 + d/2 leaves room for that. The one-pass deficits are in
+    STATS_PRIMER 2.4."""
     return SUSPECT_GAP_BASE + SUSPECT_GAP_PER_DIM * ndim
 
 

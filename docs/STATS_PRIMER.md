@@ -702,12 +702,12 @@ folder and wall time, and reads `ISAR_COUNT_BENCH_MAX_SECONDS` (default 5400 s).
 `out\count_bench\<timestamp>\`: `figures.json`, `cases.csv`, `true_peaks.csv`, `fitted_peaks.csv`,
 `records.jsonl` and the truth-versus-fit galleries. The run outputs are gitignored, not committed.
 
-### 2.4 The deep pass: nested-sampling evidence on the spectra you choose **[Partial; sampler settings provisional, calibration Planned]**
+### 2.4 The deep pass: nested-sampling evidence on the spectra you choose **[Partial; one-pass calibration done and its accuracy aims missed, settings provisional]**
 
 The fast pass (§2.2) prices every count with Laplace evidence. The deep pass prices the same models by
 nested sampling, which makes no Gaussian assumption about the posterior, so it is the check on Laplace's
-known lean toward fewer modes (§2.2). It is slow (an estimate of tens of minutes per spectrum, not yet
-measured) and runs only on spectra the user names: `isar run --deep-pass` (`USING_ISAR.md`). The code is
+known lean toward fewer modes (§2.2). It is slow (one sampler run takes from seconds to nearly an hour on one
+thread, measured on one spectrum; see the calibration subsection) and runs only on spectra the user names: `isar run --deep-pass` (`USING_ISAR.md`). The code is
 `isar/analyze/deep_pass.py` (the engine) and `isar/session/deep_delivery.py` (the entry and the persisted
 record). It runs after the fast pass, in the same run, on the same spectrum. The fast pass's fit, its
 count state and its `modes.csv` rows are not changed; the deep pass writes its own record and five
@@ -768,13 +768,14 @@ the fast pass's threshold: the preferred count carries less than 0.80 of the pro
 `close_call_p`, §2.2).
 
 **The numerical qualification, and its limit.** Each model's ln Z is perturbed by an independent normal draw
-whose sigma is the larger of the settings' calibrated sigma (1.0 accepted, 3.0 exploratory; both provisional)
+whose sigma is the larger of the settings' calibrated sigma (9.7 accepted, 12.38 exploratory; both provisional, from
+three seeds on one spectrum)
 and dynesty's own error, 4000 times. The result is *numerically marginal* (`deep_numerically_marginal`) when the
 winning count changes in more than 5% of the draws, or when the 5-95% band of the preferred count's probability
 crosses 0.80. The limit is one-sided. A marginal flag says the sampling noise could move the decision. An
 unflagged result does not say the evidence is accurate: agreement between runs bounds the error from below, not
-from above, and the sigmas are not yet measured. That is why the live-point and step-length escalation and an
-independent sampler are part of the calibration plan below.
+from above, and the sigmas rest on three seeds on one spectrum. That is why the live-point and step-length escalation and an
+independent sampler are part of the calibration protocol below.
 
 **What H is.** Each run records H, the information gained from prior to posterior in nats (dynesty's
 `information`). Nested-sampling's own error is about sqrt(H / n_live), which is why H is recorded with every
@@ -788,21 +789,105 @@ basin, keeps the better fit (a converged one first, then the lower objective), a
 the bootstrap once (`errors.attach`, `--M` draws). A failure there is recorded as `errors_failure` and never loses
 the count result.
 
-**Provisional calibration status.** The sampler settings, the two sigmas and the suspect gap are provisional
-defaults, not yet measured on the final model. While the status reads provisional, every deep-pass count decision
-is labelled untrusted: the record carries `trusted: false` and the reason in `results.csv` ends "provisional
-sampler settings: untrusted until calibration". Planned, not built: the one bounded calibration pass on the final
-model (dynesty random walk against random slice, live points and step length varied separately, an UltraNest
-cross-check) and the comparison of the fast pass's Laplace differences with its reference differences. The
-figures will be added under this heading.
+**Provisional calibration status.** The sampler settings, the two sigmas and the suspect gap are provisional.
+The settings and sigmas come from one calibration pass (next subsection) that **missed both accuracy aims**; the
+suspect gap is unchanged. While the status reads provisional, every deep-pass count decision is labelled
+untrusted: the record carries `trusted: false` and the reason in `results.csv` ends "provisional sampler
+settings: untrusted until calibration". **At four or more modes on spectra like the one measured, deep-pass
+counts are numerically marginal at these settings**, and the next step is a method change (a follow-up job), not
+more tuning of these settings.
+
+#### Deep-pass calibration (one pass, 2026-10-26)
+
+Report: `out\j6420291926ab\deep-calibration\a05\calibration.md` and `calibration.json` beside it (gitignored, main checkout; the
+pre-finalisation files are kept there as `calibration.snapshot.*`).
+
+**The protocol as run.** One bounded pass (16 single-threaded workers, 7200 s wall cap) on the le Tacon 302 K
+spectrum `CsV3Sb5_302K_0p5_0p5_3_sum:1879767298:a05` (fast-pass state `close_call`, preferred count 5), final model
+and priors. Seven core models, the top model of each count 0 to 6. (1) A dynesty random-walk screen: 128 and 400
+live points against step factor 1 and 4 (walk length `factor x (ndim + 20)`), three independent seeds per cell,
+`dlogz` 0.05, no iteration cap: 84 runs. (2) One reference level: 1600 live points at the leading step factor
+(4), three seeds per model. (3) An UltraNest cross-check at 1600 live points, three seeds on the two deciding models
+(counts 5 and 4). Every run records H, the real likelihood calls, the seed and the best log-likelihood. The session's
+2 h background limit stopped the tool at about 6560 s of its own clock, about 640 s before its own cap, so the
+report is the last per-run snapshot (98 runs) re-analysed with the tool's own analysis, with no new sampling; runs
+in flight at the stop were not recorded.
+
+**What the design's protocol leaves out.** The random-slice comparison, the follow-the-change steps, the 800 /
+1600 / 3200 live-point ladder (one reference level only), the 8 to 10 independent runs at the accepted settings,
+and the timed cases beyond this one spectrum.
+
+**What finished.** All 84 screen runs converged; none failed. Of 21 planned reference runs, 8 were recorded: counts 0,
+1 and 2 (3, 2 and 3 runs). The reference for counts 3 to 6, the models that decide this spectrum, does not exist. All six
+UltraNest runs (3 each on the counts 5 and 4 models) ended at the 3600 s per-run limit without an evidence.
+
+**Seeds on the deciding models (counts 4 to 6), ln Z, three seeds each:**
+
+| Configuration | Count 4 | Count 5 | Count 6 | Sum of ranges |
+|---|---|---|---|---|
+| 128 live, step 1 | -180.38, -180.33, -160.58 | -449.05, -439.36, -177.61 | -189.16, -159.50, -154.97 | 325.4 |
+| 128 live, step 4 | -181.34, -162.40, -159.45 | -176.61, -173.56, -157.43 | -158.43, -156.07, -153.74 | 45.8 |
+| 400 live, step 1 | -181.38, -163.44, -160.36 | -173.77, -163.90, -159.03 | -164.82, -160.49, -158.32 | 42.3 |
+| **400 live, step 4** | -160.94, -160.49, -159.86 | -176.23, -160.31, -158.67 | -167.00, -158.14, -156.52 | **29.1** |
+
+Counts 0 to 3 are stable by comparison: the three seeds span at most 1.9 nats in every configuration. The tool's own
+step-factor measure (the 400-point range plus the 128-to-400 median shift, summed over the models) is 339 at factor
+1 against 50 at factor 4, so factor 4 leads. It also flags the step length as not settled at factor 4 (some model's
+400-point median moved by more than 0.5 nat between factors 1 and 4). The spread is not scatter around a
+centre: it is mostly one run per model that settles in a mode 12 to 20 nats lower in log-likelihood (or, at 128 live
+points and step 1, nearly 300 nats lower). Twelve of the 84 screen runs fall more than the suspect gap below the
+fast-pass optimum (one at 400 live x step 4: count 5, 17.5 nats), so the gap check does flag the failure it is for.
+A larger gap would calibrate the check to the failure, so it is **unchanged**.
+
+**Installed (provisional).** The screened configuration with the smallest total seed range on the deciding models,
+400 live points at step factor 4, becomes `ACCEPTED`; `EXPLORATORY` is 128 live points, `dlogz` 0.5, at the same step
+factor. Sigma is the largest sample standard deviation of the three seeds on the counts 4 to 6 models: **9.7 nats**
+(count 5 at 400 x 4; the range there is 17.6), and 11.88 + 0.5 = **12.38 nats** for the exploratory settings (the 0.5
+for the early `dlogz` stop). These sigmas make nearly every comparison involving four or more modes numerically
+marginal, which is the honest reading of this pass.
+
+**Aims, each stated.** The tool's chosen configuration needs a reference, so it chose none.
+
+| Aim | Result |
+|---|---|
+| Deciding-difference error at most 2 nats | **missed.** No reference exists for counts 3 to 6, so the error is not measured; the 17.6-nat range of three seeds on the count 5 model alone already exceeds it |
+| Deciding-difference error at most 1 nat (RMS) | **missed**, same reason |
+| Reference settled (3-seed range at most 0.5 nat) | **missed.** Counts 0 and 2: ranges 0.14 and 0.35. Count 1: 0.36 from 2 runs. Counts 3 to 6: no reference runs recorded |
+| UltraNest agrees with the reference | **missed.** The tool's outcome is "not finished within the wall cap"; in fact all six runs hit the 3600 s per-run limit. Neither agreement nor disagreement is established |
+| Fast-pass Laplace within 2 nats and 1 nat of the reference | **missed** at the level of count decisions: the count-level difference is not available. Per model, Laplace minus reference ln Z is +0.04 (count 0), -0.06 (count 1) and -0.33 (count 2) |
+
+Against the 400 x 4 screen medians, which are **not** a reference, Laplace minus median is +0.03 (count 3), -1.45
+(count 4), +0.44 (count 5) and -3.36 (count 6); the screen ranges there (0.8, 1.1, 17.6 and 10.5 nats) are as large
+as these offsets or larger, so this says nothing about Laplace's accuracy at counts 4 to 6. The `close_call` the
+fast pass reported on this spectrum (count 5 at 0.743) is not confirmed or refuted.
+
+**Cost (measured on this machine, one thread per run, 16 runs in parallel; wall seconds per run, mean over three
+seeds, and real likelihood calls).**
+
+| Model (parameters) | 400 x 4 (accepted) | 128 x 4 (exploratory) | 1600 x 4 (reference) |
+|---|---|---|---|
+| count 0 (1) | 9 s, 0.19 M calls | 3 s | 33 s |
+| count 1 (5) | 290 s, 0.89 M | 86 s | 1086 s |
+| count 2 (8) | 650 s, 1.5 M | 170 s | 2093 s |
+| count 3 (10) | 985 s, 2.0 M | 330 s | not recorded |
+| count 4 (12) | 1731 s, 2.3 M | 603 s | not recorded |
+| count 5 (13) | 2584 s, 2.6 M | 796 s | not recorded |
+| count 6 (17) | 3205 s, 3.0 M | 1018 s | not recorded |
+
+One run per core model at the accepted settings is 9454 s, about 2.6 CPU-hours. The 98 recorded runs used 21.4
+CPU-hours inside 6558 s of wall.
+
+**Limits.** One spectrum; three seeds per cell, which measure no tails; a reference only for counts 0 to 2; one
+UltraNest attempt, which finished nothing. Agreement between repeated runs is a lower bound on the error, not
+proof of accuracy. Nothing here supports the 1 or 2 nat aims at four or more modes.
 
 | Constant (`deep_pass.py`) | Value | Status |
 |---|---|---|
-| Accepted settings (`ACCEPTED`) | 400 live points, random walk of `ndim + 20` steps, `dlogz` 0.05, no iteration cap, sigma 1.0 | provisional |
-| Exploratory settings (`EXPLORATORY`) | 128 live points, same walk, `dlogz` 0.5, sigma 3.0 | provisional |
+| Accepted settings (`ACCEPTED`) | 400 live points, random walk of `4 x (ndim + 20)` steps, `dlogz` 0.05, no iteration cap, sigma 9.7 | provisional (one-pass screen; 1 and 2 nat aims missed) |
+| Exploratory settings (`EXPLORATORY`) | 128 live points, same walk, `dlogz` 0.5, sigma 12.38 | provisional (one-pass screen) |
 | Contender floor, always at least two (`CONTENDER_MIN_P`) | fast-pass probability 0.01 | provisional |
 | Promotion window (`RELEVANCE_GAP`) | 10 nats | provisional |
-| Suspect gap | 5 + 0.5 x ndim nats | provisional |
+| Suspect gap | 5 + 0.5 x ndim nats | provisional, unchanged by the pass |
 | Restarts (`MAX_RESTARTS`) | 2 | provisional |
 | Numerical flag | winner flips in more than 5% of 4000 draws, or the 5-95% band crosses 0.80 | implementation default |
 

@@ -198,7 +198,8 @@ def test_the_budget_is_checked_before_each_chunk_and_a_started_chunk_is_never_cu
 
 def test_a_promotion_the_budget_leaves_pending_is_not_a_full_comparison(monkeypatch):
     entries = [_fake_entry("c1", 1, 0.0), _fake_entry("c2", 2, -1.0), _fake_entry("c3", 3, -6.0)]
-    values = {"c1": (0.0, None), "c2": (-1.0, None), "c3": (-7.0, -30.0)}
+    # c3's cheap value sits far enough below that +3 sigma stays under the promotion window (holds while the exploratory sigma is below 30)
+    values = {"c1": (0.0, None), "c2": (-1.0, None), "c3": (-7.0, -100.0)}
     map_fn, clock, log = _fake_pool(monkeypatch, values)
     res = dp.deep_pass(entries, budget_s=250.0, map_fn=map_fn)
     assert log == [("c1", False), ("c2", False), ("c3", True)]              # stage 3 never starts

@@ -362,8 +362,12 @@ isar run <data file> --workspace DIR --detectors ana7 --deep-pass [--deep-budget
 - `--deep-workers K` (default the smaller of 6 and `--workers`) is the number of processes for the sampler runs
   and the bootstrap. A deep run fits its spectra one after another and spends the workers inside each spectrum.
   Pooled masters are not deep-passed.
-- **Cost.** An estimate of tens of minutes per spectrum, not yet measured. Every run (seed, settings, wall time,
-  likelihood calls, best log-likelihood) is recorded.
+- **Cost.** Hours of single-thread sampling per spectrum, measured on one le Tacon spectrum at the provisional
+  settings (400 live points, step factor 4): one sampler run takes 9 s (no peaks), 5 min (1 peak), 11 min (2), 16 min
+  (3), 29 min (4), 43 min (5) and 53 min (6 peaks), and the exploratory runs at 128 live points about a third of
+  that. One run of each of that spectrum's seven leading models is 2.6 CPU-hours; a spectrum with more models, and
+  any restart of a suspect run (twice the walk, then twice the live points), costs more, so a default 60-minute budget
+  often ends `search_limited`. Every run (seed, settings, wall time, likelihood calls, best log-likelihood) is recorded.
 - **Carried, not rerun.** A spectrum that already holds a deep pass under the same settings, budget, seed and
   `--M` is skipped. Changing the budget reruns it, and a refused deep pass is retried.
 
@@ -382,7 +386,8 @@ best log-likelihood, and the errors on the chosen model) is the spectrum's `deep
 per-stage and per-run wall times are in `report/run_timings.json`. The fast-pass columns, the shown fit and
 `modes.csv` are not changed by the deep pass; read the two side by side.
 
-**Untrusted for now.** The sampler settings are provisional and not yet calibrated on the final model, so every
+**Untrusted for now.** The sampler settings are provisional: one calibration pass on a single spectrum missed its
+accuracy aims, and at four or more modes the repeated runs disagree by several to about 18 nats, so every
 count decision's `deep_state_reason` ends "provisional sampler settings: untrusted until calibration". Treat the deep pass's
 preferred count as a second opinion, not a verdict, until that note is gone. How the pass works is
 `STATS_PRIMER.md` §2.4.
