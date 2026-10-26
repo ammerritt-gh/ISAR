@@ -58,9 +58,8 @@ def _card():
 
 
 def deliver(name: str, h: float) -> dict:
-    """One world node through the delivery's fit, ``scan_delivery.fit_one``: rung 1 of the count
-    ladder, rung 2 when a trigger fires, and the delivered count outcome
-    (``fit["fit_selection_semantics"]["count_ladder"]``). The ceiling is the suite's."""
+    """One world node through the delivery's fit, ``scan_delivery.fit_one``: the fast pass and its
+    persisted record (``fit["fast_pass"]``). The ceiling is the suite's."""
     from isar.session import scan_delivery
 
     return scan_delivery.fit_one(scan_ctx(name, h), _card(), prior=None, M=1, seed=1,
@@ -75,7 +74,7 @@ def scene_observation(name: str, h: float, *, scan_ref: str | None = None,
     reshaping production persists — so the rows a test scores are the rows a campaign would
     persist, not a hand-made approximation of them. The selection record is complete by
     construction: ``run_selection`` refuses anything but the Bayesian lane. ``delivered``: the
-    rows and winner :func:`deliver` persists instead, after the count ladder's rung 2.
+    rows and winner :func:`deliver` persists instead, from the fast pass.
     """
     if delivered:
         fit = deliver(name, h)

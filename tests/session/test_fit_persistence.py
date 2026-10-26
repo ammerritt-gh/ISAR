@@ -107,11 +107,17 @@ def test_fit_one_populates_amplitudes_and_candidates():
         assert row["selection_eligibility"]
         assert len(row["conditioning_fingerprint"]) == 64
 
-    # SCENE-1 PR-c: the production catalogue declares no identity or variant, so every row is
-    # identity-agnostic and unconstrained — but each still records the pin map it was priced with,
-    # and the WINNER's map is lifted onto the fit dict for FitOutcome.at_limit.
-    assert all(r["variant"] is None and r["identity"] is None for r in cands)
-    assert all(r["effective_constraints"] == [] for r in cands)
+    # SCENE-1 PR-c: the production catalogue declares no identity, so every row is identity-agnostic;
+    # the only variant is the fast pass's delta-mode twin, whose one pin is its catalogue width
+    # (every other row is unconstrained). Each still records the pin map it was priced with, and
+    # the WINNER's map is lifted onto the fit dict for FitOutcome.at_limit.
+    assert all(r["identity"] is None for r in cands)
+    assert all(r["variant"] in (None, "delta_mode") for r in cands)
+    assert all(r["effective_constraints"] == [] for r in cands if r["variant"] is None)
+    assert all(r["effective_constraints"]
+               and all(c["origin"] == "catalogue_variant" and c["parameter"].endswith(".Gamma")
+                       for c in r["effective_constraints"])
+               for r in cands if r["variant"] == "delta_mode")
     assert all(isinstance(r["at_limit"], dict) and r["at_limit"] for r in cands)
     assert fit["at_limit"] == next(r["at_limit"] for r in cands if r["label"] == fit["best_label"])
     assert fit["evidence_identity"] is None
@@ -142,16 +148,16 @@ def test_fit_one_populates_amplitudes_and_candidates():
     assert all(r["posterior_probability"] is not None for r in cands)
     winner = max(cands, key=lambda r: r["posterior_probability"])
     assert winner["label"] == fit["best_label"]
-    # A row with no evidence of its own is either resolved to its degenerate twin, which its
-    # candidate record names (the twin carries the weight, S1U4), or, when rung 2 decided, outside
-    # rung 2's contending set (rung 2 prices its contenders alone).
+    # A row with no evidence of its own takes no weight, and its candidate record says why: the
+    # fast pass's status, and for a degenerate twin the terminal model, which the record holds.
     records = {r["label"]: r for r in fit["fit_selection_semantics"]["candidate_records"]}
-    ladder = fit["fit_selection_semantics"]["count_ladder"]
+    models = {m["model_id"]: m for m in fit["fast_pass"]["models"]}
     for row in cands:
         if row["evidence_method"] is None:
-            twin = (records[row["label"]]["evidence_validity"] or {}).get("resolved_to")
-            assert twin in records or (ladder["deciding_rung"] == 2
-                                       and row["label"] not in ladder["contending"])
+            validity = records[row["label"]]["evidence_validity"] or {}
+            assert validity.get("fast_pass_status") not in (None, "ok", "ok_boundary")
+            if validity["fast_pass_status"] == "degenerate_twin":
+                assert models[validity["twin_of"]]["twin_of"] is None
             assert row["posterior_probability"] == 0.0
     assert any(r["evidence_method"] is not None for r in cands)
 
@@ -164,7 +170,7 @@ def test_fit_one_populates_amplitudes_and_candidates():
     assert semantics["selection_fallback"] is None
     assert len(semantics["evidence_arena_fingerprint"]) == 64
     route = semantics["candidate_generation_route"]
-    assert route["route"] == "full_two_stage"
+    assert route["route"] == "fast_pass"
     assert route["supplied_hint"] is None
     assert route["hint_accepted"] is False
     assert route["offered_labels"]

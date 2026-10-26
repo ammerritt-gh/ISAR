@@ -631,8 +631,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
                       boot_workers=boot_workers, boot_executor=boot_executor,
                       boot_adaptive=boot_adaptive, descriptor=descriptor,
                       structure_hint=structure_hint, bayes_opts=bayes_opts,
-                      predictive_n_members=int(ms.n_members), fit_role=fit_role,
-                      shadow_enabled=shadow_enabled)
+                      predictive_n_members=int(ms.n_members), fit_role=fit_role)
     except Exception as exc:  # noqa: BLE001 — one unfittable pool must not kill the batch (N=16 wrinkle)
         return _stamp_master_analysis(
             ScanEntry(status="non_result",
@@ -684,6 +683,7 @@ def _fit_master_group(ms, grp, member_rec, member_det, card, runcal, g, master_i
         fit_selection_semantics=fit.get("fit_selection_semantics"),
         interval_semantics=fit.get("interval_semantics"),
         shadow_model_selection=fit.get("shadow_model_selection"),
+        fast_pass=fit.get("fast_pass"),
         at_limit=fit.get("at_limit"),
         energy_window=fit.get("energy_window"), energy_bands=fit.get("energy_bands"),
         evidence_identity=fit.get("evidence_identity"),

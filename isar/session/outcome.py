@@ -228,10 +228,10 @@ class FitOutcome:
     # claimed as searched coverage, and the end cells reach half a bin past the window.
     # ``None`` on older ledgers and wherever the window is.
     energy_bands: list | None = None
-    # Rung 2 of the count ladder so far (scan_delivery._rung2_partial): per sampled contending model
-    # its evidence and published fit, what the next invocation resumes from while the spectrum is
-    # provisional. The count outcome itself is ``fit_selection_semantics["count_ladder"]``.
-    rung2_partial: dict | None = None
+    # The fast pass's result as persisted (C-fastpass-record, ``isar.fast-pass/1``, written once by
+    # scan_delivery.fit_one): the count state and probabilities, every model tried, the selected
+    # model's peaks and the flags. ``None`` for an outcome with no fast pass. Read via fast_pass_of.
+    fast_pass: dict | None = None
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -392,6 +392,11 @@ def _best_model_posterior(oc: dict):
         if row.get("label") == best:
             return row.get("posterior_probability")
     return None
+
+
+def fast_pass_of(oc: dict) -> dict:
+    """The stored fast-pass record (``oc["fast_pass"]``), ``{}`` when absent; never raises."""
+    return (oc or {}).get("fast_pass") or {}
 
 
 def _count_ladder(oc: dict) -> dict:

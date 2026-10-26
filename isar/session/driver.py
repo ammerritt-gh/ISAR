@@ -596,9 +596,7 @@ def _run_batch_pass(workspace: Workspace, data_paths, *, force=False, force_mast
                 boot_workers=boot_workers, use_pool=use_pool,
                 scan_workers=scan_workers, boot_executor=shared_pool,
                 boot_adaptive=scan_boot_adaptive, bayes_opts=bayes_opts,
-                on_complete=checkpoint_entry, deadline_gate=deadline_gate,
-                shadow_enabled=deadline_gate.deadline is None,
-                rung2_slice_s=rung2_slice_s, rung2_resume=rung2_resume)
+                on_complete=checkpoint_entry, deadline_gate=deadline_gate)
             cached.update(zip(remaining_indices, fresh_entries))
             entries = [cached[index] for index in range(len(tasks))]
             _m_fit["per_task"] = [

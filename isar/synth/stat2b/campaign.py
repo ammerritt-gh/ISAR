@@ -679,7 +679,6 @@ def _full_delivery(
         errors_tier=errors_tier,
         boot_workers=1,
         descriptor=descriptor,
-        shadow_enabled=False,
     )
     fit = scan_delivery._hard_fix_escalation(
         fit,

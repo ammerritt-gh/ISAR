@@ -137,10 +137,8 @@ def test_ordinary_analysis_manifest_is_content_addressed_and_reusable(tmp_path):
 
 def test_soft_deadline_finishes_active_wave_then_stops_dispatch(monkeypatch):
     completed = []
-    shadow_policies = []
 
     def fake_process(*_args, **kwargs):
-        shadow_policies.append(kwargs["shadow_enabled"])
         return object()
 
     monkeypatch.setattr(scan_delivery, "_process_one", fake_process)
@@ -156,7 +154,6 @@ def test_soft_deadline_finishes_active_wave_then_stops_dispatch(monkeypatch):
             boot_workers=1, use_pool=False, scan_workers=1,
             on_complete=completed.append, deadline_gate=gate)
     assert len(completed) == 1
-    assert shadow_policies == [False]
 
 
 def test_master_task_threads_deadline_shadow_policy(monkeypatch):

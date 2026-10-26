@@ -77,23 +77,24 @@ def test_auto_escalates_missing_best_and_covariance(monkeypatch):
 def test_auto_attaches_to_same_point_estimates_without_reenumeration(monkeypatch):
     enumeration_calls = []
     attach_calls = []
-    original = scan_delivery.loop.fit_structures_two_stage_hinted
+    original = scan_delivery.fast_pass.run_fast_pass
 
     def enumerate_once(*args, **kwargs):
-        enumeration_calls.append(1)
-        return original(*args, **kwargs)
+        enumeration_calls.append(original(*args, **kwargs))
+        return enumeration_calls[-1]
 
     def attach(items, **kwargs):
         attach_calls.append([id(item[0]) for item in items])
 
-    monkeypatch.setattr(scan_delivery.loop, "fit_structures_two_stage_hinted", enumerate_once)
+    monkeypatch.setattr(scan_delivery.fast_pass, "run_fast_pass", enumerate_once)
     monkeypatch.setattr(scan_delivery, "_auto_escalation_reasons", lambda *args: ["untrusted_hesse"])
     monkeypatch.setattr(scan_delivery.errors, "attach_batch", attach)
     fit = scan_delivery.fit_one(_ctx(), _card(), prior=None, M=20, seed=1, errors_tier="auto",
                          fit_role="master")
 
     assert len(enumeration_calls) == 1
-    assert len(attach_calls) == 1 and attach_calls[0]
+    # the promotion attaches to the fast pass's own selected fit, not to a refit
+    assert attach_calls == [[id(enumeration_calls[0].selected.fit)]]
     assert fit["errors_tier_requested"] == "auto"
     assert fit["errors_tier_effective"] == "full"
     assert fit["fit_role"] == "master"

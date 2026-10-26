@@ -14,8 +14,7 @@ from isar.analyze.context import ScanContext
 from isar.analyze.errors.bayes import BayesResult
 from isar.report import run_report
 from isar.schema import card as card_mod
-from isar.schema.statistics import validate_shadow_model_selection
-from isar.schema.steering import ParamConstraints
+
 from isar.session import driver, outcome as outcome_mod, scan_delivery
 from isar.session import guidelines as G
 from isar.session.state import ScanEntry, SessionState, canonical_hash
@@ -162,29 +161,22 @@ def test_fit_one_attaches_expensive_errors_to_the_selected_model_only(monkeypatc
     ctx = ScanContext(x=x, counts=counts, mask=np.ones_like(x, dtype=bool), T=50.0,
                       center=0.0, gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="S30",
                       energy_status="needs_zero")
-    selections, attached = [], []
-    original = scan_delivery.select.select_models
-
-    def capture(*args, **kwargs):
-        selections.append(original(*args, **kwargs))
-        return selections[-1]
-
-    monkeypatch.setattr(scan_delivery.select, "select_models", capture)
+    attached = []
     monkeypatch.setattr(scan_delivery.errors, "attach_batch",
                         lambda items, **kwargs: attached.append([i[0].label for i in items]))
     fit = scan_delivery.fit_one(ctx, _card_with_fitting({}), prior=None, M=20, seed=1,
                                 errors_tier="full")
 
-    prelim = selections[0]
-    assert sum(score.weight >= 0.01 for score in prelim.scores) >= 2   # a real runner-up
+    assert sum((c["posterior_probability"] or 0.0) >= 0.01
+               for c in fit["candidates"]) >= 2                  # a real runner-up
     assert attached == [[fit["best_label"]]]
 
 
 @pytest.mark.slow
-def test_fit_one_runs_the_count_ladder_and_records_its_route():
-    """`fit_one` fits through the count ladder: every count to the ceiling is offered (no gate;
-    a declared count only seeds), and the persisted ``multimode_route`` says so. The aliased
-    shadow-selection route agrees. Slow: one full ladder with its evidence escalations."""
+def test_fit_one_runs_the_fast_pass_and_records_its_route():
+    """`fit_one` fits through the fast pass: every count to the ceiling is offered (no gate; a
+    declared count only seeds), and the persisted ``multimode_route`` says so. Slow: one full
+    ladder to the default ceiling."""
     x = np.linspace(-6.0, 20.0, 121)
     p1 = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
                              peak="stokes+astokes")
@@ -200,12 +192,12 @@ def test_fit_one_runs_the_count_ladder_and_records_its_route():
     fit = scan_delivery.fit_one(
         ctx, card, prior=None, M=1, seed=1, peaks=peaks, errors_tier="cheap")
     route = fit["fit_selection_semantics"]["candidate_generation_route"]
-    assert route["multimode_route"] == "count_ladder"
+    assert route["route"] == route["multimode_route"] == "fast_pass"
     ceiling = G.mode_ceiling(card)
-    assert {f"stokes{n}+bg" for n in range(2, ceiling + 1)} <= set(route["offered_labels"])
-    shadow_route = fit["shadow_model_selection"].get("candidate_generation_route")
-    if shadow_route is not None:
-        assert shadow_route.get("multimode_route") == "count_ladder"
+    offered = {label.split("_delta")[0] for label in route["offered_labels"]}
+    assert {n for n in range(ceiling + 1)} == {int(m["n_peaks"]) for m in fit["fast_pass"]["models"]}
+    assert any(label.startswith(f"stokes{ceiling}") or f"+stokes{ceiling}" in label
+               for label in offered)
 
 
 @pytest.mark.slow
@@ -298,7 +290,7 @@ def test_hesse_trust_gate_unit():
     assert scan_delivery._hesse_interval_and_trust(bad, ctx_hi) == (None, False)  # non-PD → no interval
 
 
-# Slow-marked family (owner rule 2026-08-08): these fit_one/shadow tests run real fits whose
+# Slow-marked family (owner rule 2026-08-08): these fit_one tests run real fits whose
 # clean synthetic scans offer junk 2-mode supersets that escalate to dynesty — 95-313 s each
 # measured at ESCALATION_N_LIVE=128. The full lane runs them pre-merge; pytest-timeout bounds each.
 @pytest.mark.slow
@@ -319,43 +311,6 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
     assert fit["hesse_trusted"] is True
     assert fit["interval"] is None and fit["omega0_profile"] is None     # no bootstrap/profile ran
     assert fit["interval_reliable"] is False
-    shadow = validate_shadow_model_selection(fit["shadow_model_selection"])
-    assert shadow["selection_status"] in {"complete", "degenerate_single_candidate"}
-    assert shadow["shadow_execution_kind"] == "exact"
-    assert shadow["reused_model_identities"] == shadow["attempted_model_identities"]
-    assert shadow["freshly_fitted_model_identities"] == []
-    assert shadow["standard_selected_label"] == fit["best_label"]
-    # /1-era this compared standard == legacy as a tautology (production WAS AIC). Under /2
-    # the comparison is the shadow lane's whole point: standard = the shadow's own AIC
-    # criterion (D6), legacy = the weights production actually used — evidence posteriors,
-    # verbatim from the delivered candidate table. Each lane is pinned to its own truth.
-    cands = {c["label"]: c for c in fit["candidates"]}
-    standard = {item["label"]: item["weight"] for item in shadow["standard_model_weights"]}
-    legacy = {item["label"]: item["weight"] for item in shadow["legacy_model_weights"]}
-    # Both lanes must cover the SAME candidate family, or the D6 comparison answers two different
-    # questions and the per-label agreement below is vacuous. The two halves hold for DIFFERENT
-    # reasons, and only one of them is structural:
-    #   legacy == cands is by construction — `legacy_weights = list(selection.scores)`
-    #     (scan_delivery._finalize_shadow_selection) and `_candidate_rows(sel.scores, fits)` read
-    #     one object, so these cannot diverge.
-    #   standard == legacy is the shadow lane's CONTRACT, not construction: standard_model_weights
-    #     is scored by shadow_selection over `point["candidates"]`, which is a separate fitting
-    #     pass (fit_shadow_candidates) unless the delivery-aliasing branch is taken. It coincides
-    #     here because the assertions above already pin the preconditions — selection_status
-    #     complete/degenerate and shadow_execution_kind "exact", with every attempted identity
-    #     reused and nothing freshly fitted. An unavailable shadow lane empties
-    #     standard_model_weights legitimately, which is why those assertions must stay above this
-    #     one rather than this one being read as a universal invariant.
-    # Zero-weight candidates (evidence-invalid, dominated, unresolved) stay in the set either way:
-    # they are scored, carry weight 0.0, contribute nothing to the sum that must reach 1.0, and
-    # must remain visible in the table recording what was considered.
-    assert set(standard) == set(legacy) == set(cands)
-    assert sum(standard.values()) == pytest.approx(1.0)
-    assert sum(legacy.values()) == pytest.approx(1.0)
-    assert standard == pytest.approx(
-        {label: cands[label]["akaike_weight"] for label in standard})
-    assert legacy == pytest.approx(
-        {label: cands[label]["posterior_probability"] for label in legacy})
 
     outcome = outcome_mod.FitOutcome(
         detector_id="ana7", verdict=fit["verdict"], disposition="resolved",
@@ -364,8 +319,7 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
         gamma_provisional=False, best_label=fit["best_label"], cost_per_dof=fit["cost_per_dof"],
         q=[3.0, 0.2, 0.0], T=50.0, sample="S", prior_used=None, calib={},
         reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
-        hesse_interval=fit["hesse_interval"], hesse_trusted=fit["hesse_trusted"],
-        shadow_model_selection=fit["shadow_model_selection"])
+        hesse_interval=fit["hesse_interval"], hesse_trusted=fit["hesse_trusted"])
     st = SessionState()
     st.put(ScanEntry(scan_id="E:9:ana7", scan_number=9, scan_type="measurement",
                      status="fitted", detectors={"ana7": outcome.to_dict()}))
@@ -375,63 +329,6 @@ def test_fast_tier_reports_trusted_hesse_interval_and_no_bootstrap(tmp_path):
     row = readers.read_results_csv(ws.root)[0]
     assert isinstance(row["hesse_lo"], float) and isinstance(row["hesse_hi"], float)
     assert row["hesse_trusted"] is True
-    assert row["shadow_model_selection"]["standard_selected_label"] == fit["best_label"]
-
-
-@pytest.mark.parametrize(
-    "constraints",
-    [
-        ParamConstraints(
-            soft={"phonon.omega0": (4.0, 0.2)},
-            origins={"phonon.omega0": "prior_predictive"},
-        ),
-        ParamConstraints(
-            hard={"phonon.Gamma": 0.3},
-            origins={"phonon.Gamma": "prior_predictive"},
-        ),
-    ],
-)
-@pytest.mark.slow
-def test_shadow_selection_is_invariant_to_delivery_constraints(constraints):
-    ctx = _single_peak_ctx_for_csv()
-    card = _card_with_fitting({})
-    baseline = scan_delivery.fit_one(
-        ctx, card, prior=None, M=20, seed=1, errors_tier="fast"
-    )
-    constrained = scan_delivery.fit_one(
-        replace(ctx, constraints=constraints),
-        card,
-        prior=None,
-        M=20,
-        seed=1,
-        errors_tier="fast",
-    )
-
-    baseline_shadow = validate_shadow_model_selection(
-        baseline["shadow_model_selection"]
-    )
-    constrained_shadow = validate_shadow_model_selection(
-        constrained["shadow_model_selection"]
-    )
-    assert constrained_shadow["standard_selection_fingerprint"] == (
-        baseline_shadow["standard_selection_fingerprint"]
-    )
-    assert {
-        item["label"]: item["weight"]
-        for item in constrained_shadow["standard_model_weights"]
-    } == pytest.approx({
-        item["label"]: item["weight"]
-        for item in baseline_shadow["standard_model_weights"]
-    })
-    assert constrained_shadow["delivery_effective_constraint_origins"] == [
-        "prior_predictive"
-    ]
-    assert baseline_shadow["shadow_execution_kind"] == "exact"
-    assert constrained_shadow["shadow_execution_kind"] == "fresh"
-    assert constrained_shadow["reused_model_identities"] == []
-    assert constrained_shadow["freshly_fitted_model_identities"] == (
-        constrained_shadow["attempted_model_identities"]
-    )
 
 
 def test_a_delivery_hint_never_shortcuts_the_ladder(monkeypatch):
@@ -458,108 +355,7 @@ def test_a_delivery_hint_never_shortcuts_the_ladder(monkeypatch):
 
     route = hinted["fit_selection_semantics"]["candidate_generation_route"]
     assert route["supplied_hint"] == "stokes+bg" and route["hint_accepted"] is False
-    shadow = validate_shadow_model_selection(hinted["shadow_model_selection"])
-    assert shadow["shadow_execution_kind"] != "partial"
-    assert len(shadow["attempted_model_identities"]) > 2        # not the hinted pair alone
-
-
-@pytest.mark.slow
-def test_soft_deadline_shadow_policy_skips_extra_candidate_fits(monkeypatch):
-    ctx = replace(
-        _single_peak_ctx_for_csv(),
-        constraints=ParamConstraints(
-            soft={"phonon.omega0": (4.0, 0.2)},
-            origins={"phonon.omega0": "prior_predictive"},
-        ),
-    )
-
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("deadline-bounded work launched shadow optimizers")
-
-    monkeypatch.setattr(scan_delivery.loop, "fit_shadow_candidates", forbidden)
-    fit = scan_delivery.fit_one(
-        ctx,
-        _card_with_fitting({}),
-        prior=None,
-        M=20,
-        seed=1,
-        errors_tier="fast",
-        shadow_enabled=False,
-    )
-
-    shadow = validate_shadow_model_selection(fit["shadow_model_selection"])
-    assert shadow["selection_status"] == "unavailable"
-    assert shadow["unavailable_reason_code"] == "shadow_skipped_soft_deadline"
-    assert shadow["runtime_increment_seconds"] == 0.0
-    assert shadow["shadow_execution_kind"] == "skipped"
-
-
-@pytest.mark.slow
-def test_shadow_comparator_failure_cannot_change_delivery(monkeypatch):
-    ctx = _single_peak_ctx_for_csv()
-    card = _card_with_fitting({})
-    baseline = scan_delivery.fit_one(
-        ctx,
-        card,
-        prior=None,
-        M=20,
-        seed=1,
-        errors_tier="fast",
-        shadow_enabled=False,
-    )
-
-    def injected_failure(*_args, **_kwargs):
-        raise RuntimeError("injected shadow-only failure")
-
-    monkeypatch.setattr(
-        scan_delivery.shadow_selection, "compare_shadow_selection", injected_failure
-    )
-    observed = scan_delivery.fit_one(
-        ctx, card, prior=None, M=20, seed=1, errors_tier="fast"
-    )
-
-    for key in (
-        "best_label",
-        "candidates",
-        "hesse_interval",
-        "verdict",
-        "confidence",
-        "omega0",
-        "gamma",
-    ):
-        assert observed[key] == baseline[key]
-    shadow = validate_shadow_model_selection(observed["shadow_model_selection"])
-    assert shadow["selection_status"] == "unavailable"
-    assert shadow["unavailable_reason_code"] == "shadow_comparison_failed"
-    assert shadow["shadow_execution_kind"] == "unavailable"
-
-
-def test_shadow_unavailable_projection_has_a_nonraising_minimal_fallback(monkeypatch):
-    def injected_failure(*_args, **_kwargs):
-        raise RuntimeError("injected unavailable-record validator failure")
-
-    monkeypatch.setattr(
-        scan_delivery.shadow_selection, "unavailable_shadow_selection", injected_failure
-    )
-    record = scan_delivery._safe_shadow_unavailable(
-        "shadow_context_construction_failed",
-        "context_construction",
-        point={"runtime_increment_seconds": 0.01},
-        legacy_fingerprint=None,
-        legacy_selected_label="stokes+bg",
-        legacy_weights=[],
-    )
-
-    assert record["selection_status"] == "unavailable"
-    assert record["selection_changed"] is None
-    assert record["standard_model_weights"] == []
-    assert record["shadow_execution_kind"] == "unavailable"
-    assert record["reused_model_identities"] == []
-    assert record["freshly_fitted_model_identities"] == []
-    assert (
-        record["unavailable_reason_code"]
-        == "shadow_unavailable_record_construction_failed"
-    )
+    assert len(route["offered_labels"]) > 2                     # not the hinted pair alone
 
 
 # --------------------------------------------------------------------------- results.csv bayes columns

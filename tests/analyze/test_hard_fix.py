@@ -121,12 +121,7 @@ def test_escalation_fires_when_gamma_only_soft(monkeypatch):
     proceeds — proving the new guard keys specifically on an already-hard Γ, not on any constraint."""
     calls = _escalation_env(monkeypatch)
     ctx = _ctx(ParamConstraints(soft={"phonon.Gamma": (0.6, 0.2)}))
-    original_shadow = {"standard_selection_fingerprint": "a" * 64}
-    fit = {
-        "gamma_at_bound": True,
-        "omega0": 5.0,
-        "shadow_model_selection": original_shadow,
-    }
+    fit = {"gamma_at_bound": True, "omega0": 5.0}
     prior = types.SimpleNamespace(omega0=5.0)
     card = types.SimpleNamespace(state=None)               # branch_for is monkeypatched; state unused
     region_reasons = []
@@ -139,8 +134,7 @@ def test_escalation_fires_when_gamma_only_soft(monkeypatch):
     assert retry_context.constraints.origins == {
         "phonon.Gamma": "data_dependent_rescue"
     }
-    assert calls[0][1]["shadow_enabled"] is False
-    assert out["shadow_model_selection"] is original_shadow
+    assert out is not fit and out["omega0"] == 5.0         # the re-fit was adopted
     assert region_reasons and "hard-fix escalation" in region_reasons[0]
 
 

@@ -284,7 +284,7 @@ def _master_entries(session):
 def _prov_no_timing(prov):
     return {k: v for k, v in (prov or {}).items()
             if k not in ("fit_seconds", "two_stage_seconds", "errors_attach_seconds",
-                         "rung1_seconds", "rung2_seconds")}
+                         "fast_pass")}
 
 
 def _detectors_no_timing(detectors):

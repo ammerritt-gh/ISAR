@@ -394,17 +394,17 @@ def test_no_acoustic_world_keeps_the_gap_at_the_zone_centre():
 def test_unknown_extra_world_extra_level_is_competitive():
     """H=2.25: acoustic, a weak dispersionless level within about one resolution width of it,
     and optic: three true modes against the suite's mode ceiling of 3. The delivered count (the
-    count ladder, rung 2 included) is never one mode and never more than the truth holds, nor
-    unresolved, and every mode it shows sits on a true one, the optic among them. Slow-marked
-    (owner rule 2026-08-08): a whole delivery, rung 2 by design when a trigger fires."""
+    fast pass) is never one mode and never more than the truth holds, nor unresolved, and every
+    mode it shows sits on a true one, the optic among them. Slow-marked (owner rule 2026-08-08):
+    a whole delivery."""
     from ._world_helpers import deliver
 
     cfg, truth = worlds.build("unknown_extra")
     true = sorted(c.branch.omega0(2.25) for c in truth.components if c.branch is not None)
     fit = deliver("unknown_extra", 2.25)
-    count = fit["fit_selection_semantics"]["count_ladder"]
-    assert count["state"] != "unresolved", count["reasons"]
-    assert 2 <= count["count"] <= len(true) == 3
+    count = fit["fast_pass"]
+    assert count["state"] != "unresolved", count["state"]
+    assert 2 <= count["preferred_count"] <= len(true) == 3
     assert sum(p for n, p in count["count_probabilities"].items() if int(n) >= 2) > 0.99
     shown = [m["omega0"] for m in fit["modes"]]
     assert all(min(abs(w - t) for t in true) < cfg.gauss_fwhm for w in shown), (shown, true)
