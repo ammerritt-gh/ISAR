@@ -465,7 +465,7 @@ def ultranest_outcome(rows, labels, ref, installed):
     if not labels:
         return "not run: no deciding models"
     by = {lb: [r for r in rows if r["label"] == lb] for lb in labels}
-    done = {lb: [r for r in v if r["status"] == "ok" and finite(r.get("log_z"))] for lb, v in by.items()}
+    done = {lb: [r for r in v if clean(r)] for lb, v in by.items()}      # a failed insertion-order check is not clean
     if any(len(done[lb]) < SEEDS for lb in labels):
         failed = [r for v in by.values() for r in v if r["status"] != "ok"
                   and r.get("error") not in (None, WALL_CAP) and "wall timeout" not in r["error"]]
@@ -1030,6 +1030,13 @@ def self_check():
     for gone in ("m1", "m2"):                     # m1 missing still leaves the pair (m0, m2) measured
         part = dict(ref3, **{gone: float("nan")})
         assert not evaluate_config(runs3, labels3, part, "m0", 400, 1)["complete"], gone
+    # the UltraNest cross-check counts only usable runs: a failed insertion-order check never "agrees"
+    un = lambda lb, z, **c: row(z, label=lb, engine="ultranest", information_h=float("nan"), **c)  # noqa: E731
+    un_rows = [un(lb, ref3[lb] + 0.1 * k) for lb in ("m0", "m1") for k in range(SEEDS)]
+    assert ultranest_outcome(un_rows, ["m0", "m1"], ref3, True) == "agrees"
+    un_rows[0] = un("m0", ref3["m0"], evidence_converged=False,
+                    suspect=["UltraNest insertion-order check missing or failed"])
+    assert ultranest_outcome(un_rows, ["m0", "m1"], ref3, True) != "agrees"
     # core set: one model per count 0..preferred+2, a twin parent standing in for an unpriced count
     entry = lambda lb, k, z, o, lp=0.0: NS(label=lb, count=k, fastpass_ln_z=z, fastpass_lnl_opt=o,  # noqa: E731
                                            log_model_prior=lp)
