@@ -501,7 +501,7 @@ so changing either refits the spectra it affects instead of carrying old results
   arXiv:1411.3921; A. Jasra, C. C. Holmes, D. A. Stephens, label switching in mixture models,
   Statistical Science (2005).
 
-### 2.2 The fast pass: a seed, then the full search **[Partial: engine built, first synthetic acceptance missed its aim; four thresholds provisional]**
+### 2.2 The fast pass: a seed, then the full search **[Partial: engine built, synthetic count aims met; wall time above its aim; four thresholds provisional]**
 
 How many modes a spectrum holds, where they are and how sure the answer is: one search that aims at about
 a minute per spectrum on a laptop (an aim and a diagnostic, never a stopping rule). The code is
@@ -526,9 +526,9 @@ residuals look clean, and deletions and merges downwards (`audit_rounds`). Each 
 (the trust-region reflective method) on the exact signed Poisson-deviance residuals. Degenerate and delta-mode
 twins resolve as in §2, every distinct solution is priced by the box-rule Laplace evidence at its posterior
 mode, and the counts are weighed by the 1/(V(k)·2^k) model prior. A count is *contending* when its evidence
-lies within `contending_margin` (10 nats) of the best; a count whose evidence could not be computed contends
-when its best log-likelihood reaches the selected model's. One that fits worse and cannot be priced is recorded
-and does not block the result.
+lies within `contending_margin` (10 nats) of the best; a count with no priced basin at all contends when its
+best log-likelihood reaches the selected model's (a count with any priced basin has evidence, whatever its
+degenerate basins do). One that fits worse and cannot be priced is recorded and does not block the result.
 
 **The mode ceiling is 6, configurable (card `[fitting] max_modes`), and arbitrary.** It is a known limit set by
 the operator, not a measured one ("6 is arbitrary"): a best count at the ceiling reads *search limited
@@ -610,16 +610,17 @@ at 17.5 meV (Γ 0.05 and 0) sized to a noiseless deletion grade of 100, run at t
 on purpose, never by a routine check; it prints the aims as reached and asserts none). A draw passes when each true peak is
 matched one-to-one by a confident peak within 0.75 meV, no confident peak is left over, and the state is
 `resolved` at three or `close_call` with P(3) ≥ 0.05. The aim is 9 of 10 draws passing, none unresolved, and
-both narrow peaks found as a confident peak within one FWHM with ln Z(4) − ln Z(3) > 10. **First measurement,
-2026-10-26, production defaults, six parallel processes: the aim is missed.** One of the ten draws passes (and
-one more is resolved at four, not three); eight draws and the Γ = 0 narrow case come out `unresolved`, while
-the Γ = 0.05 narrow case is resolved at four; in every draw the three confident peaks are the three true peaks
-(within 0.1 meV), and both narrow peaks are found as confident peaks. The cause is the contending reading
-above: the best-fitting model of a high count (an extra mode that rails against its bound, a Hessian that is
-not positive definite) has no evidence, so that count contends and blocks the result, although such a count
-usually carries little probability. With the delta-twin rule off the same table has no passing draw and all
-twelve rows unresolved. Wall time per spectrum has a median of 89 s and a maximum of 214 s against the 60 s
-aim. The state rule is the open item for the thresholds' calibration; the table is not rerun until it changes.
+both narrow peaks found as a confident peak within one FWHM with ln Z(4) − ln Z(3) > 10. **Measurements, 2026-10-26,
+production defaults, six parallel processes.** The first table missed (1 of 10 draws, 9 of 12 rows
+unresolved): a high count's best-fitting basin (an extra mode railed against its bound, a Hessian not positive
+definite) had no evidence and, although the same count had priced basins, made it contend. A count now
+contends unpriced only when none of its basins is priced (the prototype's rule), and the one rerun gives 9 of
+10 draws passing (the miss, seed 11, is resolved at four with the extra mode at 18.4 meV only tentative), no
+row unresolved, and both narrow peaks passing; in every draw the three confident peaks are the three true
+peaks (within 0.1 meV). With the delta-twin rule off the same table has no passing draw and all twelve rows
+unresolved. Wall time per spectrum has a median of 84 s and a maximum of 215 s against the 60 s aim (six
+processes sharing the machine), still above it. The table is reported, not a gate, and is not rerun to chase
+the aim.
 
 ### 2.3 The peak-count benchmark **[Built; targets not yet measured at the design's draw count]**
 
