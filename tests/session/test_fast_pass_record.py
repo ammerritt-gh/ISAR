@@ -3,6 +3,7 @@ benchmark, the deep pass and the reports read, written by ``scan_delivery._fast_
 the engine's result. Hand-built engine results (no fit), so every example is exact. The ``csv_*``
 tests at the end check each example's results.csv and modes.csv halves through the real writer.
 """
+import dataclasses
 import json
 import math
 from types import SimpleNamespace
@@ -70,14 +71,15 @@ def _peak(i, omega0, *, confident=True, delta=False):
 
 
 def _result(models, selected, peaks, *, probabilities, state="resolved", alternatives=(),
-            reason="", flags=(), settings=None, conditional=False):
+            reason="", flags=(), settings=None, conditional=False, unpriced=()):
     return FastPassResult(
         state=state, preferred_count=None if selected is None else selected.n_peaks,
         count_probabilities=probabilities, probabilities_conditional=conditional,
         close_call_alternatives=tuple(alternatives), numerically_marginal=False,
         search_limit_reason=reason, models=tuple(models), selected=selected, peaks=tuple(peaks),
         elastic_height=90.0, background=4.0, grouped_intensity=((4.5, 5.5, 50.0, 3.0),),
-        flags=tuple(flags), flag_statistics={"count_ln_z": {3: -100.0}, "max_count": 900.0},
+        flags=tuple(flags), flag_statistics={"count_ln_z": {3: -100.0}, "max_count": 900.0,
+                                             "unpriced_contenders": list(unpriced)},
         prior_provenance={"recipe": "v5", "empirical_bayes": True},
         arena_fingerprint="arena-1", ln_like_saturated=-300.0,
         settings=settings or FastPassSettings(), timing={"seed_count": 3, "total": 1.5},
@@ -283,7 +285,7 @@ def test_csv_ex3_unresolved_is_conditional_and_names_the_unpriced_count(tmp_path
     m3 = _model("elastic+stokes3+bg", 3, p=0.3)
     m4 = _model("stokes4+bg", 4, status="no_evidence", reason="posterior Hessian not positive definite")
     res = _result([m2, m3, m4], m2, [_peak(0, 5.0), _peak(1, 9.0)], probabilities={2: 0.7, 3: 0.3},
-                  state="unresolved", conditional=True)
+                  state="unresolved", conditional=True, unpriced=[4])
     row, modes = _csv(tmp_path, res, _modes([5.0, 9.0]))
     assert row["count_state"] == "unresolved" and row["probabilities_conditional"] is True
     assert "count 4 has no evidence (posterior Hessian not positive definite)" in row["count_state_reason"]
@@ -326,3 +328,20 @@ def test_csv_ex7_a_scan_with_no_fit_reads_not_fitted(tmp_path):
     row, = readers.read_results_csv(ws.root)
     assert row["count_state"] == "not fitted" and row["count_state_reason"] == "fit raised"
     assert readers.read_modes_csv(ws.root) == []
+
+
+def test_csv_the_reason_names_only_unpriced_counts_once(tmp_path):
+    """A count with a priced basin is not 'without evidence' for a no_evidence sibling; an unpriced
+    contender is named once, with its best basin's reason."""
+    m2 = _model("elastic+stokes2+bg", 2, p=1.0)
+    m2x = _model("stokes2+bg", 2, status="no_evidence", reason="sibling basin", index=1)
+    m3a = dataclasses.replace(_model("elastic+stokes3+bg", 3, status="no_evidence",
+                                     reason="first basin", index=0), ln_like=-95.0)
+    m3b = dataclasses.replace(_model("elastic+stokes3+bg", 3, status="no_evidence",
+                                     reason="second basin", index=1), ln_like=-80.0)
+    res = _result([m2, m2x, m3a, m3b], m2, [_peak(0, 5.0), _peak(1, 9.0)], probabilities={2: 1.0},
+                  state="unresolved", unpriced=[3])
+    row, _ = _csv(tmp_path, res, _modes([5.0, 9.0]))
+    reason = row["count_state_reason"]
+    assert reason.count("has no evidence") == 1 and "count 3 has no evidence (second basin)" in reason
+    assert "count 2 has no evidence" not in reason

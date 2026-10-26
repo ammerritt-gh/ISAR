@@ -442,9 +442,13 @@ def _count_reason(fp: dict) -> str | None:
         parts.append("probabilities conditional on the counts with evidence")
     if fp.get("numerically_marginal"):
         parts.append("numerically marginal")
-    for m in fp.get("models") or ():
-        if m.get("evidence_status") == "no_evidence":
-            parts.append(f"count {m.get('n_peaks')} has no evidence ({m.get('reason') or 'unknown'})")
+    # only the contending counts with no priced basin, each once, with its best basin's reason
+    for k in sorted(set((fp.get("flag_statistics") or {}).get("unpriced_contenders") or ())):
+        basins = [m for m in fp.get("models") or ()
+                  if m.get("n_peaks") == k and m.get("evidence_status") == "no_evidence"]
+        best = max(basins, default={},
+                   key=lambda m: -math.inf if m.get("ln_like") is None else m["ln_like"])
+        parts.append(f"count {k} has no evidence ({best.get('reason') or 'unknown'})")
     if fp.get("search_limit_reason"):
         parts.append(f"search limited ({fp['search_limit_reason']})")
     return "; ".join(parts) or None
