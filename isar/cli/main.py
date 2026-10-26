@@ -82,8 +82,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "errors on the chosen model. Tens of minutes per spectrum; every run is "
                          "recorded in report/run_timings.json and session.json")
     pr.add_argument("--deep-budget-minutes", dest="deep_budget_minutes", type=float, default=60.0,
-                    help="deep pass: sampling budget per spectrum in minutes (default 60); "
-                         "a spectrum that runs out is reported as search limited")
+                    help="deep pass: start budget per spectrum in minutes (default 60): no new chunk "
+                         "starts after it, but chunks in flight, restarts included, run to completion, "
+                         "which can take hours; a spectrum that runs out is reported as search limited")
     pr.add_argument("--deep-workers", dest="deep_workers", type=int, default=None,
                     help="deep pass: processes for the sampler runs (default min(6, --workers))")
     pr.add_argument("--profile", action="store_true",

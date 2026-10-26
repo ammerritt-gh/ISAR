@@ -356,18 +356,24 @@ isar run <data file> --workspace DIR --detectors ana7 --deep-pass [--deep-budget
 - `--deep-pass` runs the fast pass on the spectra this run fits, then the deep pass on each. Pick the spectra
   by data file and `--detectors` (the analyzers); add `--force` to refit a spectrum that is already current.
   It cannot be combined with a certification request, a certification manifest or an analysis allowance.
-- `--deep-budget-minutes` (default 60) is the sampling budget per spectrum. A spectrum that runs out reports
-  `search_limited` with the models it did not reach. The profile and bootstrap step after sampling is not counted
-  in it, and `--M` sets its bootstrap draws.
+- `--deep-budget-minutes` (default 60) is a start budget per spectrum. Once it is spent no new chunk of models
+  starts (a chunk is as many models as there are workers), but a chunk already running runs to completion, restarts
+  of a suspect run included. At five or six modes that can take hours: one 6-mode run took 53 min at the provisional
+  settings, and a restart roughly doubles the cost (an estimate). A spectrum that runs out reports `search_limited`
+  with the models it did not reach. The profile and bootstrap step after sampling is not counted in it, and `--M`
+  sets its bootstrap draws.
 - `--deep-workers K` (default the smaller of 6 and `--workers`) is the number of processes for the sampler runs
   and the bootstrap. A deep run fits its spectra one after another and spends the workers inside each spectrum.
   Pooled masters are not deep-passed.
 - **Cost.** Hours of single-thread sampling per spectrum, measured on one le Tacon spectrum at the provisional
   settings (400 live points, step factor 4): one sampler run takes 9 s (no peaks), 5 min (1 peak), 11 min (2), 16 min
   (3), 29 min (4), 43 min (5) and 53 min (6 peaks), and the exploratory runs at 128 live points about a third of
-  that. One run of each of that spectrum's seven leading models is 2.6 CPU-hours; a spectrum with more models, and
-  any restart of a suspect run (twice the walk, then twice the live points), costs more, so a default 60-minute budget
-  often ends `search_limited`. Every run (seed, settings, wall time, likelihood calls, best log-likelihood) is recorded.
+  that. One run of each of that spectrum's seven core models is 2.6 CPU-hours (measured). The deep pass does not stop
+  at the core set: it samples every model of the fast-pass record, and that spectrum's record holds 143. At the
+  defaults (60 minutes, 6 workers) a spectrum like it therefore ends `search_limited`, and a complete comparison needs
+  a budget of many hours (an estimate from these timings, not a measured run). A suspect run's restarts (twice the
+  walk, then twice the live points) add cost on top. Every run (seed, settings, wall time, likelihood calls, best
+  log-likelihood) is recorded.
 - **Carried, not rerun.** A spectrum that already holds a deep pass under the same settings, budget, seed and
   `--M` is skipped. Changing the budget reruns it, and a refused deep pass is retried.
 
@@ -384,10 +390,13 @@ isar run <data file> --workspace DIR --detectors ana7 --deep-pass [--deep-budget
 The full record (every model's evidence, every run with its seed, settings, information H, likelihood calls and
 best log-likelihood, and the errors on the chosen model) is the spectrum's `deep_pass` entry in `session.json`;
 per-stage and per-run wall times are in `report/run_timings.json`. The fast-pass columns, the shown fit and
-`modes.csv` are not changed by the deep pass; read the two side by side.
+`modes.csv` are not changed by the deep pass; read the two side by side. A model's `status` of `reference` in the
+record means sampled at the installed accepted settings (400 live points, step factor 4), not at the calibration's
+1600-live reference level.
 
 **Untrusted for now.** The sampler settings are provisional: one calibration pass on a single spectrum missed its
-accuracy aims, and at four or more modes the repeated runs disagree by several to about 18 nats, so every
+accuracy aims, and at the installed settings three seeds span 1.07 nats for the count-4 model but 17.6 and 10.5 nats for the
+count-5 and count-6 models, so every
 count decision's `deep_state_reason` ends "provisional sampler settings: untrusted until calibration". Treat the deep pass's
 preferred count as a second opinion, not a verdict, until that note is gone. How the pass works is
 `STATS_PRIMER.md` §2.4.

@@ -25,7 +25,9 @@ UNTRUSTED = "provisional sampler settings: untrusted until calibration"
 @dataclass(frozen=True)
 class DeepRequest:
     """What one ``isar run --deep-pass`` asks for. ``workers`` and nothing about scheduling enters
-    the signature: the same settings give the same answer on any worker count."""
+    the signature: a complete deep pass is the same on any worker count, but a search-limited one
+    depends on the worker count and the wall clock. A carried result is not redone for a new worker
+    count; a changed budget or ``--force`` redoes it."""
     budget_s: float = 3600.0        # per spectrum, sampling stages only
     workers: int = 1
     M: int = 200                    # bootstrap draws of the errors step
