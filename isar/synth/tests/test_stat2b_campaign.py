@@ -1017,7 +1017,12 @@ def test_full_tier_delivery_smoke_uses_authoritative_m200():
         delivery_inputs=campaign._delivery_inputs(dataset, candidate, spec),
     )
     assert fit["errors_tier_effective"] == "full"
-    assert fit["best_label"] == candidate.label
+    # RE-PIN: the fast pass picks its own model inside the delivered whitelist (the candidate
+    # and its twins), not the AIC candidate itself; the wiring check is that the whitelist
+    # arrived and the choice stayed inside it.
+    route = fit["fit_selection_semantics"]["candidate_generation_route"]
+    assert route["guideline_structure_filter"] == [candidate.label]
+    assert fit["best_label"] in route["offered_labels"]
     assert fit["bootstrap_M_requested"] == 200
 
 
