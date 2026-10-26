@@ -247,10 +247,8 @@ def test_force_masters_accepts_a_bare_string_as_one_id(tmp_path, monkeypatch):
     monkeypatch.setattr(master_delivery, "_fit_masters", fake_fit_masters)
     driver.run_batch(ws, [data], force_masters="master:tavi_(43, 0, 0)_200.0",
                      detectors="det0", formats=(), workers=1, errors_tier="cheap")
-    # The first pass carries the forced set; a second pass, which only resumes spectra waiting on
-    # rung 2 of the count ladder (driver.run_batch), forces nothing again.
-    assert captured[0] == frozenset({"master:tavi_(43, 0, 0)_200.0"})
-    assert all(not forced for forced in captured[1:])
+    # isar run is one pass now: the forced set is carried once, and nothing runs a second pass.
+    assert captured == [frozenset({"master:tavi_(43, 0, 0)_200.0"})]
 
 
 def test_force_masters_without_merged_collation_fails_loud(monkeypatch):
