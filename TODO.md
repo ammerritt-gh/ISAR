@@ -343,11 +343,6 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
 - [ ] **FIT-19 — `docs/stats/figures/akaike_example.json` is stale.** It still carries the key `secondary_omega0`;
       `docs/stats/make_figures.py` now writes `second_mode_omega0`. **Acceptance:** regenerated from the archived
       workspace, and the primer's Fig. 3 still matches it.
-- [ ] **FIT-20 — A campaign refresh has no refresh-wide rung-2 limit.** Each pending spectrum gets its own 120 s
-      rung-2 slice (`isar/session/driver.py`), so that every refresh advances rung 2; with more pending spectra than
-      workers the refresh runs in waves (56 pending on 12 workers: up to about ten minutes). **Acceptance:** the
-      operator rules between a refresh-wide cap with guaranteed per-spectrum progress and the per-spectrum slice,
-      and the refresh wait is measured on the example set.
 - [ ] **FIT-21 — A railed Ω_d with a broad Γ resolves to the elastic line.** The degenerate-limit rule
       (`loop._resolve_degenerate`) reads Ω_d at its lower bound as "merge into the elastic line" without checking Γ;
       since ω₀ = √(Ω_d² + Γ²), such a mode is a broad central feature, not a sharp one. Sent up for a ruling
@@ -366,6 +361,10 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       budget, and `tests/session/test_master_fit.py::test_parallel_masters_match_serial_end_to_end` alone takes
       about 9.4 min (rung 2 inside masters). **Acceptance:** the not-slow suite back near a minute and the masters
       test under a few minutes, without weakening what they assert.
+- [ ] **FIT-25 — The mode ceiling of 6 is an arbitrary, pinned known limit.** The fast pass fits every peak count
+      from 0 to the card's `[fitting] max_modes` (default 6; the operator: "6 is arbitrary", and it may bite once
+      spectra hold more modes). A best count at the ceiling reads `search_limited`. **Acceptance:** none set; revisit
+      when a real spectrum shows more modes than the ceiling (`STATS_PRIMER.md` §2.2).
 
 ---
 

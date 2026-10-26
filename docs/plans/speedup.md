@@ -11,8 +11,8 @@ conditional and unstarted. Later phases remain governed by the gates below.**
 **Exit criteria for the sprint.** (1) Reference-campaign wall time ≤ one third of baseline with
 **zero** steering-decision changes on shadow replays (§3 defines the comparison). (2) Phase 2's
 remaining work lands — crash-safe asynchronous scheduling and fresh-master `auto` drive
-enablement — and `--errors` may then default to `auto` rather than `full`
-(`isar/cli/main.py`). (3) Phases 3 and 4 are entered only if their numeric gates below trigger;
+enablement. The fast pass is now the one search of every spectrum and `--errors` defaults to
+`fast` (`isar/cli/main.py`); the `auto` default waits on this criterion. (3) Phases 3 and 4 are entered only if their numeric gates below trigger;
 if the target is met without them, they are closed as unnecessary, not left open.
 Owner intent: this sprint is judged on **development iteration velocity** — synthetic/analytic
 test campaigns must get several times faster so that design iteration on everything else
