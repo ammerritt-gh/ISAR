@@ -160,3 +160,46 @@ def test_analysis_failure_replaces_stale_canonical_reports(tmp_path, monkeypatch
     status = json.loads((ws / "report" / "report.json").read_text(encoding="utf-8"))
     assert status["status"] == "analysis_failed"
     assert status["analysis_revision"]
+
+
+def test_parser_defaults_to_the_fast_tier_and_profiles_on_request():
+    parse = main_mod.build_parser().parse_args
+    args = parse(["run", "d", "--workspace", "ws"])
+    assert args.errors == "fast" and args.profile is False
+    assert parse(["run", "d", "--workspace", "ws", "--profile"]).profile is True
+
+
+def test_profile_runs_one_process_and_writes_both_files(tmp_path, monkeypatch, capsys):
+    ws = tmp_path / "ws"
+    _install_fakes(monkeypatch, ws, [])
+    seen = {}
+
+    def fake_run_batch(*args, **kwargs):
+        seen.update(kwargs)
+        return _fake_summary()
+
+    monkeypatch.setattr(run_cmd.driver, "run_batch", fake_run_batch)
+    args = _run_args(ws, render=False)
+    args.workers, args.profile = 8, True
+
+    assert run_cmd.run(args) == 0
+    assert seen["workers"] == 1                              # the chosen spectrum fits in this process
+    report = ws / "report"
+    assert (report / "run_profile.prof").stat().st_size > 0
+    text = (report / "run_profile.txt").read_text(encoding="utf-8")
+    assert "top 40 by cumulative" in text and "top 40 by tottime" in text
+    out = capsys.readouterr().out
+    assert "run_profile.prof" in out and "run_profile.txt" in out
+
+
+def test_a_failed_profiled_run_still_writes_its_profile(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    _install_fakes(monkeypatch, ws, [])
+    monkeypatch.setattr(run_cmd.driver, "run_batch",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("analysis broke")))
+    args = _run_args(ws, render=False)
+    args.profile = True
+
+    with pytest.raises(RuntimeError, match="analysis broke"):
+        run_cmd.run(args)
+    assert (ws / "report" / "run_profile.txt").exists()

@@ -65,13 +65,20 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--workers", type=int, default=None,
                     help="total fitting worker budget, assigned across scans or within a promoted "
                          "fit (default min(30, cpu-2); env ISAR_WORKERS; 1 = serial)")
-    pr.add_argument("--errors", default="full", choices=["auto", "full", "fast", "cheap", "bayes"],
-                    help="uncertainty depth: 'auto' (HESSE-first with selective full promotion), "
-                         "'full' (MINOS+bootstrap+profile, default), "
-                         "'fast' (HESSE ω₀ interval + trust flag, no bootstrap), "
-                         "'cheap' (HESSE only — quick-look verdict + rough ω₀, no interval), or "
+    pr.add_argument("--errors", default="fast", choices=["auto", "full", "fast", "cheap", "bayes"],
+                    help="what is attached to the selected model after the fast pass, which always "
+                         "does the search and the covariance errors: "
+                         "'fast' (plus the delta-method ω₀ interval and trust flag, no bootstrap; "
+                         "default), "
+                         "'cheap' (covariance errors only, no ω₀ interval), "
+                         "'auto' ('fast', promoted to 'full' when the fit looks unreliable), "
+                         "'full' (MINOS+bootstrap+profile on the selected model), or "
                          "'bayes' = full + nested-sampling posterior interval (slow; three-method "
                          "cross-check)")
+    pr.add_argument("--profile", action="store_true",
+                    help="profile this run with cProfile in one process (workers forced to 1) and "
+                         "write report/run_profile.prof and report/run_profile.txt; combine with "
+                         "--detectors and --force to profile one chosen spectrum")
     pr.add_argument("--scan-errors", dest="scan_errors_tier", default=None,
                     choices=["auto", "full", "fast", "cheap", "bayes"], help=argparse.SUPPRESS)
     pr.add_argument("--master-errors", dest="master_errors_tier", default=None,

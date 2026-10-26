@@ -1,10 +1,13 @@
 """`isar run <data>... --workspace DIR` — the full pipeline, idempotent (the retired unification plan §5, git history; current contract: docs/WORKSPACE_AND_CLI.md)."""
 from __future__ import annotations
 
+import cProfile
 import hashlib
+import io
 import json
 import logging
 import os
+import pstats
 import sys
 import tempfile
 import uuid
@@ -18,6 +21,29 @@ from isar.session.workspace import Workspace
 log = logging.getLogger(__name__)
 
 _REPORT_STATUS = "report.complete.json"
+
+
+def _profiled(report_dir, fn, *args, **kwargs):
+    """Run ``fn`` under cProfile and write ``run_profile.prof`` (pstats) and ``run_profile.txt``
+    (the top 40 by cumulative and by own time) to ``report_dir``, printing both paths. The profile
+    is advisory: a write failure is logged and never hides the run's own result or error."""
+    profile = cProfile.Profile()
+    try:
+        return profile.runcall(fn, *args, **kwargs)
+    finally:
+        try:
+            report_dir.mkdir(parents=True, exist_ok=True)
+            prof_path, txt_path = report_dir / "run_profile.prof", report_dir / "run_profile.txt"
+            profile.dump_stats(str(prof_path))
+            text = io.StringIO()
+            for sort_key in ("cumulative", "tottime"):
+                text.write(f"=== top 40 by {sort_key} ===\n")
+                pstats.Stats(profile, stream=text).sort_stats(sort_key).print_stats(40)
+            txt_path.write_text(text.getvalue(), encoding="utf-8", newline="\n")
+            print(f"profile: {prof_path}\nprofile (top 40): {txt_path}")
+        except Exception as exc:  # noqa: BLE001 — see the docstring
+            log.warning("could not write the run profile to %s: %s: %s",
+                        report_dir, type(exc).__name__, exc)
 
 
 def _build_scene(ws, summary) -> None:
@@ -110,7 +136,7 @@ def run(args) -> int:
     for unknown in card_mod.unknown_toml_tables(ws.policy_path):
         print(f"warning: unknown card section [{unknown}] — ignored (typo?)", file=sys.stderr)
 
-    errors_tier = getattr(args, "errors", "full")
+    errors_tier = getattr(args, "errors", "fast")
     scan_errors_tier = getattr(args, "scan_errors_tier", None)
     master_errors_tier = getattr(args, "master_errors_tier", None)
     # Bayes-tier sampler knobs: pass only the explicitly-set (non-None) CLI overrides; the driver
@@ -147,12 +173,15 @@ def run(args) -> int:
             role_kwargs["scan_errors_tier"] = scan_errors_tier
         if master_errors_tier is not None:
             role_kwargs["master_errors_tier"] = master_errors_tier
-        summary = driver.run_batch(
+        profiling = bool(getattr(args, "profile", False))
+        run_batch = ((lambda *a, **kw: _profiled(ws.report_dir, driver.run_batch, *a, **kw))
+                     if profiling else driver.run_batch)
+        summary = run_batch(
             ws, args.data, force=args.force,
             force_masters=getattr(args, "force_masters", None),
             llm=args.llm, M=args.M, scan_M=scan_M,
             detectors=args.detectors, formats=formats,
-            workers=getattr(args, "workers", None), errors_tier=errors_tier,
+            workers=1 if profiling else getattr(args, "workers", None), errors_tier=errors_tier,
             bayes_cli=bayes_cli, timer=timer,
             certification_manifest=certification_manifest,
             analysis_allowance_seconds=getattr(args, "analysis_allowance_seconds", None),
