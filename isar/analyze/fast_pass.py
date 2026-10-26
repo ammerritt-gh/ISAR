@@ -1367,6 +1367,8 @@ class _Engine:
             fit.resolved_to = str(b.terminal().model.hyp.label)
             fit.resolved_limit = b.limit
         loop._attach_fit_semantics(fit, prob, model.cctx)
+        if fit.fit_semantics is not None:      # the prior this engine used, not the recipe default
+            fit.fit_semantics["prior_recipe"] = self.sp.provenance()
         return fit
 
     def _model_result(self, b, probability):
