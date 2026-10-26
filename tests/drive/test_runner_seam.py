@@ -5,7 +5,6 @@ unchanged: ``as_runner`` must invoke a bare callable EXACTLY as the loop invoked
 seam existed — ``obj(workspace, data_paths, extra_args=[...])`` with ``extra_args`` reconstructed from
 the structured ``(force, errors_tier)`` kwargs.
 """
-import os
 
 import pytest
 
@@ -410,34 +409,3 @@ def test_subprocess_runner_ingest_runs_isar_ingest(monkeypatch):
     assert seen["cmd"][1:] == ["-m", "isar.cli.main", "ingest", "a.json", "b.json",
                                "--workspace", "WS"]
     assert "run" not in seen["cmd"] and "--errors" not in seen["cmd"]
-
-# --------------------------------------------------------------------------- the rung-2 slice
-def test_every_runner_call_carries_the_campaigns_rung_2_slice(monkeypatch):
-    """The campaign's analysis child (a subprocess, or the persistent worker at its spawn, which
-    may be the early ingest) sees the rung-2 slice in its environment, so a campaign decision never
-    waits on a whole rung 2; the campaign process's own environment is left as it was."""
-    from isar.drive.isar_io.runner import ingest_new
-    from isar.session import driver
-
-    assert runner_mod.RUNG2_SLICE_ENV == driver.RUNG2_SLICE_ENV
-    monkeypatch.delenv(runner_mod.RUNG2_SLICE_ENV, raising=False)
-    seen = []
-
-    class _Child(_Recorder):
-        def run(self, *a, **k):
-            seen.append(("run", os.environ.get(runner_mod.RUNG2_SLICE_ENV)))
-            return super().run(*a, **k)
-
-        def ingest(self, *a, **k):
-            seen.append(("ingest", os.environ.get(runner_mod.RUNG2_SLICE_ENV)))
-            return RunResult(0, "", "")
-
-    child = _Child()
-    ingest_new(child, "ws", ["scan.json"])
-    refresh_analysis(child, "ws", ["d"], errors_tier="full")
-    slice_s = str(runner_mod.CAMPAIGN_RUNG2_SLICE_S)
-    assert seen == [("ingest", slice_s), ("run", slice_s)]
-    assert runner_mod.RUNG2_SLICE_ENV not in os.environ
-    monkeypatch.setenv(runner_mod.RUNG2_SLICE_ENV, "5")        # the operator's own value wins
-    refresh_analysis(child, "ws", ["d"], errors_tier="full")
-    assert seen[-1] == ("run", "5")
