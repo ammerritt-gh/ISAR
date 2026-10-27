@@ -38,6 +38,8 @@ _PLOT_MIN_HEIGHT = 130     # the plot must leave the lines visible at the laptop
 _NO_SPECTRUM = "This spectrum is no longer in the experiment"
 _NOTHING_PICKED = "Pick a scan in the list to inspect it."
 _POOLED_NOTE = "pooled spectrum: shown in the display"
+# The centre's old unit metadata that the inspector keeps (design 2.7, amendment 4): shown when present.
+_KEPT_METADATA = ("scan flags", "spectrum flags", "target #Q", "command", "counting mode")
 
 
 class Line(NamedTuple):
@@ -106,9 +108,11 @@ def energy_range_text(unit) -> tuple[str, str]:
     return text, text
 
 
-def inspector_lines(row: SpectrumRow | PooledRow, set_row: ScanSetRow | None, unit=None) -> list[Line]:
+def inspector_lines(row: SpectrumRow | PooledRow, set_row: ScanSetRow | None, unit=None,
+                    metadata: dict | None = None) -> list[Line]:
     """The lines of the inspector for ``row`` (a spectrum or a pooled master), in display order.
-    ``set_row`` is the spectrum's scan set and ``unit`` its stored unit data (both may be ``None``)."""
+    ``set_row`` is the spectrum's scan set, ``unit`` its stored unit data and ``metadata`` the unit
+    metadata of the view model (the :data:`_KEPT_METADATA` fields are taken from it); each may be ``None``."""
     def fact(label: str, f: Fact) -> Line:
         text, tip = fact_text(f)
         return Line(label, text, tip)
@@ -144,6 +148,9 @@ def inspector_lines(row: SpectrumRow | PooledRow, set_row: ScanSetRow | None, un
     text, tip = energy_range_text(unit)
     lines.append(Line("Energy range", text, tip))
     lines.append(status("Parsed", PARSED, row.parsed, "facts"))
+    for name in _KEPT_METADATA:
+        if metadata and metadata.get(name):
+            lines.append(Line(name, metadata[name], metadata[name]))
     lines.append(status("Fast pass", FAST, row.fast, "processing"))
     lines.append(status("Deep pass", DEEP, row.deep, "processing"))
     return lines
@@ -295,10 +302,11 @@ class ScanInspectorPanel(QWidget):
         unit = None if pooled else self._read_unit(self._key)
         self._title.set_full_text(row.label if pooled else
                                   f"{row.analyzer or '—'} · {set_row.label if set_row else '—'}")
-        lines = inspector_lines(row, set_row, unit)
+        state = None if pooled else self._plot_state()
+        lines = inspector_lines(row, set_row, unit, None if state is None else state.metadata)
         self._fill(self._facts, [ln for ln in lines if ln.group == "facts"])
         self._fill(self._processing, [ln for ln in lines if ln.group == "processing"])
-        self._render_plot(row, set_row, pooled)
+        self._render_plot(row, set_row, pooled, state)
 
     def _read_unit(self, key: str):
         try:
@@ -307,16 +315,19 @@ class ScanInspectorPanel(QWidget):
             log.warning("scan inspector: no unit data for %s: %s", key, exc)
             return None
 
-    def _render_plot(self, row, set_row, pooled: bool) -> None:
+    def _plot_state(self):
+        """The inspected unit's state in the panel's own view model (the centre's never moves)."""
+        if self._plot_vm is None or self._plot_vm.workspace is not self._vm.workspace:
+            self._plot_vm = InspectorViewModel(self._vm.workspace)
+        self._plot_vm.set_unit(self._key)
+        return self._plot_vm.state
+
+    def _render_plot(self, row, set_row, pooled: bool, state) -> None:
         note = None
         if pooled:
             clear_render(self._plot)
             note = _POOLED_NOTE
         else:
-            if self._plot_vm is None or self._plot_vm.workspace is not self._vm.workspace:
-                self._plot_vm = InspectorViewModel(self._vm.workspace)
-            self._plot_vm.set_unit(self._key)
-            state = self._plot_vm.state
             if state.main_spec is None:
                 clear_render(self._plot)
                 note = state.curve_error or "no parsed counts for this spectrum"

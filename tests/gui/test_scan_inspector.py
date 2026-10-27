@@ -131,6 +131,34 @@ def test_a_missing_q_shows_a_dash_with_its_reason(qtbot, patched, bl43_ws):
     assert _text(f["Fast pass"]) == "not run"
 
 
+# The campaign-era fields the old centre panel showed, which the inspector keeps (design 2.7, amendment 4).
+CAMPAIGN = {"scan flags": "missing_sidecar (warning): no .var file",
+            "spectrum flags": "bin_absent (info): a06: 2 bins absent",
+            "target #Q": "[1.5, 0, 0]", "command": "scan deltaE -2 4 200", "counting mode": "monitor"}
+
+
+def test_a_campaign_unit_shows_its_command_target_mode_and_flags(qtbot, patched, bl43_ws, monkeypatch):
+    monkeypatch.setattr(InspectorViewModel, "_unit_metadata",
+                        staticmethod(lambda *_args: {"unit": A06, "preset": "200", **CAMPAIGN}))
+    vm, panel = _panel(qtbot, bl43_ws)
+    panel.show_key(A06)
+    f = _fields(panel)
+    for label, value in CAMPAIGN.items():
+        assert _text(f[label]) == value and _tooltip(f[label]) == value
+    assert "preset" not in f and "unit" not in f           # only the kept fields, nothing else from the VM
+
+
+def test_a_bl43_scan_shows_its_mode_and_flags_but_no_command_or_target(qtbot, patched, bl43_ws):
+    # The BL43 headers stamp a counting mode and the set's QC flags, as the old centre panel showed them;
+    # a campaign command and a target Q are never in a BL43 file, so those lines are absent.
+    vm, panel = _panel(qtbot, bl43_ws)
+    panel.show_key(A06)
+    f = _fields(panel)
+    assert _text(f["counting mode"]) == "monitor"
+    assert _text(f["scan flags"]).startswith("pre_combined_input (warning)")
+    assert not {"command", "target #Q", "spectrum flags"} & set(f)
+
+
 def test_scan_numbers_text_for_each_kind_of_set():
     a = sample_snapshot(Path("x") / "ws").scan_set(KEY_A)
     assert scan_numbers_text(dataclasses.replace(a, scan_numbers=(101, 102))) == "summed: scans 101, 102"

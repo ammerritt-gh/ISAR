@@ -177,7 +177,7 @@ science. The GUI contributes only session-persisted display mode and colourbar i
 
 ### 0quinquies. The left-side arrangement and the experiment (2026-10-27)
 
-The design for the le Tacon beamtime was approved with three amendments on 2026-10-27. The committed
+The design for the le Tacon beamtime was approved with four amendments on 2026-10-27. The committed
 mockup, `mockups/2026-10-27-isar-left-side.html` with its laptop frame
 `mockups/2026-10-27-isar-left-side-laptop.png`, is the reference for look and arrangement; where it
 differs from this text, this text governs. This section supersedes G18's programmatic default and its
@@ -239,6 +239,10 @@ empty/ready layout pair, and amends G19 as stated below.
   state, or `not run` where nothing is stored, side by side, with no result picked as "the" result. The
   centre plot keeps drawing the fast-pass fit. A missing temperature or Q shows a dash with its reason
   on hover, and a background update keeps selection, expansion and scroll.
+- **Scan inspector (amendment 4, operator via orchestrator, 2026-10-27).** The inspector keeps the
+  scan's QC flags, shown whenever the scan has any, and shows the target Q a driven scan was aimed at
+  and the campaign-era command and counting mode, each only when present. Other rows of the old centre
+  metadata are not in the inspector.
 - **Stage two (Planned, waits on job `jfada74237892`, the intake backend).** Not built: the setup
   section and *Locate…* for the resolution-curve folder; *Details…* for the experiment's descriptive
   fields; a needs-attention list with ticked-scan entry; the inspector's fact table with *Set my

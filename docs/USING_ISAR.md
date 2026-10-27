@@ -366,7 +366,8 @@ selected spectrum falls outside the filter, the list says so and the display kee
 The inspector opens beside the scan list, inside the left panel, and ✕ closes it. For the selected
 analyzer it shows the file; the scan numbers (a summed set says so, and lists its scans when the files
 do); the analyzer, temperature and Q, each with where it came from; the slit, or "not in the file"; the
-number of points and the energy range; the parse status; each pass's state; and a raw-counts plot.
+number of points and the energy range; the parse status; the scan's QC flags; the target Q, the campaign
+command and the counting mode, each only when the scan has one; each pass's state; and a raw-counts plot.
 
 ### Run analysis, Stop and the Campaign tab
 
