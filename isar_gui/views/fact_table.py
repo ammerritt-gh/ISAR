@@ -22,8 +22,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QGridLayout, QLabel, QLineEdit, QPushButton,
                                QSizePolicy, QVBoxLayout, QWidget)
 
-from isar.intake.readiness import USES
-from isar.workspace_api import scan_prefix, split_key
+from isar.workspace_api import USES, scan_prefix, split_key
 from isar_gui.theme import TONE_COLOR, Tone
 from isar_gui.views.elided_label import ElidedLabel
 from isar_gui.views.value_entry import SetValueDialog
