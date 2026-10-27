@@ -7,8 +7,8 @@ Two or three compact lines from the intake backend's import summary and settings
   with its missing analyzers and their causes and its sidecar state; each file with its reason), or
   "Nothing read yet";
 * where the resolution curves were found, with *Locate…*, and below it, in the warning colour, the
-  last curve check's problem verbatim, a note when the saved folder is not checked yet, and each other
-  ``rf/`` folder found beside new data with *Use this folder*.
+  last curve check's problem (one line, the full text on hover), a note when the saved folder is not
+  checked yet, and each other ``rf/`` folder found beside new data with *Use this folder*.
 
 The section only shows what the backend returns. *Locate…* leaves through ``locate_requested``, and the
 window routes it to :func:`locate_resolution_folder`, the one route that saves a folder the user picks.
@@ -73,25 +73,18 @@ def locate_resolution_folder(parent: QWidget, intake):
     return intake.save_resolution_folder(Path(folder))
 
 
-class _Wrapped(QLabel):
-    """A wrapped line whose width never pins its column; the full text is its tooltip."""
+class _Line(ElidedLabel):
+    """A free-text line of the section: one line, shortened with "…" to the column's width, the full
+    text as its tooltip. Two wrapped lines left the scan list 390 px high at 1108 x 851 (offscreen)."""
 
     def __init__(self, parent: QWidget | None = None, *, warn: bool = False) -> None:
-        super().__init__("", parent)
-        self.setWordWrap(True)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        super().__init__("", parent, Qt.TextElideMode.ElideRight)
         if warn:
             self.setStyleSheet(_WARN)
 
     def set_line(self, text: str | None) -> None:
-        self.setText(text or "")
-        self.setToolTip(text or "")
+        self.set_full_text(text or "")
         self.setVisible(bool(text))
-
-    def minimumSizeHint(self):  # noqa: N802 (Qt override)
-        hint = super().minimumSizeHint()
-        hint.setWidth(0)
-        return hint
 
 
 class SetupSection(QWidget):
@@ -128,13 +121,13 @@ class SetupSection(QWidget):
         self._locate.setToolTip("Choose the folder of resolution curves for this experiment; "
                                 "it is saved at once and used by the analysis")
         self._locate.clicked.connect(self.locate_requested)
-        self._problem = _Wrapped(self, warn=True)
+        self._problem = _Line(self, warn=True)
         self._problem.setObjectName("setup_problem")
-        self._stale = _Wrapped(self)
+        self._stale = _Line(self)
         self._stale.setObjectName("setup_stale")
-        self._record_problem = _Wrapped(self, warn=True)
+        self._record_problem = _Line(self, warn=True)
         self._record_problem.setObjectName("setup_record_problem")
-        self._outcome = _Wrapped(self, warn=True)
+        self._outcome = _Line(self, warn=True)
         self._outcome.setObjectName("setup_outcome")
         self._others = QVBoxLayout()
         self._others.setContentsMargins(0, 0, 0, 0)
@@ -236,10 +229,13 @@ class SetupSection(QWidget):
                 "then is seen at the next import or when analysis starts.")
 
     def _place_locate(self, row: int) -> None:
-        """*Locate…* sits beside the resolution line, or beside the first line when there is none."""
+        """*Locate…* sits beside the resolution line, or beside the first line when there is none; the
+        counts line takes the full width whenever *Locate…* is not beside it."""
         if self._grid.getItemPosition(self._grid.indexOf(self._locate))[0] != row:
             self._grid.removeWidget(self._locate)
             self._grid.addWidget(self._locate, row, 1)
+            self._grid.removeWidget(self._summary)
+            self._grid.addWidget(self._summary, 0, 0, 1, 2 if row else 1)
 
     def _render_list(self, summary) -> None:
         items: list[tuple[str, str]] = []          # (row text, tooltip)

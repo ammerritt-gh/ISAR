@@ -81,6 +81,12 @@ def built_hard(tmp_path_factory):
     return _build(tmp_path_factory, "wt4", n_analyzers=28, curves=False, with_t=False)
 
 
+@pytest.fixture(scope="module")
+def built_hard_curves(tmp_path_factory):
+    """The same, with resolution curves found (no problem line, but the other setup lines)."""
+    return _build(tmp_path_factory, "wt5", n_analyzers=28, with_t=False)
+
+
 def _copy(built_root: Path, tmp_path: Path) -> Path:
     """A private copy (its manifest and curve check still name the original ``incoming/``)."""
     copy = tmp_path / "wt"
@@ -310,7 +316,7 @@ def test_scenario3_files_parse_without_curves_and_locate_changes_the_counts(
     assert import_summary(root).curves.n_curves == 0 and n > 0 and m == n       # nothing could be matched
     assert w.setup_section._resolution.full_text() == "Resolution curves: not found"
     assert WARN in w.setup_section._resolution.styleSheet()
-    assert w.setup_section._problem.text() == import_summary(root).curves.problem
+    assert w.setup_section._problem.full_text() == import_summary(root).curves.problem
     line = w.readiness_line
     assert line.text.startswith(f"{n} spectra read · 0 ready for analysis · {m} need resolution curves")
 
@@ -337,7 +343,7 @@ def test_scenario3_files_parse_without_curves_and_locate_changes_the_counts(
     assert summary.curves.folder == str(curves.resolve()) and summary.curves.check_stale
     assert _blocked_locate(root) == 0
     assert w.setup_section._resolution.full_text() == f"Resolution curves: {curves.resolve()} (chosen by you)"
-    assert w.setup_section._stale.isVisible() and w.setup_section._stale.text()
+    assert w.setup_section._stale.isVisible() and w.setup_section._stale.full_text()
     ready = sum(a.can_start is True for s in needs_attention(root).scans.values() for a in s.analyzers.values())
     assert ready > 0
     assert line.text.startswith(f"{n} spectra read · {ready} ready for analysis")
@@ -463,11 +469,11 @@ def test_scenario4_laptop_hardest_combination_collapsed_processing_keeps_the_plo
     _assert_s2_controls_usable(w)
 
 
-def _left_column(qtbot, monkeypatch, built_hard, tmp_path):
-    w = _hardest(qtbot, monkeypatch, _copy(built_hard, tmp_path), processing_collapsed=False)
+def _left_column(qtbot, monkeypatch, built, tmp_path):
+    w = _hardest(qtbot, monkeypatch, _copy(built, tmp_path), processing_collapsed=False)
     column = [w.experiment_strip, w.setup_section, w.attention_list, w.files_strip, w.scan_list]
     heights = {m.objectName(): m.height() for m in column}
-    print("left column at 1108x851, 28 analyzers, no curves:", heights)
+    print("left column at 1108x851, 28 analyzers:", heights)
     for upper, lower in zip(column, column[1:]):                         # in order, no overlap
         assert rect_in(w, upper).bottom() < rect_in(w, lower).top(), (upper.objectName(), lower.objectName(), heights)
     return w, heights
@@ -480,10 +486,18 @@ def test_scenario4_the_scan_list_shows_ten_rows_with_the_attention_list_open(
     assert tree.viewport().height() // tree.sizeHintForRow(0) >= 10      # S1's 10-row rule
 
 
-@pytest.mark.xfail(strict=True, reason="S2 defect, reported at S2U5: with 28 analyzers and no curves the setup "
-                   "section (212 px: its problem line is unbounded) and the open attention list leave the scan "
-                   "list 292 px, below S1's 400 px minimum (390 px even with curves); strict, so the fix flips it")
+@pytest.mark.parametrize("fixture", ["built_hard", "built_hard_curves"])
 def test_scenario4_the_scan_list_keeps_S1s_400px_minimum_with_the_attention_list_open(
-        qtbot, monkeypatch, built_hard, tmp_path):
-    w, heights = _left_column(qtbot, monkeypatch, built_hard, tmp_path)
+        qtbot, monkeypatch, request, tmp_path, fixture):
+    w, heights = _left_column(qtbot, monkeypatch, request.getfixturevalue(fixture), tmp_path)
     assert w.scan_list.height() >= 400, heights                          # S1's minimum
+    problem = w.setup_section._problem
+    if fixture == "built_hard":                  # no curves: the check's problem is shown, elided, full on hover
+        full = w.intake.summary.curves.problem
+        assert problem.isVisible() and problem.toolTip() == full and problem.full_text() == full
+        assert problem.text().endswith("…") and problem.text() != full
+        two_lines = 2 * problem.fontMetrics().lineSpacing() + problem.contentsMargins().top() \
+            + problem.contentsMargins().bottom() + 2 * problem.margin()
+        assert problem.height() <= two_lines, (problem.height(), two_lines)
+    else:
+        assert problem.isHidden()

@@ -257,7 +257,9 @@ empty/ready layout pair, and amends G19 as stated below.
   - *Setup section* (`views/setup_section.py`): what was read (scan sets, analyzers, incomplete sets,
     files not read; the last two open in place) and where the resolution curves were found, with
     *Locate…*, which saves the folder the user picks at once as the experiment's resolution folder. The
-    last curve check's problem is shown verbatim in the warning colour; a saved folder is marked
+    last curve check's problem is shown in the warning colour on one line, shortened with … to the
+    column's width and shown in full on hover (so the scan list keeps S1's 400 px minimum with the
+    attention list open); a saved folder is marked
     unchecked until the next import or analysis start, which is when a curve added or replaced in it
     is seen. *Details…* (`views/details_dialog.py`, from the experiment strip): the name with
     *Rename…*, the folder, and six optional descriptive fields (title, proposal, sample, people,
@@ -296,11 +298,6 @@ empty/ready layout pair, and amends G19 as stated below.
   - *Counts accepted* (design amendment 5, operator-approved): the declaration that an `_i` analyzer's
     counts are raw lifts the hold on them and changes no count and no flag (an `_lr` analyzer stays
     held whatever is saved); every fit made that way records it, and *Withdraw* takes it back.
-  - *Known limit (measured offscreen, 2026-10-27, open).* At 1108 × 851 with the inspector open, every
-    optional column on and the attention list open, 28 analyzers without resolution curves leave the
-    scan list 292 px high (390 px with curves), below S1's 400 px minimum: the setup section's
-    problem line has no height bound. The 10-row rule holds. `test_stage2_walkthrough.py` records
-    this as a strict expected failure, so a fix flips it.
 - **Pinned for later, not built here:** the analyzer overview in the centre, the batch queue, automatic
   export to an outside folder, `gpi.*` parsing for per-analyzer Q, and user values for Q and for facts
   other than temperature, slit and dead analyzers.

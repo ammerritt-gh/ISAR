@@ -341,7 +341,7 @@ def test_setup_section_not_found_with_the_no_curves_fixture(qtbot, s2_no_curves)
     section = _section(qtbot, _bound(qtbot, s2_no_curves))
     assert section._resolution.full_text() == "Resolution curves: not found"   # the shipped card names no folder
     assert "#b7791f" in section._resolution.styleSheet()
-    assert section._problem.text().startswith("no resolution folder is saved")
+    assert section._problem.full_text().startswith("no resolution folder is saved")
 
 
 def test_setup_section_shows_constructed_backend_states(qtbot, s2_ws, tmp_path):
@@ -354,9 +354,9 @@ def test_setup_section_shows_constructed_backend_states(qtbot, s2_ws, tmp_path):
                                  other_folders=(type("O", (), {"path": str(other), "beside": str(other.parent)})(),))
     intake._summary = dataclasses.replace(real, curves=curves, record_problem="import record unreadable (bad JSON)")
     section._render()
-    assert section._problem.text() == "resolution library unavailable (gone)"
-    assert section._stale.text() == STALE_NOTE
-    assert section._record_problem.text() == "import record unreadable (bad JSON)"   # the folder holds a card
+    assert section._problem.full_text() == "resolution library unavailable (gone)"
+    assert section._stale.full_text() == STALE_NOTE
+    assert section._record_problem.full_text() == "import record unreadable (bad JSON)"   # the folder holds a card
     use = [b for b in section.findChildren(type(section._locate)) if b.objectName() == "setup_use_other"]
     assert len(use) == 1
     use[0].click()                                             # saves that path, and re-reads
@@ -456,7 +456,7 @@ def test_locate_saves_the_users_folder_and_it_survives_reopening(qtbot, monkeypa
     saved = intake_settings.current_settings(s2_ws).resolution_folder
     assert saved.path == str(chosen.resolve()) and saved.source == "user"
     assert w.setup_section._resolution.full_text() == f"Resolution curves: {chosen.resolve()} (chosen by you)"
-    assert w.setup_section._stale.text() == STALE_NOTE           # not checked until the next import
+    assert w.setup_section._stale.full_text() == STALE_NOTE           # not checked until the next import
     assert f"Saved: resolution folder {chosen.resolve()}" in w.log_dock._view.toPlainText()
     w.intake.bind(None)
     w.intake.bind(s2_ws)                                          # reopen
@@ -471,7 +471,7 @@ def test_locate_onto_a_missing_folder_shows_the_reason_and_writes_nothing(qtbot,
     missing = tmp_path / "nope"
     _pick_folder(monkeypatch, missing)
     w.setup_section._locate.click()
-    assert w.setup_section._outcome.text() == f"resolution folder {missing} does not exist"
+    assert w.setup_section._outcome.full_text() == f"resolution folder {missing} does not exist"
     assert settings_file.read_bytes() == before
     assert f"resolution folder {missing} does not exist" in w.log_dock._view.toPlainText()
 
@@ -644,7 +644,7 @@ def test_every_wire_of_the_mount_table_fires(qtbot, monkeypatch, s2_built):
     assert reveals == ["temperature"] and runs == [1]
     w.setup_section.locate_requested.emit()
     w.readiness_line.locate_requested.emit()
-    assert locates == [w.intake, w.intake] and w.setup_section._outcome.text() == "refused here"
+    assert locates == [w.intake, w.intake] and w.setup_section._outcome.full_text() == "refused here"
 
     def open_dialog(dialog):
         details.append((dialog._name.full_text(), dialog._folder.text()))
