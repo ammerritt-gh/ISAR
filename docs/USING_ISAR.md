@@ -60,7 +60,7 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
 
 | File | Who writes it | What it is |
 |---|---|---|
-| `card.policy.toml` | **You** (ISAR scaffolds it once, then never touches it) | Every per-experiment decision: detectors, column names, collation rules, calibration method, fitting guidelines, and declared branch hypotheses for autonomous campaigns ([HYPOTHESES.md](HYPOTHESES.md)). Commented — the comments are the documentation. |
+| `card.policy.toml` | **You** (ISAR scaffolds it once, then never touches it) | Every per-experiment decision: detectors, column names, collation rules, calibration method, fitting guidelines, and declared branch hypotheses for autonomous campaigns ([HYPOTHESES.md](HYPOTHESES.md)). Commented — the comments are the documentation. For BL43 the format keys come from the shipped file and per-scan values are entered in ISAR, never here ([BL43's settings](#where-bl43s-settings-live)). |
 | `card.state.json` | ISAR | Accumulated experiment state: energy-zero series, resolution versions, the running dispersion prior, resolved hypothesis snapshot and mismatch evidence, sample map, exclusions, corrections audit trail. Don't hand-edit; don't delete. |
 | `session.json` | ISAR | Bookkeeping: which files were seen, which scans were processed and how. Safe to delete — a re-run rebuilds it (refitting everything once). |
 | `report/` | ISAR | The product: `report.html`/`.md`, `results.csv` (one summary row per spectrum, with its peak-count state), `modes.csv` (every fitted mode of the selected count, ordered by energy), figures, plus `reduction.*` (the QC-level detail report). `report/exports/` holds the folders `isar export` writes (see *Exporting results* below). |
