@@ -732,16 +732,33 @@ class MainWindow(QMainWindow):
         self._place_docks()
 
     def _old_panels(self) -> list:
-        """The campaign-era panels, hidden by default behind the left column and reachable from
-        View > Panels (their code is unchanged)."""
+        """The campaign-era panels: parked (hidden, out of the layout) by default and reachable from
+        View > Panels, which shows one as a tab behind the left column (their code is unchanged)."""
         return [dock for dock in (getattr(self, name, None) for name in
                                   ("files_dock", "scans_dock", "browser_dock", "card_dock",
                                    "scan_table_dock")) if dock is not None]
 
+    def _show_panel(self, dock) -> None:
+        """View > Panels shows ``dock``. A parked old panel joins the left column as a tab first."""
+        if dock in self._old_panels() and self.dockWidgetArea(dock) == Qt.NoDockWidgetArea:
+            dock.setFloating(False)
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            self.tabifyDockWidget(self.left_column_dock, dock)
+        dock.show()
+        dock.raise_()
+
+    def _hide_panel(self, dock) -> None:
+        """View > Panels hides ``dock``. An old panel is parked again: a hidden tab left in the left
+        column would keep its tab bar on screen."""
+        if dock in self._old_panels():
+            self.removeDockWidget(dock)         # hides it and takes it out of the layout
+        else:
+            dock.hide()
+
     def _place_docks(self) -> None:
         """Put every dock in its area (idempotent): the left column, Processing and Campaign
-        tabbed on the right, the Log | Output bottom bar, and the old panels hidden behind the left
-        column. Sizes, and whether the right panel is open, are not touched here."""
+        tabbed on the right, the Log | Output bottom bar, and the old panels parked. Sizes, and
+        whether the right panel is open, are not touched here."""
         for dock in (self.left_column_dock, self.processing_dock, self.output_dock, self.log_dock):
             dock.setFloating(False)
         for dock in (self.left_column_dock, self.output_dock, self.log_dock):
@@ -756,10 +773,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.BottomDockWidgetArea, self.output_dock)
         self.splitDockWidget(self.log_dock, self.output_dock, Qt.Horizontal)
         for dock in self._old_panels():
-            dock.setFloating(False)
-            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
-            self.tabifyDockWidget(self.left_column_dock, dock)
-            dock.hide()
+            self._hide_panel(dock)
         self.left_column_dock.raise_()
         self.processing_dock.raise_()
 
@@ -1942,10 +1956,9 @@ class MainWindow(QMainWindow):
 
             def _toggle(checked, d=dock):
                 if checked:
-                    d.show()
-                    d.raise_()
+                    self._show_panel(d)
                 else:
-                    d.hide()
+                    self._hide_panel(d)
                 self._autosave()
 
             # `triggered` (user interaction only), NOT `toggled`: a tabified dock going behind its

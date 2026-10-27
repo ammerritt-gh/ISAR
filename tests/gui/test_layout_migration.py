@@ -43,12 +43,12 @@ def _flush_queued(qtbot, w):
 
 
 def _assert_default_arrangement(w):
-    # The left column owns the left area; the old panels sit hidden in it, and shown they ride as
-    # tabs of the left column (a hidden dock is not reported as tabified, so show one to see it).
+    # The left column owns the left area; the old panels are parked (hidden, out of the layout), and
+    # View > Panels shows one as a tab of the left column.
     assert w.dockWidgetArea(w.left_column_dock) == Qt.LeftDockWidgetArea
     old = {w.files_dock, w.scans_dock, w.browser_dock, w.card_dock, w.scan_table_dock}
     for dock in old:
-        assert w.dockWidgetArea(dock) == Qt.LeftDockWidgetArea
+        assert w.dockWidgetArea(dock) == Qt.NoDockWidgetArea
         assert dock.isHidden()
     # Processing | Campaign are tabs of the right area. The offscreen screen is laptop-sized, so the
     # right panel starts collapsed to its rail; expanding it shows both tabs, Processing in front.
@@ -64,7 +64,8 @@ def _assert_default_arrangement(w):
     w.set_right_panel_collapsed(False)
     assert w.campaign_dock in w.tabifiedDockWidgets(w.processing_dock)
     assert w.processing_dock.isVisible()
-    w.scans_dock.show()
+    w._show_panel(w.scans_dock)
+    assert w.dockWidgetArea(w.scans_dock) == Qt.LeftDockWidgetArea
     assert w.scans_dock in w.tabifiedDockWidgets(w.left_column_dock)
 
 
@@ -91,7 +92,7 @@ def test_unversioned_blob_falls_back_to_default(qtbot, ws, caplog):
 def test_current_version_blob_round_trips(qtbot, ws):
     w1 = _window(qtbot, ws)
     _flush_queued(qtbot, w1)
-    w1.card_dock.show()                     # hidden by default; something distinctive to survive
+    w1._show_panel(w1.card_dock)            # parked by default; something distinctive to survive
     w1.card_dock.setFloating(True)
     session = w1._snapshot_session()
     assert session.dock_layout_b64

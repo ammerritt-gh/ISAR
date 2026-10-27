@@ -477,6 +477,27 @@ def test_the_rail_expands_and_collapses_and_the_view_action_stays_in_step(qtbot,
     assert w._right_panel_collapsed()
 
 
+def test_view_panels_shows_an_old_panel_as_a_left_tab_and_parks_it_again(qtbot, monkeypatch, make_ws):
+    from PySide6.QtWidgets import QTabBar
+    w = _window(qtbot, monkeypatch, LAPTOP, _ready_ws(make_ws))
+    scans = next(a for a in w._docks_menu.actions() if a.text() == "Scans")
+    assert w.dockWidgetArea(w.scans_dock) == Qt.NoDockWidgetArea and not scans.isChecked()
+
+    scans.trigger()                                  # a user click on View > Panels > Scans
+    qtbot.wait(30)
+    assert w.scans_dock.isVisible() and scans.isChecked()
+    assert w.scans_dock in w.tabifiedDockWidgets(w.left_column_dock)
+    assert w.rect().contains(rect_in(w, w.scans_dock))      # in front, where the column was
+
+    scans.trigger()                                  # and off again
+    qtbot.wait(30)
+    assert w.scans_dock.isHidden() and w.dockWidgetArea(w.scans_dock) == Qt.NoDockWidgetArea
+    # No tab bar is left behind in the left column once the old panel is parked again.
+    assert not [bar for bar in w.findChildren(QTabBar)
+                if bar.isVisible() and bar.count() and "Experiment" in bar.tabText(0)
+                and bar.count() > 1]
+
+
 def test_campaign_dock_scrolls_instead_of_forcing_the_right_panel_wide(qtbot, monkeypatch):
     from PySide6.QtWidgets import QScrollArea
     w = _window(qtbot, monkeypatch, LAPTOP)
