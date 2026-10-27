@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from isar.analyze.lineshapes import convolute_voigt_dho
+from isar.intake.settings import save_resolution_folder
 from isar.parsers import sp8_bl43
 from isar.session.workspace import Workspace
 
@@ -102,10 +103,12 @@ def workspace(tmp_path, *, merge="separate", sample=None):
 def bl43_workspace(tmp_path, *, stems=("A", "B"), analyzers=ANALYZERS, slit=None, weak=(), library_skip=(),
                    off_integer=()):
     """``(ws, data_folder)``: a BL43 workspace (experiment ``Smp``) with the curve library in
-    ``ws.root / "rf"`` and one scan per stem (``Smp_100K_0p5_0p5_3_<stem>``) on the 120-bin axis.
-    Nothing is imported yet."""
+    ``ws.root / "rf"``, saved as the experiment's resolution folder (it is not beside the data, so
+    discovery would not find it), and one scan per stem (``Smp_100K_0p5_0p5_3_<stem>``) on the 120-bin
+    axis. Nothing is imported yet."""
     ws = workspace(tmp_path, sample="Smp")
     write_library(ws.root / "rf", analyzers=analyzers, skip=library_skip)
+    assert save_resolution_folder(ws.root, ws.root / "rf").ok
     data = tmp_path / "data"
     for i, s in enumerate(stems):
         write_scan(data, stem=f"{STEM}_{s}", analyzers=analyzers, slit=slit, seed=1 + i, weak=weak,

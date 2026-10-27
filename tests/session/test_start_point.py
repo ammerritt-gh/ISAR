@@ -418,6 +418,7 @@ def test_a_scan_without_a_temperature_fits_at_the_zero_temperature_limit_and_say
 def test_a_dead_analyzer_is_never_fitted_and_its_declaration_is_carried_until_reversed(tmp_path, monkeypatch):
     ws = fx.workspace(tmp_path, sample="Smp")
     fx.write_library(ws.root / "rf")
+    assert settings.save_resolution_folder(ws.root, ws.root / "rf").ok
     data = tmp_path / "data"
     stem = f"{fx.STEM}_A"
     fx.write_scan(data, stem=stem, analyzers=("a03", "a04"), energy=fx.ENERGY_120)     # a05's file missing
@@ -728,9 +729,8 @@ def test_damaged_intake_lines_are_reported_and_never_stop_the_run(tmp_path, monk
     ws, data = fx.bl43_workspace(tmp_path, stems=("A",))
     _import(ws, data)
     (s,) = _order(ws, data)
-    assert settings.save_resolution_folder(ws.root, ws.root / "rf").ok
     assert values.save_value(ws.root, "temperature", 120.0, [s]).ok
-    for name in (store.ENTRIES, store.SETTINGS):
+    for name in (store.ENTRIES, store.SETTINGS):         # each file holds one valid line (the fixture saved the folder)
         path = ws.root / name
         valid = path.read_bytes()
         path.write_bytes(valid + b"[1, 2]\n" + valid.splitlines(keepends=True)[-1] + b'{"kind": "val')

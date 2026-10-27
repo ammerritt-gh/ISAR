@@ -493,13 +493,13 @@ def test_bl43_ingest_never_stops_for_damaged_intake_lines(tmp_path):
     from isar.intake.scans import read_scans
     from isar.intake.values import save_value
 
-    ws, data = bl43_workspace(tmp_path)
-    for name in (store.SETTINGS, store.ENTRIES):
-        path = ws.root / name
-        path.parent.mkdir(exist_ok=True)
-        path.write_bytes(b'[1, 2]\n{"id": "e000000000002", "seq": 2, "kind": "mystery"}\n{"kind": "torn')
+    ws, data = bl43_workspace(tmp_path)         # its saved resolution folder is settings.jsonl's first line
+    damage = b'[1, 2]\n{"id": "e000000000002", "seq": 2, "kind": "mystery"}\n{"kind": "torn'
+    with (ws.root / store.SETTINGS).open("ab") as f:
+        f.write(b"\n" + damage)
+    (ws.root / store.ENTRIES).write_bytes(damage)
     report = _bl43_ingest(ws, data)
     assert report.curves is not None and "error" not in report.curves
-    assert report.curves["problem"] is None and report.curves["source"] == "card"
+    assert report.curves["problem"] is None and report.curves["source"] == "setting"
     assert len(read_scans(ws.root)) == 2 and len(report.added) == 2
     assert save_value(ws.root, "temperature", 100.0, list(read_scans(ws.root))).ok   # a save appends past them

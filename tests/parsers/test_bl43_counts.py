@@ -186,17 +186,12 @@ def test_header_slit_keys_become_the_generic_slit_fact(tmp_path):
     assert rec.facts["slit"] == {"value": "60x40", "source": "header"}
     assert rec.facts["agaph_mm"] == {"value": 60.0, "source": "header"}
     assert not flags(rec, "fact_conflict")
-    # A card-declared slit ranks below the header and a disagreement is reported.
-    rec = parse(tmp_path, facts={"slit": "50x50"})
-    assert rec.facts["slit"]["value"] == "60x40"
-    assert rec.facts["slit"]["conflicts"] == [{"source": "card", "value": "50x50"}]
-    assert len(flags(rec, "fact_conflict")) == 1
 
 
-def test_card_slit_is_used_when_no_header_gives_one(tmp_path):
+def test_a_card_slit_is_never_read_the_slit_is_entered_in_isar(tmp_path):
     write_member(tmp_path, "a03", lattice(0, 10), np.ones(10), 1e6)
     assert parse(tmp_path).facts["slit"]["source"] == "missing"
-    assert parse(tmp_path, facts={"slit": "50x50"}).facts["slit"] == {"value": "50x50", "source": "card"}
+    assert parse(tmp_path, facts={"slit": "50x50"}).facts["slit"]["source"] == "missing"
 
 
 def test_header_hkl_is_rung_one_and_the_filename_hkl_is_never_a_spectrum_q(tmp_path):

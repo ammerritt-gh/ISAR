@@ -45,8 +45,8 @@ def _write_curves(folder: Path, pairs=ALL_CURVES) -> None:
 def _card(*, folder=True):
     card = sp8_bl43.card_template()
     card.policy.calibration = dict(card.policy.calibration, resolution_pattern=PATTERN)
-    if not folder:
-        card.policy.calibration.pop("resolution_folder", None)
+    if folder:      # the shipped file names no folder; an in-memory card still can (C-location's card branch)
+        card.policy.calibration["resolution_folder"] = "rf"
     return card
 
 
