@@ -13,6 +13,7 @@ wait in ``recalibrated`` for the driver to merge after the fit stage.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from isar.calibrate import tabulated
@@ -34,6 +35,22 @@ def _plain(obj):
     return inputs._finite(_json.to_jsonable(obj))
 
 
+@dataclass(frozen=True)
+class UnitPlan:
+    """One unit as its scan's start point sees it (:meth:`StartPoint.plan`), before carry or fit is decided.
+    ``task`` is the fit task tuple on the frozen effective record; ``condition`` the excluded entry of a unit
+    the user declared out, else None; ``started`` its started lines ([] for a condition entry)."""
+    unit: str
+    det: str
+    task: tuple
+    condition: object
+    chash: str
+    ghash: str
+    calfp: str | None
+    inputs_hash: str
+    started: list
+
+
 class StartPoint:
     """``start_scan`` and ``on_finish`` of the fit stage (:func:`scan_delivery._run_tasks`) for a BL43 run.
 
@@ -52,6 +69,7 @@ class StartPoint:
         self.carried: set[str] = set()                # unit ids the start point carried
         self.recalibrated: dict[str, dict] = {}       # scan key -> calibration state computed at a start point
         self.frozen: dict = {}                        # scan key -> the effective record the scan started with
+        self.views: dict = {}                         # scan key -> its frozen calibration view (None: the run's)
         self._units: dict[str, tuple] = {}            # unit id -> (inputs hash, fallbacks, is a condition entry)
 
     def _calibration(self, key: str, eff, si: inputs.ScanInputs):
@@ -78,7 +96,9 @@ class StartPoint:
             return entry
         return None
 
-    def __call__(self, group: list) -> scan_delivery.ScanStart:
+    def plan(self, group: list) -> list[UnitPlan]:
+        """The scan's freeze and each unit's hashes, condition entry and started lines; writes nothing.
+        Fills ``frozen``, ``views``, ``recalibrated`` and the units :meth:`finished_lines` stamps."""
         key = group[0][5].rsplit(":", 1)[0]
         read = store.read_all(self.root, store.ENTRIES)            # the freeze: the saves on disk now
         si = inputs.scan_inputs(self.rows[key], inputs.index_entries(read.entries, lines=read.lines))
@@ -86,52 +106,70 @@ class StartPoint:
         state, view = self._calibration(key, eff, si)
         chash = self.data_revision[key]
         T = unit_data.scan_temperature(eff)
-        items, started, stubs = [], [], []
+        out = []
         for _rec, det, q, _T, sample, scan_id, _chash, _ghash, seed in group:
             ghash = canonical_hash(guide_mod.guidelines_signature(self.g, scan_number=eff.scan_number, q=q, T=T))
             unit = inputs.unit_inputs(self.rows[key], si, det, state)
             h = inputs.inputs_hash(unit)
             reason = (_declared("excluded scan", si.excluded) if si.excluded is not None
                       else _declared("dead analyzer", si.dead[det]) if det in si.dead else None)
-            prev = self.session.get(scan_id)
             calfp = None if reason else calibrations.calibration_fingerprint(view or self.runcal, eff, det)
-            if not (self.is_fresh(prev, det, chash=chash, ghash=ghash, calfp=calfp)
-                    or ((prev.provenance or {}).get("fit_inputs") or {}).get("hash") != h):
-                self.carried.add(scan_id)
-                items.append(None)
-                continue
             fallbacks = inputs.fallbacks(unit)
             self._units[scan_id] = (h, fallbacks, reason is not None)
-            if reason is not None:
-                items.append(scan_delivery.condition_entry(eff, det, q, T, sample, scan_id, self.card,
-                                                           chash, ghash, reason))
+            condition = (None if reason is None else scan_delivery.condition_entry(
+                eff, det, q, T, sample, scan_id, self.card, chash, ghash, reason))
+            started = ([] if reason is not None else
+                       [{"unit": scan_id, "scan": key, "pass": p, "inputs": unit, "hash": h,
+                         "fallbacks": list(fallbacks)} for p in self.passes])
+            out.append(UnitPlan(scan_id, det, (eff, det, q, T, sample, scan_id, chash, ghash, seed), condition,
+                                chash, ghash, calfp, h, started))
+        self.frozen[key] = eff
+        self.views[key] = view
+        return out
+
+    def __call__(self, group: list) -> scan_delivery.ScanStart:
+        units = self.plan(group)
+        key = group[0][5].rsplit(":", 1)[0]
+        items, started, stubs = [], [], []
+        for u in units:
+            prev = self.session.get(u.unit)
+            if not (self.is_fresh(prev, u.det, chash=u.chash, ghash=u.ghash, calfp=u.calfp)
+                    or ((prev.provenance or {}).get("fit_inputs") or {}).get("hash") != u.inputs_hash):
+                self.carried.add(u.unit)
+                items.append(None)
                 continue
-            started += [{"unit": scan_id, "scan": key, "pass": p, "inputs": unit, "hash": h,
-                         "fallbacks": list(fallbacks)} for p in self.passes]
-            hit = self._reused(scan_id, chash, ghash, h)
+            if u.condition is not None:
+                items.append(u.condition)
+                continue
+            started += u.started
+            hit = self._reused(u.unit, u.chash, u.ghash, u.inputs_hash)
             if hit is not None:
                 items.append(scan_delivery.Reused(hit))
                 continue
-            task = (eff, det, q, T, sample, scan_id, chash, ghash, seed)
-            items.append(task)
-            stubs.append(task)
+            items.append(u.task)
+            stubs.append(u.task)
         fit_inputs.write_started(self.root, self.run_id, started)
         for task in stubs:
             self.write_stub(task)
-        self.frozen[key] = eff
-        return scan_delivery.ScanStart(items, view)
+        return scan_delivery.ScanStart(items, self.views[key])
 
     def finish(self, entry) -> None:
         """Stamp what the unit's result was made with; a fit's finished lines, one per pass of the run."""
+        lines = self.finished_lines(entry)
+        if lines:
+            fit_inputs.write_finished(self.root, self.run_id, lines)
+
+    def finished_lines(self, entry) -> list[dict]:
+        """:meth:`finish` without the write: stamps ``entry.provenance["fit_inputs"]`` and returns the lines."""
         info = self._units.get(entry.scan_id)
         if info is None:
-            return
+            return []
         h, fallbacks, condition = info
         kept = list(fallbacks) if entry.status in ("fitted", "non_result") and not condition else []
         entry.provenance = {**(entry.provenance or {}),
                             "fit_inputs": {"run": self.run_id, "hash": h, "fallbacks": kept}}
         if condition:                         # a declaration, not a fit: no line
-            return
+            return []
         scan, _, det = entry.scan_id.rpartition(":")
         out = (entry.detectors or {}).get(det)
         lines = []
@@ -143,4 +181,4 @@ class StartPoint:
                 result = {k: dp.get(k) for k in _DEEP} if isinstance(dp, dict) else None
             lines.append({"unit": entry.scan_id, "scan": scan, "pass": p, "status": entry.status,
                           "fallbacks": kept, "result": _plain(result)})
-        fit_inputs.write_finished(self.root, self.run_id, lines)
+        return lines

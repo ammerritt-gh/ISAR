@@ -1091,6 +1091,11 @@ def _unit_is_fresh(prev, det, *, chash, ghash, calfp, force, deep_pass) -> bool:
 
 def _write_stub(workspace, card, task) -> None:
     """One unit's pre-dispatch ``count_trust="attempted"`` record in ``report/measurements.jsonl``."""
+    measurement_store.append_measurement(workspace.report_dir, _stub_record(card, task))
+
+
+def _stub_record(card, task) -> dict:
+    """The pre-dispatch ``count_trust="attempted"`` record of one fit task, as :func:`_write_stub` writes it."""
     _rec, _det, _q, _T, _sample, _scan_id, _chash, _ghash, _seed = task
     stub = MeasurementArena(
         scan_ref=_scan_id, scan_id=_scan_id, scan_number=_rec.scan_number,
@@ -1107,7 +1112,7 @@ def _write_stub(workspace, card, task) -> None:
         # step the neutrons were spent on is not proof of the attempt.
         **campaign_provenance(
             scan_delivery._acquisition_provenance_for(_rec, card, _scan_id)[1]))
-    measurement_store.append_measurement(workspace.report_dir, stub.to_dict())
+    return stub.to_dict()
 
 
 def _carry_untaken(plan, entries, tasks, session) -> list:
