@@ -25,8 +25,13 @@ def root(tmp_path):
     return tmp_path
 
 
+def _index(root):
+    r = store.read_all(root, store.ENTRIES)
+    return index_entries(r.entries, lines=r.lines)
+
+
 def _si(root, row=ROW):
-    return scan_inputs(row, index_entries(read_entries(root)))
+    return scan_inputs(row, _index(root))
 
 
 def _t(root):
@@ -79,14 +84,14 @@ def parsed(tmp_path):
 
 def test_apply_with_nothing_in_force_is_the_record_itself(parsed):
     root, rec, row = parsed
-    assert apply(rec, scan_inputs(row, index_entries(read_entries(root)))) is rec
+    assert apply(rec, scan_inputs(row, _index(root))) is rec
 
 
 def test_apply_user_temperature_copies_and_never_mutates(parsed):
     root, rec, row = parsed
     before = content_hash(rec)
     values.save_value(root, "temperature", 120.0, [row["scan"]], reason="offset")
-    si = scan_inputs(row, index_entries(read_entries(root)))
+    si = scan_inputs(row, _index(root))
     eff = apply(rec, si)
     assert eff is not rec and np.all(eff.temperature.setpoint == 120.0)
     assert eff.facts["T_K"] == {"value": 120.0, "source": "user", "entry": si.facts["temperature"].user_entry,
@@ -94,14 +99,14 @@ def test_apply_user_temperature_copies_and_never_mutates(parsed):
     assert rec.facts["T_K"]["value"] == 100.0 and np.all(rec.temperature.setpoint == 100.0)
     assert content_hash(rec) == before                       # file values never changed, in memory too
     values.use_file_value(root, "temperature", [row["scan"]])
-    assert apply(rec, scan_inputs(row, index_entries(read_entries(root)))) is rec
+    assert apply(rec, scan_inputs(row, _index(root))) is rec
 
 
 def test_apply_drops_dead_analyzers_and_names_accepted_counts(parsed):
     root, rec, row = parsed
     values.save_condition(root, "dead", [row["scan"] + ":a14"])
     values.save_condition(root, "counts_accepted", [row["scan"] + ":a05", row["scan"] + ":a14"], reason="checked")
-    si = scan_inputs(row, index_entries(read_entries(root)))
+    si = scan_inputs(row, _index(root))
     eff = apply(rec, si)
     assert sorted(eff.spectra) == ["a03", "a05"] and sorted(rec.spectra) == ["a03", "a05", "a14"]
     assert eff.facts["counts_accepted"] == {"value": ["a05"], "source": "user",
@@ -238,3 +243,14 @@ def test_condition_line_without_a_store_time_is_skipped_and_reported(root):
         b' "targets": ["spec1:42"], "reason": null}\n')
     assert _si(root).excluded is None                        # a KeyError on 'at' here would stop the run
     assert damage_lines(root) == ["intake/entries.jsonl line 1 skipped: no str 'id', int 'seq' and str 'at'"]
+
+
+def test_index_names_the_file_line_and_cannot_be_built_without_it(root):
+    (root / "intake").mkdir()
+    (root / store.ENTRIES).write_bytes(   # line 2 carries seq 9: a report must name line 2, never seq 9
+        b'{"id": "e000000000001", "seq": 1, "at": "x", "kind": "mystery", "targets": []}\n'
+        b'{"id": "e000000000009", "seq": 9, "at": "x", "kind": "mystery", "targets": []}\n')
+    r = store.read_all(root, store.ENTRIES)
+    assert [d.line for d in index_entries(r.entries, lines=r.lines).damaged] == [1, 2]
+    with pytest.raises(TypeError):
+        index_entries(r.entries)

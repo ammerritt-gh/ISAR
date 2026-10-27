@@ -76,9 +76,9 @@ def _entry_problem(e: dict) -> str | None:
     return None
 
 
-def index_entries(entries: list[dict], *, lines: Sequence[int] | None = None) -> EntryIndex:
+def index_entries(entries: list[dict], *, lines: Sequence[int]) -> EntryIndex:
     """Index the entries once per read. An entry breaking the entry format is skipped, logged and listed
-    in ``damaged``; its line is ``lines[i]`` (``store.read_all(...).lines``), else its ``seq``."""
+    in ``damaged``; its line is ``lines[i]`` (``store.read_all(...).lines`` of the same read)."""
     facts: dict = {}
     conditions: dict = {}
     units: dict = {}
@@ -86,7 +86,7 @@ def index_entries(entries: list[dict], *, lines: Sequence[int] | None = None) ->
     for i, e in enumerate(entries):
         why = _entry_problem(e)
         if why is not None:
-            line = lines[i] if lines is not None else e["seq"]
+            line = lines[i]
             log.warning("%s line %d skipped: %s", store.ENTRIES, line, why)
             damaged.append(store.Damaged(store.ENTRIES, line, why))
             continue
