@@ -66,8 +66,12 @@ def fingerprint(folder, pattern: str) -> str:
     for path, _det, _setting in _matches(folder, pattern):
         for p in (path, path.with_name(path.name + ".gpi")):
             if p.is_file():
-                st = p.stat()
-                rows.append((p.name, st.st_size, st.st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest()))
+                try:
+                    st = p.stat()
+                    rows.append((p.name, st.st_size, st.st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest()))
+                except OSError as exc:       # one locked file must not hold every analyzer; marked, so it changes back
+                    log.warning("sarf: %s unreadable for the fingerprint (%s); its row is marked", p.name, exc)
+                    rows.append((p.name, None, None, "unreadable"))
     return hashlib.sha256(repr((str(folder.resolve()), pattern, sorted(rows))).encode("utf-8")).hexdigest()[:16]
 
 

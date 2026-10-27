@@ -148,6 +148,25 @@ def test_fingerprint_follows_the_content_at_the_same_size_and_mtime(folder):
     assert sarf.fingerprint(folder, PATTERN) != fp
 
 
+def test_an_unreadable_curve_file_is_marked_in_the_fingerprint_and_the_rest_still_load(folder, monkeypatch, caplog):
+    fp = sarf.fingerprint(folder, PATTERN)
+    locked = folder / "sarf_24Nov10_s48_60_60_a03"
+    real_read_bytes = Path.read_bytes
+
+    def locked_read_bytes(self):
+        if self == locked:
+            raise PermissionError(f"[Errno 13] locked: {self.name}")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", locked_read_bytes)
+    with caplog.at_level(logging.WARNING, logger="isar.parsers.sarf"):
+        locked_fp = sarf.fingerprint(folder, PATTERN)                    # does not raise
+    assert locked_fp != fp and "sarf_24Nov10_s48_60_60_a03" in caplog.text
+    assert sarf.load_library(folder, PATTERN).get("a03", "20x20") is not None
+    monkeypatch.undo()
+    assert sarf.fingerprint(folder, PATTERN) == fp                       # readable again: the hash returns
+
+
 def test_curve_identity_names_the_bytes_each_curve_was_loaded_from(folder):
     lib = sarf.load_library(folder, PATTERN)
     assert [(c.detector_id, c.setting) for c in lib] == [("a03", "20x20"), ("a03", "60x60")]   # sorted
