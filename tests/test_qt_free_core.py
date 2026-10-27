@@ -21,6 +21,7 @@ CORE_DIRS = {
     "geometry": ISAR_DIR / "geometry",
     "plotspec": ISAR_DIR / "plotspec",
     "workspace_api": ISAR_DIR / "workspace_api",
+    "intake": ISAR_DIR / "intake",
 }
 CORE_FILES = {"sandbox_api": ISAR_DIR / "sandbox_api.py"}
 
@@ -98,6 +99,9 @@ def test_importing_core_does_not_pull_in_qt_or_scipy():
     script = (
         "import sys\n"
         "import isar\n"
+        "import isar.intake.curves\n"
+        "assert not [m for m in sys.modules if m == 'isar.session' or m.startswith('isar.session.')], "
+        "'isar.session leaked into the intake read side (isar.intake must import it only inside functions)'\n"
         "import isar.workspace_api\n"
         "import isar.geometry\n"
         "import isar.plotspec.spec\n"

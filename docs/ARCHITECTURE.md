@@ -225,10 +225,14 @@ destroying data," and it is enforced in code, not aspirational:
   constants — Γ is the linewidth we report and a wrong resolution biases it directly.
 *(Implemented; module docstrings in `isar/reduce/` carry the details.)*
 
-**Tabulated elastic calibration (`tabulated_elastic`; a card switches it on).** The card names a
-folder of measured resolution curves, one per analyzer and slit. `calibrations.refresh_tabulated`
+**Tabulated elastic calibration (`tabulated_elastic`; a card switches it on).** The folder of measured
+resolution curves, one per analyzer and slit, is the experiment's saved folder (`intake/settings.jsonl`),
+else the card's `resolution_folder`; with none saved, an `rf/` beside the imported data is discovered and
+saved at the first import or run (`isar/intake/curves.py`). Each curve is identified by its content, and
+`report/curves.json` records the folder in force and what it holds. `calibrations.refresh_tabulated`
 runs in `isar run` after routing and writes `card.state.tabulated_calibration["exp:scan"]`, never
-the policy. Per scan it chooses the slit: a declared `slit` fact is kept, and another slit that fits
+the policy. Each analyzer's entry records the curve file and hash its zero was fitted with, and each
+scan records how its slit was chosen (`setting_basis`). Per scan it chooses the slit: a declared `slit` fact is kept, and another slit that fits
 the elastic lines clearly better (summed Poisson deviance ahead by 10 or more) only raises
 `slit_mismatch`. With none declared, the slit with the least summed deviance over the analyzers that
 have a significant elastic line and a curve at every candidate is used, flagged `slit_inferred`, and
@@ -476,6 +480,7 @@ rulings W1–W3.)*
 | Tabulated per-analyzer resolution (SARF curve per analyzer and slit) in the fit, in place of the Voigt | Implemented |
 | Slit ladder: declared slit, else inferred from the elastic lines; `slit_mismatch`, `slit_inferred`, `slit_ambiguous` alerts | Implemented |
 | Per-analyzer elastic zero (`tabulated_elastic`) with labelled `pipeline_zero` fallback; real-data proof `proofs/test_bl43_resolution.py` | Implemented |
+| Resolution-curve folder as an experiment setting, `rf/` discovery, curve content identity (BL43LXU) | Implemented |
 | Momentum (in-plane) resolution spread modelled inside the fit | Planned (after the SIXCIRCLE geometry) |
 | Adjudication (decide–record–defer) | Implemented (opt-in) |
 | Stage II: Baker–Cousins fit, evidence selection (H4; Akaike diagnostics retained), branch posterior, verdicts | Implemented |

@@ -5,6 +5,7 @@ Uses the artificial copies of two real SARF files (every number replaced, struct
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -133,6 +134,46 @@ def test_fingerprint_follows_the_files_and_a_stale_expectation_is_refused(folder
     with pytest.raises(ValueError, match="changed"):
         sarf.library_for(folder, PATTERN, fp)                            # a result made under fp is not rebuilt
     assert sarf.library_for(folder, PATTERN, fp2) is not lib
+
+
+def test_fingerprint_follows_the_content_at_the_same_size_and_mtime(folder):
+    fp = sarf.fingerprint(folder, PATTERN)
+    path = folder / "sarf_24Nov10_s48_60_60_a03"
+    st = path.stat()
+    data = path.read_bytes()
+    i = next(k for k in range(200, len(data)) if chr(data[k]).isdigit())   # one digit, changed in place
+    path.write_bytes(data[:i] + bytes([48 + (data[i] - 47) % 10]) + data[i + 1:])
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert path.stat().st_size == st.st_size and path.stat().st_mtime_ns == st.st_mtime_ns
+    assert sarf.fingerprint(folder, PATTERN) != fp
+
+
+def test_an_unreadable_curve_file_is_marked_in_the_fingerprint_and_the_rest_still_load(folder, monkeypatch, caplog):
+    fp = sarf.fingerprint(folder, PATTERN)
+    locked = folder / "sarf_24Nov10_s48_60_60_a03"
+    real_read_bytes = Path.read_bytes
+
+    def locked_read_bytes(self):
+        if self == locked:
+            raise PermissionError(f"[Errno 13] locked: {self.name}")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", locked_read_bytes)
+    with caplog.at_level(logging.WARNING, logger="isar.parsers.sarf"):
+        locked_fp = sarf.fingerprint(folder, PATTERN)                    # does not raise
+    assert locked_fp != fp and "sarf_24Nov10_s48_60_60_a03" in caplog.text
+    assert sarf.load_library(folder, PATTERN).get("a03", "20x20") is not None
+    monkeypatch.undo()
+    assert sarf.fingerprint(folder, PATTERN) == fp                       # readable again: the hash returns
+
+
+def test_curve_identity_names_the_bytes_each_curve_was_loaded_from(folder):
+    lib = sarf.load_library(folder, PATTERN)
+    assert [(c.detector_id, c.setting) for c in lib] == [("a03", "20x20"), ("a03", "60x60")]   # sorted
+    ident = sarf.curve_identity(folder, lib)
+    assert ident[("a03", "60x60")] == {"file": "sarf_24Nov10_s48_60_60_a03",
+                                       "sha256": hashlib.sha256((folder / CURVES[0]).read_bytes()).hexdigest()}
+    assert set(ident) == {("a03", "20x20"), ("a03", "60x60")}
 
 
 def test_fingerprint_follows_the_pattern_as_well_as_the_files(folder):

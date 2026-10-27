@@ -89,11 +89,13 @@ area.
 
 ## Hard Rules (each names the silent failure it prevents)
 
-1. **The experiment card is two files with opposite ownership.** `card.policy.toml` is
-   **hand-edited human intent** — detectors, column maps, collation/merge policy, fitting guidelines;
-   **code must never write it.** `card.state.json` is **machine-written** — calibration versions,
-   dispersion prior, exclusions. Writing policy from code silently overwrites the scientist's intent;
-   hand-editing state silently corrupts machine bookkeeping. (`isar/schema/`; ARCHITECTURE §5, GLOSSARY.)
+1. **ISAR should not overwrite an operator's values or settings on its own.** Writing policy from code
+   silently overwrites the scientist's intent; hand-editing state silently corrupts machine bookkeeping.
+   It holds because `card.policy.toml` is **hand-edited human intent** — detectors, column maps,
+   collation/merge policy, fitting guidelines — that **code must never write**; `card.state.json`
+   (calibration versions, dispersion prior, exclusions) and the `intake/` records are **machine-written**;
+   ISAR's only own write to a setting is a discovered resolution folder when none is saved.
+   (`isar/schema/`; ARCHITECTURE §5, GLOSSARY.)
 
 2. **Anti-Stokes amplitude is always derived, never fit.** It is Stokes × Bose factor
    `exp(−ℏω/k_BT)` — a *functional* tie (`isar/analyze/components.py:11-12`, `structures.py`). Freeing
@@ -123,15 +125,13 @@ area.
    the runtime path of a number** (P1): LLM output freezes into config before the deterministic
    fitter runs.
 
-7. **The GUI reads science, it never writes science.** `isar_gui` (PySide6 + pyqtgraph) is
-   read-only *with respect to scientific workspace interpretation*: everything it displays comes
-   through `workspace_api`, which never re-fits, re-collates from raw, or writes
-   (`isar/workspace_api/__init__.py`). Operational control is a separate channel and is allowed —
-   the GUI owns subprocesses (`isar init/run/drive` via `isar_gui/process.py`) and requests a
-   cooperative stop by atomically writing `report/control/stop-<token>.json`
-   (`isar_gui/operation_coordinator.py`). Stating this as "read-only viewer" is what previously led
-   contributors to think launching or stopping a campaign broke the architecture; interpreting a
-   number outside the fitter is what actually would.
+7. **What the user sees is what ISAR uses, and no science happens in the GUI.** The GUI computes, fits
+   and interprets nothing. It shows what ISAR has recorded and sends the user's actions down to ISAR (a
+   value, a condition, a setting, starting or stopping a run). A value shown as saved is the value every
+   later fit uses, and every fit records the values it used. Today that holds because ISAR keeps the only
+   copy, the GUI sends changes and never a snapshot, a refresh only reads, and `workspace_api` (the read
+   layer the GUI and notebooks share) never writes. The failure this prevents: a group reads one value on
+   screen while ISAR fits with another, as when a GUI refresh overwrote an entered value in LLMM.
 
 8. **A pooled master's f(E) is counts per reference monitor, not raw counts.** Rescale before
    comparing intensities across masters; comparing them as they stand silently mixes scales.
@@ -196,8 +196,11 @@ deliberate, production reads them) ·
 `report` · `synth` (Phase-1 synthetic core) / `synth_format` (synthetic-run tooling) ·
 `workspace_api` / `geometry` / `plotspec` (Qt-free; `workspace_api/config_gates.py` is the G16
 facade) ·
-`isar_gui` (reads science through `workspace_api`; controls campaigns by subprocess + control
-files). The Stage II ↔ III boundary is a **frozen file contract**
+`intake` (Qt-free; the BL43 append-only user-value and settings store in `isar/intake/`, whose writers
+the GUI calls in process; `workspace_api` only reads it) ·
+`isar_gui` (reads science through `workspace_api`, saves the user's values and settings in process
+through `isar.intake`, and controls campaigns by subprocess + control files).
+The Stage II ↔ III boundary is a **frozen file contract**
 (`report/results.csv`, `report/measurements.jsonl` — the counts-authoritative
 `isar.measurement-arena/1` log, one line per measured arena written before any fit is trusted to
 exist, `<workspace>/report/report.json`, `card.state.json`) — the driver never imports fit

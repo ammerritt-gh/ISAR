@@ -20,9 +20,20 @@ One directory per experiment (`isar/session/workspace.py`):
   card.state.json     # machine-owned accumulated state — experiment-critical, not deletable
   session.json        # machine bookkeeping (manifest + ledger) — deletable, rebuildable
   report/             # report.md/.html/.json, reduction.*, results.csv, modes.csv, figures/,
-                      # measurements.jsonl (counts-authoritative arena log), scene/ (revisions)
+                      # measurements.jsonl (counts-authoritative arena log), scene/ (revisions),
+                      # curves.json (BL43 resolution-curve check: folder, curves by content)
     scene/            # scene revisions: <digest>.json blobs + current.json pointer
+  intake/             # BL43 intake records, ISAR-written only: settings.jsonl (experiment
+                      # settings), .lock (held for one append)
 ```
+
+The `intake/` records are append-only: a save adds a line, a later line supersedes an earlier one for
+the same setting, and nothing is rewritten or erased. Only ISAR's own writers add to them. The
+experiment's resolution-curve folder is the latest `resolution_folder` line in `settings.jsonl`; it is
+saved by the GUI (or discovered once, at the first import or run, when none is saved) and never changed by
+an import, a run or a fit. `report/curves.json` records what the last check found: the folder in force, its
+fingerprint, each curve's content hash, and any other `rf/` folder that also holds curves. Imports and run
+starts write it; nothing else does.
 
 **The two card files have opposite ownership, and that is the point.**
 `card.policy.toml` is hand-edited human intent — detectors, column maps, collation and merge

@@ -58,17 +58,35 @@ def _matches(folder: Path, pattern: str) -> list[tuple[Path, str, str | None]]:
 
 
 def fingerprint(folder, pattern: str) -> str:
-    """A short hash of the folder's absolute path, the pattern and the matched files' names, sizes and modification
-    times (and their `.gpi`): a moved folder with identical files is a different library to every
-    calibration and fit that recorded its folder."""
+    """A short hash of the folder's absolute path, the pattern, and each matched file's name, size, modification
+    time and content (and its `.gpi`): a moved folder, or a curve replaced in place with its size and mtime
+    kept, is a different library to every calibration and fit that recorded it."""
     folder = Path(folder)
     rows = []
     for path, _det, _setting in _matches(folder, pattern):
         for p in (path, path.with_name(path.name + ".gpi")):
             if p.is_file():
-                st = p.stat()
-                rows.append((p.name, st.st_size, st.st_mtime_ns))
+                try:
+                    st = p.stat()
+                    rows.append((p.name, st.st_size, st.st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest()))
+                except OSError as exc:       # one locked file must not hold every analyzer; marked, so it changes back
+                    log.warning("sarf: %s unreadable for the fingerprint (%s); its row is marked", p.name, exc)
+                    rows.append((p.name, None, None, "unreadable"))
     return hashlib.sha256(repr((str(folder.resolve()), pattern, sorted(rows))).encode("utf-8")).hexdigest()[:16]
+
+
+def curve_identity(folder, library) -> dict:
+    """``{(detector, setting): {"file", "sha256"}}`` for each curve of ``library``, read from ``folder``: the
+    bytes the curve was loaded from. A curve whose file cannot be read is logged and left out."""
+    out = {}
+    for curve in library:
+        path = Path(folder) / curve.source
+        try:
+            out[(curve.detector_id, curve.setting)] = {"file": path.name,
+                                                       "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        except OSError as exc:
+            log.warning("sarf: %s unreadable for its identity (%s); left out", path.name, exc)
+    return out
 
 
 def _gpi_facts(path: Path) -> dict:

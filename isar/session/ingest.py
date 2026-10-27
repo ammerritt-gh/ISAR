@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from isar.intake import curves as intake_curves
 from isar.parsers import registry
 from isar.parsers.base import FileSet
 from isar.schema.card import Card
@@ -354,6 +355,7 @@ class IngestReport:
     passed_over: list = field(default_factory=list)  # {"set","scans","reason"}: summed sets whose scans are present
     gaps: list = field(default_factory=list)         # file_gaps output
     last_ingest: dict = field(default_factory=dict)  # persisted, additive operator summary
+    curves: dict | None = None                       # the resolution-curve check (BL43); {"error"} when it failed
     dirty: bool = False
 
     def to_jsonable(self) -> dict:
@@ -364,7 +366,8 @@ class IngestReport:
                 "refused": [dict(r) for r in self.refused],
                 "passed_over": [dict(p) for p in self.passed_over],
                 "gaps": [list(g) for g in self.gaps],
-                "last_ingest": dict(self.last_ingest)}
+                "last_ingest": dict(self.last_ingest),
+                "curves": None if self.curves is None else dict(self.curves)}
 
 
 def upsert_ingested_entry(session, rec, det, *, chash, prov) -> str:
@@ -421,7 +424,7 @@ def supersede_summed(session) -> bool:
     return changed
 
 
-def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestReport:
+def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_root=None) -> IngestReport:
     """Parse ``data_paths`` into the session ledger WITHOUT fitting (the retired unification plan §2.3, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 
     Discovers/classifies files (reusing :func:`discover`), parses the measurement files with the
@@ -437,6 +440,9 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
     identity-mismatched, or legacy-only (cheap, no ledger mutation — lets a re-ingest repair a
     pre-Phase-2 workspace without ticking ``dirty``). A unit
     write failure is logged and skipped; it never aborts the batch.
+
+    When ``workspace_root`` is given, the resolution-curve check runs once (BL43 only: see
+    :mod:`isar.intake.curves`) and its record lands on ``report.curves``.
 
     Mutates ``session`` in place; the caller persists it when ``report.dirty`` is true. Every call
     returns additive ``last_ingest`` evidence on the report (so an operator can distinguish a
@@ -465,6 +471,13 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None) -> IngestRep
 
     report = IngestReport()
     plan = discover(data_paths, card)
+    if workspace_root is not None:
+        try:
+            check = intake_curves.check_curves(workspace_root, card, data_paths, by="import")
+            report.curves = None if check is None else check.to_dict()
+        except Exception as exc:  # noqa: BLE001 — a failed curve check is reported, never aborts the batch
+            log.exception("ingest: resolution-curve check failed")
+            report.curves = {"error": f"{type(exc).__name__}: {exc}"}
 
     # --- parse measurement files/sets, tracking record -> source file(s) for dedup reporting ---
     got = _collect(plan, card, isolate=True, session=session, ledger=session)

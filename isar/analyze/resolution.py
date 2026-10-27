@@ -132,6 +132,11 @@ class ResolutionLibrary:
     def __len__(self) -> int:
         return len(self._curves)
 
+    def __iter__(self):
+        """Every curve, sorted by detector then setting (``None`` first, as ``settings`` sorts)."""
+        return iter(sorted(self._curves.values(),
+                           key=lambda c: (c.detector_id, c.setting is not None, c.setting or "")))
+
     def settings(self) -> list[str | None]:
         """Every setting with at least one curve, sorted (``None`` first)."""
         return sorted({s for _, s in self._curves}, key=lambda s: (s is not None, s or ""))

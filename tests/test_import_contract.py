@@ -27,7 +27,8 @@ WORKSPACE_API_DIR = REPO_ROOT / "isar" / "workspace_api"
 # G16: isar_gui may import ONLY the read facade, the vendored geometry, and the pure plotspec layer
 # (any depth below those). Everything else from isar.* — drive, session, analyze, reduce, report,
 # schema, cli, parsers … — is forbidden.
-GUI_ALLOWED = {"isar.workspace_api", "isar.geometry", "isar.plotspec"}
+# The intake writers are called in process by the GUI (saves go straight into the running ISAR).
+GUI_ALLOWED = {"isar.workspace_api", "isar.geometry", "isar.plotspec", "isar.intake.settings", "isar.intake.values"}
 
 # G7: only the sandbox viewmodel may cross from Qt land to the one frozen-config preview API.
 SANDBOX_VIEWMODEL = GUI_DIR / "viewmodels" / "sandbox.py"
@@ -99,6 +100,14 @@ WORKSPACE_API_ALLOWED = {
     # isar.drive.steering (the module that actually RUNS the generators) stays off this list;
     # workspace_api/agenda_view.py reads the current registry fingerprint, nothing else.
     "isar.schema.generators",
+    # The BL43 intake's read side. isar.intake.values (the writers) is deliberately absent: the facade never writes.
+    "isar.intake.store",
+    "isar.intake.settings",
+    "isar.intake.curves",
+    "isar.intake.inputs",
+    "isar.intake.scans",
+    "isar.intake.fit_inputs",
+    "isar.intake.readiness",
 }
 
 
@@ -186,4 +195,6 @@ def test_allowlist_logic_flags_a_known_violation():
     assert not _allowed("isar.analyze.loop", WORKSPACE_API_ALLOWED)
     assert _allowed("isar.plotspec.spec", GUI_ALLOWED)
     assert _allowed("isar.reduce.collate", WORKSPACE_API_ALLOWED)
+    assert not _allowed("isar.intake.values", WORKSPACE_API_ALLOWED)  # the read facade never writes
+    assert _allowed("isar.intake.values", GUI_ALLOWED)
     assert not _constrained("isar_gui.viewmodels.base")  # sibling package is not constrained
