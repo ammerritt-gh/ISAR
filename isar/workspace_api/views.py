@@ -18,6 +18,7 @@ from isar.schema.statistics import (
     PROBABILITY_SCHEMA,
     read_optional,
 )
+from isar.session.outcome import deep_pass_of, fast_pass_of
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +540,16 @@ class FitView:
         r = self._row.get("reasons")
         return [r] if r else []
 
+    @property
+    def fast_pass(self) -> dict:
+        """The stored fast-pass record (``{}`` when absent)."""
+        return fast_pass_of(self._outcome)
+
+    @property
+    def deep_pass(self) -> dict:
+        """The stored deep-pass record (``{}`` when absent)."""
+        return deep_pass_of(self._outcome)
+
     # -- resolution context (for the curve evaluator) -----------------------
     def resolution_context(self) -> dict | None:
         """``{center, gauss_fwhm, lorentz_fwhm, T}`` for :func:`isar.report.audit.reconstruct_curve`.
@@ -706,6 +717,7 @@ class ScanView:
     provenance: dict
     detectors: dict  # detector_id -> FitView
     hkl: list | None  # epoch-resolved when lattice_epochs exist, else acquisition-time hkl (or None)
+    reasons: tuple = ()  # the ledger entry's hold or exclusion reasons
 
     @property
     def experiment_id(self) -> str | None:

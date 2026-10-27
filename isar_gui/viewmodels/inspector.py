@@ -84,24 +84,71 @@ def _calibration_rows(block) -> dict:
 
 # Facts shown first, in this order; every other parsed fact follows, sorted by name.
 _FACT_FIRST = ("scan_label", "T_K", "hkl_nominal", "slit", "dq", "efficiency")
+MISSING_FACT_TEXT = "not available"   # the text of a missing fact; the scan inspector drops such rows
+CONFLICTS_SEP = "; conflicts: "       # what _fmt_fact puts before a source disagreement; the inspector keeps such rows
+
+
+def _finite(value) -> float | None:
+    """``value`` as a float, or None when it is missing, non-numeric or NaN (a BL43 preset is NaN)."""
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return None
+    return x if np.isfinite(x) else None
+
+
+_LIST_SHOWN = 4   # a longer list shows its count and this many values; the tooltip has them all
+
+
+class _Abridged(str):
+    """A fact's text as shown; ``full`` is the whole of it, for the tooltip."""
+
+    def __new__(cls, shown: str, full: str):
+        text = super().__new__(cls, shown)
+        text.full = full
+        return text
+
+
+def _item(v, full: bool) -> str:
+    if isinstance(v, int) and not isinstance(v, bool):
+        return str(v)   # a count prints exactly; .3g would show 1001 as 1e+03
+    try:
+        return f"{float(v):.3g}"
+    except (TypeError, ValueError):
+        return _value_text(v, full)
+
+
+def _value_text(value, full: bool) -> str:
+    """A fact value as readable text, never a Python repr; ``full=False`` shortens a long list."""
+    if isinstance(value, dict):
+        return ", ".join(f"{k}: {_value_text(v, full)}" for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        items = [_item(v, full) for v in value]
+        if not full and len(items) > _LIST_SHOWN:
+            return f"{len(items)} values: " + ", ".join(items[:_LIST_SHOWN]) + ", ..."
+        return "[" + ", ".join(items) + "]"
+    if isinstance(value, float):
+        return f"{value:.4g}"
+    return str(value)
 
 
 def _fmt_fact(fact: dict) -> str:
-    """One fact as ``value (source)``; a missing value says so, and a source disagreement is listed."""
+    """One fact as ``value (source)``; a missing value says so, and a source disagreement is listed.
+    A long list is shortened on screen; the returned string's ``full`` is the whole text."""
     value = fact.get("value")
     if value is None:
-        text = "not available"
-    elif isinstance(value, (list, tuple)):
-        text = _fmt_q(value) or str(value)
-    elif isinstance(value, float):
-        text = f"{value:.4g}"
+        shown = full = MISSING_FACT_TEXT
     else:
-        text = str(value)
-    text += f" ({fact.get('source')})"
+        shown, full = _value_text(value, False), _value_text(value, True)
+    source = f" ({fact.get('source')})"
+    shown += source
+    full += source
     conflicts = [c for c in (fact.get("conflicts") or []) if isinstance(c, dict)]
     if conflicts:
-        text += "; conflicts: " + ", ".join(f"{c.get('value')} ({c.get('source')})" for c in conflicts)
-    return text
+        extra = CONFLICTS_SEP + ", ".join(f"{c.get('value')} ({c.get('source')})" for c in conflicts)
+        shown += extra
+        full += extra
+    return _Abridged(shown, full)
 
 
 @dataclass
@@ -323,21 +370,16 @@ class InspectorViewModel(ViewModel):
             md["command"] = str(prov["command"])
         if prov.get("counting_mode"):
             md["counting mode"] = str(prov["counting_mode"])
-        if prov.get("preset") is not None:
-            try:
-                md["preset"] = f"{float(prov['preset']):g}"
-            except (TypeError, ValueError):
-                pass
+        preset = _finite(prov.get("preset"))
+        if preset is not None:
+            md["preset"] = f"{preset:g}"
         if prov.get("n_points") is not None:
             md["points"] = str(prov["n_points"])
         if prov.get("energy_status"):
             md["energy status"] = str(prov["energy_status"])
-        b = prov.get("B")
+        b = _finite(prov.get("B"))
         if b is not None:
-            try:
-                md["B"] = f"{float(b):g} T"
-            except (TypeError, ValueError):
-                pass
+            md["B"] = f"{b:g} T"
         if prov.get("q_rung") is not None:
             md["Q rung"] = f"{prov['q_rung']} ({prov.get('q_source')})"
         # Scan facts, then analyzer facts: every name the provenance holds, known names first.

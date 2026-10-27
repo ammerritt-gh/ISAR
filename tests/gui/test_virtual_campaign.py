@@ -1,8 +1,9 @@
-"""Virtual campaign from a cold GUI: reserve → launch → promote → adopt (no data required).
+"""Virtual campaign from a cold GUI: create → launch → promote → adopt (no data required).
 
 The drive engine is cold-start capable (it lazily runs `isar init` after its first scan); these
 tests cover the GUI side: the Campaign dock exists before any workspace does, Start with no
-workspace reserves a temporary one and launches into it, and the workspace the campaign creates
+experiment creates an ISAR-named experiment folder and launches into it (G19), and the workspace
+the campaign creates
 is promoted/adopted mid-run — including the awkward orderings (policy-only mid-init state,
 transient open failure, finish-before-tick, finish-before-init, rebind mid-promotion).
 """
@@ -79,14 +80,11 @@ class _FakeRunner:
 
 @pytest.fixture
 def cold(qtbot, monkeypatch):
-    """A cold (no-workspace) window with a fake drive runner. temp_root is already isolated by the
-    autouse LOCALAPPDATA redirect in conftest. These tests leave content-bearing temporary
-    workspaces behind, so the unsaved-temp close prompt (a modal — silent offscreen hang) is
-    resolved as 'keep for recovery', the house pattern from test_shell."""
+    """A cold (no-experiment) window with a fake drive runner. The experiments root is isolated by
+    the autouse ISAR_EXPERIMENTS_ROOT redirect in conftest."""
     monkeypatch.setattr(operation_coordinator, "ProcessRunner", _FakeRunner)
     _FakeRunner.instances.clear()
     w = MainWindow(None, session=Session(), watch=False)
-    monkeypatch.setattr(w, "_resolve_unsaved_temp_on_close", lambda: True)
     qtbot.addWidget(w)
     return w
 
@@ -139,7 +137,11 @@ def test_cold_window_has_the_campaign_entry(cold):
     w = cold
     assert w.campaign_dock is not None
     assert "Campaign" in w._docks
-    assert "virtual campaign" in w._empty_hint.text()
+    # G19: the Campaign tab exists in the right area with no experiment open.
+    from PySide6.QtCore import Qt
+    assert w.dockWidgetArea(w.campaign_dock) == Qt.RightDockWidgetArea
+    w.set_right_panel_collapsed(False)        # the Campaign tab is there beside Processing
+    assert w.campaign_dock in w.tabifiedDockWidgets(w.processing_dock)
 
 
 def test_pending_recovery_completion_status_is_resumable(cold):
@@ -151,12 +153,17 @@ def test_pending_recovery_completion_status_is_resumable(cold):
 
 
 # ---- reserve → launch → carry the form ----------------------------------------
-def test_virtual_start_reserves_a_temp_workspace_and_launches(cold):
+def test_virtual_start_creates_an_experiment_and_launches(cold, tmp_path):
+    from datetime import date
+
     w = cold
     _start_virtual(w, goal="map the acoustic branch")
     assert w._wsm.state() == "pending"
     root = w._wsm.root()
-    assert root is not None
+    # Named by ISAR as a drop is, under the (isolated) experiments root; no note for a default name.
+    assert root == tmp_path / "experiments" / f"Campaign_{date.today():%Y-%m-%d}"
+    assert root.is_dir()
+    assert w.experiment_strip._note.isHidden()
     assert w._operations.is_running_campaign()
     argv = _FakeRunner.instances[0].argv
     assert "--program" in argv
@@ -257,8 +264,8 @@ def test_rebind_mid_promotion_cancels_the_watch(cold, make_ws):
     assert w.load_workspace(other)
     assert not w._promote_timer.isActive() and w._promote_identity is None
 
-    # The contentless reserved dir was auto-discarded on rebind; even if the abandoned
-    # campaign's files rematerialized, the stale identity must not promote them.
+    # The pending folder stays where it is (nothing is discarded); even if the abandoned
+    # campaign's files appear in it later, the stale identity must not promote them.
     pending_root.mkdir(parents=True, exist_ok=True)
     _complete_init(pending_root)
     w._try_promote_campaign_workspace()       # no identity -> no-op
@@ -270,7 +277,7 @@ def test_rebind_mid_promotion_cancels_the_watch(cold, make_ws):
 # ---- form seeding honesty ------------------------------------------------------------
 def test_seeding_never_overwrites_a_recovered_form(cold, qtbot):
     w = cold
-    w.new_workspace()                         # a pending workspace (e.g. recovered) …
+    w.new_workspace()                         # a pending experiment (e.g. reopened from Recent) …
     root = w._wsm.root()
     store = GuiStore.load(root)               # … that already carries a campaign form
     store.set_campaign_form({"source": "goal", "goal": "the recovered goal"})

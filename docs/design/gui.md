@@ -2,7 +2,7 @@
 
 > **Status:** live
 > **Authority:** canonical GUI + workspace_api presentation design
-> **Verified against code revision:** `d0ea1df` (2026-07-25)
+> **Verified against code revision:** `cafb75b` (2026-10-27)
 
 **Status:** Design draft, 2026-07-11, substantially built. This document follows the discipline of
 `../ARCHITECTURE.md`: nothing is described in the implemented voice unless it is. Because roughly the first
@@ -11,15 +11,19 @@ verified implementation detail and mirrors the capability status in `../ARCHITEC
 override that canonical status table. The Planned voice of the body text predates the build and is
 preserved as the design record.
 
-### As-built status (verified against `isar_gui/` and `isar/`, 2026-07-25)
+### As-built status (verified against `isar_gui/` and `isar/`, 2026-10-27)
 
 | Phase / capability | Status | Evidence |
 |---|---|---|
 | **Phase 0** — Qt-free workspace read API + geometry layer | **Implemented** | `isar/workspace_api/` (`workspace.py`, `views.py`, `watch.py`, `evaluate.py`), `isar/geometry/`, Qt-free-core test |
 | **Phase A** — read-only viewer, surfaces C1–C5 | **Implemented** | `views/browser_dock.py`, `inspector_widget.py`, `heatmap_pane.py`, `waterfall_pane.py`, `dispersion_pane.py` |
-| **Pass 3** — workflow layout (center view host, versioned dock layout) | **Implemented** (G18) | `views/center_host.py` |
+| **Pass 3** — workflow layout (center view host, versioned dock layout) | **Implemented** (G18); its window arrangement and layout fallback are superseded by G24 | `views/center_host.py`, `main_window.py` |
 | **Pass 3** — campaign workspace: launcher, live feed, cooperative stop | **Implemented** (G19) | `views/campaign_dock.py`, `control/stop-<token>.json` protocol |
 | **Pass 3** — compact campaign monitor | **Implemented** (G20) | `views/campaign_monitor.py` |
+| **Desktop window** — one arrangement in every state: scan list in the left column, Processing and Campaign on the right, Log and Output below (G24) | **Implemented** (2026-10-27); the display at the laptop's narrowest combination is an open item (§0quinquies) | `main_window.py`, `views/experiment_strip.py`, `views/output_bar.py`, `views/processing_panel.py`, `tests/gui/test_window_frame.py` |
+| **Experiment as a real folder** — drop-to-create, Rename, Save copy as…, Export… (G25) | **Implemented** (2026-10-27) | `workspace_manager.py`, `views/files_strip.py`, `export_action.py`, `isar/report/export.py` |
+| **Scan list and scan inspector** — BL43 scan-set tree, status words, filter and sort, inspector inside the left panel (G24) | **Implemented** (2026-10-27) | `isar/workspace_api/scan_list.py`, `viewmodels/scan_list.py`, `views/scan_list.py`, `views/scan_inspector.py`, `theme.py` |
+| **Left side, stage two** — setup section, *Locate…*, *Details…*, needs-attention list, fact table, out-of-date marks (G24, G25) | **Planned** (waits on job `jfada74237892`, the intake backend) | none yet |
 | **Read-only display grammar** — WISH-1/2/3/9 | **Implemented** (G23) | `isar/workspace_api/display.py`, `isar/plotspec/`, plane/dispersion/inspector viewmodels and panes |
 | **Phase B** — planner (C6): objective authoring, forbidden-zone rendering | **Planned** | no objective editor or planner module exists |
 | **Phase C** — directives: inbox, drain protocol, NL compilation, dispersion editor | **Planned** | no directive or inbox machinery exists |
@@ -63,6 +67,8 @@ in the referenced section.
 | G12 | Donor repositories: **ACIDD** (cut gesture, coordinate-layer-under-image-view, templates, session persistence), **PUFFIN** (live-parameter fitting grammar, MVVM + worker threads), **ISAR** (everything that thinks). All three are GPL-3; code may be lifted with copyright notices. The GUI is **assembly, not invention**. | §11 |
 | G13 | Phasing: Phase 0 workspace read API → Phase A read-only viewer → Phase B planner → Phase C directives/sandbox/live dashboard. Read-only first so nothing destabilizes the pending TAVI SVP. | §13 |
 | G23 | **Individual fits show evidence; pooled masters show the current answer; only a revision-matched assessment can certify.** State colouring is the default; one shared persisted action switches plane and dispersion to mutually exclusive entropy colouring. Strip colour and latest-acquisition highlighting have one backend-neutral semantic contract. | §7.3, §8 |
+| G24 | **One arrangement in every state.** Left column (experiment strip, files strip, scan list, full height); the display; Processing and Campaign on the right; Log and Output below; the scan inspector inside the left panel; laptop or desktop chosen at first start. | §0quinquies |
+| G25 | **The experiment is a real folder.** Drop-to-create under `Documents\ISAR`, Rename, Save copy as…, Export… through `isar export`, no temporary workspace. | §0quinquies |
 
 ---
 
@@ -119,7 +125,7 @@ history):
   are tool panels only. Auto-follow (selection → scan page, campaign start → plane page) is
   user-overridable and display switching remains pure view state (G10 unchanged). Saved dock
   layouts are version-gated (`saveState(version)`): an old blob fails restore atomically and the
-  window falls back to the programmatic Pass-3 default — never a binary migration.
+  window falls back to the programmatic default of the current screen (G24 supersedes the Pass-3 default) — never a binary migration.
 - **G19 — Campaign observation and control.** The GUI *observes* a campaign exclusively through
   workspace artifacts (`ws.session_events()` over `report/session_log.jsonl` — the §7 watch
   promise, now exercised; the terminal `campaign_summary.json` only after the loop ends) and
@@ -142,17 +148,17 @@ history):
   primary action is a verified Resume, and the launcher never emits `--tier` on a resume.
   **A campaign needs no data and no workspace** — the drive engine is cold-start capable (lazy
   `isar init` after its first scan), so the Campaign dock exists in every window state and a
-  Start with no workspace at all runs the reserve → launch → promote → adopt lifecycle: the
-  window reserves a temporary directory (`new_temp`, the same recovery-covered machinery data
-  drops use), launches the campaign into it, and polls
+  Start with no workspace at all runs the create → launch → promote → adopt lifecycle: the
+  window first creates an ISAR-named experiment, as a drop does (amended 2026-10-27, G25; it
+  reserved a temporary directory before), launches the campaign into it, and polls
   `WorkspaceManager.promote_pending_if_ready` (all three init files, identity-checked against
   the armed root+generation) until the workspace the campaign created opens; the coordinator
   then rebases the running job onto the new generation (`adopt_drive_binding` — control token
   untouched, so cooperative Stop spans the promotion). The window never inspects workspace
   files; readiness detection lives in the manager. A campaign that dies before its first scan
-  leaves the reservation pending and retryable.
-- **G20 — Compact campaign monitor.** The small window is an explicit mode, not a responsive
-  collapse: same window, dock layout stashed in memory, central stack swapped to a glanceable
+  leaves the experiment pending and retryable.
+- **G20 — Compact campaign monitor.** Compact mode is an explicit mode (*View ▸ Compact mode*), not a
+  responsive collapse; a laptop-sized window does not start in it (G24): same window, dock layout stashed in memory, central stack swapped to a glanceable
   card (status, current scan, budget, mini plane, log ticker, cooperative Stop). Read-only; the
   session file always carries the full layout.
 
@@ -168,6 +174,92 @@ assessment matching, interval authority, fit-display state, and latest-completed
 selection. `isar.plotspec` carries directional errors, composed glyph tokens, semantic regions,
 and strip colour-map ownership; matplotlib and pyqtgraph map those tokens without reclassifying
 science. The GUI contributes only session-persisted display mode and colourbar interaction.
+
+### 0quinquies. The left-side arrangement and the experiment (2026-10-27)
+
+The design for the le Tacon beamtime was approved with four amendments on 2026-10-27. The committed
+mockup, `mockups/2026-10-27-isar-left-side.html` with its laptop frame
+`mockups/2026-10-27-isar-left-side-laptop.png`, is the reference for look and arrangement; where it
+differs from this text, this text governs. This section supersedes G18's programmatic default and its
+empty/ready layout pair, and amends G19 as stated below.
+
+- **G24 — one arrangement in every state.** The window keeps the same arrangement from first launch
+  onward; nothing rearranges when the first data arrives. Left column, top to bottom: the experiment
+  strip, the files strip, then the scan list, which takes the remaining height and runs past the
+  bottom bar. Centre: the display (the G18 pages, unchanged by this section). Right panel:
+  *Processing* (the default tab) and *Campaign* (the G19 content, unchanged), which collapses to a
+  slim *Processing ‹* rail. Bottom bar, under the centre and the right panel only: Log on the left,
+  Output on the right (G25). The scan inspector is part of the left panel: opening it widens the left
+  panel beside the scan list, and its ✕ pulls the panel back; the display gives and regains that
+  width. The old Files, Scans, Browser, Card and Scan Table panels are parked, hidden by default and
+  reachable from *View ▸ Panels*; their code is unchanged. The centre's unit-mode metadata panel now
+  lives in the scan inspector, and a raw unit in the display shows its counts plot alone (operator,
+  amendment 2: "like the LHS panel just extending out a bit when inspecting a scan ... It's not a
+  column on its own"). The first start picks the arrangement from the screen's available area:
+  desktop only at 1800 × 1000 logical px or more, otherwise laptop, which starts with the right panel
+  collapsed. A saved arrangement is restored only when it is version 4, its recorded size fits the
+  screen and Qt accepts it; otherwise the default for the current screen is used and one Log line says
+  why. *View ▸ Reset layout* returns to the default for the current screen. `run-isar-gui.bat` starts
+  the GUI with `pythonw`, so no console window opens.
+  **Known limit, accepted (2026-10-27, amendment 4).** Opening the scan inspector on a laptop collapses
+  Processing, so the plot keeps its width. If the user re-expands Processing while the inspector is open,
+  the display is held at its 300 px minimum, the fit page's own side tables take most of it, and its plot
+  measures about 86 px wide (offscreen measurement). The user can expand it again and accept a narrower
+  plot (operator, amendment 4: "on small screens some things get squished, but we can try to make it
+  more user-friendly").
+- **G25 — the experiment is a real folder.** With no experiment open, a drop, *Add files…* or
+  *Add folder…* creates one at once. It is named after the dropped folder (or, for loose files, their
+  common name), placed under `Documents\ISAR\` (Windows' Documents folder), with a numeric suffix when
+  the name is taken, and the files are read into it. A single dropped experiment folder with no
+  experiment open is opened, not copied. A one-time note in the experiment strip says ISAR named it and
+  offers *Rename*; it can be dismissed. *New experiment…* creates `Experiment_<YYYY-MM-DD>` the same way.
+  There is no temporary workspace and no unsaved state: the folder exists from creation, and what ISAR
+  computes is written there as it arrives (the Output bar says where and when). With an experiment
+  open, a drop anywhere in the window is read into it.
+  - *Rename* changes the folder's name and the experiment's name together, completely or not at all.
+    It is refused, with the reason shown, while an engine command or an export writes in the folder,
+    and when the experiment holds its own source data files, since its manifest names them inside the
+    folder and a rename would leave ISAR unable to find them. When the experiment has fits and its
+    resolution curves sit inside its folder, the Rename dialog says in one line that the next *Run
+    analysis* refits those spectra: ISAR recognises a curve set by its folder's path (operator,
+    amendment 1: accepted).
+  - *Save copy as…* copies the whole folder to a new one. The original stays the active experiment and
+    new data keeps going to it; the copy is offered with *Open copy*, and the Log says what the copy
+    still reads from outside its folder.
+  - *Export…* runs `isar export` through the operation queue and names the new folder when it is
+    done. Both passes are exported side by side, each labelled, and nothing picks one (operator,
+    amendment 3).
+  - *Save copy as…* and *Export…* are unavailable, with the reason beside them, while there is no
+    experiment, while an ingest, an analysis, a campaign or an export is writing to it, and while
+    nothing has been read into it yet.
+  - Campaign *Start* with no experiment open creates an ISAR-named experiment first, as a drop does,
+    and launches the campaign into it (G19, amended above).
+- **Scan list (G24).** One row per scan set, labelled by its scan number when its files carry exactly
+  one and otherwise by the set's name; the analyzers sit beneath it. Each status is a coloured dot and
+  a word, and the word is the one the stored records give. *Parsed* claims only that the file was read:
+  never calibration, a resolution curve or a fit. *Fast pass* and *Deep pass* show each pass's stored
+  state, or `not run` where nothing is stored, side by side, with no result picked as "the" result. The
+  centre plot keeps drawing the fast-pass fit. A missing temperature or Q shows a dash with its reason
+  on hover, and a background update keeps selection, expansion and scroll.
+- **Scan inspector (amendment 4, operator via orchestrator, 2026-10-27).** The inspector keeps every
+  row of the old centre metadata that the unit has a value for: the QC flags, the target Q, the
+  campaign-era command and counting mode, the status, type, energy status, calibration rows, the scan
+  and analyzer facts, preset, B and Q rung, in a "Scan metadata" section below Processing. A missing
+  fact has no row; the hashed unit key and the rows the inspector draws itself (analyzer, temperature,
+  Q, slit, points, file, scan numbers) are not repeated. The section scrolls, and the labels elide with
+  the full name as tooltip. On a laptop-size window, opening the inspector collapses an
+  expanded Processing panel to its rail; the user may expand it again, and closing the inspector does
+  not expand it. A desktop-size window is unchanged.
+- **Stage two (Planned, waits on job `jfada74237892`, the intake backend).** Not built: the setup
+  section and *Locate…* for the resolution-curve folder; *Details…* for the experiment's descriptive
+  fields; a needs-attention list with ticked-scan entry; the inspector's fact table with *Set my
+  value…*, *Use the file's value*, *Mark dead* and *In use*; and the out-of-date mark (warning colour
+  with a tooltip) on a fit whose inputs changed. User values are only ever added, never file values
+  edited (operator ruling, 2026-10-27). Stage two reads the intake backend's named contracts and keeps
+  no second store for the same facts.
+- **Pinned for later, not built here:** the analyzer overview in the centre, the batch queue, automatic
+  export to an outside folder, `gpi.*` parsing for per-analyzer Q, and user values for Q and for facts
+  other than temperature, slit and dead analyzers.
 
 ---
 

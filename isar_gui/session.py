@@ -82,6 +82,24 @@ class Session:
         self.recent_workspaces = [p] + [q for q in self.recent_workspaces if q != p]
         del self.recent_workspaces[_MAX_RECENT:]
 
+    def rename_workspace(self, old, new) -> None:
+        """An experiment folder was renamed: follow it in the recents and the remembered Run dialog.
+
+        ``old`` is replaced by ``new`` in place (its position in the recents is kept; an older entry
+        already equal to ``new`` is dropped). ``view_state["run"][old]`` moves to ``new``. An ``old``
+        that was never recorded (a transient one) is not added.
+        """
+        old_s, new_s = str(Path(old)), str(Path(new))
+        recent: list[str] = []
+        for q in self.recent_workspaces:
+            q = new_s if str(Path(q)) == old_s else q
+            if q not in recent:
+                recent.append(q)
+        self.recent_workspaces = recent
+        runs = self.view_state.get("run")
+        if isinstance(runs, dict) and old_s in runs:
+            runs[new_s] = runs.pop(old_s)
+
     @classmethod
     def from_dict(cls, data: dict | None) -> "Session":
         """Build defensively from persisted data; bad/missing fields fall back to defaults."""

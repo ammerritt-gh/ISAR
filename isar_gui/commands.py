@@ -84,6 +84,11 @@ def build_ingest_command(python: str, data_paths, workspace: str, *, json: bool 
     return cmd
 
 
+def build_export_command(python: str, workspace: str) -> list[str]:
+    """The argv for ``isar export --workspace <ws> --json``: stored results only, no refit."""
+    return [python, "-m", "isar", "export", "--workspace", str(workspace), "--json"]
+
+
 def build_detect_command(python: str, data: str) -> list[str]:
     """The argv for ``isar detect <data> --json``. Retained for a planned Files-dock detect-preview
     (no production caller today — see :class:`DetectResult`)."""
@@ -339,6 +344,7 @@ class GuiIngestReport:
     deduped: tuple = ()
     gaps: tuple = ()
     last_ingest: dict | None = None
+    import_record_error: str | None = None      # BL43: the import record was not written
 
 
 def parse_ingest_json(text) -> "GuiIngestReport | None":
@@ -366,6 +372,7 @@ def parse_ingest_json(text) -> "GuiIngestReport | None":
                 gaps=tuple(tuple(g) for g in (obj.get("gaps") or ())),
                 last_ingest=(dict(obj["last_ingest"])
                              if isinstance(obj.get("last_ingest"), dict) else None),
+                import_record_error=obj.get("import_record_error") or None,
             )
     return None
 

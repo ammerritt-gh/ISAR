@@ -35,9 +35,12 @@ watcher. The watcher never writes to the workspace.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import threading
 import time
+
+log = logging.getLogger(__name__)
 
 # Logical name -> path parts relative to the workspace root. The fixed watched set (P0-5).
 _WATCHED: dict[str, tuple[str, ...]] = {
@@ -65,6 +68,26 @@ def _stat_key(path):
     except OSError:
         return None
     return (st.st_mtime_ns, st.st_size)
+
+
+def last_written(root) -> float | None:
+    """Newest ``st_mtime`` (epoch seconds) among the files the watch set names, or ``None``.
+
+    ``None`` means none of the :data:`_WATCHED` files exists under ``root`` yet. A stat only: it
+    never parses, so the GUI can ask on every bind without cost.
+    """
+    newest = None
+    for parts in _WATCHED.values():
+        try:
+            mtime = os.stat(os.path.join(root, *parts)).st_mtime
+        except FileNotFoundError:
+            continue  # not written yet
+        except OSError as exc:
+            log.debug("last_written: cannot stat %s: %s", os.path.join(root, *parts), exc)
+            continue  # transiently unreadable reads as "no file"
+        if newest is None or mtime > newest:
+            newest = mtime
+    return newest
 
 
 class _Debouncer:

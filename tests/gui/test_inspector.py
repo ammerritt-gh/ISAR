@@ -560,17 +560,20 @@ def test_main_window_routes_unit_key_to_set_unit(qtbot, make_ws):
     assert w.inspector_vm.is_empty
 
 
-def test_widget_unit_mode_hides_fit_sections_shows_metadata(qtbot, make_ws):
+def test_widget_unit_mode_shows_the_counts_plot_alone(qtbot, make_ws):
+    # The scan-metadata panel lives in the scan inspector now: a raw unit shows its counts plot at the
+    # display's full width, with no side column.
     ws = _unit_ws(make_ws)
     vm = InspectorViewModel(ws)
     w = InspectorWidget(vm)
     qtbot.addWidget(w)
     vm.set_unit("s30:12:ana3")
-    assert w._metadata_label.isVisibleTo(w)
-    assert "command" in w._metadata_label.text()
+    assert not hasattr(w, "_metadata_label")
+    assert not w._side.isVisibleTo(w)
     for hidden in (w._ladder, w._ladder_header, w._candidates, w._verdict_header,
                    w._provenance_header):
         assert not hidden.isVisibleTo(w)
+    assert len(w._main_plot.listDataItems()) >= 1
 
 
 def test_widget_unit_then_fit_restores_fit_sections(qtbot, make_ws):
@@ -583,7 +586,7 @@ def test_widget_unit_then_fit_restores_fit_sections(qtbot, make_ws):
     fit_ws = _ws_with(make_ws, _outcome())
     vm.set_fit(_fit(fit_ws))
     assert w._ladder.isVisibleTo(w) and w._verdict_header.isVisibleTo(w)
-    assert not w._metadata_label.isVisibleTo(w)
+    assert w._side.isVisibleTo(w)
 
 
 # ---- MVP-16 smoke (read-only) ------------------------------------------------

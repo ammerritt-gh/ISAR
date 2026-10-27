@@ -1,15 +1,15 @@
 """Shell tests: MainWindow builds against a synthetic workspace; the Docks menu syncs both ways."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("PySide6")
 
 from isar.workspace_api import Workspace
-from isar_gui.commands import GuiIngestReport
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
-from synthetic_ws import scan_entry, stamp_ws
 
 
 def _open(make_ws):
@@ -48,27 +48,28 @@ def test_main_window_builds(qtbot, make_ws):
 
 
 def test_empty_start_window(qtbot):
-    """No workspace (empty-start): the window opens with the Open-Workspace hint as its central
-    widget, no watch bridge (even with watch enabled), only data-entry/diagnostic docks, and 'no
-    workspace' in the status bar."""
+    """No workspace (empty-start): the window opens with its one arrangement, the display built over
+    the null workspace (never a hint page that vanishes when data arrives), no watch bridge (even
+    with watch enabled), no scan-centric docks, and 'No experiment open' in the status bar."""
     w = MainWindow(None, session=Session(), watch=True,
                    watch_kwargs={"poll_interval_s": 0.02, "debounce_ms": 50})
     qtbot.addWidget(w)
     assert w.is_empty
     assert w._bridge is None                       # never watch a workspace that isn't there
-    # The central widget is the permanent stack; the empty state shows its hint page (index 0) and
-    # builds no CenterHost.
-    assert w.centralWidget() is w._center_stack
-    assert w._center_stack.currentWidget() is w._empty_hint
-    assert w._center_host is None
-    assert "Open Workspace" in w._empty_hint.text()
-    assert w.windowTitle() == "ISAR — (no workspace)"
-    assert "No workspace" in w.statusBar().currentMessage()
-    # Workspace-specific docks are withheld until data has a workspace.  Files is the useful
-    # first-time surface for adding/dropping data; Campaign is the OTHER way in (a virtual
-    # campaign creates its own workspace); Log remains available for visible failures.
-    assert set(w._docks) == {"Log", "Files", "Campaign"}
-    assert w.files_dock.isVisible() is False  # the window itself has not been shown yet
+    # The central widget is the frame (inspector column | display stack, then the rail); the display
+    # is built in the empty state too, and the hint page is only the parking page.
+    assert w.centralWidget() is not w._center_stack
+    assert w._center_stack.isAncestorOf(w._center_host) and w._center_host is not None
+    assert w._center_stack.currentWidget() is w._center_host
+    assert "Nothing to show yet" in w._empty_hint.text()
+    assert "Nothing to show yet" in w.inspector._empty_label.text()
+    assert w.windowTitle() == "ISAR — no experiment"
+    assert "No experiment open" in w.statusBar().currentMessage()
+    # Workspace-specific docks are withheld until data has a workspace.  The old Files dock stays
+    # reachable from View > Panels (hidden); Campaign is the OTHER way in (a virtual campaign creates
+    # its own workspace); Log and Processing are always there.
+    assert set(w._docks) == {"Log", "Files", "Campaign", "Processing"}
+    assert w.files_dock.isHidden()
     assert not hasattr(w, "browser_dock")
     assert not hasattr(w, "card_dock")
     assert not hasattr(w, "scans_dock")
@@ -78,18 +79,6 @@ def test_empty_start_window(qtbot):
     assert w.heatmap_vm.spec.strips == []
     # workspace_path stays None (not the string "None") in the hidden browser model.
     assert w.browser_vm.card_summary["workspace_path"] is None
-
-
-def test_empty_start_keeps_log_compact_and_files_prominent(qtbot):
-    """A first-time window must lead with data entry, not a giant mostly-empty log."""
-    w = MainWindow(None, session=Session(), watch=False)
-    qtbot.addWidget(w)
-    w.show()
-    qtbot.waitUntil(lambda: w.files_dock.isVisible())
-    # The queued empty-start layout runs after any restored state.  On the 800px default window the
-    # requested 180px log height leaves the useful Files dock with the clear majority of the space.
-    qtbot.waitUntil(lambda: w.log_dock.height() <= 240)
-    assert w.files_dock.height() > w.log_dock.height()
 
 
 def test_open_workspace_from_empty_binds(qtbot, make_ws):
@@ -104,7 +93,6 @@ def test_open_workspace_from_empty_binds(qtbot, make_ws):
     assert w.load_workspace(str(root)) is True
     assert not w.is_empty
     # The inspector is now the CenterHost's "scan" page (the stack shows the host, not the inspector).
-    assert w.centralWidget() is w._center_stack
     assert w._center_host is not None
     assert w._center_stack.currentWidget() is w._center_host
     assert w._center_host.pane("scan") is w.inspector
@@ -119,13 +107,13 @@ def test_open_workspace_from_empty_binds(qtbot, make_ws):
         assert w._center_host.pane(key) is not None
 
 
-def test_empty_start_autosave_preserves_full_workspace_layout(qtbot):
-    """The sparse welcome scaffold must never replace a previously saved full dock layout."""
-    saved_layout = "persisted-full-layout"
-    w = MainWindow(None, session=Session(dock_layout_b64=saved_layout), watch=False)
+def test_empty_start_autosave_saves_the_one_arrangement(qtbot):
+    """The empty state has the same arrangement as a ready one, so it saves it (and its needs)."""
+    w = MainWindow(None, session=Session(dock_layout_b64="persisted-full-layout"), watch=False)
     qtbot.addWidget(w)
     snap = w._snapshot_session()           # would raise on Path(None) if note_workspace ran
-    assert snap.dock_layout_b64 == saved_layout
+    assert snap.dock_layout_b64 != "persisted-full-layout"   # replaced by this window's own state
+    assert snap.view_state["window_layout"]["version"] == 4
     assert snap.recent_workspaces == []
 
 
@@ -152,10 +140,10 @@ def test_docks_menu_toggles_log_dock(qtbot, make_ws):
     qtbot.addWidget(w)
     w.show()
 
-    # Find the Log action in the Docks menu.
+    # Find the Log action in the View > Panels menu.
     action = None
-    for a in w.menuBar().actions():
-        if a.menu() and a.text().replace("&", "") == "Docks":
+    for a in w._view_menu.actions():
+        if a.menu() and a.text().replace("&", "") == "Panels":
             for sub in a.menu().actions():
                 if sub.text() == "Log":
                     action = sub
@@ -352,237 +340,63 @@ def test_dock_location_change_triggers_autosave(qtbot, make_ws, monkeypatch):
     assert calls == [1]
 
 
-# ---- Phase C: workspace-first shell (temp / title / close / recents) --------
-def _stamp_temp_ws(temproot, name="ws-1"):
-    root = temproot / name
-    root.mkdir(parents=True)
-    return stamp_ws(root, rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
-
-
-def _install_fake_msgbox(monkeypatch, choice):
-    """Replace main_window.QMessageBox with a fake that auto-clicks ``choice`` on exec and counts
-    instantiations, so a closeEvent prompt can be asserted without a real modal dialog."""
-    from PySide6.QtWidgets import QMessageBox as RealMB
-
-    state = {"count": 0}
-
-    class FakeMB:
-        Icon = RealMB.Icon
-        ButtonRole = RealMB.ButtonRole
-
-        def __init__(self, parent=None):
-            self._btns = {}
-            self._clicked = None
-            state["count"] += 1
-
-        def setIcon(self, *a):
-            pass
-
-        def setWindowTitle(self, *a):
-            pass
-
-        def setText(self, *a):
-            pass
-
-        def setInformativeText(self, *a):
-            pass
-
-        def addButton(self, label, role):
-            btn = object()
-            self._btns[label] = btn
-            return btn
-
-        def setDefaultButton(self, *a):
-            pass
-
-        def exec(self):
-            self._clicked = self._btns[choice]
-
-        def clickedButton(self):
-            return self._clicked
-
-    monkeypatch.setattr("isar_gui.main_window.QMessageBox", FakeMB)
-    return state
-
-
-def test_new_workspace_pending_title_is_unsaved(qtbot, tmp_path, monkeypatch):
-    import isar_gui.workspace_manager as wm
-
-    monkeypatch.setattr(wm, "temp_root", lambda: tmp_path / "temp")
+# ---- the experiment is a real folder (title / close / recents) ---------------
+def test_new_experiment_is_a_pending_real_folder_named_in_the_title(qtbot, tmp_path):
     w = MainWindow(None, session=Session(), watch=False)
     qtbot.addWidget(w)
 
     w.new_workspace()
+    root = w._wsm.root()
     assert w._wsm.state() == "pending"
-    assert w._wsm.is_temporary()
-    assert "Unsaved" in w.windowTitle()
+    assert root is not None and root.is_dir() and root.parent == tmp_path / "experiments"
+    assert w.windowTitle() == f"ISAR — {root.name}"   # never "Unsaved"
     assert w.is_empty                                   # pending is an empty bind (docks show empty)
-    assert "temporary workspace" in w._empty_hint.text().lower()
+    assert w.experiment_strip._name.full_text() == root.name
 
 
-def test_close_prompts_and_discards_content_bearing_temp(qtbot, tmp_path, monkeypatch):
-    import isar_gui.workspace_manager as wm
+def test_close_never_prompts(qtbot, monkeypatch, make_ws):
     from PySide6.QtGui import QCloseEvent
 
-    temproot = tmp_path / "temp"
-    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
-    root = _stamp_temp_ws(temproot)
+    class _NoBox:
+        def __init__(self, *a, **k):
+            raise AssertionError("closing ISAR must not ask anything")
+
+    ws, _ = _open(make_ws)
     w = MainWindow(None, session=Session(), watch=False)
     qtbot.addWidget(w)
-    assert w.load_workspace(str(root)) is True
-    assert w._wsm.is_temporary() and w._wsm.has_content()
-
-    counter = _install_fake_msgbox(monkeypatch, choice="Discard")
+    w.new_workspace()                                   # a pending experiment …
+    assert w.load_workspace(str(ws.root))               # … left for a ready one, nothing asked
+    monkeypatch.setattr("isar_gui.main_window.QMessageBox", _NoBox)
     monkeypatch.setattr(w._autosaver, "flush_now", lambda: None)  # don't touch the real session file
-    w.closeEvent(QCloseEvent())
-    assert counter["count"] == 1                        # a content-bearing temp workspace prompts
-    assert not root.exists()                            # Discard removed the temp analysis
+    event = QCloseEvent()
+    w.closeEvent(event)
+    assert event.isAccepted()
 
 
-def test_close_does_not_prompt_for_saved_workspace(qtbot, tmp_path, monkeypatch, make_ws):
-    import isar_gui.workspace_manager as wm
-    from PySide6.QtGui import QCloseEvent
-
-    monkeypatch.setattr(wm, "temp_root", lambda: tmp_path / "temp")  # make_ws roots elsewhere
-    ws, _ = _open(make_ws)
+def test_invalid_open_keeps_the_open_experiment(qtbot, tmp_path, make_ws):
+    """A folder that is not an experiment (here an empty one) is refused, not adopted."""
+    ws, root = _open(make_ws)
     w = MainWindow(ws, session=Session(), watch=False)
     qtbot.addWidget(w)
-    assert not w._wsm.is_temporary()
-
-    counter = _install_fake_msgbox(monkeypatch, choice="Discard")
-    monkeypatch.setattr(w._autosaver, "flush_now", lambda: None)
-    w.closeEvent(QCloseEvent())
-    assert counter["count"] == 0                        # a saved workspace closes without a prompt
-
-
-def test_open_valid_workspace_can_keep_temporary_work_for_recovery(
-        qtbot, tmp_path, monkeypatch, make_ws):
-    """Keeping is a real fourth choice: opening another workspace leaves recoverable temp work."""
-    import isar_gui.workspace_manager as wm
-
-    temproot = tmp_path / "temp"
-    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
-    temp = _stamp_temp_ws(temproot)
-    target = make_ws(rows=[])
-    w = MainWindow(None, session=Session(), watch=False)
-    qtbot.addWidget(w)
-    assert w.load_workspace(temp)
-
-    counter = _install_fake_msgbox(monkeypatch, choice="Keep for Recovery")
-    assert w.load_workspace(target)
-    assert counter["count"] == 1
-    assert w._wsm.root() == target
-    assert temp.exists()                                 # left for the startup recovery dialog
+    empty = tmp_path / "just-a-folder"
+    empty.mkdir()
+    assert not w.load_workspace(str(empty))
+    assert w._wsm.root() == root
+    assert "not an ISAR experiment" in w.statusBar().currentMessage()
+    assert list(empty.iterdir()) == []                  # nothing was started in it
 
 
-def test_invalid_open_does_not_prompt_or_discard_temporary_work(qtbot, tmp_path, monkeypatch):
-    """Candidate validation happens before asking the operator what to do with current analysis."""
-    import isar_gui.workspace_manager as wm
-
-    temproot = tmp_path / "temp"
-    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
-    temp = _stamp_temp_ws(temproot)
-    w = MainWindow(None, session=Session(), watch=False)
-    qtbot.addWidget(w)
-    assert w.load_workspace(temp)
-
-    counter = _install_fake_msgbox(monkeypatch, choice="Discard")
-    assert not w.load_workspace(tmp_path / "not-a-workspace")
-    assert counter["count"] == 0
-    assert temp.exists() and w._wsm.root() == temp
-    monkeypatch.setattr(w, "_resolve_unsaved_temp_on_close", lambda: True)
-
-
-def test_new_resolves_temporary_work_and_cleans_empty_reservation(qtbot, tmp_path, monkeypatch):
-    import isar_gui.workspace_manager as wm
-
-    temproot = tmp_path / "temp"
-    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
-    w = MainWindow(None, session=Session(), watch=False)
-    qtbot.addWidget(w)
-    w.new_workspace()
-    first = w._wsm.root()
-    assert first is not None and first.exists()
-
-    # A second New leaves no dead pending directory behind.
-    w.new_workspace()
-    second = w._wsm.root()
-    assert second is not None and second.exists()
-    # The allocator may reuse the same timestamped name after the empty reservation was removed;
-    # either way exactly one pending directory remains.
-    assert list(temproot.iterdir()) == [second]
-
-
-def test_new_cancel_keeps_current_temporary_analysis(qtbot, tmp_path, monkeypatch):
-    import isar_gui.workspace_manager as wm
-
-    temproot = tmp_path / "temp"
-    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
-    temp = _stamp_temp_ws(temproot)
-    w = MainWindow(None, session=Session(), watch=False)
-    qtbot.addWidget(w)
-    assert w.load_workspace(temp)
-    counter = _install_fake_msgbox(monkeypatch, choice="Cancel")
-
-    w.new_workspace()
-    assert counter["count"] == 1
-    assert w._wsm.root() == temp and temp.exists()
-    monkeypatch.setattr(w, "_resolve_unsaved_temp_on_close", lambda: True)
-
-
-def test_temp_workspace_not_added_to_recents(qtbot, tmp_path, monkeypatch):
-    import isar_gui.workspace_manager as wm
-
-    temproot = tmp_path / "temp"
-    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
-    root = _stamp_temp_ws(temproot)
-    session = Session()
-    w = MainWindow(None, session=session, watch=False)
-    qtbot.addWidget(w)
-
-    assert w.load_workspace(str(root)) is True
-    assert w._wsm.is_temporary()
-    assert session.recent_workspaces == []              # binding a temp workspace never notes recents
-    w._snapshot_session()                               # nor does an autosave snapshot
-    assert session.recent_workspaces == []
-    # The window still holds a content-bearing temp workspace here; qtbot's teardown close would
-    # otherwise raise the real (modal) Save/Discard prompt and hang the offscreen run.
-    monkeypatch.setattr(w, "_resolve_unsaved_temp_on_close", lambda: True)
-
-
-def test_save_as_notes_dest_in_recents(qtbot, tmp_path, monkeypatch):
+def test_pending_experiment_is_noted_in_recents(qtbot, tmp_path, monkeypatch):
     import tempfile
 
-    from PySide6.QtWidgets import QFileDialog
-
-    import isar_gui.workspace_manager as wm
-
-    # note_workspace refuses recents under the OS temp dir; the Save-As destination here lives under
-    # tmp_path, so point the perceived temp dir elsewhere to model a real (recordable) saved location.
+    # note_workspace refuses recents under the OS temp dir; the experiments root here lives under
+    # tmp_path, so point the perceived temp dir elsewhere to model a real (recordable) location.
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "_not_temp"))
-
-    temproot = tmp_path / "temp"
-    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
-    root = _stamp_temp_ws(temproot)
     session = Session()
     w = MainWindow(None, session=session, watch=False)
     qtbot.addWidget(w)
-    assert w.load_workspace(str(root)) is True
-
-    # A folder the operator merely NAMED: neither it nor its parents exist yet.
-    dest = tmp_path / "2026-08" / "beamtime" / "kept"
-
-    class _FakeDialog:
-        Option = QFileDialog.Option
-
-        @staticmethod
-        def getSaveFileName(*a, **k):
-            return str(dest), ""
-
-    monkeypatch.setattr("isar_gui.main_window.QFileDialog", _FakeDialog)
-    assert w.save_workspace_as() is True
-    assert not w._wsm.is_temporary()
-    assert str(dest) in session.recent_workspaces       # the saved copy IS noted in recents
+    w.new_workspace()
+    assert session.recent_workspaces == [str(w._wsm.root())]
 
 
 def test_ready_drop_routes_to_ingest_controller(qtbot, make_ws, monkeypatch):
@@ -595,7 +409,7 @@ def test_ready_drop_routes_to_ingest_controller(qtbot, make_ws, monkeypatch):
     requested = []
     monkeypatch.setattr(w._ingest_controller, "request_ingest", lambda p: requested.append(list(p)))
     w.dropEvent(_FakeDrop([r"some/data/path"]))
-    assert requested == [[r"some/data/path"]]
+    assert requested == [[str(Path("some/data/path"))]]     # native separators, in drop order
 
 
 def test_pending_gui_store_write_flushes_to_old_workspace_on_load(qtbot, make_ws):
@@ -674,185 +488,48 @@ def test_dock_layout_round_trips_through_session(qtbot, make_ws):
     assert saved.dock_layout_b64
 
     ws2, _ = _open(make_ws)
-    w2 = MainWindow(ws2, session=Session(dock_layout_b64=saved.dock_layout_b64), watch=False)
+    # The blob travels with its ``window_layout`` record (version and what it needs of a screen):
+    # a blob alone is not restorable.
+    w2 = MainWindow(ws2, session=Session(dock_layout_b64=saved.dock_layout_b64,
+                                         view_state=dict(saved.view_state)), watch=False)
     qtbot.addWidget(w2)
     w2.show()
-    # Normally fired via QTimer.singleShot(0, ...) once the event loop settles; call it directly so
-    # the test doesn't depend on pumping the event loop.
+    # The window restores its layout in __init__; call it again directly to prove it is idempotent.
     w2._restore_layout()
     assert not w2.log_dock.isVisible()
 
 
-def test_empty_start_then_open_reapplies_saved_full_dock_layout(qtbot, make_ws):
-    """A sparse welcome scaffold must not consume the saved layout for the later full workspace.
+def test_empty_start_then_open_keeps_the_saved_arrangement(qtbot, make_ws, monkeypatch):
+    """The empty start and the later open share one arrangement: a saved one (right panel open, a
+    wide left column) is restored on the empty start, and opening a workspace carries it across."""
+    from PySide6.QtCore import Qt
 
-    ``restoreState`` ignores dock ids that do not exist yet.  Opening a workspace after the empty
-    start must therefore restore the same full-layout preference that a direct workspace launch
-    would have used.
-    """
+    monkeypatch.setattr(MainWindow, "_available_size", lambda self: (1400, 900))
     ws, _ = _open(make_ws)
     source = MainWindow(ws, session=Session(), watch=False)
     qtbot.addWidget(source)
     source.show()
-    source.browser_dock.show()
-    source.browser_dock.raise_()
-    qtbot.waitUntil(source.browser_dock.isVisible)
+    source.set_right_panel_collapsed(False)
+    source.resizeDocks([source.left_column_dock], [420], Qt.Horizontal)
+    qtbot.wait(50)
     saved = source._snapshot_session()
+    left = source.left_column_dock.width()
 
     root = make_ws(rows=[{"scan": 2, "detector": "det", "status": "fitted", "omega0": 6.0}])
-    w = MainWindow(None, session=Session(dock_layout_b64=saved.dock_layout_b64), watch=False)
+    w = MainWindow(None, session=Session(dock_layout_b64=saved.dock_layout_b64,
+                                         view_state=dict(saved.view_state)), watch=False)
     qtbot.addWidget(w)
     w.show()
-    assert "Browser" not in w._docks                  # sparse start cannot restore it yet
+    qtbot.wait(50)
+    assert "Browser" not in w._docks
+    assert not w._right_panel_collapsed()
+    assert abs(w.left_column_dock.width() - left) <= 4
 
     assert w.load_workspace(str(root)) is True
-    qtbot.waitUntil(w.browser_dock.isVisible)
-
-
-def test_new_pending_reapplies_compact_empty_log_geometry(qtbot, tmp_path, monkeypatch):
-    """The compact welcome geometry also applies to a later New -> pending transition."""
-    import isar_gui.workspace_manager as wm
-    from PySide6.QtCore import Qt
-
-    monkeypatch.setattr(wm, "temp_root", lambda: tmp_path / "temp")
-    w = MainWindow(None, session=Session(), watch=False)
-    qtbot.addWidget(w)
-    w.show()
-    # Make the initial dock obviously large, then make a fresh pending workspace.  The queued
-    # welcome layout must shrink it again rather than leaving the old allocation in place.
-    w.resizeDocks([w.log_dock], [500], Qt.Vertical)
-    w.new_workspace()
-    qtbot.waitUntil(lambda: w._wsm.state() == "pending")
-    qtbot.waitUntil(lambda: w.log_dock.height() <= 240)
-    assert w.files_dock.height() > w.log_dock.height()
-
-
-def test_pending_autosave_preserves_layout_then_ingest_promotes_scans(
-        qtbot, tmp_path, monkeypatch, make_ws):
-    """New may sit pending beyond the autosave debounce without losing the full dock layout.
-
-    When bootstrap subsequently binds the ready workspace, its queued layout restoration may hide
-    Scans. The queued post-ingest promotion must run afterward and expose the parsed rows.
-    """
-    import isar_gui.workspace_manager as wm
-
-    # Build a real full layout in which Scans was hidden, matching a prior operator session.
-    source_root = make_ws(rows=[{"scan": 1, "detector": "det", "status": "fitted",
-                                 "omega0": 5.0}])
-    source = MainWindow(Workspace.open(source_root), session=Session(), watch=False)
-    qtbot.addWidget(source)
-    source.show()
-    source.scans_dock.hide()
-    saved_layout = source._snapshot_session().dock_layout_b64
-    assert saved_layout
-
-    temproot = tmp_path / "temp"
-    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
-    session = Session(dock_layout_b64=saved_layout)
-    w = MainWindow(None, session=session, watch=False)
-    qtbot.addWidget(w)
-    monkeypatch.setattr(w, "_resolve_unsaved_temp_on_close", lambda: True)
-    # Keep the debounce proof isolated from the real per-user GUI session.
-    w._autosaver._path = tmp_path / "session.json"
-    w.show()
-    w.new_workspace()
-    pending_root = w._wsm.root()
-    assert pending_root is not None
-
-    qtbot.wait(650)  # exceed the production 500 ms session-autosave debounce
-    assert session.dock_layout_b64 == saved_layout
-
-    scan_id = "tavi:41:det"
-    stamp_ws(
-        pending_root,
-        scans={scan_id: scan_entry(41, status="ingested")},
-        files={"C:/incoming/scan41.dat": {
-            "format": "measurement", "n_scans": 1, "scan_ids": [scan_id], "n_context": 0,
-        }},
-        rows=[],
-    )
-    assert w._wsm.open(pending_root)
-    w._on_ingest_report(GuiIngestReport(
-        files=({"path": "C:/incoming/scan41.dat", "scan_ids": [scan_id]},),
-        added=(scan_id,),
-    ))
-
-    # Pump both queued callbacks: restore the old layout first, then make parsed Scans prominent.
     qtbot.wait(50)
-    assert [row.key for row in w.scans_vm.rows()] == [scan_id]
-    assert w.scans_dock.isVisible()
-
-
-def test_recovered_raw_temp_promotes_scans_after_layout_restore(
-        qtbot, tmp_path, monkeypatch, make_ws):
-    """Relaunch recovery has no ingest signal, but raw parsed rows must still be made visible."""
-    import isar_gui.workspace_manager as wm
-
-    source_root = make_ws(rows=[{"scan": 1, "detector": "det", "status": "fitted",
-                                 "omega0": 5.0}])
-    source = MainWindow(Workspace.open(source_root), session=Session(), watch=False)
-    qtbot.addWidget(source)
-    source.show()
-    source.scans_dock.hide()
-    saved_layout = source._snapshot_session().dock_layout_b64
-    assert saved_layout
-
-    temproot = tmp_path / "recovery"
-    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
-    recovered_root = temproot / "ws-recovered"
-    recovered_root.mkdir(parents=True)
-    scan_id = "tavi:52:det"
-    stamp_ws(
-        recovered_root,
-        scans={scan_id: scan_entry(52, status="ingested")},
-        files={"C:/incoming/scan52.dat": {
-            "format": "measurement", "n_scans": 1, "scan_ids": [scan_id], "n_context": 0,
-        }},
-        rows=[],
-    )
-
-    w = MainWindow(
-        Workspace.open(recovered_root), session=Session(dock_layout_b64=saved_layout), watch=False)
-    qtbot.addWidget(w)
-    monkeypatch.setattr(w, "_resolve_unsaved_temp_on_close", lambda: True)
-    w.show()
-    qtbot.wait(50)  # restore the hidden layout, then run the recovery promotion
-
-    assert w._wsm.is_temporary()
-    assert [row.key for row in w.scans_vm.rows()] == [scan_id]
-    assert w._ws.results == []
-    assert w.scans_dock.isVisible()
-
-
-def test_fitted_only_ingest_does_not_promote_scans(qtbot, make_ws):
-    """A context/dedup ingest into analyzed work must not steal focus from the operator's view."""
-    root = make_ws(rows=[{"scan": 7, "detector": "det", "status": "fitted", "omega0": 5.0}])
-    w = MainWindow(Workspace.open(root), session=Session(), watch=False)
-    qtbot.addWidget(w)
-    w.show()
-    w.scans_dock.hide()
-
-    w._on_ingest_report(GuiIngestReport(files=({"path": "C:/incoming/context.log"},)))
-    qtbot.wait(50)
-
-    assert all(row.status == "fitted" for row in w.scans_vm.rows())
-    assert not w.scans_dock.isVisible()
-
-
-def test_stale_ingest_promotion_cannot_touch_new_workspace(qtbot, make_ws):
-    old_root = make_ws(
-        scans={"tavi:41:det": scan_entry(41, status="ingested")}, rows=[])
-    new_root = make_ws(rows=[])
-    w = MainWindow(Workspace.open(old_root), session=Session(), watch=False)
-    qtbot.addWidget(w)
-    w.show()
-    old_generation = w._wsm.generation()
-
-    assert w.load_workspace(new_root)
-    w.scans_dock.hide()
-    w._promote_scans_if_current(old_generation, old_root)
-
-    assert not w.scans_dock.isVisible()
+    assert "Browser" in w._docks
+    assert not w._right_panel_collapsed()
+    assert abs(w.left_column_dock.width() - left) <= 4
 
 
 # ---- persistent log dock across rebinds -------------------------------------
@@ -881,8 +558,7 @@ def test_log_dock_persists_across_rebind(qtbot, make_ws):
     assert text.count("workspace:") >= 2   # one at first bind, one after the rebind
 
 
-def test_activity_signal_after_pending_rebind_does_not_touch_dead_card_dock(
-        qtbot, make_ws, tmp_path, monkeypatch):
+def test_activity_signal_after_pending_rebind_does_not_touch_dead_card_dock(qtbot, make_ws):
     """An operation-activity signal that arrives after a rebind to the pending/empty state must not
     reach the previous binding's Card dock. (Regression: _teardown_binding deleteLater()'d the docks
     but left ``self.card_dock`` pointing at the dead C++ widget; the empty rebind returns early from
@@ -890,10 +566,6 @@ def test_activity_signal_after_pending_rebind_does_not_touch_dead_card_dock(
     ``card_dock.set_operation_busy`` on a deleted QPlainTextEdit and raised RuntimeError
     'Internal C++ object already deleted' — surfaced as the modal unexpected-error dialog during a
     drop-to-ingest.)"""
-    import isar_gui.workspace_manager as wm
-
-    monkeypatch.setattr(wm, "temp_root", lambda: tmp_path / "temp")
-
     ws, _ = _open(make_ws)
     w = MainWindow(ws, session=Session(), watch=False)
     qtbot.addWidget(w)

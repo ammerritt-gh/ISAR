@@ -46,6 +46,10 @@ WORKSPACE_API_ALLOWED = {
     # schema.statistics above.
     "isar.schema.measurement",
     "isar.session.state",
+    # The results writer's status words and the stored-pass readers (``fast_pass_of``,
+    # ``deep_pass_of``) the scan-list read uses; stdlib, schema, atomic-write and state imports only,
+    # no Qt (measured: about 4 ms to import).
+    "isar.session.outcome",
     "isar.session.workspace",
     "isar.session.unit_data",
     "isar.drive.session_log",
