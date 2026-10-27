@@ -67,19 +67,21 @@ def _unlock(fd: int) -> None:
 
 
 @contextmanager
-def _locked(root: Path):
-    lock = root / LOCK
+def file_lock(path: Path, *, timeout_s: float):
+    """An exclusive OS lock on ``path`` (created if missing), released by the OS if the holder dies.
+    Not reentrant: a second take in the same process waits like any other. ``StoreBusy`` on timeout."""
+    lock = Path(path)
     lock.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0))
     try:
-        deadline = time.monotonic() + LOCK_TIMEOUT_S
+        deadline = time.monotonic() + timeout_s
         while True:
             try:
                 _lock_once(fd)
                 break
             except OSError:  # held by another handle; the OS also releases it if the holder dies
                 if time.monotonic() >= deadline:
-                    raise StoreBusy(f"intake lock {lock} not obtained within {LOCK_TIMEOUT_S} s") from None
+                    raise StoreBusy(f"lock {lock} not obtained within {timeout_s} s") from None
                 time.sleep(0.02)
         try:
             yield
@@ -87,6 +89,10 @@ def _locked(root: Path):
             _unlock(fd)
     finally:
         os.close(fd)
+
+
+def _locked(root: Path):
+    return file_lock(root / LOCK, timeout_s=LOCK_TIMEOUT_S)
 
 
 def _bytes(path: Path) -> bytes:
