@@ -198,6 +198,21 @@ def test_expansion_is_the_users_after_the_first_time(qtbot, att_ws):
     assert not other.is_expanded()
 
 
+def test_the_first_gap_rule_is_per_experiment(qtbot, att_ws, tmp_path):
+    second = tmp_path / "second"
+    shutil.copytree(att_ws.parent, second)
+    intake, lst = _make(qtbot, att_ws)
+    assert lst.is_expanded()
+    lst._header.click()                                          # collapsed in the first experiment
+    with qtbot.waitSignal(intake.worker_changed, timeout=WAIT_MS):
+        intake.bind(second / att_ws.name)
+    assert lst.is_expanded()                                     # the second's first gaps open it all the same
+    lst._header.click()
+    with qtbot.waitSignal(intake.worker_changed, timeout=WAIT_MS):
+        intake.bind(att_ws)
+    assert not lst.is_expanded()                                 # the first already showed its gaps: the choice holds
+
+
 # ---- scope and rows --------------------------------------------------------------------------------
 def test_scan_set_rows_expand_to_plain_analyzer_lines_and_analyzer_rows_are_tri_state(qtbot, att_ws):
     intake, lst = _make(qtbot, att_ws)

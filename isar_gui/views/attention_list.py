@@ -356,7 +356,7 @@ class AttentionList(QWidget):
         self.setObjectName("attention_list")
         self._intake = intake
         self._expanded = False
-        self._decided = False                       # the user (or a restored arrangement) chose: no auto-expand
+        self._decided = False                       # the user (or a restored arrangement) chose in this experiment
         self._has_body = False
         self._root: Path | None = None
         self._auto_seen: set[Path] = set()          # experiments that already auto-expanded once
@@ -554,6 +554,8 @@ class AttentionList(QWidget):
         intake = self._intake
         root, att = intake.root, intake.attention
         if root != self._root:                      # another experiment: nothing of the last one stays
+            if self._root is not None:
+                self._decided = False               # the choice was that experiment's; one made unbound (restored) carries
             self._root = root
             self._open.clear()
             self._open_scans.clear()
