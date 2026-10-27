@@ -10,10 +10,15 @@ correction loop §8 safe).
 
 The card schema is its own test: if a parser ever needs a literal this can't express, the card is
 wrong — fix the card, not the parser (§6).
+
+A plugin in `SHIPPED_FORMATS` (BL43) takes its format knowledge — file patterns, column families,
+detectors, calibration — from the card file shipped with ISAR at every load, never from the workspace
+copy; the workspace card keeps only the analysis settings (`_with_shipped_format`).
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import tomllib
@@ -25,8 +30,24 @@ from isar.schema import _json
 from isar.schema.hypotheses import resolve_hypothesis
 from isar.schema.scan import COUNTING_MODES, ENERGY_STATUSES, RAW_ABSCISSA_KINDS
 
+log = logging.getLogger(__name__)
+
 SCHEMA_VERSION = "isar.card/1"
 NORMALIZE_BY = ("monitor", "time", "none")
+
+# Instruments whose format knowledge is read from the file shipped with ISAR, never from the workspace card.
+SHIPPED_FORMATS: dict[str, Path] = {
+    "sp8_bl43": Path(__file__).resolve().parents[1] / "parsers" / "cards" / "bl43lxu.policy.toml",
+}
+# CardPolicy fields that are format knowledge: for a SHIPPED_FORMATS plugin they come from the shipped file.
+FORMAT_KEYS: frozenset[str] = frozenset({
+    "facility", "instrument", "format_version", "plugin", "detectors",
+    "energy_column", "monitor_column", "time_column", "counting_mode", "normalize_by",
+    "raw_abscissa_kind", "energy_status", "variance_convention",
+    "measurement_pattern", "alignment_pattern",
+    "files", "reader", "calibration", "facts",
+    "multiword_columns", "miniscans_per_point", "ascan_classification",
+})
 
 
 @dataclass
@@ -93,7 +114,8 @@ class CardPolicy:
     #   [files]  measurement = regexes (re.fullmatch on the file NAME) with named groups `set` (the
     #            scan's key) and `analyzer`; sidecar = names with a `{set}` placeholder; ignore = globs.
     files: dict = field(default_factory=dict)
-    facts: dict = field(default_factory=dict)                # [facts] — card-declared fact values (lowest precedence)
+    facts: dict = field(default_factory=dict)                # [facts] — card-declared fact values (lowest precedence);
+    #                                                          # BL43 reads none: its values are entered in ISAR
     reader: dict = field(default_factory=dict)               # [reader] — plugin options
     # Inline human-authored distinction policies.  Authoring markers are materialized into exact
     # campaign scope fingerprints when an objective is frozen; code never writes this table.
@@ -117,6 +139,33 @@ class PolicyValidation:
         return not self.errors
 
 
+def _with_shipped_format(data: dict) -> tuple[dict, list[str]]:
+    """``(merged, notes)``: for a `SHIPPED_FORMATS` plugin the shipped file's dict, with the workspace's
+    non-format keys on top (tables replaced whole); every workspace format key is dropped, and a note says
+    so for each one that differs from the shipped value. Any other plugin: ``(data, [])`` unchanged.
+    Read at every call (no cache), so a corrected shipped file reaches the next load. Never writes."""
+    plugin = data.get("plugin")
+    path = SHIPPED_FORMATS.get(plugin) if isinstance(plugin, str) else None
+    if path is None:
+        return data, []
+    with open(path, "rb") as f:
+        shipped = tomllib.load(f)
+    merged = dict(shipped)
+    notes: list[str] = []
+    for key, value in data.items():
+        if key not in FORMAT_KEYS:
+            merged[key] = value
+        elif key not in shipped:
+            notes.append(f"{key!r} in the workspace card is not used: {plugin} does not read it "
+                         f"(values are entered in ISAR, not in the card)")
+        elif value != shipped[key]:
+            extra = (" (the resolution folder is a setting chosen in ISAR)"
+                     if key == "calibration" and isinstance(value, dict) and "resolution_folder" in value else "")
+            notes.append(f"{key!r} in the workspace card is not used: it is read from the shipped "
+                         f"{path.name}{extra}")
+    return merged, notes
+
+
 def validate_policy_text(text: str) -> PolicyValidation:
     """Parse and validate a policy TOML document without writing anything.
 
@@ -135,7 +184,12 @@ def validate_policy_text(text: str) -> PolicyValidation:
     known = {f.name for f in fields(CardPolicy)}
     warnings = tuple(f"unknown top-level key {key!r}" for key in sorted(data) if key not in known)
     try:
-        policy = _json.from_dataclass(CardPolicy, data)
+        merged, notes = _with_shipped_format(data)
+    except Exception as exc:  # a broken install must be a visible error, never a GUI crash
+        return PolicyValidation(None, (f"shipped format file error: {exc}",), warnings)
+    warnings += tuple(notes)
+    try:
+        policy = _json.from_dataclass(CardPolicy, merged)
     except (TypeError, ValueError, KeyError) as exc:
         return PolicyValidation(None, (f"card construction error: {exc}",), warnings)
     except Exception as exc:  # malformed human input must be reported, never crash the editor
@@ -224,6 +278,9 @@ class CardState:
 def load_policy(path) -> CardPolicy:
     with open(path, "rb") as f:
         d = tomllib.load(f)
+    d, notes = _with_shipped_format(d)      # an unreadable shipped file raises: a broken install
+    for note in notes:
+        log.warning("%s: %s", path, note)
     return _json.from_dataclass(CardPolicy, d)
 
 
