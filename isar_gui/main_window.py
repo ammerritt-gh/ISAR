@@ -1326,6 +1326,11 @@ class MainWindow(QMainWindow):
         a, u, d = len(report.added), len(report.updated), len(report.deduped)
         failed = [f for f in report.files if f.get("error")]
         note = f" — {len(failed)} file(s) failed to parse" if failed else ""
+        record_error = getattr(report, "import_record_error", None)
+        if record_error:
+            note += " — import record not written (see Log)"
+            self.log(f"WARNING: the import record could not be written; file values in the scan "
+                     f"list may be stale: {record_error}")
         summary = getattr(report, "last_ingest", None) or {}
         logical_count = summary.get("logical_scan_count")
         unit_count = summary.get("analyzer_unit_count")

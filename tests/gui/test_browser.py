@@ -250,6 +250,21 @@ def test_successful_ingest_refreshes_scans_and_keeps_results_fit_only(qtbot, mak
     assert "1 analyzer unit(s) awaiting analysis" in w.statusBar().currentMessage()
 
 
+@pytest.mark.parametrize("error", [None, "intake_scans.json was not written: disk full"])
+def test_ingest_report_warns_in_the_log_only_when_the_import_record_failed(qtbot, make_ws, error):
+    w = MainWindow(Workspace.open(make_ws(rows=[])), session=Session(), watch=False)
+    qtbot.addWidget(w)
+    w._on_ingest_report(GuiIngestReport(files=({"path": "a.dat", "scan_ids": []},),
+                                        import_record_error=error))
+    text = w.log_dock._view.toPlainText()
+    if error:
+        assert "WARNING: the import record could not be written" in text and error in text
+        assert "import record not written" in w.statusBar().currentMessage()
+    else:
+        assert "import record" not in text
+        assert "import record" not in w.statusBar().currentMessage()
+
+
 def _legacy_unit(exp, scan, det):
     return SimpleNamespace(key=f"{exp}:{scan}:{det}", scan_number=scan, det=det)
 

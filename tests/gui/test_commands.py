@@ -167,6 +167,14 @@ def test_parse_ingest_json_valid():
     assert rep.gaps == (("exp", 3, 5),)
 
 
+def test_parse_ingest_json_carries_the_import_record_error():
+    import json
+    obj = json.loads(_ingest_success_line())
+    assert commands.parse_ingest_json(json.dumps(obj)).import_record_error is None
+    obj["import_record_error"] = "disk full"
+    assert commands.parse_ingest_json(json.dumps(obj)).import_record_error == "disk full"
+
+
 def test_parse_ingest_json_accepts_line_iterable():
     rep = commands.parse_ingest_json(["noise", _ingest_success_line()])
     assert rep is not None and rep.added == ("exp:1", "exp:2")
