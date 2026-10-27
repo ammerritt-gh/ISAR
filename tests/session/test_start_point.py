@@ -22,10 +22,11 @@ import intake_fixtures as fx
 import isar
 from isar.analyze.context import ScanContext
 from isar.analyze.lineshapes import bose_numerator
+from isar.analyze.resolution import curve_from_record, file_stamp
 from isar.intake import curves, fit_inputs, inputs, scans, settings, store, values
 from isar.parsers import sarf, sp8_bl43
 from isar.schema import _json
-from isar.session import calibrations, driver, ingest, measurement_store, scan_delivery
+from isar.session import calibrations, driver, ingest, measurement_store, scan_delivery, start_point
 from isar.session.state import ScanEntry, canonical_hash
 
 PATTERN = sp8_bl43.card_template().policy.calibration["resolution_pattern"]
@@ -340,6 +341,51 @@ def test_a_pooled_worker_fits_with_the_snapshot_curve_after_a_curve_is_added(tmp
     for x in worker.calls:
         assert not x.cal.held, x.cal.held_reason
         assert x.runcal.tabulated[x.scan]["detectors"][x.det]["curve"]["sha256"] == check_sha[(x.det, fx.TRUE_SLIT)]
+
+
+def _after_start_point(monkeypatch, scan, action):
+    """Run ``action`` right after ``scan``'s start point, before its units reach the pool."""
+    real = start_point.StartPoint.__call__
+
+    def hooked(self, group):
+        out = real(self, group)
+        if group[0][5].rsplit(":", 1)[0] == scan:
+            action()
+        return out
+    monkeypatch.setattr(start_point.StartPoint, "__call__", hooked)
+
+
+def test_a_curve_replaced_after_the_start_point_keeps_the_stamp_the_run_loaded(tmp_path, monkeypatch):
+    ws, data = fx.bl43_workspace(tmp_path)
+    a, _b = _order(ws, data)
+    path = ws.root / "rf" / "sarf_t_s2_40_40_a03"             # a's a03 curve (inferred 40x40)
+    loaded = file_stamp(path)                                 # the bytes the run's snapshot loads
+    _after_start_point(monkeypatch, a, lambda: _touch_curve(path))
+    worker = _Worker(monkeypatch)
+    monkeypatch.setattr(scan_delivery, "ProcessPoolExecutor", _InlinePool)
+    _run(ws, data, workers=2)
+    (x,) = [x for x in worker.of(a) if x.det == "a03"]
+    assert file_stamp(path) != loaded                         # the file on disk did change
+    assert not x.cal.held, x.cal.held_reason
+    assert x.cal.reference["stamp"] == loaded                 # the reference names the bytes it fitted
+    with pytest.raises(ValueError, match="changed since the fit"):
+        curve_from_record(x.cal.reference)                    # so the read side refuses, as it does today
+
+
+def test_a_curve_removed_after_the_start_point_still_fits_with_the_snapshot_curve(tmp_path, monkeypatch):
+    ws, data = fx.bl43_workspace(tmp_path)
+    a, _b = _order(ws, data)
+    path = ws.root / "rf" / "sarf_t_s2_40_40_a03"
+    loaded, before = file_stamp(path), _sha(path)
+    _after_start_point(monkeypatch, a, path.unlink)
+    worker = _Worker(monkeypatch)
+    monkeypatch.setattr(scan_delivery, "ProcessPoolExecutor", _InlinePool)
+    _run(ws, data, workers=2)
+    (x,) = [x for x in worker.of(a) if x.det == "a03"]
+    assert not path.exists()
+    assert not x.cal.held, x.cal.held_reason
+    assert x.cal.curve.source == path.name and x.cal.reference["stamp"] == loaded
+    assert x.runcal.tabulated[a]["detectors"]["a03"]["curve"]["sha256"] == before
 
 
 # ---------------------------------------------------------------------------

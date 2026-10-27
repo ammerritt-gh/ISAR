@@ -334,12 +334,15 @@ def scan_view(runcal: "RunCalibration", scan_key: str, state: dict | None,
               loaded: LoadedCurves | None = None) -> "RunCalibration":
     """One scan's frozen calibration: the run's view holding only this scan's state and, from the run's
     curve snapshot, the curves at its setting, so a pooled worker fits with them and never re-reads the folder."""
-    curves = {}
+    curves, stamps = {}, {}
     if loaded is not None and state and "error" not in state and state.get("library") == loaded.fingerprint:
         dets = state.get("detectors") or {}
-        curves = {(c.detector_id, c.setting): c for c in loaded.library
-                  if c.setting == state.get("setting") and c.detector_id in dets}
-    return replace(runcal, tabulated={} if state is None else {scan_key: state}, curves=curves)
+        for c in loaded.library:
+            key = (c.detector_id, c.setting)
+            if c.setting == state.get("setting") and c.detector_id in dets and key in loaded.stamps:
+                curves[key], stamps[key] = c, loaded.stamps[key]
+    return replace(runcal, tabulated={} if state is None else {scan_key: state}, curves=curves,
+                   curve_stamps=stamps)
 
 
 def _append_version_if_changed(card: Card, body: dict) -> bool:
@@ -369,6 +372,7 @@ class RunCalibration:
     tabulated: dict = field(default_factory=dict)   # "exp:scan" -> tabulated_elastic state (a copy)
     # (detector, setting) -> TabulatedResolution from the run's curve snapshot (a scan view, `scan_view`)
     curves: dict = field(default_factory=dict)
+    curve_stamps: dict = field(default_factory=dict)   # the same keys: each file's stamp as the snapshot read it
 
     def zero(self, scan_number) -> float | None:
         return self.zeros.interpolate(scan_number) if self.zeros is not None else None
@@ -504,12 +508,18 @@ def _resolve_tabulated(record, detector_id, runcal: RunCalibration, version: str
     ref = {"folder": scan_state["folder"], "pattern": scan_state["pattern"],
            "fingerprint": scan_state["library"], "detector": detector_id, "setting": scan_state["setting"]}
     try:
-        # The run's snapshot when the scan view carries it (a pooled worker never re-reads the folder).
-        curve = runcal.curves.get((detector_id, scan_state["setting"]))
-        if curve is None:
+        # The run's snapshot when the scan view carries it (a pooled worker never re-reads the folder), with
+        # the stamp the snapshot took of its file. shortcut: a curve outside the snapshot is stamped from
+        # disk here; no BL43 fit reaches that except when its file vanished before the snapshot stamped it.
+        key = (detector_id, scan_state["setting"])
+        curve = runcal.curves.get(key)
+        if curve is not None:
+            stamp = runcal.curve_stamps[key]
+        else:
             curve = sarf.curve_from_reference(ref)
+            stamp = file_stamp(Path(ref["folder"]) / curve.source)
         # the curve's own file and stamp: what the read-only facade rebuilds it from (G16, no parser)
-        ref = {**ref, "file": curve.source, "stamp": file_stamp(Path(ref["folder"]) / curve.source)}
+        ref = {**ref, "file": curve.source, "stamp": stamp}
     except (OSError, ValueError, KeyError, re.error) as exc:
         log.warning("calibration(tabulated_elastic): %s: %s", detector_id, exc)
         return held(f"{detector_id}: {exc}")

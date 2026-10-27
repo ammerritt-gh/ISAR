@@ -12,11 +12,11 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from isar.analyze.resolution import ResolutionLibrary
+from isar.analyze.resolution import ResolutionLibrary, file_stamp
 from isar.intake.settings import current_settings, save_resolution_folder
 
 log = logging.getLogger(__name__)
@@ -108,10 +108,22 @@ class LoadedCurves:
     identity: dict           # {(detector, setting): {"file", "sha256"}}
     folder: Path | None = None     # where they were loaded from (the folder in force then)
     pattern: str | None = None
+    stamps: dict = field(default_factory=dict)   # {(detector, setting): [size, mtime_ns]} of each curve file
 
 
 def _unusable(problem: str, folder, pattern) -> LoadedCurves:
     return LoadedCurves(ResolutionLibrary(), None, problem, {}, folder, pattern)
+
+
+def _stamps(folder: Path, library) -> dict:
+    """Each curve file's stamp, taken as the snapshot loads the library; a file gone by then is left out."""
+    out = {}
+    for c in library:
+        try:
+            out[(c.detector_id, c.setting)] = file_stamp(folder / c.source)
+        except OSError as exc:
+            log.warning("resolution curves: %s gone before its stamp was taken (%s)", c.source, exc)
+    return out
 
 
 def load_curves(folder, pattern) -> LoadedCurves:
@@ -128,7 +140,8 @@ def load_curves(folder, pattern) -> LoadedCurves:
     except (OSError, ValueError, re.error) as exc:
         log.warning("calibration(tabulated_elastic): resolution library unavailable (%s)", exc)
         return _unusable(f"resolution library unavailable ({exc})", folder, pattern)
-    return LoadedCurves(library, fp, None, sarf.curve_identity(folder, library), folder, pattern)
+    stamps = _stamps(folder, library)
+    return LoadedCurves(library, fp, None, sarf.curve_identity(folder, library), folder, pattern, stamps)
 
 
 def resolution_location(card, workspace_root) -> tuple[Path | None, str | None, str]:
