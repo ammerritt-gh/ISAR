@@ -91,6 +91,18 @@ def test_a_never_fitted_spectrum_has_no_pass_to_judge(ws_root):
     assert rec[A05]["inputs"] == {"fast": None, "deep": None}
 
 
+def test_an_older_fit_without_a_fast_pass_record_is_not_judged_but_still_has_its_rows(ws_root):
+    ws, card, session = bl43_fixture._load(ws_root)           # a fit stored before the fast-pass record
+    del session.scans[A03].detectors["a03"]["fast_pass"]
+    bl43_fixture._save(ws, card, session)
+    (ws_root / "report" / "fit_inputs.jsonl").unlink()        # and no fit-input record of it
+    _folder, _doc, rec, rows = _export(ws_root)
+    assert rec[A03]["fast"]["record"] == "fit_without_fast_pass"
+    assert rec[A03]["inputs"]["fast"] == {"current": None, "used": None, "changed": []}
+    a03_fast = [r for r in rows if r["scan_id"] == A03 and r["pass"] == "fast"]
+    assert a03_fast and {r["inputs_current"] for r in a03_fast} == {""}
+
+
 def test_the_readme_names_the_inputs_key_and_the_column_for_a_bl43_experiment(ws_root):
     folder = _export(ws_root)[0]
     text = _readme(folder)

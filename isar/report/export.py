@@ -543,7 +543,7 @@ def _build(root: Path, stage: Path, progress) -> tuple:
         record["deep"] = _deep_block(oc, len(deep_rows)) if oc is not None else None
         fit = fit_inputs.get(e.scan_id)
         record["inputs"] = {
-            "fast": _pass_record(fit.fast if fit else None) if record["fast"]["record"] == "fast_pass" else None,
+            "fast": _pass_record(fit.fast if fit else None) if oc is not None else None,
             "deep": _pass_record(fit.deep if fit else None) if record["deep"] is not None else None}
         for row in fast_rows:
             row["inputs_current"] = _inputs_current(record["inputs"]["fast"])
