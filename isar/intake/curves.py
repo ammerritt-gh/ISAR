@@ -106,26 +106,29 @@ class LoadedCurves:
     fingerprint: str | None
     problem: str | None
     identity: dict           # {(detector, setting): {"file", "sha256"}}
+    folder: Path | None = None     # where they were loaded from (the folder in force then)
+    pattern: str | None = None
 
 
-def _unusable(problem: str) -> LoadedCurves:
-    return LoadedCurves(ResolutionLibrary(), None, problem, {})
+def _unusable(problem: str, folder, pattern) -> LoadedCurves:
+    return LoadedCurves(ResolutionLibrary(), None, problem, {}, folder, pattern)
 
 
 def load_curves(folder, pattern) -> LoadedCurves:
     """The folder's library, its fingerprint and each curve's content identity; ``problem`` says why it is unusable."""
+    folder = None if folder is None else Path(folder)
     if folder is None:
-        return _unusable(NO_FOLDER)
+        return _unusable(NO_FOLDER, folder, pattern)
     if not pattern:
-        return _unusable(NO_PATTERN)
+        return _unusable(NO_PATTERN, folder, pattern)
     from isar.parsers import sarf   # imported here: the read side never loads a parser
     try:
         fp = sarf.fingerprint(folder, pattern)
         library = sarf.library_for(folder, pattern, fp)
     except (OSError, ValueError, re.error) as exc:
         log.warning("calibration(tabulated_elastic): resolution library unavailable (%s)", exc)
-        return _unusable(f"resolution library unavailable ({exc})")
-    return LoadedCurves(library, fp, None, sarf.curve_identity(folder, library))
+        return _unusable(f"resolution library unavailable ({exc})", folder, pattern)
+    return LoadedCurves(library, fp, None, sarf.curve_identity(folder, library), folder, pattern)
 
 
 def resolution_location(card, workspace_root) -> tuple[Path | None, str | None, str]:
@@ -184,6 +187,12 @@ def check_curves(root, card, data_paths, *, by: str) -> CurveCheck | None:
     None unless the card's method is ``tabulated_elastic``. An ``rf/`` beside the data is saved as the
     experiment's folder only when none is saved; a saved folder is never switched here.
     """
+    got = check_and_load(root, card, data_paths, by=by)
+    return None if got is None else got[0]
+
+
+def check_and_load(root, card, data_paths, *, by: str) -> tuple[CurveCheck, LoadedCurves] | None:
+    """``check_curves`` and the curves it loaded: a run calibrates and fits with this one snapshot."""
     cfg = card.policy.calibration or {}
     if cfg.get("method") != "tabulated_elastic":
         return None
@@ -228,7 +237,7 @@ def check_curves(root, card, data_paths, *, by: str) -> CurveCheck | None:
         library=loaded.fingerprint, problem=problem, curves=curves,
         other_folders=tuple(sorted(kept.values(), key=lambda o: o.path)), discovered=discovered)
     _write(root, check)
-    return check
+    return check, loaded
 
 
 def _write(root: Path, check: CurveCheck) -> None:
