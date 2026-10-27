@@ -20,7 +20,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QDialog, QFileDialog
 
 import bl43_fixture
@@ -349,6 +349,17 @@ def test_setup_section_shows_constructed_backend_states(qtbot, s2_ws, tmp_path):
     section._render()
     assert _plain(section._summary.text()) == ("0 scan sets · 0 analyzers read · 0 incomplete sets · "
                                                "2 files not read")
+
+
+def test_an_unreadable_record_in_an_experiment_with_a_card_is_shown_not_nothing_read(qtbot, s2_ws):
+    intake = _bound(qtbot, s2_ws)
+    section = _section(qtbot, intake)
+    intake._summary = dataclasses.replace(
+        intake.summary, n_scans=0, n_analyzers=0, incomplete_sets=(), files_not_read=(),
+        record_problem="import record unreadable (bad JSON)")       # what the backend returns for it
+    section._render()
+    assert section._summary.text() == "import record unreadable (bad JSON)"
+    assert "#b7791f" in section._summary.styleSheet() and section._record_problem.isHidden()
 
 
 def test_record_problem_is_not_shown_without_a_card(qtbot, tmp_path):

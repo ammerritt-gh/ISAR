@@ -15,6 +15,7 @@ window routes it to :func:`locate_resolution_folder`, the one route that saves a
 """
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -180,7 +181,7 @@ class SetupSection(QWidget):
         bl43 = root is not None and not (has_card and summary is not None and curves is None
                                          and summary.record_problem is None)
 
-        warn_summary = False
+        warn_summary = record_in_summary = False
         if root is None:
             text = NOTHING_READ
         elif summary is None:
@@ -188,7 +189,10 @@ class SetupSection(QWidget):
         elif not bl43:
             text = NOT_BL43
         elif summary.n_scans == 0 and not summary.files_not_read:
-            text = NOTHING_READ
+            if has_card and summary.record_problem:      # an experiment that received files, not an empty one
+                text, warn_summary, record_in_summary = html.escape(summary.record_problem, quote=False), True, True
+            else:
+                text = NOTHING_READ
         else:
             text = self._counts_html(summary)
         self._summary.setText(text)
@@ -208,7 +212,7 @@ class SetupSection(QWidget):
         self._problem.set_line(curves.problem if bl43 and curves is not None else None)
         self._stale.set_line(STALE_NOTE if bl43 and curves is not None and curves.check_stale else None)
         record = None if summary is None else summary.record_problem
-        self._record_problem.set_line(record if has_card else None)
+        self._record_problem.set_line(record if has_card and not record_in_summary else None)
         self._render_others(curves.other_folders if bl43 and curves is not None else ())
 
     @staticmethod
