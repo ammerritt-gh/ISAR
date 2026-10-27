@@ -348,6 +348,19 @@ def test_double_click_and_the_inspect_button_open_the_inspector(qtbot, monkeypat
     assert len(inspect_spy.calls) == 2
 
 
+def test_inspect_acts_only_on_the_row_the_tree_shows_as_current(qtbot, monkeypatch, sample):
+    panel, vm, _ = _make(qtbot, monkeypatch, sample)
+    inspect_spy = _Spy(vm.inspect_requested)
+    _click(panel, f"spec:{A[6]}")
+    assert panel._inspect.isEnabled()
+    _click(panel, f"set:{KEY_A}")                                # the visible current row is a set
+    assert not panel._inspect.isEnabled()
+    panel._inspect.click()                                         # disabled: nothing opens
+    assert inspect_spy.calls == []
+    _click(panel, f"spec:{A[6]}")
+    assert panel._inspect.isEnabled()
+
+
 def test_clicking_a_set_row_leaves_the_display_alone(qtbot, monkeypatch, sample):
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
     _click(panel, f"spec:{A[6]}")

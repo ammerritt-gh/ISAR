@@ -161,11 +161,11 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
             self._vm.set_column_visible(column, on)
 
     def _on_current_index_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
-        if self._busy or not current.isValid():
-            return
-        key = current.siblingAtColumn(0).data(_KEY_ROLE)
-        if key:                                  # set, analyzer, section and file rows leave the display be
-            self._vm.select(key)
+        if not self._busy and current.isValid():
+            key = current.siblingAtColumn(0).data(_KEY_ROLE)
+            if key:                              # set, analyzer, section and file rows leave the display be
+                self._vm.select(key)
+        self._update_footer()                    # Inspect follows the visible row, which a set row changes too
 
     def _on_activated(self, index: QModelIndex) -> None:
         key = index.siblingAtColumn(0).data(_KEY_ROLE)
@@ -173,8 +173,13 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
             self._vm.inspect(key)
 
     def _on_inspect_clicked(self) -> None:
-        if self._vm.current_key:
-            self._vm.inspect(self._vm.current_key)
+        key = self._visible_key()
+        if key:
+            self._vm.inspect(key)
+
+    def _visible_key(self) -> str | None:
+        index = self._view.currentIndex()
+        return index.siblingAtColumn(0).data(_KEY_ROLE) if index.isValid() else None
 
     def _on_toggled(self, index: QModelIndex, opened: bool) -> None:
         node_id = index.siblingAtColumn(0).data(_ID_ROLE)
@@ -356,5 +361,5 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         notice = vm.outside_filter()
         self._notice.setText(notice or "")
         self._notice.setVisible(notice is not None)
-        key = vm.current_key
+        key = self._visible_key()
         self._inspect.setEnabled(key is not None and vm.snapshot.spectrum(key) is not None)
