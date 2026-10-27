@@ -90,6 +90,20 @@ Q and count record), written by `isar ingest` and by `isar run`; it never holds 
   worker thread. Each later call re-judges liveness and the latest passes over the parsed log (about 35 ms
   at 20 runs), so a run killed after a read stops counting at once. `Workspace.watch` reports `intake_entries`,
   `intake_settings`, `intake_scans`, `fit_inputs` and `curves` among its change names.
+- **Readiness and conditions.** `needs_attention(root)` gives readiness per scan, per analyzer and per use
+  (read, reduce, calibrate, fit, steer: ready, fallback, pending, held or unreadable) and the grouped
+  needs-attention list, each group with the action that resolves it and whether analysis can start;
+  `import_summary(root)` gives the scans and analyzers read, the incomplete sets, the files not read and where
+  the curves were found; `Workspace.conditions(scans=None)` lists the conditions in force (excluded scan, dead
+  analyzer, counts accepted) with the reason saved with each. All three are read-only, Qt-free and scipy-free
+  (`isar/intake/readiness.py`, `isar/workspace_api/intake_view.py`) and for BL43LXU workspaces only
+  (`evaluated=False` with a note otherwise). Readiness has no file of its own: it is computed on every read from
+  the import record, the entries and settings, the curve check, the calibration state and the fit-inputs log,
+  using the stages' own checks (the fit stage's count hold, the curve coverage, the calibration's inputs key), so
+  it cannot disagree with a run; it never raises, and a record it cannot read is reported, not guessed.
+  `import_summary` (about 3 ms) and `conditions` are GUI-thread safe; `needs_attention` parses the fit-inputs
+  log for its running and changed marks, so call it from a worker thread (about 0.33 s with a 20-run log of
+  19 MB at 30 scans x 28 analyzers, of which the readiness itself is about 15 ms).
 - **`Change.field`** (the *changes since* rows) is one of a closed list: `data` (the imported revision),
   `temperature`, `slit`, `q`, `excluded`, `dead`, `dead_in_scan` (a sibling analyzer declared dead), `counts_accepted`,
   `resolution_folder`, `curve` (the unit's curve content), `resolution_library` (the curves compared when the slit
@@ -156,7 +170,7 @@ init  detect  ingest  run  status  profile  report  diagnose  score  view  scene
 | `isar detect <data>` | Report the instrument detected from a data path. Writes nothing. |
 | `isar ingest <data>... --workspace DIR` | Parse into the ledger **without fitting** — one `ingested` entry per `(exp, scan, detector)`, so parsed scans are visible through `workspace_api` before any run. Never fits, never deletes, never writes `card.policy.toml`. |
 | `isar run <data>... --workspace DIR` | The whole pipeline: ingest → parse/classify → route context events → QC/combine → optional LLM adjudication → calibration-gated fit with prior → verdict/confidence → collate → report. Idempotent; re-run per batch. |
-| `isar status --workspace DIR` | Ledger summary without reprocessing: counts by status and verdict, held scans with reasons, scan-number and coverage gaps, calibration versions, prior population. |
+| `isar status --workspace DIR` | Ledger summary without reprocessing: counts by status and verdict, held scans with reasons, scan-number and coverage gaps, calibration versions, prior population; for a BL43LXU workspace also the needs-attention list (the groups the GUI shows). |
 | `isar profile --workspace DIR` | Where a campaign spent its time, from the session log; `--compare-workspace` diffs scientific decisions and certified outputs against another workspace. |
 | `isar report --workspace DIR` | Re-render `report.md`/`.html`/`.json` and the dispersion figure. **Reads the ledger only — no reparse, no refit** (`isar/cli/report_cmd.py`). `--scene` additionally rebuilds the scene revision from the persisted ledger and publishes it under `report/scene/` — read-only in the same sense (no re-fit, no re-collation); a workspace the scene adapter cannot read faithfully exits **3** rather than writing an empty scene. |
 | `isar diagnose --workspace DIR` | Render the architect's `CAMPAIGN_DIAGNOSTIC.md` for a campaign — see `docs/design/reporting.md`. |
