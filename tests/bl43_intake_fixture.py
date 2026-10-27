@@ -15,10 +15,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from bl43_fixture import ANALYZERS, KEY_A, build_bl43_workspace
+from bl43_fixture import ANALYZERS, KEY_A, KEY_A_NO_T, KEY_B_NO_T, build_bl43_workspace
 from intake_fixtures import write_library
 
 FITTED = (f"{KEY_A}:a03", f"{KEY_A}:a04", f"{KEY_A}:a06")     # the units build_bl43_workspace stamps
+FITTED_NO_T = tuple(u.replace(KEY_A, KEY_A_NO_T) for u in FITTED)   # the same, in the with_t=False variant
+KEYS_NO_T = (KEY_A_NO_T, KEY_B_NO_T)        # that variant's scan keys (the stems differ, so the hashes do)
 
 
 def analyzer_ids(n_analyzers: int = 4) -> tuple[str, ...]:
@@ -28,14 +30,15 @@ def analyzer_ids(n_analyzers: int = 4) -> tuple[str, ...]:
 def build_intake_workspace(root: Path, n_analyzers: int = 4, *, curves: bool = True, fits: bool = True,
                            with_t: bool = True, off_integer=()) -> Path:
     """The S1 workspace under ``root`` with its import record and curve check; returns ``root/ws``.
-    ``curves=False`` writes no library (the resolution curves are then not found)."""
+    ``curves=False`` writes no library (the resolution curves are then not found). ``with_t=False``: no
+    temperature anywhere, in the files or their names; the scan keys are then ``KEYS_NO_T``."""
     root = Path(root)
     if curves:
         write_library(root / "incoming" / "rf", analyzers=analyzer_ids(n_analyzers))
     ws_root = build_bl43_workspace(root, n_analyzers, fits=fits, intake=True, with_t=with_t,
                                    off_integer=off_integer)
     if fits:
-        write_run(ws_root, FITTED)
+        write_run(ws_root, FITTED if with_t else FITTED_NO_T)
     return ws_root
 
 

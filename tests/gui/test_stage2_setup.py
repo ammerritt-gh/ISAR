@@ -63,6 +63,11 @@ def s2_no_curves(tmp_path_factory):
     return bl43_intake_fixture.build_intake_workspace(tmp_path_factory.mktemp("s2nc"), curves=False)
 
 
+@pytest.fixture(scope="module")
+def s2_no_t(tmp_path_factory):
+    return bl43_intake_fixture.build_intake_workspace(tmp_path_factory.mktemp("s2nt"), with_t=False)
+
+
 @pytest.fixture
 def s2_ws(s2_built, tmp_path):
     """A private copy (its manifest and curve check still name the original ``incoming/``)."""
@@ -118,6 +123,18 @@ def test_the_fixture_writes_the_intake_layer_and_its_variants(s2_built, s2_no_cu
     fits = {u.unit: u for u in Workspace(s2_built).fit_inputs()}
     assert set(fits) == set(bl43_intake_fixture.FITTED)
     assert all(u.fast.state == "finished" and not u.fast.changes for u in fits.values())   # fresh = current
+
+
+def test_the_no_temperature_variant_has_no_temperature_anywhere(s2_no_t):
+    incoming = s2_no_t.parent / "incoming"
+    names = [f.name for f in incoming.iterdir() if f.is_file()]
+    assert not [n for n in names if re.search(r"\d+K_|_T\d+K", n)]          # no temperature token in a stem
+    assert not [f for f in incoming.iterdir() if f.is_file() and "#T=" in f.read_text(encoding="utf-8")]
+    from isar.workspace_api import Workspace
+    rows = [r for r in Workspace(s2_no_t).fact_rows() if r.fact == "temperature"]
+    assert {r.scan for r in rows} >= set(bl43_intake_fixture.KEYS_NO_T)     # the exposed keys are the real ones
+    assert all(r.used_source == "missing" and r.file_source == "missing" for r in rows)
+    assert {u.unit for u in Workspace(s2_no_t).fit_inputs()} == set(bl43_intake_fixture.FITTED_NO_T)
 
 
 # ---- IntakeState: its worked examples ----------------------------------------------------------------
