@@ -73,6 +73,19 @@ def test_one_line_counts_files_and_distinct_scan_sets(qtbot, tmp_path):
     assert strip._watch.isEnabled()
 
 
+def test_one_line_form_keeps_counts_and_buttons_on_one_row(qtbot, tmp_path):
+    strip = _strip(qtbot, _vm(tmp_path, [_file("a.dat")]))
+    strip.resize(280, 200)                          # the left column's minimum width
+    strip.show()
+    qtbot.waitExposed(strip)
+    row = (strip._line_text, strip._add, strip._watch)
+    assert strip._attention.isHidden()
+    assert max(w.y() for w in row) - min(w.y() for w in row) <= 3
+    assert strip.minimumSizeHint().width() <= 280
+    strip.set_watch_status(WatchStatus(retrying=(r"D:\beam\bad.dat",)))
+    qtbot.waitUntil(lambda: strip._attention.y() > strip._add.y())   # attention alone goes second
+
+
 def test_watch_is_disabled_with_the_reason_without_a_store(qtbot, tmp_path):
     strip = _strip(qtbot, _vm(tmp_path, [_file("a.dat")], store=False))
     assert not strip._watch.isEnabled()

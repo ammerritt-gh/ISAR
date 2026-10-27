@@ -105,17 +105,16 @@ class FilesStrip(QWidget):
         self._watch = QPushButton("Watch…", line)
         self._watch.setObjectName("files_watch")
         self._watch.clicked.connect(self._open_watch)
-        buttons = QHBoxLayout()
-        buttons.setSpacing(6)
-        buttons.addWidget(self._add, 0)
-        buttons.addWidget(self._watch, 0)
-        buttons.addStretch(1)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(self._line_text, 1)          # elides; widens nothing, so the strip fits 280 px
+        row.addWidget(self._add, 0)
+        row.addWidget(self._watch, 0)
         line_layout = QVBoxLayout(line)
         line_layout.setContentsMargins(8, 4, 8, 4)
         line_layout.setSpacing(3)
-        line_layout.addWidget(self._line_text)
-        line_layout.addWidget(self._attention)
-        line_layout.addLayout(buttons)
+        line_layout.addLayout(row)
+        line_layout.addWidget(self._attention)     # a second row only while the watch needs attention
         self._line = line
 
         outer = QVBoxLayout(self)
