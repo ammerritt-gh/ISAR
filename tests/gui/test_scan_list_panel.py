@@ -337,9 +337,12 @@ def test_double_click_and_the_inspect_button_open_the_inspector(qtbot, monkeypat
     _click(panel, f"spec:{A[6]}")
     assert panel._inspect.isEnabled()
     rect = panel._view.visualRect(_index(panel, f"spec:{A[6]}"))
-    QTest.mouseDClick(panel._view.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
-    if not inspect_spy.calls:                                      # a platform that drops the synthetic click
-        panel._view.activated.emit(_index(panel, f"spec:{A[6]}"))
+    viewport, pos = panel._view.viewport(), rect.center()
+    # the sequence a platform delivers: press, release, the double-click, release (the view needs the press)
+    QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=pos)
+    QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=pos)
+    QTest.mouseDClick(viewport, Qt.MouseButton.LeftButton, pos=pos)
+    QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=pos)
     assert inspect_spy.calls == [(A[6],)]
     panel._inspect.click()
     assert inspect_spy.calls == [(A[6],), (A[6],)]
