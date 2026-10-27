@@ -225,9 +225,9 @@ destroying data," and it is enforced in code, not aspirational:
   constants — Γ is the linewidth we report and a wrong resolution biases it directly.
 *(Implemented; module docstrings in `isar/reduce/` carry the details.)*
 
-**Tabulated elastic calibration (`tabulated_elastic`; a card switches it on).** The folder of measured
+**Tabulated elastic calibration (`tabulated_elastic`; the BL43 format file switches it on).** The folder of measured
 resolution curves, one per analyzer and slit, is the experiment's saved folder (`intake/settings.jsonl`),
-else the card's `resolution_folder`; with none saved, an `rf/` beside the imported data is discovered and
+discovered or chosen in the GUI; with none saved, an `rf/` beside the imported data is discovered and
 saved at the first import or run (`isar/intake/curves.py`). Each curve is identified by its content, and
 `report/curves.json` records the folder in force and what it holds. `calibrations.refresh_tabulated`
 runs in `isar run` after routing and writes `card.state.tabulated_calibration["exp:scan"]`, never
@@ -484,7 +484,9 @@ rulings W1–W3.)*
 | Resolution-curve folder as an experiment setting, `rf/` discovery, curve content identity (BL43LXU) | Implemented |
 | User values and conditions for BL43 (checked, append-only, applied at each scan's start point; counts accepted lifts the hold on unrecovered counts) | Implemented |
 | Fit inputs per analyzer and pass, with "values changed since last fit" | Implemented |
-| Readiness per use and the needs-attention list (BL43LXU; read-only, computed on read from the persisted records) | Implemented |
+| Readiness per use, the needs-attention list, the import summary and the conditions read (BL43LXU; read-only, computed on read from the persisted records) | Implemented |
+| BL43LXU gaps recorded at import: left-out analyzers, sidecar state, unrecognised and unparsed lines, files not read (`report/intake_scans.json`) | Implemented |
+| BL43LXU format knowledge read from the shipped format file at every load; workspace card holds analysis settings only; a moved data folder keeps its data revision | Implemented |
 | Momentum (in-plane) resolution spread modelled inside the fit | Planned (after the SIXCIRCLE geometry) |
 | Adjudication (decide–record–defer) | Implemented (opt-in) |
 | Stage II: Baker–Cousins fit, evidence selection (H4; Akaike diagnostics retained), branch posterior, verdicts | Implemented |

@@ -176,7 +176,8 @@ area.
 action identity, and `drive/acquisition/inventory.py` re-exports those names for its callers so no
 second implementation appears)
 · `parsers` (plugin registry: S30 SPEC, IN8 numor, TAVI, BL43LXU; card
-templates in `parsers/cards/*.toml` — in8, s30, s30_raw, tavi) · `reduce` (QC mask-not-delete,
+templates in `parsers/cards/*.toml` — in8, s30, s30_raw, tavi, bl43lxu (also its format file,
+read at every load)) · `reduce` (QC mask-not-delete,
 combine-before-divide, collate) · `calibrate` (elastic fits, versioned energy-zero series;
 `calibrate/tas.py` importing `isar.synth.resolution` is the one sanctioned production→synth
 dependency) · `analyze` (fitting, errors, model selection, verdict, confidence; the DHO physics —
