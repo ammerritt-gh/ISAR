@@ -26,7 +26,11 @@ scan, temperature and HKL in its name. `parse_set` turns a set (grouped by inges
 
 The trailing `#Q=` / `#T=` lines of the real analyzer files are header facts (`Q_nm` per analyzer,
 `T_K` for the scan); a leading header value wins over a disagreeing trailer, which is kept as a conflict.
-Other trailing comments are skipped.
+A bare `#T=` (no value) is an unparsed known fact. A comment line of the fact-line shape `#key= value`
+whose key ISAR does not read (a trailer other than `#Q=`/`#T=`, or any `=`-form line before the data)
+raises `unrecognised_line`, so a renamed `#T=` shows; other comments, and the leading `# key value` form
+(it cannot be told from a plain comment), are skipped. What the reader leaves out (analyzers, the sidecar,
+unrecognised and unparsed lines) is also recorded structurally in `raw_header`.
 """
 from __future__ import annotations
 
@@ -34,7 +38,7 @@ import logging
 import re
 import tempfile
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -68,8 +72,9 @@ _VAR_SCAN = {"silicon_order": ("si_order", int), "meV_bin_size": ("bin_meV", flo
 _VAR_ANALYZER = {"analeff": "efficiency", "anal_polfactor": "polarisation_factor",
                  "elpk_centroid_meV": "elastic_centroid_meV", "elpk_area_meV": "elastic_area"}
 _VAR_LINE = re.compile(r"^([A-Za-z_]\w*)(?:\[(\d+)\])?\s*=\s*(.+?)\s*$")
-_TRAILER = re.compile(r"#([QT])=\s*(\S+)")     # the analyzer files' own |Q| and the scan's temperature
+_TRAILER = re.compile(r"#([QT])=\s*(\S*)")    # the analyzer files' own |Q| and the scan's temperature
 _TRAILER_KEYS = {"Q": "Q_nm", "T": "T_K"}
+_FACT_SHAPE = re.compile(r"#\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")   # `#Key= value`: shaped like a fact line
 
 
 def card_template() -> Card:
@@ -109,6 +114,7 @@ class Member:
     labelled: bool                 # named columns (CsV3Sb5 layout) vs bare energy/intensity/error
     clash: dict                    # trailer values that disagree with the leading header (kept as conflicts)
     bad_trailer: list[str]         # trailing `#Q=`/`#T=` lines whose number does not parse
+    unrecognised: list[tuple[str, str, str]] = field(default_factory=list)   # (position, key, line)
 
 
 def _column(labels: list[str], spec) -> int | None:
@@ -118,11 +124,13 @@ def _column(labels: list[str], spec) -> int | None:
     return None
 
 
-def _trailer(lines: list[str]) -> tuple[dict, list[str]]:
+def _trailer(lines: list[str]) -> tuple[dict, list[str], list[tuple[str, str, str]]]:
     """`#Q=` and `#T=` lines after a file's data (`#Q=   11.250 /nm`, `#T=  250.000 K`) as header facts,
-    and the lines whose number does not parse. Other trailing comments are skipped."""
+    the lines whose number does not parse (a bare `#T=` too), and the fact-shaped lines with another key
+    as (`"trailer"`, key, line). Other trailing comments are skipped."""
     out: dict = {}
     bad: list[str] = []
+    unrecognised: list[tuple[str, str, str]] = []
     for s in lines:
         m = _TRAILER.match(s)
         if m:
@@ -130,7 +138,9 @@ def _trailer(lines: list[str]) -> tuple[dict, list[str]]:
                 out[_TRAILER_KEYS[m.group(1)]] = float(m.group(2))
             except ValueError:
                 bad.append(s)
-    return out, bad
+        elif (shaped := _FACT_SHAPE.match(s)):
+            unrecognised.append(("trailer", shaped.group(1), s))
+    return out, bad, unrecognised
 
 
 def _floats(rows: list[list[str]], col: int, what: str) -> np.ndarray:
@@ -151,6 +161,7 @@ def read_member(path: str | Path, family: str = "_i") -> Member:
     labels: list[str] | None = None
     lead: list[str] = []
     trail: list[str] = []
+    unrecognised: list[tuple[str, str, str]] = []
     rows: list[list[str]] = []
     for line in text.splitlines():
         s = line.strip()
@@ -164,6 +175,8 @@ def read_member(path: str | Path, family: str = "_i") -> Member:
                 labels = words
             else:
                 lead.append(s)
+                if (shaped := _FACT_SHAPE.match(s)):     # ISAR reads no `=`-form line before the data
+                    unrecognised.append(("header", shaped.group(1), s))
         else:
             trail.append(s)
     if not rows:
@@ -173,7 +186,7 @@ def read_member(path: str | Path, family: str = "_i") -> Member:
         if len(r) != width:
             raise MemberError(f"data row {i + 1} has {len(r)} columns, expected {width}")
     header = metadata.read_header(lead)
-    trailer, bad = _trailer(trail)
+    trailer, bad, unrecognised_trailer = _trailer(trail)
     clash = {}                                             # a trailer that disagrees with the header: kept aside
     for key, value in trailer.items():                     # ...and a trailer fills only a gap
         if key not in header:
@@ -205,7 +218,8 @@ def read_member(path: str | Path, family: str = "_i") -> Member:
     for key, what in (("y", "intensity"), ("e", "error")):
         _floats(rows, cols[key], what)                     # fail early, naming the column
     return Member("", energy, [r[cols["y"]] for r in rows], [r[cols["e"]] for r in rows],
-                  monitor, time, npts, header, labels is not None, clash, bad)
+                  monitor, time, npts, header, labels is not None, clash, bad,
+                  unrecognised + unrecognised_trailer)
 
 
 def read_var(path: str | Path) -> dict:
@@ -442,12 +456,20 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
                                     "no individual scans of it are in this batch"))
     if sidecar_flag is not None:
         scan_flags.append(sidecar_flag)
+        sidecar_state, sidecar_problem = "unreadable", sidecar_flag.reason
     elif labelled and var_path is None:
-        scan_flags.append(scan.Flag("missing_sidecar", "warning",
-                                    f"no {file_set.key}.var beside the analyzer files; "
-                                    "bin size, silicon order and per-analyzer sidecar facts are missing"))
+        missing = scan.Flag("missing_sidecar", "warning",
+                            f"no {file_set.key}.var beside the analyzer files; "
+                            "bin size, silicon order and per-analyzer sidecar facts are missing")
+        scan_flags.append(missing)
+        sidecar_state, sidecar_problem = "missing", missing.reason
+    else:
+        sidecar_state, sidecar_problem = ("read" if var_path is not None else "not_expected"), None
     gone = {d: causes.get(d, "no file") for d in expected if d not in members and d not in disabled}
     gone.update({d: c for d, c in causes.items() if d not in gone})
+    file_of: dict[str, str] = {}
+    for path, groups in sorted(file_set.measurements, key=lambda pg: Path(pg[0]).name):
+        file_of.setdefault(detector_id(groups["analyzer"]), Path(path).name)
     if gone:
         scan_flags.append(scan.Flag(
             "missing_analyzer", "warning",
@@ -484,7 +506,14 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
                     "files": {d: Path(p).name for p, g in file_set.measurements
                               for d in [detector_id(g["analyzer"])] if d in spectra},
                     "headers": {d: dict(members[d].header) for d in sorted(members)},
-                    "sidecar": Path(var_path).name if var_path is not None else None},
+                    "sidecar": Path(var_path).name if var_path is not None else None,
+                    # what was left out, structurally (the flags above say the same in words)
+                    "sidecar_state": sidecar_state, "sidecar_problem": sidecar_problem,
+                    "left_out": {d: {"file": file_of.get(d), "cause": c} for d, c in sorted(gone.items())},
+                    "unrecognised_lines": [{"analyzer": d, "position": pos, "key": key, "line": line}
+                                           for d in sorted(members) for pos, key, line in members[d].unrecognised],
+                    "unparsed_lines": [{"analyzer": d, "line": line}
+                                       for d in sorted(members) for line in members[d].bad_trailer]},
         source=scan.Source(file=file_set.key, byte_range=None, line_range=None, plugin=name,
                            plugin_version=version, format_version=pol.format_version,
                            schema_version=scan.SCHEMA_VERSION),
@@ -542,6 +571,10 @@ def _spectrum(m: Member, k: np.ndarray, all_keys: np.ndarray, fname_facts: dict,
     spectrum_flags += [scan.Flag("trailer_unparsed", "warning",
                                  f"{det}: trailing line {s!r} does not parse; its value is left out")
                        for s in m.bad_trailer]
+    spectrum_flags += [scan.Flag("unrecognised_line", "warning",
+                                 f"{det}: line {line!r} has the fact-line shape but ISAR does not read the key "
+                                 f"{key!r} here; its value is not used")
+                       for _pos, key, line in m.unrecognised]
     if m.npts is not None:
         ppb = np.zeros(n)
         ppb[pos] = m.npts

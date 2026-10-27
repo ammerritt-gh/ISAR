@@ -153,6 +153,7 @@ class _Collected:
     set_of: dict = field(default_factory=dict)           # (exp, scan) -> FileSet, for set-sourced scans
     refused: list = field(default_factory=list)          # {"scan","sets":[earlier, later],"reason"}
     passed_over: list = field(default_factory=list)      # {"set","scans","reason"}: summed sets not read
+    passed_files: dict = field(default_factory=dict)     # resolved member path -> reason, of those summed sets
 
 
 def _listed_scans(fs: FileSet) -> list[int]:
@@ -290,6 +291,7 @@ def _collect(plan: IngestPlan, card: Card, *, isolate: bool, session=None, ledge
                 reason = (f"set {names[id(fs)]!r} sums scans {', '.join(map(str, scans))}, which are present "
                           "as their own sets; not read, so no count is used twice")
                 got.passed_over.append({"set": names[id(fs)], "scans": scans, "reason": reason})
+                got.passed_files.update({str(Path(p).resolve()): reason for p, _g in fs.measurements})
                 log.info("ingest: %s", reason)
                 continue
             set_key, paths = names[id(fs)], [p for p, _g in fs.measurements]
@@ -442,6 +444,44 @@ def supersede_summed(session, *, on_supersede=None) -> bool:
     return changed
 
 
+def _files_not_read(plan: IngestPlan, got: _Collected, curves: dict | None) -> dict:
+    """Resolved path -> its ``files`` entry in the import record, for each file of this batch that was not
+    read (None: read, so any earlier entry goes). Curve files (the check's folder and its other folders)
+    are never listed: they are counted by the curve check, and a real ``rf/`` holds hundreds."""
+    skip = []
+    if curves and "error" not in curves:
+        skip = [Path(p).resolve() for p in
+                [curves.get("folder")] + [o["path"] for o in curves.get("other_folders") or []] if p]
+    set_of = {str(Path(p).resolve()): fs.key for fs in plan.file_sets for p, _g in fs.measurements}
+    out: dict = {}
+
+    def put(f, klass, reason, set_key=None):
+        rp = Path(f).resolve()
+        out[str(rp)] = (None if klass is None or any(rp.is_relative_to(s) for s in skip)
+                        else {"class": klass, "reason": reason, "set": set_key})
+
+    for f in plan.measurement_files:
+        rp = str(Path(f).resolve())
+        err = got.file_errors.get(rp)
+        if rp in got.passed_files:
+            put(f, "passed_over", got.passed_files[rp], set_of.get(rp))
+        elif err is not None and err.startswith("refused: "):
+            put(f, "refused", err[len("refused: "):], set_of.get(rp))
+        elif err is not None:
+            put(f, "failed", err, set_of.get(rp))
+        else:
+            put(f, None, None)
+    for f in plan.sidecar_files:
+        put(f, None, None)
+    for f in plan.ignored_files:
+        put(f, "ignored", "ignored by the BL43 format's ignore list")
+    for f in plan.unrecognized:
+        put(f, "unrecognised", "not recognised as BL43LXU data")
+    for f in plan.foreign:
+        put(f, "foreign", "recognised as another instrument's data; not read by this experiment")
+    return out
+
+
 def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_root=None) -> IngestReport:
     """Parse ``data_paths`` into the session ledger WITHOUT fitting (the retired unification plan §2.3, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 
@@ -582,7 +622,8 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
         report.dirty = True
     if intake:
         try:
-            intake_scans.record_import(workspace_root, intake_rows)
+            intake_scans.record_import(workspace_root, intake_rows,
+                                       seen_files=_files_not_read(plan, got, report.curves))
         except Exception as exc:  # noqa: BLE001 — a failed import record is logged and reported, never aborts the batch
             log.exception("ingest: %s not written", intake_scans.INTAKE_SCANS)
             report.import_record_error = import_record_message(intake_scans.INTAKE_SCANS, exc)
