@@ -16,16 +16,17 @@ def test_help_lists_view():
     assert "view" in build_parser().format_help()
 
 
-def test_view_help_mentions_recovery_recent_and_empty(capsys):
-    # `isar view -h` documents the no-argument precedence and the empty-window fallback.
+def test_view_help_mentions_recent_and_empty(capsys):
+    # `isar view -h` documents the no-argument default and the empty-window fallback; there is no
+    # temporary work left to recover.
     import pytest as _pytest
 
     with _pytest.raises(SystemExit):
         build_parser().parse_args(["view", "-h"])
     out = " ".join(capsys.readouterr().out.split())  # collapse argparse line-wrapping
-    assert "offer recovery of unfinished temporary work" in out
+    assert "recovery" not in out and "temporary" not in out
     assert "most recent workspace" in out
-    assert "empty window if neither is openable" in out
+    assert "empty window if none is openable" in out
 
 
 def test_view_parses_workspace_arg():

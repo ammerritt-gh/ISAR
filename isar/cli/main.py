@@ -163,9 +163,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     pv = sub.add_parser("view", help="open the desktop GUI on a workspace (needs the [gui] extra)")
     pv.add_argument("workspace", nargs="?", default=None,
-                    help="an ISAR workspace directory to open read-only (default: offer recovery "
-                         "of unfinished temporary work, then open the most recent workspace, or "
-                         "an empty window if neither is openable)")
+                    help="an ISAR workspace directory to open read-only (default: the most recent "
+                         "workspace, or an empty window if none is openable)")
 
     psb = sub.add_parser("scene-build",
                          help="build one scene revision from persisted state and report it as JSON")
