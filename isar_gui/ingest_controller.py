@@ -1,22 +1,23 @@
 """IngestController — the single serialization point for engine ingest subprocesses (Phase D).
 
-Every path into the ledger — a drop onto a ready workspace, a drop that must first scaffold a
-temporary workspace, a watched-folder burst — funnels through :meth:`request_ingest`. The controller
+Every path into the ledger — a drop onto a ready experiment, a drop that must first create an
+experiment folder, a watched-folder burst — funnels through :meth:`request_ingest`. The controller
 guarantees **exactly one** ``isar`` subprocess runs at a time and FIFO-queues the rest, because two
 ``isar ingest`` processes writing ``session.json`` concurrently would race the machine-owned ledger
 (Hard Rule 5's trust contract lives in that file). A watched folder dumping ten numors in one poll
 must never fan out into ten racing processes.
 
 Ownership split with :class:`~isar_gui.workspace_manager.WorkspaceManager` (Phase D decision):
-  * the **manager** owns pure lifecycle — reserve (``new_temp``), ``open``, ``save_as``,
-    ``discard_temp``, ``adopt`` — and the none/pending/ready state machine;
+  * the **manager** owns pure lifecycle — ``new_experiment``, ``open``, ``rename``, ``save_copy``,
+    ``adopt`` — and the none/pending/ready state machine;
   * the **controller** owns the *bootstrap sequence* that was Phase C's ``bootstrap_from_data``:
     ``isar init`` (scaffold the card) → ``isar ingest`` (fill the ledger) → ``manager.open(root)``.
     It consults the manager's state to decide what a request needs and calls back into the manager's
     lifecycle methods; the manager no longer drives subprocesses at all.
 
 Per request, by manager state at dequeue time:
-  * ``"none"``    → ``manager.new_temp()`` (reserve + enter pending), then the pending path;
+  * ``"none"``    → ``manager.new_experiment(name, named_from=…)`` (a folder named from the dropped
+    data, in the experiments root; enters pending), then the pending path;
   * ``"pending"`` → ``init`` first path, ``ingest`` all paths, then ``manager.open(root)``;
   * ``"ready"``   → ``ingest`` all paths straight into the open workspace.
 
@@ -40,6 +41,7 @@ from isar_gui.commands import (
     parse_ingest_json,
 )
 from isar_gui.process import ProcessRunner
+from isar_gui.workspace_manager import experiment_name_for, experiments_root
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +77,7 @@ class IngestController(QObject):
         # FIFO of (path batch, pinned root). The root is stamped at ENQUEUE time (see request_ingest)
         # so a batch queued against workspace A is never ingested into workspace B if the operator
         # switches before it dequeues. ``None`` = queued in the none-state (no workspace yet), which
-        # bootstraps a fresh temp at dequeue and so carries no pin to check.
+        # creates a fresh experiment at dequeue and so carries no pin to check.
         self._queue: list[tuple[list[str], str | None]] = []
         # Per-job scratch (valid only while a job is in flight):
         self._current: list[str] | None = None   # the batch being processed
@@ -97,7 +99,7 @@ class IngestController(QObject):
         The batch is stamped with the workspace root current *now* (at enqueue). If the operator
         switches to a different workspace before this batch dequeues, :meth:`_start_next` drops it
         rather than ingesting workspace A's files into workspace B's ledger. A batch enqueued in the
-        none-state (no root yet) carries no pin and bootstraps a fresh temp when it dequeues.
+        none-state (no root yet) carries no pin and creates a fresh experiment when it dequeues.
         """
         batch = [str(p) for p in paths if str(p)]
         if not batch:
@@ -170,8 +172,18 @@ class IngestController(QObject):
 
         state = self._wsm.state()
         if state == "none":
-            # Reserve a throwaway workspace and drop into the pending bootstrap path.
-            self._wsm.new_temp()
+            # Create the experiment folder (named from what was dropped) and drop into the pending
+            # bootstrap path. The one create-or-ingest decision for every route, so one FIFO.
+            name, named_from = experiment_name_for(paths)
+            try:
+                self._wsm.new_experiment(name, named_from=named_from)
+            except OSError as exc:
+                cause = f"could not create the experiment folder in {experiments_root()}: {exc}"
+                log.warning("%s", cause)
+                self._log(cause)
+                self.ingest_failed.emit(1, cause)
+                self._finish_job()
+                return
             state = self._wsm.state()
             root_after_reserve = self._wsm.root()
             if root_after_reserve is not None:
@@ -179,7 +191,7 @@ class IngestController(QObject):
 
         root = self._wsm.root()
         if root is None:
-            # Should not happen (new_temp reserves a root); refuse rather than build a bad command.
+            # Should not happen (new_experiment binds a root); refuse rather than build a bad command.
             self._log("ingest aborted — no workspace root to ingest into")
             self._finish_job()
             return

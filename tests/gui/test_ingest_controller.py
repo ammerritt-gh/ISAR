@@ -63,7 +63,8 @@ class _FakeManager:
         self._root = root
         self._generation = 1
         self.opened = []
-        self.new_temp_calls = 0
+        self.created = []           # (name, named_from) per new_experiment call
+        self.create_error = None    # an OSError for new_experiment to raise
 
     def state(self):
         return self._state
@@ -74,8 +75,10 @@ class _FakeManager:
     def generation(self):
         return self._generation
 
-    def new_temp(self):
-        self.new_temp_calls += 1
+    def new_experiment(self, name, *, named_from):     # no default: a positional/missing one fails
+        if self.create_error is not None:
+            raise self.create_error
+        self.created.append((name, named_from))
         self._state = "pending"
         self._root = r"D:\tmp\ws"
         self._generation += 1
@@ -144,14 +147,44 @@ def test_bootstrap_runs_init_then_ingest_then_open(qtbot, patched_runner):
     assert mgr.opened == [r"D:\tmp\ws"]             # opened exactly once, after ingest
 
 
-def test_none_state_reserves_temp_first(qtbot, patched_runner):
-    """A request with no workspace bound reserves a temp workspace (new_temp) then bootstraps it."""
+def test_none_state_creates_a_named_experiment_first(qtbot, patched_runner, tmp_path):
+    """A request with no experiment open creates one named from the dropped data (by keyword), then
+    bootstraps it: init first, the experiment's root in the argv."""
+    folder = tmp_path / "leTacon_SP8"
+    folder.mkdir()
     mgr = _FakeManager(state="none", root=None)
     ctrl = IngestController("py", mgr, log_sink=lambda _m: None)
+    bound = []
+    ctrl.bootstrap_bound.connect(lambda root, gen: bound.append(root))
+
+    ctrl.request_ingest([str(folder)])
+    assert mgr.created == [("leTacon_SP8", "folder")]
+    assert "init" in patched_runner.instances[0].argv
+    assert r"D:\tmp\ws" in patched_runner.instances[0].argv
+    assert bound == [r"D:\tmp\ws"]
+
+
+def test_create_failure_is_reported_and_starts_no_ingest(qtbot, patched_runner):
+    """If the experiment folder cannot be made, the cause is logged and emitted as ingest_failed(1,
+    cause), no process starts, and the batches queued behind it are still served."""
+    mgr = _FakeManager(state="none", root=None)
+    mgr.create_error = OSError("disk full")
+    lines, failures, finished = [], [], []
+    ctrl = IngestController("py", mgr, log_sink=lines.append)
+    ctrl.ingest_failed.connect(lambda code, cause: failures.append((code, cause)))
+    ctrl.job_finished.connect(lambda: finished.append(True))
 
     ctrl.request_ingest(["d1"])
-    assert mgr.new_temp_calls == 1
-    assert "init" in patched_runner.instances[0].argv
+    assert patched_runner.instances == []
+    assert len(failures) == 1 and failures[0][0] == 1
+    assert "could not create the experiment folder" in failures[0][1] and "disk full" in failures[0][1]
+    assert any("disk full" in ln for ln in lines)
+    assert finished == [True] and not ctrl.is_busy()
+
+    mgr.create_error = None                           # the next drop works again
+    ctrl.request_ingest(["d2"])
+    assert mgr.created == [("d2", "data")]
+    assert len(patched_runner.instances) == 1
 
 
 def test_failure_emits_ingest_failed_with_json_cause(qtbot, patched_runner):
