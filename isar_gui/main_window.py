@@ -1676,6 +1676,7 @@ class MainWindow(QMainWindow):
 
     def _push_run_row(self) -> None:
         """The setup section's Run button: on when an analysis can start, else off with the reason beside it."""
+        curves_only = False
         if self._empty:
             enabled, note = False, "Open or create an experiment first."
         elif self._operations.is_running_analysis():
@@ -1691,7 +1692,8 @@ class MainWindow(QMainWindow):
             enabled = ready != 0                  # None: no readiness read applies (not BL43LXU data); run it
             note = (f"Nothing is ready yet: {blockers}" if blockers else "Nothing is ready yet.") if ready == 0 else (
                 "" if ready is None else f"{ready} ready for analysis")
-        self.setup_section.set_run_state(enabled, note)
+            curves_only = self.readiness_line.only_curves_blocked
+        self.setup_section.set_run_state(enabled, note, curves_only=curves_only)
 
     def start_analysis(self) -> None:
         """The one window-level entry point for starting an analysis (the queue job rebinds it)."""

@@ -202,6 +202,7 @@ class ReadinessLine(QWidget):
         self._worker_done = False                 # the worker answered since the last reload (changed)
         self._ready: int | None = None            # spectra that can start; None: no readiness read applies
         self._blockers = ""                       # "9 need resolution curves · ..." (the blocked counts)
+        self._blocked_keys: tuple[str, ...] = ()  # the classify() keys behind them, in the same order
         self._checking = False                    # the first read has not answered yet
         self._label = _Wrapped(self)
         self._label.setObjectName("readiness_text")
@@ -236,6 +237,11 @@ class ReadinessLine(QWidget):
         return self._blockers
 
     @property
+    def only_curves_blocked(self) -> bool:
+        """True when every blocked count waits for resolution curves: the amber curves line says that reason."""
+        return self._blocked_keys == ("blocked:locate_folder",)
+
+    @property
     def checking(self) -> bool:
         return self._checking
 
@@ -251,7 +257,7 @@ class ReadinessLine(QWidget):
         intake = self._intake
         summary, att = intake.summary, intake.attention
         self._links, self._plain = {}, ""
-        self._ready, self._blockers, self._checking = None, "", False
+        self._ready, self._blockers, self._checking, self._blocked_keys = None, "", False, ()
         warn = False
         if intake.root is None or summary is None:
             self._label.setText("")
@@ -274,12 +280,13 @@ class ReadinessLine(QWidget):
             tip = att.note or ""
         else:
             fallback = with_fallback(att)
-            blocked = []
+            blocked, blocked_keys = [], []
             for i, (key, rows) in enumerate(classify(att, self._missing()).items()):
                 if key == READY:
                     self._ready = len(rows)
                 elif rows and key != RUNNING:
                     blocked.append(f"{len(rows)} {_phrase(key, len(rows))}")
+                    blocked_keys.append(key)
                 if not rows and key != READY:
                     continue
                 words = f"{len(rows)} {_phrase(key, len(rows))}"
@@ -292,6 +299,7 @@ class ReadinessLine(QWidget):
                 else:
                     parts.append(html.escape(words))
             self._blockers = " · ".join(blocked)
+            self._blocked_keys = tuple(blocked_keys)
         self._plain = " · ".join(plain)
         self._label.setText(" · ".join(parts))
         self._label.setToolTip(tip or (f"{self._plain}\n\n{_CLICK_HINT}" if self._links else self._plain))

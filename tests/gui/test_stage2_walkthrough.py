@@ -362,6 +362,18 @@ def test_scenario3_files_parse_without_curves_and_locate_changes_the_counts(
                for a in s.analyzers.values() if a.can_start is True)
 
 
+def test_scenario3_a_disabled_run_shows_its_reason_unless_the_amber_curves_line_is_that_reason(
+        qtbot, monkeypatch, built_no_curves, tmp_path):
+    w = _window(qtbot, monkeypatch, _copy(built_no_curves, tmp_path))
+    section, run, note = w.setup_section, w.setup_section._run, w.setup_section._run_note
+    assert section._problem.isVisible() and not run.isEnabled()
+    assert run.toolTip() and not note.isVisible()                  # the curves reason: the amber line above says it
+    monkeypatch.setattr(w._operations, "is_busy", lambda: True)    # another reason, with the amber line still showing
+    w._sync_run_actions()
+    assert section._problem.isVisible() and not run.isEnabled()
+    assert note.isVisible() and note.full_text() == "ISAR is busy with another operation."
+
+
 # ---- scenario 4: the laptop's hardest combination ---------------------------------------------------------------
 PLOT_MIN = (240, 250)       # S1's floor for the fit page's plot when Processing is collapsed
 DISPLAY_MIN = (300, 250)    # S1's floor for the display when Processing is expanded

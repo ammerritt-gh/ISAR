@@ -297,7 +297,8 @@ empty/ready layout pair, and amends G19 as stated below.
     with a muted line for the ready count or the reason it is off; it holds no logic and calls
     `MainWindow.start_analysis()`, the one entry point the Run menu entry, the Processing button and the
     readiness list's button also call (the right-hand queue job rebinds it). The amber curves line, when
-    shown, stands in for the muted line, because a second line would squeeze the counts at 1108 px.
+    shown, stands in for the muted line only when the missing curves are the whole reason Run is off; any
+    other reason keeps its line, even where a second line squeezes the counts at 1108 px.
   - *Readiness line* (`views/readiness_line.py`) in Processing: counts of spectra ready, ready with a
     fallback, waiting for resolution curves, needing their counts accepted, running and so on, each
     count opening the list behind it with the backend's reason and the button that resolves it.

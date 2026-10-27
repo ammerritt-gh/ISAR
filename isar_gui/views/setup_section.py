@@ -113,6 +113,7 @@ class SetupSection(QWidget):
         self._root: Path | None = None
         self._open_list: str | None = None      # "incomplete" | "not_read" while its list is open
         self._listed: tuple[str | None, list[tuple[str, str]]] = (None, [])   # what the list widget holds
+        self._curves_only = False               # the Run reason is the missing resolution curves
 
         self._summary = QLabel("", self)
         self._summary.setObjectName("setup_summary")
@@ -183,17 +184,21 @@ class SetupSection(QWidget):
         intake.changed.connect(self._render)
         self._render()
 
-    def set_run_state(self, enabled: bool, note: str) -> None:
-        """Run on or off, with the muted line beside it: the readiness count, or the reason it is off."""
+    def set_run_state(self, enabled: bool, note: str, *, curves_only: bool = False) -> None:
+        """Run on or off, with the muted line beside it: the readiness count, or the reason it is off.
+        ``curves_only``: the reason is the missing resolution curves, which the amber line says."""
         self._run.setEnabled(enabled)
         self._run.setToolTip(RUN_TIP if enabled else (note or RUN_TIP))
         self._run_note.set_line(note, note)
+        self._curves_only = curves_only
         self._fit_run_note()
 
     def _fit_run_note(self) -> None:
-        # The amber curves line below already says what is wrong; a second line would squeeze the counts at
-        # 1108 px, so the reason then stays in Run's tooltip.
-        self._run_note.setVisible(bool(self._run_note.full_text()) and not self._problem.isVisibleTo(self))
+        # At 1108 px a second line squeezes the counts, so the amber curves line stands in for the reason when it
+        # is that reason (a ready count is no reason at all); any other reason keeps its line.
+        said_above = self._problem.isVisibleTo(self) and (
+            self._run.isEnabled() or (self._curves_only and self._problem.full_text() == NO_CURVES))
+        self._run_note.setVisible(bool(self._run_note.full_text()) and not said_above)
 
     # ---- the outcome of a save made from here --------------------------------------------
     def show_save_outcome(self, outcome) -> None:
