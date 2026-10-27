@@ -11,8 +11,9 @@ Card-driven by the `[calibration]` policy section. Three methods cover the known
 - `elastic_records` (S30 raw): the elastics arrive in-stream as parsed calibration records.
 - `cooper_nathans` (IN8/TAS): stateless per-scan analytical resolution; center = 0 (absolute axis).
 - `tabulated_elastic` (shared; BL43LXU switches it on): a measured resolution curve per detector and
-  setting from the card's `resolution_folder`; per scan the setting ladder and per detector the
-  elastic-line zero (`refresh_tabulated`, keyed `exp:scan` in `card.state.tabulated_calibration`).
+  setting from the experiment's saved resolution folder, else the card's `resolution_folder`; per scan the
+  setting ladder and per detector the elastic-line zero (`refresh_tabulated`, keyed `exp:scan` in
+  `card.state.tabulated_calibration`).
 
 `refresh` updates `card.state` (energy_zero_series + resolution_versions). `calibration_view`
 rebuilds a run-level calibration object from state — state, not memory, is authoritative, so a
@@ -29,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-from isar.analyze.resolution import ResolutionLibrary, TabulatedResolution, file_stamp
+from isar.analyze.resolution import TabulatedResolution, file_stamp
 from isar.calibrate import bragg
 from isar.calibrate import tabulated
 from isar.calibrate import tas
@@ -39,6 +40,7 @@ from isar.calibrate.energy_zero import (
     ZeroSeries,
     build_energy_calibration,
 )
+from isar.intake.curves import load_curves, resolution_location
 from isar.parsers import metadata, sarf, spec_base
 from isar.schema import axes
 from isar.schema.card import Card
@@ -184,42 +186,16 @@ def _num(v) -> float | None:
     return v if math.isfinite(v) else None
 
 
-def _tabulated_location(card: Card, base_dir) -> tuple[Path | None, str | None]:
-    """The card's resolution folder (relative to the card's directory when not absolute) and pattern."""
-    cfg = card.policy.calibration or {}
-    folder, pattern = cfg.get("resolution_folder"), cfg.get("resolution_pattern")
-    if not folder or not pattern:
-        return None, pattern
-    path = Path(folder)
-    if not path.is_absolute() and base_dir is not None:
-        path = Path(base_dir) / path
-    return path, pattern
-
-
-def _load_library(folder, pattern) -> tuple[ResolutionLibrary, str | None, str | None]:
-    """``(library, fingerprint, problem)``: an empty library and the reason when it cannot be read."""
-    if folder is None or not pattern:
-        return ResolutionLibrary(), None, "the card names no resolution_folder and resolution_pattern"
-    try:
-        fp = sarf.fingerprint(folder, pattern)
-        return sarf.library_for(folder, pattern, fp), fp, None
-    except (OSError, ValueError, re.error) as exc:
-        log.warning("calibration(tabulated_elastic): resolution library unavailable (%s)", exc)
-        return ResolutionLibrary(), None, f"resolution library unavailable ({exc})"
-
-
 def _calibrate_detector(x, det, spectrum, library, setting, problem) -> dict:
     """One detector's entry of the state map: its zero and elastic fit, or why it is held."""
     if tabulated._not_raw(spectrum):                     # the info notice is print rounding: raw, fitted
         return {"held_reason": NON_RAW_REASON, "flags": []}      # parsed and shown, never fitted
-    curve = library.get(det, setting) if setting is not None else None
-    if curve is None:
-        why = (problem if problem else
-               "no slit setting is known for the scan" if setting is None else
-               f"no resolution curve for {det} at slit {setting}")
+    why = tabulated.curve_need(library, det, setting, problem)
+    if why is not None:
         return {"held_reason": f"{det}: {why}",
                 "flags": [_flag_row(Flag("missing_resolution", "warning",
                                          f"{det}: {why}; parsed and shown, not fitted"))]}
+    curve = library.get(det, setting)
     result = tabulated.zero_for(x, spectrum, curve)
     f = result.fit
     zero = _num(result.centre)
@@ -236,19 +212,25 @@ def _calibrate_detector(x, det, spectrum, library, setting, problem) -> dict:
             "flags": flags}
 
 
-def _calibrate_scan(rec, library, fp, problem, folder, pattern, chash) -> dict:
+def _calibrate_scan(rec, library, fp, problem, folder, pattern, chash, identity) -> dict:
     x = axes.scanned_axes(rec)[0].values
     slit = (rec.facts.get("slit") or {}).get("value")
     declared = None if slit is None else (metadata.normalise_slit(slit) or str(slit))
     choice = tabulated.choose_setting(x, rec.spectra, library, declared)
+    detectors = {}
+    for det, sp in rec.spectra.items():
+        d = _calibrate_detector(x, det, sp, library, choice.setting, problem)
+        if "held_reason" not in d:           # the curve its zero was fitted with, by content
+            d["curve"] = identity[(det, choice.setting)]
+        detectors[det] = d
     return {"content_hash": chash, "library": fp, "folder": None if folder is None else str(folder),
             "pattern": pattern, "declared": declared,
             "setting": choice.setting, "setting_source": choice.source,
+            "setting_basis": tabulated.setting_basis(choice),
             "deviances": {k: _num(v) for k, v in choice.deviances.items()},
             "comparison_set": list(choice.comparison_set),
             "flags": [_flag_row(f) for f in choice.flags],
-            "detectors": {det: _calibrate_detector(x, det, sp, library, choice.setting, problem)
-                          for det, sp in rec.spectra.items()}}
+            "detectors": detectors}
 
 
 def refresh_tabulated(card: Card, records, *, base_dir=None) -> list[str]:
@@ -266,8 +248,9 @@ def refresh_tabulated(card: Card, records, *, base_dir=None) -> list[str]:
     if cfg.get("zero_fallback", "file_axis") != "file_axis":
         lines.append(f"calibration(tabulated_elastic): zero_fallback {cfg['zero_fallback']!r} is not "
                      "supported; an analyzer without a significant elastic line uses the file's own axis")
-    folder, pattern = _tabulated_location(card, base_dir)
-    library, fp, problem = _load_library(folder, pattern)
+    folder, pattern, _source = resolution_location(card, base_dir)
+    loaded = load_curves(folder, pattern)
+    library, fp, problem = loaded.library, loaded.fingerprint, loaded.problem
     _append_version_if_changed(card, {"method": "tabulated_elastic", "folder": None if folder is None else str(folder),
                                       "pattern": pattern, "library": fp})
     if problem:
@@ -279,11 +262,10 @@ def refresh_tabulated(card: Card, records, *, base_dir=None) -> list[str]:
             continue
         key = f"{rec.experiment_id}:{rec.scan_number}"
         chash = content_hash(rec)
-        prev = state.get(key)
-        if prev is not None and prev.get("content_hash") == chash and prev.get("library") == fp:
+        if tabulated.calibration_reusable(state.get(key), content_hash=chash, library=fp):
             continue
         try:
-            state[key] = _calibrate_scan(rec, library, fp, problem, folder, pattern, chash)
+            state[key] = _calibrate_scan(rec, library, fp, problem, folder, pattern, chash, loaded.identity)
         except Exception as exc:  # noqa: BLE001 — one odd scan is held with the reason, never fatal
             log.exception("calibration(tabulated_elastic): scan %s failed", key)
             state[key] = {"content_hash": chash, "library": fp, "error": f"{type(exc).__name__}: {exc}",

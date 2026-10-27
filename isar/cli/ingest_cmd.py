@@ -10,6 +10,7 @@ import json
 import sys
 import traceback
 
+from isar.intake import curves
 from isar.schema import card as card_mod
 from isar.session import ingest
 from isar.session.workspace import Workspace
@@ -35,7 +36,8 @@ def run(args) -> int:
 
     card, session = ws.load()
     try:
-        report = ingest.ingest_batch(card, session, args.data, data_dir=ws.root / "data")
+        report = ingest.ingest_batch(card, session, args.data, data_dir=ws.root / "data",
+                                     workspace_root=ws.root)
     except Exception as exc:
         # Per-file isolation (ingest_batch) makes this a rare backstop, but the GUI's cause-extractor
         # must ALWAYS find a clean `error:` line rather than a raw traceback. Print the traceback for
@@ -58,7 +60,8 @@ def run(args) -> int:
             "deduped": report.to_jsonable()["deduped"],
             "passed_over": report.to_jsonable()["passed_over"],
             "gaps": report.to_jsonable()["gaps"],
-            "last_ingest": report.to_jsonable()["last_ingest"]}))
+            "last_ingest": report.to_jsonable()["last_ingest"],
+            "curves": report.curves}))
         return 0
 
     # Human summary.
@@ -80,6 +83,12 @@ def run(args) -> int:
     if report.gaps:
         print(f"  scan-number gaps: {len(report.gaps)} "
               f"({', '.join(f'{a}->{b}' for _e, a, b in report.gaps[:6])})")
+    if report.curves is not None:
+        if "error" in report.curves:
+            print(f"  resolution curves: check failed ({report.curves['error']})")
+        else:
+            for line in curves.CurveCheck.from_dict(report.curves).lines():
+                print(f"  {line}")
     if not report.dirty:
         print("  (no change — ledger already current)")
     return 0

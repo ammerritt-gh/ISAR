@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from isar.intake import curves
 from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
 from isar.predictive import json_fingerprint as _json_fingerprint
@@ -266,6 +267,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
         # tabulated_elastic: the slit ladder and per-detector elastic zero, from the measurements
         # themselves (state-only; the policy file is never touched). Other methods: no lines.
         if not master_certification:
+            ctx_lines += _curve_check_lines(workspace.root, card, data_paths)
             ctx_lines += calibrations.refresh_tabulated(
                 card, routed.measurements, base_dir=Path(workspace.policy_path).parent)
 
@@ -1003,6 +1005,16 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
 # ===========================================================================
 # helpers
 # ===========================================================================
+def _curve_check_lines(root, card, data_paths) -> list[str]:
+    """The run's resolution-curve check (discovery, folder in force, curve identity) as context lines."""
+    try:
+        check = curves.check_curves(root, card, data_paths, by="run")
+    except Exception as exc:  # noqa: BLE001 — a failed check is one context line; the run goes on
+        log.exception("resolution curves: check failed")
+        return [f"resolution curves: check failed ({type(exc).__name__}: {exc})"]
+    return [] if check is None else check.lines()
+
+
 def _split_csv(s):
     return [x.strip() for x in s.split(",") if x.strip()] if s else None
 

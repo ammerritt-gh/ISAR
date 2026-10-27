@@ -51,9 +51,10 @@ measurement = [
     '(?P<set>(?P<specfile>spec\d+)_T(?P<T_K>\d+(?:p\d+)?)K__scan_(?P<scan_numbers>\d+(?:_\d+)*))_A(?P<analyzer>\d{1,2})_Q_(?P<hkl>m?\d+(?:p\d+)?_m?\d+(?:p\d+)?_m?\d+(?:p\d+)?)_inel\.dat',
 ]
 sidecar = ["{set}.var"]         # beside the analyzer files: bin size, silicon order, per-analyzer efficiency
-# Never measurements: peak-position lists, and the summed file (the bare stem). `*_sum` assumes that
+# Never measurements: peak-position lists, the summed file (the bare stem) and the resolution curves
+# (`sarf_*`, in rf/, which discovery finds inside the imported folder). `*_sum` assumes that
 # stem ends in `_sum`; for another name, add its file name here, e.g. "Smp_tot".
-ignore = ["*.pkpos", "*_sum"]
+ignore = ["*.pkpos", "*_sum", "sarf_*"]
 
 [reader]
 # The column family the counts are read from. "_i" gives integer counts: raw, and the right choice.
@@ -77,7 +78,7 @@ intensity_family = "_i"
 # the `slit` fact (header, file name or [facts]); with none given, ISAR infers it from the elastic lines
 # and says so (slit_inferred); a given slit is never overridden (slit_mismatch only warns).
 method = "tabulated_elastic"            # zero + curve from the beamline's SARF files
-resolution_folder = "rf"                # folder of the sarf_* files; relative to this card's folder unless absolute
+resolution_folder = "rf"                # used only when the experiment has no saved resolution folder; relative to this card's folder unless absolute
 # A regular expression matching a whole file name; (?P<analyzer>) and (?P<setting>) pick the analyzer
 # and the slit (height_width in mm) out of it. The .gpi files beside the curves are not matched.
 resolution_pattern = 'sarf_.+_s\d+_(?P<setting>\d+_\d+)_(?P<analyzer>a\d{2})'

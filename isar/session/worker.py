@@ -137,7 +137,7 @@ def _ingest_job(workspace_path, req) -> dict:
     ws = Workspace.open(workspace_path)
     card, session = ws.load()
     report = ingest.ingest_batch(card, session, [str(p) for p in (req.get("data_paths") or [])],
-                                 data_dir=ws.root / "data")
+                                 data_dir=ws.root / "data", workspace_root=ws.root)
     if report.dirty:
         session.save(ws.session_path)
     return {"added": report.added, "updated": report.updated, "unchanged": report.unchanged}

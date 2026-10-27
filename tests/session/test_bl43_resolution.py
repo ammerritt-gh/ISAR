@@ -302,6 +302,46 @@ def test_other_methods_are_untouched_by_the_refresh(tmp_path):
     assert card.state.tabulated_calibration == {}
 
 
+def _sha(path):
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_state_records_how_the_slit_was_chosen_and_the_curve_each_zero_used(tmp_path):
+    ws, _card, _recs, entry = _calibrated(tmp_path)
+    assert entry["setting_basis"] == "inferred"
+    for det in ANALYZERS:
+        # the curve file the zero was fitted with, by its bytes: TRUE_SLIT is the second curve written (s2)
+        assert entry["detectors"][det]["curve"] == {"file": f"sarf_t_s2_40_40_{det}",
+                                                    "sha256": _sha(ws.root / "rf" / f"sarf_t_s2_40_40_{det}")}
+    _ws, _card, _recs, declared = _calibrated(tmp_path / "declared", slit=(40, 40))
+    assert declared["setting_basis"] == "declared"
+
+
+def test_no_slit_comparison_possible_is_the_broadest_curve_fallback(tmp_path):
+    _ws, _card, _recs, entry = _calibrated(tmp_path, weak=ANALYZERS)     # no elastic line anywhere
+    assert entry["setting_basis"] == "broadest_curve_fallback" and entry["setting_source"] == "inferred"
+    for det in ANALYZERS:
+        assert entry["detectors"][det]["zero_source"] == "pipeline_zero" and "curve" in entry["detectors"][det]
+
+
+def test_a_curve_replaced_at_the_same_path_recalibrates_the_scan(tmp_path):
+    import os
+    ws, card, recs, entry = _calibrated(tmp_path)
+    path = ws.root / "rf" / "sarf_t_s2_40_40_a03"
+    st = path.stat()
+    data = path.read_bytes()
+    i = next(k for k in range(200, len(data)) if chr(data[k]).isdigit())    # one digit, changed in place
+    path.write_bytes(data[:i] + bytes([48 + (data[i] - 47) % 10]) + data[i + 1:])
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))                     # same size and mtime
+    assert path.stat().st_size == st.st_size and path.stat().st_mtime_ns == st.st_mtime_ns
+    old_library = entry["library"]
+    assert calibrations.refresh_tabulated(card, recs, base_dir=ws.root)               # not reused: rebuilt
+    (new,) = card.state.tabulated_calibration.values()
+    assert new["library"] != old_library and new["detectors"]["a03"]["curve"]["sha256"] == _sha(path)
+    assert new["detectors"]["a04"]["curve"] == entry["detectors"]["a04"]["curve"]    # other curves unchanged
+
+
 # ---------------------------------------------------------------------------
 # resolve and the fit context (fast)
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
+from typing import Protocol
 
 import numpy as np
 
@@ -69,6 +70,46 @@ class SettingChoice:
     deviances: dict              # candidate setting -> summed deviance over the comparison set
     comparison_set: list[str]    # detector ids scored
     flags: list[Flag] = field(default_factory=list)
+
+
+class CurveSource(Protocol):
+    """What the coverage helpers read: a ResolutionLibrary, or the persisted curve check (intake.curves)."""
+
+    def get(self, detector_id: str, setting: str | None): ...
+    def settings(self) -> list[str | None]: ...
+
+
+def curve_need(library: CurveSource, detector_id: str, setting: str | None, problem: str | None = None) -> str | None:
+    """Why this analyzer cannot be calibrated at ``setting``, or None when its curve is there."""
+    if setting is not None and library.get(detector_id, setting) is not None:
+        return None
+    if problem:
+        return problem
+    if setting is None:
+        return "no slit setting is known for the scan"
+    return f"no resolution curve for {detector_id} at slit {setting}"
+
+
+def candidate_gaps(library: CurveSource, detector_id: str) -> list[str]:
+    """The candidate slit settings at which this analyzer has no curve (it is left out of the slit comparison)."""
+    return [s for s in library.settings() if s is not None and library.get(detector_id, s) is None]
+
+
+def calibration_reusable(prev: dict | None, *, content_hash: str, library: str | None) -> bool:
+    """Whether a stored scan calibration still stands: same data and same resolution library."""
+    return prev is not None and prev.get("content_hash") == content_hash and prev.get("library") == library
+
+
+def setting_basis(choice: SettingChoice) -> str:
+    """How the slit was chosen, in the words the report uses: declared, inferred, the broadest-curve
+    fallback (no elastic comparison was possible), or none (no curve at all)."""
+    if choice.setting is None:
+        return "none"
+    if choice.source == "declared":
+        return "declared"
+    if choice.deviances:
+        return "inferred"
+    return "broadest_curve_fallback"
 
 
 def _prepare(x, counts, exposure):
@@ -231,7 +272,7 @@ def choose_setting(x, spectra, library, declared) -> SettingChoice:
     for det, sp in spectra.items():
         if _not_raw(sp):
             continue
-        if any(library.get(det, s) is None for s in candidates):
+        if candidate_gaps(library, det):
             continue
         xs, c, w = _inputs(x, sp)
         if xs.size >= _MIN_POINTS and elastic_significant(xs, c, w):
