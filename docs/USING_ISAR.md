@@ -432,7 +432,7 @@ the fast pass's verdict on that count is in the count columns:
 | `count_probabilities` | every count's probability, as JSON, e.g. `{"3": 0.91, "4": 0.09}` |
 | `probabilities_conditional` | `True` when a count has no evidence, so the probabilities cover only the counts that have it |
 | `numerically_marginal` | `True` when the numerical error of the evidence could move the count, or cross the 0.80 close-call line |
-| `search_limit_reason` | `ceiling` (the mode ceiling was reached) or `safety_budget` (the per-spectrum time budget ran out) |
+| `search_limit_reason` | `ceiling` (the mode ceiling was reached). `safety_budget` appears only on records made before 2026-10-27, when a per-spectrum time budget could stop the search; no current pass has a time limit |
 | `n_confident`, `n_tentative` | how many of the shown peaks are confident, and how many are tentative |
 | `flags` | warnings kept apart from the state, with their energy interval, e.g. `ambiguous decomposition 5.00-7.00 meV` |
 | `deep_pass_candidate` | `True` when the state is not `resolved`: the spectrum is worth a closer look (`--deep-pass` runs it; five more `deep_*` columns, below) |
@@ -452,7 +452,7 @@ one, the damped frequency √(E0² − Γ²), empty when the mode is overdamped 
 | `resolved` | the preferred count has probability 0.80 or more, and every contending count has evidence | use it |
 | `close_call` | the preferred count is below 0.80; the alternatives named in the reason carry the rest | read the alternatives; the shown fit is the most probable count |
 | `unresolved` | a contender's evidence could not be computed, so no winner is declared; the probabilities are conditional on the counts that have evidence | read it with care; the comparison is recorded as incomplete, and the spectrum is a deep-pass candidate |
-| `search_limited` | the mode ceiling or the per-spectrum time budget stopped the search | the count is the best found, and the spectrum may hold more modes |
+| `search_limited` | the mode ceiling stopped the search | the count is the best found, and the spectrum may hold more modes |
 | `held` | the scan is held, for example because its energy zero is missing; the reason names it | nothing until the hold is cleared; it is re-examined on every run |
 | `fitting` | ingested, not yet fitted | nothing to do until the next run |
 | `not fitted` | excluded, undersampled, or the fit failed | the reason says which |
@@ -479,15 +479,16 @@ evidence for every model of its fast-pass record, then profile intervals and boo
 model. It never runs on its own.
 
 ```
-isar run <data file> --workspace DIR --detectors ana7 --deep-pass [--deep-budget-minutes 60] [--deep-workers K]
+isar run <data file> --workspace DIR --detectors ana7 --deep-pass [--deep-budget-minutes MIN] [--deep-workers K]
 ```
 
 - `--deep-pass` runs the fast pass on the spectra this run fits, then the deep pass on each. Pick the spectra
   by data file and `--detectors` (the analyzers); add `--force` to refit a spectrum that is already current.
   It cannot be combined with a certification request, a certification manifest or an analysis allowance.
-- `--deep-budget-minutes` (default 60) is a start budget per spectrum. Once it is spent no new chunk of models
-  starts (a chunk is as many models as there are workers), but a chunk already running runs to completion, restarts
-  of a suspect run included. At five or six modes that can take hours: one 6-mode run took 53 min at the provisional
+- `--deep-budget-minutes` sets a start budget per spectrum, in minutes. The default is none: every model is
+  compared, however long it takes. When you type one, once it is spent no new chunk of models starts (a chunk is
+  as many models as there are workers), but a chunk already running runs to completion, restarts of a suspect run
+  included. At five or six modes that can take hours: one 6-mode run took 53 min at the provisional
   settings, and a restart roughly doubles the cost (an estimate). A spectrum that runs out reports `search_limited`
   with the models it did not reach. The profile and bootstrap step after sampling is not counted in it, and `--M`
   sets its bootstrap draws.
@@ -499,8 +500,8 @@ isar run <data file> --workspace DIR --detectors ana7 --deep-pass [--deep-budget
   (3), 29 min (4), 43 min (5) and 53 min (6 peaks), and the exploratory runs at 128 live points about a third of
   that. One run of each of that spectrum's seven core models is 2.6 CPU-hours (measured). The deep pass does not stop
   at the core set: it samples every model of the fast-pass record, and that spectrum's record holds 143. At the
-  defaults (60 minutes, 6 workers) a spectrum like it therefore ends `search_limited`, and a complete comparison needs
-  a budget of many hours (an estimate from these timings, not a measured run). A suspect run's restarts (twice the
+  defaults (no budget, 6 workers) a spectrum like it runs for many hours until every model is sampled (an estimate
+  from these timings, not a measured run); a typed budget of 60 minutes ends it earlier, as `search_limited`. A suspect run's restarts (twice the
   walk, then twice the live points) add cost on top. Every run (seed, settings, wall time, likelihood calls, best
   log-likelihood) is recorded.
 - **Carried, not rerun.** A spectrum that already holds a deep pass under the same settings, budget, seed and

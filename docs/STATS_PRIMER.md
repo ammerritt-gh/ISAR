@@ -534,7 +534,7 @@ the operator, not a measured one ("6 is arbitrary"): a best count at the ceiling
 | `resolved` | the preferred count carries at least `close_call_p` (0.80) of the probability, every contending count has evidence |
 | `close_call` | the alternatives together carry 0.20 or more; the material alternatives are listed (`close_call_alternatives`), the shown fit is the most probable count, and `numerically_marginal` says when the evidence's own numerical spread could move a count across the 0.80 line |
 | `unresolved` | a contending count's evidence could not be computed (singular or boundary-limited curvature, or the posterior optimiser hit its iteration limit): no confident winner, the probabilities are conditional on the counts that have evidence, and the spectrum is a deep-pass candidate. A failed calculation is never evidence against a count |
-| `search_limited` | the mode ceiling or the per-spectrum safety budget (`safety_budget_s`, 300 s single-core) stopped the search; `search_limit_reason` names which |
+| `search_limited` | the mode ceiling stopped the search (records made before 2026-10-27 may also name a per-spectrum time budget, since removed); `search_limit_reason` names which |
 
 When more than one applies the order is unresolved, search limited, close call, resolved.
 `probabilities_conditional` is set when the state is `unresolved`; `deep_pass_candidate` is set for every state
@@ -746,7 +746,7 @@ only to order the work and to decide promotion.
    seed. The second criterion exists because a 128-point run can sit tens of nats low while its best
    log-likelihood looks fine.
 
-The sampling budget (`--deep-budget-minutes`, default 60) is per spectrum and is checked before each chunk of
+The sampling budget (`--deep-budget-minutes`) is per spectrum and off by default; when typed, it is checked before each chunk of
 models; a chunk is as many models as there are workers, run in separate processes, each sampler
 single-threaded. A started chunk is never cut. The errors step below runs afterwards and is outside the budget.
 

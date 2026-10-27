@@ -147,7 +147,7 @@ def run(args) -> int:
             return 2
         workers = getattr(args, "deep_workers", None)
         deep = DeepRequest(
-            budget_s=60.0 * float(args.deep_budget_minutes),
+            budget_s=None if args.deep_budget_minutes is None else 60.0 * float(args.deep_budget_minutes),
             workers=max(1, workers if workers else min(6, driver._resolve_workers(
                 getattr(args, "workers", None)))),
             M=args.M)

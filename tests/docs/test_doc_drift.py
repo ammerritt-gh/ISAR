@@ -105,6 +105,15 @@ STALE_PHRASES = (
         "OpenAI-compatible endpoint (ADJUDICATION.md §8)",
     ),
     (
+        "--deep-budget-minutes, default 60",
+        "the deep pass has no time budget by default (2026-10-27); only a typed "
+        "--deep-budget-minutes sets one",
+    ),
+    (
+        "safety_budget_s",
+        "the fast pass has no time budget (2026-10-27); the setting was removed",
+    ),
+    (
         "LLMM must be running",
         "same correction: state which profile needs LLMM rather than making it unconditional",
     ),

@@ -215,3 +215,13 @@ def test_the_outcome_keeps_the_record(real):
     assert fast_pass_of(oc.to_dict())["state"] == fit["fast_pass"]["state"]
     assert fast_pass_of({}) == {} and fast_pass_of({"fast_pass": None}) == {}
     assert not math.isnan(fit["fast_pass"]["ln_like_saturated"])
+
+
+def test_fit_one_reports_the_fast_pass_steps_then_errors(real, monkeypatch):
+    """C-progress through fit_one: seed first, errors last, and the same fit as without a callback."""
+    events = []
+    fit = _fit(monkeypatch, progress=events.append)
+    assert events[0]["phase"] == "seed" and events[-1]["phase"] == "errors"
+    assert all(e["pass"] == "fast" for e in events)
+    assert fit["best_label"] == real[0]["best_label"] and fit["n_modes"] == real[0]["n_modes"]
+    assert fit["fast_pass"]["count_probabilities"] == real[0]["fast_pass"]["count_probabilities"]

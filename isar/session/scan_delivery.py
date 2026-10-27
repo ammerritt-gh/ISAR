@@ -26,6 +26,7 @@ from isar.analyze.context import ScanContext, effective_exposure, select_exposur
 from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.phonon import EPS_OMEGA0, _phonon_for
 from isar.analyze.prior import mode_bounds
+from isar.analyze.progress import ProgressFn, emitter, relay
 from isar.schema.card import Card
 from isar.schema.scan import Flag, exposure_for
 from isar.schema.measurement import (MeasurementArena, campaign_provenance,
@@ -1647,9 +1648,11 @@ def _selection_from_fast_pass(res, results, rows) -> select.Selection:
 def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=None,
             errors_tier="full", boot_workers=1, boot_executor=None, boot_adaptive=False,
             descriptor=None, structure_hint=None, bayes_opts=None,
-            predictive_n_members: int | None = None, fit_role="provisional_scan"):
+            predictive_n_members: int | None = None, fit_role="provisional_scan",
+            progress: ProgressFn | None = None):
     """The fast pass (:func:`~isar.analyze.fast_pass.run_fast_pass`, C-fastpass) on one spectrum,
     then its selection, the error tier's attachments and the verdict. Returns extracted fields.
+    ``progress``: C-progress steps of the fast pass, then ``errors`` (never changes the fit).
 
     The search is always the fast pass: every count from 0 to the card's mode ceiling
     (:func:`guidelines.fast_pass_settings`), seeded and audited, priced by Laplace evidence; the
@@ -1675,8 +1678,10 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
     structures, catalogue_labels, warn = _structure_whitelist(structure_labels, ctx,
                                                               settings.mode_ceiling)
     _t_two_stage = time.perf_counter()
+    send = emitter(progress, "fast")
     res = fast_pass.run_fast_pass(ctx, settings=settings, peaks=tuple(peaks or ()),
-                                  structures=structures)
+                                  structures=structures, progress=relay(send))
+    send("errors")
     two_stage_seconds = round(time.perf_counter() - _t_two_stage, 4)
     rows = _candidate_models(res)
     results = [m.fit for m in rows.values()]
@@ -2607,7 +2612,7 @@ def _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calre
 def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
                  chash, ghash, *, M, seed, errors_tier="full", boot_workers=1,
                  boot_executor=None, boot_adaptive=False, bayes_opts=None, deep=None,
-                 deep_executor=None) -> ScanEntry:
+                 deep_executor=None, progress: ProgressFn | None = None) -> ScanEntry:
     _t_fit0 = time.perf_counter()
     base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
                 content_hash=chash, guidelines_hash=ghash)
@@ -2663,7 +2668,7 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         fit = fit_one(ctx, card, prior=prior, M=M, seed=seed, structure_labels=labels, peaks=peaks,
                       errors_tier=errors_tier, boot_workers=boot_workers,
                       boot_executor=boot_executor, boot_adaptive=boot_adaptive, descriptor=descriptor,
-                      bayes_opts=bayes_opts)
+                      bayes_opts=bayes_opts, progress=progress)
     except Exception as exc:  # noqa: BLE001 — one unfittable scan must not kill the batch
         log.warning("%s: fit error", scan_id, exc_info=True)
         return ScanEntry(status="non_result",
@@ -2680,7 +2685,8 @@ def _process_one(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions,
         # A hard-fix escalation replaced the fit by one on a constrained context: refused.
         record, timing = deep_delivery.deliver(
             fit, ctx, deep, executor=deep_executor,
-            refuse="hard-fix escalation replaced the fast-pass fit" if fit is not fast_fit else None)
+            refuse="hard-fix escalation replaced the fast-pass fit" if fit is not fast_fit else None,
+            progress=progress)
         fit["deep_pass"], fit["deep_pass_timing"] = _finite_json(record), _finite_json(timing)
 
     entry = _finish_outcome(fit, descriptor, ctx, rec, det, q, T, sample, card, g, calres, prior,

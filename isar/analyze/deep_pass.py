@@ -24,6 +24,7 @@ import numpy as np
 
 from isar.analyze import catalogue, evidence, loop, prior
 from isar.analyze.errors.bayes import EvidenceProblem
+from isar.analyze.progress import DEEP_STAGES, ProgressFn, emitter
 
 CLOSE_CALL_P = 0.80             # the fast pass's threshold (s2.3); ``deep_pass`` takes the record's
 NUMERIC_FLIP_FRACTION = 0.05    # winner changes in more than this share of perturbed draws => numeric
@@ -271,7 +272,7 @@ def _fast_weight(e: ModelEntry) -> float:
 def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
               exploratory: SamplerSettings = EXPLORATORY, budget_s: float | None = None,
               seed: int = 20261025, map_fn=map, close_call_p: float = CLOSE_CALL_P,
-              chunk: int = 1, fast_limit: str = "") -> DeepPassResult:
+              chunk: int = 1, fast_limit: str = "", progress: ProgressFn | None = None) -> DeepPassResult:
     """Staged coverage over EVERY model the fast pass admitted (all counts/variants to the ceiling).
 
     Stage 1: contenders (fast-pass P >= CONTENDER_MIN_P, and always the top two) at ``accepted``.
@@ -279,14 +280,16 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
              calibrated (wider) sigma, never excluded on its own.
     Stage 3: an exploratory model whose exploratory lnZ + 3 sigma, or its fast-pass lnZ, sits within
              RELEVANCE_GAP of the leader (weights include the model prior) is rerun at ``accepted``.
-    Each stage runs in chunks of ``chunk`` models and the budget is checked before each chunk; a
-    started chunk is never cut. A model left without a usable lnZ, or promoted but not yet rerun,
-    makes the result "search limited": its probabilities are then labelled partial. So does a
-    non-empty ``fast_limit`` (the record's ``search_limit_reason``): the fast pass stopped before
-    pricing every count, so the models here are not all the competing ones.
-    ``map_fn`` lets the caller run a chunk's models in a process pool (each run single-threaded)."""
+    Each stage runs in chunks of ``chunk`` models. ``budget_s`` (None: no clock, the default) is
+    checked before each chunk; a started chunk is never cut. A model left without a usable lnZ, or
+    promoted but not yet rerun, makes the result "search limited": its probabilities are then labelled
+    partial. So does a non-empty ``fast_limit`` (the record's ``search_limit_reason``): the fast pass
+    stopped before pricing every count, so the models here are not all the competing ones.
+    ``map_fn`` lets the caller run a chunk's models in a process pool (each run single-threaded).
+    ``progress`` gets C-progress ``sampling`` steps as each stage starts and as each model returns."""
     t0 = time.perf_counter()
     chunk = max(1, int(chunk))
+    send = emitter(progress, "deep")
     order = sorted(entries, key=lambda e: -_fast_weight(e))
     fz = np.array([_fast_weight(e) for e in order])
     fp = np.exp(fz - fz.max()) if np.isfinite(fz).any() else np.zeros(len(order))
@@ -302,14 +305,18 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
     def over_budget():
         return budget_s is not None and time.perf_counter() - t0 >= budget_s
 
-    def run_stage(name, labels, settings, status, seed_offset=0):
+    def run_stage(name, labels, settings, status, stage, seed_offset=0):
         started = time.perf_counter()
+        if labels:
+            send("sampling", step=1, of=len(labels), stage=stage, stages=DEEP_STAGES)
+        done = 0
         for i in range(0, len(labels), chunk):
             if over_budget():
                 break
             jobs = [(lb, by_label[lb], settings, seeds[lb] + seed_offset)
                     for lb in labels[i:i + chunk]]
             for lb, runs in map_fn(_stage_task, jobs):
+                done += 1
                 m = out[lb]
                 m.runs.extend(runs)
                 good = [r for r in runs if r.usable]
@@ -322,11 +329,13 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
                     m.status = "unresolved"     # suspect after restarts: kept, never rejected
                 if name == "promoted":
                     attempted_promotion.add(lb)
+                if done < len(labels):
+                    send("sampling", step=done + 1, of=len(labels), stage=stage, stages=DEEP_STAGES)
         stage_seconds[name] = time.perf_counter() - started
 
-    run_stage("contenders", [e.label for e in order if e.label in contenders], accepted, "reference")
+    run_stage("contenders", [e.label for e in order if e.label in contenders], accepted, "reference", 1)
     run_stage("exploratory", [e.label for e in order if e.label not in contenders], exploratory,
-              "exploratory")
+              "exploratory", 2)
     have, w = _weights(out.values())
     lead = float(w.max()) if have else -math.inf
     # An exploratory run alone may not settle a model as irrelevant: low-n_live runs underestimate
@@ -336,7 +345,7 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
                       and max(m.log_z + 3.0 * m.sigma, _finite(by_label[lb].fastpass_ln_z))
                       + m.log_model_prior >= lead - RELEVANCE_GAP),
                      key=lambda lb: -(out[lb].log_z + out[lb].log_model_prior))
-    run_stage("promoted", promote, accepted, "reference", seed_offset=1)    # independent of the exploratory run
+    run_stage("promoted", promote, accepted, "reference", 3, seed_offset=1)  # independent of the exploratory run
 
     models = [out[e.label] for e in order]
     pending = [lb for lb in promote if out[lb].status != "reference"]

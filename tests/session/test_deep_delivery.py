@@ -35,7 +35,7 @@ def test_the_deep_pass_reads_the_schema_the_fast_pass_writes():
 
 def test_deep_pass_flag_parses_and_defaults_off():
     off = cli.build_parser().parse_args(["run", "d.dat", "--workspace", "w"])
-    assert off.deep_pass is False and off.deep_budget_minutes == 60.0 and off.deep_workers is None
+    assert off.deep_pass is False and off.deep_budget_minutes is None and off.deep_workers is None
     on = cli.build_parser().parse_args(["run", "d.dat", "--workspace", "w", "--deep-pass",
                                         "--deep-budget-minutes", "5", "--deep-workers", "3"])
     assert (on.deep_pass, on.deep_budget_minutes, on.deep_workers) == (True, 5.0, 3)
@@ -158,6 +158,17 @@ def test_deliver_passes_the_fast_pass_search_limit_to_the_deep_pass(monkeypatch)
     assert "fast pass search limited: safety_budget" in record["search_limited"]
 
 
+def test_deliver_reports_its_sampling_steps_and_ends_on_errors():
+    ctx, fit = _spectrum()
+    events = []
+    record, _ = deep_delivery.deliver(fit, ctx, dataclasses.replace(REQ, budget_s=0.0),
+                                      progress=events.append)
+    assert record["state"] != "refused"
+    assert events and events[-1] == {"pass": "deep", "phase": "errors", "step": None, "of": None,
+                                     "stage": None, "stages": None}
+    assert all(e["pass"] == "deep" for e in events)
+
+
 @pytest.mark.slow
 @pytest.mark.timeout(600)
 def test_deliver_end_to_end_at_tiny_settings(monkeypatch):
@@ -195,7 +206,7 @@ def test_a_deep_run_is_carried_under_the_same_settings_and_redone_under_others(t
     from .test_driver_smoke import IN8_MAIN_NUMOR, _find, _init_workspace, write_in8_pair
     calls = []
 
-    def stub(fit, ctx, request, *, executor=None, refuse=None):
+    def stub(fit, ctx, request, *, executor=None, refuse=None, **_kw):
         calls.append(request.budget_s)
         return _deep_record(request), {"total_seconds": 1.0, "models": []}
 

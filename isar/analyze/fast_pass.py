@@ -32,6 +32,7 @@ from isar.analyze.components import Elastic, PhononDHO, phonon_unit_columns
 from isar.analyze.estimators import FMIN
 from isar.analyze.lineshapes import KB, voigt_area_for_height
 from isar.analyze.phonon import GAMMA_FLOOR, _peak_omega0
+from isar.analyze.progress import ProgressFn, emitter
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +70,6 @@ _PRICED = ("ok", "ok_boundary")
 @dataclass(frozen=True)
 class FastPassSettings:
     mode_ceiling: int = 6                    # pinned known limit (operator); card [fitting] max_modes
-    safety_budget_s: float = 300.0           # per-spectrum runaway stop (design agent default)
     contending_margin: float = 10.0          # nats: a count within this of the best evidence is contending
     close_call_p: float = 0.80               # preferred count below this -> close call (operator)
     seed_stop_gain: float = 6.0              # PROVISIONAL, NOT calibrated (refit grid skipped, run-once ruling); operator's call: 2*dlnL a seed peak must add
@@ -175,7 +175,7 @@ class FastPassResult:
     probabilities_conditional: bool
     close_call_alternatives: tuple[int, ...]
     numerically_marginal: bool
-    search_limit_reason: Literal["", "ceiling", "safety_budget"]
+    search_limit_reason: Literal["", "ceiling"]      # records before 2026-10-27 may say "safety_budget"
     models: tuple[ModelResult, ...]  # every model tried, ascending (n_peaks, elastic, background, delta_modes)
     selected: ModelResult | None
     peaks: tuple[PeakResult, ...]    # the selected model's, ascending omega0
@@ -195,10 +195,6 @@ class FastPassResult:
                                      # "families": {family: {"fits": int, "seconds": float}}; "seed_count": int
     n_fits: int                      # TRF calls made
     deep_pass_candidate: bool        # state is unresolved, close_call or search_limited
-
-
-class _BudgetExpired(RuntimeError):
-    """The per-spectrum safety budget ran out; raised in the model mean, caught in run()."""
 
 
 def poisson_residuals(y, mu) -> np.ndarray:
@@ -583,8 +579,10 @@ class _Engine:
     """One spectrum's fast pass. ``run`` searches; ``conclude`` tallies and reports, from any state
     (so a stopped search still reports what it priced)."""
 
-    def __init__(self, ctx, settings: FastPassSettings, peaks=(), structures=None):
+    def __init__(self, ctx, settings: FastPassSettings, peaks=(), structures=None,
+                 progress: ProgressFn | None = None):
         self.ctx, self.s = ctx, settings
+        self.emit = emitter(progress, "fast")
         self.prior_s = settings.prior or prior.PriorSettings()
         x = np.asarray(ctx.x_used, dtype=float)
         y = np.asarray(ctx.counts_used, dtype=float)
@@ -628,11 +626,9 @@ class _Engine:
         self._stack = []
         self.n_fits = 0
         self.seed_count = None
-        self.expired = False
         self.reached = set()
         self.rng = np.random.default_rng(0)
         self.start = time.perf_counter()
-        self.deadline = self.start + settings.safety_budget_s
 
     # ---- bookkeeping ---------------------------------------------------------------------------
     @contextmanager
@@ -647,10 +643,6 @@ class _Engine:
             self.timing[name] += elapsed - self._stack.pop()
             if self._stack:
                 self._stack[-1] += elapsed
-
-    def _check_budget(self):
-        if time.perf_counter() > self.deadline:
-            raise _BudgetExpired("safety budget")
 
     def variant(self, k, elastic, background):
         """The variant at count ``k`` with those flags, or None."""
@@ -681,8 +673,7 @@ class _Engine:
         return [got[k] for k in keys]
 
     def mean(self, model, theta):
-        """``exposure x (sum h_i col_i + elastic.h x elastic column + bg.BG)``; checks the budget."""
-        self._check_budget()
+        """``exposure x (sum h_i col_i + elastic.h x elastic column + bg.BG)``."""
         total = np.zeros_like(self.y)
         if model.modes:
             units = self.units([(theta[a], theta[b]) for a, b, _ in model.modes], model.variant.peaks)
@@ -933,7 +924,6 @@ class _Engine:
             return (mu + z[-1]) * self.expo
 
         def residual(z):
-            self._check_budget()
             return np.nan_to_num(poisson_residuals(self.y, mean(z)), nan=1e100, posinf=1e100,
                                  neginf=-1e100)
 
@@ -1024,6 +1014,7 @@ class _Engine:
             if not self.variants.get(k):
                 continue
             self.reached.add(k)
+            self.emit("ladder", step=k, of=self.s.mode_ceiling)
             starts = []
             if k <= len(seed):
                 top = sorted(seed, key=lambda p: -p[2])[:k]
@@ -1188,6 +1179,7 @@ class _Engine:
 
     def price_all(self):
         """Step 6 for every pending basin, until none is left (pricing can add basins)."""
+        self.emit("evidence")
         with self._stage("evidence"):
             while True:
                 pending = [b for b in self.basins() if b.status == "pending"]
@@ -1328,20 +1320,18 @@ class _Engine:
         return out
 
     def run(self):
-        """Seed, ladder, pricing and the audit rounds; the safety budget stops the search."""
-        try:
-            with self._stage("seed"):
-                seed = self.seed()
-            with self._stage("ladder"):
-                self.ladder(seed)
+        """Seed, ladder, pricing and the audit rounds. No clock stops the search."""
+        self.emit("seed")
+        with self._stage("seed"):
+            seed = self.seed()
+        with self._stage("ladder"):
+            self.ladder(seed)
+        self.price_all()
+        for _ in range(self.s.audit_rounds):
+            self.emit("audits")
+            with self._stage("audits"):
+                self.audit()
             self.price_all()
-            for _ in range(self.s.audit_rounds):
-                with self._stage("audits"):
-                    self.audit()
-                self.price_all()
-        except _BudgetExpired:
-            self.expired = True
-            log.warning("fast pass stopped by its safety budget (%.0f s)", self.s.safety_budget_s)
 
     # ---- adapter out ---------------------------------------------------------------------------------
     def _full_cov(self, b):
@@ -1531,12 +1521,12 @@ class _Engine:
     def conclude(self) -> FastPassResult:
         """Steps 9-11 from whatever the search reached: tally, states, peaks, ModelResults."""
         s = self.s
-        self.deadline = math.inf                  # the classify stage checks no deadline
+        self.emit("classify")
         with self._stage("classify"):
             for b in self.basins():
                 if b.status == "pending":
                     b.status = "no_evidence"
-                    b.reason = "safety budget expired before pricing" if self.expired else "not priced"
+                    b.reason = "not priced"
             fitted = {b.count for b in self.basins() if b.theta is not None}
             for k in sorted(self.reached - fitted):
                 for v in self.variants[k]:
@@ -1567,8 +1557,7 @@ class _Engine:
             spread = max(spreads, default=0.0)
             selected = tally.selected
             preferred = tally.preferred
-            reason = ("safety_budget" if self.expired
-                      else "ceiling" if preferred is not None and preferred == s.mode_ceiling else "")
+            reason = "ceiling" if preferred is not None and preferred == s.mode_ceiling else ""
             results = [self._model_result(b, prob[id(b)]) for b in basins]
             by_id = {id(b): r for b, r in zip(basins, results)}
             peaks, extras = self._peaks(selected)
@@ -1620,12 +1609,14 @@ class _Engine:
                 "evidence_gap": None if gap is None else float(gap), "omega0": omega0}
 
 
-def run_fast_pass(ctx, *, settings: FastPassSettings | None = None, peaks=(), structures=None) -> FastPassResult:
+def run_fast_pass(ctx, *, settings: FastPassSettings | None = None, peaks=(), structures=None,
+                  progress: ProgressFn | None = None) -> FastPassResult:
     """The fast pass on one spectrum (C-fastpass). ``peaks``: card peak hints, extra starts only;
-    ``structures``: a whitelist of catalogue labels (None: every count structure). Raises
-    ``ValueError`` only for an unusable context (no finite counts, no positive energy, no
-    resolution)."""
-    engine = _Engine(ctx, settings or FastPassSettings(), peaks=peaks, structures=structures)
+    ``structures``: a whitelist of catalogue labels (None: every count structure); ``progress``: a
+    C-progress callback (never changes the result). Raises ``ValueError`` only for an unusable
+    context (no finite counts, no positive energy, no resolution)."""
+    engine = _Engine(ctx, settings or FastPassSettings(), peaks=peaks, structures=structures,
+                     progress=progress)
     engine.run()
     return engine.conclude()
 

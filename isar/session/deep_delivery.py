@@ -14,6 +14,7 @@ import time
 from dataclasses import asdict, dataclass
 
 from isar.analyze import deep_pass, errors, loop
+from isar.analyze.progress import ProgressFn, emitter, relay
 from isar.session.state import canonical_hash
 
 log = logging.getLogger(__name__)
@@ -27,8 +28,8 @@ class DeepRequest:
     """What one ``isar run --deep-pass`` asks for. ``workers`` and nothing about scheduling enters
     the signature: a complete deep pass is the same on any worker count, but a search-limited one
     depends on the worker count and the wall clock. A carried result is not redone for a new worker
-    count; a changed budget or ``--force`` redoes it."""
-    budget_s: float = 3600.0        # per spectrum, sampling stages only
+    count; a changed budget or ``--force`` redoes it. ``budget_s`` None (the default) is no clock."""
+    budget_s: float | None = None   # per spectrum, sampling stages only; typed on the CLI only
     workers: int = 1
     M: int = 200                    # bootstrap draws of the errors step
     seed: int = 20261025
@@ -43,7 +44,11 @@ class DeepRequest:
             "contender_min_p": deep_pass.CONTENDER_MIN_P, "relevance_gap": deep_pass.RELEVANCE_GAP,
             "suspect_gap_base": deep_pass.SUSPECT_GAP_BASE,
             "suspect_gap_per_dim": deep_pass.SUSPECT_GAP_PER_DIM,
-            "budget_s": float(self.budget_s), "seed": int(self.seed), "M": int(self.M)})
+            "budget_s": _budget(self.budget_s), "seed": int(self.seed), "M": int(self.M)})
+
+
+def _budget(budget_s):
+    return None if budget_s is None else float(budget_s)
 
 
 def is_current(oc, request: DeepRequest) -> bool:
@@ -56,7 +61,7 @@ def is_current(oc, request: DeepRequest) -> bool:
 def _refused(request: DeepRequest, reason: str) -> dict:
     return {"schema": SCHEMA, "state": "refused", "reason": reason,
             "settings_signature": request.signature(), "calibration": deep_pass.CALIBRATION_STATUS,
-            "trusted": False, "budget_s": float(request.budget_s), "seed": int(request.seed),
+            "trusted": False, "budget_s": _budget(request.budget_s), "seed": int(request.seed),
             "M": int(request.M)}
 
 
@@ -143,13 +148,16 @@ def _state_reason(state: str, res, cc: dict, trusted: bool) -> str:
     return text if trusted else f"{text}; {UNTRUSTED}"
 
 
-def deliver(fit: dict, ctx, request: DeepRequest, *, executor=None, refuse=None) -> tuple:
+def deliver(fit: dict, ctx, request: DeepRequest, *, executor=None, refuse=None,
+            progress: ProgressFn | None = None) -> tuple:
     """``(record, timing)`` of the deep pass on one fitted spectrum. ``fit`` is ``fit_one``'s dict
     (its ``fast_pass`` record) and ``ctx`` the scan context it was fitted on; ``executor`` a process
     pool for the stage runs and the bootstrap (``None`` = serial); ``refuse`` a reason the caller
-    already knows. A refusal or a failure is a ``state="refused"`` record with ``None`` timing,
-    never an exception: one spectrum must not end the batch."""
+    already knows; ``progress`` a C-progress callback (never changes the result). A refusal or a
+    failure is a ``state="refused"`` record with ``None`` timing, never an exception: one spectrum
+    must not end the batch."""
     t0 = time.perf_counter()
+    send = emitter(progress, "deep")
     if refuse:
         return _refused(request, refuse), None
     record = fit.get("fast_pass")
@@ -166,7 +174,9 @@ def deliver(fit: dict, ctx, request: DeepRequest, *, executor=None, refuse=None)
             entries, accepted=deep_pass.ACCEPTED, exploratory=deep_pass.EXPLORATORY,
             budget_s=request.budget_s, seed=request.seed,
             map_fn=executor.map if executor is not None else map, close_call_p=close_call_p,
-            chunk=request.workers, fast_limit=record.get("search_limit_reason") or "")
+            chunk=request.workers, fast_limit=record.get("search_limit_reason") or "",
+            progress=relay(send))
+        send("errors")
         t_errors = time.perf_counter()
         m = _chosen_model(res)
         by_label = {e.label: e for e in entries}
@@ -190,7 +200,7 @@ def deliver(fit: dict, ctx, request: DeepRequest, *, executor=None, refuse=None)
            "calibration": deep_pass.CALIBRATION_STATUS, "trusted": trusted,
            "settings_signature": request.signature(),
            "accepted": asdict(deep_pass.ACCEPTED), "exploratory": asdict(deep_pass.EXPLORATORY),
-           "budget_s": float(request.budget_s), "seed": int(request.seed), "M": int(request.M),
+           "budget_s": _budget(request.budget_s), "seed": int(request.seed), "M": int(request.M),
            "close_call_p": close_call_p, "complete": res.complete,
            "comparison_scope": res.comparison_scope, "search_limited": res.search_limited,
            "count_probabilities": {str(k): v for k, v in sorted(res.count_probabilities.items())},
@@ -201,7 +211,7 @@ def deliver(fit: dict, ctx, request: DeepRequest, *, executor=None, refuse=None)
            "exploratory_only": list(res.exploratory_only), "models": models, "chosen": chosen,
            "arena_fingerprint": record.get("arena_fingerprint")}
     timing = {"total_seconds": time.perf_counter() - t0, "sampling_seconds": res.wall_s,
-              "errors_seconds": errors_s, "budget_s": float(request.budget_s),
+              "errors_seconds": errors_s, "budget_s": _budget(request.budget_s),
               "workers": int(request.workers), "stages": dict(res.stage_seconds),
               "models": [{"label": x.label, "status": x.status,
                           "runs": [_run_timing(r) for r in x.runs]} for x in res.models]}

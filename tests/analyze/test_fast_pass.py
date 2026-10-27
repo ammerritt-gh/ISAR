@@ -239,11 +239,16 @@ def test_a_best_count_at_the_ceiling_is_search_limited(three_peak_ceiling_two):
     assert res.preferred_count == 2 and res.deep_pass_candidate
 
 
-def test_the_safety_budget_stops_the_search_and_says_so():
-    res = fast_pass.run_fast_pass(_ctx(_one_peak()),
-                                  settings=FastPassSettings(mode_ceiling=2, safety_budget_s=1e-9))
-    assert res.search_limit_reason == "safety_budget" and res.state == "unresolved"
-    assert res.selected is None and res.count_probabilities == {} and res.timing["total"] < 1.0
+def test_no_clock_stops_the_fast_pass_search(monkeypatch):
+    # No analysis stops because a clock ran out: a clock a million seconds per read gives the answer
+    # of a run that has no clock reads at all (the old 300 s per-spectrum budget would cut it short).
+    free = fast_pass.run_fast_pass(_ctx(_one_peak()), settings=FastPassSettings(mode_ceiling=2))
+    ticks = iter(range(10 ** 6))
+    monkeypatch.setattr(fast_pass, "time", SimpleNamespace(perf_counter=lambda: 1e6 * next(ticks)))
+    res = fast_pass.run_fast_pass(_ctx(_one_peak()), settings=FastPassSettings(mode_ceiling=2))
+    assert res.search_limit_reason != "safety_budget" and res.selected is not None
+    assert res.state == free.state and res.preferred_count == free.preferred_count
+    assert res.count_probabilities == free.count_probabilities
     assert set(fast_pass.STAGES) | {"total", "families", "seed_count"} == set(res.timing)
 
 

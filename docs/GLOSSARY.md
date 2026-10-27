@@ -154,7 +154,7 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   dispersion prior.
 - **count state** — the fast pass's state for a spectrum's peak count: `resolved`, `close call`, `unresolved` (a
   contender's evidence could not be computed; a failed calculation is never evidence against a model), or
-  `search limited` (the mode ceiling or the per-spectrum safety budget stopped the search). Two more appear for rows
+  `search limited` (the mode ceiling stopped the search). Two more appear for rows
   with no fast-pass result: `held` (not fitted, because its calibration is missing) and `fitting`, plus `not fitted`
   and `not recorded`. Its reasons are recorded beside it. See `USING_ISAR.md`, "Reading the peak count".
 - **confident / tentative peak** — a confident peak is one whose removal changes the predicted counts by at least
