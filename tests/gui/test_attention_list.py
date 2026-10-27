@@ -172,6 +172,25 @@ def test_not_evaluated_and_nothing_headers(qtbot, att_ws):
     assert lst._header.text() == "Needs attention · nothing" and "color" not in lst._header.styleSheet()
 
 
+def test_a_failed_worker_read_shows_its_reason_in_warning_colour(qtbot, att_ws, monkeypatch):
+    import isar_gui.viewmodels.intake as intake_module
+    real = intake_module.needs_attention
+
+    def broken(root):
+        raise OSError("the log is locked")
+    monkeypatch.setattr(intake_module, "needs_attention", broken)
+    intake, lst = _make(qtbot, att_ws)
+    assert intake.attention is None and "the log is locked" in intake.error
+    assert lst._header.text() == f"Needs attention · not checked: {intake.error}"
+    assert lst._header.toolTip() == intake.error and "color" in lst._header.styleSheet()
+    monkeypatch.setattr(intake_module, "needs_attention", real)
+    intake.reload()
+    assert lst._header.text() == "Needs attention · checking…"            # a new read is under way again
+    _worker(qtbot, intake)
+    assert lst._header.text() == f"Needs attention · {len(intake.attention.groups)}"
+    assert "color" not in lst._header.styleSheet()
+
+
 def test_unbound_the_list_takes_no_room(qtbot):
     intake, lst = _make(qtbot, None, wait=False)
     assert lst._header.isHidden() and lst._scroll.isHidden()

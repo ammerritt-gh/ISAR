@@ -395,8 +395,9 @@ class AttentionList(QWidget):
         layout.addWidget(self._header)
         layout.addWidget(self._scroll)
 
-        intake.changed.connect(self._rebuild)
-        intake.worker_changed.connect(self._rebuild)
+        self._worker_done = False                   # the worker answered since the last reload (changed)
+        intake.changed.connect(self._on_changed)
+        intake.worker_changed.connect(self._on_worker)
         self._rebuild()
 
     # ---- expansion ---------------------------------------------------------------------------
@@ -554,6 +555,14 @@ class AttentionList(QWidget):
         return f"{text} (yours, {fr.user_reason})" if fr.user_reason else f"{text} (yours)"
 
     # ---- rebuilding ------------------------------------------------------------------------
+    def _on_changed(self) -> None:
+        self._worker_done = False
+        self._rebuild()
+
+    def _on_worker(self) -> None:
+        self._worker_done = True
+        self._rebuild()
+
     def _rebuild(self) -> None:
         intake = self._intake
         root, att = intake.root, intake.attention
@@ -615,9 +624,12 @@ class AttentionList(QWidget):
         self._open_scans.pop(key, None)
 
     def _set_header(self, att, has_body: bool, root) -> None:
-        tip = ""
+        tip, warn = "", False
         if root is None:
             text = ""
+        elif att is None and self._worker_done and self._intake.error:
+            tip, warn = self._intake.error, True        # the read failed: say why, never "checking…" forever
+            text = f"Needs attention · not checked: {tip}"
         elif att is None:
             text = "Needs attention · checking…"
         elif not att.evaluated:
@@ -627,6 +639,7 @@ class AttentionList(QWidget):
         else:
             text = "Needs attention · nothing"
         self._header.setText(text)
+        self._header.setStyleSheet(_WARN if warn else "")
         self._header.setToolTip(tip or text)
         self._header.setVisible(bool(text))
         self._header.setEnabled(has_body)
