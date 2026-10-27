@@ -34,6 +34,7 @@ FILE_FACT = {"temperature": "T_K", "slit": "slit"}  # fact -> the scan fact name
 CONDITIONS = ("excluded", "dead", "counts_accepted")   # excluded: scan targets; dead, counts_accepted: unit targets
 FALLBACKS = ("bose_t0_limit", "slit_inferred", "slit_broadest_curve", "zero_file_axis", "counts_accepted")
 _LIBRARY_BASES = ("inferred", "broadest_curve_fallback")   # a slit chosen by comparing curves
+_CALIBRATION_FIELDS = ("setting", "basis", "zero", "zero_source", "held_reason")   # hashed, so also compared
 _SLIT_NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
 
@@ -323,7 +324,7 @@ def fallbacks(unit: dict) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class Change:
-    field: str               # "data"|"temperature"|"slit"|"q"|"excluded"|"dead"|"dead_in_scan"|"counts_accepted"|"resolution_folder"|"curve"|"resolution_library"
+    field: str               # "data"|"temperature"|"slit"|"q"|"excluded"|"dead"|"dead_in_scan"|"counts_accepted"|"resolution_folder"|"curve"|"resolution_library"|"calibration_<setting|basis|zero|zero_source|held_reason>"
     used: object             # the value the pass used
     now: object              # the value in force now
     now_source: str | None   # for temperature/slit: "user"|"file"|"missing"; else None
@@ -333,7 +334,8 @@ def changes(used: dict, current: dict, *, folder_now: str | None = None,
             library_now: str | None = None, curve_sha_now: str | None = None) -> tuple[Change, ...]:
     """What differs, by value, between the inputs a pass used and those in force now. A calibration check
     is left out when the pass had no calibration or its ``*_now`` is None; pass ``curve_sha_now="missing"``
-    for a curve file that is gone."""
+    for a curve file that is gone. The calibration's own setting, basis, zero, zero source and held reason
+    are compared with the current calibration's, so a recalibration that moves them is never silent."""
     out = []
 
     def differ(name, u, n, src=None):
@@ -355,4 +357,7 @@ def changes(used: dict, current: dict, *, folder_now: str | None = None,
             differ("curve", (cal.get("curve") or {}).get("sha256"), curve_sha_now)
         if library_now is not None and cal.get("basis") in _LIBRARY_BASES:
             differ("resolution_library", cal.get("library"), library_now)
+        now_cal = current.get("calibration") or {}
+        for f in _CALIBRATION_FIELDS:
+            differ(f"calibration_{f}", cal.get(f), now_cal.get(f))
     return tuple(out)

@@ -168,6 +168,19 @@ def test_inputs_hash_follows_values_not_sources_or_reasons(root):
     assert inputs_hash(unit_inputs(ROW, _si(root), "a03", {**CAL, "library": "f2"})) != hi   # inferred: hashed
 
 
+def test_changes_and_inputs_hash_cover_the_same_calibration_fields(root):
+    base = unit_inputs(ROW, _si(root), "a03", CAL)
+
+    def moved(**over):
+        det = {**CAL["detectors"]["a03"], **over.pop("det", {})}
+        return unit_inputs(ROW, _si(root), "a03", {**CAL, **over, "detectors": {"a03": det}})
+    for over in ({"setting": "60x60"}, {"setting_basis": "declared"}, {"det": {"zero_source": "pipeline_zero"}},
+                 {"det": {"zero": 0.2}}):
+        assert inputs_hash(moved(**over)) != inputs_hash(base) and changes(base, moved(**over)), over
+    same = moved(inputs_key="other")                                    # recorded, never hashed
+    assert inputs_hash(same) == inputs_hash(base) and changes(base, same) == ()
+
+
 def test_calibration_inputs_key_is_values_not_entries():
     k = dict(data_revision="aa", folder="D:/rf", pattern="p", library="f1", declared_slit="60x60",
              analyzers=["a05", "a03"], counts_accepted=[])
@@ -195,12 +208,25 @@ def _unit(**over):
     (_unit(), _unit(), {"curve_sha_now": "d1"}, (Change("curve", "c0", "d1", None),)),
     (_unit(), _unit(), {"curve_sha_now": "c0", "library_now": "f2"}, ()),
     (_unit(calibration={"folder": "D:/rf", "basis": "inferred", "library": "f1", "curve": {"sha256": "c0"}}),
-     _unit(), {"library_now": "f2"}, (Change("resolution_library", "f1", "f2", None),)),
+     _unit(calibration={"folder": "D:/rf", "basis": "inferred", "library": "f1", "curve": {"sha256": "c0"}}),
+     {"library_now": "f2"}, (Change("resolution_library", "f1", "f2", None),)),
     (_unit(temperature={"value": None, "source": "missing"}), _unit(temperature={"value": 100.0, "source": "user"}),
      {}, (Change("temperature", None, 100.0, "user"),)),
     (_unit(counts={"level": "warning", "override_applied": False}),
      _unit(counts={"level": "warning", "override_applied": True}), {}, (Change("counts_accepted", False, True, None),)),
     (_unit(), _unit(), {"folder_now": "E:/rf"}, (Change("resolution_folder", "D:/rf", "E:/rf", None),)),
+    (_unit(calibration={**_unit()["calibration"], "zero": 0.148, "zero_source": "elastic_fit"}),   # recalibrated
+     _unit(calibration={**_unit()["calibration"], "zero": 0.2, "zero_source": "pipeline_zero"}), {},
+     (Change("calibration_zero", 0.148, 0.2, None),
+      Change("calibration_zero_source", "elastic_fit", "pipeline_zero", None))),
+    (_unit(calibration={**_unit()["calibration"], "zero": 0.148, "held_reason": None, "setting": "40x40"}),
+     _unit(calibration={**_unit()["calibration"], "zero": 0.148, "held_reason": "a03: no curve", "setting": "60x60",
+                        "basis": "none"}), {},
+     (Change("calibration_setting", "40x40", "60x60", None), Change("calibration_basis", "declared", "none", None),
+      Change("calibration_held_reason", None, "a03: no curve", None))),
+    (_unit(calibration={**_unit()["calibration"], "zero": 0.148}),
+     _unit(calibration={**_unit()["calibration"], "zero": 0.148}),
+     {"folder_now": "D:/rf", "curve_sha_now": "c0"}, ()),                     # an unchanged calibration shows none
     (_unit(calibration=None), _unit(), {"folder_now": "E:/rf", "curve_sha_now": "missing"}, ()),
     (_unit(), _unit(data="bb", temperature={"value": 1.0, "source": "user"}, excluded={"value": True}),
      {"curve_sha_now": "missing"},
