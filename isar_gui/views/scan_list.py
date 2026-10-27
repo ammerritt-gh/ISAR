@@ -44,7 +44,7 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         self._seen: set[str] = set()          # container ids already given their first expansion
         self._by_id: dict[str, QStandardItem] = {}
         self._by_key: dict[str, QStandardItem] = {}
-        self._layout_key = None               # (sort, filter, columns): a change reveals the selection
+        self._layout_key = None               # the user's layout choices: a change reveals the selection
 
         self._build_widgets()
         vm.snapshot_changed.connect(self._refresh)
@@ -215,7 +215,7 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         has_data = bool(snap.sets or snap.files_not_read or snap.pooled)
         self._empty.setVisible(not has_data)
         view.setVisible(has_data)
-        layout_key = (vm.sort, vm.filter_text, vm.visible_columns())
+        layout_key = vm.layout_choices()
         reveal, self._layout_key = layout_key != self._layout_key, layout_key
         if not snap.sets:                        # an empty list: the next first set opens again
             self._seen.clear()

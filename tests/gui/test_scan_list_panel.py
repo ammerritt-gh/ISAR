@@ -310,6 +310,30 @@ def test_a_new_set_arriving_does_not_collapse_or_jump(qtbot, monkeypatch, sample
     assert panel._scroll_anchor() == anchor and _current_key(panel) == A[6]
 
 
+def test_a_result_column_switched_on_by_a_stored_pass_does_not_scroll_the_list(qtbot, monkeypatch, sample):
+    unstored = dataclasses.replace(sample, sets=tuple(dataclasses.replace(ss, spectra=tuple(
+        dataclasses.replace(sp, fast=Status("not run", False)) for sp in ss.spectra)) for ss in sample.sets))
+    panel, vm, box = _make(qtbot, monkeypatch, unstored, size=(360, 190))
+    for node_id in (f"set:{KEY_A}", f"set:{KEY_B}"):
+        panel._view.expand(_index(panel, node_id))
+    _click(panel, f"spec:{A[6]}")
+    bar = panel._view.verticalScrollBar()
+    bar.setValue(bar.maximum())
+    QApplication.processEvents()
+    assert not panel._view.viewport().rect().contains(panel._view.visualRect(_index(panel, f"spec:{A[6]}")))
+    scrolled = bar.value()
+    assert panel._view.isColumnHidden(COLUMNS.index("fast"))
+    b = list(unstored.sets[1].spectra)
+    b[2] = dataclasses.replace(b[2], fast=Status("resolved", True), fit=SimpleNamespace(unit_id=B[5], pooled=False))
+    sets = list(unstored.sets)
+    sets[1] = dataclasses.replace(sets[1], spectra=tuple(b))
+    box["snap"] = dataclasses.replace(unstored, sets=tuple(sets))
+    vm.on_workspace_changed({"results"})                           # the first fast result: the column comes on by itself
+    QApplication.processEvents()
+    assert not panel._view.isColumnHidden(COLUMNS.index("fast"))
+    assert bar.value() == scrolled and vm.current_key == A[6]
+
+
 def test_the_first_set_in_an_empty_list_opens_and_the_rest_start_closed(qtbot, monkeypatch, sample):
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
     opened = [i for i in (f"set:{KEY_SINGLE}", f"set:{KEY_B}", f"set:{KEY_A}")

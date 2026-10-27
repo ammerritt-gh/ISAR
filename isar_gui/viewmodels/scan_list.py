@@ -215,6 +215,11 @@ class ScanListViewModel(ViewModel):
     def visible_columns(self) -> tuple[str, ...]:
         return tuple(c for c in COLUMNS if c not in OPTIONAL_COLUMNS or c in self._optional or c in self._auto)
 
+    def layout_choices(self) -> tuple:
+        """What the user chose about the layout; a change of it reveals the selection. A column a stored pass
+        switches on by itself is not a choice, so its arrival does not move the list."""
+        return (self._sort, self._filter_text, frozenset(self._optional), frozenset(self._hidden))
+
     def _auto_columns(self) -> set[str]:
         """The result columns to show by themselves: a stored record of that pass exists, and the user has not
         switched the column off."""
