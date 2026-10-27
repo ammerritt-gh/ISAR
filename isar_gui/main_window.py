@@ -104,6 +104,7 @@ from isar_gui.views.attention_list import AttentionList
 from isar_gui.views.center_host import CenterHost
 from isar_gui.views.details_dialog import DetailsDialog
 from isar_gui.views.dispersion_pane import DispersionPane
+from isar_gui.views import help_window
 from isar_gui.views.experiment_strip import ExperimentStrip
 from isar_gui.views.files_dock import FilesDock
 from isar_gui.views.files_strip import FilesStrip
@@ -261,6 +262,7 @@ class MainWindow(QMainWindow):
 
         self._docks: dict[str, object] = {}
         self._warn_generation = 0     # per-bridge-tick counter passed to LogDock.sync_warnings
+        self._help_window = None      # the one Help window, made on first use
         self._empty = False           # True while showing the empty-start (no workspace) state
         self.inspector = None         # the C2 fit inspector (a CenterHost page); None in the empty state
         self._center_host: CenterHost | None = None   # hosts the five display surfaces once bound
@@ -1131,8 +1133,19 @@ class MainWindow(QMainWindow):
         for menu in (file_menu, export_menu):
             menu.setToolTipsVisible(True)
         help_menu = self.menuBar().addMenu("&Help")
+        self._guide_action = help_menu.addAction("Quick guide")
+        self._guide_action.triggered.connect(lambda: self._show_help(help_window.GUIDE))
+        self._words_action = help_menu.addAction("What the status words mean")
+        self._words_action.triggered.connect(lambda: self._show_help(help_window.WORDS))
+        help_menu.addSeparator()
         open_log_action = help_menu.addAction("Open GUI Log Folder")
         open_log_action.triggered.connect(self._open_gui_log_folder)
+
+    def _show_help(self, page: str) -> None:
+        """Help pages open in one reused, non-modal window (never exec())."""
+        if self._help_window is None:
+            self._help_window = help_window.HelpWindow(self)
+        self._help_window.show_page(page)
 
     def _open_gui_log_folder(self) -> None:
         """Open the durable log directory and say explicitly if the shell cannot do so."""

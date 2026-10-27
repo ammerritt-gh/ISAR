@@ -297,7 +297,11 @@ is genuinely data- or budget-limited, and resuming without changing something wi
 
 `run-isar-gui.bat` opens the window with no console. Double-click it to open the most recent experiment,
 or drag an experiment folder onto it. A start-up failure shows a message box and is written to the GUI
-log (*Help ▸ Open GUI Log Folder* opens it).
+log (*Help ▸ Open GUI Log Folder* opens it). *Help ▸ Quick guide* is a one-page walk through the first use
+(drop data, choose the curves, run, read the list, export), and *Help ▸ What the status words mean* lists the
+plain status words with the fitting code's word and meaning for each; both open in one reusable window that
+does not block the main window. The guide is `isar_gui/resources/quick_guide.html`, shipped with ISAR; the
+words page is generated from the table the scan list displays from.
 
 With no experiment open, the window says *No experiment open*, with *New experiment…*, *Open…*,
 *Recent ▾* and a labelled drop zone. The arrangement is the same from then on, on a laptop and on a

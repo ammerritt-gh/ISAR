@@ -289,6 +289,9 @@ empty/ready layout pair, and amends G19 as stated below.
     warning colour, and names each changed input, from and to, on hover. The two passes are judged
     separately; a pass with no finished input record is not judged and never marked. The mark says
     the fit is out of date; nothing refits.
+  - *Help* (`views/help_window.py`, amendment 7): *Quick guide* (`isar_gui/resources/quick_guide.html`, read
+    at runtime) and *What the status words mean* (generated from `isar_gui/status_words.py`, so it cannot
+    drift from the display), shown in one reused non-modal window (`show()`/`raise_()`, never `exec()`).
   - *Run analysis…* (`views/setup_section.py`, amendment 7): a button on the setup section's button row,
     with a muted line for the ready count or the reason it is off; it holds no logic and calls
     `MainWindow.start_analysis()`, the one entry point the Run menu entry, the Processing button and the
