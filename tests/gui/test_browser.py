@@ -198,7 +198,7 @@ def test_main_window_registers_browser_dock(qtbot, make_ws):
     assert w._docks["Browser"] is w.browser_dock
     assert w.browser_vm is not None
     w.show()
-    assert w.browser_dock.isVisible()
+    assert w.browser_dock.isHidden()        # registered (View > Panels), hidden by default
     # The C2 inspector is the CenterHost's "scan" page, empty until a scan is selected.
     from isar_gui.views.inspector_widget import InspectorWidget
     assert isinstance(w._center_host.pane("scan"), InspectorWidget)
@@ -247,7 +247,6 @@ def test_successful_ingest_refreshes_scans_and_keeps_results_fit_only(qtbot, mak
     assert w.browser_dock._tree.topLevelItemCount() == 0
     assert not w.browser_dock._no_results.isHidden()
     assert "No displayable Results yet" in w.browser_dock._no_results.text()
-    assert w.scans_dock.isVisible()
     assert "1 analyzer unit(s) awaiting analysis" in w.statusBar().currentMessage()
 
 
@@ -318,34 +317,35 @@ def test_load_workspace_swaps_tree(qtbot, make_ws, tmp_path, monkeypatch):
 
 
 def test_load_workspace_twice_no_menu_leak(qtbot, make_ws):
-    """Repeated load_workspace must not grow the menu bar.
+    """Repeated load_workspace must not grow the View menu.
 
-    The invariant is read off the menu bar's own action list, which ``removeAction()`` updates
+    The Panels submenu lives in View (``MainWindow._view_menu``) and is rebuilt per bind. The
+    invariant is read off the View menu's own action list, which ``removeAction()`` updates
     synchronously — no deferred-delete flush is needed. Two traps this test used to fall into, both
     established by bisection; do not "simplify" them back:
 
     * The previous version counted ``menuBar().findChildren(QMenu)`` behind a process-wide
-      ``QApplication.sendPostedEvents(None, DeferredDelete)`` drain, because a Docks menu awaiting
-      deletion is still a child of the menu bar. That drain hard-crashed the interpreter: forcing
+      ``QApplication.sendPostedEvents(None, DeferredDelete)`` drain, because a menu awaiting
+      deletion is still a child of its parent menu. That drain hard-crashed the interpreter: forcing
       pending destruction while ordinary posted events were still queued destroyed a ScansDock whose
       zero-delay scrollbar-restore timer was still armed (fixed at its source in
       ``scans_dock._restore_master_view_state``). The object-level count was never the invariant
       anyway — a dead-but-pending QMenu is legitimate Qt state, not a leak.
-    * Reading ``action.menu()`` off ``menuBar().actions()`` destroys the C++ QMenu in this PySide6
-      build when the ``menuBar()`` wrapper is a temporary, leaving ``MainWindow._docks_menu`` dangling
-      and breaking the very rebind under test. ``action.text()`` is the menu title for every menu-bar
-      action and needs no wrapper for the menu itself.
+    * Reading ``action.menu()`` off a temporary ``menuBar().actions()`` wrapper destroys the C++ QMenu
+      in this PySide6 build, leaving ``MainWindow._docks_menu`` dangling and breaking the very rebind
+      under test. ``action.text()`` is the menu title for every action and needs no wrapper for the
+      menu itself.
     """
     ws1, _ = _open(make_ws, rows=_ROWS[:1])
     w = MainWindow(ws1, session=Session(), watch=False)
     qtbot.addWidget(w)
 
     def _menu_titles() -> list[str]:
-        return [a.text() for a in w.menuBar().actions() if a.text()]
+        return [a.text() for a in w._view_menu.actions() if a.text()]
 
-    baseline = _menu_titles()  # File + Help + Run + Backends + View + Docks
-    assert "&Docks" in baseline
-    # A leak adds one Docks menu per load; the titles must be identical instead. Four loads, so a
+    baseline = _menu_titles()  # the display pages, Compact mode, Processing panel, Reset layout, Panels
+    assert "Panels" in baseline
+    # A leak adds one Panels menu per load; the titles must be identical instead. Four loads, so a
     # leak that only shows up after the first rebind still gets caught.
     for rows in (_ROWS, _ROWS[:2], _ROWS, _ROWS[:2]):
         assert w.load_workspace(make_ws(rows=rows)) is True

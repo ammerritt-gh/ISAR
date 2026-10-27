@@ -33,6 +33,9 @@ def _isolated_user_dirs(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    # Where a new experiment folder is created (``experiments_root()`` honours it first): no GUI test
+    # may create one under the operator's real ``Documents\ISAR``.
+    monkeypatch.setenv("ISAR_EXPERIMENTS_ROOT", str(tmp_path / "experiments"))
 
 
 @pytest.fixture(autouse=True)

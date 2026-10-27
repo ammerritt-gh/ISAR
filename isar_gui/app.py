@@ -157,7 +157,8 @@ def main(argv=None) -> int:
     if log_path is not None:
         window.log(f"GUI log: {log_path} (Help ▸ Open GUI Log Folder)")
         window.statusBar().showMessage("GUI log ready — Help ▸ Open GUI Log Folder")
-    window.show()
+    # Maximised: the first-start arrangement is sized to the screen's available area.
+    window.showMaximized()
     logging.getLogger(__name__).info("main window shown")  # the launcher smoke test waits for this line
 
     smoke_ms = os.environ.get("ISAR_GUI_SMOKE_MS")
