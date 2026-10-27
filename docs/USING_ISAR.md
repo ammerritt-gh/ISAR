@@ -398,7 +398,9 @@ saving); try again"). Press *Save* again once it is free.
 Each top-level row is a scan set. Its label is the scan number when its files carry exactly one, and
 otherwise the set's name (for example `CsV3Sb5_97K_0p5_0p5_3_sum`). Expand it to see its analyzers. The
 columns *Scan*, *T*, *Q* and *Parsed* always show; *Columns ▾* adds *Fast pass*, *Deep pass*, *Slit* and
-*File name*. A set row's summary counts spectra, or files received for *Parsed*.
+*File name*. *Fast pass* and *Deep pass* switch on by themselves the first time a result of that pass exists in
+the experiment; if you switch one off (or on) from *Columns ▾*, ISAR remembers your choice and no longer
+overrides it. A set row's summary counts spectra, or files received for *Parsed*.
 
 Every status is a coloured dot with a word, and the word is the one the stored records give:
 

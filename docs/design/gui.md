@@ -238,7 +238,9 @@ empty/ready layout pair, and amends G19 as stated below.
   one and otherwise by the set's name; the analyzers sit beneath it. Each status is a coloured dot and
   a word, and the word is the one the stored records give. *Parsed* claims only that the file was read:
   never calibration, a resolution curve or a fit. *Fast pass* and *Deep pass* show each pass's stored
-  state, or `not run` where nothing is stored, side by side, with no result picked as "the" result. The
+  state, or `not run` where nothing is stored, side by side, with no result picked as "the" result; each
+  column switches on by itself when the first stored result of that pass exists (amendment 7), unless the
+  user switched it off by hand (`scan_list.hidden` in the session), which the auto rule then respects. The
   centre plot keeps drawing the fast-pass fit. A missing temperature or Q shows a dash with its reason
   on hover, and a background update keeps selection, expansion and scroll.
 - **Scan inspector (amendment 4, operator via orchestrator, 2026-10-27).** The inspector keeps every

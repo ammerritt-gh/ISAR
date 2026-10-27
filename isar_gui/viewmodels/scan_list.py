@@ -30,6 +30,7 @@ from isar_gui.viewmodels.base import ViewModel
 
 COLUMNS = ("scan", "T", "Q", "parsed", "fast", "deep", "slit", "file")   # model order
 OPTIONAL_COLUMNS = ("fast", "deep", "slit", "file")                      # Columns ▾; the rest always show
+RESULT_COLUMNS = ("fast", "deep")     # these switch on by themselves when the first result of that pass exists
 TITLES = {"scan": "Scan", "T": "T", "Q": "Q", "parsed": "Parsed", "fast": "Fast pass",
           "deep": "Deep pass", "slit": "Slit", "file": "File name"}
 SORTS = ("set", "temperature", "analyzer")
@@ -159,9 +160,12 @@ class ScanListViewModel(ViewModel):
         self._current_key: str | None = None
         self._focus_set: str | None = None    # the scan set whose row the user picked, until a spectrum is
         self._sort = "set"
-        self._optional: set[str] = set()      # the optional columns switched on
+        self._optional: set[str] = set()      # the optional columns the user switched on
+        self._hidden: set[str] = set()        # result columns the user switched off: the auto rule leaves them off
+        self._auto: set[str] = set()          # result columns on because a result of that pass exists
         self._filter_text = ""
         self._intake = None
+        self._auto = self._auto_columns()
 
     # ---- reads ---------------------------------------------------------------------------
     @property
@@ -196,7 +200,14 @@ class ScanListViewModel(ViewModel):
         return list(dict.fromkeys(str(Path(p).parent) for p in paths))
 
     def visible_columns(self) -> tuple[str, ...]:
-        return tuple(c for c in COLUMNS if c not in OPTIONAL_COLUMNS or c in self._optional)
+        return tuple(c for c in COLUMNS if c not in OPTIONAL_COLUMNS or c in self._optional or c in self._auto)
+
+    def _auto_columns(self) -> set[str]:
+        """The result columns to show by themselves: a stored record of that pass exists, and the user has not
+        switched the column off."""
+        snap = self._snapshot
+        rows = [sp for ss in snap.sets for sp in ss.spectra] + list(snap.pooled)
+        return {c for c in RESULT_COLUMNS if c not in self._hidden and any(getattr(r, c).stored for r in rows)}
 
     def column_title(self, column: str) -> str:
         """The header; ``Q`` and ``T`` carry their unit when every present value has the same one."""
@@ -233,8 +244,14 @@ class ScanListViewModel(ViewModel):
             self.snapshot_changed.emit()
 
     def set_column_visible(self, column: str, visible: bool) -> None:
-        if column in OPTIONAL_COLUMNS and visible != (column in self._optional):
-            (self._optional.add if visible else self._optional.discard)(column)
+        if column in OPTIONAL_COLUMNS and visible != (column in self.visible_columns()):
+            if visible:
+                self._optional.add(column)
+                self._hidden.discard(column)
+            else:                         # a hand choice: remembered, and the auto rule no longer overrides it
+                self._optional.discard(column)
+                self._hidden.add(column)
+            self._auto = self._auto_columns()
             self.snapshot_changed.emit()
 
     def set_intake(self, intake) -> None:
@@ -259,6 +276,7 @@ class ScanListViewModel(ViewModel):
             "fact_rows": intake.fact_rows or (), "fit_inputs": intake.fit_inputs or (),
             "import_summary": intake.summary or _NO_SUMMARY}      # None (not read yet): no marks, no lists
         self._snapshot = scan_list(self._ws, **reads)
+        self._auto = self._auto_columns()
         cleared = self._current_key is not None and self._snapshot.spectrum(self._current_key) is None
         if cleared:
             self._current_key = None
@@ -454,7 +472,8 @@ class ScanListViewModel(ViewModel):
     # ---- view state (G10: view state only, never the workspace) ---------------------------
     def save_view_state(self, session) -> None:
         session.view_state[_STATE_KEY] = {
-            "columns": [c for c in OPTIONAL_COLUMNS if c in self._optional], "sort": self._sort}
+            "columns": [c for c in OPTIONAL_COLUMNS if c in self._optional], "sort": self._sort,
+            "hidden": [c for c in RESULT_COLUMNS if c in self._hidden]}      # not the auto-on ones: per experiment
 
     def load_view_state(self, session) -> None:
         st = (getattr(session, "view_state", None) or {}).get(_STATE_KEY)
@@ -463,6 +482,9 @@ class ScanListViewModel(ViewModel):
         cols = st.get("columns")
         optional = {c for c in cols if c in OPTIONAL_COLUMNS} if isinstance(cols, list) else self._optional
         sort = st.get("sort") if st.get("sort") in SORTS else self._sort
-        if optional != self._optional or sort != self._sort:
-            self._optional, self._sort = optional, sort
+        off = st.get("hidden")
+        hidden = {c for c in off if c in RESULT_COLUMNS} if isinstance(off, list) else self._hidden
+        if optional != self._optional or sort != self._sort or hidden != self._hidden:
+            self._optional, self._sort, self._hidden = optional, sort, hidden
+            self._auto = self._auto_columns()
             self.snapshot_changed.emit()

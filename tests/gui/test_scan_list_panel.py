@@ -142,16 +142,17 @@ def test_a_long_label_keeps_its_full_text_on_hover_and_the_panel_fits_its_column
 def test_default_and_optional_columns(qtbot, monkeypatch, sample):
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
     hidden = {c: panel._view.isColumnHidden(i) for i, c in enumerate(COLUMNS)}
+    # the sample holds stored fast- and deep-pass results, so those two columns are on by themselves
     assert hidden == {"scan": False, "T": False, "Q": False, "parsed": False,
-                      "fast": True, "deep": True, "slit": True, "file": True}
-    panel._column_actions["fast"].trigger()
-    assert not panel._view.isColumnHidden(COLUMNS.index("fast"))
+                      "fast": False, "deep": False, "slit": True, "file": True}
     assert _model_item(panel, f"set:{KEY_A}", "fast").text() == "3/4"
     cell = _model_item(panel, f"spec:{A[4]}", "fast")
     assert cell.text() == "close_call" and not cell.icon().isNull()
     assert cell.data(_TONE_ROLE) == Tone.WARN and "close_call" in cell.toolTip()
-    panel._column_actions["fast"].trigger()
+    panel._column_actions["fast"].trigger()                      # switched off by hand
     assert panel._view.isColumnHidden(COLUMNS.index("fast"))
+    panel._column_actions["slit"].trigger()                      # and an optional one on
+    assert not panel._view.isColumnHidden(COLUMNS.index("slit"))
 
 
 def test_a_missing_value_is_a_dash_with_its_reason(qtbot, monkeypatch, sample):
@@ -471,19 +472,19 @@ def test_56_spectra_refresh_in_well_under_two_seconds(qtbot, monkeypatch, tmp_pa
 # ---------------------------------------------------------------------------------------------
 def test_view_state_round_trips_the_columns_and_the_sort_but_not_the_filter(qtbot, monkeypatch, sample):
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
-    panel._column_actions["deep"].trigger()
+    panel._column_actions["fast"].trigger()                       # on by itself (results exist): this hides it
     panel._column_actions["file"].trigger()
     panel._sort_actions["temperature"].trigger()
     panel._filter.setText("a05")
     session = SimpleNamespace(view_state={})
     vm.save_view_state(session)
-    assert session.view_state["scan_list"] == {"columns": ["deep", "file"], "sort": "temperature"}
+    assert session.view_state["scan_list"] == {"columns": ["file"], "sort": "temperature", "hidden": ["fast"]}
 
     panel2, vm2, _ = _make(qtbot, monkeypatch, sample)
     vm2.load_view_state(session)
     assert vm2.sort == "temperature" and vm2.filter_text == ""
-    assert not panel2._view.isColumnHidden(COLUMNS.index("deep"))
-    assert panel2._view.isColumnHidden(COLUMNS.index("fast"))
+    assert not panel2._view.isColumnHidden(COLUMNS.index("deep"))      # on by itself
+    assert panel2._view.isColumnHidden(COLUMNS.index("fast"))          # off by hand, remembered
     assert panel2._sort_actions["temperature"].isChecked() and panel2._column_actions["file"].isChecked()
     vm2.load_view_state(SimpleNamespace(view_state={"scan_list": {"columns": "x", "sort": "nope"}}))
     assert vm2.sort == "temperature"                               # bad stored state is ignored
