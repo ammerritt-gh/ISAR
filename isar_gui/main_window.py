@@ -700,12 +700,15 @@ class MainWindow(QMainWindow):
         self.experiment_strip.rename_requested.connect(self.rename_experiment)
         self.experiment_strip.details_requested.connect(self._open_details)
         self.setup_section.locate_requested.connect(self._locate_resolution_folder)
+        self.setup_section.run_requested.connect(lambda: self.start_analysis())   # looked up at the click
         self.attention_list.locate_requested.connect(self._locate_resolution_folder)
         self.attention_list.add_data_requested.connect(self.files_strip.choose_files)
-        self.attention_list.run_requested.connect(self.run_analysis)
+        self.attention_list.run_requested.connect(lambda: self.start_analysis())
         self.readiness_line.locate_requested.connect(self._locate_resolution_folder)
         self.readiness_line.reveal_gap.connect(self.attention_list.reveal)
-        self.readiness_line.run_requested.connect(self.run_analysis)
+        self.readiness_line.run_requested.connect(lambda: self.start_analysis())
+        for changed in (self.intake.changed, self.intake.worker_changed, self.scan_list_vm.snapshot_changed):
+            changed.connect(self._push_run_row)
         self.intake.saved.connect(self.log)
         self.files_strip.paths_dropped.connect(self._on_paths_dropped)
         self.files_strip.log_message.connect(self.log)
@@ -731,11 +734,12 @@ class MainWindow(QMainWindow):
         self._export.started.connect(lambda: self.intake.set_busy_reason("an export is running"))
         self._export.finished.connect(lambda _folder: self.intake.set_busy_reason(None))
         self._export.failed.connect(lambda _reason, _path: self.intake.set_busy_reason(None))
-        self.processing_panel.run_requested.connect(self.run_analysis)
+        self.processing_panel.run_requested.connect(lambda: self.start_analysis())
         self.processing_panel.stop_requested.connect(self._cancel_active_operation)
         self.processing_rail.toggled.connect(
             lambda: self.set_right_panel_collapsed(not self._right_panel_collapsed()))
         self._refresh_recents_menu()
+        self._push_run_row()
 
     def _scan_label(self, key: str) -> str:
         """A scan set's label from the scan list's current read; the key stands in for an unknown set."""
@@ -1619,7 +1623,7 @@ class MainWindow(QMainWindow):
     def _init_run_menu(self) -> None:
         run_menu = self.menuBar().addMenu("&Run")
         self._run_action = run_menu.addAction("Run analysis…")
-        self._run_action.triggered.connect(lambda: self.run_analysis())
+        self._run_action.triggered.connect(lambda: self.start_analysis())
         self._rerun_action = run_menu.addAction(_RERUN_TEXT)
         self._rerun_action.setToolTip(_RERUN_TIP)
         run_menu.setToolTipsVisible(True)
@@ -1650,6 +1654,30 @@ class MainWindow(QMainWindow):
             can_run=can_run, run_reason=reason,
             analysis_running=self._operations.is_running_analysis(),
             activity=self._operation_status.text(), last_run=self._last_run_status)
+        self._push_run_row()
+
+    def _push_run_row(self) -> None:
+        """The setup section's Run button: on when an analysis can start, else off with the reason beside it."""
+        if self._empty:
+            enabled, note = False, "Open or create an experiment first."
+        elif self._operations.is_running_analysis():
+            enabled, note = False, "An analysis is running."
+        elif self._operations.is_busy():
+            enabled, note = False, "ISAR is busy with another operation."
+        elif not (self.scan_list_vm.snapshot.sets or self.scan_list_vm.snapshot.files_not_read):
+            enabled, note = False, "No data yet. Add data files below."
+        elif self.readiness_line.checking:
+            enabled, note = False, "Checking what is ready…"
+        else:
+            ready, blockers = self.readiness_line.ready_count, self.readiness_line.blockers
+            enabled = ready != 0                  # None: no readiness read applies (not BL43LXU data); run it
+            note = (f"Nothing is ready yet: {blockers}" if blockers else "Nothing is ready yet.") if ready == 0 else (
+                "" if ready is None else f"{ready} ready for analysis")
+        self.setup_section.set_run_state(enabled, note)
+
+    def start_analysis(self) -> None:
+        """The one window-level entry point for starting an analysis (the queue job rebinds it)."""
+        self.run_analysis()
 
     def run_analysis(self) -> None:
         """Open the Run dialog (pre-filled from the last run) and launch ``isar run`` on accept."""

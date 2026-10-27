@@ -200,6 +200,9 @@ class ReadinessLine(QWidget):
         self._plain = ""
         self._open_key: str | None = None         # the count whose list is open
         self._worker_done = False                 # the worker answered since the last reload (changed)
+        self._ready: int | None = None            # spectra that can start; None: no readiness read applies
+        self._blockers = ""                       # "9 need resolution curves · ..." (the blocked counts)
+        self._checking = False                    # the first read has not answered yet
         self._label = _Wrapped(self)
         self._label.setObjectName("readiness_text")
         self._label.setTextFormat(Qt.TextFormat.RichText)
@@ -221,6 +224,21 @@ class ReadinessLine(QWidget):
         """The line as plain text (what a screen reader and the tests read)."""
         return self._plain
 
+    @property
+    def ready_count(self) -> int | None:
+        """Spectra the backend says can start; ``None`` when no readiness read applies (not a BL43LXU experiment,
+        nothing imported, the read failed or it is still checking)."""
+        return self._ready
+
+    @property
+    def blockers(self) -> str:
+        """The blocked counts as one phrase ("9 need resolution curves · 1 needs a value"), or ""."""
+        return self._blockers
+
+    @property
+    def checking(self) -> bool:
+        return self._checking
+
     def _on_changed(self) -> None:
         self._worker_done = False
         self._render()
@@ -233,6 +251,7 @@ class ReadinessLine(QWidget):
         intake = self._intake
         summary, att = intake.summary, intake.attention
         self._links, self._plain = {}, ""
+        self._ready, self._blockers, self._checking = None, "", False
         warn = False
         if intake.root is None or summary is None:
             self._label.setText("")
@@ -248,13 +267,19 @@ class ReadinessLine(QWidget):
             parts.append(html.escape(f"not checked: {tip}"))
             plain.append(f"not checked: {tip}")
         elif att is None:
+            self._checking = True
             parts.append("checking readiness…")
             plain.append("checking readiness…")
         elif not att.evaluated:
             tip = att.note or ""
         else:
             fallback = with_fallback(att)
+            blocked = []
             for i, (key, rows) in enumerate(classify(att, self._missing()).items()):
+                if key == READY:
+                    self._ready = len(rows)
+                elif rows and key != RUNNING:
+                    blocked.append(f"{len(rows)} {_phrase(key, len(rows))}")
                 if not rows and key != READY:
                     continue
                 words = f"{len(rows)} {_phrase(key, len(rows))}"
@@ -266,6 +291,7 @@ class ReadinessLine(QWidget):
                     parts.append(f'<a href="g{i}">{html.escape(words)}</a>')
                 else:
                     parts.append(html.escape(words))
+            self._blockers = " · ".join(blocked)
         self._plain = " · ".join(plain)
         self._label.setText(" · ".join(parts))
         self._label.setToolTip(tip or (f"{self._plain}\n\n{_CLICK_HINT}" if self._links else self._plain))

@@ -321,6 +321,8 @@ def test_scenario3_files_parse_without_curves_and_locate_changes_the_counts(
     assert import_summary(root).curves.problem in w.setup_section._problem.toolTip()
     line = w.readiness_line
     assert line.text.startswith(f"{n} spectra read · 0 ready for analysis · {m} need resolution curves")
+    run = w.setup_section._run                  # nothing is ready: Run is off and says why (the amber line shows it)
+    assert not run.isEnabled() and run.toolTip() == f"Nothing is ready yet: {m} need resolution curves"
 
     # the list behind the count: every spectrum with the backend's reason, and Locate…
     line._label.linkActivated.emit(_link(line, "blocked:locate_folder"))
@@ -351,6 +353,8 @@ def test_scenario3_files_parse_without_curves_and_locate_changes_the_counts(
     ready = sum(a.can_start is True for s in needs_attention(root).scans.values() for a in s.analyzers.values())
     assert ready > 0
     assert line.text.startswith(f"{n} spectra read · {ready} ready for analysis")
+    assert run.isEnabled() and w.setup_section._run_note.full_text() == f"{ready} ready for analysis"
+    assert w.setup_section._run_note.isVisible()
     assert "need resolution curves" not in line.text
     kinds = [g.kind for g in needs_attention(root).groups]
     assert "calibration_pending" in kinds and "resolution_folder" not in kinds
@@ -530,3 +534,23 @@ def test_scenario4_the_scan_list_keeps_S1s_400px_minimum_with_the_attention_list
         assert problem.height() <= two_lines, (problem.height(), two_lines)
     else:
         assert problem.isHidden()
+
+
+@pytest.mark.parametrize("size", [LAPTOP, (1920, 1040)])
+@pytest.mark.parametrize("collapsed", [True, False])
+def test_run_analysis_is_a_visible_button_in_the_setup_area_at_every_size(
+        qtbot, monkeypatch, built_hard_curves, tmp_path, size, collapsed):
+    """Amendment 7: the Run button sits in the setup area at the top of the left column, above the scan list,
+    on screen with the right-hand panel collapsed (positions only: offscreen Qt has no real fonts)."""
+    w = _window(qtbot, monkeypatch, _copy(built_hard_curves, tmp_path), size=size)
+    w.set_right_panel_collapsed(collapsed)
+    qtbot.wait(80)
+    section, button = w.setup_section, w.setup_section._run
+    assert button.text() == "Run analysis…" and button.toolTip()
+    _reachable(w, button)                                           # shown, enabled, whole, not covered
+    assert section.rect().contains(button.geometry()) and section.isAncestorOf(button)
+    assert w.left_column_dock.isAncestorOf(button)
+    assert rect_in(w, button).bottom() < rect_in(w, w.scan_list).top()          # at the top, above the scan list
+    assert rect_in(w, button).top() >= rect_in(w, w.experiment_strip).bottom()   # inside the setup area, under the strip
+    if collapsed:
+        assert w.processing_rail.collapsed

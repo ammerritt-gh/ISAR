@@ -284,6 +284,11 @@ empty/ready layout pair, and amends G19 as stated below.
     warning colour, and names each changed input, from and to, on hover. The two passes are judged
     separately; a pass with no finished input record is not judged and never marked. The mark says
     the fit is out of date; nothing refits.
+  - *Run analysis…* (`views/setup_section.py`, amendment 7): a button on the setup section's button row,
+    with a muted line for the ready count or the reason it is off; it holds no logic and calls
+    `MainWindow.start_analysis()`, the one entry point the Run menu entry, the Processing button and the
+    readiness list's button also call (the right-hand queue job rebinds it). The amber curves line, when
+    shown, stands in for the muted line, because a second line would squeeze the counts at 1108 px.
   - *Readiness line* (`views/readiness_line.py`) in Processing: counts of spectra ready, ready with a
     fallback, waiting for resolution curves, needing their counts accepted, running and so on, each
     count opening the list behind it with the backend's reason and the button that resolves it.

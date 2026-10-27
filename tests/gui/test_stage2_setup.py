@@ -358,7 +358,7 @@ def test_setup_section_shows_constructed_backend_states(qtbot, s2_ws, tmp_path):
     assert section._problem.full_text() == "resolution library unavailable (gone)"
     assert section._stale.full_text() == STALE_NOTE
     assert section._record_problem.full_text() == "import record unreadable (bad JSON)"   # the folder holds a card
-    use = [b for b in section.findChildren(type(section._locate)) if b.objectName() == "setup_use_other"]
+    use = [b for b in section.findChildren(QPushButton) if b.objectName() == "setup_use_other"]
     assert len(use) == 1
     use[0].click()                                             # saves that path, and re-reads
     saved = intake_settings.current_settings(s2_ws).resolution_folder
@@ -435,7 +435,7 @@ def test_record_problem_is_not_shown_without_a_card(qtbot, tmp_path):
     section = _section(qtbot, intake)
     assert _plain(section._summary.text()) == NOTHING_READ and section._record_problem.isHidden()
     assert section._locate.isVisible()
-    assert section._locate.text() == "Choose curves folder…"
+    assert section._locate.full_text() == "Choose curves folder…"
 
 
 def test_no_experiment_reads_nothing_read_yet_without_locate(qtbot):

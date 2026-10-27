@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (QFileDialog, QGridLayout, QHBoxLayout, QLabel, QL
 
 from isar_gui.plain_words import NO_CURVES, NO_CURVES_TIP, curve_problem, plain_reason
 from isar_gui.theme import TONE_COLOR, Tone
-from isar_gui.views.elided_label import ElidedLabel
+from isar_gui.views.elided_label import ElidedButton, ElidedLabel
 
 NOTHING_READ = "Nothing read yet. Add data files below."
 NOT_BL43 = "No import summary: this experiment is not BL43LXU data."
@@ -40,6 +40,9 @@ LOCATE_TIP = ("Pick the folder holding the measured resolution curves. It is sav
 _SOURCE_WORDS = {"discovered": "found beside the data", "user": "chosen by you"}
 _LIST_ROWS = 6                  # an opened list shows this many rows, then scrolls
 _WARN = f"color: {TONE_COLOR[Tone.WARN]};"
+_QUIET = "color: #6b7280;"
+RUN_TEXT = "Run analysis…"
+RUN_TIP = "Fit every spectrum that is ready; the others stay held until what they need is added."
 
 
 def _n(count: int, one: str, many: str) -> str:
@@ -85,10 +88,12 @@ class _Line(ElidedLabel):
     """A free-text line of the section: one line, shortened with "…" to the column's width, the full
     text as its tooltip. Two wrapped lines left the scan list 390 px high at 1108 x 851 (offscreen)."""
 
-    def __init__(self, parent: QWidget | None = None, *, warn: bool = False) -> None:
+    def __init__(self, parent: QWidget | None = None, *, warn: bool = False, quiet: bool = False) -> None:
         super().__init__("", parent, Qt.TextElideMode.ElideRight)
         if warn:
             self.setStyleSheet(_WARN)
+        elif quiet:
+            self.setStyleSheet(_QUIET)
 
     def set_line(self, text: str | None, tip: str | None = None) -> None:
         self.set_full_text(text or "")
@@ -99,6 +104,7 @@ class _Line(ElidedLabel):
 
 class SetupSection(QWidget):
     locate_requested = Signal()
+    run_requested = Signal()            # "Run analysis…" -> MainWindow.start_analysis (the button holds no logic)
 
     def __init__(self, intake, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -126,10 +132,16 @@ class SetupSection(QWidget):
 
         self._resolution = ElidedLabel("", self)
         self._resolution.setObjectName("setup_resolution")
-        self._locate = QPushButton(LOCATE_TEXT, self)
+        self._locate = ElidedButton(LOCATE_TEXT, self)       # shares its row with Run: it gives way first
         self._locate.setObjectName("setup_locate")
         self._locate.setToolTip(LOCATE_TIP)
         self._locate.clicked.connect(self.locate_requested)
+        self._run = QPushButton(RUN_TEXT, self)
+        self._run.setObjectName("setup_run")
+        self._run.setToolTip(RUN_TIP)
+        self._run.clicked.connect(self.run_requested)
+        self._run_note = _Line(self, quiet=True)          # how many are ready, or why Run is off
+        self._run_note.setObjectName("setup_run_note")
         self._problem = _Line(self, warn=True)
         self._problem.setObjectName("setup_problem")
         self._stale = _Line(self)
@@ -145,15 +157,23 @@ class SetupSection(QWidget):
         self._grid = QGridLayout()
         self._grid.setContentsMargins(0, 0, 0, 0)
         self._grid.setHorizontalSpacing(6)
-        self._grid.setVerticalSpacing(2)
+        self._grid.setVerticalSpacing(0)       # the Run row costs a line; the 400 px scan list has no slack
         self._grid.setColumnStretch(0, 1)
         self._grid.addWidget(self._summary, 0, 0)
         self._grid.addWidget(self._resolution, 1, 0)
         # Under the path, not beside it: the button names its object, and beside it the path got no room at 1108 px.
-        self._grid.addWidget(self._locate, 2, 0, Qt.AlignmentFlag.AlignLeft)
+        # Run analysis… leads the row, so it is on screen at every window size whatever the right panel does.
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.setSpacing(6)
+        buttons.addWidget(self._run, 0)
+        buttons.addWidget(self._locate, 0)
+        buttons.addStretch(1)
+        self._grid.addLayout(buttons, 2, 0)
+        self._grid.addWidget(self._run_note, 3, 0)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(2)
+        layout.setContentsMargins(8, 2, 8, 2)
+        layout.setSpacing(1)
         layout.addLayout(self._grid)
         layout.addWidget(self._list)
         for line in (self._problem, self._stale, self._record_problem, self._outcome):
@@ -162,6 +182,18 @@ class SetupSection(QWidget):
 
         intake.changed.connect(self._render)
         self._render()
+
+    def set_run_state(self, enabled: bool, note: str) -> None:
+        """Run on or off, with the muted line beside it: the readiness count, or the reason it is off."""
+        self._run.setEnabled(enabled)
+        self._run.setToolTip(RUN_TIP if enabled else (note or RUN_TIP))
+        self._run_note.set_line(note, note)
+        self._fit_run_note()
+
+    def _fit_run_note(self) -> None:
+        # The amber curves line below already says what is wrong; a second line would squeeze the counts at
+        # 1108 px, so the reason then stays in Run's tooltip.
+        self._run_note.setVisible(bool(self._run_note.full_text()) and not self._problem.isVisibleTo(self))
 
     # ---- the outcome of a save made from here --------------------------------------------
     def show_save_outcome(self, outcome) -> None:
@@ -223,6 +255,7 @@ class SetupSection(QWidget):
         record = None if summary is None else summary.record_problem
         self._record_problem.set_line(record if has_card and not record_in_summary else None)
         self._render_others(curves.other_folders if bl43 and curves is not None else ())
+        self._fit_run_note()
 
     @staticmethod
     def _counts_html(summary) -> str:

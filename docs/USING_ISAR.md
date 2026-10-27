@@ -466,6 +466,11 @@ reason. Everything here is the engine's read; the window computes none of it.
 
 ### Run analysis, Stop and the Campaign tab
 
+*Run analysis…* is also a button in the setup area at the top of the left column, beside the line that says
+how many spectra are ready, so it is on screen with Processing collapsed. It is off, with the reason in text
+beside it, when there is no experiment, no data, another operation is running or nothing is ready. It, the Run
+menu entry and the Processing button all start the analysis through one entry point in the window.
+
 *Processing* holds *Run analysis…*, the analysis that runs the fast pass on the experiment's data, with
 the same dialog and progress as before. Above it a readiness line counts the spectra by whether an
 analysis can start, for example "56 spectra read · 52 ready for analysis (30 will use a stand-in value) · 4 need
