@@ -143,6 +143,18 @@ def test_watch_dialog_add_remove_and_pause_reach_the_store(qtbot, tmp_path, monk
     assert vm.watched() == [] and changes == [1, 1, 1]
 
 
+def test_watch_dialog_remove_stops_every_selected_folder(qtbot, tmp_path):
+    vm = _vm(tmp_path, [_file("a.dat")])
+    vm.add_watch(r"D:\beam\numors")
+    vm.add_watch(r"D:\beam\more")
+    strip = _strip(qtbot, vm)
+    strip._open_watch()
+    dialog = strip._watch_dialog
+    dialog._list.selectAll()
+    dialog._remove()                               # each removal re-renders the list under the loop
+    assert vm.watched() == [] and dialog._list.count() == 0
+
+
 def test_last_check_line_follows_a_hand_driven_poll(qtbot, tmp_path):
     folder = tmp_path / "data"
     folder.mkdir()

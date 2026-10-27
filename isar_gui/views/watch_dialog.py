@@ -100,5 +100,6 @@ class WatchDialog(QDialog):
             self._vm.add_watch(path)
 
     def _remove(self) -> None:
-        for item in self._list.selectedItems():
-            self._vm.remove_watch(item.text())
+        folders = [item.text() for item in self._list.selectedItems()]   # remove_watch re-renders the list
+        for folder in folders:
+            self._vm.remove_watch(folder)
