@@ -507,7 +507,8 @@ def test_the_new_mounts_have_their_final_signatures():
     for cls, members in ((IntakeState, ("changed", "worker_changed", "saved", "bind", "reload", "root", "fact_rows",
                                         "conditions", "summary", "settings", "attention", "fit_inputs", "error",
                                         "busy_reason", "set_busy_reason", "save_value", "use_file_value",
-                                        "set_dead", "save_details", "save_resolution_folder")),
+                                        "set_dead", "set_counts_accepted", "save_details",
+                                        "save_resolution_folder")),
                          (SetupSection, ("locate_requested",)), (DetailsDialog, ("rename_requested",)),
                          (ExperimentStrip, ("details_requested",)), (ProcessingPanel, ("set_readiness_widget",)),
                          (AttentionList, ("expanded_changed", "reveal", "is_expanded", "set_expanded")),
@@ -517,9 +518,18 @@ def test_the_new_mounts_have_their_final_signatures():
                          (ValueEntry, ("edited", "value", "reason", "parse_error", "set_message", "clear"))):
         for name in members:
             assert hasattr(cls, name), (cls.__name__, name)
-    assert not hasattr(IntakeState, "set_counts_accepted")      # CONDITIONAL, not ruled: not built
     assert list(inspect.signature(locate_resolution_folder).parameters) == ["parent", "intake"]
     assert [f.name for f in dataclasses.fields(SaveOutcome)] == ["ok", "message", "result"]
+
+
+def test_counts_accepted_is_declared_and_withdrawn(qtbot, s2_ws):
+    intake = _bound(qtbot, s2_ws)
+    first = intake.set_counts_accepted([A03], True, "checked by hand")
+    assert first.ok and first.message == "Saved: counts accepted on 1 analyzer"
+    rows = [(c.scan, c.analyzer, c.user_reason) for c in intake.conditions if c.condition == "counts_accepted"]
+    assert rows == [(A, "a03", "checked by hand")]
+    assert intake.set_counts_accepted([A03], False, None).ok
+    assert not [c for c in intake.conditions if c.condition == "counts_accepted"]
 
 
 def test_every_wire_of_the_mount_table_fires(qtbot, monkeypatch, s2_built):

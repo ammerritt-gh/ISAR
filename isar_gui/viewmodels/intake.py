@@ -265,6 +265,12 @@ class IntakeState(QObject):
             root, "dead", list(targets), declared=dead, reason=reason),
             lambda r: f"Saved: {_n(len(r.targets), 'analyzer')} marked {word}")
 
+    def set_counts_accepted(self, targets: Sequence[str], accepted: bool, reason: str | None) -> SaveOutcome:
+        word = "accepted" if accepted else "no longer accepted"
+        return self._save("counts accepted", lambda root: intake_values.save_condition(
+            root, "counts_accepted", list(targets), declared=accepted, reason=reason),
+            lambda r: f"Saved: counts {word} on {_n(len(r.targets), 'analyzer')}")
+
     def save_details(self, fields: Mapping[str, str]) -> SaveOutcome:
         return self._save("experiment details", lambda root: intake_settings.save_experiment_metadata(
             root, fields), lambda _r: "Saved: experiment details")
