@@ -1,7 +1,8 @@
 """`isar status --workspace DIR` — summarize the ledger without reprocessing (the retired unification plan §5, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 
 Reads card + session only (no reparse): counts by status, held scans with reasons, scan-number and
-coverage gaps from the last run, calibration versions, and prior population.
+coverage gaps from the last run, calibration versions, and prior population. A BL43LXU workspace also gets
+its needs-attention list (``isar.workspace_api.needs_attention``), the same groups the GUI shows.
 """
 from __future__ import annotations
 
@@ -10,6 +11,29 @@ from collections import Counter
 
 from isar.schema import card as card_mod
 from isar.session.workspace import Workspace
+
+
+def _print_attention(root) -> None:
+    from isar.intake import readiness
+    from isar.workspace_api import needs_attention      # imported here: only a BL43LXU workspace asks
+    na = needs_attention(root)
+    if not na.evaluated:
+        if na.note and na.note != readiness.NOT_BL43:       # nothing imported yet, or a record that cannot be read
+            print()
+            print(f"Needs attention: not evaluated ({na.note})")
+        return
+    print()
+    if not na.groups:
+        print("Needs attention: nothing")
+        return
+    print("Needs attention:")
+    for g in na.groups:
+        start = {True: "analysis can start", False: "analysis cannot start", None: "running"}[g.can_start]
+        print(f"  {g.summary} [{g.action}; {start}]")
+        for it in g.items[:5]:
+            print(f"    {':'.join(x for x in (it.scan, it.analyzer) if x) or it.file or 'experiment'}: {it.reason}")
+        if len(g.items) > 5:
+            print(f"    ... and {len(g.items) - 5} more")
 
 
 def run(args) -> int:
@@ -34,6 +58,8 @@ def run(args) -> int:
     by_status = Counter(e.status for e in entries)
     for status, n in sorted(by_status.items()):
         print(f"  {status:22s} {n}")
+
+    _print_attention(ws.root)
 
     # Held scans, with the reason that parked them.
     held = [e for e in entries if e.status.startswith("held")]

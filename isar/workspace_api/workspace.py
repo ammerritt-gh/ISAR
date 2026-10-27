@@ -724,6 +724,15 @@ class Workspace:
             self._intake_rows(), self._intake_index(), self._state().tabulated_calibration,
             self._curve_check(), self._folder_now(), scans)
 
+    def conditions(self, scans=None) -> list:
+        """The BL43 conditions in force (excluded scans, dead analyzers, accepted counts) of ``scans`` (scan
+        keys; None = all), one row each with the reason saved with it; a reversed declaration is absent.
+        ``[]`` without entries or an import record. Read-only, GUI-thread safe: it filters what
+        :meth:`fact_rows` parses (once per :meth:`refresh`).
+        """
+        self._note_intake_damage()
+        return intake_view.condition_rows(self._intake_rows(), self._intake_index(), scans)
+
     def fit_inputs(self, units=None) -> list:
         """Per unit key (``"spec1:42:a03"``; None = all) with a pass on record: its latest fast and latest
         deep pass, what each used, and the changes since (judged on values, not history). ``[]`` without a

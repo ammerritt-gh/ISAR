@@ -484,6 +484,7 @@ rulings W1–W3.)*
 | Resolution-curve folder as an experiment setting, `rf/` discovery, curve content identity (BL43LXU) | Implemented |
 | User values and conditions for BL43 (checked, append-only, applied at each scan's start point; counts accepted lifts the hold on unrecovered counts) | Implemented |
 | Fit inputs per analyzer and pass, with "values changed since last fit" | Implemented |
+| Readiness per use and the needs-attention list (BL43LXU; read-only, computed on read from the persisted records) | Implemented |
 | Momentum (in-plane) resolution spread modelled inside the fit | Planned (after the SIXCIRCLE geometry) |
 | Adjudication (decide–record–defer) | Implemented (opt-in) |
 | Stage II: Baker–Cousins fit, evidence selection (H4; Akaike diagnostics retained), branch posterior, verdicts | Implemented |

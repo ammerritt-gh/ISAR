@@ -1,9 +1,10 @@
 """Read-only views of the BL43 intake records: the fact rows and what each fit used (C-read-facts,
-C-read-fit-inputs).
+C-read-fit-inputs), the conditions in force (C-read-conditions), and the two ``root`` reads that go through
+``isar.intake.readiness`` (``needs_attention``, ``import_summary``).
 
-Pure functions over data ``Workspace`` has already parsed (``intake_scans.json``, ``entries.jsonl``,
-``fit_inputs.jsonl``, the card state's tabulated calibration and the curve check); nothing here reads a
-file or writes one. "Changed since" is judged on values: the inputs a pass used against the inputs in force
+Everything else is a pure function over data ``Workspace`` has already parsed (``intake_scans.json``,
+``entries.jsonl``, ``fit_inputs.jsonl``, the card state's tabulated calibration and the curve check); it
+reads no file and writes none. "Changed since" is judged on values: the inputs a pass used against the inputs in force
 now, built by the same ``isar.intake.inputs`` functions the run uses, so the reads and the run's freshness
 hash never disagree. The curves are never hashed here: the folder, library and curve identity in force are
 those persisted in ``report/curves.json`` at the last import or run start. Qt- and scipy-free.
@@ -14,7 +15,7 @@ import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from isar.intake import inputs
+from isar.intake import inputs, readiness
 from isar.intake.inputs import Change
 
 log = logging.getLogger(__name__)
@@ -68,10 +69,7 @@ class UnitFitInputs:
     deep: PassInputs | None       # latest counting deep pass, or None
 
 
-def _order(rows: Mapping[str, dict], scan: str) -> tuple:
-    row = rows.get(scan) or {}
-    n = row.get("scan_number")
-    return (str(row.get("experiment_id", scan)), n if isinstance(n, int) else 0, scan)
+_order = readiness.scan_order
 
 
 def _slit_fallback(row: dict, si: inputs.ScanInputs, state: dict | None, check, folder_now: str | None) -> str | None:
@@ -180,3 +178,62 @@ def fit_inputs(passes: Mapping[str, Mapping[str, object]], rows: Mapping[str, di
             fast=_pass(by["fast"], current, check, folder_now) if "fast" in by else None,
             deep=_pass(by["deep"], current, check, folder_now) if "deep" in by else None))
     return out
+
+
+@dataclass(frozen=True)
+class ConditionRow:
+    scan: str                     # "spec1:42"
+    analyzer: str | None          # None for "excluded"; "a14" for "dead" and "counts_accepted"
+    condition: str                # "excluded" | "dead" | "counts_accepted"
+    entry: str                    # id of the in-force declaring entry
+    user_reason: str | None       # the reason saved with it, or None
+    at: str                       # that entry's UTC time
+    lifts_hold: bool | None       # counts_accepted: whether it lifts a hold now; None for the other two
+
+
+def condition_rows(rows: Mapping[str, dict], index: inputs.EntryIndex,
+                   scans: Iterable[str] | None = None) -> list[ConditionRow]:
+    """The conditions in force, one row each: per scan the exclusion, then the dead analyzers, then the
+    accepted counts, from the same ``inputs.scan_inputs`` the run's start point and readiness read."""
+    out: list[ConditionRow] = []
+    for scan in sorted(rows if scans is None else set(scans) & set(rows), key=lambda k: _order(rows, k)):
+        row = rows[scan]
+        si = inputs.scan_inputs(row, index)
+        if si.excluded is not None:
+            c = si.excluded
+            out.append(ConditionRow(scan, None, "excluded", c.entry, c.reason, c.at, None))
+        for det, c in si.dead.items():
+            out.append(ConditionRow(scan, det, "dead", c.entry, c.reason, c.at, None))
+        for det, c in si.counts_accepted.items():
+            has_counts = ((row.get("analyzers") or {}).get(det) or {}).get("counts") is not None
+            lifts = has_counts and inputs.unit_inputs(row, si, det, None)["counts"]["override_applied"]
+            out.append(ConditionRow(scan, det, "counts_accepted", c.entry, c.reason, c.at, bool(lifts)))
+    return out
+
+
+def _detail(p: PassInputs | None) -> str | None:
+    """A pass's first change in one line, or None when its inputs are unchanged."""
+    if p is None or not p.changes:
+        return None
+    c = p.changes[0]
+    return f"{c.field}: {c.used} \u2192 {c.now}" + (f" ({c.now_source})" if c.now_source else "")
+
+
+def needs_attention(root) -> readiness.NeedsAttention:
+    """Readiness per scan, analyzer and use, and the grouped needs-attention list (C-needs-attention).
+    A pure read of the persisted records; call it from a worker thread (the marks parse the fit-inputs log)."""
+    from .workspace import Workspace      # imported here: workspace.py imports this module
+    marks: dict[str, readiness.UnitMarks] = {}
+    try:
+        for u in Workspace(root).fit_inputs():
+            marks[u.unit] = readiness.UnitMarks(
+                running=any(p is not None and p.state == "running" for p in (u.fast, u.deep)),
+                changed_fast=_detail(u.fast), changed_deep=_detail(u.deep))
+    except Exception:  # noqa: BLE001 - a read surface degrades: the list is still right, without the marks
+        log.exception("needs_attention: the fit-inputs marks of %s could not be read", root)
+    return readiness.evaluate(root, marks=marks)
+
+
+def import_summary(root) -> readiness.ImportSummary:
+    """What the imports read and did not, and where the curves were found (C-import-summary)."""
+    return readiness.import_summary(root)
