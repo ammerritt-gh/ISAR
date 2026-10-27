@@ -57,17 +57,21 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
-def _analyzer_file(path: Path, number: int, *, with_q: bool = True) -> None:
-    """One analyzer file in ``sp8_bl43.emit_file``'s six-column ``_i`` layout."""
+def _analyzer_file(path: Path, number: int, *, with_q: bool = True, with_t: bool = True,
+                   off_integer: bool = False) -> None:
+    """One analyzer file in ``sp8_bl43.emit_file``'s six-column ``_i`` layout. ``off_integer``: the
+    printed error of every third bin squares to half a count more, so (y/e)^2 is off an integer there."""
     monitor, secs = 1e5, 10.0
     rows = ["#      meV      secs   npts          norm_i             y_i            ye_i"]
     for i, energy in enumerate(_ENERGY):
         counts = 25 + i % 7
+        err = counts + (0.5 if off_integer and i % 3 == 0 else 0.0)
         rows.append(f"{energy:10.4f} {secs:9.1f} {int(round(secs / 10)):6d} {monitor:15.7E} "
-                    f"{counts / monitor:15.7E} {counts ** 0.5 / monitor:15.7E}")
+                    f"{counts / monitor:15.7E} {err ** 0.5 / monitor:15.7E}")
     if with_q:
         rows.append(f"#Q=   {20.0 + number / 10:.3f} /nm")
-    rows.append("#T=  97.000 K")
+    if with_t:
+        rows.append("#T=  97.000 K")
     _write(path, "\n".join(rows) + "\n")
 
 
@@ -80,15 +84,18 @@ def _var_file(path: Path, numbers) -> None:
     _write(path, "\n".join(lines))
 
 
-def write_bl43_files(folder: Path, n_analyzers: int = 4) -> Path:
-    """Write the incoming data files into ``folder`` (created); return it."""
+def write_bl43_files(folder: Path, n_analyzers: int = 4, *, with_t: bool = True,
+                     off_integer=()) -> Path:
+    """Write the incoming data files into ``folder`` (created); return it. ``with_t=False`` leaves every
+    file without its ``#T=`` line; ``off_integer`` names ``"<stem>_aNN"`` files whose counts are not raw."""
     folder.mkdir(parents=True, exist_ok=True)
     numbers = ANALYZERS[:n_analyzers]
     for stem in (STEM_A, STEM_B):
         for number in numbers:
             # set A's a05 has no #Q= line: a missing Q the scan list must show as a dash
-            _analyzer_file(folder / f"{stem}_a{number:02d}", number,
-                           with_q=not (stem == STEM_A and number == 5))
+            name = f"{stem}_a{number:02d}"
+            _analyzer_file(folder / name, number, with_q=not (stem == STEM_A and number == 5),
+                           with_t=with_t, off_integer=name in off_integer)
         _var_file(folder / f"{stem}.var", numbers)
     counts = (np.arange(8) + 1.0) ** 2                 # N = (y/e)^2 recovers exactly
     energies = np.round(np.arange(8) * 0.2, 4)
@@ -148,14 +155,18 @@ def stamp_status(ws_root: Path, unit_key: str, status: str, reasons: list[str]) 
     _save(ws, card, session)
 
 
-def build_bl43_workspace(root: Path, n_analyzers: int = 4, *, fits: bool = True) -> Path:
-    """Write the data under ``root/incoming``, ingest it into ``root/ws``, stamp the fits; return ``ws``."""
+def build_bl43_workspace(root: Path, n_analyzers: int = 4, *, fits: bool = True, intake: bool = False,
+                         with_t: bool = True, off_integer=()) -> Path:
+    """Write the data under ``root/incoming``, ingest it into ``root/ws``, stamp the fits; return ``ws``.
+
+    ``intake=True`` ingests as ``isar ingest`` does (``workspace_root`` given), so the import record
+    ``report/intake_scans.json`` and the curve check ``report/curves.json`` are written too."""
     from isar.parsers import sp8_bl43
     from isar.session import ingest
     from isar.session.state import SessionState
     from isar.session.workspace import Workspace
 
-    incoming = write_bl43_files(Path(root) / "incoming", n_analyzers)
+    incoming = write_bl43_files(Path(root) / "incoming", n_analyzers, with_t=with_t, off_integer=off_integer)
     ws_root = Path(root) / "ws"
     ws_root.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(sp8_bl43._CARD_PATH, ws_root / "card.policy.toml")   # the shipped card, verbatim
@@ -163,7 +174,8 @@ def build_bl43_workspace(root: Path, n_analyzers: int = 4, *, fits: bool = True)
     SessionState().save(ws_root / "session.json")
     ws = Workspace.open(ws_root)
     card, session = ws.load()
-    ingest.ingest_batch(card, session, [incoming], data_dir=ws_root / "data")
+    ingest.ingest_batch(card, session, [incoming], data_dir=ws_root / "data",
+                        workspace_root=ws_root if intake else None)
     ws.save(card, session)
     if fits:
         stamp_fit(ws_root, f"{KEY_A}:a03", "resolved")
