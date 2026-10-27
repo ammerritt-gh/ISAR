@@ -730,6 +730,8 @@ class Workspace:
         thread once cached.
         """
         self._note_intake_damage()
+        # shortcut: re-parses the whole append-only log on each refresh; upgrade to a tail parse past about
+        # 20 MB, or when a refresh during a run takes over about 0.5 s.
         passes = self._parse("fit_inputs", lambda: intake_fit_inputs.latest_passes(
             intake_fit_inputs.read_log(self.root),
             {e.scan_id: (e.provenance or {}).get("fit_inputs") or {} for e in self._session().scans.values()}), {})
