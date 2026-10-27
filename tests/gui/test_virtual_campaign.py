@@ -139,7 +139,11 @@ def test_cold_window_has_the_campaign_entry(cold):
     w = cold
     assert w.campaign_dock is not None
     assert "Campaign" in w._docks
-    assert "virtual campaign" in w._empty_hint.text()
+    # G19: the Campaign tab exists in the right area with no experiment open.
+    from PySide6.QtCore import Qt
+    assert w.dockWidgetArea(w.campaign_dock) == Qt.RightDockWidgetArea
+    w.set_right_panel_collapsed(False)        # the Campaign tab is there beside Processing
+    assert w.campaign_dock in w.tabifiedDockWidgets(w.processing_dock)
 
 
 def test_pending_recovery_completion_status_is_resumable(cold):

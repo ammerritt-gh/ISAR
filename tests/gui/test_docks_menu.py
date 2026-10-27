@@ -41,8 +41,10 @@ def test_visibility_sync_does_not_hide_dock(qtbot, make_ws):
     qtbot.addWidget(w)
     w.show()
 
-    # Browser and Card are tabified siblings; simulate Card going behind.
+    # Browser and Card are tabified siblings (hidden by default, behind the left column); show Card
+    # as a user would from View > Panels, then simulate it going behind.
     dock = w.card_dock
+    dock.show()
     action = _dock_action(w, "Card")
     assert action is not None
 

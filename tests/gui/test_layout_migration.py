@@ -1,10 +1,11 @@
-"""Saved-layout migration to the Pass-3 arrangement (versioned saveState).
+"""Saved-layout migration to the one arrangement (versioned saveState).
 
-A pre-Pass-3 session carries an UNVERSIONED ``saveState`` blob naming docks that no longer exist;
-``restoreState(data, _LAYOUT_VERSION)`` must reject it atomically and the window must fall back to
-``_apply_default_layout`` (Files small on top-left, Scans stack under it, compact Log). A current-
-version blob must keep round-tripping, and garbage must never block the window — guarantees that
-predate this file and must survive it.
+A session from an older ISAR carries an UNVERSIONED (or version-3) ``saveState`` blob naming docks that
+no longer exist; ``restoreState(data, _LAYOUT_VERSION)`` must reject it atomically and the window must
+fall back to ``_apply_default_arrangement`` (full-height left column, Processing | Campaign tabs on the
+right, Log | Output bottom bar, the old panels hidden) with exactly one "Window layout:" Log line. A
+current-version blob must keep round-tripping, and garbage must never block the window -- guarantees
+that predate this file and must survive it.
 """
 from __future__ import annotations
 
@@ -38,29 +39,37 @@ def _window(qtbot, ws, session=None):
 
 
 def _flush_queued(qtbot, w):
-    # The ready-layout pass runs on a queued singleShot(0); one processEvents turn lands it.
     qtbot.wait(50)
 
 
-def _assert_pass3_default(w):
-    files_area = w.dockWidgetArea(w.files_dock)
-    scans_area = w.dockWidgetArea(w.scans_dock)
-    assert files_area == Qt.LeftDockWidgetArea
-    assert scans_area == Qt.LeftDockWidgetArea
-    # Files sits ABOVE the Scans stack in the left column.
-    assert w.files_dock.y() < w.scans_dock.y()
-    # Browser / Card / Scan Table ride as tabs of the Scans stack (same geometry bucket).
-    for dock in (w.browser_dock, w.card_dock, w.scan_table_dock):
+def _assert_default_arrangement(w):
+    # The left column owns the left area; the old panels sit hidden in it, and shown they ride as
+    # tabs of the left column (a hidden dock is not reported as tabified, so show one to see it).
+    assert w.dockWidgetArea(w.left_column_dock) == Qt.LeftDockWidgetArea
+    old = {w.files_dock, w.scans_dock, w.browser_dock, w.card_dock, w.scan_table_dock}
+    for dock in old:
         assert w.dockWidgetArea(dock) == Qt.LeftDockWidgetArea
-    assert set(w.tabifiedDockWidgets(w.scans_dock)) >= {w.browser_dock, w.card_dock,
-                                                        w.scan_table_dock}
-    # The campaign workspace owns the right column (v3).
+        assert dock.isHidden()
+    # Processing | Campaign are tabs of the right area. The offscreen screen is laptop-sized, so the
+    # right panel starts collapsed to its rail; expanding it shows both tabs, Processing in front.
+    assert w.dockWidgetArea(w.processing_dock) == Qt.RightDockWidgetArea
     assert w.dockWidgetArea(w.campaign_dock) == Qt.RightDockWidgetArea
-    # The Log is a compact ticker, not a workspace surface.
-    assert w.log_dock.height() <= mw_mod._DEFAULT_LOG_HEIGHT + 40
-    for dock in (w.files_dock, w.scans_dock, w.browser_dock, w.card_dock,
-                 w.scan_table_dock, w.campaign_dock, w.log_dock):
+    assert w._right_panel_collapsed()
+    # The Log is a compact ticker with the Output beside it.
+    assert w.dockWidgetArea(w.log_dock) == Qt.BottomDockWidgetArea
+    assert w.dockWidgetArea(w.output_dock) == Qt.BottomDockWidgetArea
+    assert w.log_dock.height() <= mw_mod._ARRANGEMENTS["laptop"].log_height + 40
+    for dock in (w.left_column_dock, w.log_dock, w.output_dock):
         assert not dock.isHidden()
+    w.set_right_panel_collapsed(False)
+    assert w.campaign_dock in w.tabifiedDockWidgets(w.processing_dock)
+    assert w.processing_dock.isVisible()
+    w.scans_dock.show()
+    assert w.scans_dock in w.tabifiedDockWidgets(w.left_column_dock)
+
+
+def _window_layout_lines(caplog):
+    return [r for r in caplog.records if "Window layout:" in r.getMessage()]
 
 
 def test_unversioned_blob_falls_back_to_default(qtbot, ws, caplog):
@@ -75,15 +84,15 @@ def test_unversioned_blob_falls_back_to_default(qtbot, ws, caplog):
     with caplog.at_level(logging.INFO, logger="isar_gui.main_window"):
         w2 = _window(qtbot, ws, session)
         _flush_queued(qtbot, w2)
-    _assert_pass3_default(w2)
-    upgrades = [r for r in caplog.records if "Pass-3 arrangement" in r.getMessage()]
-    assert len(upgrades) == 1
+    _assert_default_arrangement(w2)
+    assert len(_window_layout_lines(caplog)) == 1
 
 
 def test_current_version_blob_round_trips(qtbot, ws):
     w1 = _window(qtbot, ws)
     _flush_queued(qtbot, w1)
-    w1.card_dock.setFloating(True)          # something distinctive to survive the round trip
+    w1.card_dock.show()                     # hidden by default; something distinctive to survive
+    w1.card_dock.setFloating(True)
     session = w1._snapshot_session()
     assert session.dock_layout_b64
     w1.close()
@@ -98,7 +107,7 @@ def test_garbage_blob_never_blocks_the_window(qtbot, ws):
     session.dock_layout_b64 = "not-even-base64!!"
     w = _window(qtbot, ws, session)
     _flush_queued(qtbot, w)
-    _assert_pass3_default(w)                # fallback applied; window fully constructed
+    _assert_default_arrangement(w)          # fallback applied; window fully constructed
 
 
 def test_restore_false_without_exception_falls_back(qtbot, ws, monkeypatch, caplog):
@@ -111,11 +120,12 @@ def test_restore_false_without_exception_falls_back(qtbot, ws, monkeypatch, capl
     with caplog.at_level(logging.INFO, logger="isar_gui.main_window"):
         w2 = _window(qtbot, ws, session)
         _flush_queued(qtbot, w2)
-    _assert_pass3_default(w2)
-    assert any("Pass-3 arrangement" in r.getMessage() for r in caplog.records)
+    _assert_default_arrangement(w2)
+    assert len(_window_layout_lines(caplog)) == 1
 
 
 def test_version_constant_is_current():
     # A dock-inventory change must bump this consciously (v2 = M1 CenterHost migration, v3 = M2
-    # Campaign dock); the pin makes the bump an explicit edit here rather than a silent drift.
-    assert _LAYOUT_VERSION == 3
+    # Campaign dock, v4 = the one arrangement); the pin makes the bump an explicit edit here rather
+    # than a silent drift.
+    assert _LAYOUT_VERSION == 4

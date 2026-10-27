@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 
 from isar_gui.plotspec_pg import clear_render, render_into
 
-_EMPTY_HINT = "Select a scan in the Browser."
+_EMPTY_HINT = "Nothing to show yet. Pick a scan on the left once data is in."
 
 
 def _bold(item: QTableWidgetItem) -> QTableWidgetItem:

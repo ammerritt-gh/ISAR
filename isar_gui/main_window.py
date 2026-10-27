@@ -1,12 +1,22 @@
-"""MainWindow — the Phase-A application shell.
+"""MainWindow — the application shell.
 
-A :class:`QMainWindow` that opens one read-only workspace and wires the shell: a dock scaffold (the
-log dock and the C1 workspace browser; more component docks land in later tasks), a two-way-synced
-**Docks** menu, a **File -> Open Workspace…** action, a status bar, the watch->Qt bridge, and
-session-layout restore/autosave. It *wires*, it does not compute — anything smarter belongs in a
-viewmodel (:mod:`isar_gui.viewmodels`).
+A :class:`QMainWindow` that opens one read-only workspace and wires the shell. The window has ONE
+arrangement in every state (nothing appears or rearranges when the first data arrives):
 
-The Docks-menu two-way sync (checkable action <-> dock ``visibilityChanged``) follows PUFFIN's
+* **left column**, top to bottom: the experiment strip, the files strip, the scan list (it takes the
+  remaining height). It is a dock, and the left dock area owns both left corners, so it runs past the
+  bottom bar;
+* **centre**: the display (``CenterHost`` pages), with the optional scan-inspector column between it
+  and the left column;
+* **right panel**: the *Processing* and *Campaign* tabs, collapsible to a slim rail;
+* **bottom bar**, under the centre and the right panel only: the Log on the left, the Output on the
+  right.
+
+The old Files, Scans, Browser, Card and Scan Table panels stay in the code, hidden and reachable from
+**View ▸ Panels**. The window *wires*, it does not compute — anything smarter belongs in a viewmodel
+(:mod:`isar_gui.viewmodels`).
+
+The Panels menu's two-way sync (checkable action <-> dock ``visibilityChanged``) follows PUFFIN's
 ``view/main_window.py`` ``_init_menu_bar`` pattern (C:/Users/AMM/Documents/Github/Science/PUFFIN).
 """
 from __future__ import annotations
@@ -18,24 +28,30 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import NamedTuple
 from weakref import WeakSet
 
 from PySide6.QtCore import QByteArray, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
-    QMenu,
     QMessageBox,
+    QScrollArea,
+    QSplitter,
     QStackedWidget,
-    QToolBar,
-    QToolButton,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from isar_gui.commands import RunOptions, build_run_command
 from isar_gui.active_unit import ActiveUnitController
+from isar_gui.export_action import ExportController
 from isar_gui.credentials import (
     CredentialError,
     api_key_present,
@@ -74,6 +90,7 @@ from isar_gui.viewmodels import (
 )
 from isar_gui.viewmodels.campaign import CampaignViewModel
 from isar_gui.viewmodels.sandbox import SandboxViewModel
+from isar_gui.viewmodels.scan_list import ScanListViewModel
 from isar_gui.views.campaign_dock import CampaignDock
 from isar_gui.views.campaign_monitor import CampaignMonitor
 from isar_gui.views.sandbox_pane import SandboxPane
@@ -81,9 +98,15 @@ from isar_gui.views.browser_dock import BrowserDock
 from isar_gui.views.card_dock import CardDock
 from isar_gui.views.center_host import CenterHost
 from isar_gui.views.dispersion_pane import DispersionPane
+from isar_gui.views.experiment_strip import ExperimentStrip
 from isar_gui.views.files_dock import FilesDock
+from isar_gui.views.files_strip import FilesStrip
 from isar_gui.views.heatmap_pane import HeatmapPane
 from isar_gui.views.inspector_widget import InspectorWidget
+from isar_gui.views.output_bar import OutputBar
+from isar_gui.views.processing_panel import ProcessingPanel, ProcessingRail
+from isar_gui.views.scan_inspector import ScanInspectorPanel
+from isar_gui.views.scan_list import ScanListPanel
 from isar_gui.views.scan_table_dock import ScanTableDock
 from isar_gui.views.scans_dock import ScansDock
 from isar_gui.views.waterfall_pane import WaterfallPane
@@ -94,21 +117,54 @@ log = logging.getLogger(__name__)
 
 _WORKFLOW_HINT = ("Workflow:  add data (top left)  →  organize scans (left)  →  "
                   "views (center)  →  drive a campaign (right)")
-_EMPTY_HINT = ("No workspace loaded.\n\nFile ▸ Open Workspace… to begin, or drive a virtual "
-               f"campaign (right) — it creates its own workspace.\n\n{_WORKFLOW_HINT}")
+# The display's words before any scan is picked (the inspector page's empty text says the same).
+_EMPTY_HINT = "Nothing to show yet. Pick a scan on the left once data is in."
 _PENDING_HINT = ("Drop data files to begin — they'll land in a temporary workspace.\n"
                  "Or drive a virtual campaign (right) — it creates its own data."
-                 f"\n\n{_WORKFLOW_HINT}")
+                 f"\n\n{_WORKFLOW_HINT}")   # retired with the temporary workspace
 
 # Bump when the dock inventory/geometry contract changes: restoreState of any OTHER version fails
-# atomically and the window falls back to _apply_default_layout (never binary-migrate Qt blobs).
+# atomically and the window falls back to _apply_default_arrangement (never binary-migrate Qt blobs).
 # v1 (implicit, unversioned) = pre-Pass-3; v2 = Pass-3 M1 (plot docks moved into the CenterHost,
-# Scans column moved left); v3 = Pass-3 M2 (the Campaign dock joins the right area).
-_LAYOUT_VERSION = 3
-_DEFAULT_CAMPAIGN_WIDTH = 380  # px — the right-hand campaign workspace column
-_DEFAULT_FILES_HEIGHT = 170   # px — data entry is deliberately small; Scans below it dominates
-_DEFAULT_LEFT_WIDTH = 300     # px — the Files/Scans tool column
-_DEFAULT_LOG_HEIGHT = 140     # px — the Log is a ticker, not a workspace surface
+# Scans column moved left); v3 = Pass-3 M2 (the Campaign dock joins the right area); v4 = the one
+# arrangement (full-height left column, Processing|Campaign right tabs, Log|Output bottom bar).
+_LAYOUT_VERSION = 4
+
+
+class _Arrangement(NamedTuple):
+    """One screen class's default sizes (px). Algorithm settings, retuned on evidence: the geometry
+    tests (tests/gui/test_window_frame.py) are their check."""
+    left: int          # left column width
+    inspector: int     # inspector column width when opened
+    right: int         # right panel width when expanded
+    log_height: int    # bottom bar height
+    output_width: int  # the Output half of the bottom bar
+
+
+_ARRANGEMENTS = {
+    "laptop": _Arrangement(left=340, inspector=260, right=300, log_height=140, output_width=360),
+    "desktop": _Arrangement(left=520, inspector=420, right=440, log_height=220, output_width=480),
+}
+# Minimum widths (px) each column must hold: every mount's minimumSizeHint fits inside its column.
+_LEFT_MIN = 280
+_INSPECTOR_MIN = 220
+_RIGHT_MIN = 240
+_CENTER_MIN = (300, 250)       # the display (CenterHost stack), width x height
+_OUTPUT_MAX_WIDTH = 520        # the Output half of the bottom bar never grows past this
+# A screen at least this big (available logical px) starts with everything open. Derivation: the
+# desktop arrangement needs left 520 + inspector 420 + right 440 + rail 24 = 1404 px beside a display
+# of at least 400 px, so about 1800; and a 220 px log beside a display of at least 600 px plus about
+# 80 px of window chrome gives 1000.
+DESKTOP_FROM_WIDTH = 1800
+DESKTOP_FROM_HEIGHT = 1000
+
+
+def initial_arrangement(width: int, height: int) -> str:
+    """``"laptop"`` or ``"desktop"`` for an available screen area in logical px (1108x851 and
+    1536x826 are laptop; 1920x1040 and 2560x1392 are desktop)."""
+    return "desktop" if width >= DESKTOP_FROM_WIDTH and height >= DESKTOP_FROM_HEIGHT else "laptop"
+
+
 # The five central display surfaces, in switcher order: (host key, button label).
 _CENTER_PAGES = (("scan", "Scan"), ("waterfall", "Waterfall"), ("plane", "Plane (q, E)"),
                  ("dispersion", "Dispersion ω(q)"), ("sandbox", "Sandbox"))
@@ -117,9 +173,6 @@ _CENTER_KEYS = tuple(key for key, _label in _CENTER_PAGES)
 # export is unchanged for the operator. "Inspector" is the C2 fit inspector, now the "scan" page.
 _EXPORT_KEY_TO_CENTER = {"Plane (q, E)": "plane", "Dispersion ω(q)": "dispersion",
                          "Waterfall / Comparison": "waterfall", "Inspector": "scan"}
-# The log is useful context, not the primary empty-start surface.  Qt gives a lone bottom dock a
-# surprisingly generous share of the window unless we establish a deliberate starting size.
-_EMPTY_START_LOG_HEIGHT = 180
 
 
 class _EmptyWorkspace:
@@ -195,16 +248,21 @@ class MainWindow(QMainWindow):
         self._center_host: CenterHost | None = None   # hosts the five display surfaces once bound
         self.setAcceptDrops(True)      # drop a data folder/numor onto the window -> ingest (D2/D5)
 
-        # One permanent central QStackedWidget. Page 0 is the empty/pending hint (persists across
-        # rebinds like the Log dock); page 1 is the CenterHost added on a ready bind. setCentralWidget
-        # is called exactly once, here — _bind_workspace/_teardown_binding add/remove stack pages, they
-        # never swap the central widget. (A future page 2 — a compact monitor — is a later task.)
+        # One permanent QStackedWidget holds the display. Page 0 is a parking page (persists across
+        # rebinds like the Log dock; it holds the display's place while a binding is torn down); page 1
+        # is the CenterHost, built on EVERY bind so the first screen already shows the display tabs.
+        # _bind_workspace/_teardown_binding add/remove stack pages, they never swap the stack.
+        # (A future page 2 — a compact monitor — is a later task.) setCentralWidget is called once,
+        # in _build_frame, with the frame that carries the stack.
         self._center_stack = QStackedWidget(self)
-        self.setCentralWidget(self._center_stack)
-        self._empty_hint = QLabel("", self)
+        self._center_stack.setMinimumSize(*_CENTER_MIN)
+        self._empty_hint = QLabel(_EMPTY_HINT, self)
         self._empty_hint.setObjectName("empty_hint")
         self._empty_hint.setAlignment(Qt.AlignCenter)
         self._center_stack.addWidget(self._empty_hint)   # stack index 0
+        self._activity_kind: str | None = None   # the coordinator's last activity kind (ingest/run/…)
+        self._last_run_status: tuple[str, str] | None = None   # (text, colour) of the last run status
+        self._inspector_width = _ARRANGEMENTS["laptop"].inspector   # remembered across open/close
         # Compact campaign-monitor mode (M3-1): the monitor is a per-binding stack page built
         # lazily on first toggle; the stash holds the full window state to restore on expand.
         self._compact_active = False
@@ -269,7 +327,6 @@ class MainWindow(QMainWindow):
         self._store_save_timer.timeout.connect(self._save_gui_store)
 
         self._init_file_menu()
-        self._init_workspace_toolbar()
         self._init_run_menu()
         self._init_backends_menu()
         self._init_view_menu()
@@ -278,52 +335,38 @@ class MainWindow(QMainWindow):
         # The Log dock is created once and PERSISTS across workspace rebinds — _teardown_binding
         # tears down every other dock, but wiping the log would lose the operator's scrollback, and
         # the drop-to-ingest bootstrap ends in a rebind (that was the "log clears on load" bug).
-        # _init_docks only re-registers it into each fresh binding. Tracks docks whose
-        # dockLocationChanged is already wired (WeakSet auto-drops deleted transient docks) so the
-        # persistent log dock isn't double-connected on every rebind.
+        # The frame docks (left column, Processing, Output) persist the same way: they carry the
+        # persistent mounts. _init_docks only re-registers them into each fresh binding. Tracks docks
+        # whose dockLocationChanged is already wired (WeakSet auto-drops deleted transient docks) so
+        # a persistent dock isn't double-connected on every rebind.
         self._loc_wired: WeakSet = WeakSet()
         self.log_dock = LogDock(self)
-        self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
+        self._build_frame()
         self._bind_workspace(ws)
         self._bound = True
         if ws is not None and not self._wsm.is_temporary():
             self._session.note_workspace(ws.root)
-        self._sync_workspace_actions()
 
         # Session autosave: debounced 500ms, snapshotting the live layout at fire time.
         self._autosaver = Autosaver(self._snapshot_session, parent=self, on_error=self.log)
 
-        # Restore the persisted dock layout after the event loop settles (QTimer.singleShot(0, ...)),
-        # so all docks exist and their default geometry is applied first.  An empty start has a
-        # deliberately simpler layout; apply that after restoration so an old full-workspace layout
-        # cannot make Log dominate a first-time screen.
-        QTimer.singleShot(0, self, self._restore_layout)
-        QTimer.singleShot(0, self, self._apply_empty_start_dock_geometry)
+        # The arrangement is settled synchronously, before the window is shown: every mount and dock
+        # exists, so the saved layout (or the default for this screen) is applied once and nothing
+        # re-arranges when the first data arrives.
+        self.scan_list_vm.load_view_state(self._session)
+        self._restore_layout()
+        self._sync_workspace_actions()
         QTimer.singleShot(0, self, self._surface_session_security_warnings)
-        # Cold launch: _bind_workspace queued its file-less-workspace Files raise while self._bound
-        # was still False, so the restore branch there did NOT run — instead _restore_layout is
-        # queued just above, AFTER that raise. A saved layout with a different front tab would then
-        # re-bury Files. Re-queue the raise here so it runs after the restore on the construction path
-        # too (idempotent with the bind's queue). The rebind path queues its restore inside
-        # _bind_workspace, before its own raise, so it needs no repeat.
-        if ws is not None and not self._empty and not self.files_vm.rows:
-            QTimer.singleShot(0, self, self._raise_files_dock_for_empty_data)
-        # Recovery adopts a temporary workspace directly, so there is no ingest-finished signal to
-        # promote its raw scans. If it contains parsed rows but no fit results, treat Scans as the
-        # next operator surface after the saved layout is restored. Saved workspaces and analyzed
-        # temporary workspaces keep their layout exactly as the operator left it.
-        if ws is not None and self._wsm.is_temporary() and self.scans_vm.rows() and not ws.results:
-            self._queue_scans_promotion()
-
     # ---- workspace binding (shared by __init__ and load_workspace) --------
     def _bind_workspace(self, ws) -> None:
-        """(Re)bind the window to ``ws``: title, viewmodels, dock scaffold, Docks menu, watch
+        """(Re)bind the window to ``ws``: title, viewmodels, dock scaffold, Panels menu, watch
         bridge. Assumes any previously bound docks/menu/bridge were already torn down by the caller.
 
         ``ws=None`` binds the EMPTY-START state: an :class:`_EmptyWorkspace` backs the viewmodels
-        (so every dock renders its own empty view), the central widget is an "Open Workspace…" hint
-        instead of the inspector, no watch bridge is started, and the status bar reads "no
-        workspace". A later ``load_workspace`` from this state is a full bind from ``None``.
+        (so every pane renders its own empty view), the display is built exactly as for a ready
+        workspace (it shows its own "nothing yet" views), no watch bridge is started, and the status
+        bar reads "no workspace". A later ``load_workspace`` from this state is a full bind from
+        ``None``. The arrangement of the window is the same in both.
         """
         self._empty = ws is None
         self._ws = _EmptyWorkspace() if self._empty else ws
@@ -373,15 +416,14 @@ class MainWindow(QMainWindow):
         self._entropy_action.toggled.connect(self.dispersion_vm.set_color_by_entropy)
 
         # The five display surfaces (the C2 fit inspector + the four plot panes) live as switchable
-        # pages of the central CenterHost; a browser selection drives the inspector. In the empty
-        # state there is nothing to inspect, so the stack shows the Open-Workspace hint (page 0).
-        if self._empty:
-            self.inspector = None
-            self._center_host = None
-            self._show_empty_hint()
-        else:
-            self.inspector = InspectorWidget(self.inspector_vm, parent=self)
-            self._build_center_host()
+        # pages of the central CenterHost; a scan-list selection drives the inspector. They are built
+        # in EVERY state, over the null workspace when none is open, so the first screen already shows
+        # the display tabs and each pane its own "nothing yet" view (never a hint page that vanishes
+        # when data arrives).
+        self.inspector = InspectorWidget(self.inspector_vm, parent=self)
+        self._build_center_host()
+        # The parking page's words (it is shown only while a binding is torn down).
+        self._empty_hint.setText(_PENDING_HINT if self._wsm.state() == "pending" else _EMPTY_HINT)
         # Every route that changes what is being inspected passes through the active-unit controller.
         # This keeps the Results tree, physical chips, and table honest about the one detector in the
         # central inspector, without treating a multi-selection as an inspection request.
@@ -397,22 +439,8 @@ class MainWindow(QMainWindow):
         self._docks = {}
         self._init_docks()
         self._init_docks_menu()
-        # Impose the Pass-3 default arrangement synchronously, before the window paints or the
-        # operator (or a test) can touch a dock — a queued default would race and trample manual
-        # visibility changes. A valid saved layout, restored via the queued paths below/in
-        # __init__, then overrides it wholesale; a failed restore falls back onto this default.
-        if not self._empty:
-            self._apply_default_layout()
-
-        # ``restoreState`` can only restore docks which exist at the time it runs.  A first launch
-        # may deliberately bind the sparse empty-start scaffold, then open a real workspace later
-        # in the same session.  Reapply the saved layout after that ready bind creates the complete
-        # dock set.  Conversely, every none/pending rebind gets its compact data-entry geometry,
-        # not just the constructor's initial bind.
-        if self._empty:
-            QTimer.singleShot(0, self, self._apply_empty_start_dock_geometry)
-        elif self._bound and self._session.dock_layout_b64:
-            QTimer.singleShot(0, self, self._restore_layout)
+        # The arrangement itself is applied by __init__ (first bind) or carried across by _rebind
+        # (later binds): _init_docks only places each dock in its area.
 
         if self._empty:
             if self._wsm.state() == "pending":
@@ -456,34 +484,16 @@ class MainWindow(QMainWindow):
         else:
             self._live_label.setText("")
 
+        # The persistent mounts learn of the binding. ``root`` is None with no experiment (that is the
+        # window's ``_empty``, which today also covers a reserved temporary workspace).
+        root = None if self._empty else Path(self._ws.root)
+        self.scan_list_vm.set_workspace(self._ws)
+        self.scan_list_vm.set_active_key(self.active_units.key)
+        self.experiment_strip.set_experiment(root)
+        self.files_strip.bind(self.files_vm, not self._empty)
+        self.output_bar.set_experiment(root)
         self._sync_run_actions()  # Run/Re-run enablement depends on empty-state + remembered runs
-
-        # A ready workspace with no ingested files still needs a data-entry surface: without this the
-        # Files dock is buried behind its tabified siblings (Browser/Card) or a restored layout, so
-        # the "Drop data files here to begin." hint is invisible and the operator's first action has
-        # no home — mirroring the empty/pending state (_init_docks raises Files there). Queue the
-        # raise so it runs AFTER the _restore_layout queued at the top of a ready bind (both are
-        # singleShot(0, ...), FIFO), otherwise restoreState would immediately re-bury Files. A
-        # workspace that already has files keeps its saved layout untouched.
-        if not self._empty and not self.files_vm.rows:
-            QTimer.singleShot(0, self, self._raise_files_dock_for_empty_data)
-
-    def _raise_files_dock_for_empty_data(self) -> None:
-        """Surface the Files dock as the data-entry point for a ready-but-data-less workspace.
-
-        Guarded against a rebind that happened before this queued call fires: _teardown_binding nulls
-        files_dock, and a workspace that gained files in the interim no longer needs the raise.
-        """
-        if self._empty or self.files_dock is None or self.files_vm.rows:
-            return
-        self.files_dock.show()
-        self.files_dock.raise_()
-
-    def _show_empty_hint(self) -> None:
-        """Show the persistent hint page (stack index 0). Pending (a temp workspace is reserved)
-        invites a drop; a true none-state points at Open Workspace…."""
-        self._empty_hint.setText(_PENDING_HINT if self._wsm.state() == "pending" else _EMPTY_HINT)
-        self._center_stack.setCurrentWidget(self._empty_hint)
+        self._sync_workspace_actions()
 
     def _build_center_host(self) -> None:
         """Build the CenterHost with the five display surfaces, register it as the stack's ready page,
@@ -530,20 +540,141 @@ class MainWindow(QMainWindow):
         else:
             self.setWindowTitle(f"ISAR — {Path(self._ws.root).name}")
 
+    # ---- the frame: persistent mounts, central widget, frame docks ----------
+    def _build_frame(self) -> None:
+        """Build the window's persistent mounts and frame once and wire them to the window.
+
+        Every mount lives for the life of the window (like the Log dock): it learns of each binding
+        through ``bind`` / ``set_experiment`` / ``set_workspace`` and of each change through
+        ``on_workspace_changed``, and the window tears down only per-binding things. The wiring here
+        is complete: a mount never needs a wire added later.
+        """
+        # ---- the mounts ----
+        self.experiment_strip = ExperimentStrip(self)
+        self.files_strip = FilesStrip(self)
+        self.scan_list_vm = ScanListViewModel(_EmptyWorkspace(), self)
+        self.scan_list = ScanListPanel(self.scan_list_vm)
+        self.scan_inspector = ScanInspectorPanel(self.scan_list_vm)
+        self.scan_inspector.setMinimumWidth(_INSPECTOR_MIN)
+        self.scan_inspector.hide()          # opens closed; the window owns its visibility and width
+        self.processing_panel = ProcessingPanel(self)
+        self.processing_panel.setMinimumWidth(_RIGHT_MIN)
+        self.processing_rail = ProcessingRail(self)
+        self.output_bar = OutputBar(self)
+        self._export = ExportController(self._operations, self)
+
+        # ---- the left column: experiment strip, files strip, then the scan list (all the rest) ----
+        column = QWidget(self)
+        column.setObjectName("left_column")
+        column.setMinimumWidth(_LEFT_MIN)
+        column_layout = QVBoxLayout(column)
+        column_layout.setContentsMargins(0, 0, 0, 0)
+        column_layout.setSpacing(0)
+        column_layout.addWidget(self.experiment_strip, 0)
+        column_layout.addWidget(self.files_strip, 0)
+        column_layout.addWidget(self.scan_list, 1)
+
+        # ---- the central frame: [inspector column | display] splitter, then the rail ----
+        self._frame_splitter = QSplitter(Qt.Horizontal, self)
+        self._frame_splitter.setChildrenCollapsible(False)
+        self._frame_splitter.addWidget(self.scan_inspector)
+        self._frame_splitter.addWidget(self._center_stack)
+        self._frame_splitter.setStretchFactor(0, 0)
+        self._frame_splitter.setStretchFactor(1, 1)
+        self._frame_splitter.splitterMoved.connect(self._on_frame_splitter_moved)
+        frame = QWidget(self)
+        frame.setObjectName("central_frame")
+        frame_layout = QHBoxLayout(frame)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        frame_layout.setSpacing(0)
+        frame_layout.addWidget(self._frame_splitter, 1)
+        frame_layout.addWidget(self.processing_rail, 0)
+        self.setCentralWidget(frame)
+
+        # ---- the frame docks: persistent, never closable, floatable or lost ----
+        # The left dock area owns both left corners, so the left column runs the full height of the
+        # window and the bottom bar (Log | Output) spans only the centre and the right panel.
+        self.setCorner(Qt.TopLeftCorner, Qt.LeftDockWidgetArea)
+        self.setCorner(Qt.BottomLeftCorner, Qt.LeftDockWidgetArea)
+        self.setTabPosition(Qt.RightDockWidgetArea, QTabWidget.TabPosition.North)
+        self.left_column_dock = self._frame_dock("left_column_dock", "Experiment", column)
+        self.left_column_dock.setTitleBarWidget(QWidget(self.left_column_dock))   # no title bar
+        self.processing_dock = self._frame_dock("processing_dock", "Processing", self.processing_panel)
+        self.output_dock = self._frame_dock("output_dock", "Output", self.output_bar)
+        # The bottom bar splits by ratio when the window resizes; capping the Output half keeps the Log
+        # the wide one whatever size the window had when the default arrangement was applied.
+        self.output_dock.setMaximumWidth(_OUTPUT_MAX_WIDTH)
+        self.campaign_dock = None           # built per binding (it is tied to the binding's viewmodel)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.left_column_dock)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.processing_dock)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.output_dock)
+        self.splitDockWidget(self.log_dock, self.output_dock, Qt.Horizontal)
+        for dock in (self.left_column_dock, self.processing_dock, self.output_dock):
+            self._wire_dock_autosave(dock)
+        self.processing_dock.visibilityChanged.connect(self._sync_rail)
+
+        # ---- the wiring (complete) ----
+        self.experiment_strip.new_requested.connect(self.new_workspace)
+        self.experiment_strip.open_requested.connect(self._on_open_workspace)
+        self.experiment_strip.recent_chosen.connect(self.load_workspace)
+        self.experiment_strip.rename_requested.connect(self.rename_experiment)
+        self.files_strip.paths_dropped.connect(self._on_paths_dropped)
+        self.files_strip.log_message.connect(self.log)
+        self._folder_watcher.status_changed.connect(self.files_strip.set_watch_status)
+        self.scan_list_vm.display_requested.connect(self._route_inspect)
+        self.scan_list_vm.inspect_requested.connect(self._open_scan_inspector)
+        self.scan_inspector.close_requested.connect(self._close_scan_inspector)
+        self.active_units.active_changed.connect(self.scan_list_vm.set_active_key)
+        self.output_bar.save_copy_requested.connect(self.save_copy_as)
+        self.output_bar.export_requested.connect(self._on_export_requested)
+        self.output_bar.open_copy_requested.connect(lambda path: self.load_workspace(str(path)))
+        self._export.started.connect(lambda: self.output_bar.show_export_progress("Export started…"))
+        self._export.started.connect(self._sync_workspace_actions)
+        self._export.progress.connect(self.output_bar.show_export_progress)
+        self._export.progress.connect(self.log)
+        self._export.finished.connect(self.output_bar.show_export_done)
+        self._export.finished.connect(lambda folder: self.log(f"Export written to {folder}"))
+        self._export.finished.connect(self._sync_workspace_actions)
+        self._export.failed.connect(self.output_bar.show_export_failed)
+        self._export.failed.connect(lambda reason, path: self.log(f"Export failed: {reason}"))
+        self._export.failed.connect(self._sync_workspace_actions)
+        self.processing_panel.run_requested.connect(self.run_analysis)
+        self.processing_panel.stop_requested.connect(self._cancel_active_operation)
+        self.processing_rail.toggled.connect(
+            lambda: self.set_right_panel_collapsed(not self._right_panel_collapsed()))
+        self._refresh_recents_menu()
+
+    def _frame_dock(self, name: str, title: str, widget: QWidget) -> QDockWidget:
+        dock = QDockWidget(title, self)
+        dock.setObjectName(name)
+        dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+        dock.setWidget(widget)
+        return dock
+
+    def _scroll_campaign(self, dock) -> None:
+        """Wrap the Campaign dock's content in a scroll area. Its natural minimum (about 624x518 px)
+        fits no laptop right panel; the content is unchanged and scrolls instead."""
+        scroll = QScrollArea(dock)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumWidth(_RIGHT_MIN)
+        scroll.setWidget(dock.widget())
+        dock.setWidget(scroll)
+
     # ---- dock scaffold ----------------------------------------------------
     def _init_docks(self) -> None:
-        from PySide6.QtCore import Qt
-
-        # The Log dock is created once in __init__ and survives rebinds; only re-register it into
-        # this binding's docks map + Docks menu (do NOT recreate it — that wiped the scrollback).
+        # The Log and Processing docks are created once in __init__ and survive rebinds; only
+        # re-register them into this binding's docks map + Panels menu (do NOT recreate them — that
+        # wiped the Log's scrollback).
         self._register_dock("Log", self.log_dock)
 
-        # The Files dock is the data entry point (drop target + manifest + watched folders); it leads
-        # the left area so it is the first thing an operator sees on an empty/pending workspace.
-        self.files_dock = FilesDock(self.files_vm, self._ingest_controller, self)
+        # The old Files dock (drop target + manifest + watched folders) stays in the code, hidden and
+        # reachable from View > Panels; a drop on it goes through the window's one drop route.
+        self.files_dock = FilesDock(self.files_vm, SimpleNamespace(request_ingest=self._on_paths_dropped),
+                                    self)
         self._folder_watcher.status_changed.connect(self.files_dock.set_watch_status)
         self.files_dock.set_watch_status(self._folder_watcher.status())
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.files_dock)
         self._register_dock("Files", self.files_dock)
 
         # The campaign workspace (GUI Pass 3, M2-6) exists in EVERY state, including empty/pending:
@@ -557,112 +688,157 @@ class MainWindow(QMainWindow):
                                           parent=self)
         self.campaign_dock.tavi_launch_requested.connect(self._launch_tavi)
         self.campaign_dock.virtual_start_requested.connect(self._on_virtual_start_requested)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.campaign_dock)
+        self.campaign_dock.visibilityChanged.connect(self._sync_rail)
+        self._scroll_campaign(self.campaign_dock)
         self._register_dock("Campaign", self.campaign_dock)
+        self._register_dock("Processing", self.processing_dock)
 
-        if self._empty:
-            # Before a workspace exists, results, card, scan, and plot docks are not merely empty:
-            # they describe concepts the operator cannot act on yet.  Keep the data-entry dock and
-            # the campaign workspace (the two ways IN), matching the New Workspace pending state.
-            # A ready bind rebuilds the complete normal dock scaffold below.
-            self.files_dock.show()
-            self.files_dock.raise_()
-            self.campaign_dock.show()
-            return
+        if not self._empty:
+            self.browser_dock = BrowserDock(
+                self.browser_vm, self, unit_key_for_fit=self._unit_key_for_fit)
+            self.browser_vm.selection_changed.connect(self.campaign_dock.set_selected_fit)
+            self.active_units.active_changed.connect(self.browser_dock.set_active_key)
+            self.browser_dock.set_active_key(self.active_units.key)
+            self._register_dock("Browser", self.browser_dock)
 
-        self.browser_dock = BrowserDock(
-            self.browser_vm, self, unit_key_for_fit=self._unit_key_for_fit)
-        self.browser_vm.selection_changed.connect(self.campaign_dock.set_selected_fit)
-        self.active_units.active_changed.connect(self.browser_dock.set_active_key)
-        self.browser_dock.set_active_key(self.active_units.key)
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.browser_dock)
-        self._register_dock("Browser", self.browser_dock)
+            # The card editor (raw TOML, D2).
+            self.card_dock = CardDock(self._ws, self)
+            # The card remains editable during a run/ingest, but saving/reloading it must not race the
+            # engine's on-disk policy read.  The dock owns the precise button state.
+            self.card_dock.set_operation_busy(self._operations.is_busy())
+            generation = self._wsm.generation()
+            root = self._wsm.root()
+            self.card_dock.saved.connect(
+                lambda path, g=generation, r=root: self._on_card_saved(path, g, r))
+            self._register_dock("Card", self.card_dock)
 
-        # The card editor (raw TOML, D2) shares the left area with the browser as a tabified sibling.
-        self.card_dock = CardDock(self._ws, self)
-        # The card remains editable during a run/ingest, but saving/reloading it must not race the
-        # engine's on-disk policy read.  The dock owns the precise button state.
-        self.card_dock.set_operation_busy(self._operations.is_busy())
-        generation = self._wsm.generation()
-        root = self._wsm.root()
-        self.card_dock.saved.connect(
-            lambda path, g=generation, r=root: self._on_card_saved(path, g, r))
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.card_dock)
-        self._register_dock("Card", self.card_dock)
-
-        # The Phase-E physical scan view + its tabular twin (they share one model + selection, so a
-        # chip and a row light up together). Pass 3 puts the whole scan-organizing column on the
-        # LEFT, under the compact Files dock — the right area is the campaign workspace (M2-6).
-        self.scans_dock = ScansDock(self.scans_vm, self)
-        self.active_units.active_changed.connect(self.scans_dock.set_active_key)
-        self.scans_dock.set_active_key(self.active_units.key)
-        self.scans_dock.send_group_requested.connect(self._on_send_group)   # "Send to" routing (2A)
-        self.scans_dock.scan_drag_active.connect(self._on_scan_drag)        # drag-reveal on plots (R12)
-        self.scans_dock.fit_requested.connect(self._on_fit_requested)       # sandbox preview fit (2B)
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.scans_dock)
-        self._register_dock("Scans", self.scans_dock)
-        self.scan_table_dock = ScanTableDock(self.scans_vm, self)
-        self.active_units.active_changed.connect(self.scans_vm.model.set_active_key)
-        self.scans_vm.model.set_active_key(self.active_units.key)
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.scan_table_dock)
-        self._register_dock("Scan Table", self.scan_table_dock)
-
-        # (The Campaign dock was created above, before the empty-state early return.)
+            # The Phase-E physical scan view + its tabular twin (they share one model + selection, so
+            # a chip and a row light up together). Kept, hidden, beside the new scan list.
+            self.scans_dock = ScansDock(self.scans_vm, self)
+            self.active_units.active_changed.connect(self.scans_dock.set_active_key)
+            self.scans_dock.set_active_key(self.active_units.key)
+            self.scans_dock.send_group_requested.connect(self._on_send_group)   # "Send to" routing (2A)
+            self.scans_dock.scan_drag_active.connect(self._on_scan_drag)        # drag-reveal on plots (R12)
+            self.scans_dock.fit_requested.connect(self._on_fit_requested)       # sandbox preview fit (2B)
+            self._register_dock("Scans", self.scans_dock)
+            self.scan_table_dock = ScanTableDock(self.scans_vm, self)
+            self.active_units.active_changed.connect(self.scans_vm.model.set_active_key)
+            self.scans_vm.model.set_active_key(self.active_units.key)
+            self._register_dock("Scan Table", self.scan_table_dock)
 
         # The four plot panes (plane / dispersion / waterfall / sandbox) are no longer docks: the C2
         # inspector and those four surfaces are switchable pages of the central CenterHost, built in
-        # _bind_workspace (see _build_center_host). Splits/tabs/sizes for the remaining tool docks
-        # are imposed by _apply_default_layout (and overridden by a valid saved layout).
+        # _bind_workspace (see _build_center_host).
+        self._place_docks()
 
-    def _apply_empty_start_dock_geometry(self) -> None:
-        """Give the no-workspace/start-new screen a compact Log dock.
+    def _old_panels(self) -> list:
+        """The campaign-era panels, hidden by default behind the left column and reachable from
+        View > Panels (their code is unchanged)."""
+        return [dock for dock in (getattr(self, name, None) for name in
+                                  ("files_dock", "scans_dock", "browser_dock", "card_dock",
+                                   "scan_table_dock")) if dock is not None]
 
-        This is intentionally conditional: a scientist who has opened a real workspace retains
-        their saved layout.  In the none/pending state the useful first action is adding data, so
-        Files remains raised and Log gets a modest diagnostic height rather than most of the window.
-        The queued call runs after ``restoreState`` at startup and also covers later ``New`` binds.
-        """
-        if not self._empty:
-            return
-        self.files_dock.show()
-        self.files_dock.raise_()
-        if self.campaign_dock is not None:
-            self.campaign_dock.show()
-            self.resizeDocks([self.campaign_dock], [380], Qt.Horizontal)
-        self.resizeDocks([self.log_dock], [_EMPTY_START_LOG_HEIGHT], Qt.Vertical)
-
-    def _apply_default_layout(self) -> None:
-        """The Pass-3 default dock geometry (left-to-right workflow).
-
-        Files sits small at the top-left; the scan-organizing stack (Scans + Browser/Card/Scan
-        Table tabs) fills the left column under it; the center is the CenterHost view switcher;
-        the bottom Log is a compact ticker. (The Campaign dock joins the right area in M2-6.)
-        Idempotent. Never called for the empty (no-workspace) scaffold; a pending temporary
-        workspace is a real binding and does get the default arrangement."""
-        if self._empty:
-            return
-        from PySide6.QtCore import Qt
-        for dock in (self.files_dock, self.scans_dock, self.browser_dock, self.card_dock,
-                     self.scan_table_dock, self.campaign_dock, self.log_dock):
+    def _place_docks(self) -> None:
+        """Put every dock in its area (idempotent): the left column, Processing and Campaign
+        tabbed on the right, the Log | Output bottom bar, and the old panels hidden behind the left
+        column. Sizes, and whether the right panel is open, are not touched here."""
+        for dock in (self.left_column_dock, self.processing_dock, self.output_dock, self.log_dock):
             dock.setFloating(False)
+        for dock in (self.left_column_dock, self.output_dock, self.log_dock):
             dock.show()
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.files_dock)
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.scans_dock)
-        self.splitDockWidget(self.files_dock, self.scans_dock, Qt.Vertical)
-        self.tabifyDockWidget(self.scans_dock, self.browser_dock)
-        self.tabifyDockWidget(self.browser_dock, self.card_dock)
-        self.tabifyDockWidget(self.card_dock, self.scan_table_dock)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.campaign_dock)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.left_column_dock)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.processing_dock)
+        if self.campaign_dock is not None:
+            self.campaign_dock.setFloating(False)
+            self.addDockWidget(Qt.RightDockWidgetArea, self.campaign_dock)
+            self.tabifyDockWidget(self.processing_dock, self.campaign_dock)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
-        self.scans_dock.raise_()
-        self.resizeDocks([self.campaign_dock], [_DEFAULT_CAMPAIGN_WIDTH], Qt.Horizontal)
-        # A large fixed hint (not self.height() — meaningless before the window is realized):
-        # resizeDocks distributes proportionally, so [170, 700] reads "Files small, Scans the rest".
-        self.resizeDocks([self.files_dock, self.scans_dock],
-                         [_DEFAULT_FILES_HEIGHT, 700], Qt.Vertical)
-        self.resizeDocks([self.files_dock, self.scans_dock],
-                         [_DEFAULT_LEFT_WIDTH, _DEFAULT_LEFT_WIDTH], Qt.Horizontal)
-        self.resizeDocks([self.log_dock], [_DEFAULT_LOG_HEIGHT], Qt.Vertical)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.output_dock)
+        self.splitDockWidget(self.log_dock, self.output_dock, Qt.Horizontal)
+        for dock in self._old_panels():
+            dock.setFloating(False)
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            self.tabifyDockWidget(self.left_column_dock, dock)
+            dock.hide()
+        self.left_column_dock.raise_()
+        self.processing_dock.raise_()
+
+    def _available_size(self) -> tuple[int, int]:
+        """The screen's available area in logical px (the seam the geometry tests patch)."""
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            return 1280, 800
+        area = screen.availableGeometry()
+        return area.width(), area.height()
+
+    def _apply_default_arrangement(self, kind: str) -> None:
+        """The one arrangement at ``kind``'s ("laptop" or "desktop") default sizes (idempotent).
+
+        Every frame dock in its area, the old panels hidden behind the left column, the right panel
+        collapsed to its rail on a laptop and open on a desktop, the inspector closed with its
+        remembered width set to the kind's default."""
+        sizes = _ARRANGEMENTS[kind]
+        self._place_docks()
+        self._close_scan_inspector()        # remembers the open width: reset the width after it
+        self._inspector_width = sizes.inspector
+        self.resizeDocks([self.left_column_dock], [sizes.left], Qt.Horizontal)
+        self.resizeDocks([self.log_dock, self.output_dock],
+                         [max(self.width() - sizes.left - sizes.output_width, _CENTER_MIN[0]),
+                          sizes.output_width], Qt.Horizontal)
+        self.resizeDocks([self.log_dock], [sizes.log_height], Qt.Vertical)
+        self.set_right_panel_collapsed(kind == "laptop")
+        if kind != "laptop":
+            self.resizeDocks([self.processing_dock], [sizes.right], Qt.Horizontal)
+
+    # ---- the right panel and its rail -----------------------------------------
+    def _right_panel_collapsed(self) -> bool:
+        """Collapsed = both right docks hidden. Reads ``isHidden()``, not ``isVisible()``: a buried
+        tab reports invisible without being hidden."""
+        campaign = getattr(self, "campaign_dock", None)
+        return self.processing_dock.isHidden() and (campaign is None or campaign.isHidden())
+
+    def set_right_panel_collapsed(self, collapsed: bool) -> None:
+        """Collapse the right panel to its rail, or expand it (Processing raised) at the default
+        width of the current screen. Expanding takes width from the display, never draws over it."""
+        for dock in (self.processing_dock, getattr(self, "campaign_dock", None)):
+            if dock is not None:
+                dock.setVisible(not collapsed)
+        if not collapsed:
+            self.processing_dock.raise_()
+            kind = initial_arrangement(*self._available_size())
+            self.resizeDocks([self.processing_dock], [_ARRANGEMENTS[kind].right], Qt.Horizontal)
+        self._sync_rail()
+        self._autosave()
+
+    def _sync_rail(self, *_args) -> None:
+        """Keep the rail and the View > Processing panel action in step with the docks."""
+        collapsed = self._right_panel_collapsed()
+        self.processing_rail.set_collapsed(collapsed)
+        self._processing_panel_action.setChecked(not collapsed)
+
+    # ---- the scan inspector column ---------------------------------------------
+    def _open_scan_inspector(self, key=None) -> None:
+        """Show the inspector column at its remembered width; the display gives up that width."""
+        if not self.scan_inspector.isHidden():
+            return
+        self.scan_inspector.show()
+        total = self._frame_splitter.width()
+        width = max(_INSPECTOR_MIN, min(self._inspector_width, total - _CENTER_MIN[0]))
+        self._frame_splitter.setSizes([width, max(total - width, _CENTER_MIN[0])])
+
+    def _close_scan_inspector(self) -> None:
+        """Hide the inspector column (remembering its width); the display regains the width."""
+        if not self.scan_inspector.isHidden():
+            self._remember_inspector_width()
+            self.scan_inspector.hide()
+
+    def _remember_inspector_width(self) -> None:
+        if not self.scan_inspector.isHidden() and self.scan_inspector.width() >= _INSPECTOR_MIN:
+            self._inspector_width = self.scan_inspector.width()
+
+    def _on_frame_splitter_moved(self, _pos: int, _index: int) -> None:
+        self._remember_inspector_width()
+        self._autosave()
 
     # ---- compact campaign-monitor mode (M3-1) ------------------------------
     def toggle_compact_mode(self, *_a) -> None:
@@ -683,10 +859,14 @@ class MainWindow(QMainWindow):
                 self._campaign_monitor.expand_requested.connect(self.toggle_compact_mode)
                 self.log_dock.appended.connect(self._campaign_monitor.append_log_line)
                 self._center_stack.addWidget(self._campaign_monitor)
-            self._compact_stash = (self.saveState(_LAYOUT_VERSION), self.saveGeometry())
+            self._compact_stash = (self.saveState(_LAYOUT_VERSION), self.saveGeometry(),
+                                   not self.scan_inspector.isHidden())
+            self._remember_inspector_width()
             for dock in self.findChildren(QDockWidget):
                 dock.hide()
-            self._workspace_toolbar.hide()   # its buttons would pin the minimum width
+            # The inspector column and the rail would pin the minimum width of the small card.
+            self.scan_inspector.hide()
+            self.processing_rail.hide()
             self._center_stack.setCurrentWidget(self._campaign_monitor)
             # QStackedLayout's minimum size spans ALL pages, visible or not — detach the big
             # CenterHost page while compact or the window cannot shrink (re-added on expand;
@@ -706,18 +886,22 @@ class MainWindow(QMainWindow):
             self._compact_active = False
             self._compact_mode_action.setChecked(False)
             self.setMinimumSize(0, 0)        # back to hint-driven minimums for the full layout
-            self._workspace_toolbar.show()   # explicit — never depend on the restore for it
+            self.processing_rail.show()      # explicit — never depend on the restore for it
             if self._center_host is not None:
                 self._center_stack.addWidget(self._center_host)   # re-attach the detached page
                 self._center_stack.setCurrentWidget(self._center_host)
             else:
                 self._center_stack.setCurrentWidget(self._empty_hint)
             if self._compact_stash is not None:
-                state, geometry = self._compact_stash
+                state, geometry, inspector_was_open = self._compact_stash
                 self._compact_stash = None
                 self.restoreGeometry(geometry)
                 if not self.restoreState(state, _LAYOUT_VERSION):
-                    self._apply_default_layout()   # a stash can't be stale, but never half-apply
+                    # a stash can't be stale, but never half-apply
+                    self._apply_default_arrangement(initial_arrangement(*self._available_size()))
+                if inspector_was_open:
+                    self._open_scan_inspector()
+                self._sync_rail()
         self._sync_run_actions()
 
     def _dispose_campaign_monitor(self) -> None:
@@ -744,11 +928,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Tip: View ▸ Compact mode is a glanceable campaign monitor")
 
     def _register_dock(self, name: str, dock) -> None:
-        """Track a dock so the Docks menu and layout autosave pick it up (call before menu build)."""
+        """Track a dock so the Panels menu and layout autosave pick it up (call before menu build)."""
         self._docks[name] = dock
+        self._wire_dock_autosave(dock)
+
+    def _wire_dock_autosave(self, dock) -> None:
         # A user dragging a dock to a new area/float changes the layout saveState() would capture;
         # autosave (debounced) so that move survives a restart without waiting for an explicit toggle.
-        # Guard against double-wiring: the persistent Log dock is re-registered on every rebind, and
+        # Guard against double-wiring: the persistent docks are re-registered on every rebind, and
         # a second connection would fire _autosave twice per move.
         if dock not in self._loc_wired:
             dock.dockLocationChanged.connect(lambda _area: self._autosave())
@@ -804,59 +991,46 @@ class MainWindow(QMainWindow):
         if path:
             self.load_workspace(path)
 
-    # ---- Workspace toolbar (New / Open / Save As / Recent, Phase C) --------
-    def _init_workspace_toolbar(self) -> None:
-        """The always-present Workspace toolbar. ``objectName`` is set so ``QMainWindow.saveState``
-        round-trips it in the session layout."""
-        tb = QToolBar("Workspace", self)
-        tb.setObjectName("workspace_toolbar")
-        self.addToolBar(tb)
-        self._workspace_toolbar = tb   # compact mode hides it (saveState restores it on expand)
-
-        self._new_workspace_action = tb.addAction("New")
-        self._new_workspace_action.triggered.connect(self.new_workspace)
-        self._open_workspace_action = tb.addAction("Open…")
-        self._open_workspace_action.triggered.connect(self._on_open_workspace)
-        self._save_as_action = tb.addAction("Save As…")
-        self._save_as_action.triggered.connect(self.save_workspace_as)
-
-        self._recents_button = QToolButton(self)
-        self._recents_button.setText("Recent ▾")
-        self._recents_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self._recents_menu = QMenu(self._recents_button)
-        self._recents_button.setMenu(self._recents_menu)
-        tb.addWidget(self._recents_button)
-        self._refresh_recents_menu()
-
+    # ---- the experiment strip's recents and the availability rule -----------
     def _refresh_recents_menu(self) -> None:
-        """Rebuild the recents dropdown from the GUI session's recent-workspaces list."""
-        self._recents_menu.clear()
-        recents = self._session.recent_workspaces
-        if not recents:
-            act = self._recents_menu.addAction("(no recent workspaces)")
-            act.setEnabled(False)
-            return
-        for path in recents:
-            act = self._recents_menu.addAction(path)
-            act.triggered.connect(lambda _checked=False, p=path: self.load_workspace(p))
+        """Hand the experiment strip the GUI session's recent-workspaces list (most recent first)."""
+        self.experiment_strip.set_recent(list(self._session.recent_workspaces))
+
+    def _availability(self) -> tuple[bool, str, str | None]:
+        """The one availability rule for *Save copy as…* and *Export…* (first match wins).
+
+        Returns ``(available, reason, strip_busy)``. The reason is shown beside the disabled buttons;
+        ``strip_busy`` is the same reason while an engine command is writing to the experiment (the
+        experiment strip then disables New / Open / Recent / Rename), else ``None``. A copy or an
+        export therefore never mixes files from the middle of an update."""
+        if self._wsm.root() is None:
+            return False, "need an experiment", None
+        busy = {"ingest": "files are being read into the experiment",
+                "run": "analysis is writing to the experiment",
+                "drive": "a campaign is writing to the experiment",
+                "compile": "a campaign is writing to the experiment",
+                "export": "an export is running"}.get(self._activity_kind)
+        if busy is None and self._export.is_running():
+            busy = "an export is running"
+        if busy is not None:
+            return False, busy, busy
+        if self._wsm.state() == "pending":
+            return False, "no files read into this experiment yet", None
+        return True, "", None
 
     def _sync_workspace_actions(self) -> None:
         """Save As is meaningful only for a temporary workspace with a card already scaffolded
         (state ready). A saved workspace has nothing to Save As; a pending/none one has no card."""
-        busy = getattr(self, "_operations", None) is not None and self._operations.is_busy()
+        if getattr(self, "output_bar", None) is None:
+            return                      # the frame is not built yet (the manager adopts first)
+        busy = self._operations.is_busy()
         can_save_as = self._wsm.state() == "ready" and self._wsm.is_temporary() and not busy
-        for action in (getattr(self, "_save_as_action", None),
-                       getattr(self, "_save_as_menu_action", None)):
-            if action is not None:
-                action.setEnabled(can_save_as)
-        for action in (getattr(self, "_new_workspace_action", None),
-                       getattr(self, "_open_workspace_action", None),
-                       getattr(self, "_new_workspace_menu_action", None),
-                       getattr(self, "_open_workspace_menu_action", None)):
-            if action is not None:
-                action.setEnabled(not busy)
-        if getattr(self, "_recents_button", None) is not None:
-            self._recents_button.setEnabled(not busy)
+        self._save_as_menu_action.setEnabled(can_save_as)
+        for action in (self._new_workspace_menu_action, self._open_workspace_menu_action):
+            action.setEnabled(not busy)
+        available, reason, strip_busy = self._availability()
+        self.output_bar.set_available(available, available, reason)
+        self.experiment_strip.set_busy(strip_busy)
 
     # ---- workspace lifecycle actions (delegate to the manager) ------------
     def new_workspace(self) -> None:
@@ -905,6 +1079,24 @@ class MainWindow(QMainWindow):
         self.log(f"Save As failed for {dest}: {reason}")
         return False
 
+    def rename_experiment(self) -> None:
+        """Rename the open experiment (its name and its folder's name together). Foundation: only
+        says so; the rename itself arrives with the experiment lifecycle."""
+        self.statusBar().showMessage("Rename arrives with this release")
+
+    def save_copy_as(self) -> None:
+        """Copy the whole experiment to a new folder. Foundation: today's Save As."""
+        self.save_workspace_as()
+
+    def _on_export_requested(self) -> None:
+        """*Export…*: only when the availability rule allows it, then through the export controller."""
+        available, reason, _strip_busy = self._availability()
+        if not available:
+            self.statusBar().showMessage(f"Export is unavailable: {reason}")
+            return
+        if not self._export.start(Path(self._ws.root)):
+            self.statusBar().showMessage("Export did not start")
+
     @staticmethod
     def _is_empty_target(path) -> bool:
         """Whether ``path`` is a folder an operator could still save a new campaign into."""
@@ -934,10 +1126,17 @@ class MainWindow(QMainWindow):
         if not urls:
             return
         event.acceptProposedAction()
-        paths = [u.toLocalFile() for u in urls]
-        # A single dropped existing workspace opens directly. Anything else is raw data handed to the
-        # IngestController, which routes by workspace state (none -> reserve temp + bootstrap;
-        # pending -> bootstrap; ready -> ingest) and serializes everything behind one FIFO queue.
+        self._on_paths_dropped([u.toLocalFile() for u in urls])
+
+    def _on_paths_dropped(self, paths: list[str]) -> None:
+        """The one drop route: every path that arrives (the window's own drops, the files strip's
+        drops and choices, the old Files dock) lands here, in drop order.
+
+        A single dropped existing workspace opens directly. Anything else is raw data handed to the
+        IngestController, which routes by workspace state (none -> reserve temp + bootstrap;
+        pending -> bootstrap; ready -> ingest) and serializes everything behind one FIFO queue."""
+        if not paths:
+            return
         first = Path(paths[0])
         if len(paths) == 1 and self._is_workspace_dir(first):
             self.load_workspace(str(first))
@@ -986,19 +1185,13 @@ class MainWindow(QMainWindow):
                 prefix += f" ({count_text})"
             self.statusBar().showMessage(
                 f"{prefix}: {parsed_waiting} analyzer unit(s) awaiting analysis "
-                f"; open Scans or choose Run > Run analysis...{note}")
+                f"; see the scan list, or Processing ▸ Run analysis…{note}")
         else:
             prefix = f"Ingested {n_files} files"
             if count_text:
                 prefix += f" ({count_text})"
             self.statusBar().showMessage(
                 f"{prefix}: +{a} logical scans, ~{u} updated ({d} duplicates){note}")
-        if parsed_waiting:
-            # A pending bootstrap has just rebuilt the full dock set and queued restoration of the
-            # operator's saved layout. Promote Scans on the following Qt turn so that restoration
-            # cannot bury the newly-loaded data. Capture the lifecycle generation/root: if the user
-            # opens another workspace before this callback runs, it must not touch the new binding.
-            self._queue_scans_promotion()
         for dedup in report.deduped:
             self.log(f"dedup: {dedup.get('scan')} kept {dedup.get('kept')} "
                      f"(superseded {', '.join(dedup.get('superseded') or [])})")
@@ -1011,24 +1204,7 @@ class MainWindow(QMainWindow):
         dock = self._docks.get("Files")
         if dock is not None and added_paths:
             dock.highlight_added(added_paths)
-
-    def _queue_scans_promotion(self) -> None:
-        """Queue Scans promotion behind any layout restore for the current workspace binding."""
-        generation = self._wsm.generation()
-        root = self._wsm.root()
-        QTimer.singleShot(
-            0, self, lambda g=generation, r=root: self._promote_scans_if_current(g, r))
-
-    def _promote_scans_if_current(self, generation: int, root: Path | None) -> None:
-        """Show parsed scans after layout restoration, if still on the captured workspace."""
-        if generation != self._wsm.generation() or root != self._wsm.root() or self._empty:
-            return
-        if not self.scans_vm.rows():
-            return
-        dock = self._docks.get("Scans")
-        if dock is not None:
-            dock.show()
-            dock.raise_()
+        self.files_strip.show_arrival(report)
 
     def _on_ingest_failed(self, code: int, cause: str) -> None:
         self.statusBar().showMessage(f"Could not ingest data: {cause}")
@@ -1176,14 +1352,30 @@ class MainWindow(QMainWindow):
         self._sync_workspace_actions()
 
     def _rebind(self, ws) -> None:
-        """Tear down the current binding (if any) and bind ``ws`` (``None`` = empty/pending)."""
+        """Tear down the current binding (if any) and bind ``ws`` (``None`` = empty/pending).
+
+        A rebind changes nothing on screen: the arrangement is captured before the teardown and
+        restored after the bind (the per-binding docks come back under the same object names). The
+        inspector column is the one exception, closed because spectrum keys are local to a
+        workspace."""
+        state = None
         if self._bound:
+            if self._compact_active:
+                self.toggle_compact_mode()      # leave compact first: its stash is not the layout
             # Unit keys are workspace-local.  Clear before the old dock QObject instances disappear
             # so every visible surface is reset rather than carrying an old workspace's inspection.
             self.active_units.set_active(None)
+            self._close_scan_inspector()
+            state = self.saveState(_LAYOUT_VERSION)
             self._teardown_binding()
         self._bind_workspace(ws)
         self._bound = True
+        if state is not None:
+            if not self.restoreState(state, _LAYOUT_VERSION):
+                self.log("Window layout: could not carry the arrangement across; using the default "
+                         "for this screen.")
+                self._apply_default_arrangement(initial_arrangement(*self._available_size()))
+            self._sync_rail()
 
     # ---- Run menu (shell `isar run` as a subprocess, D3) ------------------
     def _init_run_menu(self) -> None:
@@ -1203,6 +1395,17 @@ class MainWindow(QMainWindow):
         # Re-run additionally needs a remembered previous invocation for this workspace.
         self._rerun_action.setEnabled(can_run and self._run_state() is not None)
         self._cancel_operation_action.setEnabled(busy)
+        self._push_processing_state()
+
+    def _push_processing_state(self) -> None:
+        """Mirror today's Run-menu enablement and status labels into the Processing panel."""
+        busy = self._operations.is_busy()
+        can_run = (not self._empty) and (not busy)
+        reason = "" if can_run else ("need an experiment" if self._empty else "ISAR is busy")
+        self.processing_panel.set_state(
+            can_run=can_run, run_reason=reason,
+            analysis_running=self._operations.is_running_analysis(),
+            activity=self._operation_status.text(), last_run=self._last_run_status)
 
     def run_analysis(self) -> None:
         """Open the Run dialog (pre-filled from the last run) and launch ``isar run`` on accept."""
@@ -1356,6 +1559,7 @@ class MainWindow(QMainWindow):
     def _on_operation_activity_changed(self, state: dict) -> None:
         kind = state["kind"]
         queued = state["queued"]
+        self._activity_kind = kind          # read by the availability rule (_sync_workspace_actions)
         if kind is None:
             self._operation_status.setText("")
             if self._close_when_operations_finish:
@@ -1383,6 +1587,8 @@ class MainWindow(QMainWindow):
     def _set_run_status(self, text: str, color: str) -> None:
         self._run_status.setText(text)
         self._run_status.setStyleSheet(f"color: {color};")
+        self._last_run_status = (text, color)
+        self._push_processing_state()
 
     # ---- remembered run state (per workspace, in the GUI session) ----------
     def _run_state(self) -> dict | None:
@@ -1457,10 +1663,11 @@ class MainWindow(QMainWindow):
 
     # ---- View menu (central view switcher; built once, persists across rebinds) ----
     def _init_view_menu(self) -> None:
-        """The View menu selects the central display surface. It is built once, before the per-bind
-        Docks menu (which is always appended last), so View reads before Docks in the menu bar. A
+        """The View menu selects the central display surface, opens or closes the right panel,
+        resets the layout, and holds the per-bind Panels submenu (always appended last). A page
         trigger is an explicit user view change (clears auto-follow); it is a no-op with no host."""
         menu = self.menuBar().addMenu("&View")
+        self._view_menu = menu
         for key, label in _CENTER_PAGES:
             act = menu.addAction(label)
             act.triggered.connect(lambda _checked=False, k=key: self._show_center_view(k, user=True))
@@ -1469,6 +1676,21 @@ class MainWindow(QMainWindow):
         self._compact_mode_action = menu.addAction("Compact mode")
         self._compact_mode_action.setCheckable(True)
         self._compact_mode_action.triggered.connect(self.toggle_compact_mode)
+        # `triggered` (user interaction only): _sync_rail's programmatic setChecked must not collapse.
+        self._processing_panel_action = menu.addAction("Processing panel")
+        self._processing_panel_action.setCheckable(True)
+        self._processing_panel_action.setChecked(True)
+        self._processing_panel_action.triggered.connect(
+            lambda checked: self.set_right_panel_collapsed(not checked))
+        reset = menu.addAction("Reset layout")
+        reset.triggered.connect(self.reset_layout)
+
+    def reset_layout(self) -> None:
+        """View > Reset layout: the default arrangement for the current screen."""
+        if self._compact_active:
+            self.toggle_compact_mode()
+        self._apply_default_arrangement(initial_arrangement(*self._available_size()))
+        self._autosave()
 
     def _settings(self) -> dict:
         """Return GUI-owned non-secret backend settings.
@@ -1708,9 +1930,11 @@ class MainWindow(QMainWindow):
             lbl.setStyleSheet("color: #888;")
             self.statusBar().addPermanentWidget(lbl)
 
-    # ---- Docks menu (PUFFIN two-way-sync pattern) -------------------------
+    # ---- View > Panels (PUFFIN two-way-sync pattern) ----------------------
     def _init_docks_menu(self) -> None:
-        self._docks_menu = self.menuBar().addMenu("&Docks")
+        # A submenu of View, rebuilt per bind. The left column and Output are frame, not panels:
+        # they are not listed and cannot be hidden.
+        self._docks_menu = self._view_menu.addMenu("Panels")
         for name, dock in self._docks.items():
             action = self._docks_menu.addAction(name)
             action.setCheckable(True)
@@ -1856,17 +2080,21 @@ class MainWindow(QMainWindow):
             self._bridge.stop()
             self._bridge = None
 
-        self.menuBar().removeAction(self._docks_menu.menuAction())
+        self._view_menu.removeAction(self._docks_menu.menuAction())
         # removeAction() only detaches the menu; the QMenu (and its per-dock QActions, whose closures
-        # capture the now-deleted docks) stay parented to the menu bar. Delete it so repeated
-        # rebinds don't leak one Docks menu per load.
+        # capture the now-deleted docks) stay parented to the View menu. Delete it so repeated
+        # rebinds don't leak one Panels menu per load.
         self._docks_menu.deleteLater()
         for dock in list(self._docks.values()):
-            if dock is self.log_dock:
-                continue  # persists across rebinds (created in __init__); keep its scrollback
+            if dock is self.log_dock or dock is self.processing_dock:
+                continue  # persist across rebinds (created in __init__); keep the Log's scrollback
             if dock is self.campaign_dock:
                 dock.dispose()
             self.removeDockWidget(dock)
+            # Unparent as well as delete later: until the event loop runs, a dock pending deletion
+            # is still a child with its object name, and the restoreState that follows the rebind
+            # would restore it instead of the new dock of the same name.
+            dock.setParent(None)
             dock.deleteLater()
         self._docks.clear()
         # deleteLater() leaves the Python attributes pointing at now-dead C++ widgets. An
@@ -1959,6 +2187,12 @@ class MainWindow(QMainWindow):
         # status (scan verdicts, spend context), so fan those out too.
         if changed & {"events", "results", "card_state"}:
             self.campaign_vm.on_workspace_changed(changed)
+        # The scan list re-reads after the bridge refresh and today's fan-out; it never asks for the
+        # display, so the central page does not move under the user.
+        if changed & {"snapshot", "results", "card", "card_state"}:
+            self.scan_list_vm.on_workspace_changed(changed)
+        if changed & {"results", "snapshot", "card_state"}:
+            self.output_bar.note_written(datetime.now())
         self._live_label.setText(f"live — last update {datetime.now():%H:%M:%S}")
         self.statusBar().showMessage(f"Updated: {', '.join(sorted(changed)) or '(none)'}")
 
@@ -2035,14 +2269,20 @@ class MainWindow(QMainWindow):
 
     # ---- session layout --------------------------------------------------
     def _snapshot_session(self) -> Session:
-        # The empty/pending screen intentionally owns only Files + Log. Serializing that sparse
-        # scaffold would overwrite the operator's complete workspace layout while New is waiting
-        # for its first ingest, so retain the last full layout until a ready workspace is bound.
-        # Compact mode is likewise never serialized: the stash holds the real layout in memory
-        # and closeEvent expands before the final snapshot.
-        if not self._empty and not self._compact_active:
+        # The one arrangement is saved in every state (the empty state has the same one). Compact
+        # mode is never serialized: the stash holds the real layout in memory and closeEvent expands
+        # before the final snapshot.
+        if not self._compact_active:
+            self._remember_inspector_width()
             state = bytes(self.saveState(_LAYOUT_VERSION).toBase64().data()).decode("ascii")
             self._session.dock_layout_b64 = state
+            # What the arrangement needs of a screen: everything except the display at its saved
+            # size, plus the display's minimum. _restore_layout refuses it on a smaller screen.
+            self._session.view_state["window_layout"] = {
+                "version": _LAYOUT_VERSION,
+                "needs": [self.width() - self._center_stack.width() + _CENTER_MIN[0],
+                          self.height() - self._center_stack.height() + _CENTER_MIN[1]],
+                "inspector_width": int(self._inspector_width)}
         # Only saved workspaces belong in recents — a temporary (pending/unsaved) workspace must
         # never pollute the recent-workspaces list (it may be discarded moments later).
         if not self._empty and not self._wsm.is_temporary():
@@ -2050,6 +2290,7 @@ class MainWindow(QMainWindow):
         self.heatmap_vm.save_view_state(self._session)
         self.dispersion_vm.save_view_state(self._session)
         self.waterfall_vm.save_view_state(self._session)
+        self.scan_list_vm.save_view_state(self._session)
         # Persist the central view switcher (current page + auto-follow) alongside the other
         # view-state writes; restored on the next ready bind (default: Scan page, auto-follow on).
         if self._center_host is not None:
@@ -2058,24 +2299,47 @@ class MainWindow(QMainWindow):
         return self._session
 
     def _restore_layout(self) -> None:
-        """Restore the saved dock layout; any failure falls back to the Pass-3 default.
+        """Apply the saved arrangement, or the default for this screen.
 
-        ``restoreState`` is version-gated (``_LAYOUT_VERSION``): a pre-Pass-3 (unversioned) or
-        future-version blob returns False atomically instead of half-applying stale geometry that
-        names docks which no longer exist. The one-time cost is that upgrading users get the new
-        default arrangement once, with an honest log line."""
+        A saved arrangement is restored only when it is version 4, its recorded ``needs`` fit the
+        screen's available area in both dimensions, and ``restoreState`` accepts it (it is
+        version-gated and atomic: a blob of another version never half-applies). Otherwise the default
+        for the current screen is used and, when a saved arrangement existed, exactly one Log line
+        says why. This is what keeps a desktop arrangement from clipping the display on a laptop."""
+        width, height = self._available_size()
+        kind = initial_arrangement(width, height)
         b64 = self._session.dock_layout_b64
         if not b64:
+            self._apply_default_arrangement(kind)
             return
-        try:
-            ok = self.restoreState(QByteArray.fromBase64(b64.encode("ascii")), _LAYOUT_VERSION)
-        except Exception as exc:  # noqa: BLE001 — a bad saved layout must never block the window
-            self.log(f"could not restore dock layout ({exc})")
+        meta = self._session.view_state.get("window_layout")
+        needs = None
+        if isinstance(meta, dict) and meta.get("version") == _LAYOUT_VERSION:
+            raw = meta.get("needs")
+            if isinstance(raw, (list, tuple)) and len(raw) == 2 and all(
+                    isinstance(v, (int, float)) and not isinstance(v, bool) for v in raw):
+                needs = (int(raw[0]), int(raw[1]))
+        if needs is not None and (needs[0] > width or needs[1] > height):
+            message = (f"Window layout: the saved arrangement needs about {needs[0]}×{needs[1]} px; "
+                       f"this screen gives {width}×{height}. Using the {kind} layout for this screen; "
+                       "View ▸ Reset layout restores it any time.")
+        else:
             ok = False
-        if not ok:
-            self._apply_default_layout()
-            self.log("applied the default Pass-3 arrangement (saved dock layout was from an "
-                     "older version or unreadable)")
+            if needs is not None:
+                try:
+                    ok = self.restoreState(QByteArray.fromBase64(b64.encode("ascii")), _LAYOUT_VERSION)
+                except Exception as exc:  # noqa: BLE001 — a bad saved layout must never block the window
+                    log.warning("could not restore the saved window layout: %s", exc)
+            if ok:
+                saved = meta.get("inspector_width")
+                if isinstance(saved, (int, float)) and not isinstance(saved, bool):
+                    self._inspector_width = max(_INSPECTOR_MIN, int(saved))
+                self._sync_rail()
+                return
+            message = (f"Window layout: the saved arrangement is from an older ISAR or unreadable. "
+                       f"Using the {kind} layout for this screen.")
+        self._apply_default_arrangement(kind)
+        self.log(message)
 
     def _autosave(self) -> None:
         if getattr(self, "_autosaver", None) is not None:
