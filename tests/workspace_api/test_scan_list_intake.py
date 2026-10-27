@@ -12,7 +12,7 @@ import pytest
 
 import bl43_fixture
 import bl43_intake_fixture
-from bl43_fixture import KEY_A, KEY_B, KEY_SINGLE
+from bl43_fixture import KEY_A, KEY_A_NO_T, KEY_B, KEY_SINGLE
 from isar.intake import values
 from isar.workspace_api import Change, PassInputs, Workspace, import_summary
 from isar.workspace_api.scan_list import Fact, ScanListSnapshot, Status, scan_list
@@ -59,6 +59,16 @@ def test_a_slit_the_user_enters_is_the_sets_slit(ws_root):
     assert _snap(ws_root).scan_set(KEY_A).slit.value is None
     assert values.save_value(ws_root, "slit", "60x60", [KEY_A]).ok
     assert _snap(ws_root).scan_set(KEY_A).slit == Fact("60x60", None, "user", "user")
+
+
+def test_a_user_temperature_does_not_hide_that_the_file_had_none(tmp_path):
+    root = bl43_intake_fixture.build_intake_workspace(tmp_path / "nt", with_t=False)
+    unit = f"{KEY_A_NO_T}:a03"
+    assert scan_list(Workspace.open(root)).spectrum(unit).parsed.word == "no T"
+    assert values.save_value(root, "temperature", 100, [KEY_A_NO_T]).ok
+    snap = scan_list(Workspace.open(root))
+    assert snap.scan_set(KEY_A_NO_T).temperature == Fact(100.0, "K", "user", "user")   # the T column: used value
+    assert snap.spectrum(unit).parsed.word == "no T"                                    # Parsed: the file's gap
 
 
 def test_the_reads_passed_in_give_the_same_snapshot_as_the_reads_made_here(ws_root):

@@ -332,8 +332,11 @@ def _scan_set(set_key: str, entries: list, files: list, patterns, intake_facts=N
     else:
         temperature = _missing()
     slit = _fact(facts.get("slit"), None)
+    t_in_file = temperature.value is not None     # Parsed judges the file's T, never the used one
     if intake_facts is not None:
-        temperature = _used_fact(intake_facts.get("temperature"), "K")
+        t_row = intake_facts.get("temperature")
+        t_in_file = t_row is not None and t_row.file_source != "missing"
+        temperature = _used_fact(t_row, "K")
         slit = _used_fact(intake_facts.get("slit"), None)
     label = (str(scan_numbers[0]) if len(scan_numbers) == 1
              else prov.get("scan_label") or str(first.scan_number))
@@ -348,7 +351,7 @@ def _scan_set(set_key: str, entries: list, files: list, patterns, intake_facts=N
         f = files[0] if len(files) == 1 else by_number.get(_detector_number(split_key(sv.scan_id)[2]))
         if f is not None:
             used.add(f.path)
-        spectra.append(_spectrum(sv, set_key, f, temperature.value is not None, (passes or {}).get(sv.scan_id)))
+        spectra.append(_spectrum(sv, set_key, f, t_in_file, (passes or {}).get(sv.scan_id)))
 
     flag = next((fl.get("reason") for fl in prov.get("scan_flags") or []
                  if fl.get("type") == "missing_analyzer"), None) or _LEFT_OUT
