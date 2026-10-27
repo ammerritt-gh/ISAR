@@ -377,6 +377,23 @@ def test_a_pooled_master_shows_its_lines_and_the_display_note(qtbot, bl43_ws, mo
 
 
 # ---------------------------------------------------------------------------
+# the fact table (S2U3) takes over the stage-one fact lines
+# ---------------------------------------------------------------------------
+def test_the_window_gives_the_inspector_its_fact_table_and_unimported_data_keeps_the_stage_one_lines(
+        qtbot, patched, bl43_ws, monkeypatch):
+    """bl43_ws was built without the intake record, so the backend holds no facts for it: the table stays
+    empty and the Temperature, Q and Slit lines are not lost; with facts the lines give way (test_fact_table)."""
+    w = _window(qtbot, monkeypatch, LAPTOP, bl43_ws)
+    table = w.scan_inspector._fact_table
+    assert table is not None and w.scan_inspector._rows_layout.indexOf(table) == 1
+    w.scan_list_vm.inspect(A06)
+    qtbot.wait(50)
+    assert not table.has_facts and table.isHidden()
+    f = _fields(w.scan_inspector)
+    assert _text(f["Temperature"]) == "97 K — file (header)" and "Slit" in f and "Q" in f
+
+
+# ---------------------------------------------------------------------------
 # nothing clips
 # ---------------------------------------------------------------------------
 def test_the_panel_fits_its_minimum_width_and_elides_long_values(qtbot, patched, bl43_ws):

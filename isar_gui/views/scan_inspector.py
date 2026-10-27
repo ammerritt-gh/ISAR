@@ -2,9 +2,11 @@
 
 The inspector extends the left panel outward beside the scan list when a scan is inspected and pulls
 back on its close button (the window owns the placement, visibility and width; this widget owns the
-content). For the inspected spectrum it shows the file, the scan numbers, the analyzer, temperature and
-Q each with its source, the slit, the points and energy range, the parse status, each pass's state and
-the small raw-counts plot.
+content). For the inspected spectrum it shows the file, the scan numbers, the analyzer, the points and
+energy range, the parse status, each pass's state and the small raw-counts plot, and the fact table
+(temperature, slit, Q and the count origin, each with the file's value, the user's and the one used;
+:mod:`isar_gui.views.fact_table`). Where the backend holds no facts for the scan (a workspace it did
+not import) the stage-one Temperature, Q and Slit lines stay, so the facts are never shown twice.
 
 Every line comes from the scan-list snapshot (``vm.snapshot``) and, for the energy range and the plot,
 the facade's stored unit data; nothing is computed or re-fitted here (hard rule 7). :func:`inspector_lines`
@@ -29,6 +31,7 @@ from isar_gui.theme import DEEP, FAST, PARSED, dot_icon, status_tone
 from isar_gui.viewmodels.inspector import CONFLICTS_SEP, MISSING_FACT_TEXT, InspectorViewModel
 from isar_gui.viewmodels.scan_list import ScanListViewModel
 from isar_gui.views.elided_label import ElidedLabel
+from isar_gui.views.fact_table import FactTable
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +41,7 @@ _PLOT_MIN_HEIGHT = 130     # the plot must leave the lines visible at the laptop
 _NO_SPECTRUM = "This spectrum is no longer in the experiment"
 _NOTHING_PICKED = "Pick a scan in the list to inspect it."
 _POOLED_NOTE = "pooled spectrum: shown in the display"
+_STAGE_ONE_FACTS = frozenset({"Temperature", "Q", "Slit"})   # the lines the fact table replaces
 # Unit metadata keys the inspector draws on its own lines, or the hashed unit key: never repeated below.
 _SHOWN_ELSEWHERE = frozenset({"unit", "analyzer", "T", "points", "file", "slit", "scan_numbers",
                               "n_merged_scans", "T_K", "Q_nm"})
@@ -193,6 +197,8 @@ class ScanInspectorPanel(QWidget):
         self._key: str | None = None
         self._stale = False             # content changed while hidden: redraw when shown
         self._plot_vm: InspectorViewModel | None = None   # the panel's own: the centre's never moves
+        self._fact_table: FactTable | None = None
+        self._fact_lines: list[Line] = []
 
         self._title = ElidedLabel("Scan inspector", self)
         font = self._title.font()
@@ -222,6 +228,7 @@ class ScanInspectorPanel(QWidget):
         rows_l = QVBoxLayout(rows)
         rows_l.setContentsMargins(0, 0, 0, 0)
         rows_l.addLayout(self._facts)
+        self._rows_layout = rows_l      # the fact table goes right under the facts (set_intake)
         rows_l.addWidget(self._section("Processing"))
         rows_l.addLayout(self._processing)
         rows_l.addWidget(self._metadata_header)
@@ -277,8 +284,15 @@ class ScanInspectorPanel(QWidget):
         return label
 
     def set_intake(self, intake) -> None:
-        """The window's IntakeState (stub: S2U3 builds the fact table from it and places it)."""
+        """The window's IntakeState: builds the fact table from it and places it under the facts."""
         self._intake = intake
+        if self._fact_table is not None:
+            self._rows_layout.removeWidget(self._fact_table)
+            self._fact_table.deleteLater()
+        self._fact_table = FactTable(intake, self)
+        self._fact_table.shown_changed.connect(self._fill_fact_lines)
+        self._rows_layout.insertWidget(1, self._fact_table)
+        self._render()
 
     # ---- following the list --------------------------------------------------------------
     def show_key(self, key: str | None) -> None:
@@ -312,6 +326,7 @@ class ScanInspectorPanel(QWidget):
         snapshot = self._vm.snapshot
         row = None if self._key is None else snapshot.spectrum(self._key)
         if row is None:
+            self._set_table_unit(None)
             self._title.set_full_text("Scan inspector")
             self._message.setText(_NOTHING_PICKED if self._key is None else _NO_SPECTRUM)
             self._message.show()
@@ -326,11 +341,22 @@ class ScanInspectorPanel(QWidget):
                                   f"{row.analyzer or '—'} · {set_row.label if set_row else '—'}")
         state = None if pooled else self._plot_state()
         lines = inspector_lines(row, set_row, unit, None if state is None else state.metadata)
-        self._fill(self._facts, [ln for ln in lines if ln.group == "facts"])
+        self._set_table_unit(None if pooled else self._key, row, set_row)
+        self._fact_lines = [ln for ln in lines if ln.group == "facts"]
+        self._fill_fact_lines()
         self._fill(self._processing, [ln for ln in lines if ln.group == "processing"])
         self._fill(self._metadata, [ln for ln in lines if ln.group == "metadata"])
         self._metadata_header.setVisible(self._metadata.rowCount() > 0)
         self._render_plot(row, set_row, pooled, state)
+
+    def _set_table_unit(self, key, row=None, set_row=None) -> None:
+        if self._fact_table is not None:
+            self._fact_table.set_unit(key, row, set_row)
+
+    def _fill_fact_lines(self) -> None:
+        """The facts form, without the stage-one Temperature, Q and Slit lines while the table shows them."""
+        replaced = self._fact_table is not None and self._fact_table.has_facts
+        self._fill(self._facts, [ln for ln in self._fact_lines if not (replaced and ln.label in _STAGE_ONE_FACTS)])
 
     def _read_unit(self, key: str):
         try:
