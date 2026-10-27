@@ -457,7 +457,7 @@ class AttentionList(QWidget):
         if not scans or all(s in self._labels for s in scans):
             return
         try:
-            self._labels = {s.key: s.label for s in scan_list(Workspace(self._root)).sets}
+            self._labels = {s.key: s.label for s in scan_list(Workspace(self._root), fit_inputs=()).sets}   # labels only
         except Exception:  # noqa: BLE001 - a label is presentation; the scan key stands in for it
             log.exception("attention list: scan labels of %s could not be read", self._root)
 
