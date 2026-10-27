@@ -10,8 +10,10 @@ from __future__ import annotations
 import copy
 import logging
 import time
-from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, replace
+from collections import deque
+from concurrent.futures import (FIRST_COMPLETED, Future, ProcessPoolExecutor,
+                                wait)
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 
 import numpy as np
@@ -2022,11 +2024,56 @@ def _process_one_task(args):
                         bayes_opts=bayes_opts)
 
 
+@dataclass(frozen=True)
+class ScanStart:
+    """What a scan's start point (``_run_tasks(start_scan=)``) hands the fit stage, per input task in
+    order: a task tuple to fit, a terminal :class:`ScanEntry` (never fitted), a :class:`Reused` entry, or
+    None (carried: no result this run); and the scan's frozen calibration view (None: the run's)."""
+    items: list
+    runcal: "calibrations.RunCalibration | None" = None
+
+
+@dataclass(frozen=True)
+class Reused:
+    """A checkpointed entry taken as this run's result: ``on_finish`` sees it, ``on_complete`` never
+    (its measurement record and checkpoint exist already)."""
+    entry: ScanEntry
+
+
+def condition_entry(rec, det, q, T, sample, scan_id, card, chash, ghash, reason) -> ScanEntry:
+    """A unit the user declared out (an excluded scan, a dead analyzer): an ``excluded`` entry made in the
+    parent, never fitted, with the measurement record a card exclusion gets."""
+    return ScanEntry(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
+                     status="excluded", content_hash=chash, guidelines_hash=ghash, reasons=[reason],
+                     measurement_record=_measurement_record(rec, det, q, T, sample, scan_id, card, chash,
+                                                            count_trust="excluded", reasons=[reason]))
+
+
+def _scan_groups(tasks) -> list[list]:
+    """The tasks split by scan, in order. They are built per record, then per detector, so a scan's
+    tasks are consecutive; a scan met twice is a caller bug, refused."""
+    groups: list[tuple[str, list]] = []
+    for task in tasks:
+        key = task[5].rsplit(":", 1)[0]
+        if groups and groups[-1][0] == key:
+            groups[-1][1].append(task)
+            continue
+        if any(k == key for k, _g in groups):
+            raise ValueError(f"the fit units of scan {key} are not contiguous")
+        groups.append((key, [task]))
+    return [g for _k, g in groups]
+
+
 def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_workers,
                use_pool, scan_workers, boot_executor=None, boot_adaptive=False,
                bayes_opts=None, on_complete=None, deadline_gate=None, deep=None,
-               deep_executor=None) -> list:
-    """Fit the fresh scan-detectors, serially or over a process pool, preserving submission order.
+               deep_executor=None, start_scan=None, on_finish=None) -> list:
+    """Fit the scan-detectors, serially or over a process pool, preserving submission order.
+
+    ``start_scan(group)`` (one scan's consecutive task tuples) runs in the parent when the scan's first
+    unit is about to be handed to a worker and returns a :class:`ScanStart`; without it every task is
+    fitted against ``runcal``. Each result goes to ``on_finish`` when it completes, then to
+    ``on_complete`` in submission order; a carried unit's output is None and reaches neither.
 
     ``deep`` (a :class:`~isar.session.deep_delivery.DeepRequest`) adds the deep pass after each
     fast-pass fit, serial path only: ``deep_executor`` is its one pool (not picklable).
@@ -2035,50 +2082,121 @@ def _run_tasks(tasks, card, g, runcal, exclusions, *, M, errors_tier, boot_worke
     executor is not picklable and must never enter a scan-pool worker (nested pools). The pool path
     only runs when ``boot_workers == 1`` (Layer A owns the workers), so it never wants a shared pool.
     """
-    arg_list = [(rec, det, q, T, sample, scan_id, card, g, runcal, exclusions, chash, ghash,
-                 M, errors_tier, seed, boot_workers, boot_adaptive, bayes_opts)
-                for (rec, det, q, T, sample, scan_id, chash, ghash, seed) in tasks]
-    if not arg_list:
+    if not tasks:
         return []
     if deep is not None and use_pool:
         raise ValueError("the deep pass fits its scans serially (use_pool=False)")
+    n = len(tasks)
+    groups = _scan_groups(tasks)
+    begin = start_scan or (lambda group: ScanStart(list(group)))
+
+    def stop(done):
+        raise AnalysisWorkIncomplete(f"analysis deadline reached after {done}/{n} scan fit units")
+
+    def view(st):
+        return runcal if st.runcal is None else st.runcal
+
+    def finish(item):
+        entry = item.entry if isinstance(item, Reused) else item
+        if entry is not None and on_finish is not None:
+            on_finish(entry)
+
+    def complete(item):
+        if item is None or isinstance(item, Reused):
+            return None if item is None else item.entry
+        if on_complete is not None:
+            on_complete(item)
+        return item
+
     if not use_pool:
         out = []
-        for a in arg_list:
-            if deadline_gate is not None and not deadline_gate.begin_wave():
-                raise AnalysisWorkIncomplete(
-                    f"analysis deadline reached after {len(out)}/{len(arg_list)} scan fit units")
-            (rec, det, q, T, sample, scan_id, card_, g_, runcal_, exclusions_, chash, ghash,
-             M_, tier_, seed, bw, adaptive_, bopts_) = a
-            entry = _process_one(rec, det, q, T, sample, scan_id, card_, g_, runcal_,
-                                 exclusions_, chash, ghash, M=M_, seed=seed, errors_tier=tier_,
-                                 boot_workers=bw, boot_executor=boot_executor,
-                                 boot_adaptive=adaptive_, bayes_opts=bopts_,
-                                 **({"deep": deep, "deep_executor": deep_executor}
-                                    if deep is not None else {}))
-            if on_complete is not None:
-                on_complete(entry)
-            out.append(entry)
+        for group in groups:
+            st = None
+            for i in range(len(group)):
+                # One deadline wave per unit fitted; a scan is never started after the deadline.
+                if (st is None or isinstance(st.items[i], tuple)) and deadline_gate is not None \
+                        and not deadline_gate.begin_wave():
+                    stop(len(out))
+                if st is None:
+                    st = begin(group)
+                item = st.items[i]
+                if isinstance(item, tuple):
+                    rec, det, q, T, sample, scan_id, chash, ghash, seed = item
+                    item = _process_one(rec, det, q, T, sample, scan_id, card, g, view(st), exclusions,
+                                        chash, ghash, M=M, seed=seed, errors_tier=errors_tier,
+                                        boot_workers=boot_workers, boot_executor=boot_executor,
+                                        boot_adaptive=boot_adaptive, bayes_opts=bayes_opts,
+                                        **({"deep": deep, "deep_executor": deep_executor}
+                                           if deep is not None else {}))
+                finish(item)
+                out.append(complete(item))
         return out
-    max_workers = min(scan_workers, len(arg_list))
-    # No deadline: one wave holding every task, so a slow spectrum never leaves the other workers
-    # idle at a wave boundary. Under a deadline, bounded waves let the soft stop end *new* work
-    # without killing active processes. ``map`` preserves order within a wave, so cached-unit
-    # reduction stays canonical either way.
+
+    # Lazy refill: a unit is handed to the pool only when a worker is free, so a scan's start point
+    # (and the saves it reads) comes as late as its turn; no worker idles while units remain. Under a
+    # deadline, bounded waves let the soft stop end *new* work without killing active processes.
+    # ``on_complete`` follows submission order, so cached-unit reduction stays canonical either way.
+    max_workers = min(scan_workers, n)
     no_deadline = deadline_gate is None or deadline_gate.deadline is None
-    wave_size = len(arg_list) if no_deadline else max_workers
+    units = [(group, i) for group in groups for i in range(len(group))]
+    nxt = 0
+    started: dict[int, ScanStart] = {}
+    pending: deque = deque()          # (future, is a pool future), in submission order
+    done_order: deque = deque()       # futures as they complete (their done callbacks)
+    reported: set = set()             # futures whose on_finish ran
+    out = []
+
+    def submit_next(ex) -> int:
+        nonlocal nxt
+        group, i = units[nxt]
+        nxt += 1
+        if i == 0:
+            started[id(group)] = begin(group)
+        st = started[id(group)]
+        item = st.items[i]
+        if isinstance(item, tuple):
+            rec, det, q, T, sample, scan_id, chash, ghash, seed = item
+            fut = ex.submit(_process_one_task, (rec, det, q, T, sample, scan_id, card, g, view(st), exclusions,
+                                                chash, ghash, M, errors_tier, seed, boot_workers,
+                                                boot_adaptive, bayes_opts))
+        else:                                 # already decided in the parent: a completed stand-in
+            fut = Future()
+            fut.set_result(item)
+        fut.add_done_callback(done_order.append)
+        pending.append((fut, isinstance(item, tuple)))
+        return int(isinstance(item, tuple))
+
+    def running() -> int:
+        return sum(1 for f, pooled in pending if pooled and not f.done())
+
+    def report(f):
+        if f not in reported:
+            reported.add(f)
+            finish(f.result())
+
     with ProcessPoolExecutor(max_workers=max_workers) as ex:
-        out = []
-        for offset in range(0, len(arg_list), wave_size):
-            if deadline_gate is not None and not deadline_gate.begin_wave():
-                raise AnalysisWorkIncomplete(
-                    f"analysis deadline reached after {len(out)}/{len(arg_list)} scan fit units")
-            wave = arg_list[offset:offset + wave_size]
-            for entry in ex.map(_process_one_task, wave):
-                if on_complete is not None:
-                    on_complete(entry)
-                out.append(entry)
-        return out
+        while True:
+            if no_deadline:
+                while nxt < len(units) and running() < max_workers:
+                    submit_next(ex)
+            elif not pending and nxt < len(units):
+                if not deadline_gate.begin_wave():
+                    stop(len(out))
+                submitted = 0
+                while nxt < len(units) and submitted < max_workers:
+                    submitted += submit_next(ex)
+            if not pending:
+                break
+            live = [f for f, _pooled in pending if not f.done()]
+            if live:
+                wait(live, return_when=FIRST_COMPLETED)
+            while done_order:
+                report(done_order.popleft())
+            while pending and pending[0][0].done():
+                f, _pooled = pending.popleft()
+                report(f)                     # its done callback may not have run yet
+                out.append(complete(f.result()))
+    return out
 
 
 # Phase A branch assignment: near a zone centre the acoustic ω₀ is unresolvable BY POSITION (below
