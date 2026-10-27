@@ -24,7 +24,7 @@ from isar.workspace_api.scan_list import (Fact, PooledRow, ScanListSnapshot, Sta
 from isar_gui import main_window as mw_mod
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
-from isar_gui.viewmodels.inspector import InspectorViewModel
+from isar_gui.viewmodels.inspector import InspectorViewModel, _fmt_fact
 from isar_gui.viewmodels.scan_list import ScanListViewModel
 from isar_gui.views.elided_label import ElidedLabel
 from isar_gui.views.scan_inspector import (Line, ScanInspectorPanel, _Note, inspector_lines,
@@ -158,13 +158,16 @@ def test_a_unit_shows_its_status_calibration_facts_and_campaign_rows(qtbot, patc
 
 
 def test_a_fact_whose_sources_disagree_keeps_its_row(qtbot, patched, bl43_ws, monkeypatch):
-    t_conflict = "97 (file); conflicts: 95 (card)"
-    md = {"unit": A06, "T_K": t_conflict, "Q_nm": "1.2 (file)", "slit": "not available (file); conflicts: 60x60 (card)"}
+    # built through the view model's own formatter, so a wording change cannot silently pass
+    t_conflict = _fmt_fact({"value": 97, "source": "file", "conflicts": [{"value": 95, "source": "card"}]})
+    slit = _fmt_fact({"value": None, "source": "file", "conflicts": [{"value": "60x60", "source": "card"}]})
+    assert t_conflict.startswith("97 (file)") and "95 (card)" in t_conflict
+    md = {"unit": A06, "T_K": t_conflict, "Q_nm": "1.2 (file)", "slit": slit}
     monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
     vm, panel = _panel(qtbot, bl43_ws)
     panel.show_key(A06)
     f = _fields(panel)
-    assert _text(f["T_K"]) == t_conflict and "conflicts: 60x60 (card)" in _text(f["slit"])
+    assert _text(f["T_K"]) == t_conflict and _text(f["slit"]) == slit
     assert "Q_nm" not in f      # no conflict: shown once, on its own line
 
 

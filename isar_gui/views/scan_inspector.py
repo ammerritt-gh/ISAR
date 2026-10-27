@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QLabel, QScrollArea, QS
 from isar.workspace_api.scan_list import Fact, PooledRow, ScanSetRow, SpectrumRow
 from isar_gui.plotspec_pg import clear_render, disable_view_drops, render_into
 from isar_gui.theme import DEEP, FAST, PARSED, dot_icon, status_tone
-from isar_gui.viewmodels.inspector import MISSING_FACT_TEXT, InspectorViewModel
+from isar_gui.viewmodels.inspector import CONFLICTS_SEP, MISSING_FACT_TEXT, InspectorViewModel
 from isar_gui.viewmodels.scan_list import ScanListViewModel
 from isar_gui.views.elided_label import ElidedLabel
 
@@ -151,7 +151,7 @@ def inspector_lines(row: SpectrumRow | PooledRow, set_row: ScanSetRow | None, un
     lines.append(status("Parsed", PARSED, row.parsed, "facts"))
     for name, value in (metadata or {}).items():      # the view model's order; a missing fact has no row
         # a fact whose sources disagree keeps its row, so the conflicting value and source stay visible
-        if "; conflicts: " in value or (name not in _SHOWN_ELSEWHERE and not value.startswith(MISSING_FACT_TEXT)):
+        if CONFLICTS_SEP in value or (name not in _SHOWN_ELSEWHERE and not value.startswith(MISSING_FACT_TEXT)):
             lines.append(Line(name, value, value, group="metadata"))
     lines.append(status("Fast pass", FAST, row.fast, "processing"))
     lines.append(status("Deep pass", DEEP, row.deep, "processing"))

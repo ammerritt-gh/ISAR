@@ -85,6 +85,7 @@ def _calibration_rows(block) -> dict:
 # Facts shown first, in this order; every other parsed fact follows, sorted by name.
 _FACT_FIRST = ("scan_label", "T_K", "hkl_nominal", "slit", "dq", "efficiency")
 MISSING_FACT_TEXT = "not available"   # the text of a missing fact; the scan inspector drops such rows
+CONFLICTS_SEP = "; conflicts: "       # what _fmt_fact puts before a source disagreement; the inspector keeps such rows
 
 
 def _finite(value) -> float | None:
@@ -110,7 +111,7 @@ def _fmt_fact(fact: dict) -> str:
     text += f" ({fact.get('source')})"
     conflicts = [c for c in (fact.get("conflicts") or []) if isinstance(c, dict)]
     if conflicts:
-        text += "; conflicts: " + ", ".join(f"{c.get('value')} ({c.get('source')})" for c in conflicts)
+        text += CONFLICTS_SEP + ", ".join(f"{c.get('value')} ({c.get('source')})" for c in conflicts)
     return text
 
 
