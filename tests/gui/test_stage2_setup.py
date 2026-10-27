@@ -575,6 +575,19 @@ def test_watch_events_and_process_ends_reread_the_intake(qtbot, monkeypatch, s2_
     assert reloads == [1, 1, 1]
 
 
+def test_one_watcher_tick_rebuilds_the_scan_list_once_now_and_once_for_the_worker(qtbot, monkeypatch, s2_built):
+    w = _window(qtbot, monkeypatch)
+    assert w.load_workspace(str(s2_built))
+    qtbot.waitUntil(lambda: w.intake.attention is not None and not w.intake._active, timeout=WAIT_MS)
+    rebuilds = []
+    real = ScanListViewModel._reread
+    monkeypatch.setattr(ScanListViewModel, "_reread", lambda self: (rebuilds.append(1), real(self))[1])
+    w._on_workspace_changed({"snapshot", "results", "card", "card_state"})
+    assert len(rebuilds) == 1                              # the intake's re-read; no earlier one on stale reads
+    qtbot.waitUntil(lambda: len(rebuilds) == 2 and not w.intake._active, timeout=WAIT_MS)
+    assert len(rebuilds) == 2                              # then the worker's answer, and nothing more
+
+
 def test_the_export_guard_follows_the_export_controller(qtbot, monkeypatch, s2_built):
     w = _window(qtbot, monkeypatch)
     assert w.load_workspace(str(s2_built))

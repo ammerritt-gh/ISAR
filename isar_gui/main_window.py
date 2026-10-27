@@ -2363,10 +2363,9 @@ class MainWindow(QMainWindow):
         # status (scan verdicts, spend context), so fan those out too.
         if changed & {"events", "results", "card_state"}:
             self.campaign_vm.on_workspace_changed(changed)
-        # The scan list re-reads after the bridge refresh and today's fan-out; it never asks for the
-        # display, so the central page does not move under the user.
-        if changed & {"snapshot", "results", "card", "card_state"}:
-            self.scan_list_vm.on_workspace_changed(changed)
+        # The scan list re-reads from the intake's `changed` below (_INTAKE_RELOAD covers snapshot, results,
+        # card and card_state), after the bridge refresh; it never asks for the display, so the central
+        # page does not move under the user.
         if changed & {"results", "snapshot", "card_state"}:
             self.output_bar.note_written(datetime.now())
         if changed & _INTAKE_RELOAD:
