@@ -239,7 +239,8 @@ empty/ready layout pair, and amends G19 as stated below.
   a word: the plain word of the display table `isar_gui/status_words.py` (clear, close call, search limit
   reached, held: needs …), with the fitting code's word and a one-line meaning on hover, and the code's word
   in the export (amendment 7; the facade still returns the code's word verbatim, and the filter matches
-  both). *Parsed* claims only that the file was read:
+  both). A deep count made on provisional sampler settings reads with the mark `(provisional)` in its word and
+  its hover, which says it is not yet to be trusted. *Parsed* claims only that the file was read:
   never calibration, a resolution curve or a fit. *Fast pass* and *Deep pass* show each pass's stored
   state, or `not run` where nothing is stored, side by side, with no result picked as "the" result; each
   column switches on by itself when the first stored result of that pass exists (amendment 7), unless the

@@ -97,8 +97,9 @@ def _fact_cell(fact: Fact, with_unit: bool = True) -> Cell:
 
 def _status_cell(status, column: str) -> Cell:
     reason = drop_echo(status.word, status.reason)            # "resolved: resolved: ..." said the word twice
-    plain = status_words.plain_word(column, status.word, status.reason)
-    tip = status_words.tooltip(column, status.word, reason)   # the plain word, the fitting code's word, its meaning
+    plain = status_words.plain_word(column, status.word, status.reason, status.provisional)
+    # the plain word, the fitting code's word, its meaning
+    tip = status_words.tooltip(column, status.word, reason, status.provisional)
     stale = status.current is False
     if stale:
         lines = "\n".join(f"{name}: {used} → {now}" for name, used, now in status.changed)
@@ -140,7 +141,7 @@ def _status_words(row) -> list[str]:
     for column in (PARSED, FAST, DEEP):
         status = getattr(row, column, None)
         if status is not None:
-            out += [status.word, status_words.plain_word(column, status.word, status.reason)]
+            out += [status.word, status_words.plain_word(column, status.word, status.reason, status.provisional)]
     return out
 
 

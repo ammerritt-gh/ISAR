@@ -19,9 +19,12 @@ TITLES = {PARSED: "Parsed", FAST: "Fast pass", DEEP: "Deep pass"}
 COLUMN_INTRO = {
     PARSED: "Whether ISAR read the file. It claims nothing more: not calibration, not a resolution curve, not a fit.",
     FAST: "The quick fit every spectrum gets: it tries every peak count and says how settled the count is.",
-    DEEP: "The slower, sampled fit you send a spectrum to when the fast pass is not settled.",
+    DEEP: "The slower, sampled fit you send a spectrum to when the fast pass is not settled. While its sampler "
+          "settings are provisional (not yet calibrated), a count is marked (provisional) and is not to be trusted yet.",
 }
 HELD = "held"
+PROVISIONAL = "(provisional)"
+PROVISIONAL_MEANING = "The deep pass ran on provisional sampler settings, so this count is not yet to be trusted."
 
 
 class Entry(NamedTuple):
@@ -89,12 +92,14 @@ def held_word(reason: str | None) -> str:
     return "held: see the reason"
 
 
-def plain_word(column: str, word: str, reason: str | None = None) -> str:
-    """The word the window shows for the fitting code's ``word`` in ``column``."""
+def plain_word(column: str, word: str, reason: str | None = None, provisional: bool = False) -> str:
+    """The word the window shows for the fitting code's ``word`` in ``column``; ``provisional`` (a deep count made
+    on provisional sampler settings) adds the mark."""
     if column == FAST and word == HELD:
         return held_word(reason)
     entry = TABLE.get(column, {}).get(word)
-    return entry.plain if entry is not None else word
+    shown = entry.plain if entry is not None else word
+    return f"{shown} {PROVISIONAL}" if provisional else shown
 
 
 def meaning(column: str, word: str) -> str:
@@ -103,11 +108,11 @@ def meaning(column: str, word: str) -> str:
     return entry.meaning if entry is not None else ""
 
 
-def tooltip(column: str, word: str, reason: str | None = None) -> str:
+def tooltip(column: str, word: str, reason: str | None = None, provisional: bool = False) -> str:
     """The hover: the plain word with the fitting code's word, the meaning, then the stored reason."""
-    shown = plain_word(column, word, reason)
+    shown = plain_word(column, word, reason, provisional)
     head = shown if shown == word else f"{shown}  (the fitting code's word: {word})"
-    lines = [head, meaning(column, word)]
+    lines = [head, meaning(column, word), PROVISIONAL_MEANING if provisional else ""]
     if reason and reason != word:
         lines.append(reason)
     return "\n".join(line for line in lines if line)

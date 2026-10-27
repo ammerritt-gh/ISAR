@@ -93,3 +93,20 @@ def test_the_export_keeps_the_fitting_codes_words(bl43_ws):
         states = {row["count_state"] for row in csv.DictReader(fh)}
     assert {"close_call", "search_limited"} <= states
     assert not states & {"clear", "close call", "search limit reached"}
+
+
+def _deep_cell(trusted: bool):
+    """The cell the scan list shows for a stored deep result whose record carries this trusted flag."""
+    from types import SimpleNamespace
+    fv = SimpleNamespace(deep_pass={"state": "resolved", "trusted": trusted, "reason": "resolved: count 2 (P 0.85)"})
+    return _status_cell(facade._deep(fv), DEEP)
+
+
+def test_an_untrusted_deep_count_says_provisional_in_the_word_and_the_hover():
+    """Provisional sampler settings make every deep result untrusted today: the plain word must not claim a settled count."""
+    from types import SimpleNamespace
+    untrusted, trusted = _deep_cell(False), _deep_cell(True)
+    assert untrusted.text == "clear (provisional)" and "provisional" in untrusted.tooltip
+    assert trusted.text == "clear" and "provisional" not in trusted.tooltip
+    refused = facade._deep(SimpleNamespace(deep_pass={"state": "refused", "trusted": False, "reason": "no fast-pass record"}))
+    assert _status_cell(refused, DEEP).text == "refused"                 # no count to qualify

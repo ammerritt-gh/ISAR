@@ -142,8 +142,8 @@ def inspector_lines(row: SpectrumRow | PooledRow, set_row: ScanSetRow | None, un
 
     def status(label: str, column: str, st, group: str) -> Line:
         reason = drop_echo(st.word, st.reason)         # "resolved" over "resolved: count 1" said the word twice
-        return Line(label, status_words.plain_word(column, st.word, st.reason),
-                    status_words.tooltip(column, st.word, reason), column, reason, group, st.word)
+        return Line(label, status_words.plain_word(column, st.word, st.reason, st.provisional),
+                    status_words.tooltip(column, st.word, reason, st.provisional), column, reason, group, st.word)
 
     if isinstance(row, PooledRow):
         members = "—" if row.n_members is None else str(row.n_members)

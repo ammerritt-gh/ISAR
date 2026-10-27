@@ -62,6 +62,7 @@ class Status:
     reason: str | None = None # tooltip text: the stored reason, the hold reason, what is missing
     current: bool | None = None   # stage two: the pass's inputs are still current (None: not judged)
     changed: tuple[tuple[str, str, str], ...] = ()   # stage two: (input, from, to) when not current
+    provisional: bool = False # deep: the stored record is untrusted (provisional sampler settings)
 
 
 @dataclass(frozen=True)
@@ -283,7 +284,10 @@ def _fast(sv, fv) -> Status:
 
 def _deep(fv) -> Status:
     if fv is not None and fv.deep_pass.get("state"):
-        return Status(fv.deep_pass["state"], True, fv.deep_pass.get("reason"))
+        dp = fv.deep_pass
+        # a refusal states no count, so it has nothing to qualify; no trusted flag means it is not provisional
+        return Status(dp["state"], True, dp.get("reason"),
+                      provisional=dp["state"] != "refused" and not dp.get("trusted", True))
     return Status(NOT_RUN, False)
 
 
