@@ -379,7 +379,8 @@ def upsert_ingested_entry(session, rec, det, *, chash, prov, on_supersede=None) 
     GUI watcher sees a scan with its counts while its fit still runs). ``prov`` is merged into
     provenance on add/update. Never downgrades a fitted/held/excluded entry whose content is
     unchanged. Returns ``"added" | "updated" | "unchanged"``. ``on_supersede(prev)`` is called with
-    an entry about to be downgraded for changed content (never a bare ``"ingested"`` placeholder),
+    an entry about to be downgraded for changed content (never a bare ``"ingested"`` placeholder or an
+    ``"excluded"`` one),
     before it is touched, so the caller can keep it on record.
     """
     from isar.session.state import ScanEntry
@@ -396,7 +397,7 @@ def upsert_ingested_entry(session, rec, det, *, chash, prov, on_supersede=None) 
         # Same content: leave the entry COMPLETELY untouched — never downgrade a
         # fitted/held/excluded status, never re-stamp provenance.
         return "unchanged"
-    if on_supersede is not None and prev.status != "ingested":
+    if on_supersede is not None and prev.status not in ("ingested", "excluded"):
         on_supersede(prev)
     prev.content_hash = chash
     prev.status = "ingested"

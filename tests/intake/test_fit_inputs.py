@@ -1,5 +1,6 @@
 """The fit-inputs log and the fit history (C-fit-inputs, C-fit-history): formats, writers and readers."""
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,7 +9,8 @@ from isar.intake import fit_inputs
 from isar.intake.fit_inputs import (FIT_HISTORY, FIT_INPUTS, begin_run, end_run, latest_passes, read_history,
                                     read_log, run_states, superseded_line, write_finished, write_started,
                                     write_superseded)
-from isar.session.state import ScanEntry, _scan_entry_from_dict
+from isar.session.ingest import upsert_ingested_entry
+from isar.session.state import ScanEntry, SessionState, _scan_entry_from_dict
 
 U = "spec1:42:a03"
 
@@ -115,3 +117,15 @@ def test_history_is_appended_and_a_repeat_collapses(tmp_path):
     write_superseded(tmp_path, [])
     assert len((tmp_path / FIT_HISTORY).read_text(encoding="utf-8").splitlines()) == 3
     assert fit_inputs.read_history(tmp_path / "nowhere") == []
+
+
+@pytest.mark.parametrize("status, superseded", [("excluded", False), ("fitted", True)])
+def test_reimport_records_a_superseded_fit_but_not_an_excluded_entry(status, superseded):
+    entry = _fitted()
+    entry.status = status
+    session = SessionState()
+    session.put(entry)
+    seen = []
+    rec = SimpleNamespace(experiment_id="spec1", scan_number=42, scan_type="measurement")
+    assert upsert_ingested_entry(session, rec, "a03", chash="new", prov={}, on_supersede=seen.append) == "updated"
+    assert [e.scan_id for e in seen] == ([U] if superseded else [])
