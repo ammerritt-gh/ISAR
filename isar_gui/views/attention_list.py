@@ -17,7 +17,7 @@ scroll place. The list scrolls inside a bounded height so the scan list below it
 """
 from __future__ import annotations
 
-import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,14 +25,9 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
                                QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
-from isar.workspace_api import Workspace
-from isar.workspace_api.scan_list import scan_list
 from isar_gui.theme import TONE_COLOR, Tone
-from isar_gui.viewmodels.scan_list import _NO_SUMMARY
 from isar_gui.views.elided_label import ElidedLabel
 from isar_gui.views.value_entry import ValueEntry
-
-log = logging.getLogger(__name__)
 
 USER_TEMPERATURE = "user-values:temperature"
 USER_SLIT = "user-values:slit"
@@ -352,10 +347,13 @@ class _Group(QWidget):
 class AttentionList(QWidget):
     expanded_changed = Signal(bool)
 
-    def __init__(self, intake, parent: QWidget | None = None) -> None:
+    def __init__(self, intake, labels: Callable[[str], str] | None = None, parent: QWidget | None = None) -> None:
+        """``labels``: scan key -> the scan set's label (the window passes the scan list's, read when a row is
+        built); the key stands in when none is given."""
         super().__init__(parent)
         self.setObjectName("attention_list")
         self._intake = intake
+        self._label = labels or (lambda scan: scan)
         self._expanded = False
         self._decided = False                       # the user (or a restored arrangement) chose in this experiment
         self._has_body = False
@@ -365,7 +363,6 @@ class AttentionList(QWidget):
         self._open: set[str] = set()                # group keys opened
         self._open_scans: dict[str, set[str]] = {}  # group key -> scan keys opened
         self._ticks: dict[str, set[str]] = {}
-        self._labels: dict[str, str] = {}
         self._pending_reveal: str | None = None
 
         self._header = QToolButton(self)
@@ -451,21 +448,6 @@ class AttentionList(QWidget):
         bar.setValue(place)
 
     # ---- reading the backend --------------------------------------------------------------
-    def _label(self, scan: str) -> str:
-        return self._labels.get(scan, scan)
-
-    def _load_labels(self, scans: set[str]) -> None:
-        """The scan sets' display labels (C-scan-list-read); read again when one is not known yet."""
-        if not scans or all(s in self._labels for s in scans):
-            return
-        intake = self._intake
-        try:
-            snap = scan_list(Workspace(self._root), fact_rows=intake.fact_rows or (), fit_inputs=intake.fit_inputs or (),
-                             import_summary=intake.summary or _NO_SUMMARY)     # the holder's reads: no log parse here
-            self._labels = {s.key: s.label for s in snap.sets}
-        except Exception:  # noqa: BLE001 - a label is presentation; the scan key stands in for it
-            log.exception("attention list: scan labels of %s could not be read", self._root)
-
     def _specs(self, att) -> list[_Spec]:
         specs = [self._group_spec(g, att) for g in (() if att is None else att.groups)]
         return specs + self._user_specs()
@@ -572,16 +554,9 @@ class AttentionList(QWidget):
             self._root = root
             self._open.clear()
             self._open_scans.clear()
-            self._labels = {}
             self._pending_reveal = None
             for key in list(self._groups):
                 self._drop_group(key)
-        known = {fr.scan for fr in intake.fact_rows or () if fr.user_value is not None}
-        known |= {c.scan for c in intake.conditions or () if c.condition == "counts_accepted"}
-        if att is not None:
-            known |= {i.scan for g in att.groups for i in g.items if i.scan}
-        if root is not None:
-            self._load_labels(known)
         specs = self._specs(att) if root is not None else []
         self._set_header(att, bool(specs), root)
 

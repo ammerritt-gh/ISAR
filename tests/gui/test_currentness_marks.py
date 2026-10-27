@@ -280,6 +280,22 @@ def test_an_analyzer_whose_file_never_arrived_is_not_a_readiness_category(qtbot)
     assert line._popup.table.rowCount() == 3
 
 
+def test_the_popup_names_a_scan_set_by_the_lookup_it_was_given(qtbot):
+    names = {"Smp:1002": "Warm set"}
+    intake = IntakeState()
+    intake._root = Path("constructed")
+    intake._summary = ImportSummary(2, 4, (), (), {}, None, None)
+    intake._attention = _r1()
+    line = ReadinessLine(intake, labels=lambda key: names.get(key, key))
+    qtbot.addWidget(line)
+    line.show()
+    line._label.linkActivated.emit(_link(line, "blocked:locate_folder"))
+    assert line._popup.table.item(0, 0).text() == "Warm set / a04"
+    names["Smp:1002"] = "Renamed"                                  # never cached: read when a list is filled
+    intake.worker_changed.emit()
+    assert line._popup.table.item(0, 0).text() == "Renamed / a04"
+
+
 def test_a_failed_worker_read_is_shown_not_checking_forever(qtbot):
     intake, line = _fed(qtbot, None)
     assert line.text == "4 spectra read · checking readiness…"

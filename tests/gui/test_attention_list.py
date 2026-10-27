@@ -196,25 +196,18 @@ def test_unbound_the_list_takes_no_room(qtbot):
     assert lst._header.isHidden() and lst._scroll.isHidden()
 
 
-def test_the_label_read_takes_the_holders_reads_off_the_gui_thread(qtbot, att_ws, monkeypatch):
-    import threading
-    import isar.workspace_api.scan_list as backend
-    on_gui = []
-    gui = threading.current_thread()
-
-    def watch(name, real):
-        def call(*args, **kwargs):
-            if threading.current_thread() is gui:
-                on_gui.append(name)
-            return real(*args, **kwargs)
-        return call
-    monkeypatch.setattr(Workspace, "fit_inputs", watch("fit_inputs", Workspace.fit_inputs))
-    monkeypatch.setattr(backend, "read_import_summary", watch("import_summary", backend.read_import_summary))
-    intake, lst = _make(qtbot, att_ws)
-    assert lst._labels
-    lst._labels = {}
-    lst._rebuild()                                               # a label not known yet: read again
-    assert lst._labels and on_gui == []
+def test_row_labels_come_from_the_lookup_read_when_the_row_is_built(qtbot, att_ws):
+    names: dict[str, str] = {}
+    intake = IntakeState()
+    lst = AttentionList(intake, labels=lambda key: names.get(key, key))        # the window passes the scan list's
+    qtbot.addWidget(lst)
+    with qtbot.waitSignal(intake.worker_changed, timeout=WAIT_MS):
+        intake.bind(att_ws)
+    keys = _members(lst, "temperature")
+    assert keys and [r.text for r in _group(lst, "temperature").spec.rows] == keys     # the key stands in
+    names.update({k: f"Set {i}" for i, k in enumerate(keys)})
+    lst._rebuild()                                                # never cached: the next row-build sees it
+    assert [r.text for r in _group(lst, "temperature").spec.rows] == [f"Set {i}" for i in range(len(keys))]
 
 
 def test_expansion_is_the_users_after_the_first_time(qtbot, att_ws):

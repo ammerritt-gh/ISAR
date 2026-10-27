@@ -592,8 +592,8 @@ def test_the_export_guard_follows_the_export_controller(qtbot, monkeypatch, s2_b
 def test_the_new_mounts_have_their_final_signatures():
     for cls, params in ((IntakeState, ["self", "parent"]), (SetupSection, ["self", "intake", "parent"]),
                         (DetailsDialog, ["self", "intake", "name", "folder", "parent"]),
-                        (AttentionList, ["self", "intake", "parent"]), (FactTable, ["self", "intake", "parent"]),
-                        (ReadinessLine, ["self", "intake", "parent"]), (ValueEntry, ["self", "fact", "parent"]),
+                        (AttentionList, ["self", "intake", "labels", "parent"]), (FactTable, ["self", "intake", "parent"]),
+                        (ReadinessLine, ["self", "intake", "labels", "parent"]), (ValueEntry, ["self", "fact", "parent"]),
                         (SetValueDialog, ["self", "intake", "fact", "targets", "applies_to", "parent"])):
         assert list(inspect.signature(cls.__init__).parameters) == params, cls.__name__
     for cls, members in ((IntakeState, ("changed", "worker_changed", "saved", "bind", "reload", "root", "fact_rows",
@@ -671,6 +671,27 @@ def test_every_wire_of_the_mount_table_fires(qtbot, monkeypatch, s2_built):
     assert session.view_state["attention_list"] == {"expanded": True}
     again = _window(qtbot, monkeypatch, session=session)
     assert again.attention_list.is_expanded()
+
+
+def test_the_attention_list_and_readiness_line_read_no_scan_list_of_their_own():
+    for name in ("attention_list", "readiness_line"):
+        src = (REPO / "isar_gui" / "views" / f"{name}.py").read_text(encoding="utf-8")
+        assert "scan_list(" not in src and "Workspace(" not in src and "_NO_SUMMARY" not in src, name
+
+
+def test_the_scan_list_re_reads_before_the_panels_that_take_its_labels(qtbot, monkeypatch, s2_built):
+    w = _window(qtbot, monkeypatch)
+    assert w.load_workspace(str(s2_built))
+    order = []
+    real = ScanListViewModel._reread
+    monkeypatch.setattr(ScanListViewModel, "_reread", lambda self: (order.append("list"), real(self))[1])
+    real_rebuild = w.attention_list._rebuild
+    monkeypatch.setattr(w.attention_list, "_rebuild", lambda: (order.append("attention"), real_rebuild())[1])
+    w.intake.changed.emit()
+    assert order == ["list", "attention"]                      # a label is read from the fresh list, never a stale one
+    key = w.scan_list_vm.snapshot.sets[0].key
+    assert w._scan_label(key) == w.scan_list_vm.snapshot.sets[0].label != key
+    assert w._scan_label("no such scan set") == "no such scan set"
 
 
 def test_the_left_column_order_in_every_state(qtbot, monkeypatch, s2_built):

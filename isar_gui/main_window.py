@@ -602,21 +602,25 @@ class MainWindow(QMainWindow):
         """
         # ---- the mounts ----
         self.experiment_strip = ExperimentStrip(self)
+        # The scan list re-reads (S2U4) on both intake signals; it is wired before the panels that take their
+        # scan-set labels from it, so those read a fresh list (Qt runs slots in connection order).
+        self.scan_list_vm = ScanListViewModel(_EmptyWorkspace(), self)
+        self.scan_list_vm.set_intake(self.intake)
+        self.intake.changed.connect(lambda: self.scan_list_vm.on_workspace_changed(None))
+        self.intake.worker_changed.connect(lambda: self.scan_list_vm.on_workspace_changed(None))
         self.setup_section = SetupSection(self.intake)
-        self.attention_list = AttentionList(self.intake)
+        self.attention_list = AttentionList(self.intake, self._scan_label)
         saved = self._session.view_state.get("attention_list")
         if isinstance(saved, dict) and isinstance(saved.get("expanded"), bool):
             self.attention_list.set_expanded(saved["expanded"])
         self.files_strip = FilesStrip(self)
-        self.scan_list_vm = ScanListViewModel(_EmptyWorkspace(), self)
-        self.scan_list_vm.set_intake(self.intake)
         self.scan_list = ScanListPanel(self.scan_list_vm)
         self.scan_inspector = ScanInspectorPanel(self.scan_list_vm)
         self.scan_inspector.set_intake(self.intake)
         self.scan_inspector.setMinimumWidth(_INSPECTOR_MIN)
         self.scan_inspector.hide()          # opens closed; the window owns its visibility and width
         self.processing_panel = ProcessingPanel(self)
-        self.readiness_line = ReadinessLine(self.intake)
+        self.readiness_line = ReadinessLine(self.intake, self._scan_label)
         self.processing_panel.set_readiness_widget(self.readiness_line)
         self.processing_panel.setMinimumWidth(_RIGHT_MIN)
         self.processing_rail = ProcessingRail(self)
@@ -693,9 +697,6 @@ class MainWindow(QMainWindow):
         self.readiness_line.reveal_gap.connect(self.attention_list.reveal)
         self.readiness_line.run_requested.connect(self.run_analysis)
         self.intake.saved.connect(self.log)
-        # The scan list re-reads its facts and marks from the intake (S2U4) on both of its signals.
-        self.intake.changed.connect(lambda: self.scan_list_vm.on_workspace_changed(None))
-        self.intake.worker_changed.connect(lambda: self.scan_list_vm.on_workspace_changed(None))
         self.files_strip.paths_dropped.connect(self._on_paths_dropped)
         self.files_strip.log_message.connect(self.log)
         self._folder_watcher.status_changed.connect(self.files_strip.set_watch_status)
@@ -725,6 +726,11 @@ class MainWindow(QMainWindow):
         self.processing_rail.toggled.connect(
             lambda: self.set_right_panel_collapsed(not self._right_panel_collapsed()))
         self._refresh_recents_menu()
+
+    def _scan_label(self, key: str) -> str:
+        """A scan set's label from the scan list's current read; the key stands in for an unknown set."""
+        ss = self.scan_list_vm.snapshot.scan_set(key)
+        return key if ss is None else ss.label
 
     def _locate_resolution_folder(self) -> None:
         """*Locate…* from the setup section or the readiness line: the one route; a refused save is

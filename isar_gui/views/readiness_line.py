@@ -20,18 +20,14 @@ it says so in the warning colour (the error on hover), as the needs-attention li
 from __future__ import annotations
 
 import html
-import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QDialog, QHBoxLayout, QHeaderView, QLabel, QPushButton,
                                QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from isar.workspace_api import ImportSummary, Workspace
-from isar.workspace_api.scan_list import scan_list
 from isar_gui.theme import TONE_COLOR, Tone
-
-log = logging.getLogger(__name__)
 
 # action -> (one spectrum, several spectra), in the order the blocked counts are listed
 _BLOCKED = (
@@ -46,7 +42,6 @@ _PHRASES = {action: (one, many) for action, one, many in _BLOCKED}
 _BUTTONS = {"locate_folder": "Locate…", "enter_value": "Enter the value", "accept_counts": "Show in the list",
             "reverse_declaration": "Show in the list", "start_analysis": "Start analysis"}
 _KIND_OF_ACTION = {"accept_counts": "counts_unaccepted", "reverse_declaration": "declared"}
-_NO_SUMMARY = ImportSummary(0, 0, (), (), {}, None, None)
 _WARN = f"color: {TONE_COLOR[Tone.WARN]};"
 _POPUP_ROWS = 8                    # an opened list shows this many rows, then scrolls
 READY, RUNNING = "ready", "running"
@@ -186,15 +181,17 @@ class ReadinessLine(QWidget):
     locate_requested = Signal()      # -> locate_resolution_folder
     run_requested = Signal()         # -> MainWindow.run_analysis
 
-    def __init__(self, intake, parent: QWidget | None = None) -> None:
+    def __init__(self, intake, labels: Callable[[str], str] | None = None, parent: QWidget | None = None) -> None:
+        """``labels``: scan key -> the scan set's label (the window passes the scan list's, read when a list is
+        filled); the key stands in when none is given."""
         super().__init__(parent)
         self.setObjectName("readiness_line")
         self._intake = intake
+        self._label_of = labels or (lambda scan: scan)
         self._links: dict[str, str] = {}          # href -> the classify() key behind it
         self._plain = ""
         self._open_key: str | None = None         # the count whose list is open
         self._worker_done = False                 # the worker answered since the last reload (changed)
-        self._labels: dict[str, str] = {}         # scan key -> display label, read when a list opens
         self._label = _Wrapped(self)
         self._label.setObjectName("readiness_text")
         self._label.setTextFormat(Qt.TextFormat.RichText)
@@ -295,9 +292,8 @@ class ReadinessLine(QWidget):
         if not rows:
             self._close_popup()
             return
-        self._load_labels({r.scan for r in rows})
         title = f"{len(rows)} {_phrase(key, len(rows))}"
-        shown = [(f"{self._labels.get(r.scan, r.scan)} / {r.analyzer}", r.reason or "ready") for r in rows]
+        shown = [(f"{self._label_of(r.scan)} / {r.analyzer}", r.reason or "ready") for r in rows]
         self._popup.fill(title, shown, self._buttons(rows, att))
         self._popup.show()
         if raise_:
@@ -342,15 +338,3 @@ class ReadinessLine(QWidget):
             self._close_popup()
             emit()
         return run
-
-    def _load_labels(self, scans: set[str]) -> None:
-        """The scan sets' display labels (C-scan-list-read), read once when a list opens and again only when
-        one is not known; a scan key stands in for a label that cannot be read."""
-        if all(s in self._labels for s in scans) or self._intake.root is None:
-            return
-        try:
-            snap = scan_list(Workspace(self._intake.root), fact_rows=self._intake.fact_rows or (),
-                             fit_inputs=(), import_summary=self._intake.summary or _NO_SUMMARY)
-            self._labels = {s.key: s.label for s in snap.sets}
-        except Exception:  # noqa: BLE001 - a label is presentation
-            log.exception("readiness line: scan labels of %s could not be read", self._intake.root)
