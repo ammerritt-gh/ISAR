@@ -1,21 +1,22 @@
 """ExperimentStrip -- the top of the window's left column: which experiment is open.
 
 With none open it reads "No experiment open" beside *New experiment…* (the one primary button),
-*Open…* and *Recent ▾*. With one open it shows the experiment's name with *Rename* and its folder
-path beneath. Purely presentational: every action is a signal, and the window decides what it does.
+*Open…* and *Recent ▾*. With one open it shows the experiment's name with *Rename* and *Details…*
+and its folder path beneath. Purely presentational: every action is a signal, and the window
+decides what it does.
 
 The buttons sit on two rows so the strip holds the left column's minimum width whatever the font.
 
 Two lines appear only when the window asks for them: the one-time note after a drop created and
-named the experiment (*Rename* and ✕), and a warning when an opened experiment's source data folder
-is gone (in the warning colour, every missing folder in its tooltip).
+named the experiment (*Rename*, *Add details* and ✕), and a warning when an opened experiment's
+source data folder is gone (in the warning colour, every missing folder in its tooltip).
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QToolButton,
+from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton, QToolButton,
                                QVBoxLayout, QWidget)
 
 from isar_gui.theme import TONE_COLOR, Tone
@@ -35,6 +36,7 @@ class ExperimentStrip(QWidget):
     open_requested = Signal()           # "Open…" clicked
     recent_chosen = Signal(str)         # a path picked from "Recent ▾"
     rename_requested = Signal()         # "Rename" clicked (strip or one-time note)
+    details_requested = Signal()        # "Details…" on the strip and "Add details" in the one-time note
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -50,6 +52,10 @@ class ExperimentStrip(QWidget):
         self._rename = QPushButton("Rename", self)
         self._rename.setObjectName("experiment_rename")
         self._rename.clicked.connect(self.rename_requested)
+        self._details = QPushButton("Details…", self)
+        self._details.setObjectName("experiment_details")
+        self._details.setToolTip("The experiment's name, folder and optional descriptive fields")
+        self._details.clicked.connect(self.details_requested)
         self._path = ElidedLabel("", self)
         self._path.setObjectName("experiment_path")
         self._path.setEnabled(False)   # greyed: secondary text
@@ -84,18 +90,28 @@ class ExperimentStrip(QWidget):
         note_rename = QPushButton("Rename", self._note)
         note_rename.setObjectName("experiment_note_rename")
         note_rename.clicked.connect(self.rename_requested)
+        note_details = QPushButton("Add details", self._note)
+        note_details.setObjectName("experiment_note_details")
+        note_details.clicked.connect(self.details_requested)
         note_close = QToolButton(self._note)
         note_close.setObjectName("experiment_note_close")
         note_close.setText("✕")
         note_close.setAccessibleName("Dismiss this note")
         note_close.setToolTip("Dismiss this note")
         note_close.clicked.connect(self._note.hide)
-        note_layout = QHBoxLayout(self._note)
+        # The note's buttons sit on their own row so the note holds the column's minimum width.
+        note_buttons = QHBoxLayout()
+        note_buttons.setSpacing(4)
+        note_buttons.addWidget(note_rename, 0)
+        note_buttons.addWidget(note_details, 0)
+        note_buttons.addStretch(1)
+        note_layout = QGridLayout(self._note)
         note_layout.setContentsMargins(6, 3, 3, 3)
         note_layout.setSpacing(4)
-        note_layout.addWidget(self._note_text, 1)
-        note_layout.addWidget(note_rename, 0)
-        note_layout.addWidget(note_close, 0)
+        note_layout.setColumnStretch(0, 1)
+        note_layout.addWidget(self._note_text, 0, 0)
+        note_layout.addWidget(note_close, 0, 1)
+        note_layout.addLayout(note_buttons, 1, 0, 1, 2)
         self._note.hide()
 
         # A missing outside reference of the opened experiment (its source data folder).
@@ -109,6 +125,7 @@ class ExperimentStrip(QWidget):
         top.setSpacing(6)
         top.addWidget(self._name, 1)
         top.addWidget(self._rename, 0)
+        top.addWidget(self._details, 0)
         primary = QHBoxLayout()
         primary.addWidget(self._new, 0)
         primary.addStretch(1)
@@ -131,6 +148,7 @@ class ExperimentStrip(QWidget):
         # public setters, which belong to the window's bind).
         self._path.hide()
         self._rename.hide()
+        self._details.hide()
         self._recent_menu.addAction("(no recent experiments)").setEnabled(False)
 
     def set_experiment(self, root: Path | None) -> None:
@@ -186,5 +204,6 @@ class ExperimentStrip(QWidget):
         for button in (self._new, self._open, self._recent):
             button.setEnabled(idle)
         self._rename.setVisible(self._root is not None)
+        self._details.setVisible(self._root is not None)   # details save to intake/, never blocked here
         self._rename.setEnabled(idle)
         self._rename.setToolTip("" if idle else self._busy_reason)
