@@ -182,7 +182,7 @@ def test_example3_a_drop_anywhere_in_the_window_reaches_the_ingest_route(qtbot, 
     requested = []
     monkeypatch.setattr(w._ingest_controller, "request_ingest", lambda p: requested.append(list(p)))
     path = str(Path(__file__))                        # any local path: it is only carried, not read
-    expected = QUrl.fromLocalFile(path).toLocalFile()   # the window passes toLocalFile() as it is
+    expected = str(Path(QUrl.fromLocalFile(path).toLocalFile()))   # normalised to native separators
 
     w._open_scan_inspector()                          # so every target is on screen to be hit
     w.set_right_panel_collapsed(False)
@@ -272,7 +272,7 @@ def test_export_running_blocks_save_copy_and_a_pending_experiment_is_not_ready(q
     set_available = _spy(monkeypatch, OutputBar, "set_available")
     w = _window(qtbot, monkeypatch, LAPTOP)
     assert w._availability() == (False, "need an experiment", None)
-    w._wsm.new_temp()                                 # today's reserved folder: bound, nothing read
+    w._wsm.new_experiment("X", named_from="default")  # a real folder: bound, nothing read
     qtbot.wait(30)
     assert set_available[-1] == (False, False, "no files read into this experiment yet")
     monkeypatch.setattr(w._export, "is_running", lambda: True)

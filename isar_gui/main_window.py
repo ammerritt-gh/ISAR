@@ -26,7 +26,7 @@ import os
 import shutil
 import sys
 import tempfile
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NamedTuple
@@ -66,7 +66,8 @@ from isar_gui.gui_store import GuiStore
 from isar_gui.health import (
     HealthProbe, LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, health_url, ping_http)
 from isar_gui.operation_coordinator import WorkspaceOperationCoordinator
-from isar_gui.workspace_manager import WorkspaceManager
+from isar_gui.workspace_manager import (
+    WorkspaceManager, default_experiment_name, experiments_root, openable)
 from isar.workspace_api import (
     DEFAULT_CLOUD_FALLBACK_MODEL,
     SCHEMA_VERSION,
@@ -76,6 +77,8 @@ from isar.workspace_api import (
     WorkspaceNotFound,
     validate_endpoint,
 )
+from isar.workspace_api.references import outside_references
+from isar.workspace_api.watch import last_written
 from isar_gui.log_dock import LogDock
 from isar_gui.logging_setup import configure_gui_logging
 from isar_gui.session import Autosaver, Session, load_session
@@ -106,6 +109,7 @@ from isar_gui.views.heatmap_pane import HeatmapPane
 from isar_gui.views.inspector_widget import InspectorWidget
 from isar_gui.views.output_bar import OutputBar
 from isar_gui.views.processing_panel import ProcessingPanel, ProcessingRail
+from isar_gui.views.rename_dialog import RenameDialog
 from isar_gui.views.scan_inspector import ScanInspectorPanel
 from isar_gui.views.scan_list import ScanListPanel
 from isar_gui.views.scan_table_dock import ScanTableDock
@@ -116,13 +120,8 @@ from isar_gui.watch_bridge import WatchBridge
 log = logging.getLogger(__name__)
 
 
-_WORKFLOW_HINT = ("Workflow:  add data (top left)  →  organize scans (left)  →  "
-                  "views (center)  →  drive a campaign (right)")
 # The display's words before any scan is picked (the inspector page's empty text says the same).
 _EMPTY_HINT = "Nothing to show yet. Pick a scan on the left once data is in."
-_PENDING_HINT = ("Drop data files to begin — they'll land in a temporary workspace.\n"
-                 "Or drive a virtual campaign (right) — it creates its own data."
-                 f"\n\n{_WORKFLOW_HINT}")   # retired with the temporary workspace
 
 # Bump when the dock inventory/geometry contract changes: restoreState of any OTHER version fails
 # atomically and the window falls back to _apply_default_arrangement (never binary-migrate Qt blobs).
@@ -282,13 +281,16 @@ class MainWindow(QMainWindow):
         # It survives ordinary workspace refreshes only while the same unit remains in the ledger.
         self.active_units = ActiveUnitController(self)
 
-        # The workspace lifecycle owner (none/pending/ready + temp/save-as). MainWindow is the view:
-        # it reflects the manager's signals and never reaches into a workspace directory itself. `ws`
-        # passed at construction is adopted directly (no re-open, no signal); every later transition
-        # flows through the manager's emitting methods.
+        # The experiment lifecycle owner (none/pending/ready; create, open, rename, copy). MainWindow is
+        # the view: it reflects the manager's signals and never reaches into a workspace directory
+        # itself. `ws` passed at construction is adopted directly (no re-open, no signal); every later
+        # transition flows through the manager's emitting methods.
         self._wsm = WorkspaceManager(self)
         self._wsm.workspace_changed.connect(self._on_wsm_workspace_changed)
         self._wsm.state_changed.connect(self._on_wsm_state_changed)
+        # A folder ISAR just created gets the one-time note saying what named it (after its bind).
+        self._wsm.experiment_created.connect(
+            lambda _root, named_from: self.experiment_strip.show_created_note(named_from))
         if ws is not None:
             self._wsm.adopt(ws)
 
@@ -345,7 +347,7 @@ class MainWindow(QMainWindow):
         self._build_frame()
         self._bind_workspace(ws)
         self._bound = True
-        if ws is not None and not self._wsm.is_temporary():
+        if ws is not None:
             self._session.note_workspace(ws.root)
 
         # Session autosave: debounced 500ms, snapshotting the live layout at fire time.
@@ -423,8 +425,6 @@ class MainWindow(QMainWindow):
         # when data arrives).
         self.inspector = InspectorWidget(self.inspector_vm, parent=self)
         self._build_center_host()
-        # The parking page's words (it is shown only while a binding is torn down).
-        self._empty_hint.setText(_PENDING_HINT if self._wsm.state() == "pending" else _EMPTY_HINT)
         # Every route that changes what is being inspected passes through the active-unit controller.
         # This keeps the Results tree, physical chips, and table honest about the one detector in the
         # central inspector, without treating a multi-selection as an inspection request.
@@ -443,16 +443,18 @@ class MainWindow(QMainWindow):
         # The arrangement itself is applied by __init__ (first bind) or carried across by _rebind
         # (later binds): _init_docks only places each dock in its area.
 
-        if self._empty:
-            if self._wsm.state() == "pending":
-                self.statusBar().showMessage("Temporary workspace — drop data files to begin")
-                self.log(f"Reserved temporary workspace {self._wsm.root()} — drop data to begin")
-            else:
-                self.statusBar().showMessage("No workspace loaded")
-                self.log("Started with no workspace — File ▸ Open Workspace… to begin")
+        # A pending experiment is a real folder with nothing read into it yet; ``root`` is None only
+        # with no experiment at all.
+        root = self._wsm.root() if self._wsm.state() != "none" else None
+        if root is not None and self._empty:
+            self.statusBar().showMessage(f"Experiment {root.name} — drop data files to begin")
+            self.log(f"Experiment {root}: no files read into it yet — drop data to begin")
+        elif root is None:
+            self.statusBar().showMessage("No experiment open")
+            self.log("No experiment open — New experiment…, Open… or drop data to begin")
         else:
-            self.statusBar().showMessage(f"Workspace: {ws.root}")
-            self.log(f"Opened workspace {ws.root}")
+            self.statusBar().showMessage(f"Experiment: {ws.root}")
+            self.log(f"Opened experiment {ws.root}")
 
         # Index the manifest for the folder watcher's is_known guard before seeding the watcher (its
         # set_folders triggers a poll that consults the guard).
@@ -466,35 +468,74 @@ class MainWindow(QMainWindow):
             self.scans_vm.set_store(self._gui_store)
             if getattr(self, "campaign_dock", None) is not None:
                 self.campaign_dock.set_store(self._gui_store)
-            # Seed the watcher from the persisted config directly (a bind is not a user mutation, so
-            # it must not re-persist the store; user add/remove/pause go through watch_config_changed).
-            self._folder_watcher.configure(
-                self.files_vm.watched(), self.files_vm.watch_paused(), reset_binding=True)
         else:
             self._gui_store = None
-            self._folder_watcher.configure([], False, reset_binding=True)
+        self._seed_folder_watcher()
 
         # Watch bridge: refresh + fan out on the Qt thread. Optional (tests may disable it). Never
         # started in the empty state — there is no workspace on disk to watch.
         self._bridge = None
+        self._start_watch_bridge()
+
+        # The persistent mounts learn of the binding.
+        self.scan_list_vm.set_workspace(self._ws)
+        self.scan_list_vm.set_active_key(self.active_units.key)
+        self.experiment_strip.set_experiment(root)
+        self.files_strip.bind(self.files_vm, root is not None)   # experiment_open
+        self.output_bar.set_experiment(root)
+        self._show_outside_references()
+        self._note_last_written()
+        self._sync_run_actions()  # Run/Re-run enablement depends on empty-state + remembered runs
+        self._sync_workspace_actions()
+
+    def _seed_folder_watcher(self) -> None:
+        """Seed the folder watcher from the bound experiment's persisted config (a bind is not a user
+        mutation, so it must not re-persist the store; user add/remove/pause go through
+        watch_config_changed). With no GUI store (none/pending) it watches nothing."""
+        if self._gui_store is not None:
+            self._folder_watcher.configure(
+                self.files_vm.watched(), self.files_vm.watch_paused(), reset_binding=True)
+        else:
+            self._folder_watcher.configure([], False, reset_binding=True)
+
+    def _start_watch_bridge(self) -> None:
+        """Start the watch bridge on the bound workspace (ready only, and only when watching is on)."""
         if self._watch_enabled and not self._empty:
-            self._bridge = WatchBridge(ws, parent=self, **self._watch_kwargs)
+            self._bridge = WatchBridge(self._ws, parent=self, **self._watch_kwargs)
             self._bridge.changed.connect(self._on_workspace_changed)
             self._bridge.start()
             self._live_label.setText("watching (no changes yet)")
         else:
             self._live_label.setText("")
 
-        # The persistent mounts learn of the binding. ``root`` is None with no experiment (that is the
-        # window's ``_empty``, which today also covers a reserved temporary workspace).
-        root = None if self._empty else Path(self._ws.root)
-        self.scan_list_vm.set_workspace(self._ws)
-        self.scan_list_vm.set_active_key(self.active_units.key)
-        self.experiment_strip.set_experiment(root)
-        self.files_strip.bind(self.files_vm, not self._empty)
-        self.output_bar.set_experiment(root)
-        self._sync_run_actions()  # Run/Re-run enablement depends on empty-state + remembered runs
-        self._sync_workspace_actions()
+    def _stop_watch_bridge(self) -> None:
+        if self._bridge is not None:
+            self._bridge.stop()
+            self._bridge = None
+
+    def _note_last_written(self) -> None:
+        """Show on the Output bar when the experiment's watched files were last written (a stat)."""
+        root = self._wsm.root()
+        stamp = None if root is None else last_written(root)
+        if stamp is not None:
+            self.output_bar.note_written(datetime.fromtimestamp(stamp))
+
+    def _show_outside_references(self) -> None:
+        """Say in the experiment strip and the Log when an opened experiment's source data folders
+        are gone. Ready only: a pending experiment has no manifest. A missing resolution folder is
+        not shown here (today's held reasons already say it)."""
+        missing = () if self._empty else outside_references(self._ws).missing_source_folders
+        if not missing:
+            self.experiment_strip.set_outside_warning(None)
+            return
+        tail = "stored scans still show; reading or re-running them needs it"
+        folder, n = missing[0]
+        more = f" and {len(missing) - 1} more" if len(missing) > 1 else ""
+        self.experiment_strip.set_outside_warning(
+            f"Source data folder not found: {folder} ({n} files){more} — {tail}",
+            "Source data folders not found:\n" + "\n".join(f"{f} ({k} files)" for f, k in missing))
+        for f, k in missing:
+            self.log(f"Source data folder not found: {f} ({k} files) — {tail}")
 
     def _build_center_host(self) -> None:
         """Build the CenterHost with the five display surfaces, register it as the stack's ready page,
@@ -532,14 +573,10 @@ class MainWindow(QMainWindow):
             self._center_host.show_view(key, user=user)
 
     def _update_title(self) -> None:
-        """``ISAR — <name>`` for a saved workspace; ``ISAR — Unsaved workspace ●`` while temporary
-        (pending or a not-yet-saved temp); ``ISAR — (no workspace)`` for the none-state."""
-        if self._wsm.is_temporary():
-            self.setWindowTitle("ISAR — Unsaved workspace ●")
-        elif self._empty:
-            self.setWindowTitle("ISAR — (no workspace)")
-        else:
-            self.setWindowTitle(f"ISAR — {Path(self._ws.root).name}")
+        """``ISAR — <folder name>`` for a pending or ready experiment, ``ISAR — no experiment``
+        otherwise."""
+        root = self._wsm.root() if self._wsm.state() != "none" else None
+        self.setWindowTitle("ISAR — no experiment" if root is None else f"ISAR — {root.name}")
 
     # ---- the frame: persistent mounts, central widget, frame docks ----------
     def _build_frame(self) -> None:
@@ -985,12 +1022,15 @@ class MainWindow(QMainWindow):
     # ---- File menu (built once; actions persist across workspace reloads) --
     def _init_file_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
-        self._new_workspace_menu_action = file_menu.addAction("New Workspace")
+        # The same window slots as the experiment strip and the Output bar.
+        self._new_workspace_menu_action = file_menu.addAction("New experiment…")
         self._new_workspace_menu_action.triggered.connect(self.new_workspace)
-        self._open_workspace_menu_action = file_menu.addAction("Open Workspace…")
+        self._open_workspace_menu_action = file_menu.addAction("Open experiment…")
         self._open_workspace_menu_action.triggered.connect(self._on_open_workspace)
-        self._save_as_menu_action = file_menu.addAction("Save Workspace As…")
-        self._save_as_menu_action.triggered.connect(self.save_workspace_as)
+        self._rename_menu_action = file_menu.addAction("Rename experiment…")
+        self._rename_menu_action.triggered.connect(self.rename_experiment)
+        self._save_copy_menu_action = file_menu.addAction("Save copy as…")
+        self._save_copy_menu_action.triggered.connect(self.save_copy_as)
 
         file_menu.addSeparator()
         report_action = file_menu.addAction("Open Report")
@@ -1022,12 +1062,13 @@ class MainWindow(QMainWindow):
             self.log(message)
 
     def _on_open_workspace(self) -> None:
-        start_dir = "" if self._ws.root is None else str(self._ws.root)
-        # Non-native, like every other workspace dialog here: the Windows-native directory picker
+        start = experiments_root()
+        start_dir = str(start) if start.is_dir() else ""
+        # Non-native, like every other experiment dialog here: the Windows-native directory picker
         # refuses a typed path whose folder does not exist yet and offers no way to make one, so
         # the operator had to leave the application and create the folder in Explorer first.
         path = QFileDialog.getExistingDirectory(
-            self, "Open Workspace", start_dir,
+            self, "Open experiment", start_dir,
             QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
         if path:
             self.load_workspace(path)
@@ -1060,74 +1101,155 @@ class MainWindow(QMainWindow):
         return True, "", None
 
     def _sync_workspace_actions(self) -> None:
-        """Save As is meaningful only for a temporary workspace with a card already scaffolded
-        (state ready). A saved workspace has nothing to Save As; a pending/none one has no card."""
+        """Mirror the availability rule into the Output bar, the experiment strip and the File menu."""
         if getattr(self, "output_bar", None) is None:
             return                      # the frame is not built yet (the manager adopts first)
         busy = self._operations.is_busy()
-        can_save_as = self._wsm.state() == "ready" and self._wsm.is_temporary() and not busy
-        self._save_as_menu_action.setEnabled(can_save_as)
         for action in (self._new_workspace_menu_action, self._open_workspace_menu_action):
             action.setEnabled(not busy)
+        self._rename_menu_action.setEnabled(self._wsm.root() is not None and not busy)
         available, reason, strip_busy = self._availability()
+        self._save_copy_menu_action.setEnabled(available)
         self.output_bar.set_available(available, available, reason)
         self.experiment_strip.set_busy(strip_busy)
 
-    # ---- workspace lifecycle actions (delegate to the manager) ------------
-    def new_workspace(self) -> None:
-        """Reserve a fresh temporary workspace and bind it (pending state)."""
-        if self._operations.is_busy():
-            self.statusBar().showMessage("Workspace is busy — cancel or wait for the current operation")
-            return
-        if not self._resolve_dirty_card("start a new workspace"):
-            return
-        if not self._resolve_temporary_workspace("start a new workspace"):
-            return
-        self._wsm.new_temp()
+    def _say(self, message: str) -> None:
+        """One line on the status bar and in the Log."""
+        self.statusBar().showMessage(message)
+        self.log(message)
 
-    def save_workspace_as(self) -> bool:
-        """Copy the current temporary workspace to a chosen directory and open it there. Returns
-        whether a save actually happened (dialog cancelled or the copy failing yields ``False``)."""
+    # ---- experiment lifecycle actions (delegate to the manager) ----------------
+    def new_workspace(self) -> None:
+        """*New experiment…*: create an empty experiment folder under a default name (pending)."""
         if self._operations.is_busy():
-            self.statusBar().showMessage("Workspace is busy — Save As is unavailable during analysis or ingest")
-            return False
-        if not self._resolve_dirty_card("save this workspace elsewhere"):
-            return False
-        if not (self._wsm.state() == "ready" and self._wsm.is_temporary()):
-            self.statusBar().showMessage("Save As is only for an unsaved temporary workspace")
-            return False
-        # Save mode, not directory mode: the operator names the folder to create rather than being
-        # forced to pre-create an empty one and then pick it. Overwrite confirmation is declined
-        # here because the manager's own "absent or empty" check is the authority (and Qt would
-        # otherwise ask about a folder we are going to refuse anyway).
-        # DontUseNativeDialog: the Windows-native dialog rejects typed paths whose
-        # parent folders do not exist ("This folder does not exist"), while the
-        # manager creates the whole parent chain at promote time.
+            self.statusBar().showMessage("ISAR is busy — cancel or wait for the current operation")
+            return
+        if not self._resolve_dirty_card("start a new experiment"):
+            return
+        try:
+            self._wsm.new_experiment(default_experiment_name(), named_from="default")
+        except OSError as exc:
+            log.warning("could not create an experiment folder: %s", exc)
+            self._say(f"Could not create the experiment folder in {experiments_root()}: {exc}")
+
+    def _rename_refusal(self) -> str | None:
+        """Why *Rename* cannot run now, or ``None``: an engine command or an export is writing in the
+        folder, or the experiment's manifest names source files inside it (their absolute paths
+        would point at the old folder)."""
+        if self._operations.is_busy() or self._export.is_running():
+            _available, _reason, strip_busy = self._availability()
+            return strip_busy or "an engine command is running in the experiment"
+        if not self._empty and outside_references(self._ws).sources_inside:
+            return ("this experiment holds its own source files; rename would leave ISAR unable to "
+                    "find them")
+        return None
+
+    def rename_experiment(self) -> None:
+        """Rename the open experiment: its name and its folder's name together, completely or not at
+        all. The watchers are stopped around the rename (a live directory handle blocks it)."""
+        old = self._wsm.root()
+        if old is None:
+            self.statusBar().showMessage("Rename needs an experiment")
+            return
+        refusal = self._rename_refusal()
+        if refusal is not None:
+            self._say(f"Rename refused: {refusal}")
+            return
+        if not self._resolve_dirty_card("rename this experiment"):
+            return
+        name = RenameDialog.ask(old, None if self._empty else self._ws, self)
+        if name is None:
+            return
+        # The dialog's event loop may have let a watched folder start an ingest meanwhile.
+        refusal = self._rename_refusal()
+        if refusal is not None:
+            self._say(f"Rename refused: {refusal}")
+            return
+        # A debounced store save firing after the rename would recreate the old folder (its mkdir).
+        self._flush_gui_store_if_pending()
+        self._stop_watch_bridge()
+        self._folder_watcher.configure([], True, reset_binding=True)
+        if self._wsm.rename(name):
+            new = self._wsm.root()
+            if str(new) == str(old):           # the same name: nothing moved and nothing re-bound
+                self._start_watch_bridge()
+                self._seed_folder_watcher()
+                return
+            # The re-bind has started both watchers on the new root.
+            self._session.rename_workspace(old, new)
+            self._refresh_recents_menu()
+            self._sync_run_actions()           # the remembered run moved with the folder
+            self._autosave()
+            self._say(f"Renamed experiment {old.name} to {new.name} ({new})")
+            return
+        reason = self._wsm.last_error() or "unknown reason"
+        live = self._wsm.root()
+        if live is not None and str(live) == str(old):
+            # The rename failed, or was undone. An undone one re-bound the old root and restarted the
+            # bridge already; a failed one left the binding as it was, with the bridge stopped.
+            if self._bridge is None:
+                self._start_watch_bridge()
+            self._seed_folder_watcher()
+        self._say(f"Rename failed: {reason}")
+
+    def save_copy_as(self) -> None:
+        """*Save copy as…*: copy the whole experiment folder to a new one. The original stays the
+        active experiment; the copy is named on the Output bar with *Open copy*."""
+        root = self._wsm.root()
+        available, reason, _strip_busy = self._availability()
+        if root is None or not available:
+            self.statusBar().showMessage(f"Save copy as… is unavailable: {reason}")
+            return
+        if not self._resolve_dirty_card("save a copy of this experiment"):
+            return
+        # Save mode, not directory mode: the operator names the folder to create. Overwrite
+        # confirmation is declined because the manager's "absent or empty" check is the authority.
+        # Non-native: the Windows dialog rejects typed paths whose parents do not exist yet, while
+        # the manager creates the whole parent chain at promotion.
         dest, _selected = QFileDialog.getSaveFileName(
-            self, "Save Workspace As — name a new folder", "isar-workspace", "",
+            self, "Save copy as — name a new folder", str(root.parent / f"{root.name}-copy"), "",
             options=(QFileDialog.Option.DontConfirmOverwrite
                      | QFileDialog.Option.DontUseNativeDialog))
         if not dest:
-            return False
-        # Flush a pending GUI-store write into the temp workspace BEFORE it is copied, so the saved
-        # copy carries the operator's latest watched-folders/groups rather than a stale snapshot.
+            return
+        available, reason, _strip_busy = self._availability()
+        if not available:                       # the dialog's event loop may have let an ingest in
+            self._say(f"Save copy as… is unavailable: {reason}")
+            return
+        # The copy carries the latest watched folders and groups, not a stale snapshot.
         self._flush_gui_store_if_pending()
-        if self._wsm.save_as(dest):
-            self.statusBar().showMessage(f"Saved workspace to {dest}")
-            return True
-        reason = self._wsm.last_error() or "folder must be empty and writable"
-        self.statusBar().showMessage(f"Could not save to {dest}: {reason}")
-        self.log(f"Save As failed for {dest}: {reason}")
-        return False
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            copy = self._wsm.save_copy(dest)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if copy is None:
+            reason = self._wsm.last_error() or "the folder must be empty and writable"
+            self.output_bar.show_copy_failed(reason)
+            self._say(f"Could not save a copy to {dest}: {reason}")
+            return
+        self.output_bar.show_copy_done(copy)
+        self._session.note_workspace(copy)
+        self._session.note_workspace(root)     # the original stays the most recent
+        self._refresh_recents_menu()
+        self._autosave()
+        self._say(f"Saved a copy of {root.name} to {copy}; new data keeps going to {root.name}")
+        self._log_copy_references(copy)
 
-    def rename_experiment(self) -> None:
-        """Rename the open experiment (its name and its folder's name together). Foundation: only
-        says so; the rename itself arrives with the experiment lifecycle."""
-        self.statusBar().showMessage("Rename arrives with this release")
-
-    def save_copy_as(self) -> None:
-        """Copy the whole experiment to a new folder. Foundation: today's Save As."""
-        self.save_workspace_as()
+    def _log_copy_references(self, copy: Path) -> None:
+        """Say what the copy still reads from outside its own folder."""
+        try:
+            refs = outside_references(Workspace.open(copy))
+        except (WorkspaceNotFound, OSError) as exc:
+            log.warning("could not read the copy's outside references at %s: %s", copy, exc)
+            return
+        if refs.source_folders:
+            self.log(f"The copy reads its source data from {', '.join(refs.source_folders)}; "
+                     "keep them available to re-read or re-run.")
+        # The copied calibration records the ORIGINAL's curve folders, so "inside" is judged there.
+        if not self._empty and outside_references(self._ws).resolution_inside:
+            self.log(f"Its stored fits name the resolution curves of {self._ws.root}; the next Run "
+                     "analysis in the copy refits them from the copy's own folder.")
 
     def _on_export_requested(self) -> None:
         """*Export…*: only when the availability rule allows it, then through the export controller."""
@@ -1137,25 +1259,6 @@ class MainWindow(QMainWindow):
             return
         if not self._export.start(Path(self._ws.root)):
             self.statusBar().showMessage("Export did not start")
-
-    @staticmethod
-    def _is_empty_target(path) -> bool:
-        """Whether ``path`` is a folder an operator could still save a new campaign into."""
-        try:
-            target = Path(path)
-            return not target.exists() or (target.is_dir() and not any(target.iterdir()))
-        except OSError:
-            return False
-
-    @staticmethod
-    def _empty_target_hint(path) -> str:
-        return ("Empty folder — start a campaign, then Save As here"
-                if Path(path).exists() else
-                "Folder does not exist yet — start a campaign, then Save As to create it")
-
-    @staticmethod
-    def _is_workspace_dir(path: Path) -> bool:
-        return path.is_dir() and (path / "card.policy.toml").exists()
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt override)
         md = event.mimeData()
@@ -1173,14 +1276,16 @@ class MainWindow(QMainWindow):
         """The one drop route: every path that arrives (the window's own drops, the files strip's
         drops and choices, the old Files dock) lands here, in drop order.
 
-        A single dropped existing workspace opens directly. Anything else is raw data handed to the
-        IngestController, which routes by workspace state (none -> reserve temp + bootstrap;
-        pending -> bootstrap; ready -> ingest) and serializes everything behind one FIFO queue."""
+        With no experiment open, one dropped experiment folder opens it. Anything else, and with an
+        experiment open everything (an experiment folder included), is read into the experiment by
+        the ingest route, which creates and names a new experiment when none is open and serializes
+        every batch behind one FIFO. *Open…* is how one switches experiments."""
+        paths = [str(Path(p)) for p in paths if str(p)]
         if not paths:
             return
-        first = Path(paths[0])
-        if len(paths) == 1 and self._is_workspace_dir(first):
-            self.load_workspace(str(first))
+        if (self._wsm.state() == "none" and len(paths) == 1
+                and (Path(paths[0]) / "card.policy.toml").is_file()):
+            self.load_workspace(paths[0])
             return
         self._ingest_controller.request_ingest(paths)
 
@@ -1225,8 +1330,8 @@ class MainWindow(QMainWindow):
             if count_text:
                 prefix += f" ({count_text})"
             self.statusBar().showMessage(
-                f"{prefix}: {parsed_waiting} analyzer unit(s) awaiting analysis "
-                f"; see the scan list, or Processing ▸ Run analysis…{note}")
+                f"{prefix}: {parsed_waiting} analyzer unit(s) awaiting analysis; "
+                f"choose Run analysis… in Processing{note}")
         else:
             prefix = f"Ingested {n_files} files"
             if count_text:
@@ -1246,6 +1351,7 @@ class MainWindow(QMainWindow):
         if dock is not None and added_paths:
             dock.highlight_added(added_paths)
         self.files_strip.show_arrival(report)
+        self._note_last_written()               # a window built with watch=False has no later tick
 
     def _on_ingest_failed(self, code: int, cause: str) -> None:
         self.statusBar().showMessage(f"Could not ingest data: {cause}")
@@ -1327,11 +1433,11 @@ class MainWindow(QMainWindow):
     def _flush_gui_store_if_pending(self) -> None:
         """Flush a pending debounced GUI-store write NOW and disarm the save timer.
 
-        Called before any store swap (a rebind/load/Save As) and on close, so a mutation made <500 ms
-        earlier is not lost when ``_gui_store`` is replaced and the armed timer would otherwise re-save
-        into the *new* store. Guarded against the discard path: after ``discard_temp`` rmtree's the
-        temp dir, ``GuiStore.save``'s ``mkdir(parents=True)`` would resurrect it — so only write when
-        the outgoing store's root still exists. The timer is stopped unconditionally.
+        Called before any store swap (a rebind/load), before a rename or a copy, and on close, so a
+        mutation made <500 ms earlier is not lost when ``_gui_store`` is replaced and the armed timer
+        would otherwise re-save into the *new* store. Only writes while the outgoing store's root
+        still exists: ``GuiStore.save``'s ``mkdir(parents=True)`` would otherwise recreate a folder
+        that has moved. The timer is stopped unconditionally.
         """
         timer = getattr(self, "_store_save_timer", None)
         if timer is None:
@@ -1379,13 +1485,14 @@ class MainWindow(QMainWindow):
 
     # ---- workspace-manager signal slots (the window reflects the manager) --
     def _on_wsm_workspace_changed(self, ws) -> None:
-        """The bound workspace changed (open / new_temp / bootstrap / save_as). Rebind the docks to
-        it (``None`` for the empty/pending state), refresh recents (saved workspaces only), and
-        re-sync the action enablement."""
+        """The bound experiment changed (new / open / bootstrap / rename). Rebind the docks to it
+        (``None`` for the none/pending state), note it in the recents (a pending experiment is a
+        real folder too), and re-sync the action enablement."""
         self._rebind(ws)
-        if ws is not None and not self._wsm.is_temporary():
-            self._session.note_workspace(ws.root)
-            self._refresh_recents_menu()
+        root = self._wsm.root()
+        if root is not None:
+            self._session.note_workspace(root)
+        self._refresh_recents_menu()
         self._autosave()
 
     def _on_wsm_state_changed(self, _state: str) -> None:
@@ -1481,15 +1588,23 @@ class MainWindow(QMainWindow):
         self._sync_run_actions()
 
     def _on_virtual_start_requested(self, opts, env: dict) -> None:
-        """Launch a campaign with NO workspace at all: reserve → rebind → carry the form → drive.
+        """Launch a campaign with NO experiment open: create one → rebind → carry the form → drive.
 
-        The dock cannot call request_drive itself here — reserving tears the emitting dock down
-        mid-click — so it hands the built options over and this slot owns the sequence. The
-        campaign then initializes the reserved directory itself (lazy `isar init` after its
-        first scan); the promotion timer adopts it (see _try_promote_campaign_workspace)."""
+        The dock cannot call request_drive itself here — creating the experiment tears the emitting
+        dock down mid-click — so it hands the built options over and this slot owns the sequence.
+        ISAR names the experiment, as a drop does (G19). The campaign then initializes the pending
+        folder itself (lazy `isar init` after its first scan); the promotion timer adopts it (see
+        _try_promote_campaign_workspace)."""
         dock = getattr(self, "campaign_dock", None)
         form = dock.form_dict() if dock is not None else None
-        self._wsm.new_temp()                       # rebind: a fresh pending dock appears
+        try:
+            # rebind: a fresh pending dock appears
+            self._wsm.new_experiment(f"Campaign_{date.today():%Y-%m-%d}", named_from="default")
+        except OSError as exc:
+            log.warning("could not create an experiment folder for the campaign: %s", exc)
+            self._say(f"Campaign not started: could not create the experiment folder in "
+                      f"{experiments_root()}: {exc}")
+            return
         if form is not None and self.campaign_dock is not None:
             self.campaign_dock.apply_form(form)    # in-memory carry — pending has no GuiStore yet
         if not self._operations.request_drive(opts, env=dict(env or {})):
@@ -1498,8 +1613,8 @@ class MainWindow(QMainWindow):
     def _seed_pending_campaign_form(self) -> None:
         """Persist the typed campaign form into the reserved directory's GuiStore BEFORE the
         promotion rebind loads it — set_store fires during the ready bind, so seeding afterwards
-        would be invisible. Never overwrites an existing form (a recovered temporary workspace
-        keeps its own). The GuiStore is a machine-written GUI file — sanctioned, unlike the card."""
+        would be invisible. Never overwrites an existing form (a pending experiment opened from
+        Recent keeps its own). The GuiStore is a machine-written GUI file — sanctioned, unlike the card."""
         root = self._wsm.root()
         dock = getattr(self, "campaign_dock", None)
         if root is None or dock is None:
@@ -1591,6 +1706,7 @@ class MainWindow(QMainWindow):
         else:
             self._set_run_status(f"run FAILED (exit {code}) — see log", "#c62828")
             self.statusBar().showMessage(f"Run failed (exit {code})")
+        self._note_last_written()               # a window built with watch=False has no later tick
         self._sync_run_actions()
 
     def _cancel_active_operation(self) -> None:
@@ -1999,94 +2115,41 @@ class MainWindow(QMainWindow):
             # C++ object during teardown). Same intent as PUFFIN's visibility handler, leak-safe.
             dock.visibilityChanged.connect(action.setChecked)
 
-    # ---- load a different workspace ---------------------------------------
+    # ---- open a different experiment ---------------------------------------
     def load_workspace(self, path) -> bool:
-        """Open the workspace at ``path`` through the manager, which emits ``workspace_changed`` and
+        """Open the experiment at ``path`` through the manager, which emits ``workspace_changed`` and
         drives the full teardown+rebind in :meth:`_on_wsm_workspace_changed`. Returns ``True`` on
-        success; an invalid path leaves the current workspace untouched and reports a status message.
+        success; a folder that is not an experiment leaves the current one untouched and says why.
         """
         if self._operations.is_busy():
-            self.statusBar().showMessage("Workspace is busy — cancel or wait before opening another workspace")
+            self.statusBar().showMessage("ISAR is busy — cancel or wait before opening another experiment")
             return False
-        # Validate before resolving the current draft.  The manager still performs the actual bind,
-        # but a failed candidate must not cause a Save/Discard prompt for the workspace being kept.
-        try:
-            Workspace.open(path)
-        except (WorkspaceNotFound, OSError) as exc:
-            # An absent or empty folder is the operator naming where a campaign should live, not a
-            # broken workspace; saying "not a workspace" sent them looking for a corrupt folder.
-            self.statusBar().showMessage(
-                f"{self._empty_target_hint(path)}: {path}" if self._is_empty_target(path)
-                else f"Not a workspace: {path}")
-            self.log(f"Not opening {path}: {exc}")
+        # Validate before resolving the current draft: a refused candidate must not cause a
+        # Save/Discard prompt for the experiment being kept.
+        reason = openable(path)
+        if reason is not None:
+            self.statusBar().showMessage(f"Cannot open {path}: {reason}")
+            self.log(f"Not opening {path}: {reason}")
             return False
-        if not self._resolve_dirty_card("open another workspace"):
+        if not self._resolve_dirty_card("open another experiment"):
             return False
         if self._wsm.root() is not None:
             try:
                 if Path(path).resolve() == self._wsm.root().resolve():
                     return True
             except OSError as exc:
-                self.log(f"could not compare current workspace to {path}: {exc}")
-        if not self._resolve_temporary_workspace("open another workspace"):
-            return False
+                self.log(f"could not compare the open experiment to {path}: {exc}")
         if self._wsm.open(path):
             return True
-        self.statusBar().showMessage(f"Not a workspace: {path}")
+        reason = self._wsm.last_error() or "not an ISAR experiment"
+        self.statusBar().showMessage(f"Cannot open {path}: {reason}")
+        self.log(f"Not opening {path}: {reason}")
         return False
 
     def _resolve_dirty_card(self, action: str) -> bool:
         """Resolve the current card draft before an action changes its meaning or binding."""
         dock = getattr(self, "card_dock", None)
         return True if dock is None else dock.resolve_dirty(action)
-
-    def _resolve_temporary_workspace(self, action: str) -> bool:
-        """Resolve temporary work before leaving it, without silently losing analysis.
-
-        Content-bearing temporary work has four deliberate outcomes: Save As, leave it available
-        for startup recovery, discard it, or cancel the transition.  Empty pending reservations are
-        not analysis; remove them on the way out so cancelled setup does not accumulate directories.
-        """
-        if not self._wsm.is_temporary():
-            return True
-        if not self._wsm.has_content():
-            if self._wsm.discard_empty_temp():
-                return True
-            self.statusBar().showMessage("Could not clean up the empty temporary workspace")
-            self.log("Could not clean up empty temporary workspace before " + action)
-            return False
-
-        root = self._wsm.root()
-        label = root.name if root is not None else "temporary workspace"
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("Temporary workspace has unsaved analysis")
-        box.setText(f"{label} has not been saved.")
-        box.setInformativeText(
-            f"Before you {action}, save it, keep it for recovery at the next launch, or discard "
-            "only the temporary analysis. Source data files are never removed.")
-        save_btn = box.addButton("Save As…", QMessageBox.ButtonRole.AcceptRole)
-        keep_btn = box.addButton("Keep for Recovery", QMessageBox.ButtonRole.ActionRole)
-        discard_btn = box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
-        cancel_btn = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(save_btn)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is cancel_btn:
-            return False
-        if clicked is keep_btn:
-            self.log(f"Keeping temporary workspace for recovery: {root}")
-            return True
-        if clicked is discard_btn:
-            before = self._wsm.root()
-            self._wsm.discard_temp()
-            if before is not None and not before.exists():
-                return True
-            self.statusBar().showMessage("Could not discard the temporary workspace")
-            self.log(f"Could not discard temporary workspace: {before}")
-            return False
-        # Save As…: a cancelled/failed save must not silently drop the workspace — back out.
-        return self.save_workspace_as()
 
     def _on_card_saved(self, path: str, generation: int, root: Path | None) -> None:
         """Refresh card-derived views only for the workspace that produced the save signal."""
@@ -2116,9 +2179,7 @@ class MainWindow(QMainWindow):
         if getattr(self, "_promote_timer", None) is not None:
             self._promote_timer.stop()
         self._promote_identity = None
-        if self._bridge is not None:
-            self._bridge.stop()
-            self._bridge = None
+        self._stop_watch_bridge()
 
         self._view_menu.removeAction(self._docks_menu.menuAction())
         # removeAction() only detaches the menu; the QMenu (and its per-dock QActions, whose closures
@@ -2331,10 +2392,9 @@ class MainWindow(QMainWindow):
             if open_extra:
                 layout["left_width"] = int(self._column_width())
             self._session.view_state["window_layout"] = layout
-        # Only saved workspaces belong in recents — a temporary (pending/unsaved) workspace must
-        # never pollute the recent-workspaces list (it may be discarded moments later).
-        if not self._empty and not self._wsm.is_temporary():
-            self._session.note_workspace(self._ws.root)
+        # Every experiment is a real folder, a pending one included, so it belongs in the recents.
+        if self._wsm.root() is not None:
+            self._session.note_workspace(self._wsm.root())
         self.heatmap_vm.save_view_state(self._session)
         self.dispersion_vm.save_view_state(self._session)
         self.waterfall_vm.save_view_state(self._session)
@@ -2429,11 +2489,6 @@ class MainWindow(QMainWindow):
         if not self._resolve_dirty_card("close ISAR"):
             event.ignore()
             return
-        # A content-bearing temporary workspace is unsaved analysis — prompt before it is lost. If
-        # the operator cancels (or backs out of the Save As dialog), abort the close entirely.
-        if not self._resolve_unsaved_temp_on_close():
-            event.ignore()
-            return
         if getattr(self, "_health_timer", None) is not None:
             self._health_timer.stop()
         if getattr(self, "_health_start_timer", None) is not None:
@@ -2450,10 +2505,6 @@ class MainWindow(QMainWindow):
         if getattr(self, "_autosaver", None) is not None:
             self._autosaver.flush_now()
         # Flush any pending debounced GUI-store write (watched folders / groups) before the window
-        # goes — guarded so a just-discarded temp dir is not resurrected by the save's mkdir.
+        # goes. Every experiment is already a real folder, so closing asks nothing.
         self._flush_gui_store_if_pending()
         super().closeEvent(event)
-
-    def _resolve_unsaved_temp_on_close(self) -> bool:
-        """Resolve temporary analysis before close; kept work remains a recovery candidate."""
-        return self._resolve_temporary_workspace("close ISAR")

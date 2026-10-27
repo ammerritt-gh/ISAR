@@ -144,7 +144,7 @@ def _make_pyside6_present(monkeypatch):
 
 
 def test_no_workspace_arg_forwards_empty_argv(monkeypatch):
-    # No workspace given: run() forwards an empty argv. Recovery/recent/empty-start resolution lives
+    # No workspace given: run() forwards an empty argv. Recent/empty-start resolution lives
     # in isar_gui.app.main (so `python -m isar_gui` and `isar view` behave identically); run() must
     # not exit or resolve on its own.
     import isar_gui.app as gui_app
@@ -263,24 +263,17 @@ def test_resolve_recent_none_without_session(monkeypatch):
     assert gui_app._resolve_recent_workspace() is None
 
 
-def test_default_startup_offers_recovery_before_generic_recent(monkeypatch):
-    """Unfinished temporary work must not be silently replaced by an unrelated saved recent."""
+def test_legacy_temporary_workspaces_get_one_startup_pointer_and_nothing_else(tmp_path, monkeypatch):
+    """Earlier builds' temporary folders are named once in the Log; nothing opens or deletes them."""
     import isar_gui.app as gui_app
+    import isar_gui.workspace_manager as wm
 
-    recovered = object()
-    monkeypatch.setattr(gui_app, "_maybe_recover_workspace", lambda: recovered)
-
-    def recent_must_not_run():
-        raise AssertionError("recent resolution ran before an available recovery")
-
-    monkeypatch.setattr(gui_app, "_resolve_recent_workspace", recent_must_not_run)
-    assert gui_app._resolve_default_workspace() is recovered
-
-
-def test_default_startup_falls_through_to_recent_when_recovery_not_opened(monkeypatch):
-    import isar_gui.app as gui_app
-
-    recent = object()
-    monkeypatch.setattr(gui_app, "_maybe_recover_workspace", lambda: None)
-    monkeypatch.setattr(gui_app, "_resolve_recent_workspace", lambda: recent)
-    assert gui_app._resolve_default_workspace() is recent
+    temproot = tmp_path / "temp_workspaces"
+    monkeypatch.setattr(wm, "temp_root", lambda: temproot)
+    assert gui_app._legacy_temp_note() is None
+    left = temproot / "20260801-101500-ab12"
+    left.mkdir(parents=True)
+    (left / "session.json").write_text("{}", encoding="utf-8", newline="\n")
+    note = gui_app._legacy_temp_note()
+    assert str(temproot) in note and "Open…" in note and "Save copy as…" in note
+    assert left.exists()

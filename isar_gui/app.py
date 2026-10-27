@@ -6,10 +6,12 @@ the Qt event loop, returning a process exit code.
 Workspace resolution:
   * an **explicit** path argument is opened read-only; a nonexistent/invalid one is a hard CLI error
     (stderr + exit 2 — no dialog yet; GUI error dialogs come later);
-  * with **no argument**, leftover temporary work is offered for recovery before a generic recent
-    workspace is opened. If neither is available, the window opens in EMPTY-START — no console
-    error. A double-click launch must never fail on a stale recent, so an unopenable recent falls
-    back silently.
+  * with **no argument**, the most recent openable experiment is opened. If none is available, the
+    window opens in EMPTY-START — no console error. A double-click launch must never fail on a
+    stale recent, so an unopenable recent falls back silently.
+
+Folders left in the retired temporary-workspace location by earlier builds are not opened or
+deleted: one Log line at startup says where they are and how to keep them.
 
 Smoke hook: set ``ISAR_GUI_SMOKE_MS=<ms>`` to auto-quit the app after that many milliseconds with
 exit 0 (a ``QTimer.singleShot`` posted after ``exec`` starts). Used by the offscreen live smoke
@@ -84,40 +86,15 @@ def _resolve_recent_workspace() -> "Workspace | None":
     return None
 
 
-def _maybe_recover_workspace() -> "Workspace | None":
-    """Offer any leftover temporary workspaces for recovery (Phase C). Returns the recovered
-    :class:`Workspace` if the operator opened one, else ``None`` (nothing to recover, or they chose
-    Discard/Later). A modal recovery prompt is suppressed under the offscreen smoke hook so CI never
-    blocks. Built lazily so the common no-candidates path adds no Qt latency.
-    """
-    if os.environ.get("ISAR_GUI_SMOKE_MS"):
+def _legacy_temp_note() -> str | None:
+    """The startup Log line naming leftover temporary workspaces of earlier builds, or ``None``."""
+    from isar_gui.workspace_manager import legacy_temp_workspaces, temp_root
+
+    found = legacy_temp_workspaces()
+    if not found:
         return None
-    from isar_gui.workspace_manager import recovery_candidates
-
-    candidates = recovery_candidates()
-    if not candidates:
-        return None
-    from isar_gui.recovery_dialog import RecoveryDialog
-
-    dlg = RecoveryDialog(candidates)
-    dlg.exec()
-    if dlg.chosen is None:
-        return None
-    try:
-        return Workspace.open(dlg.chosen)
-    except (WorkspaceNotFound, OSError):
-        return None
-
-
-def _resolve_default_workspace() -> "Workspace | None":
-    """Resolve a no-argument launch without hiding unfinished temporary work.
-
-    A saved recent workspace is merely a convenience. A recovery candidate may contain the data
-    from the operator's immediately preceding session, so it must be offered first. Choosing Later
-    (or having no candidate) falls through to the most-recent openable saved workspace.
-    """
-    recovered = _maybe_recover_workspace()
-    return recovered if recovered is not None else _resolve_recent_workspace()
+    return (f"{len(found)} folder(s) from earlier ISAR builds are in {temp_root()}: open one with "
+            "Open… (it then works as an experiment in place) and keep it with Save copy as….")
 
 
 def main(argv=None) -> int:
@@ -149,14 +126,16 @@ def main(argv=None) -> int:
     _install_exception_hook(log_path)
 
     if not explicit:
-        # No path given: unfinished temporary work takes precedence over the generic recents list.
-        # An explicit CLI arg suppresses both recovery and recent-workspace resolution.
-        ws = _resolve_default_workspace()
+        # No path given: the most recent openable experiment (an explicit CLI arg suppresses it).
+        ws = _resolve_recent_workspace()
 
     window = MainWindow(ws)  # ws may be None -> empty-start
     if log_path is not None:
         window.log(f"GUI log: {log_path} (Help ▸ Open GUI Log Folder)")
         window.statusBar().showMessage("GUI log ready — Help ▸ Open GUI Log Folder")
+    legacy = _legacy_temp_note()
+    if legacy is not None:
+        window.log(legacy)
     # Maximised: the first-start arrangement is sized to the screen's available area.
     window.showMaximized()
     logging.getLogger(__name__).info("main window shown")  # the launcher smoke test waits for this line
