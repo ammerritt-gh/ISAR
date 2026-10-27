@@ -61,6 +61,9 @@ class Rig:
         self.qtbot, self.root = qtbot, root
         self.intake = IntakeState()
         self.vm = ScanListViewModel(Workspace.open(root))
+        self.vm.set_intake(self.intake)         # as the window wires it: each intake signal re-reads the list,
+        self.intake.changed.connect(lambda: self.vm.on_workspace_changed(None))      # which re-renders the inspector
+        self.intake.worker_changed.connect(lambda: self.vm.on_workspace_changed(None))
         self.panel = ScanInspectorPanel(self.vm)
         qtbot.addWidget(self.panel)
         self.panel.set_intake(self.intake)
@@ -161,6 +164,25 @@ def test_the_file_value_is_shown_with_the_source_the_read_gives(qtbot, ft_ws):
     assert rig.text("slit", "files") == "—\nmissing"
     assert rig.text("slit", "used") == "—\nchosen when analysis starts"
     assert rig.cell("temperature", "used").styleSheet() == ""
+
+
+def test_the_table_draws_once_per_intake_signal_and_not_while_the_inspector_is_hidden(qtbot, monkeypatch, ft_ws):
+    w = _window(qtbot, monkeypatch, ft_ws)
+    w.scan_list_vm.inspect(A03)
+    qtbot.wait(50)
+    draws = []
+    real = FactTable._render
+    monkeypatch.setattr(FactTable, "_render", lambda self: (draws.append(1), real(self))[1])
+    w.intake.changed.emit()
+    w.intake.worker_changed.emit()
+    assert len(draws) == 2                                   # the inspector's render is the one trigger of each
+    w.scan_inspector.hide()
+    draws.clear()
+    w.intake.changed.emit()
+    w.intake.worker_changed.emit()
+    assert draws == []                                       # hidden: the inspector defers, and so does the table
+    w.scan_inspector.show()
+    assert len(draws) == 1 and w.scan_inspector._fact_table.has_facts
 
 
 def test_set_my_value_supersedes_and_use_the_file_value_returns(qtbot, monkeypatch, ft_ws):
@@ -434,4 +456,5 @@ def test_a_value_saved_in_the_window_reaches_the_table(qtbot, monkeypatch, ft_ws
     rig.qtbot, rig.root, rig.intake, rig.table, rig.panel = qtbot, ft_ws, w.intake, w.scan_inspector._fact_table, w.scan_inspector
     rig.type_value(monkeypatch, "temperature", "100", reason="offset")
     assert rig.text("temperature", "used") == "100 K\nyours"
+    assert rig.text("temperature", "yours") == "100 K\noffset"
     assert [x["value"] for x in _lines(ft_ws) if x["kind"] == "value"] == [100.0]

@@ -203,9 +203,7 @@ class FactTable(QWidget):
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(3)
-        intake.changed.connect(self._render)
-        intake.worker_changed.connect(self._render)
-        self._render()
+        self._render()                      # later draws come from set_unit: the inspector renders on each intake signal
 
     @property
     def has_facts(self) -> bool:
