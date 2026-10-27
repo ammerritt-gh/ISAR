@@ -370,6 +370,28 @@ def test_the_panel_fits_its_minimum_width_and_elides_long_values(qtbot, patched,
     assert file_label.toolTip().endswith(file_label.full_text())
 
 
+def _form_rows(panel):
+    for form in (panel._facts, panel._processing, panel._metadata):
+        for i in range(form.rowCount()):
+            yield (form.itemAt(i, QFormLayout.ItemRole.LabelRole).widget(),
+                   form.itemAt(i, QFormLayout.ItemRole.FieldRole).widget())
+
+
+def test_every_value_starts_past_the_end_of_its_label(qtbot, patched, bl43_ws, monkeypatch):
+    """Geometry, not text: offscreen has no real fonts, so the label column must be measured."""
+    md = {"unit": A06, "count_recovery_max_deviation": "4.139e-07 (inferred)"}
+    monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
+    vm, panel = _panel(qtbot, bl43_ws)
+    panel.resize(mw_mod._INSPECTOR_MIN, 700)
+    panel.show_key(A06)
+    qtbot.wait(30)
+    spacing = panel._facts.horizontalSpacing()
+    rows = list(_form_rows(panel))
+    assert len(rows) >= 10
+    for label, field in rows:
+        assert field.geometry().left() >= label.geometry().right() + spacing, label.full_text()
+
+
 # ---------------------------------------------------------------------------
 # 8-11: the mount inside the left panel
 # ---------------------------------------------------------------------------

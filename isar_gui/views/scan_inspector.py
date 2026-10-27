@@ -365,6 +365,8 @@ class ScanInspectorPanel(QWidget):
             form.removeRow(0)
         for line in lines:
             label = ElidedLabel(line.label, mode=Qt.TextElideMode.ElideRight)   # full name in the tooltip
+            # Fixed, not Ignored: QFormLayout sizes the label column from the hint, and Ignored zeroes it
+            label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
             label.setFixedWidth(_LABEL_WIDTH)
             _muted(label)
             form.addRow(label, self._status_widget(line) if line.column else self._value(line))
