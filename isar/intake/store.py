@@ -139,6 +139,7 @@ def append(root, name: str, entry: dict, *, check: Callable[[list[dict]], str | 
     path = root / name
     with _locked(root):
         data = _bytes(path)
+        # shortcut: O(lines) read per save, fine to tens of thousands of entries; keep a sidecar max-seq past that
         present = _entries(data, path)
         if check is not None:
             reason = check(present)
