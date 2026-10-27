@@ -84,6 +84,11 @@ def build_ingest_command(python: str, data_paths, workspace: str, *, json: bool 
     return cmd
 
 
+def build_export_command(python: str, workspace: str) -> list[str]:
+    """The argv for ``isar export --workspace <ws> --json``: stored results only, no refit."""
+    return [python, "-m", "isar", "export", "--workspace", str(workspace), "--json"]
+
+
 def build_detect_command(python: str, data: str) -> list[str]:
     """The argv for ``isar detect <data> --json``. Retained for a planned Files-dock detect-preview
     (no production caller today — see :class:`DetectResult`)."""
