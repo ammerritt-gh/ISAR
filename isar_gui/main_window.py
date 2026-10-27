@@ -225,6 +225,11 @@ class _EmptyWorkspace:
         pass
 
 
+# The status bar's and Processing panel's word for each kind the coordinator emits.
+_ACTIVITY_VERBS = {"ingest": "Ingesting", "drive": "Campaign running", "compile": "Compiling campaign",
+                   "export": "Exporting", "run": "Analysing"}
+
+
 class MainWindow(QMainWindow):
     """The shell window over one :class:`~isar.workspace_api.Workspace`."""
 
@@ -1741,12 +1746,8 @@ class MainWindow(QMainWindow):
                 verb = "Cancelling"
             elif state.get("stopping"):
                 verb = "Stopping campaign after the current scan"
-            elif kind == "ingest":
-                verb = "Ingesting"
-            elif kind == "drive":
-                verb = "Campaign running"
             else:
-                verb = "Analysing"
+                verb = _ACTIVITY_VERBS.get(kind, "Analysing")
             suffix = f" + {queued} queued" if queued else ""
             self._operation_status.setText(f"{verb}{suffix}")
         dock = getattr(self, "card_dock", None)

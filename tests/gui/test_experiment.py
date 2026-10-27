@@ -535,6 +535,18 @@ def test_the_availability_rule_on_the_real_output_bar(qtbot, make_ws):
         assert shown() == (True, True, ""), kind
 
 
+def test_each_activity_kind_has_its_own_word(qtbot, make_ws):
+    w = _window(qtbot, _ready(make_ws))
+    for kind, word in (("ingest", "Ingesting"), ("run", "Analysing"), ("export", "Exporting"),
+                       ("drive", "Campaign running"), ("compile", "Compiling campaign")):
+        w._on_operation_activity_changed({**_IDLE, "kind": kind, "queued": 1})
+        assert w._operation_status.text() == f"{word} + 1 queued", kind
+    w._on_operation_activity_changed({**_IDLE, "kind": "export", "cancelling": True})
+    assert w._operation_status.text() == "Cancelling"
+    w._on_operation_activity_changed(_IDLE)
+    assert w._operation_status.text() == ""
+
+
 def test_last_written_on_bind_is_the_session_files_time(qtbot, make_ws):
     root = make_ws(rows=_ROWS)
     stamp = time.time() + 120                            # newer than every other watched file
