@@ -241,10 +241,13 @@ empty/ready layout pair, and amends G19 as stated below.
   state, or `not run` where nothing is stored, side by side, with no result picked as "the" result. The
   centre plot keeps drawing the fast-pass fit. A missing temperature or Q shows a dash with its reason
   on hover, and a background update keeps selection, expansion and scroll.
-- **Scan inspector (amendment 4, operator via orchestrator, 2026-10-27).** The inspector keeps the
-  scan's QC flags, shown whenever the scan has any, and shows the target Q a driven scan was aimed at
-  and the campaign-era command and counting mode, each only when present. Other rows of the old centre
-  metadata are not in the inspector. On a laptop-size window, opening the inspector collapses an
+- **Scan inspector (amendment 4, operator via orchestrator, 2026-10-27).** The inspector keeps every
+  row of the old centre metadata that the unit has a value for: the QC flags, the target Q, the
+  campaign-era command and counting mode, the status, type, energy status, calibration rows, the scan
+  and analyzer facts, preset, B and Q rung, in a "Scan metadata" section below Processing. A missing
+  fact has no row; the hashed unit key and the rows the inspector draws itself (analyzer, temperature,
+  Q, slit, points, file, scan numbers) are not repeated. The section scrolls, and the labels elide with
+  the full name as tooltip. On a laptop-size window, opening the inspector collapses an
   expanded Processing panel to its rail; the user may expand it again, and closing the inspector does
   not expand it. A desktop-size window is unchanged.
 - **Stage two (Planned, waits on job `jfada74237892`, the intake backend).** Not built: the setup

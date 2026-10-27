@@ -84,13 +84,23 @@ def _calibration_rows(block) -> dict:
 
 # Facts shown first, in this order; every other parsed fact follows, sorted by name.
 _FACT_FIRST = ("scan_label", "T_K", "hkl_nominal", "slit", "dq", "efficiency")
+MISSING_FACT_TEXT = "not available"   # the text of a missing fact; the scan inspector drops such rows
+
+
+def _finite(value) -> float | None:
+    """``value`` as a float, or None when it is missing, non-numeric or NaN (a BL43 preset is NaN)."""
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return None
+    return x if np.isfinite(x) else None
 
 
 def _fmt_fact(fact: dict) -> str:
     """One fact as ``value (source)``; a missing value says so, and a source disagreement is listed."""
     value = fact.get("value")
     if value is None:
-        text = "not available"
+        text = MISSING_FACT_TEXT
     elif isinstance(value, (list, tuple)):
         text = _fmt_q(value) or str(value)
     elif isinstance(value, float):
@@ -323,21 +333,16 @@ class InspectorViewModel(ViewModel):
             md["command"] = str(prov["command"])
         if prov.get("counting_mode"):
             md["counting mode"] = str(prov["counting_mode"])
-        if prov.get("preset") is not None:
-            try:
-                md["preset"] = f"{float(prov['preset']):g}"
-            except (TypeError, ValueError):
-                pass
+        preset = _finite(prov.get("preset"))
+        if preset is not None:
+            md["preset"] = f"{preset:g}"
         if prov.get("n_points") is not None:
             md["points"] = str(prov["n_points"])
         if prov.get("energy_status"):
             md["energy status"] = str(prov["energy_status"])
-        b = prov.get("B")
+        b = _finite(prov.get("B"))
         if b is not None:
-            try:
-                md["B"] = f"{float(b):g} T"
-            except (TypeError, ValueError):
-                pass
+            md["B"] = f"{b:g} T"
         if prov.get("q_rung") is not None:
             md["Q rung"] = f"{prov['q_rung']} ({prov.get('q_source')})"
         # Scan facts, then analyzer facts: every name the provenance holds, known names first.

@@ -20,13 +20,13 @@ from typing import NamedTuple
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QLabel, QSizePolicy, QToolButton,
+from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QToolButton,
                                QVBoxLayout, QWidget)
 
 from isar.workspace_api.scan_list import Fact, PooledRow, ScanSetRow, SpectrumRow
 from isar_gui.plotspec_pg import clear_render, disable_view_drops, render_into
 from isar_gui.theme import DEEP, FAST, PARSED, dot_icon, status_tone
-from isar_gui.viewmodels.inspector import InspectorViewModel
+from isar_gui.viewmodels.inspector import MISSING_FACT_TEXT, InspectorViewModel
 from isar_gui.viewmodels.scan_list import ScanListViewModel
 from isar_gui.views.elided_label import ElidedLabel
 
@@ -38,8 +38,9 @@ _PLOT_MIN_HEIGHT = 130     # the plot must leave the lines visible at the laptop
 _NO_SPECTRUM = "This spectrum is no longer in the experiment"
 _NOTHING_PICKED = "Pick a scan in the list to inspect it."
 _POOLED_NOTE = "pooled spectrum: shown in the display"
-# The centre's old unit metadata that the inspector keeps (design 2.7, amendment 4): shown when present.
-_KEPT_METADATA = ("scan flags", "spectrum flags", "target #Q", "command", "counting mode")
+# Unit metadata keys the inspector draws on its own lines, or the hashed unit key: never repeated below.
+_SHOWN_ELSEWHERE = frozenset({"unit", "analyzer", "T", "points", "file", "slit", "scan_numbers",
+                              "n_merged_scans", "T_K", "Q_nm"})
 
 
 class Line(NamedTuple):
@@ -50,7 +51,7 @@ class Line(NamedTuple):
     tooltip: str = ""
     column: str | None = None
     reason: str | None = None
-    group: str = "facts"           # "facts" or "processing"
+    group: str = "facts"           # "facts", "processing" or "metadata"
 
 
 def _number(value: float) -> str:
@@ -148,9 +149,9 @@ def inspector_lines(row: SpectrumRow | PooledRow, set_row: ScanSetRow | None, un
     text, tip = energy_range_text(unit)
     lines.append(Line("Energy range", text, tip))
     lines.append(status("Parsed", PARSED, row.parsed, "facts"))
-    for name in _KEPT_METADATA:
-        if metadata and metadata.get(name):
-            lines.append(Line(name, metadata[name], metadata[name]))
+    for name, value in (metadata or {}).items():      # the view model's order; a missing fact has no row
+        if name not in _SHOWN_ELSEWHERE and not value.startswith(MISSING_FACT_TEXT):
+            lines.append(Line(name, value, value, group="metadata"))
     lines.append(status("Fast pass", FAST, row.fast, "processing"))
     lines.append(status("Deep pass", DEEP, row.deep, "processing"))
     return lines
@@ -213,9 +214,24 @@ class ScanInspectorPanel(QWidget):
         body.setContentsMargins(0, 0, 0, 0)
         self._facts = self._form()
         self._processing = self._form()
-        body.addLayout(self._facts)
-        body.addWidget(self._section("Processing"))
-        body.addLayout(self._processing)
+        self._metadata = self._form()
+        self._metadata_header = self._section("Scan metadata")
+        rows = QWidget()
+        rows_l = QVBoxLayout(rows)
+        rows_l.setContentsMargins(0, 0, 0, 0)
+        rows_l.addLayout(self._facts)
+        rows_l.addWidget(self._section("Processing"))
+        rows_l.addLayout(self._processing)
+        rows_l.addWidget(self._metadata_header)
+        rows_l.addLayout(self._metadata)
+        rows_l.addStretch(1)
+        # The rows scroll, so a unit with many metadata rows never squeezes the plot below them.
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("scan_inspector_rows")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._scroll.setWidget(rows)
+        body.addWidget(self._scroll, 1)
         body.addWidget(self._section("Raw counts"))
         self._glw = pg.GraphicsLayoutWidget()
         self._glw.setObjectName("scan_inspector_plot")
@@ -306,6 +322,8 @@ class ScanInspectorPanel(QWidget):
         lines = inspector_lines(row, set_row, unit, None if state is None else state.metadata)
         self._fill(self._facts, [ln for ln in lines if ln.group == "facts"])
         self._fill(self._processing, [ln for ln in lines if ln.group == "processing"])
+        self._fill(self._metadata, [ln for ln in lines if ln.group == "metadata"])
+        self._metadata_header.setVisible(self._metadata.rowCount() > 0)
         self._render_plot(row, set_row, pooled, state)
 
     def _read_unit(self, key: str):
@@ -345,7 +363,7 @@ class ScanInspectorPanel(QWidget):
         while form.rowCount():
             form.removeRow(0)
         for line in lines:
-            label = QLabel(line.label)
+            label = ElidedLabel(line.label, mode=Qt.TextElideMode.ElideRight)   # full name in the tooltip
             label.setFixedWidth(_LABEL_WIDTH)
             _muted(label)
             form.addRow(label, self._status_widget(line) if line.column else self._value(line))

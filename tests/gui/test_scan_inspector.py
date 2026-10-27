@@ -61,12 +61,13 @@ def _panel(qtbot, bl43_ws):
 
 
 def _fields(panel):
-    """label -> the value widget of every line the panel shows."""
+    """label -> the value widget of every line the panel shows (the full label, never its elided form)."""
     out = {}
-    for form in (panel._facts, panel._processing):
+    for form in (panel._facts, panel._processing, panel._metadata):
         for i in range(form.rowCount()):
-            label = form.itemAt(i, QFormLayout.ItemRole.LabelRole).widget().text()
-            out[label] = form.itemAt(i, QFormLayout.ItemRole.FieldRole).widget()
+            label = form.itemAt(i, QFormLayout.ItemRole.LabelRole).widget()
+            name = label.full_text() if isinstance(label, ElidedLabel) else label.text()
+            out[name] = form.itemAt(i, QFormLayout.ItemRole.FieldRole).widget()
     return out
 
 
@@ -132,32 +133,86 @@ def test_a_missing_q_shows_a_dash_with_its_reason(qtbot, patched, bl43_ws):
     assert _text(f["Fast pass"]) == "not run"
 
 
-# The campaign-era fields the old centre panel showed, which the inspector keeps (design 2.7, amendment 4).
+# The rows the old centre metadata panel showed (design 2.7, amendment 4): every unit metadata entry
+# is drawn, in the view model's order, except the hashed unit key and the rows the inspector draws itself.
 CAMPAIGN = {"scan flags": "missing_sidecar (warning): no .var file",
             "spectrum flags": "bin_absent (info): a06: 2 bins absent",
             "target #Q": "[1.5, 0, 0]", "command": "scan deltaE -2 4 200", "counting mode": "monitor"}
+ALL_ROWS = {"type": "measurement", "status": "fitted", "energy status": "needs_zero",
+            "resolution slit": "60x60 (file)", "slit candidates": "summed deviance 60x60: 1.0",
+            "energy zero": "0.1 meV (elastic_fit)", "elastic fit": "centre 0.1 meV, amplitude 3",
+            "calibration flags": "bin_width (info): 0.2 meV", "efficiency": "0.54 (sidecar)",
+            "preset": "200", "B": "7 T", "Q rung": "4 (none)"}
 
 
-def test_a_campaign_unit_shows_its_command_target_mode_and_flags(qtbot, patched, bl43_ws, monkeypatch):
-    monkeypatch.setattr(InspectorViewModel, "_unit_metadata",
-                        staticmethod(lambda *_args: {"unit": A06, "preset": "200", **CAMPAIGN}))
+def test_a_unit_shows_its_status_calibration_facts_and_campaign_rows(qtbot, patched, bl43_ws, monkeypatch):
+    md = {"unit": A06, "analyzer": "a06", "T": "97 K", "points": "60", **ALL_ROWS, **CAMPAIGN}
+    monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
     vm, panel = _panel(qtbot, bl43_ws)
     panel.show_key(A06)
     f = _fields(panel)
-    for label, value in CAMPAIGN.items():
-        assert _text(f[label]) == value and _tooltip(f[label]) == value
-    assert "preset" not in f and "unit" not in f           # only the kept fields, nothing else from the VM
+    for label, value in {**ALL_ROWS, **CAMPAIGN}.items():
+        assert _text(f[label]) == value and _tooltip(f[label]) == value, label
+    # the hashed unit key stays hidden, and the lines the inspector draws itself are not repeated
+    assert "unit" not in f and "analyzer" not in f and "T" not in f and "points" not in f
 
 
-def test_a_bl43_scan_shows_its_mode_and_flags_but_no_command_or_target(qtbot, patched, bl43_ws):
-    # The BL43 headers stamp a counting mode and the set's QC flags, as the old centre panel showed them;
-    # a campaign command and a target Q are never in a BL43 file, so those lines are absent.
+def test_a_unit_without_those_values_shows_none_of_their_rows(qtbot, patched, bl43_ws, monkeypatch):
+    md = {"unit": A06, "analyzer": "a06"}
+    monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
+    vm, panel = _panel(qtbot, bl43_ws)
+    panel.show_key(A06)
+    f = _fields(panel)
+    assert set(f) >= {"File", "Q", "Parsed", "Fast pass", "Deep pass"}
+    assert not (set(ALL_ROWS) | set(CAMPAIGN)) & set(f)
+    assert not panel._metadata_header.isVisibleTo(panel)
+
+
+def test_a_bl43_scan_shows_no_empty_or_nan_rows(qtbot, patched, bl43_ws):
+    # The BL43 headers stamp a counting mode, the set's QC flags and a status; a campaign command, a target Q,
+    # a preset and a B field are never in a BL43 file, and a missing fact is not a row.
     vm, panel = _panel(qtbot, bl43_ws)
     panel.show_key(A06)
     f = _fields(panel)
     assert _text(f["counting mode"]) == "monitor"
     assert _text(f["scan flags"]).startswith("pre_combined_input (warning)")
-    assert not {"command", "target #Q", "spectrum flags"} & set(f)
+    assert not {"command", "target #Q", "spectrum flags", "preset", "B"} & set(f)
+    shown = " ".join(_text(w) for w in f.values())
+    assert "not available" not in shown and "nan" not in shown
+    assert "slit" not in f and "time" not in f and "scan_numbers" not in f    # missing facts: no row
+
+
+def test_a_long_metadata_label_elides_with_its_full_name_in_the_tooltip(qtbot, patched, bl43_ws, monkeypatch):
+    md = {"unit": A06, "count_recovery_max_deviation": "4.139e-07 (inferred)"}
+    monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
+    vm, panel = _panel(qtbot, bl43_ws)
+    panel.show_key(A06)
+    qtbot.wait(30)
+    label = panel._metadata.itemAt(0, QFormLayout.ItemRole.LabelRole).widget()    # the only row
+    assert label.full_text() == "count_recovery_max_deviation"
+    assert label.text() != label.full_text() and "…" in label.text()
+    assert label.toolTip() == "count_recovery_max_deviation"
+
+
+def test_many_metadata_rows_scroll_inside_the_panel_at_the_laptop_width(qtbot, patched, bl43_ws, monkeypatch):
+    md = {"unit": A06, **{f"fact_{i:02d}": f"{i} (sidecar)" for i in range(40)}}
+    monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
+    vm, panel = _panel(qtbot, bl43_ws)
+    panel.resize(mw_mod._INSPECTOR_MIN, 600)
+    panel.show_key(A06)
+    qtbot.wait(30)
+    assert panel._scroll.verticalScrollBar().maximum() > 0
+    assert panel.minimumSizeHint().width() <= mw_mod._INSPECTOR_MIN
+
+
+def test_a_long_unit_in_the_laptop_window_keeps_the_frame_and_scrolls(qtbot, patched, bl43_ws, monkeypatch):
+    md = {"unit": A06, **{f"fact_{i:02d}": f"{i} (sidecar)" for i in range(40)}}
+    monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
+    w = _window(qtbot, monkeypatch, LAPTOP, bl43_ws)
+    w.scan_list_vm.inspect(A06)
+    qtbot.wait(50)
+    assert_frame_geometry(w, LAPTOP)
+    assert w.scan_inspector._scroll.verticalScrollBar().maximum() > 0
 
 
 def test_scan_numbers_text_for_each_kind_of_set():

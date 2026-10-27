@@ -367,7 +367,9 @@ The inspector opens beside the scan list, inside the left panel, and ✕ closes 
 analyzer it shows the file; the scan numbers (a summed set says so, and lists its scans when the files
 do); the analyzer, temperature and Q, each with where it came from; the slit, or "not in the file"; the
 number of points and the energy range; the parse status; the scan's QC flags; the target Q, the campaign
-command and the counting mode, each only when the scan has one; each pass's state; and a raw-counts plot.
+command and the counting mode, each only when the scan has one; each pass's state; a "Scan metadata"
+section with the rest of the unit's recorded values (status, calibration, the file's facts, and so on),
+one row per value the unit has; and a raw-counts plot.
 On a laptop, opening the inspector collapses *Processing* to its rail so the plot keeps its width; expand
 *Processing* again from the rail and it stays open while the inspector is open. Closing the inspector
 does not expand it.
