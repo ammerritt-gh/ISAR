@@ -173,7 +173,7 @@ def test_a_fact_whose_sources_disagree_keeps_its_row(qtbot, patched, bl43_ws, mo
 
 def test_a_dict_and_a_long_list_read_as_text_with_the_full_value_in_the_tooltip(qtbot, patched, bl43_ws,
                                                                                  monkeypatch):
-    bins = list(range(1, 156))
+    bins = list(range(1, 155)) + [1001]   # a count past three digits prints exactly
     fit = {"origin": "y_over_e_squared", "family": "_i", "bins_tested": 155, "bins_off": 1}
     md = {"unit": A06, "fit_spec": _fmt_fact({"value": fit, "source": "file"}),
           "bins": _fmt_fact({"value": bins, "source": "file"}),

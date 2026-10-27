@@ -110,6 +110,8 @@ class _Abridged(str):
 
 
 def _item(v, full: bool) -> str:
+    if isinstance(v, int) and not isinstance(v, bool):
+        return str(v)   # a count prints exactly; .3g would show 1001 as 1e+03
     try:
         return f"{float(v):.3g}"
     except (TypeError, ValueError):
