@@ -5,11 +5,15 @@ Offscreen Qt, the real MainWindow. The geometry of the button at 1108x851 and 19
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("PySide6")
 
 from isar_gui.main_window import MainWindow
+from isar_gui.run_dialog import NO_DATA_REASON, RunDialog
 from isar_gui.session import Session
 
 
@@ -62,3 +66,25 @@ def test_the_run_button_is_off_with_its_reason_in_text_until_something_can_run(q
     w.setup_section._problem.set_line(None)
     w.setup_section._fit_run_note()
     assert note.isVisible()
+
+
+def test_the_run_dialog_is_prefilled_from_where_the_experiments_data_were_read_from(qtbot, bl43_ws, monkeypatch):
+    seen = []
+    monkeypatch.setattr(RunDialog, "exec", lambda self: seen.append(self._data_edit.text()) or 0)
+    w = _win(qtbot, bl43_ws)
+    w.run_analysis()                                        # a first run of this experiment: no earlier run to copy
+    folders = w.scan_list_vm.source_folders()
+    assert folders and seen == [os.pathsep.join(folders)]
+    assert Path(folders[0]).name == "incoming" and Path(folders[0]).is_dir()    # where the files were read from
+
+
+def test_the_run_dialog_with_nothing_to_run_on_is_off_and_says_why(qtbot):
+    dlg = RunDialog(data="")
+    qtbot.addWidget(dlg)
+    dlg.show()
+    assert not dlg._run_btn.isEnabled() and dlg._reason.isVisible() and dlg._reason.text() == NO_DATA_REASON
+    assert dlg.data_paths == []
+    dlg._data_edit.setText("D:\\data")
+    assert dlg._run_btn.isEnabled() and not dlg._reason.isVisible() and dlg.data_paths == ["D:\\data"]
+    dlg._data_edit.setText(os.pathsep.join(["D:\\a", "D:\\b"]))
+    assert dlg.data_paths == ["D:\\a", "D:\\b"]

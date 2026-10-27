@@ -22,6 +22,7 @@ The Panels menu's two-way sync (checkable action <-> dock ``visibilityChanged``)
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -1686,7 +1687,8 @@ class MainWindow(QMainWindow):
         from isar_gui.run_dialog import RunDialog
 
         prev = self._run_state() or {}
-        data = (prev.get("data") or [""])[0]
+        # the last run's data, else the folders the experiment's files were read from: never an empty box
+        data = os.pathsep.join(prev.get("data") or self.scan_list_vm.source_folders())
         opts = RunOptions(**prev["opts"]) if prev.get("opts") else RunOptions()
         dlg = RunDialog(data=data, opts=opts, parent=self)
         if not dlg.exec() or not dlg.data_paths:

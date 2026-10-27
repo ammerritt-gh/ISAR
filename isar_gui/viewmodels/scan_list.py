@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from PySide6.QtCore import Signal
 
@@ -186,6 +187,13 @@ class ScanListViewModel(ViewModel):
     @property
     def filter_active(self) -> bool:
         return bool(filter_terms(self._filter_text))
+
+    def source_folders(self) -> list[str]:
+        """The folders the experiment's data files were read from (the manifest's paths), first-seen order."""
+        snap = self._snapshot
+        paths = [sp.file_path for ss in snap.sets for sp in ss.spectra if sp.file_path]
+        paths += [f.path for f in snap.files_not_read]
+        return list(dict.fromkeys(str(Path(p).parent) for p in paths))
 
     def visible_columns(self) -> tuple[str, ...]:
         return tuple(c for c in COLUMNS if c not in OPTIONAL_COLUMNS or c in self._optional)

@@ -6,6 +6,7 @@ defaults are pre-filled and the last-used values are remembered by the window ac
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QSpinBox,
@@ -34,8 +36,14 @@ _ERROR_TIPS = {
 }
 
 
+NO_DATA_REASON = "Choose the folder your data files were read from."
+
+
 class RunDialog(QDialog):
-    """Data path + a few ``isar run`` knobs. Exposes :attr:`data_paths` and :attr:`options`."""
+    """Data path + a few ``isar run`` knobs. Exposes :attr:`data_paths` and :attr:`options`.
+
+    ``data`` holds one path, or several joined with the platform's path separator (``;`` on Windows). With no
+    path Run is off and the dialog says why; it never closes on a run that has nothing to run on."""
 
     def __init__(self, *, data: str = "", opts: RunOptions | None = None, parent=None):
         super().__init__(parent)
@@ -54,6 +62,8 @@ class RunDialog(QDialog):
         dl.setContentsMargins(0, 0, 0, 0)
         dl.addWidget(self._data_edit)
         dl.addWidget(browse)
+        self._data_edit.setToolTip("The folder (or file) the analysis reads. Several are separated by "
+                                   f"'{os.pathsep}'. Filled in from where this experiment's data were read from.")
         form.addRow("Data folder or file:", data_row)
 
         self._errors = QComboBox()
@@ -88,9 +98,15 @@ class RunDialog(QDialog):
 
         outer.addLayout(form)
 
+        self._reason = QLabel(NO_DATA_REASON, self)           # why Run is off, as text
+        self._reason.setObjectName("run_dialog_reason")
+        self._reason.setStyleSheet("color: #b7791f;")
+        outer.addWidget(self._reason)
         self._run_btn = QPushButton("Run")
         self._run_btn.setDefault(True)
         self._run_btn.clicked.connect(self.accept)
+        self._data_edit.textChanged.connect(self._sync_run)
+        self._sync_run()
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
         btns = QHBoxLayout()
@@ -99,16 +115,20 @@ class RunDialog(QDialog):
         btns.addWidget(cancel)
         outer.addLayout(btns)
 
+    def _sync_run(self) -> None:
+        has_data = bool(self.data_paths)
+        self._run_btn.setEnabled(has_data)
+        self._reason.setVisible(not has_data)
+
     def _browse(self) -> None:
-        start = self._data_edit.text().strip() or str(Path.home())
+        start = next(iter(self.data_paths), str(Path.home()))
         path = QFileDialog.getExistingDirectory(self, "Select data folder", start)
         if path:
             self._data_edit.setText(path)
 
     @property
     def data_paths(self) -> list[str]:
-        text = self._data_edit.text().strip()
-        return [text] if text else []
+        return [p.strip() for p in self._data_edit.text().split(os.pathsep) if p.strip()]
 
     @property
     def options(self) -> RunOptions:
