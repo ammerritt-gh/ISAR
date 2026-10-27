@@ -599,6 +599,77 @@ def test_marks_come_from_the_fit_inputs_read(tmp_path, monkeypatch):
     assert g is not None and g.items[0].values_changed[0].startswith("temperature: 100.0")
 
 
+# --- repair batch 1 ---------------------------------------------------------------------------------------
+def test_a_declared_target_has_no_values_changed_item(tmp_path):
+    w = r1(tmp_path)
+    assert values.save_condition(w.root, "dead", ["Smp:1002:a04"], reason="no counts").ok
+    assert values.save_condition(w.root, "excluded", ["Smp:1001"]).ok
+    marks = {"Smp:1002:a04": UnitMarks(changed_fast="dead"), "Smp:1001:a03": UnitMarks(changed_fast="excluded"),
+             "Smp:1002:a03": UnitMarks(changed_fast="live")}
+    na = readiness.evaluate(w.root, marks=marks)
+    assert [(i.scan, i.analyzer, i.values_changed) for i in grp(na, "values_changed").items] == [("Smp:1002", "a03", ("live",))]
+    assert na.scans["Smp:1001"].analyzers["a03"].action == "reverse_declaration"
+    assert na.scans["Smp:1002"].analyzers["a04"].action == "reverse_declaration"
+    assert na.scans["Smp:1002"].analyzers["a04"].values_changed == ()
+
+
+def test_a_malformed_curve_check_is_reported_and_a_changed_folder_is_still_pending(tmp_path):
+    w = r1(tmp_path)
+    w.check(folder=str(w.beside / "elsewhere"))                      # a folder saved since the last check: pending
+    na = readiness.evaluate(w.root)
+    assert "resolution_folder" not in kinds(na)
+    assert {i.reason for i in grp(na, "calibration_pending").items} == {readiness.FOLDER_CHANGED}
+    (w.root / curves.CURVE_CHECK).write_text("{bad", encoding="utf-8", newline="\n")      # an unreadable check: reported
+    _, error = readiness._check(w.root)
+    assert error
+    na = readiness.evaluate(w.root)
+    assert [i.reason for i in grp(na, "resolution_folder").items] == [error]
+    assert "calibration_pending" not in kinds(na)
+    assert uses(na, "Smp:1001", "a03", "calibrate") == ("held",)
+
+
+def test_import_summary_reports_a_folder_saved_since_the_last_check_as_pending(tmp_path):
+    w = r1(tmp_path)
+    w.check(folder=str(w.beside / "elsewhere"), found=(), problem="the old folder is missing")
+    c = import_summary(w.root).curves
+    assert (c.folder, c.check_stale, c.problem, c.n_curves, c.analyzers, c.settings, c.checked_at, c.other_folders) == (
+        w.path, True, None, 0, (), (), None, ())
+    w.check(folder=str(w.beside / "elsewhere"))                      # the old check found curves: not this folder's
+    assert import_summary(w.root).curves.n_curves == 0
+    w.check()                                                         # checked: the figures come back
+    c = import_summary(w.root).curves
+    assert (c.check_stale, c.n_curves, c.checked_at is None) == (False, 3, False)
+
+
+def test_analyzers_with_no_file_do_not_hold_the_scan_but_unreadable_ones_do(tmp_path):
+    none = {"a05": {"file": None, "cause": "no file"}}
+    bad = {"a06": {"file": "Smp_1002_a06", "cause": "off the bin lattice (3 of 80 bins, step 0.2 meV)"}}
+    w = World(tmp_path, [row(1001, T=302.0, slit="60x60", left_out=none), row(1002, T=302.0, slit="60x60", left_out=bad)])
+    for s in w.rows:
+        w.calibrate(s, setting="60x60", basis="declared", declared="60x60")
+    na = readiness.evaluate(w.root)
+    ok = na.scans["Smp:1001"]
+    assert [ok.uses[u].state for u in ("read", "reduce", "calibrate", "fit")] == ["ready"] * 4
+    assert ok.analyzers["a05"].uses["calibrate"].state == "held"
+    assert [i.analyzer for i in grp(na, "analyzer_file").items] == ["a05"]
+    held = na.scans["Smp:1002"]
+    assert (held.uses["read"].state, held.uses["calibrate"].state) == ("unreadable", "held")
+    assert [i.analyzer for i in grp(na, "analyzer_unreadable").items] == ["a06"]
+
+
+def test_status_says_why_the_list_is_missing(tmp_path, capsys):
+    from isar.cli.main import main
+    w = World(tmp_path, [row(1001, T=302.0)])
+    (w.root / scans.INTAKE_SCANS).write_text("{not json", encoding="utf-8", newline="\n")
+    assert main(["status", "--workspace", str(w.root)]) == 0
+    assert "Needs attention: not evaluated (" in capsys.readouterr().out
+    sp = fx.workspace(tmp_path / "s30")                               # not a BL43LXU workspace: no line at all
+    sp.policy_path.write_text(sp.policy_path.read_text(encoding="utf-8").replace('plugin = "sp8_bl43"', 'plugin = "tavi"'),
+                              encoding="utf-8", newline="\n")
+    assert main(["status", "--workspace", str(sp.root)]) == 0
+    assert "Needs attention" not in capsys.readouterr().out
+
+
 # --- surfaces ---------------------------------------------------------------------------------------------
 def test_status_prints_the_needs_attention_list(tmp_path, capsys):
     from isar.cli.main import main

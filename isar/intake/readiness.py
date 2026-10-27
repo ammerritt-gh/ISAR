@@ -45,6 +45,7 @@ LINE_NOT_READ = "line not read"
 COUNTS_ACCEPTED = "counts accepted by the user"
 LINE_SKIPPED = "line skipped; what it held is not in force"
 
+NOT_BL43 = "readiness is computed for BL43LXU workspaces only"
 NOT_CHECKED = "the resolution curves have not been checked yet (at the next import or analysis start)"
 FOLDER_CHANGED = "the resolution folder changed; its curves are checked when analysis starts or at the next import"
 CURVES_CHANGED = "the resolution curves changed since this scan was calibrated"
@@ -190,7 +191,7 @@ class CurveSummary:
     settings: tuple[str, ...]             # slit settings present, sorted
     problem: str | None
     other_folders: tuple[OtherFolder, ...]
-    checked_at: str | None                # None: never checked
+    checked_at: str | None                # None: never checked, or the saved folder is not checked yet
     check_stale: bool                     # the saved folder differs from the one last checked
 
 
@@ -246,9 +247,9 @@ def _declared(slit) -> str | None:
     return metadata.normalise_slit(slit) or str(slit)
 
 
-def _stale(saved, check) -> bool:
-    """The saved folder differs from the one last checked."""
-    return saved is not None and (check is None or check.folder is None or Path(saved.path) != Path(check.folder))
+def _stale(saved, check, error: str | None = None) -> bool:
+    """The saved folder differs from the one last checked; never while the check is unreadable (that error is reported)."""
+    return error is None and saved is not None and (check is None or check.folder is None or Path(saved.path) != Path(check.folder))
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -518,7 +519,8 @@ def _scan(scan: str, row: dict, pos: int, index: inputs.EntryIndex, state: dict,
     for a, u in uses_of.items():
         m = marks_of[a]
         running = bool(m and m.running)
-        changed = tuple(x for x in ((m.changed_fast, m.changed_deep) if m else ()) if x is not None)
+        declared = si.excluded is not None or a in si.dead      # analysis cannot start here; the declaration is what to reverse
+        changed = () if declared else tuple(x for x in ((m.changed_fast, m.changed_deep) if m else ()) if x is not None)
         can = None if running else u["calibrate"].state not in _BLOCKING
         an_can[(scan, a)] = can
         scan_kinds = [(g.kind, g.state) for g in scan_gaps if g.kind in ("temperature", "slit", "sidecar")]
@@ -529,7 +531,9 @@ def _scan(scan: str, row: dict, pos: int, index: inputs.EntryIndex, state: dict,
             gaps.append(_Gap("running", "analysis is running on this analyzer", scan, a, order=(pos, a)))
         if changed:
             gaps.append(_Gap("values_changed", "; ".join(changed), scan, a, order=(pos, a)))
-    pool = [a for a in analyzers if a not in si.dead] or list(analyzers)
+    # an analyzer declared dead, or with no file, has nothing to fit: it must not hold the whole scan
+    nofile = {a for a, v in left_out.items() if ((v or {}).get("cause") or "no file") == "no file"}
+    pool = [a for a in analyzers if a not in si.dead and a not in nofile] or list(analyzers)
     uses = {use: _worst([analyzers[a].uses[use] for a in pool]) for use in USES} if analyzers else \
         {use: _use("held", "no analyzer was read") for use in USES}
     can = _can_start([analyzers[a].can_start for a in analyzers]) if analyzers else False
@@ -628,7 +632,7 @@ def _evaluate(root: Path, marks: Mapping[str, UnitMarks]) -> NeedsAttention:
         return _not_evaluated(f"not an ISAR workspace (no {POLICY_FILE})")
     card = _card(root)
     if not scans.applies(card):
-        return _not_evaluated("readiness is computed for BL43LXU workspaces only")
+        return _not_evaluated(NOT_BL43)
     try:
         rows, files = _record(root)
     except ValueError as exc:
@@ -642,7 +646,7 @@ def _evaluate(root: Path, marks: Mapping[str, UnitMarks]) -> NeedsAttention:
         return _not_evaluated("nothing imported yet")
     check, check_error = _check(root)
     cidx = check.index() if check else CurveIndex(())
-    stale = _stale(sett.resolution_folder, check)
+    stale = _stale(sett.resolution_folder, check, check_error)
     if check is None:
         folder_problem = check_error or NOT_CHECKED
     elif check.problem or check.folder is None:
@@ -684,6 +688,9 @@ def _summary_of_curves(root: Path, card: Card, saved, check, check_error: str | 
     else:
         path, _pattern, source = curves_mod.resolution_location(card, root)
         folder, beside = (None if path is None else str(path)), None
+    stale = _stale(saved, check, check_error)
+    if stale:
+        check = None        # the last check is of another folder: its figures are not the saved folder's
     problem = check_error
     if check is not None:
         problem = check.problem
@@ -695,7 +702,7 @@ def _summary_of_curves(root: Path, card: Card, saved, check, check_error: str | 
         analyzers=() if check is None else tuple(sorted({c.detector for c in check.curves})),
         settings=() if check is None else tuple(sorted({c.setting for c in check.curves if c.setting})),
         problem=problem, other_folders=() if check is None else check.other_folders,
-        checked_at=None if check is None else check.checked_at, check_stale=_stale(saved, check))
+        checked_at=None if check is None else check.checked_at, check_stale=stale)
 
 
 def import_summary(root) -> ImportSummary:

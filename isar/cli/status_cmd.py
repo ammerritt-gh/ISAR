@@ -14,10 +14,14 @@ from isar.session.workspace import Workspace
 
 
 def _print_attention(root) -> None:
+    from isar.intake import readiness
     from isar.workspace_api import needs_attention      # imported here: only a BL43LXU workspace asks
     na = needs_attention(root)
     if not na.evaluated:
-        return                  # not a BL43LXU workspace, or nothing imported yet
+        if na.note and na.note != readiness.NOT_BL43:       # nothing imported yet, or a record that cannot be read
+            print()
+            print(f"Needs attention: not evaluated ({na.note})")
+        return
     print()
     if not na.groups:
         print("Needs attention: nothing")
