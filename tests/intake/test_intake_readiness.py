@@ -758,3 +758,17 @@ def test_isar_run_clears_the_failed_entry_of_a_file_it_read(tmp_path, monkeypatc
     na = needs_attention(ws.root)
     assert [i.file for i in grp(na, "files_not_read").items] == [elsewhere]
     assert grp(na, "analyzer_unreadable") is None
+
+
+def test_a_group_whose_items_are_all_running_says_wait(tmp_path):
+    w = r1(tmp_path)
+    units = [f"{s}:{a}" for s in w.rows for a in ("a03", "a04")]
+    running = {u: UnitMarks(running=True, changed_fast="temperature: 1 → 2") for u in units}
+    na = readiness.evaluate(w.root, marks=running)
+    for kind in ("calibration_pending", "values_changed"):
+        g = grp(na, kind)
+        assert (g.action, g.can_start) == ("wait", None), kind
+    one = {u: UnitMarks(running=True, changed_fast="temperature: 1 → 2") for u in units if u.startswith("Smp:1001")}
+    na = readiness.evaluate(w.root, marks=one)                        # Smp:1002 can still start
+    assert (grp(na, "calibration_pending").action, grp(na, "calibration_pending").can_start) == ("start_analysis", True)
+    assert (grp(na, "values_changed").action, grp(na, "values_changed").can_start) == ("wait", None)

@@ -606,9 +606,10 @@ def _groups(gaps: list[_Gap], marks, scans_ready: Mapping[str, ScanReadiness], a
         state = "running" if kind == "running" else max((g.state for g in mine), key=_SEVERITY.__getitem__)
         analyzers = tuple(sorted({g.analyzer for g in mine if g.analyzer})) \
             if spec.target in ("analyzer", "scan_or_analyzer") else ()
+        can_start = None if kind == "running" else _can_start(can)
         out.append(AttentionGroup(
             kind=kind, title=spec.title, summary=_summary(kind, spec.title, mine, n_scans), uses=spec.uses,
-            state=state, action=spec.action, can_start=None if kind == "running" else _can_start(can),
+            state=state, action="wait" if can_start is None else spec.action, can_start=can_start,
             fallback_in_use=any(g.fallback for g in mine), n_scans=n_scans, analyzers=analyzers, items=tuple(items)))
     return tuple(out)
 
