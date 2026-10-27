@@ -72,6 +72,8 @@ def _fields(panel):
 
 
 def _text(field) -> str:
+    if isinstance(field, _Note):          # a wrapped line (the energy range) holds its whole text
+        return field.text()
     return (field if isinstance(field, ElidedLabel) else field.findChildren(ElidedLabel)[0]).full_text()
 
 
@@ -87,6 +89,25 @@ def _reason(field) -> str | None:
 def _has_dot(field) -> bool:
     return any(lbl.pixmap() is not None and not lbl.pixmap().isNull()
                for lbl in field.findChildren(QLabel))
+
+
+# ---------------------------------------------------------------------------
+# a scan-set row is not "nothing picked"
+# ---------------------------------------------------------------------------
+def test_a_picked_scan_set_row_is_summarised_in_the_open_inspector(qtbot, patched, bl43_ws):
+    vm, panel = _panel(qtbot, bl43_ws)
+    set_row = patched.sets[0]
+    vm.select_set(set_row.key)
+    assert panel._message.isVisible() and not panel._body.isVisible()
+    text = panel._message.text()
+    assert f"Scan set {set_row.label}" in text and f"{len(set_row.spectra)} analyzer" in text
+    assert set_row.spectra[0].analyzer in text and "Files:" in text and "Temperature:" in text
+    assert panel._title.full_text() == f"Scan set {set_row.label}"
+    vm.select(A06)                                  # a spectrum ends the set's summary
+    assert panel._body.isVisible() and not panel._message.isVisible()
+    vm.select_set(set_row.key)
+    vm.set_focused.emit(None)                       # the set left the read: back to the plain hint
+    assert "Select an analyzer row" in panel._message.text()
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +318,7 @@ def test_the_panel_follows_the_list_and_emits_close(qtbot, patched, bl43_ws):
     assert panel._title.full_text() == f"a04 · {STEM_A}"
     f = _fields(panel)
     assert _text(f["Fast pass"]) == "close_call"
-    assert _text(f["Deep pass"]) == "resolved" and _reason(f["Deep pass"]) == "resolved: count 1 (P 0.91)"
+    assert _text(f["Deep pass"]) == "resolved" and _reason(f["Deep pass"]) == "count 1 (P 0.91)"
 
     vm.select(B03)                                  # the panel is open: it follows
     f = _fields(panel)
@@ -349,7 +370,7 @@ def test_a_background_update_redraws_the_same_key_in_place(qtbot, patched, bl43_
                         lambda ws: dataclasses.replace(snap, sets=tuple(new)))
     vm.on_workspace_changed({"results"})
     f = _fields(panel)
-    assert _text(f["Deep pass"]) == "resolved" and _reason(f["Deep pass"]) == "resolved: count 2"
+    assert _text(f["Deep pass"]) == "resolved" and _reason(f["Deep pass"]) == "count 2"
     assert panel._title.full_text() == f"a06 · {STEM_A}"
 
 

@@ -27,7 +27,9 @@ _KIND_ROLE = Qt.ItemDataRole.UserRole + 2
 _TONE_ROLE = Qt.ItemDataRole.UserRole + 3     # what the item's dot was drawn for
 _STALE_ROLE = Qt.ItemDataRole.UserRole + 4    # whether the item's word was drawn as out of date
 _SORT_LABELS = {"set": "By scan set", "temperature": "By temperature", "analyzer": "By analyzer"}
-_HINT = "Double-click a row, or Inspect, to open the scan inspector."
+_HINT = "Select an analyzer row, then double-click it or press Open inspector."
+_HINT_SET = "A scan set cannot be inspected: select one of its analyzer rows (for example a06) under it."
+_HINT_NONE = "Select an analyzer row (for example a06) under a scan set to open the inspector."
 _NEW_CONTAINER_KINDS = ("set", "analyzer")
 
 
@@ -72,6 +74,7 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
             action.triggered.connect(lambda _checked=False, s=sort: self._vm.set_sort(s))
             self._sort_actions[sort] = action
         self._sort_button = self._menu_button("Sort ▾", sort_menu, "Sort the scan list")
+        self._sort_button.setToolTip("Sort the list by scan set, temperature or analyzer.")
 
         self._column_actions: dict[str, QAction] = {}
         column_menu = QMenu(self)
@@ -81,6 +84,7 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
             action.toggled.connect(lambda on, c=column: self._on_column_toggled(c, on))
             self._column_actions[column] = action
         self._columns_button = self._menu_button("Columns ▾", column_menu, "Choose the columns")
+        self._columns_button.setToolTip("Choose which columns the list shows.")
 
         self._model = QStandardItemModel(0, len(COLUMNS), self)
         self._view = QTreeView(self)
@@ -104,9 +108,10 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         self._view.activated.connect(self._on_activated)
         self._view.selectionModel().currentChanged.connect(self._on_current_index_changed)
 
-        self._empty = QLabel("No scans yet", self)
+        self._empty = QLabel("No scans yet. Drop data files on the box above, or use Add data.", self)
         self._empty.setObjectName("scan_list_empty")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty.setWordWrap(True)
 
         self._notice = QLabel(self)
         self._notice.setObjectName("scan_list_notice")
@@ -119,9 +124,10 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         self._status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._status.linkActivated.connect(lambda _link: self._filter.setText(""))
 
-        self._inspect = QPushButton("Inspect", self)
+        self._inspect = QPushButton("Open inspector", self)
         self._inspect.setObjectName("scan_list_inspect")
-        self._inspect.setToolTip("Open the scan inspector on the selected spectrum")
+        self._inspect.setToolTip("Show the facts, readiness and raw counts of the selected analyzer. Select an "
+                                 "analyzer row (for example a06) under a scan set first.")
         self._inspect.clicked.connect(self._on_inspect_clicked)
         self._hint = QLabel(_HINT, self)
         self._hint.setObjectName("scan_list_hint")
@@ -164,8 +170,10 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
     def _on_current_index_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
         if not self._busy and current.isValid():
             key = current.siblingAtColumn(0).data(_KEY_ROLE)
-            if key:                              # set, analyzer, section and file rows leave the display be
+            if key:                              # analyzer, section and file rows leave the display be
                 self._vm.select(key)
+            elif current.siblingAtColumn(0).data(_KIND_ROLE) == "set":
+                self._vm.select_set(current.siblingAtColumn(0).data(_ID_ROLE).removeprefix("set:"))
         self._update_footer()                    # Inspect follows the visible row, which a set row changes too
 
     def _on_activated(self, index: QModelIndex) -> None:
@@ -235,6 +243,9 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         if self._filter.text() != vm.filter_text:
             self._filter.setText(vm.filter_text)
         self._model.setHorizontalHeaderLabels([vm.column_title(c) for c in COLUMNS])
+        for i, column in enumerate(COLUMNS):
+            self._model.setHeaderData(i, Qt.Orientation.Horizontal, vm.header_tip(column),
+                                      Qt.ItemDataRole.ToolTipRole)
 
     def _scroll_anchor(self) -> str | None:
         if self._view.verticalScrollBar().value() == 0:
@@ -336,7 +347,8 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
     # ---- selection follows the view model's identity --------------------------------------------
     def _restore_selection(self, reveal: bool) -> None:
         key = self._vm.current_key
-        item = self._by_key.get(key) if key else None
+        focus = self._vm.focus_set
+        item = self._by_id.get(f"set:{focus}") if focus else (self._by_key.get(key) if key else None)
         selection = self._view.selectionModel()
         with self._changing():
             if item is None:
@@ -367,4 +379,9 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         self._notice.setText(notice or "")
         self._notice.setVisible(notice is not None)
         key = self._visible_key()
-        self._inspect.setEnabled(key is not None and vm.snapshot.spectrum(key) is not None)
+        can = key is not None and vm.snapshot.spectrum(key) is not None
+        self._inspect.setEnabled(can)
+        # a disabled button says why in text, not only on hover
+        index = self._view.currentIndex()
+        on_set = index.isValid() and index.siblingAtColumn(0).data(_KIND_ROLE) == "set"
+        self._hint.setText(_HINT if can else _HINT_SET if on_set else _HINT_NONE)

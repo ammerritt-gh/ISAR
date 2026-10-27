@@ -157,12 +157,12 @@ def test_the_file_value_is_shown_with_the_source_the_read_gives(qtbot, ft_ws):
     rig = Rig(qtbot, ft_ws, A03)
     source = _rows(rig, A, fact="temperature")[0].file_source
     assert source == "header"
-    assert rig.text("temperature", "files") == f"97 K\n{source}"
+    assert rig.text("temperature", "files") == "97 K\nfrom the header"          # the read's word, in words
     assert rig.text("temperature", "yours") == "" and rig.text("temperature", "used") == "97 K\nfile"
     assert rig.titles()[:2] == ["temperature", "slit"]
     # the slit is missing: the fallback is named, not a number
     assert rig.text("slit", "files") == "—\nmissing"
-    assert rig.text("slit", "used") == "—\nchosen when analysis starts"
+    assert rig.text("slit", "used") == "—\nno slit yet: it is chosen from the elastic lines when the analysis starts"
     assert rig.cell("temperature", "used").styleSheet() == ""
 
 
@@ -189,11 +189,14 @@ def test_set_my_value_supersedes_and_use_the_file_value_returns(qtbot, monkeypat
     rig = Rig(qtbot, ft_ws, A03)
     assert not rig.buttons()["use_file_temperature"].isEnabled()
     assert rig.buttons()["use_file_temperature"].toolTip() == NO_VALUE_OF_YOURS
+    note = rig.table.findChild(_Cell, "fact_action_note_use_file_temperature")      # the reason, as visible text
+    assert note is not None and note.text() == NO_VALUE_OF_YOURS
+    qtbot.waitUntil(lambda: note.isVisible(), timeout=2000)                       # shown, not just built
     before = len(_lines(ft_ws))
     dialog = rig.type_value(monkeypatch, "temperature", "100", reason="offset")
     assert dialog.result() == 1 and "Whole scan set".lower() in dialog._applies.text().lower()
     assert f"{bl43_fixture.STEM_A} (4 analyzers)" in dialog._applies.text()
-    assert rig.text("temperature", "files") == "97 K\nheader"                      # the file's value is untouched
+    assert rig.text("temperature", "files") == "97 K\nfrom the header"                      # the file's value is untouched
     assert rig.text("temperature", "yours") == "100 K\noffset"
     assert rig.text("temperature", "used") == "100 K\nyours"
     for col in ("yours", "used"):                                                 # a disagreement, in the warning colour
@@ -220,7 +223,7 @@ def test_a_value_applies_to_the_whole_set_and_another_set_shows_its_own_rows(qtb
     rig.panel.show_key(f"{A}:a04")                                                 # the same set: the same value
     assert rig.text("slit", "used") == "60x60 mm\nyours"
     rig.panel.show_key(B03)
-    assert rig.text("slit", "yours") == "" and rig.text("slit", "used") == "—\nchosen when analysis starts"
+    assert rig.text("slit", "yours") == "" and rig.text("slit", "used") == "—\nno slit yet: it is chosen from the elastic lines when the analysis starts"
     assert rig.text("temperature", "used") == "97 K\nfile"
     assert f"{bl43_fixture.STEM_B} (4 analyzers)" in rig.table.findChild(_Cell, "fact_applies_to").text()
     assert rig.table.findChild(_Cell, "fact_applies_to").toolTip().startswith("Applies to the whole scan set")
@@ -248,7 +251,7 @@ def test_q_counts_and_the_other_rows_have_no_action_and_the_files_column_nothing
     # no hkl in set A's files: the file's |Q| in nm^-1 with its source, and the hover that says what is missing
     q = rig.vm.snapshot.spectrum(A03).q                    # the scan list's own |Q|, read from the same files
     assert rig.text("q", "files") == f"{q.value:g} nm⁻¹\n(|Q|, header)" and q.unit == "nm⁻¹"
-    assert rig.cell("q", "files").toolTip() == NO_HKL == "no hkl in the files: steering needs it"
+    assert rig.cell("q", "files").toolTip() == NO_HKL == "no hkl in the files: campaign planning needs it"
     assert rig.cell("q", "used").toolTip() == NO_HKL
     assert rig.text("counts", "files") == "N = (y/e)², 60 bins tested, none off an integer"
     assert rig.cell("counts", "files").toolTip() == "family _i, level none"
@@ -265,10 +268,10 @@ def test_q_counts_and_the_other_rows_have_no_action_and_the_files_column_nothing
 
 def test_an_hkl_in_the_files_is_shown_in_rlu_with_its_source(qtbot, ft_ws):
     rig = Rig(qtbot, ft_ws, S06)
-    assert rig.text("q", "files") == "[4, 0.075, 0] rlu\nfilename"
+    assert rig.text("q", "files") == "[4, 0.075, 0] rlu\nfrom the file name"
     assert rig.text("q", "used") == "[4, 0.075, 0] rlu\nfile"
-    assert rig.text("temperature", "files") == "26 K\nfilename"
-    assert rig.cell("q", "files").toolTip() == "filename"
+    assert rig.text("temperature", "files") == "26 K\nfrom the file name"
+    assert rig.cell("q", "files").toolTip() == "Value read from the file name"
 
 
 def test_a_q_missing_everywhere_says_so(qtbot, ft_ws):
@@ -334,17 +337,17 @@ def test_readiness_reads_checking_then_matches_the_backend(qtbot, ft_ws):
     lines = rig.readiness()
     assert len(lines) == len(uses) == 5
     for line, (use, st) in zip(lines, uses.items()):
-        name = {"reduce": "Reduce / export"}.get(use, use.capitalize())
+        name = {"reduce": "Reduce / export", "steer": "Campaign planning"}.get(use, use.capitalize())
         assert line.startswith(f"{name}: {st.state}")
         if st.reason:
             assert line.endswith(f"— {st.reason}")
-    assert "Steer: held — no Q in the files (only |Q|)" in lines
+    assert "Campaign planning: held — no Q in the files (only |Q|)" in lines
 
 
 def test_a_zero_temperature_fallback_is_named_in_the_fit_line(qtbot, tmp_path):
     root = bl43_intake_fixture.build_intake_workspace(tmp_path, with_t=False)
     rig = Rig(qtbot, root, f"{bl43_intake_fixture.KEYS_NO_T[0]}:a03")
-    assert rig.text("temperature", "used") == "—\nnone: T → 0⁺ limit"
+    assert rig.text("temperature", "used") == "—\nno temperature known: the fit assumes T → 0 (no thermal population)"
     assert rig.text("temperature", "files") == "—\nmissing"
 
 

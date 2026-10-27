@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QLabel, QScrollArea, QS
                                QVBoxLayout, QWidget)
 
 from isar.workspace_api.scan_list import Fact, PooledRow, ScanSetRow, SpectrumRow
+from isar_gui.plain_words import drop_echo
 from isar_gui.plotspec_pg import clear_render, disable_view_drops, render_into
 from isar_gui.theme import DEEP, FAST, PARSED, dot_icon, status_tone
 from isar_gui.viewmodels.inspector import CONFLICTS_SEP, MISSING_FACT_TEXT, InspectorViewModel
@@ -39,7 +40,8 @@ _NOT_IN_THE_FILE = "not in the file"
 _LABEL_WIDTH = 96          # px of the label column; the value column gets the rest
 _PLOT_MIN_HEIGHT = 130     # the plot must leave the lines visible at the laptop size
 _NO_SPECTRUM = "This spectrum is no longer in the experiment"
-_NOTHING_PICKED = "Pick a scan in the list to inspect it."
+_NOTHING_PICKED = "Select an analyzer row (for example a06) under a scan set to inspect it."
+_RAW_AXIS_TIP = "The energy axis is the file's raw axis: no energy zero has been applied yet."
 _POOLED_NOTE = "pooled spectrum: shown in the display"
 _STAGE_ONE_FACTS = frozenset({"Temperature", "Q", "Slit"})   # the lines the fact table replaces
 # Unit metadata keys the inspector draws on its own lines, or the hashed unit key: never repeated below.
@@ -83,6 +85,19 @@ def fact_text(fact: Fact) -> tuple[str, str]:
     return shown, shown
 
 
+def set_summary_text(set_row: ScanSetRow) -> str:
+    """What the inspector says when a scan-set row (not a spectrum) is picked: the set's name, its analyzers,
+    how many of its files were read and its temperature."""
+    n = len(set_row.spectra)
+    names = ", ".join(sp.analyzer or "—" for sp in set_row.spectra) or "none read"
+    read = max(set_row.files_received - len(set_row.unread), 0)
+    files = f"Files: {read} of {set_row.files_received} read" + (
+        f", {len(set_row.unread)} not read" if set_row.unread else "")
+    return "\n".join((f"Scan set {set_row.label}", f"{n} analyzer{'' if n == 1 else 's'}: {names}", files,
+                      f"Temperature: {fact_text(set_row.temperature)[0]}",
+                      "Select one of its analyzer rows in the list to inspect that analyzer's counts and facts."))
+
+
 def scan_numbers_text(set_row: ScanSetRow) -> str:
     """The scan numbers of a set: its one number, or what a summed set says about its members."""
     numbers = ", ".join(str(n) for n in set_row.scan_numbers)
@@ -110,6 +125,7 @@ def energy_range_text(unit) -> tuple[str, str]:
     text = f"{_number(float(min(x)))} to {_number(float(max(x)))} {axis.get('units') or 'meV'}"
     if axis.get("calibration_status") != "absolute":
         text += " — raw axis, zero not applied"
+        return text, f"{text}\n{_RAW_AXIS_TIP}"
     return text, text
 
 
@@ -123,7 +139,8 @@ def inspector_lines(row: SpectrumRow | PooledRow, set_row: ScanSetRow | None, un
         return Line(label, text, tip)
 
     def status(label: str, column: str, st, group: str) -> Line:
-        return Line(label, st.word, st.reason or st.word, column, st.reason, group)
+        reason = drop_echo(st.word, st.reason)         # "resolved" over "resolved: count 1" said the word twice
+        return Line(label, st.word, st.reason or st.word, column, reason, group)
 
     if isinstance(row, PooledRow):
         members = "—" if row.n_members is None else str(row.n_members)
@@ -171,14 +188,15 @@ def _muted(widget: QWidget) -> None:
 
 
 class _Note(QLabel):
-    """A wrapped muted line whose width never pins its column."""
+    """A wrapped line (muted unless asked) whose width never pins its column."""
 
-    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+    def __init__(self, text: str = "", parent: QWidget | None = None, *, muted: bool = True) -> None:
         super().__init__(text, parent)
         self.setWordWrap(True)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        _muted(self)
+        if muted:
+            _muted(self)
 
     def minimumSizeHint(self):  # noqa: N802 (Qt override)
         hint = super().minimumSizeHint()
@@ -195,6 +213,7 @@ class ScanInspectorPanel(QWidget):
         self.setAcceptDrops(False)
         self._vm = vm
         self._key: str | None = None
+        self._set_key: str | None = None   # a scan-set row was picked: its summary stands in for a spectrum
         self._stale = False             # content changed while hidden: redraw when shown
         self._plot_vm: InspectorViewModel | None = None   # the panel's own: the centre's never moves
         self._fact_table: FactTable | None = None
@@ -261,6 +280,7 @@ class ScanInspectorPanel(QWidget):
 
         vm.inspect_requested.connect(self.show_key)
         vm.current_changed.connect(self._on_current_changed)
+        vm.set_focused.connect(self._on_set_focused)
         vm.snapshot_changed.connect(self._on_snapshot_changed)
         self._render()
 
@@ -298,6 +318,15 @@ class ScanInspectorPanel(QWidget):
     def show_key(self, key: str | None) -> None:
         """Show the facts of spectrum ``key`` (``None`` = nothing selected)."""
         self._key = key
+        self._set_key = None
+        self._render()
+
+    def _on_set_focused(self, set_key) -> None:
+        if self.isHidden():
+            return                      # showEvent follows the list's focus
+        self._set_key = set_key
+        if set_key is not None:
+            self._key = None
         self._render()
 
     def _on_current_changed(self, key) -> None:
@@ -314,9 +343,11 @@ class ScanInspectorPanel(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: N802 (Qt override)
         super().showEvent(event)
-        current = self._vm.current_key
-        if current is not None and current != self._key and self._vm.snapshot.spectrum(current):
-            self._key, self._stale = current, True      # opened without a key: follow the list
+        current, focus = self._vm.current_key, self._vm.focus_set
+        if focus is not None and focus != self._set_key:
+            self._key, self._set_key, self._stale = None, focus, True   # opened on a scan-set row: summarise it
+        elif focus is None and current is not None and current != self._key and self._vm.snapshot.spectrum(current):
+            self._key, self._set_key, self._stale = current, None, True   # opened without a key: follow the list
         if self._stale:
             self._render()
 
@@ -327,8 +358,10 @@ class ScanInspectorPanel(QWidget):
         row = None if self._key is None else snapshot.spectrum(self._key)
         if row is None:
             self._set_table_unit(None)
-            self._title.set_full_text("Scan inspector")
-            self._message.setText(_NOTHING_PICKED if self._key is None else _NO_SPECTRUM)
+            set_row = None if self._set_key is None else snapshot.scan_set(self._set_key)
+            self._title.set_full_text("Scan inspector" if set_row is None else f"Scan set {set_row.label}")
+            self._message.setText(set_summary_text(set_row) if set_row is not None else
+                                  _NOTHING_PICKED if self._key is None else _NO_SPECTRUM)
             self._message.show()
             self._body.hide()
             return
@@ -403,7 +436,11 @@ class ScanInspectorPanel(QWidget):
             form.addRow(label, self._status_widget(line) if line.column else self._value(line))
 
     @staticmethod
-    def _value(line: Line) -> ElidedLabel:
+    def _value(line: Line) -> QLabel:
+        if line.label == "Energy range":          # its caveat ("zero not applied") must not be cut off
+            note = _Note(line.text, muted=False)
+            note.setToolTip(line.tooltip or line.text)
+            return note
         mode = Qt.TextElideMode.ElideMiddle if line.label == "File" else Qt.TextElideMode.ElideRight
         value = ElidedLabel(line.text, mode=mode)
         value.setToolTip(line.tooltip or line.text)

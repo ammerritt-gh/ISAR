@@ -59,6 +59,23 @@ NO_CURVES_TIP = ("ISAR also looks for a folder named rf next to your data and fo
                  "Choose the folder that holds the measured resolution curves.")
 
 
+def drop_echo(word: str, reason: str | None) -> str | None:
+    """``reason`` without a leading "<word>: " (the word is shown beside it already); ``None`` when nothing is left."""
+    if reason and reason.startswith(f"{word}: "):
+        reason = reason[len(word) + 2:]
+    return reason or None
+
+
+# What a readiness state means, in a sentence (backend state id -> text).
+STATE_WORDS = {
+    "ready": "nothing is missing",
+    "fallback": "can run, with a stand-in for something that is missing",
+    "pending": "will be done when the analysis starts",
+    "held": "waiting for something that is missing; it is tried again when that arrives",
+    "unreadable": "its file could not be read",
+}
+
+
 def stand_in(text: str | None) -> str:
     """A fallback id or label as a sentence; an unknown one is returned as given."""
     return _STAND_IN.get(text, text) if text else ""

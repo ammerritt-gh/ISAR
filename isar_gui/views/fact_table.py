@@ -23,18 +23,23 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QGridLayout, QLabel, Q
                                QSizePolicy, QVBoxLayout, QWidget)
 
 from isar.workspace_api import USES, scan_prefix, split_key
+from isar_gui.plain_words import STATE_WORDS, source_words, stand_in
 from isar_gui.theme import TONE_COLOR, Tone
 from isar_gui.views.elided_label import ElidedButton, ElidedLabel
 from isar_gui.views.value_entry import SetValueDialog
 
-NO_VALUE_OF_YOURS = "No value of yours is in force"
+NO_VALUE_OF_YOURS = "No value of yours to remove"
 FILES_ONLY = "Comes from the files only"
-NO_HKL = "no hkl in the files: steering needs it"
-_FALLBACKS = {"bose_t0_limit": "none: T → 0⁺ limit", "slit_inferred": "inferred from the elastic lines",
-              "slit_broadest_curve": "broadest curve", "slit_pending": "chosen when analysis starts"}
+NO_HKL = "no hkl in the files: campaign planning needs it"
 _USE_NAMES = {"read": "Read", "reduce": "Reduce / export", "calibrate": "Calibrate", "fit": "Fit",
-              "steer": "Steer"}
-_TITLES = {"temperature": "Temperature", "slit": "Slit", "q": "Q", "counts": "Count origin"}
+              "steer": "Campaign planning"}
+_TITLES = {"temperature": "Temperature", "slit": "Slit", "q": "Q", "counts": "Counts check"}
+_COLUMN_TIPS = (
+    "Where the files give the value, and which part of the file it came from.",
+    "The value you entered, with your reason; empty when you entered none.",
+    "Used in fit: the value the analysis will use (yours if you entered one, else the file's, else the stand-in).")
+_COUNTS_TIP = ("BL43 files store normalised intensity and error; ISAR recovers counts as N = (y/e)² and tests "
+               "that they are whole numbers. Bins off an integer may mean the data were rescaled.")
 _WARN = f"color: {TONE_COLOR[Tone.WARN]};"
 
 
@@ -210,19 +215,22 @@ class FactTable(QWidget):
                              f"You accepted these counts: {r.user_reason}" if r.user_reason
                              else "You accepted these counts")
             row.used = ("as in the file", "Accepting the counts changes none of them")
+            row.tip = _COUNTS_TIP
             return row
         if r.file_value is None:
             row.files = ("—\nmissing", "missing")
         else:
-            row.files = (f"{_value_text(r.file_value, unit)}\n{r.file_source}", r.file_source)
+            where = source_words(r.file_source)
+            row.files = (f"{_value_text(r.file_value, unit)}\n{where}", f"Value read {where}" if where != "inferred" else "Value inferred")
         if r.file_conflicts:
             row.files = (row.files[0], "; ".join(str(c) for c in r.file_conflicts))
         if r.user_value is not None:
             row.yours = (_with(_value_text(r.user_value, unit), r.user_reason),
                          f"Yours ({r.user_entry}): {r.user_reason}" if r.user_reason else f"Yours ({r.user_entry})")
         if r.used_source == "missing":
-            named = _FALLBACKS.get(r.fallback, r.fallback) if r.fallback else None
-            row.used = (f"—\n{named or 'missing'}", f"No value is in force; {named}" if named else "missing")
+            named = stand_in(r.fallback) if r.fallback else None
+            row.used = (f"—\n{named or 'missing'}", f"No value is in force; {named}. Entering a value replaces "
+                                                   "the stand-in." if named else "missing")
         else:
             whose = "yours" if r.used_source == "user" else "file"
             row.used = (f"{_value_text(r.used_value, unit)}\n{whose}", f"Used: {whose}")
@@ -259,18 +267,22 @@ class FactTable(QWidget):
         if dead is not None:
             why = _with("declared dead", dead.user_reason)
             row.yours, row.used = (why, why.replace("\n", ": ")), ("not used", "Declared dead")
-            row.actions.append(_Action("In use", self._mark_in_use, "in_use", tip=f"Use {analyzer} again"))
+            row.actions.append(_Action("Use analyzer again…", self._mark_in_use, "in_use",
+                                       tip=f"Put {analyzer} back into the analysis of this scan."))
         else:
             row.used = ("in use", "In use")
-            row.actions.append(_Action("Mark dead", self._mark_dead, "mark_dead",
-                                       tip=f"Leave {analyzer} out of this scan"))
+            row.actions.append(_Action("Leave out analyzer…", self._mark_dead, "mark_dead",
+                                       tip=f"Leave {analyzer} out of the analysis of this scan. Reversible; "
+                                           "the data stay."))
         att = self._attention_for(scan, analyzer)
         if accepted is not None:
-            row.actions.append(_Action("Withdraw acceptance", self._withdraw_counts, "withdraw_counts",
-                                       tip="Take back your acceptance of these counts"))
+            row.actions.append(_Action("Take back acceptance…", self._withdraw_counts, "withdraw_counts",
+                                       tip="Hold this analyzer again until its counts are accepted."))
         elif att is not None and att.action == "accept_counts":
-            row.actions.append(_Action("Accept counts…", self._accept_counts, "accept_counts",
-                                       tip="The counts may not be raw: accept them as they are"))
+            row.actions.append(_Action("Accept counts as they are…", self._accept_counts, "accept_counts",
+                                       tip=("Some of these counts are not whole numbers after N = (y/e)², so they may "
+                                            "not be raw counts and the fit is held. Accept to fit them as they are; "
+                                            "no data change.")))
         return row
 
     def _attention_for(self, scan: str, analyzer: str):
@@ -292,11 +304,13 @@ class FactTable(QWidget):
             row = self._fact_cells(r)
             row.title, row.tip = f"{row.title} — whole scan set", self._applies_to()
             row.actions = [
-                _Action("Set my value…", lambda f=fact: self._set_value(f), f"set_{fact}", tip=self._applies_to()),
+                _Action("Enter my value…", lambda f=fact: self._set_value(f), f"set_{fact}",
+                        tip=f"Enter your own {fact} for the whole scan set; it is used instead of the file's. "
+                            f"The file is not changed. {self._applies_to()}"),
                 _Action("Use the file's value", lambda f=fact: self._use_file_value(f), f"use_file_{fact}",
                         enabled=r.user_value is not None,
-                        tip=f"Use the file's {fact} again. {self._applies_to()}" if r.user_value is not None
-                        else NO_VALUE_OF_YOURS)]
+                        tip=f"Drop your value and use the file's {fact} again. {self._applies_to()}"
+                        if r.user_value is not None else NO_VALUE_OF_YOURS)]
             out.append(row)
         if (r := by.get(("q", analyzer))) is not None:
             out.append(self._q_row(r))
@@ -343,7 +357,7 @@ class FactTable(QWidget):
         self._layout.addWidget(self._body)
 
     def _heading(self, text: str) -> QLabel:
-        label = QLabel(text, self._body)
+        label = _Cell(text, self._body)         # wrapped: a long heading must not widen the 260 px inspector
         font = label.font()
         font.setBold(True)
         label.setFont(font)
@@ -363,9 +377,10 @@ class FactTable(QWidget):
         grid.setVerticalSpacing(1)
         for col in range(3):
             grid.setColumnStretch(col, 1)
-        for col, name in enumerate(("From the files", "Yours", "Used")):
+        for col, name in enumerate(("File value", "My value", "Used in fit")):
             head = _Cell(name, table, muted=True)
             head.setObjectName("fact_head")
+            head.setToolTip(_COLUMN_TIPS[col])
             grid.addWidget(head, 0, col)
         n = 1
         for row in rows:
@@ -397,6 +412,10 @@ class FactTable(QWidget):
                     button.setToolTip(a.tip)
                     button.clicked.connect(lambda _checked=False, slot=a.slot: slot())
                     stack.addWidget(button, 0, Qt.AlignmentFlag.AlignLeft)
+                    if not a.enabled and a.tip:         # a greyed button says why in text, not only on hover
+                        why = _Cell(a.tip, box, muted=True)
+                        why.setObjectName(f"fact_action_note_{a.name}")
+                        stack.addWidget(why)
                 grid.addWidget(box, n, 0, 1, 3)
                 n += 1
         return table
@@ -404,26 +423,27 @@ class FactTable(QWidget):
     def _readiness(self, body: QVBoxLayout) -> None:
         attention = self._intake.attention
         if attention is None:
-            lines = ["Readiness: checking…"]
+            lines = [("Readiness: checking…", "")]
         elif not attention.evaluated:
-            lines = [f"Readiness: not judged — {attention.note or 'not evaluated'}"]
+            lines = [(f"Readiness: not judged — {attention.note or 'not evaluated'}", "")]
         else:
             ar = self._attention_for(self._scan, self._analyzer)
             if ar is None:
-                lines = ["Readiness: this analyzer is not in the import record"]
+                lines = [("Readiness: this analyzer is not in the import record", "")]
             else:
                 lines = []
                 for use in USES:
                     st = ar.uses[use]
-                    why = st.reason or (_FALLBACKS.get(st.fallback, st.fallback) if st.fallback else None)
-                    lines.append(f"{_USE_NAMES.get(use, use)}: {st.state}" + (f" — {why}" if why else ""))
+                    why = st.reason or (stand_in(st.fallback) if st.fallback else None)
+                    lines.append((f"{_USE_NAMES.get(use, use)}: {st.state}" + (f" — {why}" if why else ""),
+                                  STATE_WORDS.get(st.state, "")))
                 if ar.running:
-                    lines.append("running")
-                body.addWidget(self._heading("Readiness"))
-        for text in lines:
+                    lines.append(("running", ""))
+                body.addWidget(self._heading("What can be done with this analyzer"))
+        for text, gloss in lines:
             cell = _Cell(text, self._body)
             cell.setObjectName("fact_readiness")
-            cell.setToolTip(text)
+            cell.setToolTip(f"{text}\n{gloss}" if gloss else text)
             body.addWidget(cell)
 
     # ---- the actions -----------------------------------------------------------------------
@@ -440,21 +460,22 @@ class FactTable(QWidget):
 
     def _mark_dead(self) -> None:
         self._run(_ReasonDialog(
-            "Mark analyzer dead", f"Leave {self._analyzer} out of this scan's analysis.", "Mark dead",
+            "Leave analyzer out", f"Leave {self._analyzer} out of this scan's analysis. You can use it again later.",
+            "Leave out analyzer",
             lambda reason: self._intake.set_dead([self._unit], True, reason), self))
 
     def _mark_in_use(self) -> None:
         self._run(_ReasonDialog(
-            "Analyzer in use", f"Use {self._analyzer} in this scan's analysis again.", "In use",
+            "Use analyzer again", f"Use {self._analyzer} in this scan's analysis again.", "Use analyzer again",
             lambda reason: self._intake.set_dead([self._unit], False, reason), self))
 
     def _accept_counts(self) -> None:
         self._run(_ReasonDialog(
-            "Accept counts", f"The counts of {self._analyzer} may not be raw. Accept them as they are.",
-            "Accept counts", lambda reason: self._intake.set_counts_accepted([self._unit], True, reason), self))
+            "Accept counts", f"The counts of {self._analyzer} may not be raw counts. Accept them as they are; "
+            "no data change.", "Accept counts as they are", lambda reason: self._intake.set_counts_accepted([self._unit], True, reason), self))
 
     def _withdraw_counts(self) -> None:
         self._run(_ReasonDialog(
-            "Withdraw acceptance", f"Take back your acceptance of the counts of {self._analyzer}.",
-            "Withdraw acceptance", lambda reason: self._intake.set_counts_accepted([self._unit], False, reason),
+            "Take back acceptance", f"Take back your acceptance of the counts of {self._analyzer}.",
+            "Take back acceptance", lambda reason: self._intake.set_counts_accepted([self._unit], False, reason),
             self))

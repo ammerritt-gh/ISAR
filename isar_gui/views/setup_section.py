@@ -22,7 +22,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QFileDialog, QGridLayout, QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
-from isar_gui.plain_words import NO_CURVES, NO_CURVES_TIP, curve_problem
+from isar_gui.plain_words import NO_CURVES, NO_CURVES_TIP, curve_problem, plain_reason
 from isar_gui.theme import TONE_COLOR, Tone
 from isar_gui.views.elided_label import ElidedLabel
 
@@ -255,7 +255,8 @@ class SetupSection(QWidget):
                 items.append((line, line))
         elif summary is not None and self._open_list == "not_read":
             # the full path is the tooltip: two folders can each hold a notes.txt
-            items = [(f"{Path(f.path).name}: {f.reason}", f"{f.path}\n{f.reason}") for f in summary.files_not_read]
+            items = [(f"{Path(f.path).name}: {plain_reason(f.reason)}", f"{f.path}\n{f.reason}")
+                     for f in summary.files_not_read]
         if not items:
             self._open_list = None
         if (self._open_list, items) != self._listed:     # a re-read that changed nothing leaves the list alone

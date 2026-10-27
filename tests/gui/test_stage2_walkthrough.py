@@ -261,7 +261,7 @@ def test_scenario2_a_changed_input_marks_the_fit_and_the_export_records_its_inpu
     # save 100 K on set A (its files say 97 K) from the inspector
     w.scan_list_vm.inspect(A03_T)
     QApplication.processEvents()
-    assert _fact(w, "temperature", "files") == "97 K\nheader"
+    assert _fact(w, "temperature", "files") == "97 K\nfrom the header"
     _after_save(qtbot, w, lambda: _set_my_value(w, monkeypatch, "temperature", "100", reason="thermometer"))
 
     # the old fits keep their stored word, in the warning colour, with a tooltip naming input, from and to

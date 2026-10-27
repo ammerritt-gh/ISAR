@@ -113,7 +113,7 @@ def test_tree_is_sets_then_files_not_read_and_hides_the_placeholder_numbers(qtbo
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
     assert _tops(panel) == [f"set:{KEY_SINGLE}", f"set:{KEY_B}", f"set:{KEY_A}", "section:not_read"]
     assert [panel._model.invisibleRootItem().child(r, 0).text() for r in range(4)] == [
-        "58", STEM_B, STEM_A, "Files not read"]
+        "58 (1 analyzer)", f"{STEM_B} (4 analyzers)", f"{STEM_A} (4 analyzers)", "Files not read"]
     assert len(_children(panel, "section:not_read")) == 3 and "section:pooled" not in panel._by_id
     assert not any(h in text for text in _all_text(panel) for h in HASHES)
     assert _model_item(panel, f"set:{KEY_A}", "parsed").text() == "4/4"
@@ -189,9 +189,10 @@ def test_same_temperature_sets_stay_distinct_through_selection_and_the_analyzer_
     assert vm.sort == "analyzer"
     assert _children(panel, "ana:a04") == [f"spec:{B[4]}", f"spec:{A[4]}"]
     assert [_model_item(panel, i).text() for i in _children(panel, "ana:a04")] == [STEM_B, STEM_A]
+    assert _model_item(panel, "ana:a04").text() == "a04 (2 scan sets)"
     assert vm.current_key == B[4] and _current_key(panel) == B[4]
     assert len(display.calls) == n                                  # the regroup asked for nothing
-    assert _model_item(panel, "ana:a04", "Q").text() == "2 scan sets"
+    assert _model_item(panel, "ana:a04", "Q").text() == ""            # the count joined the name in the first column
     assert _model_item(panel, "ana:a04", "T").text() == ""
 
     panel._sort_actions["set"].trigger()
@@ -417,9 +418,20 @@ def test_the_bl43_list_has_no_pooled_section(qtbot, monkeypatch, sample):
     assert "section:pooled" not in panel._by_id
 
 
+def test_inspect_says_in_text_why_it_is_off_on_a_scan_set_row(qtbot, monkeypatch, sample):
+    panel, vm, _ = _make(qtbot, monkeypatch, sample)
+    _click(panel, f"set:{KEY_A}")
+    assert not panel._inspect.isEnabled()
+    assert panel._hint.isVisibleTo(panel) and "scan set cannot be inspected" in panel._hint.text()   # text, not a tooltip
+    assert vm.focus_set == KEY_A                      # the inspector is told which set was picked
+    _click(panel, f"spec:{A[4]}")
+    assert panel._inspect.isEnabled() and "Select an analyzer row, then" in panel._hint.text()
+    assert vm.focus_set is None
+
+
 def test_the_empty_list_says_so(qtbot, monkeypatch):
     panel, vm, _ = _make(qtbot, monkeypatch, ScanListSnapshot())
-    assert panel._empty.text() == "No scans yet" and not panel._empty.isHidden()
+    assert panel._empty.text().startswith("No scans yet") and not panel._empty.isHidden()
     assert panel._view.isHidden() and panel._status.text() == ""
     assert not panel._inspect.isEnabled()
 
