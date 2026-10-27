@@ -124,16 +124,7 @@ class FilesDock(QDockWidget):
 
     def set_watch_status(self, status) -> None:
         """Render durable watcher attention; it stays until the watcher reports recovery."""
-        messages: list[str] = []
-        if getattr(status, "paused", False) and getattr(status, "deferred", ()):
-            messages.append(f"Watching is paused; {len(status.deferred)} settled file(s) waiting")
-        if getattr(status, "unavailable", ()):
-            messages.append("Watched folder unavailable: " + ", ".join(status.unavailable))
-        if getattr(status, "retrying", ()):
-            messages.append(f"Retrying {len(status.retrying)} file(s) that could not be parsed")
-        if getattr(status, "exhausted", ()):
-            messages.append(
-                f"{len(status.exhausted)} file(s) still could not be parsed after automatic retries; inspect them")
+        messages = status.messages()
         self._watch_notice.setText("\n".join(messages))
         self._watch_notice.setVisible(bool(messages))
 
