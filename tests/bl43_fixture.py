@@ -23,6 +23,7 @@ from __future__ import annotations
 import shutil
 import types
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -165,17 +166,21 @@ def stamp_status(ws_root: Path, unit_key: str, status: str, reasons: list[str]) 
     _save(ws, card, session)
 
 
-def _make_temperature_optional(card_path: Path) -> None:
-    """The shipped file-name patterns require a ``<T>K`` token; for the no-temperature variant this
-    workspace's copy of the card lets that token be absent, so the files still read as measurements."""
-    raw = card_path.read_bytes().decode("utf-8")
+def _temperature_optional_card(dest: Path) -> Path:
+    """Write ``dest``: a copy of the shipped card whose file-name patterns let the ``<T>K`` token be
+    absent, so the no-temperature variant's files still read as measurements. The patterns are format
+    knowledge, read from the shipped file and never from the workspace card, so the copy reaches the
+    reader through ``card.SHIPPED_FORMATS``; the shipped card itself is not touched."""
+    from isar.parsers import sp8_bl43
+    raw = Path(sp8_bl43._CARD_PATH).read_bytes().decode("utf-8")
     edits = ((r"_(?P<T_K>\d+(?:p\d+)?)K_(?P<hkl_nominal>", r"_(?:(?P<T_K>\d+(?:p\d+)?)K_)?(?P<hkl_nominal>"),
              (r"(?P<specfile>spec\d+)_T(?P<T_K>\d+(?:p\d+)?)K__scan_",
               r"(?P<specfile>spec\d+)_(?:T(?P<T_K>\d+(?:p\d+)?)K_)?_scan_"))
     for before, after in edits:
         assert raw.count(before) == 1, before
         raw = raw.replace(before, after)
-    card_path.write_bytes(raw.encode("utf-8"))
+    dest.write_bytes(raw.encode("utf-8"))
+    return dest
 
 
 def build_bl43_workspace(root: Path, n_analyzers: int = 4, *, fits: bool = True, intake: bool = False,
@@ -188,6 +193,7 @@ def build_bl43_workspace(root: Path, n_analyzers: int = 4, *, fits: bool = True,
     ``intake=True`` ingests as ``isar ingest`` does (``workspace_root`` given), so the import record
     ``report/intake_scans.json`` and the curve check ``report/curves.json`` are written too."""
     from isar.parsers import sp8_bl43
+    from isar.schema import card as card_mod
     from isar.session import ingest
     from isar.session.state import SessionState
     from isar.session.workspace import Workspace
@@ -196,15 +202,16 @@ def build_bl43_workspace(root: Path, n_analyzers: int = 4, *, fits: bool = True,
     ws_root = Path(root) / "ws"
     ws_root.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(sp8_bl43._CARD_PATH, ws_root / "card.policy.toml")   # the shipped card, verbatim
-    if not with_t:
-        _make_temperature_optional(ws_root / "card.policy.toml")
     (ws_root / "card.state.json").write_text("{}", encoding="utf-8", newline="\n")
     SessionState().save(ws_root / "session.json")
-    ws = Workspace.open(ws_root)
-    card, session = ws.load()
-    ingest.ingest_batch(card, session, [incoming], data_dir=ws_root / "data",
-                        workspace_root=ws_root if intake else None)
-    ws.save(card, session)
+    shipped = ({"sp8_bl43": _temperature_optional_card(Path(root) / "bl43_optional_t.policy.toml")}
+               if not with_t else {})
+    with patch.dict(card_mod.SHIPPED_FORMATS, shipped):    # in force for the in-process ingest only
+        ws = Workspace.open(ws_root)
+        card, session = ws.load()
+        ingest.ingest_batch(card, session, [incoming], data_dir=ws_root / "data",
+                            workspace_root=ws_root if intake else None)
+        ws.save(card, session)
     if fits:
         key_a, key_b = (KEY_A, KEY_B) if with_t else (KEY_A_NO_T, KEY_B_NO_T)
         stamp_fit(ws_root, f"{key_a}:a03", "resolved")
