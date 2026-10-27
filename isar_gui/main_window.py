@@ -22,10 +22,7 @@ The Panels menu's two-way sync (checkable action <-> dock ``visibilityChanged``)
 from __future__ import annotations
 
 import logging
-import os
-import shutil
 import sys
-import tempfile
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
