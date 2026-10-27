@@ -17,7 +17,7 @@ ISAR = analysis authority). Forward workstreams live in their own plans:
 [SPEEDUP](docs/plans/speedup.md), [STEERING roadmap §10](docs/design/steering.md),
 [BACKGROUND](docs/plans/background.md), [EIG](docs/design/eig.md).
 
-Last updated: 2026-10-23.
+Last updated: 2026-10-27.
 
 ---
 
@@ -361,6 +361,16 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       from 0 to the card's `[fitting] max_modes` (default 6; the operator: "6 is arbitrary", and it may bite once
       spectra hold more modes). A best count at the ceiling reads `search_limited`. **Acceptance:** none set; revisit
       when a real spectrum shows more modes than the ceiling (`STATS_PRIMER.md` §2.2).
+- [ ] **FIT-26 — Fit the temperature from detailed balance.** "We should pin that we can fit temperature with detailed
+      balance, it's nice if we have it to take it as authoritative/a seed but detailed balance is normally so
+      strong it serves as an independent check on temperature (something to pin for later)." The anti-Stokes
+      amplitude stays tied through the Bose factor (hard rule 2); only the temperature would be fitted, seeded by
+      the recorded or user value, and compared against it. **Acceptance:** none set; pinned for later.
+- [ ] **FIT-27 — A working flag to fit in intensity mode.** The file's intensities with the file's errors under a
+      Gaussian likelihood, for data whose counts cannot be recovered (today such a spectrum is held, with the
+      counts-accepted override for `_i`). The operator's ruling, 2026-10-27: "pin it for now". It would be a second
+      likelihood path through the fast pass, deep pass, evidence and priors, statistically weaker at low counts and
+      with zero-count bins undefined; built only if real data arrive that fail the count check. **Acceptance:** none set.
 
 ---
 
@@ -503,6 +513,13 @@ None of these change a reported number; all are cost or hygiene.
 - [ ] **PLAT-6 — Migrate the check scripts onto the driver.** Only after step-5 equivalence is
       proven; until then they are the validation record.
       **Acceptance:** the `docs/*_check.py` drivers run through the CLI with identical results.
+- [ ] **PLAT-8 — Reconcile the other instruments onto the new intake.** The operator: "I know we need to a do
+      fuller reconciliation pass for more beamlines/instruments." Scope: move S30, IN8 and TAVI onto what the BL43
+      intake built (user values beside file values, recorded fit inputs and freshness, readiness and the
+      needs-attention list, format knowledge from shipped files); the full catalogue (recognition among several
+      formats, re-read on a format correction); and, as its starting point, restore every test the BL43 intake
+      retired under the ruling of 2026-10-27. None was retired: S1 to S3 retired no test, and S4's changed BL43
+      tests follow the new BL43 behaviour and retire none. **Acceptance:** none set; pinned for later. Nothing builds it.
 - [ ] **TAVI-1 — 2D scans.** Currently a clear refusal; support when a use case appears (path
       scans / campaigns on the TAVI side may produce them).
       **Acceptance:** a 2D scan parses, or the refusal is confirmed permanent.

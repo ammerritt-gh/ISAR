@@ -43,7 +43,7 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   whose elastic line is not significant. It is labelled `pipeline_zero` in the alerts; ISAR never
   assumes a zero of 0.0 on an uncalibrated axis.
 - **setting ladder** — how ISAR picks a scan's analyzer-slit setting, and so its resolution curve. A
-  slit the card or header declares is kept (a clearly better slit only raises `slit_mismatch`). With
+  slit the files or the user give is kept (a clearly better slit only raises `slit_mismatch`). With
   none, the slit whose curves best fit the elastic lines is used (`slit_inferred`), and
   `slit_ambiguous` says the runner-up is nearly as good.
 - **Voigt** — a Gaussian convolved with a Lorentzian; ISAR's instrument-resolution shape.
@@ -201,7 +201,11 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **experiment card** — the one place all per-experiment decisions live, in two halves: a
   human-edited `card.policy.toml` (detectors, column names, collation rules, your fitting
   guidelines — ISAR never writes it) and a machine-written `card.state.json` (accumulated state:
-  calibration versions, the dispersion prior, exclusions).
+  calibration versions, the dispersion prior, exclusions). For BL43LXU the policy half holds analysis
+  settings only; its format is read from the *BL43 format file*.
+- **BL43 format file** — `isar/parsers/cards/bl43lxu.policy.toml`: the BL43LXU reader's format knowledge
+  (its files, reader, calibration pattern and detectors), shipped with ISAR and read at every load. A
+  workspace card does not hold these keys; `isar init` copies only the analysis-settings region of it.
 - **workspace** — the per-experiment directory `isar init` creates: the card, the session ledger,
   and the `report/` output. One experiment = one workspace.
 - **session ledger** — ISAR's bookkeeping (`session.json`): which files it has seen and what
@@ -215,8 +219,11 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **fact source** — where a scan's or spectrum's value came from: `header` (a `# key value` line in the
   file, or its trailing `#Q=`/`#T=` line when no leading header gives it), `trailer` (a trailing line
   that disagrees with the leading header, kept as a conflict), `sidecar` (a beamline file beside the
-  data, such as `.var`), `filename`, `card` (your `[facts]`), `inferred` (ISAR derived it) or `missing`.
-  The first found wins in that order; a disagreement is flagged `fact_conflict`.
+  data, such as `.var`), `filename`, `inferred` (ISAR derived it) or `missing`. The first found wins in
+  that order; `fact_conflict` covers disagreement among file sources only. A value you enter in ISAR
+  (*file value / user value*) is kept beside the file value. Where the two differ, the scan gets a
+  *File and user values disagree* item on the needs-attention list, naming the field and both values;
+  the user value is the one used.
 - **Q rung** — how a spectrum's momentum transfer Q was obtained, best first: rung 1, the analyzer's
   own HKL from the file; rung 2, computed from the sample angles and orientation (planned); rung 3,
   computed from the arm-centre HKL and labelled approximate (planned); rung 4, no Q (`q = None`). The

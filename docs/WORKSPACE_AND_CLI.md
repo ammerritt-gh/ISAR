@@ -125,6 +125,11 @@ machine-written — calibration versions, the energy-zero series, the dispersion
 corrections. Writing policy from code silently overwrites the scientist's intent; hand-editing
 state silently corrupts machine bookkeeping.
 
+For a BL43LXU workspace `card.policy.toml` holds only analysis settings: collation, fitting, priors,
+`[sample]` and the QC thresholds. Its format comes from the shipped `bl43lxu.policy.toml` at every load, so
+a format key in the card is ignored with a warning and a later change to the shipped file reaches the
+workspace at its next load, with no edit to the card.
+
 The split between `card.state.json` and `session.json` is a survivability split, not a tidiness
 one: `card.state.json` holds what the *experiment* owns and must survive; `session.json` holds
 what the *machine* owns and can be deleted and rebuilt from the data files plus a re-run.
@@ -153,7 +158,8 @@ new, previously held, whose `content_hash` changed, or whose `guidelines_hash` c
 whose fit inputs (data revision, user values, conditions, calibration) changed.
 
 - `content_hash` covers the parsed record — it makes a growing-file resend a re-parse plus dedup
-  rather than a duplicate.
+  rather than a duplicate. For BL43 it covers the files' content, not where they sit: a moved or renamed
+  data folder re-imports as unchanged, and the import record keeps the paths it was read from.
 - `guidelines_hash` covers the `[fitting]` guidelines that applied to *that* scan. This is what
   makes a card edit a real correction channel: the edit changes the hash for exactly the scans it
   touches, those re-enter the fit queue, and nothing else refits.
@@ -170,7 +176,7 @@ init  detect  ingest  run  status  profile  report  export  diagnose  score  vie
 
 | Command | What it does |
 |---|---|
-| `isar init <data> [--out DIR]` | Detect the instrument and scaffold a workspace: the matching card template copied verbatim as text (its comments are the documentation), empty state, printed next steps. |
+| `isar init <data> [--out DIR]` | Detect the instrument and scaffold a workspace: the matching card template copied verbatim as text (its comments are the documentation); for BL43LXU only the analysis-settings region of the shipped format file, the format staying in that file; empty state, printed next steps. |
 | `isar detect <data>` | Report the instrument detected from a data path. Writes nothing. |
 | `isar ingest <data>... --workspace DIR` | Parse into the ledger **without fitting** — one `ingested` entry per `(exp, scan, detector)`, so parsed scans are visible through `workspace_api` before any run. Never fits, never deletes, never writes `card.policy.toml`. |
 | `isar run <data>... --workspace DIR` | The whole pipeline: ingest → parse/classify → route context events → QC/combine → optional LLM adjudication → calibration-gated fit with prior → verdict/confidence → collate → report. Idempotent; re-run per batch. |

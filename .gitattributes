@@ -15,5 +15,6 @@ tests/gui/fixtures/** text eol=lf
 artificial_data/** -text
 # The session transcript is kept byte for byte as received (CRLF), not normalised like other docs.
 docs/transcripts/2026-10-25-peak-fitting-for-letacon-csv3sb5-data-d70ac2ed.md -text
+docs/transcripts/2026-10-27-bl43lxu-isar-data-intake-job-fafd32ff.md -text
 # Verbatim copies of the measured resolution curves keep their bytes too.
 resolution_curves/** -text

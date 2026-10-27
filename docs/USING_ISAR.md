@@ -556,7 +556,9 @@ isar ingest "D:\beamtime\leTacon_SP8_CsV3Sb5" --workspace my_bl43
 ```
 
 `isar init` detects the instrument from the first per-analyzer file and writes
-`my_bl43\card.policy.toml` from the shipped template. `isar ingest` makes one scan per set of files,
+`my_bl43\card.policy.toml` with the analysis settings from the shipped format file,
+`isar/parsers/cards/bl43lxu.policy.toml`. The format is read from that file at every load, so a fix there
+reaches every workspace at its next load. `isar ingest` makes one scan per set of files,
 with one spectrum per analyzer, and ledgers each analyzer as its own `(scan, analyzer)` entry. `isar run`
 then sets each scan's slit and each analyzer's energy zero. An analyzer that cannot be fitted is held on
 its own, with the reason named; the other analyzers of the scan still fit.
@@ -599,7 +601,13 @@ a set was read first and its individual scans arrive later (in any folder), the 
 `isar run` marks its ledger entries `excluded`, with a reason naming the set and the scans; they are not
 fitted again and stay listed under "Held / declined". The files are never touched.
 
-### What the card's tables do
+### Where BL43's settings live
+
+Three homes, and each setting is in exactly one of them.
+
+**1. The shipped format file** (`isar/parsers/cards/bl43lxu.policy.toml`), read at every load and never
+copied into the workspace, so a fix to it reaches every workspace at its next load. The agent edits it when
+the format changes. Its tables:
 
 - `[files]`: `measurement` holds regexes with named groups. Each must name `set` (the scan's key,
   shared by its analyzer files) and `analyzer`; the other groups (sample, `T_K`, `hkl_nominal`,
@@ -619,19 +627,25 @@ fitted again and stay listed under "Held / declined". The files are never touche
   records it. An `_lr` spectrum stays held whatever is saved. A notice is print rounding of raw counts,
   holds nothing, and that spectrum is fitted. Where each analyzer's counts came from, and the result of
   the integer check, is recorded with every fit.
-- `[facts]`: values you declare, for example `slit = "60x60"` or `lattice = [...]`. They rank lowest: a
-  header, trailer, sidecar or filename value wins, and a disagreement raises `fact_conflict`.
-- `[calibration]`: `method = "tabulated_elastic"` (see *Resolution, slit and zero*). `resolution_folder`
-  is the folder of SARF files, used only when the experiment has no saved resolution folder, relative to the
-  card's folder unless absolute; `resolution_pattern` matches their file names and picks out the analyzer and
-  the slit.
-- `[[detectors]]`: `enabled = false` leaves an analyzer out of every scan. `value_index` and
-  `signal_column` are not used for this instrument.
+- `[calibration]`: `method = "tabulated_elastic"` (see *Resolution, slit and zero*), and
+  `resolution_pattern`, which matches the SARF file names and picks out the analyzer and the slit. No
+  folder is named here: the resolution folder is the experiment's saved one.
+- `[[detectors]]`: `value_index` and `signal_column` are not used for this instrument.
+
+**2. The workspace card** (`card.policy.toml`): the analysis settings only, meaning collation, fitting
+guidelines, priors, `[sample]` and the QC thresholds. It is edited in the GUI's card panel. A format key
+in it (for example `[files]`, `[reader]` or `[facts]`) is ignored with a warning, and the shipped value is used.
+
+**3. Values, conditions and the resolution folder**: entered in ISAR (the GUI), never in a card. A
+temperature or slit for one scan, an excluded scan, a dead analyzer and counts accepted are saved there, and
+the resolution folder is the one ISAR saved for the experiment. A dead analyzer is a condition, not an
+`enabled = false` line: it is still read and imported, and it is left out of the fits of its scan. See
+*Resolution, slit and zero* and WORKSPACE_AND_CLI's *Values, conditions and what each fit used*.
 
 ### Header lines the group's macro can write
 
 A `# key value` line before the data (the column-label line is skipped) gives the same fact that the file
-name or the card would, and it wins over them. The reader takes:
+name would, and it wins over it. The reader takes:
 
 - scan level: `specfile` (the SPEC file name), `scan` (scan number or numbers), `T_K`, `si_order`, `energy_keV`, `agaph_mm` and `agapv_mm`
   (the analyzer slit, combined into the generic fact `slit` as `<h>x<v>`), `lattice` (a, b, c, α, β, γ)
@@ -658,7 +672,12 @@ analyzer `efficiency`, `polarisation_factor`, `elastic_centroid_meV` and `elasti
 is missing or unreadable raises `missing_sidecar`; one that is empty or has no analyzer list (for
 example still being copied) counts as unreadable, and importing the scan's folder or files again once it
 is whole completes the scan. A re-import reads every file again (a file is never skipped as unchanged), so
-it also picks up a corrected reader.
+it also picks up a corrected reader. Moving or renaming the data folder and importing it from its new place
+marks no scan changed, because the data revision ignores where the files sit; the import record keeps the
+new paths. A resolution folder saved inside the moved folder (the usual `rf/` beside the data) is not
+followed: ISAR keeps the old path, the next import reports its curves as missing, and any fit that used them
+shows Values changed since last fit. Save the new folder in the GUI (ISAR never switches a
+saved folder by itself), and the mark clears once the affected scans are fitted again.
 
 ### Reading a fact's source label
 
@@ -669,12 +688,13 @@ The inspector shows every fact with its source:
 | `header` | a `# key value` line, or a trailing `#Q=` / `#T=` line, in the file itself |
 | `trailer` | a trailing line that disagrees with the leading header (kept as a conflict) |
 | `sidecar` | the `.var` file beside the analyzer files |
-| `filename` | the file-name pattern (the card's `[files]` groups) |
-| `card` | a value you declared in `[facts]` |
+| `filename` | the file-name pattern (the `[files]` groups of the shipped format file) |
 | `inferred` | derived by ISAR: `energy_keV` from `si_order` (1.977 keV per silicon order) when nothing else gives it, the count-recovery deviation, and `points_per_bin` (read from the `npts` data column) |
 | `missing` | nothing supplied it. The value is empty, and nothing downstream may invent one |
 
-The precedence is header, then trailer, sidecar, filename, card; the first found wins.
+The precedence is header, then trailer, sidecar, filename; the first found wins. A value you enter in ISAR
+is kept beside the file's value, not in this order: it is what the fit uses (see WORKSPACE_AND_CLI's
+*Values, conditions and what each fit used*, and GLOSSARY's *file value / user value*).
 
 A spectrum's `q_source` says which rung gave its Q. `header` or `filename` is rung 1 (the analyzer's own
 HKL). `none` is rung 4: no Q, `q = None`. Rungs 2 and 3 are planned, not built. For CsV3Sb5 every analyzer
@@ -690,11 +710,11 @@ on its elastic line with that curve. To set this up:
 1. Put the `rf/` folder of SARF files inside the imported data folder (or beside an imported file). ISAR
    finds it at the first import or run when no folder is saved for the experiment, saves it as the experiment's
    resolution folder and says where it found it. The folder is an experiment setting that ISAR saves and
-   changes only through the GUI, never by editing the card. The card's `resolution_folder` is used only when
-   no folder is saved. ISAR never switches a saved folder by itself: an `rf/` it finds beside a later import
-   is listed in `report/curves.json` as another folder that also holds curves.
-2. Declare the slit if you know it: the header lines `agaph_mm` and `agapv_mm`, or `slit = "60x60"`
-   under `[facts]`. A declared slit is always used.
+   changes only through the GUI, never by editing a file. ISAR never switches a saved folder by itself: an
+   `rf/` it finds beside a later import is listed in `report/curves.json` as another folder that also holds
+   curves.
+2. Declare the slit if you know it: the header lines `agaph_mm` and `agapv_mm`, or enter the slit in ISAR
+   (the GUI). A slit you give is always used.
 3. ISAR checks the folder's curves at every import and every `isar run`, by their content: a curve replaced
    at the same path is noticed, and the calibration is rebuilt at the next run.
    `isar run` builds the calibration. The inspector shows each scan's slit, its candidate deviances and
@@ -706,12 +726,12 @@ Alerts on that choice and on the zeros:
 
 | Alert | Meaning | What to do |
 |---|---|---|
-| `slit_inferred` | No slit was declared; ISAR chose one from the elastic lines. | Declare the slit if you know it. |
-| `slit_ambiguous` | The runner-up slit fits within 10 in summed deviance, so the data do not pick one. | Check the slit and declare it. |
-| `slit_mismatch` | The declared slit is kept, but another fits the elastic lines clearly better. | Check the declared slit and the curve files. |
+| `slit_inferred` | No slit was declared; ISAR chose one from the elastic lines. | Enter the slit in ISAR if you know it. |
+| `slit_ambiguous` | The runner-up slit fits within 10 in summed deviance, so the data do not pick one. | Check the slit and enter it in ISAR. |
+| `slit_mismatch` | The slit you gave is kept, but another fits the elastic lines clearly better. | Check the slit you gave and the curve files. |
 | `pipeline_zero` | The analyzer has no significant elastic line. Its zero is the file's own axis, labelled. | Compare that analyzer's ω₀ with its neighbours before trusting it. |
 | `zero_disagrees_with_beamline` | The analyzer's zero (`elastic_fit` or `pipeline_zero`) is more than 0.3 meV from the beamline's elastic centroid; the reason gives both numbers. The centroid includes background and phonon tails, so the flag is a cross-check and ISAR's fit stays the zero. It is raised when a scan is calibrated, so an existing workspace shows it only once its data are run into a fresh one. | Inspect that analyzer's elastic fit. The flag does not change the zero. |
-| `missing_resolution` | No curve for that analyzer at that slit, or no folder: the analyzer is held and not fitted. | Add the curve to the experiment's resolution folder (the one ISAR saved, or the card's), or correct `resolution_pattern`. |
+| `missing_resolution` | No curve for that analyzer at that slit, or no folder: the analyzer is held and not fitted. | Add the curve to the experiment's resolution folder (the one ISAR saved), or correct `resolution_pattern` in the shipped format file. |
 | `resolution_range_exceeded` | The fit range runs past the measured curve; the curve is used as given. | Read the fit with that in mind. |
 
 Held analyzers and scans are listed under "Held / declined" in the report, with their reason.
@@ -727,7 +747,7 @@ main checkout. It takes one to two hours and writes its workspaces, logs and `su
   energy zero to 0.0 on an uncalibrated axis.
 - The in-plane momentum spread of the resolution is not modelled. Q rungs 2 and 3 are not built, so an
   analyzer's Q stays absent unless its file gives an HKL.
-- `_lr` counts are parsed and shown, never fitted (see `[reader]`).
+- `_lr` counts are parsed and shown, never fitted (see `[reader]` under *Where BL43's settings live*).
 - The raw SPEC files are not read.
 - The Ba122 layout has no monitor, and ISAR does not deduce one.
 
