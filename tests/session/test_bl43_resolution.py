@@ -14,89 +14,16 @@ import numpy as np
 import pytest
 
 import isar
-from isar.analyze.lineshapes import convolute_voigt_dho
+from intake_fixtures import (ANALYZERS, SETTINGS, STEM, TRUE_SLIT, ZERO,  # the generators, shared with tests/intake
+                             curve_values as _curve_values, workspace as _workspace,
+                             write_library as _write_library, write_scan as _write_scan)
 from isar.parsers import metadata, sarf, sp8_bl43
 from isar.reduce import combine, qc
 from isar.schema import axes
 from isar.schema.scan import Flag
 from isar.session import calibrations, driver, guidelines as guide_mod, ingest, scan_delivery
-from isar.session.workspace import Workspace
 
 PATTERN = sp8_bl43.card_template().policy.calibration["resolution_pattern"]
-SETTINGS = {"60x60": 0.9, "40x40": 1.3, "20x20": 2.0}      # slit -> curve FWHM (meV) in the generated library
-TRUE_SLIT = "40x40"
-ZERO = 0.15                                                 # where the generated elastic line really sits
-STEM = "Smp_100K_0p5_0p5_3"
-ENERGY = np.round(np.arange(-8.0, 8.0001, 0.2), 4)
-ANALYZERS = ("a03", "a04", "a05")
-
-
-# ---------------------------------------------------------------------------
-# generated data
-# ---------------------------------------------------------------------------
-def _curve_values(e, fwhm):
-    """An asymmetric curve with a long tail (not a Voigt, so a Voigt cannot stand in for it)."""
-    s = fwhm / 2.355
-    return np.exp(-0.5 * (e / s) ** 2) + 0.03 * (1 + 0.5 * np.tanh(e)) / (1 + (e / (2.5 * fwhm)) ** 2)
-
-
-def _write_library(folder: Path, settings=SETTINGS, analyzers=ANALYZERS, *, skip=()):
-    """`sarf_t_s<n>_<h>_<v>_aNN` files for every analyzer and setting, minus the `skip` pairs."""
-    folder.mkdir(parents=True, exist_ok=True)
-    grid = np.round(np.arange(-15.0, 15.0001, 0.1), 4)
-    for n, (setting, fwhm) in enumerate(settings.items(), start=1):
-        h, v = setting.split("x")
-        for det in analyzers:
-            if (det, setting) in skip:
-                continue
-            rows = ["# SARF generated for the test", "# center of FWHM at zero", "#E_meV SARF fit"]
-            rows += [f" {e:8.3f} {y:12.5E} {y:12.5E}" for e, y in zip(grid, _curve_values(grid, fwhm))]
-            (folder / f"sarf_t_s{n}_{h}_{v}_{det}").write_text("\n".join(rows) + "\n", encoding="utf-8",
-                                                               newline="\n")
-
-
-def _write_scan(folder: Path, stem=STEM, analyzers=ANALYZERS, *, slit=None, seed=1, monitors=None, weak=(),
-                hkl=None, zero=ZERO, true_slit=TRUE_SLIT, centroids=None):
-    """One scan in the CsV3Sb5 layout: an elastic line at `zero` through the `true_slit` curve, one DHO
-    mode at 4 meV, a flat background; Poisson counts. `slit` = (h, v) written as header facts.
-    `centroids` (analyzer -> beamline elastic centroid, meV) writes the `.var` sidecar: every analyzer is
-    listed, and only the analyzers in the mapping carry `elpk_centroid_meV`."""
-    folder.mkdir(parents=True, exist_ok=True)
-    rng = np.random.default_rng(seed)
-    grid = np.round(np.arange(-15.0, 15.0001, 0.1), 4)
-    if centroids is not None:
-        var = ["silicon_order = 4", "meV_bin_size = 0.2", "nscans = 1", f"array ano[{len(analyzers)}]"]
-        var += [f"ano[{i}] = {int(det[1:])}" for i, det in enumerate(analyzers)]
-        var += [f"elpk_centroid_meV[{i}] = {centroids[det]}" for i, det in enumerate(analyzers) if det in centroids]
-        (folder / f"{stem}.var").write_text("\n".join(var) + "\n", encoding="utf-8", newline="\n")
-    for det in analyzers:
-        from isar.analyze.resolution import TabulatedResolution
-        curve = TabulatedResolution(grid, _curve_values(grid, SETTINGS[true_slit]), det, true_slit)
-        a_ph, a_el = (0.0, 0.0) if det in weak else (40.0, 900.0)       # weak: background only
-        mean = convolute_voigt_dho(ENERGY, 4.0, zero, 0.0, 0.0, 0.6, a_ph, a_el, 1.0, 100.0,
-                                   resolution_curve=curve)
-        counts = rng.poisson(np.clip(mean, 0, None)).astype(float)
-        mon = (monitors or {}).get(det, 1.0e5)
-        rows = []
-        if slit:
-            rows += [f"# agaph_mm {slit[0]}", f"# agapv_mm {slit[1]}"]
-        if hkl:
-            rows.append("# hkl " + " ".join(str(h) for h in hkl))
-        rows.append("#      meV      secs   npts          norm_i             y_i            ye_i")
-        rows += [f"{e:10.4f} {10.0:9.1f} {1:6d} {mon:15.7E} {n / mon:15.7E} {np.sqrt(n) / mon:15.7E}"
-                 for e, n in zip(ENERGY, counts)]
-        (folder / f"{stem}_{det}").write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
-
-
-def _workspace(tmp_path, *, merge="separate", sample=None):
-    ws = Workspace.open(tmp_path / "ws")
-    ws.root.mkdir(parents=True, exist_ok=True)
-    text = (Path(sp8_bl43.__file__).parent / "cards" / "bl43lxu.policy.toml").read_text(encoding="utf-8")
-    text = text.replace('merge = "separate"', f'merge = "{merge}"')
-    if sample:
-        text += f'\n[sample]\nname = "{sample}"\n'
-    ws.policy_path.write_text(text, encoding="utf-8", newline="\n")
-    return ws
 
 
 def _records(card, folder):
