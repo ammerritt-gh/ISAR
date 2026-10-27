@@ -547,6 +547,16 @@ def test_each_activity_kind_has_its_own_word(qtbot, make_ws):
     assert w._operation_status.text() == ""
 
 
+def test_opening_another_experiment_clears_the_last_run_status(qtbot, make_ws):
+    w = _window(qtbot, _ready(make_ws))
+    w._set_run_status("run finished OK (12:00:00)", "#2e7d32")
+    assert w.processing_panel._last_run.text() == "run finished OK (12:00:00)"
+    assert w.load_workspace(make_ws(rows=_ROWS))
+    assert w._last_run_status is None
+    assert w._run_status.text() == "" and w.processing_panel._last_run.text() == ""
+    assert w.processing_panel._last_run.isHidden()
+
+
 def test_last_written_on_bind_is_the_session_files_time(qtbot, make_ws):
     root = make_ws(rows=_ROWS)
     stamp = time.time() + 120                            # newer than every other watched file

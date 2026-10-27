@@ -1532,6 +1532,9 @@ class MainWindow(QMainWindow):
             self._close_scan_inspector()
             state = self.saveState(_LAYOUT_VERSION)
             self._teardown_binding()
+        # The last run belongs to the experiment it ran in; the bind pushes the cleared state.
+        self._last_run_status = None
+        self._run_status.setText("")
         self._bind_workspace(ws)
         self._bound = True
         if state is not None:
