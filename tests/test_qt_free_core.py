@@ -21,6 +21,7 @@ CORE_DIRS = {
     "geometry": ISAR_DIR / "geometry",
     "plotspec": ISAR_DIR / "plotspec",
     "workspace_api": ISAR_DIR / "workspace_api",
+    "intake": ISAR_DIR / "intake",
 }
 CORE_FILES = {"sandbox_api": ISAR_DIR / "sandbox_api.py"}
 
