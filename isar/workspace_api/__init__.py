@@ -19,6 +19,7 @@ from __future__ import annotations
 from .views import (BranchModelView, CampaignView, CardView, CertificationStatusView, FitView,
                     GroupView, MasterAssessmentView, MasterGroupView, ScanView)
 from .workspace import SCHEMA_VERSION, Workspace, WorkspaceNotFound
+from .intake_view import Change, FactRow, PassInputs, UnitFitInputs
 from .scan_keys import scan_prefix, split_key, unit_key
 from .config_gates import (DEFAULT_CLOUD_FALLBACK_MODEL, PolicyValidation, validate_endpoint,
                            validate_policy_text)
@@ -80,4 +81,10 @@ __all__ = [
     # The discovery decision ledger's read door (SCENE-5 5.2): the latest persisted decision, for
     # the operator alert on a scoring fallback (D7) — never a second write path.
     "latest_decision",
+    # The BL43 intake reads (Workspace.fact_rows, Workspace.fit_inputs): file and user values, and what
+    # each pass used with the changes since.
+    "FactRow",
+    "Change",
+    "PassInputs",
+    "UnitFitInputs",
 ]
