@@ -227,7 +227,8 @@ class Workspace:
                 scan_id=entry.scan_id, scan_number=entry.scan_number,
                 scan_type=entry.scan_type, status=entry.status,
                 provenance=dict(entry.provenance or {}), detectors=detectors,
-                hkl=self._resolve_hkl(entry, detectors, epochs)))
+                hkl=self._resolve_hkl(entry, detectors, epochs),
+                reasons=tuple(entry.reasons or ())))
         self._views["scans"] = out
         return out
 
