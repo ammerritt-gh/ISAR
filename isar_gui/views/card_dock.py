@@ -222,11 +222,20 @@ class CardDock(QDockWidget):
         return self.reload(discard_dirty=True)
 
     def _confirm_warnings(self, validation: PolicyValidation) -> bool:
-        message = "\n".join(validation.warnings)
+        # Unknown keys and the notes about keys ISAR reads elsewhere (the shipped BL43 file, values entered
+        # in ISAR) are different things: each sits under its own heading, and the title names what is there.
+        unknown, notes = validation.unknown_keys, validation.notes
+        sections = []
+        if unknown:
+            sections.append("These keys are not part of the current card schema:\n" + "\n".join(unknown))
+        if notes:
+            sections.append("These keys are not used (ISAR reads them from elsewhere):\n" + "\n".join(notes))
+        title = ("Card keys to review" if unknown and notes
+                 else "Unknown card keys" if unknown else "Card keys not used")
         answer = QMessageBox.warning(
             self,
-            "Unknown card keys",
-            f"These keys are not part of the current card schema:\n{message}\n\nSave anyway?",
+            title,
+            "\n\n".join(sections) + "\n\nSave anyway?",
             QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )

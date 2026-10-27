@@ -1,10 +1,17 @@
 """CardDock: validation, atomic human saves, conflict safety, and empty-state behavior."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtWidgets import QMessageBox
+
+import bl43_fixture
+from isar.cli import init_cmd
+from isar.parsers import sp8_bl43
 from isar.workspace_api import Workspace
 from isar_gui.main_window import _EmptyWorkspace
 from isar_gui.views.card_dock import CardDock
@@ -153,3 +160,75 @@ def test_discard_restores_the_on_disk_policy_before_analysis_can_continue(qtbot,
     assert dock._discard_draft() is True
     assert dock.text == on_disk
     assert not dock.is_dirty
+
+
+# ---- the save-anyway dialog: unknown keys and "not used" notes are different things ----------------------
+NOT_USED = "These keys are not used (ISAR reads them from elsewhere):"
+UNKNOWN = "These keys are not part of the current card schema:"
+BL43_EXTRAS = '\n[facts]\nslit = "60x60"\n\n[calibration]\nresolution_folder = "rf"\n'
+
+
+def _bl43_dock(qtbot, tmp_path):
+    """A dock over a BL43 workspace, holding the card `isar init` writes there (the settings region)."""
+    dock = CardDock(Workspace.open(bl43_fixture.build_bl43_workspace(tmp_path)))
+    qtbot.addWidget(dock)
+    shipped = Path(sp8_bl43._CARD_PATH).read_text(encoding="utf-8")
+    dock.set_text(init_cmd._settings_region(shipped))
+    return dock
+
+
+def _ask(monkeypatch, answer=QMessageBox.StandardButton.Cancel):
+    """Replace the dialog; the calls it gets are collected as (title, text)."""
+    shown = []
+
+    def warning(_parent, title, text, *_args, **_kwargs):
+        shown.append((title, text))
+        return answer
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(warning))
+    return shown
+
+
+def _under(text: str, heading: str) -> list[str]:
+    """The lines listed under ``heading`` (up to the next blank line)."""
+    lines = text.split("\n")
+    assert heading in lines, (heading, text)
+    rest = lines[lines.index(heading) + 1:]
+    return rest[:rest.index("")] if "" in rest else rest
+
+
+def test_notes_about_keys_read_elsewhere_are_not_titled_unknown_keys(qtbot, monkeypatch, tmp_path):
+    dock = _bl43_dock(qtbot, tmp_path)
+    dock.set_text(dock.text + BL43_EXTRAS)
+    shown = _ask(monkeypatch)
+    assert dock.save() is False and "review" in dock._status.text()
+    (title, text), = shown
+    assert title == "Card keys not used"
+    assert UNKNOWN not in text and "unknown top-level key" not in text
+    notes = _under(text, NOT_USED)
+    assert len(notes) == 2 and {n.split("'")[1] for n in notes} == {"facts", "calibration"}
+    assert any("entered in ISAR" in n for n in notes if "'facts'" in n)
+    assert any("shipped" in n for n in notes if "'calibration'" in n)
+
+
+def test_a_truly_unknown_key_keeps_its_heading(qtbot, make_ws, monkeypatch):
+    ws, _root = _ws_with_card(make_ws)
+    dock = CardDock(ws)
+    qtbot.addWidget(dock)
+    dock.set_text("fittng = 1\n" + dock.text)
+    shown = _ask(monkeypatch)
+    assert dock.save() is False
+    (title, text), = shown
+    assert title == "Unknown card keys"
+    assert _under(text, UNKNOWN) == ["unknown top-level key 'fittng'"] and NOT_USED not in text
+
+
+def test_both_kinds_sit_under_their_own_headings_and_save_anyway_saves(qtbot, monkeypatch, tmp_path):
+    dock = _bl43_dock(qtbot, tmp_path)
+    dock.set_text("fittng = 1\n" + dock.text + BL43_EXTRAS)
+    shown = _ask(monkeypatch, QMessageBox.StandardButton.Save)
+    assert dock.save() is True
+    (title, text), = shown
+    assert title == "Card keys to review"
+    assert _under(text, UNKNOWN) == ["unknown top-level key 'fittng'"]
+    assert {n.split("'")[1] for n in _under(text, NOT_USED)} == {"facts", "calibration"}
+    assert "unknown top-level key" not in "\n".join(_under(text, NOT_USED))
