@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import datetime
 import logging
 import os
 from pathlib import Path
@@ -82,10 +83,27 @@ class WatchStatus:
     unavailable: tuple[str, ...] = ()
     retrying: tuple[str, ...] = ()
     exhausted: tuple[str, ...] = ()
+    # The last completed sweep that handed files to reading, and how many (wall clock, for the dialog).
+    found_at: datetime | None = None
+    found: int = 0
 
     @property
     def needs_attention(self) -> bool:
         return bool(self.unavailable or self.retrying or self.exhausted)
+
+    def messages(self) -> list[str]:
+        """The attention lines the Files dock and the Watch dialog both show, in one order."""
+        out: list[str] = []
+        if self.paused and self.deferred:
+            out.append(f"Watching is paused; {len(self.deferred)} settled file(s) waiting")
+        if self.unavailable:
+            out.append("Watched folder unavailable: " + ", ".join(self.unavailable))
+        if self.retrying:
+            out.append(f"Retrying {len(self.retrying)} file(s) that could not be parsed")
+        if self.exhausted:
+            out.append(f"{len(self.exhausted)} file(s) still could not be parsed after automatic retries; "
+                       "inspect them")
+        return out
 
 
 class FolderWatcher(QObject):
@@ -108,6 +126,8 @@ class FolderWatcher(QObject):
         self._deferred: OrderedDict[str, None] = OrderedDict()
         self._unavailable: set[str] = set()
         self._last_status: WatchStatus | None = None
+        self._found_at: datetime | None = None
+        self._found = 0
         # Sweep state machine: the in-flight sweep, its validity generation, the presence set from
         # the LAST COMPLETED sweep (what retries are checked against), and the re-entrancy guard.
         self._sweep: _Sweep | None = None
@@ -147,6 +167,7 @@ class FolderWatcher(QObject):
             self._tracked.clear()
             self._deferred.clear()
             self._unavailable.clear()
+            self._found_at, self._found = None, 0
         else:
             self._tracked = {p: st for p, st in self._tracked.items()
                              if any(_is_within(p, f) for f in new)}
@@ -366,6 +387,8 @@ class FolderWatcher(QObject):
                 log.info("watched folder(s) available again: %s", ", ".join(sorted(returned)))
                 self._sync_filesystem_watcher()
             self._unavailable = set(sweep.unavailable)
+        if newly_stable:
+            self._found_at, self._found = datetime.now(), len(newly_stable)
         for path in newly_stable:
             self._queue_or_emit(path)
 
@@ -432,6 +455,8 @@ class FolderWatcher(QObject):
             unavailable=tuple(sorted(self._unavailable)),
             retrying=retrying,
             exhausted=exhausted,
+            found_at=self._found_at,
+            found=self._found,
         )
         if status != self._last_status:
             self._last_status = status

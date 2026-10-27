@@ -381,3 +381,25 @@ def test_reentrant_poll_is_a_noop(qtbot, tmp_path):
     for _ in range(5):
         fw.poll()
     assert calls == [[str(folder / "s.dat")]]    # emitted exactly once, no recursion damage
+
+def test_found_names_the_last_sweep_that_handed_files_to_reading(qtbot, tmp_path):
+    folder = tmp_path / "data"
+    folder.mkdir()
+    statuses = []
+    fw = FolderWatcher(poll_ms=5, stable_polls=2)
+    fw.status_changed.connect(statuses.append)
+    fw.set_folders([str(folder)])
+    assert fw.status().found == 0 and fw.status().found_at is None
+
+    (folder / "a.dat").write_bytes(b"x")
+    (folder / "b.dat").write_bytes(b"y")
+    fw.poll()
+    fw.poll()                                    # both settle on the second sweep
+    assert fw.status().found == 2 and fw.status().found_at is not None
+    seen = len(statuses)
+    fw.poll()
+    fw.poll()                                    # a sweep that finds nothing emits no status
+    assert len(statuses) == seen and fw.status().found == 2
+
+    fw.configure([str(folder)], paused=False, reset_binding=True)
+    assert fw.status().found == 0 and fw.status().found_at is None

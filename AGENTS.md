@@ -21,8 +21,8 @@ area.
 - **Setup (operator):** double-click `setup-isar-env.bat` (creates env, `pip install -e ".[gui]"`).
 - **CLI entrypoint:** `isar` → `isar.cli.main:main`. Subcommands: `init detect ingest run status
   report score profile drive view diagnose`.
-- **GUI:** `run-isar-gui.bat` → `micromamba run -n isar python -m isar_gui`; falls back to env
-  `tavi-dev` when `isar` isn't built yet.
+- **GUI:** `run-isar-gui.bat` → the environment's `pythonw.exe -m isar_gui` (no console);
+  falls back to env `tavi-dev` when `isar` isn't built yet.
 - **Tests:** markers `slow`, `live`, `golden`; `testpaths` = `isar/synth/tests`, `tests`
   (`pyproject.toml`). **The routine suite needs nothing outside git** — no test reads `real_data/`
   (hard rule 10), so it passes in any worktree or fresh checkout. `live` needs a running TAVI at

@@ -81,6 +81,18 @@ class FilesViewModel(ViewModel):
         return out
 
     @property
+    def counts(self) -> tuple[int, int]:
+        """(files received, scan sets): a scan set is a distinct ledger key across the manifest rows."""
+        files = self.workspace.files
+        keys = {key for fv in files for key in (getattr(fv, "scan_ids", ()) or ())}
+        return len(files), len(keys)
+
+    @property
+    def can_watch(self) -> bool:
+        """A store is bound: a ready experiment (pending and none have no GuiStore)."""
+        return self._store is not None
+
+    @property
     def last_ingest(self):
         """The facade's immutable latest-ingest evidence, if this workspace predates it."""
         return getattr(self.workspace, "last_ingest", None)

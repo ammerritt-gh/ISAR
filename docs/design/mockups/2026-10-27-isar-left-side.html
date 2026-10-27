@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ISAR left side — mockup (job ja0cd202ecb67)</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --line: #d5d9e0; --text: #1f2430; --muted: #6b7280;
+    --head: #eef0f3; --action: #2f6fb3; --action-tint: #e8f0fa; --ok: #2e7d4f; --warn: #b7791f;
+    --err: #b42318; --idle: #9aa1ab; --run: #2f6fb3; --sel: #dbe7f6;
+    font-family: "Segoe UI", system-ui, sans-serif; font-size: 12px; color: var(--text);
+  }
+  body { background: #c9ccd2; margin: 0; padding: 24px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .note { max-width: 1100px; color: #333; margin: 0 0 18px; line-height: 1.45; }
+  .frame-title { font-weight: 600; margin: 26px 0 6px; font-size: 13px; }
+  .frame-sub { color: #444; margin: 0 0 8px; max-width: 1100px; line-height: 1.4; }
+  .win { background: var(--bg); border: 1px solid #888; box-shadow: 0 4px 18px rgba(0,0,0,.25);
+         display: flex; flex-direction: column; overflow: hidden; }
+  .laptop { width: 1108px; height: 851px; }
+  .desktop-wrap { width: 1280px; height: 696px; overflow: hidden; }
+  .desktop { width: 2560px; height: 1392px; transform: scale(.5); transform-origin: 0 0; }
+  .titlebar { height: 28px; background: #fff; border-bottom: 1px solid var(--line); display: flex;
+              align-items: center; padding: 0 10px; gap: 8px; }
+  .menubar { height: 24px; background: #fff; display: flex; align-items: center; gap: 18px; padding: 0 10px;
+             border-bottom: 1px solid var(--line); }
+  .main { flex: 1; display: flex; min-height: 0; }
+  .col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--panel); }
+  .phead { background: var(--head); border-bottom: 1px solid var(--line); padding: 4px 8px; font-weight: 600;
+           display: flex; align-items: center; gap: 6px; }
+  .phead .x { margin-left: auto; color: var(--muted); font-weight: 400; }
+  .btn { display: inline-block; border: 1px solid #b9c0ca; border-radius: 3px; padding: 2px 8px; background: #fff; }
+  .btn.primary { border-color: var(--action); color: var(--action); background: var(--action-tint); }
+  .btn.small { padding: 1px 6px; font-size: 11px; }
+  .link { color: var(--action); }
+  .muted { color: var(--muted); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: 0; }
+  .ok { background: var(--ok); } .warn { background: var(--warn); } .err { background: var(--err); }
+  .idle { background: transparent; border: 1px solid var(--idle); width: 6px; height: 6px; }
+  .run { background: var(--run); }
+  .exp { padding: 8px; border-bottom: 1px solid var(--line); }
+  .exp .name { font-size: 14px; font-weight: 600; }
+  .exp .path { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .drop { margin: 8px; border: 1.5px dashed #9fb3cc; border-radius: 4px; padding: 8px; text-align: center; color: #44546a;
+          background: #f7f9fc; }
+  .drop.big { padding: 26px 8px; }
+  .drop.thin { padding: 5px 8px; text-align: left; display: flex; align-items: center; gap: 6px; }
+  .toolrow { display: flex; gap: 6px; padding: 6px 8px; align-items: center; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .search { flex: 1; min-width: 90px; border: 1px solid #b9c0ca; border-radius: 3px; padding: 2px 6px; color: var(--muted); background: #fff; }
+  table { border-collapse: collapse; width: 100%; }
+  th { text-align: left; font-weight: 600; background: #f7f8fa; border-bottom: 1px solid var(--line); padding: 3px 6px; white-space: nowrap; }
+  td { padding: 2px 6px; white-space: nowrap; border-bottom: 1px solid #f0f1f3; }
+  tr.set td { background: #fafbfc; font-weight: 600; }
+  tr.sel td { background: var(--sel); }
+  .tree { flex: 1; overflow: hidden; }
+  .center { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--panel); border-right: 1px solid var(--line); }
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); background: var(--head); }
+  .tabs span { padding: 4px 12px; border-right: 1px solid var(--line); }
+  .tabs span.on { background: #fff; font-weight: 600; }
+  .plot { flex: 1; margin: 10px; border: 1px solid var(--line); position: relative; background: #fff; }
+  .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted);
+           text-align: center; line-height: 1.6; }
+  .right { width: 250px; background: var(--panel); display: flex; flex-direction: column; }
+  .rail { width: 26px; background: var(--head); border-left: 1px solid var(--line); writing-mode: vertical-rl;
+          text-align: center; padding-top: 10px; color: #444; }
+  .bottom { height: 120px; display: flex; border-top: 1px solid var(--line); background: var(--panel); }
+  .log { flex: 1; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; }
+  .logbody { padding: 4px 8px; font-family: Consolas, monospace; font-size: 11px; line-height: 1.5; color: #333; overflow: hidden; }
+  .out { width: 380px; display: flex; flex-direction: column; }
+  .outbody { padding: 6px 8px; line-height: 1.6; }
+  .inspector { width: 270px; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; }
+  .kv { display: grid; grid-template-columns: 105px 1fr; gap: 2px 8px; padding: 6px 8px; }
+  .kv div:nth-child(odd) { color: var(--muted); }
+  .sec { padding: 4px 8px; font-weight: 600; background: #f7f8fa; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .reserved { margin: 8px; border: 1px dashed #c3c8d0; border-radius: 4px; padding: 10px; color: var(--muted); line-height: 1.5; }
+  .banner { margin: 6px 8px 0; background: #eef5ec; border: 1px solid #b9d6b4; border-radius: 3px; padding: 5px 8px; line-height: 1.45; }
+  .dialog { width: 430px; background: #fff; border: 1px solid #888; box-shadow: 0 6px 22px rgba(0,0,0,.3); }
+  .dialog .body { padding: 12px 14px; line-height: 1.5; }
+  .field { display: grid; grid-template-columns: 90px 1fr; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .input { border: 1px solid #b9c0ca; border-radius: 3px; padding: 3px 6px; background: #fff; }
+  .callout { background: #fff8d6; border: 1px solid #e3c766; padding: 1px 5px; border-radius: 3px; font-size: 11px; color: #5a4a00; }
+  .row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  .colmenu { position: absolute; background: #fff; border: 1px solid #999; box-shadow: 0 3px 10px rgba(0,0,0,.2); padding: 4px 0; width: 170px; }
+  .colmenu div { padding: 2px 10px; }
+</style>
+</head>
+<body>
+<h1>ISAR — left side for the BL43LXU beamtime: mockup for discussion</h1>
+<p class="note">Job ja0cd202ecb67, 2026-10-27. Static picture only: nothing here is built. Frames 1–3 are drawn at the
+laptop geometry TAVI tests against (1108×851 logical pixels); frame 4 is the desktop (2560×1392) shown at half size.
+Spatial grammar: <b>left</b> data and scans · <b>centre</b> display · <b>right</b> processing (reserved; the queue is a later job) ·
+<b>bottom</b> log (left) and output status with Save/Export (right). Scan names and temperatures follow the CsV₃Sb₅
+example set; every Q value is invented. Yellow tags mark open questions.</p>
+
+<!-- ================= FRAME 1: first launch ================= -->
+<div class="frame-title">1 · First launch, laptop — no experiment yet</div>
+<p class="frame-sub">The window opens in its final layout; nothing rearranges later. The top left says what to do. A drop
+anywhere in the window counts (it creates the experiment, named by ISAR, then ingests).</p>
+<div class="win laptop">
+  <div class="titlebar"><b>ISAR</b><span class="muted">— no experiment</span></div>
+  <div class="menubar"><span>File</span><span>View</span><span>Run</span><span>Help</span></div>
+  <div class="main">
+    <div class="col" style="width:372px">
+      <div class="phead">Experiment</div>
+      <div class="exp">
+        <div class="muted" style="margin-bottom:6px">No experiment open.</div>
+        <span class="btn primary">New experiment…</span> <span class="btn">Open…</span>
+        <span class="link" style="margin-left:6px">Recent ▾</span>
+      </div>
+      <div class="drop big">
+        <div style="font-size:13px;font-weight:600">Drop data files or a folder here</div>
+        <div style="margin-top:4px">ISAR creates the experiment for you and reads the files.<br>You can rename it and add details afterwards.</div>
+        <div style="margin-top:8px"><span class="btn small">Add files…</span> <span class="btn small">Add folder…</span></div>
+      </div>
+      <div class="phead">Scans</div>
+      <div class="tree" style="position:relative"><div class="empty">No scans yet.</div></div>
+    </div>
+    <div class="center">
+      <div class="tabs"><span class="on">Spectrum</span><span>Waterfall</span><span>Plane</span><span>Dispersion</span></div>
+      <div class="plot"><div class="empty">Nothing to show yet.<br>Pick a scan on the left once data is in.</div></div>
+    </div>
+    <div class="rail">Processing ‹</div>
+  </div>
+  <div class="bottom">
+    <div class="log"><div class="phead">Log</div>
+      <div class="logbody">06:22:18 ISAR started. No experiment open.<br>06:22:18 GUI log: C:\Users\…\isar_gui\isar-gui.log</div></div>
+    <div class="out"><div class="phead">Output</div>
+      <div class="outbody muted">No experiment, so nothing is being written.<br><span class="btn small" style="opacity:.5">Save copy as…</span> <span class="btn small" style="opacity:.5">Export…</span> <span class="muted" style="font-size:11px">— need an experiment</span></div></div>
+  </div>
+</div>
+
+<!-- ================= FRAME 2: populated ================= -->
+<div class="frame-title">2 · After one drop, laptop — scan list, inspector closed</div>
+<p class="frame-sub">ISAR named the experiment from the dropped folder and says so once in a dismissible note. The
+files area shrinks to one line (still a drop target); the watched folder moved into a dialog. The scan list is the main
+thing: one row per scan set (temperature, analyzer count, parse summary), expanding to its analyzers with Q and status.
+The processing panel stays a slim rail on the laptop until opened.</p>
+<div class="win laptop">
+  <div class="titlebar"><b>ISAR</b><span class="muted">— leTacon_SP8_CsV3Sb5</span></div>
+  <div class="menubar"><span>File</span><span>View</span><span>Run</span><span>Help</span></div>
+  <div class="main">
+    <div class="col" style="width:372px">
+      <div class="phead">Experiment</div>
+      <div class="exp">
+        <div><span class="name">leTacon_SP8_CsV3Sb5</span> <span class="link" style="font-size:11px">Rename</span> · <span class="link" style="font-size:11px">Details…</span></div>
+        <div class="path">Documents\ISAR\leTacon_SP8_CsV3Sb5</div>
+      </div>
+      <div class="banner">Experiment created and named after the folder you dropped. <span class="link">Rename</span> · <span class="link">Add details</span> <span class="muted" style="float:right">✕</span></div>
+      <div class="drop thin"><span>⤓</span><span style="flex:1">58 files · 2 scan sets · drop more here</span><span class="btn small">Add…</span><span class="btn small">Watch…</span></div>
+      <div class="phead">Scans <span class="muted" style="font-weight:400">2 sets · 56 analyzers</span></div>
+      <div class="toolrow"><span class="search">filter: a06, 97K, not parsed…</span><span class="btn small">Sort: scan ▾</span><span class="btn small">Columns ▾</span></div>
+      <div class="tree">
+        <table>
+          <tr><th>Scan</th><th>T</th><th>Q (nm⁻¹)</th><th>Parsed</th></tr>
+          <tr class="set"><td title="CsV3Sb5_97K_0p5_0p5_3_sum">▾ CsV3Sb5_97K_0p5_0p5…</td><td>97 K</td><td class="muted">28 an.</td><td><span class="dot ok"></span>28/28</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a03</td><td></td><td>22.81</td><td><span class="dot ok"></span>ok</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a04</td><td></td><td>22.88</td><td><span class="dot ok"></span>ok</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a05</td><td></td><td>22.94</td><td><span class="dot ok"></span>ok</td></tr>
+          <tr class="sel"><td>&nbsp;&nbsp;&nbsp;&nbsp;a06</td><td></td><td>23.02</td><td><span class="dot ok"></span>ok</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a07</td><td></td><td>23.09</td><td><span class="dot ok"></span>ok</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a08</td><td></td><td>23.15</td><td><span class="dot ok"></span>ok</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a09</td><td></td><td>23.22</td><td><span class="dot ok"></span>ok</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a14</td><td></td><td>22.79</td><td><span class="dot ok"></span>ok</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a15</td><td></td><td>22.86</td><td><span class="dot ok"></span>ok</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a16</td><td></td><td class="muted" title="this file carries no #Q= line">—</td><td><span class="dot warn"></span>no Q</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a17</td><td></td><td>22.99</td><td><span class="dot ok"></span>ok</td></tr>
+          <tr><td class="muted">&nbsp;&nbsp;&nbsp;&nbsp;… 17 more</td><td></td><td></td><td></td></tr>
+          <tr class="set"><td title="CsV3Sb5_302K_0p5_0p5_3_sum">▸ CsV3Sb5_302K_0p5_0p…</td><td>302 K</td><td class="muted">28 an.</td><td><span class="dot ok"></span>28/28</td></tr>
+          <tr class="set"><td>▸ Files not read</td><td></td><td></td><td><span class="dot err"></span>2</td></tr>
+        </table>
+      </div>
+      <div style="padding:4px 8px;border-top:1px solid var(--line)" class="muted">Double-click a row, or <span class="link">Inspect</span>, to open the scan inspector.</div>
+    </div>
+    <div class="center">
+      <div class="tabs"><span class="on">Spectrum</span><span>Waterfall</span><span>Plane</span><span>Dispersion</span></div>
+      <div class="plot"><div class="empty">[ existing spectrum view: CsV3Sb5_97K … a06, counts vs energy transfer ]</div></div>
+    </div>
+    <div class="rail">Processing ‹</div>
+  </div>
+  <div class="bottom">
+    <div class="log"><div class="phead">Log</div>
+      <div class="logbody">06:31:02 Created experiment leTacon_SP8_CsV3Sb5 in Documents\ISAR\leTacon_SP8_CsV3Sb5<br>06:31:04 Read 56 analyzer files in 2 scan sets; 2 files not read (CsV3Sb5_302K…_sum.pkpos, …var)<br>06:31:04 a16 (97 K): no #Q= line in the file</div></div>
+    <div class="out"><div class="phead">Output</div>
+      <div class="outbody">Results are written to the experiment folder as they arrive.<br>
+        <span class="muted">Auto-export: off</span> <span class="link">Set folder…</span><br>
+        <span class="btn small">Save copy as…</span> <span class="btn small">Export…</span> <span class="callout">what Export writes: open</span></div></div>
+  </div>
+</div>
+
+<!-- ================= FRAME 3: inspector open ================= -->
+<div class="frame-title">3 · Laptop with the scan inspector open, and the optional processing columns</div>
+<p class="frame-sub">The inspector opens as its own column beside the scan list and closes with ✕; the display keeps
+the rest. Fast pass and Deep pass columns are switched on from <b>Columns ▾</b> (Parsed is on by default).
+Stage two (after the backend job lands) adds the "from the files / yours / used" fact table here.</p>
+<div class="win laptop">
+  <div class="titlebar"><b>ISAR</b><span class="muted">— leTacon_SP8_CsV3Sb5</span></div>
+  <div class="menubar"><span>File</span><span>View</span><span>Run</span><span>Help</span></div>
+  <div class="main">
+    <div class="col" style="width:372px; position:relative">
+      <div class="phead">Experiment</div>
+      <div class="exp"><div><span class="name">leTacon_SP8_CsV3Sb5</span> <span class="link" style="font-size:11px">Rename</span> · <span class="link" style="font-size:11px">Details…</span></div>
+        <div class="path">Documents\ISAR\leTacon_SP8_CsV3Sb5</div></div>
+      <div class="drop thin"><span>⤓</span><span style="flex:1">58 files · 2 scan sets</span><span class="btn small">Add…</span><span class="btn small">Watch…</span></div>
+      <div class="phead">Scans <span class="muted" style="font-weight:400">2 sets · 56 analyzers</span></div>
+      <div class="toolrow"><span class="search">filter…</span><span class="btn small">Sort: scan ▾</span><span class="btn small">Columns ▾</span></div>
+      <div class="tree">
+        <table>
+          <tr><th>Scan</th><th>T</th><th>Q</th><th title="Parsed">P</th><th>Fast</th><th>Deep</th></tr>
+          <tr class="set"><td>▾ …97K_0p5_0p5_3_sum</td><td>97 K</td><td></td><td><span class="dot ok"></span></td><td><span class="dot run"></span>11/28</td><td class="muted">—</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;a03</td><td></td><td>22.81</td><td><span class="dot ok"></span></td><td><span class="dot ok"></span>settled</td><td class="muted">—</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;a04</td><td></td><td>22.88</td><td><span class="dot ok"></span></td><td><span class="dot warn"></span>flag</td><td class="muted">—</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;a05</td><td></td><td>22.94</td><td><span class="dot ok"></span></td><td><span class="dot ok"></span>settled</td><td><span class="dot run"></span>running</td></tr>
+          <tr class="sel"><td>&nbsp;&nbsp;&nbsp;a06</td><td></td><td>23.02</td><td><span class="dot ok"></span></td><td><span class="dot run"></span>fitting</td><td class="muted">—</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;a07</td><td></td><td>23.09</td><td><span class="dot ok"></span></td><td><span class="dot idle"></span>queued</td><td class="muted">—</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;a08</td><td></td><td>23.15</td><td><span class="dot ok"></span></td><td><span class="dot idle"></span>queued</td><td class="muted">—</td></tr>
+          <tr class="set"><td>▸ …302K_0p5_0p5_3_sum</td><td>302 K</td><td></td><td><span class="dot ok"></span></td><td><span class="dot ok"></span>28/28</td><td class="muted">—</td></tr>
+        </table>
+      </div>
+      <div class="colmenu" style="left:220px; top:178px">
+        <div class="muted" style="font-size:11px">Columns</div>
+        <div>☑ Parsed</div><div>☑ Fast pass</div><div>☑ Deep pass</div><div>☐ Slit</div><div>☐ File name</div>
+      </div>
+    </div>
+    <div class="inspector">
+      <div class="phead">Scan inspector <span class="x">✕</span></div>
+      <div class="sec">CsV3Sb5_97K_0p5_0p5_3_sum · a06</div>
+      <div class="kv">
+        <div>File</div><div title="full path on hover">…_0p5_3_sum_a06</div>
+        <div>Scan numbers</div><div>summed set (several)</div>
+        <div>Analyzer</div><div>a06</div>
+        <div>Temperature</div><div>97 K <span class="muted">(file, #T=)</span></div>
+        <div>Q</div><div>23.02 nm⁻¹ <span class="muted">(file, #Q=)</span></div>
+        <div>Slit</div><div class="muted">— not in the file</div>
+        <div>Points</div><div>181, −16 … +20 meV</div>
+        <div>Parsed</div><div><span class="dot ok"></span>ok</div>
+      </div>
+      <div class="sec">Processing</div>
+      <div class="kv">
+        <div>Fast pass</div><div><span class="dot run"></span>fitting (started 06:40)</div>
+        <div>Deep pass</div><div class="muted">not run</div>
+      </div>
+      <div class="sec">Raw counts</div>
+      <div style="flex:1;margin:6px 8px;border:1px solid var(--line);position:relative"><div class="empty">[ small data-only counts plot ]</div></div>
+    </div>
+    <div class="center">
+      <div class="tabs"><span class="on">Spectrum</span><span>Waterfall</span><span>…</span></div>
+      <div class="plot"><div class="empty">[ spectrum view,<br>narrower while the<br>inspector is open ]</div></div>
+    </div>
+    <div class="rail">Processing ‹</div>
+  </div>
+  <div class="bottom">
+    <div class="log"><div class="phead">Log</div><div class="logbody">06:40:11 Fast pass started on 28 spectra (97 K)<br>06:41:30 a03 settled · 2 modes</div></div>
+    <div class="out"><div class="phead">Output</div>
+      <div class="outbody"><span class="dot ok"></span>Auto-export to D:\beamtime\isar_out<br><span class="muted">last written 06:41:30 (a03)</span><br>
+        <span class="btn small">Save copy as…</span> <span class="btn small">Export…</span></div></div>
+  </div>
+</div>
+
+<!-- ================= FRAME 4: desktop ================= -->
+<div class="frame-title">4 · Desktop, 2560×1392 (shown at half size) — everything open at once</div>
+<p class="frame-sub">On a big screen the scan list is wider (more columns fit), the inspector, display and processing
+panel are all visible, and the log is taller. Same arrangement as the laptop: only widths change.</p>
+<div class="desktop-wrap">
+<div class="win desktop" style="font-size:12px">
+  <div class="titlebar"><b>ISAR</b><span class="muted">— leTacon_SP8_CsV3Sb5</span></div>
+  <div class="menubar"><span>File</span><span>View</span><span>Run</span><span>Help</span></div>
+  <div class="main">
+    <div class="col" style="width:520px">
+      <div class="phead">Experiment</div>
+      <div class="exp"><div><span class="name">leTacon_SP8_CsV3Sb5</span> <span class="link">Rename</span> · <span class="link">Details…</span></div>
+        <div class="path">Documents\ISAR\leTacon_SP8_CsV3Sb5 · proposal 2026B1234 · CsV₃Sb₅ · 3 people</div></div>
+      <div class="drop thin"><span>⤓</span><span style="flex:1">58 files · 2 scan sets · watching D:\beamtime\data</span><span class="btn small">Add…</span><span class="btn small">Watch…</span></div>
+      <div class="phead">Scans <span class="muted" style="font-weight:400">2 sets · 56 analyzers</span></div>
+      <div class="toolrow"><span class="search">filter…</span><span class="btn small">Sort: scan ▾</span><span class="btn small">Columns ▾</span></div>
+      <div class="tree"><table>
+        <tr><th>Scan</th><th>T</th><th>Q (nm⁻¹)</th><th>Parsed</th><th>Fast pass</th><th>Deep pass</th><th>File</th></tr>
+        <tr class="set"><td>▾ CsV3Sb5_97K_0p5_0p5_3_sum</td><td>97 K</td><td class="muted">28 an.</td><td><span class="dot ok"></span>28/28</td><td><span class="dot run"></span>11/28</td><td class="muted">—</td><td></td></tr>
+        <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a03</td><td></td><td>22.81</td><td><span class="dot ok"></span>ok</td><td><span class="dot ok"></span>settled</td><td class="muted">—</td><td class="muted">…_sum_a03</td></tr>
+        <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a04</td><td></td><td>22.88</td><td><span class="dot ok"></span>ok</td><td><span class="dot warn"></span>flag</td><td class="muted">—</td><td class="muted">…_sum_a04</td></tr>
+        <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a05</td><td></td><td>22.94</td><td><span class="dot ok"></span>ok</td><td><span class="dot ok"></span>settled</td><td><span class="dot run"></span>running</td><td class="muted">…_sum_a05</td></tr>
+        <tr class="sel"><td>&nbsp;&nbsp;&nbsp;&nbsp;a06</td><td></td><td>23.02</td><td><span class="dot ok"></span>ok</td><td><span class="dot run"></span>fitting</td><td class="muted">—</td><td class="muted">…_sum_a06</td></tr>
+        <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a07</td><td></td><td>23.09</td><td><span class="dot ok"></span>ok</td><td><span class="dot idle"></span>queued</td><td class="muted">—</td><td class="muted">…_sum_a07</td></tr>
+        <tr><td class="muted">&nbsp;&nbsp;&nbsp;&nbsp;… 23 more</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+        <tr class="set"><td>▸ CsV3Sb5_302K_0p5_0p5_3_sum</td><td>302 K</td><td class="muted">28 an.</td><td><span class="dot ok"></span>28/28</td><td><span class="dot ok"></span>28/28</td><td class="muted">—</td><td></td></tr>
+      </table></div>
+    </div>
+    <div class="inspector" style="width:420px">
+      <div class="phead">Scan inspector <span class="x">✕</span></div>
+      <div class="sec">CsV3Sb5_97K_0p5_0p5_3_sum · a06</div>
+      <div class="kv"><div>Temperature</div><div>97 K (file)</div><div>Q</div><div>23.02 nm⁻¹ (file)</div><div>Slit</div><div class="muted">— not in the file</div><div>Fast pass</div><div>fitting</div></div>
+      <div style="flex:1;margin:6px 8px;border:1px solid var(--line);position:relative"><div class="empty">[ raw counts ]</div></div>
+    </div>
+    <div class="center">
+      <div class="tabs"><span class="on">Spectrum</span><span>Waterfall</span><span>Plane</span><span>Dispersion</span></div>
+      <div class="plot"><div class="empty">[ spectrum view ]</div></div>
+    </div>
+    <div class="right" style="width:440px">
+      <div class="phead">Processing</div>
+      <div style="padding:8px;line-height:1.6">Today's route stays: <span class="btn">Run analysis…</span><br><span class="muted">(runs the fast pass on the experiment's data)</span></div>
+      <div class="reserved">Reserved for the batch queue: choose scans, fast or deep, watch the queue's progress.<br><b>A later job</b> — not built here.</div>
+    </div>
+  </div>
+  <div class="bottom" style="height:220px">
+    <div class="log"><div class="phead">Log</div><div class="logbody">06:40:11 Fast pass started on 28 spectra (97 K)<br>06:41:30 a03 settled · 2 modes<br>06:42:02 a04 flagged: possible hidden component</div></div>
+    <div class="out" style="width:620px"><div class="phead">Output</div>
+      <div class="outbody"><span class="dot ok"></span>Auto-export to D:\beamtime\isar_out · last written 06:41:30<br><span class="btn small">Save copy as…</span> <span class="btn small">Export…</span></div></div>
+  </div>
+</div>
+</div>
+
+<!-- ================= Dialogs ================= -->
+<div class="frame-title">5 · Details… and Watch… (both open from the experiment strip; neither blocks the first drop)</div>
+<div class="row">
+  <div class="dialog">
+    <div class="phead">Experiment details</div>
+    <div class="body">
+      <div class="field"><span>Name</span><span class="input">leTacon_SP8_CsV3Sb5</span></div>
+      <div class="field"><span>Folder</span><span class="input muted">Documents\ISAR\leTacon_SP8_CsV3Sb5 <span class="link">Move…</span></span></div>
+      <div class="muted" style="margin:8px 0 4px">Optional — kept with the experiment, never used by a fit:</div>
+      <div class="field"><span>Proposal</span><span class="input">&nbsp;</span></div>
+      <div class="field"><span>Sample</span><span class="input">&nbsp;</span></div>
+      <div class="field"><span>People</span><span class="input">&nbsp;</span></div>
+      <div class="field"><span>Dates</span><span class="input">&nbsp;</span></div>
+      <div class="field"><span>Notes</span><span class="input" style="height:34px">&nbsp;</span></div>
+      <div class="field"><span>Resolution</span><span class="muted">stage two: folder found / Locate… <span class="callout">after backend job</span></span></div>
+      <div style="text-align:right;margin-top:8px"><span class="btn">Cancel</span> <span class="btn primary">Save</span></div>
+    </div>
+  </div>
+  <div class="dialog" style="width:380px">
+    <div class="phead">Watch a folder</div>
+    <div class="body">
+      ISAR reads new files that appear in this folder (top level only).<br><br>
+      <div class="field"><span>Folder</span><span class="input">D:\beamtime\data <span class="link">Browse…</span></span></div>
+      <div><label>☐ Pause watching</label></div>
+      <div class="muted" style="margin-top:6px">Last check 06:44:10 · 0 new files</div>
+      <div style="text-align:right;margin-top:8px"><span class="btn">Stop watching</span> <span class="btn primary">Watch</span></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

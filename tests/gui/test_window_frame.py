@@ -1,8 +1,7 @@
 """The window frame: one arrangement in every state, its mount points, and their wiring.
 
 Offscreen Qt with the real widgets (the floor's rule for any "the window does X" acceptance). The
-mounts that later units fill (experiment strip, files strip, scan list, scan inspector, output bar,
-export controller) are stubs here, so this file checks the *frame*: where things are, what is wired to
+mounts that later units fill (experiment strip, files strip, scan list, scan inspector, output bar) are stubs here, so this file checks the *frame*: where things are, what is wired to
 what, and that the geometry holds at four screen sizes. Each filler reruns it on its real class.
 
 The screen is patched through the one seam, ``MainWindow._available_size``.
@@ -649,11 +648,6 @@ def test_stub_mounts_have_their_final_signatures():
             assert hasattr(cls, name), (cls.__name__, name)
     assert list(inspect.signature(ScanListPanel.__init__).parameters) == ["self", "vm", "parent"]
     assert list(inspect.signature(ScanInspectorPanel.__init__).parameters) == ["self", "vm", "parent"]
-
-
-def test_export_controller_stub_refuses_without_raising(qtbot, tmp_path):
-    controller = ExportController(operations=None)
-    assert controller.start(tmp_path) is False and controller.is_running() is False
 
 
 # ---------------------------------------------------------------------------

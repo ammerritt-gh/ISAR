@@ -1,6 +1,7 @@
 """`isar` CLI entry point (the retired unification plan §5, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 
-Subcommands: init, detect, ingest, run, status, report, score, profile, diagnose, view, drive.
+Subcommands: init, detect, ingest, run, status, report, export, score, profile, diagnose, view,
+drive.
 Built incrementally; unimplemented commands raise a clear message rather than a stack trace.
 """
 from __future__ import annotations
@@ -141,6 +142,12 @@ def build_parser() -> argparse.ArgumentParser:
                      help="also rebuild the SCENE revision from persisted state into "
                           "<workspace>/report/scene/ (read-only: no re-fit, no re-collation)")
 
+    pex = sub.add_parser("export", help="write a timestamped export of the stored results under "
+                                        "report/exports/ (no refit)")
+    pex.add_argument("--workspace", required=True)
+    pex.add_argument("--json", action="store_true",
+                     help="end with one machine-readable JSON line (the folder, or the error)")
+
     pdg = sub.add_parser("diagnose", help="render the architect's CAMPAIGN_DIAGNOSTIC.md for a campaign")
     pdg.add_argument("--workspace", required=True)
 
@@ -163,9 +170,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     pv = sub.add_parser("view", help="open the desktop GUI on a workspace (needs the [gui] extra)")
     pv.add_argument("workspace", nargs="?", default=None,
-                    help="an ISAR workspace directory to open read-only (default: offer recovery "
-                         "of unfinished temporary work, then open the most recent workspace, or "
-                         "an empty window if neither is openable)")
+                    help="an ISAR workspace directory to open read-only (default: the most recent "
+                         "workspace, or an empty window if none is openable)")
 
     psb = sub.add_parser("scene-build",
                          help="build one scene revision from persisted state and report it as JSON")
@@ -351,6 +357,9 @@ def main(argv=None) -> int:
     if cmd == "report":
         from isar.cli import report_cmd
         return report_cmd.run(args)
+    if cmd == "export":
+        from isar.cli import export_cmd
+        return export_cmd.run(args)
     if cmd == "diagnose":
         from isar.cli import diagnose_cmd
         return diagnose_cmd.run(args)

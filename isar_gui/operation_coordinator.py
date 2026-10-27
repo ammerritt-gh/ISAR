@@ -1,7 +1,8 @@
 """Single-writer coordinator for GUI-owned workspace operations.
 
-``isar ingest`` and ``isar run`` both rewrite the machine-owned workspace state.  This QObject is
-therefore the only GUI component allowed to start either subprocess.  It applies an intentionally
+``isar ingest`` and ``isar run`` both rewrite the machine-owned workspace state, and ``isar export``
+reads it.  This QObject is
+therefore the only GUI component allowed to start any of them.  It applies an intentionally
 conservative FIFO policy: queued/active ingest work runs before analysis; files discovered during a
 run wait until it finishes.  Each job is pinned to both a workspace root and a WorkspaceManager
 generation, so a late callback cannot refresh a different binding.
@@ -21,7 +22,8 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from isar_gui.commands import (
-    DriveOptions, RunOptions, build_compile_command, build_drive_command, build_run_command)
+    DriveOptions, RunOptions, build_compile_command, build_drive_command, build_export_command,
+    build_run_command)
 from isar_gui.ingest_controller import IngestController
 from isar_gui.process import ProcessRunner
 
@@ -63,6 +65,9 @@ class WorkspaceOperationCoordinator(QObject):
     drive_finished = Signal(int, bool)  # exit code (4 = stopped by operator), live workspace
     drive_compiled = Signal(object, str)  # campaign program dict, program path
     drive_compile_failed = Signal(str)
+    export_started = Signal(str)          # log path of the export process
+    export_line = Signal(str)             # each output line of the export process
+    export_finished = Signal(int, bool)   # exit code, callback is still for the live workspace
 
     def __init__(self, python_exe: str, workspace_manager, log_sink, parent=None):
         super().__init__(parent)
@@ -80,6 +85,7 @@ class WorkspaceOperationCoordinator(QObject):
         self._run_runner: ProcessRunner | None = None
         self._drive_runner: ProcessRunner | None = None
         self._compile_runner: ProcessRunner | None = None
+        self._export_runner: ProcessRunner | None = None
         self._ingest_report = None
         self._ingest_failure: tuple[int, str] | None = None
         self._cancelling = False
@@ -98,6 +104,9 @@ class WorkspaceOperationCoordinator(QObject):
 
     def is_running_campaign(self) -> bool:
         return self._active is not None and self._active.kind == "drive"
+
+    def is_running_export(self) -> bool:
+        return self._active is not None and self._active.kind == "export"
 
     def is_stop_pending(self) -> bool:
         """A cooperative campaign stop request has been written and not yet honored."""
@@ -123,6 +132,17 @@ class WorkspaceOperationCoordinator(QObject):
         root = self._wsm.root()
         self._queue.append(_Job("ingest", batch, str(root) if root is not None else None,
                                 self._wsm.generation()))
+        self._emit_activity()
+        self._start_next()
+        return True
+
+    def request_export(self, root) -> bool:
+        """Queue ``isar export`` for the live, ready workspace; it runs FIFO like any other job."""
+        live = self._wsm.root()
+        if live is None or self._wsm.state() != "ready" or not _same_root(live, root):
+            self._log("export refused: no ready experiment at that folder")
+            return False
+        self._queue.append(_Job("export", None, str(root), self._wsm.generation()))
         self._emit_activity()
         self._start_next()
         return True
@@ -248,6 +268,8 @@ class WorkspaceOperationCoordinator(QObject):
             runner = self._run_runner
         elif self._active.kind == "compile":
             runner = self._compile_runner
+        elif self._active.kind == "export":
+            runner = self._export_runner
         else:
             runner = self._ingest.runner()
         if runner is None or not runner.is_running():
@@ -279,6 +301,8 @@ class WorkspaceOperationCoordinator(QObject):
                 self._start_drive(job)
             elif job.kind == "compile":
                 self._start_compile(job)
+            elif job.kind == "export":
+                self._start_export(job)
             else:
                 self._start_run(job)
             return
@@ -296,6 +320,18 @@ class WorkspaceOperationCoordinator(QObject):
         self._run_runner = runner
         runner.start(cmd, log_path=str(log_path), env=env)
         self.run_started.emit()
+
+    def _start_export(self, job: _Job) -> None:
+        assert job.root is not None
+        cmd = build_export_command(self._python, job.root)
+        log_path = Path(job.root) / "report" / "gui-runs" / f"export-{datetime.now():%Y%m%d-%H%M%S}.log"
+        self._log("$ " + " ".join(cmd))
+        runner = ProcessRunner(self)
+        runner.line.connect(self._on_export_line)
+        runner.finished.connect(self._on_export_finished)
+        self._export_runner = runner
+        runner.start(cmd, log_path=str(log_path))
+        self.export_started.emit(str(log_path))
 
     def _start_drive(self, job: _Job) -> None:
         opts, env = job.payload
@@ -330,8 +366,8 @@ class WorkspaceOperationCoordinator(QObject):
     def _adopt_bootstrap_binding(self, root: str, generation: int) -> None:
         """Adopt a known init/ingest bootstrap transition from our active controller.
 
-        ``new_temp`` and opening the just-scaffolded root deliberately create new workspace
-        generations.  Those are not stale callbacks.  Only the controller emits this signal, and
+        ``WorkspaceManager.new_experiment`` and opening the just-scaffolded root deliberately create new
+        workspace generations.  Those are not stale callbacks.  Only the controller emits this signal, and
         only the active ingest plus jobs that were queued for the same pending/no-workspace binding
         are rebased; an arbitrary root/generation change still fails ``_job_is_current``.
         """
@@ -467,6 +503,25 @@ class WorkspaceOperationCoordinator(QObject):
         self.drive_finished.emit(int(code), bool(live))
         self._finish_active()
 
+    def _on_export_line(self, line: str) -> None:
+        self._log(line)
+        self.export_line.emit(line)
+
+    def _on_export_finished(self, code: int) -> None:
+        active = self._active
+        live = active is not None and active.kind == "export" and self._job_is_current(active)
+        runner = self._export_runner
+        self._export_runner = None
+        if runner is not None:
+            try:
+                runner.line.disconnect(self._on_export_line)
+                runner.finished.disconnect(self._on_export_finished)
+            except (RuntimeError, TypeError) as exc:
+                log.debug("export runner signals already detached: %s", exc)
+            runner.deleteLater()
+        self.export_finished.emit(int(code), bool(live))
+        self._finish_active()
+
     def _on_compile_finished(self, code: int) -> None:
         active = self._active
         runner = self._compile_runner
@@ -502,6 +557,8 @@ class WorkspaceOperationCoordinator(QObject):
             runner = self._run_runner
         elif self._active.kind == "compile":
             runner = self._compile_runner
+        elif self._active.kind == "export":
+            runner = self._export_runner
         else:
             runner = self._ingest.runner()
         if runner is not None and runner.is_running():
