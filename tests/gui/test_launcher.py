@@ -83,9 +83,9 @@ def test_bat_starts_the_gui_windowless(tmp_path):
     assert result.returncode == 0
     log = tmp_path / "isar_gui" / "isar-gui.log"
     deadline = time.monotonic() + 20
-    while time.monotonic() < deadline and not (log.exists() and "GUI log started" in log.read_text(encoding="utf-8")):
+    while time.monotonic() < deadline and not (log.exists() and "main window shown" in log.read_text(encoding="utf-8")):
         time.sleep(0.2)
-    assert "GUI log started" in log.read_text(encoding="utf-8")
+    assert "main window shown" in log.read_text(encoding="utf-8")
 
 
 @WINDOWS_ONLY
