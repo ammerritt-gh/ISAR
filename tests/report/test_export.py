@@ -294,7 +294,7 @@ def test_an_export_of_a_stored_nan_is_valid_json(ws):
 
 
 def test_a_failed_export_leaves_no_new_folder(ws, monkeypatch):
-    def boom(folder):
+    def boom(folder, bl43):
         raise RuntimeError("disk full")
     monkeypatch.setattr(export_mod, "_write_readme", boom)
     with pytest.raises(RuntimeError, match="disk full"):
