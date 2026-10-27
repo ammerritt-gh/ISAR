@@ -5,9 +5,9 @@ arrangement in every state (nothing appears or rearranges when the first data ar
 
 * **left column**, top to bottom: the experiment strip, the files strip, the scan list (it takes the
   remaining height). It is a dock, and the left dock area owns both left corners, so it runs past the
-  bottom bar;
-* **centre**: the display (``CenterHost`` pages), with the optional scan-inspector column between it
-  and the left column;
+  bottom bar. The optional scan inspector is part of it: opened, it extends the left panel outward
+  beside the scan list (the display gives up that width), and its close button pulls the panel back;
+* **centre**: the display (``CenterHost`` pages);
 * **right panel**: the *Processing* and *Campaign* tabs, collapsible to a slim rail;
 * **bottom bar**, under the centre and the right panel only: the Log on the left, the Output on the
   right.
@@ -32,9 +32,10 @@ from types import SimpleNamespace
 from typing import NamedTuple
 from weakref import WeakSet
 
-from PySide6.QtCore import QByteArray, Qt, QTimer, QUrl
+from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
+    QApplication,
     QDockWidget,
     QFileDialog,
     QHBoxLayout,
@@ -135,7 +136,7 @@ class _Arrangement(NamedTuple):
     """One screen class's default sizes (px). Algorithm settings, retuned on evidence: the geometry
     tests (tests/gui/test_window_frame.py) are their check."""
     left: int          # left column width
-    inspector: int     # inspector column width when opened
+    inspector: int     # scan inspector width when opened (the left panel widens by it)
     right: int         # right panel width when expanded
     log_height: int    # bottom bar height
     output_width: int  # the Output half of the bottom bar
@@ -574,20 +575,25 @@ class MainWindow(QMainWindow):
         column_layout.addWidget(self.files_strip, 0)
         column_layout.addWidget(self.scan_list, 1)
 
-        # ---- the central frame: [inspector column | display] splitter, then the rail ----
-        self._frame_splitter = QSplitter(Qt.Horizontal, self)
-        self._frame_splitter.setChildrenCollapsible(False)
-        self._frame_splitter.addWidget(self.scan_inspector)
-        self._frame_splitter.addWidget(self._center_stack)
-        self._frame_splitter.setStretchFactor(0, 0)
-        self._frame_splitter.setStretchFactor(1, 1)
-        self._frame_splitter.splitterMoved.connect(self._on_frame_splitter_moved)
+        # ---- the left panel: the column, and beside it the scan inspector (hidden until opened) ----
+        # The inspector is part of the left panel, not a column of its own: opening it widens the
+        # left dock by its width and closing it pulls the dock back (_open/_close_scan_inspector).
+        # Stretch puts a dragged dock edge on the inspector, never on the scan list.
+        self._left_split = QSplitter(Qt.Horizontal, self)
+        self._left_split.setChildrenCollapsible(False)
+        self._left_split.addWidget(column)
+        self._left_split.addWidget(self.scan_inspector)
+        self._left_split.setStretchFactor(0, 0)
+        self._left_split.setStretchFactor(1, 1)
+        self._left_split.splitterMoved.connect(self._on_left_splitter_moved)
+
+        # ---- the central frame: the display, then the rail ----
         frame = QWidget(self)
         frame.setObjectName("central_frame")
         frame_layout = QHBoxLayout(frame)
         frame_layout.setContentsMargins(0, 0, 0, 0)
         frame_layout.setSpacing(0)
-        frame_layout.addWidget(self._frame_splitter, 1)
+        frame_layout.addWidget(self._center_stack, 1)
         frame_layout.addWidget(self.processing_rail, 0)
         self.setCentralWidget(frame)
 
@@ -597,7 +603,7 @@ class MainWindow(QMainWindow):
         self.setCorner(Qt.TopLeftCorner, Qt.LeftDockWidgetArea)
         self.setCorner(Qt.BottomLeftCorner, Qt.LeftDockWidgetArea)
         self.setTabPosition(Qt.RightDockWidgetArea, QTabWidget.TabPosition.North)
-        self.left_column_dock = self._frame_dock("left_column_dock", "Experiment", column)
+        self.left_column_dock = self._frame_dock("left_column_dock", "Experiment", self._left_split)
         self.left_column_dock.setTitleBarWidget(QWidget(self.left_column_dock))   # no title bar
         self.processing_dock = self._frame_dock("processing_dock", "Processing", self.processing_panel)
         self.output_dock = self._frame_dock("output_dock", "Output", self.output_bar)
@@ -830,27 +836,43 @@ class MainWindow(QMainWindow):
         self.processing_rail.set_collapsed(collapsed)
         self._processing_panel_action.setChecked(not collapsed)
 
-    # ---- the scan inspector column ---------------------------------------------
+    # ---- the scan inspector, inside the left panel -----------------------------
+    def _column_width(self) -> int:
+        """The left panel's width without the inspector: the scan-list column's own."""
+        return max(_LEFT_MIN, self._left_split.widget(0).width())
+
     def _open_scan_inspector(self, key=None) -> None:
-        """Show the inspector column at its remembered width; the display gives up that width."""
+        """Open the inspector beside the scan list: the left panel widens by the inspector's width and
+        the display gives that width up. The width is the remembered one, the smaller of it and what
+        leaves the display its minimum, so the window never grows to make room."""
         if not self.scan_inspector.isHidden():
             return
+        col = self._column_width()
+        handle = self._left_split.handleWidth()
+        room = self._center_stack.width() - _CENTER_MIN[0] - handle
+        width = max(_INSPECTOR_MIN, min(self._inspector_width, room))
         self.scan_inspector.show()
-        total = self._frame_splitter.width()
-        width = max(_INSPECTOR_MIN, min(self._inspector_width, total - _CENTER_MIN[0]))
-        self._frame_splitter.setSizes([width, max(total - width, _CENTER_MIN[0])])
+        self._left_split.setSizes([col, width])
+        self.resizeDocks([self.left_column_dock], [col + width + handle], Qt.Horizontal)
 
     def _close_scan_inspector(self) -> None:
-        """Hide the inspector column (remembering its width); the display regains the width."""
+        """Close the inspector (remembering its width): the left panel pulls back to the scan list's
+        width and the display regains the room."""
         if not self.scan_inspector.isHidden():
             self._remember_inspector_width()
+            col = self._column_width()
             self.scan_inspector.hide()
+            # The dock's minimum width still counts the hidden inspector until its pending layout
+            # request runs, and resizeDocks clamps to it: run the request now.
+            for obj in (self._left_split, self.left_column_dock, self):
+                QApplication.sendPostedEvents(obj, QEvent.Type.LayoutRequest)
+            self.resizeDocks([self.left_column_dock], [col], Qt.Horizontal)
 
     def _remember_inspector_width(self) -> None:
         if not self.scan_inspector.isHidden() and self.scan_inspector.width() >= _INSPECTOR_MIN:
             self._inspector_width = self.scan_inspector.width()
 
-    def _on_frame_splitter_moved(self, _pos: int, _index: int) -> None:
+    def _on_left_splitter_moved(self, _pos: int, _index: int) -> None:
         self._remember_inspector_width()
         self._autosave()
 
@@ -873,13 +895,15 @@ class MainWindow(QMainWindow):
                 self._campaign_monitor.expand_requested.connect(self.toggle_compact_mode)
                 self.log_dock.appended.connect(self._campaign_monitor.append_log_line)
                 self._center_stack.addWidget(self._campaign_monitor)
+            # The stash holds the closed arrangement (the left panel without the inspector); coming
+            # back reopens the inspector, which widens the left panel again.
+            inspector_was_open = not self.scan_inspector.isHidden()
+            self._close_scan_inspector()
             self._compact_stash = (self.saveState(_LAYOUT_VERSION), self.saveGeometry(),
-                                   not self.scan_inspector.isHidden())
-            self._remember_inspector_width()
+                                   inspector_was_open)
             for dock in self.findChildren(QDockWidget):
                 dock.hide()
-            # The inspector column and the rail would pin the minimum width of the small card.
-            self.scan_inspector.hide()
+            # The rail would pin the minimum width of the small card.
             self.processing_rail.hide()
             self._center_stack.setCurrentWidget(self._campaign_monitor)
             # QStackedLayout's minimum size spans ALL pages, visible or not — detach the big
@@ -914,7 +938,10 @@ class MainWindow(QMainWindow):
                     # a stash can't be stale, but never half-apply
                     self._apply_default_arrangement(initial_arrangement(*self._available_size()))
                 if inspector_was_open:
-                    self._open_scan_inspector()
+                    # The restored docks take their sizes on the next layout pass; the inspector is
+                    # sized from them, so it opens after that pass.
+                    QTimer.singleShot(0, lambda: None if self._compact_active
+                                      else self._open_scan_inspector())
                 self._sync_rail()
         self._sync_run_actions()
 
@@ -1370,7 +1397,7 @@ class MainWindow(QMainWindow):
 
         A rebind changes nothing on screen: the arrangement is captured before the teardown and
         restored after the bind (the per-binding docks come back under the same object names). The
-        inspector column is the one exception, closed because spectrum keys are local to a
+        scan inspector is the one exception, closed because spectrum keys are local to a
         workspace."""
         state = None
         if self._bound:
@@ -2290,12 +2317,20 @@ class MainWindow(QMainWindow):
             state = bytes(self.saveState(_LAYOUT_VERSION).toBase64().data()).decode("ascii")
             self._session.dock_layout_b64 = state
             # What the arrangement needs of a screen: everything except the display at its saved
-            # size, plus the display's minimum. _restore_layout refuses it on a smaller screen.
-            self._session.view_state["window_layout"] = {
+            # size, plus the display's minimum. _restore_layout refuses it on a smaller screen. The
+            # inspector opens closed on every start, so while it is open the record describes the
+            # arrangement without it: its width and handle come off ``needs`` and the left panel's own
+            # width is kept apart for _restore_layout to apply over the blob's widened dock.
+            open_extra = (0 if self.scan_inspector.isHidden()
+                          else self.scan_inspector.width() + self._left_split.handleWidth())
+            layout = {
                 "version": _LAYOUT_VERSION,
-                "needs": [self.width() - self._center_stack.width() + _CENTER_MIN[0],
+                "needs": [self.width() - self._center_stack.width() + _CENTER_MIN[0] - open_extra,
                           self.height() - self._center_stack.height() + _CENTER_MIN[1]],
                 "inspector_width": int(self._inspector_width)}
+            if open_extra:
+                layout["left_width"] = int(self._column_width())
+            self._session.view_state["window_layout"] = layout
         # Only saved workspaces belong in recents — a temporary (pending/unsaved) workspace must
         # never pollute the recent-workspaces list (it may be discarded moments later).
         if not self._empty and not self._wsm.is_temporary():
@@ -2347,6 +2382,10 @@ class MainWindow(QMainWindow):
                 saved = meta.get("inspector_width")
                 if isinstance(saved, (int, float)) and not isinstance(saved, bool):
                     self._inspector_width = max(_INSPECTOR_MIN, int(saved))
+                left = meta.get("left_width")      # saved with the inspector open: the blob's dock is wide
+                if isinstance(left, (int, float)) and not isinstance(left, bool):
+                    self.resizeDocks([self.left_column_dock], [max(_LEFT_MIN, int(left))],
+                                     Qt.Horizontal)
                 self._sync_rail()
                 return
             message = (f"Window layout: the saved arrangement is from an older ISAR or unreadable. "
