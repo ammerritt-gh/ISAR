@@ -90,6 +90,7 @@ from isar_gui.viewmodels import (
     WaterfallViewModel,
 )
 from isar_gui.viewmodels.campaign import CampaignViewModel
+from isar_gui.viewmodels.intake import IntakeState
 from isar_gui.viewmodels.sandbox import SandboxViewModel
 from isar_gui.viewmodels.scan_list import ScanListViewModel
 from isar_gui.views.campaign_dock import CampaignDock
@@ -97,7 +98,9 @@ from isar_gui.views.campaign_monitor import CampaignMonitor
 from isar_gui.views.sandbox_pane import SandboxPane
 from isar_gui.views.browser_dock import BrowserDock
 from isar_gui.views.card_dock import CardDock
+from isar_gui.views.attention_list import AttentionList
 from isar_gui.views.center_host import CenterHost
+from isar_gui.views.details_dialog import DetailsDialog
 from isar_gui.views.dispersion_pane import DispersionPane
 from isar_gui.views.experiment_strip import ExperimentStrip
 from isar_gui.views.files_dock import FilesDock
@@ -106,10 +109,12 @@ from isar_gui.views.heatmap_pane import HeatmapPane
 from isar_gui.views.inspector_widget import InspectorWidget
 from isar_gui.views.output_bar import OutputBar
 from isar_gui.views.processing_panel import ProcessingPanel, ProcessingRail
+from isar_gui.views.readiness_line import ReadinessLine
 from isar_gui.views.rename_dialog import RenameDialog
 from isar_gui.views.scan_inspector import ScanInspectorPanel
 from isar_gui.views.scan_list import ScanListPanel
 from isar_gui.views.scan_table_dock import ScanTableDock
+from isar_gui.views.setup_section import SetupSection, locate_resolution_folder
 from isar_gui.views.scans_dock import ScansDock
 from isar_gui.views.waterfall_pane import WaterfallPane
 from isar_gui.watch_bridge import WatchBridge
@@ -222,6 +227,9 @@ class _EmptyWorkspace:
         pass
 
 
+# The watch events after which the intake reads are re-read (the intake files and what they derive from).
+_INTAKE_RELOAD = frozenset({"snapshot", "results", "card", "card_state", "intake_entries",
+                           "intake_settings", "intake_scans", "fit_inputs", "curves"})
 # The status bar's and Processing panel's word for each kind the coordinator emits.
 _ACTIVITY_VERBS = {"ingest": "Ingesting", "drive": "Campaign running", "compile": "Compiling campaign",
                    "export": "Exporting", "run": "Analysing"}
@@ -346,6 +354,8 @@ class MainWindow(QMainWindow):
         # a persistent dock isn't double-connected on every rebind.
         self._loc_wired: WeakSet = WeakSet()
         self.log_dock = LogDock(self)
+        # The one Qt-side holder of the intake reads and writers (stage two); every intake panel reads it.
+        self.intake = IntakeState(self)
         self._build_frame()
         self._bind_workspace(ws)
         self._bound = True
@@ -483,6 +493,7 @@ class MainWindow(QMainWindow):
         self.scan_list_vm.set_workspace(self._ws)
         self.scan_list_vm.set_active_key(self.active_units.key)
         self.experiment_strip.set_experiment(root)
+        self.intake.bind(root)
         self.files_strip.bind(self.files_vm, root is not None)   # experiment_open
         self.output_bar.set_experiment(root)
         self._show_outside_references()
@@ -591,19 +602,29 @@ class MainWindow(QMainWindow):
         """
         # ---- the mounts ----
         self.experiment_strip = ExperimentStrip(self)
+        self.setup_section = SetupSection(self.intake)
+        self.attention_list = AttentionList(self.intake)
+        saved = self._session.view_state.get("attention_list")
+        if isinstance(saved, dict) and isinstance(saved.get("expanded"), bool):
+            self.attention_list.set_expanded(saved["expanded"])
         self.files_strip = FilesStrip(self)
         self.scan_list_vm = ScanListViewModel(_EmptyWorkspace(), self)
+        self.scan_list_vm.set_intake(self.intake)
         self.scan_list = ScanListPanel(self.scan_list_vm)
         self.scan_inspector = ScanInspectorPanel(self.scan_list_vm)
+        self.scan_inspector.set_intake(self.intake)
         self.scan_inspector.setMinimumWidth(_INSPECTOR_MIN)
         self.scan_inspector.hide()          # opens closed; the window owns its visibility and width
         self.processing_panel = ProcessingPanel(self)
+        self.readiness_line = ReadinessLine(self.intake)
+        self.processing_panel.set_readiness_widget(self.readiness_line)
         self.processing_panel.setMinimumWidth(_RIGHT_MIN)
         self.processing_rail = ProcessingRail(self)
         self.output_bar = OutputBar(self)
         self._export = ExportController(self._operations, self)
 
-        # ---- the left column: experiment strip, files strip, then the scan list (all the rest) ----
+        # ---- the left column: experiment strip, setup section, needs-attention list, files strip, then
+        # the scan list (all the rest) ----
         column = QWidget(self)
         column.setObjectName("left_column")
         column.setMinimumWidth(_LEFT_MIN)
@@ -611,6 +632,8 @@ class MainWindow(QMainWindow):
         column_layout.setContentsMargins(0, 0, 0, 0)
         column_layout.setSpacing(0)
         column_layout.addWidget(self.experiment_strip, 0)
+        column_layout.addWidget(self.setup_section, 0)
+        column_layout.addWidget(self.attention_list, 0)
         column_layout.addWidget(self.files_strip, 0)
         column_layout.addWidget(self.scan_list, 1)
 
@@ -664,6 +687,15 @@ class MainWindow(QMainWindow):
         self.experiment_strip.open_requested.connect(self._on_open_workspace)
         self.experiment_strip.recent_chosen.connect(self.load_workspace)
         self.experiment_strip.rename_requested.connect(self.rename_experiment)
+        self.experiment_strip.details_requested.connect(self._open_details)
+        self.setup_section.locate_requested.connect(self._locate_resolution_folder)
+        self.readiness_line.locate_requested.connect(self._locate_resolution_folder)
+        self.readiness_line.reveal_gap.connect(self.attention_list.reveal)
+        self.readiness_line.run_requested.connect(self.run_analysis)
+        self.intake.saved.connect(self.log)
+        # The scan list re-reads its facts and marks from the intake (S2U4) on both of its signals.
+        self.intake.changed.connect(lambda: self.scan_list_vm.on_workspace_changed(None))
+        self.intake.worker_changed.connect(lambda: self.scan_list_vm.on_workspace_changed(None))
         self.files_strip.paths_dropped.connect(self._on_paths_dropped)
         self.files_strip.log_message.connect(self.log)
         self._folder_watcher.status_changed.connect(self.files_strip.set_watch_status)
@@ -684,11 +716,30 @@ class MainWindow(QMainWindow):
         self._export.failed.connect(self.output_bar.show_export_failed)
         self._export.failed.connect(lambda reason, path: self.log(f"Export failed: {reason}"))
         self._export.failed.connect(self._sync_workspace_actions)
+        # The export guard: one export is made from one state of the intake records.
+        self._export.started.connect(lambda: self.intake.set_busy_reason("an export is running"))
+        self._export.finished.connect(lambda _folder: self.intake.set_busy_reason(None))
+        self._export.failed.connect(lambda _reason, _path: self.intake.set_busy_reason(None))
         self.processing_panel.run_requested.connect(self.run_analysis)
         self.processing_panel.stop_requested.connect(self._cancel_active_operation)
         self.processing_rail.toggled.connect(
             lambda: self.set_right_panel_collapsed(not self._right_panel_collapsed()))
         self._refresh_recents_menu()
+
+    def _locate_resolution_folder(self) -> None:
+        """*Locate…* from the setup section or the readiness line: the one route; a refused save is
+        shown in the setup section (and, like every save, in the Log)."""
+        self.setup_section.show_save_outcome(locate_resolution_folder(self, self.intake))
+
+    def _open_details(self) -> None:
+        """*Details…* on the strip and *Add details* in the one-time note."""
+        root = self._wsm.root()
+        if root is None:
+            return
+        dialog = DetailsDialog(self.intake, root.name, root, self)
+        dialog.rename_requested.connect(self.rename_experiment)
+        dialog.exec()
+        dialog.deleteLater()
 
     def _frame_dock(self, name: str, title: str, widget: QWidget) -> QDockWidget:
         dock = QDockWidget(title, self)
@@ -1372,6 +1423,7 @@ class MainWindow(QMainWindow):
     def _on_ingest_failed(self, code: int, cause: str) -> None:
         self.statusBar().showMessage(f"Could not ingest data: {cause}")
         self.log(f"ingest failed (exit {code}): {cause}")
+        self.intake.reload()                # its curve check may already have rewritten report/curves.json
         # A real failure (exit != 0) must be visible on screen, never buried in a hidden dock
         # (operator contract). Code 0 is the informational "queued batch dropped" note — not a
         # failure, so it does not force the dock up.
@@ -1704,6 +1756,7 @@ class MainWindow(QMainWindow):
         if not live_workspace:
             self.log("stale campaign completion ignored — workspace changed")
             return
+        self.intake.reload()                # a stopped campaign's passes stop counting as running
         msg = {0: "Campaign met its objective", 3: "Campaign incomplete — see the feed",
                4: "Campaign stopped by operator",
                5: "Campaign scan recovery pending — press Resume to retry",
@@ -1719,6 +1772,7 @@ class MainWindow(QMainWindow):
         if not live_workspace:
             self.log("stale run completion ignored — workspace changed")
             return
+        self.intake.reload()                # a cancelled run's passes stop counting as running or latest
         if code == 0:
             self._set_run_status(f"run finished OK ({datetime.now():%H:%M:%S})", "#2e7d32")
             self.statusBar().showMessage("Run finished — results updated below")
@@ -2309,6 +2363,8 @@ class MainWindow(QMainWindow):
             self.scan_list_vm.on_workspace_changed(changed)
         if changed & {"results", "snapshot", "card_state"}:
             self.output_bar.note_written(datetime.now())
+        if changed & _INTAKE_RELOAD:
+            self.intake.reload()
         self._live_label.setText(f"live — last update {datetime.now():%H:%M:%S}")
         self.statusBar().showMessage(f"Updated: {', '.join(sorted(changed)) or '(none)'}")
 
@@ -2414,6 +2470,7 @@ class MainWindow(QMainWindow):
         self.dispersion_vm.save_view_state(self._session)
         self.waterfall_vm.save_view_state(self._session)
         self.scan_list_vm.save_view_state(self._session)
+        self._session.view_state["attention_list"] = {"expanded": self.attention_list.is_expanded()}
         # Persist the central view switcher (current page + auto-follow) alongside the other
         # view-state writes; restored on the next ready bind (default: Scan page, auto-follow on).
         if self._center_host is not None:
