@@ -146,10 +146,7 @@ Read in this order when returning after time away:
 9. **Read first, before anything above:** [HANDOFF-eig.md](HANDOFF-eig.md) — the one objective
    (hypothesis map, intensity map, EIG; no survey, no legacy), what the code does instead today,
    and the measured facts of 2026-09-02/03.
-10. While it exists: [HANDOFF-catalogue-intake.md](HANDOFF-catalogue-intake.md) — the frontier of the
-    catalogue-driven intake job (per-format catalogue entries, file and user values side by side,
-    readiness and the needs-attention list), parked at its first packet.
-11. While it exists: [HANDOFF-letacon-fitting.md](HANDOFF-letacon-fitting.md) — the le Tacon BL43LXU
+10. While it exists: [HANDOFF-letacon-fitting.md](HANDOFF-letacon-fitting.md) — the le Tacon BL43LXU
     fitting job: slice S1 (open-ended peak count) held unlanded behind a scene presence-factor bound;
     later slices paused for a replan.
 
