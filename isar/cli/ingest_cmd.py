@@ -63,7 +63,8 @@ def run(args) -> int:
             "gaps": report.to_jsonable()["gaps"],
             "last_ingest": report.to_jsonable()["last_ingest"],
             "curves": report.curves,
-            "intake_damaged": damaged}))
+            "intake_damaged": damaged,
+            "import_record_error": report.import_record_error}))
         return 0
 
     # Human summary.
@@ -93,6 +94,8 @@ def run(args) -> int:
                 print(f"  {line}")
     for line in damaged:
         print(f"  intake: {line}")
+    if report.import_record_error:
+        print(f"  intake: {report.import_record_error}")
     if not report.dirty:
         print("  (no change — ledger already current)")
     return 0

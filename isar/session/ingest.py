@@ -358,6 +358,7 @@ class IngestReport:
     gaps: list = field(default_factory=list)         # file_gaps output
     last_ingest: dict = field(default_factory=dict)  # persisted, additive operator summary
     curves: dict | None = None                       # the resolution-curve check (BL43); {"error"} when it failed
+    import_record_error: str | None = None           # BL43: the import record was not written (GUI file values stale)
     dirty: bool = False
 
     def to_jsonable(self) -> dict:
@@ -369,7 +370,14 @@ class IngestReport:
                 "passed_over": [dict(p) for p in self.passed_over],
                 "gaps": [list(g) for g in self.gaps],
                 "last_ingest": dict(self.last_ingest),
-                "curves": None if self.curves is None else dict(self.curves)}
+                "curves": None if self.curves is None else dict(self.curves),
+                "import_record_error": self.import_record_error}
+
+
+def import_record_message(name: str, exc: BaseException) -> str:
+    """The one wording, for the ingest summary and a run's context lines, of a failed import-record write."""
+    return (f"{name} was not written ({type(exc).__name__}: {exc}); the GUI's file values may be stale "
+            f"and a newly imported scan may not take a saved value until it is")
 
 
 def upsert_ingested_entry(session, rec, det, *, chash, prov, on_supersede=None) -> str:
@@ -575,8 +583,9 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
     if intake:
         try:
             intake_scans.record_import(workspace_root, intake_rows)
-        except Exception:  # noqa: BLE001 — a failed import record is logged, never aborts the batch
+        except Exception as exc:  # noqa: BLE001 — a failed import record is logged and reported, never aborts the batch
             log.exception("ingest: %s not written", intake_scans.INTAKE_SCANS)
+            report.import_record_error = import_record_message(intake_scans.INTAKE_SCANS, exc)
 
     # --- file manifest for ALL classified files (merge, never replace) ---
     # For a measurement-class FILE, its scans still split into measurement scans (ledgered, listed

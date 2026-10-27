@@ -131,3 +131,21 @@ def test_bl43_ingest_writes_the_import_record_and_prints_damaged_intake_lines(tm
     code = ingest_cmd.run(argparse.Namespace(data=[str(data)], workspace=str(ws.root), json=True))
     obj = json.loads(capsys.readouterr().out.strip())
     assert code == 0 and obj["intake_damaged"] == ["intake/entries.jsonl line 1 skipped: not a JSON object"]
+    assert obj["import_record_error"] is None
+
+
+def test_bl43_ingest_says_when_the_import_record_could_not_be_written(tmp_path, capsys, monkeypatch):
+    from intake_fixtures import bl43_workspace
+    from isar.intake import scans
+
+    def locked(*_a, **_k):
+        raise PermissionError("intake_scans.json is held by another process")
+    monkeypatch.setattr(scans, "record_import", locked)
+    ws, data = bl43_workspace(tmp_path)
+    code = ingest_cmd.run(argparse.Namespace(data=[str(data)], workspace=str(ws.root), json=False))
+    out = capsys.readouterr().out
+    assert code == 0 and "intake: report/intake_scans.json was not written (PermissionError: " in out
+    assert "file values may be stale" in out
+    code = ingest_cmd.run(argparse.Namespace(data=[str(data)], workspace=str(ws.root), json=True))
+    obj = json.loads(capsys.readouterr().out.strip())
+    assert code == 0 and "was not written" in obj["import_record_error"]

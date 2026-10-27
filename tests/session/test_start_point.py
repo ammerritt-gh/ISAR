@@ -742,3 +742,17 @@ def test_damaged_intake_lines_are_reported_and_never_stop_the_run(tmp_path, monk
     for name in (store.ENTRIES, store.SETTINGS):
         assert any(ln.startswith(f"{name} line 2 skipped") for ln in damaged)
         assert any(ln.startswith(f"{name} line 4 skipped") for ln in damaged)
+
+
+def test_a_run_says_when_the_import_record_could_not_be_written(tmp_path, monkeypatch):
+    ws, data = fx.bl43_workspace(tmp_path, stems=("A",))
+
+    def locked(*_a, **_k):
+        raise PermissionError("intake_scans.json is held by another process")
+    monkeypatch.setattr(driver.intake_scans, "record_import", locked)
+    worker = _Worker(monkeypatch)
+    summary = _run(ws, data)
+    assert worker.calls and _log(ws)[-1]["outcome"] == "complete"          # the run goes on
+    (line,) = [ln for ln in summary.context_lines if "was not written" in ln]
+    assert line.startswith("report/intake_scans.json was not written (PermissionError: ")
+    assert "file values may be stale" in line
