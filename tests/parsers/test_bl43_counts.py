@@ -390,3 +390,69 @@ def test_emit_file_round_trips_whole_aligned_analyzers(tmp_path):
     for det in ("a03", "a06"):
         assert back.spectra[det].facts["Q_nm"] == {"value": 11.250, "source": "header"}
     assert not [f for f in back.scan_flags if f.type in ("missing_analyzer", "missing_sidecar")]
+
+
+# ---------------------------------------------------------------------------
+# What the reader leaves out, recorded at import (S3U1): fact-shaped lines with an unknown key
+# ---------------------------------------------------------------------------
+def append_line(path: Path, line: str) -> None:
+    with open(path, "a", encoding="utf-8", newline="\n") as fh:
+        fh.write(line + "\n")
+
+
+def test_a_renamed_trailer_is_flagged_and_its_value_is_not_read(tmp_path):
+    path = write_member(tmp_path, "a03", lattice(0, 20), np.full(20, 40.0), 1e6, q_nm=None)
+    append_line(path, "#Temp=  416.000 K")
+    rec = parse(tmp_path)
+    sp = rec.spectra["a03"]
+    (flag,) = [f for f in sp.spectrum_flags if f.type == "unrecognised_line"]
+    assert flag.severity == "warning" and "a03" in flag.reason and "'Temp'" in flag.reason
+    assert rec.raw_header["unrecognised_lines"] == [
+        {"analyzer": "a03", "position": "trailer", "key": "Temp", "line": "#Temp=  416.000 K"}]
+    assert "T_K" not in rec.raw_header["headers"]["a03"]          # not read as the temperature
+
+
+def test_plain_comments_and_the_column_label_line_are_never_flagged(tmp_path):
+    path = write_member(tmp_path, "a03", lattice(0, 20), np.full(20, 40.0), 1e6,
+                        header=["# SARF generated for the test", "# center of FWHM at zero (eshift= 4.14)",
+                                "# agaph_mm 60"], t_k=250.0)
+    append_line(path, "# fitted by hand later")
+    rec = parse(tmp_path)
+    assert not [f for f in rec.spectra["a03"].spectrum_flags if f.type == "unrecognised_line"]
+    assert rec.raw_header["unrecognised_lines"] == [] and rec.raw_header["unparsed_lines"] == []
+
+
+def test_an_equals_form_line_before_the_data_is_a_header_entry(tmp_path):
+    write_member(tmp_path, "a03", lattice(0, 20), np.full(20, 40.0), 1e6, header=["#Foo= 3"])
+    rec = parse(tmp_path)
+    assert rec.raw_header["unrecognised_lines"] == [
+        {"analyzer": "a03", "position": "header", "key": "Foo", "line": "#Foo= 3"}]
+    assert len([f for f in rec.spectra["a03"].spectrum_flags if f.type == "unrecognised_line"]) == 1
+
+
+def test_a_bare_trailer_key_is_an_unparsed_known_fact_not_an_unrecognised_line(tmp_path):
+    path = write_member(tmp_path, "a03", lattice(0, 20), np.full(20, 40.0), 1e6, q_nm=None)
+    append_line(path, "#T=")
+    rec = parse(tmp_path)
+    kinds = [f.type for f in rec.spectra["a03"].spectrum_flags]
+    assert kinds == ["trailer_unparsed"]
+    assert rec.raw_header["unparsed_lines"] == [{"analyzer": "a03", "line": "#T="}]
+    assert rec.raw_header["unrecognised_lines"] == []
+
+
+def test_the_sidecar_state_and_the_left_out_analyzers_are_recorded(tmp_path):
+    e = lattice(0, 20)
+    write_member(tmp_path, "a03", e, np.full(20, 40.0), 1e6)
+    rec = parse(tmp_path)
+    assert rec.raw_header["sidecar_state"] == "missing" and "no " in rec.raw_header["sidecar_problem"]
+    assert rec.raw_header["left_out"] == {}                                        # no .var, no expected list
+    write_member(tmp_path, "a05", e[:-1] + 0.05, np.full(19, 40.0), 1e6)         # off the bin lattice
+    write_var(tmp_path, [3, 4, 5])
+    rec = parse(tmp_path)
+    assert (rec.raw_header["sidecar_state"], rec.raw_header["sidecar_problem"]) == ("read", None)
+    assert rec.raw_header["left_out"]["a04"] == {"file": None, "cause": "no file"}
+    assert rec.raw_header["left_out"]["a05"]["file"] == f"{STEM}_a05"
+    assert rec.raw_header["left_out"]["a05"]["cause"].startswith("off the bin lattice")
+    (tmp_path / f"{STEM}.var").write_text("silicon_order = ", encoding="utf-8", newline="\n")
+    rec = parse(tmp_path)
+    assert rec.raw_header["sidecar_state"] == "unreadable" and rec.raw_header["sidecar_problem"]

@@ -516,10 +516,20 @@ header line gives them. If a trailing value disagrees with the file's own leadin
 value is kept and the trailing value is listed as a conflict under source `trailer`, with a
 `fact_conflict` flag.
 
+A comment line shaped like a fact, `#Key= value`, whose key ISAR does not read here raises an
+`unrecognised_line` flag, and the import record lists it with its analyzer and line: a renamed `#T=`
+(say `#Temp=`) shows up this way instead of silently leaving the temperature unread. Its value is not
+used. This covers a trailing `#Key=` line other than `#Q=`/`#T=`, and any `#Key=` line before the data;
+a bare `#T=` or `#Q=` with no value is reported as an unparsed line (`trailer_unparsed`). Plain comments
+and the column-label line are never flagged, nor is the leading `# key value` form (it cannot be told from
+a plain comment), nor are the `.var` sidecar's keys (ISAR reads only a few of its many).
+
 The `.var` sidecar supplies `si_order`, `bin_meV` (the bin size) and `n_merged_scans`, and for each
 analyzer `efficiency`, `polarisation_factor`, `elastic_centroid_meV` and `elastic_area`. A `.var` that
 is missing or unreadable raises `missing_sidecar`; one that is empty or has no analyzer list (for
-example still being copied) counts as unreadable, and re-ingesting once it is whole completes the scan.
+example still being copied) counts as unreadable, and importing the scan's folder or files again once it
+is whole completes the scan. A re-import reads every file again (a file is never skipped as unchanged), so
+it also picks up a corrected reader.
 
 ### Reading a fact's source label
 
