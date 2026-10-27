@@ -316,7 +316,7 @@ def test_setup_section_reads_what_was_read_and_where_the_curves_were_found(qtbot
 
 def test_setup_section_not_found_with_the_no_curves_fixture(qtbot, s2_no_curves):
     section = _section(qtbot, _bound(qtbot, s2_no_curves))
-    assert section._resolution.full_text().startswith("Resolution curves: not found (")
+    assert section._resolution.full_text() == "Resolution curves: not found"   # the shipped card names no folder
     assert "#b7791f" in section._resolution.styleSheet()
     assert section._problem.text().startswith("no resolution folder is saved")
 

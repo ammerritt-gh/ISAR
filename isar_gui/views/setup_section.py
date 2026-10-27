@@ -29,7 +29,7 @@ NOTHING_READ = "Nothing read yet"
 NOT_BL43 = "The import summary is shown for BL43LXU experiments only"
 POLICY_FILE = "card.policy.toml"
 STALE_NOTE = "this folder is checked at the next import or when analysis starts"
-_SOURCE_WORDS = {"discovered": "found beside the data", "user": "chosen by you", "card": "from the card"}
+_SOURCE_WORDS = {"discovered": "found beside the data", "user": "chosen by you"}
 _LIST_ROWS = 6                  # an opened list shows this many rows, then scrolls
 _WARN = f"color: {TONE_COLOR[Tone.WARN]};"
 
@@ -40,7 +40,7 @@ def _n(count: int, one: str, many: str) -> str:
 
 def resolution_text(summary, settings) -> tuple[str | None, bool]:
     """Where the resolution curves are, as ``(text, warn)``: ``"<folder> (found beside the data)"``,
-    ``"not found"`` or ``"not found (<folder>, from the card)"`` in the warning colour when the last check
+    ``"not found"`` or ``"not found (<folder>, chosen by you)"`` in the warning colour when the last check
     found no curve there, or ``(None, False)`` when nothing is known (no card and nothing saved)."""
     curves = None if summary is None else summary.curves
     if curves is not None:
