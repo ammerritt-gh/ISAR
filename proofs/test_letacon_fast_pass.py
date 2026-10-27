@@ -7,8 +7,8 @@ minutes), so run it with ``run-isar-proofs.bat letacon`` or
 
 What it does, in the order the tests report it:
 
-1. Each temperature folder (302 K, 97 K; 28 analyzers each) goes through ``isar init`` and
-   ``isar run --workers 4`` with render and scene on, the GUI's command, as a child process whose
+1. Each temperature folder (302 K, 97 K; 28 analyzers each) goes through ``isar init``, ``isar ingest``
+   (the resolution folder and the 40x40 slit are then saved in ISAR) and ``isar run --workers 4`` with render and scene on, the GUI's command, as a child process whose
    environment has none of the pytest-only caps (``ISAR_WORKERS``, ``ISAR_BOOTSTRAP_WORKERS``,
    ``ISAR_ESCALATION_N_LIVE``, ``ISAR_MODE_CEILING``). It prints the batch wall time, the stage split and
    the per-spectrum fast-pass median, p90 and max.
@@ -41,6 +41,8 @@ import numpy as np
 import pytest
 
 from isar.analyze.prior import SENSITIVITY_ARMS, PriorSettings
+from isar.intake import scans, values
+from isar.intake.settings import save_resolution_folder
 from isar.parsers import sarf
 from isar.session.outcome import fast_pass_of
 from isar.session.workspace import Workspace
@@ -98,21 +100,24 @@ def _prior_table(arm):
     return "\n[fitting.prior]\n" + "\n".join(lines) + "\n"
 
 
-def _init_workspace(data, ws, rf, log, prior_arm=None):
-    """``isar init`` on ``data``, then the card's resolution folder made absolute (and, for a sensitivity
-    arm, its prior table appended) the way ``proofs/test_bl43_resolution.py`` does."""
-    code, _ = _isar(["init", data, "--out", ws], log, "isar init")
+def _init_workspace(datas, ws, rf, log, prior_arm=None):
+    """``isar init`` on the first of ``datas``, then (for a sensitivity arm) its prior table appended, then
+    ``isar ingest`` of EVERY folder the workspace will run, then the resolution folder ``rf`` and the 40x40
+    slit saved in ISAR on every imported scan (a save refuses a scan the import record lacks)."""
+    code, _ = _isar(["init", datas[0], "--out", ws], log, "isar init")
     assert code == 0, f"isar init failed (exit {code}); log: {log}"
-    policy = ws / "card.policy.toml"
-    text = policy.read_text(encoding="utf-8")
-    assert 'resolution_folder = "rf"' in text
-    text = text.replace('resolution_folder = "rf"', f'resolution_folder = "{rf.as_posix()}"')
-    # The paper records the 40x40 slit; a declared slit is always kept (inferred, a06 gets 20x20).
-    assert "\n[facts]\n" in text
-    text = text.replace("\n[facts]\n", '\n[facts]\nslit = "40x40"\n', 1)
     if prior_arm:
-        text += _prior_table(prior_arm)
-    policy.write_text(text, encoding="utf-8", newline="\n")
+        policy = ws / "card.policy.toml"
+        policy.write_text(policy.read_text(encoding="utf-8") + _prior_table(prior_arm), encoding="utf-8",
+                          newline="\n")
+    code, _ = _isar(["ingest", *datas, "--workspace", ws], log.with_name(log.stem + "_ingest.log"), "isar ingest")
+    assert code == 0, f"isar ingest failed (exit {code}); log: {log.with_name(log.stem + '_ingest.log')}"
+    assert save_resolution_folder(ws, rf).ok
+    # The paper records the 40x40 slit; a saved slit is always kept (inferred, a06 gets 20x20).
+    keys = list(scans.read_scans(ws))
+    assert keys, "the import record holds no scan"
+    saved = values.save_value(ws, "slit", "40x40", keys)
+    assert saved.ok, saved
 
 
 def _fits(ws):
@@ -172,7 +177,7 @@ def batches(real, out_dir, data_dirs):
     done = {}
     for t in TEMPERATURES:
         ws = out_dir / f"ws_{t}"
-        _init_workspace(data_dirs[t], ws, rf, out_dir / f"init_{t}.log")
+        _init_workspace([data_dirs[t]], ws, rf, out_dir / f"init_{t}.log")
         log = out_dir / f"run_{t}.log"
         code, wall = _isar(["run", data_dirs[t], "--workspace", ws, "--workers", BATCH_WORKERS], log,
                            f"{t} K batch")
@@ -300,7 +305,7 @@ def test_prior_sensitivity_of_counts_and_confident_peaks(batches, real, out_dir,
     arm_walls = {}
     for arm in ARMS:
         ws = out_dir / f"ws_{arm}"
-        _init_workspace(data_dirs[TEMPERATURES[0]], ws, rf, out_dir / f"init_{arm}.log", prior_arm=arm)
+        _init_workspace([data_dirs[t] for t in TEMPERATURES], ws, rf, out_dir / f"init_{arm}.log", prior_arm=arm)
         code, wall = _isar(["run", *[data_dirs[t] for t in TEMPERATURES], "--workspace", ws, "--workers", workers,
                             "--no-render", "--no-scene"], out_dir / f"run_{arm}.log", f"sensitivity arm {arm}")
         assert code == 0, f"sensitivity arm {arm}: isar run exited {code}; log {out_dir / f'run_{arm}.log'}"

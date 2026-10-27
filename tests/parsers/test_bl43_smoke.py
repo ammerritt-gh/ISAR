@@ -9,16 +9,25 @@ asserted against the copy's truth file, i.e. what the copy tool wrote; header an
 """
 from __future__ import annotations
 
+import logging
 import shutil
+import tomllib
+from argparse import Namespace
+from contextlib import nullcontext
+from dataclasses import fields
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from artificial import (BA122, BL43, BL43_A03, BL43_A04, BL43_STEM, BL43_VAR, SARF_20, SARF_60,
                         scan_truth, tokens, values)
+from isar.cli import init_cmd
 from isar.parsers import registry, sp8_bl43
-from isar.schema import axes, scan
+from isar.schema import axes, card as card_mod, scan
+from isar.schema.card import Card, CardPolicy, validate_policy_text
 from isar.session import ingest
+from isar.workspace_api import Workspace
 
 A03, A04 = scan_truth(BL43_A03, 0), scan_truth(BL43_A04, 0)
 BA = scan_truth(BA122, 0)
@@ -195,3 +204,133 @@ def test_the_record_survives_the_canonical_json_store(sets):
         back = scan.ScanRecord.from_dict(rec.to_dict())
         assert scan.records_close(rec, back)
         assert back.spectra[sorted(back.spectra)[0]].facts == rec.spectra[sorted(rec.spectra)[0]].facts
+
+
+# ---------------------------------------------------------------------------
+# the thin split (C-bl43-format-split): format keys come from the shipped file, the workspace card keeps settings
+# ---------------------------------------------------------------------------
+SHIPPED = sp8_bl43._CARD_PATH
+
+
+def _shipped_text() -> str:
+    return SHIPPED.read_text(encoding="utf-8")
+
+
+def _region() -> str:
+    """What `isar init` writes into a workspace: the lines between the shipped file's two markers."""
+    region = init_cmd._settings_region(_shipped_text())
+    assert region is not None
+    return region
+
+
+def _load(tmp_path, text, caplog=None):
+    """``(policy, notes)`` of a workspace card written from `text`, loaded as every workspace load does, and
+    the same text through the GUI's validator; the two must agree."""
+    path = tmp_path / "card.policy.toml"
+    path.write_text(text, encoding="utf-8", newline="\n")
+    with caplog.at_level(logging.WARNING, logger=card_mod.log.name) if caplog else nullcontext():
+        policy = Card.load(path).policy
+    checked = validate_policy_text(text)
+    assert checked.is_valid and checked.policy == policy
+    notes = [r.getMessage() for r in caplog.records if r.name == card_mod.log.name] if caplog else []
+    return policy, notes, checked.warnings
+
+
+def test_the_init_region_loads_with_the_shipped_format(tmp_path, caplog):
+    policy, notes, warnings = _load(tmp_path, _region(), caplog)
+    shipped = tomllib.loads(_shipped_text())
+    assert (policy.energy_status, policy.variance_convention) == ("needs_zero", "none")    # hard rules 3 and 4
+    assert policy.files == shipped["files"] and "sarf_*" in policy.files["ignore"]
+    assert len(policy.detectors) == 28 and all(d.enabled for d in policy.detectors)
+    assert policy.calibration == {"method": "tabulated_elastic", "zero_fallback": "file_axis",
+                                  "resolution_pattern": shipped["calibration"]["resolution_pattern"]}
+    assert policy.facts == {} and policy.reader == {"intensity_family": "_i"}
+    assert policy.collation == {"key": ["sample", "q", "T"], "merge": "separate"}
+    assert Card(policy, card_mod.CardState()).validate() == []
+    assert notes == [] and warnings == ()
+
+
+def test_format_keys_in_a_workspace_card_are_ignored_and_named(tmp_path, caplog):
+    text = ('energy_status = "absolute"\n' + _region()
+            + '\n[facts]\nslit = "60x60"\n\n[calibration]\nresolution_folder = "rf"\n')
+    policy, notes, warnings = _load(tmp_path, text, caplog)
+    base = _load(tmp_path, _region())[0]
+    assert policy == base and policy.energy_status == "needs_zero"
+    assert "resolution_folder" not in policy.calibration and policy.facts == {}
+    assert len(notes) == len(warnings) == 3
+    named = sorted(w.split("'")[1] for w in warnings)
+    assert named == ["calibration", "energy_status", "facts"]
+    assert all("not used" in w for w in warnings)
+    assert any("not read for this instrument" in w or "does not read it" in w for w in warnings if "'facts'" in w)
+
+
+def test_a_workspace_setting_wins_over_the_shipped_default(tmp_path, caplog):
+    policy, notes, warnings = _load(tmp_path, _region().replace('merge = "separate"', 'merge = "merge"'), caplog)
+    assert policy.collation["merge"] == "merge" and notes == [] and warnings == ()
+
+
+def test_the_full_shipped_file_as_a_workspace_card_is_no_change_and_no_note(tmp_path, caplog):
+    policy, notes, warnings = _load(tmp_path, _shipped_text(), caplog)
+    assert policy == sp8_bl43.card_template().policy and notes == [] and warnings == ()
+
+
+def test_another_facilitys_card_is_unchanged(tmp_path):
+    data = {"plugin": "tavi", "facts": {"a": 1}, "detectors": []}
+    assert card_mod._with_shipped_format(data) == (data, [])
+    assert card_mod._with_shipped_format({"plugin": ["unhashable"]}) == ({"plugin": ["unhashable"]}, [])
+    tavi = Path(registry.plugin_by_name("tavi")._CARD_PATH)
+    assert Card.load(tavi).policy.plugin == "tavi" and Card.load(tavi).validate() == []
+
+
+def test_discovery_groups_by_the_shipped_files_table_whatever_the_workspace_card_says(tmp_path):
+    text = _region() + '\n[files]\nmeasurement = ["nothing_(?P<set>x)_(?P<analyzer>a..)"]\n'
+    path = tmp_path / "card.policy.toml"
+    path.write_text(text, encoding="utf-8", newline="\n")
+    card = Card.load(path)
+    plan = ingest.discover([BL43], card)
+    assert {fs.key for fs in plan.file_sets} == {BL43_STEM, "spec1_T26K__scan_58"}
+    by_key = {fs.key: fs for fs in plan.file_sets}
+    assert [p.name for p, _ in by_key[BL43_STEM].measurements] == [f"{BL43_STEM}_a03", f"{BL43_STEM}_a04"]
+
+
+def test_the_shipped_file_layout_keeps_format_and_settings_apart():
+    text = _shipped_text()
+    assert text.count(init_cmd.REGION_START) == text.count(init_cmd.REGION_END) == 1
+    shipped = tomllib.loads(text)
+    region = tomllib.loads(_region())
+    assert set(region) & card_mod.FORMAT_KEYS == {"plugin"}
+    outside = set(shipped) - set(region)
+    assert outside <= card_mod.FORMAT_KEYS and card_mod.FORMAT_KEYS <= {f.name for f in fields(CardPolicy)}
+    assert "facts" not in shipped and "resolution_folder" not in shipped["calibration"]
+    assert len(shipped["detectors"]) == 28 and all("enabled" not in d for d in shipped["detectors"])
+    assert card_mod.SHIPPED_FORMATS["sp8_bl43"] == SHIPPED == sp8_bl43._CARD_PATH
+
+
+def test_init_writes_only_the_analysis_settings_and_the_workspace_opens(tmp_path, capsys):
+    ws_dir = tmp_path / "ws"
+    assert init_cmd.run(Namespace(data=str(BL43), out=str(ws_dir), json=False)) == 0
+    assert "analysis settings" in capsys.readouterr().out
+    written = (ws_dir / "card.policy.toml").read_text(encoding="utf-8")
+    assert written.replace("\r\n", "\n") == _region()
+    assert not {"files", "reader", "calibration", "detectors", "facts"} & set(tomllib.loads(written))
+    assert (ws_dir / "session.json").exists() and (ws_dir / "card.state.json").exists()
+    card = Card.load(ws_dir / "card.policy.toml", ws_dir / "card.state.json")
+    assert card.validate() == [] and len(card.policy.detectors) == 28
+    view = Workspace.open(ws_dir)
+    assert view.card.policy.energy_status == "needs_zero" and view.warnings == []
+
+
+def test_init_refuses_a_shipped_file_whose_markers_are_wrong(tmp_path, monkeypatch, capsys):
+    bad = tmp_path / "bl43.toml"
+    bad.write_text(_shipped_text().replace(init_cmd.REGION_END, "# end"), encoding="utf-8", newline="\n")
+    monkeypatch.setattr(sp8_bl43, "_CARD_PATH", bad)
+    assert init_cmd.run(Namespace(data=str(BL43), out=str(tmp_path / "ws"), json=False)) == 2
+    assert "exactly once" in capsys.readouterr().err and not (tmp_path / "ws").exists()
+
+
+def test_a_disabled_analyzer_is_still_read():
+    card = sp8_bl43.card_template()
+    card.policy.detectors[0].enabled = False                      # a03: now a condition entered in ISAR, not a card switch
+    plan = ingest.discover([BL43], card)
+    rec = sp8_bl43.parse_set(next(fs for fs in plan.file_sets if fs.key == BL43_STEM), card)[0]
+    assert sorted(rec.spectra) == ["a03", "a04"]

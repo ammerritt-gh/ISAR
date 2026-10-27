@@ -1,5 +1,12 @@
 # BL43LXU (SPring-8) - meV-resolution IXS, processed per-analyzer files.
-# Human-authored policy half of the experiment card (D8): the machine READS this, never writes it.
+#
+# This file is read by EVERY BL43 workspace (isar.schema.card: `plugin = "sp8_bl43"` names it). It holds the
+# format knowledge - how the files are named, grouped and decoded, what the axis and the counts mean, the
+# analyzer list and how BL43 is calibrated - and the agent edits it only when the beamline's output format
+# changes: the fix then reaches every workspace at once. The workspace's own `card.policy.toml` is a copy of
+# the marked region below and holds analysis settings only; a format key written there is ignored with a
+# warning. Temperature, slit, dead analyzers, excluded scans and the resolution folder are never card edits:
+# they are entered in the ISAR GUI.
 #
 # One scan is a SET of files, one per analyzer (28 analyzers: a03-a09, a14-a20, a25-a31, a35-a41).
 # ISAR turns each set into one scan with one spectrum per analyzer. Two layouts are read:
@@ -9,7 +16,8 @@
 #   * Ba122 layout: spec1_T<T>K__scan_<n>_A<a>_Q_<h>_<k>_<l>_inel.dat (the group's export macro):
 #     three columns, no monitor, and the scan, temperature, analyzer and that analyzer's HKL in the name.
 # A header written at the top of an analyzer file (`# hkl 0.5 0.5 3`, `# T_K 302`, `# agaph_mm 60`,
-# `# agapv_mm 60`, `# scan 12`, ...) overrides the same fact from the file name or from [facts] below.
+# `# agapv_mm 60`, `# scan 12`, ...) overrides the same fact from the file name; a value entered in the GUI
+# overrides both.
 #
 # Counts are RAW: N = (intensity / error)^2, recovered from the printed numbers. The monitor and the
 # counting time of each analyzer are stored beside its counts, never divided in.
@@ -17,7 +25,6 @@
 facility = "SP8"
 instrument = "BL43LXU"
 format_version = "processed"
-plugin = "sp8_bl43"
 
 energy_column = "meV"           # the bin centre, energy transfer in meV on the beamline's own axis
 monitor_column = "norm_i"       # the monitor of the chosen column family (norm_lr for _lr)
@@ -27,17 +34,48 @@ normalize_by = "monitor"        # a bin whose monitor is 0 is masked and flagged
 raw_abscissa_kind = "energy"    # the axis is already in meV...
 energy_status = "needs_zero"    # ...but its zero is not trusted: scans are HELD until a zero exists
 variance_convention = "none"    # D3: variance = counts, NO zero-count floor
-min_points = 5
-hkl_round_step = 0.05
 measurement_pattern = "processed"   # unused: processed files carry no scan command
 alignment_pattern = "none"          # unused: every scan in these files is a measurement
+
+# --- isar init copies the analysis settings from here ---
+# Analysis settings of this experiment, read from this file in the workspace (card.policy.toml). The file
+# format is read from the BL43 file shipped with ISAR, not from here; temperature, slit, dead analyzers,
+# excluded scans and the resolution folder are entered in the ISAR GUI.
+plugin = "sp8_bl43"
+min_points = 5
+hkl_round_step = 0.05
 exclusions_seed = []
 
-[temperature_rule]              # no sensor in the files; the setpoint is the T_K fact (header, name or [facts])
+[temperature_rule]              # no sensor in the files; the setpoint is the file's T_K or the temperature entered in the GUI
 
 [collation]
 key = ["sample", "q", "T"]
 merge = "separate"              # no pooling of repeat scans until per-analyzer exposure is pooled safely
+
+[fitting]
+min_fit_points = 6              # fewer usable points than this -> non-result (undersampled)
+# detectors = ["a06"]           # which analyzers to fit (default: all 28)
+
+# The fast pass's thresholds. The values shown are the installed defaults (PROVISIONAL, calibrated on
+# generated spectra 2026-10-26: your call). Uncomment a line to change it; a change refits the
+# affected scans on the next run.
+# [fitting.fast_pass]
+# seed_stop_gain = 6.0                                 # 2*dlnL a seed peak must add (not calibrated)
+# confident_anchor = [[0.0, 50.0]]                      # [spectrum max count, counts a peak's removal must change]
+# flag_residual_threshold = 10.05                      # residual-scan statistic at or above which "possible hidden component" is flagged (0 = off)
+# overdamped_correlation = 0.8                         # |corr(omega0, Gamma)| above which a peak is warned overdamped
+
+# The prior (a data-derived empirical-Bayes starting point; the defaults are the 2026-10-25 recipe).
+# [fitting.prior]
+# amplitude_margin = 1.2     # peak and elastic heights flat on [0, margin x the highest count]
+# width_kind = "softlog"     # width density 1/(Gamma + width_knee); "flat" = uniform
+# width_knee = 0.12          # meV
+# width_cap = 20.0           # meV, largest Gamma
+# energy_cap = 20.0          # meV, largest omega0
+
+# [sample]
+# name = "CsV3Sb5"              # names the experiment in the ledger (default: the SPEC file name, else the file stem)
+# --- to here ---
 
 [files]
 # Each measurement pattern is matched against the whole file name and must name `set` (the scan's
@@ -62,215 +100,158 @@ ignore = ["*.pkpos", "*_sum", "sarf_*"]
 # and every _lr spectrum carries a counts_not_integer warning, whatever its bins recover to.
 intensity_family = "_i"
 
-[facts]
-# Card-declared facts rank below every header and file name; a header that disagrees raises a warning.
-# The analyzer slit is not in the files. Write it here as <horizontal>x<vertical> mm if you know it:
-# slit = "60x60"
-# lattice = [5.4, 5.4, 9.3, 90, 90, 120]    # a, b, c (Angstrom), alpha, beta, gamma (deg)
-
-# [sample]
-# name = "CsV3Sb5"              # names the experiment in the ledger (default: the SPEC file name, else the file stem)
-
 [calibration]
 # Each analyzer is fitted with the beamline's own measured resolution curve (SARF) for the scan's slit, and
 # its energy zero is the fitted elastic line. Without a curve (no folder, or none for that analyzer at that
-# slit) the analyzer is parsed and shown but held, with a missing_resolution flag naming it. The slit is
-# the `slit` fact (header, file name or [facts]); with none given, ISAR infers it from the elastic lines
-# and says so (slit_inferred); a given slit is never overridden (slit_mismatch only warns).
+# slit) the analyzer is parsed and shown but held, with a missing_resolution flag naming it. The folder is
+# the experiment's setting, not a card key: ISAR finds `rf/` inside the imported folder, or the GUI locates
+# it. The slit is the `slit` fact (header, file name or the GUI); with none given, ISAR infers it from the
+# elastic lines and says so (slit_inferred); a given slit is never overridden (slit_mismatch only warns).
 method = "tabulated_elastic"            # zero + curve from the beamline's SARF files
-resolution_folder = "rf"                # used only when the experiment has no saved resolution folder; relative to this card's folder unless absolute
 # A regular expression matching a whole file name; (?P<analyzer>) and (?P<setting>) pick the analyzer
 # and the slit (height_width in mm) out of it. The .gpi files beside the curves are not matched.
 resolution_pattern = 'sarf_.+_s\d+_(?P<setting>\d+_\d+)_(?P<analyzer>a\d{2})'
 zero_fallback = "file_axis"             # no significant elastic line: use the file's own axis, labelled pipeline_zero
 
-[fitting]
-min_fit_points = 6              # fewer usable points than this -> non-result (undersampled)
-# detectors = ["a06"]           # which analyzers to fit (default: all enabled)
-
-# The fast pass's thresholds. The values shown are the installed defaults (PROVISIONAL, calibrated on
-# generated spectra 2026-10-26: your call). Uncomment a line to change it; a change refits the
-# affected scans on the next run.
-# [fitting.fast_pass]
-# seed_stop_gain = 6.0                                 # 2*dlnL a seed peak must add (not calibrated)
-# confident_anchor = [[0.0, 50.0]]                      # [spectrum max count, counts a peak's removal must change]
-# flag_residual_threshold = 10.05                      # residual-scan statistic at or above which "possible hidden component" is flagged (0 = off)
-# overdamped_correlation = 0.8                         # |corr(omega0, Gamma)| above which a peak is warned overdamped
-
-# The prior (a data-derived empirical-Bayes starting point; the defaults are the 2026-10-25 recipe).
-# [fitting.prior]
-# amplitude_margin = 1.2     # peak and elastic heights flat on [0, margin x the highest count]
-# width_kind = "softlog"     # width density 1/(Gamma + width_knee); "flat" = uniform
-# width_knee = 0.12          # meV
-# width_cap = 20.0           # meV, largest Gamma
-# energy_cap = 20.0          # meV, largest omega0
-
 # The analyzers. `value_index` and `signal_column` are unused for this instrument (the reader finds its
-# columns by name, from [reader]); `enabled = false` leaves an analyzer out of every scan.
+# columns by name, from [reader]). An analyzer a scan did not measure is a dead analyzer, declared in the
+# GUI; it is still read and shown.
 [[detectors]]
 detector_id = "a03"
 value_index = 0
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a04"
 value_index = 1
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a05"
 value_index = 2
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a06"
 value_index = 3
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a07"
 value_index = 4
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a08"
 value_index = 5
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a09"
 value_index = 6
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a14"
 value_index = 7
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a15"
 value_index = 8
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a16"
 value_index = 9
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a17"
 value_index = 10
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a18"
 value_index = 11
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a19"
 value_index = 12
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a20"
 value_index = 13
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a25"
 value_index = 14
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a26"
 value_index = 15
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a27"
 value_index = 16
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a28"
 value_index = 17
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a29"
 value_index = 18
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a30"
 value_index = 19
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a31"
 value_index = 20
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a35"
 value_index = 21
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a36"
 value_index = 22
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a37"
 value_index = 23
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a38"
 value_index = 24
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a39"
 value_index = 25
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a40"
 value_index = 26
 signal_column = "y_i"
-enabled = true
 
 [[detectors]]
 detector_id = "a41"
 value_index = 27
 signal_column = "y_i"
-enabled = true

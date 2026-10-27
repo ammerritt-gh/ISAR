@@ -461,6 +461,49 @@ def test_bl43_reimport_keeps_every_replaced_fit_in_the_history(tmp_path):
     assert all(session.scans[h["unit"]].status == "ingested" for h in hist)   # the ledger moved on after
 
 
+def test_bl43_moved_data_folder_reimports_with_every_scan_unchanged(tmp_path):
+    """Where the files sit is not their content (C-data-revision): a moved folder changes no hash."""
+    import shutil
+
+    from intake_fixtures import bl43_workspace, rows_for
+    from isar.intake.fit_inputs import FIT_HISTORY
+    from isar.intake.scans import read_scans
+    from isar.workspace_api import needs_attention
+
+    ws, data = bl43_workspace(tmp_path)
+    _bl43_ingest(ws, data)
+    ledger = _mark_fitted(ws)
+    rows = read_scans(ws.root)
+    moved = tmp_path / "moved"
+    shutil.move(str(data), str(moved))
+    report = _bl43_ingest(ws, moved)
+    assert report.updated == [] and report.added == [] and sorted(report.unchanged) == sorted(rows)
+    assert {k: _json.to_jsonable(e) for k, e in ws.load()[1].scans.items()} == ledger
+    assert not (ws.root / FIT_HISTORY).exists()
+    new = read_scans(ws.root)
+    for key, row in new.items():
+        assert row["data_revision"] == rows[key]["data_revision"]
+        assert all(Path(p).resolve().is_relative_to(moved.resolve()) for p in row["import"]["paths"].values())
+    assert not [g for g in needs_attention(ws.root).groups if g.kind == "analyzer_unreadable"]
+    assert {r["scan"]: r["data_revision"] for r in rows_for(ws, moved)} == {k: v["data_revision"] for k, v in new.items()}
+
+
+def test_content_hash_ignores_only_the_location_of_a_bl43_record(tmp_path):
+    from intake_fixtures import bl43_workspace, records_for
+    from isar.session.state import canonical_hash, content_hash
+
+    ws, data = bl43_workspace(tmp_path)
+    (rec, *_) = records_for(ws, data)
+    assert "paths" in rec.raw_header
+    other = records_for(ws, data)[0]
+    other.raw_header["paths"] = {k: "elsewhere/" + v for k, v in other.raw_header["paths"].items()}
+    assert content_hash(rec) == content_hash(other) != canonical_hash(rec)
+    other.spectra["a03"].intensity[0] += 1.0                     # a data difference still counts
+    assert content_hash(other) != content_hash(rec)
+    del rec.raw_header["paths"]                                # no paths key: byte-identical to today
+    assert content_hash(rec) == canonical_hash(rec)
+
+
 def test_bl43_summed_set_superseded_by_its_scans_keeps_its_fit(tmp_path):
     import numpy as np
 
@@ -493,13 +536,13 @@ def test_bl43_ingest_never_stops_for_damaged_intake_lines(tmp_path):
     from isar.intake.scans import read_scans
     from isar.intake.values import save_value
 
-    ws, data = bl43_workspace(tmp_path)
-    for name in (store.SETTINGS, store.ENTRIES):
-        path = ws.root / name
-        path.parent.mkdir(exist_ok=True)
-        path.write_bytes(b'[1, 2]\n{"id": "e000000000002", "seq": 2, "kind": "mystery"}\n{"kind": "torn')
+    ws, data = bl43_workspace(tmp_path)         # its saved resolution folder is settings.jsonl's first line
+    damage = b'[1, 2]\n{"id": "e000000000002", "seq": 2, "kind": "mystery"}\n{"kind": "torn'
+    with (ws.root / store.SETTINGS).open("ab") as f:
+        f.write(b"\n" + damage)
+    (ws.root / store.ENTRIES).write_bytes(damage)
     report = _bl43_ingest(ws, data)
     assert report.curves is not None and "error" not in report.curves
-    assert report.curves["problem"] is None and report.curves["source"] == "card"
+    assert report.curves["problem"] is None and report.curves["source"] == "setting"
     assert len(read_scans(ws.root)) == 2 and len(report.added) == 2
     assert save_value(ws.root, "temperature", 100.0, list(read_scans(ws.root))).ok   # a save appends past them

@@ -3,6 +3,10 @@
 Copies the matching card template **verbatim as text** (its comments are the documentation — no
 tomllib round-trip), appends commented `[calibration]`/`[fitting]` scaffolds if the template
 predates them, and writes empty state + session files. Prints the exact next command.
+
+For a plugin in `card.SHIPPED_FORMATS` (BL43) the template is the shipped format file, and only the
+analysis-settings region between its two marker lines is copied: the format is read from the shipped
+file at every load, so the workspace card holds nothing else.
 """
 from __future__ import annotations
 
@@ -12,7 +16,12 @@ from datetime import date
 from pathlib import Path
 
 from isar.parsers import registry
+from isar.schema import card
 from isar.session.state import SessionState
+
+# The marker lines of a shipped format file that bound the text `isar init` copies into a workspace.
+REGION_START = "# --- isar init copies the analysis settings from here ---"
+REGION_END = "# --- to here ---"
 
 
 def _fail(kind: str, message: str, as_json: bool) -> int:
@@ -70,6 +79,16 @@ def _first_recognizable(path: Path):
     return None, None
 
 
+def _settings_region(text: str) -> str | None:
+    """The lines strictly between the two marker lines; None unless each marker appears exactly once."""
+    lines = text.splitlines()
+    starts = [i for i, ln in enumerate(lines) if ln.strip() == REGION_START]
+    ends = [i for i, ln in enumerate(lines) if ln.strip() == REGION_END]
+    if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
+        return None
+    return "\n".join(lines[starts[0] + 1:ends[0]]) + "\n"
+
+
 def _has_section(text: str, name: str) -> bool:
     return any(line.strip().startswith(f"[{name}]") for line in text.splitlines())
 
@@ -94,10 +113,18 @@ def run(args) -> int:
 
     plugin = registry.plugin_by_name(plugin_name)
     template_text = Path(plugin._CARD_PATH).read_text(encoding="utf-8")
-    if not _has_section(template_text, "calibration"):
-        template_text += _CALIBRATION_SCAFFOLD
-    if not _has_section(template_text, "fitting"):
-        template_text += _FITTING_SCAFFOLD
+    shipped = plugin_name in card.SHIPPED_FORMATS
+    if shipped:
+        template_text = _settings_region(template_text)
+        if template_text is None:
+            return _fail("no_card_template",
+                         f"{plugin._CARD_PATH} must hold the lines '{REGION_START}' and '{REGION_END}' "
+                         f"exactly once each", as_json)
+    else:
+        if not _has_section(template_text, "calibration"):
+            template_text += _CALIBRATION_SCAFFOLD
+        if not _has_section(template_text, "fitting"):
+            template_text += _FITTING_SCAFFOLD
 
     out = Path(args.out) if args.out else Path.cwd() / f"isar_{instrument}_{date.today():%Y%m%d}"
     if out.exists() and (out / "card.policy.toml").exists():
@@ -117,10 +144,17 @@ def run(args) -> int:
 
     print(f"Detected {facility}/{instrument} (format {fmt}) from {probe.name}")
     print(f"Created workspace: {out}")
-    print(f"  card.policy.toml   <- template for '{plugin_name}' (edit: detectors, [fitting], [calibration])")
+    if shipped:
+        print(f"  card.policy.toml   <- analysis settings for '{plugin_name}' (the file format is read from "
+              f"the shipped {Path(plugin._CARD_PATH).name})")
+    else:
+        print(f"  card.policy.toml   <- template for '{plugin_name}' (edit: detectors, [fitting], [calibration])")
     print(f"  card.state.json, session.json  (empty)")
     print()
     print("Next:")
-    print(f'  1. edit "{out / "card.policy.toml"}"  (confirm detectors; add expectations / known-bad scans)')
+    if shipped:
+        print(f'  1. optionally edit the analysis settings in "{out / "card.policy.toml"}"')
+    else:
+        print(f'  1. edit "{out / "card.policy.toml"}"  (confirm detectors; add expectations / known-bad scans)')
     print(f'  2. isar run "{data}" --workspace "{out}"')
     return 0

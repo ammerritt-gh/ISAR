@@ -451,10 +451,6 @@ def test_import_summary_without_a_record_or_check_and_with_a_malformed_one(tmp_p
     w = World(tmp_path, [], folder=False)
     s = import_summary(w.root)
     assert (s.n_scans, s.record_problem, s.curves.checked_at, s.curves.n_curves) == (0, None, None, 0)
-    assert (s.curves.folder, s.curves.source, s.curves.problem) == (str(w.root / "rf"), "card", None)   # the card's folder
-    w.ws.policy_path.write_text(w.ws.policy_path.read_text(encoding="utf-8").replace('resolution_folder = "rf"', ''),
-                                encoding="utf-8", newline="\n")
-    s = import_summary(w.root)
     assert (s.curves.folder, s.curves.source, s.curves.problem) == (None, "none", "no resolution folder is saved")
     scans.record_import(w.root, [row(1001)])
     (w.root / scans.INTAKE_SCANS).write_text("[1]", encoding="utf-8", newline="\n")
