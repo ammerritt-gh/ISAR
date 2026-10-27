@@ -2,8 +2,8 @@
 
 The beamline's processing writes one text file per analyzer (and, for the CsV3Sb5 layout, a `.var`
 sidecar); the operator's group's Ba122 export writes one three-column file per analyzer with the
-scan, temperature and HKL in its name. `parse_set` turns a set (grouped by ingest from the card's
-`[files]` table) into ONE `ScanRecord` holding one `Spectrum` per analyzer:
+scan, temperature and HKL in its name. `parse_set` turns a set (grouped by ingest from the shipped
+format file's `[files]` table) into ONE `ScanRecord` holding one `Spectrum` per analyzer:
 
   * counts are RAW: N = (intensity / error)^2 through `metadata.recover_counts`, variance = N, no
     floor (hard rule 3). Monitor and time travel beside the counts on each spectrum, never folded in;
@@ -22,7 +22,8 @@ scan, temperature and HKL in its name. `parse_set` turns a set (grouped by inges
   * every fact carries its source. Q is attached by rung: a header or filename HKL on an analyzer is rung 1;
     the CsV3Sb5 filename HKL is only the scan's nominal arm-centre `hkl_nominal`, never a spectrum's Q;
     otherwise `q = None` (rung 4).
-  * the energy zero is not known here: `status = "needs_zero"` comes from the card, never a defaulted 0.0.
+  * the energy zero is not known here: `status = "needs_zero"` comes from the shipped format file, never a
+    defaulted 0.0.
 
 The trailing `#Q=` / `#T=` lines of the real analyzer files are header facts (`Q_nm` per analyzer,
 `T_K` for the scan); a leading header value wins over a disagreeing trailer, which is kept as a conflict.
@@ -336,7 +337,6 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
     if family not in _FAMILIES:
         raise ValueError(f"[reader] intensity_family {family!r} must be one of {sorted(_FAMILIES)}")
     patterns = (pol.files or {}).get("measurement", [])
-    disabled = {d.detector_id for d in pol.detectors if not d.enabled}
 
     # --- sidecar -------------------------------------------------------------------------
     var_path = next((p for p in file_set.sidecars if Path(p).suffix.lower() == ".var"), None)
@@ -361,8 +361,6 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
     causes: dict[str, str] = {}
     for path, groups in sorted(file_set.measurements, key=lambda pg: Path(pg[0]).name):
         det = detector_id(groups["analyzer"])
-        if det in disabled:
-            continue
         if det in members or det in causes:
             causes[det] = f"{Path(path).name} duplicates another file for this analyzer"
             continue
@@ -438,7 +436,7 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
     if labelled:
         expect += ["hkl_nominal", "si_order", "bin_meV", "n_merged_scans"]
     facts, flags = metadata.merge_facts(
-        {"header": header_facts, "sidecar": var_scan, "filename": from_name, "card": dict(pol.facts or {})},
+        {"header": header_facts, "sidecar": var_scan, "filename": from_name},
         expected=expect)
     scan_flags += flags
     for fact, entries in header_clashes.items():
@@ -465,7 +463,7 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
         sidecar_state, sidecar_problem = "missing", missing.reason
     else:
         sidecar_state, sidecar_problem = ("read" if var_path is not None else "not_expected"), None
-    gone = {d: causes.get(d, "no file") for d in expected if d not in members and d not in disabled}
+    gone = {d: causes.get(d, "no file") for d in expected if d not in members}
     gone.update({d: c for d, c in causes.items() if d not in gone})
     file_of: dict[str, str] = {}
     for path, groups in sorted(file_set.measurements, key=lambda pg: Path(pg[0]).name):
@@ -508,6 +506,7 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
                     "headers": {d: dict(members[d].header) for d in sorted(members)},
                     "sidecar": Path(var_path).name if var_path is not None else None,
                     # the resolved path of each analyzer file: the key its entry in the import record's files section has
+                    # (not part of the data revision: `state.content_hash` leaves it out)
                     "paths": {d: str(Path(p).resolve()) for p, g in file_set.measurements
                               for d in [detector_id(g["analyzer"])] if d in spectra},
                     # what was left out, structurally (the flags above say the same in words)
@@ -605,10 +604,10 @@ def _spectrum(m: Member, k: np.ndarray, all_keys: np.ndarray, fname_facts: dict,
 # parse_file / emit_file
 # ---------------------------------------------------------------------------
 def parse_file(path: str | Path, card: Card) -> list[scan.ScanRecord]:
-    """A BL43LXU scan is a set of files; ingest groups them from the card's `[files]` table and calls
-    `parse_set`. A card without `[files]` has no way to name a set."""
+    """A BL43LXU scan is a set of files; ingest groups them from the shipped format file's `[files]`
+    table and calls `parse_set`."""
     raise ValueError(f"{Path(path).name}: BL43LXU scans are sets of per-analyzer files; "
-                     "the card needs a [files] table (see the shipped bl43lxu template)")
+                     "the shipped bl43lxu.policy.toml needs a [files] table")
 
 
 def emit_file(record: scan.ScanRecord, card: Card, out_dir: str | Path | None = None) -> Path:
