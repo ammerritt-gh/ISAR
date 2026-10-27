@@ -1,9 +1,9 @@
 """PROOF (real data, run on purpose): BL43LXU tabulated resolution on the real CsV3Sb5 set.
 
 The real folder goes through discovery, parsing, reduction and QC, then the calibration the run uses
-(``router.route`` -> ``calibrations.refresh_tabulated``), in a fresh workspace. The card names the real
-``rf/`` resolution folder (read only, by absolute path) and declares no slit, so each scan's slit is
-inferred. Checks: the 302 K and 97 K scans infer the same slit; every analyzer's zero is a fitted
+(``router.route`` -> ``calibrations.refresh_tabulated``), in a fresh workspace. The real ``rf/`` resolution
+folder (read only, by absolute path) is saved as the experiment's folder and no slit is entered, so each
+scan's slit is inferred. Checks: the 302 K and 97 K scans infer the same slit; every analyzer's zero is a fitted
 elastic zero within ZERO_TOL of the file's axis zero, or a labelled pipeline zero. Only structure and
 bounds are asserted and printed: no measured value is written here, so no expectation file is needed.
 """
@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from isar.intake.settings import save_resolution_folder
 from isar.parsers import sp8_bl43
 from isar.reduce import combine, qc
 from isar.session import calibrations, ingest, router
@@ -31,12 +32,10 @@ def calibrated(real_file, tmp_path):
     rf = real_file(FOLDER, "rf")
     ws = Workspace.open(tmp_path / "ws")
     ws.root.mkdir()
-    text = Path(sp8_bl43._CARD_PATH).read_text(encoding="utf-8")
-    assert 'resolution_folder = "rf"' in text
-    ws.policy_path.write_text(text.replace('resolution_folder = "rf"', f'resolution_folder = "{rf.as_posix()}"'),
-                              encoding="utf-8", newline="\n")
+    ws.policy_path.write_text(Path(sp8_bl43._CARD_PATH).read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
     ws.state_path.write_text("{}", encoding="utf-8")
     SessionState().save(ws.session_path)
+    assert save_resolution_folder(ws.root, rf).ok
     card, _session = ws.load()
     records = ingest.parse_all(ingest.discover([folder], card), card)
     for rec in records:
