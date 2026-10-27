@@ -122,7 +122,7 @@ def test_bl43_ingest_writes_the_import_record_and_prints_damaged_intake_lines(tm
     from isar.intake import store
 
     ws, data = bl43_workspace(tmp_path)
-    (ws.root / "intake").mkdir()
+    (ws.root / "intake").mkdir(exist_ok=True)       # the fixture's saved resolution folder made it
     (ws.root / store.ENTRIES).write_bytes(b"[1, 2]\n")
     code = ingest_cmd.run(argparse.Namespace(data=[str(data)], workspace=str(ws.root), json=False))
     out = capsys.readouterr().out

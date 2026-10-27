@@ -17,6 +17,8 @@ import isar
 from intake_fixtures import (ANALYZERS, SETTINGS, STEM, TRUE_SLIT, ZERO,  # the generators, shared with tests/intake
                              curve_values as _curve_values, workspace as _workspace,
                              write_library as _write_library, write_scan as _write_scan)
+from isar.intake.curves import NO_FOLDER
+from isar.intake.settings import save_resolution_folder
 from isar.parsers import metadata, sarf, sp8_bl43
 from isar.reduce import combine, qc
 from isar.schema import axes
@@ -40,6 +42,7 @@ def _calibrated(tmp_path, *, slit=None, library_skip=(), analyzers=ANALYZERS, we
     """A workspace with data and library; returns (ws, card, records, state entry of the one scan)."""
     ws = _workspace(tmp_path)
     _write_library(ws.root / "rf", skip=library_skip)
+    assert save_resolution_folder(ws.root, ws.root / "rf").ok
     _write_scan(tmp_path / "data", analyzers=analyzers, slit=slit, weak=weak, monitors=monitors,
                 centroids=centroids)
     card, _session = ws.load()
@@ -82,7 +85,7 @@ def test_resolution_version_records_only_method_folder_and_fingerprint(tmp_path)
     ws, card, recs, entry = _calibrated(tmp_path)
     (version,) = card.state.resolution_versions
     assert set(version) == {"method", "folder", "pattern", "library", "version", "_sig"}
-    assert version["method"] == "tabulated_elastic" and version["folder"] == str(ws.root / "rf")  # relative to the card
+    assert version["method"] == "tabulated_elastic" and version["folder"] == str((ws.root / "rf").resolve())  # the saved folder
     assert version["library"] == sarf.fingerprint(ws.root / "rf", PATTERN) == entry["library"]
 
 
@@ -134,13 +137,13 @@ def test_an_analyzer_without_a_curve_at_the_setting_is_held_the_rest_are_fitted(
 
 
 def test_no_resolution_folder_holds_every_analyzer_and_says_why(tmp_path):
-    ws = _workspace(tmp_path)                                  # the card's `rf` does not exist
+    ws = _workspace(tmp_path)                                  # no folder saved, none beside the data
     _write_scan(tmp_path / "data")
     card, _s = ws.load()
     lines = calibrations.refresh_tabulated(card, _records(card, tmp_path / "data"), base_dir=ws.root)
-    assert any("resolution library unavailable" in line for line in lines)
+    assert any(NO_FOLDER in line for line in lines)
     (entry,) = card.state.tabulated_calibration.values()
-    assert all("unavailable" in d["held_reason"] and d["flags"][0]["type"] == "missing_resolution"
+    assert all(NO_FOLDER in d["held_reason"] and d["flags"][0]["type"] == "missing_resolution"
                for d in entry["detectors"].values())
 
 
@@ -159,6 +162,7 @@ def test_weak_elastic_line_falls_back_to_the_pipeline_zero_labelled(tmp_path):
 def test_print_rounding_notice_is_fitted_not_held(tmp_path):
     ws = _workspace(tmp_path)
     _write_library(ws.root / "rf")
+    assert save_resolution_folder(ws.root, ws.root / "rf").ok
     _write_scan(tmp_path / "data", analyzers=ANALYZERS)
     card, _session = ws.load()
     recs = _records(card, tmp_path / "data")
@@ -274,6 +278,7 @@ def test_an_analyzer_whose_curve_cannot_be_identified_is_held_alone(tmp_path, mo
     # The curve loaded, then its file became unreadable before its identity was taken: only that analyzer is held.
     ws = _workspace(tmp_path)
     _write_library(ws.root / "rf")
+    assert save_resolution_folder(ws.root, ws.root / "rf").ok
     _write_scan(tmp_path / "data")
     card, _s = ws.load()
     recs = _records(card, tmp_path / "data")
@@ -358,12 +363,12 @@ def test_repointing_at_a_moved_library_refits_from_the_new_folder(tmp_path):
     old_fp = calibrations.calibration_fingerprint(calibrations.calibration_view(card), recs[0], "a03")
     shutil.copytree(ws.root / "rf", ws.root / "rf_moved", copy_function=shutil.copy2)
     shutil.rmtree(ws.root / "rf")
-    card.policy.calibration["resolution_folder"] = "rf_moved"
+    assert save_resolution_folder(ws.root, ws.root / "rf_moved").ok
     calibrations.refresh_tabulated(card, recs, base_dir=ws.root)
     sarf._LIBRARIES.clear()                                      # what a fresh `isar run` starts with
     runcal = calibrations.calibration_view(card)
     calres = calibrations.resolve(recs[0], "a03", card, runcal)
-    assert not calres.held and calres.reference["folder"] == str(ws.root / "rf_moved")
+    assert not calres.held and calres.reference["folder"] == str((ws.root / "rf_moved").resolve())
     assert calibrations.calibration_fingerprint(runcal, recs[0], "a03") != old_fp    # the driver refits
 
 
@@ -379,6 +384,7 @@ def _run(ws, data, **kw):
 def test_run_fits_with_the_tabulated_curve_holds_the_rest_and_refits_on_a_changed_library(tmp_path):
     ws = _workspace(tmp_path)
     _write_library(ws.root / "rf", skip=[("a05", "40x40")])
+    assert save_resolution_folder(ws.root, ws.root / "rf").ok
     data = tmp_path / "data"
     _write_scan(data, monitors={"a03": 1.0e5, "a04": 2.0e5})
     policy_before = ws.policy_path.read_bytes()
@@ -417,6 +423,7 @@ def test_reopened_workspace_rebuilds_the_fitted_model_with_its_curve_and_shows_t
     from isar.workspace_api import Workspace as ReadOnlyWorkspace
     ws = _workspace(tmp_path)
     _write_library(ws.root / "rf")
+    assert save_resolution_folder(ws.root, ws.root / "rf").ok
     data = tmp_path / "data"
     _write_scan(data)
     _run(ws, data, detectors="a03")
@@ -457,6 +464,7 @@ def test_reopened_workspace_rebuilds_the_fitted_model_with_its_curve_and_shows_t
 def test_pooled_master_is_held_under_tabulated_calibration_and_the_member_fits_stand(tmp_path):
     ws = _workspace(tmp_path, merge="merge", sample="Smp")
     _write_library(ws.root / "rf")
+    assert save_resolution_folder(ws.root, ws.root / "rf").ok
     data = tmp_path / "data"
     for i, stem in enumerate((STEM + "_runA", STEM + "_runB")):
         _write_scan(data, stem=stem, analyzers=("a03",), seed=10 + i, hkl=(0.5, 0.5, 3))

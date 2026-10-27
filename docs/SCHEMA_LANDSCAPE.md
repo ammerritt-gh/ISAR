@@ -154,7 +154,7 @@ be promoted to a scanned axis by reference from `scan_axes`.
   (`#F/#E/#D/#O/#S/#G/#P/#Q` blocks), and ISAR does not read those raw files. It reads the beamline's
   processed per-analyzer layouts instead, through the `sp8_bl43` reader: the CsV3Sb5 layout (one file per
   analyzer beside a `.var` sidecar) and the Ba122 three-column export. Large analyzer array (described as 6×4 → now 28; a 2024
-  experiment used 7×4 = 28 analyzers, 28 momentum transfers per scan), resolution ~0.75–6 meV.
+  experiment used 7×4 = 28 analyzers, 28 momentum transfers per scan), resolution ~0.75–6 meV. The reader's format knowledge lives in the shipped `bl43lxu.policy.toml`; the workspace card keeps analysis settings only.
 - **ILL IN8 (TAS):** ILL "numor" format (NUMber Of Run; 6-digit zero-padded filenames), historically
   ASCII/TAPDAT-derived. **[real_data]:** the real files confirm the classic numor ASCII (header blocks
   `INSTR/EXPNO/COMND/POSQE/PARAM/VARIA/ZEROS`, then a `DATA_:` column table `PNT A3 M1 M2 TIME CNTS …`),

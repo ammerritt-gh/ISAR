@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 import isar
+from isar.intake.curves import NO_FOLDER
 from isar.parsers import sp8_bl43, spec_s30
 from isar.reduce import collate
 from isar.schema import axes, scan
@@ -191,14 +192,14 @@ def _bl43_ws(tmp_path):
 
 
 def test_run_holds_qless_scan_for_want_of_a_resolution_curve(tmp_path):
-    # The shipped card names a resolution folder (`rf`) this workspace does not have: nothing is fitted.
+    # No resolution folder is saved and none sits beside the data: nothing is fitted.
     ws = _bl43_ws(tmp_path)
     summary = driver.run_batch(ws, [_bl43_folder(tmp_path)], M=10)
     _card, session = ws.load()
     assert len(session.scans) == 4                               # 2 scans x 2 analyzers
     for entry in session.scans.values():
         assert entry.status == "held_for_calibration"
-        assert entry.reasons and "resolution library unavailable" in entry.reasons[0]
+        assert entry.reasons and NO_FOLDER in entry.reasons[0]
         assert entry.provenance["q"] is None                    # never a fake Q
         assert entry.provenance["q_source"] == "none" and entry.provenance["q_rung"] == 4
     assert summary.collation is not None                         # collation did not fail either
