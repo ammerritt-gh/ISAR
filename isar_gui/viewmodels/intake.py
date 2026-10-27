@@ -25,7 +25,6 @@ import logging
 import queue
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,46 +56,46 @@ def _number(value) -> str:
     return f"{value:g}" if isinstance(value, float) else str(value)
 
 
-_gc_lock = threading.Lock()
-_gc_holds = 0                   # intake workers running with the cyclic collector paused
+_live: list[threading.Thread] = []   # intake workers not yet seen ended (GUI thread only)
 _gc_was_enabled = False
 
 
-@contextmanager
-def _collector_paused():
-    """Pause the cyclic garbage collector while a worker reads. A collection triggered by the worker's
-    allocations would run on the worker and could destroy unreachable Qt objects off the GUI thread, which
-    deadlocked the GUI tests (measured: the GUI check hung in 2 of 2 runs, then passed 6 of 6 paused)."""
-    global _gc_holds, _gc_was_enabled
-    with _gc_lock:
-        if _gc_holds == 0:
-            _gc_was_enabled = gc.isenabled()
-            gc.disable()
-        _gc_holds += 1
-    try:
-        yield
-    finally:
-        with _gc_lock:
-            _gc_holds -= 1
-            if _gc_holds == 0 and _gc_was_enabled:
-                gc.enable()
+def _pause_collector(thread: threading.Thread) -> None:
+    """Turn the cyclic collector off before a worker starts (GUI thread). A collection run on the worker
+    could destroy unreachable Qt objects off the GUI thread, which deadlocked the GUI tests. Re-enabling it
+    on the worker was not enough: the worker's next allocation then ran the whole backlog there (seen as
+    workers parked at that point in hung xdist runs)."""
+    global _gc_was_enabled
+    _resume_collector()
+    if not _live:
+        _gc_was_enabled = gc.isenabled()
+        gc.disable()
+    _live.append(thread)
+
+
+def _resume_collector() -> None:
+    """Turn the collector back on once every worker thread has ended (GUI thread), so the backlog runs here."""
+    global _gc_was_enabled
+    _live[:] = [t for t in _live if t.is_alive()]
+    if not _live and _gc_was_enabled:
+        _gc_was_enabled = False
+        gc.enable()
 
 
 def _work(results: queue.SimpleQueue, root: Path, generation: int) -> None:
-    """The worker thread's reads (NO Qt access here); the answer goes back through ``results``."""
-    with _collector_paused():
-        try:
-            # shortcut: the worker parses the fit-inputs log twice per reload (once in fit_inputs, once inside
-            # needs_attention); ask the intake job for a needs_attention that takes the fit-inputs read if a
-            # reload during a run is seen to lag.
-            fit_inputs = tuple(Workspace(root).fit_inputs())
-            attention = needs_attention(root)
-            item = (generation, root, attention, fit_inputs, None)
-        except Exception as exc:  # noqa: BLE001 - reported on the GUI thread as `error`
-            log.exception("intake worker read of %s failed", root)
-            item = (generation, root, None, None, f"worker: {type(exc).__name__}: {exc}")
-        results.put(item)
-        del item, results          # dropped while the collector is still paused
+    """The worker thread's reads (NO Qt access, the collector off for its whole life); the answer goes back
+    through ``results``."""
+    try:
+        # shortcut: the worker parses the fit-inputs log twice per reload (once in fit_inputs, once inside
+        # needs_attention); ask the intake job for a needs_attention that takes the fit-inputs read if a
+        # reload during a run is seen to lag.
+        fit_inputs = tuple(Workspace(root).fit_inputs())
+        attention = needs_attention(root)
+        item = (generation, root, attention, fit_inputs, None)
+    except Exception as exc:  # noqa: BLE001 - reported on the GUI thread as `error`
+        log.exception("intake worker read of %s failed", root)
+        item = (generation, root, None, None, f"worker: {type(exc).__name__}: {exc}")
+    results.put(item)
 
 
 class IntakeState(QObject):
@@ -112,7 +111,8 @@ class IntakeState(QObject):
         self._error: str | None = None
         self._busy: str | None = None
         self._generation = 0            # bumped by every reload; a worker result carries the one it served
-        self._active = False            # exactly one worker thread at a time
+        self._active = False            # exactly one worker thread at a time, until it is seen ended
+        self._thread: threading.Thread | None = None
         self._pending: tuple[Path, int] | None = None   # the newest request not yet started
         self._queue: queue.SimpleQueue = queue.SimpleQueue()
         self._timer = QTimer(self)
@@ -165,16 +165,18 @@ class IntakeState(QObject):
         self._active = True
         # The thread gets the queue, never `self`: a last reference dropped on the worker would destroy
         # this QObject (and its timer) off the GUI thread.
-        threading.Thread(target=_work, args=(self._queue, root, generation), daemon=True,
-                         name="isar-gui-intake").start()
+        self._thread = threading.Thread(target=_work, args=(self._queue, root, generation), daemon=True,
+                                        name="isar-gui-intake")
+        _pause_collector(self._thread)
+        self._thread.start()
 
     # ---- GUI thread ----
     def _poll(self) -> None:
         latest = None
+        ended = self._active and not self._thread.is_alive()   # read first: an ended worker's answer is queued
         try:
             while True:
                 item = self._queue.get_nowait()
-                self._active = False
                 if item[0] == self._generation and item[1] == self._root:
                     latest = item       # older generations are dropped; the pending request delivers instead
         except queue.Empty:
@@ -184,6 +186,9 @@ class IntakeState(QObject):
             if error is not None:
                 self._error = error
             self.worker_changed.emit()
+        if ended:
+            self._active = False
+            _resume_collector()
         self._start_pending()
         if not self._active and self._pending is None:
             self._timer.stop()

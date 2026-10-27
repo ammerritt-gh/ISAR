@@ -260,6 +260,29 @@ def test_a_worker_failure_is_an_error_and_empty_marks(qtbot, monkeypatch, s2_bui
     assert "ZeroDivisionError" in intake.error
 
 
+def test_no_collection_runs_on_the_intake_worker_and_the_collector_comes_back(qtbot, s2_built):
+    """A cyclic collection on the worker could finalize Qt objects off the GUI thread (the suite's hang:
+    the worker parked right after re-enabling the collector, at its first allocation)."""
+    import gc
+    import threading
+    collected_on = []
+
+    def note(phase, _info):
+        if phase == "start":
+            collected_on.append(threading.current_thread().name)
+    gc.callbacks.append(note)
+    try:
+        for _ in range(3):
+            intake = _bound(qtbot, s2_built)
+            qtbot.waitUntil(lambda: not any(t.name == "isar-gui-intake" for t in threading.enumerate()),
+                            timeout=WAIT_MS)
+            qtbot.waitUntil(gc.isenabled, timeout=WAIT_MS)       # resumed on the GUI thread once the worker ended
+            assert intake.attention is not None
+    finally:
+        gc.callbacks.remove(note)
+    assert "isar-gui-intake" not in collected_on
+
+
 # ---- the value entry ---------------------------------------------------------------------------------
 def test_value_entry_parses_and_the_dialog_saves_or_stays_open(qtbot, s2_ws):
     entry = ValueEntry("temperature")
