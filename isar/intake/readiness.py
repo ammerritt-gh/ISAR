@@ -383,9 +383,10 @@ def _can_start(values: list[bool | None]) -> bool | None:
 
 def _scan(scan: str, row: dict, pos: int, index: inputs.EntryIndex, state: dict, check, cidx, folder_problem,
           stale: bool, marks: Mapping[str, UnitMarks], gaps: list[_Gap], an_can: dict, running_scans: set,
-          disagree: set) -> ScanReadiness:
+          disagree: set, unread: Mapping[str, dict]) -> ScanReadiness:
     """One scan's readiness; its gaps, the analyzers' ``can_start`` and the scans running or disagreeing are
-    added to the collectors the caller passes."""
+    added to the collectors the caller passes. ``unread``: file name -> its ``files`` entry, for each file
+    the latest import recorded failed or refused."""
     si = inputs.scan_inputs(row, index)
     prev = state.get(scan)
     imp = row.get("import") or {}
@@ -424,6 +425,13 @@ def _scan(scan: str, row: dict, pos: int, index: inputs.EntryIndex, state: dict,
                 gap("declared", why, a)
             else:
                 own.setdefault(a, []).append(("declared", "held"))
+            continue
+        if (name := (row.get("files") or {}).get(a)) in unread:
+            # the latest import could not read this analyzer's file: the row is of an earlier read
+            rec = unread[name]
+            why = f"{a}: {name} was not read at the latest import ({rec.get('reason') or rec['class']})"
+            uses_of[a] = {u: _use("unreadable" if u == "read" else "held", why) for u in USES}
+            gap("analyzer_unreadable", why, a)
             continue
         if a in left_out:
             cause = (left_out[a] or {}).get("cause") or "no file"
@@ -484,7 +492,8 @@ def _scan(scan: str, row: dict, pos: int, index: inputs.EntryIndex, state: dict,
                 f"{g[0] + ' is' if len(g) == 1 else 'one of them is'} chosen", a)
         uses_of[a] = u
 
-    live_read = [a for a in read_dets if a not in si.dead and si.excluded is None and a not in left_out]
+    live_read = [a for a in read_dets if a not in si.dead and si.excluded is None and a not in left_out
+                 and (row.get("files") or {}).get(a) not in unread]
     # scan-level gaps
     if live_read:
         if si.facts["temperature"].used_value is None:
@@ -665,9 +674,12 @@ def _evaluate(root: Path, marks: Mapping[str, UnitMarks]) -> NeedsAttention:
     running_scans: set = set()
     ready: dict[str, ScanReadiness] = {}
     order = sorted(rows, key=lambda k: scan_order(rows, k))
+    # shortcut: matched by file name, so a failed file of another folder with the same name also holds the
+    # analyzer; upgrade if two folders of one workspace ever share names.
+    unread = {Path(p).name: rec for p, rec in files.items() if (rec or {}).get("class") in ("failed", "refused")}
     for pos, scan in enumerate(order):
         ready[scan] = _scan(scan, rows[scan], pos, index, state, check, cidx, folder_problem, stale, marks,
-                            gaps, an_can, running_scans, disagree)
+                            gaps, an_can, running_scans, disagree, unread)
     if folder_problem is not None and rows:
         gaps.append(_Gap("resolution_folder", folder_problem))
     for path in sorted(files):

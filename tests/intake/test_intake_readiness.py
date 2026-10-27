@@ -702,3 +702,41 @@ def test_the_readiness_read_stays_scipy_and_qt_free(tmp_path):
     out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
                          cwd=Path(__file__).resolve().parents[2])
     assert out.returncode == 0 and "OK" in out.stdout, out.stderr
+
+
+# --- repair batch 2 ---------------------------------------------------------------------------------------
+def _truncate(path):
+    """The file as the beamline leaves it while it is still being written: a label and no data rows."""
+    path.write_text("#      meV      secs   npts          norm_i             y_i            ye_i\n",
+                    encoding="utf-8", newline="\n")
+
+
+def test_a_file_that_failed_at_re_import_holds_its_analyzer_whatever_its_old_row_says(tmp_path):
+    ws, data = fx.bl43_workspace(tmp_path, stems=("A",), analyzers=("a03",))
+    _ingest(ws, data)
+    (scan,) = needs_attention(ws.root).scans
+    assert needs_attention(ws.root).scans[scan].can_start is True
+    _truncate(data / f"{fx.STEM}_A_a03")
+    _ingest(ws, data)
+    na = needs_attention(ws.root)
+    s = na.scans[scan]
+    assert (s.can_start, s.action, s.analyzers["a03"].can_start) == (False, "import_again", False)
+    assert (s.uses["read"].state, s.uses["calibrate"].state) == ("unreadable", "held")
+    g = grp(na, "analyzer_unreadable")
+    assert (g.action, g.can_start, [(i.scan, i.analyzer) for i in g.items]) == ("import_again", False, [(scan, "a03")])
+    fx.write_scan(data, stem=f"{fx.STEM}_A", analyzers=("a03",), energy=fx.ENERGY_120)     # the file is complete now
+    _ingest(ws, data)
+    na = needs_attention(ws.root)
+    assert (na.scans[scan].can_start, grp(na, "analyzer_unreadable"), grp(na, "files_not_read")) == (True, None, None)
+
+
+def test_only_the_analyzer_whose_file_failed_is_held(tmp_path):
+    w = r1(tmp_path)
+    w.files({str(w.root / "data" / "Smp_1001_a03"): {"class": "failed", "reason": "ValueError: odd", "set": "Smp_1001",
+                                                       "seen_at": "t"}})
+    na = readiness.evaluate(w.root)
+    a03, a04 = na.scans["Smp:1001"].analyzers["a03"], na.scans["Smp:1001"].analyzers["a04"]
+    assert (a03.can_start, a03.action, a04.action) == (False, "import_again", "start_analysis")
+    assert [(i.scan, i.analyzer) for i in grp(na, "analyzer_unreadable").items] == [("Smp:1001", "a03")]
+    assert "ValueError: odd" in grp(na, "analyzer_unreadable").items[0].reason
+    assert na.scans["Smp:1002"].analyzers["a03"].can_start is True
