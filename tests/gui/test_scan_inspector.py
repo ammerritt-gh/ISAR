@@ -47,7 +47,7 @@ def patched(monkeypatch, bl43_ws):
     snapshot = dataclasses.replace(snapshot, sets=tuple(
         dataclasses.replace(s, spectra=tuple(dataclasses.replace(sp, fit=None) for sp in s.spectra))
         for s in snapshot.sets))
-    monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda ws: snapshot)
+    monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda ws, **_reads: snapshot)
     return snapshot
 
 

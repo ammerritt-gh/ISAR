@@ -12,12 +12,12 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, QPoint, Qt
-from PySide6.QtGui import QAction, QActionGroup, QIcon, QStandardItem, QStandardItemModel
+from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QMenu, QPushButton, QSizePolicy, QToolButton, QTreeView, QVBoxLayout,
                                QWidget)
 
-from isar_gui.theme import dot_icon
+from isar_gui.theme import TONE_COLOR, Tone, dot_icon
 from isar_gui.viewmodels.scan_list import (COLUMNS, OPTIONAL_COLUMNS, SORTS, TITLES,
                                            ScanListViewModel)
 
@@ -25,6 +25,7 @@ _ID_ROLE = Qt.ItemDataRole.UserRole           # the node id, on a row's first it
 _KEY_ROLE = Qt.ItemDataRole.UserRole + 1      # the selectable identity, or None
 _KIND_ROLE = Qt.ItemDataRole.UserRole + 2
 _TONE_ROLE = Qt.ItemDataRole.UserRole + 3     # what the item's dot was drawn for
+_STALE_ROLE = Qt.ItemDataRole.UserRole + 4    # whether the item's word was drawn as out of date
 _SORT_LABELS = {"set": "By scan set", "temperature": "By temperature", "analyzer": "By analyzer"}
 _HINT = "Double-click a row, or Inspect, to open the scan inspector."
 _NEW_CONTAINER_KINDS = ("set", "analyzer")
@@ -277,6 +278,7 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
             text = cell.text if cell else ""
             tip = (cell.tooltip or cell.text) if cell else ""
             tone = cell.tone if cell else None
+            stale = bool(cell and cell.stale)
             if item.text() != text:
                 item.setText(text)
             if item.toolTip() != tip:
@@ -284,6 +286,9 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
             if item.data(_TONE_ROLE) != tone:
                 item.setData(tone, _TONE_ROLE)
                 item.setIcon(dot_icon(tone) if tone is not None else QIcon())
+            if bool(item.data(_STALE_ROLE)) != stale:     # the out-of-date mark: the word in the warning colour
+                item.setData(stale, _STALE_ROLE)
+                item.setData(QColor(TONE_COLOR[Tone.WARN]) if stale else None, Qt.ItemDataRole.ForegroundRole)
 
     def _index_items(self) -> None:
         self._by_id.clear()

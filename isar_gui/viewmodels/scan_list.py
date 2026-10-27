@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import Signal
 
+from isar.workspace_api import ImportSummary
 from isar.workspace_api.scan_list import (Fact, PooledRow, ScanListSnapshot, ScanSetRow, SpectrumRow,
                                           UnreadFile, natural_key, scan_list)
 from isar_gui.theme import DEEP, FAST, PARSED, Tone, status_tone, summary_tone
@@ -33,6 +34,7 @@ SORTS = ("set", "temperature", "analyzer")
 _STATE_KEY = "scan_list"
 _DASH = "—"
 _TEMP_TERM = re.compile(r"(\d+(?:\.\d+)?)\s*k", re.IGNORECASE)
+_NO_SUMMARY = ImportSummary(0, 0, (), (), {}, None, None)     # nothing imported yet: the ledger's lists stand
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,7 @@ class Cell:
     text: str
     tooltip: str | None = None        # None: the view shows the text itself
     tone: Tone | None = None          # a status dot; None for plain text
+    stale: bool = False               # the pass's inputs changed since it was made: the word is drawn in WARN
 
 
 @dataclass(frozen=True)
@@ -80,11 +83,21 @@ def _fact_cell(fact: Fact, with_unit: bool = True) -> Cell:
 
 def _status_cell(status, column: str) -> Cell:
     tip = f"{status.word}: {status.reason}" if status.reason else status.word
-    return Cell(status.word, tip, status_tone(column, status.word))
+    stale = status.current is False
+    if stale:
+        lines = "\n".join(f"{name}: {used} → {now}" for name, used, now in status.changed)
+        tip = f"Inputs changed since this {column} pass:\n{lines}" + (f"\n{status.reason}" if status.reason else "")
+    return Cell(status.word, tip, status_tone(column, status.word), stale)
 
 
-def _summary_cell(stored: int, total: int, tones, what: str) -> Cell:
-    return Cell(f"{stored}/{total}", f"{stored} of {total} {what}", summary_tone(tones))
+def _summary_cell(stored: int, total: int, tones, what: str, statuses=(), column: str = "") -> Cell:
+    """The ``11/28`` cell of a set or an analyzer; ``statuses`` are its spectra's passes, any of which
+    may have changed inputs."""
+    tip = f"{stored} of {total} {what}"
+    stale = sum(s.current is False for s in statuses)
+    if stale:
+        tip += f"\n{stale} of {stored} {column}-pass results have changed inputs"
+    return Cell(f"{stored}/{total}", tip, summary_tone(tones), stale > 0)
 
 
 def _temperature(fact: Fact) -> float | None:
@@ -133,6 +146,7 @@ class ScanListViewModel(ViewModel):
         self._sort = "set"
         self._optional: set[str] = set()      # the optional columns switched on
         self._filter_text = ""
+        self._intake = None
 
     # ---- reads ---------------------------------------------------------------------------
     @property
@@ -190,8 +204,9 @@ class ScanListViewModel(ViewModel):
             self.snapshot_changed.emit()
 
     def set_intake(self, intake) -> None:
-        """The window's IntakeState (stub: S2U4 passes its fact rows, fit inputs and summary to the
-        scan-list read)."""
+        """The window's IntakeState: every re-read passes its fact rows, fit inputs and import summary to
+        the scan-list read, so this thread never parses the fit-inputs log. The marks update on its
+        ``worker_changed`` (the window re-reads on both of its signals)."""
         self._intake = intake
 
     # ---- the workspace changed -----------------------------------------------------------
@@ -205,7 +220,11 @@ class ScanListViewModel(ViewModel):
         self._reread()
 
     def _reread(self) -> None:
-        self._snapshot = scan_list(self._ws)
+        intake = self._intake
+        reads = {} if intake is None else {
+            "fact_rows": intake.fact_rows or (), "fit_inputs": intake.fit_inputs or (),
+            "import_summary": intake.summary or _NO_SUMMARY}      # None (not read yet): no marks, no lists
+        self._snapshot = scan_list(self._ws, **reads)
         cleared = self._current_key is not None and self._snapshot.spectrum(self._current_key) is None
         if cleared:
             self._current_key = None
@@ -315,10 +334,10 @@ class ScanListViewModel(ViewModel):
                                     "files received were read"),
             "fast": _summary_cell(sum(sp.fast.stored for sp in ss.spectra), n,
                                   [status_tone(FAST, sp.fast.word) for sp in ss.spectra],
-                                  "spectra through the fast pass"),
+                                  "spectra through the fast pass", [sp.fast for sp in ss.spectra], FAST),
             "deep": _summary_cell(sum(sp.deep.stored for sp in ss.spectra), n,
                                   [status_tone(DEEP, sp.deep.word) for sp in ss.spectra],
-                                  "spectra through the deep pass"),
+                                  "spectra through the deep pass", [sp.deep for sp in ss.spectra], DEEP),
             "slit": _fact_cell(ss.slit),
             "file": Cell(""),
         }
@@ -365,10 +384,10 @@ class ScanListViewModel(ViewModel):
                                         "spectra read"),
                 "fast": _summary_cell(sum(sp.fast.stored for sp in all_sp), n,
                                       [status_tone(FAST, sp.fast.word) for sp in all_sp],
-                                      "spectra through the fast pass"),
+                                      "spectra through the fast pass", [sp.fast for sp in all_sp], FAST),
                 "deep": _summary_cell(sum(sp.deep.stored for sp in all_sp), n,
                                       [status_tone(DEEP, sp.deep.word) for sp in all_sp],
-                                      "spectra through the deep pass"),
+                                      "spectra through the deep pass", [sp.deep for sp in all_sp], DEEP),
             }
             nodes.append(Node(f"ana:{ana}", "analyzer", None, cells, children))
         return nodes
