@@ -55,7 +55,8 @@ class Fact:
 
 @dataclass(frozen=True)
 class Status:
-    word: str                 # shown verbatim, never renamed
+    word: str                 # the fitting code's word, returned verbatim (the export keeps it); the GUI's
+                              # display table (isar_gui/status_words.py) glosses it, this read does not
     stored: bool              # Parsed: True when the file was read. Fast/Deep: True when the word
                               # comes from that pass's own stored record ("through the pass")
     reason: str | None = None # tooltip text: the stored reason, the hold reason, what is missing

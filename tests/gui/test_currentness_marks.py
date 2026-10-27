@@ -112,7 +112,7 @@ def test_a_changed_input_draws_the_stored_word_in_the_warning_colour(qtbot, ws_r
     intake, vm, panel = _list(qtbot, ws_root)
     assert not any(_marked(panel, f"spec:{u}", "fast") for u in (A03, A04, A06))      # fresh fits are current
     _save(qtbot, intake, 100)
-    for unit, word in ((A03, "resolved"), (A04, "close_call"), (A06, "search_limited")):
+    for unit, word in ((A03, "clear"), (A04, "close call"), (A06, "search limit reached")):
         cell = _cell(panel, f"spec:{unit}", "fast")
         assert cell.text() == word and _marked(panel, f"spec:{unit}", "fast")          # the word is unchanged
         assert cell.toolTip().startswith("Inputs changed since this fast pass:")

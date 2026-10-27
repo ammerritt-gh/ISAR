@@ -236,7 +236,10 @@ empty/ready layout pair, and amends G19 as stated below.
     and launches the campaign into it (G19, amended above).
 - **Scan list (G24).** One row per scan set, labelled by its scan number when its files carry exactly
   one and otherwise by the set's name; the analyzers sit beneath it. Each status is a coloured dot and
-  a word, and the word is the one the stored records give. *Parsed* claims only that the file was read:
+  a word: the plain word of the display table `isar_gui/status_words.py` (clear, close call, search limit
+  reached, held: needs …), with the fitting code's word and a one-line meaning on hover, and the code's word
+  in the export (amendment 7; the facade still returns the code's word verbatim, and the filter matches
+  both). *Parsed* claims only that the file was read:
   never calibration, a resolution curve or a fit. *Fast pass* and *Deep pass* show each pass's stored
   state, or `not run` where nothing is stored, side by side, with no result picked as "the" result; each
   column switches on by itself when the first stored result of that pass exists (amendment 7), unless the

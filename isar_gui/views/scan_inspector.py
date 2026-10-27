@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QLabel, QScrollArea, QS
                                QVBoxLayout, QWidget)
 
 from isar.workspace_api.scan_list import Fact, PooledRow, ScanSetRow, SpectrumRow
+from isar_gui import status_words
 from isar_gui.plain_words import drop_echo
 from isar_gui.plotspec_pg import clear_render, disable_view_drops, render_into
 from isar_gui.theme import DEEP, FAST, PARSED, dot_icon, status_tone
@@ -58,6 +59,7 @@ class Line(NamedTuple):
     column: str | None = None
     reason: str | None = None
     group: str = "facts"           # "facts", "processing" or "metadata"
+    word: str | None = None        # a status line: the fitting code's word (``text`` is the plain word shown)
 
 
 def _number(value: float) -> str:
@@ -140,7 +142,8 @@ def inspector_lines(row: SpectrumRow | PooledRow, set_row: ScanSetRow | None, un
 
     def status(label: str, column: str, st, group: str) -> Line:
         reason = drop_echo(st.word, st.reason)         # "resolved" over "resolved: count 1" said the word twice
-        return Line(label, st.word, st.reason or st.word, column, reason, group)
+        return Line(label, status_words.plain_word(column, st.word, st.reason),
+                    status_words.tooltip(column, st.word, reason), column, reason, group, st.word)
 
     if isinstance(row, PooledRow):
         members = "—" if row.n_members is None else str(row.n_members)
@@ -457,7 +460,7 @@ class ScanInspectorPanel(QWidget):
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(4)
         dot = QLabel()
-        dot.setPixmap(dot_icon(status_tone(line.column, line.text)).pixmap(10, 10))
+        dot.setPixmap(dot_icon(status_tone(line.column, line.word or line.text)).pixmap(10, 10))
         word = ElidedLabel(line.text, mode=Qt.TextElideMode.ElideRight)
         word.setToolTip(line.tooltip or line.text)
         top.addWidget(dot, 0)

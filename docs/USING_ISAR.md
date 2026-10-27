@@ -402,15 +402,16 @@ columns *Scan*, *T*, *Q* and *Parsed* always show; *Columns ▾* adds *Fast pass
 the experiment; if you switch one off (or on) from *Columns ▾*, ISAR remembers your choice and no longer
 overrides it. A set row's summary counts spectra, or files received for *Parsed*.
 
-Every status is a coloured dot with a word, and the word is the one the stored records give:
+Every status is a coloured dot with a word. The list and the inspector show a plain word; hover it to see the
+fitting code's own word and one line on what it means (the filter box matches either word). The export keeps the fitting code's words (`count_state` and the rest).
 
 - **Parsed** is `ok`, a gap (`no T`, `no Q`), or `not read`. It says the file was read and nothing more:
   not that the spectrum is calibrated, matched to a resolution curve or ready to fit.
-- **Fast pass** and **Deep pass** show the state each pass stored for that spectrum: `resolved`,
-  `close_call`, `unresolved` or `search_limited` for the fast pass, and `resolved`, `close_call`,
-  `search_limited` or `refused` for the deep pass. A spectrum with nothing stored shows `not run`, or
-  `held` (with the hold's reason on hover), `not fitted`, or `not recorded` for a fit stored before the
-  fast pass existed.
+- **Fast pass** and **Deep pass** show the state each pass stored for that spectrum. Fast pass: *clear*
+  (`resolved`), *close call* (`close_call`), `unresolved` or *search limit reached* (`search_limited`). Deep
+  pass: *clear*, *close call*, *search limit reached* or `refused`. A spectrum with nothing stored shows `not
+  run`, or *held: needs resolution curves* (or an energy zero, a slit setting, its counts accepted; the hold's
+  reason is on hover), `not fitted`, or `not recorded` for a fit stored before the fast pass existed.
 - **`not run` and `fitting`.** A spectrum that has been read but not fitted shows `not run` in these
   columns, while `report/results.csv` and the export's `fits.json` say `fitting` for the same entry.
   Both mean there is no stored fit.

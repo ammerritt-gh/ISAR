@@ -147,8 +147,8 @@ def test_default_and_optional_columns(qtbot, monkeypatch, sample):
                       "fast": False, "deep": False, "slit": True, "file": True}
     assert _model_item(panel, f"set:{KEY_A}", "fast").text() == "3/4"
     cell = _model_item(panel, f"spec:{A[4]}", "fast")
-    assert cell.text() == "close_call" and not cell.icon().isNull()
-    assert cell.data(_TONE_ROLE) == Tone.WARN and "close_call" in cell.toolTip()
+    assert cell.text() == "close call" and not cell.icon().isNull()
+    assert cell.data(_TONE_ROLE) == Tone.WARN and "close_call" in cell.toolTip()      # the code's word is on hover
     panel._column_actions["fast"].trigger()                      # switched off by hand
     assert panel._view.isColumnHidden(COLUMNS.index("fast"))
     panel._column_actions["slit"].trigger()                      # and an optional one on
@@ -288,7 +288,7 @@ def test_a_stored_fit_arriving_changes_a_cell_in_place(qtbot, monkeypatch, bl43_
     assert panel._view.isExpanded(_index(panel, f"set:{KEY_A}"))
     assert vm.current_key == A[6] and _current_key(panel) == A[6]
     assert panel._scroll_anchor() == anchor
-    assert _model_item(panel, f"spec:{B[5]}", "fast").text() == "resolved"
+    assert _model_item(panel, f"spec:{B[5]}", "fast").text() == "clear"
     assert display.calls == []
 
 

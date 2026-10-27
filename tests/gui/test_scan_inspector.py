@@ -127,7 +127,7 @@ def test_a06_of_a_summed_set_shows_every_line(qtbot, patched, bl43_ws):
     energy = _text(f["Energy range"])
     assert energy.startswith("-4 to 7.8 meV") and "raw axis, zero not applied" in energy
     assert _text(f["Parsed"]) == "ok" and _has_dot(f["Parsed"])
-    assert _text(f["Fast pass"]) == "search_limited" and _has_dot(f["Fast pass"])
+    assert _text(f["Fast pass"]) == "search limit reached" and _has_dot(f["Fast pass"])
     assert _text(f["Deep pass"]) == "not run" and _has_dot(f["Deep pass"])
     # the full file path is the file line's tooltip; the hashed placeholder number is nowhere
     assert _tooltip(f["File"]).endswith("CsV3Sb5_97K_0p5_0p5_3_sum_a06")
@@ -284,7 +284,8 @@ def test_inspector_lines_is_pure_and_marks_statuses():
     row = snap.spectrum(B03)
     lines = inspector_lines(row, snap.scan_set(row.set_key), None)
     by = {ln.label: ln for ln in lines}
-    assert by["Fast pass"].column == "fast" and by["Fast pass"].text == "held"
+    assert by["Fast pass"].column == "fast" and by["Fast pass"].text == "held: needs resolution curves"
+    assert by["Fast pass"].word == "held" and "held" in by["Fast pass"].tooltip     # the fitting code's word
     assert by["Fast pass"].reason == "a03: no resolution curve for a03 at slit 60x60"
     assert by["Fast pass"].group == "processing" and by["Parsed"].group == "facts"
     assert by["Energy range"].text == "— no parsed counts for this spectrum"
@@ -317,13 +318,13 @@ def test_the_panel_follows_the_list_and_emits_close(qtbot, patched, bl43_ws):
     vm.inspect(f"{KEY_A}:a04")
     assert panel._title.full_text() == f"a04 · {STEM_A}"
     f = _fields(panel)
-    assert _text(f["Fast pass"]) == "close_call"
-    assert _text(f["Deep pass"]) == "resolved" and _reason(f["Deep pass"]) == "count 1 (P 0.91)"
+    assert _text(f["Fast pass"]) == "close call"
+    assert _text(f["Deep pass"]) == "clear" and _reason(f["Deep pass"]) == "count 1 (P 0.91)"
 
     vm.select(B03)                                  # the panel is open: it follows
     f = _fields(panel)
     assert panel._title.full_text() == f"a03 · {bl43_fixture.STEM_B}"
-    assert _text(f["Fast pass"]) == "held"
+    assert _text(f["Fast pass"]) == "held: needs resolution curves"
     assert _reason(f["Fast pass"]) == "a03: no resolution curve for a03 at slit 60x60"
 
     vm.select(None)                                 # nothing selected: it keeps what it shows
@@ -370,7 +371,7 @@ def test_a_background_update_redraws_the_same_key_in_place(qtbot, patched, bl43_
                         lambda ws: dataclasses.replace(snap, sets=tuple(new)))
     vm.on_workspace_changed({"results"})
     f = _fields(panel)
-    assert _text(f["Deep pass"]) == "resolved" and _reason(f["Deep pass"]) == "count 2"
+    assert _text(f["Deep pass"]) == "clear" and _reason(f["Deep pass"]) == "count 2"
     assert panel._title.full_text() == f"a06 · {STEM_A}"
 
 

@@ -24,6 +24,7 @@ from PySide6.QtCore import Signal
 from isar.workspace_api import ImportSummary
 from isar.workspace_api.scan_list import (Fact, PooledRow, ScanListSnapshot, ScanSetRow, SpectrumRow,
                                           UnreadFile, natural_key, scan_list)
+from isar_gui import status_words
 from isar_gui.plain_words import drop_echo, plain_reason
 from isar_gui.theme import DEEP, FAST, PARSED, Tone, status_tone, summary_tone
 from isar_gui.viewmodels.base import ViewModel
@@ -96,12 +97,13 @@ def _fact_cell(fact: Fact, with_unit: bool = True) -> Cell:
 
 def _status_cell(status, column: str) -> Cell:
     reason = drop_echo(status.word, status.reason)            # "resolved: resolved: ..." said the word twice
-    tip = f"{status.word}: {reason}" if reason else status.word
+    plain = status_words.plain_word(column, status.word, status.reason)
+    tip = status_words.tooltip(column, status.word, reason)   # the plain word, the fitting code's word, its meaning
     stale = status.current is False
     if stale:
         lines = "\n".join(f"{name}: {used} → {now}" for name, used, now in status.changed)
-        tip = f"Inputs changed since this {column} pass:\n{lines}" + (f"\n{reason}" if reason else "")
-    return Cell(status.word, tip, status_tone(column, status.word), stale)
+        tip = f"Inputs changed since this {column} pass:\n{lines}" + (f"\n{tip}")
+    return Cell(plain, tip, status_tone(column, status.word), stale)
 
 
 def _summary_cell(stored: int, total: int, tones, what: str, statuses=(), column: str = "") -> Cell:
@@ -132,13 +134,23 @@ def _term_hits(term: str, temperature: Fact, haystack) -> bool:
     return any(term in (h or "").casefold() for h in haystack)
 
 
+def _status_words(row) -> list[str]:
+    """Every word the filter matches for a row's passes: the fitting code's word and the plain word shown."""
+    out = []
+    for column in (PARSED, FAST, DEEP):
+        status = getattr(row, column, None)
+        if status is not None:
+            out += [status.word, status_words.plain_word(column, status.word, status.reason)]
+    return out
+
+
 def spectrum_matches(terms, ss: ScanSetRow, sp: SpectrumRow) -> bool:
-    hay = (sp.analyzer, ss.label, sp.file_name, sp.parsed.word, sp.fast.word, sp.deep.word)
+    hay = (sp.analyzer, ss.label, sp.file_name, *_status_words(sp))
     return all(_term_hits(t, ss.temperature, hay) for t in terms)
 
 
 def pooled_matches(terms, p: PooledRow) -> bool:
-    hay = (p.label, "pooled", p.fast.word, p.deep.word)
+    hay = (p.label, "pooled", *_status_words(p))
     return all(_term_hits(t, p.temperature, hay) for t in terms)
 
 

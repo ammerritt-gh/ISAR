@@ -41,9 +41,10 @@ def test_a_result_cells_tooltip_says_the_word_once():
     from isar.workspace_api.scan_list import Status
     from isar_gui.theme import DEEP
     from isar_gui.viewmodels.scan_list import _status_cell
-    assert _status_cell(Status("resolved", True, "resolved: count 1 (P 0.91)"), DEEP).tooltip == "resolved: count 1 (P 0.91)"
-    assert _status_cell(Status("held", False, "no energy zero"), DEEP).tooltip == "held: no energy zero"
-    assert _status_cell(Status("not run", False), DEEP).tooltip == "not run"
+    cell = _status_cell(Status("resolved", True, "resolved: count 1 (P 0.91)"), DEEP)
+    assert cell.text == "clear" and cell.tooltip.splitlines()[0] == "clear  (the fitting code's word: resolved)"
+    assert cell.tooltip.splitlines()[-1] == "count 1 (P 0.91)" and "resolved: count" not in cell.tooltip
+    assert _status_cell(Status("not run", False), DEEP).tooltip.splitlines()[0] == "not run"   # the word is its own
 
 
 def test_a_status_word_is_not_said_twice():
