@@ -10,7 +10,8 @@ and analyzer), the backend's own reason for each, and one button for the action 
 resolution-folder route and the needs-attention list; *Start analysis* asks for today's Run dialog.
 
 The line counts spectra by what the backend says (``can_start``, ``running`` and ``action`` of each
-analyzer's ``fit`` use) and decides nothing: a fact gap that does not stop fitting (a missing Q, action
+analyzer's ``fit`` use) and decides nothing; an analyzer whose file never arrived is not a spectrum read, so it
+is no category here (the setup section counts it as an incomplete set): a fact gap that does not stop fitting (a missing Q, action
 ``none``) is not a block here, because it affects steering and the plane view only. Without a readiness
 read (not a BL43LXU experiment, or nothing imported) the line says only how many spectra were read, with the
 backend's reason on hover; before the first result it says it is checking.
@@ -56,15 +57,18 @@ class Row:
     action: str
 
 
-def classify(attention) -> dict[str, list[Row]]:
+def classify(attention, missing: frozenset = frozenset()) -> dict[str, list[Row]]:
     """The spectra of a readiness read by what the fit use says, in the order the line lists them:
     ``"ready"`` (``can_start`` True), ``"blocked:<action>"`` or ``"other:<reason>"`` (``can_start`` False) and
-    ``"running"``. ``attention`` is a ``NeedsAttention`` with ``evaluated`` True."""
+    ``"running"``. ``attention`` is a ``NeedsAttention`` with ``evaluated`` True; ``missing`` holds the
+    (scan, analyzer) pairs whose file never arrived, which are left out."""
     ready: list[Row] = []
     running: list[Row] = []
     blocked: dict[str, list[Row]] = {}
     for scan in attention.scans.values():
         for a in scan.analyzers.values():
+            if (scan.scan, a.analyzer) in missing:
+                continue
             use = a.uses.get("fit")
             row = Row(scan.scan, a.analyzer, (use.reason if use is not None and use.reason else ""), a.action)
             if a.running:
@@ -227,7 +231,7 @@ class ReadinessLine(QWidget):
             tip = att.note or ""
         else:
             fallback = with_fallback(att)
-            for i, (key, rows) in enumerate(classify(att).items()):
+            for i, (key, rows) in enumerate(classify(att, self._missing()).items()):
                 if not rows and key != READY:
                     continue
                 words = f"{len(rows)} {_phrase(key, len(rows))}"
@@ -246,6 +250,12 @@ class ReadinessLine(QWidget):
         self._refresh_popup(att)
 
     # ---- the list behind a count -----------------------------------------------------------
+    def _missing(self) -> frozenset:
+        """The (scan, analyzer) pairs the import record lists as having no file or an unreadable one."""
+        summary = self._intake.summary
+        return frozenset() if summary is None else frozenset(
+            (s.scan, a) for s in summary.incomplete_sets for a in s.missing_analyzers)
+
     def _open(self, href: str) -> None:
         key = self._links.get(href)
         if key is None or self._intake.attention is None:
@@ -262,7 +272,7 @@ class ReadinessLine(QWidget):
         key = self._open_key
         if key is None or not (raise_ or self._popup.isVisible()):
             return
-        rows = classify(att).get(key) if att is not None and att.evaluated else None
+        rows = classify(att, self._missing()).get(key) if att is not None and att.evaluated else None
         if not rows:
             self._close_popup()
             return

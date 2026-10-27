@@ -22,7 +22,7 @@ from PySide6.QtWidgets import QApplication, QPushButton
 
 import bl43_fixture
 import bl43_intake_fixture
-from isar.workspace_api import (AnalyzerReadiness, AttentionGroup, AttentionItem, ImportSummary,
+from isar.workspace_api import (AnalyzerReadiness, AttentionGroup, AttentionItem, ImportSummary, IncompleteSet,
                                 NeedsAttention, ScanReadiness, UseState, Workspace)
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
@@ -262,6 +262,22 @@ def test_no_readiness_read_says_only_what_was_read_and_why(qtbot):
     _intake._attention = None
     _intake.changed.emit()
     assert line.text == "4 spectra read · checking readiness…"
+
+
+def test_an_analyzer_whose_file_never_arrived_is_not_a_readiness_category(qtbot):
+    # 3 spectra read; a04 of scan 1002 has no file: the backend lists it, but it is the setup section's
+    # incomplete-set count, so no category can exceed "spectra read"
+    att = _att([_scan("Smp:1001", _an("Smp:1001", "a03"), _an("Smp:1001", "a04")),
+                _scan("Smp:1002", _an("Smp:1002", "a03"),
+                      _an("Smp:1002", "a04", can_start=False, action="import_again",
+                          fit=_use("held", "a04: no file")))])
+    intake, line = _fed(qtbot, att, n_analyzers=3)
+    intake._summary = ImportSummary(2, 3, (IncompleteSet("Smp:1002", "set", {"a04": "no file"}, "read", None),),
+                                    (), {}, None, None)
+    intake.changed.emit()
+    assert line.text == "3 spectra read · 3 ready for analysis"
+    line._label.linkActivated.emit(_link(line, "ready"))
+    assert line._popup.table.rowCount() == 3
 
 
 def test_the_line_says_checking_before_the_first_worker_result(qtbot, ws_root):
