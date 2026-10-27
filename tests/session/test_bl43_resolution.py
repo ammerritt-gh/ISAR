@@ -342,6 +342,25 @@ def test_a_curve_replaced_at_the_same_path_recalibrates_the_scan(tmp_path):
     assert new["detectors"]["a04"]["curve"] == entry["detectors"]["a04"]["curve"]    # other curves unchanged
 
 
+def test_an_analyzer_whose_curve_cannot_be_identified_is_held_alone(tmp_path, monkeypatch):
+    # The curve loaded, then its file became unreadable before its identity was taken: only that analyzer is held.
+    ws = _workspace(tmp_path)
+    _write_library(ws.root / "rf")
+    _write_scan(tmp_path / "data")
+    card, _s = ws.load()
+    recs = _records(card, tmp_path / "data")
+    identify = sarf.curve_identity
+    monkeypatch.setattr(sarf, "curve_identity",
+                        lambda folder, lib: {k: v for k, v in identify(folder, lib).items() if k != ("a03", TRUE_SLIT)})
+    calibrations.refresh_tabulated(card, recs, base_dir=ws.root)
+    (entry,) = card.state.tabulated_calibration.values()
+    assert "error" not in entry and entry["setting"] == TRUE_SLIT
+    held = entry["detectors"]["a03"]
+    assert "a03" in held["held_reason"] and TRUE_SLIT in held["held_reason"] and "unreadable" in held["held_reason"]
+    assert _flag_types(held["flags"]) == ["missing_resolution"]
+    assert all("zero" in entry["detectors"][det] and "curve" in entry["detectors"][det] for det in ("a04", "a05"))
+
+
 # ---------------------------------------------------------------------------
 # resolve and the fit context (fast)
 # ---------------------------------------------------------------------------

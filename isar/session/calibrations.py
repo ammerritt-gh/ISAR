@@ -186,11 +186,13 @@ def _num(v) -> float | None:
     return v if math.isfinite(v) else None
 
 
-def _calibrate_detector(x, det, spectrum, library, setting, problem) -> dict:
+def _calibrate_detector(x, det, spectrum, library, setting, problem, identified) -> dict:
     """One detector's entry of the state map: its zero and elastic fit, or why it is held."""
     if tabulated._not_raw(spectrum):                     # the info notice is print rounding: raw, fitted
         return {"held_reason": NON_RAW_REASON, "flags": []}      # parsed and shown, never fitted
     why = tabulated.curve_need(library, det, setting, problem)
+    if why is None and not identified:                   # its file was unreadable between the load and its identity
+        why = f"the curve at {setting} is unreadable for its identity (its file changed or was locked while read)"
     if why is not None:
         return {"held_reason": f"{det}: {why}",
                 "flags": [_flag_row(Flag("missing_resolution", "warning",
@@ -219,7 +221,7 @@ def _calibrate_scan(rec, library, fp, problem, folder, pattern, chash, identity)
     choice = tabulated.choose_setting(x, rec.spectra, library, declared)
     detectors = {}
     for det, sp in rec.spectra.items():
-        d = _calibrate_detector(x, det, sp, library, choice.setting, problem)
+        d = _calibrate_detector(x, det, sp, library, choice.setting, problem, (det, choice.setting) in identity)
         if "held_reason" not in d:           # the curve its zero was fitted with, by content
             d["curve"] = identity[(det, choice.setting)]
         detectors[det] = d
