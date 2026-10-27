@@ -72,9 +72,23 @@ Same route and reasoning as ``ISAR_ESCALATION_N_LIVE``: the *environment*, so a 
 that re-imports the fit code sees the same ceiling instead of silently searching up to 6, and
 ``setdefault`` so an operator or a test needing the production value sets it themselves.
 Production leaves the variable unset and uses 6.
+
+Operator-profile guard
+----------------------
+The GUI writes into the operator's real profile: ``%APPDATA%\\isar_gui`` (the session file and the
+log), ``%LOCALAPPDATA%\\isar_gui`` and, for a new experiment, ``Documents\\ISAR``. ``tests/gui/conftest.py``
+points all three at a per-test folder, but a per-test ``monkeypatch`` is undone before pytest-qt's
+teardown closes a window left open, and a write made then resolves the *real* profile. That is how the
+operator's ``session.json`` was rewritten by a test run (2026-10-27). So the profile is redirected for
+the whole session here, at import time: ``APPDATA``, ``LOCALAPPDATA`` and ``ISAR_EXPERIMENTS_ROOT`` are
+overridden (never ``setdefault``: on Windows the real ones are always set) to a fresh folder removed at
+the end. Each xdist worker imports this file too, and finds the variable already inherited from the
+controller. The originals are kept in ``ISAR_TEST_REAL_<name>`` for ``tests/test_profile_guard.py``.
 """
 
 import os
+import shutil
+import tempfile
 
 # Import-time, not a fixture: the cap must be in place before any test module import that might
 # resolve a worker budget at collection time.
@@ -82,3 +96,20 @@ os.environ.setdefault("ISAR_WORKERS", "2")
 os.environ.setdefault("ISAR_BOOTSTRAP_WORKERS", "2")
 os.environ.setdefault("ISAR_ESCALATION_N_LIVE", "32")
 os.environ.setdefault("ISAR_MODE_CEILING", "3")
+
+# Operator-profile guard (see the docstring). The controller creates the folder; workers inherit it.
+_PROFILE_OWNER = False
+if not os.path.isdir(os.environ.get("ISAR_TEST_PROFILE_ROOT", "")):
+    for _name in ("APPDATA", "LOCALAPPDATA", "ISAR_EXPERIMENTS_ROOT"):
+        os.environ["ISAR_TEST_REAL_" + _name] = os.environ.get(_name, "")
+    os.environ["ISAR_TEST_PROFILE_ROOT"] = tempfile.mkdtemp(prefix="isar-pytest-profile-")
+    _PROFILE_OWNER = True
+_profile = os.environ["ISAR_TEST_PROFILE_ROOT"]
+os.environ["APPDATA"] = os.path.join(_profile, "appdata")
+os.environ["LOCALAPPDATA"] = os.path.join(_profile, "localappdata")
+os.environ["ISAR_EXPERIMENTS_ROOT"] = os.path.join(_profile, "experiments")
+
+
+def pytest_unconfigure(config):
+    if _PROFILE_OWNER:
+        shutil.rmtree(_profile, ignore_errors=True)  # scratch folder in the system temp; a leftover is harmless
