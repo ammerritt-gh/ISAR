@@ -14,7 +14,8 @@ analyzer's ``fit`` use) and decides nothing; an analyzer whose file never arrive
 is no category here (the setup section counts it as an incomplete set): a fact gap that does not stop fitting (a missing Q, action
 ``none``) is not a block here, because it affects steering and the plane view only. Without a readiness
 read (not a BL43LXU experiment, or nothing imported) the line says only how many spectra were read, with the
-backend's reason on hover; before the first result it says it is checking.
+backend's reason on hover; before the first result it says it is checking, and when the worker's read failed
+it says so in the warning colour (the error on hover), as the needs-attention list does.
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QDialog, QHBoxLayout, QHeaderV
 
 from isar.workspace_api import ImportSummary, Workspace
 from isar.workspace_api.scan_list import scan_list
+from isar_gui.theme import TONE_COLOR, Tone
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +47,7 @@ _BUTTONS = {"locate_folder": "Locate…", "enter_value": "Enter the value", "acc
             "reverse_declaration": "Show in the list", "start_analysis": "Start analysis"}
 _KIND_OF_ACTION = {"accept_counts": "counts_unaccepted", "reverse_declaration": "declared"}
 _NO_SUMMARY = ImportSummary(0, 0, (), (), {}, None, None)
+_WARN = f"color: {TONE_COLOR[Tone.WARN]};"
 _POPUP_ROWS = 8                    # an opened list shows this many rows, then scrolls
 READY, RUNNING = "ready", "running"
 
@@ -190,6 +193,7 @@ class ReadinessLine(QWidget):
         self._links: dict[str, str] = {}          # href -> the classify() key behind it
         self._plain = ""
         self._open_key: str | None = None         # the count whose list is open
+        self._worker_done = False                 # the worker answered since the last reload (changed)
         self._labels: dict[str, str] = {}         # scan key -> display label, read when a list opens
         self._label = _Wrapped(self)
         self._label.setObjectName("readiness_text")
@@ -202,8 +206,8 @@ class ReadinessLine(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._label)
-        intake.changed.connect(self._render)
-        intake.worker_changed.connect(self._render)
+        intake.changed.connect(self._on_changed)
+        intake.worker_changed.connect(self._on_worker)
         self._render()
 
     # ---- rendering -----------------------------------------------------------------------
@@ -212,19 +216,33 @@ class ReadinessLine(QWidget):
         """The line as plain text (what a screen reader and the tests read)."""
         return self._plain
 
+    def _on_changed(self) -> None:
+        self._worker_done = False
+        self._render()
+
+    def _on_worker(self) -> None:
+        self._worker_done = True
+        self._render()
+
     def _render(self) -> None:
         intake = self._intake
         summary, att = intake.summary, intake.attention
         self._links, self._plain = {}, ""
+        warn = False
         if intake.root is None or summary is None:
             self._label.setText("")
             self._label.setToolTip("")
+            self._label.setStyleSheet("")
             self.setVisible(False)
             self._close_popup()
             return
         read = f"{summary.n_analyzers} {'spectrum' if summary.n_analyzers == 1 else 'spectra'} read"
         parts, plain, tip = [html.escape(read)], [read], ""
-        if att is None:
+        if att is None and self._worker_done and intake.error:
+            tip, warn = intake.error, True                  # the read failed: say why, never "checking…" forever
+            parts.append(html.escape(f"not checked: {tip}"))
+            plain.append(f"not checked: {tip}")
+        elif att is None:
             parts.append("checking readiness…")
             plain.append("checking readiness…")
         elif not att.evaluated:
@@ -246,6 +264,7 @@ class ReadinessLine(QWidget):
         self._plain = " · ".join(plain)
         self._label.setText(" · ".join(parts))
         self._label.setToolTip(tip or self._plain)
+        self._label.setStyleSheet(_WARN if warn else "")
         self.setVisible(True)
         self._refresh_popup(att)
 

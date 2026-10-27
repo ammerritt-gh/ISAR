@@ -280,6 +280,18 @@ def test_an_analyzer_whose_file_never_arrived_is_not_a_readiness_category(qtbot)
     assert line._popup.table.rowCount() == 3
 
 
+def test_a_failed_worker_read_is_shown_not_checking_forever(qtbot):
+    intake, line = _fed(qtbot, None)
+    assert line.text == "4 spectra read · checking readiness…"
+    intake._error = "worker: ValueError: boom"
+    intake.worker_changed.emit()
+    assert line.text == "4 spectra read · not checked: worker: ValueError: boom"
+    assert line._label.toolTip() == "worker: ValueError: boom"
+    assert WARN in line._label.styleSheet()
+    intake.changed.emit()                                        # a reload: the worker has not answered yet
+    assert line.text == "4 spectra read · checking readiness…" and line._label.styleSheet() == ""
+
+
 def test_the_line_says_checking_before_the_first_worker_result(qtbot, ws_root):
     intake = IntakeState()
     line = ReadinessLine(intake)
