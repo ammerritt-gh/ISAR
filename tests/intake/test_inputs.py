@@ -229,3 +229,12 @@ def test_damaged_entries_are_skipped_and_every_damaged_line_is_reported(root):
     ]
     assert damage_lines(root / "nowhere") == []
     assert inputs.read_entries(root)[-1]["seq"] == 10        # the store keeps them; only the index skips
+
+
+def test_condition_line_without_a_store_time_is_skipped_and_reported(root):
+    (root / "intake").mkdir()
+    (root / store.ENTRIES).write_bytes(
+        b'{"id": "e000000000001", "seq": 1, "kind": "condition", "condition": "excluded", "declared": true,'
+        b' "targets": ["spec1:42"], "reason": null}\n')
+    assert _si(root).excluded is None                        # a KeyError on 'at' here would stop the run
+    assert damage_lines(root) == ["intake/entries.jsonl line 1 skipped: no str 'id', int 'seq' and str 'at'"]

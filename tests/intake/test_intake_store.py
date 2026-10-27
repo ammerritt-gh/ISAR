@@ -63,7 +63,7 @@ def test_refused_check_writes_nothing(tmp_path):
 GARBAGE = {  # a damaged middle line -> why the read skips it
     b"not json at all": "does not parse as JSON",
     b"[1, 2]": "not a JSON object",
-    b'{"kind": "value"}': "no str 'id' and int 'seq'",
+    b'{"kind": "value"}': "no str 'id', int 'seq' and str 'at'",
 }
 
 
@@ -71,7 +71,8 @@ GARBAGE = {  # a damaged middle line -> why the read skips it
 @pytest.mark.parametrize("garbage", list(GARBAGE))
 def test_damaged_middle_line_is_skipped_reported_and_appended_after(tmp_path, caplog, name, garbage):
     (tmp_path / "intake").mkdir()
-    before = b'{"id": "e000000000001", "seq": 1}\n' + garbage + b'\n{"id": "e000000000003", "seq": 3}\n'
+    before = b'{"id": "e000000000001", "seq": 1, "at": "x"}\n' + garbage \
+        + b'\n{"id": "e000000000003", "seq": 3, "at": "x"}\n'
     (tmp_path / name).write_bytes(before)
     with caplog.at_level(logging.WARNING, logger="isar.intake.store"):
         assert [e["seq"] for e in store.read(tmp_path, name)] == [1, 3]
@@ -86,7 +87,7 @@ def test_damaged_middle_line_is_skipped_reported_and_appended_after(tmp_path, ca
 @pytest.mark.parametrize("name", [store.ENTRIES, store.SETTINGS])
 def test_torn_final_line_is_reported_and_appended_after(tmp_path, name):
     (tmp_path / "intake").mkdir()
-    before = b'{"id": "e000000000001", "seq": 1}\n{"kind": "resol'
+    before = b'{"id": "e000000000001", "seq": 1, "at": "x"}\n{"kind": "resol'
     (tmp_path / name).write_bytes(before)
     assert store.read_all(tmp_path, name).damaged == (store.Damaged(name, 2, "does not parse as JSON"),)
     stored = store.append(tmp_path, name, {"kind": "c"})

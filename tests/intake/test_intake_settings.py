@@ -96,7 +96,7 @@ def test_unknown_settings_kind_is_skipped_and_reported(ws, caplog):
 MIDDLE = {  # a damaged middle line of intake/settings.jsonl -> the reason current_settings reports
     b"garbage{": "does not parse as JSON",
     b"[1, 2]": "not a JSON object",
-    b'{"kind": "resolution_folder"}': "no str 'id' and int 'seq'",
+    b'{"kind": "resolution_folder"}': "no str 'id', int 'seq' and str 'at'",
     b'{"id": "e000000000002", "seq": 2, "at": "2026-10-27T00:00:00+00:00", "kind": "mystery"}': "unknown kind 'mystery'",
     b'{"id": "e000000000002", "seq": 2, "at": "2026-10-27T00:00:00+00:00", "kind": "resolution_folder"}':
         "resolution_folder entry has no 'path'",

@@ -4,7 +4,7 @@ Entries are only ever added, never rewritten or removed. ``append`` holds one OS
 read-check-write and fsyncs before it returns, so a return means the entry is on disk. ``read``
 takes no lock: a concurrent writer at worst leaves a half line that the next read skips.
 
-A damaged line (a torn write, or debris that is not a JSON object or has no ``id``/``seq``) is
+A damaged line (a torn write, or debris that is not a JSON object or lacks ``id``, ``seq`` or ``at``) is
 skipped with a logged warning and listed by ``read_all``; no read or append raises for one, and
 nothing rewrites or removes it.
 """
@@ -100,7 +100,7 @@ def _bytes(path: Path) -> bytes:
 class Damaged:
     file: str          # the store file relative to the workspace, "intake/entries.jsonl"
     line: int          # 1-based line number
-    why: str           # "does not parse as JSON" | "not a JSON object" | "no str 'id' and int 'seq'" | a schema reason
+    why: str           # "does not parse as JSON" | "not a JSON object" | "no str 'id', int 'seq' and str 'at'" | a schema reason
 
 
 @dataclass(frozen=True)
@@ -137,11 +137,12 @@ def _read(data: bytes, name: str) -> StoreRead:
     entries, lines = [], []
     for lineno, obj in _objects(data, name, damaged):
         seq = obj.get("seq")
-        if isinstance(obj.get("id"), str) and isinstance(seq, int) and not isinstance(seq, bool):
+        if isinstance(obj.get("id"), str) and isinstance(seq, int) and not isinstance(seq, bool) \
+                and isinstance(obj.get("at"), str):
             entries.append(obj)
             lines.append(lineno)
         else:
-            _skip(damaged, name, lineno, "no str 'id' and int 'seq'")
+            _skip(damaged, name, lineno, "no str 'id', int 'seq' and str 'at'")
     return StoreRead(entries, tuple(sorted(damaged, key=lambda d: d.line)), tuple(lines))
 
 
