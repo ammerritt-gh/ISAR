@@ -220,8 +220,10 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   file, or its trailing `#Q=`/`#T=` line when no leading header gives it), `trailer` (a trailing line
   that disagrees with the leading header, kept as a conflict), `sidecar` (a beamline file beside the
   data, such as `.var`), `filename`, `inferred` (ISAR derived it) or `missing`. The first found wins in
-  that order; a value you enter in ISAR (*file value / user value*) is kept beside it, and a disagreement
-  is flagged `fact_conflict`.
+  that order; `fact_conflict` covers disagreement among file sources only. A value you enter in ISAR
+  (*file value / user value*) is kept beside the file value. Where the two differ, the scan gets a
+  *File and user values disagree* item on the needs-attention list, naming the field and both values;
+  the user value is the one used.
 - **Q rung** — how a spectrum's momentum transfer Q was obtained, best first: rung 1, the analyzer's
   own HKL from the file; rung 2, computed from the sample angles and orientation (planned); rung 3,
   computed from the arm-centre HKL and labelled approximate (planned); rung 4, no Q (`q = None`). The
