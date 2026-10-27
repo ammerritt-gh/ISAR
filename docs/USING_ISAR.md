@@ -2,7 +2,7 @@
 
 > **Status:** live
 > **Authority:** canonical for the operator workflow
-> **Verified against code revision:** `d483af1` (2026-08-08)
+> **Verified against code revision:** `cafb75b` (2026-10-27)
 
 How to run ISAR on your own data: set up an experiment once, then re-run one command as scans land.
 Written for a scientist at (or preparing for) a beamtime. For what ISAR *is* and why to trust it,
@@ -63,7 +63,7 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
 | `card.policy.toml` | **You** (ISAR scaffolds it once, then never touches it) | Every per-experiment decision: detectors, column names, collation rules, calibration method, fitting guidelines, and declared branch hypotheses for autonomous campaigns ([HYPOTHESES.md](HYPOTHESES.md)). Commented — the comments are the documentation. |
 | `card.state.json` | ISAR | Accumulated experiment state: energy-zero series, resolution versions, the running dispersion prior, resolved hypothesis snapshot and mismatch evidence, sample map, exclusions, corrections audit trail. Don't hand-edit; don't delete. |
 | `session.json` | ISAR | Bookkeeping: which files were seen, which scans were processed and how. Safe to delete — a re-run rebuilds it (refitting everything once). |
-| `report/` | ISAR | The product: `report.html`/`.md`, `results.csv` (one summary row per spectrum, with its peak-count state), `modes.csv` (every fitted mode of the selected count, ordered by energy), figures, plus `reduction.*` (the QC-level detail report). |
+| `report/` | ISAR | The product: `report.html`/`.md`, `results.csv` (one summary row per spectrum, with its peak-count state), `modes.csv` (every fitted mode of the selected count, ordered by energy), figures, plus `reduction.*` (the QC-level detail report). `report/exports/` holds the folders `isar export` writes (see *Exporting results* below). |
 
 ## The commands
 
@@ -128,6 +128,9 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
   fitted / held / excluded, *why* each held scan is held, gaps in the scan-number sequence and in
   Q coverage, current calibration versions.
 - **`isar report --workspace DIR`** — re-render the report from stored results (fast; no refits).
+- **`isar export --workspace DIR`** — write one new folder of the stored results under `report/exports/`,
+  for use outside ISAR. Nothing is refitted or reparsed. The desktop window's *Export…* runs this;
+  see *Exporting results* below.
 - **`isar score --workspace DIR --gold your_fits.csv`** — optional: if you have your own by-hand
   fits for (some of) the same scans, score ISAR against them (the validation harness the gold
   reports use). Never required — `isar run` works on data nobody has fit before.
@@ -289,6 +292,126 @@ campaign **is** resumable once it is repaired. A stop naming a `policy_forbidden
 move left would have to leave the energy search band you declared — authorise it (`identity_search_meV`
 in the objective, or re-compile the goal) and resume; more beam time alone will not help. Anything else
 is genuinely data- or budget-limited, and resuming without changing something will reproduce it.
+
+## The desktop window
+
+`run-isar-gui.bat` opens the window with no console. Double-click it to open the most recent experiment,
+or drag an experiment folder onto it. A start-up failure shows a message box and is written to the GUI
+log (*Help ▸ Open GUI Log Folder* opens it).
+
+With no experiment open, the window says *No experiment open*, with *New experiment…*, *Open…*,
+*Recent ▾* and a labelled drop zone. The arrangement is the same from then on, on a laptop and on a
+desktop: the scan list down the left, the display in the centre, *Processing* and *Campaign* on the
+right, and the Log and Output along the bottom. On a laptop the right panel starts collapsed to a
+*Processing ‹* rail. *View ▸ Reset layout* returns to the default for the current screen.
+
+### Dropping data
+
+Drop data files or a folder anywhere in the window. With no experiment open, ISAR creates one, named
+after the folder you dropped (or the files' common name), in `Documents\ISAR\`, reads the files into it,
+and says so in the Log. Nothing asks you for a name first; a one-time note in the experiment line offers
+*Rename*. With an experiment open, a drop is read into it. The experiment is a real folder from the
+start, and what ISAR computes is written there as it arrives. There is no temporary workspace and no
+*Save As* step.
+
+*Rename* changes the folder's name and the experiment's name together. It is refused, with the reason
+shown, while an ingest, an analysis, a campaign or an export is writing to the folder, and when the
+experiment holds its own source data files, since its manifest names them inside the folder and a rename
+would leave ISAR unable to find them. When the experiment has fits and its resolution curves sit inside
+its folder, the Rename dialog says that the next *Run analysis* refits those spectra, because ISAR
+recognises a curve set by its folder's path.
+
+### The files strip
+
+The strip under the experiment line counts what has been read (for example "58 files · 2 scan sets"),
+and offers *Add…* (files or a folder) and *Watch…*. *Watch…* opens the watched-folders dialog: add or
+remove folders, pause watching, and see the last check and how many new files it found. Watching works
+as it did before. Files that could not be read are listed under *Files not read* in the scan list, each
+with its reason.
+
+### The scan list
+
+Each top-level row is a scan set. Its label is the scan number when its files carry exactly one, and
+otherwise the set's name (for example `CsV3Sb5_97K_0p5_0p5_3_sum`). Expand it to see its analyzers. The
+columns *Scan*, *T*, *Q* and *Parsed* always show; *Columns ▾* adds *Fast pass*, *Deep pass*, *Slit* and
+*File name*. A set row's summary counts spectra, or files received for *Parsed*.
+
+Every status is a coloured dot with a word, and the word is the one the stored records give:
+
+- **Parsed** is `ok`, a gap (`no T`, `no Q`), or `not read`. It says the file was read and nothing more:
+  not that the spectrum is calibrated, matched to a resolution curve or ready to fit.
+- **Fast pass** and **Deep pass** show the state each pass stored for that spectrum: `resolved`,
+  `close_call`, `unresolved` or `search_limited` for the fast pass, and `resolved`, `close_call`,
+  `search_limited` or `refused` for the deep pass. A spectrum with nothing stored shows `not run`, or
+  `held` (with the hold's reason on hover), `not fitted`, or `not recorded` for a fit stored before the
+  fast pass existed.
+- **`not run` and `fitting`.** A spectrum that has been read but not fitted shows `not run` in these
+  columns, while `report/results.csv` and the export's `fits.json` say `fitting` for the same entry.
+  Both mean there is no stored fit.
+
+A dash (—) marks a missing temperature or Q; hover over it for the reason. Both passes are shown side by
+side and neither is picked as the result.
+
+The filter box narrows the list: comma-separated terms, all of which must match, such as an analyzer
+(`a06`), a temperature (`97K`), a file name or a status word. The list says how many of how many spectra
+are visible. *Sort ▾* orders the scan sets by name (the default) or by temperature, or flips the list to
+analyzer first, with every scan set beneath each analyzer.
+
+Click a spectrum to show it in the display. Double-click it, or press *Inspect*, to open the scan
+inspector. A background update does not collapse the list, move the selection or jump the scroll. If the
+selected spectrum falls outside the filter, the list says so and the display keeps it.
+
+### The scan inspector
+
+The inspector opens beside the scan list, inside the left panel, and ✕ closes it. For the selected
+analyzer it shows the file; the scan numbers (a summed set says so, and lists its scans when the files
+do); the analyzer, temperature and Q, each with where it came from; the slit, or "not in the file"; the
+number of points and the energy range; the parse status; each pass's state; and a raw-counts plot.
+
+### Run analysis, Stop and the Campaign tab
+
+*Processing* holds *Run analysis…*, the analysis that runs the fast pass on the experiment's data, with
+the same dialog and progress as before. *Stop* asks the running analysis to stop; spectra already stored
+stay stored. *Campaign* is the campaign launcher and monitor, unchanged in content. Pressing *Start*
+with no experiment open creates an ISAR-named experiment (`Campaign_<date>`) first, as a drop does.
+
+### Log and Output
+
+The Log, bottom left, holds what the window reports. The Output, bottom right, says where results are written and when the last one was written. It has two actions:
+
+- *Save copy as…* copies the whole experiment folder to a new one. The original stays the active
+  experiment and new data keeps going to it. The copy is offered as *Open copy*, and the Log says what the
+  copy still reads from outside its folder (its source data files, its resolution curves).
+- *Export…* runs `isar export` on the experiment and names the new folder when it is done, with
+  *Open folder*. See *Exporting results* below.
+
+Both actions are unavailable, with the reason beside them, while an ingest, an analysis, a campaign or an
+export is writing to the experiment, and while nothing has been read into it yet.
+
+### Exporting results
+
+`isar export` writes one new folder, `report/exports/export-<timestamp>/`, from the stored results. It
+refits nothing, reparses nothing and saves nothing, and an earlier export is never overwritten. The
+folder holds:
+
+- `modes.csv`: one row per fitted mode per pass. The `pass` column says `fast` or `deep`. `trust` is the
+  deep record's own flag on deep rows; fast rows say `not assessed`, because the fast pass stores no trust
+  flag. `count_state` is that row's own pass's state. A deep row leaves empty the cells its record does
+  not store (amplitudes, heights, peak positions and the per-peak errors). An empty cell means missing,
+  never zero.
+- `fits.json`: one record per spectrum, fitted or not, with both stored pass records in full. A spectrum
+  with no mode row (zero modes, held, never fitted) is still listed with its state. A deep pass that
+  contributes no rows says why in its `deep` block.
+- `spectra/`: one CSV per spectrum with the data ISAR holds now. Its `#` header lines give the exposure
+  the stored fit used, or `exposure: not stored` where ISAR stored none. The columns are the energy,
+  counts, sigma (the square root of the counts, zero at zero counts, no floor) and the QC mask.
+- `resolution/`: one CSV per resolution curve a fit used.
+- `README.txt`: units and conventions.
+
+Nothing picks one pass over the other: the display keeps drawing the fast-pass fit, but the export carries
+both passes with their labels. Currentness is only partly checked: `fit_data_mismatch` flags a spectrum
+whose data file was read again with changed content after the fit. A change to a fit's resolution curve
+or settings after the fit is not detected yet; that waits for the left-side stage two work.
 
 ## Reading the peak count
 
