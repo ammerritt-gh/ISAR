@@ -276,6 +276,10 @@ class ScanInspectorPanel(QWidget):
         label.setFont(font)
         return label
 
+    def set_intake(self, intake) -> None:
+        """The window's IntakeState (stub: S2U3 builds the fact table from it and places it)."""
+        self._intake = intake
+
     # ---- following the list --------------------------------------------------------------
     def show_key(self, key: str | None) -> None:
         """Show the facts of spectrum ``key`` (``None`` = nothing selected)."""

@@ -43,7 +43,7 @@ class ProcessingPanel(QWidget):
         self._stop.setToolTip(_STOP_TOOLTIP)
         self._stop.clicked.connect(self.stop_requested)
 
-        layout = QVBoxLayout(self)
+        self._layout = layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
         layout.addWidget(self._run)
@@ -54,6 +54,10 @@ class ProcessingPanel(QWidget):
         layout.addStretch(1)
         self.set_state(can_run=False, run_reason="need an experiment", analysis_running=False,
                        activity="", last_run=None)
+
+    def set_readiness_widget(self, widget: QWidget) -> None:
+        """Place the readiness line above *Run analysis…*."""
+        self._layout.insertWidget(self._layout.indexOf(self._run), widget)
 
     def set_state(self, *, can_run: bool, run_reason: str, analysis_running: bool,
                   activity: str, last_run: tuple[str, str] | None) -> None:

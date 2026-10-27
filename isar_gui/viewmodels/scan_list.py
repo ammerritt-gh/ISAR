@@ -189,6 +189,11 @@ class ScanListViewModel(ViewModel):
             (self._optional.add if visible else self._optional.discard)(column)
             self.snapshot_changed.emit()
 
+    def set_intake(self, intake) -> None:
+        """The window's IntakeState (stub: S2U4 passes its fact rows, fit inputs and summary to the
+        scan-list read)."""
+        self._intake = intake
+
     # ---- the workspace changed -----------------------------------------------------------
     def set_workspace(self, ws) -> None:
         """Rebind: re-read, keep ``current_key`` only if it still exists, emit ``snapshot_changed``."""
