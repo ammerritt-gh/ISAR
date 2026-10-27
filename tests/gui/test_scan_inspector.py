@@ -157,6 +157,17 @@ def test_a_unit_shows_its_status_calibration_facts_and_campaign_rows(qtbot, patc
     assert "unit" not in f and "analyzer" not in f and "T" not in f and "points" not in f
 
 
+def test_a_fact_whose_sources_disagree_keeps_its_row(qtbot, patched, bl43_ws, monkeypatch):
+    t_conflict = "97 (file); conflicts: 95 (card)"
+    md = {"unit": A06, "T_K": t_conflict, "Q_nm": "1.2 (file)", "slit": "not available (file); conflicts: 60x60 (card)"}
+    monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
+    vm, panel = _panel(qtbot, bl43_ws)
+    panel.show_key(A06)
+    f = _fields(panel)
+    assert _text(f["T_K"]) == t_conflict and "conflicts: 60x60 (card)" in _text(f["slit"])
+    assert "Q_nm" not in f      # no conflict: shown once, on its own line
+
+
 def test_a_unit_without_those_values_shows_none_of_their_rows(qtbot, patched, bl43_ws, monkeypatch):
     md = {"unit": A06, "analyzer": "a06"}
     monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))

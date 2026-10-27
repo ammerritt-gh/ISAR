@@ -150,7 +150,8 @@ def inspector_lines(row: SpectrumRow | PooledRow, set_row: ScanSetRow | None, un
     lines.append(Line("Energy range", text, tip))
     lines.append(status("Parsed", PARSED, row.parsed, "facts"))
     for name, value in (metadata or {}).items():      # the view model's order; a missing fact has no row
-        if name not in _SHOWN_ELSEWHERE and not value.startswith(MISSING_FACT_TEXT):
+        # a fact whose sources disagree keeps its row, so the conflicting value and source stay visible
+        if "; conflicts: " in value or (name not in _SHOWN_ELSEWHERE and not value.startswith(MISSING_FACT_TEXT)):
             lines.append(Line(name, value, value, group="metadata"))
     lines.append(status("Fast pass", FAST, row.fast, "processing"))
     lines.append(status("Deep pass", DEEP, row.deep, "processing"))
