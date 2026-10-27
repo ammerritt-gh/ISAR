@@ -684,6 +684,24 @@ def test_counts_accepted_by_a_running_scans_worker_reach_the_next_scan(tmp_path,
     assert held == {f"{a}:a05": True, f"{b}:a05": False}
 
 
+def test_a_clean_run_leaves_every_unit_unchanged_for_the_reads(tmp_path, monkeypatch):
+    """The reads' inputs in force and the run's frozen inputs are derived two ways; after a run they agree."""
+    from isar.workspace_api import Workspace
+    ws, data = fx.bl43_workspace(tmp_path, stems=("A",), off_integer=("a05",))
+    _import(ws, data)
+    (s,) = _order(ws, data)
+    assert values.save_condition(ws.root, "dead", [f"{s}:a04"]).ok
+    assert values.save_condition(ws.root, "counts_accepted", [f"{s}:a05"], reason="checked").ok
+    worker = _Worker(monkeypatch)
+    _run(ws, data)
+    assert {x.det for x in worker.calls} == {d for d in fx.ANALYZERS if d != "a04"}
+    read = Workspace.open(ws.root)
+    got = read.fit_inputs()
+    assert {u.unit for u in got} == {f"{s}:{d}" for d in fx.ANALYZERS if d != "a04"}
+    assert all(u.fast is not None and u.fast.changes == () for u in got), [(u.unit, u.fast.changes) for u in got]
+    assert all(r.fallback != "slit_pending" for r in read.fact_rows() if r.fact == "slit")
+
+
 def test_an_lr_spectrum_stays_held_whatever_is_accepted(tmp_path, monkeypatch):
     ws, data = fx.bl43_workspace(tmp_path, stems=("A",), off_integer=("a05",))
     real = driver.ingest.parse_all
