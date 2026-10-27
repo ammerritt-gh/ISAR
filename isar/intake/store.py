@@ -3,6 +3,10 @@
 Entries are only ever added, never rewritten or removed. ``append`` holds one OS lock around its
 read-check-write and fsyncs before it returns, so a return means the entry is on disk. ``read``
 takes no lock: a concurrent writer at worst leaves a half line that the next read skips.
+
+A damaged line (a torn write, or debris that is not a JSON object or has no ``id``/``seq``) is
+skipped with a logged warning and listed by ``read_all``; no read or append raises for one, and
+nothing rewrites or removes it.
 """
 from __future__ import annotations
 
@@ -11,8 +15,9 @@ import logging
 import os
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -91,38 +96,68 @@ def _bytes(path: Path) -> bytes:
         return b""
 
 
-def _objects(data: bytes, path: Path) -> Iterator[tuple[int, dict]]:
+@dataclass(frozen=True)
+class Damaged:
+    file: str          # the store file relative to the workspace, "intake/entries.jsonl"
+    line: int          # 1-based line number
+    why: str           # "does not parse as JSON" | "not a JSON object" | "no str 'id' and int 'seq'" | a schema reason
+
+
+@dataclass(frozen=True)
+class StoreRead:
+    entries: list[dict]                 # the valid entries, in file order
+    damaged: tuple[Damaged, ...]        # in file order
+    lines: tuple[int, ...] = ()         # each entry's 1-based line number, so a schema check can name it
+
+
+def _skip(found: list, name: str, lineno: int, why: str) -> None:
+    log.warning("%s line %d skipped: %s", name, lineno, why)
+    found.append(Damaged(name, lineno, why))
+
+
+def _objects(data: bytes, name: str, damaged: list) -> list[tuple[int, dict]]:
+    out = []
     for lineno, raw in enumerate(data.split(b"\n"), 1):
         if not raw.strip():
             continue
         try:
             obj = json.loads(raw)
         except ValueError:  # bad JSON or UTF-8: a write in progress, or debris from a dead writer
-            log.warning("%s line %d does not parse as JSON; skipped", path, lineno)
+            _skip(damaged, name, lineno, "does not parse as JSON")
             continue
         if not isinstance(obj, dict):
-            raise ValueError(f"{path} line {lineno}: expected a JSON object, got {type(obj).__name__}")
-        yield lineno, obj
-
-
-def _entries(data: bytes, path: Path) -> list[dict]:
-    out = []
-    for lineno, obj in _objects(data, path):
-        if not (isinstance(obj.get("id"), str) and isinstance(obj.get("seq"), int)):
-            raise ValueError(f"{path} line {lineno}: not an intake entry (needs a str 'id' and an int 'seq')")
-        out.append(obj)
+            _skip(damaged, name, lineno, "not a JSON object")
+            continue
+        out.append((lineno, obj))
     return out
+
+
+def _read(data: bytes, name: str) -> StoreRead:
+    damaged: list[Damaged] = []
+    entries, lines = [], []
+    for lineno, obj in _objects(data, name, damaged):
+        seq = obj.get("seq")
+        if isinstance(obj.get("id"), str) and isinstance(seq, int) and not isinstance(seq, bool):
+            entries.append(obj)
+            lines.append(lineno)
+        else:
+            _skip(damaged, name, lineno, "no str 'id' and int 'seq'")
+    return StoreRead(entries, tuple(sorted(damaged, key=lambda d: d.line)), tuple(lines))
 
 
 def read_jsonl(path) -> list[dict]:
     """Tolerant line reading with no id/seq check; the fit-inputs log reads through it."""
     path = Path(path)
-    return [obj for _, obj in _objects(_bytes(path), path)]
+    return [obj for _, obj in _objects(_bytes(path), str(path), [])]
+
+
+def read_all(root, name: str) -> StoreRead:
+    """The valid entries and every damaged line, both in file order; takes no lock."""
+    return _read(_bytes(Path(root) / name), name)
 
 
 def read(root, name: str) -> list[dict]:
-    path = Path(root) / name
-    return _entries(_bytes(path), path)
+    return read_all(root, name).entries
 
 
 def append(root, name: str, entry: dict, *, check: Callable[[list[dict]], str | None] | None = None) -> dict:
@@ -140,7 +175,7 @@ def append(root, name: str, entry: dict, *, check: Callable[[list[dict]], str | 
     with _locked(root):
         data = _bytes(path)
         # shortcut: O(lines) read per save, fine to tens of thousands of entries; keep a sidecar max-seq past that
-        present = _entries(data, path)
+        present = _read(data, name).entries          # damaged lines left out, never raised
         if check is not None:
             reason = check(present)
             if reason is not None:
