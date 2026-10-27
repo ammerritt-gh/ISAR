@@ -103,6 +103,7 @@ class SetupSection(QWidget):
         self._intake = intake
         self._root: Path | None = None
         self._open_list: str | None = None      # "incomplete" | "not_read" while its list is open
+        self._listed: tuple[str | None, list[tuple[str, str]]] = (None, [])   # what the list widget holds
 
         self._summary = QLabel("", self)
         self._summary.setObjectName("setup_summary")
@@ -241,28 +242,36 @@ class SetupSection(QWidget):
             self._grid.addWidget(self._locate, row, 1)
 
     def _render_list(self, summary) -> None:
-        lines: list[str] = []
+        items: list[tuple[str, str]] = []          # (row text, tooltip)
         if summary is not None and self._open_list == "incomplete":
             for s in summary.incomplete_sets:
                 missing = ", ".join(f"{a} ({cause})" for a, cause in s.missing_analyzers.items())
                 bits = [f"missing {missing}"] if missing else []
                 if s.sidecar in ("missing", "unreadable"):
                     bits.append(f"sidecar {s.sidecar}" + (f" ({s.sidecar_reason})" if s.sidecar_reason else ""))
-                lines.append(f"{s.set or s.scan}: {'; '.join(bits) or 'incomplete'}")
+                line = f"{s.set or s.scan}: {'; '.join(bits) or 'incomplete'}"
+                items.append((line, line))
         elif summary is not None and self._open_list == "not_read":
-            lines = [f"{Path(f.path).name}: {f.reason}" for f in summary.files_not_read]
-        if not lines:
+            # the full path is the tooltip: two folders can each hold a notes.txt
+            items = [(f"{Path(f.path).name}: {f.reason}", f"{f.path}\n{f.reason}") for f in summary.files_not_read]
+        if not items:
             self._open_list = None
-        self._list.clear()
-        for line in lines:
-            item = QListWidgetItem(line)
-            item.setToolTip(line)
-            self._list.addItem(item)
-        if lines:
-            rows = min(len(lines), _LIST_ROWS)
-            self._list.setFixedHeight(rows * max(self._list.sizeHintForRow(0), 1)
-                                      + 2 * self._list.frameWidth())
-        self._list.setVisible(bool(lines))
+        if (self._open_list, items) != self._listed:     # a re-read that changed nothing leaves the list alone
+            bar = self._list.verticalScrollBar()
+            keep = bar.value() if self._open_list == self._listed[0] else 0   # another list starts at the top
+            self._list.clear()
+            for line, tip in items:
+                item = QListWidgetItem(line)
+                item.setToolTip(tip)
+                self._list.addItem(item)
+            if items:
+                rows = min(len(items), _LIST_ROWS)
+                self._list.setFixedHeight(rows * max(self._list.sizeHintForRow(0), 1)
+                                          + 2 * self._list.frameWidth())
+                self._list.doItemsLayout()               # the scroll range is current before the place is restored
+                bar.setValue(keep)
+            self._listed = (self._open_list, items)
+        self._list.setVisible(bool(items))
 
     def _render_others(self, others) -> None:
         while self._others.count():

@@ -351,6 +351,47 @@ def test_setup_section_shows_constructed_backend_states(qtbot, s2_ws, tmp_path):
                                                "2 files not read")
 
 
+def _unread(n: int, prefix: str = "") -> tuple:
+    """``n`` files not read, each in its own folder with the same name (``notes.txt``)."""
+    return tuple(FileNotRead(f"C:/data/{prefix}{i:02d}/notes.txt", "unrecognised", "not recognised", None, None)
+                 for i in range(n))
+
+
+def test_an_opened_unread_list_keeps_its_place_across_a_re_read(qtbot, s2_ws):
+    intake = _bound(qtbot, s2_ws)
+    section = _section(qtbot, intake)
+    intake._summary = dataclasses.replace(intake.summary, files_not_read=_unread(12))
+    section._render()
+    section.toggle_list("not_read")
+    bar = section._list.verticalScrollBar()
+    assert section._list.count() == 12 and bar.maximum() > 0
+    bar.setValue(3)                                              # inside the range before and after the rebuild
+    place = bar.value()
+    assert place == 3
+    section._list.item(3).setData(Qt.ItemDataRole.UserRole, "kept")
+    intake.changed.emit()                                       # a re-read that found the same files
+    assert section._open_list == "not_read" and section._list.isVisible()
+    assert bar.value() == place and section._list.item(3).data(Qt.ItemDataRole.UserRole) == "kept"
+    intake._summary = dataclasses.replace(intake.summary, files_not_read=_unread(12) + _unread(1, "z"))
+    intake.changed.emit()                                       # a new file arrives: rebuilt, place kept
+    assert section._list.count() == 13 and section._open_list == "not_read"
+    assert bar.value() == place
+    section.toggle_list("incomplete")                           # another list starts at the top
+    assert bar.value() == 0
+
+
+def test_each_unread_file_shows_its_full_path_on_hover(qtbot, s2_ws):
+    intake = _bound(qtbot, s2_ws)
+    section = _section(qtbot, intake)
+    intake._summary = dataclasses.replace(intake.summary, files_not_read=_unread(2))
+    section._render()
+    section.toggle_list("not_read")
+    rows = [(section._list.item(i).text(), section._list.item(i).toolTip()) for i in range(2)]
+    assert rows[0][0] == rows[1][0] == "notes.txt: not recognised"              # the rows alone are twins
+    assert rows[0][1] == "C:/data/00/notes.txt\nnot recognised"
+    assert rows[1][1] == "C:/data/01/notes.txt\nnot recognised"
+
+
 def test_an_unreadable_record_in_an_experiment_with_a_card_is_shown_not_nothing_read(qtbot, s2_ws):
     intake = _bound(qtbot, s2_ws)
     section = _section(qtbot, intake)
