@@ -231,7 +231,8 @@ class Autosaver:
         from PySide6.QtCore import QTimer  # lazy: keep module import Qt-free
 
         self._snapshot = snapshot
-        self._path = path
+        # Fixed now, not at write time: a close after the environment changed must not move the file.
+        self._path = Path(path) if path is not None else session_path()
         self._on_error = on_error
         self._timer = QTimer(parent)
         self._timer.setSingleShot(True)
