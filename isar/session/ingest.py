@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from isar.intake import curves as intake_curves
+from isar.intake import scans as intake_scans
 from isar.parsers import registry
 from isar.parsers.base import FileSet
 from isar.schema.card import Card
@@ -442,7 +443,8 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
     write failure is logged and skipped; it never aborts the batch.
 
     When ``workspace_root`` is given, the resolution-curve check runs once (BL43 only: see
-    :mod:`isar.intake.curves`) and its record lands on ``report.curves``.
+    :mod:`isar.intake.curves`) and its record lands on ``report.curves``. For BL43 it also writes the
+    import record ``report/intake_scans.json`` (:mod:`isar.intake.scans`).
 
     Mutates ``session`` in place; the caller persists it when ``report.dirty`` is true. Every call
     returns additive ``last_ingest`` evidence on the report (so an operator can distinguish a
@@ -502,6 +504,10 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
             report.deduped.append({"scan": f"{key[0]}:{key[1]}",
                                    "kept": paths[-1], "superseded": paths[:-1]})
 
+    # BL43 with a workspace: the import record of file facts.
+    intake = workspace_root is not None and intake_scans.applies(card)
+    intake_rows: list[dict] = []
+
     # --- upsert one ledger entry per (exp, scan, det), MEASUREMENTS ONLY ---
     now_iso = datetime.now(timezone.utc).isoformat()
     ledgered_keys: set[tuple] = set()                # measurement scans that produced ≥1 entry
@@ -535,6 +541,8 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
         if touched:
             # A no-spectra measurement produces no ledger entry — keep it out of all three lists.
             ledgered_keys.add((rec.experiment_id, rec.scan_number))
+            if intake:
+                intake_rows.append(intake_scans.scan_row(rec, chash))
             # Collapse per-detector states: "added" only when every detector entry is new; any other
             # change to a known scan (a late set member's new detector, or a drifted entry) is "updated".
             if all(s == "added" for s in det_states):
@@ -547,6 +555,11 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
     # Summed sets from earlier batches whose individual scans are now in the ledger (this batch's included).
     if supersede_summed(session):
         report.dirty = True
+    if intake:
+        try:
+            intake_scans.record_import(workspace_root, intake_rows)
+        except Exception:  # noqa: BLE001 — a failed import record is logged, never aborts the batch
+            log.exception("ingest: %s not written", intake_scans.INTAKE_SCANS)
 
     # --- file manifest for ALL classified files (merge, never replace) ---
     # For a measurement-class FILE, its scans still split into measurement scans (ledgered, listed
