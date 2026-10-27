@@ -262,6 +262,8 @@ def test_format_keys_in_a_workspace_card_are_ignored_and_named(tmp_path, caplog)
     assert named == ["calibration", "energy_status", "facts"]
     assert all("not used" in w for w in warnings)
     assert any("not read for this instrument" in w or "does not read it" in w for w in warnings if "'facts'" in w)
+    _, plain = card_mod._with_shipped_format({"plugin": "sp8_bl43", "miniscans_per_point": 3})   # only facts is entered in ISAR
+    assert len(plain) == 1 and "'miniscans_per_point'" in plain[0] and "ISAR" not in plain[0]
 
 
 def test_a_workspace_setting_wins_over_the_shipped_default(tmp_path, caplog):

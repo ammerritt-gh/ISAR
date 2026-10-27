@@ -156,8 +156,8 @@ def _with_shipped_format(data: dict) -> tuple[dict, list[str]]:
         if key not in FORMAT_KEYS:
             merged[key] = value
         elif key not in shipped:
-            notes.append(f"{key!r} in the workspace card is not used: {plugin} does not read it "
-                         f"(values are entered in ISAR, not in the card)")
+            why = " (values are entered in ISAR, not in the card)" if key == "facts" else ""
+            notes.append(f"{key!r} in the workspace card is not used: {plugin} does not read it{why}")
         elif value != shipped[key]:
             extra = (" (the resolution folder is a setting chosen in ISAR)"
                      if key == "calibration" and isinstance(value, dict) and "resolution_folder" in value else "")
