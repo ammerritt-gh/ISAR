@@ -167,12 +167,15 @@ def test_no_rf_and_no_card_folder_is_a_stated_gap(tmp_path):
     assert check.problem == problem and check.lines() == [f"resolution curves: {problem}"]
 
 
-def test_the_card_folder_that_is_missing_is_unusable_with_the_stage_reason(tmp_path):
+def test_the_card_folder_that_is_missing_is_reported_as_the_gap_to_locate(tmp_path):
     root = tmp_path / "ws"
     root.mkdir()
-    check = curves.check_curves(root, _card(), [tmp_path / "set4"], by="run")
+    set4 = tmp_path / "set4"
+    set4.mkdir()
+    check = curves.check_curves(root, _card(), [set4], by="run")
     assert check.source == "card" and check.folder == str(root / "rf") and check.library is None
-    assert check.problem.startswith("resolution library unavailable (")
+    assert check.problem == (f"no resolution folder is saved, and no rf/ folder holding curves was found "
+                             f"beside {set4.resolve()}")
 
 
 def test_a_curve_replaced_at_the_same_path_changes_its_identity(tmp_path):

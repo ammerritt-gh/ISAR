@@ -205,7 +205,7 @@ def check_curves(root, card, data_paths, *, by: str) -> CurveCheck | None:
     saved = current_settings(root).resolution_folder
     loaded = load_curves(folder, pattern)
     problem = loaded.problem
-    if folder is None:
+    if folder is None or (source == "card" and not folder.is_dir()):     # no saved folder, and nothing beside the data
         beside = ", ".join(dict.fromkeys(str(d) for d, _rf in cands))
         problem = f"no resolution folder is saved, and no rf/ folder holding curves was found beside {beside}"
 
