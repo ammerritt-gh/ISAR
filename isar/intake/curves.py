@@ -18,7 +18,6 @@ from pathlib import Path
 
 from isar.analyze.resolution import ResolutionLibrary
 from isar.intake.settings import current_settings, save_resolution_folder
-from isar.session.atomic import replace_retrying
 
 log = logging.getLogger(__name__)
 
@@ -233,6 +232,7 @@ def check_curves(root, card, data_paths, *, by: str) -> CurveCheck | None:
 
 
 def _write(root: Path, check: CurveCheck) -> None:
+    from isar.session.atomic import replace_retrying   # imported here: the read side never loads isar.session
     path = root / CURVE_CHECK
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
