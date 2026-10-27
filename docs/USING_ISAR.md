@@ -415,8 +415,8 @@ preferred count as a second opinion, not a verdict, until that note is gone. How
 ## Parsing SPring-8 BL43LXU (IXS) folders
 
 BL43LXU is supported for **parsing** (`isar init`, `isar ingest` and the inspector read its processed
-per-analyzer files) and for **fitting** with the beamline's measured resolution curves, once the card
-names its resolution folder (see *Resolution, slit and zero* below). Two processed layouts are read. The raw SPEC files the beamline writes (`specixs_*`, `spects_*`) are
+per-analyzer files) and for **fitting** with the beamline's measured resolution curves (see *Resolution,
+slit and zero* below). Two processed layouts are read. The raw SPEC files the beamline writes (`specixs_*`, `spects_*`) are
 not: `isar init` on one stops with "has no shipped card template yet".
 
 Point ISAR at the folder, as for any instrument:
@@ -477,8 +477,8 @@ fitted again and stay listed under "Held / declined". The files are never touche
   `specfile`, `scan_numbers`, `hkl`) become filename facts. `sidecar` is `{set}.var`. `ignore` lists
   globs that are never read as data. Subfolders are walked, and a set is the files of one folder: the
   same stem in two folders is two sets (the second is refused by name if it lands on the first's
-  identity, see below). The `rf/` folder of SARF resolution files is classified unrecognized and never
-  read as data; `[calibration]` reads it as the resolution library.
+  identity, see below). The `rf/` folder of SARF resolution files is never read as data (the template's
+  `ignore` lists `sarf_*`); `[calibration]` reads it as the resolution library.
 - `[reader]`: `intensity_family` is `"_i"` (the default: integer counts, raw) or `"_lr"`. The `_lr`
   counts split some counts between neighbouring bins, so they are **not raw**. They are kept unrounded and
   every `_lr` spectrum is flagged `counts_not_integer` (a warning, whatever its bins recover to). For `_i`,
@@ -489,8 +489,9 @@ fitted again and stay listed under "Held / declined". The files are never touche
 - `[facts]`: values you declare, for example `slit = "60x60"` or `lattice = [...]`. They rank lowest: a
   header, trailer, sidecar or filename value wins, and a disagreement raises `fact_conflict`.
 - `[calibration]`: `method = "tabulated_elastic"` (see *Resolution, slit and zero*). `resolution_folder`
-  is the folder of SARF files, relative to the card's folder unless absolute; `resolution_pattern` matches
-  their file names and picks out the analyzer and the slit.
+  is the folder of SARF files, used only when the experiment has no saved resolution folder, relative to the
+  card's folder unless absolute; `resolution_pattern` matches their file names and picks out the analyzer and
+  the slit.
 - `[[detectors]]`: `enabled = false` leaves an analyzer out of every scan. `value_index` and
   `signal_column` are not used for this instrument.
 
@@ -543,11 +544,17 @@ The per-analyzer files carry two energy columns. `meV` is the beamline's calibra
 A scan's slit sets which resolution curve each analyzer uses, and each analyzer's energy zero is fitted
 on its elastic line with that curve. To set this up:
 
-1. Keep the `rf/` folder of SARF files beside the card (the template's `resolution_folder = "rf"`), or
-   give its full path as `resolution_folder`.
+1. Put the `rf/` folder of SARF files inside the imported data folder (or beside an imported file). ISAR
+   finds it at the first import or run when no folder is saved for the experiment, saves it as the experiment's
+   resolution folder and says where it found it. The folder is an experiment setting that ISAR saves and
+   changes only through the GUI, never by editing the card. The card's `resolution_folder` is used only when
+   no folder is saved. ISAR never switches a saved folder by itself: an `rf/` it finds beside a later import
+   is listed in `report/curves.json` as another folder that also holds curves.
 2. Declare the slit if you know it: the header lines `agaph_mm` and `agapv_mm`, or `slit = "60x60"`
    under `[facts]`. A declared slit is always used.
-3. `isar run` builds the calibration. The inspector shows each scan's slit, its candidate deviances and
+3. ISAR checks the folder's curves at every import and every `isar run`, by their content: a curve replaced
+   at the same path is noticed, and the calibration is rebuilt at the next run.
+   `isar run` builds the calibration. The inspector shows each scan's slit, its candidate deviances and
    the alerts; the numbers are kept under `tabulated_calibration` in `card.state.json`, and the policy is
    never written.
 
@@ -561,7 +568,7 @@ Alerts on that choice and on the zeros:
 | `slit_mismatch` | The declared slit is kept, but another fits the elastic lines clearly better. | Check the declared slit and the curve files. |
 | `pipeline_zero` | The analyzer has no significant elastic line. Its zero is the file's own axis, labelled. | Compare that analyzer's ω₀ with its neighbours before trusting it. |
 | `zero_disagrees_with_beamline` | The analyzer's zero (`elastic_fit` or `pipeline_zero`) is more than 0.3 meV from the beamline's elastic centroid; the reason gives both numbers. The centroid includes background and phonon tails, so the flag is a cross-check and ISAR's fit stays the zero. It is raised when a scan is calibrated, so an existing workspace shows it only once its data are run into a fresh one. | Inspect that analyzer's elastic fit. The flag does not change the zero. |
-| `missing_resolution` | No curve for that analyzer at that slit, or no folder: the analyzer is held and not fitted. | Add the curve to `rf/`, or correct `resolution_pattern`. |
+| `missing_resolution` | No curve for that analyzer at that slit, or no folder: the analyzer is held and not fitted. | Add the curve to the experiment's resolution folder (the one ISAR saved, or the card's), or correct `resolution_pattern`. |
 | `resolution_range_exceeded` | The fit range runs past the measured curve; the curve is used as given. | Read the fit with that in mind. |
 
 Held analyzers and scans are listed under "Held / declined" in the report, with their reason.
