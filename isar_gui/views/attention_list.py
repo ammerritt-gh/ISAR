@@ -25,8 +25,11 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
                                QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
+from isar_gui.plain_words import (STAND_IN_MARK, STAND_IN_TIP, affects, fix_sentence, group_title,
+                                  stand_in)
 from isar_gui.theme import TONE_COLOR, Tone
-from isar_gui.views.elided_label import ElidedLabel
+from isar_gui.views.elided_label import ElidedButton, ElidedLabel
+from isar_gui.views.setup_section import LOCATE_LONG, LOCATE_TIP
 from isar_gui.views.value_entry import ValueEntry
 
 USER_TEMPERATURE = "user-values:temperature"
@@ -36,14 +39,39 @@ _USER_FACTS = {USER_TEMPERATURE: "temperature", USER_SLIT: "slit"}
 
 _BODY_MAX = 160            # px: the scroll area never grows past this, so the scan list keeps its minimum
 _STATES = ("ready", "fallback", "pending", "held", "unreadable")      # the backend's ascending severity
-_ACTION_PHRASE = {
-    "enter_value": "enter the value", "locate_folder": "locate the resolution folder",
-    "start_analysis": "start analysis", "reverse_declaration": "reverse the declaration",
-    "accept_counts": "accept the counts, or correct the data", "import_again": "import again",
-    "tell_operator": "tell the operator", "wait": "wait", "none": "",
+# The remedy that has a button of its own inside the group: action -> (button text, tooltip, signal name).
+_FIX_BUTTONS = {
+    "locate_folder": (LOCATE_LONG, LOCATE_TIP, "locate_requested"),
+    "import_again": ("Add data…", "Read more data files into this experiment. The originals stay where they "
+                                   "are and must stay available.", "add_data_requested"),
+    "start_analysis": ("Run analysis…", "Open the Run dialog to analyse this experiment's data.", "run_requested"),
 }
-_FOOT_BUTTONS = {"value": [("save", "Save")], "dead": [("dead", "Mark dead")], "declared": [("in_use", "In use")],
-                 "user": [("file_value", "Use the file's value")], "accepted": [("withdraw", "Withdraw")]}
+_FOOT_BUTTONS = {"value": [("save", "Save my value")], "dead": [("dead", "Leave out analyzer")],
+                 "declared": [("in_use", "Use analyzer again")], "user": [("file_value", "Use the file's value")],
+                 "accepted": [("withdraw", "Take back acceptance")]}
+_BUTTON_TIPS = {
+    "save": "Use this value for the ticked scan sets instead of the file's. The files are not changed.",
+    "dead": "Leave the ticked analyzers out of the analysis of these scan sets. Reversible; the data stay.",
+    "in_use": "Put the ticked analyzers back into the analysis.",
+    "file_value": "Drop your value for the ticked scan sets and use the value in the files again.",
+    "withdraw": "Hold the ticked analyzers again until their counts are accepted.",
+    "accept": ("Some of this analyzer's counts are not whole numbers after N = (y/e)², so they may not be raw "
+               "counts and the fit is held. Accept to fit them as they are; no data change."),
+}
+_TICK_HINT = {
+    "value": "Tick the scan sets above; then enter the value and press Save my value.",
+    "user": "Tick the scan sets above; then use the file's value again.",
+    "dead": "Tick the analyzers above; then leave them out of the analysis.",
+    "declared": "Tick the analyzers above; then use them again.",
+    "accepted": "Tick the analyzers above; then take back your acceptance.",
+}
+_TITLE_TIPS = {
+    "q_missing": "Without Q the campaign planner cannot place this scan; the fit is not affected.",
+    "calibration_pending": ("Analysis calibrates these scan sets (energy zero and resolution) when it starts; "
+                            "until then they are held and no energy zero is assumed."),
+}
+_HEADER_TIP = ("Things missing or unreadable that stop or weaken the analysis. Open a group to see which "
+               "scan sets or analyzers, then fix it there.")
 _WARN = f"color: {TONE_COLOR[Tone.WARN]};"
 _QUIET = "color: #6b7280;"
 
@@ -70,6 +98,8 @@ class _Spec:
     quiet: str
     mode: str                   # "scan" | "unit" | "plain"
     foot: str | None            # None: shown only; else a key of _FOOT_BUTTONS
+    fix: str | None = None      # the action whose remedy has a button in the group (a key of _FIX_BUTTONS)
+    title_tip: str = ""
     fact: str | None = None
     counts: bool = False        # the foot also offers *Counts accepted*
     mark: str = ""
@@ -125,26 +155,32 @@ class _Foot(QWidget):
             self.reason_edit.setObjectName("attention_reason")
             self.reason_edit.setPlaceholderText("Reason (optional)")
             self.reason_edit.setAccessibleName("Reason (optional)")
+            self.reason_edit.setToolTip("Optional. Kept with the change so you can see later why you made it.")
+        self.reason_note = _Line("", self, quiet=True)      # why the value button is off, as text
+        self.reason_note.setObjectName("attention_save_reason")
+        self.reason_note.hide()
         self.preview = ElidedLabel("", self, Qt.TextElideMode.ElideRight)
         self.preview.setObjectName("attention_preview")
         self.status = _Line("", self, warn=True)
         self.status.setObjectName("attention_status")
         self.status.hide()
         self.buttons: dict[str, QPushButton] = {}
-        row = QHBoxLayout()
-        row.setSpacing(4)
-        for name, text in [*([("accept", "Counts accepted")] if spec.counts else []), *_FOOT_BUTTONS[spec.foot]]:
-            button = QPushButton(text, self)
+        row = QVBoxLayout()         # one button to a line: the long names must not widen the narrow column
+        row.setSpacing(3)
+        for name, text in [*([("accept", "Accept counts as they are")] if spec.counts else []),
+                           *_FOOT_BUTTONS[spec.foot]]:
+            button = ElidedButton(text, self)
             button.setObjectName(f"attention_{name}")
+            button.setToolTip(_BUTTON_TIPS[name])
             self.buttons[name] = button
-            row.addWidget(button)
-        row.addStretch(1)
+            row.addWidget(button, 0, Qt.AlignmentFlag.AlignLeft)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 2, 0, 4)
         layout.setSpacing(3)
         layout.addWidget(self.preview)
         layout.addWidget(self.entry if self.entry is not None else self.reason_edit)
         layout.addLayout(row)
+        layout.addWidget(self.reason_note)
         layout.addWidget(self.status)
         if self.reason_edit is not None:
             self.reason_edit.textChanged.connect(lambda *_a: self.status.hide())
@@ -189,12 +225,18 @@ class _Group(QWidget):
         self.title = _Line("", self)
         self.title.setObjectName("attention_group_title")
         self.title.clicked.connect(lambda: owner._toggle_group(self.key))
-        self.mark = QLabel("", self)
+        self.mark = _Line("", self, warn=True)       # on its own line: a long mark must not widen the column
         self.mark.setObjectName("attention_group_mark")
-        self.mark.setStyleSheet(_WARN)
         self.mark.hide()
         self.quiet = _Line("", self, quiet=True)
         self.quiet.setObjectName("attention_group_quiet")
+        self.fix = ElidedButton("", self)            # the remedy, beside the sentence that names it
+        self.fix.setObjectName("attention_fix")
+        self.fix.hide()
+        self.fix.clicked.connect(lambda: owner._fix(self.key))
+        self.hint = _Line("", self, quiet=True)      # what the ticks are for, while none is ticked
+        self.hint.setObjectName("attention_tick_hint")
+        self.hint.hide()
         self.rows_widget = QWidget(self)
         self.rows = QVBoxLayout(self.rows_widget)
         self.rows.setContentsMargins(18, 0, 0, 0)
@@ -211,13 +253,19 @@ class _Group(QWidget):
         head.setSpacing(2)
         head.addWidget(self.toggle, 0, Qt.AlignmentFlag.AlignTop)
         head.addWidget(self.title, 1)
-        head.addWidget(self.mark, 0, Qt.AlignmentFlag.AlignTop)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 2, 0, 2)
         layout.setSpacing(1)
         layout.addLayout(head)
+        layout.addWidget(self.mark)
         layout.addWidget(self.quiet)
+        fix_row = QHBoxLayout()
+        fix_row.setContentsMargins(18, 0, 0, 0)
+        fix_row.addWidget(self.fix, 0)
+        fix_row.addStretch(1)
+        layout.addLayout(fix_row)
         layout.addWidget(self.rows_widget)
+        layout.addWidget(self.hint)
         if self.foot is not None:
             layout.addWidget(self.foot)
         self.boxes: dict[str, QCheckBox] = {}           # member id -> its check box (open group only)
@@ -228,9 +276,14 @@ class _Group(QWidget):
     def refresh(self, spec: _Spec, *, open_: bool, open_scans: frozenset[str]) -> None:
         self.spec = spec
         self.title.setText(spec.title)
-        self.title.setToolTip(spec.title)
+        self.title.setToolTip(spec.title_tip or spec.title)
         self.quiet.setText(spec.quiet)
         self.quiet.setVisible(bool(spec.quiet))
+        if spec.fix is not None:
+            text, tip, _signal = _FIX_BUTTONS[spec.fix]
+            self.fix.set_full_text(text)
+            self.fix.setToolTip(tip)
+        self.fix.setVisible(spec.fix is not None)
         self.mark.setText(spec.mark)
         self.mark.setToolTip(spec.mark_tip)
         self.mark.setVisible(bool(spec.mark))
@@ -302,11 +355,12 @@ class _Group(QWidget):
         spec, owner = self.spec, self._owner
         tick = spec.foot is not None
         if tick and len(spec.rows) > 1:
-            self.all_box = self._check("Select all", tristate=True)
+            noun = "analyzer" if spec.mode == "unit" else "scan set"
+            self.all_box = self._check(f"Tick all {noun}s", tristate=True)
             self.all_box.setObjectName("attention_select_all")
             self.all_box.clicked.connect(lambda _c=False: owner._tick_all(
                 self.key, self.all_box.checkState() != Qt.CheckState.Unchecked))
-            self.rows.addWidget(self._row(f"Select all {len(spec.rows)}", "", box=self.all_box))
+            self.rows.addWidget(self._row(f"Tick all {_n(len(spec.rows), noun)}", "", box=self.all_box))
         if spec.mode == "scan":
             for row in spec.rows:
                 is_open = row.id in open_scans
@@ -346,6 +400,9 @@ class _Group(QWidget):
 
 class AttentionList(QWidget):
     expanded_changed = Signal(bool)
+    locate_requested = Signal()         # "Choose resolution-curve folder…" -> the window's locate route
+    add_data_requested = Signal()       # "Add data…" -> the files strip's add-files route
+    run_requested = Signal()            # "Run analysis…" -> the window's run route
 
     def __init__(self, intake, labels: Callable[[str], str] | None = None, parent: QWidget | None = None) -> None:
         """``labels``: scan key -> the scan set's label (the window passes the scan list's, read when a row is
@@ -463,9 +520,10 @@ class AttentionList(QWidget):
             foot = "dead"
         else:
             foot = None
-        phrase = _ACTION_PHRASE.get(g.action, g.action)
-        quiet = " · ".join(p for p in (f"Affects {', '.join(g.uses)}" if g.uses else "",
-                                       f"to resolve: {phrase}" if phrase else "") if p)
+        fix = g.action if g.action in _FIX_BUTTONS else None
+        phrase = fix_sentence(g.action)
+        quiet = " · ".join(p for p in (f"Affects: {affects(g.uses)}" if g.uses else "",
+                                       f"Fix: {phrase}" if phrase else "") if p)
         rows, plain, scans = [], [], []
         for item in g.items:
             mark = ", ".join(m for m in ("values disagree" if item.values_disagree else "",
@@ -484,10 +542,14 @@ class AttentionList(QWidget):
                 label = self._label(item.scan)
                 rows.append(_Row(item.scan, label, detail=item.reason, mark=mark,
                                  info=self._analyzer_lines(att, item.scan), tooltip=f"{label}: {tip}"))
-        return _Spec(key=g.kind, title=g.summary, quiet=quiet, mode=scope, foot=foot,
+        title = group_title(g.kind, g.summary, scope)
+        tip = _TITLE_TIPS.get(g.kind, "")
+        return _Spec(key=g.kind, title=title, quiet=quiet, mode=scope, foot=foot, fix=fix,
+                     title_tip="\n".join(p for p in (tip, g.summary if g.summary != title else "") if p),
                      fact=g.kind if foot == "value" else None, counts=g.kind == "counts_unaccepted",
-                     mark="fallback in use" if g.fallback_in_use else "",
-                     mark_tip="; ".join(dict.fromkeys(i.fallback for i in g.items if i.fallback)),
+                     mark=STAND_IN_MARK if g.fallback_in_use else "",
+                     mark_tip="\n".join((*dict.fromkeys(stand_in(i.fallback) for i in g.items if i.fallback),
+                                         "", STAND_IN_TIP)),
                      rows=tuple(rows), scans=tuple(scans), plain=tuple(plain))
 
     @staticmethod
@@ -610,12 +672,12 @@ class AttentionList(QWidget):
         elif not att.evaluated:
             text, tip = "Needs attention", att.note or ""
         elif att.groups:
-            text = f"Needs attention · {len(att.groups)}"
+            text = f"Needs attention · {_n(len(att.groups), 'item')}"
         else:
             text = "Needs attention · nothing"
         self._header.setText(text)
         self._header.setStyleSheet(_WARN if warn else "")
-        self._header.setToolTip(tip or text)
+        self._header.setToolTip(tip or (_HEADER_TIP if text else ""))
         self._header.setVisible(bool(text))
         self._header.setEnabled(has_body)
         self._has_body = has_body
@@ -678,6 +740,11 @@ class AttentionList(QWidget):
             return
         foot, ids = group.foot, self.ticked(key)
         foot.setVisible(bool(ids) and key in self._open)
+        hint = _TICK_HINT.get(group.spec.foot, "")
+        if group.spec.counts:
+            hint = "Tick the analyzers above; then accept their counts as they are, or leave them out."
+        group.hint.setText(hint)
+        group.hint.setVisible(key in self._open and not ids and bool(hint))
         if not ids:
             return
         foot.preview.set_full_text(self._preview(key))
@@ -685,9 +752,19 @@ class AttentionList(QWidget):
             ok = foot.entry.value() is not None
             save = foot.buttons["save"]
             save.setEnabled(ok)
-            save.setToolTip("" if ok else (foot.entry.parse_error() or f"Enter the {foot.entry.fact} to save"))
+            error = foot.entry.parse_error()
+            why = "" if ok else (error or f"Enter the {foot.entry.fact} to save it.")
+            save.setToolTip(_BUTTON_TIPS["save"] if ok else why)
+            foot.reason_note.setText(why)
+            foot.reason_note.setVisible(bool(why) and error is None)       # a parse error shows under the entry
 
     # ---- acting ----------------------------------------------------------------------------
+    def _fix(self, key: str) -> None:
+        """The group's own remedy button: the window's route for it."""
+        group = self._groups.get(key)
+        if group is not None and group.spec.fix is not None:
+            getattr(self, _FIX_BUTTONS[group.spec.fix][2]).emit()
+
     def _act(self, key: str, action: str) -> None:
         group, ids = self._groups.get(key), self.ticked(key)
         if group is None or group.foot is None or not ids:

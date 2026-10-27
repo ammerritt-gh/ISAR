@@ -6,11 +6,11 @@ Two or three compact lines from the intake backend's import summary and settings
   incomplete sets and the files not read are links that open, in place, the list behind them (each set
   with its missing analyzers and their causes and its sidecar state; each file with its reason), or
   "Nothing read yet";
-* where the resolution curves were found, with *Locate…*, and below it, in the warning colour, the
+* where the resolution curves were found, with *Choose curves folder…*, and below it, in the warning colour, the
   last curve check's problem (one line, the full text on hover), a note when the saved folder is not
   checked yet, and each other ``rf/`` folder found beside new data with *Use this folder*.
 
-The section only shows what the backend returns. *Locate…* leaves through ``locate_requested``, and the
+The section only shows what the backend returns. *Choose curves folder…* leaves through ``locate_requested``, and the
 window routes it to :func:`locate_resolution_folder`, the one route that saves a folder the user picks.
 """
 from __future__ import annotations
@@ -22,13 +22,21 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QFileDialog, QGridLayout, QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
+from isar_gui.plain_words import NO_CURVES, NO_CURVES_TIP, curve_problem
 from isar_gui.theme import TONE_COLOR, Tone
 from isar_gui.views.elided_label import ElidedLabel
 
-NOTHING_READ = "Nothing read yet"
-NOT_BL43 = "The import summary is shown for BL43LXU experiments only"
+NOTHING_READ = "Nothing read yet. Add data files below."
+NOT_BL43 = "No import summary: this experiment is not BL43LXU data."
 POLICY_FILE = "card.policy.toml"
-STALE_NOTE = "this folder is checked at the next import or when analysis starts"
+STALE_NOTE = "The curves folder has not been checked yet; it is checked when you add data or start the analysis."
+COUNTS_LEGEND = ("A scan set is one scan with one file per analyzer; a spectrum is one analyzer of one set, "
+                 "and 'analyzers read' counts the spectra.\nAn incomplete set has analyzer files that did not "
+                 "arrive or could not be read. Click a count in blue to list them.")
+LOCATE_TEXT = "Choose curves folder…"               # the setup line is tight at 1108 px; elsewhere there is room
+LOCATE_LONG = "Choose resolution-curve folder…"     # attention list, readiness list, Details dialog
+LOCATE_TIP = ("Pick the folder holding the measured resolution curves. It is saved with this experiment "
+              "at once and the analysis fits with it.")
 _SOURCE_WORDS = {"discovered": "found beside the data", "user": "chosen by you"}
 _LIST_ROWS = 6                  # an opened list shows this many rows, then scrolls
 _WARN = f"color: {TONE_COLOR[Tone.WARN]};"
@@ -64,7 +72,7 @@ def _start_folder(intake) -> str:
 
 
 def locate_resolution_folder(parent: QWidget, intake):
-    """*Locate…*, wherever it is clicked: pick a folder and save it at once as the user's resolution
+    """*Choose resolution-curve folder…*, wherever it is clicked: pick a folder and save it at once as the user's resolution
     folder. Returns the :class:`~isar_gui.viewmodels.intake.SaveOutcome`, or ``None`` when cancelled."""
     folder = QFileDialog.getExistingDirectory(parent, "Choose the resolution-curve folder",
                                               _start_folder(intake))
@@ -82,8 +90,10 @@ class _Line(ElidedLabel):
         if warn:
             self.setStyleSheet(_WARN)
 
-    def set_line(self, text: str | None) -> None:
+    def set_line(self, text: str | None, tip: str | None = None) -> None:
         self.set_full_text(text or "")
+        if tip:
+            self.setToolTip(tip)
         self.setVisible(bool(text))
 
 
@@ -116,10 +126,9 @@ class SetupSection(QWidget):
 
         self._resolution = ElidedLabel("", self)
         self._resolution.setObjectName("setup_resolution")
-        self._locate = QPushButton("Locate…", self)
+        self._locate = QPushButton(LOCATE_TEXT, self)
         self._locate.setObjectName("setup_locate")
-        self._locate.setToolTip("Choose the folder of resolution curves for this experiment; "
-                                "it is saved at once and used by the analysis")
+        self._locate.setToolTip(LOCATE_TIP)
         self._locate.clicked.connect(self.locate_requested)
         self._problem = _Line(self, warn=True)
         self._problem.setObjectName("setup_problem")
@@ -140,7 +149,8 @@ class SetupSection(QWidget):
         self._grid.setColumnStretch(0, 1)
         self._grid.addWidget(self._summary, 0, 0)
         self._grid.addWidget(self._resolution, 1, 0)
-        self._grid.addWidget(self._locate, 1, 1)
+        # Under the path, not beside it: the button names its object, and beside it the path got no room at 1108 px.
+        self._grid.addWidget(self._locate, 2, 0, Qt.AlignmentFlag.AlignLeft)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(2)
@@ -190,20 +200,25 @@ class SetupSection(QWidget):
         else:
             text = self._counts_html(summary)
         self._summary.setText(text)
+        self._summary.setToolTip(COUNTS_LEGEND if text not in (NOTHING_READ, NOT_BL43) else "")
         self._summary.setStyleSheet(_WARN if warn_summary else "")
         self._render_list(summary if bl43 else None)
 
         where, warn = resolution_text(summary, settings)
         resolution = None if where is None else f"Resolution curves: {where}"
-        self._place_locate(row=1 if resolution else 0)
         self._locate.setVisible(bl43)
         self._resolution.set_full_text(resolution or "")
         self._resolution.setStyleSheet(_WARN if warn else "")
-        self._resolution.setVisible(bool(resolution) and bl43)
+        # "not found" and the sentence under it say the same: the sentence stands alone (the row is kept for the tests
+        # and the screen reader, hidden) so the section keeps the height it had before the button got its own row.
+        self._resolution.setVisible(bool(resolution) and bl43 and curve_problem(
+            curves.problem if curves is not None else None) != NO_CURVES)
         if curves is not None:
             self._resolution.setToolTip(f"{resolution}\n{self._checked_text(curves)}")
 
-        self._problem.set_line(curves.problem if bl43 and curves is not None else None)
+        problem = curves.problem if bl43 and curves is not None else None
+        shown = curve_problem(problem)
+        self._problem.set_line(shown, f"{NO_CURVES_TIP}\n\n{problem}" if shown != problem else None)
         self._stale.set_line(STALE_NOTE if bl43 and curves is not None and curves.check_stale else None)
         record = None if summary is None else summary.record_problem
         self._record_problem.set_line(record if has_card and not record_in_summary else None)
@@ -224,18 +239,9 @@ class SetupSection(QWidget):
     @staticmethod
     def _checked_text(curves) -> str:
         if curves.checked_at is None:
-            return "Not checked yet: the folder is checked at the next import or when analysis starts."
+            return "Not checked yet: the folder is checked when you add data or start the analysis."
         return (f"Last checked {curves.checked_at}. A curve file added or replaced in the folder since "
                 "then is seen at the next import or when analysis starts.")
-
-    def _place_locate(self, row: int) -> None:
-        """*Locate…* sits beside the resolution line, or beside the first line when there is none; the
-        counts line takes the full width whenever *Locate…* is not beside it."""
-        if self._grid.getItemPosition(self._grid.indexOf(self._locate))[0] != row:
-            self._grid.removeWidget(self._locate)
-            self._grid.addWidget(self._locate, row, 1)
-            self._grid.removeWidget(self._summary)
-            self._grid.addWidget(self._summary, 0, 0, 1, 2 if row else 1)
 
     def _render_list(self, summary) -> None:
         items: list[tuple[str, str]] = []          # (row text, tooltip)
@@ -283,12 +289,13 @@ class SetupSection(QWidget):
         for o in others:
             row = QHBoxLayout()
             row.setSpacing(6)
-            label = ElidedLabel(f"Another rf/ folder was found beside new data: {o.path}", self)
+            label = ElidedLabel(f"Another rf/ folder with curves was found beside new data: {o.path}", self)
             label.setObjectName("setup_other_folder")
-            label.setToolTip(f"{o.path} (beside {o.beside}) also holds curves; it is not used")
-            use = QPushButton("Use this folder", self)
+            label.setToolTip(f"{o.path} (beside {o.beside}) also holds curves; it is not used unless you choose it")
+            use = QPushButton("Use this curves folder", self)
             use.setObjectName("setup_use_other")
-            use.setToolTip(f"Save {o.path} as this experiment's resolution folder")
+            use.setToolTip("Replace the saved resolution-curve folder with this one; the analysis will refit "
+                           f"with it.\n{o.path}")
             use.clicked.connect(lambda _checked=False, p=o.path: self._use(p))
             row.addWidget(label, 1)
             row.addWidget(use, 0)

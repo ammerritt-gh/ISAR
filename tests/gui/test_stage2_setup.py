@@ -341,7 +341,8 @@ def test_setup_section_not_found_with_the_no_curves_fixture(qtbot, s2_no_curves)
     section = _section(qtbot, _bound(qtbot, s2_no_curves))
     assert section._resolution.full_text() == "Resolution curves: not found"   # the shipped card names no folder
     assert "#b7791f" in section._resolution.styleSheet()
-    assert section._problem.full_text().startswith("no resolution folder is saved")
+    assert section._problem.full_text() == "No resolution curves yet. Choose the folder that holds them."
+    assert "no resolution folder is saved" in section._problem.toolTip()           # the backend's text stays on hover
 
 
 def test_setup_section_shows_constructed_backend_states(qtbot, s2_ws, tmp_path):
@@ -434,7 +435,7 @@ def test_record_problem_is_not_shown_without_a_card(qtbot, tmp_path):
     section = _section(qtbot, intake)
     assert _plain(section._summary.text()) == NOTHING_READ and section._record_problem.isHidden()
     assert section._locate.isVisible()
-    assert section._grid.getItemPosition(section._grid.indexOf(section._locate))[0] == 0   # beside the one line
+    assert section._locate.text() == "Choose curves folder…"
 
 
 def test_no_experiment_reads_nothing_read_yet_without_locate(qtbot):

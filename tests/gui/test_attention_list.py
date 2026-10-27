@@ -144,16 +144,18 @@ def test_the_header_reads_checking_then_the_groups_as_the_backend_gives_them(qtb
     _worker(qtbot, intake)
     att = intake.attention
     assert att.evaluated and "temperature" in _kinds(att) and "counts_unaccepted" in _kinds(att)
-    assert lst._header.text() == f"Needs attention · {len(att.groups)}"
+    assert lst._header.text() == f"Needs attention · {len(att.groups)} items"
     backend = [k for k in _kinds(att)]
     assert [k for k in lst._groups if k in backend] == backend           # the backend's order, kept
     assert list(lst._groups)[:len(backend)] == backend
     temp = next(g for g in att.groups if g.kind == "temperature")
     group = _group(lst, "temperature")
-    assert group.title.text() == temp.summary == "Temperature: 3 scans"
+    assert temp.summary == "Temperature: 3 scans"                           # the backend counts "scans" ...
+    assert group.title.text() == "Temperature: 3 scan sets"                 # ... the window says what they are
+    assert temp.summary in group.title.toolTip()                            # and keeps the backend's own text on hover
     assert set(_members(lst, "temperature")) == {i.scan for i in temp.items} == {A, B, SINGLE}
-    assert "Affects fit" in group.quiet.text() and "to resolve: enter the value" in group.quiet.text()
-    assert group.mark.text() == "fallback in use" and group.mark.isVisible()
+    assert "Affects: the fit" in group.quiet.text() and "Fix: tick the scan sets, then enter the value" in group.quiet.text()
+    assert group.mark.text() == "stand-in value used" and group.mark.isVisible()
     assert lst.is_expanded()                                  # the first time this experiment shows gaps
     assert lst._scroll.isVisible()
 
@@ -187,7 +189,7 @@ def test_a_failed_worker_read_shows_its_reason_in_warning_colour(qtbot, att_ws, 
     intake.reload()
     assert lst._header.text() == "Needs attention · checking…"            # a new read is under way again
     _worker(qtbot, intake)
-    assert lst._header.text() == f"Needs attention · {len(intake.attention.groups)}"
+    assert lst._header.text() == f"Needs attention · {len(intake.attention.groups)} items"
     assert "color" not in lst._header.styleSheet()
 
 
@@ -292,14 +294,14 @@ def test_a_constructed_damaged_lines_group_renders_plain_rows_with_their_reasons
     assert g.foot is None and g.findChildren(QCheckBox) == []
     shown = [w.text() for w in g.rows_widget.findChildren(QWidget) if hasattr(w, "wordWrap") and w.text()]
     assert shown == reasons
-    assert "to resolve: tell the operator" in g.quiet.text()
+    assert "Fix: see the reasons below" in g.quiet.text()
 
 
 def test_the_q_group_shows_its_members_and_what_resolves_it_with_no_value_entry(qtbot, att_ws):
     intake, lst = _make(qtbot, att_ws)
     g = _open(lst, "q_missing")
     assert g.spec.fact is None and g.findChildren(ValueEntry) == []
-    assert g.quiet.text().startswith("Affects steer")
+    assert g.quiet.text().startswith("Affects: campaign planning")
     # the other kinds that are not value gaps carry no entry either
     for key in ("calibration_pending",):
         assert _group(lst, key).foot is None and _group(lst, key).findChildren(ValueEntry) == []
@@ -329,12 +331,12 @@ def test_a_temperature_is_saved_once_on_exactly_the_ticked_scan_sets(qtbot, att_
     assert lst.ticked("temperature") == [] and foot.isHidden()             # ticks and entry cleared
     assert foot.entry.value() is None
     assert _members(lst, "temperature") == [SINGLE]                        # the gap closed only where it was filled
-    assert _group(lst, "temperature").title.text() == "Temperature: 1 scan"
+    assert _group(lst, "temperature").title.text() == "Temperature: 1 scan set"
     mine = _group(lst, USER_TEMPERATURE)
     assert mine.title.text() == "Your temperature values: 2 scan sets"
     assert set(_members(lst, USER_TEMPERATURE)) == {A, B}
     assert all("100 K (yours, sample thermometer)" in r.text for r in mine.spec.rows)
-    assert lst._header.text() == f"Needs attention · {len(intake.attention.groups)}"      # theirs are not counted
+    assert lst._header.text() == f"Needs attention · {len(intake.attention.groups)} items"      # theirs are not counted
 
 
 def test_a_refused_value_shows_the_backend_reason_and_keeps_the_ticks_and_text(qtbot, att_ws):
@@ -462,7 +464,7 @@ def test_mark_dead_then_in_use_from_the_declared_group(qtbot, att_ws):
     lst._open_scans.setdefault("declared", set()).add(A)
     lst._refresh_group("declared")
     d = _group(lst, "declared")
-    assert set(d.foot.buttons) == {"in_use"} and "to resolve: reverse the declaration" in d.quiet.text()
+    assert set(d.foot.buttons) == {"in_use"} and "Fix: tick the analyzers, then use them again" in d.quiet.text()
     _tick(d, A05)
     with qtbot.waitSignal(intake.worker_changed, timeout=WAIT_MS):
         d.foot.buttons["in_use"].click()
@@ -474,8 +476,8 @@ def test_mark_dead_then_in_use_from_the_declared_group(qtbot, att_ws):
 def test_counts_accepted_and_withdrawn(qtbot, att_ws):
     intake, lst = _make(qtbot, att_ws)
     g = _open(lst, "counts_unaccepted")
-    assert set(g.foot.buttons) == {"accept", "dead"}                        # Mark dead, and Counts accepted
-    assert "accept the counts, or correct the data" in g.quiet.text()
+    assert set(g.foot.buttons) == {"accept", "dead"}                        # Leave out analyzer, and Accept counts
+    assert "Fix: tick the analyzers, then accept their counts as they are" in g.quiet.text()
     assert _members(lst, "counts_unaccepted") == [B03]
     lst._open_scans.setdefault("counts_unaccepted", set()).add(B)
     lst._refresh_group("counts_unaccepted")
@@ -492,7 +494,7 @@ def test_counts_accepted_and_withdrawn(qtbot, att_ws):
     mine = _group(lst, USER_COUNTS)
     assert mine.title.text() == "Your accepted counts: 1 analyzer" and _members(lst, USER_COUNTS) == [B03]
     assert "a03 · " in mine.spec.rows[0].text and "(accepted, checked by hand)" in mine.spec.rows[0].text
-    assert lst._header.text() == f"Needs attention · {len(intake.attention.groups)}"       # not counted
+    assert lst._header.text() == f"Needs attention · {len(intake.attention.groups)} items"       # not counted
     lst._open.add(USER_COUNTS)
     lst._open_scans.setdefault(USER_COUNTS, set()).add(B)
     lst._refresh_group(USER_COUNTS)

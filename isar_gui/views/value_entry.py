@@ -3,7 +3,7 @@
 :class:`ValueEntry` takes one temperature (K) or one slit (horizontal × vertical, mm) and an optional
 reason. It only parses text into numbers (``float``, independent of the locale) and never range-checks:
 the intake backend validates every save and its reason is shown under the entry as given. While typed
-text is not saved the entry says "Not saved".
+text is not saved the entry says "Not saved yet; press Save".
 
 :class:`SetValueDialog` holds one entry, the sentence saying what the value applies to, and *Save* /
 *Cancel*; *Save* calls ``intake.save_value`` and stays open showing the reason when the save is refused.
@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel, Q
 
 from isar_gui.theme import TONE_COLOR, Tone
 
-NOT_SAVED = "Not saved"
+NOT_SAVED = "Not saved yet; press Save"
 _UNITS = {"temperature": "K", "slit": "mm"}
 _TITLES = {"temperature": "Set my temperature", "slit": "Set my slit"}
 
@@ -66,6 +66,7 @@ class ValueEntry(QWidget):
         self._reason.setObjectName("value_reason")
         self._reason.setPlaceholderText("Reason (optional)")
         self._reason.setAccessibleName("Reason (optional)")
+        self._reason.setToolTip("Optional. Kept with the value so you can see later why you entered it.")
         self._status = QLabel("", self)
         self._status.setObjectName("value_status")
         self._status.setWordWrap(True)

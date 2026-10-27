@@ -694,6 +694,9 @@ class MainWindow(QMainWindow):
         self.experiment_strip.rename_requested.connect(self.rename_experiment)
         self.experiment_strip.details_requested.connect(self._open_details)
         self.setup_section.locate_requested.connect(self._locate_resolution_folder)
+        self.attention_list.locate_requested.connect(self._locate_resolution_folder)
+        self.attention_list.add_data_requested.connect(self.files_strip.choose_files)
+        self.attention_list.run_requested.connect(self.run_analysis)
         self.readiness_line.locate_requested.connect(self._locate_resolution_folder)
         self.readiness_line.reveal_gap.connect(self.attention_list.reveal)
         self.readiness_line.run_requested.connect(self.run_analysis)
@@ -734,7 +737,7 @@ class MainWindow(QMainWindow):
         return key if ss is None else ss.label
 
     def _locate_resolution_folder(self) -> None:
-        """*Locate…* from the setup section or the readiness line: the one route; a refused save is
+        """*Choose curves folder…* (setup line, attention list, readiness list): the one route; a refused save is
         shown in the setup section (and, like every save, in the Log)."""
         self.setup_section.show_save_outcome(locate_resolution_folder(self, self.intake))
 

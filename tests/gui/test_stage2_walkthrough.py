@@ -228,7 +228,7 @@ def test_scenario1_a_value_is_entered_then_superseded_and_the_files_value_stays(
     # readiness: A's temperature gap and its fallback are gone for every use; the others' stay
     assert "bose_t0_limit" not in _fallbacks(root, A)
     assert A not in _members(w, "temperature") and B in _members(w, "temperature")
-    assert w.attention_list._header.text() == f"Needs attention · {len(w.intake.attention.groups)}"
+    assert w.attention_list._header.text() == f"Needs attention · {len(w.intake.attention.groups)} items"
 
 
 def _digest_equal(before: dict, built_root: Path) -> bool:
@@ -316,7 +316,8 @@ def test_scenario3_files_parse_without_curves_and_locate_changes_the_counts(
     assert import_summary(root).curves.n_curves == 0 and n > 0 and m == n       # nothing could be matched
     assert w.setup_section._resolution.full_text() == "Resolution curves: not found"
     assert WARN in w.setup_section._resolution.styleSheet()
-    assert w.setup_section._problem.full_text() == import_summary(root).curves.problem
+    assert w.setup_section._problem.full_text() == "No resolution curves yet. Choose the folder that holds them."
+    assert import_summary(root).curves.problem in w.setup_section._problem.toolTip()
     line = w.readiness_line
     assert line.text.startswith(f"{n} spectra read · 0 ready for analysis · {m} need resolution curves")
 
@@ -411,7 +412,9 @@ def _text_fits(label) -> None:
 def _assert_s2_controls_usable(w) -> None:
     lst, section, inspector = w.attention_list, w.setup_section, w.scan_inspector
     # setup section: the read counts, the curves line, Locate… and the problem line, apart and whole
-    setup = (section._summary, section._resolution, section._locate, section._problem)
+    setup = tuple(c for c in (section._summary, section._resolution, section._locate, section._problem)
+                  if c.isVisible())         # the "not found" row folds into the sentence under it
+    assert section._locate in setup and section._problem in setup
     _apart(w, setup, "setup section")
     for control in setup:
         _reachable(w, control)
@@ -443,6 +446,29 @@ def _assert_s2_controls_usable(w) -> None:
         if isinstance(label, QLabel):
             _text_fits(label)
     assert table.width() <= inspector._scroll.viewport().width()
+
+
+def test_each_attention_group_carries_its_remedy_button_inside_it_at_1108x851(qtbot, monkeypatch, built_hard, tmp_path):
+    """Batch 1 of the GUI threshold: "to resolve: ..." is never bare text. The group whose remedy is the
+    curves folder holds *Choose resolution-curve folder...*, a group whose remedy is "import again" holds
+    *Add data...*; each is whole, visible and inside its group's rectangle, and calls the window's route."""
+    w = _hardest(qtbot, monkeypatch, _copy(built_hard, tmp_path), processing_collapsed=False)
+    lst = w.attention_list
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: "")      # the window's routes open file
+    monkeypatch.setattr(QFileDialog, "getOpenFileNames", lambda *a, **k: ([], ""))    # dialogs: cancel them
+    expected = {"resolution_folder": ("Choose resolution-curve folder…", lst.locate_requested),
+                "files_not_read": ("Add data…", lst.add_data_requested),
+                "analyzer_unreadable": ("Add data…", lst.add_data_requested)}
+    assert set(expected) <= set(lst._groups)
+    for key, (text, signal) in expected.items():
+        group = lst._groups[key]
+        button = group.fix
+        _reachable(w, button, lst._scroll)                      # shown, enabled, whole inside the window, not clipped
+        assert button.full_text() == text and button.toolTip(), key
+        assert group.rect().contains(button.geometry()), (key, group.rect(), button.geometry())   # inside its group
+        assert group.isAncestorOf(button)
+        with qtbot.waitSignal(signal, timeout=1000):
+            button.click()
 
 
 def test_scenario4_laptop_hardest_combination_expanded_processing(qtbot, monkeypatch, built_hard, tmp_path):
@@ -494,8 +520,8 @@ def test_scenario4_the_scan_list_keeps_S1s_400px_minimum_with_the_attention_list
     problem = w.setup_section._problem
     if fixture == "built_hard":                  # no curves: the check's problem is shown, elided, full on hover
         full = w.intake.summary.curves.problem
-        assert problem.isVisible() and problem.toolTip() == full and problem.full_text() == full
-        assert problem.text().endswith("…") and problem.text() != full
+        assert problem.isVisible() and full in problem.toolTip()      # the plain sentence shows, the backend's text hovers
+        assert problem.full_text() == "No resolution curves yet. Choose the folder that holds them."
         two_lines = 2 * problem.fontMetrics().lineSpacing() + problem.contentsMargins().top() \
             + problem.contentsMargins().bottom() + 2 * problem.margin()
         assert problem.height() <= two_lines, (problem.height(), two_lines)

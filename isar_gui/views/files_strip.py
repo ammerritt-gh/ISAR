@@ -62,10 +62,10 @@ class FilesStrip(QWidget):
         self._note.setWordWrap(True)
         self._add_files = QPushButton("Add files…", zone)
         self._add_files.setObjectName("files_add_files")
-        self._add_files.clicked.connect(self._choose_files)
+        self._add_files.clicked.connect(self.choose_files)
         self._add_folder = QPushButton("Add folder…", zone)
         self._add_folder.setObjectName("files_add_folder")
-        self._add_folder.clicked.connect(self._choose_folder)
+        self._add_folder.clicked.connect(self.choose_folder)
         inner = QVBoxLayout(zone)
         inner.setContentsMargins(8, 4, 8, 4)
         inner.setSpacing(3)
@@ -99,8 +99,8 @@ class FilesStrip(QWidget):
         self._add = QPushButton("Add…", line)
         self._add.setObjectName("files_add")
         add_menu = QMenu(self._add)
-        add_menu.addAction("Files…").triggered.connect(self._choose_files)
-        add_menu.addAction("Folder…").triggered.connect(self._choose_folder)
+        add_menu.addAction("Files…").triggered.connect(self.choose_files)
+        add_menu.addAction("Folder…").triggered.connect(self.choose_folder)
         self._add.setMenu(add_menu)
         self._watch = QPushButton("Watch…", line)
         self._watch.setObjectName("files_watch")
@@ -212,13 +212,14 @@ class FilesStrip(QWidget):
             self._watch_dialog = None
 
     # ---- choosing paths ------------------------------------------------------------------
-    def _choose_files(self) -> None:
+    def choose_files(self) -> None:
+        """Pick data files to read into this experiment (also the needs-attention list's *Add data…*)."""
         paths, _ = QFileDialog.getOpenFileNames(self, "Add data files", self._last_dir)
         if paths:
             self._last_dir = str(Path(paths[0]).parent)
             self.paths_dropped.emit([str(Path(p)) for p in paths])
 
-    def _choose_folder(self) -> None:
+    def choose_folder(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Add data folder", self._last_dir)
         if path:
             self._last_dir = path

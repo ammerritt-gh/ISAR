@@ -3,7 +3,7 @@
 The name is shown with *Rename…* (the window's rename), the folder path is shown and selectable but not
 editable, and six optional fields (title, proposal, sample, people, dates, notes) are kept with the
 experiment in the intake backend's settings record. No fit reads them and none is required. The
-resolution-curve line with *Locate…* acts at once, outside the fields' *Save details*.
+resolution-curve line with its chooser acts at once, outside the fields' *Save details*.
 
 *Save details* sends all six fields (an empty one as ``""``) plus every other key the record already
 holds, unchanged, so a field another tool stored is never dropped. A refused save keeps the dialog open
@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout, QHBoxLayo
 
 from isar_gui.theme import TONE_COLOR, Tone
 from isar_gui.views.elided_label import ElidedLabel
-from isar_gui.views.setup_section import locate_resolution_folder, resolution_text
+from isar_gui.views.setup_section import LOCATE_LONG, LOCATE_TIP, locate_resolution_folder, resolution_text
 
 # The descriptive fields: (key, label). The keys are this GUI's (the backend stores them as given).
 FIELDS = (("title", "Title"), ("proposal", "Proposal"), ("sample", "Sample"), ("people", "People"),
@@ -74,9 +74,9 @@ class DetailsDialog(QDialog):
 
         self._resolution = ElidedLabel("", self)
         self._resolution.setObjectName("details_resolution")
-        locate = QPushButton("Locate…", self)
+        locate = QPushButton(LOCATE_LONG, self)
         locate.setObjectName("details_locate")
-        locate.setToolTip("Choose the folder of resolution curves; it is saved at once")
+        locate.setToolTip(LOCATE_TIP)
         locate.clicked.connect(self._locate)
         res_row = QHBoxLayout()
         res_row.addWidget(self._resolution, 1)

@@ -19,12 +19,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QGridLayout, QLabel, QLineEdit, QPushButton,
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QGridLayout, QLabel, QLineEdit,
                                QSizePolicy, QVBoxLayout, QWidget)
 
 from isar.workspace_api import USES, scan_prefix, split_key
 from isar_gui.theme import TONE_COLOR, Tone
-from isar_gui.views.elided_label import ElidedLabel
+from isar_gui.views.elided_label import ElidedButton, ElidedLabel
 from isar_gui.views.value_entry import SetValueDialog
 
 NO_VALUE_OF_YOURS = "No value of yours is in force"
@@ -91,37 +91,6 @@ class _Cell(QLabel):
         hint = super().minimumSizeHint()
         hint.setWidth(0)
         return hint
-
-
-class _ActionButton(QPushButton):
-    """A button that never pins the inspector's width: its text is shortened with "…" to the room it has
-    (the full text stays the accessible name), as :class:`ElidedLabel` does for a label."""
-    _PAD = 24       # px the button style adds around the text
-
-    def __init__(self, text: str, parent: QWidget | None = None) -> None:
-        super().__init__(text, parent)
-        self._full = text
-        self.setAccessibleName(text)
-        # Preferred, not the default Minimum: only a policy that may shrink lets the layout use the 0 minimum
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-
-    def full_text(self) -> str:
-        return self._full
-
-    def sizeHint(self):  # noqa: N802 (Qt override)
-        hint = super().sizeHint()
-        hint.setWidth(self.fontMetrics().horizontalAdvance(self._full) + self._PAD)
-        return hint
-
-    def minimumSizeHint(self):  # noqa: N802 (Qt override)
-        hint = super().minimumSizeHint()
-        hint.setWidth(0)
-        return hint
-
-    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        super().resizeEvent(event)
-        self.setText(self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight,
-                                                    max(self.width() - self._PAD, 1)))
 
 
 @dataclass
@@ -422,7 +391,7 @@ class FactTable(QWidget):
                 stack.setContentsMargins(0, 0, 0, 2)
                 stack.setSpacing(2)
                 for a in row.actions:
-                    button = _ActionButton(a.text, box)
+                    button = ElidedButton(a.text, box)
                     button.setObjectName(f"fact_action_{a.name}")
                     button.setEnabled(a.enabled)
                     button.setToolTip(a.tip)
