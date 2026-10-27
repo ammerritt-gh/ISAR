@@ -60,7 +60,7 @@ The full command set:
 
 <!-- isar-commands: exhaustive -->
 ```
-init  detect  ingest  run  status  profile  report  diagnose  score  view  scene-build  drive  answer
+init  detect  ingest  run  status  profile  report  export  diagnose  score  view  scene-build  drive  answer
 ```
 <!-- /isar-commands -->
 

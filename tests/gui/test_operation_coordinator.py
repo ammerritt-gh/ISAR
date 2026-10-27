@@ -7,6 +7,7 @@ pytest.importorskip("PySide6")
 
 from isar_gui import operation_coordinator
 import json
+from pathlib import Path
 
 from isar_gui.commands import DriveOptions, RunOptions
 from isar_gui.operation_coordinator import WorkspaceOperationCoordinator
@@ -402,3 +403,55 @@ def test_stale_generation_drive_completion_is_not_live(qtbot, coordinator):
     coordinator._wsm._generation += 1
     _Runner.instances[0].complete(0)
     qtbot.waitUntil(lambda: results == [(0, False)])
+
+
+def test_ingest_waits_behind_a_running_export(qtbot, coordinator):
+    """An export reads the stored results, so a drop queued while it runs starts only after it ends."""
+    activity, done = [], []
+    coordinator.activity_changed.connect(activity.append)
+    coordinator.export_finished.connect(lambda code, live: done.append((code, live)))
+    assert coordinator.request_export(r"D:\ws") is True
+    coordinator.request_ingest(["new.dat"])
+    ingest = _Ingest.instances[0]
+    assert ingest.started == []
+    assert activity[-1]["kind"] == "export"
+
+    _Runner.instances[0].complete(0)
+    qtbot.waitUntil(lambda: ingest.started == [["new.dat"]])
+    assert done == [(0, True)]
+
+
+def test_export_waits_behind_a_queued_ingest(qtbot, coordinator):
+    coordinator.request_ingest(["first.dat"])
+    assert coordinator.request_export(r"D:\ws") is True
+    assert _Runner.instances == []
+
+    _Ingest.instances[0].complete()
+    qtbot.waitUntil(lambda: len(_Runner.instances) == 1)
+    assert "export" in _Runner.instances[0].argv
+
+
+def test_export_refused_unless_the_live_experiment_is_ready(coordinator, monkeypatch):
+    assert coordinator.request_export(r"E:\elsewhere") is False
+    monkeypatch.setattr(coordinator._wsm, "root", lambda: None)
+    assert coordinator.request_export(r"D:\ws") is False
+    monkeypatch.setattr(coordinator._wsm, "root", lambda: r"D:\ws")
+    monkeypatch.setattr(coordinator._wsm, "state", lambda: "pending")
+    assert coordinator.request_export(r"D:\ws") is False
+    assert coordinator.is_busy() is False and coordinator.queued_count() == 0
+
+
+def test_export_argv_and_log_under_gui_runs(coordinator):
+    started = []
+    coordinator.export_started.connect(started.append)
+    assert coordinator.request_export(r"D:\ws") is True
+    assert _Runner.instances[0].argv == ["python", "-m", "isar", "export", "--workspace", r"D:\ws", "--json"]
+    assert coordinator.is_running_export()
+    log = Path(started[0])
+    assert log.parent == Path(r"D:\ws", "report", "gui-runs") and log.name.startswith("export-")
+
+
+def test_cancel_terminates_the_running_export(coordinator):
+    coordinator.request_export(r"D:\ws")
+    assert coordinator.cancel() is True
+    assert _Runner.instances[0].terminated is True
