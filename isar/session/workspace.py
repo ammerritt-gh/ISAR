@@ -7,6 +7,7 @@ Layout:
       card.state.json     # machine-owned accumulated state (calibration, prior, exclusions)
       session.json        # machine bookkeeping (manifest + ledger); deletable/rebuildable
       report/             # report.md/.html/.json, reduction.*, results.csv, figures/
+      .isar-write.lock    # held by the writers beside the analysis queue (isar.session.atomic)
 
 `Workspace` is a thin path holder + load/save. `load()` returns the in-memory `(Card, SessionState)`
 pair; `save()` writes both machine-owned files atomically. The policy TOML is only ever read.

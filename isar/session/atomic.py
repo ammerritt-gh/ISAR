@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -48,3 +50,31 @@ def replace_retrying(temporary: str | Path, target: str | Path, *,
             log.warning("replace of %s blocked by a concurrent reader (attempt %d/%d): %s",
                         target, attempt, attempts, error)
             time.sleep(float(delay_seconds))
+
+
+# --- C-lock: the workspace write lock -----------------------------------------------------------
+#: The lock file at the workspace root. The writers that run beside the analysis queue
+#: (``isar.session.writer.save_results`` and ``isar ingest``) hold it for their whole
+#: read-modify-write; readers never take it.
+WRITE_LOCK = ".isar-write.lock"
+#: Longer than the one long hold (a folder copy under the analysis service's ``hold_writes``, about a
+#: minute), so a writer arriving during a copy waits rather than fails. An algorithm setting.
+WRITE_LOCK_TIMEOUT_S = 120.0
+
+
+class WorkspaceBusy(TimeoutError):
+    """The workspace write lock was not obtained within its timeout; nothing was written."""
+
+
+@contextmanager
+def workspace_write_lock(root: str | Path, *, timeout_s: float = WRITE_LOCK_TIMEOUT_S) -> Iterator[None]:
+    """Hold ``<root>/.isar-write.lock``: exclusive across processes, released by the OS if the holder
+    dies, not reentrant (a nested take waits, then raises ``WorkspaceBusy``)."""
+    from isar.intake import store   # lazily: intake/scans.py imports this module lazily; keep it acyclic
+    path = Path(root) / WRITE_LOCK
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(store.file_lock(path, timeout_s=timeout_s))
+        except store.StoreBusy:      # only the take: a StoreBusy from the body propagates as itself
+            raise WorkspaceBusy(f"{path} held by another ISAR writer for {timeout_s} s") from None
+        yield

@@ -12,7 +12,8 @@ import traceback
 
 from isar.intake import curves, inputs
 from isar.schema import card as card_mod
-from isar.session import ingest
+from isar.session import ingest, writer
+from isar.session.atomic import WorkspaceBusy
 from isar.session.workspace import Workspace
 
 
@@ -35,6 +36,7 @@ def run(args) -> int:
         print(f"warning: unknown card section [{unknown}] — ignored (typo?)", file=sys.stderr)
 
     card, session = ws.load()
+    base = writer.snapshot(session)      # the save merges onto session.json as it is then (C-lock)
     try:
         report = ingest.ingest_batch(card, session, args.data, data_dir=ws.root / "data",
                                      workspace_root=ws.root)
@@ -49,7 +51,13 @@ def run(args) -> int:
         print(f"error: {msg}", file=sys.stderr)
         return 2
     if report.dirty:
-        session.save(ws.session_path)   # only the machine-owned ledger; never card.policy.toml
+        try:     # only the machine-owned ledger, merged under the write lock; never card.policy.toml
+            writer.save_session_merged(ws, session, base)
+        except WorkspaceBusy as exc:
+            if as_json:
+                print(json.dumps({"error": {"kind": "busy", "message": str(exc)}}))
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     damaged = inputs.damage_lines(ws.root)   # skipped lines of the intake files, never a stop
 
     if as_json:

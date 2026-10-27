@@ -30,6 +30,7 @@ One directory per experiment (`isar/session/workspace.py`):
   intake/             # BL43 intake records, ISAR-written only: settings.jsonl (experiment
                       # settings), entries.jsonl (user values and conditions; experiment-critical like
                       # card.state.json, not deletable), .lock (held for one append)
+  .isar-write.lock    # the workspace write lock (below); empty, safe to leave in place
 ```
 
 The `intake/` records are append-only: a save adds a line, a later line supersedes an earlier one for
@@ -39,6 +40,18 @@ saved by the GUI (or discovered once, at the first import or run, when none is s
 an import, a run or a fit. `report/curves.json` records what the last check found: the folder in force, its
 fingerprint, each curve's content hash, and any other `rf/` folder that also holds curves. Imports and run
 starts write it; nothing else does.
+
+**Writers and the write lock.** The writers that run beside the GUI's analysis queue hold
+`.isar-write.lock` at the workspace root for their whole read-modify-write: the queue's writer
+(`isar.session.writer.save_results`) and `isar ingest`. Each re-reads `session.json` (and, for the queue,
+`card.state.json`) under the lock and merges onto it: a queued result replaces only its own analyzer's
+pass, and refuses to save, with its reason, when that file was read in again with different data, or its
+fast pass replaced, while it ran; an ingest keeps every result saved since it started reading. The lock
+is exclusive across processes and released by the operating system if its holder dies; a writer waits
+for it up to `WRITE_LOCK_TIMEOUT_S` (120 s, longer than a held copy of the folder) and then fails with
+nothing written. Readers never take it. `isar run`, `isar drive` and the campaign worker do not take it:
+do not run them on an experiment while the GUI queue is analysing it, or their whole-file saves can
+overwrite the queue's results (re-add the files to recover).
 
 ### Values, conditions and what each fit used (BL43)
 
