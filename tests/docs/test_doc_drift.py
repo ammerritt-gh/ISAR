@@ -113,12 +113,18 @@ STALE_PHRASES = (
     # which reads as an architectural boundary that campaign control appears to violate.
     (
         "read-only viewer over",
-        "the GUI is read-only with respect to scientific interpretation through workspace_api; "
-        "it does own subprocesses and write control files (AGENTS.md hard rule 7)",
+        "the GUI shows what ISAR has recorded and sends the user's actions to ISAR; it interprets "
+        "no science (AGENTS.md hard rule 7, rewritten 2026-10-27)",
     ),
     (
         "read-only viewer against",
-        "same correction, README's repository-layout wording",
+        "same correction as the entry above, README's repository-layout wording (AGENTS.md hard "
+        "rule 7, rewritten 2026-10-27)",
+    ),
+    (
+        "The GUI reads science, it never writes science",
+        "hard rule 7 was replaced 2026-10-27: the GUI sends the user's actions to ISAR; the invariant "
+        "is that what the user sees is what ISAR uses",
     ),
     (
         "awaits separate O42 release review",
