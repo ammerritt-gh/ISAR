@@ -1,6 +1,7 @@
 """`isar` CLI entry point (the retired unification plan §5, git history; current contract: docs/WORKSPACE_AND_CLI.md).
 
-Subcommands: init, detect, ingest, run, status, report, score, profile, diagnose, view, drive.
+Subcommands: init, detect, ingest, run, status, report, export, score, profile, diagnose, view,
+drive.
 Built incrementally; unimplemented commands raise a clear message rather than a stack trace.
 """
 from __future__ import annotations
@@ -140,6 +141,12 @@ def build_parser() -> argparse.ArgumentParser:
     prp.add_argument("--scene", action="store_true",
                      help="also rebuild the SCENE revision from persisted state into "
                           "<workspace>/report/scene/ (read-only: no re-fit, no re-collation)")
+
+    pex = sub.add_parser("export", help="write a timestamped export of the stored results under "
+                                        "report/exports/ (no refit)")
+    pex.add_argument("--workspace", required=True)
+    pex.add_argument("--json", action="store_true",
+                     help="end with one machine-readable JSON line (the folder, or the error)")
 
     pdg = sub.add_parser("diagnose", help="render the architect's CAMPAIGN_DIAGNOSTIC.md for a campaign")
     pdg.add_argument("--workspace", required=True)
@@ -350,6 +357,9 @@ def main(argv=None) -> int:
     if cmd == "report":
         from isar.cli import report_cmd
         return report_cmd.run(args)
+    if cmd == "export":
+        from isar.cli import export_cmd
+        return export_cmd.run(args)
     if cmd == "diagnose":
         from isar.cli import diagnose_cmd
         return diagnose_cmd.run(args)
