@@ -676,8 +676,8 @@ it also picks up a corrected reader. Moving or renaming the data folder and impo
 marks no scan changed, because the data revision ignores where the files sit; the import record keeps the
 new paths. A resolution folder saved inside the moved folder (the usual `rf/` beside the data) is not
 followed: ISAR keeps the old path, the next import reports its curves as missing, and any fit that used them
-shows Values changed since last fit until you save the new folder in the GUI, since ISAR never switches a
-saved folder by itself.
+shows Values changed since last fit. Save the new folder in the GUI (ISAR never switches a
+saved folder by itself), and the mark clears once the affected scans are fitted again.
 
 ### Reading a fact's source label
 
