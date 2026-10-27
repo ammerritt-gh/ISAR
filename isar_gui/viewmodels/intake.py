@@ -20,7 +20,6 @@ after it returns, ok or not.
 """
 from __future__ import annotations
 
-import gc
 import logging
 import queue
 import threading
@@ -34,6 +33,7 @@ from isar.intake import settings as intake_settings
 from isar.intake import values as intake_values
 from isar.intake.settings import SaveResult
 from isar.workspace_api import Workspace, import_summary, needs_attention
+from isar_gui import collector_guard
 
 log = logging.getLogger(__name__)
 
@@ -54,32 +54,6 @@ def _n(count: int, one: str, many: str | None = None) -> str:
 
 def _number(value) -> str:
     return f"{value:g}" if isinstance(value, float) else str(value)
-
-
-_live: list[threading.Thread] = []   # intake workers not yet seen ended (GUI thread only)
-_gc_was_enabled = False
-
-
-def _pause_collector(thread: threading.Thread) -> None:
-    """Turn the cyclic collector off before a worker starts (GUI thread). A collection run on the worker
-    could destroy unreachable Qt objects off the GUI thread, which deadlocked the GUI tests. Re-enabling it
-    on the worker was not enough: the worker's next allocation then ran the whole backlog there (seen as
-    workers parked at that point in hung xdist runs)."""
-    global _gc_was_enabled
-    _resume_collector()
-    if not _live:
-        _gc_was_enabled = gc.isenabled()
-        gc.disable()
-    _live.append(thread)
-
-
-def _resume_collector() -> None:
-    """Turn the collector back on once every worker thread has ended (GUI thread), so the backlog runs here."""
-    global _gc_was_enabled
-    _live[:] = [t for t in _live if t.is_alive()]
-    if not _live and _gc_was_enabled:
-        _gc_was_enabled = False
-        gc.enable()
 
 
 def _work(results: queue.SimpleQueue, root: Path, generation: int) -> None:
@@ -167,7 +141,7 @@ class IntakeState(QObject):
         # this QObject (and its timer) off the GUI thread.
         self._thread = threading.Thread(target=_work, args=(self._queue, root, generation), daemon=True,
                                         name="isar-gui-intake")
-        _pause_collector(self._thread)
+        collector_guard.hold(self._thread)
         self._thread.start()
 
     # ---- GUI thread ----
@@ -188,7 +162,7 @@ class IntakeState(QObject):
             self.worker_changed.emit()
         if ended:
             self._active = False
-            _resume_collector()
+            collector_guard.release()
         self._start_pending()
         if not self._active and self._pending is None:
             self._timer.stop()

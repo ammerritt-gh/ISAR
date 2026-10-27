@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from isar_gui import file_dialogs
+from isar_gui import collector_guard, file_dialogs
 from isar_gui.commands import RunOptions, build_run_command
 from isar_gui.active_unit import ActiveUnitController
 from isar_gui.export_action import ExportController
@@ -2646,6 +2646,9 @@ class MainWindow(QMainWindow):
         self._health_closed = True
         if getattr(self, "_health_probe", None) is not None:
             self._health_probe.shutdown()
+        # Threads (health, sandbox) that already ended give the collector back now; one still blocked
+        # keeps it off until the process exits, which is the safe side of the close-time deadlock.
+        collector_guard.release()
         if getattr(self, "_folder_watcher", None) is not None:
             self._folder_watcher.stop()
         if self._bridge is not None:

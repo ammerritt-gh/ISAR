@@ -82,6 +82,15 @@ def _no_live_health_probes(monkeypatch):
             thread.join(timeout=5.0)
 
 
+@pytest.fixture(autouse=True)
+def _collector_back_after_each_test():
+    """A window closed with a background thread still running leaves its hold; the next call finds the
+    thread ended. Make that call here so no test inherits a disabled collector."""
+    yield
+    from isar_gui import collector_guard
+    collector_guard.release()
+
+
 @pytest.fixture
 def make_ws(tmp_path):
     """Return a factory that stamps a synthetic workspace under a fresh subdir and returns its path."""
