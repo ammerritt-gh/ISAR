@@ -171,3 +171,24 @@ def test_the_default_request_has_no_clock_and_a_deep_pass_past_an_hour_completes
     stages = [s for s, _step, _of in _sampling(events)]
     assert stages == sorted(stages) and set(stages) == {1, 2, 3}  # stage by stage, never back
     assert all(step <= of for _s, step, of in _sampling(events))
+
+
+# --------------------------------------------------------------------------- budget: no step for an unrun chunk
+def test_a_zero_budget_announces_no_sampling_step(monkeypatch):
+    entries, values = _ex2_entries()
+    map_fn, _clock = _fake_pool(monkeypatch, values, EXPL)
+    events = []
+    dp.deep_pass(entries, accepted=ACC, exploratory=EXPL, map_fn=map_fn, budget_s=0.0,
+                 progress=events.append)
+    assert _sampling(events) == []
+
+
+def test_a_chunk_the_budget_blocks_announces_no_step(monkeypatch):
+    # each job costs 100 s: the two contenders run (0-200 s); the budget of 150 s then blocks stage 2
+    entries, values = _ex2_entries()
+    map_fn, _clock = _fake_pool(monkeypatch, values, EXPL)
+    events = []
+    res = dp.deep_pass(entries, accepted=ACC, exploratory=EXPL, map_fn=map_fn, budget_s=150.0,
+                       progress=events.append)
+    assert _sampling(events) == [(1, 1, 2), (1, 2, 2)]
+    assert "budget ended before c5, c3, c4" in res.search_limited

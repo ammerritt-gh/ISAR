@@ -286,7 +286,8 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
     partial. So does a non-empty ``fast_limit`` (the record's ``search_limit_reason``): the fast pass
     stopped before pricing every count, so the models here are not all the competing ones.
     ``map_fn`` lets the caller run a chunk's models in a process pool (each run single-threaded).
-    ``progress`` gets C-progress ``sampling`` steps as each stage starts and as each model returns."""
+    ``progress`` gets C-progress ``sampling`` steps as each chunk the budget admits starts and as each
+    model returns."""
     t0 = time.perf_counter()
     chunk = max(1, int(chunk))
     send = emitter(progress, "deep")
@@ -307,12 +308,11 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
 
     def run_stage(name, labels, settings, status, stage, seed_offset=0):
         started = time.perf_counter()
-        if labels:
-            send("sampling", step=1, of=len(labels), stage=stage, stages=DEEP_STAGES)
         done = 0
         for i in range(0, len(labels), chunk):
             if over_budget():
                 break
+            send("sampling", step=i + 1, of=len(labels), stage=stage, stages=DEEP_STAGES)
             jobs = [(lb, by_label[lb], settings, seeds[lb] + seed_offset)
                     for lb in labels[i:i + chunk]]
             for lb, runs in map_fn(_stage_task, jobs):
@@ -329,7 +329,7 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
                     m.status = "unresolved"     # suspect after restarts: kept, never rejected
                 if name == "promoted":
                     attempted_promotion.add(lb)
-                if done < len(labels):
+                if done < min(i + chunk, len(labels)):   # the rest of this chunk is already admitted
                     send("sampling", step=done + 1, of=len(labels), stage=stage, stages=DEEP_STAGES)
         stage_seconds[name] = time.perf_counter() - started
 
