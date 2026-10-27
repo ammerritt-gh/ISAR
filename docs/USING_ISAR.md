@@ -368,6 +368,9 @@ analyzer it shows the file; the scan numbers (a summed set says so, and lists it
 do); the analyzer, temperature and Q, each with where it came from; the slit, or "not in the file"; the
 number of points and the energy range; the parse status; the scan's QC flags; the target Q, the campaign
 command and the counting mode, each only when the scan has one; each pass's state; and a raw-counts plot.
+On a laptop, opening the inspector collapses *Processing* to its rail so the plot keeps its width; expand
+*Processing* again from the rail and it stays open while the inspector is open. Closing the inspector
+does not expand it.
 
 ### Run analysis, Stop and the Campaign tab
 

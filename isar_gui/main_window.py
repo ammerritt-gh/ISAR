@@ -666,7 +666,7 @@ class MainWindow(QMainWindow):
         self.files_strip.log_message.connect(self.log)
         self._folder_watcher.status_changed.connect(self.files_strip.set_watch_status)
         self.scan_list_vm.display_requested.connect(self._route_inspect)
-        self.scan_list_vm.inspect_requested.connect(self._open_scan_inspector)
+        self.scan_list_vm.inspect_requested.connect(self._inspect_from_list)
         self.scan_inspector.close_requested.connect(self._close_scan_inspector)
         self.active_units.active_changed.connect(self.scan_list_vm.set_active_key)
         self.output_bar.save_copy_requested.connect(self.save_copy_as)
@@ -877,6 +877,15 @@ class MainWindow(QMainWindow):
     def _column_width(self) -> int:
         """The left panel's width without the inspector: the scan-list column's own."""
         return max(_LEFT_MIN, self._left_split.widget(0).width())
+
+    def _inspect_from_list(self, key=None) -> None:
+        """The list's Inspect: on a laptop the inspector opens with Processing collapsed to its rail, so
+        the display keeps its width (the user may re-expand it). A compact-mode restore does not come here."""
+        if (self.scan_inspector.isHidden() and not self._right_panel_collapsed()
+                and initial_arrangement(*self._available_size()) == "laptop"):
+            self.set_right_panel_collapsed(True)
+            QApplication.sendPostedEvents(self, QEvent.Type.LayoutRequest)   # the room is measured next
+        self._open_scan_inspector(key)
 
     def _open_scan_inspector(self, key=None) -> None:
         """Open the inspector beside the scan list: the left panel widens by the inspector's width and

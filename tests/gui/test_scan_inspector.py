@@ -36,6 +36,7 @@ A04 = f"{KEY_A}:a04"
 B03 = f"{KEY_B}:a03"
 SINGLE = f"{KEY_SINGLE}:a06"
 LAPTOP = (1108, 851)
+DESKTOP = (2560, 1392)
 
 
 @pytest.fixture
@@ -392,6 +393,43 @@ def test_compact_mode_stashes_the_closed_arrangement_and_reopens_the_inspector(
     assert not w.scan_inspector.isHidden() and w.left_column_dock.isAncestorOf(w.scan_inspector)
     assert w.left_column_dock.width() >= (w._column_width() + w._left_split.handleWidth()
                                           + mw_mod._INSPECTOR_MIN)
+
+
+def test_on_a_laptop_opening_the_inspector_collapses_processing_and_closing_does_not_expand_it(
+        qtbot, patched, bl43_ws, monkeypatch):
+    w = _window(qtbot, monkeypatch, LAPTOP, bl43_ws)
+    w.set_right_panel_collapsed(False)
+    qtbot.wait(50)
+    w.scan_list_vm.inspect(A06)
+    qtbot.wait(50)
+    assert w._right_panel_collapsed() and not w.scan_inspector.isHidden()
+    assert w._center_stack.width() >= mw_mod._CENTER_MIN[0]
+    # the room is measured after the collapse, so the inspector opens at its full width, not the minimum
+    assert abs(w.scan_inspector.width() - mw_mod._ARRANGEMENTS["laptop"].inspector) <= 4
+    w.scan_inspector.close_requested.emit()
+    qtbot.wait(50)
+    assert w._right_panel_collapsed() and w.scan_inspector.isHidden()
+
+
+def test_a_processing_panel_re_expanded_stays_open_while_the_inspector_is_open(
+        qtbot, patched, bl43_ws, monkeypatch):
+    w = _window(qtbot, monkeypatch, LAPTOP, bl43_ws)
+    w.scan_list_vm.inspect(A06)
+    qtbot.wait(50)
+    w.set_right_panel_collapsed(False)
+    qtbot.wait(50)
+    w.scan_list_vm.inspect(A04)                      # another spectrum while it is open: no second collapse
+    qtbot.wait(50)
+    assert not w._right_panel_collapsed() and not w.scan_inspector.isHidden()
+    assert_frame_geometry(w, LAPTOP)
+
+
+def test_on_a_desktop_opening_the_inspector_leaves_processing_expanded(qtbot, patched, bl43_ws, monkeypatch):
+    w = _window(qtbot, monkeypatch, DESKTOP, bl43_ws)
+    assert not w._right_panel_collapsed()
+    w.scan_list_vm.inspect(A06)
+    qtbot.wait(50)
+    assert not w.scan_inspector.isHidden() and not w._right_panel_collapsed()
 
 
 def test_laptop_with_the_inspector_open_and_the_right_panel_expanded_fits(

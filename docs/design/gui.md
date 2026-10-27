@@ -201,10 +201,12 @@ empty/ready layout pair, and amends G19 as stated below.
   screen and Qt accepts it; otherwise the default for the current screen is used and one Log line says
   why. *View ▸ Reset layout* returns to the default for the current screen. `run-isar-gui.bat` starts
   the GUI with `pythonw`, so no console window opens.
-  **Known limit, not yet resolved (2026-10-27).** At 1108 × 851 logical px with the scan inspector open
-  and the Processing panel expanded, the display is held at its 300 px minimum, the fit page's own side
-  tables take most of it, and its plot measures about 86 px wide (offscreen measurement). The laptop
-  check for that combination does not yet hold.
+  **Known limit, accepted (2026-10-27, amendment 4).** Opening the scan inspector on a laptop collapses
+  Processing, so the plot keeps its width. If the user re-expands Processing while the inspector is open,
+  the display is held at its 300 px minimum, the fit page's own side tables take most of it, and its plot
+  measures about 86 px wide (offscreen measurement). The user can expand it again and accept a narrower
+  plot (operator, amendment 4: "on small screens some things get squished, but we can try to make it
+  more user-friendly").
 - **G25 — the experiment is a real folder.** With no experiment open, a drop, *Add files…* or
   *Add folder…* creates one at once. It is named after the dropped folder (or, for loose files, their
   common name), placed under `Documents\ISAR\` (Windows' Documents folder), with a numeric suffix when
@@ -242,7 +244,9 @@ empty/ready layout pair, and amends G19 as stated below.
 - **Scan inspector (amendment 4, operator via orchestrator, 2026-10-27).** The inspector keeps the
   scan's QC flags, shown whenever the scan has any, and shows the target Q a driven scan was aimed at
   and the campaign-era command and counting mode, each only when present. Other rows of the old centre
-  metadata are not in the inspector.
+  metadata are not in the inspector. On a laptop-size window, opening the inspector collapses an
+  expanded Processing panel to its rail; the user may expand it again, and closing the inspector does
+  not expand it. A desktop-size window is unchanged.
 - **Stage two (Planned, waits on job `jfada74237892`, the intake backend).** Not built: the setup
   section and *Locate…* for the resolution-curve folder; *Details…* for the experiment's descriptive
   fields; a needs-attention list with ticked-scan entry; the inspector's fact table with *Set my
