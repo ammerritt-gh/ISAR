@@ -196,3 +196,28 @@ def test_debouncer_cancel_returns_true_when_idle():
     d.add({"a"})
     time.sleep(0.1)                 # let the single flush complete
     assert d.cancel(timeout=WAIT) is True
+
+
+# ---- last_written: the Output bar's "last written" stamp ----------------------
+def test_last_written_is_none_before_any_watched_file(tmp_path):
+    from isar.workspace_api.watch import last_written
+
+    assert last_written(tmp_path) is None
+    (tmp_path / "gui.state.json").write_text("{}", encoding="utf-8")   # not a watched file
+    assert last_written(tmp_path) is None
+
+
+def test_last_written_is_the_newest_watched_mtime(make_ws):
+    import os
+
+    from isar.workspace_api.watch import last_written
+
+    root = make_ws(rows=[{"scan": 1, "detector": "det"}])      # session.json, card.state.json, results.csv
+    os.utime(root / "session.json", (1_000_000_000, 1_000_000_000))
+    os.utime(root / "card.state.json", (1_000_000_050, 1_000_000_050))
+    os.utime(root / "report" / "results.csv", (1_000_000_020, 1_000_000_020))
+    assert last_written(root) == 1_000_000_050
+    os.utime(root / "report" / "results.csv", (1_000_000_090, 1_000_000_090))
+    assert last_written(root) == 1_000_000_090                 # a nested watched file counts too
+    os.utime(root / "card.policy.toml", (2_000_000_000, 2_000_000_000))
+    assert last_written(root) == 1_000_000_090                 # the policy is not a watched artifact
