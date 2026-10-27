@@ -236,8 +236,9 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
     with timer.stage("ingest_parse") as _m_ingest:
         plan = ingest.discover(data_paths, card)
         set_of: dict = {}
+        read_files: set = set()
         records = ingest.parse_all(plan, card, session=None if master_certification else session,
-                                   set_of=set_of)
+                                   set_of=set_of, read_files=read_files)
         _m_ingest["n_records"] = len(records)
     # Basename -> resolved absolute source path, so run's provenance source_file matches ingest's.
     source_by_name = {Path(f).name: str(Path(f).resolve()) for f in plan.measurement_files}
@@ -279,7 +280,9 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             chash_of = {k: content_hash(r) for k, r in parsed_by_key.items()}
             rows = {k: intake_scans.scan_row(r, chash_of[k]) for k, r in parsed_by_key.items()}
             try:
-                intake_scans.record_import(workspace.root, rows.values())
+                # a file this run parsed is read now: any earlier failed/refused entry of it goes
+                intake_scans.record_import(workspace.root, rows.values(),
+                                           seen_files=dict.fromkeys(read_files))
             except Exception as exc:  # noqa: BLE001 — a failed import record is logged and reported, never stops the run
                 log.exception("run: %s not written", intake_scans.INTAKE_SCANS)
                 ctx_lines.append(ingest.import_record_message(intake_scans.INTAKE_SCANS, exc))

@@ -129,18 +129,22 @@ def discover(data_paths, card: Card) -> IngestPlan:
     return plan
 
 
-def parse_all(plan: IngestPlan, card: Card, session=None, set_of: dict | None = None) -> list:
+def parse_all(plan: IngestPlan, card: Card, session=None, set_of: dict | None = None,
+              read_files: set | None = None) -> list:
     """Parse the measurement files with the card-pinned plugin; dedup + order.
 
     Dedup key is `(experiment_id, scan_number)`; the LAST occurrence wins (a resent growing file
     supersedes an earlier copy). Records are returned sorted by `(experiment_id, scan_number)`.
     ``session`` (the run path) lets a summed set be passed over for individual scans already in the
     ledger, as `ingest_batch` does; nothing else of the ledger is consulted. ``set_of`` receives
-    (experiment, scan) -> FileSet for the scans read from a set, for `set_provenance`.
+    (experiment, scan) -> FileSet for the scans read from a set, for `set_provenance`. ``read_files``
+    receives the resolved path of every file that parsed (a set passed over is not one).
     """
     got = _collect(plan, card, isolate=False, ledger=session)
     if set_of is not None:
         set_of.update(got.set_of)
+    if read_files is not None:
+        read_files.update(got.read_files)
     return [got.by_key[k] for k in sorted(got.by_key, key=lambda k: (str(k[0]), k[1]))]
 
 
@@ -154,6 +158,7 @@ class _Collected:
     refused: list = field(default_factory=list)          # {"scan","sets":[earlier, later],"reason"}
     passed_over: list = field(default_factory=list)      # {"set","scans","reason"}: summed sets not read
     passed_files: dict = field(default_factory=dict)     # resolved member path -> reason, of those summed sets
+    read_files: set = field(default_factory=set)         # resolved paths of the files that parsed
 
 
 def _listed_scans(fs: FileSet) -> list[int]:
@@ -320,6 +325,7 @@ def _collect(plan: IngestPlan, card: Card, *, isolate: bool, session=None, ledge
                     got.file_errors[rp] = "refused: " + clash["reason"]
                 log.warning("ingest: %s", clash["reason"])
                 continue
+        got.read_files.update(rps)
         # A set is ONE source for dedup (its first member), so dedup alerts are per set, not per file.
         src = rps[0]
         seen_here: set[tuple] = set()

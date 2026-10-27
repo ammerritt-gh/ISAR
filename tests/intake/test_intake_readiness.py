@@ -740,3 +740,21 @@ def test_only_the_analyzer_whose_file_failed_is_held(tmp_path):
     assert [(i.scan, i.analyzer) for i in grp(na, "analyzer_unreadable").items] == [("Smp:1001", "a03")]
     assert "ValueError: odd" in grp(na, "analyzer_unreadable").items[0].reason
     assert na.scans["Smp:1002"].analyzers["a03"].can_start is True
+
+
+def test_isar_run_clears_the_failed_entry_of_a_file_it_read(tmp_path, monkeypatch):
+    ws, data = fx.bl43_workspace(tmp_path, stems=("A",), analyzers=("a03",))
+    path = data / f"{fx.STEM}_A_a03"
+    good = path.read_text(encoding="utf-8")
+    _truncate(path)
+    _ingest(ws, data)
+    assert [e["class"] for e in scans._load(ws.root / scans.INTAKE_SCANS)["files"].values()] == ["failed"]
+    elsewhere = str(tmp_path / "elsewhere" / "Smp_1_a03")                      # a failed file this run does not read
+    scans.record_import(ws.root, [], seen_files={elsewhere: {"class": "failed", "reason": "odd", "set": None}})
+    path.write_text(good, encoding="utf-8", newline="\n")
+    _no_fit(monkeypatch)
+    _run(ws, data)
+    assert list(scans._load(ws.root / scans.INTAKE_SCANS)["files"]) == [elsewhere]
+    na = needs_attention(ws.root)
+    assert [i.file for i in grp(na, "files_not_read").items] == [elsewhere]
+    assert grp(na, "analyzer_unreadable") is None
