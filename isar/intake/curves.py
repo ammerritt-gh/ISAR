@@ -12,11 +12,11 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from isar.analyze.resolution import ResolutionLibrary
+from isar.analyze.resolution import ResolutionLibrary, file_stamp
 from isar.intake.settings import current_settings, save_resolution_folder
 
 log = logging.getLogger(__name__)
@@ -106,26 +106,42 @@ class LoadedCurves:
     fingerprint: str | None
     problem: str | None
     identity: dict           # {(detector, setting): {"file", "sha256"}}
+    folder: Path | None = None     # where they were loaded from (the folder in force then)
+    pattern: str | None = None
+    stamps: dict = field(default_factory=dict)   # {(detector, setting): [size, mtime_ns]} of each curve file
 
 
-def _unusable(problem: str) -> LoadedCurves:
-    return LoadedCurves(ResolutionLibrary(), None, problem, {})
+def _unusable(problem: str, folder, pattern) -> LoadedCurves:
+    return LoadedCurves(ResolutionLibrary(), None, problem, {}, folder, pattern)
+
+
+def _stamps(folder: Path, library) -> dict:
+    """Each curve file's stamp, taken as the snapshot loads the library; a file gone by then is left out."""
+    out = {}
+    for c in library:
+        try:
+            out[(c.detector_id, c.setting)] = file_stamp(folder / c.source)
+        except OSError as exc:
+            log.warning("resolution curves: %s gone before its stamp was taken (%s)", c.source, exc)
+    return out
 
 
 def load_curves(folder, pattern) -> LoadedCurves:
     """The folder's library, its fingerprint and each curve's content identity; ``problem`` says why it is unusable."""
+    folder = None if folder is None else Path(folder)
     if folder is None:
-        return _unusable(NO_FOLDER)
+        return _unusable(NO_FOLDER, folder, pattern)
     if not pattern:
-        return _unusable(NO_PATTERN)
+        return _unusable(NO_PATTERN, folder, pattern)
     from isar.parsers import sarf   # imported here: the read side never loads a parser
     try:
         fp = sarf.fingerprint(folder, pattern)
         library = sarf.library_for(folder, pattern, fp)
     except (OSError, ValueError, re.error) as exc:
         log.warning("calibration(tabulated_elastic): resolution library unavailable (%s)", exc)
-        return _unusable(f"resolution library unavailable ({exc})")
-    return LoadedCurves(library, fp, None, sarf.curve_identity(folder, library))
+        return _unusable(f"resolution library unavailable ({exc})", folder, pattern)
+    stamps = _stamps(folder, library)
+    return LoadedCurves(library, fp, None, sarf.curve_identity(folder, library), folder, pattern, stamps)
 
 
 def resolution_location(card, workspace_root) -> tuple[Path | None, str | None, str]:
@@ -184,6 +200,12 @@ def check_curves(root, card, data_paths, *, by: str) -> CurveCheck | None:
     None unless the card's method is ``tabulated_elastic``. An ``rf/`` beside the data is saved as the
     experiment's folder only when none is saved; a saved folder is never switched here.
     """
+    got = check_and_load(root, card, data_paths, by=by)
+    return None if got is None else got[0]
+
+
+def check_and_load(root, card, data_paths, *, by: str) -> tuple[CurveCheck, LoadedCurves] | None:
+    """``check_curves`` and the curves it loaded: a run calibrates and fits with this one snapshot."""
     cfg = card.policy.calibration or {}
     if cfg.get("method") != "tabulated_elastic":
         return None
@@ -228,7 +250,7 @@ def check_curves(root, card, data_paths, *, by: str) -> CurveCheck | None:
         library=loaded.fingerprint, problem=problem, curves=curves,
         other_folders=tuple(sorted(kept.values(), key=lambda o: o.path)), discovered=discovered)
     _write(root, check)
-    return check
+    return check, loaded
 
 
 def _write(root: Path, check: CurveCheck) -> None:

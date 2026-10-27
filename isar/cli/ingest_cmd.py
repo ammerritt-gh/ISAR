@@ -10,7 +10,7 @@ import json
 import sys
 import traceback
 
-from isar.intake import curves
+from isar.intake import curves, inputs
 from isar.schema import card as card_mod
 from isar.session import ingest
 from isar.session.workspace import Workspace
@@ -50,6 +50,7 @@ def run(args) -> int:
         return 2
     if report.dirty:
         session.save(ws.session_path)   # only the machine-owned ledger; never card.policy.toml
+    damaged = inputs.damage_lines(ws.root)   # skipped lines of the intake files, never a stop
 
     if as_json:
         print(json.dumps({
@@ -61,7 +62,9 @@ def run(args) -> int:
             "passed_over": report.to_jsonable()["passed_over"],
             "gaps": report.to_jsonable()["gaps"],
             "last_ingest": report.to_jsonable()["last_ingest"],
-            "curves": report.curves}))
+            "curves": report.curves,
+            "intake_damaged": damaged,
+            "import_record_error": report.import_record_error}))
         return 0
 
     # Human summary.
@@ -89,6 +92,10 @@ def run(args) -> int:
         else:
             for line in curves.CurveCheck.from_dict(report.curves).lines():
                 print(f"  {line}")
+    for line in damaged:
+        print(f"  intake: {line}")
+    if report.import_record_error:
+        print(f"  intake: {report.import_record_error}")
     if not report.dirty:
         print("  (no change — ledger already current)")
     return 0

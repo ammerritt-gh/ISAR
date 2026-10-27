@@ -21,10 +21,15 @@ One directory per experiment (`isar/session/workspace.py`):
   session.json        # machine bookkeeping (manifest + ledger) — deletable, rebuildable
   report/             # report.md/.html/.json, reduction.*, results.csv, modes.csv, figures/,
                       # measurements.jsonl (counts-authoritative arena log), scene/ (revisions),
-                      # curves.json (BL43 resolution-curve check: folder, curves by content)
+                      # curves.json (BL43 resolution-curve check: folder, curves by content),
+                      # intake_scans.json (BL43 import record: the file values of every scan read;
+                      # machine-written, rebuilt by a re-import), fit_inputs.jsonl (what each pass
+                      # used; append-only), fit_history.jsonl (every ledger entry a re-import or
+                      # refit replaced, kept in full; append-only)
     scene/            # scene revisions: <digest>.json blobs + current.json pointer
   intake/             # BL43 intake records, ISAR-written only: settings.jsonl (experiment
-                      # settings), .lock (held for one append)
+                      # settings), entries.jsonl (user values and conditions; experiment-critical like
+                      # card.state.json, not deletable), .lock (held for one append)
 ```
 
 The `intake/` records are append-only: a save adds a line, a later line supersedes an earlier one for
@@ -34,6 +39,66 @@ saved by the GUI (or discovered once, at the first import or run, when none is s
 an import, a run or a fit. `report/curves.json` records what the last check found: the folder in force, its
 fingerprint, each curve's content hash, and any other `rf/` folder that also holds curves. Imports and run
 starts write it; nothing else does.
+
+### Values, conditions and what each fit used (BL43)
+
+For a BL43LXU workspace the colleague can save, per scan, a temperature or a slit that overrides the one
+the files give, and can declare an excluded scan, a dead analyzer or accepted counts (see the glossary).
+Each save is one line of `intake/entries.jsonl`, checked before it is written (a refusal gives its reason
+and writes nothing); a damaged line is skipped, logged and reported by the reads, and never stops a save,
+an import or a run. `report/intake_scans.json` holds what the files said (the file values, each analyzer's
+Q and count record), written by `isar ingest` and by `isar run`; it never holds a user value.
+
+- **Start point.** A run lists every unit of its scans and decides nothing about freshness up front. When
+  it reaches a scan's first unit it reads `entries.jsonl` from disk, builds the effective record and
+  freezes it for that scan's calibration and all its analyzers' fits; there it decides, per unit, carry or
+  fit. A save made after a scan's start point is used from the next run, and the reads mark the results
+  meanwhile. A save never requeues anything by itself.
+- **Effective record.** The temperature and slit in force replace the file's (a missing temperature stays
+  missing and falls back, never 0 K); dead analyzers are absent; the analyzers with accepted counts are
+  named. The parsed record is never changed.
+- **Calibration reuse.** A scan's tabulated calibration state carries an `inputs_key`, the hash of its data
+  revision, resolution folder, pattern, library fingerprint, declared slit, analyzers and accepted counts.
+  It is reused only when that key is unchanged; otherwise the scan is recalibrated before its units are
+  fitted. An excluded or dead unit becomes an `excluded` ledger entry carrying the declaring entry in its
+  reason; it is never fitted and has no fit-inputs line.
+- **Count hold.** A spectrum with a warning-level `counts_not_integer` is held (`held_for_calibration`)
+  unless its counts are accepted and it is an `_i` spectrum; the notice level holds nothing.
+- **Fit inputs.** `report/fit_inputs.jsonl` gets a run start line, a started line per unit and pass at the
+  scan's start point (the frozen inputs, their hash and their fallbacks), a finished line as each unit
+  completes, and an end line after the workspace save. A run that died, failed or was cut by a deadline
+  saved nothing to the ledger, so its lines do not count, except a unit the ledger holds by its stamp (a
+  checkpoint). A GUI Cancel kills the process and writes no end line: a run with no end line whose process
+  is gone is not running. Each ledger entry processed in a run carries
+  `provenance["fit_inputs"] = {run, hash, fallbacks}`, and a later start point refits a unit whose frozen
+  inputs hash differs from it. The hash covers exactly the values the reads compare: data revision,
+  temperature, slit, Q, the conditions, whether the counts override applied, and the calibration's folder,
+  slit setting and basis, zero and its source, held reason and the unit's own curve (the library only when
+  the slit was chosen by comparing curves).
+- **Reads.** `Workspace.fact_rows(scans=None)` and `Workspace.fit_inputs(units=None)`
+  (`isar/workspace_api/intake_view.py`) are read-only, Qt-free and scipy-free. Fact rows give, per scan,
+  the temperature and slit and, per analyzer, Q and counts: the file value and source, the user value,
+  the value used, any disagreement and any fallback. Fit inputs give, per analyzer, the latest fast and
+  latest deep pass with the inputs it used and its *changes since*, judged on values against the inputs in
+  force now: the saved values and conditions, the calibration state in `card.state.json`, the folder in
+  force, and the library and curve identity from the last `report/curves.json` (never hashed at read
+  time, so a replaced curve is marked from the next import or run start). With none of the files, both
+  return `[]`. They take no lock and never block a writer: the import record is replaced atomically and
+  the two logs are append-only, so a read during a run or a save sees the last committed state.
+  Each parses its files once per `refresh()`; `fit_inputs` parses the whole log, which grows by about
+  1.4 MB per fast pass at 30 scans x 28 analyzers (about 0.4 s at 20 runs, 30 ms at one), so call it from a
+  worker thread. Each later call re-judges liveness and the latest passes over the parsed log (about 35 ms
+  at 20 runs), so a run killed after a read stops counting at once. `Workspace.watch` reports `intake_entries`,
+  `intake_settings`, `intake_scans`, `fit_inputs` and `curves` among its change names.
+- **`Change.field`** (the *changes since* rows) is one of a closed list: `data` (the imported revision),
+  `temperature`, `slit`, `q`, `excluded`, `dead`, `dead_in_scan` (a sibling analyzer declared dead), `counts_accepted`,
+  `resolution_folder`, `curve` (the unit's curve content), `resolution_library` (the curves compared when the slit
+  was chosen by comparison), and five fields of the calibration the pass was made with, compared with the
+  calibration now so that a recalibration is never silent: `calibration_setting` (the slit setting chosen),
+  `calibration_basis` (how it was chosen: `declared`, `inferred`, `broadest_curve_fallback` or `none`), `calibration_zero` (the energy zero),
+  `calibration_zero_source` (elastic fit or file-axis fallback) and `calibration_held_reason` (why the
+  analyzer is held, if it is). A recalibration moves several of these at once, and a dead declaration moves
+  its own analyzer's calibration as well as `dead`. `now_source` is set only for `temperature` and `slit`.
 
 **The two card files have opposite ownership, and that is the point.**
 `card.policy.toml` is hand-edited human intent — detectors, column maps, collation and merge
@@ -61,12 +126,13 @@ and the ledger (`scans`).
   later run — that is how a scan held for a missing energy zero is picked up once the calibration
   arrives.
 - **Provenance per entry:** resolution version, zero source, prior size and source, `M`, seed,
-  code versions.
+  code versions, and (BL43) `fit_inputs`: the run, the inputs hash and the fallbacks of the fit.
 
 ### Idempotency: re-parse everything, re-fit selectively
 
 Every `isar run` re-parses every manifest file, and re-*fits* only scans whose ledger entry is
-new, previously held, whose `content_hash` changed, or whose `guidelines_hash` changed.
+new, previously held, whose `content_hash` changed, or whose `guidelines_hash` changed, or (BL43)
+whose fit inputs (data revision, user values, conditions, calibration) changed.
 
 - `content_hash` covers the parsed record — it makes a growing-file resend a re-parse plus dedup
   rather than a duplicate.

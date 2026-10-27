@@ -41,38 +41,53 @@ class ResolutionFolder:
 class ExperimentSettings:
     resolution_folder: ResolutionFolder | None   # None: nothing saved
     metadata: dict[str, str]                     # the latest metadata save, whole; {} when none
+    damaged: tuple[store.Damaged, ...] = ()      # settings lines skipped (store- or schema-level), by line
+
+
+def _problem(e: dict) -> str | None:
+    """Why a store entry is not a settings entry this module can use; None when it is."""
+    kind = e.get("kind")
+    if kind not in _KINDS:
+        return f"unknown kind {kind!r}"
+    if kind == "resolution_folder":
+        for k in ("path", "source", "at"):
+            if not isinstance(e.get(k), str):
+                return f"resolution_folder entry has no {k!r}"
+        if e["source"] not in _SOURCES:
+            return f"unknown folder source {e['source']!r}"
+        if not (e.get("found_beside") is None or isinstance(e["found_beside"], str)):
+            return "found_beside is not text"
+    else:
+        fields = e.get("fields")
+        if not isinstance(fields, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in fields.items()):
+            return "fields must be a mapping of text"
+    return None
 
 
 def _folder(e: dict) -> ResolutionFolder:
-    try:
-        if e["source"] not in _SOURCES:
-            raise ValueError(f"settings entry {e['id']}: unknown folder source {e['source']!r}")
-        return ResolutionFolder(path=e["path"], source=e["source"], entry_id=e["id"], at=e["at"],
-                                found_beside=e.get("found_beside"))
-    except KeyError as k:
-        raise ValueError(f"settings entry {e['id']} lacks {k.args[0]!r}") from None
-
-
-def _metadata(e: dict) -> dict[str, str]:
-    fields = e.get("fields")
-    if not isinstance(fields, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in fields.items()):
-        raise ValueError(f"settings entry {e['id']}: fields must be a mapping of text")
-    return dict(fields)
+    return ResolutionFolder(path=e["path"], source=e["source"], entry_id=e["id"], at=e["at"],
+                            found_beside=e.get("found_beside"))
 
 
 def current_settings(root) -> ExperimentSettings:
+    """The highest-``seq`` entry of each kind; a damaged line is skipped (logged) and listed in ``damaged``."""
+    read = store.read_all(root, store.SETTINGS)
+    damaged = list(read.damaged)
     latest: dict[str, dict] = {}
-    for e in store.read(root, store.SETTINGS):
-        kind = e.get("kind")
-        if kind not in _KINDS:
-            raise ValueError(f"settings entry {e['id']} has unknown kind {kind!r}")
-        if kind not in latest or e["seq"] > latest[kind]["seq"]:
-            latest[kind] = e
+    for e, line in zip(read.entries, read.lines):
+        why = _problem(e)
+        if why is not None:
+            log.warning("%s line %d skipped: %s", store.SETTINGS, line, why)
+            damaged.append(store.Damaged(store.SETTINGS, line, why))
+            continue
+        if e["kind"] not in latest or e["seq"] > latest[e["kind"]]["seq"]:
+            latest[e["kind"]] = e
     folder = latest.get("resolution_folder")
     meta = latest.get("experiment_metadata")
     return ExperimentSettings(
         resolution_folder=_folder(folder) if folder is not None else None,
-        metadata=_metadata(meta) if meta is not None else {},
+        metadata=dict(meta["fields"]) if meta is not None else {},
+        damaged=tuple(sorted(damaged, key=lambda d: d.line)),
     )
 
 
@@ -97,7 +112,7 @@ def _write(root, entry: dict, targets: tuple[str, ...], value: object, check=Non
 
 def _no_folder_yet(entries: list[dict]) -> str | None:
     for e in entries:
-        if e.get("kind") == "resolution_folder":
+        if e.get("kind") == "resolution_folder" and _problem(e) is None:   # a damaged folder line never blocks
             f = _folder(e)
             return f"a resolution folder is already saved ({f.path}, {f.source}); discovery never replaces it"
     return None

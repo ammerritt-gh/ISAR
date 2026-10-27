@@ -49,6 +49,11 @@ _WATCHED: dict[str, tuple[str, ...]] = {
     "report": ("report", "report.json"),
     "card_state": ("card.state.json",),
     "snapshot": ("session.json",),
+    "intake_entries": ("intake", "entries.jsonl"),        # user values and conditions
+    "intake_settings": ("intake", "settings.jsonl"),      # the resolution folder and experiment metadata
+    "intake_scans": ("report", "intake_scans.json"),      # the import record
+    "fit_inputs": ("report", "fit_inputs.jsonl"),         # what each pass used (a scan start, an analyzer finish)
+    "curves": ("report", "curves.json"),                  # the curve check, at each import and run start
 }
 
 

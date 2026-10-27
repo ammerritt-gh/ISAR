@@ -42,6 +42,22 @@ def test_change_to_results_fires_with_results_name(make_ws):
     assert got["changed"] == {"results"}
 
 
+def test_appending_a_fit_inputs_line_fires_with_the_fit_inputs_name(make_ws):
+    root = make_ws(rows=[{"scan": 1, "detector": "det"}])
+    ws = Workspace.open(root)
+    got = {}
+    fired = threading.Event()
+
+    def cb(changed):
+        got["changed"] = set(changed)
+        fired.set()
+
+    with ws.watch(cb, debounce_ms=DEBOUNCE, poll_interval_s=POLL):
+        _append(root / "report" / "fit_inputs.jsonl", '{"kind": "run", "event": "start", "run": "r1"}\n')
+        assert fired.wait(WAIT), "callback never fired"
+    assert got["changed"] == {"fit_inputs"}
+
+
 def test_two_rapid_changes_coalesce(make_ws):
     # Wider than DEBOUNCE: under parallel load the poll thread can see the second write after a
     # 150 ms window has closed, which splits the burst into two callbacks.

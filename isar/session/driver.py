@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from isar.intake import curves
+from isar.intake import fit_inputs as intake_fit_inputs, inputs as intake_inputs
+from isar.intake import scans as intake_scans, store as intake_store
 from isar.reduce import collate as collate_mod
 from isar.reduce import combine, qc
 from isar.predictive import json_fingerprint as _json_fingerprint
@@ -37,7 +39,7 @@ from isar.session import unit_data
 from isar.session.state import ScanEntry, SessionState, canonical_hash, content_hash
 from isar.session.timing import NullTimer
 from isar.session.workspace import Workspace
-from isar.session import deep_delivery, evidence_update, master_delivery, scan_delivery
+from isar.session import deep_delivery, evidence_update, master_delivery, scan_delivery, start_point
 from isar.session.scan_delivery import (
     AnalysisWorkIncomplete, FULL_TIERS, _campaign_hypotheses, _dispersion_period,
 )
@@ -211,6 +213,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
         checkpoint_store = CheckpointStore(certification_manifest)
     master_certification = bool(
         checkpoint_store is not None and checkpoint_store.is_master_certification)
+    # BL43: user values and conditions, the per-scan start point and the fit-inputs log (C-start-point).
+    intake = intake_scans.applies(card) and not master_certification
     if master_certification and (force or force_masters):
         raise ValueError(
             "force=True / force_masters are invalid for isar.certification/2 master-only runs")
@@ -264,12 +268,41 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
         ctx_lines = ([] if master_certification else router.apply_context_updates(
             routed, card, session, companion_files=plan.companion_files))
 
+        # BL43: the import record of file facts, then the run-start read of the user's entries. The
+        # data revision is always the parsed record's hash; an effective record is never hashed as data.
+        parsed_by_key = {_scan_key(r): r for r in routed.measurements}
+        chash_of: dict = {}
+        rows: dict = {}
+        scan_in: dict = {}
+        run_start_eff: dict = {}
+        if intake:
+            chash_of = {k: content_hash(r) for k, r in parsed_by_key.items()}
+            rows = {k: intake_scans.scan_row(r, chash_of[k]) for k, r in parsed_by_key.items()}
+            try:
+                intake_scans.record_import(workspace.root, rows.values())
+            except Exception as exc:  # noqa: BLE001 — a failed import record is logged and reported, never stops the run
+                log.exception("run: %s not written", intake_scans.INTAKE_SCANS)
+                ctx_lines.append(ingest.import_record_message(intake_scans.INTAKE_SCANS, exc))
+            read = intake_store.read_all(workspace.root, intake_store.ENTRIES)
+            index = intake_inputs.index_entries(read.entries, lines=read.lines)
+            ctx_lines += intake_inputs.damage_lines(workspace.root, read=read, index=index)
+            scan_in = {k: intake_inputs.scan_inputs(rows[k], index) for k in rows}
+            run_start_eff = {k: intake_inputs.apply(parsed_by_key[k], scan_in[k]) for k in rows}
+
         # tabulated_elastic: the slit ladder and per-detector elastic zero, from the measurements
-        # themselves (state-only; the policy file is never touched). Other methods: no lines.
+        # themselves (state-only; the policy file is never touched). Other methods: no lines. The run
+        # calibrates and fits with the one curve snapshot its check loaded.
+        loaded = None
         if not master_certification:
-            ctx_lines += _curve_check_lines(workspace.root, card, data_paths)
+            check_lines, loaded = _curve_check_lines(workspace.root, card, data_paths)
+            ctx_lines += check_lines
+            if loaded is None and (card.policy.calibration or {}).get("method") == "tabulated_elastic":
+                loaded = curves.load_curves(*curves.resolution_location(card, workspace.root)[:2])
+            cal_records = ([run_start_eff[k] for k in rows if scan_in[k].excluded is None] if intake
+                           else routed.measurements)
             ctx_lines += calibrations.refresh_tabulated(
-                card, routed.measurements, base_dir=Path(workspace.policy_path).parent)
+                card, cal_records, base_dir=Path(workspace.policy_path).parent,
+                data_hashes=chash_of or None, loaded=loaded)
 
         # Optional LLM adjudication (off critical path; degrade, never stall).
         if not master_certification and (llm or (card.policy.adjudication or {}).get("enabled")):
@@ -306,20 +339,29 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
         with timer.stage("ingest_save") as _m_save:
             _now_iso = datetime.now(timezone.utc).isoformat()
             _dirty = False
+            on_supersede = None
+            if intake:       # a fit a re-import replaces is kept in full before the ledger changes
+                def on_supersede(prev):
+                    intake_fit_inputs.write_superseded(
+                        workspace.root, [intake_fit_inputs.superseded_line(prev, by="reimport", run=None)])
             for rec in routed.measurements:
-                _chash = content_hash(rec)
+                _key = _scan_key(rec)
+                _fit_rec = run_start_eff.get(_key, rec)
+                _chash = chash_of.get(_key) or content_hash(rec)
                 for det in fit_dets:
                     if det not in rec.spectra:
                         continue
-                    _block = calibrations.calibration_block(runcal, rec, det)
-                    _prov = {**_core_provenance(rec, det, source_by_name), "ingested_at": _now_iso,
+                    _prov_rec = _fit_rec if det in _fit_rec.spectra else rec    # a dead analyzer: its file
+                    _block = calibrations.calibration_block(runcal, _prov_rec, det)
+                    _prov = {**_core_provenance(_prov_rec, det, source_by_name), "ingested_at": _now_iso,
                              **ingest.set_provenance(rec, set_of.get((rec.experiment_id, rec.scan_number))),
                              **({"calibration": _block} if _block else {})}
                     if ingest.upsert_ingested_entry(
-                            session, rec, det, chash=_chash, prov=_prov) != "unchanged":
+                            session, rec, det, chash=_chash, prov=_prov,
+                            on_supersede=on_supersede) != "unchanged":
                         _dirty = True
             # After the registration, so this run's own individual scans count as present (R10).
-            _dirty = ingest.supersede_summed(session) or _dirty
+            _dirty = ingest.supersede_summed(session, on_supersede=on_supersede) or _dirty
             _m_save["dirty"] = _dirty
             if _dirty:
                 workspace.save(card, session)
@@ -336,12 +378,16 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             deadline_gate=deadline_gate, timer=timer)
 
     # --- Pass 1: split fresh scan-detectors (to fit) from carried ones, preserving report order. ---
+    # BL43: every unit of the run's scans is a candidate; its scan's start point decides carry or fit
+    # against the inputs frozen there (a save before a queued scan's turn is used). The task's record is
+    # the run-start effective record; Q comes from the parsed spectrum (a dead analyzer exists only there).
     from isar.session.state import canonical_hash
     tasks = []          # (rec, det, q, T, sample, scan_id, chash, ghash, seed)
     plan = []           # ordered: ("carry", scan, outcome) | ("task", scan, det, task_idx)
     for rec in routed.measurements:
         scan = rec.scan_number
-        chash = content_hash(rec)
+        fit_rec = run_start_eff[_scan_key(rec)] if intake else rec
+        chash = chash_of[_scan_key(rec)] if intake else content_hash(rec)
         for det in fit_dets:
             if det not in rec.spectra:
                 continue
@@ -349,30 +395,25 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             # No Q (rung 4) and no temperature stay None downstream; neither is ever replaced by a
             # stand-in value that a guideline, a prior or a pool could then match.
             q = [float(v) for v in sp.q] if sp.q is not None else None
-            T = unit_data.scan_temperature(rec)
-            sample = _sample_of(rec, card)
+            T = unit_data.scan_temperature(fit_rec)
+            sample = _sample_of(fit_rec, card)
             scan_id = f"{rec.experiment_id}:{scan}:{det}"
 
             gsig = guide_mod.guidelines_signature(g, scan_number=scan, q=q, T=T)
             ghash = canonical_hash(gsig)
 
-            prev = session.get(scan_id)
-            # tabulated_elastic: a changed library, slit or zero refits this unit (None otherwise).
-            calfp = calibrations.calibration_fingerprint(runcal, rec, det)
-            fresh = (prev is None or prev.content_hash != chash
-                     or prev.guidelines_hash != ghash or prev.status.startswith("held")
-                     or prev.status == "ingested" or force
-                     or (deep_pass is not None and bool(prev.detectors.get(det))
-                         and not deep_delivery.is_current(prev.detectors[det], deep_pass))
-                     or (calfp is not None and prev.status != "excluded"   # an excluded set stays so
-                         and (prev.provenance or {}).get("calibration_fingerprint") != calfp))
-            if not fresh:
-                # Unchanged & already resolved: keep the ledger entry, re-list its outcome for the report.
-                if prev.detectors.get(det):
-                    plan.append(("carry", scan, _outcome_from_entry(prev, det)))
-                continue
+            if not intake:
+                prev = session.get(scan_id)
+                # tabulated_elastic: a changed library, slit or zero refits this unit (None otherwise).
+                calfp = calibrations.calibration_fingerprint(runcal, rec, det)
+                if not _unit_is_fresh(prev, det, chash=chash, ghash=ghash, calfp=calfp, force=force,
+                                      deep_pass=deep_pass):
+                    # Unchanged & already resolved: keep the ledger entry, re-list its outcome for the report.
+                    if prev.detectors.get(det):
+                        plan.append(("carry", scan, _outcome_from_entry(prev, det)))
+                    continue
             task_idx = len(tasks)
-            tasks.append((rec, det, q, T, sample, scan_id, chash, ghash, seed_base + scan))
+            tasks.append((fit_rec, det, q, T, sample, scan_id, chash, ghash, seed_base + scan))
             plan.append(("task", scan, det, task_idx))
 
     # Ordinary deadline-bounded work uses the same immutable/checkpointed reduction contract as final
@@ -466,6 +507,19 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
     # The deep pass's one pool (stage runs and the errors step's bootstrap); workers start lazily.
     deep_pool = (ProcessPoolExecutor(max_workers=deep_pass.workers)
                  if deep_pass is not None and deep_pass.workers > 1 and tasks else None)
+    # BL43: the run's start line, then each scan's start point (C-start-point) inside the fit stage.
+    start = run_id = None
+    outcome = "failed"
+    if intake:
+        run_id = intake_fit_inputs.begin_run(
+            workspace.root, passes=("fast", "deep") if deep_pass is not None else ("fast",))
+        start = start_point.StartPoint(
+            workspace.root, card, g, runcal, parsed=parsed_by_key, rows=rows, data_revision=chash_of,
+            passes=("fast", "deep") if deep_pass is not None else ("fast",), run_id=run_id,
+            session=session,
+            is_fresh=lambda prev, det, **kw: _unit_is_fresh(prev, det, force=force, deep_pass=deep_pass, **kw),
+            write_stub=lambda task: _write_stub(workspace, card, task), loaded=loaded,
+            checkpoint=checkpoint_store)
     try:
         with timer.stage("fit_scans", n_tasks=len(tasks), use_pool=use_pool,
                          boot_workers=boot_workers, scan_workers=scan_workers,
@@ -476,7 +530,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             cached: dict[int, ScanEntry] = {}
             remaining = []
             remaining_indices = []
-            if checkpoint_store is not None:
+            if checkpoint_store is not None and start is None:    # BL43: judged at the start point
                 for task_index, task in enumerate(tasks):
                     scan_id, chash, ghash = task[5], task[6], task[7]
                     entry = checkpoint_store.load(
@@ -496,24 +550,10 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             # (or an ``on_complete`` that never runs) then still leaves proof a scan was attempted
             # — the enriched record ``checkpoint_entry`` appends below is a later line for the
             # same ``scan_ref`` and wins on read (last-line-wins, measurement_store's contract).
-            for task in remaining:
-                _rec, _det, _q, _T, _sample, _scan_id, _chash, _ghash, _seed = task
-                stub = MeasurementArena(
-                    scan_ref=_scan_id, scan_id=_scan_id, scan_number=_rec.scan_number,
-                    detector=_det, sample=_sample,
-                    conditions=(("temperature_K", float(_T)),) if _T is not None else (),
-                    q=(tuple(float(v) for v in _q) if _q is not None else None),
-                    lattice_epoch=current_lattice_epoch(
-                        getattr(card.state, "lattice_epochs", None) or []),
-                    energy_window=None, energy_bands=None, effective_exposure=None,
-                    exposure_provenance=None, count_trust="attempted", reasons=(),
-                    written_at=datetime.now(timezone.utc).isoformat(), content_hash=_chash,
-                    # Same request provenance the enriched record carries (PR 4.3, D2): a hard
-                    # worker kill leaves ONLY this stub, and a stub that cannot say which program
-                    # step the neutrons were spent on is not proof of the attempt.
-                    **campaign_provenance(
-                        scan_delivery._acquisition_provenance_for(_rec, card, _scan_id)[1]))
-                measurement_store.append_measurement(workspace.report_dir, stub.to_dict())
+            # BL43: the start point writes them for the units it hands a worker (never a carried one).
+            if start is None:
+                for task in remaining:
+                    _write_stub(workspace, card, task)
 
             def checkpoint_entry(entry):
                 # Measurement-arena records first, and unconditionally (SCENE-4 PR 4.0, #26): a
@@ -535,9 +575,13 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                 scan_workers=scan_workers, boot_executor=shared_pool,
                 boot_adaptive=scan_boot_adaptive, bayes_opts=bayes_opts,
                 on_complete=checkpoint_entry, deadline_gate=deadline_gate,
-                deep=deep_pass, deep_executor=deep_pool)
+                deep=deep_pass, deep_executor=deep_pool,
+                start_scan=start, on_finish=None if start is None else start.finish)
             cached.update(zip(remaining_indices, fresh_entries))
-            entries = [cached[index] for index in range(len(tasks))]
+            entries = [cached[index] for index in range(len(tasks))]     # None: carried at its start point
+            if start is not None:
+                card.state.tabulated_calibration.update(start.recalibrated)
+                _m_fit["recalibrated"] = len(start.recalibrated)
             _m_fit["per_task"] = [
                 {"scan_id": e.scan_id,
                  "seconds": e.provenance.get("fit_seconds"),
@@ -552,9 +596,21 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                    "bootstrap_M_effective": e.provenance.get("bootstrap_M_effective")}
                 | ({"deep_pass": e.provenance["deep_pass"]}
                    if e.provenance.get("deep_pass") is not None else {})
-                for e in entries if e.provenance.get("fit_seconds") is not None]
+                for e in entries if e is not None and e.provenance.get("fit_seconds") is not None]
+        final_records = records
+        if start is not None:
+            plan = _carry_untaken(plan, entries, tasks, session)
+            # Every ledger entry a taken unit replaces is kept in full first (C-fit-history).
+            intake_fit_inputs.write_superseded(workspace.root, [
+                intake_fit_inputs.superseded_line(prev, by="refit", run=run_id)
+                for e in entries if e is not None
+                for prev in [session.get(e.scan_id)]
+                if prev is not None and prev.status not in ("ingested", "excluded")])
+            # The fit's own record: the start point's frozen one, else the run-start effective one.
+            final = {id(parsed_by_key[k]): rec for k, rec in {**run_start_eff, **start.frozen}.items()}
+            final_records = [final.get(id(r), r) for r in records]
         completed_master_keys: list[str] = []
-        _apply_and_finish(summary, session, card, records, runcal, g, plan, entries,
+        _apply_and_finish(summary, session, card, final_records, runcal, g, plan, entries,
                           workspace, force=force, force_masters=force_masters,
                           M=M, seed_base=seed_base, errors_tier=master_tier,
                           master_boot_workers=master_boot_workers, boot_executor=shared_pool,
@@ -563,10 +619,13 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
                           checkpoint_store=checkpoint_store,
                           completed_master_keys=completed_master_keys,
                           deadline_gate=deadline_gate)
+        outcome = "complete"
         if checkpoint_store is not None:
             checkpoint_store.mark_complete(
-                unit_keys=[f"scan:{entry.scan_id}" for entry in entries] + completed_master_keys)
+                unit_keys=[f"scan:{entry.scan_id}" for entry in entries if entry is not None]
+                + completed_master_keys)
     except AnalysisWorkIncomplete as exc:
+        outcome = "incomplete"
         summary.analysis_incomplete = True
         summary.context_lines.append(f"checkpointed incomplete analysis: {exc}")
     finally:
@@ -574,6 +633,11 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             shared_pool.shutdown()
         if deep_pool is not None:
             deep_pool.shutdown()
+        if run_id is not None:
+            try:
+                intake_fit_inputs.end_run(workspace.root, run_id, outcome)
+            except OSError:          # the run's own outcome stands; a later run start ends it anyway
+                log.exception("run: the end line of %s not written", run_id)
     return summary
 
 
@@ -1005,14 +1069,67 @@ def _run_master_certification(workspace, card, session, records, runcal, g, chec
 # ===========================================================================
 # helpers
 # ===========================================================================
-def _curve_check_lines(root, card, data_paths) -> list[str]:
-    """The run's resolution-curve check (discovery, folder in force, curve identity) as context lines."""
+def _scan_key(rec) -> str:
+    return f"{rec.experiment_id}:{rec.scan_number}"
+
+
+def _unit_is_fresh(prev, det, *, chash, ghash, calfp, force, deep_pass) -> bool:
+    """Whether a unit is (re)fitted: new, new data or guidelines, held, only registered, forced, its deep
+    pass not current, or its tabulated calibration changed (a changed library, slit or zero; an excluded
+    unit stays so)."""
+    return (prev is None or prev.content_hash != chash
+            or prev.guidelines_hash != ghash or prev.status.startswith("held")
+            or prev.status == "ingested" or force
+            or (deep_pass is not None and bool(prev.detectors.get(det))
+                and not deep_delivery.is_current(prev.detectors[det], deep_pass))
+            or (calfp is not None and prev.status != "excluded"
+                and (prev.provenance or {}).get("calibration_fingerprint") != calfp))
+
+
+def _write_stub(workspace, card, task) -> None:
+    """One unit's pre-dispatch ``count_trust="attempted"`` record in ``report/measurements.jsonl``."""
+    _rec, _det, _q, _T, _sample, _scan_id, _chash, _ghash, _seed = task
+    stub = MeasurementArena(
+        scan_ref=_scan_id, scan_id=_scan_id, scan_number=_rec.scan_number,
+        detector=_det, sample=_sample,
+        conditions=(("temperature_K", float(_T)),) if _T is not None else (),
+        q=(tuple(float(v) for v in _q) if _q is not None else None),
+        lattice_epoch=current_lattice_epoch(
+            getattr(card.state, "lattice_epochs", None) or []),
+        energy_window=None, energy_bands=None, effective_exposure=None,
+        exposure_provenance=None, count_trust="attempted", reasons=(),
+        written_at=datetime.now(timezone.utc).isoformat(), content_hash=_chash,
+        # Same request provenance the enriched record carries (PR 4.3, D2): a hard
+        # worker kill leaves ONLY this stub, and a stub that cannot say which program
+        # step the neutrons were spent on is not proof of the attempt.
+        **campaign_provenance(
+            scan_delivery._acquisition_provenance_for(_rec, card, _scan_id)[1]))
+    measurement_store.append_measurement(workspace.report_dir, stub.to_dict())
+
+
+def _carry_untaken(plan, entries, tasks, session) -> list:
+    """A unit its start point carried (no entry this run) becomes a carry item, as Pass 1 lists one."""
+    out = []
+    for item in plan:
+        if item[0] == "task" and entries[item[3]] is None:
+            _, scan, det, idx = item
+            prev = session.get(tasks[idx][5])
+            if prev is not None and prev.detectors.get(det):
+                out.append(("carry", scan, _outcome_from_entry(prev, det)))
+            continue
+        out.append(item)
+    return out
+
+
+def _curve_check_lines(root, card, data_paths) -> tuple[list[str], "curves.LoadedCurves | None"]:
+    """The run's resolution-curve check (discovery, folder in force, curve identity) as context lines,
+    and the curves it loaded (None when the check failed or the method is not tabulated)."""
     try:
-        check = curves.check_curves(root, card, data_paths, by="run")
+        got = curves.check_and_load(root, card, data_paths, by="run")
     except Exception as exc:  # noqa: BLE001 — a failed check is one context line; the run goes on
         log.exception("resolution curves: check failed")
-        return [f"resolution curves: check failed ({type(exc).__name__}: {exc})"]
-    return [] if check is None else check.lines()
+        return [f"resolution curves: check failed ({type(exc).__name__}: {exc})"], None
+    return ([], None) if got is None else (got[0].lines(), got[1])
 
 
 def _split_csv(s):

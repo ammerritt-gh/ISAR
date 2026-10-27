@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from isar.intake import curves as intake_curves
+from isar.intake import fit_inputs as intake_fit_inputs
+from isar.intake import scans as intake_scans
 from isar.parsers import registry
 from isar.parsers.base import FileSet
 from isar.schema.card import Card
@@ -356,6 +358,7 @@ class IngestReport:
     gaps: list = field(default_factory=list)         # file_gaps output
     last_ingest: dict = field(default_factory=dict)  # persisted, additive operator summary
     curves: dict | None = None                       # the resolution-curve check (BL43); {"error"} when it failed
+    import_record_error: str | None = None           # BL43: the import record was not written (GUI file values stale)
     dirty: bool = False
 
     def to_jsonable(self) -> dict:
@@ -367,16 +370,26 @@ class IngestReport:
                 "passed_over": [dict(p) for p in self.passed_over],
                 "gaps": [list(g) for g in self.gaps],
                 "last_ingest": dict(self.last_ingest),
-                "curves": None if self.curves is None else dict(self.curves)}
+                "curves": None if self.curves is None else dict(self.curves),
+                "import_record_error": self.import_record_error}
 
 
-def upsert_ingested_entry(session, rec, det, *, chash, prov) -> str:
+def import_record_message(name: str, exc: BaseException) -> str:
+    """The one wording, for the ingest summary and a run's context lines, of a failed import-record write."""
+    return (f"{name} was not written ({type(exc).__name__}: {exc}); the GUI's file values may be stale "
+            f"and a newly imported scan may not take a saved value until it is")
+
+
+def upsert_ingested_entry(session, rec, det, *, chash, prov, on_supersede=None) -> str:
     """Upsert one ``(experiment_id, scan_number, det)`` ledger entry at status ``"ingested"``.
 
     Shared by :func:`ingest_batch` and ``driver.run_batch``'s early-visibility registration (so a
     GUI watcher sees a scan with its counts while its fit still runs). ``prov`` is merged into
     provenance on add/update. Never downgrades a fitted/held/excluded entry whose content is
-    unchanged. Returns ``"added" | "updated" | "unchanged"``.
+    unchanged. Returns ``"added" | "updated" | "unchanged"``. ``on_supersede(prev)`` is called with
+    an entry about to be downgraded for changed content (never a bare ``"ingested"`` placeholder or an
+    ``"excluded"`` one),
+    before it is touched, so the caller can keep it on record.
     """
     from isar.session.state import ScanEntry
 
@@ -392,13 +405,15 @@ def upsert_ingested_entry(session, rec, det, *, chash, prov) -> str:
         # Same content: leave the entry COMPLETELY untouched — never downgrade a
         # fitted/held/excluded status, never re-stamp provenance.
         return "unchanged"
+    if on_supersede is not None and prev.status not in ("ingested", "excluded"):
+        on_supersede(prev)
     prev.content_hash = chash
     prev.status = "ingested"
     prev.provenance = {**(prev.provenance or {}), **prov}
     return "updated"
 
 
-def supersede_summed(session) -> bool:
+def supersede_summed(session, *, on_supersede=None) -> bool:
     """Mark `excluded` every ledger entry of a summed set whose individual scans are all in the ledger.
 
     R10: ISAR combines scans itself, so once the individual scans of a set the beamline already summed
@@ -406,7 +421,8 @@ def supersede_summed(session) -> bool:
     A set is told by its stem (`file_set`), never by scan number; one with only some of its scans present
     stays active. Nothing is deleted: the entry, its provenance and its unit data stay. The fit outcome is
     cleared, as for any entry the exclusion gate re-gates, so no table or report counts it again. Returns
-    whether anything changed; a second call changes nothing."""
+    whether anything changed; a second call changes nothing. ``on_supersede(entry)`` is called with
+    each entry that is neither ``"ingested"`` nor ``"excluded"`` before its fit is cleared."""
     sets = _ledger_sets(session)
     singles = {(exp, n[0]) for exp, n in sets.values() if len(n) == 1}
     changed = False
@@ -418,6 +434,8 @@ def supersede_summed(session) -> bool:
         for entry in session.scans.values():
             if (entry.provenance or {}).get("file_set") != stem or reason in entry.reasons:
                 continue
+            if on_supersede is not None and entry.status not in ("ingested", "excluded"):
+                on_supersede(entry)
             entry.reasons = [*entry.reasons, reason] if entry.status == "excluded" else [reason]
             entry.status, entry.detectors, changed = "excluded", {}, True
             log.info("ingest: %s: %s", entry.scan_id, reason)
@@ -442,7 +460,9 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
     write failure is logged and skipped; it never aborts the batch.
 
     When ``workspace_root`` is given, the resolution-curve check runs once (BL43 only: see
-    :mod:`isar.intake.curves`) and its record lands on ``report.curves``.
+    :mod:`isar.intake.curves`) and its record lands on ``report.curves``. For BL43 it also writes the
+    import record ``report/intake_scans.json`` and appends every fitted entry a re-import replaces to
+    ``report/fit_history.jsonl`` (:mod:`isar.intake.scans`, :mod:`isar.intake.fit_inputs`).
 
     Mutates ``session`` in place; the caller persists it when ``report.dirty`` is true. Every call
     returns additive ``last_ingest`` evidence on the report (so an operator can distinguish a
@@ -502,6 +522,16 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
             report.deduped.append({"scan": f"{key[0]}:{key[1]}",
                                    "kept": paths[-1], "superseded": paths[:-1]})
 
+    # BL43 with a workspace: the import record of file facts, and every fit a re-import replaces kept in
+    # full in the fit history before the ledger changes (a failed history write stops the ingest: no fit is lost).
+    intake = workspace_root is not None and intake_scans.applies(card)
+    intake_rows: list[dict] = []
+    on_supersede = None
+    if intake:
+        def on_supersede(prev):
+            intake_fit_inputs.write_superseded(
+                workspace_root, [intake_fit_inputs.superseded_line(prev, by="reimport", run=None)])
+
     # --- upsert one ledger entry per (exp, scan, det), MEASUREMENTS ONLY ---
     now_iso = datetime.now(timezone.utc).isoformat()
     ledgered_keys: set[tuple] = set()                # measurement scans that produced ≥1 entry
@@ -527,7 +557,8 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
             extras = unit_data._provenance_extras(rec, det)       # scan + analyzer, additive + tolerant
             extras = {**extras, **scan_extras}
             prov_add = {"source_file": src, "T": T, "q": q, "ingested_at": now_iso, **extras}
-            det_state = upsert_ingested_entry(session, rec, det, chash=chash, prov=prov_add)
+            det_state = upsert_ingested_entry(session, rec, det, chash=chash, prov=prov_add,
+                                              on_supersede=on_supersede)
             if det_state != "unchanged":
                 report.dirty = True
             _write_unit(rec, det, det_state)
@@ -535,6 +566,8 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
         if touched:
             # A no-spectra measurement produces no ledger entry — keep it out of all three lists.
             ledgered_keys.add((rec.experiment_id, rec.scan_number))
+            if intake:
+                intake_rows.append(intake_scans.scan_row(rec, chash))
             # Collapse per-detector states: "added" only when every detector entry is new; any other
             # change to a known scan (a late set member's new detector, or a drifted entry) is "updated".
             if all(s == "added" for s in det_states):
@@ -545,8 +578,14 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
                 report.unchanged.append(scan_short)
 
     # Summed sets from earlier batches whose individual scans are now in the ledger (this batch's included).
-    if supersede_summed(session):
+    if supersede_summed(session, on_supersede=on_supersede):
         report.dirty = True
+    if intake:
+        try:
+            intake_scans.record_import(workspace_root, intake_rows)
+        except Exception as exc:  # noqa: BLE001 — a failed import record is logged and reported, never aborts the batch
+            log.exception("ingest: %s not written", intake_scans.INTAKE_SCANS)
+            report.import_record_error = import_record_message(intake_scans.INTAKE_SCANS, exc)
 
     # --- file manifest for ALL classified files (merge, never replace) ---
     # For a measurement-class FILE, its scans still split into measurement scans (ledgered, listed

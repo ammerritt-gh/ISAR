@@ -95,8 +95,12 @@ def candidate_gaps(library: CurveSource, detector_id: str) -> list[str]:
     return [s for s in library.settings() if s is not None and library.get(detector_id, s) is None]
 
 
-def calibration_reusable(prev: dict | None, *, content_hash: str, library: str | None) -> bool:
-    """Whether a stored scan calibration still stands: same data and same resolution library."""
+def calibration_reusable(prev: dict | None, *, content_hash: str, library: str | None,
+                         inputs_key: str | None = None) -> bool:
+    """Whether a stored scan calibration still stands: same data and same resolution library, and with
+    ``inputs_key`` (which holds both) the same calibration inputs and no error."""
+    if inputs_key is not None:
+        return prev is not None and "error" not in prev and prev.get("inputs_key") == inputs_key
     return prev is not None and prev.get("content_hash") == content_hash and prev.get("library") == library
 
 
@@ -144,6 +148,25 @@ def _not_raw(spectrum) -> bool:
     """A spectrum whose counts are not raw (the reader's ``counts_not_integer`` warning: every ``_lr``
     spectrum, or columns that are not counts). The ``info`` notice is print rounding of raw counts."""
     return any(f.type == "counts_not_integer" and f.severity == "warning" for f in spectrum.spectrum_flags)
+
+
+NON_RAW_REASON = "non-raw counts (_lr) are not fitted"
+
+
+def count_hold(spectrum, *, accepted: bool) -> str | None:
+    """Why this spectrum's counts hold its fit, or None. Only the reader's warning-level
+    ``counts_not_integer`` holds: always for a spectrum not recovered from the ``_i`` columns (``_lr``),
+    and for an ``_i`` spectrum until its counts are accepted. The notice level (print rounding) holds nothing."""
+    if not _not_raw(spectrum):
+        return None
+    rec = ((spectrum.facts or {}).get("count_recovery") or {}).get("value")
+    if not isinstance(rec, dict) or rec.get("family") != "_i":
+        return NON_RAW_REASON
+    if accepted:
+        return None
+    return (f"counts may not be raw: {rec.get('bins_off')} of {rec.get('bins_tested')} bins are off an integer "
+            f"after N = (y/e)^2 (largest deviation {float(rec.get('max_deviation') or 0.0):.3g}); "
+            "not fitted until the counts are accepted")
 
 
 def _at_search_edge(x, c0) -> bool:

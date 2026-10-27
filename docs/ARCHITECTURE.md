@@ -242,8 +242,9 @@ Baker–Cousins deviance, with no zero-count floor; the fitted centre is the ene
 An analyzer with no significant elastic line (a peak at the edge of the search, a peak not 5 σ above
 the median, or a fit pinned at its centre bound) takes the file's own axis, labelled `pipeline_zero`:
 an uncalibrated axis is never assumed to be zero. An analyzer with no curve at the chosen slit, or
-whose spectrum carries a `counts_not_integer` warning (every `_lr` spectrum), is held with its reason
-and is not fitted. In the fit the curve
+whose spectrum carries a `counts_not_integer` warning, is held with its reason and is not fitted; the
+colleague can lift the hold for an `_i` spectrum by accepting its counts (every `_lr` spectrum stays
+held, and a notice holds nothing), and where the counts came from is recorded with each fit. In the fit the curve
 replaces the Voigt for the DHO convolution and the elastic line, its FWHM is the Gaussian width, and a
 fit range beyond the table raises `resolution_range_exceeded`. The in-plane momentum spread is not
 modelled. Each given zero is also cross-checked against the beamline's elastic centroid (`elpk_centroid_meV`): a difference above 0.3 meV raises `zero_disagrees_with_beamline` and never moves the zero. *(Implemented.)*
@@ -481,6 +482,8 @@ rulings W1–W3.)*
 | Slit ladder: declared slit, else inferred from the elastic lines; `slit_mismatch`, `slit_inferred`, `slit_ambiguous` alerts | Implemented |
 | Per-analyzer elastic zero (`tabulated_elastic`) with labelled `pipeline_zero` fallback; real-data proof `proofs/test_bl43_resolution.py` | Implemented |
 | Resolution-curve folder as an experiment setting, `rf/` discovery, curve content identity (BL43LXU) | Implemented |
+| User values and conditions for BL43 (checked, append-only, applied at each scan's start point; counts accepted lifts the hold on unrecovered counts) | Implemented |
+| Fit inputs per analyzer and pass, with "values changed since last fit" | Implemented |
 | Momentum (in-plane) resolution spread modelled inside the fit | Planned (after the SIXCIRCLE geometry) |
 | Adjudication (decide–record–defer) | Implemented (opt-in) |
 | Stage II: Baker–Cousins fit, evidence selection (H4; Akaike diagnostics retained), branch posterior, verdicts | Implemented |

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from concurrent.futures import Future
 
 import pytest
 
@@ -156,11 +157,12 @@ def test_soft_deadline_finishes_active_wave_then_stops_dispatch(monkeypatch):
     assert len(completed) == 1
 
 
-def test_scan_pool_is_one_wave_without_a_deadline_and_bounded_waves_under_one(monkeypatch):
-    """Waves wait on their slowest spectrum, so they exist only to honour a soft deadline."""
-    waves = []
+def test_scan_pool_refills_without_a_deadline_and_bounds_waves_under_one(monkeypatch):
+    """Waves wait on their slowest spectrum, so they exist only to honour a soft deadline; without one
+    each freed worker is refilled at once."""
+    events = []
 
-    class _Pool:
+    class _Pool:                      # submit runs the unit now, so its worker is free again at once
         def __init__(self, max_workers):
             self.max_workers = max_workers
 
@@ -170,25 +172,31 @@ def test_scan_pool_is_one_wave_without_a_deadline_and_bounded_waves_under_one(mo
         def __exit__(self, *exc):
             return False
 
-        def map(self, _fn, wave):
-            waves.append(len(wave))
-            return [object() for _ in wave]
+        def submit(self, fn, args):
+            events.append("s")
+            fut = Future()
+            fut.set_result(fn(args))
+            return fut
 
     monkeypatch.setattr(scan_delivery, "ProcessPoolExecutor", _Pool)
+    monkeypatch.setattr(scan_delivery, "_process_one", lambda *_a, **_k: object())
     tasks = [(None, "det", [2.0, 0, 0], 300.0, "sample", f"scan:{index}",
               f"content:{index}", "guide", 6000 + index) for index in range(5)]
 
     def run(gate):
-        waves.clear()
+        events.clear()
+        if gate is not None:
+            begin = gate.begin_wave
+            gate.begin_wave = lambda: events.append("w") or begin()
         out = scan_delivery._run_tasks(
             tasks, object(), object(), object(), set(), M=10, errors_tier="fast",
             boot_workers=1, use_pool=True, scan_workers=2, deadline_gate=gate)
         assert len(out) == 5
-        return list(waves)
+        return "".join(events)       # "s" a submission, "w" a wave begun
 
-    assert run(None) == [5]
-    assert run(driver._AnalysisDeadline(None)) == [5]
-    assert run(driver._AnalysisDeadline(time.monotonic() + 3600.0)) == [2, 2, 1]
+    assert run(None) == "sssss"
+    assert run(driver._AnalysisDeadline(None)) == "sssss"
+    assert run(driver._AnalysisDeadline(time.monotonic() + 3600.0)) == "wsswssws"     # waves [2, 2, 1]
 
 
 def test_master_task_threads_the_certification_role(monkeypatch):

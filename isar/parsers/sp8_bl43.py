@@ -518,11 +518,11 @@ def _spectrum(m: Member, k: np.ndarray, all_keys: np.ndarray, fname_facts: dict,
         point_flags += [scan.PointFlag(int(pos[i]), "monitor_dropout", "monitor==0")
                         for i in np.nonzero(dropped)[0]]
     spectrum_flags = []
+    n_off, n_valid = int(rec.not_integer.sum()), int((~rec.invalid).sum())
     if family == "_lr" or rec.not_integer.any():       # `_lr` is never raw, whatever its bins recover to
         what = ("_lr counts are not raw (they split counts between bins)" if family == "_lr"
                 else "bins beyond the printed digits")
         # A few reported bins are print rounding (a notice); many mean the columns are not counts at all.
-        n_off, n_valid = int(rec.not_integer.sum()), int((~rec.invalid).sum())
         severity = "warning" if family == "_lr" or n_off > _OFF_SHARE_WARN * n_valid else "info"
         spectrum_flags.append(scan.Flag(
             "counts_not_integer", severity,
@@ -547,6 +547,11 @@ def _spectrum(m: Member, k: np.ndarray, all_keys: np.ndarray, fname_facts: dict,
         ppb[pos] = m.npts
         facts["points_per_bin"] = {"value": ppb.astype(int).tolist(), "source": "inferred"}   # the npts data column
     facts["count_recovery_max_deviation"] = {"value": rec.max_deviation, "source": "inferred"}
+    # Where the counts came from and the integer check's result, for every spectrum (the fact rows and
+    # every fit that uses these counts record it; the flag above keeps its own rule).
+    facts["count_recovery"] = {"value": {"origin": "y_over_e_squared", "family": family, "bins_tested": n_valid,
+                                         "bins_off": n_off, "max_deviation": rec.max_deviation},
+                               "source": "inferred"}
 
     hkl = facts["hkl"]["value"]
     if facts["hkl"]["source"] in ("header", "filename") and isinstance(hkl, list) and len(hkl) == 3 \

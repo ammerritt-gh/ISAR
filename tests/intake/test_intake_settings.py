@@ -83,7 +83,48 @@ def test_busy_store_returns_not_ok_and_writes_nothing(ws, tmp_path, monkeypatch)
     assert store.read(ws, store.SETTINGS) == []
 
 
-def test_unknown_settings_kind_is_visible(ws):
+def test_unknown_settings_kind_is_skipped_and_reported(ws, caplog):
     store.append(ws, store.SETTINGS, {"kind": "mystery"})
-    with pytest.raises(ValueError, match="mystery"):
-        current_settings(ws)
+    save_experiment_metadata(ws, {"sample": "CsV3Sb5"})
+    with caplog.at_level("WARNING", logger="isar.intake.settings"):
+        s = current_settings(ws)
+    assert s.metadata == {"sample": "CsV3Sb5"}
+    assert s.damaged == (store.Damaged(store.SETTINGS, 1, "unknown kind 'mystery'"),)
+    assert any("line 1" in r.getMessage() for r in caplog.records)
+
+
+MIDDLE = {  # a damaged middle line of intake/settings.jsonl -> the reason current_settings reports
+    b"garbage{": "does not parse as JSON",
+    b"[1, 2]": "not a JSON object",
+    b'{"kind": "resolution_folder"}': "no str 'id', int 'seq' and str 'at'",
+    b'{"id": "e000000000002", "seq": 2, "at": "2026-10-27T00:00:00+00:00", "kind": "mystery"}': "unknown kind 'mystery'",
+    b'{"id": "e000000000002", "seq": 2, "at": "2026-10-27T00:00:00+00:00", "kind": "resolution_folder"}':
+        "resolution_folder entry has no 'path'",
+}
+
+
+@pytest.mark.parametrize("garbage", list(MIDDLE))
+def test_damaged_settings_line_never_stops_a_read_or_a_save(ws, tmp_path, garbage):
+    save_experiment_metadata(ws, {"sample": "CsV3Sb5"})
+    path = ws / store.SETTINGS
+    path.write_bytes(path.read_bytes() + garbage + b"\n")
+    before = path.read_bytes()
+    s = current_settings(ws)
+    assert (s.resolution_folder, s.metadata) == (None, {"sample": "CsV3Sb5"})
+    assert s.damaged == (store.Damaged(store.SETTINGS, 2, MIDDLE[garbage]),)
+    found = _folder(tmp_path, "set1")
+    r = save_resolution_folder(ws, found, source="discovered", found_beside=str(found.parent))
+    assert r.ok                                      # a damaged folder line never blocks discovery
+    after = path.read_bytes()
+    assert after.startswith(before) and after.count(b"\n") == before.count(b"\n") + 1
+    assert current_settings(ws).resolution_folder.path == str(found.resolve())
+
+
+def test_torn_final_settings_line_never_stops_a_save(ws, tmp_path):
+    path = ws / store.SETTINGS
+    path.parent.mkdir()
+    path.write_bytes(b'{"kind": "resolution_fol')
+    assert current_settings(ws).damaged == (store.Damaged(store.SETTINGS, 1, "does not parse as JSON"),)
+    assert save_resolution_folder(ws, _folder(tmp_path, "set1")).ok
+    assert path.read_bytes().startswith(b'{"kind": "resolution_fol\n')
+    assert current_settings(ws).resolution_folder.source == "user"

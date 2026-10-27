@@ -19,11 +19,17 @@ import hashlib
 import json
 from pathlib import Path
 
+from isar.intake import curves as intake_curves
+from isar.intake import fit_inputs as intake_fit_inputs
+from isar.intake import inputs as intake_inputs
+from isar.intake import scans as intake_scans
+from isar.intake import store as intake_store
 from isar.predictive import TARGET_PROJECTION_SCHEMA
-from isar.schema.card import CardState, load_policy, load_state
+from isar.schema.card import Card, CardState, load_policy, load_state
 from isar.session.state import SessionState
 from isar.session.workspace import (POLICY_NAME, SESSION_NAME, STATE_NAME, REPORT_DIRNAME)
 
+from . import intake_view
 from .evaluate import evaluate_model as _evaluate_model
 from .scan_keys import split_key
 from .views import (BranchModelView, CampaignView, CardView, CertificationStatusView, FileView,
@@ -678,6 +684,69 @@ class Workspace:
                     continue
             yield rec
 
+    # ---- BL43 intake: values, conditions and what each fit used -------------
+    def _intake_rows(self) -> dict:
+        return self._parse("intake_scans", lambda: intake_scans.read_scans(self.root), {})
+
+    def _intake_index(self):
+        def load():
+            r = self._views["intake_read"] = intake_store.read_all(self.root, intake_store.ENTRIES)   # kept for damage
+            return intake_inputs.index_entries(r.entries, lines=r.lines)
+        return self._parse("intake_entries", load, intake_inputs.EntryIndex({}, {}, {}))
+
+    def _curve_check(self):
+        return self._parse("curve_check", lambda: intake_curves.read_curve_check(self.root), None)
+
+    def _folder_now(self):
+        """The resolution folder in force now (the saved setting, else the card's), or None."""
+        def load():
+            pol = self._policy()
+            if pol is None:
+                return None
+            folder, _pattern, _source = intake_curves.resolution_location(Card(pol, self._state()), self.root)
+            return None if folder is None else str(folder)
+        return self._parse("intake_folder", load, None)
+
+    def _note_intake_damage(self) -> None:
+        """Once per refresh, add the skipped lines of both intake files to :attr:`warnings`."""
+        if "intake_damage" not in self._raw:
+            index = self._intake_index()
+            self.warnings.extend(self._parse("intake_damage", lambda: intake_inputs.damage_lines(
+                self.root, read=self._views.get("intake_read"), index=index), []))
+
+    def fact_rows(self, scans=None) -> list:
+        """The BL43 fact rows of ``scans`` (scan keys; None = all): per scan its temperature and slit,
+        then each analyzer's Q and counts, each with the file value, the user value, the one used, any
+        disagreement and any fallback. ``[]`` without an import record. Read-only; the first call after
+        :meth:`refresh` parses the intake files (tens of ms at 30 scans x 28 analyzers), later calls filter.
+        """
+        self._note_intake_damage()
+        return intake_view.fact_rows(
+            self._intake_rows(), self._intake_index(), self._state().tabulated_calibration,
+            self._curve_check(), self._folder_now(), scans)
+
+    def fit_inputs(self, units=None) -> list:
+        """Per unit key (``"spec1:42:a03"``; None = all) with a pass on record: its latest fast and latest
+        deep pass, what each used, and the changes since (judged on values, not history). ``[]`` without a
+        fit-inputs log. Read-only. The first call after :meth:`refresh` parses the whole log, which grows with
+        every run (about 1 MB per fast pass of 840 units): call it from a worker thread. Each call then judges
+        liveness and the latest passes over the parsed log, so a run killed after a read stops counting at once.
+        """
+        self._note_intake_damage()
+        # shortcut: re-parses the whole append-only log on each refresh; upgrade to a tail parse past about
+        # 20 MB, or when a refresh during a run takes over about 0.5 s.
+        lines = self._parse("fit_log", lambda: intake_fit_inputs.read_log(self.root), [])
+        try:
+            # Judged on every call, never cached: a run's process can end without a refresh (a GUI Cancel).
+            ledger = {e.scan_id: (e.provenance or {}).get("fit_inputs") or {} for e in self._session().scans.values()}
+            passes = intake_fit_inputs.latest_passes(lines, ledger)
+        except Exception as exc:  # noqa: BLE001 — degrade as _parse does, never raise from a read surface
+            self.warnings.append(f"fit_inputs: {exc}; serving no passes")
+            passes = {}
+        return intake_view.fit_inputs(
+            passes, self._intake_rows(), self._intake_index(), self._state().tabulated_calibration,
+            self._curve_check(), self._folder_now(), units)
+
     # ---- change notifications ---------------------------------------------
     def watch(self, callback, *, debounce_ms: float = 200,
               poll_interval_s: float = 1.0, backend: str | None = None):
@@ -685,7 +754,7 @@ class Workspace:
 
         ``callback(changed: set[str])`` is invoked (coalesced within ``debounce_ms``) with the
         logical names that changed — a subset of ``{"results", "events", "report", "card_state",
-        "snapshot"}``. It runs on a background daemon thread owned by the watcher (never this thread
+        "snapshot", "intake_entries", "intake_settings", "intake_scans", "fit_inputs", "curves"}``. It runs on a background daemon thread owned by the watcher (never this thread
         or a GUI thread), so a GUI must marshal it onto its own loop. The watcher does not refresh
         this ``Workspace``; call ``ws.refresh()`` inside the callback before re-reading. Supports
         ``with ws.watch(cb) as w:``. See :mod:`isar.workspace_api.watch` for the full thread model.

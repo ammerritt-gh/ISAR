@@ -230,6 +230,41 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **provenance** — every reported number carries where its inputs came from: which resolution
   version, which energy-zero source, whether the seed was your expectation or the auto prior and
   how many neighbors informed it.
+- **file value / user value** (SPring-8 BL43LXU) — a scan's temperature or slit as its files give it
+  (with its *fact source*) against the value you saved for that scan. A user value wins and is what the
+  fit uses; saving the file value again withdraws it. A later save supersedes an earlier one, nothing is
+  erased, and a value saved for one scan touches no other. The two disagree when both exist and differ.
+- **condition** — a declaration about a scan or an analyzer rather than a number: an **excluded scan**
+  (left out of every fit), a **dead analyzer** (left out of one scan), or **counts accepted** (below).
+  Saved with an optional reason, and reversed by saving it again as not declared.
+- **count origin** — where an analyzer's counts came from. The BL43 files carry a normalised intensity
+  and its error, and ISAR recovers the counts as N = (y/e)², which is exact only when the beamline merely
+  scaled the data. The origin and the integer check (bins tested, bins off, largest deviation) are shown
+  with the facts and recorded with every fit that used those counts.
+- **counts accepted** — your condition that an analyzer's counts are usable although more than a tenth of
+  its bins failed the integer check (a warning-level `counts_not_integer`). It lifts the fit hold for an
+  `_i` spectrum only; it never changes the counts or the flag, `_lr` spectra stay held whatever is saved,
+  and a notice-level check holds nothing. A fit made under it carries the fallback `counts_accepted`.
+- **start point** — the moment a run reaches a scan's first unit in the fit stage. ISAR reads the saved
+  values and conditions from disk there, builds the *effective record* (the parsed record with your
+  temperature and slit, without the dead analyzers) and freezes it for that scan's calibration and all
+  its analyzers' fits. A value saved after the start point is not used by the run in progress; the next
+  run takes it up and the reads mark the earlier fit.
+- **fit inputs** — what one fit used, per analyzer and pass (`fast` or `deep`): the data revision, the
+  temperature, slit and Q with their sources, the conditions, the counts record and the calibration
+  (folder, slit setting and how it was chosen, zero and its source, the resolution curve by content). They
+  are appended to `report/fit_inputs.jsonl` when the pass starts, so a fit is tied to the values it
+  really used. Only a pass of the run in progress or of a run that completed counts.
+- **values changed since last fit** — the mark on a fit whose inputs differ by value from those in force
+  now ("fitted with 97 K; 100 K saved since"). Saving 97 K again over a file value of 97 K adds an entry
+  and marks nothing; a condition declared after a fit marks it as made before the declaration. The latest
+  fast pass and the latest deep pass are judged separately. Nothing is refitted by the mark.
+- **fallback** — a stand-in a fit ran under, recorded with it. Five are recorded: `bose_t0_limit` (no
+  temperature: the T→0 Bose factor, never 0 K), `slit_inferred` (no slit: chosen by comparing the elastic
+  lines), `slit_broadest_curve` (no slit and no comparison possible: the broadest curve), `zero_file_axis`
+  (an analyzer without a significant elastic line used the file's own axis) and `counts_accepted`. The
+  fact rows can also show `slit_pending`, which is not a fit fallback: the slit is still missing and the
+  calibration is out of date, so a recalibration is due.
 
 ## Steering vocabulary (the autonomous driver)
 

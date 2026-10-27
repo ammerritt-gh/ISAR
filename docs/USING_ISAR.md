@@ -613,8 +613,12 @@ fitted again and stay listed under "Held / declined". The files are never touche
   every `_lr` spectrum is flagged `counts_not_integer` (a warning, whatever its bins recover to). For `_i`,
   a few bins that do not recover to an integer (print rounding) raise the same flag as a notice; when more
   than 10% of the valid bins do, it is a warning, because the columns are then probably not counts. The
-  calibration holds a spectrum carrying the warning and never fits it ("non-raw counts (_lr) are not
-  fitted"); a notice is print rounding of raw counts, and that spectrum is fitted.
+  calibration holds a spectrum carrying the warning, and it is not fitted: the counts may not be raw.
+  For an `_i` spectrum you can lift the hold by saving *counts accepted* for that scan and analyzer
+  (with a reason if you like); the counts and the flag are not changed, and every fit made that way
+  records it. An `_lr` spectrum stays held whatever is saved. A notice is print rounding of raw counts,
+  holds nothing, and that spectrum is fitted. Where each analyzer's counts came from, and the result of
+  the integer check, is recorded with every fit.
 - `[facts]`: values you declare, for example `slit = "60x60"` or `lattice = [...]`. They rank lowest: a
   header, trailer, sidecar or filename value wins, and a disagreement raises `fact_conflict`.
 - `[calibration]`: `method = "tabulated_elastic"` (see *Resolution, slit and zero*). `resolution_folder`
