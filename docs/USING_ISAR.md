@@ -324,8 +324,9 @@ recognises a curve set by its folder's path.
 ### The files strip
 
 The strip under the experiment line counts what has been read (for example "58 files · 2 scan sets"),
-and offers *Add…* (files or a folder) and *Watch…*. *Watch…* opens the watched-folders dialog: add or
-remove folders, pause watching, and see the last check and how many new files it found. Watching works
+and offers *Add data ▾* (files or a folder) and *Watch a folder…*. *Watch a folder…* opens the watched-folders
+dialog: add folders, stop watching them (files already read stay in the experiment), pause watching, and see the
+last check and how many new files it found. Watching works
 as it did before. Files that could not be read are listed under *Files not read* in the scan list, each
 with its reason.
 
@@ -338,15 +339,17 @@ found the resolution curves.
   *Incomplete set* and *files not read* open, in place, the list behind them: each incomplete set with the
   analyzers it lacks and why (and the state of its sidecar), and each unread file with its reason (hover
   shows its full path). Before the first import it says "Nothing read yet".
-- **Resolution curves**: "Resolution curves: <folder> (found beside the data)", "(chosen by you)", or "not
-  found" in the warning colour, with the last check's reason written out under it. *Locate…* opens a folder
-  chooser and saves the folder you pick at once as this experiment's resolution folder; the analysis uses it.
-  A saved folder is checked at the next import or when an analysis starts, and the section says so until
-  then: a curve file added or replaced in the folder is seen at that point, not before. If another `rf/`
-  folder was found beside newly dropped data, the section names it with *Use this folder*; ISAR never
-  switches to it by itself.
+- **Resolution curves**: "Resolution curves: <folder> (found beside the data)", "(chosen by you)", or, in the warning colour, "No resolution curves yet. Choose
+  the folder that holds them." (the backend's longer text, with the folder it looked beside, is on hover).
+  *Choose curves folder…* opens a folder chooser and saves the folder you pick at once as this experiment's
+  resolution folder; the analysis uses it. The same button, named *Choose resolution-curve folder…*, sits in the
+  needs-attention group and the readiness list that ask for it. A saved folder is checked at the next import or
+  when an analysis starts, and the section says so until then: a curve file added or replaced in the folder is
+  seen at that point, not before. If another `rf/` folder was found beside newly dropped data, the section names
+  it with *Use this curves folder*; ISAR never switches to it by itself. Hover the counts line for what a scan
+  set, an analyzer and a spectrum are.
 
-*Details…* on the experiment line opens the experiment's name (with *Rename…*), its folder, and six optional
+*Experiment info…* on the experiment line opens the experiment's name (with *Rename…*), its folder, and six optional
 fields: title, proposal, sample, people, dates and notes. They are kept with the experiment and no fit reads
 them. *Save details* keeps every other value already stored.
 
@@ -362,11 +365,11 @@ A group about a missing temperature or slit takes a value:
 
 1. Open the group and tick the scan sets it concerns (a set row opens to its analyzers).
 2. Type the value (temperature in K; slit horizontal and vertical in mm) and, if you like, a reason. The line
-   under the entry says which scan sets it applies to, and "Not saved" shows while typed text is unsaved.
-3. Press *Save*. One save writes the value to exactly the ticked scan sets or to none of them. A refused value
+   under the entry says which scan sets it applies to, and "Not saved yet; press Save" shows while typed text is unsaved.
+3. Press *Save my value*. One save writes the value to exactly the ticked scan sets or to none of them. A refused value
    shows the engine's reason under the entry and keeps your ticks and text.
 
-Until a temperature exists the fit uses the zero-temperature limit, and the group says "fallback in use".
+Until a temperature exists the fit uses the zero-temperature limit, and the group says "stand-in value used" (hover for what the stand-in is).
 
 **Your values are only ever added.** ISAR never edits a value a file supplies and never changes a data file. A
 later value for the same scan set supersedes the earlier one; both stay on record, and the file's own value
@@ -375,14 +378,15 @@ counted: *Your temperature values* and *Your slit values* (every scan set carryi
 the file's value* stays reachable after the gap has closed) and *Your accepted counts*. User values are taken
 for temperature and slit only; Q and the other facts are shown, not entered.
 
-Groups of analyzers (for example one with no Q) offer *Mark dead*: the analyzer is then left out of the fits
-of that scan until you press *In use* on it in the *declared* group.
+Groups of analyzers (for example one with no Q) offer *Leave out analyzer*: the analyzer is then left out of the fits
+of that scan until you press *Use analyzer again* on it in the *declared* group. A group whose remedy is a button
+carries it: *Choose resolution-curve folder…*, *Add data…* (when files must be added again) or *Run analysis…*.
 
 A **"Counts may not be raw"** group lists analyzers whose counts do not recover to whole numbers; they are
-held out of fitting. *Counts accepted* (on the group, or *Accept counts…* in the inspector) declares the counts
+held out of fitting. *Accept counts as they are* (on the group, or *Accept counts as they are…* in the inspector) declares the counts
 raw: it lifts the hold and changes no count and no flag; every fit made that way records it. It is offered
 with an optional reason, and it lifts the hold for an `_i` analyzer only (an `_lr` analyzer stays held
-whatever is saved). The analyzer then appears in *Your accepted counts*, where *Withdraw* (in the inspector, *Withdraw acceptance*)
+whatever is saved). The analyzer then appears in *Your accepted counts*, where *Take back acceptance*
 takes it back. The other ways out are to mark the analyzer dead or to correct the data and import again.
 
 A save is refused, and nothing is written, while an export is running ("an export is running") and when
@@ -451,37 +455,38 @@ counts' origin and the analyzer, with three cells per fact.
 - **Used**: the value the fits use and whose it is (`file` or `yours`), or the named fallback when there is none.
   A value of yours that differs from the file's is drawn in the warning colour, and hovering gives both numbers.
 
-Temperature and slit apply to the whole scan set (the table says which). Each has *Set my value…* (a value in K
+Temperature and slit apply to the whole scan set (the table says which). Each has *Enter my value…* (a value in K
 or mm and an optional reason; a later one supersedes the earlier) and *Use the file's value* (withdraws yours;
-available only when you have one). The analyzer block has *Mark dead* / *In use*, and *Accept counts…* /
-*Withdraw acceptance* when its counts may not be raw. Q and the counts' origin are shown only. The counts' origin
+available only when you have one). The analyzer block has *Leave out analyzer…* / *Use analyzer again…*, and *Accept counts as they are…* /
+*Take back acceptance…* when its counts may not be raw. Q and the counts' origin are shown only. The counts' origin
 reads like "N = (y/e)², 60 bins tested, none off an integer": how the counts were recovered and how many bins
-were off a whole number. When the files carry no hkl, Q shows the file's |Q| in nm⁻¹ and says steering needs the
-hkl. Under the table, **Readiness** gives each step's state (ready, fallback, pending, held) with the engine's
+were off a whole number. When the files carry no hkl, Q shows the file's |Q| in nm⁻¹ and says campaign planning needs the
+hkl. Under the table, **What can be done with this analyzer** gives each step's state (ready, fallback, pending, held) with the engine's
 reason. Everything here is the engine's read; the window computes none of it.
 
 ### Run analysis, Stop and the Campaign tab
 
 *Processing* holds *Run analysis…*, the analysis that runs the fast pass on the experiment's data, with
 the same dialog and progress as before. Above it a readiness line counts the spectra by whether an
-analysis can start, for example "56 spectra read · 52 ready for analysis (30 with a fallback) · 4 need
+analysis can start, for example "56 spectra read · 52 ready for analysis (30 will use a stand-in value) · 4 need
 resolution curves · 3 running". Every count but the first opens the list behind it (scan set and analyzer, with
-the engine's reason) and the button that resolves it: *Locate…*, *Enter the value*, *Show in the list* or *Start
-analysis*. "With a fallback" means ready but running on a stated fallback such as the zero-temperature limit; a
+the engine's reason) and the button that resolves it: *Choose resolution-curve folder…*, *Enter the value…*, *Add data…*, *Show these in
+the list* or *Run analysis…*. "Will use a stand-in value" means ready but running on a stated fallback such as the
+zero-temperature limit; a
 missing Q does not stop a fit and is not counted as a block. Before the first result the line says "checking
 readiness…". The window re-reads after each of its own saves, when files in the experiment change, and at the
-end of every run, a cancelled one included. *Stop* asks the running analysis to stop; spectra already stored
+end of every run, a cancelled one included. *Stop analysis* asks the running analysis to stop; spectra already stored
 stay stored. *Campaign* is the campaign launcher and monitor, unchanged in content. Pressing *Start*
 with no experiment open creates an ISAR-named experiment (`Campaign_<date>`) first, as a drop does.
 
 ### Log and Output
 
-The Log, bottom left, holds what the window reports. The Output, bottom right, says where results are written and when the last one was written. It has two actions:
+The Log, bottom left, holds what the window reports. The Output, bottom right, names the experiment folder and when it last changed. It has two actions:
 
-- *Save copy as…* copies the whole experiment folder to a new one. The original stays the active
+- *Save experiment copy…* copies the whole experiment folder to a new one. The original stays the active
   experiment and new data keeps going to it. The copy is offered as *Open copy*, and the Log says what the
   copy still reads from outside its folder (its source data files, its resolution curves).
-- *Export…* runs `isar export` on the experiment and names the new folder when it is done, with
+- *Export results…* runs `isar export` on the experiment and names the new folder when it is done, with
   *Open folder*. See *Exporting results* below.
 
 Both actions are unavailable, with the reason beside them, while an ingest, an analysis, a campaign or an
