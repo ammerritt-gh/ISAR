@@ -79,6 +79,16 @@ def test_a_refused_save_returns_its_targets_as_given(root):
     assert save_condition(root, "dead", ["spec1:42:a10"]).targets == ("spec1:42:a10",)
 
 
+@pytest.mark.parametrize("call, what", [
+    (lambda r, g: save_value(r, "temperature", 100.0, g), "scan keys"),
+    (lambda r, g: save_condition(r, "dead", g), "unit keys"),
+])
+def test_an_unhashable_target_is_refused_with_the_targets_as_given(root, call, what):
+    given = ["spec1:42:a14", ["bad"]]
+    r = call(root, given)
+    assert (r.ok, r.reason, r.targets) == (False, f"target ['bad'] is not a key (targets must be {what})", tuple(given))
+
+
 def test_slit_is_canonical_and_a_missing_curve_is_never_a_refusal(root):
     assert save_value(root, "slit", "60 x 40", ["spec1:42"]).value == "60x40"
     assert save_value(root, "slit", (60, 60.0), ["spec1:42"]).value == "60x60"

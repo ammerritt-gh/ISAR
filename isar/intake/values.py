@@ -57,12 +57,12 @@ def _targets(targets, what: str) -> list[str]:
         raise _Bad(f"targets must be a list of {what}, not a string")
     if not isinstance(targets, Sequence):
         raise _Bad(f"targets must be a list of {what} (got {type(targets).__name__})")
+    for t in targets:       # before deduplication: an unhashable target must not raise
+        if not isinstance(t, str):
+            raise _Bad(f"target {t!r} is not a key (targets must be {what})")
     out = list(dict.fromkeys(targets))
     if not out:
         raise _Bad("no targets given")
-    for t in out:
-        if not isinstance(t, str):
-            raise _Bad(f"target {t!r} is not a key (targets must be {what})")
     return out
 
 
