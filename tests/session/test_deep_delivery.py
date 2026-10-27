@@ -158,14 +158,15 @@ def test_deliver_passes_the_fast_pass_search_limit_to_the_deep_pass(monkeypatch)
     assert "fast pass search limited: safety_budget" in record["search_limited"]
 
 
-def test_deliver_reports_its_sampling_steps_and_ends_on_errors():
+def test_deliver_reports_its_sampling_steps_and_ends_on_errors(monkeypatch):
     ctx, fit = _spectrum()
+    monkeypatch.setattr(deep_pass, "_stage_task", lambda job: (job[0], []))  # no real sampling; the steps still run
     events = []
-    record, _ = deep_delivery.deliver(fit, ctx, dataclasses.replace(REQ, budget_s=0.0),
-                                      progress=events.append)
+    record, _ = deep_delivery.deliver(fit, ctx, REQ, progress=events.append)
     assert record["state"] != "refused"
-    assert events and events[-1] == {"pass": "deep", "phase": "errors", "step": None, "of": None,
-                                     "stage": None, "stages": None}
+    assert any(e["phase"] == "sampling" for e in events)     # the stages' steps reach the caller
+    assert events[-1] == {"pass": "deep", "phase": "errors", "step": None, "of": None,
+                          "stage": None, "stages": None}
     assert all(e["pass"] == "deep" for e in events)
 
 
