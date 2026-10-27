@@ -1141,6 +1141,10 @@ class MainWindow(QMainWindow):
         open_log_action = help_menu.addAction("Open GUI Log Folder")
         open_log_action.triggered.connect(self._open_gui_log_folder)
 
+    def default_save_folder(self) -> Path | None:
+        """Where a save dialog offered a bare file name opens: the open experiment's folder (see file_dialogs)."""
+        return None if self._empty else Path(self._ws.root)
+
     def _show_help(self, page: str) -> None:
         """Help pages open in one reused, non-modal window (never exec())."""
         if self._help_window is None:

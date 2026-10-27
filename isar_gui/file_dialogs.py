@@ -16,6 +16,18 @@ from PySide6.QtWidgets import QDialog, QFileDialog, QWidget
 _ATTR = "_isar_file_dialog"
 
 
+def _default_folder(parent: QWidget) -> Path | None:
+    """The folder a bare file name is offered in: the window's ``default_save_folder()`` (the open experiment's
+    folder), found up the parent chain because a floating dock is its own top-level window; else ``None``."""
+    widget = parent
+    while widget is not None:
+        folder = getattr(widget, "default_save_folder", None)
+        if callable(folder):
+            return folder()
+        widget = widget.parentWidget()
+    return None
+
+
 def _run(parent: QWidget, caption: str, directory: str, file_filter: str, options: QFileDialog.Option,
          accept: QFileDialog.AcceptMode, mode: QFileDialog.FileMode) -> QFileDialog | None:
     """Show the window's dialog (made on first use), set as the static call would set it; the dialog
@@ -34,6 +46,9 @@ def _run(parent: QWidget, caption: str, directory: str, file_filter: str, option
     dialog.setNameFilter(file_filter)
     if directory:
         path = Path(directory)
+        if not path.is_absolute() and path.parent == Path("."):     # a bare name: not wherever the dialog was last
+            base = _default_folder(parent)
+            path = path if base is None else base / path
         if path.is_dir():
             dialog.setDirectory(str(path))
         else:                       # a file or folder to name: start in its parent, with it selected

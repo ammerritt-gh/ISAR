@@ -506,6 +506,10 @@ The Log, bottom left, holds what the window reports. The Output, bottom right, n
 Both actions are unavailable, with the reason beside them, while an ingest, an analysis, a campaign or an
 export is writing to the experiment, and while nothing has been read into it yet.
 
+A save dialog that is offered a plain file name (*File ▸ Save view as image*, the campaign log's save) opens in
+the experiment's folder, not in the folder the last dialog was used in; with no experiment open it opens where
+the last one did.
+
 ### Exporting results
 
 `isar export` writes one new folder, `report/exports/export-<timestamp>/`, from the stored results. It
