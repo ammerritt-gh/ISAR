@@ -433,6 +433,24 @@ def test_reimported_counts_change_only_the_data_and_reach_the_worker(tmp_path, m
     assert {ln["inputs"]["data"] for ln in _lines(ws, "started", _runs(ws)[-1])} == {new}
 
 
+def test_an_excluded_scan_is_never_fitted_and_stays_excluded_while_declared(tmp_path, monkeypatch):
+    ws, data = fx.bl43_workspace(tmp_path)
+    a, b = _order(ws, data)
+    _import(ws, data)
+    excl = values.save_condition(ws.root, "excluded", [b], reason="sample moved")
+    worker = _Worker(monkeypatch)
+    _run(ws, data)
+    assert {x.scan for x in worker.calls} == {a}
+    _card, session = ws.load()
+    for det in fx.ANALYZERS:
+        e = session.get(f"{b}:{det}")
+        assert e.status == "excluded" and excl.entry_id in e.reasons[0] and "sample moved" in e.reasons[0]
+    assert not [ln for ln in _log(ws) if ln.get("scan") == b]             # no fit, so no fit-inputs line
+    worker.calls.clear()
+    _run(ws, data)
+    assert worker.calls == []                                             # carried while the exclusion stands
+
+
 # ---------------------------------------------------------------------------
 # 8, 9, 10: the lazy pool, a real pool, the run's end line
 # ---------------------------------------------------------------------------
