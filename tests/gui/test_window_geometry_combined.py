@@ -2,8 +2,8 @@
 
 Offscreen Qt with the real widgets over the 56-spectrum BL43LXU-shaped workspace generated at test
 time, at the laptop size. The combination: the scan inspector open inside the left panel, every
-optional column on, and the Processing panel in one of two states, set explicitly here (the
-auto-collapse on opening the inspector is an S1U7 repair with its own test):
+optional column on, and the Processing panel in one of two states, set after the inspector opens
+(opening it collapses Processing on a laptop, tested in test_scan_inspector.py):
 
 * collapsed to its rail: the fit page's plot keeps at least 240 x 250, a floor that catches the
   86 px squeeze an expanded Processing panel leaves (collapsed it measures 253 px);
@@ -38,8 +38,9 @@ def _open_hardest_combination(qtbot, monkeypatch, tmp_path, *, processing_collap
     panel = w.scan_list
     for column in ("fast", "deep", "slit", "file"):
         panel._column_actions[column].trigger()
-    w.set_right_panel_collapsed(processing_collapsed)
     w.scan_list_vm.inspect(A03)
+    # opening the inspector on a laptop collapses Processing; the expanded case is the user re-expanding it
+    w.set_right_panel_collapsed(processing_collapsed)
     panel._view.expandAll()
     qtbot.wait(50)
     return w, panel
