@@ -38,7 +38,7 @@ def test_not_a_workspace_exits_2(tmp_path, capsys):
 
 
 def test_a_failure_exits_1_with_its_reason_and_leaves_no_folder(bl43_ws, capsys, monkeypatch):
-    def boom(folder):
+    def boom(folder, bl43):
         raise OSError("disk full")
     monkeypatch.setattr(export_mod, "_write_readme", boom)
     assert main(["export", "--workspace", str(bl43_ws), "--json"]) == 1

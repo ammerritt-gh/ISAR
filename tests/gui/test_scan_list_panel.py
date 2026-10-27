@@ -43,7 +43,7 @@ def _make(qtbot, monkeypatch, snap, size=(360, 520), ws=None):
     update); ``snap=None`` leaves the real read in place."""
     box = {"snap": snap}
     if snap is not None:
-        monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda _ws: box["snap"])
+        monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda _ws, **_reads: box["snap"])
     vm = ScanListViewModel(ws if ws is not None else SimpleNamespace())
     panel = ScanListPanel(vm)
     qtbot.addWidget(panel)
@@ -480,3 +480,22 @@ def test_view_state_round_trips_the_columns_and_the_sort_but_not_the_filter(qtbo
 def test_a_drop_over_the_panel_is_left_to_the_window(qtbot, monkeypatch, sample):
     panel, _, _ = _make(qtbot, monkeypatch, sample)
     assert not panel.acceptDrops() and not panel._view.acceptDrops()
+
+
+def test_a_view_model_with_an_intake_hands_the_read_its_holders_reads(monkeypatch):
+    """The GUI thread never parses the fit-inputs log: the snapshot is given the holder's reads, empty
+    ones (and an empty summary) while the holder has none yet."""
+    seen = []
+    monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list",
+                        lambda ws, **reads: seen.append(reads) or ScanListSnapshot())
+    vm = ScanListViewModel(SimpleNamespace())
+    assert seen == [{}]                                     # no holder: the read makes its own
+    intake = SimpleNamespace(fact_rows=None, fit_inputs=None, summary=None)
+    vm.set_intake(intake)
+    vm.on_workspace_changed(None)
+    assert set(seen[-1]) == {"fact_rows", "fit_inputs", "import_summary"}
+    assert seen[-1]["fact_rows"] == () and seen[-1]["fit_inputs"] == ()
+    assert seen[-1]["import_summary"].n_scans == 0 and not seen[-1]["import_summary"].files_not_read
+    intake.fit_inputs, intake.fact_rows, intake.summary = ("p",), ("f",), "summary"
+    vm.on_workspace_changed(None)
+    assert seen[-1] == {"fact_rows": ("f",), "fit_inputs": ("p",), "import_summary": "summary"}
