@@ -16,12 +16,21 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QEvent, QTimer
 from PySide6.QtWidgets import QApplication, QFileDialog, QWidget
 
 from isar_gui import file_dialogs
 
 STALL_S = 0.5           # the defect froze for 1 s and 5 s; a reused dialog shows in milliseconds
+
+
+@pytest.fixture(autouse=True)
+def _settled(qapp):
+    """Pay for earlier tests' teardown before timing: a destroyed window's dialog frees its file-info
+    thread through a chain of deferred deletes, which would otherwise land inside this test's dialogs."""
+    for _ in range(5):
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        QApplication.processEvents()
 
 
 def _answer(choose):
