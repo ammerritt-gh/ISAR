@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from isar.parsers import spec_s30
+from isar.schema import _json
 from isar.session import ingest
 from isar.session.state import ScanEntry, SessionState
 from isar.session.workspace import Workspace
@@ -418,3 +419,87 @@ def test_run_only_workspace_stamps_core_provenance_and_unit_files(tmp_path):
     # one unit data file per ledger entry, matching `isar ingest`
     unit_files = sorted((ws_dir / "data" / "ingest").glob("*.json"))
     assert len(unit_files) == len(session.scans)
+
+
+# --- BL43 with a workspace: the import record and the fit history (C-scan-record, C-fit-history) ---
+def _bl43_ingest(ws, *folders):
+    card, session = ws.load()
+    report = ingest.ingest_batch(card, session, list(folders), workspace_root=ws.root)
+    session.save(ws.session_path)
+    return report
+
+
+def _mark_fitted(ws, match=lambda e: True):
+    """Stand-in for a run: the matching entries fitted, each tied to the inputs it used."""
+    _card, session = ws.load()
+    for e in session.scans.values():
+        if match(e):
+            e.status, e.detectors = "fitted", {e.scan_id.rsplit(":", 1)[1]: {"omega0": 4.0}}
+            e.provenance = {**e.provenance, "fit_inputs": {"run": "r1", "hash": "7c", "fallbacks": []}}
+    session.save(ws.session_path)
+    return {k: _json.to_jsonable(e) for k, e in session.scans.items()}
+
+
+def test_bl43_reimport_keeps_every_replaced_fit_in_the_history(tmp_path):
+    from intake_fixtures import bl43_workspace, write_scan
+    from isar.intake.fit_inputs import FIT_HISTORY, read_history
+
+    ws, data = bl43_workspace(tmp_path)
+    _bl43_ingest(ws, data)
+    before = _mark_fitted(ws, lambda e: e.provenance.get("file_set", "").endswith("_A"))   # B stays a placeholder
+    assert not _bl43_ingest(ws, data).dirty and not (ws.root / FIT_HISTORY).exists()   # unchanged: nothing
+    write_scan(data, stem="Smp_100K_0p5_0p5_3_A", seed=99)
+    write_scan(data, stem="Smp_100K_0p5_0p5_3_B", seed=98)
+    report = _bl43_ingest(ws, data)
+    assert len(report.updated) == 2
+    hist = read_history(ws.root)
+    assert sorted(h["unit"] for h in hist) == sorted(k for k, e in before.items() if e["status"] == "fitted")
+    for h in hist:                                    # in full, as the ledger held it before the import
+        assert h["by"] == "reimport" and h["run"] is None and h["entry"] == before[h["unit"]]
+        assert h["fit_inputs"] == {"run": "r1", "hash": "7c", "fallbacks": []}
+    _card, session = ws.load()
+    assert all(session.scans[h["unit"]].status == "ingested" for h in hist)   # the ledger moved on after
+
+
+def test_bl43_summed_set_superseded_by_its_scans_keeps_its_fit(tmp_path):
+    import numpy as np
+
+    from intake_fixtures import workspace
+    from isar.intake.fit_inputs import read_history
+
+    def ba122(folder, scans):
+        folder.mkdir(parents=True, exist_ok=True)
+        counts = (np.arange(8) + 1.0) ** 2
+        rows = [f"{e:.4f} {n:.6E} {n ** 0.5:.6E}" for e, n in zip(np.arange(8) * 0.2, counts)]
+        (folder / f"spec1_T26K__scan_{scans}_A6_Q_4_0p075_0_inel.dat").write_text(
+            "\n".join(rows) + "\n", encoding="utf-8", newline="\n")
+
+    ws = workspace(tmp_path)
+    data = tmp_path / "data"
+    ba122(data, "58_59")
+    _bl43_ingest(ws, data)
+    before = _mark_fitted(ws)
+    ba122(data, "58")
+    ba122(data, "59")
+    _bl43_ingest(ws, data)
+    (h,) = read_history(ws.root)
+    assert h["by"] == "reimport" and h["entry"] == before[h["unit"]]
+    assert ws.load()[1].scans[h["unit"]].status == "excluded"
+
+
+def test_bl43_ingest_never_stops_for_damaged_intake_lines(tmp_path):
+    from intake_fixtures import bl43_workspace
+    from isar.intake import store
+    from isar.intake.scans import read_scans
+    from isar.intake.values import save_value
+
+    ws, data = bl43_workspace(tmp_path)
+    for name in (store.SETTINGS, store.ENTRIES):
+        path = ws.root / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b'[1, 2]\n{"id": "e000000000002", "seq": 2, "kind": "mystery"}\n{"kind": "torn')
+    report = _bl43_ingest(ws, data)
+    assert report.curves is not None and "error" not in report.curves
+    assert report.curves["problem"] is None and report.curves["source"] == "card"
+    assert len(read_scans(ws.root)) == 2 and len(report.added) == 2
+    assert save_value(ws.root, "temperature", 100.0, list(read_scans(ws.root))).ok   # a save appends past them
