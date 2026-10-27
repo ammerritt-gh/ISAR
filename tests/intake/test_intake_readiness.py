@@ -772,3 +772,19 @@ def test_a_group_whose_items_are_all_running_says_wait(tmp_path):
     na = readiness.evaluate(w.root, marks=one)                        # Smp:1002 can still start
     assert (grp(na, "calibration_pending").action, grp(na, "calibration_pending").can_start) == ("start_analysis", True)
     assert (grp(na, "values_changed").action, grp(na, "values_changed").can_start) == ("wait", None)
+
+
+def test_status_does_no_bl43_work_on_another_instruments_workspace(tmp_path, capsys, monkeypatch):
+    from isar.cli.main import main
+    import isar.workspace_api
+    from isar.workspace_api.workspace import Workspace as Ws
+    sp = fx.workspace(tmp_path / "s30")
+    sp.policy_path.write_text(sp.policy_path.read_text(encoding="utf-8").replace('plugin = "sp8_bl43"', 'plugin = "tavi"'),
+                              encoding="utf-8", newline="\n")
+    called = []
+    monkeypatch.setattr(Ws, "fit_inputs", lambda self: called.append("fit_inputs") or [])
+    real = isar.workspace_api.needs_attention
+    monkeypatch.setattr(isar.workspace_api, "needs_attention", lambda root: called.append("status") or real(root))
+    assert main(["status", "--workspace", str(sp.root)]) == 0
+    assert needs_attention(sp.root).evaluated is False
+    assert called == [] and "Needs attention" not in capsys.readouterr().out

@@ -9,16 +9,16 @@ from __future__ import annotations
 import sys
 from collections import Counter
 
+from isar.intake import scans as intake_scans
 from isar.schema import card as card_mod
 from isar.session.workspace import Workspace
 
 
 def _print_attention(root) -> None:
-    from isar.intake import readiness
     from isar.workspace_api import needs_attention      # imported here: only a BL43LXU workspace asks
     na = needs_attention(root)
     if not na.evaluated:
-        if na.note and na.note != readiness.NOT_BL43:       # nothing imported yet, or a record that cannot be read
+        if na.note:                                          # nothing imported yet, or a record that cannot be read
             print()
             print(f"Needs attention: not evaluated ({na.note})")
         return
@@ -59,7 +59,8 @@ def run(args) -> int:
     for status, n in sorted(by_status.items()):
         print(f"  {status:22s} {n}")
 
-    _print_attention(ws.root)
+    if intake_scans.applies(card):
+        _print_attention(ws.root)
 
     # Held scans, with the reason that parked them.
     held = [e for e in entries if e.status.startswith("held")]

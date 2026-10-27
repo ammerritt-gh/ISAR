@@ -225,7 +225,7 @@ def needs_attention(root) -> readiness.NeedsAttention:
     from .workspace import Workspace      # imported here: workspace.py imports this module
     marks: dict[str, readiness.UnitMarks] = {}
     try:
-        for u in Workspace(root).fit_inputs():
+        for u in (Workspace(root).fit_inputs() if readiness.is_bl43(root) else ()):    # no marks to parse elsewhere
             marks[u.unit] = readiness.UnitMarks(
                 running=any(p is not None and p.state == "running" for p in (u.fast, u.deep)),
                 changed_fast=_detail(u.fast), changed_deep=_detail(u.deep))

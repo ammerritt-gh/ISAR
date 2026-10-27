@@ -221,6 +221,12 @@ def _card(root: Path) -> Card:
     return Card(load_policy(root / POLICY_FILE), load_state(root / STATE_FILE))
 
 
+def is_bl43(root) -> bool:
+    """True for a BL43LXU workspace; the one test of whether readiness applies (``evaluate`` makes it too)."""
+    root = Path(root)
+    return (root / POLICY_FILE).exists() and scans.applies(_card(root))
+
+
 def _record(root: Path) -> tuple[dict, dict]:
     """``(scan rows, files section)`` of the import record; ValueError when it is malformed."""
     doc = scans._load(root / scans.INTAKE_SCANS)      # {} when nothing was imported
