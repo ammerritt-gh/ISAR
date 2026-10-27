@@ -407,9 +407,22 @@ def _write_readme(folder: Path) -> None:
         f.write(README_TEXT)
 
 
+def _null_nonfinite(value):
+    """``value`` with every non-finite float (NaN, inf) replaced by None, recursively: JSON has no
+    token for them, and a stored BL43 value can be NaN."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _null_nonfinite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_null_nonfinite(v) for v in value]
+    return value
+
+
 def _write_fits(folder: Path, doc: dict) -> None:
     with open(folder / "fits.json", "w", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps(doc, indent=1, sort_keys=True))
+        # allow_nan=False: a bare NaN token can never be written again, whatever the sanitiser misses
+        f.write(json.dumps(_null_nonfinite(doc), indent=1, sort_keys=True, allow_nan=False))
         f.write("\n")
 
 

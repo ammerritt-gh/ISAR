@@ -270,6 +270,29 @@ def test_exports_never_overwrite_and_leave_no_partial(ws):
     assert not list((ws / "report" / "exports").glob(".partial-*"))
 
 
+def _no_bare_constants(name):
+    raise AssertionError(f"fits.json holds a bare {name} token")
+
+
+def test_fits_json_holds_null_where_a_stored_value_is_not_finite(tmp_path):
+    export_mod._write_fits(tmp_path, {"a": float("nan"), "b": [1.0, float("inf")],
+                                      "c": {"d": (float("-inf"), 2.0)}, "e": 3})
+    doc = json.loads((tmp_path / "fits.json").read_text(encoding="utf-8"),
+                     parse_constant=_no_bare_constants)
+    assert doc == {"a": None, "b": [1.0, None], "c": {"d": [None, 2.0]}, "e": 3}
+
+
+def test_an_export_of_a_stored_nan_is_valid_json(ws):
+    state = SessionState.load(ws / "session.json")
+    state.scans["E:5:ana"].detectors["ana"]["exposure_provenance"]["value"] = float("nan")
+    state.save(ws / "session.json")
+    folder = export_mod.export_workspace(ws, now=NOW).folder
+    text = (folder / "fits.json").read_text(encoding="utf-8")
+    assert "NaN" not in text
+    doc = json.loads(text, parse_constant=_no_bare_constants)
+    assert doc["spectra"]  # the export still holds its spectra
+
+
 def test_a_failed_export_leaves_no_new_folder(ws, monkeypatch):
     def boom(folder):
         raise RuntimeError("disk full")
