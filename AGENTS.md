@@ -198,8 +198,9 @@ deliberate, production reads them) ·
 facade) ·
 `intake` (Qt-free; the BL43 append-only user-value and settings store in `isar/intake/`, whose writers
 the GUI calls in process; `workspace_api` only reads it) ·
-`isar_gui` (reads science through `workspace_api`; controls campaigns by subprocess + control
-files). The Stage II ↔ III boundary is a **frozen file contract**
+`isar_gui` (reads science through `workspace_api`, saves the user's values and settings in process
+through `isar.intake`, and controls campaigns by subprocess + control files).
+The Stage II ↔ III boundary is a **frozen file contract**
 (`report/results.csv`, `report/measurements.jsonl` — the counts-authoritative
 `isar.measurement-arena/1` log, one line per measured arena written before any fit is trusted to
 exist, `<workspace>/report/report.json`, `card.state.json`) — the driver never imports fit
