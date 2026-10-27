@@ -258,6 +258,7 @@ def test_damaged_entries_are_skipped_and_every_damaged_line_is_reported(root):
         "intake/entries.jsonl line 4 skipped: -5 is not a temperature value",
         "intake/entries.jsonl line 5 skipped: does not parse as JSON",
     ]
+    assert damage_lines(root, read=r, index=idx) == damage_lines(root)      # an already-read file is not parsed again
     assert damage_lines(root / "nowhere") == []
     assert inputs.read_entries(root)[-1]["seq"] == 10        # the store keeps them; only the index skips
 

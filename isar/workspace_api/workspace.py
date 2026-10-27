@@ -689,7 +689,7 @@ class Workspace:
 
     def _intake_index(self):
         def load():
-            r = intake_store.read_all(self.root, intake_store.ENTRIES)
+            r = self._views["intake_read"] = intake_store.read_all(self.root, intake_store.ENTRIES)   # kept for damage
             return intake_inputs.index_entries(r.entries, lines=r.lines)
         return self._parse("intake_entries", load, intake_inputs.EntryIndex({}, {}, {}))
 
@@ -709,7 +709,9 @@ class Workspace:
     def _note_intake_damage(self) -> None:
         """Once per refresh, add the skipped lines of both intake files to :attr:`warnings`."""
         if "intake_damage" not in self._raw:
-            self.warnings.extend(self._parse("intake_damage", lambda: intake_inputs.damage_lines(self.root), []))
+            index = self._intake_index()
+            self.warnings.extend(self._parse("intake_damage", lambda: intake_inputs.damage_lines(
+                self.root, read=self._views.get("intake_read"), index=index), []))
 
     def fact_rows(self, scans=None) -> list:
         """The BL43 fact rows of ``scans`` (scan keys; None = all): per scan its temperature and slit,

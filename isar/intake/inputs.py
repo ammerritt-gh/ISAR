@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import copy
 import dataclasses
-import logging
 import math
 import re
 from collections.abc import Mapping, Sequence
@@ -26,8 +25,6 @@ from pathlib import Path
 import numpy as np
 
 from isar.intake import settings, store
-
-log = logging.getLogger(__name__)
 
 ENTERABLE = {"temperature": "K", "slit": "mm"}      # fact -> its one unit
 FILE_FACT = {"temperature": "T_K", "slit": "slit"}  # fact -> the scan fact name in the parsed record
@@ -78,8 +75,9 @@ def _entry_problem(e: dict) -> str | None:
 
 
 def index_entries(entries: list[dict], *, lines: Sequence[int]) -> EntryIndex:
-    """Index the entries once per read. An entry breaking the entry format is skipped, logged and listed
-    in ``damaged``; its line is ``lines[i]`` (``store.read_all(...).lines`` of the same read)."""
+    """Index the entries once per read. An entry breaking the entry format is skipped and listed in
+    ``damaged`` (reported once, by :func:`damage_lines`); its line is ``lines[i]`` (``store.read_all(...).lines``
+    of the same read)."""
     facts: dict = {}
     conditions: dict = {}
     units: dict = {}
@@ -87,9 +85,7 @@ def index_entries(entries: list[dict], *, lines: Sequence[int]) -> EntryIndex:
     for i, e in enumerate(entries):
         why = _entry_problem(e)
         if why is not None:
-            line = lines[i]
-            log.warning("%s line %d skipped: %s", store.ENTRIES, line, why)
-            damaged.append(store.Damaged(store.ENTRIES, line, why))
+            damaged.append(store.Damaged(store.ENTRIES, lines[i], why))
             continue
         if e["kind"] == "condition":
             cond = e["condition"]
@@ -108,11 +104,13 @@ def index_entries(entries: list[dict], *, lines: Sequence[int]) -> EntryIndex:
     return EntryIndex(facts, conditions, units, tuple(damaged))
 
 
-def damage_lines(root) -> list[str]:
-    """One line per damaged line of both intake files (store-, settings- and entry-level); [] when none."""
+def damage_lines(root, *, read: store.StoreRead | None = None, index: EntryIndex | None = None) -> list[str]:
+    """One line per damaged line of both intake files (store-, settings- and entry-level); [] when none.
+    A caller that has already read the entries file passes that ``read`` (and the ``index`` built from it),
+    so the file is parsed once."""
     found = list(settings.current_settings(root).damaged)
-    r = store.read_all(root, store.ENTRIES)
-    found += [*r.damaged, *index_entries(r.entries, lines=r.lines).damaged]
+    r = read if read is not None else store.read_all(root, store.ENTRIES)
+    found += [*r.damaged, *(index if index is not None else index_entries(r.entries, lines=r.lines)).damaged]
     found.sort(key=lambda d: (d.file != store.SETTINGS, d.line))
     return [f"{d.file} line {d.line} skipped: {d.why}" for d in found]
 

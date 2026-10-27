@@ -213,6 +213,22 @@ def test_damaged_intake_lines_are_reported_and_never_raise(env):
     assert len(env.ws.warnings) == 2                                     # once per refresh
 
 
+def test_the_entries_file_is_parsed_once_per_refresh_and_a_damaged_line_is_logged_once(env, monkeypatch, caplog):
+    values.save_value(env.root, "temperature", 100.0, ["spec1:42"])
+    path = env.root / store.ENTRIES
+    path.write_bytes(path.read_bytes() + b'{"id": "e1", "seq": 9, "at": "x", "kind": "mystery", "targets": []}\n')
+    reads = []
+    real = store.read_all
+    monkeypatch.setattr(store, "read_all", lambda root, name: reads.append(name) or real(root, name))
+    env.ws.refresh()
+    with caplog.at_level("WARNING"):
+        env.ws.fact_rows()
+        env.ws.fit_inputs()
+    assert reads.count(store.ENTRIES) == 1
+    assert env.ws.warnings == ["intake/entries.jsonl line 2 skipped: unknown kind 'mystery'"]
+    assert not [r for r in caplog.records if "skipped" in r.getMessage()]   # the index no longer logs each line
+
+
 # --- fit inputs --------------------------------------------------------------------------------
 def test_a_fast_pass_is_marked_when_the_user_saves_another_temperature(env):
     env.pass_lines()

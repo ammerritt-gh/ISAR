@@ -283,9 +283,9 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             except Exception as exc:  # noqa: BLE001 — a failed import record is logged and reported, never stops the run
                 log.exception("run: %s not written", intake_scans.INTAKE_SCANS)
                 ctx_lines.append(ingest.import_record_message(intake_scans.INTAKE_SCANS, exc))
-            ctx_lines += intake_inputs.damage_lines(workspace.root)
             read = intake_store.read_all(workspace.root, intake_store.ENTRIES)
             index = intake_inputs.index_entries(read.entries, lines=read.lines)
+            ctx_lines += intake_inputs.damage_lines(workspace.root, read=read, index=index)
             scan_in = {k: intake_inputs.scan_inputs(rows[k], index) for k in rows}
             run_start_eff = {k: intake_inputs.apply(parsed_by_key[k], scan_in[k]) for k in rows}
 
