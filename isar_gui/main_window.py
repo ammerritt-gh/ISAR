@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from isar_gui import file_dialogs
 from isar_gui.commands import RunOptions, build_run_command
 from isar_gui.active_unit import ActiveUnitController
 from isar_gui.export_action import ExportController
@@ -1135,9 +1136,7 @@ class MainWindow(QMainWindow):
         # Non-native, like every other experiment dialog here: the Windows-native directory picker
         # refuses a typed path whose folder does not exist yet and offers no way to make one, so
         # the operator had to leave the application and create the folder in Explorer first.
-        path = QFileDialog.getExistingDirectory(
-            self, "Open experiment", start_dir,
-            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
+        path = file_dialogs.get_existing_directory(self, "Open experiment", start_dir)
         if path:
             self.load_workspace(path)
 
@@ -1274,10 +1273,9 @@ class MainWindow(QMainWindow):
         # confirmation is declined because the manager's "absent or empty" check is the authority.
         # Non-native: the Windows dialog rejects typed paths whose parents do not exist yet, while
         # the manager creates the whole parent chain at promotion.
-        dest, _selected = QFileDialog.getSaveFileName(
+        dest, _selected = file_dialogs.get_save_file_name(
             self, "Save copy as — name a new folder", str(root.parent / f"{root.name}-copy"), "",
-            options=(QFileDialog.Option.DontConfirmOverwrite
-                     | QFileDialog.Option.DontUseNativeDialog))
+            QFileDialog.Option.DontConfirmOverwrite)
         if not dest:
             return
         available, reason, _strip_busy = self._availability()
@@ -1864,9 +1862,8 @@ class MainWindow(QMainWindow):
             return False
         if path is None:
             default = f"{Path(self._ws.root).name}_{dock_key.split()[0].lower()}.png"
-            path, _ = QFileDialog.getSaveFileName(self, "Export view as PNG", default,
-                                                  "PNG image (*.png)", "",
-                                                  QFileDialog.Option.DontUseNativeDialog)
+            path, _ = file_dialogs.get_save_file_name(self, "Export view as PNG", default,
+                                                      "PNG image (*.png)")
             if not path:
                 return False
         ok = save_widget_png(glw, path)

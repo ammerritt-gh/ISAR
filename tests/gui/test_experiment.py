@@ -107,6 +107,7 @@ class _Forbidden:
 
 def _no_dialogs(monkeypatch):
     monkeypatch.setattr(main_window, "QFileDialog", _Forbidden("QFileDialog"))
+    monkeypatch.setattr(main_window, "file_dialogs", _Forbidden("file_dialogs"))
     monkeypatch.setattr(main_window, "QMessageBox", _Forbidden("QMessageBox"))
 
 
@@ -387,16 +388,7 @@ def test_rename_dialog_cleans_the_name_and_warns_of_a_refit_only_with_fits(make_
 
 # ---- Save copy as ----------------------------------------------------------------------------
 def _choose_copy_folder(monkeypatch, dest):
-    from PySide6.QtWidgets import QFileDialog
-
-    class _Dialog:
-        Option = QFileDialog.Option
-
-        @staticmethod
-        def getSaveFileName(*_a, **_k):
-            return str(dest), ""
-
-    monkeypatch.setattr(main_window, "QFileDialog", _Dialog)
+    monkeypatch.setattr(main_window.file_dialogs, "get_save_file_name", lambda *_a, **_k: (str(dest), ""))
 
 
 def test_after_save_copy_as_another_drop_goes_to_the_original(

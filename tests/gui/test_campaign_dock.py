@@ -454,7 +454,9 @@ def test_feed_hydrates_events_consumed_before_dock_connected(qtbot, make_ws):
 
 
 def test_feed_copy_selection_copy_all_and_save_text(dock_env, tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QApplication, QFileDialog
+    from PySide6.QtWidgets import QApplication
+
+    from isar_gui import file_dialogs
 
     dock, vm, ops, ws, root = dock_env
     path = root / "report" / "session_log.jsonl"
@@ -472,7 +474,7 @@ def test_feed_copy_selection_copy_all_and_save_text(dock_env, tmp_path, monkeypa
     assert QApplication.clipboard().text() == visible
 
     destination = tmp_path / "campaign-log.txt"
-    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+    monkeypatch.setattr(file_dialogs, "get_save_file_name",
                         lambda *_args, **_kwargs: (str(destination), "Text (*.txt)"))
     dock._save_feed()
     assert destination.read_text(encoding="utf-8") == visible + "\n"

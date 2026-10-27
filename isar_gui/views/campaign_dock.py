@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from isar_gui import file_dialogs
 from isar_gui.commands import DriveOptions, source_fingerprint
 from isar_gui.log_render import BUDGET_KIND, BudgetAnnouncer, RenderedEvent, format_payload
 from isar_gui.viewmodels.campaign import (analysis_readout, budget_readout,
@@ -745,9 +746,8 @@ class CampaignDock(QDockWidget):
         QApplication.clipboard().setText("\n".join(item.text for item in self._feed_items))
 
     def _save_feed(self) -> None:
-        path, _kind = QFileDialog.getSaveFileName(self, "Save campaign log", "campaign-log.txt",
-                                                   "Text (*.txt);;All files (*)", "",
-                                                   QFileDialog.Option.DontUseNativeDialog)
+        path, _kind = file_dialogs.get_save_file_name(self, "Save campaign log", "campaign-log.txt",
+                                                      "Text (*.txt);;All files (*)")
         if not path:
             return
         try:
