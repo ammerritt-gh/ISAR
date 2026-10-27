@@ -59,6 +59,30 @@ def test_note_workspace_dedup_and_order():
     assert s.recent_workspaces.count(str(__import__("pathlib").Path("/ws/a"))) == 1
 
 
+def test_rename_workspace_follows_recents_and_remembered_run():
+    from pathlib import Path
+
+    a, b, c = (str(Path(p)) for p in ("/exp/a", "/exp/b", "/exp/c"))
+    s = sess.Session(recent_workspaces=[a, b, c],
+                     view_state={"run": {b: {"mode": "fast"}, c: {"mode": "deep"}}})
+    s.rename_workspace("/exp/b", "/exp/renamed")
+    renamed = str(Path("/exp/renamed"))
+    assert s.recent_workspaces == [a, renamed, c]                  # same position, new path
+    assert s.view_state["run"] == {renamed: {"mode": "fast"}, c: {"mode": "deep"}}
+
+
+def test_rename_workspace_never_adds_and_never_duplicates():
+    from pathlib import Path
+
+    a, b = str(Path("/exp/a")), str(Path("/exp/b"))
+    s = sess.Session(recent_workspaces=[a])
+    s.rename_workspace("/exp/unrecorded", "/exp/new")             # an old that was never a recent
+    assert s.recent_workspaces == [a] and "run" not in s.view_state
+    s = sess.Session(recent_workspaces=[a, b])
+    s.rename_workspace("/exp/a", "/exp/b")                        # the new path is already a recent
+    assert s.recent_workspaces == [b]
+
+
 def test_note_workspace_refuses_temp_dir_path(tmp_path, monkeypatch):
     """A workspace under the system temp dir (e.g. a leaked pytest tmp_path) must not be recorded as
     a recent: a later no-arg launch would auto-open a dead scratch dir instead of the empty-start
