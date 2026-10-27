@@ -21,7 +21,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtWidgets import QDialog, QFileDialog
+from PySide6.QtWidgets import QDialog, QFileDialog, QPushButton
 
 import bl43_fixture
 import bl43_intake_fixture
@@ -667,7 +667,7 @@ def test_every_wire_of_the_mount_table_fires(qtbot, monkeypatch, s2_built):
     monkeypatch.setattr(DetailsDialog, "exec", open_dialog)
     w.experiment_strip._details.click()
     w.experiment_strip.show_created_note("folder")
-    note_details = [b for b in w.experiment_strip.findChildren(type(w.experiment_strip._details))
+    note_details = [b for b in w.experiment_strip.findChildren(QPushButton)
                     if b.objectName() == "experiment_note_details"]
     note_details[0].click()
     assert details == [(s2_built.name, str(s2_built))] * 2 and renames == [1, 1]

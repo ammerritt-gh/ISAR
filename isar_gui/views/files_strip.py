@@ -1,9 +1,9 @@
 """FilesStrip -- the window's drop target and watch line, under the experiment strip.
 
 Two forms, one mount. With no experiment open, or an experiment holding no files, it is the large drop
-zone ("Drop data files or a folder here") with *Add files…* and *Add folder…*. Once the experiment holds
-files it is one line: the counts, the watch state, *Add…* (files or a folder) and *Watch…*, which opens
-the WatchDialog. Both forms take drops. The strip never ingests: every path leaves through
+zone ("Drop data files or a folder here") with *Add data files…* and *Add data folder…*. Once the experiment
+holds files it is one line: the counts, the watch state, *Add data ▾* (files or a folder) and
+*Watch a folder…*, which opens the WatchDialog. Both forms take drops. The strip never ingests: every path leaves through
 ``paths_dropped``, and the window decides (create-or-ingest, a lone experiment folder opens it).
 
 The two add buttons sit on separate rows so the strip holds the left column's minimum width whatever
@@ -21,12 +21,17 @@ from isar_gui.commands import GuiIngestReport
 from isar_gui.folder_watcher import WatchStatus
 from isar_gui.theme import TONE_COLOR, Tone, dot_icon
 from isar_gui.viewmodels.files import FilesViewModel
-from isar_gui.views.elided_label import ElidedLabel
+from isar_gui.views.elided_label import ElidedButton, ElidedLabel
 from isar_gui.views.files_dock import _HIGHLIGHT_COLOR, _HIGHLIGHT_MS
 from isar_gui.views.watch_dialog import WatchDialog
 
 _FIRST_LAUNCH = "Drop data files or a folder here"
-_FIRST_LAUNCH_NOTE = "ISAR creates the experiment for you and reads the files. You can rename it afterwards."
+_FIRST_LAUNCH_NOTE = ("ISAR creates the experiment for you and reads the files. You can rename it afterwards. "
+                      "Or use New experiment… to make an empty one first.")
+_ADD_FILES_TIP = "Read the chosen data files into this experiment. They stay where they are and must stay available."
+_ADD_FOLDER_TIP = "Read every data file of the chosen folder into this experiment. They stay where they are."
+_WATCH_TIP = ("Choose a folder (for example where the beamline writes scans); new files appearing in it are "
+              "read into this experiment automatically.")
 _IN_EXPERIMENT_NOTE = "Files you drop are read into this experiment."
 _NEEDS_EXPERIMENT = "needs an experiment with data"
 
@@ -60,11 +65,13 @@ class FilesStrip(QWidget):
         self._note = QLabel(_FIRST_LAUNCH_NOTE, zone)
         self._note.setObjectName("files_note")
         self._note.setWordWrap(True)
-        self._add_files = QPushButton("Add files…", zone)
+        self._add_files = QPushButton("Add data files…", zone)
         self._add_files.setObjectName("files_add_files")
+        self._add_files.setToolTip(_ADD_FILES_TIP)
         self._add_files.clicked.connect(self.choose_files)
-        self._add_folder = QPushButton("Add folder…", zone)
+        self._add_folder = QPushButton("Add data folder…", zone)
         self._add_folder.setObjectName("files_add_folder")
+        self._add_folder.setToolTip(_ADD_FOLDER_TIP)
         self._add_folder.clicked.connect(self.choose_folder)
         inner = QVBoxLayout(zone)
         inner.setContentsMargins(8, 4, 8, 4)
@@ -81,30 +88,37 @@ class FilesStrip(QWidget):
         # ---- the one line: counts and watch state, then Add… and Watch… ----
         line = QFrame(self)
         line.setObjectName("files_line")
-        self._line_text = ElidedLabel("", line)
+        self._line_text = ElidedLabel("", line, Qt.TextElideMode.ElideRight)    # the counts stay; the watch tail goes
         self._line_text.setObjectName("files_line_text")
         self._attention = QWidget(line)
         self._attention.setObjectName("files_attention")
         self._attention_dot = QLabel(self._attention)
         self._attention_dot.setPixmap(dot_icon(Tone.WARN).pixmap(10, 10))
-        self._attention_word = QLabel("watch needs attention", self._attention)
+        self._attention_word = ElidedLabel("watch needs attention", self._attention, Qt.TextElideMode.ElideRight)
         self._attention_word.setStyleSheet(f"color: {TONE_COLOR[Tone.WARN]};")
         attention_row = QHBoxLayout(self._attention)
         attention_row.setContentsMargins(0, 0, 0, 0)
         attention_row.setSpacing(4)
         attention_row.addWidget(self._attention_dot, 0)
-        attention_row.addWidget(self._attention_word, 0)
-        attention_row.addStretch(1)
+        attention_row.addWidget(self._attention_word, 1)
         self._attention.hide()
-        self._add = QPushButton("Add…", line)
+        self._add = ElidedButton("Add data ▾", line)
         self._add.setObjectName("files_add")
+        self._add.setToolTip("Read more data files, or a whole folder, into this experiment. The originals stay "
+                             "where they are and must stay available.")
         add_menu = QMenu(self._add)
-        add_menu.addAction("Files…").triggered.connect(self.choose_files)
-        add_menu.addAction("Folder…").triggered.connect(self.choose_folder)
+        add_menu.addAction("Data files…").triggered.connect(self.choose_files)
+        add_menu.addAction("Data folder…").triggered.connect(self.choose_folder)
         self._add.setMenu(add_menu)
-        self._watch = QPushButton("Watch…", line)
+        self._watch = ElidedButton("Watch a folder…", line)
         self._watch.setObjectName("files_watch")
+        self._watch.setToolTip(_WATCH_TIP)
         self._watch.clicked.connect(self._open_watch)
+        self._watch_reason = QLabel(_NEEDS_EXPERIMENT, line)      # why Watch is off, as text
+        self._watch_reason.setObjectName("files_watch_reason")
+        self._watch_reason.setWordWrap(True)
+        self._watch_reason.setStyleSheet("color: #6b7280;")
+        self._watch_reason.hide()
         row = QHBoxLayout()
         row.setSpacing(6)
         row.addWidget(self._line_text, 1)          # elides; widens nothing, so the strip fits 280 px
@@ -114,6 +128,7 @@ class FilesStrip(QWidget):
         line_layout.setContentsMargins(8, 4, 8, 4)
         line_layout.setSpacing(3)
         line_layout.addLayout(row)
+        line_layout.addWidget(self._watch_reason)
         line_layout.addWidget(self._attention)     # a second row only while the watch needs attention
         self._line = line
 
@@ -176,15 +191,17 @@ class FilesStrip(QWidget):
             return
         text = (f"{files} file{'s' if files != 1 else ''} · {sets} scan set{'s' if sets != 1 else ''}"
                 " · drop more here" + self._watch_text())
-        if not vm.can_watch:
-            text += f" — {_NEEDS_EXPERIMENT}"
         self._line_text.set_full_text(text)
         self._watch.setEnabled(vm.can_watch)
-        messages = "\n".join(self._status.messages())
+        self._watch.setToolTip(_WATCH_TIP if vm.can_watch else f"Watching is off: {_NEEDS_EXPERIMENT}.")
+        self._watch_reason.setVisible(not vm.can_watch)
+        messages = list(self._status.messages())
         self._attention.setVisible(self._status.needs_attention)
-        self._attention.setToolTip(messages)
-        self._attention_dot.setToolTip(messages)
-        self._attention_word.setToolTip(messages)
+        self._attention_word.set_full_text("Watch problem: " + messages[0] if messages else "watch needs attention")
+        tip = "\n".join(messages)
+        self._attention.setToolTip(tip)
+        self._attention_dot.setToolTip(tip)
+        self._attention_word.setToolTip(tip or self._attention_word.full_text())
 
     def _watch_text(self) -> str:
         folders = self._files_vm.watched()

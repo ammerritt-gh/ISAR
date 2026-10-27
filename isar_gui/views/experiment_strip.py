@@ -1,14 +1,14 @@
 """ExperimentStrip -- the top of the window's left column: which experiment is open.
 
 With none open it reads "No experiment open" beside *New experiment…* (the one primary button),
-*Open…* and *Recent ▾*. With one open it shows the experiment's name with *Rename* and *Details…*
+*Open experiment…* and *Recent ▾*. With one open it shows the experiment's name with *Rename…* and *Experiment info…*
 and its folder path beneath. Purely presentational: every action is a signal, and the window
 decides what it does.
 
 The buttons sit on two rows so the strip holds the left column's minimum width whatever the font.
 
 Two lines appear only when the window asks for them: the one-time note after a drop created and
-named the experiment (*Rename*, *Add details* and ✕), and a warning when an opened experiment's
+named the experiment (*Rename…*, *Add info* and ✕), and a warning when an opened experiment's
 source data folder is gone (in the warning colour, every missing folder in its tooltip).
 """
 from __future__ import annotations
@@ -20,9 +20,10 @@ from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, 
                                QVBoxLayout, QWidget)
 
 from isar_gui.theme import TONE_COLOR, Tone
-from isar_gui.views.elided_label import ElidedLabel
+from isar_gui.views.elided_label import ElidedButton, ElidedLabel
 
 _NO_EXPERIMENT = "No experiment open"
+_RENAME_TIP = "Rename the experiment. Its folder on disk is renamed with it."
 # The one-time note's words by what named the experiment; "default" shows no note.
 _CREATED_NOTES = {
     "folder": "Experiment created and named after the folder you dropped.",
@@ -33,10 +34,10 @@ _CREATED_NOTES = {
 
 class ExperimentStrip(QWidget):
     new_requested = Signal()            # "New experiment…" clicked
-    open_requested = Signal()           # "Open…" clicked
+    open_requested = Signal()           # "Open experiment…" clicked
     recent_chosen = Signal(str)         # a path picked from "Recent ▾"
-    rename_requested = Signal()         # "Rename" clicked (strip or one-time note)
-    details_requested = Signal()        # "Details…" on the strip and "Add details" in the one-time note
+    rename_requested = Signal()         # "Rename…" clicked (strip or one-time note)
+    details_requested = Signal()        # "Experiment info…" on the strip and "Add info" in the one-time note
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -49,27 +50,35 @@ class ExperimentStrip(QWidget):
         font = self._name.font()
         font.setBold(True)
         self._name.setFont(font)
-        self._rename = QPushButton("Rename", self)
+        self._name.setMinimumWidth(60)      # the buttons shorten their text before the name disappears
+        self._rename = ElidedButton("Rename…", self)
         self._rename.setObjectName("experiment_rename")
+        self._rename.setToolTip(_RENAME_TIP)
         self._rename.clicked.connect(self.rename_requested)
-        self._details = QPushButton("Details…", self)
+        self._details = ElidedButton("Experiment info…", self)
         self._details.setObjectName("experiment_details")
-        self._details.setToolTip("The experiment's name, folder and optional descriptive fields")
+        self._details.setToolTip("Name, folder and optional notes (title, proposal, sample, people, dates). "
+                                 "Nothing here affects a fit.")
         self._details.clicked.connect(self.details_requested)
         self._path = ElidedLabel("", self)
         self._path.setObjectName("experiment_path")
-        self._path.setEnabled(False)   # greyed: secondary text
+        self._path.setStyleSheet("color: #6b7280;")    # muted but enabled: a disabled label fell under the contrast floor
 
         self._new = QPushButton("New experiment…", self)
         self._new.setObjectName("experiment_new")
         self._new.setDefault(True)
+        self._new.setToolTip("Create an empty experiment folder. Dropping data files on the box below "
+                             "creates one for you.")
         self._new.clicked.connect(self.new_requested)
-        self._open = QPushButton("Open…", self)
+        self._open = ElidedButton("Open experiment…", self)
         self._open.setObjectName("experiment_open")
+        self._open.setToolTip("Open an experiment folder made earlier in ISAR (yours or a copy). "
+                              "To read data files into this one, use Add data.")
         self._open.clicked.connect(self.open_requested)
         self._recent = QToolButton(self)
         self._recent.setObjectName("experiment_recent")
         self._recent.setText("Recent ▾")
+        self._recent.setToolTip("Experiments you opened lately, most recent first.")
         self._recent.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._recent.setStyleSheet("QToolButton::menu-indicator { image: none; }")   # text has the arrow
         self._recent_menu = QMenu(self._recent)
@@ -87,10 +96,12 @@ class ExperimentStrip(QWidget):
         self._note_text = QLabel("", self._note)
         self._note_text.setObjectName("experiment_note_text")
         self._note_text.setWordWrap(True)
-        note_rename = QPushButton("Rename", self._note)
+        note_rename = QPushButton("Rename…", self._note)
         note_rename.setObjectName("experiment_note_rename")
         note_rename.clicked.connect(self.rename_requested)
-        note_details = QPushButton("Add details", self._note)
+        note_details = QPushButton("Add info", self._note)
+        note_details.setToolTip("Name, folder and optional notes (title, proposal, sample, people, dates). "
+                                "Nothing here affects a fit.")
         note_details.setObjectName("experiment_note_details")
         note_details.clicked.connect(self.details_requested)
         note_close = QToolButton(self._note)
@@ -177,7 +188,7 @@ class ExperimentStrip(QWidget):
             action.triggered.connect(lambda _checked=False, p=path: self.recent_chosen.emit(p))
 
     def set_busy(self, reason: str | None) -> None:
-        """``None`` = idle; else New/Open/Recent/Rename are disabled and the reason is shown."""
+        """``None`` = idle; else New/Open/Recent/Rename are disabled and the reason is shown on the line below them."""
         self._busy_reason = reason or None
         self._busy.setText(reason or "")
         self._busy.setVisible(bool(reason))
@@ -206,4 +217,4 @@ class ExperimentStrip(QWidget):
         self._rename.setVisible(self._root is not None)
         self._details.setVisible(self._root is not None)   # details save to intake/, never blocked here
         self._rename.setEnabled(idle)
-        self._rename.setToolTip("" if idle else self._busy_reason)
+        self._rename.setToolTip(_RENAME_TIP if idle else self._busy_reason)     # the reason is also the busy line

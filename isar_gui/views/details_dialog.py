@@ -1,4 +1,4 @@
-"""DetailsDialog -- *Details…*: the experiment's name and folder, and its optional descriptive fields.
+"""DetailsDialog -- *Experiment info…*: the experiment's name and folder, and its optional descriptive fields.
 
 The name is shown with *Rename…* (the window's rename), the folder path is shown and selectable but not
 editable, and six optional fields (title, proposal, sample, people, dates, notes) are kept with the
@@ -34,14 +34,14 @@ class DetailsDialog(QDialog):
     def __init__(self, intake, name: str, folder: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("details_dialog")
-        self.setWindowTitle("Experiment details")
+        self.setWindowTitle("Experiment info")
         self._intake = intake
 
         self._name = ElidedLabel(name, self)
         self._name.setObjectName("details_name")
         rename = QPushButton("Rename…", self)
         rename.setObjectName("details_rename")
-        rename.setToolTip("Rename the experiment and its folder together")
+        rename.setToolTip("Rename the experiment. Its folder on disk is renamed with it.")
         rename.clicked.connect(self.rename_requested)
         name_row = QHBoxLayout()
         name_row.addWidget(self._name, 1)
