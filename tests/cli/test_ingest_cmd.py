@@ -113,3 +113,21 @@ def test_ingest_no_workspace_human(tmp_path, capsys):
     assert code == 2
     assert out.out == ""                         # no JSON on stdout in human mode
     assert "no workspace" in out.err
+
+
+def test_bl43_ingest_writes_the_import_record_and_prints_damaged_intake_lines(tmp_path, capsys):
+    """A BL43 workspace gains report/intake_scans.json; a damaged line in the user's entries file is
+    reported, never a stop (R14)."""
+    from intake_fixtures import bl43_workspace
+    from isar.intake import store
+
+    ws, data = bl43_workspace(tmp_path)
+    (ws.root / "intake").mkdir()
+    (ws.root / store.ENTRIES).write_bytes(b"[1, 2]\n")
+    code = ingest_cmd.run(argparse.Namespace(data=[str(data)], workspace=str(ws.root), json=False))
+    out = capsys.readouterr().out
+    assert code == 0 and (ws.root / "report" / "intake_scans.json").exists()
+    assert "intake: intake/entries.jsonl line 1 skipped: not a JSON object" in out
+    code = ingest_cmd.run(argparse.Namespace(data=[str(data)], workspace=str(ws.root), json=True))
+    obj = json.loads(capsys.readouterr().out.strip())
+    assert code == 0 and obj["intake_damaged"] == ["intake/entries.jsonl line 1 skipped: not a JSON object"]
