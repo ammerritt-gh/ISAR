@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -30,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from isar_gui.plotspec_pg import clear_render, render_into
 
-_EMPTY_HINT = "Nothing to show yet. Pick a scan on the left once data is in."
+_EMPTY_HINT = "Select an analyzer in the scan list."
 
 
 def _bold(item: QTableWidgetItem) -> QTableWidgetItem:
@@ -61,14 +62,19 @@ class InspectorWidget(QWidget):
         self._resid_plot.setXLink(self._main_plot)
         self._glw.ci.layout.setRowStretchFactor(0, 3)
         self._glw.ci.layout.setRowStretchFactor(1, 1)
-        self._splitter.addWidget(self._glw)
+        # With nothing to show the hint takes the plots' place, centred in their area (in the side
+        # column it sat detached beside two empty plots).
+        self._empty_label = QLabel(_EMPTY_HINT)
+        self._empty_label.setAlignment(Qt.AlignCenter)
+        self._empty_label.setWordWrap(True)
+        self._left = QStackedWidget()
+        self._left.addWidget(self._glw)
+        self._left.addWidget(self._empty_label)
+        self._splitter.addWidget(self._left)
 
         # --- right: tables + panels -------------------------------------
         side = self._side = QWidget()
         side_l = QVBoxLayout(side)
-        self._empty_label = QLabel(_EMPTY_HINT)
-        self._empty_label.setContentsMargins(12, 12, 12, 12)
-        side_l.addWidget(self._empty_label)
 
         self._ladder_header = QLabel("<b>Interval ladder</b>")
         side_l.addWidget(self._ladder_header)
@@ -117,12 +123,12 @@ class InspectorWidget(QWidget):
         st = self._vm.state
         empty = st.empty
         unit = (not empty) and st.kind == "unit"
-        self._empty_label.setVisible(empty)
+        self._left.setCurrentWidget(self._empty_label if empty else self._glw)
         # Unit mode (a raw parsed scan × analyzer) shows the counts plot alone, at the display's full
         # width: its metadata lives in the scan inspector. Fit mode shows the ladder/candidates/
         # verdict/provenance. Header labels are toggled alongside their widgets so a hidden section
         # leaves no orphan heading.
-        self._side.setVisible(not unit)
+        self._side.setVisible(not unit and not empty)
         for w in (self._ladder_header, self._ladder, self._candidates_header, self._candidates,
                   self._verdict_header, self._verdict_label,
                   self._provenance_header, self._provenance_label):

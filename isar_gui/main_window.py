@@ -126,7 +126,7 @@ log = logging.getLogger(__name__)
 
 
 # The display's words before any scan is picked (the inspector page's empty text says the same).
-_EMPTY_HINT = "Nothing to show yet. Pick a scan on the left once data is in."
+_EMPTY_HINT = "Select an analyzer in the scan list."
 
 # Bump when the dock inventory/geometry contract changes: restoreState of any OTHER version fails
 # atomically and the window falls back to _apply_default_arrangement (never binary-migrate Qt blobs).

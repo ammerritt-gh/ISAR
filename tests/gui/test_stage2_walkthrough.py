@@ -554,3 +554,19 @@ def test_run_analysis_is_a_visible_button_in_the_setup_area_at_every_size(
     assert rect_in(w, button).top() >= rect_in(w, w.experiment_strip).bottom()   # inside the setup area, under the strip
     if collapsed:
         assert w.processing_rail.collapsed
+
+
+
+@pytest.mark.parametrize("size", [LAPTOP, (1920, 1040)])
+def test_the_empty_display_hint_is_centred_in_the_plot_area(qtbot, monkeypatch, built_no_curves, tmp_path, size):
+    """Audit I9, a real layout effect: the hint sat in the inspector's side column, to the right of the empty
+    plots. It now takes the plots' place and is centred in that area."""
+    w = _window(qtbot, monkeypatch, _copy(built_no_curves, tmp_path), size=size)
+    insp = w.inspector
+    label = insp._empty_label
+    assert label.isVisible() and label.text() == "Select an analyzer in the scan list."
+    area = rect_in(w, insp._splitter.widget(0))             # the plots' column
+    box = rect_in(w, label)
+    assert area.contains(box), (box, area)
+    assert abs(box.center().x() - area.center().x()) <= 2 and abs(box.center().y() - area.center().y()) <= 2
+    assert not insp._side.isVisible()                       # no empty side column beside it
