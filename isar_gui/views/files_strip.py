@@ -1,33 +1,34 @@
-"""FilesStrip -- the window's one drop zone, under the experiment strip.
+"""FilesStrip -- the window's drop target and watch line, under the experiment strip.
 
-With no experiment open it is a large labelled drop zone ("Drop data files or a folder here") that
-says ISAR creates the experiment and reads the files, with *Add files…* and *Add folder…*. It is the
-only mount that accepts drops: every dropped or chosen path leaves through ``paths_dropped``, and the
-window decides (create-or-ingest, a lone experiment folder opens it).
+Two forms, one mount. With no experiment open, or an experiment holding no files, it is the large drop
+zone ("Drop data files or a folder here") with *Add files…* and *Add folder…*. Once the experiment holds
+files it is one line: the counts, the watch state, *Add…* (files or a folder) and *Watch…*, which opens
+the WatchDialog. Both forms take drops. The strip never ingests: every path leaves through
+``paths_dropped``, and the window decides (create-or-ingest, a lone experiment folder opens it).
 
 The two add buttons sit on separate rows so the strip holds the left column's minimum width whatever
 the font.
-
-This is the foundation's version: the drop zone, the two add buttons and the signals. The one-line
-form with an experiment open, the *Watch…* dialog and the arrival highlight are filled by a later
-unit; the signatures do not change.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
-                               QWidget)
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu, QPushButton,
+                               QVBoxLayout, QWidget)
 
 from isar_gui.commands import GuiIngestReport
 from isar_gui.folder_watcher import WatchStatus
+from isar_gui.theme import TONE_COLOR, Tone, dot_icon
 from isar_gui.viewmodels.files import FilesViewModel
+from isar_gui.views.elided_label import ElidedLabel
+from isar_gui.views.files_dock import _HIGHLIGHT_COLOR, _HIGHLIGHT_MS
+from isar_gui.views.watch_dialog import WatchDialog
 
 _FIRST_LAUNCH = "Drop data files or a folder here"
-_FIRST_LAUNCH_NOTE = ("ISAR creates the experiment and reads the files. You can rename it and add "
-                      "details afterwards.")
-_OPEN = "Drop more data files here"
+_FIRST_LAUNCH_NOTE = "ISAR creates the experiment for you and reads the files. You can rename it afterwards."
+_IN_EXPERIMENT_NOTE = "Files you drop are read into this experiment."
+_NEEDS_EXPERIMENT = "needs an experiment with data"
 
 
 class FilesStrip(QWidget):
@@ -39,10 +40,14 @@ class FilesStrip(QWidget):
         super().__init__(parent)
         self.setObjectName("files_strip")
         self.setAcceptDrops(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)   # the arrival tint paints
         self._files_vm: FilesViewModel | None = None
         self._experiment_open = False
+        self._status = WatchStatus()
         self._last_dir = ""
+        self._watch_dialog: WatchDialog | None = None
 
+        # ---- the drop zone: no experiment, or one with no files yet ----
         zone = QFrame(self)
         zone.setObjectName("files_drop_zone")
         zone.setFrameShape(QFrame.Shape.StyledPanel)
@@ -71,23 +76,141 @@ class FilesStrip(QWidget):
             row.addWidget(button, 0)
             row.addStretch(1)
             inner.addLayout(row)
+        self._zone = zone
+
+        # ---- the one line: counts and watch state, then Add… and Watch… ----
+        line = QFrame(self)
+        line.setObjectName("files_line")
+        self._line_text = ElidedLabel("", line)
+        self._line_text.setObjectName("files_line_text")
+        self._attention = QWidget(line)
+        self._attention.setObjectName("files_attention")
+        self._attention_dot = QLabel(self._attention)
+        self._attention_dot.setPixmap(dot_icon(Tone.WARN).pixmap(10, 10))
+        self._attention_word = QLabel("watch needs attention", self._attention)
+        self._attention_word.setStyleSheet(f"color: {TONE_COLOR[Tone.WARN]};")
+        attention_row = QHBoxLayout(self._attention)
+        attention_row.setContentsMargins(0, 0, 0, 0)
+        attention_row.setSpacing(4)
+        attention_row.addWidget(self._attention_dot, 0)
+        attention_row.addWidget(self._attention_word, 0)
+        attention_row.addStretch(1)
+        self._attention.hide()
+        self._add = QPushButton("Add…", line)
+        self._add.setObjectName("files_add")
+        add_menu = QMenu(self._add)
+        add_menu.addAction("Files…").triggered.connect(self._choose_files)
+        add_menu.addAction("Folder…").triggered.connect(self._choose_folder)
+        self._add.setMenu(add_menu)
+        self._watch = QPushButton("Watch…", line)
+        self._watch.setObjectName("files_watch")
+        self._watch.clicked.connect(self._open_watch)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        buttons.addWidget(self._add, 0)
+        buttons.addWidget(self._watch, 0)
+        buttons.addStretch(1)
+        line_layout = QVBoxLayout(line)
+        line_layout.setContentsMargins(8, 4, 8, 4)
+        line_layout.setSpacing(3)
+        line_layout.addWidget(self._line_text)
+        line_layout.addWidget(self._attention)
+        line_layout.addLayout(buttons)
+        self._line = line
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 2, 8, 4)
         outer.addWidget(zone)
+        outer.addWidget(line)
+        line.hide()
 
     # ---- state ---------------------------------------------------------------------------
     def bind(self, files_vm: FilesViewModel, experiment_open: bool) -> None:
         """Called on every bind; the strip drops ``files_vm`` on the next bind."""
+        if files_vm is not self._files_vm:
+            self._close_watch()
+            files_vm.refreshed.connect(self._render)
+            files_vm.watch_config_changed.connect(self._render)
         self._files_vm = files_vm
         self._experiment_open = bool(experiment_open)
-        self._title.setText(_OPEN if self._experiment_open else _FIRST_LAUNCH)
-        self._note.setVisible(not self._experiment_open)
+        self._render()
 
     def set_watch_status(self, status: WatchStatus) -> None:
-        """Foundation: watched-folder status is shown by a later unit."""
+        self._status = status
+        if self._watch_dialog is not None:
+            self._watch_dialog.show_status(status)
+        self._render()
 
     def show_arrival(self, report: GuiIngestReport) -> None:
-        """Foundation: the arrival highlight and its Log line come from a later unit."""
+        """Tint the strip briefly and log what arrived; a report with no files does nothing."""
+        if not report.files:
+            return
+        self.setStyleSheet(f"#files_strip {{ background: {_HIGHLIGHT_COLOR.name()}; }}")
+        # Context-object form: a rebind during the highlight cannot fire into a deleted strip.
+        QTimer.singleShot(_HIGHLIGHT_MS, self, self._clear_arrival)
+        root = self._files_vm.workspace.root
+        name = Path(root).name if root else "no experiment"
+        summary = report.last_ingest or {}
+        logical, units = summary.get("logical_scan_count"), summary.get("analyzer_unit_count")
+        if logical is not None and units is not None:
+            what = f"{logical} scan set(s), {units} analyzer(s)"
+        else:
+            what = f"+{len(report.added)} added, ~{len(report.updated)} updated"
+        not_read = sum(1 for f in report.files if f.get("error"))
+        tail = f"; {not_read} not read" if not_read else ""
+        self.log_message.emit(f"Read {len(report.files)} file(s) into {name}: {what}{tail}")
+
+    def _clear_arrival(self) -> None:
+        self.setStyleSheet("")
+
+    # ---- rendering -----------------------------------------------------------------------
+    def _render(self) -> None:
+        vm = self._files_vm
+        if vm is None:
+            return
+        files, sets = vm.counts
+        drop_zone = not self._experiment_open or files == 0
+        self._zone.setVisible(drop_zone)
+        self._line.setVisible(not drop_zone)
+        if drop_zone:
+            self._note.setText(_IN_EXPERIMENT_NOTE if self._experiment_open else _FIRST_LAUNCH_NOTE)
+            return
+        text = (f"{files} file{'s' if files != 1 else ''} · {sets} scan set{'s' if sets != 1 else ''}"
+                " · drop more here" + self._watch_text())
+        if not vm.can_watch:
+            text += f" — {_NEEDS_EXPERIMENT}"
+        self._line_text.set_full_text(text)
+        self._watch.setEnabled(vm.can_watch)
+        messages = "\n".join(self._status.messages())
+        self._attention.setVisible(self._status.needs_attention)
+        self._attention.setToolTip(messages)
+        self._attention_dot.setToolTip(messages)
+        self._attention_word.setToolTip(messages)
+
+    def _watch_text(self) -> str:
+        folders = self._files_vm.watched()
+        if not folders:
+            return ""
+        if self._status.paused:
+            return " · watching paused"
+        if len(folders) == 1:
+            return f" · watching {folders[0]}"
+        return f" · watching {len(folders)} folders"
+
+    # ---- the Watch dialog ----------------------------------------------------------------
+    def _open_watch(self) -> None:
+        if self._watch_dialog is None:
+            self._watch_dialog = WatchDialog(self._files_vm, self)
+            self._watch_dialog.show_status(self._status)
+        self._watch_dialog.show()
+        self._watch_dialog.raise_()
+        self._watch_dialog.activateWindow()
+
+    def _close_watch(self) -> None:
+        if self._watch_dialog is not None:
+            self._watch_dialog.close()
+            self._watch_dialog.deleteLater()
+            self._watch_dialog = None
 
     # ---- choosing paths ------------------------------------------------------------------
     def _choose_files(self) -> None:
