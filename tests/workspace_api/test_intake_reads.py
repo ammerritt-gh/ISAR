@@ -332,21 +332,26 @@ def test_a_run_that_died_or_failed_never_counts(env):
     assert [x.unit for x in env.ws.fit_inputs()] == [U, "spec1:100:a03"]
 
 
-def _killed(env, run):
-    """Make `run` a run whose process is gone: the GUI's Cancel terminates `isar run`, so no end line is written."""
+def _set_pid(env, run, pid):
+    """Give the start line of `run` the process id `pid`, as the run that wrote it had."""
     import json
-    import subprocess
-    import sys
-    done = subprocess.Popen([sys.executable, "-c", "pass"])
-    done.wait()
     path = env.root / fit_inputs.FIT_INPUTS
     out = []
     for ln in path.read_text(encoding="utf-8").splitlines():
         d = json.loads(ln)
         if d.get("kind") == "run" and d.get("event") == "start" and d["run"] == run:
-            d["pid"] = done.pid
+            d["pid"] = pid
         out.append(json.dumps(d))
     path.write_text("\n".join(out) + "\n", encoding="utf-8", newline="\n")
+
+
+def _killed(env, run):
+    """Make `run` a run whose process is gone: the GUI's Cancel terminates `isar run`, so no end line is written."""
+    import subprocess
+    import sys
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    done.wait()
+    _set_pid(env, run, done.pid)
 
 
 def _ledger(env, unit, run):
@@ -386,6 +391,28 @@ def test_a_killed_runs_unit_the_ledger_holds_is_still_reported(env):
     _killed(env, other)
     env.ws.refresh()
     assert [x.unit for x in env.ws.fit_inputs()] == [U]
+
+
+def test_a_run_killed_after_a_read_stops_counting_on_the_next_read_without_a_refresh(env):
+    import subprocess
+    import sys
+    first = env.pass_lines()
+    _ledger(env, U, first)
+    values.save_value(env.root, "temperature", 100.0, ["spec1:42"])
+    cancelled = env.pass_lines(end=None)                         # no end line; its process is the child below
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    try:
+        _set_pid(env, cancelled, child.pid)
+        (u,) = env.ws.fit_inputs([U])                            # read while the run is live
+        assert (u.fast.run, u.fast.state) == (cancelled, "finished")
+        child.kill()
+        child.wait()                                             # the GUI's Cancel: the process is gone
+        (u,) = env.ws.fit_inputs([U])                            # same Workspace, no refresh()
+        assert (u.fast.run, u.fast.state) == (first, "finished")
+        assert u.fast.changes == (Change("temperature", 97.0, 100.0, "user"),)
+    finally:
+        child.kill()
+        child.wait()
 
 
 def test_units_are_ordered_by_scan_number_and_filtered_and_a_scan_without_a_row_has_no_changes(env):

@@ -728,15 +728,20 @@ class Workspace:
         """Per unit key (``"spec1:42:a03"``; None = all) with a pass on record: its latest fast and latest
         deep pass, what each used, and the changes since (judged on values, not history). ``[]`` without a
         fit-inputs log. Read-only. The first call after :meth:`refresh` parses the whole log, which grows with
-        every run (about 1 MB per fast pass of 840 units): call it from a worker thread, then from the GUI
-        thread once cached.
+        every run (about 1 MB per fast pass of 840 units): call it from a worker thread. Each call then judges
+        liveness and the latest passes over the parsed log, so a run killed after a read stops counting at once.
         """
         self._note_intake_damage()
         # shortcut: re-parses the whole append-only log on each refresh; upgrade to a tail parse past about
         # 20 MB, or when a refresh during a run takes over about 0.5 s.
-        passes = self._parse("fit_inputs", lambda: intake_fit_inputs.latest_passes(
-            intake_fit_inputs.read_log(self.root),
-            {e.scan_id: (e.provenance or {}).get("fit_inputs") or {} for e in self._session().scans.values()}), {})
+        lines = self._parse("fit_log", lambda: intake_fit_inputs.read_log(self.root), [])
+        try:
+            # Judged on every call, never cached: a run's process can end without a refresh (a GUI Cancel).
+            ledger = {e.scan_id: (e.provenance or {}).get("fit_inputs") or {} for e in self._session().scans.values()}
+            passes = intake_fit_inputs.latest_passes(lines, ledger)
+        except Exception as exc:  # noqa: BLE001 — degrade as _parse does, never raise from a read surface
+            self.warnings.append(f"fit_inputs: {exc}; serving no passes")
+            passes = {}
         return intake_view.fit_inputs(
             passes, self._intake_rows(), self._intake_index(), self._state().tabulated_calibration,
             self._curve_check(), self._folder_now(), units)

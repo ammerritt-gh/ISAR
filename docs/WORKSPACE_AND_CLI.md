@@ -87,7 +87,8 @@ Q and count record), written by `isar ingest` and by `isar run`; it never holds 
   the two logs are append-only, so a read during a run or a save sees the last committed state.
   Each parses its files once per `refresh()`; `fit_inputs` parses the whole log, which grows by about
   1.4 MB per fast pass at 30 scans x 28 analyzers (about 0.4 s at 20 runs, 30 ms at one), so call it from a
-  worker thread, then from the GUI thread once cached. `Workspace.watch` reports `intake_entries`,
+  worker thread. Each later call re-judges liveness and the latest passes over the parsed log (about 35 ms
+  at 20 runs), so a run killed after a read stops counting at once. `Workspace.watch` reports `intake_entries`,
   `intake_settings`, `intake_scans`, `fit_inputs` and `curves` among its change names.
 - **`Change.field`** (the *changes since* rows) is one of a closed list: `data` (the imported revision),
   `temperature`, `slit`, `q`, `excluded`, `dead`, `dead_in_scan` (a sibling analyzer declared dead), `counts_accepted`,
