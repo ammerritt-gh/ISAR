@@ -507,6 +507,9 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
                               for d in [detector_id(g["analyzer"])] if d in spectra},
                     "headers": {d: dict(members[d].header) for d in sorted(members)},
                     "sidecar": Path(var_path).name if var_path is not None else None,
+                    # the resolved path of each analyzer file: the key its entry in the import record's files section has
+                    "paths": {d: str(Path(p).resolve()) for p, g in file_set.measurements
+                              for d in [detector_id(g["analyzer"])] if d in spectra},
                     # what was left out, structurally (the flags above say the same in words)
                     "sidecar_state": sidecar_state, "sidecar_problem": sidecar_problem,
                     "left_out": {d: {"file": file_of.get(d), "cause": c} for d, c in sorted(gone.items())},

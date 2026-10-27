@@ -101,8 +101,9 @@ Q and count record), written by `isar ingest` and by `isar run`; it never holds 
   the import record, the entries and settings, the curve check, the calibration state and the fit-inputs log,
   using the stages' own checks (the fit stage's count hold, the curve coverage, the calibration's inputs key), so
   it cannot disagree with a run; it never raises, and a record it cannot read is reported, not guessed. An
-  analyzer whose file the latest import recorded as failed or refused is held as unreadable (`import_again`)
-  whatever its earlier row says; the next import or `isar run` that reads the file clears that entry. A group
+  analyzer whose file (matched by its resolved path, never its name) the latest import recorded as failed is held
+  as unreadable (`import_again`) whatever its earlier row says; the next import or `isar run` that reads the file
+  clears that entry. A refused file lost an identity clash to another set and holds nothing. A group
   whose items are all running reads `wait`.
   `import_summary` (about 3 ms) and `conditions` are GUI-thread safe; `needs_attention` parses the fit-inputs
   log for its running and changed marks, so call it from a worker thread (about 0.33 s with a 20-run log of

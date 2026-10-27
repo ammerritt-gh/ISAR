@@ -64,6 +64,7 @@ def _import_block(raw: dict) -> dict | None:
         return None
     return {"sidecar": {"state": raw["sidecar_state"], "reason": raw.get("sidecar_problem")},
             "left_out": dict(raw.get("left_out") or {}),
+            "paths": dict(raw.get("paths") or {}),
             "unrecognised_lines": list(raw.get("unrecognised_lines") or []),
             "unparsed_lines": list(raw.get("unparsed_lines") or [])}
 

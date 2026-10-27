@@ -8,6 +8,7 @@ curve gap, the calibration inputs key and the count hold must agree. Nothing rea
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -34,6 +35,11 @@ def test_import_root_is_the_worktree():
     assert Path(isar.__file__).resolve().parents[1] == Path(__file__).resolve().parents[2]
 
 
+def _path(n, a):
+    """Where the beamline wrote the file: the resolved path a ``files`` entry of this file would be keyed by."""
+    return str(Path("D:/bt/set1") / f"Smp_{n}_{a}")
+
+
 def row(n, *, T=None, slit=None, analyzers=("a03", "a04"), counts=None, sidecar="read", left_out=None,
         exposure="monitor", lines=(), flags=()):
     """An import row as ``scans.scan_row`` and S3U1's ``import`` block make it (C-scan-import)."""
@@ -48,7 +54,7 @@ def row(n, *, T=None, slit=None, analyzers=("a03", "a04"), counts=None, sidecar=
                       for a in analyzers},
         "flags": list(flags),
         "import": {"sidecar": side, "left_out": left_out or {}, "unrecognised_lines": list(lines),
-                   "unparsed_lines": []}}
+                   "unparsed_lines": [], "paths": {a: _path(n, a) for a in analyzers}}}
 
 
 class World:
@@ -732,7 +738,7 @@ def test_a_file_that_failed_at_re_import_holds_its_analyzer_whatever_its_old_row
 
 def test_only_the_analyzer_whose_file_failed_is_held(tmp_path):
     w = r1(tmp_path)
-    w.files({str(w.root / "data" / "Smp_1001_a03"): {"class": "failed", "reason": "ValueError: odd", "set": "Smp_1001",
+    w.files({_path(1001, "a03"): {"class": "failed", "reason": "ValueError: odd", "set": "Smp_1001",
                                                        "seen_at": "t"}})
     na = readiness.evaluate(w.root)
     a03, a04 = na.scans["Smp:1001"].analyzers["a03"], na.scans["Smp:1001"].analyzers["a04"]
@@ -740,6 +746,31 @@ def test_only_the_analyzer_whose_file_failed_is_held(tmp_path):
     assert [(i.scan, i.analyzer) for i in grp(na, "analyzer_unreadable").items] == [("Smp:1001", "a03")]
     assert "ValueError: odd" in grp(na, "analyzer_unreadable").items[0].reason
     assert na.scans["Smp:1002"].analyzers["a03"].can_start is True
+
+
+def test_a_failed_or_refused_file_of_another_folder_with_the_same_name_holds_nothing(tmp_path):
+    w = r1(tmp_path)
+    other = str(Path("D:/bt/set2") / "Smp_1001_a03")
+    for klass in ("refused", "failed"):
+        w.files({other: {"class": klass, "reason": "odd", "set": "Smp_1001", "seen_at": "t"}})
+        na = readiness.evaluate(w.root)
+        assert (na.scans["Smp:1001"].analyzers["a03"].can_start, grp(na, "analyzer_unreadable")) == (True, None), klass
+        assert [i.file for i in grp(na, "files_not_read").items] == [other]          # still listed
+
+
+def test_a_re_export_refused_as_a_clash_leaves_the_imported_scan_able_to_start(tmp_path):
+    ws, data = fx.bl43_workspace(tmp_path, stems=("A",), analyzers=("a03",))
+    again = tmp_path / "again"
+    shutil.copytree(data, again)                                  # the same names in another folder
+    card, session = ws.load()
+    ingest.ingest_batch(card, session, [data, again], workspace_root=ws.root)       # one set loses the clash
+    ws.save(card, session)
+    (scan,) = needs_attention(ws.root).scans
+    files = scans._load(ws.root / scans.INTAKE_SCANS)["files"]
+    assert [e["class"] for e in files.values()] == ["refused"], files
+    na = needs_attention(ws.root)
+    assert (na.scans[scan].can_start, grp(na, "analyzer_unreadable")) == (True, None)
+    assert [i.file for i in grp(na, "files_not_read").items] == list(files)
 
 
 def test_isar_run_clears_the_failed_entry_of_a_file_it_read(tmp_path, monkeypatch):
