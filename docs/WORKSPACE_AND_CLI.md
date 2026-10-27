@@ -89,6 +89,15 @@ Q and count record), written by `isar ingest` and by `isar run`; it never holds 
   1.4 MB per fast pass at 30 scans x 28 analyzers (about 0.4 s at 20 runs, 30 ms at one), so call it from a
   worker thread, then from the GUI thread once cached. `Workspace.watch` reports `intake_entries`,
   `intake_settings`, `intake_scans`, `fit_inputs` and `curves` among its change names.
+- **`Change.field`** (the *changes since* rows) is one of a closed list: `data` (the imported revision),
+  `temperature`, `slit`, `q`, `excluded`, `dead`, `dead_in_scan` (a sibling analyzer declared dead), `counts_accepted`,
+  `resolution_folder`, `curve` (the unit's curve content), `resolution_library` (the curves compared when the slit
+  was chosen by comparison), and five fields of the calibration the pass was made with, compared with the
+  calibration now so that a recalibration is never silent: `calibration_setting` (the slit setting chosen),
+  `calibration_basis` (how it was chosen: `declared`, `inferred`, `broadest_curve_fallback` or `none`), `calibration_zero` (the energy zero),
+  `calibration_zero_source` (elastic fit or file-axis fallback) and `calibration_held_reason` (why the
+  analyzer is held, if it is). A recalibration moves several of these at once, and a dead declaration moves
+  its own analyzer's calibration as well as `dead`. `now_source` is set only for `temperature` and `slit`.
 
 **The two card files have opposite ownership, and that is the point.**
 `card.policy.toml` is hand-edited human intent — detectors, column maps, collation and merge
