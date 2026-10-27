@@ -673,9 +673,11 @@ is missing or unreadable raises `missing_sidecar`; one that is empty or has no a
 example still being copied) counts as unreadable, and importing the scan's folder or files again once it
 is whole completes the scan. A re-import reads every file again (a file is never skipped as unchanged), so
 it also picks up a corrected reader. Moving or renaming the data folder and importing it from its new place
-marks no scan changed and no fit out of date, because the data revision ignores where the files sit; the
-import record keeps the new paths. A resolution folder saved inside the moved folder is not followed: save
-the new one in the GUI, since ISAR never switches a saved folder by itself.
+marks no scan changed, because the data revision ignores where the files sit; the import record keeps the
+new paths. A resolution folder saved inside the moved folder (the usual `rf/` beside the data) is not
+followed: ISAR keeps the old path, the next import reports its curves as missing, and any fit that used them
+shows Values changed since last fit until you save the new folder in the GUI, since ISAR never switches a
+saved folder by itself.
 
 ### Reading a fact's source label
 
