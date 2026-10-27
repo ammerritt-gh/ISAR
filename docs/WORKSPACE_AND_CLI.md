@@ -67,7 +67,9 @@ Q and count record), written by `isar ingest` and by `isar run`; it never holds 
 - **Fit inputs.** `report/fit_inputs.jsonl` gets a run start line, a started line per unit and pass at the
   scan's start point (the frozen inputs, their hash and their fallbacks), a finished line as each unit
   completes, and an end line after the workspace save. A run that died, failed or was cut by a deadline
-  saved nothing to the ledger, so its lines do not count. Each ledger entry processed in a run carries
+  saved nothing to the ledger, so its lines do not count, except a unit the ledger holds by its stamp (a
+  checkpoint). A GUI Cancel kills the process and writes no end line: a run with no end line whose process
+  is gone is not running. Each ledger entry processed in a run carries
   `provenance["fit_inputs"] = {run, hash, fallbacks}`, and a later start point refits a unit whose frozen
   inputs hash differs from it. The hash covers exactly the values the reads compare: data revision,
   temperature, slit, Q, the conditions, whether the counts override applied, and the calibration's folder,

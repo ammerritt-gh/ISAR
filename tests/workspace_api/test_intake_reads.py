@@ -316,6 +316,62 @@ def test_a_run_that_died_or_failed_never_counts(env):
     assert [x.unit for x in env.ws.fit_inputs()] == [U, "spec1:100:a03"]
 
 
+def _killed(env, run):
+    """Make `run` a run whose process is gone: the GUI's Cancel terminates `isar run`, so no end line is written."""
+    import json
+    import subprocess
+    import sys
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    done.wait()
+    path = env.root / fit_inputs.FIT_INPUTS
+    out = []
+    for ln in path.read_text(encoding="utf-8").splitlines():
+        d = json.loads(ln)
+        if d.get("kind") == "run" and d.get("event") == "start" and d["run"] == run:
+            d["pid"] = done.pid
+        out.append(json.dumps(d))
+    path.write_text("\n".join(out) + "\n", encoding="utf-8", newline="\n")
+
+
+def _ledger(env, unit, run):
+    """The session ledger holds `unit` as fitted by `run` (the stamp the session writes at the unit's finish)."""
+    from isar.session.state import ScanEntry
+    h = [ln for ln in fit_inputs.read_log(env.root) if ln["kind"] == "started" and ln["run"] == run][0]["hash"]
+    card, session = env.session_ws.load()
+    session.scans[unit] = ScanEntry(
+        scan_id=unit, scan_number=42, scan_type="measurement", status="fitted", content_hash="aa",
+        guidelines_hash="g", reasons=[], provenance={"fit_inputs": {"run": run, "hash": h, "fallbacks": []}})
+    env.session_ws.save(card, session)
+
+
+def test_a_cancelled_run_is_not_running_and_the_ledgers_fit_is_the_latest(env):
+    first = env.pass_lines()
+    _ledger(env, U, first)
+    values.save_value(env.root, "temperature", 100.0, ["spec1:42"])
+    cancelled = env.pass_lines(end=None)                         # started and finished, killed before the save
+    u = env.unit()
+    assert (u.fast.run, u.fast.state) == (cancelled, "finished")         # its process (this one) is alive: running
+    _killed(env, cancelled)
+    u = env.unit()
+    assert (u.fast.run, u.fast.state) == (first, "finished")
+    assert (u.fast.inputs["temperature"]["value"], u.fast.changes) == (97.0, (Change("temperature", 97.0, 100.0, "user"),))
+
+
+def test_a_killed_runs_unit_the_ledger_holds_is_still_reported(env):
+    first = env.pass_lines()
+    _ledger(env, U, first)
+    values.save_value(env.root, "temperature", 100.0, ["spec1:42"])
+    cancelled = env.pass_lines(end=None)
+    _ledger(env, U, cancelled)                                   # a deadline checkpoint saved this unit
+    _killed(env, cancelled)
+    u = env.unit()
+    assert (u.fast.run, u.fast.inputs["temperature"]["value"], u.fast.changes) == (cancelled, 100.0, ())
+    other = env.pass_lines("spec1:43:a03", end=None)             # a unit the ledger does not hold
+    _killed(env, other)
+    env.ws.refresh()
+    assert [x.unit for x in env.ws.fit_inputs()] == [U]
+
+
 def test_units_are_ordered_by_scan_number_and_filtered_and_a_scan_without_a_row_has_no_changes(env):
     env.pass_lines("spec1:100:a03")
     env.pass_lines("spec1:42:a03")

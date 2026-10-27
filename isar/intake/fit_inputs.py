@@ -3,7 +3,8 @@
 ``fit_inputs.jsonl`` has one writer, the run's parent process: a run start line, a ``started`` line per
 analyzer and pass at the scan's start point (the inputs frozen there, C-effective ``unit_inputs``), a
 ``finished`` line as each completes, and an end line. ``latest_passes`` counts only passes of the run in
-progress or of a run that completed, so the log agrees with the ledger: a run that died or failed never
+progress (its process alive), of a run that completed, or that the ledger holds by its stamp, so the log
+agrees with the ledger: a run that died or failed (a cancelled run is killed, so writes no end line) never
 saved its results.
 
 ``fit_history.jsonl`` keeps, in full, every ledger entry a BL43 re-import or refit replaces, written before
@@ -18,7 +19,7 @@ import json
 import logging
 import os
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -104,7 +105,7 @@ class RunState:
     started_at: str
     passes: tuple[str, ...]
     outcome: str | None          # the end line's outcome; None when there is no end line
-    running: bool                # no end line and it is the latest run start in the file
+    running: bool                # no end line, the latest run start in the file, and its process still alive
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,31 @@ def _is(line: dict, kind: str, event: str | None = None) -> bool:
         and isinstance(line.get("run"), str)
 
 
+def _alive(pid) -> bool:
+    """Whether process ``pid`` still exists; True when it cannot be told (no pid on the line, or no access).
+    shortcut: a reused pid reads as alive; the ledger stamp in ``latest_passes`` still decides what counts."""
+    if not isinstance(pid, int) or pid <= 0:
+        return True
+    if os.name == "nt":                  # os.kill(pid, 0) would terminate the process here
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)        # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+            return not ok or code.value == 259                                  # STILL_ACTIVE
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
 def run_states(lines: list[dict]) -> dict[str, RunState]:
     starts = [ln for ln in lines if _is(ln, "run", "start")]
     ends = {ln["run"]: ln for ln in lines if _is(ln, "run", "end")}
@@ -141,12 +167,17 @@ def run_states(lines: list[dict]) -> dict[str, RunState]:
         end = ends.get(s["run"])
         out[s["run"]] = RunState(run=s["run"], started_at=s.get("at"), passes=tuple(s.get("passes") or ()),
                                  outcome=None if end is None else end.get("outcome"),
-                                 running=end is None and s["run"] == latest)
+                                 running=end is None and s["run"] == latest and _alive(s.get("pid")))
     return out
 
 
-def latest_passes(lines: list[dict]) -> dict[str, dict[str, PassRecord]]:
-    """Per unit and pass, the last counting started line in file order (unit -> {"fast": ..., "deep": ...})."""
+def latest_passes(lines: list[dict], ledger: Mapping[str, Mapping] | None = None) -> dict[str, dict[str, PassRecord]]:
+    """Per unit and pass, the last counting started line in file order (unit -> {"fast": ..., "deep": ...}).
+
+    A pass counts when its run is running (a live process), or the unit finished and the run completed or the
+    ledger holds that very fit: ``ledger`` maps a unit to its entry's ``provenance["fit_inputs"]`` stamp
+    (``{"run", "hash"}``), which a killed run's checkpoint save leaves behind without an end line.
+    """
     runs = run_states(lines)
     finished = {(ln["run"], ln.get("unit"), ln.get("pass")): ln for ln in lines if _is(ln, "finished")}
     out: dict[str, dict[str, PassRecord]] = {}
@@ -155,7 +186,9 @@ def latest_passes(lines: list[dict]) -> dict[str, dict[str, PassRecord]]:
             continue
         rs = runs[ln["run"]]
         fin = finished.get((ln["run"], ln["unit"], ln.get("pass")))
-        if not (rs.running or (rs.outcome == "complete" and fin is not None)):
+        held = (ledger or {}).get(ln["unit"]) or {}
+        if not (rs.running or (fin is not None and (
+                rs.outcome == "complete" or (held.get("run"), held.get("hash")) == (ln["run"], ln.get("hash"))))):
             continue                                   # a run that ended without completing saved nothing
         src = fin if fin is not None else ln
         out.setdefault(ln["unit"], {})[ln.get("pass")] = PassRecord(

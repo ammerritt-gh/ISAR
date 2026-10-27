@@ -6,6 +6,7 @@ imports its generators from here.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -140,7 +141,7 @@ def log_lines(*events) -> list[dict]:
         at = f"2026-10-28T10:00:{i:02d}+00:00"
         kind, run = ev[0], ev[1]
         if kind == "start":
-            out.append({"kind": "run", "event": "start", "run": run, "at": at, "passes": list(ev[2]), "pid": 1})
+            out.append({"kind": "run", "event": "start", "run": run, "at": at, "passes": list(ev[2]), "pid": os.getpid()})
         elif kind == "end":
             out.append({"kind": "run", "event": "end", "run": run, "at": at, "outcome": ev[2]})
         elif kind == "started":

@@ -731,7 +731,8 @@ class Workspace:
         """
         self._note_intake_damage()
         passes = self._parse("fit_inputs", lambda: intake_fit_inputs.latest_passes(
-            intake_fit_inputs.read_log(self.root)), {})
+            intake_fit_inputs.read_log(self.root),
+            {e.scan_id: (e.provenance or {}).get("fit_inputs") or {} for e in self._session().scans.values()}), {})
         return intake_view.fit_inputs(
             passes, self._intake_rows(), self._intake_index(), self._state().tabulated_calibration,
             self._curve_check(), self._folder_now(), units)
