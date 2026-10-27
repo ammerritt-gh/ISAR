@@ -583,12 +583,15 @@ conditions — these are wants, not commitments.
 - `isar/analyze/deep_pass.py:335` — at the installed exploratory sigma (12.38) stage-3 promotion
   admits nearly every model, so stage 2 is mostly overhead inside a binding budget; send near-lead
   non-contenders straight to the accepted settings. Revisit when `EXPLORATORY.calibrated_sigma` changes.
+- `isar/workspace_api/intake_view.py:75` — the fact rows' slit fallback and readiness each decide whether a
+  scan's stored calibration matches the inputs in force, by different comparisons; use one helper in
+  `readiness.py` for both. Revisit when `calibration_inputs_key` or the folder-in-force rule next changes.
 
 ---
 
 ## Notes
 
-routine suite 7.9 min, over its 1-min budget
+routine suite 1.6 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
