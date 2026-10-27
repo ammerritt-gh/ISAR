@@ -37,6 +37,7 @@ from isar.intake import store
 from isar.report.export import export_workspace
 from isar.workspace_api import Workspace, import_summary, needs_attention
 from isar_gui.main_window import MainWindow
+from isar_gui.plain_words import plain_hold
 from isar_gui.session import Session
 from isar_gui.theme import TONE_COLOR, Tone
 from isar_gui.viewmodels.scan_list import COLUMNS
@@ -327,7 +328,9 @@ def test_scenario3_files_parse_without_curves_and_locate_changes_the_counts(
     assert popup.isVisible() and popup.table.rowCount() == m
     reasons = {a.uses["fit"].reason for s in needs_attention(root).scans.values() for a in s.analyzers.values()
                if a.action == "locate_folder"}
-    assert {popup.table.item(i, 1).text() for i in range(m)} == reasons
+    assert {popup.table.item(i, 1).toolTip() for i in range(m)} == reasons          # the backend's text, on hover
+    assert {popup.table.item(i, 1).text() for i in range(m)} == {plain_hold(r) for r in reasons}   # short in the cell
+    assert all("C:" not in popup.table.item(i, 1).text() for i in range(m))
     locate = popup.findChild(QPushButton, "readiness_locate_folder")
     assert locate is not None and locate.isEnabled()
 

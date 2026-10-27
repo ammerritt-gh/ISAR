@@ -236,7 +236,7 @@ def _link(line, prefix):
 
 def test_the_line_counts_a_fallback_as_ready_and_a_missing_q_as_no_block(qtbot):
     _intake, line = _fed(qtbot, _r1())
-    assert line.text == "4 spectra read · 3 ready for analysis (1 with a fallback) · 1 needs resolution curves"
+    assert line.text == "4 spectra read · 3 ready for analysis (1 will use a stand-in value) · 1 needs resolution curves"
 
 
 def test_a_declared_dead_analyzer_is_named_not_blocked_generally(qtbot):
@@ -245,7 +245,7 @@ def test_a_declared_dead_analyzer_is_named_not_blocked_generally(qtbot):
                       _an("Smp:1002", "a04", can_start=False, action="reverse_declaration",
                           fit=_use("held", "declared dead")))])
     _intake, line = _fed(qtbot, att)
-    assert line.text == "4 spectra read · 3 ready for analysis · 1 declared dead"
+    assert line.text == "4 spectra read · 3 ready for analysis · 1 left out by you"
 
 
 def test_running_spectra_are_counted_and_zero_counts_are_left_out(qtbot):

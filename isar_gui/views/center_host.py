@@ -66,7 +66,8 @@ class CenterHost(QWidget):
         self._auto_btn.setCheckable(True)
         self._auto_btn.setChecked(True)
         self._auto_btn.setAutoRaise(True)
-        self._auto_btn.setToolTip("View follows selection and campaign events")
+        self._auto_btn.setToolTip("Auto-switch: the view follows your selection and campaign events. It turns "
+                                  "off when you pick a view yourself.")
         self._auto_btn.toggled.connect(self._on_auto_toggled)
         bar_l.addWidget(self._auto_btn)
         outer.addWidget(self._bar)

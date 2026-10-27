@@ -102,7 +102,8 @@ def test_apply_health_marks_reachable_http_error_amber(qtbot, make_ws):
                      "tavi": (False, False, "unreachable (URLError)", "http://tavi")})
     assert "b26a00" in w._llm_health.styleSheet()
     assert "c62828" in w._tavi_health.styleSheet()
-    assert "TAVI backend unreachable" in w.statusBar().currentMessage()
+    assert w.statusBar().currentMessage() == "TAVI (instrument control) is not running. Only needed for campaigns."
+    assert "TAVI backend unreachable" in w.statusBar().toolTip()           # the exact text stays on hover
 
 
 def test_apply_health_ignores_error(qtbot, make_ws):

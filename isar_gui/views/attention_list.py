@@ -25,7 +25,7 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
                                QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
-from isar_gui.plain_words import (STAND_IN_MARK, STAND_IN_TIP, affects, fix_sentence, group_title,
+from isar_gui.plain_words import (STAND_IN_MARK, STAND_IN_TIP, affects, fix_sentence, group_title, plain_hold,
                                   stand_in)
 from isar_gui.theme import TONE_COLOR, Tone
 from isar_gui.views.elided_label import ElidedButton, ElidedLabel
@@ -534,13 +534,13 @@ class AttentionList(QWidget):
             elif item.analyzer is not None and scope == "unit":
                 if item.scan not in dict(scans):
                     scans.append((item.scan, self._label(item.scan)))
-                rows.append(_Row(f"{item.scan}:{item.analyzer}", f"{item.analyzer} · {item.reason}",
+                rows.append(_Row(f"{item.scan}:{item.analyzer}", f"{item.analyzer} · {plain_hold(item.reason)}",
                                  mark=mark, parent=item.scan, tooltip=tip))
             elif scope == "unit":                              # a scan among analyzers (the declared group's exclusions)
                 plain.append((f"{self._label(item.scan)}: {item.reason}", tip))
             else:
                 label = self._label(item.scan)
-                rows.append(_Row(item.scan, label, detail=item.reason, mark=mark,
+                rows.append(_Row(item.scan, label, detail=plain_hold(item.reason), mark=mark,
                                  info=self._analyzer_lines(att, item.scan), tooltip=f"{label}: {tip}"))
         title = group_title(g.kind, g.summary, scope)
         tip = _TITLE_TIPS.get(g.kind, "")

@@ -101,6 +101,12 @@ class CampaignDock(QDockWidget):
         outer.setSpacing(6)
 
         # ---- Setup -----------------------------------------------------------
+        intro = QLabel("Autonomous measuring: ISAR asks TAVI (the instrument-control program, for now its "
+                       "simulator) to take scans. Not needed to triage data you already have.", body)
+        intro.setObjectName("campaign_intro")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #6b7280;")
+        outer.addWidget(intro)
         self._src_goal = QRadioButton("Goal", body)
         self._src_program = QRadioButton("Program file", body)
         self._src_goal.setChecked(True)
@@ -131,12 +137,17 @@ class CampaignDock(QDockWidget):
         self._budget = QLineEdit(body)
         # The GUI may not import isar.drive (G16), so no literal default is quoted
         # here — blank inherits the driver's per-tier default.
-        self._budget.setPlaceholderText("blank = tier default; e.g. 2h or 1e10n")
+        self._budget.setPlaceholderText("blank = default for the tier; e.g. 2h (counting time) or 1e10n (neutrons)")
+        self._budget.setToolTip("How much measuring the campaign may spend: hours of counting time (2h) or "
+                                "neutrons (1e10n). Blank uses the tier's default.")
         self._analysis_limit = QLineEdit(body)
-        self._analysis_limit.setPlaceholderText("analysis: 1h | none")
+        self._analysis_limit.setPlaceholderText("e.g. 1h, or none for no limit")
+        self._analysis_limit.setToolTip("Ceiling on the total time spent analysing (fitting) during the campaign, "
+                                        "e.g. 1h; none = no limit.")
         self._seed = QSpinBox(body)
         self._seed.setRange(0, 99_999_999)
-        form.addRow("Tier", self._tier)
+        self._seed.setToolTip("Base seed for the sequence of scan seeds: the same seed repeats the same campaign.")
+        form.addRow("Simulation tier", self._tier)
         form.addRow("Measurement budget", self._budget)
         form.addRow("Analysis limit", self._analysis_limit)
         form.addRow("Seed", self._seed)
@@ -175,6 +186,11 @@ class CampaignDock(QDockWidget):
         controls.addWidget(self._force_btn)
         controls.addStretch(1)
         outer.addLayout(controls)
+        self._start_reason = QLabel("", body)           # why Start is off, as text (the tooltip says it too)
+        self._start_reason.setObjectName("campaign_start_reason")
+        self._start_reason.setWordWrap(True)
+        self._start_reason.setStyleSheet("color: #6b7280;")
+        outer.addWidget(self._start_reason)
 
         tavi_row = QHBoxLayout()
         self._tavi_dot = QLabel("TAVI ●", body)
@@ -569,15 +585,18 @@ class CampaignDock(QDockWidget):
         can_start = (not busy) and self._tavi_status == "ok" and self._form_fingerprint() is not None
         self._start_btn.setEnabled(can_start)
         if running:
-            self._start_btn.setToolTip("A campaign is already running")
+            why = "A campaign is already running"
         elif busy:
-            self._start_btn.setToolTip("Another workspace operation is running")
+            why = "Another workspace operation is running"
         elif self._tavi_status != "ok":
-            self._start_btn.setToolTip("TAVI backend is not reachable — launch it first")
+            why = "TAVI (instrument control) is not reachable — launch it first"
         elif self._form_fingerprint() is None:
-            self._start_btn.setToolTip("Enter a goal or pick a program file")
+            why = "Enter a goal or pick a program file"
         else:
-            self._start_btn.setToolTip("")
+            why = ""
+        self._start_btn.setToolTip(why)
+        self._start_reason.setText(why)
+        self._start_reason.setVisible(bool(why))
 
         # The explicit resume route needs NO form fingerprint — the frozen objective in the log is
         # sufficient. Shown whenever a campaign exists and the primary isn't already a verified

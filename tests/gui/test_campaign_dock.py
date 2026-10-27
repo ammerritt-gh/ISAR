@@ -112,13 +112,15 @@ def _goal_sha(text):
 def test_start_disabled_until_tavi_ok_and_source_present(dock_env):
     dock, vm, ops, ws, root = dock_env
     assert not dock._start_btn.isEnabled()          # TAVI down + empty goal
+    assert dock._start_reason.isVisible() and "TAVI" in dock._start_reason.text()      # the reason is text, not just hover
     dock.set_backend_status("tavi", "ok", "up")
     assert not dock._start_btn.isEnabled()          # still no goal text
+    assert dock._start_reason.text() == "Enter a goal or pick a program file" and dock._start_reason.isVisible()
     dock._goal.setPlainText("map the branch")
-    assert dock._start_btn.isEnabled()
+    assert dock._start_btn.isEnabled() and not dock._start_reason.isVisible()
     dock.set_backend_status("tavi", "down", "gone")
     assert not dock._start_btn.isEnabled()
-    assert "TAVI" in dock._start_btn.toolTip()
+    assert "TAVI" in dock._start_btn.toolTip() and dock._start_reason.text() == dock._start_btn.toolTip()
 
 
 def test_start_maps_form_to_drive_options_with_llm_env(dock_env):

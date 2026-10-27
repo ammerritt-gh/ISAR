@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QGridLayout, QLabel, Q
                                QSizePolicy, QVBoxLayout, QWidget)
 
 from isar.workspace_api import USES, scan_prefix, split_key
-from isar_gui.plain_words import STATE_WORDS, source_words, stand_in
+from isar_gui.plain_words import STATE_WORDS, plain_hold, source_words, stand_in
 from isar_gui.theme import TONE_COLOR, Tone
 from isar_gui.views.elided_label import ElidedButton, ElidedLabel
 from isar_gui.views.value_entry import SetValueDialog
@@ -434,7 +434,7 @@ class FactTable(QWidget):
                 lines = []
                 for use in USES:
                     st = ar.uses[use]
-                    why = st.reason or (stand_in(st.fallback) if st.fallback else None)
+                    why = plain_hold(st.reason) or (stand_in(st.fallback) if st.fallback else None)
                     lines.append((f"{_USE_NAMES.get(use, use)}: {st.state}" + (f" — {why}" if why else ""),
                                   STATE_WORDS.get(st.state, "")))
                 if ar.running:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -25,6 +26,12 @@ from PySide6.QtWidgets import (
 from isar_gui.commands import RunOptions
 
 _ERRORS = ["full", "fast", "cheap", "bayes"]
+_ERROR_TIPS = {
+    "full": "Adds MINOS, bootstrap and profile intervals to the chosen model. Slower.",
+    "fast": "The delta-method interval on the peak position and its trust flag, no bootstrap. The default for triage.",
+    "cheap": "Covariance errors only.",
+    "bayes": "Adds the nested-sampling interval. Slowest.",
+}
 
 
 class RunDialog(QDialog):
@@ -52,21 +59,30 @@ class RunDialog(QDialog):
         self._errors = QComboBox()
         self._errors.addItems(_ERRORS)
         self._errors.setCurrentText(opts.errors if opts.errors in _ERRORS else "fast")
-        form.addRow("Uncertainty tier:", self._errors)
+        self._errors.setToolTip("What is attached to the fitted model after the peak-count search: pick fast for "
+                                "triage. Hover an entry for what it adds.")
+        for i, name in enumerate(_ERRORS):
+            self._errors.setItemData(i, _ERROR_TIPS[name], Qt.ItemDataRole.ToolTipRole)
+        form.addRow("Error estimate:", self._errors)
 
         self._M = QSpinBox()
         self._M.setRange(1, 100000)
         self._M.setValue(opts.M)
-        form.addRow("Bootstrap draws (M):", self._M)
+        self._M.setToolTip("At most this many bootstrap resamples for pooled masters and certification "
+                           "(used by the full error estimate).")
+        form.addRow("Bootstrap resamples (M):", self._M)
 
         self._detectors = QLineEdit(opts.detectors or "")
-        self._detectors.setPlaceholderText("all (card default) — or e.g. ana5,ana7")
-        form.addRow("Detectors:", self._detectors)
+        self._detectors.setPlaceholderText("all (card default) — or e.g. a03,a05")
+        self._detectors.setToolTip("Only the named analyzers are fitted this run; blank = all.")
+        form.addRow("Only these analyzers:", self._detectors)
 
-        self._llm = QCheckBox("LLM adjudication of QC flags (--llm)")
+        self._llm = QCheckBox("Ask the LLM to review QC flags (optional)")
+        self._llm.setToolTip("Let the LLM service review the QC flags. Optional; it needs a reachable LLM service.")
         self._llm.setChecked(opts.llm)
         form.addRow("", self._llm)
-        self._force = QCheckBox("Refit every scan, ignore the ledger (--force)")
+        self._force = QCheckBox("Refit every scan, even unchanged ones")
+        self._force.setToolTip("Ignore the record of finished fits and fit every spectrum again.")
         self._force.setChecked(opts.force)
         form.addRow("", self._force)
 

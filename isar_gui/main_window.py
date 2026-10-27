@@ -168,6 +168,12 @@ def initial_arrangement(width: int, height: int) -> str:
     return "desktop" if width >= DESKTOP_FROM_WIDTH and height >= DESKTOP_FROM_HEIGHT else "laptop"
 
 
+_HEALTH_WORDS = {"tavi": "TAVI (instrument control) is not running. Only needed for campaigns.",
+                 "llm": "The LLM service is not running. Only needed for the optional LLM review."}
+_RERUN_TEXT = "Re-run (only what changed)"
+_RERUN_TIP = ("Run the last analysis again with the same settings; only new, changed or held scans, or ones "
+              "touched by a card edit, are fitted.")
+
 # The five central display surfaces, in switcher order: (host key, button label).
 _CENTER_PAGES = (("scan", "Scan"), ("waterfall", "Waterfall"), ("plane", "Plane (q, E)"),
                  ("dispersion", "Dispersion ω(q)"), ("sandbox", "Sandbox"))
@@ -464,7 +470,7 @@ class MainWindow(QMainWindow):
             self.log(f"Experiment {root}: no files read into it yet — drop data to begin")
         elif root is None:
             self.statusBar().showMessage("No experiment open")
-            self.log("No experiment open — New experiment…, Open… or drop data to begin")
+            self.log("No experiment open — New experiment…, Open experiment… or drop data to begin")
         else:
             self.statusBar().showMessage(f"Experiment: {ws.root}")
             self.log(f"Opened experiment {ws.root}")
@@ -1101,18 +1107,24 @@ class MainWindow(QMainWindow):
         self._open_workspace_menu_action.triggered.connect(self._on_open_workspace)
         self._rename_menu_action = file_menu.addAction("Rename experiment…")
         self._rename_menu_action.triggered.connect(self.rename_experiment)
-        self._save_copy_menu_action = file_menu.addAction("Save copy as…")
+        self._save_copy_menu_action = file_menu.addAction("Save experiment copy…")
+        self._save_copy_menu_action.setToolTip("Copy this whole experiment folder to a new place. You keep "
+                                               "working in the original.")
         self._save_copy_menu_action.triggered.connect(self.save_copy_as)
 
         file_menu.addSeparator()
-        report_action = file_menu.addAction("Open Report")
+        report_action = file_menu.addAction("Open HTML report")
+        report_action.setToolTip("Open report/report.html of this experiment in your browser.")
         report_action.triggered.connect(self._open_report)
-        export_menu = file_menu.addMenu("Export View as PNG")
+        export_menu = file_menu.addMenu("Save view as image")
+        export_menu.setToolTip("Save the chosen display as a PNG picture.")
         for label, key in (("Plane (q, E)", "Plane (q, E)"), ("Dispersion", "Dispersion ω(q)"),
                            ("Waterfall", "Waterfall / Comparison"), ("Inspector", "Inspector")):
             act = export_menu.addAction(label)
             act.triggered.connect(lambda _checked=False, k=key: self._export_view(k))
 
+        for menu in (file_menu, export_menu):
+            menu.setToolTipsVisible(True)
         help_menu = self.menuBar().addMenu("&Help")
         open_log_action = help_menu.addAction("Open GUI Log Folder")
         open_log_action.triggered.connect(self._open_gui_log_folder)
@@ -1608,7 +1620,9 @@ class MainWindow(QMainWindow):
         run_menu = self.menuBar().addMenu("&Run")
         self._run_action = run_menu.addAction("Run analysis…")
         self._run_action.triggered.connect(lambda: self.run_analysis())
-        self._rerun_action = run_menu.addAction("Re-run (only new scans)")
+        self._rerun_action = run_menu.addAction(_RERUN_TEXT)
+        self._rerun_action.setToolTip(_RERUN_TIP)
+        run_menu.setToolTipsVisible(True)
         self._rerun_action.triggered.connect(self.rerun)
         self._cancel_operation_action = run_menu.addAction("Cancel active operation")
         self._cancel_operation_action.triggered.connect(self._cancel_active_operation)
@@ -1619,7 +1633,11 @@ class MainWindow(QMainWindow):
         can_run = (not self._empty) and (not busy)
         self._run_action.setEnabled(can_run)
         # Re-run additionally needs a remembered previous invocation for this workspace.
-        self._rerun_action.setEnabled(can_run and self._run_state() is not None)
+        can_rerun = can_run and self._run_state() is not None
+        self._rerun_action.setEnabled(can_rerun)
+        # a greyed menu entry says why in its own text
+        self._rerun_action.setText(_RERUN_TEXT if can_rerun else f"{_RERUN_TEXT} — " + (
+            "needs an experiment" if self._empty else "an operation is running" if busy else "run the analysis once first"))
         self._cancel_operation_action.setEnabled(busy)
         self._push_processing_state()
 
@@ -1648,7 +1666,7 @@ class MainWindow(QMainWindow):
         self._launch_run(dlg.data_paths, dlg.options)
 
     def rerun(self) -> None:
-        """Re-run the last invocation verbatim (idempotent — the engine only fits new scans)."""
+        """Re-run the last invocation verbatim (idempotent — the engine fits only new, changed or held scans)."""
         if self._empty or self._operations.is_busy():
             return
         state = self._run_state()
@@ -1889,8 +1907,11 @@ class MainWindow(QMainWindow):
     def _init_backends_menu(self) -> None:
         menu = self.menuBar().addMenu("&Backends")
         settings_action = menu.addAction("Settings…")
+        settings_action.setToolTip("Optional: the LLM review service and where TAVI is installed.")
         settings_action.triggered.connect(self._open_settings)
-        self._launch_tavi_action = menu.addAction("Launch TAVI")
+        self._launch_tavi_action = menu.addAction("Launch TAVI (instrument control)")
+        self._launch_tavi_action.setToolTip("Only needed for campaigns that measure.")
+        menu.setToolTipsVisible(True)
         self._launch_tavi_action.triggered.connect(self._launch_tavi)
 
     # ---- View menu (central view switcher; built once, persists across rebinds) ----
@@ -2126,10 +2147,11 @@ class MainWindow(QMainWindow):
             else:
                 ok, reachable, detail, url = item
             name = "LLM" if key == "llm" else "TAVI"
-            label.setText(f"{name} ●")
+            label.setText(f"{'LLM (optional)' if key == 'llm' else 'TAVI (campaigns)'} ●")
             color = "#2e7d32" if ok else ("#b26a00" if reachable else "#c62828")
             label.setStyleSheet(f"color: {color};")
-            label.setToolTip(f"{url} — {detail}")
+            label.setToolTip(f"{url} — {detail}\ngreen = reachable, amber = reachable but reports a problem, "
+                             "red = not reachable, grey = not checked yet")
             status = "ok" if ok else ("reachable_error" if reachable else "down")
             if key == "tavi" and getattr(self, "campaign_dock", None) is not None:
                 self.campaign_dock.set_backend_status("tavi", status, f"{url} — {detail}")
@@ -2139,9 +2161,11 @@ class MainWindow(QMainWindow):
                 if status == "ok" and previous is not None:
                     self.log(f"{name} backend recovered: {url}")
                 elif status != "ok":
-                    message = f"{name} backend {detail}: {url}"
-                    self.log(message)
-                    self.statusBar().showMessage(message)
+                    technical = f"{name} backend {detail}: {url}"
+                    self.log(technical)                         # the log keeps the exact text
+                    self.statusBar().showMessage(_HEALTH_WORDS[key] if status == "down" else
+                                                 f"{name} answered but reports a problem.")
+                    self.statusBar().setToolTip(technical)      # and so does the hover
 
     # ---- status bar: persistent live indicator ----------------------------
     def _init_status_bar(self) -> None:

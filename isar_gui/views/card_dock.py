@@ -62,8 +62,11 @@ class CardDock(QDockWidget):
         row = QWidget()
         row_l = QHBoxLayout(row)
         row_l.setContentsMargins(0, 0, 0, 0)
-        self._save_btn = QPushButton("Save")
-        self._reload_btn = QPushButton("Reload")
+        self._save_btn = QPushButton("Save card")
+        self._save_btn.setToolTip("Save the edits to card.policy.toml: the instrument settings and fitting "
+                                  "guidelines of this experiment. A new analysis uses them.")
+        self._reload_btn = QPushButton("Reload from disk")
+        self._reload_btn.setToolTip("Discard the edits shown here and read card.policy.toml again.")
         self._save_btn.clicked.connect(self.save)
         self._reload_btn.clicked.connect(self.reload)
         row_l.addWidget(self._save_btn)

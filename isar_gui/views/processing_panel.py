@@ -38,10 +38,13 @@ class ProcessingPanel(QWidget):
         self._last_run = QLabel("", self)
         self._last_run.setObjectName("processing_last_run")
         self._last_run.setWordWrap(True)
-        self._stop = QPushButton("Stop", self)
+        self._stop = QPushButton("Stop analysis", self)
         self._stop.setObjectName("processing_stop")
         self._stop.setToolTip(_STOP_TOOLTIP)
         self._stop.clicked.connect(self.stop_requested)
+        self._stop_reason = QLabel("No analysis is running.", self)       # why Stop is off, as text
+        self._stop_reason.setObjectName("processing_stop_reason")
+        self._stop_reason.setWordWrap(True)
 
         self._layout = layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -51,6 +54,7 @@ class ProcessingPanel(QWidget):
         layout.addWidget(self._activity)
         layout.addWidget(self._last_run)
         layout.addWidget(self._stop)
+        layout.addWidget(self._stop_reason)
         layout.addStretch(1)
         self.set_state(can_run=False, run_reason="need an experiment", analysis_running=False,
                        activity="", last_run=None)
@@ -78,6 +82,7 @@ class ProcessingPanel(QWidget):
             self._last_run.setStyleSheet(f"color: {colour};")
         self._last_run.setVisible(last_run is not None)
         self._stop.setEnabled(analysis_running)
+        self._stop_reason.setVisible(not analysis_running)
 
 
 class ProcessingRail(QWidget):          # the slim right-edge strip; paints vertical text

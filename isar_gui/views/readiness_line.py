@@ -2,12 +2,13 @@
 
 One wrapped line from the intake backend's readiness read, for the fit use only::
 
-    56 spectra read · 52 ready for analysis (30 with a fallback) · 4 need resolution curves · 3 running
+    56 spectra read · 52 ready for analysis (30 will use a stand-in value) · 4 need resolution curves · 3 running
 
 Every count but the first is a link that opens a small non-modal list of the spectra behind it (scan set
 and analyzer), the backend's own reason for each, and one button for the action that resolves it:
-*Locate…*, *Enter the value* and *Show in the list* leave through the signals the window routes to the
-resolution-folder route and the needs-attention list; *Start analysis* asks for today's Run dialog.
+*Choose resolution-curve folder…*, *Enter the value…*, *Add data…* and *Show these in the list* leave through
+the signals the window routes to the resolution-folder route, the add-files route and the needs-attention list;
+*Run analysis…* asks for today's Run dialog.
 
 The line counts spectra by what the backend says (``can_start``, ``running`` and ``action`` of each
 analyzer's ``fit`` use) and decides nothing; an analyzer whose file never arrived is not a spectrum read, so it
@@ -27,20 +28,24 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QDialog, QHBoxLayout, QHeaderView, QLabel, QPushButton,
                                QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
+from isar_gui.plain_words import plain_hold
 from isar_gui.theme import TONE_COLOR, Tone
+from isar_gui.views.setup_section import LOCATE_LONG
 
 # action -> (one spectrum, several spectra), in the order the blocked counts are listed
 _BLOCKED = (
     ("locate_folder", "needs resolution curves", "need resolution curves"),
-    ("import_again", "needs importing again", "need importing again"),
+    ("import_again", "needs its file added again", "need their files added again"),
     ("accept_counts", "needs its counts accepted", "need their counts accepted"),
     ("enter_value", "needs a value", "need a value"),
-    ("reverse_declaration", "declared dead", "declared dead"),
-    ("tell_operator", "needs the operator", "need the operator"),
+    ("reverse_declaration", "left out by you", "left out by you"),
+    ("tell_operator", "needs you to decide", "need you to decide"),
 )
 _PHRASES = {action: (one, many) for action, one, many in _BLOCKED}
-_BUTTONS = {"locate_folder": "Locate…", "enter_value": "Enter the value", "accept_counts": "Show in the list",
-            "reverse_declaration": "Show in the list", "start_analysis": "Start analysis"}
+_BUTTONS = {"locate_folder": LOCATE_LONG, "enter_value": "Enter the value…", "accept_counts": "Show these in the list",
+            "reverse_declaration": "Show these in the list", "start_analysis": "Run analysis…",
+            "import_again": "Add data…"}
+_CLICK_HINT = "Click a count in blue to list the spectra behind it and the action that fixes it."
 _KIND_OF_ACTION = {"accept_counts": "counts_unaccepted", "reverse_declaration": "declared"}
 _WARN = f"color: {TONE_COLOR[Tone.WARN]};"
 _POPUP_ROWS = 8                    # an opened list shows this many rows, then scrolls
@@ -151,15 +156,17 @@ class _Popup(QDialog):
         row.addWidget(close)
         layout.addLayout(row)
 
-    def fill(self, title: str, rows: list[tuple[str, str]], buttons: list[tuple[str, str, object]]) -> None:
-        """``rows``: (spectrum, reason); ``buttons``: (object name, text, callback)."""
+    def fill(self, title: str, rows: list[tuple[str, str]], buttons: list[tuple[str, str, object]],
+             full: list[str] | None = None) -> None:
+        """``rows``: (spectrum, reason); ``buttons``: (object name, text, callback); ``full``: each reason's whole
+        backend text, for the hover."""
         self.setWindowTitle(title)
         self._title.setText(title)
         self.table.setRowCount(len(rows))
         for i, (spectrum, reason) in enumerate(rows):
             for column, text in enumerate((spectrum, reason)):
                 item = QTableWidgetItem(text)
-                item.setToolTip(text)
+                item.setToolTip(text if full is None or column == 0 else full[i])
                 self.table.setItem(i, column, item)
         self.table.setColumnWidth(0, 190)
         shown = min(len(rows), _POPUP_ROWS)
@@ -180,6 +187,7 @@ class ReadinessLine(QWidget):
     reveal_gap = Signal(str)         # group key -> AttentionList.reveal
     locate_requested = Signal()      # -> locate_resolution_folder
     run_requested = Signal()         # -> MainWindow.run_analysis
+    add_data_requested = Signal()    # -> FilesStrip.choose_files
 
     def __init__(self, intake, labels: Callable[[str], str] | None = None, parent: QWidget | None = None) -> None:
         """``labels``: scan key -> the scan set's label (the window passes the scan list's, read when a list is
@@ -251,7 +259,7 @@ class ReadinessLine(QWidget):
                     continue
                 words = f"{len(rows)} {_phrase(key, len(rows))}"
                 if key == READY and fallback:
-                    words += f" ({fallback} with a fallback)"
+                    words += f" ({fallback} will use a stand-in value)"
                 plain.append(words)
                 if rows:
                     self._links[f"g{i}"] = key
@@ -260,7 +268,7 @@ class ReadinessLine(QWidget):
                     parts.append(html.escape(words))
         self._plain = " · ".join(plain)
         self._label.setText(" · ".join(parts))
-        self._label.setToolTip(tip or self._plain)
+        self._label.setToolTip(tip or (f"{self._plain}\n\n{_CLICK_HINT}" if self._links else self._plain))
         self._label.setStyleSheet(_WARN if warn else "")
         self.setVisible(True)
         self._refresh_popup(att)
@@ -293,8 +301,8 @@ class ReadinessLine(QWidget):
             self._close_popup()
             return
         title = f"{len(rows)} {_phrase(key, len(rows))}"
-        shown = [(f"{self._label_of(r.scan)} / {r.analyzer}", r.reason or "ready") for r in rows]
-        self._popup.fill(title, shown, self._buttons(rows, att))
+        shown = [(f"{self._label_of(r.scan)} / {r.analyzer}", plain_hold(r.reason) or "ready") for r in rows]
+        self._popup.fill(title, shown, self._buttons(rows, att), [r.reason or "ready" for r in rows])
         self._popup.show()
         if raise_:
             self._popup.raise_()
@@ -308,6 +316,8 @@ class ReadinessLine(QWidget):
         for action in actions:
             if action == "start_analysis":
                 callback = self._then(self.run_requested.emit)
+            elif action == "import_again":
+                callback = self._then(self.add_data_requested.emit)
             elif action == "locate_folder":
                 callback = self._then(self.locate_requested.emit)
             else:

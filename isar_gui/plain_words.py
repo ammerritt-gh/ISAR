@@ -59,6 +59,15 @@ NO_CURVES_TIP = ("ISAR also looks for a folder named rf next to your data and fo
                  "Choose the folder that holds the measured resolution curves.")
 
 
+_HOLD_NO_FOLDER = re.compile(r"no resolution folder is saved(?:, and no rf/ folder holding curves was found beside [^;]+)?")
+
+
+def plain_hold(reason: str | None) -> str:
+    """A readiness reason with the "no resolution folder is saved ... beside <path>" sentence made short
+    (the path stays in the hover); any other reason is returned as given."""
+    return _HOLD_NO_FOLDER.sub("no resolution curves chosen yet", reason) if reason else ""
+
+
 def drop_echo(word: str, reason: str | None) -> str | None:
     """``reason`` without a leading "<word>: " (the word is shown beside it already); ``None`` when nothing is left."""
     if reason and reason.startswith(f"{word}: "):
