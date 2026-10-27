@@ -50,6 +50,10 @@ WORKSPACE_API_ALLOWED = {
     # ``deep_pass_of``) the scan-list read uses; stdlib, schema, atomic-write and state imports only,
     # no Qt (measured: about 4 ms to import).
     "isar.session.outcome",
+    # The one currentness predicate (C-current): which stored passes the analysis queue may skip, the
+    # rule a queued item applies at its start, so the read side cannot answer differently. Stdlib at
+    # import; the fitting stack is imported inside ``current_passes`` (workspace_api/currentness.py).
+    "isar.session.currentness",
     "isar.session.workspace",
     "isar.session.unit_data",
     "isar.drive.session_log",

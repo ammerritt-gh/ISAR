@@ -2,17 +2,23 @@
 
 One predicate, :func:`judge`, serves every caller: the queue item's start (:mod:`isar.session.file_fit`,
 on freshly prepared inputs) and the read side (``isar.workspace_api.currentness.current_passes``, on the
-stored registration through :func:`stored_now`). It is the engine's own carry rule: ``fast`` is current
-when ``isar run`` would carry the unit (no force, no deep request) and, for BL43, its fit-inputs hash is
-unchanged; ``deep`` when, on top of that, the stored deep record is current for the queue's request.
+stored registration through :func:`stored_now`, in :func:`current_passes`). It is the engine's own carry
+rule: ``fast`` is current when ``isar run`` would carry the unit (no force, no deep request) and, for BL43,
+its fit-inputs hash is unchanged; ``deep`` when, on top of that, the stored deep record is current for the
+queue's request.
 
 Heavy imports (the driver, the deep pass) happen inside the functions: the read side imports this
 module at its own import and must stay light.
 """
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import NamedTuple
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -92,6 +98,55 @@ def stored_now(prev, det: str, *, g, runcal, row: dict | None, scan_inputs, libr
     ghash = canonical_hash(guide_mod.guidelines_signature(g, scan_number=scan, q=prov.get("q"), T=T))
     calfp = None if declared_out else calibrations.calibration_fingerprint(runcal, _ScanRef(exp, scan), det)
     return UnitNow(chash, ghash, calfp, inputs_hash)
+
+
+def current_passes(workspace_root: Path | str, unit_keys: Iterable[str] | None = None) -> dict[str, frozenset[str]]:
+    """``unit_key -> {"fast", "deep"} subset`` with a current stored result, for ``unit_keys`` (None: every
+    analyzer file in the ledger); an unknown key gives ``frozenset()``. Reads the workspace once and never
+    writes; ``FileNotFoundError`` when there is no workspace at ``workspace_root``. Re-exported, Qt-free, as
+    ``isar.workspace_api.currentness.current_passes``."""
+    from isar.intake import curves, inputs, scans as intake_scans, store
+    from isar.session import calibrations, guidelines as guide_mod
+    from isar.session.workspace import Workspace
+
+    card, session = Workspace.open(workspace_root).load()
+    root = Path(workspace_root)
+    keys = list(session.scans) if unit_keys is None else list(unit_keys)
+    g = guide_mod.resolve(card)
+    runcal = calibrations.calibration_view(card)
+    request = queue_deep_request()
+    bl43 = intake_scans.applies(card)
+    rows, index, library_fp = {}, None, None
+    if bl43:
+        rows = intake_scans.read_scans(root)
+        read = store.read_all(root, store.ENTRIES)
+        index = inputs.index_entries(read.entries, lines=read.lines)
+        folder, pattern, _source = curves.resolution_location(card, root)
+        if folder is not None and pattern:
+            from isar.parsers import sarf
+            try:
+                library_fp = sarf.fingerprint(folder, pattern)
+            except (OSError, ValueError) as exc:
+                log.warning("current_passes: the curve library at %s is unreadable (%s)", folder, exc)
+    inputs_of: dict = {}
+    out: dict[str, frozenset[str]] = {}
+    for key in keys:
+        prev = session.get(key)
+        if prev is None:
+            out[key] = frozenset()
+            continue
+        det = key.rsplit(":", 1)[1]
+        row = si = None
+        if bl43:
+            scan = key.rsplit(":", 1)[0]
+            row = rows.get(scan)
+            if row is None:              # a BL43 unit with no import row has nothing to compare with
+                out[key] = frozenset()
+                continue
+            si = inputs_of.get(scan) or inputs_of.setdefault(scan, inputs.scan_inputs(row, index))
+        now = stored_now(prev, det, g=g, runcal=runcal, row=row, scan_inputs=si, library_fp=library_fp)
+        out[key] = judge(prev, det, now, request)
+    return out
 
 
 def _models(n: int) -> str:
