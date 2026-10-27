@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit
 from isar.workspace_api import Workspace
 from isar.workspace_api.scan_list import scan_list
 from isar_gui.theme import TONE_COLOR, Tone
+from isar_gui.viewmodels.scan_list import _NO_SUMMARY
 from isar_gui.views.elided_label import ElidedLabel
 from isar_gui.views.value_entry import ValueEntry
 
@@ -456,8 +457,11 @@ class AttentionList(QWidget):
         """The scan sets' display labels (C-scan-list-read); read again when one is not known yet."""
         if not scans or all(s in self._labels for s in scans):
             return
+        intake = self._intake
         try:
-            self._labels = {s.key: s.label for s in scan_list(Workspace(self._root), fit_inputs=()).sets}   # labels only
+            snap = scan_list(Workspace(self._root), fact_rows=intake.fact_rows or (), fit_inputs=intake.fit_inputs or (),
+                             import_summary=intake.summary or _NO_SUMMARY)     # the holder's reads: no log parse here
+            self._labels = {s.key: s.label for s in snap.sets}
         except Exception:  # noqa: BLE001 - a label is presentation; the scan key stands in for it
             log.exception("attention list: scan labels of %s could not be read", self._root)
 
