@@ -64,20 +64,11 @@ class InspectorWidget(QWidget):
         self._splitter.addWidget(self._glw)
 
         # --- right: tables + panels -------------------------------------
-        side = QWidget()
+        side = self._side = QWidget()
         side_l = QVBoxLayout(side)
         self._empty_label = QLabel(_EMPTY_HINT)
         self._empty_label.setContentsMargins(12, 12, 12, 12)
         side_l.addWidget(self._empty_label)
-
-        # Unit-mode metadata panel (a raw parsed scan × analyzer): shown only in "unit" kind, hidden
-        # in "fit" kind where the ladder/candidates/verdict tell the story instead.
-        self._metadata_header = QLabel("<b>Scan metadata</b>")
-        side_l.addWidget(self._metadata_header)
-        self._metadata_label = QLabel()
-        self._metadata_label.setWordWrap(True)
-        self._metadata_label.setTextFormat(Qt.RichText)
-        side_l.addWidget(self._metadata_label)
 
         self._ladder_header = QLabel("<b>Interval ladder</b>")
         side_l.addWidget(self._ladder_header)
@@ -127,17 +118,16 @@ class InspectorWidget(QWidget):
         empty = st.empty
         unit = (not empty) and st.kind == "unit"
         self._empty_label.setVisible(empty)
-        # Unit mode shows only the metadata panel; fit mode shows the ladder/candidates/verdict/
-        # provenance. Header labels are toggled alongside their widgets so a hidden section leaves no
-        # orphan heading.
-        for w in (self._metadata_header, self._metadata_label):
-            w.setVisible(unit)
+        # Unit mode (a raw parsed scan × analyzer) shows the counts plot alone, at the display's full
+        # width: its metadata lives in the scan inspector. Fit mode shows the ladder/candidates/
+        # verdict/provenance. Header labels are toggled alongside their widgets so a hidden section
+        # leaves no orphan heading.
+        self._side.setVisible(not unit)
         for w in (self._ladder_header, self._ladder, self._candidates_header, self._candidates,
                   self._verdict_header, self._verdict_label,
                   self._provenance_header, self._provenance_label):
             w.setVisible((not empty) and not unit)
         self._render_plots(st)
-        self._render_metadata(st.metadata if unit else {})
         self._render_ladder(st.ladder_rows)
         self._render_candidates(st)
         self._render_verdict({} if (empty or unit) else st.verdict)
@@ -193,15 +183,6 @@ class InspectorWidget(QWidget):
                 if r.winner:
                     _bold(cell)
                 self._candidates.setItem(i, c, cell)
-
-    def _render_metadata(self, md) -> None:
-        if not md:
-            self._metadata_label.setText("")
-            return
-        # Escape workspace-derived values (command / file / q …) so markup in the data can't inject
-        # into the RichText label — same discipline as the verdict/provenance panels.
-        parts = [f"<b>{html.escape(str(k))}</b>: {html.escape(str(v))}" for k, v in md.items()]
-        self._metadata_label.setText("<br>".join(parts))
 
     def _render_verdict(self, v) -> None:
         if not v:
