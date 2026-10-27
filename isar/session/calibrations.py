@@ -13,7 +13,7 @@ Card-driven by the `[calibration]` policy section. Three methods cover the known
 - `tabulated_elastic` (shared; BL43LXU switches it on): a measured resolution curve per detector and
   setting from the experiment's saved resolution folder, else the card's `resolution_folder`; per scan the
   setting ladder and per detector the elastic-line zero (`refresh_tabulated`, keyed `exp:scan` in
-  `card.state.tabulated_calibration`).
+  `card.state.tabulated_calibration`, reused only while its `inputs_key` is unchanged).
 
 `refresh` updates `card.state` (energy_zero_series + resolution_versions). `calibration_view`
 rebuilds a run-level calibration object from state — state, not memory, is authoritative, so a
@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -40,7 +40,8 @@ from isar.calibrate.energy_zero import (
     ZeroSeries,
     build_energy_calibration,
 )
-from isar.intake.curves import load_curves, resolution_location
+from isar.intake.curves import LoadedCurves, load_curves, resolution_location
+from isar.intake.inputs import calibration_inputs_key
 from isar.parsers import metadata, sarf, spec_base
 from isar.schema import axes
 from isar.schema.card import Card
@@ -172,7 +173,7 @@ def _refresh_cooper_nathans(card: Card) -> list[str]:
 # ---------------------------------------------------------------------------
 # tabulated_elastic — the setting ladder and the per-detector elastic zero, per measurement scan
 # ---------------------------------------------------------------------------
-NON_RAW_REASON = "non-raw counts (_lr) are not fitted"
+NON_RAW_REASON = tabulated.NON_RAW_REASON
 ZERO_CROSSCHECK_MEV = 0.3       # above the 0.1 meV agreement seen; the beamline centroid has background and phonon tails, so never the zero
 
 
@@ -186,10 +187,13 @@ def _num(v) -> float | None:
     return v if math.isfinite(v) else None
 
 
-def _calibrate_detector(x, det, spectrum, library, setting, problem, identified) -> dict:
+def _calibrate_detector(x, det, spectrum, library, setting, problem, identified, accepted=False) -> dict:
     """One detector's entry of the state map: its zero and elastic fit, or why it is held."""
-    if tabulated._not_raw(spectrum):                     # the info notice is print rounding: raw, fitted
+    why = tabulated.count_hold(spectrum, accepted=accepted)   # the info notice is print rounding: raw, fitted
+    if why == NON_RAW_REASON:
         return {"held_reason": NON_RAW_REASON, "flags": []}      # parsed and shown, never fitted
+    if why is not None:                                   # _i counts off an integer: held until accepted
+        return {"held_reason": f"{det}: {why}", "flags": []}
     why = tabulated.curve_need(library, det, setting, problem)
     if why is None and not identified:                   # its file was unreadable between the load and its identity
         why = f"the curve at {setting} is unreadable for its identity (its file changed or was locked while read)"
@@ -214,18 +218,30 @@ def _calibrate_detector(x, det, spectrum, library, setting, problem, identified)
             "flags": flags}
 
 
-def _calibrate_scan(rec, library, fp, problem, folder, pattern, chash, identity) -> dict:
-    x = axes.scanned_axes(rec)[0].values
+def _declared_slit(rec) -> str | None:
     slit = (rec.facts.get("slit") or {}).get("value")
-    declared = None if slit is None else (metadata.normalise_slit(slit) or str(slit))
+    return None if slit is None else (metadata.normalise_slit(slit) or str(slit))
+
+
+def _accepted(rec) -> list:
+    """The analyzers whose counts the user accepted (the effective record's ``counts_accepted`` fact)."""
+    return list(((rec.facts or {}).get("counts_accepted") or {}).get("value") or [])
+
+
+def _calibrate_scan(rec, library, fp, problem, folder, pattern, chash, identity, inputs_key=None) -> dict:
+    x = axes.scanned_axes(rec)[0].values
+    declared = _declared_slit(rec)
     choice = tabulated.choose_setting(x, rec.spectra, library, declared)
+    accepted = set(_accepted(rec))
     detectors = {}
     for det, sp in rec.spectra.items():
-        d = _calibrate_detector(x, det, sp, library, choice.setting, problem, (det, choice.setting) in identity)
+        d = _calibrate_detector(x, det, sp, library, choice.setting, problem, (det, choice.setting) in identity,
+                                det in accepted)
         if "held_reason" not in d:           # the curve its zero was fitted with, by content
             d["curve"] = identity[(det, choice.setting)]
         detectors[det] = d
-    return {"content_hash": chash, "library": fp, "folder": None if folder is None else str(folder),
+    return {"content_hash": chash, "inputs_key": inputs_key, "library": fp,
+            "folder": None if folder is None else str(folder),
             "pattern": pattern, "declared": declared,
             "setting": choice.setting, "setting_source": choice.source,
             "setting_basis": tabulated.setting_basis(choice),
@@ -235,14 +251,54 @@ def _calibrate_scan(rec, library, fp, problem, folder, pattern, chash, identity)
             "detectors": detectors}
 
 
-def refresh_tabulated(card: Card, records, *, base_dir=None) -> list[str]:
+def _curves(card: Card, base_dir, loaded: LoadedCurves | None) -> LoadedCurves:
+    """The given curve snapshot, else the folder in force loaded now."""
+    if loaded is not None:
+        return loaded
+    folder, pattern, _source = resolution_location(card, base_dir)
+    return load_curves(folder, pattern)
+
+
+def _inputs_key(record, data_hash: str, loaded: LoadedCurves) -> str:
+    return calibration_inputs_key(
+        data_revision=data_hash, folder=None if loaded.folder is None else str(loaded.folder),
+        pattern=loaded.pattern, library=loaded.fingerprint, declared_slit=_declared_slit(record),
+        analyzers=sorted(record.spectra), counts_accepted=_accepted(record))
+
+
+def tabulated_key(card: Card, record, *, data_hash: str, base_dir=None, loaded: LoadedCurves | None = None) -> str:
+    """What this scan's calibration is computed from: data revision, folder, pattern, library, declared
+    slit, analyzers and accepted counts (C-effective ``calibration_inputs_key``)."""
+    return _inputs_key(record, data_hash, _curves(card, base_dir, loaded))
+
+
+def calibrate_scan_state(card: Card, record, *, data_hash: str, base_dir=None,
+                         loaded: LoadedCurves | None = None) -> dict:
+    """One scan's `tabulated_elastic` state, computed now against ``loaded`` (else the folder in force);
+    writes nothing. An odd scan gets an ``error`` state with the reason, never an exception."""
+    loaded = _curves(card, base_dir, loaded)
+    key = _inputs_key(record, data_hash, loaded)
+    try:
+        return _calibrate_scan(record, loaded.library, loaded.fingerprint, loaded.problem, loaded.folder,
+                               loaded.pattern, data_hash, loaded.identity, key)
+    except Exception as exc:  # noqa: BLE001 — one odd scan is held with the reason, never fatal
+        log.exception("calibration(tabulated_elastic): scan %s:%s failed", record.experiment_id, record.scan_number)
+        return {"content_hash": data_hash, "inputs_key": key, "library": loaded.fingerprint,
+                "error": f"{type(exc).__name__}: {exc}", "flags": [], "detectors": {}}
+
+
+def refresh_tabulated(card: Card, records, *, base_dir=None, data_hashes=None,
+                      loaded: LoadedCurves | None = None) -> list[str]:
     """Build the `tabulated_elastic` state for these measurement records; no-op for any other method.
 
     Per scan the slit setting (declared, else inferred, with its candidate deviances and flags) and
     per detector the elastic zero (or the reason it is held) go into
-    ``card.state.tabulated_calibration["exp:scan"]``. A scan is recomputed only when its content or the
-    resolution library changed; the resolution version records only the method, folder, pattern and
-    library fingerprint, so the state grows linearly with the scans. Never writes the policy."""
+    ``card.state.tabulated_calibration["exp:scan"]``. A scan is recomputed only when its calibration
+    inputs key (data revision, folder, pattern, library, declared slit, analyzers, accepted counts)
+    changed; the resolution version records only the method, folder, pattern and library fingerprint,
+    so the state grows linearly with the scans. ``data_hashes`` (scan key -> the parsed record's
+    ``content_hash``) is the data revision when the records are effective records; ``loaded`` is the
+    run's curve snapshot. Never writes the policy."""
     cfg = card.policy.calibration or {}
     if cfg.get("method") != "tabulated_elastic":
         return []
@@ -250,11 +306,10 @@ def refresh_tabulated(card: Card, records, *, base_dir=None) -> list[str]:
     if cfg.get("zero_fallback", "file_axis") != "file_axis":
         lines.append(f"calibration(tabulated_elastic): zero_fallback {cfg['zero_fallback']!r} is not "
                      "supported; an analyzer without a significant elastic line uses the file's own axis")
-    folder, pattern, _source = resolution_location(card, base_dir)
-    loaded = load_curves(folder, pattern)
-    library, fp, problem = loaded.library, loaded.fingerprint, loaded.problem
+    loaded = _curves(card, base_dir, loaded)
+    folder, fp, problem = loaded.folder, loaded.fingerprint, loaded.problem
     _append_version_if_changed(card, {"method": "tabulated_elastic", "folder": None if folder is None else str(folder),
-                                      "pattern": pattern, "library": fp})
+                                      "pattern": loaded.pattern, "library": fp})
     if problem:
         lines.append(f"calibration(tabulated_elastic): {problem}; every analyzer is held for want of a curve")
     state = card.state.tabulated_calibration
@@ -263,20 +318,28 @@ def refresh_tabulated(card: Card, records, *, base_dir=None) -> list[str]:
         if rec.scan_type != "measurement":
             continue
         key = f"{rec.experiment_id}:{rec.scan_number}"
-        chash = content_hash(rec)
-        if tabulated.calibration_reusable(state.get(key), content_hash=chash, library=fp):
+        chash = data_hashes[key] if data_hashes and key in data_hashes else content_hash(rec)
+        if tabulated.calibration_reusable(state.get(key), content_hash=chash, library=fp,
+                                          inputs_key=_inputs_key(rec, chash, loaded)):
             continue
-        try:
-            state[key] = _calibrate_scan(rec, library, fp, problem, folder, pattern, chash, loaded.identity)
-        except Exception as exc:  # noqa: BLE001 — one odd scan is held with the reason, never fatal
-            log.exception("calibration(tabulated_elastic): scan %s failed", key)
-            state[key] = {"content_hash": chash, "library": fp, "error": f"{type(exc).__name__}: {exc}",
-                          "flags": [], "detectors": {}}
+        state[key] = calibrate_scan_state(card, rec, data_hash=chash, loaded=loaded)
         built += 1
     if built:
         lines.append(f"calibration(tabulated_elastic): {built} scan(s) calibrated against "
-                     f"{len(library)} resolution curve(s)")
+                     f"{len(loaded.library)} resolution curve(s)")
     return lines
+
+
+def scan_view(runcal: "RunCalibration", scan_key: str, state: dict | None,
+              loaded: LoadedCurves | None = None) -> "RunCalibration":
+    """One scan's frozen calibration: the run's view holding only this scan's state and, from the run's
+    curve snapshot, the curves at its setting, so a pooled worker fits with them and never re-reads the folder."""
+    curves = {}
+    if loaded is not None and state and "error" not in state and state.get("library") == loaded.fingerprint:
+        dets = state.get("detectors") or {}
+        curves = {(c.detector_id, c.setting): c for c in loaded.library
+                  if c.setting == state.get("setting") and c.detector_id in dets}
+    return replace(runcal, tabulated={} if state is None else {scan_key: state}, curves=curves)
 
 
 def _append_version_if_changed(card: Card, body: dict) -> bool:
@@ -304,6 +367,8 @@ class RunCalibration:
     slit_by_scan: dict                # int scan -> int slit
     default_resolution: tuple
     tabulated: dict = field(default_factory=dict)   # "exp:scan" -> tabulated_elastic state (a copy)
+    # (detector, setting) -> TabulatedResolution from the run's curve snapshot (a scan view, `scan_view`)
+    curves: dict = field(default_factory=dict)
 
     def zero(self, scan_number) -> float | None:
         return self.zeros.interpolate(scan_number) if self.zeros is not None else None
@@ -403,12 +468,15 @@ def calibration_block(runcal: RunCalibration, record, detector_id) -> dict | Non
 
 def calibration_fingerprint(runcal: RunCalibration, record, detector_id) -> str | None:
     """What a fit of this unit depends on in the tabulated calibration (library, setting, zero and its
-    source, or the hold); None for every other method. The driver refits when it changes."""
+    source, or the hold); None for every other method. The driver refits when it changes. A declared slit
+    depends on the unit's own curve, not the whole library: another analyzer's curve changes nothing."""
     scan_state = _scan_state(runcal, record)
     if scan_state is None:
         return None
     d = (scan_state.get("detectors") or {}).get(detector_id) or {}
-    return canonical_hash({"library": scan_state.get("library"), "setting": scan_state.get("setting"),
+    curve = d.get("curve") if scan_state.get("setting_basis") == "declared" and not d.get("held_reason") else None
+    library = {"curve": curve.get("sha256")} if curve else {"library": scan_state.get("library")}
+    return canonical_hash({**library, "setting": scan_state.get("setting"),
                            "zero": d.get("zero"), "zero_source": d.get("zero_source"),
                            "held": d.get("held_reason"), "error": scan_state.get("error")})
 
@@ -436,7 +504,10 @@ def _resolve_tabulated(record, detector_id, runcal: RunCalibration, version: str
     ref = {"folder": scan_state["folder"], "pattern": scan_state["pattern"],
            "fingerprint": scan_state["library"], "detector": detector_id, "setting": scan_state["setting"]}
     try:
-        curve = sarf.curve_from_reference(ref)
+        # The run's snapshot when the scan view carries it (a pooled worker never re-reads the folder).
+        curve = runcal.curves.get((detector_id, scan_state["setting"]))
+        if curve is None:
+            curve = sarf.curve_from_reference(ref)
         # the curve's own file and stamp: what the read-only facade rebuilds it from (G16, no parser)
         ref = {**ref, "file": curve.source, "stamp": file_stamp(Path(ref["folder"]) / curve.source)}
     except (OSError, ValueError, KeyError, re.error) as exc:

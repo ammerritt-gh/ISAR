@@ -46,6 +46,7 @@ def _calibrated(tmp_path, *, slit=None, library_skip=(), analyzers=ANALYZERS, we
     recs = _records(card, tmp_path / "data")
     for det in lr:                       # what the reader does to an _lr spectrum
         recs[0].spectra[det].spectrum_flags.append(Flag("counts_not_integer", "warning", "_lr counts"))
+        recs[0].spectra[det].facts["count_recovery"]["value"]["family"] = "_lr"
     calibrations.refresh_tabulated(card, recs, base_dir=ws.root)
     (entry,) = card.state.tabulated_calibration.values()
     return ws, card, recs, entry
