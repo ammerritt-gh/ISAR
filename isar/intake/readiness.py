@@ -615,7 +615,8 @@ def _groups(gaps: list[_Gap], marks, scans_ready: Mapping[str, ScanReadiness], a
         can_start = None if kind == "running" else _can_start(can)
         out.append(AttentionGroup(
             kind=kind, title=spec.title, summary=_summary(kind, spec.title, mine, n_scans), uses=spec.uses,
-            state=state, action="wait" if can_start is None else spec.action, can_start=can_start,
+            state=state, action="wait" if can_start is None and all(i.running for i in items) else spec.action,
+            can_start=can_start,
             fallback_in_use=any(g.fallback for g in mine), n_scans=n_scans, analyzers=analyzers, items=tuple(items)))
     return tuple(out)
 

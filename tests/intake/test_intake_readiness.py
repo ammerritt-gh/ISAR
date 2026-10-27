@@ -805,6 +805,17 @@ def test_a_group_whose_items_are_all_running_says_wait(tmp_path):
     assert (grp(na, "values_changed").action, grp(na, "values_changed").can_start) == ("wait", None)
 
 
+def test_a_group_with_no_running_item_keeps_its_own_action_while_every_scan_runs(tmp_path):
+    w = r1(tmp_path)
+    with open(w.root / store.ENTRIES, "ab") as f:
+        f.write(b"[1, 2]\n")
+    units = [f"{s}:{a}" for s in w.rows for a in ("a03", "a04")]
+    na = readiness.evaluate(w.root, marks={u: UnitMarks(running=True) for u in units})
+    g = grp(na, "damaged_lines")
+    assert (g.action, [i.running for i in g.items]) == ("tell_operator", [False])
+    assert grp(na, "calibration_pending").action == "wait"          # its items do run
+
+
 def test_status_does_no_bl43_work_on_another_instruments_workspace(tmp_path, capsys, monkeypatch):
     from isar.cli.main import main
     import isar.workspace_api
