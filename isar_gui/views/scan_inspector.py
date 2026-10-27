@@ -152,7 +152,8 @@ def inspector_lines(row: SpectrumRow | PooledRow, set_row: ScanSetRow | None, un
     for name, value in (metadata or {}).items():      # the view model's order; a missing fact has no row
         # a fact whose sources disagree keeps its row, so the conflicting value and source stay visible
         if CONFLICTS_SEP in value or (name not in _SHOWN_ELSEWHERE and not value.startswith(MISSING_FACT_TEXT)):
-            lines.append(Line(name, value, value, group="metadata"))
+            # a long value is shown shortened; its tooltip is the whole text (_fmt_fact)
+            lines.append(Line(name, value, getattr(value, "full", value), group="metadata"))
     lines.append(status("Fast pass", FAST, row.fast, "processing"))
     lines.append(status("Deep pass", DEEP, row.deep, "processing"))
     return lines

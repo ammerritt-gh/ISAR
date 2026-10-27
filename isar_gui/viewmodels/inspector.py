@@ -97,22 +97,56 @@ def _finite(value) -> float | None:
     return x if np.isfinite(x) else None
 
 
+_LIST_SHOWN = 4   # a longer list shows its count and this many values; the tooltip has them all
+
+
+class _Abridged(str):
+    """A fact's text as shown; ``full`` is the whole of it, for the tooltip."""
+
+    def __new__(cls, shown: str, full: str):
+        text = super().__new__(cls, shown)
+        text.full = full
+        return text
+
+
+def _item(v, full: bool) -> str:
+    try:
+        return f"{float(v):.3g}"
+    except (TypeError, ValueError):
+        return _value_text(v, full)
+
+
+def _value_text(value, full: bool) -> str:
+    """A fact value as readable text, never a Python repr; ``full=False`` shortens a long list."""
+    if isinstance(value, dict):
+        return ", ".join(f"{k}: {_value_text(v, full)}" for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        items = [_item(v, full) for v in value]
+        if not full and len(items) > _LIST_SHOWN:
+            return f"{len(items)} values: " + ", ".join(items[:_LIST_SHOWN]) + ", ..."
+        return "[" + ", ".join(items) + "]"
+    if isinstance(value, float):
+        return f"{value:.4g}"
+    return str(value)
+
+
 def _fmt_fact(fact: dict) -> str:
-    """One fact as ``value (source)``; a missing value says so, and a source disagreement is listed."""
+    """One fact as ``value (source)``; a missing value says so, and a source disagreement is listed.
+    A long list is shortened on screen; the returned string's ``full`` is the whole text."""
     value = fact.get("value")
     if value is None:
-        text = MISSING_FACT_TEXT
-    elif isinstance(value, (list, tuple)):
-        text = _fmt_q(value) or str(value)
-    elif isinstance(value, float):
-        text = f"{value:.4g}"
+        shown = full = MISSING_FACT_TEXT
     else:
-        text = str(value)
-    text += f" ({fact.get('source')})"
+        shown, full = _value_text(value, False), _value_text(value, True)
+    source = f" ({fact.get('source')})"
+    shown += source
+    full += source
     conflicts = [c for c in (fact.get("conflicts") or []) if isinstance(c, dict)]
     if conflicts:
-        text += CONFLICTS_SEP + ", ".join(f"{c.get('value')} ({c.get('source')})" for c in conflicts)
-    return text
+        extra = CONFLICTS_SEP + ", ".join(f"{c.get('value')} ({c.get('source')})" for c in conflicts)
+        shown += extra
+        full += extra
+    return _Abridged(shown, full)
 
 
 @dataclass

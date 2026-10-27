@@ -171,6 +171,26 @@ def test_a_fact_whose_sources_disagree_keeps_its_row(qtbot, patched, bl43_ws, mo
     assert "Q_nm" not in f      # no conflict: shown once, on its own line
 
 
+def test_a_dict_and_a_long_list_read_as_text_with_the_full_value_in_the_tooltip(qtbot, patched, bl43_ws,
+                                                                                 monkeypatch):
+    bins = list(range(1, 156))
+    fit = {"origin": "y_over_e_squared", "family": "_i", "bins_tested": 155, "bins_off": 1}
+    md = {"unit": A06, "fit_spec": _fmt_fact({"value": fit, "source": "file"}),
+          "bins": _fmt_fact({"value": bins, "source": "file"}),
+          "modes": _fmt_fact({"value": ["fork", "fold"], "source": "file"})}
+    monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
+    vm, panel = _panel(qtbot, bl43_ws)
+    panel.show_key(A06)
+    f = _fields(panel)
+    assert _text(f["fit_spec"]) == "origin: y_over_e_squared, family: _i, bins_tested: 155, bins_off: 1 (file)"
+    assert _tooltip(f["fit_spec"]) == _text(f["fit_spec"])
+    assert _text(f["bins"]) == "155 values: 1, 2, 3, 4, ... (file)"
+    assert _tooltip(f["bins"]) == "[" + ", ".join(map(str, bins)) + "] (file)"
+    assert _text(f["modes"]) == "[fork, fold] (file)"
+    for label in ("fit_spec", "bins"):
+        assert not {"{", "[", "'"} & set(_text(f[label])), label
+
+
 def test_a_unit_without_those_values_shows_none_of_their_rows(qtbot, patched, bl43_ws, monkeypatch):
     md = {"unit": A06, "analyzer": "a06"}
     monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
