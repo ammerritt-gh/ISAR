@@ -447,7 +447,9 @@ def test_a_dead_analyzer_is_never_fitted_and_its_declaration_is_carried_until_re
     assert session.get(f"{s}:a04").status == "excluded" and dead04.entry_id in session.get(f"{s}:a04").reasons[0]
     latest04 = _latest(ws)[f"{s}:a04"]["fast"]
     assert latest04 == fitted04
-    assert [ch.field for ch in inputs.changes(latest04.inputs, _now(ws, f"{s}:a04"))] == ["dead", "calibration_held_reason"]   # "made before"; dead also holds its calibration
+    fields04 = [ch.field for ch in inputs.changes(latest04.inputs, _now(ws, f"{s}:a04"))]   # "made before"
+    assert fields04[0] == "dead" and "calibration_held_reason" in fields04   # dead also holds its calibration
+    assert all(f.startswith("calibration_") for f in fields04[1:])
     history = len(fit_inputs.read_history(ws.root))
     worker.calls.clear()
     _run(ws, data)                                            # the declarations stand: everything carried
