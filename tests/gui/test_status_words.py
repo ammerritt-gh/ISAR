@@ -49,6 +49,11 @@ def test_the_plain_words_the_amendment_names():
     assert sw.plain_word(FAST, "a word from the future") == "a word from the future"   # shown as stored
 
 
+def test_a_deep_search_limit_names_the_fast_pass_ceiling_or_a_suspect_model():
+    meaning = sw.meaning(DEEP, "search_limited")
+    assert "fast pass hit its peak-count ceiling" in meaning and "suspect after restarts" in meaning
+
+
 def test_a_cell_shows_the_plain_word_and_its_hover_the_code_word_and_the_meaning():
     from isar.workspace_api.scan_list import Status
     cell = _status_cell(Status("close_call", True, "close call: preferred count 2 (P 0.64)"), FAST)

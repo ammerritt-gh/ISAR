@@ -66,11 +66,11 @@ TABLE: dict[str, dict[str, Entry]] = {
                                    "0.80 or more."),
         "close_call": Entry("close call", "The deep pass still finds two peak counts close: the preferred count "
                                           "has probability below 0.80."),
-        "search_limited": Entry("search limit reached", "The deep pass reached its peak-count ceiling, or a model "
-                                                       "stayed suspect after restarts (a result made before the "
-                                                       "time limits were removed may show its time budget "
-                                                       "instead); the probabilities cover only the models it "
-                                                       "sampled."),
+        "search_limited": Entry("search limit reached", "The deep pass is incomplete: the fast pass hit its peak-count "
+                                                        "ceiling, or a model stayed suspect after restarts. The reason "
+                                                        "shown with it says which; the probabilities cover only the "
+                                                        "models it sampled. A result made before the time limits were "
+                                                        "removed may say its time budget ended instead."),
         "refused": Entry("refused", "The deep pass could not run on this spectrum; the reason says why."),
         "not run": Entry("not run", "The deep pass has not been run on this spectrum."),
     },
