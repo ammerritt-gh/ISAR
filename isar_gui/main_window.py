@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -49,7 +50,6 @@ from PySide6.QtWidgets import (
 )
 
 from isar_gui import collector_guard, file_dialogs
-from isar_gui.commands import RunOptions, build_run_command
 from isar_gui.active_unit import ActiveUnitController
 from isar_gui.export_action import ExportController
 from isar_gui.credentials import (
@@ -65,6 +65,7 @@ from isar_gui.gui_store import GuiStore
 from isar_gui.health import (
     HealthProbe, LLM_DEFAULT_ENDPOINT, TAVI_DEFAULT_URL, find_tavi_bat, health_url, ping_http)
 from isar_gui.operation_coordinator import WorkspaceOperationCoordinator
+from isar_gui.queue_controller import QueueController
 from isar_gui.workspace_manager import (
     WorkspaceManager, default_experiment_name, experiments_root, openable)
 from isar.workspace_api import (
@@ -117,7 +118,7 @@ from isar_gui.views.rename_dialog import RenameDialog
 from isar_gui.views.scan_inspector import ScanInspectorPanel
 from isar_gui.views.scan_list import ScanListPanel
 from isar_gui.views.scan_table_dock import ScanTableDock
-from isar_gui.views.setup_section import SetupSection, locate_resolution_folder
+from isar_gui.views.setup_section import RUN_TEXT, RUN_TIP, SetupSection, locate_resolution_folder
 from isar_gui.views.scans_dock import ScansDock
 from isar_gui.views.waterfall_pane import WaterfallPane
 from isar_gui.watch_bridge import WatchBridge
@@ -172,9 +173,6 @@ def initial_arrangement(width: int, height: int) -> str:
 
 _HEALTH_WORDS = {"tavi": "TAVI (instrument control) is not running. Only needed for campaigns.",
                  "llm": "The LLM service is not running. Only needed for the optional LLM review."}
-_RERUN_TEXT = "Re-run (only what changed)"
-_RERUN_TIP = ("Run the last analysis again with the same settings; only new, changed or held scans, or ones "
-              "touched by a card edit, are fitted.")
 
 # The five central display surfaces, in switcher order: (host key, button label).
 _CENTER_PAGES = (("scan", "Scan"), ("waterfall", "Waterfall"), ("plane", "Plane (q, E)"),
@@ -241,7 +239,15 @@ _INTAKE_RELOAD = frozenset({"snapshot", "results", "card", "card_state", "intake
                            "intake_settings", "intake_scans", "fit_inputs", "curves"})
 # The status bar's and Processing panel's word for each kind the coordinator emits.
 _ACTIVITY_VERBS = {"ingest": "Ingesting", "drive": "Campaign running", "compile": "Compiling campaign",
-                   "export": "Exporting", "run": "Analysing"}
+                   "export": "Exporting"}
+_CORES_TIP = ("How many processor cores ISAR may use for analysis. A lower number takes effect as running "
+              "analyzers finish; a deep pass that is already running keeps its cores until you stop it.")
+
+
+def _sentence(text: str) -> str:
+    """A reason as a sentence: first letter up, a full stop at the end."""
+    text = text.strip()
+    return text if not text else text[0].upper() + text[1:] + ("" if text.endswith((".", "…")) else ".")
 
 
 class MainWindow(QMainWindow):
@@ -280,8 +286,8 @@ class MainWindow(QMainWindow):
         self._empty_hint.setObjectName("empty_hint")
         self._empty_hint.setAlignment(Qt.AlignCenter)
         self._center_stack.addWidget(self._empty_hint)   # stack index 0
-        self._activity_kind: str | None = None   # the coordinator's last activity kind (ingest/run/…)
-        self._last_run_status: tuple[str, str] | None = None   # (text, colour) of the last run status
+        self._activity_kind: str | None = None   # the coordinator's last activity kind (ingest/drive/…)
+        self._renaming = False        # True while a rename re-binds: the queue keeps its waiting items
         self._inspector_width = _ARRANGEMENTS["laptop"].inspector   # remembered across open/close
         # Compact campaign-monitor mode (M3-1): the monitor is a per-binding stack page built
         # lazily on first toggle; the stash holds the full window state to restore on expand.
@@ -321,8 +327,6 @@ class MainWindow(QMainWindow):
         self._operations.ingest_started.connect(self._on_ingest_started)
         self._operations.ingest_finished.connect(self._on_ingest_report)
         self._operations.ingest_failed.connect(self._on_ingest_failed)
-        self._operations.run_started.connect(self._on_run_started)
-        self._operations.run_finished.connect(self._on_run_finished)
         self._operations.drive_started.connect(self._on_drive_started)
         self._operations.drive_finished.connect(self._on_drive_finished)
         self._operations.activity_changed.connect(self._on_operation_activity_changed)
@@ -351,6 +355,7 @@ class MainWindow(QMainWindow):
 
         self._init_file_menu()
         self._init_run_menu()
+        self._init_config_menu()
         self._init_backends_menu()
         self._init_view_menu()
         self._init_status_bar()
@@ -504,11 +509,13 @@ class MainWindow(QMainWindow):
         self.scan_list_vm.set_active_key(self.active_units.key)
         self.experiment_strip.set_experiment(root)
         self.intake.bind(root)
+        self._queue.bind(root, auto_fast=True if self._gui_store is None else self._gui_store.auto_fast_pass(),
+                         keep_waiting=self._renaming)
         self.files_strip.bind(self.files_vm, root is not None)   # experiment_open
         self.output_bar.set_experiment(root)
         self._show_outside_references()
         self._note_last_written()
-        self._sync_run_actions()  # Run/Re-run enablement depends on empty-state + remembered runs
+        self._sync_run_actions()  # the entry point depends on the empty state and what is ready
         self._sync_workspace_actions()
 
     def _seed_folder_watcher(self) -> None:
@@ -636,6 +643,17 @@ class MainWindow(QMainWindow):
         self.processing_rail = ProcessingRail(self)
         self.output_bar = OutputBar(self)
         self._export = ExportController(self._operations, self)
+        # The analysis queue: the one owner of queue state; the panel, the rail and the scan list read it.
+        self._queue = QueueController(
+            sys.executable, self.intake, self.scan_list_vm, cores=self._cores_setting(),
+            blocked=lambda: ("a campaign is running in this experiment"
+                             if self._operations.has_campaign() else None), parent=self)
+        self.processing_panel.set_controller(self._queue)
+        self.processing_rail.set_controller(self._queue)
+        self.scan_list_vm.set_queue(self._queue)
+        self._queue.log_line.connect(self.log)
+        self._queue.auto_fast_changed.connect(self._on_auto_fast_changed)
+        self._queue.changed.connect(self._push_run_row)
 
         # ---- the left column: experiment strip, setup section, needs-attention list, files strip, then
         # the scan list (all the rest) ----
@@ -738,7 +756,6 @@ class MainWindow(QMainWindow):
         self._export.finished.connect(lambda _folder: self.intake.set_busy_reason(None))
         self._export.failed.connect(lambda _reason, _path: self.intake.set_busy_reason(None))
         self.processing_panel.run_requested.connect(lambda: self.start_analysis())
-        self.processing_panel.stop_requested.connect(self._cancel_active_operation)
         self.processing_rail.toggled.connect(
             lambda: self.set_right_panel_collapsed(not self._right_panel_collapsed()))
         self._refresh_recents_menu()
@@ -1192,7 +1209,6 @@ class MainWindow(QMainWindow):
         if self._wsm.root() is None:
             return False, "need an experiment", None
         busy = {"ingest": "files are being read into the experiment",
-                "run": "analysis is writing to the experiment",
                 "drive": "a campaign is writing to the experiment",
                 "compile": "a campaign is writing to the experiment",
                 "export": "an export is running"}.get(self._activity_kind)
@@ -1282,7 +1298,6 @@ class MainWindow(QMainWindow):
             # The re-bind has started both watchers on the new root.
             self._session.rename_workspace(old, new)
             self._refresh_recents_menu()
-            self._sync_run_actions()           # the remembered run moved with the folder
             self._autosave()
             self._say(f"Renamed experiment {old.name} to {new.name} ({new})")
             return
@@ -1351,8 +1366,8 @@ class MainWindow(QMainWindow):
                      "keep them available to re-read or re-run.")
         # The copied calibration records the ORIGINAL's curve folders, so "inside" is judged there.
         if not self._empty and outside_references(self._ws).resolution_inside:
-            self.log(f"Its stored fits name the resolution curves of {self._ws.root}; the next Run "
-                     "analysis in the copy refits them from the copy's own folder.")
+            self.log(f"Its stored fits name the resolution curves of {self._ws.root}; add them to the "
+                     "queue in the copy to refit them from the copy's own folder.")
 
     def _on_export_requested(self) -> None:
         """*Export…*: only when the availability rule allows it, then through the export controller."""
@@ -1415,6 +1430,7 @@ class MainWindow(QMainWindow):
         if not self._empty:
             self._ws.refresh()
             self._on_workspace_changed({"snapshot"})
+            self._queue.on_arrivals([*report.added, *report.updated])
 
         n_files = len(report.files)
         a, u, d = len(report.added), len(report.updated), len(report.deduped)
@@ -1439,7 +1455,8 @@ class MainWindow(QMainWindow):
                 prefix += f" ({count_text})"
             self.statusBar().showMessage(
                 f"{prefix}: {parsed_waiting} analyzer unit(s) awaiting analysis; "
-                f"choose Run analysis… in Processing{note}")
+                + ("their fast passes are queued in Processing" if self._queue.auto_fast()
+                   else "add them to the queue in Processing") + note)
         else:
             prefix = f"Ingested {n_files} files"
             if count_text:
@@ -1625,9 +1642,6 @@ class MainWindow(QMainWindow):
             self._close_scan_inspector()
             state = self.saveState(_LAYOUT_VERSION)
             self._teardown_binding()
-        # The last run belongs to the experiment it ran in; the bind pushes the cleared state.
-        self._last_run_status = None
-        self._run_status.setText("")
         self._bind_workspace(ws)
         self._bound = True
         if state is not None:
@@ -1637,100 +1651,109 @@ class MainWindow(QMainWindow):
                 self._apply_default_arrangement(initial_arrangement(*self._available_size()))
             self._sync_rail()
 
-    # ---- Run menu (shell `isar run` as a subprocess, D3) ------------------
+    # ---- Run menu: the one analysis entry point queues work -------------------
     def _init_run_menu(self) -> None:
         run_menu = self.menuBar().addMenu("&Run")
-        self._run_action = run_menu.addAction("Run analysis…")
-        self._run_action.triggered.connect(lambda: self.start_analysis())
-        self._rerun_action = run_menu.addAction(_RERUN_TEXT)
-        self._rerun_action.setToolTip(_RERUN_TIP)
+        self._run_action = run_menu.addAction(RUN_TEXT)
+        self._run_action.setToolTip(RUN_TIP)
         run_menu.setToolTipsVisible(True)
-        self._rerun_action.triggered.connect(self.rerun)
+        self._run_action.triggered.connect(lambda: self.start_analysis())
         self._cancel_operation_action = run_menu.addAction("Cancel active operation")
+        self._cancel_operation_action.setToolTip(
+            "Stops the file reading, export or campaign that is running now. Analyzers in the queue are "
+            "stopped with the stop button beside each in the Processing panel.")
         self._cancel_operation_action.triggered.connect(self._cancel_active_operation)
 
     def _sync_run_actions(self) -> None:
-        """Runs need a real workspace and the workspace-wide writer gate to be idle."""
-        busy = self._operations.is_busy()
-        can_run = (not self._empty) and (not busy)
-        self._run_action.setEnabled(can_run)
-        # Re-run additionally needs a remembered previous invocation for this workspace.
-        can_rerun = can_run and self._run_state() is not None
-        self._rerun_action.setEnabled(can_rerun)
-        # a greyed menu entry says why in its own text
-        self._rerun_action.setText(_RERUN_TEXT if can_rerun else f"{_RERUN_TEXT} — " + (
-            "needs an experiment" if self._empty else "an operation is running" if busy else "run the analysis once first"))
-        self._cancel_operation_action.setEnabled(busy)
+        """The Run menu and the Processing panel follow the entry point and the busy state."""
+        self._cancel_operation_action.setEnabled(self._operations.is_busy())
         self._push_processing_state()
 
     def _push_processing_state(self) -> None:
-        """Mirror today's Run-menu enablement and status labels into the Processing panel."""
-        busy = self._operations.is_busy()
-        can_run = (not self._empty) and (not busy)
-        reason = "" if can_run else ("need an experiment" if self._empty else "ISAR is busy")
-        self.processing_panel.set_state(
-            can_run=can_run, run_reason=reason,
-            analysis_running=self._operations.is_running_analysis(),
-            activity=self._operation_status.text(), last_run=self._last_run_status)
+        """The Processing panel's activity line (an ingest, export or campaign) and the entry point's controls."""
+        self.processing_panel.set_activity(self._operation_status.text())
         self._push_run_row()
 
     def _push_run_row(self) -> None:
-        """The setup section's Run button: on when an analysis can start, else off with the reason beside it."""
+        """The entry point's controls (the setup section's button, the Processing button, the Run menu entry): on
+        when the queue can take work, with the count of analyzer files it would add in the label; else off, with
+        the reason beside the button."""
         curves_only = False
+        count = None
         if self._empty:
             enabled, note = False, "Open or create an experiment first."
-        elif self._operations.is_running_analysis():
-            enabled, note = False, "An analysis is running."
-        elif self._operations.is_busy():
-            enabled, note = False, "ISAR is busy with another operation."
         elif not (self.scan_list_vm.snapshot.sets or self.scan_list_vm.snapshot.files_not_read):
             enabled, note = False, "No data yet. Add data files below."
         elif self.readiness_line.checking:
             enabled, note = False, "Checking what is ready…"
         else:
+            count, why = self._queue.fast_all()
             ready, blockers = self.readiness_line.ready_count, self.readiness_line.blockers
-            enabled = ready != 0                  # None: no readiness read applies (not BL43LXU data); run it
-            note = (f"Nothing is ready yet: {blockers}" if blockers else "Nothing is ready yet.") if ready == 0 else (
-                "" if ready is None else f"{ready} ready for analysis")
-            curves_only = self.readiness_line.only_curves_blocked
-        self.setup_section.set_run_state(enabled, note, curves_only=curves_only)
+            if count is None:
+                enabled, note = False, _sentence(why or "the queue cannot take work now")
+            elif count == 0:
+                enabled = False
+                note = ((f"Nothing is ready yet: {blockers}" if blockers else "Nothing is ready yet.") if ready == 0
+                        else "Every ready analyzer already has a current fast pass or is queued.")
+                curves_only = self.readiness_line.only_curves_blocked
+            else:
+                enabled = True
+                note = "" if ready is None else f"{ready} ready for analysis"
+                curves_only = self.readiness_line.only_curves_blocked
+        label = RUN_TEXT if count is None else f"{RUN_TEXT} ({count})"
+        self.setup_section.set_run_state(enabled, note, curves_only=curves_only, label=label)
+        self.processing_panel.set_run_state(enabled, label, note)
+        self._run_action.setEnabled(enabled)
+        # a greyed menu entry says why in its own text
+        self._run_action.setText(label if enabled or not note else f"{label} — {note.rstrip('.')}")
+        self._run_action.setToolTip(RUN_TIP if enabled else (note or RUN_TIP))
 
     def start_analysis(self) -> None:
-        """The one window-level entry point for starting an analysis (the queue job rebinds it)."""
-        self.run_analysis()
+        """The one window-level entry point for analysis: add a fast pass for every ready analyzer file that has no
+        current one (the queue's duplicate rules apply). Every start button, menu entry and remedy goes through here."""
+        self._queue.fast_pass_all_ready()
 
-    def run_analysis(self) -> None:
-        """Open the Run dialog (pre-filled from the last run) and launch ``isar run`` on accept."""
-        if self._empty or self._operations.is_busy():
-            return
-        from isar_gui.run_dialog import RunDialog
+    # ---- Config menu: machine-level settings (TAVI's form) --------------------
+    def _init_config_menu(self) -> None:
+        menu = self.menuBar().addMenu("&Config")
+        self._cores_action = menu.addAction(self._cores_action_text())
+        self._cores_action.setToolTip(_CORES_TIP)
+        menu.setToolTipsVisible(True)
+        self._cores_action.triggered.connect(self._ask_cores)
 
-        prev = self._run_state() or {}
-        # the last run's data, else the folders the experiment's files were read from: never an empty box
-        data = os.pathsep.join(prev.get("data") or self.scan_list_vm.source_folders())
-        opts = RunOptions(**prev["opts"]) if prev.get("opts") else RunOptions()
-        dlg = RunDialog(data=data, opts=opts, parent=self)
-        if not dlg.exec() or not dlg.data_paths:
-            return
-        self._launch_run(dlg.data_paths, dlg.options)
+    @staticmethod
+    def _cores_max() -> int:
+        return max(1, os.cpu_count() or 1)
 
-    def rerun(self) -> None:
-        """Re-run the last invocation verbatim (idempotent — the engine fits only new, changed or held scans)."""
-        if self._empty or self._operations.is_busy():
-            return
-        state = self._run_state()
-        if state is None:
-            return
-        self._launch_run(state["data"], RunOptions(**state["opts"]))
+    def _cores_setting(self) -> int:
+        """ISAR's core budget on this machine: the saved number, else all the machine's cores but two."""
+        saved = self._session.view_state.get("cores")
+        if isinstance(saved, int) and not isinstance(saved, bool) and saved >= 1:
+            return min(saved, self._cores_max())
+        return max(1, self._cores_max() - 2)
 
-    def _launch_run(self, data_paths, opts: RunOptions) -> None:
-        # A run reads the on-disk card.  Do not let a scientist believe their visible draft was
-        # used; Save / Discard / Cancel makes that boundary explicit.
-        if not self._resolve_dirty_card("start analysis"):
+    def _cores_action_text(self) -> str:
+        return f"Cores for analysis… ({self._cores_setting()} of {self._cores_max()})"
+
+    def _ask_cores(self) -> None:
+        current = self._cores_setting()
+        label = (f"Cores ISAR may use for analysis (this computer has {self._cores_max()}).\n"
+                 "A lower number takes effect as running analyzers finish. A deep pass that is already "
+                 "running keeps its cores until you stop it.")
+        value, ok = QInputDialog.getInt(self, "Cores for analysis", label, current, 1, self._cores_max())
+        if not ok or value == current:
             return
-        self._remember_run(data_paths, opts)
-        self._operations.request_run(data_paths, opts, env=self._llm_env())
-        self._sync_run_actions()
+        self._session.view_state["cores"] = int(value)
+        self._autosave()
+        self._queue.set_cores(int(value))
+        self._cores_action.setText(self._cores_action_text())
+        self.log(f"Cores for analysis: {value}")
+
+    def _on_auto_fast_changed(self, flag: bool) -> None:
+        """The switch moved: it belongs to the experiment, so it is saved in the experiment's GUI store."""
+        if self._gui_store is not None:
+            self._gui_store.set_auto_fast_pass(flag)
+            self._store_save_timer.start()
 
     def _on_virtual_start_requested(self, opts, env: dict) -> None:
         """Launch a campaign with NO experiment open: create one → rebind → carry the form → drive.
@@ -1839,23 +1862,6 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(msg)
         self._sync_run_actions()
 
-    def _on_run_started(self) -> None:
-        self._set_run_status("running…", "#b8860b")
-
-    def _on_run_finished(self, code: int, live_workspace: bool) -> None:
-        if not live_workspace:
-            self.log("stale run completion ignored — workspace changed")
-            return
-        self.intake.reload()                # a cancelled run's passes stop counting as running or latest
-        if code == 0:
-            self._set_run_status(f"run finished OK ({datetime.now():%H:%M:%S})", "#2e7d32")
-            self.statusBar().showMessage("Run finished — results updated below")
-        else:
-            self._set_run_status(f"run FAILED (exit {code}) — see log", "#c62828")
-            self.statusBar().showMessage(f"Run failed (exit {code})")
-        self._note_last_written()               # a window built with watch=False has no later tick
-        self._sync_run_actions()
-
     def _cancel_active_operation(self) -> None:
         if self._operations.cancel():
             self.statusBar().showMessage("Cancelling active workspace operation…")
@@ -1875,33 +1881,15 @@ class MainWindow(QMainWindow):
             elif state.get("stopping"):
                 verb = "Stopping campaign after the current scan"
             else:
-                verb = _ACTIVITY_VERBS.get(kind, "Analysing")
+                verb = _ACTIVITY_VERBS.get(kind, "Working")
             suffix = f" + {queued} queued" if queued else ""
             self._operation_status.setText(f"{verb}{suffix}")
         dock = getattr(self, "card_dock", None)
         if dock is not None:
             dock.set_operation_busy(kind is not None)
+        self._queue.poke()          # a campaign that ended frees the queue to start; one that began holds it
         self._sync_run_actions()
         self._sync_workspace_actions()
-
-    def _set_run_status(self, text: str, color: str) -> None:
-        self._run_status.setText(text)
-        self._run_status.setStyleSheet(f"color: {color};")
-        self._last_run_status = (text, color)
-        self._push_processing_state()
-
-    # ---- remembered run state (per workspace, in the GUI session) ----------
-    def _run_state(self) -> dict | None:
-        if self._empty:
-            return None
-        return self._session.view_state.get("run", {}).get(str(self._ws.root))
-
-    def _remember_run(self, data_paths, opts: RunOptions) -> None:
-        from dataclasses import asdict
-
-        runs = self._session.view_state.setdefault("run", {})
-        runs[str(self._ws.root)] = {"data": list(data_paths), "opts": asdict(opts)}
-        self._autosave()
 
     # ---- Open report / Export view (Operator-Contract wins, D3) -----------
     def _open_report(self) -> bool:
@@ -1913,7 +1901,7 @@ class MainWindow(QMainWindow):
             return False
         report = Path(self._ws.root) / "report" / "report.html"
         if not report.exists():
-            self.statusBar().showMessage("No report yet — run analysis first")
+            self.statusBar().showMessage("No report yet — fast-pass some analyzers first")
             return False
         webbrowser.open(report.as_uri())
         return True
@@ -2222,10 +2210,6 @@ class MainWindow(QMainWindow):
         live" stays visible even after the transient "Updated: ..." message expires."""
         self._live_label = QLabel()
         self.statusBar().addPermanentWidget(self._live_label)
-        # A persistent run-state indicator (colour-coded): survives the transient showMessage text so
-        # a finished/failed run stays visible. Empty until the first run.
-        self._run_status = QLabel()
-        self.statusBar().addPermanentWidget(self._run_status)
         self._operation_status = QLabel()
         self.statusBar().addPermanentWidget(self._operation_status)
         # Backend reachability indicators (LLM + TAVI): grey until the first probe returns.
@@ -2310,8 +2294,8 @@ class MainWindow(QMainWindow):
         self._on_workspace_changed({"card"})
         if self._ws.results:
             self.statusBar().showMessage(
-                "Card saved — existing results used the previous policy; re-run analysis to apply it")
-            self.log("Card policy changed after results existed — re-run analysis to apply it")
+                "Card saved — existing results used the previous policy; add the analyzers to the queue again to apply it")
+            self.log("Card policy changed after results existed — add the analyzers to the queue again to apply it")
         else:
             self.statusBar().showMessage("Card saved — new analysis will use this policy")
 

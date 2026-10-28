@@ -568,12 +568,11 @@ def test_watch_events_and_process_ends_reread_the_intake(qtbot, monkeypatch, s2_
     monkeypatch.setattr(w.intake, "reload", lambda: reloads.append(1))
     w._on_workspace_changed({"events"})                     # not an intake input: no re-read
     assert reloads == []
-    w._on_run_finished(1, True)                              # as a Cancel delivers it
-    w._on_ingest_failed(1, "cancelled")
+    w._on_ingest_failed(1, "cancelled")                      # as a Cancel delivers it
     w._on_drive_finished(4, True)
-    assert reloads == [1, 1, 1]
-    w._on_run_finished(0, False)                             # another experiment's run: the bind re-read already
-    assert reloads == [1, 1, 1]
+    assert reloads == [1, 1]
+    w._on_drive_finished(0, False)                           # another experiment's campaign: the bind re-read already
+    assert reloads == [1, 1]
 
 
 def test_one_watcher_tick_rebuilds_the_scan_list_once_now_and_once_for_the_worker(qtbot, monkeypatch, s2_built):
@@ -641,7 +640,7 @@ def test_counts_accepted_is_declared_and_withdrawn(qtbot, s2_ws):
 def test_every_wire_of_the_mount_table_fires(qtbot, monkeypatch, s2_built):
     reveals, runs, renames, locates, details = [], [], [], [], []
     monkeypatch.setattr(AttentionList, "reveal", lambda self, key: reveals.append(key))
-    monkeypatch.setattr(MainWindow, "run_analysis", lambda self: runs.append(1))
+    monkeypatch.setattr(MainWindow, "start_analysis", lambda self: runs.append(1))
     monkeypatch.setattr(mw_mod, "locate_resolution_folder",
                         lambda parent, intake: locates.append(intake) or SaveOutcome(False, "refused here", None))
     w = _window(qtbot, monkeypatch)

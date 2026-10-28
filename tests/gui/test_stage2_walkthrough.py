@@ -368,10 +368,11 @@ def test_scenario3_a_disabled_run_shows_its_reason_unless_the_amber_curves_line_
     section, run, note = w.setup_section, w.setup_section._run, w.setup_section._run_note
     assert section._problem.isVisible() and not run.isEnabled()
     assert run.toolTip() and not note.isVisible()                  # the curves reason: the amber line above says it
-    monkeypatch.setattr(w._operations, "is_busy", lambda: True)    # another reason, with the amber line still showing
+    monkeypatch.setattr(w._queue, "fast_all",                      # another reason, with the amber line still showing
+                        lambda: (None, "the readiness check failed: unreadable"))
     w._sync_run_actions()
     assert section._problem.isVisible() and not run.isEnabled()
-    assert note.isVisible() and note.full_text() == "ISAR is busy with another operation."
+    assert note.isVisible() and note.full_text() == "The readiness check failed: unreadable."
 
 
 # ---- scenario 4: the laptop's hardest combination ---------------------------------------------------------------
@@ -558,7 +559,8 @@ def test_run_analysis_is_a_visible_button_in_the_setup_area_at_every_size(
     w.set_right_panel_collapsed(collapsed)
     qtbot.wait(80)
     section, button = w.setup_section, w.setup_section._run
-    assert button.text() == "Run analysis…" and button.toolTip()
+    assert button.full_text().startswith("Fast-pass all ready (") and button.full_text().endswith(")")
+    assert button.toolTip() and button.text().startswith("Fast-pass all ready")     # the words whole; the count may give way
     _reachable(w, button)                                           # shown, enabled, whole, not covered
     assert section.rect().contains(button.geometry()) and section.isAncestorOf(button)
     assert w.left_column_dock.isAncestorOf(button)

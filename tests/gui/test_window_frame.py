@@ -256,7 +256,6 @@ def test_example5_activity_gates_save_copy_and_export(qtbot, monkeypatch, make_w
     w = _window(qtbot, monkeypatch, LAPTOP, _ready_ws(make_ws))
     idle = {"kind": None, "queued": 0, "cancelling": False}
     for kind, reason in (("ingest", "files are being read into the experiment"),
-                         ("run", "analysis is writing to the experiment"),
                          ("drive", "a campaign is writing to the experiment"),
                          ("compile", "a campaign is writing to the experiment"),
                          ("export", "an export is running")):
@@ -422,7 +421,8 @@ def test_mounts_fit_inside_their_columns_minimum_width(qtbot, monkeypatch):
     assert w.files_strip.minimumSizeHint().width() <= mw_mod._LEFT_MIN
     assert w.scan_list.minimumSizeHint().width() <= mw_mod._LEFT_MIN
     assert w.scan_inspector.minimumSizeHint().width() <= mw_mod._INSPECTOR_MIN
-    assert w.processing_panel.minimumSizeHint().width() <= mw_mod._RIGHT_MIN
+    # the queue's Fast pass / Deep pass row measures 250 px in offscreen's wide fake font (real fonts need about half)
+    assert w.processing_panel.minimumSizeHint().width() <= mw_mod._RIGHT_MIN + 40
     hint = w.output_bar.minimumSizeHint()
     assert hint.width() <= 300 and hint.height() <= 120
     assert w.processing_rail.minimumSizeHint().width() <= 24
@@ -594,39 +594,41 @@ def test_the_arrangement_is_the_same_before_and_after_the_first_data(qtbot, monk
 # ---------------------------------------------------------------------------
 # the Processing panel
 # ---------------------------------------------------------------------------
-def test_processing_panel_run_is_disabled_without_an_experiment_and_stop_follows_activity(
-        qtbot, monkeypatch, make_ws):
-    runs = []
-    monkeypatch.setattr(MainWindow, "run_analysis", lambda self: runs.append(1))
+def test_processing_panel_run_queues_the_ready_analyzers_and_says_why_it_is_off(
+        qtbot, monkeypatch, bl43_ws):
+    starts = []
+    monkeypatch.setattr(MainWindow, "start_analysis", lambda self: starts.append(1))
     w = _window(qtbot, monkeypatch, LAPTOP)
     run = w.processing_panel.findChild(QPushButton, "processing_run")
-    stop = w.processing_panel.findChild(QPushButton, "processing_stop")
-    assert not run.isEnabled() and not stop.isEnabled()
-    assert w.processing_panel.findChild(type(w._empty_hint), "processing_reason").text() == (
-        "need an experiment")
+    assert w.processing_panel.findChild(QPushButton, "processing_stop") is None      # the batch Stop is gone
+    assert not run.isEnabled() and run.full_text() == "Fast-pass all ready"
+    reason = w.processing_panel.findChild(type(w._empty_hint), "processing_reason")
+    assert reason.text() == "Open or create an experiment first." and run.toolTip() == reason.text()
 
-    assert w.load_workspace(str(_ready_ws(make_ws).root))
-    qtbot.wait(30)
-    assert run.isEnabled()
+    with qtbot.waitSignal(w.intake.worker_changed, timeout=15000):
+        assert w.load_workspace(str(bl43_ws))
+    qtbot.waitUntil(run.isEnabled, timeout=15000)
+    count = w._queue.fast_all()[0]
+    assert count and run.full_text() == f"Fast-pass all ready ({count})" and "no current fast pass" in run.toolTip()
+    assert not reason.isVisibleTo(w.processing_panel)
     run.click()
-    assert runs == [1]
+    assert starts == [1]
 
-    running = {"on": True}
-    monkeypatch.setattr(type(w._operations), "is_running_analysis", lambda self: running["on"])
-    monkeypatch.setattr(type(w._operations), "is_busy", lambda self: running["on"])
-    w._on_operation_activity_changed({"kind": "run", "queued": 0, "cancelling": False})
-    assert stop.isEnabled() and not run.isEnabled()
-    assert stop.toolTip() == "Asks the running analysis to stop; spectra already stored stay"
-    running["on"] = False
-    w._on_operation_activity_changed({"kind": None, "queued": 0, "cancelling": False})
-    assert not stop.isEnabled() and run.isEnabled()
+    monkeypatch.setattr(w._queue, "fast_all", lambda: (0, None))
+    w._push_run_row()
+    assert not run.isEnabled() and run.full_text() == "Fast-pass all ready (0)"
+    assert reason.isVisibleTo(w.processing_panel) and reason.text() == run.toolTip()
+    assert "current fast pass or is queued" in reason.text()
 
 
-def test_processing_panel_mirrors_the_run_status(qtbot, monkeypatch, make_ws):
+def test_the_processing_panel_shows_an_ingest_export_or_campaign_in_its_activity_line(qtbot, monkeypatch, make_ws):
     w = _window(qtbot, monkeypatch, LAPTOP, _ready_ws(make_ws))
-    w._set_run_status("run finished OK (10:00:00)", "#2e7d32")
-    label = w.processing_panel.findChild(type(w._empty_hint), "processing_last_run")
-    assert label.text() == "run finished OK (10:00:00)" and "#2e7d32" in label.styleSheet()
+    line = w.processing_panel.findChild(type(w._empty_hint), "processing_activity")
+    assert not line.isVisibleTo(w.processing_panel)
+    w._on_operation_activity_changed({"kind": "export", "queued": 0, "cancelling": False})
+    assert line.isVisibleTo(w.processing_panel) and line.text() == "Exporting" and line.toolTip()
+    w._on_operation_activity_changed({"kind": None, "queued": 0, "cancelling": False})
+    assert not line.isVisibleTo(w.processing_panel)
 
 
 def test_the_experiments_root_seam_points_under_the_test_folder(tmp_path):
@@ -639,7 +641,7 @@ def test_stub_mounts_have_their_final_signatures():
                          (OutputBar, ("save_copy_requested", "export_requested", "open_copy_requested")),
                          (FilesStrip, ("paths_dropped", "log_message")),
                          (ScanInspectorPanel, ("close_requested",)),
-                         (ProcessingPanel, ("run_requested", "stop_requested")),
+                         (ProcessingPanel, ("run_requested",)),
                          (ProcessingRail, ("toggled",)),
                          (ExportController, ("started", "progress", "finished", "failed")),
                          (ScanListViewModel, ("snapshot_changed", "display_requested",

@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from isar_gui import commands
-from isar_gui.commands import DetectResult, DriveOptions, RunOptions
+from isar_gui.commands import DetectResult, DriveOptions
 
 
 def test_module_is_qt_and_isar_free():
@@ -31,44 +31,6 @@ def test_module_is_qt_and_isar_free():
 def test_build_init_command_basic():
     cmd = commands.build_init_command("py.exe", r"D:\beam\numors", r"D:\ws\exp1")
     assert cmd == ["py.exe", "-m", "isar", "init", r"D:\beam\numors", "--out", r"D:\ws\exp1"]
-
-
-def test_build_run_command_defaults_are_minimal():
-    """Engine-default options add no flags — the command stays clean."""
-    cmd = commands.build_run_command("py.exe", [r"D:\beam\numors"], r"D:\ws\exp1", RunOptions())
-    assert cmd == ["py.exe", "-m", "isar", "run", r"D:\beam\numors", "--workspace", r"D:\ws\exp1"]
-
-
-def test_build_run_command_multiple_data_paths_are_positional():
-    cmd = commands.build_run_command("py", ["a", "b", "c"], "ws", RunOptions())
-    assert cmd[:5] == ["py", "-m", "isar", "run", "a"]
-    assert cmd[3:7] == ["run", "a", "b", "c"]
-    assert cmd[-2:] == ["--workspace", "ws"]
-
-
-def test_build_run_command_maps_nondefault_options():
-    opts = RunOptions(llm=True, force=True, M=400, errors="bayes", detectors="ana5,ana7")
-    cmd = commands.build_run_command("py", ["d"], "ws", opts)
-    assert "--llm" in cmd
-    assert "--force" in cmd
-    assert cmd[cmd.index("--M") + 1] == "400"
-    assert cmd[cmd.index("--errors") + 1] == "bayes"
-    assert cmd[cmd.index("--detectors") + 1] == "ana5,ana7"
-
-
-def test_build_run_command_omits_default_M_and_errors():
-    opts = RunOptions(M=200, errors="fast")
-    cmd = commands.build_run_command("py", ["d"], "ws", opts)
-    assert "--M" not in cmd
-    assert "--errors" not in cmd
-    assert "--detectors" not in cmd
-
-
-def test_the_full_tier_is_sent_explicitly_now_that_fast_is_the_default():
-    cmd = commands.build_run_command("py", ["d"], "ws", RunOptions())
-    assert "--errors" not in cmd
-    cmd = commands.build_run_command("py", ["d"], "ws", RunOptions(errors="full"))
-    assert cmd[cmd.index("--errors") + 1] == "full"
 
 
 def test_default_workspace_dir_sibling_of_data():

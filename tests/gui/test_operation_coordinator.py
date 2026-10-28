@@ -1,4 +1,4 @@
-"""WorkspaceOperationCoordinator tests — one writer across ingest and analysis."""
+"""WorkspaceOperationCoordinator tests — one writer across ingest, export and campaigns."""
 from __future__ import annotations
 
 import pytest
@@ -9,7 +9,7 @@ from isar_gui import operation_coordinator
 import json
 from pathlib import Path
 
-from isar_gui.commands import DriveOptions, RunOptions
+from isar_gui.commands import DriveOptions
 from isar_gui.operation_coordinator import WorkspaceOperationCoordinator
 
 
@@ -119,11 +119,11 @@ def coordinator(monkeypatch):
     return WorkspaceOperationCoordinator("python", _Manager(), lambda _line: None)
 
 
-def test_ingest_batches_drain_before_queued_run(qtbot, coordinator):
-    """A run waits for every previously queued ingest, preventing concurrent session writers."""
+def test_ingest_batches_drain_before_queued_export(qtbot, coordinator):
+    """An export waits for every previously queued ingest, preventing concurrent session writers."""
     coordinator.request_ingest(["first.dat"])
     coordinator.request_ingest(["second.dat"])
-    coordinator.request_run(["analysis.dat"], RunOptions())
+    coordinator.request_export(r"D:\ws")
     ingest = _Ingest.instances[0]
     assert ingest.started == [["first.dat"]]
 
@@ -131,8 +131,8 @@ def test_ingest_batches_drain_before_queued_run(qtbot, coordinator):
     qtbot.waitUntil(lambda: ingest.started == [["first.dat"], ["second.dat"]])
     ingest.complete()
     qtbot.waitUntil(lambda: len(_Runner.instances) == 1)
-    assert "run" in _Runner.instances[0].argv
-    assert coordinator.is_running_analysis()
+    assert "export" in _Runner.instances[0].argv
+    assert coordinator.is_running_export()
 
 
 def test_stale_ingest_completion_never_reaches_the_new_workspace(qtbot, coordinator):
@@ -209,14 +209,6 @@ def test_pending_bootstrap_adopts_open_generation(qtbot, coordinator):
     assert reports == [report]
 
 
-def test_cancel_requests_graceful_run_termination(coordinator):
-    coordinator.request_run(["analysis.dat"], RunOptions())
-    runner = _Runner.instances[0]
-    assert coordinator.cancel() is True
-    assert runner.terminated is True
-    assert coordinator.queued_count() == 0
-
-
 # ---- campaigns (drive job kind) ----------------------------------------------
 def _drive_opts(**kw):
     return DriveOptions(goal="map the acoustic branch", **kw)
@@ -230,6 +222,20 @@ def test_request_drive_stamps_token_and_starts(coordinator):
     token = runner.argv[i + 1]
     assert len(token) == 32          # uuid4().hex, minted per invocation
     assert coordinator.is_running_campaign()
+
+
+def test_has_campaign_is_true_from_the_request_until_the_campaign_ends(qtbot, coordinator):
+    """The analysis queue holds its starts on this: a campaign queued behind an ingest counts too."""
+    assert coordinator.has_campaign() is False
+    coordinator.request_ingest(["first.dat"])
+    coordinator.request_drive(_drive_opts())
+    assert coordinator.is_running_campaign() is False and coordinator.has_campaign() is True   # queued
+    _Ingest.instances[0].complete()
+    qtbot.waitUntil(coordinator.is_running_campaign)
+    assert coordinator.has_campaign() is True
+    _Runner.instances[0].complete(0)
+    qtbot.waitUntil(lambda: not coordinator.is_busy())
+    assert coordinator.has_campaign() is False
 
 
 def test_request_drive_allowed_in_pending_refused_in_none(coordinator):
@@ -290,10 +296,10 @@ def test_adopt_drive_binding_refusals(coordinator):
     assert coordinator._active.generation == 7
 
 
-def test_drive_gates_run_and_ingest_until_finished(qtbot, coordinator):
+def test_drive_gates_export_and_ingest_until_finished(qtbot, coordinator):
     coordinator.request_drive(_drive_opts())
     coordinator.request_ingest(["late.dat"])
-    coordinator.request_run(["analysis.dat"], RunOptions())
+    coordinator.request_export(r"D:\ws")
     assert coordinator.queued_count() == 2
     ingest = _Ingest.instances[0]
     assert ingest.started == []                       # everything waits behind the campaign
@@ -325,7 +331,7 @@ def test_drive_stop_writes_control_file_to_captured_root(qtbot, coordinator, tmp
 
 
 def test_drive_stop_refused_for_non_drive_jobs(coordinator):
-    coordinator.request_run(["analysis.dat"], RunOptions())
+    coordinator.request_export(r"D:\ws")
     assert coordinator.request_drive_stop() is False
 
 

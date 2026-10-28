@@ -38,7 +38,7 @@ def test_both_pages_open_in_one_reused_non_modal_window(qtbot):
     win = w._help_window
     assert win.isVisible() and not win.isModal() and win.page == help_window.GUIDE
     guide = win.text()
-    for key in ("Drop data files or a folder here", "Choose curves folder…", "Run analysis…", "Needs attention",
+    for key in ("Drop data files or a folder here", "Choose curves folder…", "Fast-pass all ready", "Needs attention",
                 "Fast pass", "Export results…"):
         assert key in guide, key
     actions["What the status words mean"].trigger()
@@ -58,8 +58,10 @@ def test_the_guide_names_only_labels_the_window_shows(qtbot):
     w = _win(qtbot)
     shown = {b.text() for b in w.findChildren(QPushButton)} | {b.full_text() for b in w.findChildren(QPushButton)
                                                                 if hasattr(b, "full_text")}
-    for label in ("Add data files…", "Add data folder…", "Choose curves folder…", "Run analysis…", "Open inspector"):
+    for label in ("Add data files…", "Add data folder…", "Choose curves folder…", "Open inspector"):
         assert label in shown, label
+    # the entry point's label carries a count, so it is matched by its words
+    assert any(text.startswith("Fast-pass all ready") for text in shown)
 
 
 def test_a_missing_guide_file_is_said_on_the_page_not_swallowed(qtbot, monkeypatch, tmp_path, caplog):

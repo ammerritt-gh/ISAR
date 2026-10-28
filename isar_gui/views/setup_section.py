@@ -41,8 +41,9 @@ _SOURCE_WORDS = {"discovered": "found beside the data", "user": "chosen by you"}
 _LIST_ROWS = 6                  # an opened list shows this many rows, then scrolls
 _WARN = f"color: {TONE_COLOR[Tone.WARN]};"
 _QUIET = "color: #6b7280;"
-RUN_TEXT = "Run analysis…"
-RUN_TIP = "Fit every spectrum that is ready; the others stay held until what they need is added."
+RUN_TEXT = "Fast-pass all ready"
+RUN_TIP = ("Add a fast pass for every ready analyzer file that has no current fast pass. They join the fast queue "
+           "in the Processing panel and start as cores free up; a number in brackets is how many would be added now.")
 
 
 def _n(count: int, one: str, many: str) -> str:
@@ -102,9 +103,35 @@ class _Line(ElidedLabel):
         self.setVisible(bool(text))
 
 
+class _RunButton(ElidedButton):
+    """*Fast-pass all ready (N)*: when the row is short the count in brackets goes before the words are cut, and
+    the button beside it shrinks before the words do."""
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setMinimumWidth(self.fontMetrics().horizontalAdvance(RUN_TEXT) + self._PAD)
+
+    def _show(self) -> None:
+        room = max(self.width() - self._PAD, 1)
+        text = self._full
+        if self.fontMetrics().horizontalAdvance(text) > room:
+            text = RUN_TEXT
+        self.setText(self.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, room))
+
+    def set_full_text(self, text: str) -> None:
+        self._full = text
+        self.setAccessibleName(text)
+        self._show()
+        self.updateGeometry()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        QPushButton.resizeEvent(self, event)
+        self._show()
+
+
 class SetupSection(QWidget):
     locate_requested = Signal()
-    run_requested = Signal()            # "Run analysis…" -> MainWindow.start_analysis (the button holds no logic)
+    run_requested = Signal()            # "Fast-pass all ready (N)" -> MainWindow.start_analysis (the button holds no logic)
 
     def __init__(self, intake, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -137,7 +164,7 @@ class SetupSection(QWidget):
         self._locate.setObjectName("setup_locate")
         self._locate.setToolTip(LOCATE_TIP)
         self._locate.clicked.connect(self.locate_requested)
-        self._run = QPushButton(RUN_TEXT, self)
+        self._run = _RunButton(RUN_TEXT, self)
         self._run.setObjectName("setup_run")
         self._run.setToolTip(RUN_TIP)
         self._run.clicked.connect(self.run_requested)
@@ -163,7 +190,7 @@ class SetupSection(QWidget):
         self._grid.addWidget(self._summary, 0, 0)
         self._grid.addWidget(self._resolution, 1, 0)
         # Under the path, not beside it: the button names its object, and beside it the path got no room at 1108 px.
-        # Run analysis… leads the row, so it is on screen at every window size whatever the right panel does.
+        # Fast-pass all ready leads the row, so it is on screen at every window size whatever the right panel does.
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.setSpacing(6)
@@ -184,9 +211,11 @@ class SetupSection(QWidget):
         intake.changed.connect(self._render)
         self._render()
 
-    def set_run_state(self, enabled: bool, note: str, *, curves_only: bool = False) -> None:
-        """Run on or off, with the muted line beside it: the readiness count, or the reason it is off.
-        ``curves_only``: the reason is the missing resolution curves, which the amber line says."""
+    def set_run_state(self, enabled: bool, note: str, *, curves_only: bool = False, label: str = RUN_TEXT) -> None:
+        """The button on or off, with the muted line beside it: the readiness count, or the reason it is off.
+        ``label`` carries the count of analyzer files a press would add. ``curves_only``: the reason is the
+        missing resolution curves, which the amber line says."""
+        self._run.set_full_text(label)
         self._run.setEnabled(enabled)
         self._run.setToolTip(RUN_TIP if enabled else (note or RUN_TIP))
         self._run_note.set_line(note, note)

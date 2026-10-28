@@ -1,9 +1,9 @@
 """The right panel's Processing tab and the slim rail that opens and closes it.
 
-:class:`ProcessingPanel` holds the readiness line, today's route for fitting (the Run button, its run status and
-*Stop*, which the window-wiring unit replaces), and below them the analysis queue
-(:class:`~isar_gui.views.queue_panel.QueuePanel`), shown once the window hands the panel its controller. It
-only displays what it is handed and emits its two request signals; the window decides what they do.
+:class:`ProcessingPanel` holds the readiness line, the *Fast-pass all ready (N)* button (the window's one
+analysis entry point), the line for an ingest, export or campaign running in the window, and below them the
+analysis queue (:class:`~isar_gui.views.queue_panel.QueuePanel`), shown once the window hands the panel its
+controller. It only displays what it is handed and emits its one request signal; the window decides what it does.
 
 :class:`ProcessingRail` is the strip at the display's right edge. While the right panel is collapsed it reads
 "Processing ‹" and, when the queue has work, what is happening and what needs a look ("Processing ‹ · 5 running
@@ -13,24 +13,25 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPalette
-from PySide6.QtWidgets import QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from isar_gui.theme import TONE_COLOR, Tone
+from isar_gui.views.elided_label import ElidedButton
 from isar_gui.views.queue_panel import QueuePanel, rail_status
+from isar_gui.views.setup_section import RUN_TEXT, RUN_TIP
 
-_STOP_TOOLTIP = "Asks the running analysis to stop; spectra already stored stay"
 RAIL_WIDTH = 24
 
 
 class ProcessingPanel(QWidget):
-    run_requested = Signal()            # "Run analysis…"
-    stop_requested = Signal()           # "Stop"
+    run_requested = Signal()            # "Fast-pass all ready (N)" -> MainWindow.start_analysis
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("processing_panel")
-        self._run = QPushButton("Run analysis…", self)
+        self._run = ElidedButton(RUN_TEXT, self)
         self._run.setObjectName("processing_run")
+        self._run.setToolTip(RUN_TIP)
         self._run.setDefault(True)
         self._run.clicked.connect(self.run_requested)
         self._reason = QLabel("", self)
@@ -38,17 +39,8 @@ class ProcessingPanel(QWidget):
         self._reason.setWordWrap(True)
         self._activity = QLabel("", self)
         self._activity.setObjectName("processing_activity")
+        self._activity.setToolTip("What ISAR is doing in this experiment besides the analysis queue below.")
         self._activity.setWordWrap(True)
-        self._last_run = QLabel("", self)
-        self._last_run.setObjectName("processing_last_run")
-        self._last_run.setWordWrap(True)
-        self._stop = QPushButton("Stop analysis", self)
-        self._stop.setObjectName("processing_stop")
-        self._stop.setToolTip(_STOP_TOOLTIP)
-        self._stop.clicked.connect(self.stop_requested)
-        self._stop_reason = QLabel("No analysis is running.", self)       # why Stop is off, as text
-        self._stop_reason.setObjectName("processing_stop_reason")
-        self._stop_reason.setWordWrap(True)
         self._queue = QueuePanel(self)
         self._queue.hide()                  # shown once the window hands the panel a controller
 
@@ -58,16 +50,13 @@ class ProcessingPanel(QWidget):
         layout.addWidget(self._run)
         layout.addWidget(self._reason)
         layout.addWidget(self._activity)
-        layout.addWidget(self._last_run)
-        layout.addWidget(self._stop)
-        layout.addWidget(self._stop_reason)
         layout.addWidget(self._queue)
         layout.addStretch(1)
-        self.set_state(can_run=False, run_reason="need an experiment", analysis_running=False,
-                       activity="", last_run=None)
+        self.set_run_state(False, RUN_TEXT, "Open or create an experiment first.")
+        self.set_activity("")
 
     def set_readiness_widget(self, widget: QWidget) -> None:
-        """Place the readiness line directly above the Run button."""
+        """Place the readiness line directly above the *Fast-pass all ready* button."""
         self._layout.insertWidget(self._layout.indexOf(self._run), widget)
 
     def set_controller(self, controller) -> None:
@@ -83,26 +72,14 @@ class ProcessingPanel(QWidget):
         self._activity.setText(text)
         self._activity.setVisible(bool(text))
 
-    def set_state(self, *, can_run: bool, run_reason: str, analysis_running: bool,
-                  activity: str, last_run: tuple[str, str] | None) -> None:
-        """``activity``: today's operation text ("Analysing + 1 queued", "" when idle);
-        ``last_run``: (text, colour) of today's run status label, or ``None``."""
-        self._run.setEnabled(can_run)
-        self._run.setToolTip("" if can_run else run_reason)
-        self._reason.setText("" if can_run else run_reason)
-        self._reason.setVisible(not can_run and bool(run_reason))
-        self._activity.setText(activity)
-        self._activity.setVisible(bool(activity))
-        if last_run is None:
-            self._last_run.setText("")
-            self._last_run.setStyleSheet("")
-        else:
-            text, colour = last_run
-            self._last_run.setText(text)
-            self._last_run.setStyleSheet(f"color: {colour};")
-        self._last_run.setVisible(last_run is not None)
-        self._stop.setEnabled(analysis_running)
-        self._stop_reason.setVisible(not analysis_running)
+    def set_run_state(self, enabled: bool, label: str, reason: str) -> None:
+        """The *Fast-pass all ready (N)* button: ``label`` carries the count; a greyed button says why, beside it
+        and on hover."""
+        self._run.set_full_text(label)
+        self._run.setEnabled(enabled)
+        self._run.setToolTip(RUN_TIP if enabled else (reason or RUN_TIP))
+        self._reason.setText("" if enabled else reason)
+        self._reason.setVisible(not enabled and bool(reason))
 
 
 class ProcessingRail(QWidget):          # the slim right-edge strip; paints vertical text

@@ -260,13 +260,12 @@ def test_rename_is_refused_when_the_experiment_holds_its_own_source_files(qtbot,
     assert root.is_dir() and w._wsm.root() == root and w.windowTitle() == f"ISAR — {root.name}"
 
 
-def test_rename_of_a_watched_experiment_moves_folder_binding_recents_and_run(
+def test_rename_of_a_watched_experiment_moves_folder_binding_and_recents(
         qtbot, monkeypatch, make_ws):
     other = make_ws(rows=_ROWS)
     ws = _ready(make_ws)
     old = Path(ws.root)
-    session = Session(recent_workspaces=[str(other), str(old)],
-                      view_state={"run": {str(old): {"data": ["D:/beam"], "opts": {}}}})
+    session = Session(recent_workspaces=[str(other), str(old)])
     w = _window(qtbot, ws, session, watch=True,
                 watch_kwargs={"backend": _backend(), "poll_interval_s": 0.05, "debounce_ms": 50})
     assert w._bridge is not None
@@ -280,8 +279,6 @@ def test_rename_of_a_watched_experiment_moves_folder_binding_recents_and_run(
     assert w.experiment_strip._name.full_text() == "leTacon run 2"
     assert w._bridge is not None and str(w._bridge._ws.root) == str(new)   # watching the new root
     assert session.recent_workspaces == [str(other), str(new)]
-    assert set(session.view_state["run"]) == {str(new)}
-    assert w._rerun_action.isEnabled()                   # the remembered run followed the folder
     assert f"Renamed experiment {old.name} to leTacon run 2 ({new})" in _log_text(w)
 
 
@@ -518,7 +515,6 @@ def test_the_availability_rule_on_the_real_output_bar(qtbot, make_ws):
     assert w.load_workspace(make_ws(rows=_ROWS))
     assert shown() == (True, True, "")
     for kind, reason in (("ingest", "files are being read into the experiment"),
-                         ("run", "analysis is writing to the experiment"),
                          ("export", "an export is running")):
         w._on_operation_activity_changed({**_IDLE, "kind": kind})
         assert shown() == (False, False, reason), kind
@@ -529,7 +525,7 @@ def test_the_availability_rule_on_the_real_output_bar(qtbot, make_ws):
 
 def test_each_activity_kind_has_its_own_word(qtbot, make_ws):
     w = _window(qtbot, _ready(make_ws))
-    for kind, word in (("ingest", "Ingesting"), ("run", "Analysing"), ("export", "Exporting"),
+    for kind, word in (("ingest", "Ingesting"), ("export", "Exporting"),
                        ("drive", "Campaign running"), ("compile", "Compiling campaign")):
         w._on_operation_activity_changed({**_IDLE, "kind": kind, "queued": 1})
         assert w._operation_status.text() == f"{word} + 1 queued", kind
@@ -537,16 +533,6 @@ def test_each_activity_kind_has_its_own_word(qtbot, make_ws):
     assert w._operation_status.text() == "Cancelling"
     w._on_operation_activity_changed(_IDLE)
     assert w._operation_status.text() == ""
-
-
-def test_opening_another_experiment_clears_the_last_run_status(qtbot, make_ws):
-    w = _window(qtbot, _ready(make_ws))
-    w._set_run_status("run finished OK (12:00:00)", "#2e7d32")
-    assert w.processing_panel._last_run.text() == "run finished OK (12:00:00)"
-    assert w.load_workspace(make_ws(rows=_ROWS))
-    assert w._last_run_status is None
-    assert w._run_status.text() == "" and w.processing_panel._last_run.text() == ""
-    assert w.processing_panel._last_run.isHidden()
 
 
 def test_last_written_on_bind_is_the_session_files_time(qtbot, make_ws):

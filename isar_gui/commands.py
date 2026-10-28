@@ -1,7 +1,7 @@
 """Qt-free, ISAR-free command assembly for the operator on-ramp.
 
-The Files-dock bootstrap flow (drop data → ``isar init`` + ``isar ingest``) and the Run action
-*shell the same engine* (``isar init`` / ``isar run`` / ``isar ingest`` / ``isar detect``) rather than
+The Files-dock bootstrap flow (drop data → ``isar init`` + ``isar ingest``) and the Campaign dock
+*shell the same engine* (``isar init`` / ``isar drive`` / ``isar ingest`` / ``isar detect``) rather than
 import it — the GUI is a thin front door onto the ``isar`` CLI, and the G16 import contract forbids
 ``isar_gui`` from importing engine internals (cli, parsers, …). So this module builds argument vectors
 and parses the JSON the engine prints; it imports neither Qt nor ``isar``, which keeps it trivially
@@ -24,18 +24,6 @@ from pathlib import Path
 # A Python exception's final traceback line: "ValueError: bad", "isar.foo.MyError: x", etc. Matches a
 # dotted-qualified type name ending in Error/Exception, followed by an optional ": message".
 _EXC_LINE = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception))\b(.*)$")
-
-
-@dataclass(frozen=True)
-class RunOptions:
-    """The subset of ``isar run`` knobs the on-ramp exposes. Defaults mirror the CLI defaults, so a
-    default ``RunOptions`` adds no flags to the command (``build_run_command`` stays minimal)."""
-
-    llm: bool = False
-    force: bool = False
-    M: int = 200
-    errors: str = "fast"          # fast | full | cheap | bayes (the CLI default; omitted from the command)
-    detectors: str | None = None  # comma-separated detector ids, or None for the card default
 
 
 @dataclass(frozen=True)
@@ -93,26 +81,6 @@ def build_detect_command(python: str, data: str) -> list[str]:
     """The argv for ``isar detect <data> --json``. Retained for a planned Files-dock detect-preview
     (no production caller today — see :class:`DetectResult`)."""
     return [python, "-m", "isar", "detect", str(data), "--json"]
-
-
-def build_run_command(python: str, data_paths, workspace: str, opts: RunOptions) -> list[str]:
-    """The argv for ``isar run <data>... --workspace <ws> [opts]``.
-
-    Only non-default options add flags, so the command stays legible in the log dock. Data paths are
-    positional (one or more); ``--workspace`` is always present (the engine requires it).
-    """
-    cmd = [python, "-m", "isar", "run", *[str(p) for p in data_paths], "--workspace", str(workspace)]
-    if opts.llm:
-        cmd.append("--llm")
-    if opts.force:
-        cmd.append("--force")
-    if opts.M != 200:
-        cmd += ["--M", str(opts.M)]
-    if opts.errors != "fast":
-        cmd += ["--errors", opts.errors]
-    if opts.detectors:
-        cmd += ["--detectors", opts.detectors]
-    return cmd
 
 
 @dataclass(frozen=True)

@@ -1,10 +1,10 @@
 """Single-writer coordinator for GUI-owned workspace operations.
 
-``isar ingest`` and ``isar run`` both rewrite the machine-owned workspace state, and ``isar export``
+``isar ingest`` and ``isar drive`` both rewrite the machine-owned workspace state, and ``isar export``
 reads it.  This QObject is
-therefore the only GUI component allowed to start any of them.  It applies an intentionally
-conservative FIFO policy: queued/active ingest work runs before analysis; files discovered during a
-run wait until it finishes.  Each job is pinned to both a workspace root and a WorkspaceManager
+therefore the only GUI component allowed to start any of them (analysis is the queue controller's, not
+this class's).  It applies an intentionally conservative FIFO policy: files discovered during a
+campaign wait until it finishes.  Each job is pinned to both a workspace root and a WorkspaceManager
 generation, so a late callback cannot refresh a different binding.
 """
 from __future__ import annotations
@@ -22,8 +22,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from isar_gui.commands import (
-    DriveOptions, RunOptions, build_compile_command, build_drive_command, build_export_command,
-    build_run_command)
+    DriveOptions, build_compile_command, build_drive_command, build_export_command)
 from isar_gui.ingest_controller import IngestController
 from isar_gui.process import ProcessRunner
 
@@ -48,9 +47,9 @@ def _same_root(a, b) -> bool:
 
 
 class WorkspaceOperationCoordinator(QObject):
-    """Serialize GUI initiated init/ingest/run work for one workspace binding.
+    """Serialize GUI initiated init/ingest/drive/export work for one workspace binding.
 
-    Consumers should use ``request_ingest`` and ``request_run`` rather than starting a process
+    Consumers should use ``request_ingest`` and ``request_drive`` rather than starting a process
     directly.  ``activity_changed`` carries ``kind``, ``queued`` and ``cancelling`` for a compact
     operator-facing progress indicator.
     """
@@ -59,8 +58,6 @@ class WorkspaceOperationCoordinator(QObject):
     ingest_started = Signal(list)
     ingest_finished = Signal(object)
     ingest_failed = Signal(int, str)
-    run_started = Signal()
-    run_finished = Signal(int, bool)  # exit code, callback is still for the live workspace
     drive_started = Signal()
     drive_finished = Signal(int, bool)  # exit code (4 = stopped by operator), live workspace
     drive_compiled = Signal(object, str)  # campaign program dict, program path
@@ -82,7 +79,6 @@ class WorkspaceOperationCoordinator(QObject):
         self._ingest.bootstrap_bound.connect(self._adopt_bootstrap_binding)
         self._queue: list[_Job] = []
         self._active: _Job | None = None
-        self._run_runner: ProcessRunner | None = None
         self._drive_runner: ProcessRunner | None = None
         self._compile_runner: ProcessRunner | None = None
         self._export_runner: ProcessRunner | None = None
@@ -99,8 +95,9 @@ class WorkspaceOperationCoordinator(QObject):
     def is_busy(self) -> bool:
         return self._active is not None or bool(self._queue)
 
-    def is_running_analysis(self) -> bool:
-        return self._active is not None and self._active.kind == "run"
+    def has_campaign(self) -> bool:
+        """A campaign is queued or running (the analysis queue holds its starts while one is)."""
+        return self.is_running_campaign() or any(job.kind == "drive" for job in self._queue)
 
     def is_running_campaign(self) -> bool:
         return self._active is not None and self._active.kind == "drive"
@@ -143,16 +140,6 @@ class WorkspaceOperationCoordinator(QObject):
             self._log("export refused: no ready experiment at that folder")
             return False
         self._queue.append(_Job("export", None, str(root), self._wsm.generation()))
-        self._emit_activity()
-        self._start_next()
-        return True
-
-    def request_run(self, data_paths, opts: RunOptions, *, env: dict | None = None) -> bool:
-        root = self._wsm.root()
-        if root is None or self._wsm.state() != "ready":
-            return False
-        self._queue.append(_Job("run", (list(data_paths), opts, dict(env or {})), str(root),
-                                self._wsm.generation()))
         self._emit_activity()
         self._start_next()
         return True
@@ -264,9 +251,7 @@ class WorkspaceOperationCoordinator(QObject):
                 self._drive_runner.kill_tree()
             self._emit_activity()
             return True
-        if self._active.kind == "run":
-            runner = self._run_runner
-        elif self._active.kind == "compile":
+        if self._active.kind == "compile":
             runner = self._compile_runner
         elif self._active.kind == "export":
             runner = self._export_runner
@@ -303,23 +288,8 @@ class WorkspaceOperationCoordinator(QObject):
                 self._start_compile(job)
             elif job.kind == "export":
                 self._start_export(job)
-            else:
-                self._start_run(job)
             return
         self._emit_activity()
-
-    def _start_run(self, job: _Job) -> None:
-        data_paths, opts, env = job.payload
-        assert job.root is not None
-        cmd = build_run_command(self._python, data_paths, job.root, opts)
-        log_path = Path(job.root) / "report" / "gui-runs" / f"run-{datetime.now():%Y%m%d-%H%M%S}.log"
-        self._log("$ " + " ".join(cmd))
-        runner = ProcessRunner(self)
-        runner.line.connect(self._log)
-        runner.finished.connect(self._on_run_finished)
-        self._run_runner = runner
-        runner.start(cmd, log_path=str(log_path), env=env)
-        self.run_started.emit()
 
     def _start_export(self, job: _Job) -> None:
         assert job.root is not None
@@ -463,22 +433,7 @@ class WorkspaceOperationCoordinator(QObject):
             self._log("stale ingest completion ignored — workspace changed")
         self._finish_active()
 
-    # ---- run relay / cancellation ---------------------------------------
-    def _on_run_finished(self, code: int) -> None:
-        active = self._active
-        live = active is not None and active.kind == "run" and self._job_is_current(active)
-        runner = self._run_runner
-        self._run_runner = None
-        if runner is not None:
-            try:
-                runner.line.disconnect(self._log)
-                runner.finished.disconnect(self._on_run_finished)
-            except (RuntimeError, TypeError) as exc:
-                log.debug("run runner signals already detached: %s", exc)
-            runner.deleteLater()
-        self.run_finished.emit(int(code), bool(live))
-        self._finish_active()
-
+    # ---- campaign / export relay and cancellation ------------------------
     def _on_drive_finished(self, code: int) -> None:
         active = self._active
         live = active is not None and active.kind == "drive" and self._job_is_current(active)
@@ -553,9 +508,7 @@ class WorkspaceOperationCoordinator(QObject):
                 self._log("campaign did not stop after 3 seconds; killing its process tree")
                 self._drive_runner.kill_tree()
             return
-        if self._active.kind == "run":
-            runner = self._run_runner
-        elif self._active.kind == "compile":
+        if self._active.kind == "compile":
             runner = self._compile_runner
         elif self._active.kind == "export":
             runner = self._export_runner

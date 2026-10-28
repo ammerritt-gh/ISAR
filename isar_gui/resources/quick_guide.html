@@ -18,10 +18,14 @@ experiment. It also looks for a folder named <i>rf</i> next to your data.</p>
 the value (a temperature, for example) and press <b>Save my value</b>. A value you enter is used instead of the
 file's; the files are never changed. Without a value ISAR can still fit, on a stated stand-in.</p>
 
-<h3>4. Run the analysis</h3>
-<p>Press <b>Run analysis…</b> in the setup area, beside the count of spectra that are ready. A dialog opens with
-the folder your data were read from already filled in; press <b>Run</b>. Spectra that are not ready stay
-<i>held</i> and are tried again on the next run. <b>Stop analysis</b> in the Processing panel stops a run; spectra
+<h3>4. Queue the analysis</h3>
+<p>Press <b>Fast-pass all ready</b> in the setup area, beside the count of analyzers that are ready. Every ready
+analyzer file without a current fast pass joins the fast queue in the Processing panel, and ISAR works through
+the queue on the cores you gave it (<b>Config ▸ Cores for analysis…</b>). With <b>Fast-pass new scans as they
+arrive</b> on, newly read files join by themselves. To fit one analyzer more thoroughly, select it in the scan list
+and press <b>Deep pass</b>; a deep pass is only ever started by you. <b>Pause</b> starts nothing new until you press
+<b>Resume</b>; the stop button beside a running analyzer stops that one and ✕ takes a waiting one out. An analyzer
+ISAR cannot fit yet is listed as <i>held</i> with the reason; add it again once what it needs exists. Results
 already stored stay.</p>
 
 <h3>5. Read the scan list</h3>

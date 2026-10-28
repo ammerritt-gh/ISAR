@@ -36,7 +36,7 @@ _SOURCE = {"header": "from the header", "trailer": "from the trailer", "sidecar"
 FIX_PHRASE = {
     "enter_value": "tick the scan sets, then enter the value",
     "locate_folder": "choose the folder that holds the resolution curves",
-    "start_analysis": "run the analysis",
+    "start_analysis": "press Fast-pass all ready",
     "reverse_declaration": "tick the analyzers, then use them again",
     "accept_counts": "tick the analyzers, then accept their counts as they are",
     "import_again": "add the data files again",

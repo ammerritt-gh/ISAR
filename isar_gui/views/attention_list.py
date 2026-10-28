@@ -29,7 +29,7 @@ from isar_gui.plain_words import (STAND_IN_MARK, STAND_IN_TIP, affects, fix_sent
                                   stand_in)
 from isar_gui.theme import TONE_COLOR, Tone
 from isar_gui.views.elided_label import ElidedButton, ElidedLabel
-from isar_gui.views.setup_section import LOCATE_LONG, LOCATE_TIP
+from isar_gui.views.setup_section import LOCATE_LONG, LOCATE_TIP, RUN_TEXT, RUN_TIP
 from isar_gui.views.value_entry import ValueEntry
 
 USER_TEMPERATURE = "user-values:temperature"
@@ -44,7 +44,7 @@ _FIX_BUTTONS = {
     "locate_folder": (LOCATE_LONG, LOCATE_TIP, "locate_requested"),
     "import_again": ("Add data…", "Read more data files into this experiment. The originals stay where they "
                                    "are and must stay available.", "add_data_requested"),
-    "start_analysis": ("Run analysis…", "Open the Run dialog to analyse this experiment's data.", "run_requested"),
+    "start_analysis": (RUN_TEXT, RUN_TIP, "run_requested"),
 }
 _FOOT_BUTTONS = {"value": [("save", "Save my value")], "dead": [("dead", "Leave out analyzer")],
                  "declared": [("in_use", "Use analyzer again")], "user": [("file_value", "Use the file's value")],
@@ -402,7 +402,7 @@ class AttentionList(QWidget):
     expanded_changed = Signal(bool)
     locate_requested = Signal()         # "Choose resolution-curve folder…" -> the window's locate route
     add_data_requested = Signal()       # "Add data…" -> the files strip's add-files route
-    run_requested = Signal()            # "Run analysis…" -> the window's run route
+    run_requested = Signal()            # "Fast-pass all ready" -> the window's analysis entry point
 
     def __init__(self, intake, labels: Callable[[str], str] | None = None, parent: QWidget | None = None) -> None:
         """``labels``: scan key -> the scan set's label (the window passes the scan list's, read when a row is
