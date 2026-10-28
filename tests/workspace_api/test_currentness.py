@@ -101,6 +101,24 @@ def test_a_curve_library_changed_since_the_calibration_makes_the_unit_not_curren
     _agrees(ws, cur, [unit])
 
 
+def test_a_declared_slit_result_follows_its_own_curve_not_the_library(tmp_path):
+    ws, scan = _ingested(tmp_path, slit=("40", "40"), library_skip=[("a05", fx.TRUE_SLIT)])
+    unit = f"{scan}:a04"
+    _saved(ws, unit)
+    fx.write_library(ws.root / "rf", settings={fx.TRUE_SLIT: 1.3}, analyzers=("a05",))   # another analyzer's curve
+    cur = current_passes(ws.root, [unit])
+    assert cur == {unit: FAST}
+    _agrees(ws, cur, [unit])
+    own = ws.root / "rf" / "sarf_t_s2_40_40_a04"                            # this analyzer's own curve, edited
+    text = own.read_text(encoding="utf-8")
+    assert "# center of FWHM at zero\n" in text
+    own.write_text(text.replace("# center of FWHM at zero\n", "# center of FWHM at zero, edited\n"),
+                   encoding="utf-8", newline="\n")
+    cur = current_passes(ws.root, [unit])
+    assert cur == {unit: NONE}
+    _agrees(ws, cur, [unit])
+
+
 def test_the_newer_inputs_calibration_is_kept_when_the_older_item_saves_first(tmp_path):
     """Two analyzers of one scan; the slit is corrected between their starts; the older one saves first."""
     ws, scan = _ingested(tmp_path)

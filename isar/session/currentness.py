@@ -69,11 +69,24 @@ def judge(prev, det: str, now: UnitNow | None, request) -> frozenset[str]:
     return frozenset({"fast"})
 
 
-def stored_now(prev, det: str, *, g, runcal, row: dict | None, scan_inputs, library_fp: str | None) -> UnitNow | None:
+def _state_stands(state: dict, det: str, curves_now) -> bool:
+    """Whether the stored scan calibration is, for ``det``'s fit, what a start would compute from the curves
+    now (``curves_now``, a LoadedCurves; None or unusable: not judged): the same library, or for a declared
+    slit the same folder and ``det``'s own curve file, all ``calibration_fingerprint`` and the inputs hash
+    read of the curves there (another analyzer's curve changes nothing)."""
+    if curves_now is None or curves_now.fingerprint is None or state.get("library") == curves_now.fingerprint:
+        return True
+    curve = ((state.get("detectors") or {}).get(det) or {}).get("curve")       # None when held
+    folder = None if curves_now.folder is None else str(curves_now.folder)
+    return (state.get("setting_basis") == "declared" and curve is not None and state.get("folder") == folder
+            and curves_now.identity.get((det, state.get("setting"))) == curve)
+
+
+def stored_now(prev, det: str, *, g, runcal, row: dict | None, scan_inputs, curves_now) -> UnitNow | None:
     """:class:`UnitNow` from what is stored, without parsing the data file: the import row's data revision
     (BL43; else the ledger's own content hash), the stamped q and T in the guidelines hash, the stored scan
     calibration. ``row``/``scan_inputs`` are the scan's import row and inputs (BL43), else None. None when
-    the stored scan calibration was made against another curve library than ``library_fp``."""
+    the stored scan calibration no longer stands for ``det`` against the curves now (``curves_now``)."""
     if prev is None:
         return None
     from isar.intake import inputs
@@ -82,7 +95,7 @@ def stored_now(prev, det: str, *, g, runcal, row: dict | None, scan_inputs, libr
     exp = prev.scan_id.rsplit(":", 2)[0]
     scan = prev.scan_number
     state = runcal.tabulated.get(f"{exp}:{scan}") if runcal.method == "tabulated_elastic" else None
-    if library_fp is not None and state is not None and state.get("library") != library_fp:
+    if state is not None and not _state_stands(state, det, curves_now):
         return None
     prov = prev.provenance or {}
     T = prov.get("T")
@@ -116,18 +129,13 @@ def current_passes(workspace_root: Path | str, unit_keys: Iterable[str] | None =
     runcal = calibrations.calibration_view(card)
     request = queue_deep_request()
     bl43 = intake_scans.applies(card)
-    rows, index, library_fp = {}, None, None
+    rows, index, curves_now = {}, None, None
     if bl43:
         rows = intake_scans.read_scans(root)
         read = store.read_all(root, store.ENTRIES)
         index = inputs.index_entries(read.entries, lines=read.lines)
         folder, pattern, _source = curves.resolution_location(card, root)
-        if folder is not None and pattern:
-            from isar.parsers import sarf
-            try:
-                library_fp = sarf.fingerprint(folder, pattern)
-            except (OSError, ValueError) as exc:
-                log.warning("current_passes: the curve library at %s is unreadable (%s)", folder, exc)
+        curves_now = curves.load_curves(folder, pattern)          # logs why when unusable; then not judged
     inputs_of: dict = {}
     out: dict[str, frozenset[str]] = {}
     for key in keys:
@@ -144,7 +152,7 @@ def current_passes(workspace_root: Path | str, unit_keys: Iterable[str] | None =
                 out[key] = frozenset()
                 continue
             si = inputs_of.get(scan) or inputs_of.setdefault(scan, inputs.scan_inputs(row, index))
-        now = stored_now(prev, det, g=g, runcal=runcal, row=row, scan_inputs=si, library_fp=library_fp)
+        now = stored_now(prev, det, g=g, runcal=runcal, row=row, scan_inputs=si, curves_now=curves_now)
         out[key] = judge(prev, det, now, request)
     return out
 
