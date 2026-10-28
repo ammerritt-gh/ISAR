@@ -264,6 +264,11 @@ def test_fixture_deep_labels_trust_and_refusal_are_preserved(scans_view_ws_reado
     trusted = bundles[DEEP_TRUSTED].summaries["deep"]
     assert trusted.trusted is True and trusted.label == "1 DHO"
     assert trusted.modes[0].energy.kind == "minos"
+    assert trusted.modes[0].energy.value == 4.0
+    assert trusted.modes[0].energy.lo == 3.8
+    assert trusted.modes[0].energy.hi == 4.25
+    assert trusted.modes[0].linewidth.lo == pytest.approx(0.3)
+    assert trusted.modes[0].linewidth.hi == pytest.approx(0.55)
     refused = bundles[DEEP_REFUSED]
     assert refused.summaries["deep"].state == "refused"
     assert refused.summaries["deep"].present

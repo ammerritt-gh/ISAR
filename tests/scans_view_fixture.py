@@ -131,8 +131,9 @@ def _deep_record(key: str) -> dict | None:
     minos = {}
     for prefix in ("phonon", "phonon2"):
         if f"{prefix}.omega0" in params:
-            minos[f"{prefix}.omega0"] = [-0.2, 0.25, True]
-            minos[f"{prefix}.Gamma"] = [-0.1, 0.15, True]
+            energy, gamma = params[f"{prefix}.omega0"], params[f"{prefix}.Gamma"]
+            minos[f"{prefix}.omega0"] = [energy - 0.2, energy + 0.25, True]
+            minos[f"{prefix}.Gamma"] = [max(0.0, gamma - 0.1), gamma + 0.15, True]
     trusted = key != ONE_MODE
     result = {"state": "resolved", "trusted": trusted,
             "chosen": {"label": DEEP_LABELS[key], "params": params,
