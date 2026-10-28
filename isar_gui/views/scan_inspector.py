@@ -170,7 +170,8 @@ def measured_text(value: Measured) -> tuple[str, str]:
 def _finite_number(value) -> float | None:
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        log.debug("scan inspector: fit value is not numeric (%r): %s", value, exc)
         return None
     return number if math.isfinite(number) else None
 
