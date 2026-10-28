@@ -302,7 +302,7 @@ class QueuePanel(QWidget):
                 lost = (f"{item.analyzer} has been in its deep pass for "
                         f"{max(0, int((_now() - item.started_at) // 60))} min." if item.started_at is not None
                         else f"{item.analyzer} is in its deep pass.")
-                tail = "; its fast-pass result stays."
+                tail = "; its fast-pass result stays once it has been saved."
             text = f"{lost} Stopping now discards that work{tail}"
             if not _confirm_stop(self, "Stop the deep pass?", text, f"Stop {item.analyzer}"):
                 return
@@ -552,7 +552,7 @@ class QueuePanel(QWidget):
     def _stop_button(self, item, what: str):
         button = _button("■ Stop", (f"Stops {what} now and frees its cores; other items carry on. "
                                          + ("It asks first, because the work done so far is discarded. Its fast-pass "
-                                            "result stays." if item.pass_kind == "deep" else
+                                            "result stays once it has been saved." if item.pass_kind == "deep" else
                                             "Nothing already saved is lost; press the add button to run it again.")),
                          "queue_item_stop", tool=True)
         button.setAccessibleName(f"Stop {item.analyzer}'s {item.pass_kind} pass")

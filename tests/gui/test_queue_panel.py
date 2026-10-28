@@ -234,9 +234,10 @@ def test_stopping_a_deep_pass_asks_first_and_naming_the_work_lost(qtbot, asked):
                 progress=_p("deep", "sampling", 1, 9, 1, 3))
     stub = Stub(qview(deep=[group([deep])]))
     p = panel(qtbot, stub)
+    assert "fast-pass result stays once it has been saved." in button(p, "queue_item_stop").toolTip()
     button(p, "queue_item_stop").click()
     assert log == [("a06 has been in its deep pass for 34 min. Stopping now discards that work; its fast-pass "
-                    "result stays.", "Stop a06")]
+                    "result stays once it has been saved.", "Stop a06")]
     assert stub.calls == []                                            # "Keep running": nothing sent
     asked(True)
     button(p, "queue_item_stop").click()
