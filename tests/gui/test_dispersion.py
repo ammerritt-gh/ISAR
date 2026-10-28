@@ -341,7 +341,8 @@ def test_mainwindow_registers_dispersion_dock_and_routes(qtbot, make_ws):
     with qtbot.waitSignal(w.inspector_vm.spec_changed, timeout=1000):
         w.dispersion_vm.activate_at(2.1, 5.0)
     assert not w.inspector_vm.is_empty
-    assert w.inspector_vm.state.main_spec is not None
+    assert w.inspector_vm.current_fit.scan_number == 2
+    assert w.inspector_vm.state.main_spec is None  # metadata bridge; Scan(s) owns the plot
 
 
 # ---- MVP-16 smoke (read-only) ------------------------------------------------

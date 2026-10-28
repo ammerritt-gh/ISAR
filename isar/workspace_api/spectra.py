@@ -204,6 +204,7 @@ class SpectraCache:
     def __init__(self, maxsize: int = CACHE_SIZE):
         self.maxsize = maxsize
         self._cache: OrderedDict[str, SpectrumBundle] = OrderedDict()
+        self._no_monitor: dict[tuple[str, str], tuple] = {}
 
     def _get(self, revision):
         bundle = self._cache.get(revision)
@@ -701,7 +702,7 @@ def _bundle(ws, row, qe, cache):
     if status == "absolute":
         shift = zero if zero is not None and zero_source is not None else 0.0
     elif (status == "needs_zero" and zero is not None
-          and zero_source in ("elastic_fit", "pipeline_zero")):
+          and zero_source in ("elastic_fit", "pipeline_zero", "interpolated")):
         shift = zero
     if shift is None:
         return _not_drawn_bundle(
@@ -765,11 +766,42 @@ def spectrum_bundles(ws, rows: Sequence[SpectrumRow | PooledRow], *,
     return tuple(out)
 
 
-def normalisation_reference(ws, keys: Iterable[str]) -> float | None:
+def _unit_file_stamp(ws, key):
+    """Cheap negative-cache identity; a new or replaced unit must be retried."""
+    from isar.session.unit_data import unit_data_paths_for_read
+
+    if not hasattr(ws, "_data_dir") or not hasattr(ws, "_split_unit_id"):
+        return None
+    identity = ws._split_unit_id(key)
+    if any(value is None for value in identity):
+        return None
+    stamps = []
+    for path in unit_data_paths_for_read(ws._data_dir, *identity):
+        try:
+            stat = path.stat()
+            stamps.append((str(path), stat.st_mtime_ns, stat.st_size))
+        except FileNotFoundError as exc:
+            _log.debug("normalisation unit not yet written: %s (%s)", path, exc)
+            stamps.append((str(path), None, None))
+        except OSError as exc:
+            _log.warning("normalisation unit stamp unavailable: %s (%s)", path, exc)
+            return None
+    return tuple(stamps)
+
+
+def normalisation_reference(ws, keys: Iterable[str], *, cache: SpectraCache | None = None) -> float | None:
     monitors = []
     for key in keys:
+        stamp = _unit_file_stamp(ws, key) if cache is not None else None
+        cache_key = (str(getattr(ws, "root", "")), key)
+        if stamp is not None and cache._no_monitor.get(cache_key) == stamp:
+            continue
+        if cache is not None:
+            cache._no_monitor.pop(cache_key, None)
         unit = ws.unit_data(key)
         if unit is None or unit.monitor is None:
+            if stamp is not None:
+                cache._no_monitor[cache_key] = stamp
             continue
         monitor = np.asarray(unit.monitor, dtype=float)
         mask = np.asarray(unit.mask, dtype=bool)
@@ -782,4 +814,6 @@ def normalisation_reference(ws, keys: Iterable[str]) -> float | None:
         valid = kept & np.isfinite(monitor) & (monitor > 0)
         if valid.any():
             monitors.extend(monitor[valid].tolist())
+        elif stamp is not None:
+            cache._no_monitor[cache_key] = stamp
     return nearest_power_of_ten(float(np.median(monitors))) if monitors else None

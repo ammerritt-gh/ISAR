@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QModelIndex, QPoint, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -123,6 +123,15 @@ def test_gutter_file_and_blank_clicks_and_hover(panel_vm):
     assert not panel._view.indexAt(blank).isValid()
     QTest.mouseClick(panel._view.viewport(), Qt.MouseButton.LeftButton, pos=blank)
     assert vm.selection.keys == () and vm.selection.active is None
+
+
+def test_space_without_a_focused_row_keeps_recalled_group(panel_vm):
+    panel, vm, _ = panel_vm
+    vm.selection.set(A, origin=ORIGIN_GROUP)
+    panel._view.setCurrentIndex(QModelIndex())
+    before = vm.selection.keys
+    QTest.keyClick(panel._view, Qt.Key.Key_Space)
+    assert vm.selection.keys == before
 
 
 def test_keyboard_focus_ranges_and_container_space(panel_vm):

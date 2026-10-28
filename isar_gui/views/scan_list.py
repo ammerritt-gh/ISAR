@@ -94,6 +94,8 @@ class _ScanTree(QTreeView):
         super().keyPressEvent(event)
         key, modifiers = event.key(), event.modifiers()
         index = self.currentIndex().siblingAtColumn(0)
+        if not index.isValid():
+            return
         if key == Qt.Key.Key_Space:
             self._click(index, modifiers)
         elif key in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Home, Qt.Key.Key_End,

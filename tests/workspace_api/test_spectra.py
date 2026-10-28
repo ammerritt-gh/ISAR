@@ -30,12 +30,12 @@ from scans_view_fixture import (DEEP_DELTA, DEEP_NO_PARAMS, DEEP_REFUSED, DEEP_T
 from isar.workspace_api.evaluate import evaluate_manifest
 
 
-def _fit():
+def _fit(*, zero_source="elastic_fit"):
     return FitView.from_outcome({
         "detector_id": "a01",
         "best_label": "background",
         "T": 100.0,
-        "calib": {"center": 10.5, "zero_source": "elastic_fit",
+        "calib": {"center": 10.5, "zero_source": zero_source,
                   "gauss_fwhm": 1.0, "lorentz_fwhm": 0.0},
         "model_manifest": {
             "schema": MANIFEST_SCHEMA,
@@ -118,6 +118,45 @@ def test_bundle_scales_data_curves_and_exposure_aware_residuals():
         (unit.counts[[0, 1, 3]] - 10 * unit.exposure.scale[[0, 1, 3]])
         * 100_000 / unit.monitor[[0, 1, 3]],
     )
+
+
+@pytest.mark.parametrize("source", ["elastic_fit", "pipeline_zero", "interpolated", None])
+def test_needs_zero_uses_recorded_calibration_sources(source):
+    bundle = spectrum_bundles(_workspace(_unit()), [_row(fit=_fit(zero_source=source))])[0]
+    if source is None:
+        assert bundle.not_drawn == NotDrawn(NO_ENERGY_ZERO, "no energy zero yet")
+    else:
+        assert bundle.not_drawn is None
+        np.testing.assert_allclose(bundle.energy, [-0.5, 0.5, 1.5, 2.5])
+
+
+def test_missing_monitor_cache_retries_a_changed_unit(scans_view_ws, monkeypatch):
+    import json
+    from isar.session.unit_data import unit_data_path
+
+    ws = Workspace.open(scans_view_ws)
+    cache = SpectraCache()
+    original = ws.unit_data
+    reads = []
+
+    def read(key):
+        reads.append(key)
+        return original(key)
+
+    monkeypatch.setattr(ws, "unit_data", read)
+    assert normalisation_reference(ws, [NO_MONITOR], cache=cache) is None
+    ws.refresh()
+    assert normalisation_reference(ws, [NO_MONITOR], cache=cache) is None
+    assert reads == [NO_MONITOR]
+
+    path = unit_data_path(ws._data_dir, *ws._split_unit_id(NO_MONITOR))
+    with path.open("r", encoding="utf-8", newline="") as source:
+        payload = json.load(source)
+    payload["monitor"] = [100_000.0] * len(payload["counts"])
+    with path.open("w", encoding="utf-8", newline="\n") as target:
+        json.dump(payload, target)
+    assert normalisation_reference(ws, [NO_MONITOR], cache=cache) == 100_000.0
+    assert reads == [NO_MONITOR, NO_MONITOR]
 
 
 def test_revision_is_keyed_and_cache_reuses_only_the_same_bundle():

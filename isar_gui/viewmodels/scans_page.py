@@ -171,7 +171,9 @@ class ScansPageViewModel(ViewModel):
         value = self._store.normalisation_reference() if self._store else self._reference
         if value is None and snapshot is not self._reference_snapshot:
             self._reference_snapshot = snapshot
-            value = normalisation_reference(self._ws, [r.key for ss in snapshot.sets for r in ss.spectra])
+            value = normalisation_reference(
+                self._ws, [r.key for ss in snapshot.sets for r in ss.spectra],
+                cache=self.scan_list.spectra_cache)
             if value is not None and self._store:
                 value = self._store.freeze_normalisation_reference(value)
                 self.store_dirty.emit()
