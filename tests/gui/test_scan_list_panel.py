@@ -145,7 +145,7 @@ def test_default_and_optional_columns(qtbot, monkeypatch, sample):
     # the sample holds stored fast- and deep-pass results, so those two columns are on by themselves
     assert hidden == {"scan": False, "T": False, "Q": False, "parsed": False,
                       "fast": False, "deep": False, "slit": True, "file": True}
-    assert _model_item(panel, f"set:{KEY_A}", "fast").text() == "3/4"
+    assert _model_item(panel, f"set:{KEY_A}", "fast").text() == "…"       # no current-results read here: no coverage claimed
     cell = _model_item(panel, f"spec:{A[4]}", "fast")
     assert cell.text() == "close call" and not cell.icon().isNull()
     assert cell.data(_TONE_ROLE) == Tone.WARN and "close_call" in cell.toolTip()      # the code's word is on hover
