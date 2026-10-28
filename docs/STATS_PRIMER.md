@@ -428,6 +428,11 @@ box mass 0.1585 puts it right. A Hessian that is not positive definite is `no_ev
 no linear-limit branch). Laplace is not promised accurate for a prior-dominated coordinate; it is
 not priced as if it did not spread beyond the support.
 
+**Support stencil repair (2026-10-28).** Finite-difference steps are capped by each support
+span, and stencil centres move inward whenever necessary, including for a mode just outside
+the rail tolerance. The rail tolerance still determines the boundary-gradient correction; it
+does not decide whether an objective may be evaluated outside its support.
+
 **The sensitivity arms.** `SENSITIVITY_ARMS` names the five alternatives the recipe is checked
 against, plus itself: `margin_1.05` and `margin_3` (the amplitude margin), `width_flat` (a flat
 width prior), `width_cap_40` (a 40 meV cap) and `today_v4` (recipe /4 in the height coordinate:

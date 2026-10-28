@@ -435,9 +435,10 @@ def laplace_log_evidence(neg_log_post, theta, lo, hi, *, rel_step=1e-4) -> Lapla
     """Posterior-mode Laplace evidence on the support box ``[lo, hi]`` (the box rule).
 
     neg_log_post(theta) = -(ln L + ln prior), finite inside the support. ``theta`` is the posterior
-    mode found by a bounded optimiser, free coordinates only. A coordinate within 1e-6 x span of a
-    bound is railed: its Hessian stencil is nudged two steps inward and the one-sided inward
-    gradient g enters. With C = H^-1 and mu = theta - C g the quadratic's centre,
+    mode found by a bounded optimiser, free coordinates only. Every Hessian stencil stays inside
+    the support: its centre is nudged inward when needed, and its step is capped by the span.
+    A coordinate within 1e-6 x span of a bound is railed: the one-sided inward gradient g enters.
+    With C = H^-1 and mu = theta - C g the quadratic's centre,
     ``ln Z = -f(theta) + g'Cg/2 + (d/2) ln 2pi - (1/2) ln det H + ln P_box``, P_box the mass of
     N(mu, C) inside the box. One railed coordinate reproduces the single-boundary correction
     ``(g s)^2/2 + ln Phi(-g s)``. A Hessian that is not positive definite is ``no_evidence``."""
@@ -446,13 +447,13 @@ def laplace_log_evidence(neg_log_post, theta, lo, hi, *, rel_step=1e-4) -> Lapla
     hi = np.asarray(hi, float)
     d = theta.size
     span = np.maximum(hi - lo, 1e-9)
-    steps = rel_step * np.maximum(np.abs(theta), 1e-2 * span)
+    steps = np.minimum(rel_step * np.maximum(np.abs(theta), 1e-2 * span), (hi - lo) / 4.0)
     tol = 1e-6 * span
     at_lo = theta - lo <= tol
     at_hi = hi - theta <= tol
-    x = theta.copy()
-    x[at_lo] = lo[at_lo] + 2.0 * steps[at_lo]          # stencil inside the support
-    x[at_hi] = hi[at_hi] - 2.0 * steps[at_hi]
+    # The rail tolerance determines the gradient correction, not whether a stencil crosses
+    # the support. Keep central and mixed differences inside even just beyond that tolerance.
+    x = np.clip(theta, lo + 2.0 * steps, hi - 2.0 * steps)
     f0 = float(neg_log_post(theta))
     H = hessian_fd(neg_log_post, x, steps)
     if not np.all(np.isfinite(H)):
