@@ -86,6 +86,7 @@ def test_start_analysis_queues_the_ready_analyzers_once(qtbot, bl43_ws, monkeypa
         assert "Queued for a fast pass" in log and "Not added:" in log and "a fast pass" in log.split("Not added:")[-1]
     finally:
         w._queue._drop_service()
+        w._queue.bind(None, auto_fast=True)     # forgotten: closing the window then asks nothing
 
 
 def test_the_run_button_is_off_with_its_reason_in_text_until_something_can_run(qtbot, bl43_ws, monkeypatch):

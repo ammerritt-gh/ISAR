@@ -250,6 +250,59 @@ def _sentence(text: str) -> str:
     return text if not text else text[0].upper() + text[1:] + ("" if text.endswith((".", "…")) else ".")
 
 
+# The leave question's words per action: (title, the button that stays, the button that leaves, when ISAR leaves).
+_LEAVE_WORDS = {"close": ("Close ISAR?", "Keep ISAR open", "Stop and close", "before ISAR closes"),
+                "open": ("Open another experiment?", "Stay in this experiment", "Stop and open",
+                         "before ISAR leaves this experiment"),
+                "new": ("Start a new experiment?", "Stay in this experiment", "Stop and start a new one",
+                        "before ISAR leaves this experiment")}
+
+
+def _are(n: int, noun: str = "") -> str:
+    """``"1 analyzer is"`` / ``"5 analyzers are"``; without a noun ``"1 is"`` / ``"5 are"``."""
+    noun = f" {noun}{'' if n == 1 else 's'}" if noun else ""
+    return f"{n}{noun} {'is' if n == 1 else 'are'}"
+
+
+def _leave_text(s, when: str) -> str:
+    """What leaving the experiment now loses (design step 17), from the queue's ``LeaveSummary``."""
+    said = []
+    if s.n_running:
+        running = f"{_are(s.n_running, 'analyzer')} running"
+        if s.n_running_deep:
+            minutes = int((s.longest_deep_s or 0.0) // 60)
+            running += (f" (one deep pass, {minutes} min in)" if s.n_running_deep == 1
+                        else f" ({s.n_running_deep} deep passes, the longest {minutes} min in)")
+        said.append(running)
+    if s.n_waiting:
+        said.append(f"{_are(s.n_waiting) if s.n_running else _are(s.n_waiting, 'analyzer')} waiting")
+    if s.n_saving:
+        said.append(f"{_are(s.n_saving, 'finished result')} being saved")
+    text = (", ".join(said[:-1]) + " and " + said[-1] if len(said) > 1 else said[0]) + "."
+    lost = []
+    if s.n_running:
+        lost.append("stops the running analyzer, discarding its work" if s.n_running == 1
+                    else "stops the running analyzers, discarding their work")
+    if s.n_waiting:
+        lost.append("forgets the waiting ones")
+    if lost:
+        text += " Leaving " + (", and ".join(lost) if len(lost) > 1 else lost[0]) + "."
+    if s.n_saving:
+        text += f" Every finished result is saved {when}."
+    return text
+
+
+def _confirm_leave(parent, title: str, text: str, stay: str, go: str) -> bool:
+    """Ask before leaving stops or forgets queued analysis; the default button stays."""
+    box = QMessageBox(QMessageBox.Icon.Warning, title, text, QMessageBox.StandardButton.NoButton, parent)
+    leave = box.addButton(go, QMessageBox.ButtonRole.DestructiveRole)
+    keep = box.addButton(stay, QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(keep)
+    box.setEscapeButton(keep)
+    box.exec()
+    return box.clickedButton() is leave
+
+
 class MainWindow(QMainWindow):
     """The shell window over one :class:`~isar.workspace_api.Workspace`."""
 
@@ -288,6 +341,7 @@ class MainWindow(QMainWindow):
         self._center_stack.addWidget(self._empty_hint)   # stack index 0
         self._activity_kind: str | None = None   # the coordinator's last activity kind (ingest/drive/…)
         self._renaming = False        # True while a rename re-binds: the queue keeps its waiting items
+        self._leave_confirmed = False  # the leave question was answered; set for the re-entry after the queue stops
         self._export_hold = False     # an export holds the queue's writer until its first progress line
         self._inspector_width = _ARRANGEMENTS["laptop"].inspector   # remembered across open/close
         # Compact campaign-monitor mode (M3-1): the monitor is a per-binding stack page built
@@ -1245,16 +1299,47 @@ class MainWindow(QMainWindow):
     # ---- experiment lifecycle actions (delegate to the manager) ----------------
     def new_workspace(self) -> None:
         """*New experiment…*: create an empty experiment folder under a default name (pending)."""
+        confirmed, self._leave_confirmed = self._leave_confirmed, False    # only the re-entry skips the question
         if self._operations.is_busy():
             self.statusBar().showMessage("ISAR is busy — cancel or wait for the current operation")
             return
+        if not (confirmed or self._confirm_leave_queue("new")):
+            return
         if not self._resolve_dirty_card("start a new experiment"):
+            return
+        if not self._queue_stopped_for(self.new_workspace):
             return
         try:
             self._wsm.new_experiment(default_experiment_name(), named_from="default")
         except OSError as exc:
             log.warning("could not create an experiment folder: %s", exc)
             self._say(f"Could not create the experiment folder in {experiments_root()}: {exc}")
+
+    # ---- leaving the experiment with queued analysis ------------------------------
+    def _confirm_leave_queue(self, verb: str) -> bool:
+        """Before closing ISAR (``"close"``), opening another experiment (``"open"``) or starting a new one
+        (``"new"``): with analysis running, saving or waiting, ask, naming what is lost. True: go on."""
+        summary = self._queue.leave_summary()
+        if summary is None:
+            return True
+        title, stay, go, when = _LEAVE_WORDS[verb]
+        return _confirm_leave(self, title, _leave_text(summary, when), stay, go)
+
+    def _queue_stopped_for(self, action) -> bool:
+        """True when the queue holds nothing of this experiment any more. Otherwise stop the analysis process in
+        order (results handed to its writer are saved first) and run ``action`` again, unasked, once it is gone."""
+        if self._queue.leave_summary() is None:
+            return True
+        if self._queue.view().service in ("off", "failed"):     # no process to wait for: forgotten at once
+            self._queue.shutdown(lambda: None)
+            return True
+
+        def again() -> None:
+            self._leave_confirmed = True
+            action()
+        self._queue.shutdown(lambda: QTimer.singleShot(0, self, again))
+        self._say("Stopping the analysis before leaving the experiment; finished results are saved first…")
+        return False
 
     def _rename_refusal(self) -> str | None:
         """Why *Rename* cannot run now, or ``None``: an engine command, an export or the analysis queue is
@@ -2309,6 +2394,7 @@ class MainWindow(QMainWindow):
         drives the full teardown+rebind in :meth:`_on_wsm_workspace_changed`. Returns ``True`` on
         success; a folder that is not an experiment leaves the current one untouched and says why.
         """
+        confirmed, self._leave_confirmed = self._leave_confirmed, False    # only the re-entry skips the question
         if self._operations.is_busy():
             self.statusBar().showMessage("ISAR is busy — cancel or wait before opening another experiment")
             return False
@@ -2319,14 +2405,20 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Cannot open {path}: {reason}")
             self.log(f"Not opening {path}: {reason}")
             return False
-        if not self._resolve_dirty_card("open another experiment"):
-            return False
+        same = False
         if self._wsm.root() is not None:
             try:
-                if Path(path).resolve() == self._wsm.root().resolve():
-                    return True
+                same = Path(path).resolve() == self._wsm.root().resolve()
             except OSError as exc:
                 self.log(f"could not compare the open experiment to {path}: {exc}")
+        if not (same or confirmed or self._confirm_leave_queue("open")):
+            return False
+        if not self._resolve_dirty_card("open another experiment"):
+            return False
+        if same:
+            return True
+        if not self._queue_stopped_for(lambda: self.load_workspace(path)):
+            return False                        # opened once the analysis process has stopped
         if self._wsm.open(path):
             return True
         reason = self._wsm.last_error() or "not an ISAR experiment"
@@ -2667,16 +2759,26 @@ class MainWindow(QMainWindow):
         # not a hidden-everything scaffold (the compact stash is memory-only by design).
         if self._compact_active:
             self.toggle_compact_mode()
+        confirmed, self._leave_confirmed = self._leave_confirmed, False    # only the re-entry skips the question
+        if not (confirmed or self._confirm_leave_queue("close")):
+            event.ignore()
+            return
         # Do not save, discard, or tear down a workspace while an engine process can still be
         # writing it.  Request graceful termination, then re-enter close once its terminal callback
         # has fired (the coordinator escalates to kill after three seconds).
         if getattr(self, "_operations", None) is not None and self._operations.is_busy():
             self._close_when_operations_finish = True
+            # A leave the user has just confirmed is not asked again by the re-entered close.
+            self._leave_confirmed = confirmed or self._queue.leave_summary() is not None
             self._operations.cancel()
             self.statusBar().showMessage("Cancelling workspace operation before closing…")
             event.ignore()
             return
         if not self._resolve_dirty_card("close ISAR"):
+            event.ignore()
+            return
+        # Results handed to the queue's writer are saved before the window goes; close again once it has stopped.
+        if not self._queue_stopped_for(self.close):
             event.ignore()
             return
         if getattr(self, "_health_timer", None) is not None:

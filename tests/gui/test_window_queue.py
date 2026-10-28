@@ -243,6 +243,61 @@ def _finish(qtbot, w, start: dict) -> None:
     qtbot.waitUntil(lambda: w._queue.writes_busy() is None, timeout=WAIT_MS)
 
 
+def test_the_leave_question_names_what_is_lost():
+    assert mw_mod._leave_text(LeaveSummary(5, 1, 2040.0, 14, 0), "before ISAR closes") == (
+        "5 analyzers are running (one deep pass, 34 min in) and 14 are waiting. Leaving stops the running "
+        "analyzers, discarding their work, and forgets the waiting ones.")
+    assert mw_mod._leave_text(LeaveSummary(1, 0, None, 0, 2), "before ISAR closes") == (
+        "1 analyzer is running and 2 finished results are being saved. Leaving stops the running analyzer, "
+        "discarding its work. Every finished result is saved before ISAR closes.")
+    assert mw_mod._leave_text(LeaveSummary(0, 0, None, 1, 0), "before ISAR closes") == (
+        "1 analyzer is waiting. Leaving forgets the waiting ones.")
+
+
+@pytest.mark.parametrize("verb", ["close", "open", "new"])
+def test_leaving_with_queued_work_asks_keep_changes_nothing_and_stop_waits_for_the_process(
+        qtbot, monkeypatch, bl43_ws, make_ws, tmp_path, verb):
+    record = _fake_service(monkeypatch, tmp_path)
+    other = make_ws(rows=[{"scan": 1, "detector": "det", "status": "fitted", "omega0": 5.0}])
+    w = _win(qtbot, bl43_ws)
+    leave = {"close": w.close, "open": lambda: w.load_workspace(str(other)), "new": w.new_workspace}[verb]
+    try:
+        _one_running(qtbot, w, record)
+        asked, answer = [], [False]
+        monkeypatch.setattr(mw_mod, "_confirm_leave",
+                            lambda parent, title, text, stay, go: asked.append((title, text, stay, go)) or answer[0])
+        leave()                                                            # Keep: everything goes on
+        title, text, stay, go = asked[0]
+        assert (title, stay, go) == {"close": ("Close ISAR?", "Keep ISAR open", "Stop and close"),
+                                     "open": ("Open another experiment?", "Stay in this experiment", "Stop and open"),
+                                     "new": ("Start a new experiment?", "Stay in this experiment",
+                                             "Stop and start a new one")}[verb]
+        assert text.startswith("1 analyzer is running and ") and "forgets the waiting ones" in text
+        assert w.isVisible() and w._wsm.root() == bl43_ws and w._queue.view().n_running["fast"] == 1
+        assert not _commands(record, "shutdown")
+        answer[0] = True
+        leave()                                                            # Stop: the process is asked to end first
+        assert w._wsm.root() == bl43_ws and _commands(record, "shutdown")
+        if verb == "close":
+            qtbot.waitUntil(lambda: not w.isVisible(), timeout=WAIT_MS)
+        else:
+            qtbot.waitUntil(lambda: w._wsm.root() != bl43_ws, timeout=WAIT_MS)
+            assert (w._wsm.root() == other) == (verb == "open")
+        assert len(asked) == 2 and w._queue.leave_summary() is None       # the re-entry did not ask again
+    finally:
+        _forget_queue(w)
+
+
+def test_leaving_with_an_empty_queue_asks_nothing(qtbot, monkeypatch, bl43_ws):
+    w = _win(qtbot, bl43_ws)
+
+    def ask(*_a):
+        raise AssertionError("the leave question was asked with nothing queued")
+    monkeypatch.setattr(mw_mod, "_confirm_leave", ask)
+    w.new_workspace()
+    assert w._wsm.root() != bl43_ws
+
+
 def test_a_copy_waits_for_the_writer_hold_and_releases_it_after(qtbot, monkeypatch, bl43_ws, tmp_path):
     record = _fake_service(monkeypatch, tmp_path)
     w = _win(qtbot, bl43_ws)
