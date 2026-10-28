@@ -709,6 +709,8 @@ class QueueController(QObject):
         self.changed.emit()
 
     def _ev_ready(self, ev: dict) -> None:
+        if self._service == "stopping":
+            return                      # shutdown was asked while starting: the exit completes it
         self._service = "ready"
         if self._holds and not self._hold_sent:
             self._hold_sent = self._send({"op": "hold_writes"})
