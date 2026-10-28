@@ -24,7 +24,8 @@ COLUMN_INTRO = {
 }
 HELD = "held"
 PROVISIONAL = "(provisional)"
-PROVISIONAL_MEANING = "The deep pass ran on provisional sampler settings, so this count is not yet to be trusted."
+PROVISIONAL_MEANING = ("The deep pass ran on provisional sampler settings, so this count is not yet to be trusted. "
+                       "See the note under Deep queue in the Processing panel.")
 
 
 class Entry(NamedTuple):
@@ -47,25 +48,29 @@ TABLE: dict[str, dict[str, Entry]] = {
                                           "the dispersion."),
         "unresolved": Entry("unresolved", "A rival model could not be evaluated, so no winner is declared. A "
                                           "failed calculation is never counted against a model."),
-        "search_limited": Entry("search limit reached", "The search stopped at its peak-count ceiling or its time "
-                                                       "budget; the count is the best found and there may be "
-                                                       "more peaks."),
-        "held": Entry("held", "Not fitted yet: something it needs is missing (the reason says what). It is "
-                              "retried on the next run once that is added."),
+        "search_limited": Entry("search limit reached", "The search stopped at its peak-count ceiling (a result "
+                                                       "made before the time limits were removed may show its "
+                                                       "time budget instead); the count is the best found and "
+                                                       "there may be more peaks."),
+        "held": Entry("held", "Not fitted yet: something it needs is missing (the reason says what). Once that "
+                              "is added, add the file to the queue again to fit it."),
         "not fitted": Entry("not fitted", "No fit was made: the spectrum was excluded, undersampled or the fit "
                                           "failed. The reason says which."),
         "not run": Entry("not run", "The analysis has not fitted this spectrum yet."),
         "not recorded": Entry("not recorded", "A fit is stored but it has no fast-pass record (it was written "
-                                              "before the fast pass existed); a re-run refits it."),
+                                              "before the fast pass existed); adding the file to the fast "
+                                              "queue refits it."),
     },
     DEEP: {
-        "resolved": Entry("clear", "The deep pass settles the peak count: the preferred count has probability "
+        "resolved": Entry("clear", "The deep pass prefers one peak count: the preferred count has probability "
                                    "0.80 or more."),
         "close_call": Entry("close call", "The deep pass still finds two peak counts close: the preferred count "
                                           "has probability below 0.80."),
-        "search_limited": Entry("search limit reached", "The deep pass ran out of its time budget, or a model "
-                                                       "stayed suspect after restarts; the probabilities cover "
-                                                       "only the models it sampled."),
+        "search_limited": Entry("search limit reached", "The deep pass reached its peak-count ceiling, or a model "
+                                                       "stayed suspect after restarts (a result made before the "
+                                                       "time limits were removed may show its time budget "
+                                                       "instead); the probabilities cover only the models it "
+                                                       "sampled."),
         "refused": Entry("refused", "The deep pass could not run on this spectrum; the reason says why."),
         "not run": Entry("not run", "The deep pass has not been run on this spectrum."),
     },
@@ -142,5 +147,5 @@ def page_html() -> str:
                "is one analyzer of one scan set. <i>Analyzers read</i> counts the spectra.</p>")
     out.append("<h3>Stand-in value</h3><p>When a value is missing (for example the temperature), the fit may run "
                "on a stated stand-in instead. Entering the value replaces it; fits made before it are marked out of "
-               "date until you run the analysis again.</p>")
+               "date until you add them to the queue again.</p>")
     return "\n".join(out)

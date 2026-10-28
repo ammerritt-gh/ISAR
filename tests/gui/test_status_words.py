@@ -107,6 +107,17 @@ def test_an_untrusted_deep_count_says_provisional_in_the_word_and_the_hover():
     from types import SimpleNamespace
     untrusted, trusted = _deep_cell(False), _deep_cell(True)
     assert untrusted.text == "clear (provisional)" and "provisional" in untrusted.tooltip
+    assert "note under Deep queue in the Processing panel" in untrusted.tooltip         # job amendment 3: the pointer
     assert trusted.text == "clear" and "provisional" not in trusted.tooltip
+    assert "Deep queue" not in trusted.tooltip
     refused = facade._deep(SimpleNamespace(deep_pass={"state": "refused", "trusted": False, "reason": "no fast-pass record"}))
     assert _status_cell(refused, DEEP).text == "refused"                 # no count to qualify
+
+
+def test_no_meaning_claims_a_settled_count_or_a_removed_batch_path():
+    """The deep "clear" meaning claims no settled count while the calibration is provisional; no meaning names the
+    removed run-again path or says a time budget ended a fresh result."""
+    assert "settles" not in sw.meaning(sw.DEEP, "resolved") and "prefers" in sw.meaning(sw.DEEP, "resolved")
+    every = " ".join(e.meaning for entries in sw.TABLE.values() for e in entries.values()) + sw.page_html()
+    for stale in ("retried on the next run", "a re-run refits", "run the analysis again", "ran out of its time budget"):
+        assert stale not in every, stale
