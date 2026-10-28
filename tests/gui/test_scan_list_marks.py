@@ -172,3 +172,16 @@ def test_a_queue_update_rebuilds_once_and_keeps_selection_and_expansion(qtbot, w
     assert panel._view.currentIndex().siblingAtColumn(0).data(_KEY_ROLE) == A04
     queue.set_marks({A03: {"fast": "running"}})   # the same marks again: nothing to draw
     assert len(rebuilds) == 1
+
+
+def test_a_queued_fast_item_shows_its_column_in_an_experiment_with_no_results(qtbot, tmp_path):
+    root = bl43_fixture.build_bl43_workspace(tmp_path, fits=False)     # read, never fitted
+    vm = ScanListViewModel(Workspace.open(root))
+    panel = ScanListPanel(vm)
+    qtbot.addWidget(panel)
+    queue = FakeQueue()
+    vm.set_queue(queue)
+    assert "fast" not in vm.visible_columns()
+    queue.set_marks({A03: {"fast": "queued"}})                        # the first fast pass is queued
+    assert "fast" in vm.visible_columns() and panel._column_actions["fast"].isChecked()
+    assert _cell(panel, f"spec:{A03}", "fast").text() == "queued"

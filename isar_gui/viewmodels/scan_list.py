@@ -31,7 +31,7 @@ from isar_gui.viewmodels.base import ViewModel
 
 COLUMNS = ("scan", "T", "Q", "parsed", "fast", "deep", "slit", "file")   # model order
 OPTIONAL_COLUMNS = ("fast", "deep", "slit", "file")                      # Columns ▾; the rest always show
-RESULT_COLUMNS = ("fast", "deep")     # these switch on by themselves when the first result of that pass exists
+RESULT_COLUMNS = ("fast", "deep")     # these switch on by themselves once that pass has a result or a queue mark
 TITLES = {"scan": "Scan", "T": "T", "Q": "Q", "parsed": "Parsed", "fast": "Fast pass",
           "deep": "Deep pass", "slit": "Slit", "file": "File name"}
 SORTS = ("set", "temperature", "analyzer")
@@ -240,6 +240,7 @@ class ScanListViewModel(ViewModel):
         marks = {} if self._queue is None else self._queue.marks()
         if marks != self._marks:
             self._marks = marks
+            self._auto = self._auto_columns()
             self.snapshot_changed.emit()
 
     def _emit_selection(self) -> None:
@@ -273,11 +274,13 @@ class ScanListViewModel(ViewModel):
         return (self._sort, self._filter_text, frozenset(self._optional), frozenset(self._hidden))
 
     def _auto_columns(self) -> set[str]:
-        """The result columns to show by themselves: a stored record of that pass exists, and the user has not
-        switched the column off."""
+        """The result columns to show by themselves: a stored record of that pass exists or the queue marks one, and
+        the user has not switched the column off."""
         snap = self._snapshot
         rows = [sp for ss in snap.sets for sp in ss.spectra] + list(snap.pooled)
-        return {c for c in RESULT_COLUMNS if c not in self._hidden and any(getattr(r, c).stored for r in rows)}
+        queued = {p for mine in self._marks.values() for p in mine}
+        return {c for c in RESULT_COLUMNS if c not in self._hidden
+                and (c in queued or any(getattr(r, c).stored for r in rows))}
 
     def column_title(self, column: str) -> str:
         """The header; ``Q`` and ``T`` carry their unit when every present value has the same one."""
