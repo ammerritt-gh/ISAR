@@ -552,9 +552,11 @@ residuals look clean, and deletions and merges downwards (`audit_rounds`). Each 
 (the trust-region reflective method) on the exact signed Poisson-deviance residuals. Degenerate and delta-mode
 twins resolve as in §2, every distinct solution is priced by the box-rule Laplace evidence at its posterior
 mode, and the counts are weighed by the 1/(V(k)·2^k) model prior. A count is *contending* when its evidence
-lies within `contending_margin` (10 nats) of the best; a count with no priced basin at all contends when its
-best log-likelihood reaches the selected model's (a count with any priced basin has evidence, whatever its
-degenerate basins do). One that fits worse and cannot be priced is recorded and does not block the result.
+lies within `contending_margin` (10 nats) of the best. A count with no priced basin is dismissed only
+when its best found non-twin ln L + ln model prior is strictly below the leading count's ln Z minus
+that margin. An entirely unfitted count contends; twins alone add no competitor. A count with any
+priced basin retains its priced value, whatever its other basins do. This is the operator's
+best-found-fit heuristic, not a proof that all the count's evidence has been covered.
 
 **The mode ceiling is 6, configurable (card `[fitting] max_modes`), and arbitrary.** It is a known limit set by
 the operator, not a measured one ("6 is arbitrary"): a best count at the ceiling reads *search limited
@@ -661,6 +663,28 @@ has no finite priced basin (one row, count zero). With the twin rule disabled, 0
 before the proposed completeness-rule change, not a measurement of that change. The harness
 now prints this coverage and saves the combined rows. Full output and command metadata are in
 `out/fitting_audit/acceptance-before.log` and `acceptance-before.run.json` (local, gitignored).
+
+**Completeness amendment (2026-10-28, operator Decision 1 completed by Q1).** Decision 1
+required repairing the Laplace boundaries, measuring unpriced counts, then replacing the
+comparison with the selected model's likelihood. Q1 settles the remaining choice: use the
+best fit the fast pass *found*, with its model-prior weight, against the leading count's
+aggregate evidence minus `contending_margin`. There is no slack term or saturated-likelihood
+bound. Equality contends. The engine's ln L and ln Z both include the saturated Poisson
+constant; subtracting it from both leaves the comparison unchanged. The result stores each
+discarded count in `flag_statistics.dismissed_counts`, with the explanation "dismissed on
+its best found fit" and both sides of the comparison. A local optimum is not a global
+likelihood bound, and one priced basin does not prove complete count coverage. These are
+accepted limitations of this fast screen. The deep pass remains the backstop: all models
+without a finite fast price still go to accepted sampling, including those in a dismissed count.
+
+The final Q1 synthetic acceptance table retains 9/10 passing draws, 0/12 unresolved rows,
+1/84 wholly unpriced count instances, and both narrow cases passing with production twins.
+With twins disabled it reports 1/10 passing draws, 11/12 unresolved rows, 26/84 wholly
+unpriced count instances and neither narrow case passing, compared with 0/10, 12/12, 27/84
+and neither in the boundary-repair baseline. Evaluator changes also separate these revisions,
+so differences are not attributable to Q1 alone. The final command exited 0 in 239.5 seconds;
+local output is `out/pr59-followup/q1-acceptance-final.log` in the PR worktree. These remain
+reported aims, not an accuracy gate.
 
 ### 2.3 The peak-count benchmark **[Built; figures reached, 2026-10-26]**
 

@@ -81,10 +81,12 @@ Factor 2 met the proposed reading targets: maximum model seed SD was about 0.16 
 rwalk, at about 1.47 times mean wall time. It was not uniformly more repeatable across models,
 and three seeds cannot establish accuracy. Adoption remains an operator decision. Raw seeds
 and fit values belong only in the ignored local report; no follow-up sampling was run.
-The count-completeness change requires distinguishing an attained local optimum from a genuine
-likelihood upper bound. A wholly unpriced count must not be dismissed by comparing its fit
-quality with the selected model's fit quality alone; count priors and within-count model weights
-are different quantities. The boundary-repair acceptance baseline is in STATS_PRIMER §2.2.
+The operator's Q1 ruling replaces the old fit-to-fit completeness comparison with the best
+found ln L plus model-prior weight against the leading count's aggregate ln Z minus the margin.
+Dismissals are recorded as "dismissed on its best found fit". This local-fit heuristic is not
+a guaranteed evidence bound; deep admission still includes every unpriced model. A count with
+any priced basin retains its priced value. The boundary-repair baseline and dated ruling are
+in STATS_PRIMER §2.2; the authorized acceptance rerun measures the resulting unresolved rate.
 
 Deferred: parallel MINOS/profile until error-stage timings justify it; GUI core lending;
 amplitude profiling; regrouping width masks; UltraNest. Regrouping reduces integrations but

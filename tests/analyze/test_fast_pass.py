@@ -72,15 +72,78 @@ def test_ex1_count_prior_is_normalised_over_variants_and_masks():
 
 def test_a_count_with_a_priced_basin_never_contends_unpriced():
     # Count 1 is priced; count 2 has a priced basin and a higher-ln L unpriced one (not a contender);
-    # count 3 has only unpriced basins reaching the selected ln L (a contender); count 4's only
-    # unpriced basin fits worse than the selected model (not a contender).
+    # count 3 fits worse than the selected model but reaches the evidence margin; count 4
+    # falls below that margin. A priced count keeps its priced value (operator Q1).
     def entry(count, status, ln_like, ln_z=None):
         return SimpleNamespace(count=count, status=status, ln_z=ln_z, ln_like=ln_like, k_free=3 * count,
                                ln_model_prior=0.0)
-    entries = [entry(1, "ok", -10.0, 0.0), entry(2, "ok", -11.0, -3.0), entry(2, "no_evidence", -5.0),
-               entry(3, "no_evidence", -9.0), entry(4, "no_evidence", -20.0)]
+    entries = [entry(1, "ok", -10.0, -20.0), entry(2, "ok", -11.0, -23.0), entry(2, "no_evidence", -5.0),
+               entry(3, "no_evidence", -25.0), entry(4, "no_evidence", -31.0)]
     tally = fast_pass._tally(entries, 10.0)
     assert tally.preferred == 1 and tally.unpriced_contenders == [3]
+
+
+@pytest.mark.parametrize("offset", [0.0, -1000.0])
+def test_unpriced_count_uses_best_found_weight_against_aggregate_evidence(offset):
+    def entry(count, status, ln_like=None, ln_z=None, weight=0.0):
+        return SimpleNamespace(count=count, status=status,
+                               ln_z=None if ln_z is None else ln_z + offset,
+                               ln_like=None if ln_like is None else ln_like + offset,
+                               k_free=3 * count, ln_model_prior=weight)
+
+    # Two priced basins aggregate to ln Z=-20. Equality at the margin must contend.
+    entries = [entry(1, "ok", -10.0, -20.0 - math.log(2)) for _ in range(2)]
+    entries += [entry(2, "no_evidence", -28.0, weight=-2.0),
+                entry(3, "no_evidence", -28.0, weight=-3.0),
+                entry(4, "not_fitted"), entry(5, "degenerate_twin", -1.0),
+                entry(6, "no_evidence", -1.0, weight=-31.0),
+                entry(6, "no_evidence", -28.0, weight=-1.0)]
+    tally = fast_pass._tally(entries, 10.0)
+    assert tally.unpriced_contenders == [2, 4, 6]
+    assert tally.dismissed_counts == {3: {
+        "reason": "dismissed on its best found fit",
+        "best_found_ln_weight": pytest.approx(-31.0 + offset),
+        "leading_count_ln_z": pytest.approx(-20.0 + offset),
+        "contending_margin": 10.0}}
+
+
+def test_best_found_fit_dismissal_survives_recording(monkeypatch):
+    from isar.session.scan_delivery import _fast_pass_record
+
+    eng = _engine(_expected([(4.0, 0.5, 60.0)]), 2)
+    eng.reached.update((1, 2))
+    # Build basins without optimisation; isolate the tally-to-record contract.
+    monkeypatch.setattr(eng, "_trf", lambda model, theta0, family:
+                        SimpleNamespace(x=theta0[model.free], nfev=1, message="synthetic"))
+    monkeypatch.setattr(eng, "resolve", lambda basin, point: None)
+    for k in (1, 2):
+        eng.fit(eng.variant(k, True, True),
+                [(4.0 + 5 * i, 0.5, 60.0, False) for i in range(k)], "ladder")
+    basins = eng.basins()
+    for b in basins:
+        b.status = "no_evidence"
+        b.ln_like = -100.0
+    # Stub only the expensive diagnostic paths; use conclude's real tally and serializer.
+    leader = next(b for b in basins if b.count == 1)
+    leader.status, leader.ln_z, leader.ln_like = "ok", -20.0, -10.0
+    leader.theta_map = leader.theta.copy()
+    monkeypatch.setattr(eng, "_peaks", lambda selected: ((), {
+        "peaks": [], "height_correlations": [], "residual_scan": []}))
+    record = _fast_pass_record(eng.conclude())
+    dismissal = record["flag_statistics"]["dismissed_counts"]["2"]
+    assert dismissal["reason"] == "dismissed on its best found fit"
+    assert dismissal["best_found_ln_weight"] < dismissal["leading_count_ln_z"] - 10.0
+
+
+def test_twin_does_not_hide_an_unfitted_variant_of_an_unpriced_count():
+    entries = [SimpleNamespace(count=k, status=status, ln_z=ln_z, ln_like=ln_like,
+                               k_free=k, ln_model_prior=0.0)
+               for k, status, ln_z, ln_like in [
+                   (1, "ok", -20.0, -10.0), (2, "degenerate_twin", None, -5.0),
+                   (2, "not_fitted", None, None), (3, "degenerate_twin", None, -5.0)]]
+    tally = fast_pass._tally(entries, 10.0)
+    assert tally.unpriced_contenders == [2]
+    assert tally.dismissed_counts == {}
 
 
 @pytest.mark.parametrize("delta", [(), (1,)])

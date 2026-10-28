@@ -65,7 +65,7 @@ CACHE_SIZE = 4096             # unit columns kept, keyed by (omega0, Gamma, peak
 DELTA_TWIN_RULE = True
 
 # Increment for result-changing repairs; saved fit signatures must not carry older answers.
-IMPLEMENTATION_VERSION = 2
+IMPLEMENTATION_VERSION = 3
 
 STAGES = ("seed", "ladder", "audits", "twins", "evidence", "classify")
 _PRICED = ("ok", "ok_boundary")
@@ -334,6 +334,7 @@ class _Tally:
     total: float | None
     priced_contenders: list
     unpriced_contenders: list
+    dismissed_counts: dict             # count -> best-found-fit dismissal and its comparison
 
 
 def _tally(entries, contending_margin: float) -> _Tally:
@@ -341,9 +342,11 @@ def _tally(entries, contending_margin: float) -> _Tally:
 
     ``entries`` carry ``count``, ``status``, ``ln_z``, ``ln_model_prior``, ``ln_like`` and
     ``k_free``. Z_k sums exp(ln_model_prior + ln_z) over the count's priced entries; a count with
-    none has no evidence. A count lacks evidence and contends only when no entry of it is priced and
-    its best-ln L non-twin entry has ln L at least the selected model's, or when every entry of it
-    is not fitted (the prototype's rule, amendment 14)."""
+    none has no evidence. A wholly unpriced count contends unless its best found non-twin
+    ln L + ln model prior falls below the leading count's ln Z minus the margin (operator Q1,
+    2026-10-28). This is a local-fit heuristic, not a guaranteed evidence bound. Both ln L and
+    ln Z include the same saturated-likelihood constant. Entirely unfitted counts contend;
+    twins alone do not add a competing count. Any priced basin still supplies its count's value."""
     terms, by_count = {}, {}
     for e in entries:
         by_count.setdefault(e.count, []).append(e)
@@ -363,20 +366,26 @@ def _tally(entries, contending_margin: float) -> _Tally:
                        key=lambda e: (-terms[id(e)], e.k_free))
     top = max(lnz.values()) if lnz else None
     priced = sorted(k for k, v in lnz.items() if v >= top - contending_margin)
-    unpriced = []
+    unpriced, dismissed = [], {}
     for k, es in sorted(by_count.items()):
         if k in lnz:                  # a priced basin gives the count its evidence
             continue
         live = [e for e in es if e.status not in ("degenerate_twin", "not_fitted")
                 and e.ln_like is not None]
         if not live:
-            if all(e.status == "not_fitted" for e in es):
+            if any(e.status != "degenerate_twin" for e in es):
                 unpriced.append(k)
             continue
-        best = max(live, key=lambda e: e.ln_like)
-        if best.status == "no_evidence" and (selected is None or best.ln_like >= selected.ln_like):
+        best = max(live, key=lambda e: e.ln_like + e.ln_model_prior)
+        best_weight = best.ln_like + best.ln_model_prior
+        if top is not None and best_weight < top - contending_margin:
+            dismissed[k] = {"reason": "dismissed on its best found fit",
+                            "best_found_ln_weight": float(best_weight),
+                            "leading_count_ln_z": float(top),
+                            "contending_margin": float(contending_margin)}
+        else:
             unpriced.append(k)
-    return _Tally(lnz, probs, preferred, selected, terms, total, priced, unpriced)
+    return _Tally(lnz, probs, preferred, selected, terms, total, priced, unpriced, dismissed)
 
 
 def _numerically_marginal(count_ln_z: dict, preferred, spread: float, close_call_p: float) -> bool:
@@ -1587,6 +1596,7 @@ class _Engine:
                 "max_count": float(self.sp.max_count), "fwhm": float(self.fwhm),
                 "count_ln_z": {int(k): float(v) for k, v in tally.count_ln_z.items()},
                 "unpriced_contenders": [int(k) for k in tally.unpriced_contenders],
+                "dismissed_counts": tally.dismissed_counts,
                 "evidence_spread_nats": float(spread), "alternatives": alternatives, **extras}
             c = _classify(s, [asdict(p) for p in peaks], flag_statistics, tally.probabilities,
                           preferred, reason)
