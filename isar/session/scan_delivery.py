@@ -1524,6 +1524,7 @@ def _fast_pass_record(res) -> dict:
     selected = res.selected
     return _finite_json({
         "schema": FAST_PASS_RECORD_SCHEMA, "state": res.state,
+        "implementation_version": fast_pass.IMPLEMENTATION_VERSION,
         "preferred_count": res.preferred_count,
         "count_probabilities": {str(k): res.count_probabilities[k]
                                 for k in sorted(res.count_probabilities)},

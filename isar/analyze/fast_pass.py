@@ -64,6 +64,9 @@ CACHE_SIZE = 4096             # unit columns kept, keyed by (omega0, Gamma, peak
 # never a setting, never read from the environment.
 DELTA_TWIN_RULE = True
 
+# Increment for result-changing repairs; saved fit signatures must not carry older answers.
+IMPLEMENTATION_VERSION = 2
+
 STAGES = ("seed", "ladder", "audits", "twins", "evidence", "classify")
 _PRICED = ("ok", "ok_boundary")
 

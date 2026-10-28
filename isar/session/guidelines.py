@@ -377,6 +377,8 @@ def fit_detectors(g: Guidelines, card: Card, cli_detectors=None) -> list[str]:
 def guidelines_signature(g: Guidelines, *, scan_number, q, T) -> dict:
     """The guideline state that applied to a scan — hashed into the ledger's `guidelines_hash` so a
     card edit re-fits exactly the affected scans (§6 correction channel)."""
+    from isar.analyze import fast_pass
+
     prior = g.expectation_for(scan_number=scan_number, q=q, T=T)
     fit_range, exclude_regions = g.mask_regions_for(scan_number=scan_number, q=q, T=T)
     peaks = g.peaks_for(scan_number=scan_number, q=q, T=T)
@@ -389,6 +391,7 @@ def guidelines_signature(g: Guidelines, *, scan_number, q, T) -> dict:
         "min_fit_points": g.min_fit_points,
         "mode_ceiling": mode_ceiling(g),
         "prior_recipe": prior_recipe.PRIOR_RECIPE_VERSION,
+        "fast_pass_implementation": fast_pass.IMPLEMENTATION_VERSION,
         "fit_range": None if fit_range is None else [fit_range[0], fit_range[1]],
         "exclude_regions": [[lo, hi] for lo, hi in exclude_regions],
         "peaks": [[p["omega0"], p["sigma"]] for p in peaks],

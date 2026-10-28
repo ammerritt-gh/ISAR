@@ -530,6 +530,11 @@ sampling, profile interval, bootstrap or automatic second pass. `scan_delivery.f
 place of the earlier count ladder (a Laplace rung and a nested-sampling rung with seven triggers),
 which is deleted.
 
+**Implementation currentness (2026-10-28).** The fast-pass implementation revision is recorded
+with each result and included in its input signature. Result-changing numerical or selection
+repairs therefore make older fits stale for a newly requested pass, even when the operator's
+settings did not change. This does not edit settings or start fits; earlier records remain saved.
+
 **Stage 1, the seed.** Pseudo-Voigt peaks, each with its anti-Stokes partner tied by the Bose factor and no
 convolution, so it is cheap. Fitted on the original counts (never on subtracted residuals): candidate
 positions are ranked by how much they improve the Poisson fit, all seed peaks are refitted jointly after each

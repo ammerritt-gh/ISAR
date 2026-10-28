@@ -69,6 +69,20 @@ def _with_engine(monkeypatch, res):
     monkeypatch.setattr(fast_pass, "run_fast_pass", lambda *a, **k: copy.deepcopy(res))
 
 
+def test_fitter_revision_invalidates_carry_and_is_recorded(real, monkeypatch):
+    from isar.session import guidelines
+
+    g = guidelines.resolve(_card())
+    revision = getattr(fast_pass, "IMPLEMENTATION_VERSION", 1)
+    original = guidelines.guidelines_signature(g, scan_number=1, q=None, T=50.0)
+    with monkeypatch.context() as changed:
+        changed.setattr(fast_pass, "IMPLEMENTATION_VERSION", revision + 1, raising=False)
+        updated = guidelines.guidelines_signature(g, scan_number=1, q=None, T=50.0)
+    assert updated != original, "a fitter repair must invalidate a carried result"
+    fit, _result = real
+    assert fit["fast_pass"]["implementation_version"] == revision
+
+
 def test_the_delivery_is_the_engines_answer(real):
     """Winner, count probabilities and candidate posteriors are the engine's own, never re-ranked:
     the candidate rows of each count sum to that count's probability, the winner is the selected
