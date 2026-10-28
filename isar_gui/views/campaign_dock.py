@@ -397,9 +397,13 @@ class CampaignDock(QDockWidget):
                             analysis_limit=self._analysis_limit.text().strip() or None,
                             seed=self._seed.value())
         if not self._operations.request_drive(opts, env=dict(self._llm_env())):
-            self._status_line.setText("could not start — workspace not ready")
+            self._status_line.setText(f"could not start — {self._refusal()}")
             return
         self._sync_status()
+
+    def _refusal(self) -> str:
+        """Why the coordinator refused the campaign: the writer guard's words, else the workspace."""
+        return self._operations.last_refusal() or "workspace not ready"
 
     def _on_resume_clicked(self) -> None:
         self._launch_resume()
@@ -444,7 +448,7 @@ class CampaignDock(QDockWidget):
             self.virtual_start_requested.emit(opts, dict(self._llm_env()))
             return
         if not self._operations.request_drive(opts, env=dict(self._llm_env())):
-            self._status_line.setText("could not start — workspace not ready")
+            self._status_line.setText(f"could not start — {self._refusal()}")
 
     def _on_objective_compile_failed(self, message: str) -> None:
         if not shiboken6.isValid(self):

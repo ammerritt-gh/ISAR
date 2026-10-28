@@ -87,6 +87,8 @@ class WorkspaceOperationCoordinator(QObject):
         self._cancelling = False
         self._stop_pending = False        # a cooperative campaign stop request is in flight
         self._drive_force_stopped = False  # the operator force-killed the campaign tree
+        self._writer_guard = lambda: None  # why another writer holds the experiment, or None
+        self._last_refusal: str | None = None
         self._kill_timer = QTimer(self)
         self._kill_timer.setSingleShot(True)
         self._kill_timer.timeout.connect(self._kill_if_still_running)
@@ -98,6 +100,14 @@ class WorkspaceOperationCoordinator(QObject):
     def has_campaign(self) -> bool:
         """A campaign is queued or running (the analysis queue holds its starts while one is)."""
         return self.is_running_campaign() or any(job.kind == "drive" for job in self._queue)
+
+    def set_writer_guard(self, fn) -> None:
+        """``fn() -> str | None``: why a campaign may not start now (the analysis queue writes here), or None."""
+        self._writer_guard = fn
+
+    def last_refusal(self) -> str | None:
+        """Why the writer guard refused the last :meth:`request_drive`, or None."""
+        return self._last_refusal
 
     def is_running_campaign(self) -> bool:
         return self._active is not None and self._active.kind == "drive"
@@ -155,8 +165,14 @@ class WorkspaceOperationCoordinator(QObject):
         ever address the campaign this coordinator launched. The job captures root + generation
         at request time; a later rebind can neither hijack the stop path nor adopt the result.
         """
+        self._last_refusal = None
         root = self._wsm.root()
         if root is None or self._wsm.state() not in ("pending", "ready"):
+            return False
+        refusal = self._writer_guard()
+        if refusal is not None:         # one writer per experiment: a campaign never writes beside the queue
+            self._last_refusal = refusal
+            self._log(f"campaign not started: {refusal}")
             return False
         opts = replace(opts, control_token=uuid.uuid4().hex)
         self._queue.append(_Job("drive", (opts, dict(env or {})), str(root),

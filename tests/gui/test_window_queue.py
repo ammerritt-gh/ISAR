@@ -367,3 +367,21 @@ def test_a_rename_keeps_the_waiting_items(qtbot, monkeypatch, bl43_ws):
         assert sum(w._queue.view().n_waiting.values()) == waiting and w._queue.view().paused
     finally:
         _forget_queue(w)
+
+
+def test_a_campaign_is_refused_while_the_queue_runs_or_holds_waiting_items(qtbot, monkeypatch, bl43_ws, tmp_path):
+    record = _fake_service(monkeypatch, tmp_path)
+    w = _win(qtbot, bl43_ws)
+    try:
+        start = _one_running(qtbot, w, record)
+        assert not w._operations.request_drive(DriveOptions(resume_latest=True))
+        assert w._operations.last_refusal().startswith("analysis is running") and not w._operations.is_busy()
+        w.campaign_dock._launch_resume()                                   # the dock says why in its own line
+        assert w.campaign_dock._status_line.text() == f"could not start — {w._operations.last_refusal()}"
+        w._queue.pause()
+        _finish(qtbot, w, start)                                           # paused, with analyzers still waiting
+        assert not w._operations.request_drive(DriveOptions(resume_latest=True))
+        assert w._operations.last_refusal() == (
+            "analyzers are waiting in the analysis queue; remove them or let them finish first")
+    finally:
+        _forget_queue(w)

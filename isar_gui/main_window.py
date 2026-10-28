@@ -709,6 +709,7 @@ class MainWindow(QMainWindow):
         self._queue.log_line.connect(self.log)
         self._queue.auto_fast_changed.connect(self._on_auto_fast_changed)
         self._queue.changed.connect(self._push_run_row)
+        self._operations.set_writer_guard(self._campaign_refusal)
 
         # ---- the left column: experiment strip, setup section, needs-attention list, files strip, then
         # the scan list (all the rest) ----
@@ -1341,6 +1342,15 @@ class MainWindow(QMainWindow):
         self._say("Stopping the analysis before leaving the experiment; finished results are saved first…")
         return False
 
+    def _campaign_refusal(self) -> str | None:
+        """The coordinator's writer guard: why a campaign may not start here now (one writer per experiment)."""
+        busy = self._queue.writes_busy()
+        if busy is not None:
+            return busy
+        if sum(self._queue.view().n_waiting.values()):
+            return "analyzers are waiting in the analysis queue; remove them or let them finish first"
+        return None
+
     def _rename_refusal(self) -> str | None:
         """Why *Rename* cannot run now, or ``None``: an engine command, an export or the analysis queue is
         writing in the folder, or the experiment's manifest names source files inside it (their absolute
@@ -1917,7 +1927,8 @@ class MainWindow(QMainWindow):
         if form is not None and self.campaign_dock is not None:
             self.campaign_dock.apply_form(form)    # in-memory carry — pending has no GuiStore yet
         if not self._operations.request_drive(opts, env=dict(env or {})):
-            self.log("could not start the virtual campaign — workspace not ready")
+            self.log("could not start the virtual campaign — "
+                     + (self._operations.last_refusal() or "workspace not ready"))
 
     def _seed_pending_campaign_form(self) -> None:
         """Persist the typed campaign form into the reserved directory's GuiStore BEFORE the
