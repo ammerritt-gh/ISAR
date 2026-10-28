@@ -169,12 +169,12 @@ class BrowserDock(QDockWidget):
             return (
                 "No displayable Results yet.\n\n"
                 "Parsed scans are listed in Scans or Scan Table. "
-                "Use Run \u25b8 Run analysis\u2026 when you are ready to analyse them."
+                "Use Run \u25b8 Fast-pass all ready when you are ready to analyse them."
             )
         return (
             "No displayable Results yet.\n\n"
             "Parsed scans will appear in Scans or Scan Table after ingestion. "
-            "Run analysis when scans are ready."
+            "Use Run \u25b8 Fast-pass all ready when scans are ready."
         )
 
     def set_active_key(self, key: str | None) -> None:

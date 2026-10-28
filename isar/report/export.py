@@ -123,7 +123,7 @@ Data revisions
 fit_input is the revision of the data the stored fit was made against; current_data the revision
 ISAR holds now, which the spectrum CSV carries. fit_data_mismatch true means the file was read again
 with changed content after the fit, so the stored fit and its modes.csv rows describe earlier data
-than the spectrum CSV holds; the next Run analysis refits it. "fitted-against revision not recorded"
+than the spectrum CSV holds; it is refitted when it is added to the queue again. "fitted-against revision not recorded"
 means ISAR stored no input revision for that fit; the current revision is not a substitute.
 @CURRENTNESS@
 
@@ -417,7 +417,7 @@ lists each input that differs now: `input`, `from` (used), `to` (now) and, for t
 counts_accepted, resolution_folder, curve, resolution_library, calibration_setting, calibration_basis,
 calibration_zero, calibration_zero_source, calibration_held_reason. The `inputs_current` column of modes.csv
 is that `current` for the row's own pass (true / false; empty when not judged). A fit whose inputs changed
-keeps its stored result until the next Run analysis.
+keeps its stored result until it is added to the queue again.
 """
 
 

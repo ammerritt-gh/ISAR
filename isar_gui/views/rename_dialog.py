@@ -4,7 +4,7 @@ A name field prefilled with the current name; beneath it the folder the name giv
 manager will clean it ("Folder: <parent>\\<cleaned name>"), so the cleaning shows before it happens.
 OK is disabled, with the reason inline, while the cleaned name is empty or that folder already
 exists (the manager checks again). When the experiment has fits whose resolution curves sit inside
-its folder, one line says the next *Run analysis* will refit them: ISAR recognises a curve set by
+its folder, one line says adding them to the queue again will refit them: ISAR recognises a curve set by
 its folder's path, so a renamed folder is a new curve set.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ from isar_gui.workspace_manager import clean_experiment_name
 
 log = logging.getLogger(__name__)
 
-REFIT_LINE = ("The next Run analysis will refit these spectra: their resolution curves are inside "
+REFIT_LINE = ("Adding these spectra to the queue again will refit them: their resolution curves are inside "
               "this folder, and ISAR recognises curves by their folder's path.")
 
 
