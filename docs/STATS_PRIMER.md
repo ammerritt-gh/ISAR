@@ -813,14 +813,19 @@ independent sampler are part of the calibration protocol below.
 **What H is.** Each run records H, the information gained from prior to posterior in nats (dynesty's
 `information`). Nested-sampling's own error is about sqrt(H / n_live), which is why H is recorded with every
 run beside the real number of likelihood calls (counted here; dynesty's own count overstates it by about 25%),
-the iterations, the seed, the settings and the best log-likelihood. Wall times go to `run_timings.json`, not to
-the record.
+the iterations, the seed, the settings and the best log-likelihood. Wall times go to
+`run_timings.json`, not to the scientific record. Each worker also flushes a `deep_timing` JSON
+line to the existing stderr/run log after every sampling attempt, before a retry or another
+model starts: label, stage, worker allocation, settings, seed, wall seconds, calls, status and
+restart index. A stop therefore retains completed-attempt timings even when no final timing
+block was saved. The worker PID and numerical threadpool inventory are logged once per process.
 
 **The errors step.** On the chosen model (the highest-weight model of the preferred count, preferring one sampled
 at accepted precision) the deep pass refits from the nested maximum-likelihood sample and from the fast-pass best
 basin, keeps the better fit (a converged one first, then the lower objective), and attaches profile intervals and
 the bootstrap once (`errors.attach`, `--M` draws). A failure there is recorded as `errors_failure` and never loses
-the count result.
+the count result. The chosen model's per-method durations are retained in the separate
+timing block as `errors_method_seconds`, alongside the aggregate errors duration.
 
 **Provisional calibration status.** The sampler settings, the two sigmas and the suspect gap are provisional.
 The settings and sigmas come from one calibration pass (next subsection) that **missed both accuracy aims**; the

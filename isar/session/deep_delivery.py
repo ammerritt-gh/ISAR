@@ -132,7 +132,7 @@ def _chosen(m, entry, record: dict, request: DeepRequest, executor) -> dict:
                                  else "no within-model errors for this model")
         return out
     out["errors"] = {k: wm.get(k) for k in ("freq_interval", "gamma_interval", "profile_interval",
-                                            "minos", "M_effective", "n_converged", "bimodal")}
+                                            "minos", "M_effective", "n_converged", "bimodal", "method_seconds")}
     return out
 
 
@@ -184,6 +184,8 @@ def deliver(fit: dict, ctx, request: DeepRequest, *, executor=None, refuse=None,
         by_label = {e.label: e for e in entries}
         chosen = _chosen(m, by_label[m.label], record, request, executor) if m is not None else None
         errors_s = time.perf_counter() - t_errors
+        error_methods = ((chosen.get("errors") or {}).pop("method_seconds", None) or {}
+                         if chosen is not None else {})
     except ValueError as exc:
         return _refused(request, str(exc)), None
     except Exception as exc:  # noqa: BLE001 — see the docstring
@@ -218,6 +220,7 @@ def deliver(fit: dict, ctx, request: DeepRequest, *, executor=None, refuse=None,
            "arena_fingerprint": record.get("arena_fingerprint")}
     timing = {"total_seconds": time.perf_counter() - t0, "sampling_seconds": res.wall_s,
               "errors_seconds": errors_s, "budget_s": _budget(request.budget_s),
+              "errors_method_seconds": error_methods,
               "workers": int(request.workers), "stages": dict(res.stage_seconds),
               "models": [{"label": x.label, "status": x.status,
                           "runs": [_run_timing(r) for r in x.runs]} for x in res.models]}

@@ -85,7 +85,7 @@ class _Worker:
 @pytest.fixture
 def no_sampling(monkeypatch):
     """No nested sampling and no bootstrap: every stage task returns no runs, errors attach instantly."""
-    monkeypatch.setattr(deep_pass, "_stage_task", lambda job: (job[0], []))
+    monkeypatch.setattr(deep_pass, "_stage_task", lambda job, **kw: (job[0], []))
     monkeypatch.setattr(errors, "attach", lambda *a, **k: None)
 
 

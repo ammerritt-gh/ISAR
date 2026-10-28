@@ -1,6 +1,8 @@
 """deep_pass with a process pool as map_fn gives the same result as serial (picklability and
 determinism, plan S2U1). ``Gauss`` stays at module level so spawned workers unpickle it."""
 import math
+import json
+import os
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
@@ -26,7 +28,7 @@ def entry(label, count, d, offset):
     return dp.ModelEntry(label, count, d, offset, None, Gauss(d, offset=offset))
 
 
-def test_pooled_deep_pass_equals_serial():
+def test_pooled_deep_pass_equals_serial(capfd):
     fast = dp.SamplerSettings(n_live=100, dlogz=0.1, calibrated_sigma=0.5)
     expl = dp.SamplerSettings(n_live=50, dlogz=0.5, calibrated_sigma=2.0)
     es = [entry("c1", 1, 4, 0.0), entry("c2", 2, 5, -1.0), entry("c3", 3, 6, -30.0)]
@@ -38,3 +40,9 @@ def test_pooled_deep_pass_equals_serial():
     assert a == b
     assert [r.n_like_calls for m in serial.models for r in m.runs] == \
         [r.n_like_calls for m in pooled.models for r in m.runs]
+    # Spawned workers flush to the inherited stderr, the same stream the GUI's queue log retains.
+    rows = [json.loads(line.split("deep_timing ", 1)[1])
+            for line in capfd.readouterr().err.splitlines() if "deep_timing " in line]
+    completed = [r for r in rows if r["event"] == "run_completed" and r["pid"] != os.getpid()]
+    assert {r["label"] for r in completed} == {e.label for e in es}
+    assert all(r["workers"] == 2 for r in completed)

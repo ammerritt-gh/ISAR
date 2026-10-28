@@ -202,7 +202,7 @@ def test_chosen_deep_manifest_uses_its_peak_with_the_same_data_arena(monkeypatch
 
 def test_deliver_reports_its_sampling_steps_and_ends_on_errors(monkeypatch):
     ctx, fit = _spectrum()
-    monkeypatch.setattr(deep_pass, "_stage_task", lambda job: (job[0], []))  # no real sampling; the steps still run
+    monkeypatch.setattr(deep_pass, "_stage_task", lambda job, **kw: (job[0], []))  # no real sampling; the steps still run
     events = []
     record, _ = deep_delivery.deliver(fit, ctx, REQ, progress=events.append)
     assert record["state"] != "refused"

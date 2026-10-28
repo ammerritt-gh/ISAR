@@ -15,16 +15,58 @@ calibration installs measured values; the names say which.
 from __future__ import annotations
 
 import json
+import logging
 import math
+import os
+import sys
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
+from functools import partial
 
 import numpy as np
 
 from isar.analyze import catalogue, evidence, loop, prior
 from isar.analyze.errors.bayes import EvidenceProblem
 from isar.analyze.progress import DEEP_STAGES, ProgressFn, emitter
+
+log = logging.getLogger(__name__)
+_timing_log = logging.getLogger(__name__ + ".timing")
+_timing_worker_pid: int | None = None
+
+
+def _log_timing(event: str, **fields) -> None:
+    """Flush each completion to stderr's existing run log, even before ordered map returns it.
+
+    Spawned workers have no inherited Python handlers. Install only this diagnostic logger's
+    stderr handler when needed; the GUI already captures stderr into its queue log. StreamHandler
+    flushes each line, so stopping another model cannot erase completed attempts.
+    """
+    _timing_log.setLevel(logging.INFO)
+    if not _timing_log.hasHandlers():
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(process)d %(message)s"))
+        _timing_log.addHandler(handler)
+    _timing_log.info("deep_timing %s", json.dumps({"event": event, "pid": os.getpid(), **fields},
+                                               separators=(",", ":")))
+
+
+def _log_worker_once(workers: int) -> None:
+    global _timing_worker_pid
+    pid = os.getpid()
+    if _timing_worker_pid == pid:
+        return
+    _timing_worker_pid = pid
+    try:
+        from threadpoolctl import threadpool_info
+        pools = threadpool_info()
+    except Exception as exc:  # diagnostics must not prevent an otherwise runnable fit
+        log.warning("deep pass threadpool inventory unavailable: %s: %s", type(exc).__name__, exc)
+        _log_timing("worker", workers=workers, threadpools=None,
+                    inventory_failure=f"{type(exc).__name__}: {exc}")
+        return
+    _log_timing("worker", workers=workers, threadpools=pools)
+
 
 CLOSE_CALL_P = 0.80             # the fast pass's threshold (s2.3); ``deep_pass`` takes the record's
 NUMERIC_FLIP_FRACTION = 0.05    # winner changes in more than this share of perturbed draws => numeric
@@ -161,7 +203,7 @@ def escalate(settings: SamplerSettings, attempt: int) -> SamplerSettings:
     return replace(settings, n_live=2 * settings.n_live)
 
 
-def run_until_clean(label, problem, *, settings, seed, reference_lnl):
+def run_until_clean(label, problem, *, settings, seed, reference_lnl, timing_context=None):
     """Run; on a suspect run restart with a new seed and escalated settings, up to MAX_RESTARTS.
     Returns every run (the failures are kept: "save the failure and its settings"). Never rejects."""
     runs = []
@@ -170,6 +212,12 @@ def run_until_clean(label, problem, *, settings, seed, reference_lnl):
         rec = run_nested(label, problem, settings=s, seed=seed + 7919 * attempt,
                          reference_lnl=reference_lnl)
         runs.append(rec)
+        if timing_context is not None:
+            _log_timing("run_completed", **timing_context, label=label, restart=attempt,
+                        seed=rec.seed, settings=asdict(rec.settings), ndim=rec.ndim,
+                        wall_s=rec.wall_s, n_like_calls=rec.n_like_calls, n_iter=rec.n_iter,
+                        status="usable" if rec.usable else "failed" if rec.failure else "suspect",
+                        failure=rec.failure, suspect=list(rec.suspect))
         if rec.usable:
             break
         s = escalate(s, attempt + 1)
@@ -348,7 +396,8 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
             send("sampling", step=i + 1, of=len(labels), stage=stage, stages=DEEP_STAGES)
             jobs = [(lb, by_label[lb], settings, seeds[lb] + seed_offset)
                     for lb in labels[i:i + chunk]]
-            for lb, runs in map_fn(_stage_task, jobs):
+            task = partial(_stage_task, stage=name, workers=chunk)
+            for lb, runs in map_fn(task, jobs):
                 done += 1
                 m = out[lb]
                 m.runs.extend(runs)
@@ -412,10 +461,12 @@ def _finite(v) -> float:
     return float(v) if v is not None and math.isfinite(v) else math.inf
 
 
-def _stage_task(job):
+def _stage_task(job, *, stage=None, workers=1):
     label, entry, settings, seed = job
+    _log_worker_once(workers)
     return label, run_until_clean(label, entry.problem, settings=settings, seed=seed,
-                                  reference_lnl=entry.fastpass_lnl_opt)
+                                  reference_lnl=entry.fastpass_lnl_opt,
+                                  timing_context={"stage": stage, "workers": workers})
 
 
 def _better_fit(fast_fit, refit) -> tuple:
