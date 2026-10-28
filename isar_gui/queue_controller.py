@@ -753,6 +753,8 @@ class QueueController(QObject):
 
     def _ev_writes_held(self, ev: dict) -> None:
         self._hold_confirmed = True
+        if self._service == "stopping":  # the service may still save what it was handed: the waiters run at its exit
+            return
         waiters, self._hold_waiters = self._hold_waiters, []
         for then in waiters:
             then()

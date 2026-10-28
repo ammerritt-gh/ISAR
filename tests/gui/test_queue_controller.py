@@ -414,6 +414,21 @@ def test_a_hold_asked_while_stopping_waits_for_the_exit_and_runs_before_the_leav
     r.ctrl.release_writes()
 
 
+def test_a_hold_confirmed_while_stopping_waits_for_the_exit_too(rig):
+    r = rig(cores=1)
+    r.select(A06)
+    r.ctrl.add_selection("fast")
+    r.wait_commands("start", 1)
+    order = []
+    r.ctrl.hold_writes(lambda: order.append(("copy", r.ctrl.view().service)))   # asked; writes_held not back yet
+    r.wait_commands("hold_writes", 1)
+    r.ctrl._send({"op": "_on_shutdown", "lines": [{"ev": "writes_held"}]})     # confirmed while the service leaves
+    r.ctrl.shutdown(lambda: order.append(("leave", r.ctrl.view().service)))
+    r.wait(lambda: len(order) == 2)
+    assert order == [("copy", "off"), ("leave", "off")]        # the copy runs at the exit, before the leave goes on
+    r.ctrl.release_writes()
+
+
 def test_a_service_that_crashes_while_stopping_names_the_saves_it_never_confirmed(rig):
     r = rig(cores=1)
     r.select(A06)
