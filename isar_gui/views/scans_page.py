@@ -152,13 +152,22 @@ class ScansPage(QWidget):
         plot_layout = QVBoxLayout(self.plot_area)
         plot_layout.setContentsMargins(0, 0, 0, 0)
         self._glw = pg.GraphicsLayoutWidget(self.plot_area)
+        self._glw.setBackground('white')
         self._glw.setObjectName('scansPageGraphics')
         disable_view_drops(self._glw)
         self._main_plot = self._glw.addPlot(row=0, col=0)
         self._resid_plot = self._glw.addPlot(row=1, col=0)
         self._resid_plot.setXLink(self._main_plot)
+        for plot in (self._main_plot, self._resid_plot):
+            for name in ('left', 'bottom'):
+                axis = plot.getAxis(name)
+                axis.setPen('#404040')
+                axis.setTextPen('#404040')
+                axis.setLabel(color='#404040')
         self._glw.ci.layout.setRowStretchFactor(0, 3)
-        self._glw.ci.layout.setRowStretchFactor(1, 1)
+        self._glw.ci.layout.setRowStretchFactor(1, 0)
+        self._glw.ci.removeItem(self._resid_plot)
+        self._residual_mounted = False
         self._resid_plot.hide()
         plot_layout.addWidget(self._glw)
         self.body.addWidget(self.plot_area)
@@ -324,6 +333,14 @@ class ScansPage(QWidget):
             for name in group.names:
                 QTreeWidgetItem(item, [name])
         render_started = perf_counter()
+        show_residual = state.residual_spec is not None
+        if show_residual != self._residual_mounted:
+            if show_residual:
+                self._glw.ci.addItem(self._resid_plot, row=1, col=0)
+            else:
+                self._glw.ci.removeItem(self._resid_plot)
+            self._glw.ci.layout.setRowStretchFactor(1, int(show_residual))
+            self._residual_mounted = show_residual
         for plot, spec in ((self._main_plot, state.main_spec), (self._resid_plot, state.residual_spec)):
             if spec is None:
                 clear_render(plot)

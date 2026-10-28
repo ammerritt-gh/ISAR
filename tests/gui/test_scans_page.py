@@ -58,6 +58,15 @@ def test_single_fit_uses_scaled_bundle_and_freezes_reference(page, qtbot):
     page.flush_redraw()
     assert page.store.normalisation_reference() == reference
     assert len(emissions) == 1
+    from PySide6.QtCore import QCoreApplication
+    QCoreApplication.processEvents()
+    single_height = page._main_plot.getViewBox().height()
+    select(page, ONE_MODE, TWO_MODE)
+    QCoreApplication.processEvents()
+    assert page._main_plot.getViewBox().height() > single_height + 50
+    select(page, ONE_MODE)
+    QCoreApplication.processEvents()
+    assert page._resid_plot.isVisible()
 
 
 def test_deep_missing_outdated_and_trust_are_visible(page):

@@ -20,8 +20,15 @@ def test_grouped_legend_style_parity_and_replacement(qtbot):
     ], annotations=[ps.Annotation('active <scan>', (2, 2), anchor=(1, 1), tooltip=long_name, bold=True)])
     widget = pg.GraphicsLayoutWidget()
     qtbot.addWidget(widget)
+    widget.resize(640, 480)
     plot = widget.addPlot()
+    widget.show()
+    qtbot.waitExposed(widget)
     rendered = render_into(plot, spec)
+    QtCore.QCoreApplication.processEvents()
+    legend_rect = rendered.legend.mapRectToParent(rendered.legend.boundingRect())
+    assert plot.getViewBox().boundingRect().contains(legend_rect)
+    assert rendered.legend.width() < 500
     assert rendered.legend_names == {long_name, 'Total', 'Background'}
     assert len(rendered.legend.items) == 3
     swatch, label = rendered.legend.items[0]

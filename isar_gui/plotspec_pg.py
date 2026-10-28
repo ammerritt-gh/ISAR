@@ -472,6 +472,14 @@ def save_widget_png(widget, path) -> bool:
     return bool(pixmap.save(str(path), "PNG"))
 
 
+class _GroupedLegend(pg.LegendItem):
+    def updateSize(self):  # noqa: N802 (Qt/pyqtgraph override)
+        # LegendItem sums current cell widths, counting a spanning header twice.
+        # The layout's natural hint handles spans without feeding stretch back into size.
+        size = self.layout.effectiveSizeHint(QtCore.Qt.SizeHint.PreferredSize)
+        self.setGeometry(0, 0, size.width(), size.height())
+
+
 def _populate_legend(legend, entries, names) -> None:
     # Keep legacy entries in order; each named group occupies one consecutive block.
     blocks = []
@@ -488,7 +496,7 @@ def _populate_legend(legend, entries, names) -> None:
             groups[group].append((sample, name, bold))
     for group, items in blocks:
         if group is not None:
-            header = pg.LabelItem(escape(group), bold=True, justify="left")
+            header = pg.LabelItem(escape(group), bold=True, justify="left", color=_GREY_025, size="9pt")
             legend.layout.addItem(header, legend.layout.rowCount(), 0, 1, 2)
         seen = set()
         for sample, name, bold in items:
@@ -550,7 +558,9 @@ def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
         _draw_projection(rs, spec.projection)
 
     if legend_entries:
-        legend = pg.LegendItem(offset=None)
+        grouped = any(len(entry) == 4 and entry[2] is not None for entry in legend_entries)
+        legend = (_GroupedLegend(offset=None, labelTextColor=_GREY_025, brush=pg.mkBrush(255, 255, 255, 235))
+                  if grouped else pg.LegendItem(offset=None))
         legend.setParentItem(plot_item.getViewBox())
         legend.anchor(itemPos=(1, 0), parentPos=(1, 0), offset=(-8, 8))
         _populate_legend(legend, legend_entries, rs.legend_names)
