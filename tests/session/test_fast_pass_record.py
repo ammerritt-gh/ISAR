@@ -25,7 +25,7 @@ from isar.session.workspace import Workspace
 
 # The connection's lists, verbatim: a field the writer drops fails here.
 RECORD_KEYS = {
-    "schema", "state", "preferred_count", "count_probabilities", "probabilities_conditional",
+    "schema", "implementation_version", "state", "preferred_count", "count_probabilities", "probabilities_conditional",
     "close_call_alternatives", "numerically_marginal", "search_limit_reason",
     "deep_pass_candidate", "selected_model_id", "selected_label", "arena_fingerprint",
     "ln_like_saturated", "models", "peaks", "elastic_height", "background", "grouped_intensity",
