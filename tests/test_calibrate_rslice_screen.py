@@ -404,7 +404,8 @@ def test_retry_worker_still_refuses_wrong_usable_dimensions(harness, monkeypatch
         harness._retry_worker(job, SimpleNamespace(send=lambda row: None))
 
 
-def test_retry_cleanup_drains_buffered_attempts_without_masking_failure(harness, monkeypatch):
+@pytest.mark.parametrize("broken_poll", [False, True])
+def test_retry_cleanup_drains_buffered_attempts_without_masking_failure(harness, monkeypatch, broken_poll):
     from collections import deque
 
     jobs = [dict(model=e, stage="accepted", seed=10 + i, engine="dynesty", production_retry=True,
@@ -417,15 +418,22 @@ def test_retry_cleanup_drains_buffered_attempts_without_masking_failure(harness,
                           dict(event="attempt_completed", **identity, log_z=-2.0, wall_s=.1),
                           dict(event="attempt_started", **{**identity, "attempt": 1, "seed": job["seed"] + 7919},
                                started_monotonic=harness.time.monotonic())])
-        readers.append(SimpleNamespace(poll=lambda messages=messages: bool(messages),
+        def poll(messages=messages, first=not readers):
+            if broken_poll and first and not messages:
+                raise BrokenPipeError(109, "synthetic closed Windows pipe")
+            return bool(messages)
+
+        readers.append(SimpleNamespace(poll=poll,
                                        recv=lambda messages=messages: messages.popleft(), close=lambda: None))
     pipes = iter(readers)
+    processes = []
 
     class Process:
         exitcode = 0
 
         def __init__(self, **kwargs):
             self.alive = True
+            processes.append(self)
 
         def start(self):
             pass
@@ -458,6 +466,45 @@ def test_retry_cleanup_drains_buffered_attempts_without_masking_failure(harness,
     interrupted = [e for e in events if e["event"] == "attempt_interrupted"]
     assert len(interrupted) == 2 and all(e["attempt"] == 1 for e in interrupted)
     assert len(results) == 2 and all(len(r["attempts"]) == 1 for r in results)
+    assert len(processes) == 2 and all(not p.alive for p in processes)
+
+
+def test_completed_job_does_not_poll_closed_windows_pipe_again(harness, monkeypatch):
+    job = dict(model=entries()[0], stage="accepted", seed=10, engine="dynesty", production_retry=True,
+               settings=harness._settings(400, 4))
+    calls = []
+
+    def poll():
+        calls.append("poll")
+        if len(calls) > 1:
+            raise BrokenPipeError(109, "closed after the final result")
+        return True
+
+    final = {**harness._base_row(job), "status": "ok", "log_z": -2., "usable": True,
+             "evidence_converged": True}
+    reader = SimpleNamespace(poll=poll, recv=lambda: final, close=lambda: None)
+    process = SimpleNamespace(start=lambda: None, is_alive=lambda: False, join=lambda **kwargs: None)
+    monkeypatch.setattr(harness.mp, "get_context", lambda method: SimpleNamespace(
+        Pipe=lambda **kwargs: (reader, SimpleNamespace(close=lambda: None)), Process=lambda **kwargs: process))
+    rows = harness.run_jobs([job], workers=1, timeout_s=60, on_result=lambda row: None)
+    assert len(rows) == 1 and rows[0]["log_z"] == -2. and rows[0]["usable"]
+    assert calls == ["poll"]
+
+
+def test_windows_pipe_break_before_result_is_retained_as_failure(harness, monkeypatch, caplog):
+    job = dict(model=entries()[0], stage="accepted", seed=10, engine="dynesty", production_retry=True,
+               settings=harness._settings(400, 4))
+
+    def poll():
+        raise BrokenPipeError(109, "closed without a result")
+
+    reader = SimpleNamespace(poll=poll, close=lambda: None)
+    process = SimpleNamespace(start=lambda: None, is_alive=lambda: False, join=lambda **kwargs: None)
+    monkeypatch.setattr(harness.mp, "get_context", lambda method: SimpleNamespace(
+        Pipe=lambda **kwargs: (reader, SimpleNamespace(close=lambda: None)), Process=lambda **kwargs: process))
+    rows = harness.run_jobs([job], workers=1, timeout_s=60, on_result=lambda row: None)
+    assert len(rows) == 1 and rows[0]["status"] == "failed"
+    assert "closed without a result" in rows[0]["error"] and "pipe closed" in caplog.text
 
 
 def test_retry_calibration_plans_54_jobs_and_uses_only_final_usable_values(harness, monkeypatch, tmp_path):

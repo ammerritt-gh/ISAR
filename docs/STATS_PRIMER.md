@@ -959,6 +959,14 @@ seed errors. EXPLORATORY then adds 0.5 for its stopping tolerance. All nine usab
 per model are required for a proposal. This remains a provisional single-spectrum estimate,
 not evidence of absolute accuracy. The tool reports proposals and installs nothing itself.
 
+The authorized invocation failed during Windows result collection: polling a closed worker
+pipe raised `BrokenPipeError`, and the same failure interrupted cleanup. Its partial attempt
+records survive in ignored `out/deep-retry-20261028/`; they do not supply complete model groups
+or justify new sigmas. The installed constants and provisional status remain unchanged.
+The collector now stops reading after a final result, treats closed pipes explicitly, and
+cleans every worker even when another worker's cleanup fails. Synthetic regressions cover
+these paths. Completing Q2 requires a separately authorized real-data invocation.
+
 #### Deep-pass calibration (one pass, 2026-10-26)
 
 Report: `out\j6420291926ab\deep-calibration\a05\calibration.md` and `calibration.json` beside it (gitignored, main checkout; the

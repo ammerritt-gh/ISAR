@@ -77,6 +77,11 @@ def retry_event_worker(job, connection):
     connection.close()
 
 
+def final_then_close_worker(job, connection):
+    connection.send(dict(label=job["model"].label, seed=job["seed"], status="ok", log_z=-2.0))
+    connection.close()
+
+
 def inner(artifacts: Path):
     sys.path.insert(0, str(REPO))
     spec = importlib.util.spec_from_file_location("calibrate_deep_pass", REPO / "tools" / "calibrate_deep_pass.py")
@@ -250,6 +255,11 @@ def inner(artifacts: Path):
         assert rows[0]["interrupted_attempt"]["attempt"] == 1 and rows[0]["retry_count"] == 1
         assert rows[0]["interrupted_attempt"]["n_like_calls"] is None
         print("spawned production retry timeout retains the completed and interrupted attempts: passed")
+        h._worker = final_then_close_worker
+        rows = h.run_jobs([{**slow(), "production_retry": True}], workers=1, timeout_s=5,
+                          on_result=lambda row: None)
+        assert len(rows) == 1 and rows[0]["status"] == "ok" and rows[0]["log_z"] == -2.0
+        print("spawned worker final result survives immediate pipe closure: passed")
     finally:
         h._worker = old_worker
 

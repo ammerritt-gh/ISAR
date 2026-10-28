@@ -381,12 +381,15 @@ def run_jobs(jobs, *, workers, timeout_s, on_result, deadline=None, skipped=None
             for item in active[:]:
                 proc, reader, job, start = (item[k] for k in ("proc", "reader", "job", "start"))
                 row = None
-                while reader.poll() and row is None:
+                while row is None:
                     try:
+                        if not reader.poll():
+                            break
                         message = reader.recv()
-                    except EOFError:
+                    except (EOFError, OSError) as exc:
+                        logging.getLogger(__name__).warning("Calibration worker result pipe closed: %s", exc)
                         row = _base_row(job)
-                        row["error"] = "worker closed its result pipe without a record"
+                        row["error"] = f"worker closed its result pipe without a record: {type(exc).__name__}: {exc}"
                         break
                     if message.get("event") == "attempt_started":
                         item["current"] = message
@@ -432,23 +435,32 @@ def run_jobs(jobs, *, workers, timeout_s, on_result, deadline=None, skipped=None
     finally:
         if pending and skipped is not None:
             skipped.extend(pending)
+        # Stop every owned process before touching result pipes: one broken Windows pipe must
+        # never leave later workers sampling after this invocation has failed.
         for item in active:
-            proc, reader = item["proc"], item["reader"]
-            if proc.is_alive():
-                proc.terminate()
-            proc.join(timeout=2)
-            if proc.is_alive():
-                proc.kill()
+            proc = item["proc"]
+            try:
+                if proc.is_alive():
+                    proc.terminate()
                 proc.join(timeout=2)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join(timeout=2)
+            except Exception:
+                logging.getLogger(__name__).exception("Could not stop calibration worker; continuing other cleanup")
+        for item in active:
+            reader = item["reader"]
             if item["job"].get("production_retry"):
                 # Another worker's callback may have failed before this pipe was polled. Drain
                 # the finished process's buffered records before classifying the last attempt.
                 finished = None
-                while reader.poll():
+                while True:
                     try:
+                        if not reader.poll():
+                            break
                         message = reader.recv()
                     except (EOFError, OSError):
-                        logging.getLogger(__name__).debug("Calibration pipe closed during cleanup", exc_info=True)
+                        logging.getLogger(__name__).warning("Calibration pipe closed during cleanup", exc_info=True)
                         break
                     if message.get("event") == "attempt_started":
                         item["current"] = message
@@ -474,7 +486,10 @@ def run_jobs(jobs, *, workers, timeout_s, on_result, deadline=None, skipped=None
                     if on_attempt is not None:
                         _final_refresh(lambda: on_attempt(interrupted))
                 _final_refresh(lambda: on_result(row))
-            reader.close()
+            try:
+                reader.close()
+            except OSError:
+                logging.getLogger(__name__).exception("Could not close calibration pipe; preserving original exception")
     return completed
 
 
@@ -1299,7 +1314,8 @@ def retry_calibration(entries, *, labels, output, workers=16, run_timeout_s=3600
     def keep_attempt(row):
         report["attempts"].append(row)
         print(f"{row['stage']} {row['label']} job={row['job_seed']} attempt={row['attempt']} "
-              f"seed={row['seed']} {row['status']} lnZ={row.get('log_z')} wall={row.get('wall_s', 0):.1f}s", flush=True)
+              f"seed={row['seed']} status={row['status']} usable={row.get('usable', False)} "
+              f"suspect={row.get('suspect', [])} lnZ={row.get('log_z')} wall={row.get('wall_s', 0):.1f}s", flush=True)
         refresh()
 
     def keep(row):

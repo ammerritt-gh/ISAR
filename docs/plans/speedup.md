@@ -84,8 +84,11 @@ protocol and corrected interpretation are in STATS_PRIMER §2.4. Both large raw-
 were flagged by production's suspect check and would be retried. Among unflagged seeds,
 factor 2's maximum model SD is about 0.86 times rwalk's at about 1.47 times mean wall time:
 no advantage is shown for rslice under production retry, with only two or three usable seeds.
-Q2 authorizes a bounded measurement of final usable production retries at both settings levels,
-with conservative SD upper bounds; status remains provisional. Raw fit values stay local.
+Q2's bounded measurement of final usable production retries failed in Windows pipe collection
+and cleanup before complete model groups were available. The collector repair has synthetic
+regressions; the retained partial evidence does not justify new uncertainty constants. Both
+sigmas and provisional status stay unchanged. Completing the measurement with conservative
+SD upper bounds requires a separately authorized invocation. Raw fit values stay local.
 The operator's Q1 ruling replaces the old fit-to-fit completeness comparison with the best
 found ln L plus model-prior weight against the leading count's aggregate ln Z minus the margin.
 Dismissals are recorded as "dismissed on its best found fit". This local-fit heuristic is not
