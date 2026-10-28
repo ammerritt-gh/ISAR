@@ -9,6 +9,8 @@ never sees the subdir) and cannot collide with a job id.
 Schema ``isar.unit_data/1`` (all arrays verbatim, honest — D3: σ²=0 stays 0; hard rule 4: ``x`` is
 the RAW abscissa, never energy-zero-shifted; the axis block records the 3-state calibration so a
 consumer can label honestly and never assumes ``E0=0``).
+The optional monitor and fit-selected monitor/time exposure are stored with the arrays; older files
+remain readable without those keys.
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
-from isar.schema.scan import Q_SOURCE_RUNG
+from isar.schema.scan import Q_SOURCE_RUNG, exposure_for
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +94,25 @@ def write_unit_data(rec, det, data_dir) -> Path:
     ax = sc[0] if sc else None
     x = ax.values if ax is not None else np.arange(np.asarray(sp.intensity).size)
     ec = rec.energy_calibration
+    counts = np.asarray(sp.intensity)
+    normalization = exposure_for(rec, det)
+    monitor = getattr(normalization, "monitor", None)
+    monitor_values = None
+    if monitor is not None:
+        try:
+            monitor_array = np.asarray(monitor, dtype=float)
+        except (TypeError, ValueError):
+            monitor_array = None
+        if monitor_array is not None and monitor_array.shape == counts.shape:
+            monitor_values = [float(v) if math.isfinite(float(v)) else None
+                              for v in monitor_array]
+    from isar.analyze.context import select_exposure
+    selected = select_exposure(normalization, np.asarray(x).shape, sp.mask)
+    exposure = {
+        "source": selected.source,
+        "reference": selected.reference,
+        "scale": None if selected.scale is None else _tolist(selected.scale),
+    }
     payload = {
         "schema": SCHEMA,
         "scan_id": f"{rec.experiment_id}:{rec.scan_number}:{det}",
@@ -101,6 +122,8 @@ def write_unit_data(rec, det, data_dir) -> Path:
         "x": _tolist(x),                       # RAW abscissa — never energy-zero-shifted (hard rule 4)
         "counts": _tolist(sp.intensity),       # verbatim raw counts (combined, post-rejection)
         "variance": _tolist(sp.variance),      # honest Poisson variance; σ²=0 stays 0 (D3)
+        "monitor": monitor_values,
+        "exposure": exposure,
         "mask": _tolist(np.asarray(sp.mask, dtype=bool)),
         "axis": {
             "name": getattr(ax, "name", None),

@@ -61,6 +61,52 @@ def test_round_trip_verbatim(tmp_path):
     np.testing.assert_array_equal(d["x"], np.asarray(scanned_axes(rec)[0].values))
 
 
+def test_unit_data_stores_monitor_and_fit_selected_monitor_exposure(tmp_path):
+    from isar.analyze.context import ScanContext
+
+    rec = _s30_record()
+    n = len(rec.spectra["ana1"].intensity)
+    monitor = np.arange(1, n + 1, dtype=float)
+    monitor[1] = np.nan
+    rec.spectra["ana1"].monitor = None
+    rec.spectra["ana1"].time = None
+    rec.normalization.monitor = monitor
+    rec.normalization.time = np.ones(n, dtype=float)
+    expected = ScanContext.from_scan(
+        rec, "ana1", spec_s30.card_template(), center=0.0, gauss_fwhm=1.0,
+        lorentz_fwhm=0.0,
+    )
+
+    data = unit_data.read_unit_data(unit_data.write_unit_data(rec, "ana1", tmp_path / "data"))
+    stored_monitor = np.asarray(
+        [np.nan if value is None else value for value in data["monitor"]], dtype=float)
+    np.testing.assert_allclose(stored_monitor, monitor, equal_nan=True)
+    assert data["exposure"]["source"] == expected.exposure_source == "monitor"
+    assert data["exposure"]["reference"] == expected.exposure_reference
+    np.testing.assert_array_equal(data["exposure"]["scale"], expected.exposure_scale)
+
+
+def test_unit_data_stores_fit_selected_time_exposure_when_monitor_is_unusable(tmp_path):
+    from isar.analyze.context import ScanContext
+
+    rec = _s30_record()
+    n = len(rec.spectra["ana1"].intensity)
+    rec.spectra["ana1"].monitor = None
+    rec.spectra["ana1"].time = None
+    rec.normalization.monitor = np.full(n, np.nan)
+    rec.normalization.time = np.arange(1, n + 1, dtype=float)
+    expected = ScanContext.from_scan(
+        rec, "ana1", spec_s30.card_template(), center=0.0, gauss_fwhm=1.0,
+        lorentz_fwhm=0.0,
+    )
+
+    data = unit_data.read_unit_data(unit_data.write_unit_data(rec, "ana1", tmp_path / "data"))
+    assert data["monitor"] == [None] * n
+    assert data["exposure"]["source"] == expected.exposure_source == "time"
+    assert data["exposure"]["reference"] == expected.exposure_reference
+    np.testing.assert_array_equal(data["exposure"]["scale"], expected.exposure_scale)
+
+
 def test_variance_zero_preserved(tmp_path):
     """D3: a zero-count point keeps σ²=0 through the file — no floor is silently added."""
     rec = _s30_record()
