@@ -26,12 +26,12 @@ from isar.workspace_api.scan_list import (Fact, PooledRow, ScanListSnapshot, Sca
                                           UnreadFile, natural_key, scan_list)
 from isar_gui import status_words
 from isar_gui.plain_words import drop_echo, plain_reason
-from isar_gui.theme import DEEP, FAST, PARSED, Tone, status_tone, summary_tone
+from isar_gui.theme import DEEP, FAST, PARSED, QUEUE_STATES, Tone, status_tone, summary_tone
 from isar_gui.viewmodels.base import ViewModel
 
 COLUMNS = ("scan", "T", "Q", "parsed", "fast", "deep", "slit", "file")   # model order
 OPTIONAL_COLUMNS = ("fast", "deep", "slit", "file")                      # Columns ▾; the rest always show
-RESULT_COLUMNS = ("fast", "deep")     # these switch on by themselves when the first result of that pass exists
+RESULT_COLUMNS = ("fast", "deep")     # these switch on by themselves once that pass has a result or a queue mark
 TITLES = {"scan": "Scan", "T": "T", "Q": "Q", "parsed": "Parsed", "fast": "Fast pass",
           "deep": "Deep pass", "slit": "Slit", "file": "File name"}
 SORTS = ("set", "temperature", "analyzer")
@@ -95,7 +95,7 @@ def _fact_cell(fact: Fact, with_unit: bool = True) -> Cell:
     return Cell(text, f"{_fact_text(fact)} (from {fact.source})")
 
 
-def _status_cell(status, column: str) -> Cell:
+def _status_cell(status, column: str, mark: str | None = None) -> Cell:
     reason = drop_echo(status.word, status.reason)            # "resolved: resolved: ..." said the word twice
     plain = status_words.plain_word(column, status.word, status.reason, status.provisional)
     # the plain word, the fitting code's word, its meaning
@@ -104,17 +104,35 @@ def _status_cell(status, column: str) -> Cell:
     if stale:
         lines = "\n".join(f"{name}: {used} → {now}" for name, used, now in status.changed)
         tip = f"Inputs changed since this {column} pass:\n{lines}" + (f"\n{tip}")
+    if mark is not None:       # the queue's word replaces the stored one, which moves to the hover
+        word, tone, meaning = QUEUE_STATES[mark]
+        return Cell(word, f"{meaning}. Stored {status_words.TITLES[column].lower()}: {plain}\n{tip}", tone)
     return Cell(plain, tip, status_tone(column, status.word), stale)
 
 
-def _summary_cell(stored: int, total: int, tones, what: str, statuses=(), column: str = "") -> Cell:
-    """The ``11/28`` cell of a set or an analyzer; ``statuses`` are its spectra's passes, any of which
-    may have changed inputs."""
-    tip = f"{stored} of {total} {what}"
-    stale = sum(s.current is False for s in statuses)
+def _summary_cell(stored: int, total: int, tones, what: str) -> Cell:
+    """The ``11/28`` cell of a set or an analyzer's parse count."""
+    return Cell(f"{stored}/{total}", f"{stored} of {total} {what}", summary_tone(tones))
+
+
+def _coverage_cell(spectra, column: str, current, marks, what: str) -> Cell:
+    """The ``27/28`` of a set or an analyzer for one pass: how many of its spectra hold a current stored result
+    (C-current, the duplicate rule's own predicate). ``current`` is None before the first read; ``marks`` is the
+    queue's ``unit_key -> {pass: mark}``, whose live work sets the tone."""
+    n = len(spectra)
+    stored = sum(getattr(sp, column).stored for sp in spectra)
+    stale = sum(getattr(sp, column).current is False for sp in spectra)
+    tones = [status_tone(column, getattr(sp, column).word) for sp in spectra]
+    tones += [QUEUE_STATES[marks[sp.key][column]][1] for sp in spectra if column in marks.get(sp.key, {})]
+    if current is None:
+        text, tip = "…", "checking which results are current"
+    else:
+        have = sum(column in current.get(sp.key, ()) for sp in spectra)
+        text = f"{have}/{n}"
+        tip = f"{have} of {n} {what} have a current {column}-pass result; ISAR refits the others when you add them"
     if stale:
         tip += f"\n{stale} of {stored} {column}-pass results have changed inputs"
-    return Cell(f"{stored}/{total}", tip, summary_tone(tones), stale > 0)
+    return Cell(text, tip, summary_tone(tones), stale > 0)
 
 
 def _temperature(fact: Fact) -> float | None:
@@ -179,6 +197,8 @@ class ScanListViewModel(ViewModel):
         self._auto: set[str] = set()          # result columns on because a result of that pass exists
         self._filter_text = ""
         self._intake = None
+        self._queue = None
+        self._marks: dict[str, dict[str, str]] = {}    # the queue's marks as the list last took them
         self._auto = self._auto_columns()
 
     # ---- reads ---------------------------------------------------------------------------
@@ -206,7 +226,22 @@ class ScanListViewModel(ViewModel):
         self.select(keys[0] if keys else None)
 
     def set_queue(self, controller) -> None:
-        """The analysis queue controller whose marks the list shows (filled by the queue-marks unit)."""
+        """The analysis queue controller whose marks the list shows; None shows none."""
+        if self._queue is not None:
+            self._queue.changed.disconnect(self._on_queue_changed)
+        self._queue = controller
+        if controller is not None:
+            controller.changed.connect(self._on_queue_changed)
+        self._on_queue_changed()
+
+    def _on_queue_changed(self) -> None:
+        """Rebuild only when the marks differ: the controller also listens to this list's ``snapshot_changed``,
+        so an unconditional emit would loop."""
+        marks = {} if self._queue is None else self._queue.marks()
+        if marks != self._marks:
+            self._marks = marks
+            self._auto = self._auto_columns()
+            self.snapshot_changed.emit()
 
     def _emit_selection(self) -> None:
         self.selection_changed.emit(self.selected_keys())
@@ -239,11 +274,13 @@ class ScanListViewModel(ViewModel):
         return (self._sort, self._filter_text, frozenset(self._optional), frozenset(self._hidden))
 
     def _auto_columns(self) -> set[str]:
-        """The result columns to show by themselves: a stored record of that pass exists, and the user has not
-        switched the column off."""
+        """The result columns to show by themselves: a stored record of that pass exists or the queue marks one, and
+        the user has not switched the column off."""
         snap = self._snapshot
         rows = [sp for ss in snap.sets for sp in ss.spectra] + list(snap.pooled)
-        return {c for c in RESULT_COLUMNS if c not in self._hidden and any(getattr(r, c).stored for r in rows)}
+        queued = {p for mine in self._marks.values() for p in mine}
+        return {c for c in RESULT_COLUMNS if c not in self._hidden
+                and (c in queued or any(getattr(r, c).stored for r in rows))}
 
     def column_title(self, column: str) -> str:
         """The header; ``Q`` and ``T`` carry their unit when every present value has the same one."""
@@ -295,6 +332,11 @@ class ScanListViewModel(ViewModel):
         the scan-list read, so this thread never parses the fit-inputs log. The marks update on its
         ``worker_changed`` (the window re-reads on both of its signals)."""
         self._intake = intake
+
+    @property
+    def _current_map(self):
+        """C-current: unit key -> the passes holding a current stored result; None before the first read."""
+        return None if self._intake is None else self._intake.current
 
     # ---- the workspace changed -----------------------------------------------------------
     def set_workspace(self, ws) -> None:
@@ -439,12 +481,8 @@ class ScanListViewModel(ViewModel):
             "Q": Cell(""),
             "parsed": _summary_cell(ss.files_received - unread, ss.files_received, parsed_tones,
                                     "files received were read"),
-            "fast": _summary_cell(sum(sp.fast.stored for sp in ss.spectra), n,
-                                  [status_tone(FAST, sp.fast.word) for sp in ss.spectra],
-                                  "spectra through the fast pass", [sp.fast for sp in ss.spectra], FAST),
-            "deep": _summary_cell(sum(sp.deep.stored for sp in ss.spectra), n,
-                                  [status_tone(DEEP, sp.deep.word) for sp in ss.spectra],
-                                  "spectra through the deep pass", [sp.deep for sp in ss.spectra], DEEP),
+            "fast": _coverage_cell(ss.spectra, FAST, self._current_map, self._marks, "analyzers"),
+            "deep": _coverage_cell(ss.spectra, DEEP, self._current_map, self._marks, "analyzers"),
             "slit": _fact_cell(ss.slit),
             "file": Cell(""),
         }
@@ -453,14 +491,15 @@ class ScanListViewModel(ViewModel):
 
     def _spectrum_node(self, sp: SpectrumRow, with_unit: bool, ss: ScanSetRow | None = None) -> Node:
         """A spectrum row under its set (``ss`` is ``None``) or under its analyzer (``ss`` given)."""
+        mine = self._marks.get(sp.key, {})
         cells = {
             "scan": (Cell(ss.label) if ss is not None else
                      Cell(sp.analyzer or _DASH, None if sp.analyzer else "the analyzer is not known")),
             "T": _fact_cell(ss.temperature) if ss is not None else Cell(""),
             "Q": _fact_cell(sp.q, with_unit),
             "parsed": _status_cell(sp.parsed, PARSED),
-            "fast": _status_cell(sp.fast, FAST),
-            "deep": _status_cell(sp.deep, DEEP),
+            "fast": _status_cell(sp.fast, FAST, mine.get(FAST)),
+            "deep": _status_cell(sp.deep, DEEP, mine.get(DEEP)),
             "slit": Cell(""),
             "file": (Cell(sp.file_name, sp.file_path or sp.file_name) if sp.file_name
                      else Cell(_DASH, "the analyzer's file cannot be told")),
@@ -489,12 +528,8 @@ class ScanListViewModel(ViewModel):
                 "parsed": _summary_cell(sum(sp.parsed.stored for sp in all_sp), n,
                                         [status_tone(PARSED, sp.parsed.word) for sp in all_sp],
                                         "spectra read"),
-                "fast": _summary_cell(sum(sp.fast.stored for sp in all_sp), n,
-                                      [status_tone(FAST, sp.fast.word) for sp in all_sp],
-                                      "spectra through the fast pass", [sp.fast for sp in all_sp], FAST),
-                "deep": _summary_cell(sum(sp.deep.stored for sp in all_sp), n,
-                                      [status_tone(DEEP, sp.deep.word) for sp in all_sp],
-                                      "spectra through the deep pass", [sp.deep for sp in all_sp], DEEP),
+                "fast": _coverage_cell(all_sp, FAST, self._current_map, self._marks, "spectra"),
+                "deep": _coverage_cell(all_sp, DEEP, self._current_map, self._marks, "spectra"),
             }
             nodes.append(Node(f"ana:{ana}", "analyzer", None, cells, children))
         return nodes
