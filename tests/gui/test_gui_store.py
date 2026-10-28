@@ -215,9 +215,9 @@ def test_saved_group_slots_create_replace_restore_and_free_order(tmp_path):
     assert slot_two.id not in store.group_order()
 
 
-def test_saved_group_slots_fill_nine_and_replace_an_occupied_slot(tmp_path):
+def test_saved_group_slots_fill_ten_and_replace_an_occupied_slot(tmp_path):
     store = GuiStore.load(tmp_path)
-    for slot in range(1, 10):
+    for slot in range(1, 11):
         assert store.save_slot(slot, [f"k{slot}"]) is None
     assert store.free_slot() is None
     previous = store.save_slot(3, ["replacement"])
@@ -238,7 +238,7 @@ def test_invalid_slot_values_are_read_as_manual_and_preserved(tmp_path):
     assert store.slot_groups() == {3: store.groups()[2]}
     store.save()
     assert json.loads(path.read_text(encoding="utf-8"))["groups"] == original["groups"]
-    for slot in (0, 10, True, "3"):
+    for slot in (0, 11, True, "3"):
         try:
             store.slot_group(slot)
         except ValueError:

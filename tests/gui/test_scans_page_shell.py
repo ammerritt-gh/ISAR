@@ -76,7 +76,9 @@ def test_window_group_shortcuts_reach_the_saved_group_bar(qtbot, bl43_ws_readonl
     shortcuts["Ctrl+3"].activated.emit()
     shortcuts["3"].activated.emit()
 
-    assert seen == [(3, True), (3, False)]
+    shortcuts["Ctrl+0"].activated.emit()
+    shortcuts["0"].activated.emit()
+    assert seen == [(3, True), (3, False), (10, True), (10, False)]
 
 
 def test_window_selection_never_builds_the_retired_inspector_plot(qtbot, scans_view_ws_readonly, monkeypatch):

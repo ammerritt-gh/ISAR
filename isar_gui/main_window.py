@@ -757,8 +757,8 @@ class MainWindow(QMainWindow):
         self._operations.set_writer_guard(self._campaign_refusal)
 
         self._group_shortcuts = []
-        for slot in range(1, 10):
-            for save, sequence in ((True, f"Ctrl+{slot}"), (False, str(slot))):
+        for slot in range(1, 11):
+            for save, sequence in ((True, f"Ctrl+{slot % 10}"), (False, str(slot % 10))):
                 shortcut = QShortcut(QKeySequence(sequence), self)
                 shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
                 shortcut.activated.connect(

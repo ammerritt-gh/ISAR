@@ -212,7 +212,7 @@ def test_first_use_walkthrough_uses_real_list_clicks_and_keyboard(qtbot, monkeyp
     page._glw.setFocus()
     QTest.keyClick(page._glw, Qt.Key.Key_1, Qt.KeyboardModifier.ControlModifier)
     assert page.store.slot_group(1).members == list(selected)
-    assert page.groups.chip(1).text() == "1 · 4 spectra"
+    assert page.groups.chip(1).text() == "1"
 
     qtbot.mouseClick(window.scan_list._inspect, Qt.MouseButton.LeftButton)
     inspector = window.scan_inspector
@@ -245,7 +245,7 @@ def test_expert_group_recall_and_header_switches_need_no_menu(qtbot, monkeypatch
     QTest.keyClick(page._glw, Qt.Key.Key_2)
     drawn = _wait_drawn(qtbot, page, lambda state: state.keys == SPECTRA_B[:3])
     assert window.selection.keys == SPECTRA_B[:3]
-    assert page.groups.chip(2).text() == "2 · 3 spectra"
+    assert page.groups.chip(2).text() == "2"
 
     qtbot.mouseClick(page.fit_buttons["fast"], Qt.MouseButton.LeftButton)
     _wait_drawn(qtbot, page, lambda state: state.fit == "fast")
@@ -310,7 +310,7 @@ def test_mouse_edit_replaces_group_three_when_all_slots_are_used(qtbot, monkeypa
                                                                  scans_view_ws):
     window = _window(qtbot, monkeypatch, scans_view_ws, DESKTOP)
     page = _page(window)
-    for slot in range(1, 10):
+    for slot in range(1, 11):
         page.store.save_slot(slot, SPECTRA_A[:5])
     page.groups.reload()
     qtbot.mouseClick(page.groups.chip(3), Qt.MouseButton.LeftButton)
@@ -320,12 +320,12 @@ def test_mouse_edit_replaces_group_three_when_all_slots_are_used(qtbot, monkeypa
     edited = window.selection.keys
     chip = page.groups.chip(3)
     save = page.groups.save_button(3)
-    assert "edited" in chip.text() and save is not None and save.isVisible()
+    assert "edited" in chip.accessibleName() and save is not None and save.isVisible()
     qtbot.mouseClick(save, Qt.MouseButton.LeftButton)
     assert page.store.slot_group(3).members == list(edited)
     assert page.store.free_slot() is None
-    assert page.groups._notice.text() == "Group 3 replaced"
-    assert page.groups._undo_button.text() == "Undo"
+    assert page.groups._notice.full_text() == "Group 3 replaced"
+    assert page.groups._clear_button.isEnabled()
 
 
 def test_live_counts_mark_old_fits_and_keep_selection_zoom_and_list_state(qtbot, monkeypatch,
@@ -476,7 +476,7 @@ def test_composed_window_geometry_names_and_elision(qtbot, monkeypatch, scans_vi
     assert partial_text and "of" in partial_text
 
     if size == DESKTOP:
-        assert page.groups._plus.isEnabled()
+        assert page.groups.chip(10).isVisible()
         page.store.save_slot(1, selected)
         page.groups.reload()
         chip = page.groups.chip(1)
@@ -489,27 +489,16 @@ def test_composed_window_geometry_names_and_elision(qtbot, monkeypatch, scans_vi
         page.groups.reload()
         QApplication.processEvents()
         _capture(window, tmp_path, "scan-view-laptop-10-spectra.png")
-        for slot in range(2, 10):
+        for slot in range(2, 11):
             page.store.save_slot(slot, selected)
         page.groups.reload()
         QApplication.processEvents()
-        for slot in range(1, 10):
+        for slot in range(1, 11):
             chip = page.groups.chip(slot)
-            if chip is not None:
-                assert_reachable(window, chip)
-                assert chip.accessibleName()
-                assert "scan-list selection" in chip.toolTip()
-            else:
-                assert_reachable(window, page.groups._more)
-                qtbot.mouseClick(page.groups._more, Qt.MouseButton.LeftButton)
-                menu = page.groups._more_menu
-                assert menu.isVisible()
-                assert any(action.text().startswith(f"Group {slot} ·") for action in menu.actions())
-                action_rects = [menu.actionGeometry(action) for action in menu.actions()
-                                if action.isVisible()]
-                assert action_rects and all(menu.rect().contains(rect) for rect in action_rects)
-                menu.close()
-        assert_reachable(window, page.groups._plus, enabled=False)
+            assert chip is not None
+            assert_reachable(window, chip)
+            assert chip.accessibleName()
+            assert "scan-list selection" in chip.toolTip()
         _capture(window, tmp_path, "scan-view-laptop-10-spectra-9-groups.png")
 
     for section in inspector._fit_tables._sections.values():

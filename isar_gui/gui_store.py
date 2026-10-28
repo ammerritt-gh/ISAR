@@ -27,7 +27,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 STORE_NAME = "gui.state.json"
-GROUP_SLOTS = tuple(range(1, 10))
+GROUP_SLOTS = tuple(range(1, 11))
 
 
 @dataclass
@@ -244,7 +244,7 @@ class GuiStore:
     @staticmethod
     def _validate_slot(slot: int) -> None:
         if not isinstance(slot, int) or isinstance(slot, bool) or slot not in GROUP_SLOTS:
-            raise ValueError(f"group slot must be an integer from 1 to 9, got {slot!r}")
+            raise ValueError(f"group slot must be an integer from 1 to 10, got {slot!r}")
 
     def slot_groups(self) -> dict[int, GroupRec]:
         """The saved Scan(s) groups by occupied slot, with invalid/duplicate values omitted."""

@@ -511,10 +511,12 @@ Missing uncertainty stays visible as “± —” or “—”. Interval ladder,
 remain in their existing collapsed sections below. The inspector has no spectrum plot. Pooled masters still
 show their recorded numbers and fit tables there.
 
-The group chips save or recall up to nine selections per experiment. Click a numbered chip or press 1–9 when no text editor has focus to
-recall it; Ctrl+1–Ctrl+9 saves or replaces that slot, while + saves to the lowest free slot. Chip Save/Undo, + and Ctrl+number can replace or add a
-saved group after selection membership changes; ordinary selection does not rewrite
-the saved group. Missing group members are named, and recall drops them with a notice. These groups are
+The ten group slots are always visible: 1–9 and 0 (group 10). Filled slots have saved selections;
+the outlined slot is selected, and an asterisk marks an edited selection. Click a slot or press its digit
+when no text editor has focus to select it and recall any saved spectra. Select an empty slot and press
+Save to bookmark the current selection; Save also replaces a selected saved group. Ctrl+1–Ctrl+9 and
+Ctrl+0 save directly. Clear removes only the selected bookmark, keeping the scans and current selection.
+There is no Undo. Ordinary selection changes do not rewrite a saved group. Missing group members are named, and recall drops them with a notice. These groups are
 view controls, not card collation settings.
 
 The Processing queue remains on the right. It consumes the same selection, adds one item for each selected
