@@ -250,7 +250,8 @@ def test_identity_formats_numbered_summed_and_missing_facts():
 def test_unique_labels_append_set_then_stable_hash_only_on_remaining_collisions():
     x, key_x = _snapshot(label="X", key="expX:12:a06")
     y, key_y = _snapshot(label="Y", key="expY:12:a06")
-    third, key_z = _snapshot(label="Z", key="expZ:14:a03", q=10.0, analyzer="a03")
+    third, key_z = _snapshot(scan_numbers=(14,), label="Z", key="expZ:14:a03",
+                             q=10.0, analyzer="a03")
     combined = ScanListSnapshot(x.sets + y.sets + third.sets)
     labels = unique_labels(combined, (key_x, key_y, key_z, "absent"),
                            lambda i: (f"Scan {i.scan}" if i.numbered else i.scan,
@@ -258,7 +259,7 @@ def test_unique_labels_append_set_then_stable_hash_only_on_remaining_collisions(
     assert labels == {
         key_x: "Scan 12 · a06 · 97 K · X",
         key_y: "Scan 12 · a06 · 97 K · Y",
-        key_z: "Scan 14 · a03 · 97 K · Z",
+        key_z: "Scan 14 · a03 · 97 K",
     }
 
     same, same_key = _snapshot(label="X", key="expSame:12:a06")
