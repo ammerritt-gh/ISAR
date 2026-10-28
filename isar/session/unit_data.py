@@ -101,7 +101,9 @@ def write_unit_data(rec, det, data_dir) -> Path:
     if monitor is not None:
         try:
             monitor_array = np.asarray(monitor, dtype=float)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            log.warning("unit data: invalid monitor for %s:%s:%s (%s: %s)",
+                        rec.experiment_id, rec.scan_number, det, type(exc).__name__, exc)
             monitor_array = None
         if monitor_array is not None and monitor_array.shape == counts.shape:
             monitor_values = [float(v) if math.isfinite(float(v)) else None
