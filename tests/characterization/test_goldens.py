@@ -29,8 +29,9 @@ Regeneration
 Set ``UPDATE_GOLDENS=1`` and run this module (on a machine that HAS the baseline for the
 baseline-derived goldens); each golden under ``tests/characterization/goldens/`` is rewritten from
 the live canonicalised spec. Then re-run WITHOUT the flag to confirm the committed goldens match.
-Canonicalisation rounds floats to 9 significant figures and sorts keys, so incidental float noise
-never churns a golden.
+Canonicalisation rounds floats to 9 significant figures and sorts keys. Float comparisons allow
+relative 1e-8 / absolute 1e-12 noise, including values crossing a rounding boundary; structure and
+nonfloat values remain exact.
 """
 from __future__ import annotations
 
@@ -79,6 +80,40 @@ def _canon(obj):
     return obj
 
 
+def _assert_golden_close(actual, expected, path="root"):
+    """Allow numerical rounding noise while preserving every rendering semantic."""
+    assert type(actual) is type(expected), f"{path}: value type changed"
+    if isinstance(actual, dict):
+        assert actual.keys() == expected.keys(), f"{path}: keys changed"
+        for key in actual:
+            _assert_golden_close(actual[key], expected[key], f"{path}.{key}")
+    elif isinstance(actual, list):
+        assert len(actual) == len(expected), f"{path}: list length changed"
+        for i, (a, e) in enumerate(zip(actual, expected)):
+            _assert_golden_close(a, e, f"{path}[{i}]")
+    elif isinstance(actual, float):
+        assert math.isclose(actual, expected, rel_tol=1e-8, abs_tol=1e-12), f"{path}: {actual!r} != {expected!r}"
+    else:
+        assert actual == expected, f"{path}: {actual!r} != {expected!r}"
+
+
+@pytest.mark.parametrize("actual, expected, matches", [
+    ({"y": [0.123456789]}, {"y": [0.123456790]}, True),
+    ({"role": "fit"}, {"role": "data"}, False),
+    ({"count": 2}, {"count": 3}, False),
+    ({"y": [1.0]}, {"y": [1.0, 2.0]}, False),
+    ({"y": [1.001]}, {"y": [1.0]}, False),
+    ({"count": True}, {"count": 1}, False),
+    ({"role": "fit"}, {"state": "fit"}, False),
+])
+def test_golden_comparison_allows_float_rounding_but_preserves_semantics(actual, expected, matches):
+    if matches:
+        _assert_golden_close(actual, expected)
+    else:
+        with pytest.raises(AssertionError):
+            _assert_golden_close(actual, expected)
+
+
 def _reduce_strips(spec_dict: dict) -> dict:
     """Replace each strip's y/values arrays with a compact manifest so the C3 golden is reviewable;
     everything else (overlays / annotations / markers / projection / legend) is kept in full."""
@@ -105,7 +140,7 @@ def _check_golden(name: str, spec_dict: dict) -> None:
         path.write_text(json.dumps(canon, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     assert path.exists(), f"golden {name!r} missing — regenerate with UPDATE_GOLDENS=1"
     expected = _canon(json.loads(path.read_text(encoding="utf-8")))
-    assert canon == expected, f"golden {name!r} drifted from the committed snapshot"
+    _assert_golden_close(canon, expected, name)
 
 
 # ---------------------------------------------------------------------------
