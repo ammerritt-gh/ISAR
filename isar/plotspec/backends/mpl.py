@@ -7,6 +7,7 @@ rather than imported so plotspec does not depend on `isar.report`."""
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 
 import matplotlib
 
@@ -47,6 +48,8 @@ def _series_color(s) -> str:
     styles = set((s.style or "").split())
     if "muted" in styles:
         return "0.6"
+    if s.color is not None:
+        return s.color
     if s.state is State.POOLED:
         if "verdict_resolved" in styles:
             return "green"
@@ -95,17 +98,21 @@ def _draw_series(ax, s) -> None:
     color = _series_color(s)
     styles = set((s.style or "").split())
     # Certifying tier is visually primary (heavier, on top); non-certifying tiers recede.
-    lw = 2.2 if s.certifying else 1.0
+    lw = 2.2 if s.certifying else (2.0 if "heavy" in styles else 1.0)
     z = 6 if s.certifying else 2
     # A pooled (combine-before-divide) master gets a distinct SQUARE glyph so it stays visually
     # separable from per-scan member points even in the degenerate no-entropy case (both backends).
     marker = "s" if s.state is State.POOLED else "o"
+    if s.symbol is not None:
+        marker = {"o": "o", "s": "s", "t": "^", "d": "D", "p": "p", "h": "h",
+                  "star": "*", "t1": "v", "t2": ">", "t3": "<"}[s.symbol]
     if s.state is State.POOLED:
         lw = max(lw, 1.8)
         z = 9
     elif "muted" in styles:
         z = 1
     dashed = bool(styles & {"rival", "provisional", "dashed"})
+    dotted = "dotted" in styles
     hollow = "provisional" in styles
     label = s.label
     if s.tier is not None and label is None:
@@ -125,9 +132,9 @@ def _draw_series(ax, s) -> None:
             edgecolors, facecolors = edge, face
         ax.scatter(s.x, s.y, s=size, marker=marker, edgecolors=edgecolors,
                    facecolors=facecolors, linewidths=glw, zorder=gz + 1, label=label)
-    elif s.role is Role.SANDBOX or (not has_errors and dashed):
+    elif s.role is Role.SANDBOX or (not has_errors and (dashed or dotted)):
         # Sandbox results are ephemeral and unmistakably marked (G7): dashed.
-        ax.plot(s.x, s.y, ls="--", lw=lw, color=color, zorder=z, label=label)
+        ax.plot(s.x, s.y, ls=":" if dotted else "--", lw=lw, color=color, zorder=z, label=label)
     elif has_errors and s.color_values is not None:
         # Per-point honesty colour channel (e.g. assignment entropy): neutral whiskers, and each
         # point coloured calm->alarm by its own value (the legend note explains the encoding).
@@ -267,8 +274,12 @@ def _render_onto(ax, spec: PlotSpec) -> None:
         _draw_region(ax, region)
     for b in spec.bands:
         _draw_band(ax, b)
+    seen_series = set()
     for s in spec.series:
-        _draw_series(ax, s)
+        key = (s.legend_group, s.label)
+        duplicate = s.legend_group is not None and key in seen_series
+        _draw_series(ax, replace(s, label="_nolegend_") if duplicate else s)
+        seen_series.add(key)
     seen_marker_keys = set()  # (kind, label) already in the legend — dedup one entry per group
     for m in spec.markers:
         key = (m.kind, m.label)

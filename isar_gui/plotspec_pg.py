@@ -15,6 +15,8 @@ pure. Nothing here writes to a workspace.
 """
 from __future__ import annotations
 
+from html import escape
+
 import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -64,6 +66,8 @@ def _series_color(s) -> str:
     styles = set((s.style or "").split())
     if "muted" in styles:
         return "#999999"
+    if s.color is not None:
+        return s.color
     if s.state is State.POOLED:
         if "verdict_resolved" in styles:
             return "green"
@@ -169,8 +173,9 @@ def _detach(item) -> None:
 # ---------------------------------------------------------------------------
 # Element drawers
 # ---------------------------------------------------------------------------
-def _pen(color, width, dashed=False) -> QtGui.QPen:
-    style = QtCore.Qt.PenStyle.DashLine if dashed else QtCore.Qt.PenStyle.SolidLine
+def _pen(color, width, dashed=False, dotted=False) -> QtGui.QPen:
+    style = (QtCore.Qt.PenStyle.DotLine if dotted else
+             QtCore.Qt.PenStyle.DashLine if dashed else QtCore.Qt.PenStyle.SolidLine)
     return pg.mkPen(color=color, width=width, style=style)
 
 
@@ -204,17 +209,18 @@ def _error_kwargs(s) -> dict:
 def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
     color = _series_color(s)
     styles = set((s.style or "").split())
-    width = 2.2 if s.certifying else 1.0
+    width = 2.2 if s.certifying else (2.0 if "heavy" in styles else 1.0)
     z = 6 if s.certifying else 2
     # A pooled (combine-before-divide) master gets a distinct SQUARE glyph so it stays visually
     # separable from per-scan member points even in the degenerate no-entropy case (mirrors mpl).
-    symbol = "s" if s.state is State.POOLED else "o"
+    symbol = s.symbol or ("s" if s.state is State.POOLED else "o")
     if s.state is State.POOLED:
         width = max(width, 1.8)
         z = 9
     elif "muted" in styles:
         z = 1
     dashed = bool(styles & {"rival", "provisional", "dashed"})
+    dotted = "dotted" in styles
     hollow = "provisional" in styles
     label = _series_label(s)
     x = np.asarray(s.x, dtype=float)
@@ -242,14 +248,14 @@ def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
         scat.setZValue(gz + 1)
         rs._add_data(scat)
         if label is not None:
-            legend_entries.append((scat, label))
-    elif s.role is Role.SANDBOX or (not error_kwargs and dashed):
+            legend_entries.append((scat, label, s.legend_group, s.legend_bold))
+    elif s.role is Role.SANDBOX or (not error_kwargs and (dashed or dotted)):
         # Sandbox results are ephemeral and unmistakably marked (G7): dashed.
-        item = pg.PlotDataItem(x, y, pen=_pen(color, width, dashed=True))
+        item = pg.PlotDataItem(x, y, pen=_pen(color, width, dashed=True, dotted=dotted))
         item.setZValue(z)
         rs._add_data(item)
         if label is not None:
-            legend_entries.append((item, label))
+            legend_entries.append((item, label, s.legend_group, s.legend_bold))
     elif error_kwargs and s.color_values is not None:
         # Per-point honesty colour channel (e.g. assignment entropy): neutral whiskers + a scatter
         # whose brushes are per-point calm->alarm (mirrors the mpl backend).
@@ -268,7 +274,7 @@ def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
         rs._add_data(err)
         rs._add_data(scat)
         if label is not None:
-            legend_entries.append((scat, label))
+            legend_entries.append((scat, label, s.legend_group, s.legend_bold))
     elif error_kwargs:
         line = pg.PlotDataItem(
             x, y, pen=(None if s.role is Role.DATA else _pen(color, width)), symbol=symbol,
@@ -282,17 +288,17 @@ def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
         rs._add_data(err)
         rs._add_data(line)
         if label is not None:
-            legend_entries.append((line, label))
+            legend_entries.append((line, label, s.legend_group, s.legend_bold))
     else:
         if "muted" in styles:
             item = pg.PlotDataItem(x, y, pen=None, symbol=symbol, symbolSize=6,
                                    symbolBrush=None, symbolPen=_pen(color, width))
         else:
-            item = pg.PlotDataItem(x, y, pen=_pen(color, width, dashed=dashed))
+            item = pg.PlotDataItem(x, y, pen=_pen(color, width, dashed=dashed, dotted=dotted))
         item.setZValue(z)
         rs._add_data(item)
         if label is not None:
-            legend_entries.append((item, label))
+            legend_entries.append((item, label, s.legend_group, s.legend_bold))
 
 
 def _draw_band(rs: RenderedSpec, b, legend_entries: list) -> None:
@@ -411,7 +417,11 @@ def _draw_region(rs: RenderedSpec, region) -> None:
 def _draw_annotation(rs: RenderedSpec, a) -> None:
     if a.xy is not None:
         color = "red" if a.role is State.UNRELIABLE else _GREY_025
-        text = pg.TextItem(a.text, color=color, anchor=(0, 1))
+        text = pg.TextItem(a.text, color=color, anchor=a.anchor or (0, 1))
+        if a.bold:
+            text.setHtml(f'<span style="color:{color}; font-weight:bold">{escape(a.text)}</span>')
+        if a.tooltip is not None:
+            text.setToolTip(a.tooltip)
         text.setPos(float(a.xy[0]), float(a.xy[1]))
         rs._add_data(text)
     else:
@@ -462,6 +472,41 @@ def save_widget_png(widget, path) -> bool:
     return bool(pixmap.save(str(path), "PNG"))
 
 
+def _populate_legend(legend, entries, names) -> None:
+    # Keep legacy entries in order; each named group occupies one consecutive block.
+    blocks = []
+    groups = {}
+    for entry in entries:
+        sample, name = entry[:2]
+        group, bold = entry[2:] if len(entry) == 4 else (None, False)
+        if group is None:
+            blocks.append((None, [(sample, name, bold)]))
+        elif group not in groups:
+            groups[group] = [(sample, name, bold)]
+            blocks.append((group, groups[group]))
+        else:
+            groups[group].append((sample, name, bold))
+    for group, items in blocks:
+        if group is not None:
+            header = pg.LabelItem(escape(group), bold=True, justify="left")
+            legend.layout.addItem(header, legend.layout.rowCount(), 0, 1, 2)
+        seen = set()
+        for sample, name, bold in items:
+            if group is not None and name in seen:
+                continue
+            seen.add(name)
+            short = name if len(name) <= 48 else name[:23] + "…" + name[-24:]
+            legend.addItem(sample, escape(short) if group is not None else name)
+            swatch, label = legend.items[-1]
+            if group is not None:
+                label.setText(escape(short), bold=bold)
+                label.setToolTip(name)
+                swatch.setToolTip(name)
+                swatch.setAcceptedMouseButtons(QtCore.Qt.MouseButton.NoButton)
+            names.add(name)
+    legend.updateSize()
+
+
 def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
     """Render ``spec`` into ``plot_item``, returning a :class:`RenderedSpec` handle.
 
@@ -508,9 +553,7 @@ def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
         legend = pg.LegendItem(offset=None)
         legend.setParentItem(plot_item.getViewBox())
         legend.anchor(itemPos=(1, 0), parentPos=(1, 0), offset=(-8, 8))
-        for sample, name in legend_entries:
-            legend.addItem(sample, name)
-            rs.legend_names.add(name)
+        _populate_legend(legend, legend_entries, rs.legend_names)
         rs.legend = legend
 
     plot_item.setLabel("bottom", spec.xlabel)

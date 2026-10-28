@@ -32,6 +32,16 @@ from enum import Enum
 import numpy as np
 
 
+# Scan(s) identity and component palettes, shared by both renderers.
+DATA_NEUTRAL = "#404040"
+TRACE_COLORS = ("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+                "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf")
+SYMBOLS = ("o", "s", "t", "d", "p", "h", "star", "t1", "t2", "t3")
+CURVE_COLORS = {"total": "#222222", "elastic": "#7f7f7f",
+                "quasielastic": "#8c564b", "background": "#999999",
+                **{f"mode{i + 1}": color for i, color in enumerate(TRACE_COLORS[:6])}}
+
+
 # ---------------------------------------------------------------------------
 # Semantic tokens (str-valued so they serialize as themselves)
 # ---------------------------------------------------------------------------
@@ -177,8 +187,14 @@ class Series:
     color_values: np.ndarray | None = None
     color_norm: float | None = None
     glyph: Glyph | None = None
+    color: str | None = None
+    symbol: str | None = None
+    legend_group: str | None = None
+    legend_bold: bool = False
 
     def __post_init__(self):
+        if self.symbol is not None and self.symbol not in SYMBOLS:
+            raise ValueError(f"unknown series symbol: {self.symbol}")
         if self.yerr is not None and self.errors is not None:
             raise ValueError("Series.yerr and Series.errors are mutually exclusive")
         if self.errors is not None:
@@ -188,13 +204,19 @@ class Series:
                              "use mark_unreliable() instead")
 
     def to_dict(self) -> dict:
-        return {"x": _arr(self.x), "y": _arr(self.y), "yerr": _arr(self.yerr),
+        result = {"x": _arr(self.x), "y": _arr(self.y), "yerr": _arr(self.yerr),
                 "errors": None if self.errors is None else self.errors.to_dict(),
                 "label": self.label, "role": _tok(self.role), "style": self.style,
                 "tier": _tok(self.tier), "certifying": bool(self.certifying),
                 "state": _tok(self.state), "color_values": _arr(self.color_values),
                 "color_norm": None if self.color_norm is None else float(self.color_norm),
                 "glyph": _tok(self.glyph)}
+        for name in ("color", "symbol", "legend_group"):
+            if getattr(self, name) is not None:
+                result[name] = getattr(self, name)
+        if self.legend_bold:
+            result["legend_bold"] = True
+        return result
 
 
 @dataclass
@@ -239,10 +261,20 @@ class Annotation:
     text: str
     xy: tuple | None = None
     role: State | None = None
+    anchor: tuple | None = None
+    tooltip: str | None = None
+    bold: bool = False
 
     def to_dict(self) -> dict:
-        return {"text": self.text, "xy": (None if self.xy is None else [float(v) for v in self.xy]),
+        result = {"text": self.text, "xy": (None if self.xy is None else [float(v) for v in self.xy]),
                 "role": _tok(self.role)}
+        if self.anchor is not None:
+            result["anchor"] = list(self.anchor)
+        if self.tooltip is not None:
+            result["tooltip"] = self.tooltip
+        if self.bold:
+            result["bold"] = True
+        return result
 
 
 @dataclass

@@ -8,6 +8,9 @@ Imports only numpy + the record accessors it reads (`isar.schema.axes`); never m
 delegate to this module)."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Sequence
+
 import numpy as np
 
 from isar.plotspec import spec as ps
@@ -536,6 +539,118 @@ def _segment_xy(segment) -> tuple[np.ndarray, np.ndarray] | None:
     if not pairs:
         return None
     return np.asarray([p[0] for p in pairs]), np.asarray([p[1] for p in pairs])
+
+
+@dataclass(frozen=True)
+class ScansCurve:
+    name: str
+    kind: str
+    number: int | None
+    values: np.ndarray
+
+
+@dataclass(frozen=True)
+class ScansTrace:
+    identity: str
+    note: str | None
+    x: np.ndarray
+    y: np.ndarray
+    yerr: np.ndarray
+    kept: np.ndarray
+    curve_x: np.ndarray | None
+    curves: tuple[ScansCurve, ...]
+    deep: bool
+    active: bool
+
+
+def stack_step(traces: Sequence[ScansTrace]) -> float:
+    """Space traces by their data range; masked spikes and fits never move the stack."""
+    ranges = []
+    for trace in traces:
+        y = np.asarray(trace.y, dtype=float)
+        finite = np.isfinite(y)
+        shown = finite & np.asarray(trace.kept, dtype=bool)
+        values = y[shown if shown.any() else finite]
+        if values.size:
+            ranges.append(float(np.ptp(values)))
+    return 1.2 * max(ranges) if ranges else 1.0
+
+
+def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
+               ylabel: str, curves_header: str | None,
+               xlabel: str = "Energy transfer (meV)") -> ps.PlotSpec:
+    """Draw already-scaled spectra. This builder performs display offsets only."""
+    if view not in {"single", "offset", "overlay"}:
+        raise ValueError(f"unknown scans view: {view}")
+    if view == "single" and len(traces) != 1:
+        raise ValueError("single view requires exactly one trace")
+    if len(traces) > len(ps.SYMBOLS):
+        raise ValueError("Scan(s) draws at most ten spectra")
+    if view == "overlay" and any(t.curves for t in traces):
+        raise ValueError("Overlay compares data only")
+    if not np.isfinite(step) or step < 0:
+        raise ValueError("trace offset must be finite and non-negative")
+    spec = ps.PlotSpec(title="", xlabel=xlabel, ylabel=ylabel,
+                       meta={"view": view, "step": float(step), "n": len(traces)})
+    if not traces:
+        spec.annotations.append(ps.Annotation("Nothing drawn — see the line above"))
+        return spec
+    offsets = [(len(traces) - 1 - i) * step if view == "offset" else 0.0
+               for i in range(len(traces))]
+    for i, (trace, offset) in enumerate(zip(traces, offsets)):
+        x, y, err = (np.asarray(v, dtype=float) for v in (trace.x, trace.y, trace.yerr))
+        kept = np.asarray(trace.kept, dtype=bool)
+        if any(a.shape != x.shape for a in (y, err, kept)):
+            raise ValueError("trace points, errors and mask must have the same shape")
+        finite = np.isfinite(x) & np.isfinite(y)
+        shown = kept & finite
+        label = trace.identity + (f" · {trace.note}" if trace.note else "")
+        spec.series.append(ps.Series(
+            x=x[shown], y=y[shown] + offset, yerr=err[shown], label=label,
+            role=ps.Role.DATA, symbol=ps.SYMBOLS[i],
+            color=ps.TRACE_COLORS[i] if view == "overlay" else ps.DATA_NEUTRAL,
+            legend_group="Spectra", legend_bold=trace.active))
+        for px, py in zip(x[~kept & finite], y[~kept & finite]):
+            spec.markers.append(ps.Marker(float(px), float(py + offset), ps.MarkerKind.MASKED,
+                                          "masked (shown, not used in fit)"))
+        if view == "offset" and finite.any():
+            last = np.flatnonzero(finite)[-1]
+            label = trace.identity
+            short = label if len(label) <= 28 else label[:13] + "…" + label[-14:]
+            spec.annotations.append(ps.Annotation(
+                short, xy=(float(x[last]), float(y[last] + offset)), anchor=(1, 1),
+                tooltip=label, bold=trace.active))
+    # Canonical role order is independent of what the first trace happens to contain.
+    rank = {"total": 0, "mode": 1, "elastic": 2, "quasielastic": 3, "background": 4}
+    curves = [(curve, trace, offset) for trace, offset in zip(traces, offsets)
+              for curve in trace.curves]
+    curves.sort(key=lambda item: (rank[item[0].kind], item[0].number or 0))
+    for curve, trace, offset in curves:
+        if trace.curve_x is None or np.shape(curve.values) != np.shape(trace.curve_x):
+            raise ValueError("curve values must match the curve energy grid")
+        color_key = (f"mode{((curve.number or 1) - 1) % 6 + 1}"
+                     if curve.kind == "mode" else curve.kind)
+        style = []
+        if curve.kind == "total":
+            style.append("heavy")
+        if curve.kind == "background":
+            style.append("dotted")
+        elif trace.deep:
+            style.append("dashed")
+        spec.series.append(ps.Series(
+            x=np.asarray(trace.curve_x), y=np.asarray(curve.values) + offset,
+            label=curve.name, role=ps.Role.FIT if curve.kind == "total" else ps.Role.COMPONENT,
+            style=" ".join(style) or None, color=ps.CURVE_COLORS[color_key],
+            legend_group=curves_header))
+    return spec
+
+
+def scans_residual_spec(*, trace: ScansTrace, residuals: np.ndarray,
+                        ylabel: str) -> ps.PlotSpec:
+    return residuals_spec(x=trace.x, residuals=residuals, yerr=trace.yerr,
+                          mask=trace.kept, xlabel="Energy transfer (meV)",
+                          ylabel=ylabel, title="")
+
 
 
 def waterfall_spec(*, traces, offset_step, q=None, axis_label=None,
