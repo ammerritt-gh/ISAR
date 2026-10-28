@@ -396,7 +396,7 @@ class QueuePanel(QWidget):
             if view.n_saving:
                 text += f" · {view.n_saving} saving"
             tip = (f"{view.cores_in_use} of the {view.cores} cores ISAR may use are busy. Change the limit under "
-                   "Config > Cores… in the top row.")
+                   "Config > Cores for analysis… in the top row.")
         self._footer_text.setText(text)
         self._footer_text.setToolTip(tip)
         paused = bound and view.paused

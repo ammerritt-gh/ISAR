@@ -324,6 +324,12 @@ def test_each_disabled_add_button_shows_its_reason_in_place(qtbot, selection, bo
     assert button(enabled, "queue_add_fast").isEnabled() and texts(enabled, "queue_add_reason") == []
 
 
+def test_the_footer_names_the_cores_menu_entry_as_the_menu_reads(qtbot):
+    p = panel(qtbot, Stub(qview()))
+    footer = [w for w in p.findChildren(QLabel) if w.objectName() == "queue_footer_text"][0]
+    assert "Config > Cores for analysis…" in footer.toolTip()
+
+
 def test_the_paused_blocked_and_failed_banners(qtbot):
     p = panel(qtbot, Stub(qview(paused=True, n_running={"fast": 2, "deep": 0}, n_waiting={"fast": 16, "deep": 0})))
     assert texts(p, "queue_banner_text") == ["Paused. 2 analyzers finishing; nothing new starts; 16 waiting."]
