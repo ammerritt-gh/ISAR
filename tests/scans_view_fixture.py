@@ -33,6 +33,7 @@ FAST_ONLY = (NO_Q, DROPOUT, OUTDATED, NO_MONITOR)
 FITTED = tuple(key for key in (*SPECTRA_A, *SPECTRA_B, NO_MONITOR)
                if key not in (NO_ZERO, HELD))
 DEEP_LABELS = {
+    ONE_MODE: "1 DHO",
     DEEP_REFUSED: None,
     DEEP_DELTA: "1 DHO",
     DEEP_TRUSTED: "1 DHO",
@@ -132,10 +133,14 @@ def _deep_record(key: str) -> dict | None:
         if f"{prefix}.omega0" in params:
             minos[f"{prefix}.omega0"] = [-0.2, 0.25, True]
             minos[f"{prefix}.Gamma"] = [-0.1, 0.15, True]
-    return {"state": "resolved", "trusted": True,
+    trusted = key != ONE_MODE
+    result = {"state": "resolved", "trusted": trusted,
             "chosen": {"label": DEEP_LABELS[key], "params": params,
                        "model_manifest": chosen_manifest,
                        "errors": {"minos": minos}}}
+    if not trusted:
+        result["reason"] = "the stored deep fit did not meet the trust criterion"
+    return result
 
 
 def _truth_rows() -> dict[str, Truth]:

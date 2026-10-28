@@ -47,10 +47,12 @@ def test_fixture_keeps_counts_exposure_and_models_tied_to_truth(scans_view_ws_re
     dropped = ws.unit_data(DROPOUT)
     assert not dropped.mask[30] and dropped.counts[30] == 0
 
-    for key in (DEEP_DELTA, DEEP_TRUSTED, STOKES_ONLY, FAST_ZERO_MODE):
+    for key in (ONE_MODE, DEEP_DELTA, DEEP_TRUSTED, STOKES_ONLY, FAST_ZERO_MODE):
         chosen = fits[key].deep_pass["chosen"]
         assert chosen["label"] == truth(key).deep["chosen"]["label"]
         assert chosen["model_manifest"] == truth(key).deep["chosen"]["model_manifest"]
+    assert fits[ONE_MODE].deep_pass["trusted"] is False
+    assert fits[ONE_MODE].deep_pass["reason"]
     assert fits[DEEP_TRUSTED].deep_pass["trusted"] is True
     assert truth(TWO_MODE).fast_manifest["parameters"]["phonon.omega0"] == 5.5
     assert truth(TWO_MODE).fast_manifest["parameters"]["phonon2.omega0"] == 2.5
