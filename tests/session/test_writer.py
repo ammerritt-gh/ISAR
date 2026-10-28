@@ -79,7 +79,7 @@ def _fast(ws, unit: str, *, h="i0", fast_pass=None, base_hash=None) -> dict:
                                         "fallbacks": []}],
                            "finished": [{"unit": unit, "scan": scan, "pass": "fast", "status": "fitted",
                                          "fallbacks": [], "result": {"verdict": "clean"}}]},
-            "calibration": None, "resolution_version": None}
+            "calibration": None, "resolution_version": None, "inputs_at": time.time_ns()}
 
 
 def _deep(unit: str, fast_payload: dict, *, h="i0", state="close_call") -> dict:
@@ -94,7 +94,7 @@ def _deep(unit: str, fast_payload: dict, *, h="i0", state="close_call") -> dict:
                                         "fallbacks": []}],
                            "finished": [{"unit": unit, "scan": scan, "pass": "deep", "status": "fitted",
                                          "fallbacks": [], "result": {"state": state}}]},
-            "calibration": None, "resolution_version": None}
+            "calibration": None, "resolution_version": None, "inputs_at": time.time_ns()}
 
 
 def _bytes(path: Path) -> bytes:
@@ -315,17 +315,27 @@ def test_a_malformed_payload_raises_before_anything_is_written(bl43):
     assert _bytes(ws.session_path) == before
 
 
-def test_calibration_state_is_stored_only_when_unchanged_since_start(bl43):
+def test_the_calibration_and_version_from_the_newest_inputs_are_kept(bl43):
     ws, _data, units = bl43
     scan = units[0].rsplit(":", 1)[0]
-    p = _fast(ws, units[0])
-    p["calibration"] = {"scan": scan, "state": {"inputs_key": "k1"}, "replaces": None}
-    assert writer.save_results(ws.root, [p]) == [None]
-    assert ws.load()[0].state.tabulated_calibration[scan] == {"inputs_key": "k1"}
-    late = _fast(ws, units[1])
-    late["calibration"] = {"scan": scan, "state": {"inputs_key": "k2"}, "replaces": "k0"}  # started before k1
-    assert writer.save_results(ws.root, [late]) == [None]
-    assert ws.load()[0].state.tabulated_calibration[scan] == {"inputs_key": "k1"}
+
+    def save(unit, at, key, replaces=None, library=None):
+        p = {**_fast(ws, unit), "inputs_at": at,
+             "calibration": {"scan": scan, "state": {"inputs_key": key}, "replaces": replaces}}
+        if library is not None:
+            p["resolution_version"] = {"method": "tabulated_elastic", "folder": "rf", "pattern": "x", "library": library}
+        assert writer.save_results(ws.root, [p]) == [None]
+        state = ws.load()[0].state
+        return state.tabulated_calibration[scan]["inputs_key"], (state.resolution_versions or [{}])[-1].get("library")
+
+    assert save(units[0], 20, "k20", library="L20") == ("k20", "L20")
+    assert save(units[1], 10, "k10", library="L10") == ("k20", "L20")     # older inputs, saved last
+    assert save(units[1], 30, "k30") == ("k30", "L20")                     # newer, saved after an older
+    card, session = ws.load()
+    card.state.tabulated_calibration[scan] = {"inputs_key": "run"}        # isar run's, unstamped
+    ws.save(card, session)
+    assert save(units[0], 40, "k40", replaces="k30") == ("run", "L20")    # started before isar run's
+    assert save(units[0], 50, "k50", replaces="run", library="L50") == ("k50", "L50")
 
 
 # ---------------------------------------------------------------------------

@@ -46,7 +46,10 @@ starts write it; nothing else does.
 (`isar.session.writer.save_results`) and `isar ingest`. Each re-reads `session.json` (and, for the queue,
 `card.state.json`) under the lock and merges onto it: a queued result replaces only its own analyzer's
 pass, and refuses to save, with its reason, when that file was read in again with different data, or its
-fast pass replaced, while it ran; an ingest keeps every result saved since it started reading. The lock
+fast pass replaced, while it ran. The scan calibration and resolution version a queued result recomputed
+are stored only when its inputs are at least as new as those of what is stored, whichever saves first, so
+an item started before a correction never overwrites one started after it. An ingest keeps every result
+saved since it started reading. The lock
 is exclusive across processes and released by the operating system if its holder dies; a writer waits
 for it up to `WRITE_LOCK_TIMEOUT_S` (120 s, longer than a held copy of the folder) and then fails with
 nothing written. Readers never take it. `isar run`, `isar drive` and the campaign worker do not take it:

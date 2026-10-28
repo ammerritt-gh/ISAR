@@ -101,6 +101,43 @@ def test_a_curve_library_changed_since_the_calibration_makes_the_unit_not_curren
     _agrees(ws, cur, [unit])
 
 
+def test_the_newer_inputs_calibration_is_kept_when_the_older_item_saves_first(tmp_path):
+    """Two analyzers of one scan; the slit is corrected between their starts; the older one saves first."""
+    ws, scan = _ingested(tmp_path)
+    old, new = f"{scan}:a03", f"{scan}:a04"
+    (first,) = _fit(ws, old)
+    assert values.save_value(ws.root, "slit", "60x60", [scan]).ok
+    (second,) = _fit(ws, new)
+    assert first.payload["calibration"] is not None and second.payload["calibration"] is not None
+    assert save_results(ws.root, [first.payload]) == [None]
+    assert save_results(ws.root, [second.payload]) == [None]
+    stored = ws.load()[0].state.tabulated_calibration[scan]
+    assert stored["inputs_key"] == second.payload["calibration"]["state"]["inputs_key"]
+    cur = current_passes(ws.root, [old, new])
+    assert cur == {old: NONE, new: FAST}
+    _agrees(ws, cur, [old, new])
+
+
+def test_an_older_library_saved_last_stays_behind_the_newer_one(tmp_path):
+    """The curves change between two items' starts; the newer item saves first."""
+    ws, scan = _ingested(tmp_path)
+    old, new = f"{scan}:a03", f"{scan}:a04"
+    fx.write_library(ws.root / "rf", settings={"80x80": 0.7})
+    (first,) = _fit(ws, old)
+    fx.write_library(ws.root / "rf", settings={"10x10": 3.0})
+    (second,) = _fit(ws, new)
+    library = second.payload["resolution_version"]["library"]
+    assert first.payload["resolution_version"]["library"] != library
+    assert save_results(ws.root, [second.payload]) == [None]
+    assert save_results(ws.root, [first.payload]) == [None]
+    state = ws.load()[0].state
+    assert state.resolution_versions[-1]["library"] == library
+    assert state.tabulated_calibration[scan]["library"] == library
+    cur = current_passes(ws.root, [old, new])
+    assert cur == {old: NONE, new: FAST}
+    _agrees(ws, cur, [old, new])
+
+
 def test_a_stored_deep_pass_is_current_under_the_queues_request_and_the_isolated_rule(tmp_path, monkeypatch):
     """Examples 3 and 4, with the agreement of example 7 for the deep pass."""
     ws, scan = _ingested(tmp_path)

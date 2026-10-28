@@ -17,6 +17,7 @@ import copy
 import logging
 import math
 import os
+import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
@@ -82,6 +83,9 @@ def _fit(root: Path, item: FileItem, progress, emit) -> None:
     exp, scan_s, det = item.unit_key.rsplit(":", 2)
     scan = int(scan_s)
     key = f"{exp}:{scan}"
+    # The freeze's time orders saves by how new their inputs are (C-save). shortcut: wall clock across item
+    # processes, a clock stepped back misorders two starts; take a sequence from the service if that bites.
+    inputs_at = time.time_ns()
     card, session = Workspace.open(root).load()               # the freeze (design step 9)
     prev = session.get(item.unit_key)
     if prev is None:
@@ -158,7 +162,7 @@ def _fit(root: Path, item: FileItem, progress, emit) -> None:
         payload = {"schema": SCHEMA, "unit": item.unit_key, "pass": "fast",
                    "base": {"content_hash": prev.content_hash, "fast_id": None},
                    "deep": None, "fit_inputs": fit_inputs_of(entry, "fast"),
-                   "calibration": calibration, "resolution_version": version}
+                   "calibration": calibration, "resolution_version": version, "inputs_at": inputs_at}
         payload["entry"] = _json.to_jsonable(entry)
         status, reason = _fast_status(entry, det, tabulated)
         result("fast", status, reason, payload)
@@ -184,7 +188,7 @@ def _fit(root: Path, item: FileItem, progress, emit) -> None:
                "base": {"content_hash": fast_entry.content_hash, "fast_id": canonical_hash(oc["fast_pass"])},
                "entry": None, "deep": {"record": record, "timing": timing},
                "fit_inputs": fit_inputs_of(with_deep, "deep"),
-               "calibration": calibration, "resolution_version": version}
+               "calibration": calibration, "resolution_version": version, "inputs_at": inputs_at}
     if record.get("state") == "refused":
         return result("deep", "failed", f"Deep pass not run: {record.get('reason')}", payload)
     warning = currentness.result_warning({"deep_pass": record}, "deep")

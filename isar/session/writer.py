@@ -68,6 +68,8 @@ def _validate(i: int, p) -> None:
         bad(f"a fast payload's entry is not {unit}'s")
     if kind == "deep" and not (isinstance(p.get("deep"), dict) and isinstance(p["deep"].get("record"), dict)):
         bad("a deep payload carries no deep record")
+    if not isinstance(p.get("inputs_at"), int):
+        bad("no inputs_at (when its inputs were read)")
     fi = p.get("fit_inputs")
     if fi is not None and not (isinstance(fi, dict) and isinstance(fi.get("hash"), str)
                                and all(isinstance(fi.get(k), list) for k in ("fallbacks", "started", "finished"))):
@@ -100,22 +102,29 @@ def _apply(session: SessionState, p: dict) -> str | None:
 
 
 def _apply_calibration(card, p: dict) -> bool:
-    """Store the payload's recomputed scan state and resolution version; whether card.state changed."""
+    """Store the payload's recomputed scan state and append its resolution version, each only when the
+    payload's inputs are at least as new as the stored one's (``inputs_at``, stamped on what it stores); a
+    stored state without a stamp (``isar run``'s) yields only to a payload that saw it at its start, and a
+    version without one to any. Whether card.state changed."""
+    at = p["inputs_at"]
     changed = False
     cal = p.get("calibration")
     if cal is not None:
         fresh = card.state.tabulated_calibration.get(cal["scan"])
-        replaces = cal.get("replaces")
-        unchanged = (fresh is None and replaces is None) or (
-            fresh is not None and replaces is not None and fresh.get("inputs_key") == replaces)
-        if unchanged:
-            card.state.tabulated_calibration[cal["scan"]] = cal["state"]
+        if fresh is None or (at >= fresh["inputs_at"] if "inputs_at" in fresh
+                             else fresh.get("inputs_key") == cal.get("replaces")):
+            card.state.tabulated_calibration[cal["scan"]] = {**cal["state"], "inputs_at": at}
             changed = True
-        else:     # another writer stored a newer state; the result records its own fingerprint
-            log.info("calibration of %s not stored: the stored state changed since %s started", cal["scan"],
+        else:     # a state from newer inputs is stored; the result records its own fingerprint
+            log.info("calibration of %s not stored: the stored state is newer than %s's inputs", cal["scan"],
                      p["unit"])
+    versions = card.state.resolution_versions
     if p.get("resolution_version") is not None:
-        changed |= calibrations._append_version_if_changed(card, dict(p["resolution_version"]))
+        if versions and at < versions[-1].get("inputs_at", at):
+            log.info("resolution version of %s not appended: the latest is from newer inputs", p["unit"])
+        elif calibrations._append_version_if_changed(card, dict(p["resolution_version"])):
+            versions[-1]["inputs_at"] = at
+            changed = True
     return changed
 
 
