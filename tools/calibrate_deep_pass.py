@@ -68,6 +68,7 @@ import dataclasses
 import importlib.metadata
 import importlib.util
 import json
+import logging
 import math
 import multiprocessing as mp
 import os
@@ -739,6 +740,17 @@ def write_report(report, output):
         replace_retrying(temporary, target)
 
 
+def _final_refresh(refresh):
+    """Try to persist failure status without replacing the original escaped exception."""
+    if sys.exc_info()[0] is None:
+        refresh()
+        return
+    try:
+        refresh()
+    except Exception:
+        logging.getLogger(__name__).exception("Final calibration report failed; preserving original exception")
+
+
 def installed_text(report, analysis):
     """The CALIBRATION_STATUS string the install commit would carry (P2); empty when nothing is chosen."""
     if not analysis.get("chosen"):
@@ -874,7 +886,7 @@ def calibrate(entries, *, preferred_count, output, workers=16, run_timeout_s=360
         report.update(status="interrupted_or_failed", error=traceback.format_exc())
         raise
     finally:
-        refresh()
+        _final_refresh(refresh)
     return report
 
 
@@ -1054,7 +1066,7 @@ def rslice_screen(entries, *, labels, output, workers=16, run_timeout_s=3600, wa
         report.update(status="interrupted_or_failed", error=traceback.format_exc())
         raise
     finally:
-        refresh()
+        _final_refresh(refresh)
     return report
 
 

@@ -56,6 +56,33 @@ META = {"arena_fingerprint": "synthetic-arena", "prior_provenance": {"recipe": "
 LABELS = ["m0", "m1", "m2"]
 
 
+@pytest.mark.parametrize("protocol", ["calibrate", "rslice_screen"])
+@pytest.mark.parametrize("first_write_fails", [False, True])
+def test_final_report_failure_preserves_original_exception(
+        harness, monkeypatch, tmp_path, caplog, protocol, first_write_fails):
+    original = RuntimeError("original calculation failure")
+    calls = []
+
+    def write(report, output):
+        calls.append(report["status"])
+        if first_write_fails and len(calls) == 1:
+            raise original
+        if len(calls) > 1:
+            raise PermissionError("secondary report writer failure")
+
+    def run(*args, **kwargs):
+        raise original
+
+    monkeypatch.setattr(harness, "write_report", write)
+    monkeypatch.setattr(harness, "run_jobs", run)
+    kwargs = {"preferred_count": 1} if protocol == "calibrate" else {"labels": LABELS}
+    with caplog.at_level("ERROR"), pytest.raises(RuntimeError) as error:
+        getattr(harness, protocol)(entries(), output=tmp_path, **kwargs)
+    assert error.value is original
+    assert calls[-1] == "interrupted_or_failed"
+    assert "secondary report writer failure" in caplog.text
+
+
 def fake_runner(h, seen, *, capped=False):
     def run(jobs, *, workers, timeout_s, on_result, deadline=None, skipped=None):
         seen.update(jobs=jobs, workers=workers, timeout_s=timeout_s, deadline=deadline)
